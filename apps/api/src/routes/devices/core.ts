@@ -452,6 +452,12 @@ export const CUSTOM_ORG_REWRITE_TABLES = [
   // moveOrg.ts also names ticket_checklist_items_ticket_org_fk in its
   // SET CONSTRAINTS … DEFERRED statement.
   'ticket_checklist_items',
+  // ticket_external_refs (Partner API tickets): rewritten through the
+  // tickets join, appended last to extend — not reorder — the shared lock
+  // order. Its composite (ticket_id, org_id) FK is DEFERRABLE INITIALLY
+  // IMMEDIATE, so moveDeviceOrgInTransaction.ts also names
+  // ticket_external_refs_ticket_org_fk in its SET CONSTRAINTS … DEFERRED.
+  'ticket_external_refs',
 ] as const;
 
 /**

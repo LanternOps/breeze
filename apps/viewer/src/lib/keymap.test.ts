@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { mapKey, getModifiers, isModifierOnly, isCapsLock, getCapsLockState } from './keymap';
+import {
+  mapKey,
+  getModifiers,
+  isModifierOnly,
+  isCapsLock,
+  getCapsLockState,
+  keyNameModeFor,
+  resolveKeyUpName,
+} from './keymap';
 
 describe('keymap', () => {
   it('maps known KeyboardEvent.code values', () => {
@@ -73,5 +81,113 @@ describe('caps lock (issue #3595)', () => {
   it('falls back to false when the platform has no getModifierState', () => {
     const stub = { getModifierState: undefined } as unknown as KeyboardEvent;
     expect(getCapsLockState(stub)).toBe(false);
+  });
+});
+
+/**
+ * Non-US layouts (issue #7809). KeyboardEvent.code names the PHYSICAL key by
+ * its US-QWERTY position; KeyboardEvent.key is what the active layout produced.
+ * Fixtures are what a browser reports for the key whose cap shows the letter
+ * named in the test.
+ */
+describe('layout-aware letters (issue #7809)', () => {
+  const evt = (code: string, key: string, init: KeyboardEventInit = {}) =>
+    new KeyboardEvent('keydown', { code, key, ...init });
+
+  describe('German QWERTZ', () => {
+    it('sends z for the Z cap (physically KeyY) to a layout-resolving remote', () => {
+      expect(mapKey(evt('KeyY', 'z'), 'layout')).toBe('z');
+      expect(mapKey(evt('KeyZ', 'y'), 'layout')).toBe('y');
+    });
+
+    it('defaults to layout mode', () => {
+      expect(mapKey(evt('KeyY', 'z'))).toBe('z');
+    });
+
+    it('keeps Ctrl+Z as undo (z), not redo (y)', () => {
+      expect(mapKey(evt('KeyY', 'z', { ctrlKey: true }), 'layout')).toBe('z');
+    });
+
+    it('lowercases shifted letters (shift travels in modifiers)', () => {
+      expect(mapKey(evt('KeyY', 'Z', { shiftKey: true }), 'layout')).toBe('z');
+    });
+
+    it('falls back to the physical key when AltGr produced a non-letter', () => {
+      // AltGr+Q = "@" on QWERTZ: send q with ctrl+alt so the remote layout
+      // produces the symbol itself, exactly as before.
+      expect(mapKey(evt('KeyQ', '@', { ctrlKey: true, altKey: true }), 'layout')).toBe('q');
+    });
+
+    it('sends positional names to a macOS remote (its injector is positional)', () => {
+      expect(mapKey(evt('KeyY', 'z'), 'positional')).toBe('y');
+      expect(mapKey(evt('KeyZ', 'y'), 'positional')).toBe('z');
+    });
+  });
+
+  describe('French AZERTY', () => {
+    it('maps the A/Q and Z/W swaps by produced letter', () => {
+      expect(mapKey(evt('KeyQ', 'a'), 'layout')).toBe('a');
+      expect(mapKey(evt('KeyA', 'q'), 'layout')).toBe('q');
+      expect(mapKey(evt('KeyW', 'z'), 'layout')).toBe('z');
+      expect(mapKey(evt('KeyZ', 'w'), 'layout')).toBe('w');
+    });
+
+    it('maps M (physically Semicolon) to m', () => {
+      expect(mapKey(evt('Semicolon', 'm'), 'layout')).toBe('m');
+    });
+
+    it('sends positional names to a macOS remote', () => {
+      expect(mapKey(evt('KeyQ', 'a'), 'positional')).toBe('q');
+      expect(mapKey(evt('Semicolon', 'm'), 'positional')).toBe(';');
+    });
+  });
+
+  it('ignores non-ASCII letters and keeps the physical key (e.g. Cyrillic)', () => {
+    // A Russian layout's "я" sits on KeyZ. Unchanged from before: the name is
+    // the physical key, and what it produces is up to the remote layout.
+    expect(mapKey(evt('KeyZ', 'я'), 'layout')).toBe('z');
+  });
+
+  it('ignores dead keys', () => {
+    expect(mapKey(evt('BracketLeft', 'Dead'), 'layout')).toBe('[');
+  });
+
+  it('never reinterprets non-letter keys', () => {
+    expect(mapKey(evt('Digit7', '/', { shiftKey: true }), 'layout')).toBe('7');
+    expect(mapKey(evt('ArrowUp', 'ArrowUp'), 'layout')).toBe('up');
+    expect(mapKey(evt('ShiftLeft', 'Shift'), 'layout')).toBe('shift');
+    expect(mapKey(evt('Space', ' '), 'layout')).toBe('space');
+  });
+});
+
+describe('keyNameModeFor (issue #7809)', () => {
+  it('is positional only for macOS remotes', () => {
+    expect(keyNameModeFor('macos')).toBe('positional');
+    expect(keyNameModeFor('windows')).toBe('layout');
+    expect(keyNameModeFor('linux')).toBe('layout');
+    expect(keyNameModeFor(null)).toBe('layout');
+  });
+});
+
+describe('resolveKeyUpName (issue #7809)', () => {
+  const up = (code: string, key: string) => new KeyboardEvent('keyup', { code, key });
+
+  it('releases the exact name that was pressed, even if the produced char changed', () => {
+    // Z cap pressed (sent "z"); AltGr engaged before release turns key into a
+    // symbol. Re-mapping the keyup would release "y" and strand "z" held down.
+    const held = new Map([['KeyY', 'z']]);
+    expect(resolveKeyUpName(up('KeyY', '←'), held, 'layout')).toBe('z');
+    expect(held.has('KeyY')).toBe(false);
+  });
+
+  it('maps normally when the key was not recorded as held', () => {
+    expect(resolveKeyUpName(up('KeyY', 'z'), new Map(), 'layout')).toBe('z');
+    expect(resolveKeyUpName(up('KeyY', 'z'), new Map(), 'positional')).toBe('y');
+  });
+
+  it('falls through to mapping when the event has no code', () => {
+    const held = new Map([['KeyY', 'z']]);
+    expect(resolveKeyUpName(up('', 'q'), held, 'layout')).toBe('q');
+    expect(held.size).toBe(1);
   });
 });

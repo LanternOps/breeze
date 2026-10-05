@@ -19,6 +19,8 @@ interface UseFilterPreviewOptions {
   debounceMs?: number;
   enabled?: boolean;
   limit?: number;
+  // Pin the preview to one org instead of the top-bar org switcher (#7479).
+  orgId?: string;
 }
 
 interface UseFilterPreviewReturn {
@@ -32,7 +34,7 @@ export function useFilterPreview(
   filter: FilterConditionGroup | null,
   options: UseFilterPreviewOptions = {}
 ): UseFilterPreviewReturn {
-  const { debounceMs = 500, enabled = true, limit } = options;
+  const { debounceMs = 500, enabled = true, limit, orgId } = options;
   const [preview, setPreview] = useState<FilterPreviewResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,7 +49,7 @@ export function useFilterPreview(
     setError(null);
 
     try {
-      const response = await fetchWithAuth('/filters/preview', {
+      const response = await fetchWithAuth(orgId ? `/filters/preview?orgId=${encodeURIComponent(orgId)}` : '/filters/preview', {
         method: 'POST',
         body: JSON.stringify({ conditions, limit }),
         signal: controller.signal
@@ -65,7 +67,7 @@ export function useFilterPreview(
     } finally {
       setLoading(false);
     }
-  }, [limit]);
+  }, [limit, orgId]);
 
   useEffect(() => {
     if (!enabled || !filter || !hasValidConditions(filter)) {

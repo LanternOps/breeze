@@ -15,6 +15,8 @@ export interface EvalReport {
   toolSearchEnabled: boolean;
   surface: CaptureSurfaceId | 'agent-suite';
   systemPromptBytes: number;
+  /** W11: the prompt variant appended to every case's system prompt; null = the base prompt. */
+  promptVariant: string | null;
   cases: Array<CaseScore & {
     expected: GoldenExpectation[];
     surface: CaptureSurfaceId;
@@ -31,7 +33,7 @@ export interface EvalReport {
     contextTokensToFirstTool: number;
     /** Context of the response that made the first real call — what every later turn re-sends (mostly as cache reads). */
     contextTokensAtFirstTool: number;
-    /** `calculateCostCents` summed over those responses, output included. */
+    /** `priceInvocation` at the platform registry rate, summed over those responses, output included (NaN when unpriced). */
     costCentsToFirstTool: number;
   }>;
   summary: ReturnType<typeof summarize>;
@@ -51,7 +53,7 @@ export function renderMarkdownReport(input: EvalReport): string {
   const lines = [
     `# Tool-selection accuracy ${summary.hits}/${summary.total} = ${(summary.accuracy * 100).toFixed(1)}%`,
     '',
-    `Generated: ${input.generatedAt}; model: ${input.model}; suite: ${input.suite}; surface: ${input.surface}; tool search: ${input.toolSearch}, surface opt-in: ${input.surfaceSearch} (${input.toolSearchEnabled ? 'enabled' : 'disabled'} by policy${input.suite === 'agent' ? ' for every case' : ''}).`,
+    `Generated: ${input.generatedAt}; model: ${input.model}; suite: ${input.suite}; surface: ${input.surface}; tool search: ${input.toolSearch}, surface opt-in: ${input.surfaceSearch} (${input.toolSearchEnabled ? 'enabled' : 'disabled'} by policy${input.suite === 'agent' ? ' for every case' : ''}); prompt: ${input.promptVariant ?? 'base'}.`,
     '',
     '| id | prompt | expected | observed |',
     '| --- | --- | --- | --- |',

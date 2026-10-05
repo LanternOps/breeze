@@ -168,3 +168,27 @@ describe('compose passes the pinned WebAuthn values through to api', () => {
     expect(compose).toMatch(/^\s*WEBAUTHN_RP_ID: \$\{WEBAUTHN_RP_ID:-\}\s*$/m);
   });
 });
+
+// The dev images are built locally from the worktree, but docker-compose.yml
+// defaults DOCKER_PLATFORM to linux/amd64. On an arm64 host that runs the API
+// under emulation: the main thread blocks ~15 s after boot and every detached
+// startup task (registry reconcile, storage key history, built-in monitors)
+// times out on its database prologue. Build native unless the root .env says
+// otherwise.
+describe('writeEnvStack — DOCKER_PLATFORM', () => {
+  it('builds native arm64 images on an arm64 host when the root .env leaves it unset', () => {
+    const env = readFileSync(writeEnvStack(dir, { arch: 'arm64' }), 'utf8');
+    expect(env).toContain('DOCKER_PLATFORM=linux/arm64');
+  });
+
+  it('keeps an explicit DOCKER_PLATFORM from the root .env', () => {
+    writeFileSync(path.join(dir, '.env'), 'FOO=1\nDOCKER_PLATFORM=linux/amd64\n', 'utf8');
+    const env = readFileSync(writeEnvStack(dir, { arch: 'arm64' }), 'utf8');
+    expect(env).not.toContain('DOCKER_PLATFORM=');
+  });
+
+  it('adds nothing on an x64 host (the compose default is already native)', () => {
+    const env = readFileSync(writeEnvStack(dir, { arch: 'x64' }), 'utf8');
+    expect(env).not.toContain('DOCKER_PLATFORM=');
+  });
+});

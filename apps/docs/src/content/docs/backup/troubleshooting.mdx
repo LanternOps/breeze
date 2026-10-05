@@ -61,6 +61,36 @@ If a manual backup request cannot be queued at all, Breeze now marks the job **F
 
 ---
 
+## Backup waits for the backup component to report
+
+**Symptom:** A backup or restore stays queued with a note naming the backup component, or a backup fails with "The backup was not started because the backup component on this device hasn't reported which storage features it supports yet. If the device is online, update or reinstall the Breeze agent, then run the backup again."
+
+**Cause:** Each heartbeat reports which storage features the device's backup helper supports. When the agent cannot ask the helper (not installed yet, crashed, timed out, unreadable output), it reports **unknown** rather than "no support". A device that already reported support keeps its last known value; a device with no report yet waits — for up to 10 minutes — instead of being treated as an older helper. The agent retries the check after 1, 2 and 4 minutes, then every 5 minutes.
+
+**Fix:** Usually none: the next successful check releases the work. If the message persists while the device is online, update or reinstall the Breeze agent on the device, then run the backup again.
+
+---
+
+## Restore refused: "did not match its integrity record"
+
+**Symptom:** A restore, verification or VM restore fails with `This backup did not match its integrity record and cannot be read from storage.`
+
+**Cause:** The snapshot's stored objects did not match its attestation when they were checked. Breeze will not read such a snapshot. See [Integrity checks on restore](/backup/restoring/#integrity-checks-on-restore).
+
+**Fix:** Restore from a different snapshot. Investigate the storage target for tampering or corruption. If the message instead says the file list `is being rebuilt from storage`, wait a few minutes and run the restore again.
+
+---
+
+## Deleting a backup destination fails
+
+**Symptom:** Deleting a backup destination that has ever run a backup returns a server error.
+
+**Cause:** Known issue in v0.120.0: a destination with job history cannot be deleted.
+
+**Fix:** Stop using the destination instead of deleting it: reassign the policies that point at it, then disable it (`PATCH /backup/configs/:id` with `"enabled": false`).
+
+---
+
 ## Snapshot browse returns empty
 
 **Symptom:** A snapshot exists but the file browser shows no contents.
@@ -175,7 +205,7 @@ Breeze does not create simulated verification records or silent pending restores
 1. Check available disk space at the export destination.
 2. Verify the VM state — exports work best when the VM is **Running** or **Off**.
 3. For application-consistent exports, ensure Hyper-V integration services are installed and running in the guest OS.
-4. Try a **crash-consistent** export if application-consistent fails.
+4. Try a **crash-consistent** export if application-consistent fails — but not for a VM that is **Off**. Known issue in v0.120.0: a crash-consistent backup of a powered-off VM fails with `failed to save VM state … Save-VM`; use **Application-consistent** for powered-off VMs.
 
 ---
 
@@ -225,7 +255,7 @@ Breeze does not create simulated verification records or silent pending restores
 
 **Cause:** The token may have expired, been used already, or was copied incorrectly.
 
-**Fix:** Generate a [new recovery token](/backup/bare-metal-recovery/). Tokens are single-use and time-limited. Ensure you copy the full token string without trailing whitespace.
+**Fix:** Generate a [new recovery token](/backup/bare-metal-recovery/). A token is consumed once a recovery completes with it and stops working when it expires; a recovery that failed before completing does not consume it, so `Token is used` means a recovery already finished with that token. Ensure you copy the full token string without trailing whitespace.
 
 ---
 

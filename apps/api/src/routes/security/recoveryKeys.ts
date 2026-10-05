@@ -10,6 +10,8 @@ import type { AuthContext } from '../../middleware/auth';
 import { canAccessSite, getUserPermissions, type UserPermissions } from '../../services/permissions';
 import { decryptForColumn } from '../../services/secretCrypto';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { rateLimiter } from '../../services/rate-limit';
+import { getRedis } from '../../services/redis';
 import { CommandTypes, queueCommand } from '../../services/commandQueue';
 import { encryptSensitivePayloadFields } from '../../services/sensitiveCommandPayload';
 import { deviceIdParamSchema, recoveryKeyRevealParamSchema, rotateRecoveryKeySchema } from './schemas';
@@ -108,6 +110,15 @@ recoveryKeysRoutes.get(
   }
 );
 
+/**
+ * Per-user cap on recovery-key reveals. Generous enough for a technician
+ * working through a batch of locked machines, low enough that bulk reads of
+ * key material across a fleet are throttled. Keyed by user, not device, so
+ * the cap spans every device and org the user can reach.
+ */
+export const RECOVERY_KEY_REVEAL_LIMIT = 20;
+export const RECOVERY_KEY_REVEAL_WINDOW_SECONDS = 60 * 60;
+
 // Audited fetch-on-demand reveal: ledger row + route audit; plaintext returned once.
 recoveryKeysRoutes.post(
   '/encryption/devices/:deviceId/recovery-keys/:keyId/reveal',
@@ -124,6 +135,38 @@ recoveryKeysRoutes.post(
     const { deviceId, keyId } = c.req.valid('param');
     const { device, denied } = await loadAccessibleDevice(c, deviceId);
     if (!device) return denied;
+
+    // Checked before the key is read or decrypted. Fails closed: without
+    // Redis there is no cap, so no reveal.
+    const redis = getRedis();
+    if (!redis) {
+      console.error('[security] recovery key reveal rate limit unavailable: redis client missing');
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
+    const rate = await rateLimiter(
+      redis,
+      `recovery-key-reveal:user:${auth.user.id}`,
+      RECOVERY_KEY_REVEAL_LIMIT,
+      RECOVERY_KEY_REVEAL_WINDOW_SECONDS,
+      1,
+      { refundOnReject: true },
+    );
+    if (!rate.allowed) {
+      writeRouteAudit(c, {
+        orgId: device.orgId,
+        action: 'device.recovery_key.reveal',
+        resourceType: 'device',
+        resourceId: deviceId,
+        result: 'denied',
+        details: { keyId, reason: 'rate_limited' },
+      });
+      const retryAfterSeconds = Math.max(1, Math.ceil((rate.resetAt.getTime() - Date.now()) / 1000));
+      c.header('Retry-After', String(retryAfterSeconds));
+      return c.json(
+        { error: 'Recovery key reveal limit reached. Try again later.', retryAfter: rate.resetAt.toISOString() },
+        429,
+      );
+    }
 
     const [key] = await db
       .select()

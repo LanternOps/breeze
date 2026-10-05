@@ -1,54 +1,32 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CheckCheck, CheckCircle, PencilLine, PlayCircle, RefreshCw, ShieldAlert, ShieldCheck, Sparkles, ThumbsDown, ThumbsUp, XCircle } from 'lucide-react';
+import { RefreshCw, Sparkles } from 'lucide-react';
 
-import { handleActionError, runAction } from '../../lib/runAction';
-import { fetchWithAuth } from '../../stores/auth';
+import { ActionError, handleActionError, runAction } from '../../lib/runAction';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
+import { draftPrompt, stashScriptDraft } from '../../lib/scriptDraftHandoff';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
-
-type SuggestionStatus = 'suggested' | 'accepted' | 'edited' | 'rejected' | 'executed' | 'failed';
-
-type OutcomeState = 'pending' | 'awaiting_recovery' | 'holding' | 'verified' | 'failed' | 'recurred' | 'inconclusive' | 'cancelled';
-type SuggestionOutcome = { state: OutcomeState; stateReason: string | null; humanVote: 'up' | 'down' | null };
-
-type RemediationSuggestion = {
-  id: string;
-  sourceType: string;
-  sourceId: string;
-  deviceId: string | null;
-  targetType: 'script' | 'script_template' | 'playbook' | 'diagnostic' | 'manual_steps';
-  scriptId: string | null;
-  scriptTemplateId: string | null;
-  playbookId: string | null;
-  title: string;
-  rationale: string;
-  expectedAction: string;
-  riskTier: 'low' | 'medium' | 'high' | 'critical';
-  status: SuggestionStatus;
-  confidence: number | null;
-  parameters: Record<string, unknown>;
-  targetDeviceIds: string[];
-  elevationRequestId: string | null;
-  scriptExecutionId: string | null;
-  origin?: 'catalog_match' | 'memory' | 'ai_research';
-  evidence?: Record<string, unknown>;
-  outcome?: SuggestionOutcome | null;
-};
-
-const OUTCOME_STATE_KEYS: Record<OutcomeState, string> = {
-  pending: 'longTail.remediation.RemediationSuggestionsPanel.outcome.state.pending',
-  awaiting_recovery: 'longTail.remediation.RemediationSuggestionsPanel.outcome.state.awaitingRecovery',
-  holding: 'longTail.remediation.RemediationSuggestionsPanel.outcome.state.holding',
-  verified: 'longTail.remediation.RemediationSuggestionsPanel.outcome.state.verified',
-  failed: 'longTail.remediation.RemediationSuggestionsPanel.outcome.state.failed',
-  recurred: 'longTail.remediation.RemediationSuggestionsPanel.outcome.state.recurred',
-  inconclusive: 'longTail.remediation.RemediationSuggestionsPanel.outcome.state.inconclusive',
-  cancelled: 'longTail.remediation.RemediationSuggestionsPanel.outcome.state.cancelled',
-};
-
-function canMarkDone(s: RemediationSuggestion): boolean {
-  return s.targetType === 'manual_steps' && (s.status === 'accepted' || s.status === 'edited') && !s.outcome;
-}
+import ResearchControls from './ResearchControls';
+import SuggestionRow from './SuggestionRow';
+import {
+  canExecuteSuggestion,
+  canMarkDone,
+  canQueueSuggestion,
+  requiresExecutionApproval,
+  type EditDraft,
+  type RemediationSuggestion,
+  type ReviewedInstructions,
+  type SuggestionOutcome,
+} from './suggestionRowModel';
+import { useResearchStatus, type ResearchOutcome } from './useResearchStatus';
+import {
+  groupSuggestions,
+  researchPanelState,
+  trackRecordText,
+  type ResearchStatusDto,
+  type TrackRecordLite,
+} from './suggestionGroups';
 
 type RemediationSuggestionsPanelProps = {
   sourceType: 'alert' | 'anomaly' | 'correlation' | 'rca';
@@ -56,82 +34,6 @@ type RemediationSuggestionsPanelProps = {
   orgId?: string;
   deviceId?: string;
 };
-
-type EditDraft = Pick<RemediationSuggestion, 'title' | 'rationale' | 'expectedAction' | 'riskTier'>;
-
-const riskClasses: Record<RemediationSuggestion['riskTier'], string> = {
-  low: 'border-success/30 bg-success/10 text-success',
-  medium: 'border-warning/30 bg-warning/10 text-warning',
-  high: 'border-destructive/40 bg-destructive/10 text-destructive',
-  critical: 'border-destructive bg-destructive/15 text-destructive',
-};
-
-function targetLabel(suggestion: RemediationSuggestion, t: (key: string) => string): string {
-  if (suggestion.targetType === 'script') return t('longTail.remediation.RemediationSuggestionsPanel.targets.script');
-  if (suggestion.targetType === 'script_template') return t('longTail.remediation.RemediationSuggestionsPanel.targets.template');
-  if (suggestion.targetType === 'playbook') return t('longTail.remediation.RemediationSuggestionsPanel.targets.playbook');
-  return t('longTail.remediation.RemediationSuggestionsPanel.targets.diagnostic');
-}
-
-function targetIdentifier(suggestion: RemediationSuggestion, t: (key: string, options?: Record<string, unknown>) => string): string {
-  if (suggestion.targetType === 'script') {
-    return suggestion.scriptId
-      ? t('longTail.remediation.RemediationSuggestionsPanel.targetIdentifiers.script', { id: suggestion.scriptId })
-      : t('longTail.remediation.RemediationSuggestionsPanel.targetIdentifiers.scriptMissing');
-  }
-  if (suggestion.targetType === 'script_template') {
-    return suggestion.scriptTemplateId
-      ? t('longTail.remediation.RemediationSuggestionsPanel.targetIdentifiers.template', { id: suggestion.scriptTemplateId })
-      : t('longTail.remediation.RemediationSuggestionsPanel.targetIdentifiers.templateMissing');
-  }
-  if (suggestion.targetType === 'playbook') {
-    return suggestion.playbookId
-      ? t('longTail.remediation.RemediationSuggestionsPanel.targetIdentifiers.playbook', { id: suggestion.playbookId })
-      : t('longTail.remediation.RemediationSuggestionsPanel.targetIdentifiers.playbookMissing');
-  }
-  return t('longTail.remediation.RemediationSuggestionsPanel.targetIdentifiers.diagnostic');
-}
-
-function targetDeviceLabel(suggestion: RemediationSuggestion, t: (key: string, options?: Record<string, unknown>) => string): string {
-  const ids = suggestion.targetDeviceIds.length > 0
-    ? suggestion.targetDeviceIds
-    : suggestion.deviceId
-      ? [suggestion.deviceId]
-      : [];
-
-  if (ids.length === 0) return t('longTail.remediation.RemediationSuggestionsPanel.targetDevices.none');
-  if (ids.length === 1) return t('longTail.remediation.RemediationSuggestionsPanel.targetDevices.one', { id: ids[0] });
-  return t('longTail.remediation.RemediationSuggestionsPanel.targetDevices.many', { count: ids.length, ids: ids.join(', ') });
-}
-
-function parametersPreview(suggestion: RemediationSuggestion): string | null {
-  if (!suggestion.parameters || Object.keys(suggestion.parameters).length === 0) return null;
-  return JSON.stringify(suggestion.parameters, null, 2);
-}
-
-function singleTargetDeviceId(suggestion: RemediationSuggestion): string | null {
-  if (suggestion.targetDeviceIds.length === 1) return suggestion.targetDeviceIds[0] ?? null;
-  if (suggestion.targetDeviceIds.length === 0) return suggestion.deviceId;
-  return null;
-}
-
-function canQueueScriptSuggestion(suggestion: RemediationSuggestion): boolean {
-  return (
-    suggestion.targetType === 'script' &&
-    Boolean(suggestion.scriptId) &&
-    Boolean(singleTargetDeviceId(suggestion)) &&
-    (suggestion.status === 'accepted' || suggestion.status === 'edited') &&
-    !suggestion.scriptExecutionId
-  );
-}
-
-function requiresExecutionApproval(suggestion: RemediationSuggestion): boolean {
-  return suggestion.riskTier === 'high' || suggestion.riskTier === 'critical';
-}
-
-function canExecuteScriptSuggestion(suggestion: RemediationSuggestion): boolean {
-  return canQueueScriptSuggestion(suggestion) && (!requiresExecutionApproval(suggestion) || Boolean(suggestion.elevationRequestId));
-}
 
 export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgId, deviceId }: RemediationSuggestionsPanelProps) {
   const { t } = useTranslation('common');
@@ -148,11 +50,33 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
   const [error, setError] = useState<string>();
   const [votingId, setVotingId] = useState<string | null>(null);
   const [markingDoneId, setMarkingDoneId] = useState<string | null>(null);
+  const [memory, setMemory] = useState<{ proven: TrackRecordLite[]; similar: TrackRecordLite[] }>({ proven: [], similar: [] });
+  const [researchBusy, setResearchBusy] = useState(false);
+  const [reviewed, setReviewed] = useState<ReviewedInstructions[] | null>(null);
+  const [reviewedChoice, setReviewedChoice] = useState<Record<string, string>>({});
+  const [savingReviewed, setSavingReviewed] = useState<{ id: string; title: string; steps: string } | null>(null);
+  const [savingReviewedBusy, setSavingReviewedBusy] = useState(false);
+  const canManagePartnerWide = useAuthStore((state) => state.user?.canManagePartnerWide);
+  const sourceQuery = new URLSearchParams({ sourceType, sourceId, ...(orgId ? { orgId } : {}) }).toString();
+  const sourceQueryRef = useRef(sourceQuery);
+  sourceQueryRef.current = sourceQuery;
+  const onResearchTerminal = useCallback(() => { void fetchSuggestionsRef.current(true); }, []);
+  const research = useResearchStatus(sourceQuery, onResearchTerminal);
+  const fetchSuggestionsRef = useRef<(silent?: boolean, includeList?: boolean) => Promise<void>>(async () => undefined);
 
-  const fetchSuggestions = useCallback(async () => {
-    setLoading(true);
+  const fetchSuggestions = useCallback(async (silent = false, includeList = true) => {
+    if (!silent) setLoading(true);
     setError(undefined);
+    const query = sourceQueryRef.current;
+    // Memory and research are best-effort: a failure of either must never blank the list.
+    const loadMemory = fetchWithAuth(`/remediation-suggestions/memory?${query}`)
+      .then(async (r) => (r.ok ? (await r.json())?.data : null))
+      .catch(() => null);
+    const loadResearch = fetchWithAuth(`/remediation-suggestions/research?${query}`)
+      .then(async (r) => (r.ok ? (await r.json())?.data : null))
+      .catch(() => null);
     try {
+      if (!includeList) return;
       const params = new URLSearchParams({ sourceType, sourceId, limit: '5' });
       const response = await fetchWithAuth(`/remediation-suggestions?${params.toString()}`);
       if (!response.ok) throw new Error(t('longTail.remediation.RemediationSuggestionsPanel.errors.loadFailed'));
@@ -161,9 +85,17 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
     } catch (err) {
       setError(err instanceof Error ? err.message : t('longTail.remediation.RemediationSuggestionsPanel.errors.loadFailed'));
     } finally {
+      const [mem, researchLoaded] = await Promise.all([loadMemory, loadResearch]);
+      setMemory({
+        proven: Array.isArray(mem?.proven) ? mem.proven : [],
+        similar: Array.isArray(mem?.similar) ? mem.similar : [],
+      });
+      // Only a non-null read overwrites the research state: a failed read never erases what is on screen.
+      research.applyLoaded(researchLoaded as ResearchStatusDto | null, query);
       setLoading(false);
     }
   }, [sourceId, sourceType]);
+  fetchSuggestionsRef.current = fetchSuggestions;
 
   useEffect(() => {
     void fetchSuggestions();
@@ -174,6 +106,7 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
   async function generateSuggestions() {
     if (remediationSuggestionsDisabled) return;
     setGenerating(true);
+    research.clearDenial();
     try {
       const body = {
         sourceType,
@@ -182,7 +115,7 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
         ...(orgId ? { orgId } : {}),
         ...(deviceId ? { deviceId } : {}),
       };
-      const result = await runAction<{ data?: RemediationSuggestion[]; skipped?: boolean }>({
+      const result = await runAction<{ data?: RemediationSuggestion[]; skipped?: boolean; research?: ResearchOutcome | null }>({
         request: () => fetchWithAuth('/remediation-suggestions/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -194,10 +127,40 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
           : t('longTail.remediation.RemediationSuggestionsPanel.messages.generated'),
       });
       setSuggestions(Array.isArray(result.data) ? result.data : []);
+      research.noteOutcome(result.research);
+      // The response already carries the list; only memory needs a re-read (Generate may have attached rows).
+      void fetchSuggestions(true, false);
     } catch (err) {
       handleActionError(err, t('longTail.remediation.RemediationSuggestionsPanel.errors.generateFailed'));
     } finally {
       setGenerating(false);
+    }
+  }
+
+  async function requestResearch(depth: 'quick' | 'deep') {
+    if (remediationSuggestionsDisabled) return;
+    setResearchBusy(true);
+    research.clearDenial();
+    try {
+      const result = await runAction<{ data?: ResearchOutcome }>({
+        request: () => fetchWithAuth('/remediation-suggestions/research', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sourceType, sourceId, depth, ...(orgId ? { orgId } : {}) }),
+        }),
+        errorFallback: t('longTail.remediation.RemediationSuggestionsPanel.errors.researchFailed'),
+      });
+      research.noteOutcome(result.data);
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (err instanceof ActionError) {
+        // runAction already toasted; the panel keeps the reason on screen too.
+        if (err.code) research.denyFromError(err.code, err.message);
+        return;
+      }
+      showToast({ type: 'error', message: t('longTail.remediation.RemediationSuggestionsPanel.errors.researchFailed') });
+    } finally {
+      setResearchBusy(false);
     }
   }
 
@@ -278,7 +241,7 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
   }
 
   async function executeSuggestion(suggestion: RemediationSuggestion) {
-    if (!canExecuteScriptSuggestion(suggestion)) return;
+    if (!canExecuteSuggestion(suggestion)) return;
 
     setExecutingId(suggestion.id);
     try {
@@ -298,16 +261,6 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
     } finally {
       setExecutingId(null);
     }
-  }
-
-  function provenTrack(s: RemediationSuggestion): string | null {
-    const e = s.evidence ?? {};
-    const verified = typeof e.verifiedCount === 'number' ? e.verifiedCount : null;
-    const attempts = typeof e.attempts === 'number' ? e.attempts : null;
-    if (verified === null || attempts === null) return null;
-    return e.scope === 'this_client'
-      ? t('longTail.remediation.RemediationSuggestionsPanel.proven.trackThisClient', { verified, attempts })
-      : t('longTail.remediation.RemediationSuggestionsPanel.proven.trackAllClients', { verified, attempts });
   }
 
   function applyOutcome(id: string, outcome: SuggestionOutcome | undefined) {
@@ -335,6 +288,29 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
     }
   }
 
+  // A read (GET), not a mutation: runAction does not apply, but failure is still toasted.
+  async function draftScript(suggestion: RemediationSuggestion) {
+    try {
+      const res = await fetchWithAuth(`/remediation-suggestions/${suggestion.id}/draft-brief`);
+      if (!res.ok) throw new Error('draft-brief failed');
+      const { data } = await res.json();
+      const validLanguage = ['powershell', 'bash', 'python', 'cmd'].includes(data?.language);
+      if (typeof data?.brief !== 'string' || !data.brief || typeof data?.title !== 'string' || !validLanguage) {
+        throw new Error('malformed draft brief');
+      }
+      const handoff = { brief: data.brief, language: data.language, title: data.title, suggestionId: suggestion.id };
+      if (stashScriptDraft(handoff)) {
+        window.location.assign('/scripts/new');
+        return;
+      }
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(draftPrompt(handoff));
+      showToast({ type: 'warning', message: t('longTail.remediation.RemediationSuggestionsPanel.messages.draftCopied') });
+    } catch {
+      showToast({ type: 'error', message: t('longTail.remediation.RemediationSuggestionsPanel.errors.draftFailed') });
+    }
+  }
+
   async function markDone(suggestion: RemediationSuggestion) {
     if (!canMarkDone(suggestion)) return;
     setMarkingDoneId(suggestion.id);
@@ -343,7 +319,7 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
         request: () => fetchWithAuth(`/remediation-suggestions/${suggestion.id}/done`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
+          body: JSON.stringify(reviewedChoice[suggestion.id] ? { instructionsId: reviewedChoice[suggestion.id] } : {}),
         }),
         errorFallback: t('longTail.remediation.RemediationSuggestionsPanel.done.failed'),
         successMessage: t('longTail.remediation.RemediationSuggestionsPanel.done.recorded'),
@@ -356,8 +332,52 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
     }
   }
 
+  const loadReviewed = useCallback(async () => {
+    try {
+      const response = await fetchWithAuth('/fix-memory/instructions');
+      const json = response.ok ? await response.json() : null;
+      setReviewed(Array.isArray(json?.data) ? json.data : []);
+    } catch {
+      setReviewed([]);
+    }
+  }, []);
+
+  const needsReviewedList = suggestions.some(canMarkDone);
+  useEffect(() => {
+    if (needsReviewedList && reviewed === null) void loadReviewed();
+  }, [needsReviewedList, reviewed, loadReviewed]);
+
+  async function saveReviewedSteps(suggestion: RemediationSuggestion) {
+    if (!savingReviewed || savingReviewed.id !== suggestion.id) return;
+    const title = savingReviewed.title.trim();
+    const steps = savingReviewed.steps.split('\n').map((line) => line.trim()).filter(Boolean);
+    if (!title || steps.length === 0) return;
+    setSavingReviewedBusy(true);
+    try {
+      const result = await runAction<{ data?: ReviewedInstructions }>({
+        request: () => fetchWithAuth('/fix-memory/instructions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, steps, osType: null, fromSuggestionId: suggestion.id }),
+        }),
+        errorFallback: t('longTail.remediation.RemediationSuggestionsPanel.reviewed.failed'),
+        successMessage: t('longTail.remediation.RemediationSuggestionsPanel.reviewed.saved'),
+      });
+      if (result.data) {
+        const saved = result.data;
+        setReviewed((current) => [saved, ...(current ?? [])]);
+        setReviewedChoice((current) => ({ ...current, [suggestion.id]: saved.id }));
+      }
+      setSavingReviewed(null);
+    } catch (err) {
+      handleActionError(err, t('longTail.remediation.RemediationSuggestionsPanel.reviewed.failed'));
+    } finally {
+      setSavingReviewedBusy(false);
+    }
+  }
+
   async function requestApproval(suggestion: RemediationSuggestion) {
-    if (!canQueueScriptSuggestion(suggestion) || !requiresExecutionApproval(suggestion) || suggestion.elevationRequestId) return;
+    if (!canQueueSuggestion(suggestion) || !requiresExecutionApproval(suggestion) || suggestion.elevationRequestId) return;
 
     setRequestingApprovalId(suggestion.id);
     try {
@@ -388,6 +408,68 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
     }
   }
 
+  const renderSuggestion = (suggestion: RemediationSuggestion) => (
+    <SuggestionRow
+      key={suggestion.id}
+      suggestion={suggestion}
+      approvalStatus={approvalStatuses[suggestion.id]}
+      editDraft={editingId === suggestion.id ? editDraft : null}
+      setEditDraft={setEditDraft}
+      busy={{ updatingId, executingId, requestingApprovalId, votingId, markingDoneId }}
+      reviewed={reviewed}
+      reviewedChoice={reviewedChoice[suggestion.id] ?? ''}
+      onReviewedChoice={(value) => setReviewedChoice((current) => ({ ...current, [suggestion.id]: value }))}
+      savingReviewed={savingReviewed?.id === suggestion.id ? savingReviewed : null}
+      setSavingReviewed={setSavingReviewed}
+      savingReviewedBusy={savingReviewedBusy}
+      canManagePartnerWide={canManagePartnerWide}
+      onUpdate={updateSuggestion}
+      onBeginEdit={beginEdit}
+      onCancelEdit={cancelEdit}
+      onSaveEdit={saveEditedSuggestion}
+      onExecute={executeSuggestion}
+      onVote={voteOnSuggestion}
+      onMarkDone={markDone}
+      onRequestApproval={requestApproval}
+      onSaveReviewed={saveReviewedSteps}
+      onDraftScript={draftScript}
+    />
+  );
+
+  const renderRecord = (record: TrackRecordLite, muted: boolean) => {
+    const text = trackRecordText(record);
+    const name = record.scriptName ?? record.instructionsTitle ?? record.builtinAction ?? record.fixKind;
+    return (
+      <div key={record.memoryId} data-testid={`suggestion-record-${record.memoryId}`} className={`rounded-md border p-3 ${muted ? 'opacity-70' : ''}`}>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-semibold">{name}</span>
+          <span className="text-xs text-muted-foreground">
+            {text.scope === 'this_client'
+              ? t('longTail.remediation.RemediationSuggestionsPanel.proven.trackThisClient', { verified: record.verified, attempts: record.attempts })
+              : t('longTail.remediation.RemediationSuggestionsPanel.proven.trackAllClients', { verified: record.verified, attempts: record.attempts })}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {text.lastVerifiedDays === null
+              ? t('longTail.remediation.RemediationSuggestionsPanel.track.neverVerified')
+              : t('longTail.remediation.RemediationSuggestionsPanel.track.lastVerified', { days: text.lastVerifiedDays })}
+          </span>
+        </div>
+      </div>
+    );
+  };
+
+  const groups = groupSuggestions(suggestions, memory);
+  const panelState = researchPanelState(research.status, research.denial);
+  const everyGroupEmpty = groups.proven.length === 0 && groups.provenRecordsOnly.length === 0 && groups.ai.length === 0
+    && groups.similar.length === 0 && groups.legacy.length === 0;
+
+  const section = (id: string, heading: string, children: ReactNode) => (
+    <section data-testid={`suggestions-group-${id}`} className="mt-3 space-y-2">
+      <h5 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{heading}</h5>
+      {children}
+    </section>
+  );
+
   if (loading) {
     return (
       <div className="mt-4 rounded-md border border-dashed p-4">
@@ -403,299 +485,54 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
           <Sparkles className="h-4 w-4 text-muted-foreground" />
           <h4 className="text-sm font-semibold">{t('longTail.remediation.RemediationSuggestionsPanel.title')}</h4>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => void fetchSuggestions()}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground hover:bg-muted hover:text-foreground"
-            title={t('longTail.remediation.RemediationSuggestionsPanel.refresh')}
-            aria-label={t('longTail.remediation.RemediationSuggestionsPanel.refresh')}
-          >
-            <RefreshCw className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            disabled={generating || remediationSuggestionsDisabled}
-            onClick={() => void generateSuggestions()}
-            title={remediationSuggestionsDisabled ? t('longTail.remediation.RemediationSuggestionsPanel.disabledTitle') : undefined}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <Sparkles className="h-4 w-4" />
-            {remediationSuggestionsDisabled
-              ? t('longTail.remediation.RemediationSuggestionsPanel.suggestionsDisabled')
-              : t('longTail.remediation.RemediationSuggestionsPanel.generate')}
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => { research.restartPolling(); void fetchSuggestions(); }}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground hover:bg-muted hover:text-foreground"
+          title={t('longTail.remediation.RemediationSuggestionsPanel.refresh')}
+          aria-label={t('longTail.remediation.RemediationSuggestionsPanel.refresh')}
+        >
+          <RefreshCw className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="mt-3">
+        <ResearchControls
+          state={panelState}
+          disabled={remediationSuggestionsDisabled}
+          disabledTitle={t('longTail.remediation.RemediationSuggestionsPanel.disabledTitle')}
+          generateLabel={remediationSuggestionsDisabled ? t('longTail.remediation.RemediationSuggestionsPanel.suggestionsDisabled') : t('longTail.remediation.RemediationSuggestionsPanel.generate')}
+          busy={generating || researchBusy}
+          stalled={research.stalled}
+          onRefresh={() => { research.restartPolling(); void fetchSuggestions(true); }}
+          onGenerate={() => void generateSuggestions()}
+          onResearchDeeper={() => void requestResearch('deep')}
+          onRetry={() => void requestResearch(research.status?.depth ?? 'quick')}
+        />
       </div>
 
       {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
 
-      {suggestions.length === 0 ? (
-        <p className="mt-3 text-sm text-muted-foreground">{t('longTail.remediation.RemediationSuggestionsPanel.empty')}</p>
-      ) : (
-        <div className="mt-3 space-y-3">
-          {suggestions.map((suggestion) => {
-            const approvalStatus = approvalStatuses[suggestion.id];
-            const approvalPending = requiresExecutionApproval(suggestion) && suggestion.elevationRequestId && approvalStatus === 'pending';
-            const editing = editingId === suggestion.id && editDraft;
-            const executionPreview = suggestion.status === 'accepted' || suggestion.status === 'edited';
-            const parameterJson = parametersPreview(suggestion);
-            return (
-              <div key={suggestion.id} className="rounded-md border p-3">
-                {editing ? (
-                  <div className="space-y-3">
-                    <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_10rem]">
-                      <label className="grid gap-1 text-sm font-medium">
-                        {t('longTail.remediation.RemediationSuggestionsPanel.fields.title')}
-                        <input
-                          value={editDraft.title}
-                          onChange={(event) => setEditDraft({ ...editDraft, title: event.currentTarget.value })}
-                          className="rounded-md border bg-background px-3 py-2 text-sm font-normal"
-                        />
-                      </label>
-                      <label className="grid gap-1 text-sm font-medium">
-                        {t('longTail.remediation.RemediationSuggestionsPanel.fields.risk')}
-                        <select
-                          value={editDraft.riskTier}
-                          onChange={(event) => setEditDraft({ ...editDraft, riskTier: event.currentTarget.value as RemediationSuggestion['riskTier'] })}
-                          className="rounded-md border bg-background px-3 py-2 text-sm font-normal"
-                        >
-                          <option value="low">{t('longTail.remediation.RemediationSuggestionsPanel.risk.low')}</option>
-                          <option value="medium">{t('longTail.remediation.RemediationSuggestionsPanel.risk.medium')}</option>
-                          <option value="high">{t('longTail.remediation.RemediationSuggestionsPanel.risk.high')}</option>
-                          <option value="critical">{t('longTail.remediation.RemediationSuggestionsPanel.risk.critical')}</option>
-                        </select>
-                      </label>
-                    </div>
-                    <label className="grid gap-1 text-sm font-medium">
-                      {t('longTail.remediation.RemediationSuggestionsPanel.fields.rationale')}
-                      <textarea
-                        value={editDraft.rationale}
-                        onChange={(event) => setEditDraft({ ...editDraft, rationale: event.currentTarget.value })}
-                        rows={3}
-                        className="rounded-md border bg-background px-3 py-2 text-sm font-normal"
-                      />
-                    </label>
-                    <label className="grid gap-1 text-sm font-medium">
-                      {t('longTail.remediation.RemediationSuggestionsPanel.fields.expectedAction')}
-                      <textarea
-                        value={editDraft.expectedAction}
-                        onChange={(event) => setEditDraft({ ...editDraft, expectedAction: event.currentTarget.value })}
-                        rows={3}
-                        className="rounded-md border bg-background px-3 py-2 text-sm font-normal"
-                      />
-                    </label>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        disabled={updatingId === suggestion.id || !editDraft.title.trim() || !editDraft.rationale.trim() || !editDraft.expectedAction.trim()}
-                        onClick={() => void saveEditedSuggestion(suggestion)}
-                        className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        <CheckCircle className="h-4 w-4" />
-                        {t('longTail.remediation.RemediationSuggestionsPanel.saveEdits')}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={updatingId === suggestion.id}
-                        onClick={cancelEdit}
-                        className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        <XCircle className="h-4 w-4" />
-                        {t('common:actions.cancel')}
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-semibold">{suggestion.title}</span>
-                        <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">{targetLabel(suggestion, t)}</span>
-                        <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${riskClasses[suggestion.riskTier]}`}>
-                          {t(/* i18n-dynamic */ `longTail.remediation.RemediationSuggestionsPanel.risk.${suggestion.riskTier}`)}
-                        </span>
-                        {suggestion.confidence != null && (
-                          <span className="text-xs text-muted-foreground">{Math.round(suggestion.confidence * 100)}%</span>
-                        )}
-                      </div>
-                      <p className="mt-2 text-sm text-muted-foreground">{suggestion.rationale}</p>
-                      <p className="mt-2 text-sm">{suggestion.expectedAction}</p>
-                      {suggestion.status !== 'suggested' && (
-                        <p className="mt-2 text-xs font-medium text-muted-foreground">
-                          {t('longTail.remediation.RemediationSuggestionsPanel.statusLine', {
-                            status: t(/* i18n-dynamic */ `longTail.remediation.RemediationSuggestionsPanel.status.${suggestion.status}`),
-                          })}
-                        </p>
-                      )}
-                      {suggestion.origin === 'memory' && (
-                        <p className="mt-2 inline-flex items-center gap-1 rounded bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-300" data-testid="remediation-proven-badge">
-                          <ShieldCheck className="h-3.5 w-3.5" />
-                          {t('longTail.remediation.RemediationSuggestionsPanel.proven.badge')}
-                          {provenTrack(suggestion) && <span className="font-normal">· {provenTrack(suggestion)}</span>}
-                        </p>
-                      )}
-                      {suggestion.outcome && (
-                        <p className="mt-2 text-xs text-muted-foreground" data-testid="remediation-outcome">
-                          {t('longTail.remediation.RemediationSuggestionsPanel.outcome.label', {
-                            state: t(/* i18n-dynamic */ OUTCOME_STATE_KEYS[suggestion.outcome.state]),
-                          })}
-                        </p>
-                      )}
-                      {executionPreview && (
-                        <div className="mt-3 rounded-md border bg-muted/30 p-3">
-                          <p className="text-xs font-semibold text-foreground">{t('longTail.remediation.RemediationSuggestionsPanel.executionPreview')}</p>
-                          <dl className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
-                            <div className="min-w-0">
-                              <dt className="font-medium text-muted-foreground">{t('longTail.remediation.RemediationSuggestionsPanel.preview.willRun')}</dt>
-                              <dd className="wrap-break-word text-foreground">{targetLabel(suggestion, t)}: {targetIdentifier(suggestion, t)}</dd>
-                            </div>
-                            <div className="min-w-0">
-                              <dt className="font-medium text-muted-foreground">{t('longTail.remediation.RemediationSuggestionsPanel.preview.where')}</dt>
-                              <dd className="wrap-break-word text-foreground">{targetDeviceLabel(suggestion, t)}</dd>
-                            </div>
-                            <div className="min-w-0">
-                              <dt className="font-medium text-muted-foreground">{t('longTail.remediation.RemediationSuggestionsPanel.preview.source')}</dt>
-                              <dd className="wrap-break-word text-foreground">{suggestion.sourceType} {suggestion.sourceId}</dd>
-                            </div>
-                            <div className="min-w-0">
-                              <dt className="font-medium text-muted-foreground">{t('longTail.remediation.RemediationSuggestionsPanel.preview.risk')}</dt>
-                              <dd className="wrap-break-word text-foreground">{t(/* i18n-dynamic */ `longTail.remediation.RemediationSuggestionsPanel.risk.${suggestion.riskTier}`)}</dd>
-                            </div>
-                            <div className="min-w-0 sm:col-span-2">
-                              <dt className="font-medium text-muted-foreground">{t('longTail.remediation.RemediationSuggestionsPanel.preview.why')}</dt>
-                              <dd className="wrap-break-word text-foreground">{suggestion.rationale}</dd>
-                            </div>
-                            <div className="min-w-0 sm:col-span-2">
-                              <dt className="font-medium text-muted-foreground">{t('longTail.remediation.RemediationSuggestionsPanel.preview.expectedAction')}</dt>
-                              <dd className="wrap-break-word text-foreground">{suggestion.expectedAction}</dd>
-                            </div>
-                          </dl>
-                          {parameterJson && (
-                            <div className="mt-2">
-                              <p className="text-xs font-medium text-muted-foreground">{t('longTail.remediation.RemediationSuggestionsPanel.preview.parameters')}</p>
-                              <pre className="mt-1 max-h-36 overflow-auto rounded-md border bg-background p-2 text-xs text-foreground">{parameterJson}</pre>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex shrink-0 flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={updatingId === suggestion.id || executingId === suggestion.id || suggestion.status === 'accepted'}
-                      onClick={() => void updateSuggestion(suggestion, 'accepted')}
-                      className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      <CheckCircle className="h-4 w-4" />
-                      {t('longTail.remediation.RemediationSuggestionsPanel.accept')}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={
-                        updatingId === suggestion.id ||
-                        executingId === suggestion.id ||
-                        suggestion.status === 'rejected' ||
-                        suggestion.status === 'executed' ||
-                        suggestion.status === 'failed'
-                      }
-                      onClick={() => beginEdit(suggestion)}
-                      className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      <PencilLine className="h-4 w-4" />
-                      {t('common:actions.edit')}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={updatingId === suggestion.id || executingId === suggestion.id || suggestion.status === 'rejected'}
-                      onClick={() => void updateSuggestion(suggestion, 'rejected')}
-                      className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      <XCircle className="h-4 w-4" />
-                      {t('longTail.remediation.RemediationSuggestionsPanel.reject')}
-                    </button>
-                    {canExecuteScriptSuggestion(suggestion) && !approvalPending && (
-                      <button
-                        type="button"
-                        disabled={executingId === suggestion.id || requestingApprovalId === suggestion.id}
-                        onClick={() => void executeSuggestion(suggestion)}
-                        className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        <PlayCircle className="h-4 w-4" />
-                        {t('longTail.remediation.RemediationSuggestionsPanel.execute')}
-                      </button>
-                    )}
-                    {/* A cancelled attempt never counts (a vote on it changes nothing): no rating. */}
-                    {suggestion.outcome && suggestion.outcome.state !== 'cancelled' && (
-                      <>
-                        <button
-                          type="button"
-                          aria-pressed={suggestion.outcome.humanVote === 'up'}
-                          disabled={votingId === suggestion.id}
-                          onClick={() => void voteOnSuggestion(suggestion, 'up')}
-                          className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 aria-pressed:bg-muted"
-                          data-testid="remediation-vote-up"
-                        >
-                          <ThumbsUp className="h-4 w-4" />
-                          {t('longTail.remediation.RemediationSuggestionsPanel.feedback.worked')}
-                        </button>
-                        <button
-                          type="button"
-                          aria-pressed={suggestion.outcome.humanVote === 'down'}
-                          disabled={votingId === suggestion.id}
-                          onClick={() => void voteOnSuggestion(suggestion, 'down')}
-                          className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 aria-pressed:bg-muted"
-                          data-testid="remediation-vote-down"
-                        >
-                          <ThumbsDown className="h-4 w-4" />
-                          {t('longTail.remediation.RemediationSuggestionsPanel.feedback.didNotWork')}
-                        </button>
-                      </>
-                    )}
-                    {canMarkDone(suggestion) && (
-                      <button
-                        type="button"
-                        disabled={markingDoneId === suggestion.id}
-                        onClick={() => void markDone(suggestion)}
-                        className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                        data-testid="remediation-mark-done"
-                      >
-                        <CheckCheck className="h-4 w-4" />
-                        {t('longTail.remediation.RemediationSuggestionsPanel.done.button')}
-                      </button>
-                    )}
-                    {canQueueScriptSuggestion(suggestion) && requiresExecutionApproval(suggestion) && !suggestion.elevationRequestId && (
-                      <button
-                        type="button"
-                        disabled={requestingApprovalId === suggestion.id || updatingId === suggestion.id || executingId === suggestion.id}
-                        onClick={() => void requestApproval(suggestion)}
-                        title={t('longTail.remediation.RemediationSuggestionsPanel.requestApprovalTitle')}
-                        className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        <ShieldAlert className="h-4 w-4" />
-                        {requestingApprovalId === suggestion.id
-                          ? t('longTail.remediation.RemediationSuggestionsPanel.requesting')
-                          : t('longTail.remediation.RemediationSuggestionsPanel.requestApproval')}
-                      </button>
-                    )}
-                    {approvalPending && (
-                      <button
-                        type="button"
-                        disabled
-                        title={t('longTail.remediation.RemediationSuggestionsPanel.waitingApprovalTitle')}
-                        className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground disabled:cursor-not-allowed disabled:opacity-70"
-                      >
-                        <ShieldAlert className="h-4 w-4" />
-                        {t('longTail.remediation.RemediationSuggestionsPanel.approvalPending')}
-                      </button>
-                    )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+      {everyGroupEmpty && (panelState.kind === 'idle' || panelState.kind === 'done') && (
+        <div data-testid="suggestions-empty" className="mt-3 text-sm text-muted-foreground">
+          <p>{t('longTail.remediation.RemediationSuggestionsPanel.empty')}</p>
+          <p>{t('longTail.remediation.RemediationSuggestionsPanel.emptyHint')}</p>
         </div>
+      )}
+
+      {(groups.proven.length > 0 || groups.provenRecordsOnly.length > 0) && section('proven', t('longTail.remediation.RemediationSuggestionsPanel.groups.proven'), (
+        <>
+          {groups.proven.map(renderSuggestion)}
+          {groups.provenRecordsOnly.map((record) => renderRecord(record, false))}
+        </>
+      ))}
+      {groups.ai.length > 0 && section('ai', t('longTail.remediation.RemediationSuggestionsPanel.groups.ai'), groups.ai.map(renderSuggestion))}
+      {groups.similar.length > 0 && section('similar', t('longTail.remediation.RemediationSuggestionsPanel.groups.similar'), groups.similar.map((record) => renderRecord(record, true)))}
+      {groups.legacy.length > 0 && (
+        <details data-testid="suggestions-group-legacy" className="mt-3">
+          <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('longTail.remediation.RemediationSuggestionsPanel.groups.legacy')}</summary>
+          <div className="mt-2 space-y-2">{groups.legacy.map(renderSuggestion)}</div>
+        </details>
       )}
     </div>
   );

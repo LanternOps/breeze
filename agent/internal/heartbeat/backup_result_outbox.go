@@ -219,8 +219,8 @@ func (o *backupResultOutbox) Flush(send func(websocket.CommandResult) error) {
 // then the configured data dir, then a temp dir as a last resort) so it
 // lands in the same place as the agent's other small persisted-state files.
 func backupResultOutboxDir() string {
-	if homeDir, err := os.UserHomeDir(); err == nil && strings.TrimSpace(homeDir) != "" {
-		return filepath.Join(homeDir, ".breeze", backupResultOutboxDirName)
+	if homeDir := perUserStateDir(); homeDir != "" {
+		return filepath.Join(homeDir, backupResultOutboxDirName)
 	}
 
 	dataDir := strings.TrimSpace(config.GetDataDir())

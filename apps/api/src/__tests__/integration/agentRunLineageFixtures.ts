@@ -164,7 +164,7 @@ export async function insertLineage(t: {
     .returning();
   const [session] = await adminDb
     .insert(aiSessions)
-    .values({ orgId: t.org.id, deviceId: t.device.id, type: 'general' })
+    .values({ orgId: t.org.id, deviceId: t.device.id, type: 'general', model: 'claude-sonnet-5-5' })
     .returning();
   const [run] = await withSystemDbAccessContext(() =>
     db

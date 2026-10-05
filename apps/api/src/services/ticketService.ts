@@ -7,6 +7,7 @@ import { serviceDeliverableOccurrences } from '../db/schema/serviceDeliverables'
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
+import { HUMAN_AUTHORITATIVE_PROVENANCE_SQL_LIST, isHumanAuthoritativeProvenance } from './ticketProvenance';
 import { resolveSlaTargets, type TicketSlaPriority } from './ticketSla';
 import { getOrgSlaOverride, getPartnerPrioritySla, getSystemStatusId, getTicketStatusById } from './ticketConfigService';
 import { readOrgStampingDefaultsMany } from './orgCurrencyCore';
@@ -20,6 +21,7 @@ import { isEligibleTicketRecipient } from './ticketPush';
 import type { AiDraftOutboxClaim } from './aiTimeEntryProposal';
 import type { AddinTicketSummary } from '@breeze/shared';
 import { markRequestAuditWritten } from './auditRequestTracking';
+import { scrubAlertText } from '../utils/endpointDisplay';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
 export type TicketSource = (typeof ticketSourceEnum.enumValues)[number];
@@ -68,56 +70,215 @@ export type TicketServiceErrorCode =
   | 'service_management_off'
   // #5573 W02 — the ticket is a service deliverable's work item; it cannot
   // leave the deliverable's org.
-  | 'DELIVERABLE_TICKET_PINNED';
+  | 'DELIVERABLE_TICKET_PINNED'
+  // A machine actor asked for something only a human session may do (soft
+  // delete, AI drafts, attachment claims, proposal notes).
+  | 'HUMAN_SESSION_REQUIRED';
 
 export class TicketServiceError extends Error {
   constructor(
     message: string,
     public status: TicketServiceErrorStatus = 400,
-    public code?: TicketServiceErrorCode
+    public code?: TicketServiceErrorCode,
+    public details?: Record<string, unknown>
   ) {
     super(message);
     this.name = 'TicketServiceError';
   }
 }
 
-export interface TicketActor {
-  userId: string;
-  name?: string;
-  email?: string;
-  triageFeedbackSource?: 'manual' | 'suggestion';
-  triageFeedbackMetadata?: Record<string, unknown>;
-  /**
-   * P2-4 (#4191): who is actually behind this write, for `tickets.field_provenance`
-   * stamping in `updateTicketFields`. Defaults to 'user' — every existing caller
-   * (human staff, attended chat auto-executing under the caller's own session)
-   * is unaffected. An 'ai_agent'/'system' actor is never routed through
-   * `updateTicketFields` today (the AI ticket-triage release path uses the
-   * dedicated `applyAiFieldUpdates`, which is CAS-guarded and never overwrites
-   * a 'user' stamp) — this field exists so `updateTicketFields` stamps
-   * correctly if a future caller ever does pass a non-human actor here,
-   * without that caller having to know the stamping mechanics.
-   */
-  principalKind?: 'user' | 'ai_agent' | 'system';
-}
+/** Where a `'system'` ticket write comes from — a pipeline, never a person. */
+export type TicketSystemSource = 'inbound_email' | 'caller_verification' | 'planned_work' | 'ai_operator' | 'scheduler';
+
+/**
+ * Who is behind a ticket write — a discriminated union, so every consumer
+ * says what it means through one of the accessors below and the compiler
+ * finds any site that still assumes a person.
+ *
+ * - `'user'`: a human session. This INCLUDES a human-owned `brz_` API key and
+ *   the MCP `manage_tickets` tool — those are delegation, so the write is
+ *   credited to the key's owner (`userId = createdBy`) and only the internal
+ *   audit row (`mcp.*`, actor_type 'api_key') tells the two apart.
+ * - `'ai_agent'`: an AI agent run.
+ * - `'system'`: a pipeline with no principal (inbound email, caller
+ *   verification, planned-work sweeps).
+ * - `'service_principal'`: a partner service principal (`brz_sp_` key) on the
+ *   Partner API. It has NO human owner, so it acts as ITSELF, identified by
+ *   the PRINCIPAL id (stable across key rotations); the key id is credential
+ *   detail for audit rows only.
+ *
+ * No member but `'user'` carries a `userId`.
+ */
+export type TicketActor =
+  | {
+      kind: 'user';
+      userId: string;
+      name?: string;
+      email?: string;
+      triageFeedbackSource?: 'manual' | 'suggestion';
+      triageFeedbackMetadata?: Record<string, unknown>;
+    }
+  | { kind: 'ai_agent'; agentId: string; runId?: string; name?: string }
+  // A customer-portal login (`portal_users`, not `users`): today only
+  // createTicket is reached with one; portal comments are written directly by
+  // the portal route with `portal_user_id`.
+  | { kind: 'portal_user'; portalUserId: string; name?: string; email?: string }
+  | { kind: 'system'; source: TicketSystemSource; name?: string }
+  | { kind: 'service_principal'; principalId: string; keyId: string; name: string };
+
+export type TicketActorKind = TicketActor['kind'];
+
+const SYSTEM_AUDIT_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
 
 /**
  * #6689: the value to write into a column FK'd to `users(id)` for this actor.
- * A `principalKind: 'system'` actor (e.g. the inbound-email pipeline) carries a
- * synthetic userId that is not a users row, so FK'd columns
- * (`ticket_comments.user_id`, `tickets.closed_by`) and the event's
- * `actorUserId` get null instead. `audit_logs.actor_id` has no FK and keeps
- * the synthetic id.
- *
- * The status-change feed row deliberately keeps the default
- * `origin_principal_kind = 'user'` even for a system actor: the inbound
- * reopen writes it in the same transaction (same `created_at`) as the
- * customer's comment, and a non-'user' row would count as agent activity in
- * the helpdesk loop guard (`humanCommentIsNewerThanAgentActivity`, strict `>`)
- * and suppress the helpdesk agent's reply to that customer comment.
+ * Only a `'user'` is a users row; every machine kind (`ticket_comments.user_id`,
+ * `tickets.closed_by`, `ml_feedback_events.actor_user_id`, the event's
+ * `actorUserId`, …) gets null. `audit_logs.actor_id` has no FK and takes the
+ * kind-appropriate id from `actorAuditIdentity` instead.
  */
-function actorUserFk(actor: TicketActor): string | null {
-  return actor.principalKind === 'system' ? null : actor.userId;
+export function actorUserFk(actor: TicketActor): string | null {
+  return actor.kind === 'user' ? actor.userId : null;
+}
+
+/**
+ * The users(id) behind an action only a human session may perform (draft
+ * consumption, attachment claims, soft delete, proposal notes): a machine
+ * actor is refused with 403 HUMAN_SESSION_REQUIRED rather than written into a
+ * users FK by accident.
+ */
+export function humanUserId(actor: TicketActor, what: string): string {
+  if (actor.kind !== 'user') {
+    throw new TicketServiceError(`${what} requires a human session`, 403, 'HUMAN_SESSION_REQUIRED');
+  }
+  return actor.userId;
+}
+
+/**
+ * The `audit_logs` actor columns for this actor. A `'user'` keeps the
+ * `createAuditLogAsync` defaults (actor_type 'user'); a service principal is
+ * recorded as `actorType: 'api_key'` (the existing enum value for machine
+ * credentials) with `actorId` = the PRINCIPAL id and `initiatedBy:
+ * 'integration'` — the key id goes to `actorAuditDetails`, never into the
+ * identity, so one integration stays one actor across key rotations.
+ */
+export function actorAuditIdentity(actor: TicketActor): {
+  actorId: string;
+  actorType?: 'ai_agent' | 'system' | 'api_key';
+  initiatedBy?: 'ai' | 'automation' | 'integration';
+} {
+  switch (actor.kind) {
+    case 'user': return { actorId: actor.userId };
+    // Parity with the pre-union portal path: the portal login id under the
+    // default 'user' actor_type (audit_logs.actor_id has no FK).
+    case 'portal_user': return { actorId: actor.portalUserId };
+    case 'ai_agent': return { actorId: actor.agentId, actorType: 'ai_agent', initiatedBy: 'ai' };
+    case 'system': return { actorId: SYSTEM_AUDIT_ACTOR_ID, actorType: 'system', initiatedBy: 'automation' };
+    case 'service_principal': return { actorId: actor.principalId, actorType: 'api_key', initiatedBy: 'integration' };
+  }
+}
+
+/**
+ * Audit `details` extras naming the credential/pipeline behind a machine
+ * write. Spread AFTER the call site's own details so route-specific keys are
+ * never shadowed. Never the key itself.
+ */
+export function actorAuditDetails(actor: TicketActor): Record<string, unknown> {
+  switch (actor.kind) {
+    case 'user': return {};
+    case 'portal_user': return { portalUserId: actor.portalUserId };
+    case 'ai_agent': return actor.runId ? { agentRunId: actor.runId } : {};
+    case 'system': return { systemSource: actor.source };
+    case 'service_principal': return {
+      partnerServicePrincipalId: actor.principalId,
+      partnerServicePrincipalName: actor.name,
+      keyId: actor.keyId,
+    };
+  }
+}
+
+/** The actor columns of a ticket lifecycle event (`services/ticketEvents.ts`). */
+export function actorEventIdentity(actor: TicketActor): { actorUserId: string | null; actorPrincipalId: string | null } {
+  return {
+    actorUserId: actorUserFk(actor),
+    actorPrincipalId: actor.kind === 'service_principal' ? actor.principalId : null,
+  };
+}
+
+/**
+ * Author columns for a `ticket_comments` row (comment or feed entry) written
+ * by this actor.
+ *
+ * `authorType` stays `'internal'` for a service principal — the portal and the
+ * comment edit-window logic branch on `authorType !== 'portal'` — and
+ * `origin_principal_kind` + `origin_principal_id` name the machine author, so
+ * a mirroring integration can suppress exactly its own echo.
+ *
+ * A `'system'` actor keeps the `'user'` origin default on purpose: the inbound
+ * reopen writes its status-change feed row in the same transaction (same
+ * `created_at`) as the customer's comment, and a non-'user' row would count as
+ * agent activity in the helpdesk loop guard
+ * (`humanCommentIsNewerThanAgentActivity`, strict `>`) and suppress the
+ * helpdesk agent's reply to that customer comment. A service principal has no
+ * such coupling and IS tagged — suppressing the helpdesk agent after an
+ * external system's write is the intended fail-closed default.
+ */
+export function actorAuthorFields(actor: TicketActor): {
+  userId: string | null;
+  authorName: string | null;
+  authorType: 'internal' | 'ai_agent' | 'portal';
+  originPrincipalKind: 'user' | 'ai_agent' | 'service_principal';
+  originPrincipalId: string | null;
+} {
+  switch (actor.kind) {
+    case 'user':
+      return { userId: actor.userId, authorName: actor.name ?? null, authorType: 'internal', originPrincipalKind: 'user', originPrincipalId: null };
+    case 'ai_agent':
+      return { userId: null, authorName: actor.name ?? null, authorType: 'ai_agent', originPrincipalKind: 'ai_agent', originPrincipalId: actor.agentId };
+    case 'portal_user':
+      // Never reached by a comment writer today (the portal route writes
+      // portal_user_id itself); kept total so the switch stays exhaustive.
+      return { userId: null, authorName: actor.name ?? null, authorType: 'portal', originPrincipalKind: 'user', originPrincipalId: null };
+    case 'system':
+      return { userId: null, authorName: actor.name ?? null, authorType: 'internal', originPrincipalKind: 'user', originPrincipalId: null };
+    case 'service_principal':
+      return { userId: null, authorName: actor.name, authorType: 'internal', originPrincipalKind: 'service_principal', originPrincipalId: actor.principalId };
+  }
+}
+
+/**
+ * The `tickets.field_provenance` value an actor stamps on the fields it sets.
+ * Provenance records whose AUTHORITY set a field (a person, an integration
+ * acting as system of record, an AI agent, a pipeline), not the author's role,
+ * so a portal requester stamps 'user' like staff: a person chose the value and
+ * AI triage must not overwrite it (HUMAN_AUTHORITATIVE_PROVENANCE).
+ */
+export function actorProvenance(actor: TicketActor): NonNullable<typeof tickets.$inferSelect['fieldProvenance']>[string] {
+  switch (actor.kind) {
+    case 'user':
+    case 'portal_user':
+      return 'user';
+    case 'ai_agent': return 'ai_agent';
+    case 'system': return 'system';
+    case 'service_principal': return 'service_principal';
+  }
+}
+
+/** Comment authorship for edit/delete: exact for humans and for service principals. */
+export function actorOwnsComment(
+  actor: TicketActor,
+  comment: { userId: string | null; originPrincipalId?: string | null },
+): boolean {
+  if (actor.kind === 'user') return comment.userId != null && comment.userId === actor.userId;
+  if (actor.kind === 'service_principal') return comment.originPrincipalId != null && comment.originPrincipalId === actor.principalId;
+  return false;
+}
+
+export { HUMAN_AUTHORITATIVE_PROVENANCE, isHumanAuthoritativeProvenance } from './ticketProvenance';
+
+/** SQL predicate: the stamp for `field` is NOT a human-authoritative one (see ticketProvenance.ts). */
+function provenanceNotHumanSql(field: string) {
+  return sql`COALESCE(${tickets.fieldProvenance}->>${sql.raw(`'${field}'`)}, '') NOT IN ${sql.raw(HUMAN_AUTHORITATIVE_PROVENANCE_SQL_LIST)}`;
 }
 
 // Legacy display identifier (NOT NULL UNIQUE), retry loop dropped when creation
@@ -287,7 +448,7 @@ async function assertAssigneeEligible(
 /** Clear a retained assignment when a ticket's org or device scope changes. */
 export async function revalidateTicketAssignee(
   ticketId: string,
-  actor: TicketActor | { kind: 'ai_agent'; agentId: string; name?: string },
+  actor: TicketActor,
   connection: Pick<typeof db, 'select' | 'update' | 'insert'> = db,
   currentTicket?: typeof tickets.$inferSelect
 ): Promise<typeof tickets.$inferSelect> {
@@ -312,14 +473,10 @@ export async function revalidateTicketAssignee(
       ticket.deviceId ? eq(tickets.deviceId, ticket.deviceId) : isNull(tickets.deviceId),
     )).returning();
   if (!updated) throw new TicketServiceError('Ticket was modified concurrently', 409, 'CONCURRENT_MODIFICATION');
-  const isAgent = 'kind' in actor || actor.principalKind === 'ai_agent';
-  const actorId = 'kind' in actor ? actor.agentId : actor.userId;
+  const audit = actorAuditIdentity(actor);
   await connection.insert(ticketComments).values({
     ticketId,
-    userId: isAgent ? null : actorId,
-    authorName: actor.name ?? null,
-    authorType: isAgent ? 'ai_agent' : 'internal',
-    originPrincipalKind: isAgent ? 'ai_agent' : 'user',
+    ...actorAuthorFields(actor),
     commentType: 'assignment',
     content: 'Assignee no longer eligible after ticket scope change',
     isPublic: false,
@@ -333,11 +490,14 @@ export async function revalidateTicketAssignee(
   // lock, so a separate audit connection's FK check would wait on this writer.
   await connection.insert(auditLogs).values({
     orgId: ticket.orgId,
-    actorId,
-    actorType: isAgent ? 'ai_agent' : 'user',
-    initiatedBy: isAgent ? 'ai' : 'manual',
+    actorId: audit.actorId,
+    actorType: audit.actorType ?? 'user',
+    initiatedBy: audit.initiatedBy ?? 'manual',
     action: 'ticket.assign', resourceType: 'ticket', resourceId: ticketId,
-    details: { from: ticket.assignedTo, to: null, reason: 'assignee_no_longer_eligible' },
+    details: {
+      from: ticket.assignedTo, to: null, reason: 'assignee_no_longer_eligible',
+      ...actorAuditDetails(actor),
+    },
     result: 'success',
   });
   markRequestAuditWritten();
@@ -733,7 +893,7 @@ function computeSlaRestamp(
   const out: Partial<Record<SlaTargetField, number | null>> = {};
   for (const field of SLA_TARGET_FIELDS) {
     if (explicit.has(field)) continue;
-    if (current.fieldProvenance?.[field] === 'user') continue;
+    if (isHumanAuthoritativeProvenance(current.fieldProvenance?.[field])) continue;
     if ((current[field] ?? null) === next[field]) continue;
     out[field] = next[field];
   }
@@ -965,17 +1125,18 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     ticketId: ticket.id,
     orgId: input.orgId,
     partnerId: org.partnerId ?? null,
-    actorUserId: actor.userId,
+    ...actorEventIdentity(actor),
     payload: { internalNumber, assigneeId: input.assigneeId ?? null, source: input.source }
   });
   await writeTicketOutbox(input.orgId, ticket.id, 'ticket.created');
   await createAuditLogAsync({
     orgId: input.orgId,
-    actorId: actor.userId,
+    ...actorAuditIdentity(actor),
     action: 'ticket.create',
     resourceType: 'ticket',
     resourceId: ticket.id,
     resourceName: internalNumber,
+    details: { source: input.source, ...actorAuditDetails(actor) },
     result: 'success'
   });
   return ticket;
@@ -1126,6 +1287,9 @@ export async function changeTicketStatus(
   if (opts.aiDraftId && toStatus !== 'resolved') {
     throw new TicketServiceError('aiDraftId is only accepted when resolving a ticket', 400, 'INVALID_INPUT');
   }
+  // A draft is a technician's artifact (consumed_by is a users FK); a machine
+  // principal supplies its own resolution text instead.
+  if (opts.aiDraftId) humanUserId(actor, 'Applying an AI draft');
 
   // Review fix (#4191): the same-core-status branches below (no-op and the
   // statusId-only relabel) skip FSM validation entirely and used to return
@@ -1177,7 +1341,7 @@ export async function changeTicketStatus(
     // Consume in the SAME transaction as the ticket update above — a failure
     // here rolls the whole thing back (mirrors the full-transition path).
     if (sameStatusDraft) {
-      await consumeResolutionDraft(sameStatusDraft.id, actor.userId);
+      await consumeResolutionDraft(sameStatusDraft.id, humanUserId(actor, 'Applying an AI draft'));
     }
 
     // Only write a feed entry when there is meaningful content — i.e. the
@@ -1190,9 +1354,7 @@ export async function changeTicketStatus(
     if (feedContent) {
       await db.insert(ticketComments).values({
         ticketId,
-        userId: actorUserFk(actor),
-        authorName: actor.name ?? null,
-        authorType: 'internal',
+        ...actorAuthorFields(actor),
         commentType: 'status_change',
         content: feedContent,
         isPublic: false,
@@ -1206,11 +1368,11 @@ export async function changeTicketStatus(
     // consumers.
     await createAuditLogAsync({
       orgId: ticket.orgId,
-      actorId: actor.userId,
+      ...actorAuditIdentity(actor),
       action: 'ticket.status_change',
       resourceType: 'ticket',
       resourceId: ticketId,
-      details: { from: fromStatus, to: toStatus },
+      details: { from: fromStatus, to: toStatus, ...actorAuditDetails(actor) },
       result: 'success'
     });
     // #4177: no time-entry proposal on this path — it deliberately emits no
@@ -1296,14 +1458,12 @@ export async function changeTicketStatus(
   // above — a failure here throws and rolls back the whole request
   // transaction, including the status change just written.
   if (draftToConsume) {
-    await consumeResolutionDraft(draftToConsume.id, actor.userId);
+    await consumeResolutionDraft(draftToConsume.id, humanUserId(actor, 'Applying an AI draft'));
   }
 
   await db.insert(ticketComments).values({
     ticketId,
-    userId: actorUserFk(actor),
-    authorName: actor.name ?? null,
-    authorType: 'internal',
+    ...actorAuthorFields(actor),
     commentType: 'status_change',
     content: resolutionNote ?? opts.pendingReason ?? customStatusName ?? '',
     isPublic: false,
@@ -1316,7 +1476,7 @@ export async function changeTicketStatus(
     ticketId,
     orgId: ticket.orgId,
     partnerId: ticket.partnerId ?? null,
-    actorUserId: actorUserFk(actor),
+    ...actorEventIdentity(actor),
     payload: { from: fromStatus, to: toStatus }
   });
   await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', {
@@ -1327,11 +1487,11 @@ export async function changeTicketStatus(
   });
   await createAuditLogAsync({
     orgId: ticket.orgId,
-    actorId: actor.userId,
+    ...actorAuditIdentity(actor),
     action: 'ticket.status_change',
     resourceType: 'ticket',
     resourceId: ticketId,
-    details: { from: fromStatus, to: toStatus },
+    details: { from: fromStatus, to: toStatus, ...actorAuditDetails(actor) },
     result: 'success'
   });
 
@@ -1359,7 +1519,7 @@ export async function changeTicketStatus(
       // the SAME transaction (same `now`, captured once above).
       dedupeKey: ticketTriageDedupeKey('status', fromStatus, `${toStatus}@${now.toISOString()}`),
       outcome: 'resolved',
-      actorUserId: actor.userId,
+      ...actorEventIdentity(actor),
       metadata: ticketTriageFeedbackMetadata(actor, {
         fromStatus,
         toStatus,
@@ -1373,7 +1533,7 @@ export async function changeTicketStatus(
       eventType: 'ticket.reopened',
       dedupeKey: ticketTriageDedupeKey('status', fromStatus, `${toStatus}@${now.toISOString()}`),
       outcome: 'reopened',
-      actorUserId: actor.userId,
+      ...actorEventIdentity(actor),
       metadata: ticketTriageFeedbackMetadata(actor, {
         fromStatus,
         toStatus,
@@ -1443,11 +1603,11 @@ function ticketFieldChanged(key: DiffFieldKey, oldValue: unknown, newValue: unkn
 }
 
 function ticketTriageFeedbackMetadata(actor: TicketActor, extra: Record<string, unknown>): Record<string, unknown> {
-  const acceptedSuggestion = actor.triageFeedbackSource === 'suggestion';
+  const acceptedSuggestion = actor.kind === 'user' && actor.triageFeedbackSource === 'suggestion';
   return {
     source: acceptedSuggestion ? 'ticket_triage_v0' : 'manual_update',
     acceptedSuggestion,
-    ...(acceptedSuggestion ? actor.triageFeedbackMetadata ?? {} : {}),
+    ...(acceptedSuggestion && actor.kind === 'user' ? actor.triageFeedbackMetadata ?? {} : {}),
     ...extra,
   };
 }
@@ -1661,8 +1821,9 @@ export async function updateTicketFields(
   // CAS needed on this path (unlike applyAiFieldUpdates, which is the one
   // that must never overwrite a 'user' stamp).
   if (changed.length > 0) {
+    const stamp = actorProvenance(actor);
     const provenanceStamp = Object.fromEntries(
-      changed.map((field) => [field, actor.principalKind ?? 'user']),
+      changed.map((field) => [field, stamp]),
     );
     (patch as Record<string, unknown>).fieldProvenance =
       sql`${tickets.fieldProvenance} || ${JSON.stringify(provenanceStamp)}::jsonb`;
@@ -1683,9 +1844,7 @@ export async function updateTicketFields(
 
   await db.insert(ticketComments).values({
     ticketId,
-    userId: actor.userId,
-    authorName: actor.name ?? null,
-    authorType: 'internal',
+    ...actorAuthorFields(actor),
     commentType: 'system',
     content: `Updated ${changedLabels.join(', ')}`,
     isPublic: false
@@ -1696,17 +1855,17 @@ export async function updateTicketFields(
     ticketId,
     orgId: ticket.orgId,
     partnerId: ticket.partnerId ?? null,
-    actorUserId: actor.userId,
+    ...actorEventIdentity(actor),
     payload: { changed: changedForLog }
   });
   await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.updated');
   await createAuditLogAsync({
     orgId: ticket.orgId,
-    actorId: actor.userId,
+    ...actorAuditIdentity(actor),
     action: 'ticket.update',
     resourceType: 'ticket',
     resourceId: ticketId,
-    details: { changed: changedForLog },
+    details: { changed: changedForLog, ...actorAuditDetails(actor) },
     result: 'success'
   });
   if (changed.includes('categoryId')) {
@@ -1716,7 +1875,7 @@ export async function updateTicketFields(
       eventType: 'ticket.category_changed',
       dedupeKey: ticketTriageDedupeKey('categoryId', ticket.categoryId ?? null, updated[0]?.categoryId ?? null),
       outcome: 'category_changed',
-      actorUserId: actor.userId,
+      ...actorEventIdentity(actor),
       metadata: ticketTriageFeedbackMetadata(actor, {
         oldValue: ticket.categoryId ?? null,
         newValue: updated[0]?.categoryId ?? null,
@@ -1730,7 +1889,7 @@ export async function updateTicketFields(
       eventType: 'ticket.priority_changed',
       dedupeKey: ticketTriageDedupeKey('priority', ticket.priority, updated[0]?.priority ?? null),
       outcome: 'priority_changed',
-      actorUserId: actor.userId,
+      ...actorEventIdentity(actor),
       metadata: ticketTriageFeedbackMetadata(actor, {
         oldValue: ticket.priority,
         newValue: updated[0]?.priority ?? null,
@@ -1767,9 +1926,7 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
 
   await db.insert(ticketComments).values({
     ticketId,
-    userId: actor.userId,
-    authorName: actor.name ?? null,
-    authorType: 'internal',
+    ...actorAuthorFields(actor),
     commentType: 'assignment',
     content: '',
     isPublic: false,
@@ -1782,17 +1939,17 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
     ticketId,
     orgId: ticket.orgId,
     partnerId: ticket.partnerId ?? null,
-    actorUserId: actor.userId,
+    ...actorEventIdentity(actor),
     payload: { assigneeId }
   });
   await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.assigned', { assigneeId });
   await createAuditLogAsync({
     orgId: ticket.orgId,
-    actorId: actor.userId,
+    ...actorAuditIdentity(actor),
     action: 'ticket.assign',
     resourceType: 'ticket',
     resourceId: ticketId,
-    details: { from: prevAssignedTo ?? null, to: assigneeId },
+    details: { from: prevAssignedTo ?? null, to: assigneeId, ...actorAuditDetails(actor) },
     result: 'success'
   });
   await emitTicketTriageFeedback({
@@ -1801,7 +1958,7 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
     eventType: 'ticket.assignee_changed',
     dedupeKey: ticketTriageDedupeKey('assignedTo', prevAssignedTo ?? null, assigneeId),
     outcome: 'assignee_changed',
-    actorUserId: actor.userId,
+    ...actorEventIdentity(actor),
     metadata: ticketTriageFeedbackMetadata(actor, {
       oldValue: prevAssignedTo ?? null,
       newValue: assigneeId,
@@ -1825,6 +1982,9 @@ export interface AddCommentInput {
 export async function addTicketComment(ticketId: string, input: AddCommentInput, actor: TicketActor) {
   const ticket = await getTicketOrThrow(ticketId);
   const attachmentIds = input.attachmentIds ?? [];
+  // The claim below matches on uploaded_by_user_id; a machine principal has
+  // no uploads to claim. Rejected up front rather than failing the claim.
+  const uploaderId = attachmentIds.length > 0 ? humanUserId(actor, 'Attaching uploads') : null;
 
   // W08 #3902: this used to be four separate writes on the global `db`. The
   // attachment claim must roll back with the comment, so the comment insert,
@@ -1835,9 +1995,7 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
   const { comment, firstResponseStamped, attachments } = await db.transaction(async (tx) => {
     const inserted = await tx.insert(ticketComments).values({
       ticketId,
-      userId: actor.userId,
-      authorName: actor.name ?? null,
-      authorType: 'internal',
+      ...actorAuthorFields(actor),
       commentType: input.isPublic ? 'comment' : 'internal',
       content: input.content,
       isPublic: input.isPublic
@@ -1875,7 +2033,7 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
            AND ticket_id = ${ticketId}::uuid
            AND org_id = ${ticket.orgId}::uuid
            AND comment_id IS NULL
-           AND uploaded_by_user_id = ${actor.userId}::uuid
+           AND uploaded_by_user_id = ${uploaderId}::uuid
         RETURNING id,
                   comment_id        AS "commentId",
                   content_type      AS "contentType",
@@ -1901,7 +2059,7 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
     ticketId,
     orgId: ticket.orgId,
     partnerId: ticket.partnerId ?? null,
-    actorUserId: actor.userId,
+    ...actorEventIdentity(actor),
     payload: { commentId: comment.id, isPublic: input.isPublic }
   });
   await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: input.isPublic });
@@ -1910,11 +2068,11 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
   // sibling pattern of keeping details lean).
   await createAuditLogAsync({
     orgId: ticket.orgId,
-    actorId: actor.userId,
+    ...actorAuditIdentity(actor),
     action: 'ticket.comment',
     resourceType: 'ticket',
     resourceId: ticketId,
-    details: { commentId: comment.id, isInternal: !input.isPublic },
+    details: { commentId: comment.id, isInternal: !input.isPublic, ...actorAuditDetails(actor) },
     result: 'success'
   });
 
@@ -1956,7 +2114,10 @@ export async function addAiTriageNote(
   runId: string,
   content: string,
   orgId: string,
-  agentName = 'AI Agent'
+  agentName = 'AI Agent',
+  // The acting agent (aiAgents.id), stamped as the row's origin principal —
+  // the RUN is `agent_run_id`. Null when the caller only knows the run.
+  agentId: string | null = null
 ): Promise<{ comment: { id: string } }> {
   const ticket = await getTicketOrThrow(ticketId);
   if (ticket.orgId !== orgId) {
@@ -1984,6 +2145,7 @@ export async function addAiTriageNote(
       content,
       isPublic: false,
       originPrincipalKind: 'ai_agent',
+      originPrincipalId: agentId,
       agentRunId: runId
     }).returning({ id: ticketComments.id }));
     const comment = inserted[0];
@@ -2105,7 +2267,7 @@ export async function postProposalNote(
     const inserted = await db.transaction((tx) =>
       tx.insert(ticketComments).values({
         ticketId,
-        userId: actor.userId,
+        userId: humanUserId(actor, 'Posting a proposal note'),
         authorName: actor.name ?? null,
         authorType: 'internal',
         commentType: 'internal',
@@ -2140,13 +2302,13 @@ export async function postProposalNote(
       ticketId,
       orgId: ticket.orgId,
       partnerId: ticket.partnerId ?? null,
-      actorUserId: actor.userId,
+      ...actorEventIdentity(actor),
       payload: { commentId: comment.id, isPublic: false }
     });
     await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false });
     await createAuditLogAsync({
       orgId: ticket.orgId,
-      actorId: actor.userId,
+      actorId: humanUserId(actor, 'Posting a proposal note'),
       actorType: 'user',
       action: 'ticket.comment',
       resourceType: 'ticket',
@@ -2260,10 +2422,10 @@ export async function applyAiFieldUpdates(
   // the real-change guard (#4466 — an AI re-asserting the value already on
   // the ticket must not take ownership of it; see the doc block above).
   const categoryCond = updates.categoryId
-    ? sql`(${tickets.categoryId} IS NOT DISTINCT FROM ${updates.categoryId.expectedCurrent} AND COALESCE(${tickets.fieldProvenance}->>'categoryId', '') <> 'user' AND ${tickets.categoryId} IS DISTINCT FROM ${updates.categoryId.value}::uuid)`
+    ? sql`(${tickets.categoryId} IS NOT DISTINCT FROM ${updates.categoryId.expectedCurrent} AND ${provenanceNotHumanSql('categoryId')} AND ${tickets.categoryId} IS DISTINCT FROM ${updates.categoryId.value}::uuid)`
     : null;
   const priorityCond = updates.priority
-    ? sql`(${tickets.priority} IS NOT DISTINCT FROM ${updates.priority.expectedCurrent} AND COALESCE(${tickets.fieldProvenance}->>'priority', '') <> 'user' AND ${tickets.priority} IS DISTINCT FROM ${updates.priority.value}::ticket_priority)`
+    ? sql`(${tickets.priority} IS NOT DISTINCT FROM ${updates.priority.expectedCurrent} AND ${provenanceNotHumanSql('priority')} AND ${tickets.priority} IS DISTINCT FROM ${updates.priority.value}::ticket_priority)`
     : null;
 
   const setClause: Record<string, unknown> = { updatedAt: new Date() };
@@ -2296,12 +2458,12 @@ export async function applyAiFieldUpdates(
   if (updates.categoryId) {
     result.categoryId = after.categoryId === updates.categoryId.value
       ? { applied: true }
-      : { applied: false, skipped: after.fieldProvenance?.categoryId === 'user' ? 'human_set' : 'concurrent_change' };
+      : { applied: false, skipped: isHumanAuthoritativeProvenance(after.fieldProvenance?.categoryId) ? 'human_set' : 'concurrent_change' };
   }
   if (updates.priority) {
     result.priority = after.priority === updates.priority.value
       ? { applied: true }
-      : { applied: false, skipped: after.fieldProvenance?.priority === 'user' ? 'human_set' : 'concurrent_change' };
+      : { applied: false, skipped: isHumanAuthoritativeProvenance(after.fieldProvenance?.priority) ? 'human_set' : 'concurrent_change' };
   }
 
   // #6691 — the AI-triage path categorises exactly the email / add-in / chat
@@ -2335,7 +2497,7 @@ export async function applyAiFieldUpdates(
         // The 'user' guard and the gate are re-checked in SQL against the row
         // under the UPDATE's own lock, so a concurrent human override or first
         // response between the read above and this write wins.
-        restampSet[field] = sql`CASE WHEN COALESCE(${tickets.fieldProvenance}->>${sql.raw(`'${field}'`)}, '') <> 'user' THEN ${restamp[field] ?? null}::integer ELSE ${tickets[field]} END`;
+        restampSet[field] = sql`CASE WHEN ${provenanceNotHumanSql(field)} THEN ${restamp[field] ?? null}::integer ELSE ${tickets[field]} END`;
       }
       await db
         .update(tickets)
@@ -2430,7 +2592,7 @@ export async function sendTicketDraft(
 
   const inserted = await db.insert(ticketComments).values({
     ticketId,
-    userId: actor.userId,
+    userId: humanUserId(actor, 'Sending an AI draft'),
     authorName: actor.name ?? null,
     authorType: 'internal',
     commentType: 'comment',
@@ -2443,7 +2605,7 @@ export async function sendTicketDraft(
 
   const consumed = await db
     .update(ticketDrafts)
-    .set({ state: 'consumed', consumedBy: actor.userId, consumedAt: new Date() })
+    .set({ state: 'consumed', consumedBy: humanUserId(actor, 'Sending an AI draft'), consumedAt: new Date() })
     .where(and(eq(ticketDrafts.id, draftId), eq(ticketDrafts.state, 'active')))
     .returning({ id: ticketDrafts.id });
   if (consumed.length === 0) {
@@ -2464,7 +2626,7 @@ export async function sendTicketDraft(
     ticketId,
     orgId: ticket.orgId,
     partnerId: ticket.partnerId ?? null,
-    actorUserId: actor.userId,
+    ...actorEventIdentity(actor),
     payload: { commentId: comment.id, isPublic: true }
   });
   await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', {
@@ -2475,7 +2637,7 @@ export async function sendTicketDraft(
   });
   await createAuditLogAsync({
     orgId: ticket.orgId,
-    actorId: actor.userId,
+    ...actorAuditIdentity(actor),
     action: 'ticket.comment',
     resourceType: 'ticket',
     resourceId: ticketId,
@@ -2546,7 +2708,7 @@ export async function linkAlertToTicket(
     orgId: ticket.orgId,
     alertId,
     linkType,
-    createdBy: actor.userId
+    createdBy: actorUserFk(actor)
   }).onConflictDoNothing().returning();
 
   if (inserted.length === 0) {
@@ -2555,9 +2717,7 @@ export async function linkAlertToTicket(
 
   await db.insert(ticketComments).values({
     ticketId,
-    userId: actor.userId,
-    authorName: actor.name ?? null,
-    authorType: 'internal',
+    ...actorAuthorFields(actor),
     commentType: 'system',
     content: `Linked alert: ${alert.title ?? alertId}`,
     isPublic: false,
@@ -2566,7 +2726,7 @@ export async function linkAlertToTicket(
 
   await createAuditLogAsync({
     orgId: ticket.orgId,
-    actorId: actor.userId,
+    ...actorAuditIdentity(actor),
     action: 'ticket.alert_link',
     resourceType: 'ticket',
     resourceId: ticketId,
@@ -2589,9 +2749,7 @@ export async function unlinkAlertFromTicket(ticketId: string, alertId: string, a
 
   await db.insert(ticketComments).values({
     ticketId,
-    userId: actor.userId,
-    authorName: actor.name ?? null,
-    authorType: 'internal',
+    ...actorAuthorFields(actor),
     commentType: 'system',
     content: 'Unlinked alert',
     isPublic: false,
@@ -2600,7 +2758,7 @@ export async function unlinkAlertFromTicket(ticketId: string, alertId: string, a
 
   await createAuditLogAsync({
     orgId: ticket.orgId,
-    actorId: actor.userId,
+    ...actorAuditIdentity(actor),
     action: 'ticket.alert_unlink',
     resourceType: 'ticket',
     resourceId: ticketId,
@@ -2621,8 +2779,10 @@ export async function createTicketFromAlert(
 
   const ticket = await createTicket({
     orgId: alert.orgId,
-    subject: overrides.subject ?? alert.title ?? `Alert ${alertId}`,
-    description: overrides.description ?? alert.message ?? undefined,
+    // Text copied from the alert shows endpoints as scheme + host (#7920);
+    // a subject or description the user supplied is kept as typed.
+    subject: overrides.subject ?? scrubAlertText(alert.title, alert.context) ?? `Alert ${alertId}`,
+    description: overrides.description ?? scrubAlertText(alert.message, alert.context) ?? undefined,
     deviceId: alert.deviceId ?? undefined,
     categoryId: overrides.categoryId,
     priority: overrides.priority ?? SEVERITY_TO_PRIORITY[alert.severity ?? ''] ?? 'normal',
@@ -2670,7 +2830,7 @@ function assertCommentEditable(
   if (comment.deletedAt) {
     throw new TicketServiceError('Comment already deleted', 409);
   }
-  const isAuthor = comment.userId != null && comment.userId === actor.userId;
+  const isAuthor = actorOwnsComment(actor, comment);
   if (!isAuthor && !canManageAny) {
     throw new TicketServiceError('You can only edit or delete your own comments', 403);
   }
@@ -2706,7 +2866,7 @@ export async function editTicketComment(
   // consumers need it.
   await createAuditLogAsync({
     orgId: ticket.orgId,
-    actorId: actor.userId,
+    ...actorAuditIdentity(actor),
     action: 'ticket.comment.edit',
     resourceType: 'ticket',
     resourceId: ticket.id,
@@ -2746,7 +2906,7 @@ export async function deleteTicketComment(
   // consumers need it.
   await createAuditLogAsync({
     orgId: ticket.orgId,
-    actorId: actor.userId,
+    ...actorAuditIdentity(actor),
     action: 'ticket.comment.delete',
     resourceType: 'ticket',
     resourceId: ticket.id,
@@ -2768,13 +2928,15 @@ export async function deleteTicketComment(
  * Gated at the route on tickets:manage.
  */
 export async function softDeleteTicket(ticketId: string, actor: TicketActor): Promise<{ id: string }> {
+  // deleted_by is a users FK and delete stays a human, tickets:manage action.
+  const deletedBy = humanUserId(actor, 'Deleting a ticket');
   const ticket = await getTicketOrThrow(ticketId);
   if (ticket.deletedAt) throw new TicketServiceError('Ticket already deleted', 409);
 
   const now = new Date();
   const deleted = await db
     .update(tickets)
-    .set({ deletedAt: now, deletedBy: actor.userId, updatedAt: now })
+    .set({ deletedAt: now, deletedBy, updatedAt: now })
     .where(and(eq(tickets.id, ticketId), isNull(tickets.deletedAt)))
     .returning({ id: tickets.id });
   // CAS on deleted_at IS NULL: an empty result means we lost a race to a
@@ -2783,7 +2945,7 @@ export async function softDeleteTicket(ticketId: string, actor: TicketActor): Pr
 
   await createAuditLogAsync({
     orgId: ticket.orgId,
-    actorId: actor.userId,
+    ...actorAuditIdentity(actor),
     action: 'ticket.delete',
     resourceType: 'ticket',
     resourceId: ticketId,
@@ -2799,6 +2961,9 @@ export async function softDeleteTicket(ticketId: string, actor: TicketActor): Pr
  * ticket.restore. Gated at the route on tickets:manage.
  */
 export async function restoreTicket(ticketId: string, actor: TicketActor): Promise<typeof tickets.$inferSelect> {
+  // Restore is the inverse of soft delete and, like it, a human tickets:manage
+  // action (design doc §3.4) — no machine actor may undo a deletion.
+  humanUserId(actor, 'Restoring a ticket');
   const ticket = await getTicketOrThrow(ticketId);
   if (!ticket.deletedAt) throw new TicketServiceError('Ticket is not deleted', 409);
 
@@ -2817,7 +2982,7 @@ export async function restoreTicket(ticketId: string, actor: TicketActor): Promi
 
   await createAuditLogAsync({
     orgId: ticket.orgId,
-    actorId: actor.userId,
+    ...actorAuditIdentity(actor),
     action: 'ticket.restore',
     resourceType: 'ticket',
     resourceId: ticketId,
@@ -2927,14 +3092,11 @@ export async function assertDeviceTicketsNotPinnedToDeliverable(
 export async function moveTicketOrg(
   ticketId: string,
   targetOrgId: string,
-  actor: TicketActor | { kind: 'ai_agent'; agentId: string; name?: string },
+  actor: TicketActor,
   opts: MoveTicketOrgOptions = {}
 ): Promise<typeof tickets.$inferSelect> {
-  const isAgent = 'kind' in actor;
-  const userId = isAgent ? null : actor.userId;
-  const auditActor = isAgent
-    ? { actorType: 'ai_agent' as const, actorId: actor.agentId, initiatedBy: 'ai' as const }
-    : { actorId: actor.userId };
+  const userId = actorUserFk(actor);
+  const auditActor = actorAuditIdentity(actor);
   const snapshots = await db
     .select({ ...getTableColumns(tickets), rowVersion: sql<string>`${tickets}.xmin::text` })
     .from(tickets)
@@ -2973,12 +3135,13 @@ export async function moveTicketOrg(
     //
     // #5783 W01 adds ticket_checklist_items_ticket_org_fk — the third composite
     // (ticket_id, org_id) -> tickets(id, org_id) child FK, same shape and same
-    // reason as the two above it. Still BY NAME, never `ALL`.
+    // reason as the two above it — and the Partner API tickets surface adds
+    // the fourth, ticket_external_refs_ticket_org_fk. Still BY NAME, never `ALL`.
     //
     // Safe to precede the org lock below: SET CONSTRAINTS takes no table locks,
     // so it does not participate in the lock order this transaction documents.
     await tx.execute(
-      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED`
+      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk DEFERRED`
     );
     // Lock order (global, #3778): organizations FOR SHARE (BOTH orgs, ascending
     // UUID so two concurrent moves between the same pair cannot deadlock) →
@@ -3283,10 +3446,7 @@ export async function moveTicketOrg(
     // System feed entry on the moved ticket.
     await tx.insert(ticketComments).values({
       ticketId,
-      userId,
-      authorName: actor.name ?? null,
-      authorType: isAgent ? 'ai_agent' : 'internal',
-      originPrincipalKind: isAgent ? 'ai_agent' : 'user',
+      ...actorAuthorFields(actor),
       // Runs remain in the source org; never link this destination comment
       // back to a source-org run after the detach above.
       agentRunId: null,

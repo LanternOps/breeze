@@ -62,7 +62,15 @@ const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStat
     intentServiceMock: { transitionIntent: vi.fn() },
     actorContextMock: { buildAuthContextForIntent: vi.fn(), buildApproverAuthContextForIntent: vi.fn() },
     tenantStatusMock: { getActiveOrgTenant: vi.fn() },
-    aiToolsMock: { getToolTier: vi.fn(), executeTool: vi.fn(), requiresLiveSession: vi.fn() },
+    aiToolsMock: {
+      getToolTier: vi.fn(), executeTool: vi.fn(), requiresLiveSession: vi.fn(),
+      // #7918: the worker reads the registry's `selfManagedDbContext` through
+      // the real predicate's shape; tests register a stub tool to flip it.
+      aiTools: new Map<string, { selfManagedDbContext?: true | readonly string[] }>(),
+      toolManagesDbContext: vi.fn((tool: { selfManagedDbContext?: true | readonly string[] } | undefined, input: Record<string, unknown>) =>
+        tool?.selfManagedDbContext === true
+        || (Array.isArray(tool?.selfManagedDbContext) && tool!.selfManagedDbContext.includes(input.action as string))),
+    },
     aiGuardrailsMock: { checkToolPermission: vi.fn(), checkPermissionRequirements: vi.fn(async () => null) },
     // Tool catalog W01 PR B (#5216): the external-tool release branch. The
     // resolver/executor are mocked at the module boundary; the worker's own
@@ -380,6 +388,8 @@ vi.mock('../services/aiTools', () => ({
   getToolTier: aiToolsMock.getToolTier,
   executeTool: aiToolsMock.executeTool,
   requiresLiveSession: aiToolsMock.requiresLiveSession,
+  aiTools: aiToolsMock.aiTools,
+  toolManagesDbContext: aiToolsMock.toolManagesDbContext,
 }));
 vi.mock('../services/aiGuardrails', () => ({
   checkToolPermission: aiGuardrailsMock.checkToolPermission,
@@ -521,6 +531,7 @@ import { eq as mockedEq } from 'drizzle-orm';
 import type { ActionIntent } from '../db/schema/actionIntents';
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { GoogleConnectionUnavailableError } from '../services/googleToolsHeadless';
+import { withAuthDbAccessContext as mockedWithAuthContext } from '../middleware/auth';
 import { M365ConnectionUnavailableError } from '../services/m365ToolsHeadless';
 import { PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
 // Deliberately REAL (not mocked) — assertNoPlaintextSecret is the exact guard
@@ -870,6 +881,43 @@ describe('releaseApprovedIntent', () => {
       expect.objectContaining({ intentId: intent.id, outcome: 'executed' }),
     );
     expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  describe('self-managed DB context tools (#7918)', () => {
+    afterEach(() => { aiToolsMock.aiTools.clear(); });
+
+    it('releases a self-managed core tool with NO held transaction around executeTool', async () => {
+      const intent = baseIntent();
+      aiToolsMock.aiTools.set(intent.actionName, { selfManagedDbContext: true });
+      primeThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      // Same auth and context bag as any other release — only the wrapper differs.
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments, fakeAuth,
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
+      );
+      expect(mockedWithAuthContext).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'completed', expect.anything(),
+      );
+    });
+
+    it('an action list opts out only those actions; every other release keeps its transaction', async () => {
+      const intent = baseIntent();
+      aiToolsMock.aiTools.set(intent.actionName, { selfManagedDbContext: ['some_other_action'] });
+      primeThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(mockedWithAuthContext).toHaveBeenCalledTimes(1);
+      expect(mockedWithAuthContext).toHaveBeenCalledWith(fakeAuth, expect.any(Function));
+    });
   });
 
   describe('external (tool-source) tools — tool catalog W01 PR B (#5216)', () => {

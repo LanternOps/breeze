@@ -1161,6 +1161,7 @@
     "clearCategory": "Quitar selección",
     "columnPath": "Ruta",
     "columnSize": "Tamaño",
+    "selectionLimit": "Una sola ejecución de limpieza puede eliminar como máximo {{max}} elementos. Seleccionar todo completa la selección hasta ese límite, empezando por los más grandes. Elimínelos y vuelva a ejecutar la vista previa de limpieza para lo que quede.",
     "selectionSummary": "{{count}} seleccionados · {{size}}",
     "executeSelected": "Eliminar seleccionados ({{count}})",
     "confirmTitle": "Eliminar permanentemente los objetivos de limpieza",
@@ -1921,6 +1922,10 @@
       "noReason": "El agente no informó ningún motivo",
       "failedAt": "El último intento de instalación falló: {{when}}"
     },
+    "awaitingRestart": {
+      "badge": "Instalado, se requiere reinicio",
+      "installedAt": "Instalado el {{when}}. Sigue apareciendo como pendiente hasta que se reinicie el dispositivo."
+    },
     "approval": {
       "approved": "Aprobado",
       "approvedTitle": "Aprobado manualmente.",
@@ -2430,6 +2435,7 @@
       "bulkWakeSomeFailed": "Despertar en masa algunos falló",
       "commandQueued": "{{action}} en cola — se ejecutará cuando {{hostname}} se reconecte",
       "commandSent": "{{action}} enviado a {{hostname}}",
+      "commandCancelled": "{{action}} no se envió a {{hostname}}: el comando se canceló ({{reason}})",
       "compareNeedsTwo": "La comparación requiere al menos 2 dispositivos con agente.",
       "decommissionCancelled": "Remoción cancelada",
       "decommissionFailed": "Error al quitar",

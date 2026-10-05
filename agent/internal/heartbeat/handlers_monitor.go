@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -197,6 +198,19 @@ func truncateObservation(s string) string {
 	return s[:cut]
 }
 
+// requestErrorText describes an HTTP request failure without the request URL.
+// net/http wraps every client error in *url.Error, whose text quotes the full
+// URL (`Get "https://host/path?token=…": <cause>`); a monitor URL can carry
+// credentials in its userinfo, query or path, and this text is stored and
+// shown to operators.
+func requestErrorText(err error) string {
+	var urlErr *neturl.Error
+	if errors.As(err, &urlErr) && urlErr.Err != nil {
+		return urlErr.Op + ": " + urlErr.Err.Error()
+	}
+	return err.Error()
+}
+
 func handleNetworkHttpCheck(_ *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 	url, errResult := tools.RequirePayloadString(cmd.Payload, "url")
@@ -252,7 +266,7 @@ func handleNetworkHttpCheck(_ *Heartbeat, cmd Command) tools.CommandResult {
 			"monitorId":  monitorId,
 			"status":     "offline",
 			"responseMs": 0,
-			"error":      fmt.Sprintf("invalid request: %v", err),
+			"error":      fmt.Sprintf("invalid request: %s", requestErrorText(err)),
 		}, time.Since(start).Milliseconds())
 	}
 
@@ -266,7 +280,7 @@ func handleNetworkHttpCheck(_ *Heartbeat, cmd Command) tools.CommandResult {
 			"monitorId":  monitorId,
 			"status":     "offline",
 			"responseMs": float64(time.Since(reqStart).Microseconds()) / 1000.0,
-			"error":      err.Error(),
+			"error":      requestErrorText(err),
 		}
 		// #4230: the server must be able to tell "the handshake failed" from
 		// "plain HTTP" from "the check never ran". A TLS failure returns here,

@@ -10,7 +10,7 @@ import { catalogItems } from '../db/schema/catalog';
 import { pax8OrderLines, pax8Orders } from '../db/schema/pax8Orders';
 import { listQuoteOrders } from './quoteOrderService';
 import { computeLineTotal } from './invoiceMath';
-import { resolveOrgTaxRate, OrgNotVisibleForTaxError } from './taxRateResolver';
+import { resolveOrgTaxRate, resolveOrgTaxRateOn, OrgNotVisibleForTaxError, PartnerNotVisibleForTaxError } from './taxRateResolver';
 import { vendorIdentityFromAttributes } from './catalogVendorIdentity';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
@@ -280,24 +280,82 @@ function resolvePartner(actor: QuoteActor): string {
 }
 
 /**
+ * The quote's draft tax rate through the ONE shared resolver (settings audit
+ * rule 5, #7507), read on `dbc` — the caller's own transaction or the ambient
+ * request one. resolveOrgTaxRateOn never escalates, so it never opens a second
+ * pooled connection while the caller holds the quote row lock (sendQuote, the
+ * on-behalf accept, the draft mutators). That is only correct because every
+ * caller runs partner- or system-scoped (all quote routes and the AI quote tool
+ * are partner/system-gated, the scheduled-send worker is system) — the same
+ * assumption freezeQuoteSentSnapshot's plain `partners` read already makes.
+ *
+ * An org RLS no longer shows maps to the same 404 resolveQuoteTaxRate raises; an
+ * invisible partner means a new caller broke the scope assumption above, so it
+ * fails closed with a traceable log rather than silently dropping the partner
+ * rate.
+ */
+async function resolveDraftTaxRateOn(
+  dbc: Pick<typeof db, 'select'>,
+  orgId: string,
+  partnerId: string,
+): Promise<string | null> {
+  try {
+    return await resolveOrgTaxRateOn(dbc, { orgId, partnerId });
+  } catch (err) {
+    if (err instanceof OrgNotVisibleForTaxError) {
+      throw new QuoteServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    }
+    if (err instanceof PartnerNotVisibleForTaxError) {
+      console.error('[quoteService] DRAFT_TAX_PARTNER_NOT_VISIBLE', { orgId, partnerId });
+    }
+    throw err;
+  }
+}
+
+/** Compare numeric(8,5) rates by value, not spelling: '0.0825' and '0.08250'
+ *  are the same rate, and the resolver's null means the same as a zero rate. */
+function sameTaxRate(a: string | null, b: string | null): boolean {
+  return Number(a ?? 0) === Number(b ?? 0);
+}
+
+/**
  * Recompute the header buckets (subtotal/tax/total + one-time/monthly/annual)
  * from the quote's current lines. Runs after EVERY line insert/update/delete
- * and after any header update (tax rate is the only header field that moves
- * totals). Routes per-line cents through the shared
+ * and after any header update. Routes per-line cents through the shared
  * computeLineTotal/toCents discipline (via computeQuoteTotals) so the header
  * totals are penny-consistent with the persisted line_total and with invoices.
+ *
+ * Tax (#7507): a DRAFT has no rate of its own. It is re-resolved here on every
+ * recompute (org rate → partner default; exempt → none), as a draft invoice is
+ * (invoiceService.recomputeInvoiceTotals), and frozen at send: sendQuote and the
+ * on-behalf accept call syncDraftQuoteTaxRate before their gates, and the claim
+ * then moves the quote out of 'draft'. A non-draft keeps the rate it was sent
+ * with. `resolvedTaxRate` lets a caller that already resolved the rate for this
+ * same operation (updateQuote's deposit validation) pass it in, so the
+ * validation and the persisted totals use one value.
  *
  * `dbc` lets a caller run the recompute inside its own transaction (updateQuote's
  * org reassignment) so a mid-flight failure can't commit the header move while
  * leaving totals computed under the old tax rate.
  */
-async function recomputeAndPersist(quoteId: string, dbc: Pick<typeof db, 'select' | 'update'> = db): Promise<void> {
+async function recomputeAndPersist(
+  quoteId: string,
+  dbc: Pick<typeof db, 'select' | 'update'> = db,
+  resolvedTaxRate?: string | null,
+): Promise<void> {
   const [q] = await dbc.select({
+    status: quotes.status,
+    orgId: quotes.orgId,
+    partnerId: quotes.partnerId,
     taxRate: quotes.taxRate,
     depositType: quotes.depositType,
     depositPercent: quotes.depositPercent,
     currencyCode: quotes.currencyCode,
   }).from(quotes).where(eq(quotes.id, quoteId)).limit(1);
+  const isDraft = q?.status === 'draft';
+  const taxRate = isDraft
+    ? (resolvedTaxRate !== undefined ? resolvedTaxRate : await resolveDraftTaxRateOn(dbc, q.orgId, q.partnerId))
+    : (q?.taxRate ?? null);
   const lines = await dbc.select({
     quantity: quoteLines.quantity,
     unitPrice: quoteLines.unitPrice,
@@ -308,8 +366,10 @@ async function recomputeAndPersist(quoteId: string, dbc: Pick<typeof db, 'select
     itemType: quoteLines.itemType,
   }).from(quoteLines).where(eq(quoteLines.quoteId, quoteId));
   const deposit = toQuoteDepositConfig(q?.depositType, q?.depositPercent);
-  const totals = computeQuoteTotals(lines as QuoteLineForMath[], q?.taxRate ? parseFloat(q.taxRate) : null, deposit, q?.currencyCode);
+  const totals = computeQuoteTotals(lines as QuoteLineForMath[], taxRate ? parseFloat(taxRate) : null, deposit, q?.currencyCode);
   await dbc.update(quotes).set({
+    // A draft's rate is whatever the resolver says NOW; a sent quote's is frozen.
+    ...(isDraft ? { taxRate } : {}),
     subtotal: totals.subtotal,
     taxTotal: totals.taxTotal,
     total: totals.total,
@@ -321,6 +381,68 @@ async function recomputeAndPersist(quoteId: string, dbc: Pick<typeof db, 'select
     depositAmount: totals.depositDueTotal,
     updatedAt: new Date(),
   }).where(eq(quotes.id, quoteId));
+}
+
+/**
+ * Bring a DRAFT's tax rate (and the totals computed from it) up to the rate the
+ * shared resolver returns now. Returns true when it wrote, false when the quote
+ * is not a draft or its rate is already current.
+ *
+ * The send-time snapshot moment (#7507, settings audit rule 6): sendQuote and
+ * the on-behalf accept call this AFTER locking the quote row and checking
+ * access, and BEFORE their send gates, so the deposit gate, the frozen totals,
+ * the emailed PDF, the acceptance content hash and the converted invoice all
+ * see the rate current at the moment the quote becomes customer-bound. A draft
+ * is otherwise only as fresh as its last mutation.
+ *
+ * No access check: callers MUST hold the quote row lock and have already
+ * authorized the caller. Must run inside the caller's transaction so the write
+ * commits or rolls back with the claim it precedes.
+ */
+export async function syncDraftQuoteTaxRate(quoteId: string): Promise<boolean> {
+  const [q] = await db.select({
+    status: quotes.status, orgId: quotes.orgId, partnerId: quotes.partnerId, taxRate: quotes.taxRate,
+  }).from(quotes).where(eq(quotes.id, quoteId)).limit(1);
+  if (!q || q.status !== 'draft') return false;
+  const rate = await resolveDraftTaxRateOn(db, q.orgId, q.partnerId);
+  if (sameTaxRate(rate, q.taxRate)) return false;
+  await recomputeAndPersist(quoteId, db, rate);
+  // A money change nobody typed: leave a trail (a draft carrying a rate set via
+  // the pre-#7507 per-quote API override also lands here once).
+  console.info('[quoteService] DRAFT_TAX_RATE_REFRESHED', { quoteId, orgId: q.orgId, from: q.taxRate, to: rate });
+  return true;
+}
+
+/**
+ * Detail-read refresh (#7507): opening a draft shows the rate that would apply
+ * if it were sent now, not the one current at its last edit. Checks access
+ * first (404 like getQuote), compares without a lock, and only when the rate
+ * moved takes the same FOR UPDATE every draft mutator takes before writing —
+ * so a quote being sent concurrently either sees the refreshed totals or this
+ * call sees it already sent and does nothing. A non-draft is never touched.
+ *
+ * Read paths only (detail, draft PDF, AI get_quote). An invisible partner —
+ * a caller outside the partner/system scope resolveDraftTaxRateOn assumes —
+ * degrades to "not refreshed" (already logged) rather than 500-ing the read;
+ * it is an app-level throw, so the transaction is still usable. Send and the
+ * on-behalf accept call syncDraftQuoteTaxRate directly and stay fail-closed.
+ */
+export async function refreshDraftQuoteTaxRate(quoteId: string, actor: QuoteActor): Promise<boolean> {
+  const [q] = await db.select({
+    status: quotes.status, orgId: quotes.orgId, siteId: quotes.siteId,
+    partnerId: quotes.partnerId, taxRate: quotes.taxRate,
+  }).from(quotes).where(eq(quotes.id, quoteId)).limit(1);
+  if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
+  assertQuoteAccess(actor, q);
+  if (q.status !== 'draft') return false;
+  try {
+    if (sameTaxRate(await resolveDraftTaxRateOn(db, q.orgId, q.partnerId), q.taxRate)) return false;
+    await db.select({ id: quotes.id }).from(quotes).where(eq(quotes.id, quoteId)).limit(1).for('update');
+    return await syncDraftQuoteTaxRate(quoteId);
+  } catch (err) {
+    if (err instanceof PartnerNotVisibleForTaxError) return false;
+    throw err;
+  }
 }
 
 /** Load a quote and assert it is owned/accessible AND still a draft (409 if not). */
@@ -380,11 +502,12 @@ async function nextLineSortOrder(quoteId: string, dbc: DbExecutor = db): Promise
 // ---------------------------------------------------------------------------
 
 /**
- * Thin wrapper: quote creation/reassignment tax resolution goes through the
+ * Thin wrapper: quote creation and clone tax resolution goes through the
  * shared `resolveOrgTaxRate` (`taxRateResolver.ts`) — the ONE resolver per
  * concept (settings audit rule 5). Kept as a named function (not inlined at
- * each call site) so the three call sites don't each re-derive the
- * null-vs-zero contract and the error mapping below.
+ * each call site) so the call sites don't each re-derive the null-vs-zero
+ * contract and the error mapping below. Draft recompute and the send-time
+ * snapshot use resolveDraftTaxRateOn (same core, on the caller's transaction).
  *
  * The mapping exists because `resolveOrgTaxRate` fails closed: a caller that
  * reaches this function with an orgId RLS no longer considers visible (e.g. a
@@ -554,9 +677,9 @@ async function cloneQuoteCore(
     // contract_documents → contract_templates FK. Partner-wide templates pass.
     await assertContractBlocksValidForOrg(blocks, { orgId: targetOrgId, partnerId: source.partnerId });
   }
-  const taxRate = orgChanged
-    ? await resolveQuoteTaxRate(targetOrgId, source.partnerId)
-    : source.taxRate;
+  // Re-resolved, never copied (#7507): the clone is a new draft, and the
+  // source's rate is the one frozen when IT was sent (or a stale draft value).
+  const taxRate = await resolveQuoteTaxRate(targetOrgId, source.partnerId);
   const title = input.title !== undefined ? (input.title.trim() || null) : source.title;
 
   let quoteNumber: string;
@@ -1109,12 +1232,13 @@ export async function listQuotes(query: ListQuotesQuery, actor: QuoteActor) {
 }
 
 /** Draft-only header edit. Only provided fields are written; nullable fields can be
- *  explicitly cleared with null. A tax-rate change triggers a totals recompute.
+ *  explicitly cleared with null. The tax rate is not a header field (#7507): every
+ *  patch re-resolves it for the draft's org and recomputes the totals.
  *
  *  `orgId` reassigns the draft to another organization of the same partner:
  *  the site is cleared (it belongs to the old customer), the billToName
- *  override is cleared and the tax rate re-resolved for the new org (each
- *  unless the same patch sets a fresh value explicitly), and the denormalized
+ *  override is cleared unless the same patch sets a fresh one, the tax rate
+ *  resolves for the new org, and the denormalized
  *  org_id on blocks/lines/images is moved in the same transaction so
  *  RLS-scoped readers never see a half-moved quote. */
 export async function updateQuote(id: string, input: UpdateQuoteInput, actor: QuoteActor) {
@@ -1124,8 +1248,6 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
   // (nor clear it to null, which a restricted caller can never see).
   if (input.siteId !== undefined) assertSite(actor, input.siteId);
   const orgChanged = input.orgId !== undefined && input.orgId !== q.orgId;
-  // Re-resolved org tax default; undefined = org unchanged (keep current rate).
-  let orgTaxRate: string | null | undefined;
   if (orgChanged) {
     if (q.revisionOfQuoteId != null) {
       throw new QuoteServiceError(
@@ -1155,9 +1277,12 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
         400, 'CURRENCY_MISMATCH',
       );
     }
-    if (input.taxRate === undefined) orgTaxRate = await resolveQuoteTaxRate(targetOrgId, q.partnerId);
   }
-  const set: Record<string, unknown> = { updatedAt: new Date() };
+  // The draft's rate for THIS patch, resolved once (#7507) for the org the
+  // draft lands on, and shared by the deposit check below and the recompute
+  // that persists it — so a deposit is never validated against a stale rate.
+  const draftTaxRate = await resolveDraftTaxRateOn(db, orgChanged ? input.orgId! : q.orgId, q.partnerId);
+  const set: Record<string, unknown> = { updatedAt: new Date(), taxRate: draftTaxRate };
   if (input.siteId !== undefined) set.siteId = input.siteId;
   if (input.title !== undefined) set.title = input.title === null ? null : input.title.trim() || null;
   if (input.expiryDate !== undefined) set.expiryDate = input.expiryDate;
@@ -1165,8 +1290,6 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
   if (input.terms !== undefined) set.terms = input.terms;
   if (input.termsAndConditions !== undefined) set.termsAndConditions = input.termsAndConditions;
   if (input.billToName !== undefined) set.billToName = input.billToName;
-  // Numeric tax_rate takes a fixed-string value; null clears it.
-  if (input.taxRate !== undefined) set.taxRate = input.taxRate === null ? null : Number(input.taxRate).toFixed(5);
   if (input.coverPage !== undefined) {
     // Ownership check mirrors updateLine's imageId guard: coverImageId must be a
     // quote_images row on THIS quote, or a caller could point the cover at
@@ -1188,19 +1311,13 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
     }).from(quoteLines).where(eq(quoteLines.quoteId, id));
     const nextType = input.depositType ?? q.depositType;
     const nextPercent = input.depositPercent !== undefined ? input.depositPercent : q.depositPercent;
-    // Include an in-flight taxRate change from THIS SAME patch — a deposit
-    // validated against the stale persisted rate could pass here and then fail
-    // (or silently mis-total) once the new tax rate lands via recomputeAndPersist.
-    // An org change re-resolves the rate too (orgTaxRate) and must be coherent
-    // the same way.
-    const effectiveTaxRate = input.taxRate !== undefined
-      ? input.taxRate
-      : orgTaxRate !== undefined
-        ? (orgTaxRate ? parseFloat(orgTaxRate) : null)
-        : (q.taxRate ? parseFloat(q.taxRate) : null);
+    // Validate against the rate this patch persists (draftTaxRate — re-resolved,
+    // and for the NEW org on a reassignment), not the stored one: a deposit
+    // checked against a stale rate could pass here and then mis-total once
+    // recomputeAndPersist lands the current rate.
     const check = validateQuoteDeposit(
       lines as QuoteLineForMath[],
-      effectiveTaxRate === null ? null : Number(effectiveTaxRate),
+      draftTaxRate ? parseFloat(draftTaxRate) : null,
       toQuoteDepositConfig(nextType, nextPercent),
       q.currencyCode,
     );
@@ -1218,7 +1335,6 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
     // bill-to falls back to the new org's name/address, unless this same patch
     // sets a fresh override explicitly.
     if (input.billToName === undefined) set.billToName = null;
-    if (orgTaxRate !== undefined) set.taxRate = orgTaxRate;
     // Re-validate carried contract blocks against the NEW org before moving the
     // quote onto it: an org-owned template embedded under the old org is invalid
     // (422) for the target org — carrying it would expose another org's private
@@ -1289,11 +1405,11 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
       // Recompute INSIDE the transaction: a failure here must roll back the org
       // move too, never commit the quote onto the new org with totals still
       // computed under the old tax rate.
-      await recomputeAndPersist(id, tx);
+      await recomputeAndPersist(id, tx, draftTaxRate);
     });
   } else {
     await db.update(quotes).set(set).where(eq(quotes.id, id));
-    await recomputeAndPersist(id);
+    await recomputeAndPersist(id, db, draftTaxRate);
   }
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
   return { ...updated!, deviceSetDrift };

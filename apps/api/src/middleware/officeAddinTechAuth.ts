@@ -7,6 +7,7 @@ import {
   siteAccessCheck,
 } from './auth';
 import { ipAllowlistGuard } from './ipAllowlistGuard';
+import { markPermissionGate } from './permissionGate';
 import { getRedis } from '../services/redis';
 import {
   getTechSession,
@@ -237,7 +238,7 @@ const CAPABILITY_PERMISSION: Record<AddinCapability, { resource: string; action:
 
 export function requireAddinCapability(cap: AddinCapability): MiddlewareHandler {
   const grant = CAPABILITY_PERMISSION[cap];
-  return async (c, next) => {
+  return markPermissionGate(async (c, next) => {
     const auth = c.get('officeAddinAuth');
     if (!auth) {
       return c.json(UNAUTHORIZED, 401);
@@ -246,5 +247,5 @@ export function requireAddinCapability(cap: AddinCapability): MiddlewareHandler 
       return c.json(FORBIDDEN, 403);
     }
     await next();
-  };
+  }, `${grant.resource}:${grant.action}`);
 }

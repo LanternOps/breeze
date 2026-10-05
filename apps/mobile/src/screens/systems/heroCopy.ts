@@ -25,7 +25,7 @@ export interface OrgHeroScope {
 // are derived from device counts (online / maintenance / offline) and the
 // alert critical count. Passing `orgScope` describes that org's own devices
 // instead of the fleet (#5105 — the hero used to stay fleet-wide even with
-// an org filter active, e.g. "77 devices" while only "Morning Fresh Dairy"
+// an org filter active, e.g. "77 devices" while only "Sunrise Valley Dairy"
 // was filtered).
 export function deriveHeroState(
   summary: MobileSummary | null,

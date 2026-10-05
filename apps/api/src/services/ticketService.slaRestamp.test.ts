@@ -98,7 +98,7 @@ const CATEGORY_ID = '44444444-4444-4444-4444-444444444444';
 const OTHER_CATEGORY_ID = '66666666-6666-6666-6666-666666666666';
 const RUN_ID = '55555555-5555-5555-5555-555555555555';
 
-const actor: TicketActor = { userId: 'user-1', name: 'Tess Tech' };
+const actor: TicketActor = { kind: 'user', userId: 'user-1', name: 'Tess Tech' };
 
 // An uncategorised, unanswered email ticket still on the default (normal = none) SLA.
 const UNANSWERED = {
@@ -295,7 +295,7 @@ describe('applyAiFieldUpdates — SLA restamp before first response (#6691)', ()
     const response = sqlOf(restamp.responseSlaMinutes);
     expect(response.sql.toLowerCase()).toContain('case when');
     expect(response.sql).toContain(`->>'responseSlaMinutes'`);
-    expect(response.sql.toLowerCase()).toContain(`<> 'user'`);
+    expect(response.sql.toLowerCase()).toContain(`not in ('user', 'service_principal')`);
     expect(response.params).toContain(30);
     expect(sqlOf(restamp.resolutionSlaMinutes).params).toContain(480);
 

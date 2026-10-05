@@ -36,6 +36,15 @@ function walk(dir: string): string[] {
 const settingsItems = () => navSections.find((s) => s.id === 'settings')!.items;
 
 describe('settings catalogue (#6220)', () => {
+  it('lists AI Providers & Models in the AI group, deep-linking the partner tab', () => {
+    expect(SETTINGS_CATALOG.find((e) => e.id === 'ai-models')).toMatchObject({
+      group: 'ai',
+      href: '/settings/partner#ai-provider',
+      labelKey: 'nav.aiProvidersModels',
+      partnerScopeOnly: true,
+    });
+  });
+
   it('has unique ids and hrefs, and only known groups', () => {
     const ids = SETTINGS_CATALOG.map((e) => e.id);
     expect(new Set(ids).size).toBe(ids.length);

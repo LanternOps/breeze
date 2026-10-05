@@ -35,10 +35,15 @@ const { sessionsCreateMock, getPartnerStripeClientMock, PartnerStripeError } = v
   }
   return { sessionsCreateMock: vi.fn(), getPartnerStripeClientMock: vi.fn(), PartnerStripeError };
 });
-vi.mock('../../services/partnerStripe', () => ({
-  getPartnerStripeClient: getPartnerStripeClientMock,
-  PartnerStripeError,
-}));
+// isPartnerOnlinePaymentAvailable (#7509) stays real: it reads the seeded stripe_connect_accounts row.
+vi.mock('../../services/partnerStripe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/partnerStripe')>();
+  return {
+    isPartnerOnlinePaymentAvailable: actual.isPartnerOnlinePaymentAvailable,
+    getPartnerStripeClient: getPartnerStripeClientMock,
+    PartnerStripeError,
+  };
+});
 
 /** The account id the mocked client reports; seeded per partner (see seedSentQuote). */
 let currentAccountId = 'acct_test';

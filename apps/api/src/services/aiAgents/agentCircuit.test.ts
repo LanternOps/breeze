@@ -204,6 +204,13 @@ describe('classifyTerminal', () => {
     expect(classifyTerminal('completed', null, NEEDS_ATTENTION)).toBe('increment');
   });
 
+  it('is neutral on a blocked run — an admin\'s model choice or a provider refusal is not an agent fault (W03)', () => {
+    expect(classifyTerminal('blocked', 'model_refused', null)).toBe('neutral');
+    expect(classifyTerminal('blocked', 'model_unavailable', NEEDS_ATTENTION)).toBe('neutral');
+    // Even with an error code the failure classifier WOULD increment on.
+    expect(classifyTerminal('blocked', 'sdk_error', null)).toBe('neutral');
+  });
+
   it('resets on a clean completed run (no verdict)', () => {
     expect(classifyTerminal('completed', null, null)).toBe('reset');
   });
@@ -279,6 +286,12 @@ describe('classifyTerminal per profile (AI patch agent W01)', () => {
     expect(classifyTerminal('failed', 'llm_unavailable', null, 'patch')).toBe('increment');
     expect(classifyTerminal('failed', 'max_turns_exceeded', null, 'patch')).toBe('increment');
     expect(classifyTerminal('failed', 'stalled', null, 'patch')).toBe('neutral');
+  });
+
+  it('remediation_research runs are streak-neutral on completion and approval (W2)', () => {
+    expect(classifyTerminal('completed', null, 'needs_attention', 'remediation_research')).toBe('neutral');
+    expect(classifyTerminal('awaiting_approval', null, null, 'remediation_research')).toBe('neutral');
+    expect(classifyTerminal('failed', 'llm_unavailable', null, 'remediation_research')).toBe('increment');
   });
 });
 

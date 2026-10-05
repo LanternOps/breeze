@@ -64,10 +64,10 @@ vi.mock('../../db', () => ({
   db: { select: dbSelectMock, insert: dbInsertMock, update: dbUpdateMock },
   withDbAccessContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
 }));
-vi.mock('../../services/clientAiSessions', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../services/clientAiSessions')>()),
-  resolveClientLlmConfig: vi.fn(() =>
-    Promise.resolve({ source: 'platform', apiKey: 'test-platform-key', model: 'claude-sonnet-4-6' })),
+const { resolveSessionTurnMock } = vi.hoisted(() => ({ resolveSessionTurnMock: vi.fn() }));
+// W03 Task 7: office_chat turns (and the /events reattach) resolve through the registry.
+vi.mock('../../services/aiModels/sessionModel', () => ({
+  resolveSessionTurn: (...args: unknown[]) => resolveSessionTurnMock(...args),
 }));
 vi.mock('../../services/streamingSessionManager', () => ({ streamingSessionManager: managerMock }));
 vi.mock('../../services/auditEvents', () => ({ writeAuditEvent: writeAuditEventMock }));
@@ -86,6 +86,7 @@ vi.mock('../../services/clientAiToolBridge', () => ({
 vi.mock('../../services/clientAiDlp', () => ({ applyDlp: applyDlpMock }));
 
 import { clientAiSessionRoutes } from './sessions';
+import { makeResolvedModel } from '../../services/aiModels/__fixtures__/resolvedModel';
 import { defaultClientAiPolicy } from '../../services/clientAiPolicy';
 
 const SESSION_ROW = {
@@ -113,6 +114,7 @@ const AUTHED = { Authorization: 'Bearer tok', 'Content-Type': 'application/json'
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resolveSessionTurnMock.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'office_chat' }));
   managerMock.tryTransitionToProcessing.mockReturnValue(true);
   checkClientBudgetMock.mockResolvedValue(null);
   checkBillingCreditsMock.mockResolvedValue(null);
@@ -194,6 +196,17 @@ describe('GET /client-ai/sessions/:id/events', () => {
     expect(text).not.toContain('message_start');
   });
 
+  it('a reattach whose model cannot be resolved is 503 ai_unavailable and creates no session', async () => {
+    managerMock.get.mockReturnValue(undefined);
+    resolveSessionTurnMock.mockResolvedValue({
+      ok: false, reason: 'model_unavailable', recoverable: true, offeringId: 'off-1', message: 'gone',
+    });
+    const res = await buildApp().request(`/client-ai/sessions/${SESSION_ID}/events`, { headers: AUTHED });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(managerMock.getOrCreate).not.toHaveBeenCalled();
+  });
+
   it('creates the in-memory session when absent (connect-before-first-message)', async () => {
     const active = makeStreamingSession();
     managerMock.get.mockReturnValue(undefined);
@@ -204,7 +217,10 @@ describe('GET /client-ai/sessions/:id/events', () => {
     expect(managerMock.getOrCreate).toHaveBeenCalled();
     // 10th positional arg pins the client loop config
     const args = managerMock.getOrCreate.mock.calls[0]!;
-    expect(args[9]).toEqual({ injectApprovalModeInstructions: false });
+    expect(args[9]).toEqual({ injectApprovalModeInstructions: false, ledgerUserId: null });
+    // The reattach path resolves its own office_chat turn (no reservation, no dispatch).
+    expect(resolveSessionTurnMock).toHaveBeenCalledWith({ sessionId: SESSION_ID, surface: 'office_chat', userId: null });
+    expect(args[6]).toBe(await resolveSessionTurnMock.mock.results[0]!.value);
     // SDK toolset is the write-mode-filtered client allowlist
     expect(args[7]).toEqual(expect.arrayContaining(['mcp__excel__read_range']));
     expect(args[7]).not.toEqual(expect.arrayContaining(['mcp__breeze__query_devices']));

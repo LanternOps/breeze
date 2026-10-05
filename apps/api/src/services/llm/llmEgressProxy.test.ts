@@ -429,6 +429,26 @@ describe('llmEgressProxy — allowlist enforcement', () => {
     expect(out).toEqual({ kind: 'status', status: 502 });
     expect(events).toEqual([{ host: PROVIDER_HOST, resolvedIp: null, blocked: true }]);
   });
+
+  it('a null grant refuses every CONNECT and audits it as blocked (W06 deny-all)', async () => {
+    let resolved = 0;
+    __setResolverForTests(async () => { resolved += 1; return { safe: [{ address: '127.0.0.1', family: 4 }], allIps: ['127.0.0.1'] }; });
+    const proxy = await newProxy();
+    const events: LlmEgressAttempt[] = [];
+    const { proxyUrl } = proxy.grant('s-deny', null, (e) => events.push(e));
+
+    for (const target of ['api.anthropic.com:443', `${PROVIDER_HOST}:443`, '127.0.0.1:443']) {
+      const out = await proxyConnect({ port: proxy.port(), token: extractToken(proxyUrl), target });
+      expect(out).toEqual({ kind: 'status', status: 403 });
+    }
+    expect(events).toEqual([
+      { host: 'api.anthropic.com', resolvedIp: null, blocked: true },
+      { host: PROVIDER_HOST, resolvedIp: null, blocked: true },
+      { host: '127.0.0.1', resolvedIp: null, blocked: true },
+    ]);
+    // Never resolved, never dialled.
+    expect(resolved).toBe(0);
+  });
 });
 
 describe('llmEgressProxy — tunnelling', () => {

@@ -19,6 +19,12 @@ type WsSessionManager struct {
 	// watchdog stops a stream — so the caller can hide the on-screen session
 	// indicator and send the end notice exactly as an operator stop does.
 	OnSessionStopped func(sessionID, reason string)
+	// activityObserver is told every time the set of running streams changes,
+	// by any path: start, replacement, operator stop, exact stop, StopAll and
+	// the lease watchdog. Guarded by mu and invoked with mu held, so it must
+	// not block and must not call back into the manager. Set it with
+	// SetActivityObserver.
+	activityObserver func()
 	// clock is the watchdog's time source; nil in production (real clock).
 	clock *watchdogClock
 	// newCapturer replaces the platform capturer; nil in production. Set only
@@ -56,6 +62,9 @@ func (m *WsSessionManager) StartSession(id string, displayIndex int, config Stre
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Deferred after the unlock, so it runs first: on every exit, including a
+	// failed replacement that already stopped the old stream below.
+	defer m.notifyActivityLocked()
 
 	// Stop existing session with same ID if any
 	if existing, ok := m.sessions[id]; ok {
@@ -145,7 +154,29 @@ func (m *WsSessionManager) StopSession(id string) bool {
 
 	delete(m.sessions, id)
 	session.Stop()
+	m.notifyActivityLocked()
 	return true
+}
+
+// SetActivityObserver registers fn to be told whenever the set of running
+// streams changes, by any path. It is called once immediately, so an observer
+// wired after a stream started still learns about it. fn runs with the
+// manager's lock held: it must only record that something changed (e.g. a
+// non-blocking channel send) and read the new state later, never block or
+// call back into the manager. nil unregisters.
+func (m *WsSessionManager) SetActivityObserver(fn func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.activityObserver = fn
+	m.notifyActivityLocked()
+}
+
+// notifyActivityLocked tells the activity observer that the running set may
+// have changed. Caller holds m.mu.
+func (m *WsSessionManager) notifyActivityLocked() {
+	if m.activityObserver != nil {
+		m.activityObserver()
+	}
 }
 
 // HandleInput routes an input event to the correct session
@@ -179,10 +210,14 @@ func (m *WsSessionManager) UpdateConfig(id string, config StreamConfig) error {
 func (m *WsSessionManager) StopAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if len(m.sessions) == 0 {
+		return
+	}
 	for id, session := range m.sessions {
 		session.Stop()
 		delete(m.sessions, id)
 	}
+	m.notifyActivityLocked()
 }
 
 // ActiveCount returns the number of active sessions

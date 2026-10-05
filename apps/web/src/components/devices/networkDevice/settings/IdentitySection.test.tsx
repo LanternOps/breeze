@@ -192,6 +192,51 @@ describe('IdentitySection', () => {
   });
 });
 
+describe('IdentitySection — own save echoing back (#7388)', () => {
+  it('does not flag a conflict when the refetched asset lands after saving flips back and matches the draft', async () => {
+    const { rerender } = render(<IdentitySection {...props} />);
+    fireEvent.change(screen.getByTestId('network-settings-identity-type'), { target: { value: 'router' } });
+    fireEvent.click(screen.getByTestId('network-settings-identity-save'));
+    await waitFor(() => expect(props.onAnnounce).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('network-settings-identity-type')).toBeEnabled());
+
+    // Parent's refetched asset commits only after `saving` is already false.
+    rerender(<IdentitySection {...props} asset={{ ...asset, type: 'router' }} />);
+
+    expect(screen.queryByTestId('network-settings-identity-conflict')).not.toBeInTheDocument();
+    expect(screen.getByTestId('network-settings-identity-type')).toHaveValue('router');
+    expect(screen.getByTestId('network-settings-identity-save')).toBeDisabled();
+  });
+});
+
+describe('IdentitySection — normalised echo (#7388)', () => {
+  it('does not flag a conflict when tags/notes come back normalised after save', async () => {
+    const { rerender } = render(<IdentitySection {...props} />);
+    fireEvent.change(screen.getByTestId('network-settings-identity-tags'), { target: { value: ' core , floor-2 ,, ' } });
+    fireEvent.change(screen.getByTestId('network-settings-identity-notes'), { target: { value: 'Closet B  ' } });
+    fireEvent.click(screen.getByTestId('network-settings-identity-save'));
+    await waitFor(() => expect(props.onAnnounce).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('network-settings-identity-tags')).toBeEnabled());
+
+    rerender(<IdentitySection {...props} asset={{ ...asset, tags: ['core', 'floor-2'], notes: 'Closet B' }} />);
+
+    expect(screen.queryByTestId('network-settings-identity-conflict')).not.toBeInTheDocument();
+    expect(screen.getByTestId('network-settings-identity-save')).toBeDisabled();
+  });
+});
+
+describe('IdentitySection — partial match is still a conflict (#7388)', () => {
+  it('flags a conflict when the incoming baseline matches only some of the draft', () => {
+    const { rerender } = render(<IdentitySection {...props} />);
+    fireEvent.change(screen.getByTestId('network-settings-identity-type'), { target: { value: 'router' } });
+    fireEvent.change(screen.getByTestId('network-settings-identity-name'), { target: { value: 'Mine' } });
+
+    rerender(<IdentitySection {...props} asset={{ ...asset, type: 'router', label: 'Theirs' }} />);
+
+    expect(screen.getByTestId('network-settings-identity-conflict')).toBeInTheDocument();
+  });
+});
+
 describe('IdentitySection — change site', () => {
   const extras = { orgId: 'org-1', siteId: 'site-a', siteName: 'HQ' };
   const SITE_A = { id: 'site-a', orgId: 'org-1', name: 'HQ' };

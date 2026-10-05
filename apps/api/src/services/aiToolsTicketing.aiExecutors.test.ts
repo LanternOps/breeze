@@ -19,6 +19,7 @@ const TICKET_ID = '11111111-1111-1111-1111-111111111111';
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const DEVICE_ID = '66666666-6666-6666-6666-666666666666';
 const RUN_ID = '77777777-7777-7777-7777-777777777777';
+const ALERT_ID = '88888888-8888-8888-8888-888888888888';
 
 const { serviceMocks, dbState } = vi.hoisted(() => ({
   serviceMocks: {
@@ -171,7 +172,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { registerTicketingTools } from './aiToolsTicketing';
 import { createTimeEntry } from './timeEntryService';
-import { tickets, devices, deviceHardware, ticketDrafts } from '../db/schema';
+import { alerts, tickets, devices, deviceHardware, ticketDrafts } from '../db/schema';
 
 function getTool(): AiTool {
   const tools = new Map<string, AiTool>();
@@ -237,7 +238,7 @@ describe('link_device (P2-4, #4191)', () => {
     queueSelect(devices, [{ id: DEVICE_ID }]);
     dbState.updateReturningQueue.push([{ id: TICKET_ID }]);
     await getTool().handler({ action: 'link_device', ticketId: TICKET_ID, hostname: 'WKS-042' }, makeAgentAuth());
-    expect(serviceMocks.revalidateTicketAssignee).toHaveBeenCalledWith(TICKET_ID, expect.objectContaining({ principalKind: 'ai_agent' }));
+    expect(serviceMocks.revalidateTicketAssignee).toHaveBeenCalledWith(TICKET_ID, expect.objectContaining({ kind: 'ai_agent' }));
     expect(serviceMocks.revalidateTicketAssignee.mock.invocationCallOrder[0]).toBeGreaterThan(topUpdateWhereMock.mock.invocationCallOrder[0]!);
   });
 
@@ -480,7 +481,8 @@ describe('comment routes ai_agent-principal calls to addAiTriageNote (P2-4, #419
     );
 
     expect(JSON.parse(out)).toEqual({ comment: { id: 'note-1' } });
-    expect(serviceMocks.addAiTriageNote).toHaveBeenCalledWith(TICKET_ID, RUN_ID, 'Investigating disk usage.', ORG_ID);
+    // The acting agent is stamped as the note's origin principal; the run is its own column.
+    expect(serviceMocks.addAiTriageNote).toHaveBeenCalledWith(TICKET_ID, RUN_ID, 'Investigating disk usage.', ORG_ID, undefined, 'agent-1');
     expect(serviceMocks.addTicketComment).not.toHaveBeenCalled();
   });
 
@@ -509,6 +511,12 @@ describe('manage_tickets refuses the three users-FK actions for an ai_agent prin
     { action: 'assign', input: { action: 'assign', ticketId: TICKET_ID, assigneeId: 'user-9' }, humanMock: 'assignTicket' },
     { action: 'update_status', input: { action: 'update_status', ticketId: TICKET_ID, status: 'resolved' }, humanMock: 'changeTicketStatus' },
     { action: 'create', input: { action: 'create', subject: 'Printer down', orgId: ORG_ID }, humanMock: 'createTicket' },
+    // #7490 review: with a typed ai_agent actor these would no longer fail on
+    // the users FK — they would succeed. Refused until agent attribution for
+    // alert linking is designed, the same product decision as the three above.
+    { action: 'link_alert', input: { action: 'link_alert', ticketId: TICKET_ID, alertId: ALERT_ID }, humanMock: 'linkAlertToTicket' },
+    { action: 'unlink_alert', input: { action: 'unlink_alert', ticketId: TICKET_ID, alertId: ALERT_ID }, humanMock: 'unlinkAlertFromTicket' },
+    { action: 'create_from_alert', input: { action: 'create_from_alert', alertId: ALERT_ID }, humanMock: 'createTicketFromAlert' },
   ] as const;
 
   for (const { action, input, humanMock } of CASES) {
@@ -535,6 +543,7 @@ describe('manage_tickets refuses the three users-FK actions for an ai_agent prin
 
     it(`${action} still works for a user_session principal`, async () => {
       queueSelect(tickets, [accessibleTicket()]);
+      queueSelect(alerts, [{ id: ALERT_ID, orgId: ORG_ID, deviceId: null }]);
       serviceMocks[humanMock].mockResolvedValue({ id: TICKET_ID });
 
       const out = await getTool().handler(input as Record<string, unknown>, makeHumanAuth());

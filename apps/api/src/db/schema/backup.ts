@@ -11,6 +11,7 @@ import {
   bigint,
   index,
   uniqueIndex,
+  customType,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -24,6 +25,36 @@ import {
   recoveryAuthorizationSubjectChecks,
   recoveryAuthorizationSubjectColumns,
 } from './recoveryAuthorizationSubject';
+import {
+  openBackupProviderConfig,
+  sealBackupProviderConfig,
+} from '../../services/backupProviderConfigSealing';
+
+/**
+ * jsonb whose credential fields are sealed with the application secret key on
+ * the way to the database and opened on the way back
+ * (services/backupProviderConfigSealing.ts). Same driver mapping as Drizzle's
+ * own jsonb otherwise.
+ */
+const sealedBackupProviderConfig = customType<{ data: unknown; driverData: unknown }>({
+  dataType() {
+    return 'jsonb';
+  },
+  toDriver(value) {
+    return JSON.stringify(sealBackupProviderConfig(value));
+  },
+  fromDriver(value) {
+    let parsed = value;
+    if (typeof value === 'string') {
+      try {
+        parsed = JSON.parse(value);
+      } catch {
+        parsed = value;
+      }
+    }
+    return openBackupProviderConfig(parsed);
+  },
+});
 
 export const backupProviderEnum = pgEnum('backup_provider', [
   'local',
@@ -130,14 +161,15 @@ export const backupConfigs = pgTable(
     name: varchar('name', { length: 200 }).notNull(),
     type: backupTypeEnum('type').notNull(),
     provider: backupProviderEnum('provider').notNull(),
-    providerConfig: jsonb('provider_config').notNull(),
+    // Credentials inside are sealed on write and opened on read by the column
+    // type, so every Drizzle reader sees plaintext and the row holds ciphertext.
+    providerConfig: sealedBackupProviderConfig('provider_config').notNull(),
     schedule: jsonb('schedule'),
     retention: jsonb('retention'),
     providerCapabilities: jsonb('provider_capabilities'),
     providerCapabilitiesCheckedAt: timestamp('provider_capabilities_checked_at'),
     compression: boolean('compression').notNull().default(true),
     encryption: boolean('encryption').notNull().default(false),
-    encryptionKey: text('encryption_key'),
     isActive: boolean('is_active').notNull().default(true),
     // The org's default destination. Partner-wide config policies cannot pin
     // one org's credentials, so their backup links resolve to the device

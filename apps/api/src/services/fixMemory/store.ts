@@ -650,3 +650,37 @@ export async function recomputeForOutcome(
   if (hooks.afterRecompute) await hooks.afterRecompute();
   await db.update(fixOutcomes).set({ recountRequestedAt: null, updatedAt: now }).where(eq(fixOutcomes.id, outcomeId));
 }
+
+/**
+ * Retire (spec "Fix memory list"): an operator takes a fix out of circulation.
+ * Under the identity lock so it cannot interleave with a recompute; W1's
+ * upsert keeps 'retired' sticky thereafter. Retire is not a delete — the
+ * track record stays readable in the list.
+ *
+ * DOCUMENTED EXCEPTION to this module's system-scope convention: this is the
+ * one caller-facing writer, so it runs in the caller's REQUEST transaction
+ * (fix_memory's FOR ALL dual-axis policy bounds which rows the SELECT/UPDATE
+ * can touch). It asserts only that SOME DB context is active — the advisory
+ * lock must live in an enclosing transaction or it releases immediately. The
+ * route gates partner-owned rows on canManagePartnerWidePolicies.
+ */
+export async function retireFixMemory(input: { id: string; userId: string; now?: Date }): Promise<'retired' | 'already_retired' | 'not_found'> {
+  if (!getCurrentDbAccessContext()) {
+    throw new Error('fixMemory/store.retireFixMemory: requires an open DB access context (the identity lock needs an enclosing transaction)');
+  }
+  const now = input.now ?? new Date();
+  const [row] = await db.select().from(fixMemory).where(eq(fixMemory.id, input.id)).limit(1);
+  if (!row) return 'not_found';
+  let partnerId = row.partnerId;
+  if (!partnerId && row.orgId) {
+    const [org] = await db.select({ partnerId: organizations.partnerId }).from(organizations).where(eq(organizations.id, row.orgId)).limit(1);
+    partnerId = org?.partnerId ?? null;
+  }
+  if (!partnerId) return 'not_found';
+  await lock(identityLockKey({ partnerId, signatureVersion: row.signatureVersion, signatureKey: row.signatureKey, osType: row.osType, fixIdentity: row.fixIdentity }));
+  const updated = await db.update(fixMemory)
+    .set({ status: 'retired', retiredBy: input.userId, retiredAt: now, updatedAt: now })
+    .where(and(eq(fixMemory.id, input.id), ne(fixMemory.status, 'retired')))
+    .returning({ id: fixMemory.id });
+  return updated.length === 1 ? 'retired' : 'already_retired';
+}

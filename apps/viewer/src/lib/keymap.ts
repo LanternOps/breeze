@@ -55,10 +55,44 @@ const codeToKey: Record<string, string> = {
 };
 
 /**
+ * How the remote agent turns a LETTER key name into an injected key (#7809):
+ *
+ *  - 'layout'     — Windows (VK_A..VK_Z via SendInput) and Linux (keysym →
+ *                   keycode on the active XKB map) resolve the name through the
+ *                   REMOTE keyboard layout, so the name must be the letter the
+ *                   operator actually typed. Sending the physical US position
+ *                   instead is what swapped Y/Z for German QWERTZ users.
+ *  - 'positional' — macOS injects fixed kVK_ANSI_* keycodes (US physical
+ *                   positions) and lets the remote layout produce the char, so
+ *                   the name must stay the physical key.
+ *
+ * Only ASCII letters are affected. Digits, punctuation, AltGr symbols and
+ * non-Latin letters keep the physical key name in both modes, as before: a
+ * produced char like "/" (Shift+7 on QWERTZ) or "@" (AltGr+Q) has no
+ * single-key equivalent to send. (Punctuation names are still read through the
+ * remote layout on Windows/Linux, so e.g. German ö is not fixed here — that
+ * needs agent-side scancode injection.)
+ */
+export type KeyNameMode = 'layout' | 'positional';
+
+export function keyNameModeFor(remoteOs: string | null | undefined): KeyNameMode {
+  return remoteOs === 'macos' ? 'positional' : 'layout';
+}
+
+const ASCII_LETTER = /^[a-z]$/i;
+
+/**
  * Convert a DOM KeyboardEvent to an agent key name
  */
-export function mapKey(e: KeyboardEvent): string | null {
-  // Try code first (physical key position)
+export function mapKey(e: KeyboardEvent, mode: KeyNameMode = 'layout'): string | null {
+  // A letter the active local layout produced (QWERTZ Z on KeyY, AZERTY A on
+  // KeyQ / M on Semicolon). Ctrl/Cmd don't change e.key for letters, so
+  // shortcuts follow the cap too (Ctrl+Z stays undo on QWERTZ).
+  if (mode === 'layout' && ASCII_LETTER.test(e.key)) {
+    return e.key.toLowerCase();
+  }
+
+  // Otherwise the physical key position
   if (e.code in codeToKey) {
     return codeToKey[e.code];
   }
@@ -69,6 +103,27 @@ export function mapKey(e: KeyboardEvent): string | null {
   }
 
   return null;
+}
+
+/**
+ * Name to send on keyup. In 'layout' mode the name depends on e.key, which can
+ * differ between a key's down and up (AltGr or a layout switch while held), so
+ * the name sent on key_down is remembered per physical key (`heldByCode`) and
+ * replayed here. Re-mapping instead would release a different key than was
+ * pressed and leave the original stuck down on the remote machine.
+ * Consumes the entry.
+ */
+export function resolveKeyUpName(
+  e: KeyboardEvent,
+  heldByCode: Map<string, string>,
+  mode: KeyNameMode = 'layout'
+): string | null {
+  const held = e.code ? heldByCode.get(e.code) : undefined;
+  if (held !== undefined) {
+    heldByCode.delete(e.code);
+    return held;
+  }
+  return mapKey(e, mode);
 }
 
 /**

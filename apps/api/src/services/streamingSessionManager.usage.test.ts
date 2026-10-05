@@ -1,24 +1,29 @@
 /**
- * #3095 — ai_sessions token counters recorded 0 for real sessions.
+ * #3095 / #7667 / W03 Task 7 — how an Agent SDK turn's usage reaches the
+ * ledger.
  *
- * Root cause: the background processor's `result` handler read
- * `session.auth.orgId`, which is null for partner- and system-scoped users,
- * and silently skipped usage recording for every turn of their sessions.
- * These tests pin the fix (use the canonical `session.orgId` from the DB row)
- * plus the fallback accumulation of per-API-call assistant usage for turns
- * whose `result` arrives with missing/zero usage, and the flush for turns
- * abandoned without a `result`.
+ * #3095: settlement uses the session's canonical org (the ai_sessions row),
+ * never `auth.orgId` (null for partner- and system-scoped technicians).
+ * #7667: `total_cost_usd` is a running total. W03 removes it from billing
+ * entirely: every turn settles through settleInvocation at the registry rate
+ * bound to the turn, over the per-model DELTA of the SDK's cumulative
+ * `modelUsage` against the breeze session's persisted snapshot (W05 spike).
+ * The assistant-message accumulator is no longer a billing source; an
+ * abandoned turn settles ZERO as `no_result` and leaves the snapshot alone,
+ * so a resumed query's next delta recovers whatever the CLI persisted.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import type { SdkUsageSnapshot } from './aiModels/invocationUsage';
 
-const { queryMock, recordUsageMock, calculateCostCentsMock, markIndeterminateMock } = vi.hoisted(() => ({
+const m = vi.hoisted(() => ({
   queryMock: vi.fn(),
-  recordUsageMock: vi.fn(() => Promise.resolve()),
-  calculateCostCentsMock: vi.fn(() => 42),
-  markIndeterminateMock: vi.fn(() => Promise.resolve()),
+  settleInvocation: vi.fn(),
+  snapshots: new Map<string, unknown>(),
+  readSdkUsageSnapshot: vi.fn(),
+  markIndeterminate: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
+vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: m.queryMock }));
 
 vi.mock('../db', () => ({
   db: {
@@ -33,21 +38,24 @@ vi.mock('../db', () => ({
     insert: vi.fn(() => ({ values: vi.fn(() => Promise.resolve()) })),
   },
   withDbAccessContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
-
-vi.mock('./aiCostTracker', () => ({
-  recordUsageFromSdkResult: recordUsageMock,
-  calculateCostCents: calculateCostCentsMock,
-  // Pure helper — kept real so these tests exercise the actual summing rule.
-  sumInputTokens: (u: Record<string, number | null | undefined>) =>
-    (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
-}));
+vi.mock('../db/dbWriteExpectingRows', () => ({ dbWriteExpectingRows: vi.fn(async () => undefined) }));
 vi.mock('./aiBudgetReservations', () => ({
-  markAiBudgetReservationIndeterminate: markIndeterminateMock,
+  markAiBudgetReservationIndeterminate: m.markIndeterminate,
+  readSdkUsageSnapshot: m.readSdkUsageSnapshot,
+}));
+vi.mock('./aiModels/platformModels', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/platformModels')>()),
+  getPlatformModelByModelId: vi.fn(async () => null),
+}));
+vi.mock('./aiModels/settleInvocation', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/settleInvocation')>()),
+  settleInvocation: m.settleInvocation,
 }));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
-vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('./aiAgentSdkTools', () => ({
   createBreezeMcpServer: vi.fn(() => ({ type: 'sdk' })),
   BREEZE_MCP_TOOL_NAMES: ['mcp__breeze__query_devices'],
@@ -61,37 +69,23 @@ vi.mock('./aiToolOutput', () => ({
   redactSensitiveToolInput: (i: unknown) => i,
 }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
+vi.mock('./toolSources/resolver', () => ({ resolveTenantTools: vi.fn(async () => []) }));
 
 import { StreamingSessionManager } from './streamingSessionManager';
-import { withDbAccessContext } from '../db';
 import type { AuthContext } from '../middleware/auth';
-import type { UsableLlmConfig } from './llm/llmConfigResolver';
+import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
+import { priceUsage, sumCostCents, type SettleInvocationInput } from './aiModels/settleInvocation';
+import { scriptedQuery, sdkResult } from './__testutils__/streamingSessionManagerHarness';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
+const SONNET = 'claude-sonnet-5-5';
 
 const DB_SESSION = {
   orgId: ORG,
-  sdkSessionId: null,
-  model: 'claude-sonnet-4-5-20250929',
+  sdkSessionId: null as string | null,
   maxTurns: 50,
   turnCount: 0,
   systemPrompt: null,
-};
-
-const PLATFORM_CONFIG = {
-  source: 'platform' as const,
-  apiKey: 'platform-key',
-  model: 'claude-sonnet-4-6',
-};
-
-const PARTNER_CONFIG = {
-  source: 'partner' as const,
-  partnerId: 'aaaaaaaa-1111-4222-8333-444455556666',
-  apiKey: 'partner-key',
-  model: 'claude-sonnet-4-6',
-  configId: 'config-1',
-  configVersion: 3,
-  endpoint: { kind: 'anthropic' as const },
 };
 
 /** Partner-scoped technician: orgId is null on the auth context (the #3095 trigger). */
@@ -103,39 +97,46 @@ const PARTNER_AUTH = {
   user: { id: 'beefbeef-1111-4222-8333-444455556666', email: 'tech@msp.example.com' },
 } as unknown as AuthContext;
 
+/** Registry cents for SONNET at FIXTURE_STD_RATES (200 / 1000 / 20 / 250 cents per M). */
+function cents(input: number, output: number, cacheRead = 0, cacheWrite = 0): number {
+  return (input * 200 + output * 1000 + cacheRead * 20 + cacheWrite * 250) / 1e6;
+}
+
 function assistantMsg(usage: Record<string, number>, text = 'hello') {
+  return { type: 'assistant', message: { content: [{ type: 'text', text }], usage } };
+}
+
+/** A result whose cumulative modelUsage for SONNET is (input, output). */
+function result(input: number, output: number, extra: Parameters<typeof sdkResult>[0] = {}) {
+  return sdkResult({
+    usage: { input_tokens: input, output_tokens: output },
+    modelUsage: { [SONNET]: { inputTokens: input, outputTokens: output } },
+    ...extra,
+  });
+}
+
+function snap(input: number, output: number): SdkUsageSnapshot {
   return {
-    type: 'assistant',
-    message: { content: [{ type: 'text', text }], usage },
+    version: 1,
+    models: { [SONNET]: { tokens: { input, output, cacheRead: 0, cacheWrite: 0 }, webSearchRequests: 0 } },
   };
 }
 
-function resultMsg(overrides: Record<string, unknown> = {}) {
-  return {
-    type: 'result',
-    subtype: 'success',
-    total_cost_usd: 0,
-    usage: { input_tokens: 0, output_tokens: 0 },
-    num_turns: 1,
-    ...overrides,
-  };
-}
-
-function mockSdkQuery(messages: unknown[], gate: Promise<void> = Promise.resolve()) {
-  queryMock.mockImplementation(() => ({
-    async *[Symbol.asyncIterator]() {
-      await gate;
-      yield* messages as never[];
-    },
-    interrupt: vi.fn(),
-    close: vi.fn(),
-  }));
+function settles(): SettleInvocationInput[] {
+  return m.settleInvocation.mock.calls.map((c) => c[0] as SettleInvocationInput);
 }
 
 let manager: StreamingSessionManager;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  m.snapshots.clear();
+  m.readSdkUsageSnapshot.mockImplementation(async ({ sessionId }: { sessionId: string }) =>
+    (m.snapshots.get(sessionId) as SdkUsageSnapshot | undefined) ?? null);
+  m.settleInvocation.mockImplementation(async (input: SettleInvocationInput) => {
+    if (input.sdkUsage?.nextSnapshot) m.snapshots.set(input.sdkUsage.sessionId, input.sdkUsage.nextSnapshot);
+    return { costCents: sumCostCents(priceUsage(input.binding, input.usage)), invocationIds: ['i1'], deferred: false };
+  });
   manager = new StreamingSessionManager();
 });
 
@@ -143,260 +144,259 @@ afterEach(() => {
   manager.shutdown();
 });
 
+/**
+ * Run one scripted query to completion. The gate holds the stream until the
+ * per-user hook is attached (Office sessions attach it after getOrCreate).
+ */
 async function runSession(
   sessionId: string,
   messages: unknown[],
-  resolved: UsableLlmConfig = PLATFORM_CONFIG,
-  budgetReservationId?: string,
+  opts: {
+    resolved?: ReturnType<typeof makeResolvedModel>;
+    budgetReservationId?: string;
+    sdkSessionId?: string | null;
+    withExtra?: boolean;
+  } = {},
 ) {
-  mockSdkQuery(messages);
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((r) => (releaseGate = r));
+  m.queryMock.mockImplementation(() => scriptedQuery(messages, gate));
   const session = await manager.getOrCreate(
     sessionId,
-    DB_SESSION,
+    { ...DB_SESSION, sdkSessionId: opts.sdkSessionId ?? null },
     PARTNER_AUTH,
     undefined,
     'PROMPT',
     undefined,
-    resolved,
+    opts.resolved ?? makeResolvedModel('platform'),
     undefined,
     undefined,
-    budgetReservationId ? { budgetReservationId } : undefined,
+    opts.budgetReservationId ? { budgetReservationId: opts.budgetReservationId } : undefined,
   );
+  const recordExtraUsage = vi.fn(
+    (_u: { inputTokens: number; outputTokens: number; costCents: number }) => Promise.resolve(),
+  );
+  if (opts.withExtra) session.recordExtraUsage = recordExtraUsage;
+  releaseGate();
   await session.processorPromise;
-  return session;
+  const doneUsage = session.eventBus
+    .getReplayEvents()
+    .filter((e: any) => e.type === 'done' && e.usage)
+    .map((e: any) => e.usage as { inputTokens: number; outputTokens: number; costCents: number });
+  return { session, recordExtraUsage, doneUsage };
 }
 
-describe('result usage recording — partner-scoped sessions (#3095)', () => {
-  it('threads a durable reservation into atomic result settlement', async () => {
-    await runSession('sess-reserved', [
-      resultMsg({ total_cost_usd: 0.03, usage: { input_tokens: 100, output_tokens: 50 } }),
-    ], PLATFORM_CONFIG, '77777777-7777-4777-8777-777777777777');
+describe('result settlement — partner-scoped sessions (#3095)', () => {
+  it('threads a durable reservation into the settlement', async () => {
+    await runSession('sess-reserved', [result(100, 50)], { budgetReservationId: '77777777-7777-4777-8777-777777777777' });
 
-    expect(recordUsageMock).toHaveBeenCalledWith(
-      'sess-reserved',
-      ORG,
-      expect.any(Object),
-      'platform',
-      undefined,
-      '77777777-7777-4777-8777-777777777777',
-    );
-    expect(markIndeterminateMock).not.toHaveBeenCalled();
+    expect(settles()).toHaveLength(1);
+    expect(settles()[0]).toMatchObject({
+      sessionId: 'sess-reserved', orgId: ORG, reservationId: '77777777-7777-4777-8777-777777777777',
+    });
+    expect(m.markIndeterminate).not.toHaveBeenCalled();
   });
 
-  it('retains a reservation when the provider exits without any usage result', async () => {
-    await runSession(
-      'sess-unknown',
-      [],
-      PLATFORM_CONFIG,
-      '77777777-7777-4777-8777-777777777777',
-    );
+  it('a provider exit with no result settles the reservation at ZERO as no_result (released, not held)', async () => {
+    await runSession('sess-unknown', [], { budgetReservationId: '77777777-7777-4777-8777-777777777777' });
 
-    expect(recordUsageMock).not.toHaveBeenCalled();
-    expect(markIndeterminateMock).toHaveBeenCalledWith({
+    expect(settles()).toHaveLength(1);
+    expect(settles()[0]).toMatchObject({
+      reservationId: '77777777-7777-4777-8777-777777777777',
+      usage: [],
+      sourceRef: 'abandoned_turn',
+      sdkUsage: { nextSnapshot: null, usageConfirmed: false, usageNote: 'no_result' },
+    });
+    expect(m.markIndeterminate).not.toHaveBeenCalled();
+  });
+
+  it('retains the reservation as indeterminate only when that zero settlement itself fails', async () => {
+    m.settleInvocation.mockRejectedValueOnce(new Error('db down'));
+    await runSession('sess-unknown-fail', [], { budgetReservationId: '77777777-7777-4777-8777-777777777777' });
+
+    expect(m.markIndeterminate).toHaveBeenCalledWith({
       orgId: ORG,
       reservationId: '77777777-7777-4777-8777-777777777777',
     });
   });
 
-  it('passes partner_key from the immutable session config snapshot', async () => {
-    await runSession('sess-byok', [
-      resultMsg({ total_cost_usd: 0.03, usage: { input_tokens: 100, output_tokens: 50 } }),
-    ], PARTNER_CONFIG);
+  it('settles a BYOK session with the binding\'s partner_key funding', async () => {
+    await runSession('sess-byok', [result(100, 50)], { resolved: makeResolvedModel('anthropic_byok') });
 
-    expect(recordUsageMock).toHaveBeenCalledWith(
-      'sess-byok',
-      ORG,
-      expect.objectContaining({ total_cost_usd: 0.03 }),
-      'partner_key',
-      // 5th arg: the catalog pricing snapshot (#3922 W3) — undefined for a
-      // direct-Anthropic partner session, which prices from MODEL_PRICING.
-      undefined,
-      // 6th arg: no durable reservation on this legacy-session fixture.
-      undefined,
-    );
+    expect(settles()[0]!.binding).toMatchObject({ funding: 'partner_key', connectionId: 'conn-1' });
   });
 
-  it('records non-zero usage using the canonical session orgId even when auth.orgId is null', async () => {
-    await runSession('sess-partner', [
-      resultMsg({ total_cost_usd: 0.03, usage: { input_tokens: 100, output_tokens: 50 } }),
-    ]);
+  it('settles on the canonical session orgId even when auth.orgId is null, with no ledger user by default', async () => {
+    await runSession('sess-partner', [result(100, 50)]);
 
-    expect(recordUsageMock).toHaveBeenCalledTimes(1);
-    expect(recordUsageMock).toHaveBeenCalledWith('sess-partner', ORG, expect.objectContaining({
-      total_cost_usd: 0.03,
-      usage: expect.objectContaining({ input_tokens: 100, output_tokens: 50 }),
-    }), 'platform', undefined, undefined);
-    // The RLS db-access context must also be built from the DB-row org, not auth.orgId (null).
-    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledWith(
-      expect.objectContaining({ scope: 'organization', orgId: ORG }),
-      expect.any(Function),
-    );
+    expect(settles()).toHaveLength(1);
+    expect(settles()[0]).toMatchObject({
+      orgId: ORG,
+      userId: null,
+      usage: [expect.objectContaining({ model: SONNET, tokens: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } })],
+    });
+    expect(m.readSdkUsageSnapshot).toHaveBeenCalledWith({ orgId: ORG, sessionId: 'sess-partner' });
   });
 
-  it('records usage on error-subtype results too (turns that die on tool errors)', async () => {
-    await runSession('sess-err', [
-      {
-        ...resultMsg({ usage: { input_tokens: 70, output_tokens: 20 } }),
-        subtype: 'error_during_execution',
-        errors: ['tool blew up'],
-      },
-    ]);
+  it('settles error-subtype results too (turns that die on tool errors)', async () => {
+    await runSession('sess-err', [{ ...result(70, 20, { subtype: 'error_during_execution' }), errors: ['tool blew up'] }]);
 
-    expect(recordUsageMock).toHaveBeenCalledTimes(1);
-    expect(recordUsageMock).toHaveBeenCalledWith('sess-err', ORG, expect.objectContaining({
-      usage: expect.objectContaining({ input_tokens: 70, output_tokens: 20 }),
-    }), 'platform', undefined, undefined);
+    expect(settles()).toHaveLength(1);
+    expect(settles()[0]).toMatchObject({
+      usage: [expect.objectContaining({ tokens: expect.objectContaining({ input: 70, output: 20 }) })],
+      outcome: expect.objectContaining({ stopReason: 'error' }),
+    });
   });
 });
 
-describe('fallback accumulation from assistant messages', () => {
-  it('sums per-API-call assistant usage when the result usage is empty', async () => {
-    await runSession('sess-fallback', [
-      assistantMsg({ input_tokens: 1200, output_tokens: 80, cache_read_input_tokens: 300 }),
-      assistantMsg({ input_tokens: 1500, output_tokens: 40, cache_creation_input_tokens: 200 }),
-      resultMsg(), // zero usage from the SDK
+describe('billing source: modelUsage deltas, never the assistant accumulator', () => {
+  it('a result without modelUsage bills nothing, even after assistant messages reported tokens', async () => {
+    await runSession('sess-no-model-usage', [
+      assistantMsg({ input_tokens: 1200, output_tokens: 80 }),
+      sdkResult({ usage: { input_tokens: 0, output_tokens: 0 } }),
     ]);
 
-    expect(recordUsageMock).toHaveBeenCalledTimes(1);
-    expect(recordUsageMock).toHaveBeenCalledWith('sess-fallback', ORG, expect.objectContaining({
-      usage: {
-        input_tokens: 2700,
-        output_tokens: 120,
-        cache_read_input_tokens: 300,
-        cache_creation_input_tokens: 200,
-      },
-    }), 'platform', undefined, undefined);
+    expect(settles()).toHaveLength(1);
+    expect(settles()[0]).toMatchObject({ usage: [], sdkUsage: { usageNote: 'no_result', usageConfirmed: false } });
   });
 
-  it('prefers SDK-reported result usage over the accumulator when present', async () => {
-    await runSession('sess-sdk-wins', [
-      assistantMsg({ input_tokens: 999, output_tokens: 999 }),
-      resultMsg({ usage: { input_tokens: 100, output_tokens: 50 } }),
-    ]);
-
-    expect(recordUsageMock).toHaveBeenCalledWith('sess-sdk-wins', ORG, expect.objectContaining({
-      usage: expect.objectContaining({ input_tokens: 100, output_tokens: 50 }),
-    }), 'platform', undefined, undefined);
-  });
-
-  it('resets the accumulator between turns (multi-turn sessions)', async () => {
-    await runSession('sess-multiturn', [
-      assistantMsg({ input_tokens: 100, output_tokens: 10 }),
-      resultMsg(),
-      assistantMsg({ input_tokens: 40, output_tokens: 5 }),
-      resultMsg(),
-    ]);
-
-    expect(recordUsageMock).toHaveBeenCalledTimes(2);
-    expect(recordUsageMock).toHaveBeenNthCalledWith(1, 'sess-multiturn', ORG, expect.objectContaining({
-      usage: expect.objectContaining({ input_tokens: 100, output_tokens: 10 }),
-    }), 'platform', undefined, undefined);
-    expect(recordUsageMock).toHaveBeenNthCalledWith(2, 'sess-multiturn', ORG, expect.objectContaining({
-      usage: expect.objectContaining({ input_tokens: 40, output_tokens: 5 }),
-    }), 'platform', undefined, undefined);
-  });
-
-  it('flushes accumulated usage when the turn ends without a result message', async () => {
-    await runSession('sess-abandoned', [
+  it('an abandoned turn bills ZERO, leaves the snapshot alone and skips the per-user hook', async () => {
+    m.snapshots.set('sess-abandoned', snap(1000, 100));
+    const { recordExtraUsage } = await runSession('sess-abandoned', [
       assistantMsg({ input_tokens: 500, output_tokens: 60 }),
       // no result — subprocess died / stream closed mid-turn
+    ], { withExtra: true });
+
+    expect(settles()).toHaveLength(1);
+    expect(settles()[0]).toMatchObject({
+      usage: [], sourceRef: 'abandoned_turn', turnCount: 1,
+      sdkUsage: { nextSnapshot: null, usageNote: 'no_result' },
+    });
+    expect(m.snapshots.get('sess-abandoned')).toEqual(snap(1000, 100));
+    expect(recordExtraUsage).not.toHaveBeenCalled();
+  });
+
+  it('reports cache tokens as input on the per-user hook and the done event, priced per component', async () => {
+    // Release QA: an 8-turn session read 17 input tokens / 1029 output. On
+    // every turn past the first, prompt caching moves nearly the whole prompt
+    // into cache_read, so the uncached slice alone is meaningless.
+    const { recordExtraUsage, doneUsage } = await runSession('sess-cache-surfaces', [
+      sdkResult({
+        total_cost_usd: 0.57,
+        usage: { input_tokens: 17, output_tokens: 1_029, cache_read_input_tokens: 120_000, cache_creation_input_tokens: 4_500 },
+        modelUsage: {
+          [SONNET]: { inputTokens: 17, outputTokens: 1_029, cacheReadInputTokens: 120_000, cacheCreationInputTokens: 4_500 },
+        },
+      }),
+    ], { withExtra: true });
+
+    const expected = {
+      inputTokens: 17 + 120_000 + 4_500,
+      outputTokens: 1_029,
+      costCents: expect.closeTo(cents(17, 1_029, 120_000, 4_500), 6),
+    };
+    expect(doneUsage).toEqual([expected]);
+    expect(recordExtraUsage).toHaveBeenCalledWith(expected);
+    // The settlement still receives the SPLIT components — they price differently.
+    expect(settles()[0]!.usage[0]!.tokens).toEqual({ input: 17, output: 1_029, cacheRead: 120_000, cacheWrite: 4_500 });
+  });
+
+  it('does not settle twice when a completed turn is followed by teardown', async () => {
+    await runSession('sess-clean', [
+      assistantMsg({ input_tokens: 100, output_tokens: 10 }),
+      result(100, 10),
     ]);
 
-    expect(recordUsageMock).toHaveBeenCalledTimes(1);
-    expect(recordUsageMock).toHaveBeenCalledWith('sess-abandoned', ORG, expect.objectContaining({
-      usage: expect.objectContaining({ input_tokens: 500, output_tokens: 60 }),
-      num_turns: 1,
-    }), 'platform', undefined, undefined);
+    // Only the result-driven settlement; the finally sees no turn in flight.
+    expect(settles()).toHaveLength(1);
+  });
+});
+
+/**
+ * #7667 — the SDK's `total_cost_usd` is a RUNNING total. W03 never reads it
+ * for billing: each turn is charged the registry price of its own modelUsage
+ * delta, and every consumer (ledger, per-user hook, done event) reads that
+ * one number.
+ */
+describe('per-turn registry cost (supersedes the #7667 running-total hotfix)', () => {
+  it('bills each turn of one live query its own modelUsage delta, whatever total_cost_usd says', async () => {
+    const { recordExtraUsage, doneUsage } = await runSession('sess-cumulative', [
+      result(100, 10, { total_cost_usd: 0.01 }),
+      result(250, 25, { total_cost_usd: 0.025 }),
+      result(450, 45, { total_cost_usd: 0.045 }),
+    ], { withExtra: true });
+
+    expect(settles().map((s) => s.usage[0]!.tokens)).toEqual([
+      { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 },
+      { input: 150, output: 15, cacheRead: 0, cacheWrite: 0 },
+      { input: 200, output: 20, cacheRead: 0, cacheWrite: 0 },
+    ]);
+    const perTurn = [cents(100, 10), cents(150, 15), cents(200, 20)];
+    expect(doneUsage.map((u) => u.costCents)).toEqual(perTurn.map((c) => expect.closeTo(c, 6)));
+    expect(recordExtraUsage.mock.calls.map((c) => c[0].costCents)).toEqual(perTurn.map((c) => expect.closeTo(c, 6)));
   });
 
-  it('feeds abandoned-turn usage to the per-user recordExtraUsage hook (client sessions)', async () => {
-    let releaseGate!: () => void;
-    const gate = new Promise<void>((r) => (releaseGate = r));
-    mockSdkQuery([assistantMsg({ input_tokens: 500, output_tokens: 60 })], gate);
+  it('bills the first result after a resume only its delta over the stored snapshot, not the carried-over total', async () => {
+    m.snapshots.set('sess-resumed', snap(1000, 100));
+    const { doneUsage } = await runSession('sess-resumed', [
+      // Cumulative across the transcript; total_cost_usd carries earlier queries.
+      result(1100, 110, { total_cost_usd: 0.5 }),
+      result(1200, 120, { total_cost_usd: 0.53 }),
+    ], { sdkSessionId: 'sdk-prior-session' });
 
-    const session = await manager.getOrCreate(
-      'sess-abandoned-extra',
-      DB_SESSION,
-      PARTNER_AUTH,
-      undefined,
-      'PROMPT',
-      undefined,
-      PLATFORM_CONFIG,
+    expect(m.queryMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ options: expect.objectContaining({ resume: 'sdk-prior-session' }) }),
     );
-    const recordExtraUsage = vi.fn(() => Promise.resolve());
-    session.recordExtraUsage = recordExtraUsage;
-
-    releaseGate();
-    await session.processorPromise;
-
-    // Org ledger and per-user ledger both get the abandoned turn's tokens.
-    expect(recordUsageMock).toHaveBeenCalledWith('sess-abandoned-extra', ORG, expect.objectContaining({
-      usage: expect.objectContaining({ input_tokens: 500, output_tokens: 60 }),
-    }), 'platform', undefined, undefined);
-    expect(recordExtraUsage).toHaveBeenCalledWith({ inputTokens: 500, outputTokens: 60, costCents: 42 });
-    expect(calculateCostCentsMock).toHaveBeenCalledWith('claude-sonnet-4-5-20250929', 500, 60, 0, 0);
+    expect(settles().map((s) => s.usage[0]!.tokens)).toEqual([
+      { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 },
+      { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 },
+    ]);
+    expect(doneUsage.map((u) => u.costCents)).toEqual([expect.closeTo(cents(100, 10), 6), expect.closeTo(cents(100, 10), 6)]);
   });
 
-  it('reports cache tokens as input on the per-user hook and the done event', async () => {
-    // Release QA: an 8-turn session read 17 input tokens / 1029 output / $0.57.
-    // On every turn past the first, prompt caching moves nearly the whole prompt
-    // into cache_read, so the uncached slice alone is meaningless.
-    mockSdkQuery([
-      resultMsg({
-        total_cost_usd: 0.57,
-        usage: {
-          input_tokens: 17,
-          output_tokens: 1_029,
-          cache_read_input_tokens: 120_000,
-          cache_creation_input_tokens: 4_500,
-        },
+  it('with no snapshot, the first result bills its own result.usage (modelUsage only caps it)', async () => {
+    await runSession('sess-first', [
+      sdkResult({
+        total_cost_usd: 0.5,
+        usage: { input_tokens: 100, output_tokens: 10 },
+        // Carries earlier transcript turns.
+        modelUsage: { [SONNET]: { inputTokens: 1000, outputTokens: 100 } },
       }),
     ]);
 
-    const session = await manager.getOrCreate(
-      'sess-cache-surfaces',
-      DB_SESSION,
-      PARTNER_AUTH,
-      undefined,
-      'PROMPT',
-      undefined,
-      PLATFORM_CONFIG,
-    );
-    const recordExtraUsage = vi.fn(() => Promise.resolve());
-    session.recordExtraUsage = recordExtraUsage;
-
-    await session.processorPromise;
-
-    const done = session.eventBus.getReplayEvents().find((e: any) => e.type === 'done') as any;
-    expect(done?.usage).toEqual({
-      inputTokens: 17 + 120_000 + 4_500,
-      outputTokens: 1_029,
-      costCents: 57,
+    expect(settles()[0]).toMatchObject({
+      usage: [expect.objectContaining({ tokens: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 } })],
+      sdkUsage: { usageNote: 'first_result', nextSnapshot: snap(1000, 100) },
     });
-    expect(recordExtraUsage).toHaveBeenCalledWith({
-      inputTokens: 17 + 120_000 + 4_500,
-      outputTokens: 1_029,
-      costCents: 57,
-    });
-    // The org-level recorder still receives the SPLIT components — it prices
-    // them at their different rates and does its own summing for the columns.
-    expect(recordUsageMock).toHaveBeenCalledWith('sess-cache-surfaces', ORG, expect.objectContaining({
-      usage: {
-        input_tokens: 17,
-        output_tokens: 1_029,
-        cache_read_input_tokens: 120_000,
-        cache_creation_input_tokens: 4_500,
-      },
-    }), 'platform', undefined, undefined);
   });
 
-  it('does not double-record when a completed turn is followed by teardown', async () => {
-    await runSession('sess-clean', [
-      assistantMsg({ input_tokens: 100, output_tokens: 10 }),
-      resultMsg({ usage: { input_tokens: 100, output_tokens: 10 } }),
+  it('the same tokens cost the same registry price whether the SDK reports $0 or $9.99', async () => {
+    const zero = await runSession('sess-zero', [result(1000, 100, { total_cost_usd: 0 })]);
+    const high = await runSession('sess-high', [result(1000, 100, { total_cost_usd: 9.99 })]);
+
+    expect(zero.doneUsage[0]!.costCents).toBeCloseTo(cents(1000, 100), 6);
+    expect(high.doneUsage[0]!.costCents).toBeCloseTo(cents(1000, 100), 6);
+    expect(settles()[1]!.outcome.sdkReportedCostUsd).toBe(9.99); // telemetry only
+  });
+
+  it('a decreased modelUsage component re-baselines and bills the turn\'s own usage (snapshot_regressed), never a negative bill', async () => {
+    m.snapshots.set('sess-decreasing', snap(500, 50));
+    const { doneUsage } = await runSession('sess-decreasing', [result(400, 40, { total_cost_usd: 0.04 })]);
+
+    expect(settles()[0]).toMatchObject({
+      usage: [{ model: SONNET, tokens: { input: 400, output: 40 } }],
+      sdkUsage: { usageNote: 'snapshot_regressed', usageConfirmed: false, nextSnapshot: snap(400, 40) },
+    });
+    expect(doneUsage[0]!.costCents).toBeGreaterThan(0);
+  });
+
+  it('bills deltas across error-subtype results on the same query', async () => {
+    await runSession('sess-interrupted', [
+      result(100, 10),
+      { ...result(180, 18, { subtype: 'error_during_execution' }), errors: ['interrupted'] },
+      result(300, 30),
     ]);
 
-    // Only the result-driven record; the finally-flush sees an empty accumulator.
-    expect(recordUsageMock).toHaveBeenCalledTimes(1);
+    expect(settles().map((s) => s.usage[0]!.tokens.input)).toEqual([100, 80, 120]);
   });
 });

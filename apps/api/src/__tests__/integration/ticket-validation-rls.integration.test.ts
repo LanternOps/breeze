@@ -194,7 +194,7 @@ describe('ticket validation reads under org-scoped RLS (system-context regressio
           categoryId: c1.id,
           assigneeId: staff.id,
         },
-        { userId: actor.id, name: actor.name, email: actor.email }
+        { kind: 'user' as const, userId: actor.id, name: actor.name, email: actor.email }
       )
     );
 
@@ -211,7 +211,7 @@ describe('ticket validation reads under org-scoped RLS (system-context regressio
       withDbAccessContext(orgContext, () =>
         createTicket(
           { orgId: o1.id, subject: 'rls probe x-partner category', source: 'manual', categoryId: c2.id },
-          { userId: actor.id }
+          { kind: 'user' as const, userId: actor.id }
         )
       )
     );
@@ -229,7 +229,7 @@ describe('ticket validation reads under org-scoped RLS (system-context regressio
       withDbAccessContext(orgContext, () =>
         createTicket(
           { orgId: o1.id, subject: 'rls probe x-partner assignee', source: 'manual', assigneeId: u2.id },
-          { userId: actor.id }
+          { kind: 'user' as const, userId: actor.id }
         )
       )
     );
@@ -247,7 +247,7 @@ describe('ticket validation reads under org-scoped RLS (system-context regressio
       withDbAccessContext(orgContext, () =>
         createTicket(
           { orgId: o1.id, subject: 'must never persist', source: 'manual', assigneeId: noRead.id },
-          { userId: actor.id }
+          { kind: 'user' as const, userId: actor.id }
         )
       )
     );

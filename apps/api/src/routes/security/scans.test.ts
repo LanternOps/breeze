@@ -69,6 +69,8 @@ vi.mock('../../middleware/auth', async () => {
   return {
     ...actual,
     requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+    // Session-claim MFA, controlled per test through the auth token.
+    hasSatisfiedMfa: vi.fn((auth: any) => auth.token?.mfa === true),
   };
 });
 
@@ -80,10 +82,11 @@ import { SECURITY_SCAN_SETTINGS_DEFAULTS } from '@breeze/shared';
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const DEVICE_ID = '22222222-2222-2222-2222-222222222222';
 
-function buildApp(): Hono {
+function buildApp(opts: { mfa?: boolean } = {}): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('auth', {
+      token: { mfa: opts.mfa ?? false },
       scope: 'organization',
       orgId: ORG_ID,
       partnerId: null,
@@ -304,6 +307,56 @@ describe('POST /scan/:deviceId — attaches the device\'s resolved policy settin
   function app(): Hono {
     return buildApp();
   }
+});
+
+// A manual scan runs under the CALLER's authority: devices:execute is enforced
+// route-level, and the policy's auto-quarantine additionally needs a satisfied
+// MFA session, otherwise the scan runs detect-only and the row records why.
+describe('POST /scan/:deviceId — auto-quarantine needs an MFA session', () => {
+  let insertedValues: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'execute' }],
+      allowedSiteIds: undefined,
+    });
+    mockDeviceSelect();
+    insertedValues = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(db.insert).mockReturnValue({ values: insertedValues } as any);
+    resolveSecurityScanSettingsForDeviceMock.mockResolvedValue({
+      ...SECURITY_SCAN_SETTINGS_DEFAULTS,
+      autoQuarantine: true,
+    });
+  });
+
+  function scan(mfa: boolean) {
+    return buildApp({ mfa }).request(`/security/scan/${DEVICE_ID}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scanType: 'quick' }),
+    });
+  }
+
+  it('without MFA: dispatches detect-only and records manual_no_mfa', async () => {
+    const res = await scan(false);
+
+    expect(res.status).toBe(202);
+    expect(vi.mocked(queueCommand).mock.calls.at(-1)![2]).toMatchObject({ autoQuarantine: false });
+    expect(insertedValues).toHaveBeenCalledWith(expect.objectContaining({
+      autoQuarantineSuppressedReason: 'manual_no_mfa',
+    }));
+  });
+
+  it('with MFA: keeps the policy auto-quarantine', async () => {
+    const res = await scan(true);
+
+    expect(res.status).toBe(202);
+    expect(vi.mocked(queueCommand).mock.calls.at(-1)![2]).toMatchObject({ autoQuarantine: true });
+    expect(insertedValues).toHaveBeenCalledWith(expect.objectContaining({
+      autoQuarantineSuppressedReason: null,
+    }));
+  });
 });
 
 describe('GET /scans/:deviceId — timed_out filter', () => {

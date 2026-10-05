@@ -50,6 +50,8 @@ const TERMINAL_BY_STATUS: Record<AiAgentRunStatus, boolean> = {
   cancelled: true,
   expired: true,
   skipped: true,
+  // AI model registry W03: model unavailable / refused — final, like skipped.
+  blocked: true,
 };
 
 function isTerminal(status: string): boolean {

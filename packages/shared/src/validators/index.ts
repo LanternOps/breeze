@@ -965,6 +965,7 @@ export * from './orgNarrative';
 export * from './fleetDesign';
 export * from './fleetDesignApply';
 export * from './aiPatchPlan';
+export * from './remediationResearch';
 export * from './ticketTriage';
 export * from './aiAgentImpact';
 export * from './aiAgentImpactMeasured';
@@ -989,6 +990,7 @@ export * from './timeEntries';
 export * from './portal';
 export * from './ticketConfig';
 export * from './retiredLabourPricing';
+export * from './retiredAiModelFields';
 export * from './partnerTicketingSettings';
 export * from './auditRetention';
 export * from './ticketPushPreferences';
@@ -1287,3 +1289,6 @@ export * from './companyIdentity';
 
 // AI model registry W01 (#7599): option / support / rate schemas.
 export * from './aiModelOptions';
+export * from './aiModelChoice';
+export * from './aiModelRegistryApi';
+export * from './autopay';

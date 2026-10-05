@@ -965,6 +965,7 @@
       "description": "{{count}} cihaz(lar)ında {{runAs}} olarak “{{name}}” komutunu çalıştırın. Komut dosyaları sıraya alınır ve hemen yürütülmeye başlar."
     },
     "selectedCount": "{{count}} cihaz seçildi",
+    "executeBlocked": "Çalıştırma kullanılamıyor: seçili bir cihaz bu betiği burada çalıştıramıyor (gösterilenden farklı bir kuruluşa ait olabilir veya artık erişilebilir değil).",
     "languages": {
       "powershell": "PowerShell",
       "bash": "Bash",

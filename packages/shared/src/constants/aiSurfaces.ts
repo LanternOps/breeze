@@ -30,6 +30,13 @@ export const AI_SURFACE_ROLES: Readonly<Record<AiSurface, readonly string[]>> = 
   patch_test: ['default'],
 });
 
+/** W09 (#7607): the escalation stages an `ai_agents` run resolves (#7570). Mirrors AI_SURFACE_ROLES.ai_agents minus 'default'. */
+export const AI_AGENT_ESCALATION_ROLES = ['triage', 'analysis', 'remediation'] as const;
+export type AiAgentEscalationRole = (typeof AI_AGENT_ESCALATION_ROLES)[number];
+
+/** W09: the longest ordered failover list on one assignment row (the DB CHECK mirrors it). */
+export const MAX_FALLBACK_OFFERINGS = 5;
+
 /** An offering without verified tool support can't be assigned or permitted here (spec §7). */
 export const TOOL_REQUIRING_SURFACES = [
   'chat',
@@ -37,4 +44,21 @@ export const TOOL_REQUIRING_SURFACES = [
   'script_builder',
   'ai_agents',
   'office_chat',
+] as const satisfies readonly AiSurface[];
+
+/**
+ * AI chargeback (#7608, spec §8): surfaces whose usage an MSP may rebill to the
+ * client org. The rest is the MSP's own tooling (catalog enrichment,
+ * extension content, patch tests) and is never chargeable. The script reviewer is
+ * chargeable (client work; decided by Todd 2026-10-02, #7598). Changing this
+ * list changes only future stamps (snapshot rule).
+ */
+export const AI_CHARGEBACK_ELIGIBLE_SURFACES = [
+  'chat',
+  'helper',
+  'script_builder',
+  'script_reviewer',
+  'office_chat',
+  'office_ticket',
+  'ai_agents',
 ] as const satisfies readonly AiSurface[];

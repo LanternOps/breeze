@@ -218,53 +218,450 @@
   "aiBudgetThresholds": {
     "invalid": "Inserisci fino a cinque numeri interi tra 1 e 99, separati da virgole."
   },
-  "partnerAiProvider": {
-    "title": "Provider IA",
-    "subtitle": "Esegui l'IA di Breeze con la tua chiave API Anthropic invece della chiave della piattaforma.",
-    "platformKey": "Chiave della piattaforma",
-    "platformKeyDescription": "Le funzionalità di IA usano la chiave Anthropic di Breeze e vengono addebitate come crediti IA di Breeze.",
-    "yourKey": "La tua chiave •••• {{last4}}",
-    "verifiedAt": "Verificata il {{date}}",
-    "notVerifiedYet": "Non ancora verificata",
-    "defaultModelValue": "Modello predefinito: {{model}}",
-    "platformDefault": "Predefinito della piattaforma",
-    "keyErrorTitle": "La tua chiave Anthropic non funziona",
-    "reconnectHint": "Le funzionalità di IA non sono disponibili per le tue organizzazioni finché non salvi una chiave funzionante qui sotto.",
-    "connectKeyTitle": "Collega la tua chiave Anthropic",
-    "replaceKeyTitle": "Sostituisci la tua chiave Anthropic",
-    "keyLabel": "Chiave API Anthropic",
-    "writeOnlyHint": "La chiave viene verificata al salvataggio e non viene mai più mostrata.",
-    "saveKey": "Salva chiave",
-    "keySaved": "Chiave Anthropic salvata e verificata.",
-    "keySaveFailed": "Impossibile salvare la chiave Anthropic.",
-    "defaultModelLabel": "Modello predefinito",
-    "defaultModelHint": "Usato per le nuove sessioni di IA in tutte le tue organizzazioni.",
-    "modelUpdated": "Modello predefinito aggiornato.",
-    "modelUpdateFailed": "Impossibile aggiornare il modello predefinito.",
-    "disconnectTitle": "Torna alla chiave della piattaforma",
-    "disconnectDescription": "Rimuove la tua chiave Anthropic. L'utilizzo dell'IA torna a essere addebitato come crediti IA di Breeze.",
-    "disconnect": "Disconnetti",
-    "disconnectConfirm": "Disconnettere la tua chiave Anthropic? Le funzionalità di IA torneranno alla chiave della piattaforma e ai crediti IA di Breeze.",
-    "disconnected": "Chiave Anthropic rimossa. Le funzionalità di IA ora usano la chiave della piattaforma.",
-    "disconnectFailed": "Impossibile disconnettere la chiave Anthropic.",
-    "permissionDenied": "La gestione del provider IA richiede autorizzazioni di fatturazione e l'accesso a tutte le organizzazioni.",
-    "loadFailed": "Impossibile caricare la configurazione del provider IA.",
-    "workspaceDisclosure": "L'arricchimento dei contenuti di Workspace utilizza il provider IA configurato e appare nel tuo utilizzo IA.",
-    "endpointCardTitle": "Endpoint",
-    "endpointCardSubtitle": "Scegli dove viene inviato il tuo traffico IA. Breeze verifica ogni opzione prima che appaia qui.",
-    "directOptionLabel": "Anthropic (diretto)",
-    "verifiedModelsLabel": "Modelli verificati: {{models}}",
-    "noVerifiedModels": "Nessun modello verificato ancora",
-    "viewDataNote": "Visualizza la nota sul trattamento dei dati",
-    "hideDataNote": "Nascondi la nota sul trattamento dei dati",
-    "confirmDialogTitle": "Passare a {{name}}?",
-    "confirmDialogMessageWithNote": "Prima che il tuo traffico IA passi attraverso {{name}}, verifica come vengono trattati i tuoi dati:",
-    "confirmDialogMessageNoNote": "Passare il tuo traffico IA a {{name}}?",
-    "consentCheckboxLabel": "Capisco che il mio traffico IA e i miei contenuti saranno elaborati da {{name}}",
-    "endpointUpdated": "Endpoint IA aggiornato.",
-    "endpointUpdateFailed": "Impossibile aggiornare l'endpoint IA.",
-    "endpointDelistedBanner": "Questo endpoint è stato rimosso da Breeze — l'IA è in pausa finché non ne scegli un altro",
-    "endpointModelUnverifiedBanner": "Il modello {{model}} non è verificato su questo endpoint. Scegli un modello o un endpoint diverso per riprendere l'IA."
+  "aiModels": {
+    "title": "Provider e modelli IA",
+    "subtitle": "Collega i provider, scegli quali modelli sono disponibili e imposta il modello predefinito per ogni funzione IA.",
+    "forbidden": "Non hai il permesso di gestire provider e modelli IA.",
+    "loadFailed": "Impossibile caricare provider e modelli IA.",
+    "workspaceNote": "L'arricchimento dei contenuti di Workspace utilizza il provider IA configurato e appare nel tuo utilizzo IA.",
+    "connections": {
+      "title": "Connessioni",
+      "subtitle": "Dove vengono inviate le richieste IA e chi le paga.",
+      "add": "Aggiungi connessione",
+      "edit": "Modifica",
+      "created": "Connessione aggiunta",
+      "saved": "Connessione salvata",
+      "saveFailed": "Impossibile salvare la connessione.",
+      "keyFailed": "Impossibile sostituire la chiave API.",
+      "endpointFailed": "Impossibile modificare l'endpoint.",
+      "credentialSavedSettingsFailed": "La chiave o l'endpoint è stato salvato, ma il nome e la regione no. Riprova a salvarli.",
+      "disconnected": "Connessione rimossa",
+      "disconnectFailed": "Impossibile rimuovere la connessione.",
+      "columns": {
+        "name": "Nome",
+        "status": "Stato",
+        "key": "Chiave",
+        "geo": "Regione di inferenza",
+        "funding": "Fatturato a"
+      },
+      "kind": {
+        "platform": "Piattaforma Breeze",
+        "anthropic_byok": "Anthropic (la tua chiave)",
+        "catalog": "Endpoint del catalogo",
+        "openai_compatible": "Compatibile con OpenAI"
+      },
+      "status": {
+        "active": "Attiva",
+        "error": "Errore",
+        "platform": "Inclusa"
+      },
+      "funding": {
+        "platform": "Crediti Breeze",
+        "partner_key": "La tua chiave API"
+      },
+      "geoSource": {
+        "connection": "impostazione propria",
+        "platform": "impostazione della piattaforma",
+        "provider_default": "predefinito del provider"
+      },
+      "geoProviderDefault": "Predefinito del provider",
+      "supportedGeos": "Supporta: {{geos}}",
+      "refreshQueued": "Aggiornamento dei modelli in coda",
+      "refreshFailed": "Impossibile mettere in coda l'aggiornamento dei modelli.",
+      "alreadyConnected": "Già connessa",
+      "addKind": {
+        "anthropic_byok": "Chiave API Anthropic",
+        "openai_compatible": "Endpoint compatibile con OpenAI"
+      },
+      "openai": {
+        "name": "Nome",
+        "baseUrl": "URL di base",
+        "baseUrlHelp": "L'URL che termina prima di /chat/completions, ad es. https://llm.example.com/v1. Breeze ospitato si connette solo a endpoint https pubblici.",
+        "apiKey": "Chiave API (facoltativa)",
+        "apiKeyHelp": "Salvata cifrata e mai più mostrata. I server locali come Ollama o vLLM di solito non ne richiedono una.",
+        "optional": "Facoltativa",
+        "keepKey": "Lascia vuoto per mantenere la chiave attuale",
+        "removeKey": "Rimuovi la chiave salvata",
+        "keyTooShort": "La chiave deve contenere almeno {{min}} caratteri.",
+        "keyRequiredForNewUrl": "Inserisci la chiave per il nuovo URL oppure rimuovi la chiave. La chiave salvata non viene mai inviata a un nuovo URL.",
+        "envManaged": "Questa connessione è gestita dall'ambiente dell'istanza (impostazioni MCP_LLM_*). Modificala lì; qui non è modificabile.",
+        "envReleased": "Questa connessione è stata configurata dall'ambiente dell'istanza (impostazioni MCP_LLM_*), che non la gestisce più. Qui non è modificabile; puoi disconnetterla.",
+        "envManagedBadge": "Gestita dall'ambiente",
+        "noKey": "Nessuna chiave",
+        "discovered_one": "{{count}} modello trovato · {{when}}",
+        "discovered_other": "{{count}} modelli trovati · {{when}}",
+        "partialSaved": "L'endpoint o la chiave sono stati salvati, ma il nome no. Riapri la connessione per rinominarla."
+      }
+    },
+    "drawer": {
+      "titleCreate": "Aggiungi connessione",
+      "titleEdit": "Modifica {{name}}",
+      "errorTitle": "La chiave di questa connessione ha smesso di funzionare",
+      "reconnectHint": "Sostituisci la chiave qui sotto per riconnetterti.",
+      "name": "Nome",
+      "geo": "Regione di inferenza",
+      "geoProviderDefault": "Predefinito del provider",
+      "geoHint": "Dove il provider elabora le richieste. Lascia il predefinito del provider, a meno che non ti serva una regione specifica.",
+      "keyLabel": "Chiave API Anthropic",
+      "replaceKey": "Sostituisci chiave API",
+      "writeOnlyHint": "Solo scrittura: la chiave non viene più mostrata dopo il salvataggio.",
+      "endpoint": "Endpoint",
+      "endpointDirect": "Anthropic (diretto)",
+      "endpointDelisted": "L'endpoint usato da questa connessione non è più elencato. Torna ad Anthropic (diretto) per ripristinarla.",
+      "verifiedModels": "Modelli verificati: {{models}}",
+      "noVerifiedModels": "Nessun modello verificato elencato.",
+      "consent": "Capisco che {{name}} gestisce le mie richieste secondo la nota sui dati qui sopra.",
+      "oneCredentialChange": "Salva prima la nuova chiave, poi modifica l'endpoint (ciascuno viene verificato separatamente).",
+      "disconnect": "Disconnetti",
+      "disconnectTitle": "Disconnettere questa connessione?",
+      "disconnectMessage": "Le funzioni IA smettono di usare questa chiave. Puoi riconnetterti con una nuova chiave in qualsiasi momento.",
+      "refresh": "Aggiorna modelli"
+    },
+    "residency": {
+      "label": "Richiedi la residenza dei dati",
+      "savedOn": "La residenza dei dati è ora richiesta",
+      "savedOff": "La residenza dei dati non è più richiesta",
+      "saveFailed": "Impossibile aggiornare l'impostazione di residenza.",
+      "previewFailed": "Impossibile verificare cosa influenzerebbe la residenza.",
+      "confirmTitle": "Richiedere la residenza dei dati?",
+      "confirmBody": "Queste funzioni smetteranno di funzionare finché non viene impostato come predefinito un modello in grado di mantenere i dati nella regione richiesta.",
+      "confirmSubmit": "Richiedi la residenza",
+      "orgOverride": "{{org}}: {{surface}}"
+    },
+    "surfaces": {
+      "chat": "Chat",
+      "helper": "Helper",
+      "script_builder": "Generatore di script",
+      "script_reviewer": "Revisore di script",
+      "office_chat": "Chat del componente aggiuntivo di Office",
+      "office_ticket": "Assistente ticket di Office",
+      "ai_agents": "Agenti IA",
+      "catalog_enrichment": "Arricchimento del catalogo",
+      "extension_content": "Contenuti delle estensioni",
+      "patch_test": "Test delle patch"
+    },
+    "blockers": {
+      "model_unavailable": "Questo modello non è più disponibile.",
+      "unpriced": "Per questo modello non è impostato alcun prezzo.",
+      "plan_required": "Il tuo piano non include questo modello.",
+      "connection_unavailable": "La sua connessione non funziona.",
+      "residency_unavailable": "Non può mantenere i dati nella regione richiesta."
+    },
+    "errors": {
+      "not_found": "Questo elemento non esiste più. Ricarica e riprova.",
+      "unpriced": "Questo modello non ha ancora un prezzo, quindi non può essere abilitato.",
+      "not_eligible": "Questo modello al momento non può essere usato in questo modo.",
+      "offering_in_use": "Una funzione usa ancora questo modello come predefinito. Scegli prima un altro predefinito.",
+      "stale_write": "Qualcun altro ha modificato questo elemento mentre lo modificavi. Ricarica e riprova.",
+      "conflict": "Questo è in conflitto con un’impostazione esistente.",
+      "invalid": "Questa modifica non è valida.",
+      "tools_unsupported": "Questo modello non può chiamare strumenti, necessari per questa funzione.",
+      "widens_partner": "Un'organizzazione può solo restringere ciò che il partner consente.",
+      "write_failed": "Impossibile salvare la modifica. Riprova.",
+      "registry_unavailable": "La configurazione IA è in fase di aggiornamento. Riprova tra un momento.",
+      "approvals_decide_required": "Per cambiare il modello del revisore di script serve il permesso approvals:decide.",
+      "queue_unavailable": "La coda delle richieste non è disponibile. Riprova tra un momento.",
+      "registry_busy": "È in corso un'altra modifica alla configurazione IA. Riprova tra un momento.",
+      "crossesFunding": "Quel modello di riserva è pagato da un’altra fonte. Consenti prima il passaggio tra crediti Breeze e la tua chiave API.",
+      "egress_blocked": "Questo indirizzo non è consentito.",
+      "invalid_url": "Questo URL non è valido.",
+      "managed_by_env": "Questa connessione è gestita dall'ambiente dell'istanza e non può essere modificata qui.",
+      "connection_in_use": "Una funzione usa ancora un modello di questa connessione. Scegli prima un altro modello predefinito.",
+      "duplicate_model": "Questo ID modello esiste già su questa connessione.",
+      "geo_not_supported": "Questo tipo di connessione non può impostare una regione di inferenza.",
+      "key_required_for_new_endpoint": "Inserisci la chiave per il nuovo URL (oppure rimuovi la chiave).",
+      "too_many_models": "Questa connessione ha già il numero massimo di modelli aggiunti manualmente."
+    },
+    "org": {
+      "title": "Modelli predefiniti",
+      "subtitle": "Sostituisci i modelli predefiniti del partner per questa organizzazione. Un'organizzazione può solo restringere ciò che il partner consente; lascia un campo su Eredita per seguire il partner.",
+      "partnerLink": "Vedi i valori predefiniti del partner",
+      "inherit": "Eredita",
+      "inheritModel": "Eredita — {{model}} (predefinito del partner)",
+      "inheritNone": "Eredita — nessun predefinito",
+      "inheritValue": "Eredita — {{value}}",
+      "inheritModelDefault": "Eredita — predefinito del modello",
+      "inheritedFrom": "Eredita {{model}} (predefinito del partner)",
+      "inheritedNone": "Nessun predefinito del partner per questa funzione",
+      "effective": "In vigore: {{model}} ({{source}})",
+      "effectiveNone": "In vigore: nessun predefinito",
+      "lockChoice": "Non consentire agli utenti di scegliere",
+      "lockedByPartner": "Bloccato dal partner",
+      "readonly": "Puoi visualizzare questi valori predefiniti. Modificarli richiede il permesso di scrittura sull'organizzazione.",
+      "pickDefault": "Scegli un modello predefinito per questa funzione: quello del partner ({{model}}) non è tra i modelli consentiti.",
+      "widensField": "Il partner non consente questo valore per questa funzione.",
+      "loadFailed": "Impossibile caricare i modelli predefiniti.",
+      "saved": "Modelli predefiniti salvati.",
+      "saveFailed": "Impossibile salvare i modelli predefiniti. Riprova.",
+      "source": {
+        "org": "Sostituzione dell'organizzazione",
+        "partner": "Predefinito del partner",
+        "none": "Nessun predefinito"
+      },
+      "noCrossFunding": "Non passare tra crediti Breeze e la chiave propria del partner",
+      "crossFundingLocked": "Non consentito dal partner",
+      "fallbackInherit_one": "Eredita — {{count}} modello di riserva (partner)",
+      "fallbackInherit_other": "Eredita — {{count}} modelli di riserva (partner)",
+      "fallbackOnlyThese": "Solo questi modelli di riserva",
+      "noBackups": "Nessun modello di riserva"
+    },
+    "models": {
+      "title": "Modelli",
+      "subtitle": "Scegli quali modelli possono usare i tuoi tecnici e le funzioni. I prezzi sono per 1 milione di token.",
+      "empty": "Nessun modello disponibile al momento.",
+      "otherGroup": "Altri",
+      "ratePair": "{{input}} in ingresso / {{output}} in uscita per 1 mln di token",
+      "fastRate": "Veloce: {{rate}}",
+      "noPrice": "Nessun prezzo",
+      "context": "Contesto di {{tokens}} token",
+      "unverified": "Funzionalità non verificate",
+      "lifecycle": {
+        "missing": "Non più presente nel provider",
+        "retired": "Ritirato"
+      },
+      "defaultFor": "Predefinito per {{count}} funzione/i",
+      "enabledAt": "{{name}} abilitato a {{rate}}",
+      "enabled": "{{name}} abilitato",
+      "disabled": "{{name}} disabilitato",
+      "toggleFailed": "Impossibile modificare il modello. Riprova.",
+      "inUseFriendly": "Questo modello è ancora un predefinito. Conferma per disabilitarlo comunque.",
+      "enableFirst": "Abilita prima il modello, poi modifica i dettagli.",
+      "details": "Dettagli",
+      "enableLabel": "Abilita {{name}}",
+      "disableTitle": "Disabilitare {{name}}?",
+      "disableMessage": "Queste funzioni usano questo modello come predefinito. Resteranno senza modello finché non ne scegli un altro:",
+      "disableAnyway": "Disabilita comunque",
+      "orgOverrides": "Override di organizzazione interessati: {{count}}",
+      "verification": {
+        "verified": "Verificato",
+        "unverified": "Non verificato",
+        "failed": "Verifica non riuscita",
+        "failedWithSummary": "Verifica non riuscita: {{summary}}",
+        "stale": "Da riverificare: endpoint modificato"
+      },
+      "setPriceToEnable": "Imposta un prezzo per attivarlo",
+      "manual": {
+        "add": "Aggiungi modello",
+        "empty": "Ancora nessun modello. Aggiungine uno a mano o aggiorna la connessione per rilevarli.",
+        "title": "Aggiungi un modello",
+        "modelId": "ID del modello",
+        "modelIdHelp": "Esattamente come lo richiede l'endpoint, ad es. qwen2.5-coder:7b.",
+        "modelIdInvalid": "Usa solo lettere, cifre e . _ : / @ + -, senza spazi.",
+        "displayName": "Nome visualizzato (facoltativo)",
+        "pricesHint": "Facoltativo. Centesimi per 1 milione di token. Compila tutti e quattro i campi, oppure lasciali vuoti e imposta un prezzo prima di attivare.",
+        "added": "Modello aggiunto",
+        "failed": "Impossibile aggiungere il modello."
+      }
+    },
+    "offering": {
+      "displayName": "Nome visualizzato",
+      "displayNameHint": "Lascia vuoto per usare il nome del provider. ID modello: {{modelId}}",
+      "pricesTitle": "Prezzo",
+      "pricesHint": "Centesimi per 1 mln di token. Compila tutti e quattro o lasciali vuoti per nessun prezzo (il modello non potrà essere abilitato).",
+      "prices": {
+        "input": "Input",
+        "output": "Output",
+        "cacheRead": "Lettura cache",
+        "cacheWrite": "Scrittura cache"
+      },
+      "priceSource": {
+        "platform": "Prezzo della piattaforma Breeze",
+        "catalog": "Prezzo dal catalogo",
+        "linked_platform": "Prezzo del modello di piattaforma collegato",
+        "offering": "Prezzo impostato su questo modello",
+        "none": "Nessun prezzo impostato"
+      },
+      "allowedEffort": "Livelli di impegno consentiti",
+      "effort": {
+        "low": "Basso",
+        "medium": "Medio",
+        "high": "Alto",
+        "xhigh": "Molto alto",
+        "max": "Massimo"
+      },
+      "display": {
+        "omitted": "Nascosto",
+        "summarized": "Riassunto",
+        "updates": "Aggiornamenti in tempo reale"
+      },
+      "providerDefault": "Predefinito del provider",
+      "defaultEffort": "Impegno predefinito",
+      "defaultDisplay": "Visualizzazione del ragionamento predefinita",
+      "defaultSpeed": "Velocità predefinita",
+      "speed": {
+        "standard": "Standard",
+        "fastWithRate": "Veloce ({{rate}})"
+      },
+      "allowFast": "Consenti la modalità Veloce",
+      "allowFastHint": "La modalità Veloce è fatturata alla tariffa Veloce, più alta.",
+      "premium": "Richiedi il permesso per i modelli premium",
+      "premiumHint": "Solo i ruoli con il permesso ai_models:premium possono usare questo modello.",
+      "premiumForced": "Obbligatorio finché la modalità Veloce è consentita su un modello finanziato da Breeze.",
+      "refusalFallback": "Alternativa in caso di rifiuto",
+      "refusalNone": "Nessuno",
+      "refusalHint": "Un altro modello abilitato sulla stessa connessione da provare quando questo rifiuta una richiesta.",
+      "invalidPrices": "Inserisci tutti e quattro i prezzi come numeri non negativi oppure lasciali tutti vuoti.",
+      "saved": "Modello salvato",
+      "saveFailed": "Impossibile salvare il modello. Riprova.",
+      "verify": "Verifica",
+      "verifyQueued": "Verifica del modello in coda",
+      "verifyFailed": "Impossibile mettere in coda la verifica del modello.",
+      "verifyGatewayHint": "Esegue un breve test di chiamata degli strumenti sul tuo endpoint (usa alcune migliaia di token)."
+    },
+    "defaults": {
+      "title": "Predefiniti per funzionalità",
+      "subtitle": "Scegli il modello predefinito di ogni funzionalità, quali modelli può usare e le sue opzioni di ragionamento. Le modifiche valgono per tutte le organizzazioni, salvo override.",
+      "needsTools": "richiede strumenti",
+      "reviewerHelp": "Modificarlo richiede il permesso di approvazioni.",
+      "default": "Modello predefinito",
+      "chooseDefault": "Scegli un modello",
+      "permitted": "Modelli consentiti",
+      "permittedAll": "Tutti i modelli abilitati",
+      "permittedList": "Solo questi",
+      "userChoice": "Gli utenti possono scegliere",
+      "effort": "Impegno",
+      "display": "Visualizzazione del ragionamento",
+      "speed": "Velocità",
+      "modelDefault": "Predefinito del modello",
+      "orgOverrides_one": "{{count}} override dell'organizzazione",
+      "orgOverrides_other": "{{count}} override delle organizzazioni",
+      "changedElsewhere": "Modificato altrove; il salvataggio lo sovrascrive",
+      "unsaved": "Modifiche non salvate",
+      "discard": "Annulla modifiche",
+      "saved": "Predefiniti salvati.",
+      "saveFailed": "Impossibile salvare i predefiniti. Riprova.",
+      "needsDefault": "Scegli un modello predefinito per ogni funzionalità modificata.",
+      "needsPermitted": "Seleziona almeno un modello per «Solo questi».",
+      "effortValues": {
+        "low": "Basso",
+        "medium": "Medio",
+        "high": "Alto",
+        "xhigh": "Molto alto",
+        "max": "Massimo"
+      },
+      "displayValues": {
+        "omitted": "Nascosto",
+        "summarized": "Riepilogato",
+        "updates": "Aggiornamenti in tempo reale"
+      },
+      "speedValues": {
+        "standard": "Standard",
+        "fast": "Veloce"
+      },
+      "unavailableModel": "{{model}} (non disponibile)",
+      "unavailableUnknown": "Modello non disponibile",
+      "roleInherit": "Come il predefinito degli agenti IA",
+      "fallbacks": "Modelli di riserva, in ordine",
+      "addFallback": "Aggiungi un modello di riserva…",
+      "moveUp": "Sposta su",
+      "moveDown": "Sposta giù",
+      "removeFallback": "Rimuovi",
+      "fallbackUnavailable": "Un modello non più disponibile",
+      "crossFunding": "Consenti il passaggio tra crediti Breeze e la tua chiave API",
+      "crossFundingHelp": "Se attivo, un modello di riserva pagato dall’altra fonte può gestire una richiesta. Viene addebitata alla fonte che l’ha effettivamente gestita.",
+      "fundingPlatform": "Crediti Breeze",
+      "fundingOwnKey": "La tua chiave API"
+    },
+    "usage": {
+      "title": "Utilizzo IA per modello",
+      "subtitleAll": "Spesa e rifiuti per tutte le organizzazioni, dal registro delle chiamate ai modelli.",
+      "subtitleOrg": "Spesa e rifiuti per l'organizzazione selezionata, dal registro delle chiamate ai modelli.",
+      "from": "Dal",
+      "to": "Al",
+      "groupByLabel": "Raggruppa l'utilizzo per",
+      "groupBy": {
+        "model": "Modello",
+        "surface": "Funzionalità",
+        "user": "Tecnico",
+        "org": "Organizzazione"
+      },
+      "calls": "Chiamate",
+      "cost": "Costo",
+      "inputTokens": "Token in ingresso",
+      "outputTokens": "Token in uscita",
+      "refusals": "Rifiuti",
+      "fallbacks": "Alternative",
+      "total": "Totale",
+      "system": "Sistema / agenti",
+      "loading": "Caricamento dell'utilizzo…",
+      "empty": "Nessuna chiamata ai modelli in questo periodo.",
+      "error": "Impossibile caricare il dettaglio dell'utilizzo.",
+      "disconnected": "Disconnessa",
+      "disconnectedHint": "La connessione che ha servito queste chiamate è stata nel frattempo disconnessa.",
+      "footnote": "Il tasso di rifiuto è calcolato per chiamata al modello. I conteggi iniziano dall'attivazione del registro dei modelli; l'utilizzo precedente è incluso nei totali sopra.",
+      "view": {
+        "label": "Mostra",
+        "spend": "Spesa",
+        "quality": "Qualità"
+      },
+      "failovers": "Failover",
+      "failoversHelp": "Chiamate gestite da un modello di riserva perché quello configurato non è riuscito o non era disponibile"
+    },
+    "link": {
+      "summary": "Modello: {{model}} — impostato in Provider e modelli IA → Predefiniti per funzionalità",
+      "setPerFeature": "Impostato per funzionalità",
+      "noDefault": "nessun predefinito impostato",
+      "partner": "Predefiniti del partner",
+      "org": "Override di questa organizzazione"
+    },
+    "quality": {
+      "title": "Qualità dei modelli",
+      "subtitleAll": "Come vanno le conversazioni su ogni modello in tutte le organizzazioni: rifiuti, segnalazioni, passaggi a un altro modello e turni fino alla risoluzione.",
+      "subtitleOrg": "Come vanno le conversazioni su ogni modello per l'organizzazione selezionata.",
+      "groupBy": {
+        "model": "Modello",
+        "surface": "Funzione",
+        "prompt_profile": "Famiglia di modelli"
+      },
+      "columns": {
+        "conversations": "Conversazioni",
+        "costPerConversation": "Costo / conversazione",
+        "refusalRate": "Tasso di rifiuto",
+        "failoverRate": "Tasso di failover",
+        "flagRate": "Tasso di segnalazione",
+        "leftRate": "Passate a un altro modello",
+        "turnsToResolution": "Turni fino alla risoluzione",
+        "agentCompletion": "Esecuzioni agente completate"
+      },
+      "help": {
+        "conversations": "Sessioni di chat ed esecuzioni agente la cui ultima chiamata al modello in questo periodo era su questa riga.",
+        "costPerConversation": "Spesa media su questa riga per ogni conversazione che l'ha usata.",
+        "refusalRate": "Chiamate al modello rifiutate dal modello, per chiamata.",
+        "failoverRate": "Chiamate passate a un modello di riserva perché questo ha avuto un errore o non era disponibile.",
+        "flagRate": "Sessioni segnalate da una persona. Le segnalazioni automatiche dopo un errore di strumento sono contate a parte.",
+        "leftRate": "Conversazioni passate a un altro modello o proseguite in una nuova sessione su un altro modello.",
+        "turnsToResolution": "Mediana dei messaggi inviati da un tecnico nelle sessioni concluse senza segnalazione di una persona né passaggio a una nuova sessione. Include la sessione da cui proseguiva.",
+        "agentCompletion": "Esecuzioni agente completate, sul totale delle esecuzioni terminate."
+      },
+      "profiles": {
+        "claude-frontier": "Claude Frontier",
+        "claude-standard": "Claude Standard",
+        "claude-small": "Claude Small",
+        "generic": "Altri modelli"
+      },
+      "unrecorded": "Non registrato",
+      "unattributed": "Non attribuito a un modello",
+      "removedModel": "Modello rimosso",
+      "platformConnection": "Piattaforma Breeze",
+      "notRecorded": "Non ancora registrato su questo server",
+      "switchesOnly": "Solo passaggi",
+      "few": "Poche conversazioni",
+      "autoFlagged_one": "{{count}} segnalata automaticamente",
+      "autoFlagged_other": "{{count}} segnalate automaticamente",
+      "leftBreakdown": "{{switched}} passate, {{continued}} proseguite",
+      "resolvedCount_one": "{{count}} risolta",
+      "resolvedCount_other": "{{count}} risolte",
+      "loading": "Caricamento della qualità…",
+      "empty": "Nessuna chiamata al modello in questo periodo.",
+      "error": "Impossibile caricare la vista Qualità.",
+      "timeout": "Questo intervallo è troppo ampio per essere riassunto rapidamente. Scegli un intervallo più breve.",
+      "footnote": "Una conversazione conta per l'ultimo modello usato e un passaggio per il modello lasciato. Le chiamate servite da un modello di riserva contano per il modello scelto. I conteggi partono dall'attivazione del monitoraggio della qualità. Leggi con cautela i numeri piccoli."
+    },
+    "roles": {
+      "triage": "Triage (primo esame)",
+      "analysis": "Analisi (indagare e pianificare)",
+      "remediation": "Correzione (agire sui dispositivi)"
+    }
   },
   "partnerDefaults": {
     "notSet": "Non impostato — le org si configurano singolarmente",
@@ -591,8 +988,8 @@
         "description": "Limiti di spesa AI"
       },
       "aiProvider": {
-        "label": "Provider IA",
-        "description": "Usa la tua chiave Anthropic"
+        "label": "Provider e modelli IA",
+        "description": "Connessioni, modelli e impostazioni predefinite per ogni funzione IA"
       },
       "aiFeatures": {
         "label": "Funzionalità IA",
@@ -934,7 +1331,44 @@
       "invoice_number": "Numero fattura",
       "due_date": "Data di scadenza pagamento",
       "invite_url": "URL di invito",
-      "cta_button": "Pulsante"
+      "cta_button": "Pulsante",
+      "client_name": "Client name",
+      "setup_link": "Automatic payments setup link",
+      "ach_mode_text": "Available payment methods",
+      "payment_method": "Saved payment method",
+      "schedule_text": "Payment schedule",
+      "fee_text": "Processing fee terms",
+      "stopped_by": "Who stopped automatic payments",
+      "open_invoices_text": "Open invoice summary",
+      "expires_on": "Card expiry date",
+      "update_link": "Payment method update link",
+      "amount_due": "Importo dovuto",
+      "charge_date": "Data di addebito",
+      "fee_amount": "Commissione di elaborazione",
+      "invoice_link": "Link alla fattura",
+      "amount_paid": "Importo pagato",
+      "total_charged": "Totale addebitato",
+      "paid_on": "Data di pagamento",
+      "balance_remaining": "Saldo residuo",
+      "failure_text": "Dettagli dell’errore",
+      "action_link": "Link dell’azione",
+      "action_label": "Etichetta dell’azione",
+      "days_overdue": "Giorni di ritardo",
+      "pay_link": "Link di pagamento",
+      "charge_total": "Addebito totale",
+      "attempted_amount": "Importo del pagamento tentato"
+    },
+    "billingPayments": "Billing & payments",
+    "supportPortal": "Support & portal",
+    "labels": {
+      "autopay_request": "Automatic payments request",
+      "autopay_enrolled": "Automatic payments confirmed",
+      "autopay_stopped": "Automatic payments stopped",
+      "autopay_paused": "Pagamenti automatici sospesi",
+      "autopay_resumed": "Pagamenti automatici ripresi",
+      "card_expiring": "Saved card expiring",
+      "payment_receipt": "Ricevuta di pagamento online",
+      "payment_failed": "Impossibile completare il pagamento"
     }
   },
   "inboundEmail": {
@@ -1714,6 +2148,13 @@
     "failedToFetchReviewDetails": "Recupero dettagli revisione non riuscito",
     "noReviewerEmailsAvailableForNotifications": "Nessuna email revisore disponibile per le notifiche",
     "unableToLaunchEmailNotification": "Impossibile avviare la notifica email",
+    "reviewersEmailed": "Revisore assegnato notificato via email",
+    "assignedReviewerEmailedOnly": "Revisore assegnato notificato via email. Gli altri revisori selezionati non hanno ricevuto l’email: una revisione memorizza un solo revisore assegnato.",
+    "fallbackToMailClient": "{{reason}} Verrà aperto invece il tuo client di posta.",
+    "fallbackEmailNotConfigured": "L’invio delle email non è configurato su questo server.",
+    "fallbackNoReviewerEmail": "Il revisore assegnato non ha un indirizzo email registrato.",
+    "fallbackSendFailed": "Il server non è riuscito a inviare l’email.",
+    "fallbackRequestFailed": "La richiesta di notifica non è riuscita.",
     "failedToCreateAccessReview": "Creazione revisione accessi non riuscita",
     "failedToUpdateDecision": "Aggiornamento decisione non riuscito",
     "failedToFetchReviewForReport": "Recupero revisione per report non riuscito",
@@ -1728,7 +2169,12 @@
     "sending": "Invio in corso...",
     "notifyReviewers": "Notifica revisori",
     "completing": "Completamento in corso...",
-    "completeReview": "Completa revisione"
+    "completeReview": "Completa revisione",
+    "selfDecided": "Autodeciso",
+    "selfDecidedHint": "Deciso dall'utente stesso, perché nessun altro amministratore poteva esaminarlo (eccezione per amministratore unico).",
+    "ownItemBlocked": "Non puoi decidere sul tuo accesso. Un altro amministratore con permessi di gestione utenti deve esaminare questo elemento.",
+    "ownItemBlockedShort": "Serve un altro revisore",
+    "ownItemSelfDecisionWarning": "Sei l'unico amministratore che può esaminarlo, quindi puoi decidere sul tuo accesso. Verrà registrato come autodecisione."
   },
   "aiUsagePage": {
     "aIUsageBudget": "Utilizzo AI",
@@ -1890,7 +2336,8 @@
       "triage": "Analizza i nuovi avvisi e propone cosa fare.",
       "patch": "Esamina le patch mancanti e propone cosa installare.",
       "helpdesk": "Prende in carico i ticket e propone risposte e prossimi passi.",
-      "designer": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico."
+      "designer": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico.",
+      "research": "Integrato. Analizza un problema su un dispositivo su richiesta di un tecnico e suggerisce correzioni sicure. Non esegue mai nulla."
     },
     "emptyState": {
       "title": "Nessun agente per ora",
@@ -2036,7 +2483,8 @@
       "triage": "Triage degli avvisi",
       "patch": "Gestione delle patch",
       "helpdesk": "Assistenza",
-      "designer": "Progettista della flotta"
+      "designer": "Progettista della flotta",
+      "research": "Ricerca correzioni"
     },
     "modes": {
       "off": "Disattivato",
@@ -2084,6 +2532,14 @@
       "recipientRolesEmpty": "Nessun ruolo disponibile.",
       "instructionsHint": "Solo indicazioni — tono, cosa controllare per primo, convenzioni interne. Non concede mai autorizzazioni.",
       "charactersLeft": "{{count}} caratteri rimasti",
+      "model": "Modello",
+      "modelDefault": "Usa il predefinito ({{model}})",
+      "modelDefaultUnknown": "il predefinito degli agenti IA",
+      "modelRequiresRole": "richiede {{roles}}",
+      "modelRequiresPermission": "richiede il permesso per i modelli IA premium",
+      "modelUnavailable": "Il modello salvato non è più disponibile. Scegline un altro.",
+      "modelLoadFailed": "Impossibile caricare i modelli. L'agente mantiene il modello attuale.",
+      "modelHint": "Imposta il predefinito e i modelli consentiti in Provider e modelli IA.",
       "recipientRolesFailed": "Impossibile caricare i ruoli: al momento i destinatari delle notifiche non possono essere modificati.",
       "supervisedActionKeysHint": "Operazioni che questo agente può eseguire SENZA che un essere umano clicchi su approva, quando esiste una policy corrispondente e il limite di esposizione dell'organizzazione ha margine. Ognuna passa comunque attraverso le protezioni live, l'interruttore di emergenza e i limiti per organizzazione al momento dell'esecuzione.",
       "supervisedActionKeysEmpty": "Nessuna azione decidibile tramite policy è registrata.",
@@ -2155,7 +2611,8 @@
         "failed": "Non riuscita",
         "cancelled": "Annullata",
         "expired": "Scaduta",
-        "skipped": "Saltata"
+        "skipped": "Saltata",
+        "blocked": "Bloccata"
       },
       "verdicts": {
         "remediated": "Risolto",
@@ -3331,6 +3788,11 @@
           "blurb": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico.",
           "runsWhen": "avvii una Progettazione della flotta per un'organizzazione, oppure in base a una pianificazione trimestrale",
           "recommended": "una migrazione da zero, oppure un audit di configurazione trimestrale"
+        },
+        "research": {
+          "blurb": "Integrato. Analizza un problema su un dispositivo su richiesta di un tecnico e suggerisce correzioni sicure. Non esegue mai nulla.",
+          "runsWhen": "un tecnico richiede suggerimenti di correzione per un problema di un dispositivo",
+          "recommended": "ricerca automatica in sola lettura, un problema alla volta"
         }
       },
       "kindCard": {
@@ -3358,6 +3820,36 @@
       "title": "Questo agente legge e scrive soltanto report",
       "body": "Un Fleet Designer non esegue mai nulla su un dispositivo. Attivo significa che può essere eseguito e consegnare i suoi design ai destinatari che scegli.",
       "ack": "Capisco che questo agente viene eseguito senza supervisione e consegna Fleet Design."
+    },
+    "research": {
+      "capsTitle": "Limiti di ricerca",
+      "builtInNote": "Integrato e solo suggerimenti: non esegue mai nulla. Puoi disattivarlo e impostare i suoi limiti di spesa.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Ricerche simultanee",
+          "hint": "Quante ricerche possono essere in corso contemporaneamente."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Ricerche all'ora",
+          "hint": "Massimo di ricerche avviate in un'ora."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Ricerche automatiche all'ora",
+          "hint": "Massimo di ricerche avviate automaticamente da avvisi alti e critici. 0 disattiva la ricerca automatica."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Budget ricerca rapida (centesimi)",
+          "hint": "Limite di spesa per una ricerca rapida."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Budget ricerca approfondita (centesimi)",
+          "hint": "Limite di spesa per una ricerca approfondita."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Spesa giornaliera di ricerca (centesimi)",
+          "hint": "Limite di spesa totale al giorno per tutte le esecuzioni di questo agente."
+        }
+      }
     }
   },
   "apiKeyForm": {
@@ -3752,6 +4244,8 @@
     "lastUsed": "Ultimo utilizzo",
     "actions": "Azioni",
     "requestFailed": "Richiesta non riuscita ({{status}})",
+    "notEnabledTitle": "Le app connesse non sono abilitate su questo server",
+    "notEnabledBody": "MCP OAuth è disabilitato su questo server. Imposta MCP_OAUTH_ENABLED=true e riavvia l'API per consentire le app connesse.",
     "revokeConfirm": "Revocare l'accesso per {{name}}? Il relativo token di accesso smetterà di funzionare entro 10 minuti.",
     "revokeFailed": "Revoca non riuscita ({{status}})",
     "networkError": "Errore di rete",
@@ -5896,7 +6390,6 @@
       "allowedClasses": "Cosa può toccare uno script non presidiato",
       "perHour": "Numero massimo di esecuzioni non presidiate all'ora",
       "reviewerModel": "Modello di revisione",
-      "reviewerModelHint": "Lascia vuoto per usare il valore predefinito della piattaforma.",
       "protectedResources": "Non toccare mai questi elementi",
       "protectedServices": "Servizi",
       "protectedPaths": "Percorsi",

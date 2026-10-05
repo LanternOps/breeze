@@ -1,23 +1,15 @@
-import { getConfig } from '../../config/validate';
-import type { ResolvedLlmConfig } from './llmConfigResolver';
-
 /**
- * The ONE answer to "can a model actually be called for this org?", shared by
- * chat, the script builder and the topology AI readiness check.
+ * Why a model cannot be called for an org, as surfaces report it. The model
+ * resolver (aiModels/resolveModel.ts) decides per call; topology's advisory
+ * readiness (aiModels/readiness.ts) reads the same registry facts.
  *
- * `resolveLlmConfig` alone is not that answer: its `platform` result means
- * only "no partner BYO key applies", and carries whatever
- * `ANTHROPIC_API_KEY` happens to be — possibly nothing. Callers that stopped
- * at `source !== 'unavailable'` started sessions on a server with no model
- * key at all; the model turn then ran with no credentials and the surface
- * showed an empty or "partial" answer instead of saying AI is not set up.
- *
- * - `ai_unavailable`: a partner BYO config exists but cannot be used (bad or
- *   undecryptable key, delisted / unverified catalog provider). Fixed by
- *   reconnecting the partner's provider.
+ * - `ai_unavailable`: the org's model cannot be used (no default, a disabled
+ *   offering, a connection that is errored, disconnected or has an
+ *   undecryptable key, or a catalog revision that no longer maps the model).
+ *   Fixed under AI Providers & Models.
  * - `ai_not_configured`: the platform path has no credential at all. Fixed by
  *   an administrator adding a model provider key to the server (or a partner
- *   BYO key).
+ *   connection).
  */
 export type LlmUnusableCode = 'ai_unavailable' | 'ai_not_configured';
 
@@ -35,10 +27,11 @@ export const PLATFORM_LLM_CREDENTIAL_ENV_KEYS = [
 ] as const;
 
 /**
- * How a surface reaches the model. `chat` (AI chat, topology "Explain this")
- * can run on the platform's OpenAI-compatible provider; `agent_sdk` surfaces
- * (the script builder) always spawn the Claude Agent SDK, which needs an
- * Anthropic-dialect credential and cannot use that provider.
+ * How a surface reaches the model. Since W06 every surface runs the Agent SDK
+ * or the Messages API on a registry-resolved model, so both transports need
+ * the same platform credential; the parameter is kept for call-site intent.
+ * (An env OpenAI-compatible deployment is an env-managed registry connection,
+ * not a platform credential.)
  */
 export type LlmTransport = 'chat' | 'agent_sdk';
 
@@ -58,19 +51,6 @@ export class LlmNotConfiguredError extends Error {
   }
 }
 
-/**
- * Platform chat runs on an OpenAI-compatible endpoint instead of the Agent
- * SDK (`MCP_LLM_PROVIDER=openai-compatible`; its URL, model and key are
- * boot-validated). False before the config is validated.
- */
-export function isOpenAICompatibleProvider(): boolean {
-  try {
-    return getConfig().MCP_LLM_PROVIDER === 'openai-compatible';
-  } catch {
-    return false;
-  }
-}
-
 function present(value: string | undefined): boolean {
   return typeof value === 'string' && value.trim().length > 0;
 }
@@ -82,16 +62,8 @@ function present(value: string | undefined): boolean {
  */
 export function isPlatformLlmConfigured(
   apiKey: string | undefined = process.env.ANTHROPIC_API_KEY,
-  transport: LlmTransport = 'chat',
+  _transport: LlmTransport = 'chat',
 ): boolean {
-  const credentialPresent = PLATFORM_LLM_CREDENTIAL_ENV_KEYS.some((key) =>
+  return PLATFORM_LLM_CREDENTIAL_ENV_KEYS.some((key) =>
     present(key === 'ANTHROPIC_API_KEY' ? apiKey : process.env[key]));
-  return credentialPresent || (transport === 'chat' && isOpenAICompatibleProvider());
-}
-
-/** Why no model can be called for `resolved` over `transport`, or null when one can. */
-export function llmUnusableCode(resolved: ResolvedLlmConfig, transport: LlmTransport = 'chat'): LlmUnusableCode | null {
-  if (resolved.source === 'unavailable') return 'ai_unavailable';
-  if (resolved.source === 'platform' && !isPlatformLlmConfigured(resolved.apiKey, transport)) return 'ai_not_configured';
-  return null;
 }

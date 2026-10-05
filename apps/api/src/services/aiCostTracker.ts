@@ -1,8 +1,9 @@
 /**
  * AI Cost Tracker
  *
- * Tracks token usage and costs per message, enforces budget limits,
- * and provides usage summaries.
+ * Budget, rate-limit and billing-credit gates, compute (sandbox) cost, and
+ * usage summaries. Token cost is NOT recorded here: every model call is
+ * priced and written by aiModels/settleInvocation.ts (W03 #7601).
  */
 
 import { db, withSystemDbAccessContext } from '../db';
@@ -12,16 +13,11 @@ import { eq, and, sql, desc, isNotNull } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
 import { getEffectiveAiBudget } from './effectiveSettings';
-import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
 import { captureException, captureMessage } from './sentry';
+import { captureAtMostHourly } from './llm/platformKeyAlert';
 import { evaluateAiBudgetThresholds } from './aiBudgetAlerts';
 import { getCatalogEntryName } from './llmProviderCatalog';
-import { settleAiBudgetReservationDurably } from './aiBudgetReservations';
 import { topologySessionCondition, type TopologySessionVisibility } from './topology/aiSessionAccess';
-import { isPlatformModelSnapshotLoaded, peekPlatformModel } from './aiModels/platformModelSnapshot';
-import { computeInvocationCents, platformRateSnapshot, type RateSnapshot } from './aiModels/pricing';
-import { emitLegacyCostRecorded, type InvocationLedgerContext, type LegacyCostEvent } from './aiModels/legacyCostEvents';
-import type { ModelRates } from '@breeze/shared';
 
 export type AiBillingSource = 'platform' | 'partner_key';
 
@@ -93,70 +89,11 @@ function reportBillingIssueAtMostHourly(key: string, capture: () => void): void 
   }
 }
 
-// Cost per million tokens, expressed in cents (USD * 100).
-// Source: official Anthropic pricing — https://platform.claude.com/docs/en/about-claude/models/overview
-// (input / output $/MTok): sonnet-5-5 $2/$10, opus-5-5 $4/$20, fable-5-1 $10/$50,
-// opus-4-8 $5/$25, sonnet-4-6 $3/$15, haiku-4-5 $1/$5, fable-5 $10/$50.
-// Verified 2026-06-13; 5.5 / 5.1 rows added 2026-09-30 (#7587), matching the pricing tiers
-// baked into @anthropic-ai/claude-agent-sdk 0.3.286's model catalog. Do NOT edit these without re-confirming against the official pricing page.
-// Both the dateless alias and the pinned dated snapshot are keyed where one exists, since callers
-// may pass either form (the SDK / DB sessions use the alias; legacy rows may carry the dated id).
-// `cacheReadPerMillion` overrides the standard CACHE_READ_INPUT_MULTIPLIER (0.1x
-// input) for models billed below it: opus-5-5 $0.20 and fable-5-1 $0.25 per MTok
-// (SDK tiers `tier_4_20_cache_read_0_20` / `tier_10_50_cache_read_0_25`, #7587).
-const MODEL_PRICING: Record<
-  string,
-  { inputPerMillion: number; outputPerMillion: number; cacheReadPerMillion?: number }
-> = {
-  // Current models
-  'claude-sonnet-5-5': { inputPerMillion: 200, outputPerMillion: 1000 },
-  'claude-opus-5-5': { inputPerMillion: 400, outputPerMillion: 2000, cacheReadPerMillion: 20 },
-  'claude-fable-5-1': { inputPerMillion: 1000, outputPerMillion: 5000, cacheReadPerMillion: 25 },
-  'claude-opus-4-8': { inputPerMillion: 500, outputPerMillion: 2500 },
-  'claude-sonnet-4-6': { inputPerMillion: 300, outputPerMillion: 1500 },
-  'claude-haiku-4-5': { inputPerMillion: 100, outputPerMillion: 500 },
-  'claude-haiku-4-5-20251001': { inputPerMillion: 100, outputPerMillion: 500 },
-  'claude-fable-5': { inputPerMillion: 1000, outputPerMillion: 5000 },
-  // Legacy / previously-default models still seen on older sessions
-  'claude-sonnet-4-5': { inputPerMillion: 300, outputPerMillion: 1500 },
-  'claude-sonnet-4-5-20250929': { inputPerMillion: 300, outputPerMillion: 1500 }
-};
-
-/**
- * W01 (#7599): the platform model registry decides; MODEL_PRICING is the
- * bootstrap for a cold snapshot or an id the registry doesn't hold. W03
- * deletes MODEL_PRICING / DEFAULT_PRICING / isPricedModel.
- */
-function legacyRateSnapshot(model: string): RateSnapshot | null {
-  const pricing = MODEL_PRICING[model];
-  if (!pricing) return null;
-  return {
-    source: 'platform',
-    standard: {
-      inputCentsPerM: pricing.inputPerMillion,
-      outputCentsPerM: pricing.outputPerMillion,
-      cacheReadCentsPerM: pricing.cacheReadPerMillion ?? pricing.inputPerMillion * CACHE_READ_INPUT_MULTIPLIER,
-      cacheWriteCentsPerM: pricing.inputPerMillion * CACHE_WRITE_INPUT_MULTIPLIER,
-    },
-  };
-}
-
-function resolveTokenRate(model: string): RateSnapshot | null {
-  if (isPlatformModelSnapshotLoaded()) {
-    const row = peekPlatformModel(model);
-    if (row) return platformRateSnapshot(row);
-  }
-  return legacyRateSnapshot(model);
-}
-
-export function isPricedModel(model: string): boolean {
-  return resolveTokenRate(model) !== null;
-}
-
 // Sandbox COMPUTE pricing (spec §5.6) lives in its own pure module and is
 // re-exported here because that is the name the execution-plane wave contract
-// uses. Kept out of this file's body deliberately: aiCostTracker.ts is already
-// ~1,500 lines, and compute pricing has no dependency on anything in it.
+// uses. Token pricing is not here at all: every model call is priced by
+// aiModels/settleInvocation.ts (priceInvocation over the resolver's rate
+// snapshot), W03 #7601.
 export {
   AI_COMPUTE_PRICE_MULTIPLIER_ENV,
   COMPUTE_PRICING,
@@ -164,22 +101,6 @@ export {
   calculateComputeCents,
   computePriceMultiplier,
 } from './aiComputePricing';
-
-// Lives in aiOfferableModels.ts (dependency-free); re-exported for existing importers.
-export { OFFERABLE_AI_MODELS } from './aiOfferableModels';
-
-// Conservative last-resort pricing for an unrecognized model id. Mirrors the most
-// expensive current Opus-tier rate so we never silently undercount. Hitting this is logged.
-const DEFAULT_PRICING = { inputPerMillion: 500, outputPerMillion: 2500 };
-
-// Prompt-caching price multipliers, applied to the model's base input rate.
-// Standard Anthropic convention: a cache READ is billed at 0.1x the input rate
-// (https://platform.claude.com/docs/en/build-with-claude/prompt-caching) and a
-// cache WRITE / creation (5-minute TTL) is billed at 1.25x the input rate. These
-// are reused across every model since Anthropic prices cache tokens as a fixed
-// fraction of the per-model input rate rather than as separate flat amounts.
-const CACHE_READ_INPUT_MULTIPLIER = 0.1;
-const CACHE_WRITE_INPUT_MULTIPLIER = 1.25;
 
 /** The record cached at `ai:credits:<partnerId>` and surfaced on /ai/usage. */
 export interface CachedPartnerCredits {
@@ -384,11 +305,107 @@ export async function checkBillingCreditsDetailed(
 }
 
 /**
+ * Outcome of a KEYED credit debit (W03 #7601 Step 8a; billing-service #25).
+ * - `debited`: the billing service holds exactly one debit for the key
+ *   (`replayed` = this call found the earlier one).
+ * - `retryable`: not confirmed (5xx, 408/429, transport). Retry under the SAME
+ *   key — the service dedupes, so a lost response cannot double-charge.
+ * - `rejected`: a 4xx (or no partner to bill). The same key can never succeed,
+ *   so retrying is pointless; the caller records it for an operator.
+ * - `not_configured`: no billing service on this deployment (self-hosted).
+ * `code` is short and bounded (`http_<status>[:<error code>]`, `transport`,
+ * `org_partner_missing`); it never carries the response message or params.
+ */
+export type CreditDebitResult =
+  | { kind: 'debited'; replayed: boolean }
+  | { kind: 'retryable'; status: number | null; code: string }
+  | { kind: 'rejected'; status: number | null; code: string }
+  | { kind: 'not_configured' };
+
+const CREDIT_DEBIT_TIMEOUT_MS = 15_000;
+const BILLING_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+
+export function isBillingServiceConfigured(): boolean {
+  return Boolean(process.env.BILLING_SERVICE_URL && process.env.BILLING_SERVICE_API_KEY);
+}
+
+async function billingErrorCode(res: Response): Promise<string | null> {
+  try {
+    const body = await res.json() as { error?: unknown } | null;
+    return typeof body?.error === 'string' && BILLING_ERROR_CODE.test(body.error) ? body.error : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Debit platform credits under an idempotency key. Never throws for a billing
+ * outcome (only for a caller bug: empty key, bad amount), and reports nothing
+ * to Sentry itself: the caller owns the durable state and the event.
+ *
+ * The key travels as BOTH the `idempotencyKey` body field and the
+ * `Idempotency-Key` header. The body field name is load-bearing: the billing
+ * service's schema strips unknown fields, so a misspelling would silently turn
+ * this into an unkeyed debit (pinned by aiCostTracker.test.ts).
+ */
+export async function debitBillingCredits(
+  orgId: string,
+  costCents: number,
+  opts: { idempotencyKey: string },
+): Promise<CreditDebitResult> {
+  const key = opts.idempotencyKey;
+  if (typeof key !== 'string' || key.trim().length === 0 || key.length > 255) {
+    throw new Error('debitBillingCredits: idempotencyKey must be 1-255 characters');
+  }
+  if (!Number.isFinite(costCents) || costCents < 0) {
+    throw new Error('debitBillingCredits: costCents must be a finite non-negative amount');
+  }
+  const billingUrl = process.env.BILLING_SERVICE_URL;
+  const billingKey = process.env.BILLING_SERVICE_API_KEY;
+  if (!billingUrl || !billingKey) return { kind: 'not_configured' };
+
+  // Lookup only inside a context; the fetch stays outside it (#1105).
+  const [org] = await withSystemDbAccessContext(() => db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1));
+  if (!org?.partnerId) return { kind: 'rejected', status: null, code: 'org_partner_missing' };
+
+  let res: Response;
+  try {
+    res = await fetch(`${billingUrl}/billing/api/internal/partners/${org.partnerId}/ai-credits/deduct`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${billingKey}`,
+        'Content-Type': 'application/json',
+        'Idempotency-Key': key,
+      },
+      body: JSON.stringify({ costCents, idempotencyKey: key }),
+      signal: AbortSignal.timeout(CREDIT_DEBIT_TIMEOUT_MS),
+    });
+  } catch {
+    return { kind: 'retryable', status: null, code: 'transport' };
+  }
+  if (res.ok) return { kind: 'debited', replayed: res.headers.get('Idempotent-Replayed') === 'true' };
+  const errorCode = await billingErrorCode(res);
+  const code = errorCode ? `http_${res.status}:${errorCode}` : `http_${res.status}`;
+  // 408/429 mean "try again later" by definition; every other 4xx is a request
+  // the same key can never make succeed (bad input, key reused with another
+  // amount, auth). 5xx = not confirmed, safe to retry under the same key.
+  const retryable = res.status >= 500 || res.status === 408 || res.status === 429;
+  return retryable
+    ? { kind: 'retryable', status: res.status, code }
+    : { kind: 'rejected', status: res.status, code };
+}
+
+/**
  * Draw platform-funded spend down from the org's prepaid AI credit balance.
  *
- * Exported for callers that record usage through `recordUsage` (which does NOT
- * deduct — see the note on `recordSessionlessSdkUsage`) and therefore have to
- * make the deduction themselves. Only ever call this for
+ * UNKEYED legacy debit, kept for its one remaining caller: compute
+ * settlement (settleComputeCents). Token spend uses the keyed
+ * debitBillingCredits via settleInvocation (W06 deleted the env-only
+ * OpenAI-compatible chat path, its other caller). Only ever call this for
  * `billingSource === 'platform'`: partner BYOK spend is billed by Anthropic to
  * the partner, not against our credits.
  */
@@ -399,8 +416,8 @@ export async function deductBillingCredits(orgId: string, costCents: number): Pr
 
   // Self-contexted (#2190), and deliberately only around the LOOKUP: the
   // wrapper reuses an ambient request context, so the in-request chat callers
-  // are unchanged, while the contextless headless-run caller
-  // (`recordSessionlessSdkUsage`) gets a context instead of an RLS-filtered
+  // are unchanged, while a contextless caller (compute settlement from a
+  // headless run) gets a context instead of an RLS-filtered
   // zero-row read that would silently skip every deduction. The fetch below
   // stays outside it — a pooled connection must never be held across a network
   // call (#1105).
@@ -580,25 +597,6 @@ export async function settleComputeCents(
   }
 }
 
-/**
- * Look up the model id recorded on a session, used to price tokens when the SDK
- * does not report a cost. Returns null if the session can't be found.
- */
-async function getSessionModel(sessionId: string): Promise<string | null> {
-  try {
-    const [row] = await db
-      .select({ model: aiSessions.model })
-      .from(aiSessions)
-      .where(eq(aiSessions.id, sessionId))
-      .limit(1);
-    return row?.model ?? null;
-  } catch (err) {
-    console.error(`[AI] Failed to look up model for session=${sessionId}:`, err);
-    return null;
-  }
-}
-
-/** The three components the Anthropic/SDK usage object splits input across. */
 export interface SdkInputTokenUsage {
   input_tokens?: number | null;
   cache_read_input_tokens?: number | null;
@@ -609,7 +607,7 @@ export interface SdkInputTokenUsage {
  * Total input tokens for a turn — uncached + cache-read + cache-creation.
  *
  * The SDK reports these three separately because they are PRICED differently
- * (see the multipliers above), not because only the first one is "input". They
+ * (separate registry rates), not because only the first one is "input". They
  * are three disjoint slices of one prompt: every token in the request lands in
  * exactly one of them, so summing cannot double-count.
  *
@@ -632,114 +630,6 @@ export function sumInputTokens(usage: SdkInputTokenUsage | null | undefined): nu
     (usage?.cache_read_input_tokens ?? 0) +
     (usage?.cache_creation_input_tokens ?? 0)
   );
-}
-
-/**
- * computeInvocationCents rejects non-finite or negative counts. The SDK usage
- * object types cache counts `number | null`, and a destructuring default only
- * replaces undefined, so a runtime null reaches here; W00 priced it as 0. Clamp
- * at this boundary so recording usage never fails on a malformed count.
- */
-function billableTokenCount(value: number | null | undefined): number {
-  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
-  if (value !== null && value !== undefined) {
-    // Not W00 parity: W00 produced a negative or NaN cost here. Pricing it as
-    // 0 under-bills, so surface it rather than only logging.
-    console.warn(`[AI] Ignoring invalid token count ${String(value)} when pricing usage`);
-    captureMessage('AI usage priced with an invalid token count; priced as 0', {
-      eventCode: 'ai_usage_invalid_token_count',
-      level: 'warning',
-    });
-  }
-  return 0;
-}
-
-export function calculateCostCents(
-  model: string,
-  inputTokens: number,
-  outputTokens: number,
-  // Cache tokens are reported separately from `input_tokens` by the SDK usage
-  // object and are billed at different rates. Default to 0 so callers that
-  // don't care about caching are unaffected.
-  cacheReadInputTokens = 0,
-  cacheCreationInputTokens = 0
-): number {
-  let rate = resolveTokenRate(model);
-  if (!rate) {
-    // Surface unpriced models: price them in the registry (/admin/ai-models)
-    // rather than silently billing at the conservative default rate.
-    console.warn(
-      `[AI] No price for model "${model}" — falling back to DEFAULT_PRICING ` +
-      `($${(DEFAULT_PRICING.inputPerMillion / 100).toFixed(2)}/$${(DEFAULT_PRICING.outputPerMillion / 100).toFixed(2)} per MTok). ` +
-      'Set its price on /admin/ai-models.'
-    );
-    rate = {
-      source: 'platform',
-      standard: {
-        inputCentsPerM: DEFAULT_PRICING.inputPerMillion,
-        outputCentsPerM: DEFAULT_PRICING.outputPerMillion,
-        cacheReadCentsPerM: DEFAULT_PRICING.inputPerMillion * CACHE_READ_INPUT_MULTIPLIER,
-        cacheWriteCentsPerM: DEFAULT_PRICING.inputPerMillion * CACHE_WRITE_INPUT_MULTIPLIER,
-      },
-    };
-  }
-  // One rounding to 2 dp, exactly as W00 (#7593) rounded. computeInvocationCents
-  // sums the components in W00's order.
-  const cents = computeInvocationCents(
-    rate,
-    {
-      input: billableTokenCount(inputTokens),
-      output: billableTokenCount(outputTokens),
-      cacheRead: billableTokenCount(cacheReadInputTokens),
-      cacheWrite: billableTokenCount(cacheCreationInputTokens),
-    },
-    {},
-  );
-  return Math.round(cents * 100) / 100;
-}
-
-/**
- * The per-million rates calculateCostCents() charges for `model`, as a
- * registry ModelRates (#7600 W02): W01's resolveTokenRate (platform snapshot,
- * else bootstrap MODEL_PRICING), else DEFAULT_PRICING. Used ONLY to price
- * backfilled non-platform offerings at exactly what legacy bills, so the W02
- * shadow ledger and the W03 cutover agree with it. A prototype key
- * ('constructor', '__proto__') is never a model id; without the guard
- * MODEL_PRICING[...] would resolve through Object.prototype.
- * W03 moves this and its rate table to aiModels/legacySurfaceModels.ts (its
- * per-partner cutover still runs the projection); W08 deletes it.
- */
-export function getLegacyModelRates(model: string): {
-  rates: ModelRates;
-  source: 'priced' | 'default_pricing';
-} {
-  const rate = model in Object.prototype ? null : resolveTokenRate(model);
-  if (rate) return { source: 'priced', rates: { ...rate.standard } };
-  return {
-    source: 'default_pricing',
-    rates: {
-      inputCentsPerM: DEFAULT_PRICING.inputPerMillion,
-      outputCentsPerM: DEFAULT_PRICING.outputPerMillion,
-      cacheReadCentsPerM: DEFAULT_PRICING.inputPerMillion * CACHE_READ_INPUT_MULTIPLIER,
-      cacheWriteCentsPerM: DEFAULT_PRICING.inputPerMillion * CACHE_WRITE_INPUT_MULTIPLIER,
-    },
-  };
-}
-
-export function calculateCatalogCostCents(
-  catalogPricing: CatalogPricingSnapshot,
-  inputTokens: number,
-  outputTokens: number,
-  cacheReadInputTokens = 0,
-  cacheCreationInputTokens = 0,
-): number {
-  const inputCost = (inputTokens / 1_000_000) * catalogPricing.inputCentsPerM;
-  const outputCost = (outputTokens / 1_000_000) * catalogPricing.outputCentsPerM;
-  const cacheReadCost =
-    (cacheReadInputTokens / 1_000_000) * catalogPricing.cacheReadCentsPerM;
-  const cacheWriteCost =
-    (cacheCreationInputTokens / 1_000_000) * catalogPricing.cacheWriteCentsPerM;
-  return Math.round((inputCost + outputCost + cacheReadCost + cacheWriteCost) * 100) / 100;
 }
 
 /**
@@ -910,606 +800,6 @@ export async function checkSystemAiRateLimit(orgId: string): Promise<string | nu
 }
 
 /**
- * Record token usage for a message and update aggregates.
- *
- * `sessionId` is `null` for sessionless flows (e.g. the one-shot catalog AI
- * enrichment, which has no `ai_sessions` row). In that case the per-session
- * totals update is skipped, but the org-budget aggregates (`ai_cost_usage`)
- * are still written so per-org budget enforcement still sees the spend. Passing
- * a non-UUID label as the session id used to throw `invalid input syntax for
- * type uuid` and abort before the aggregate write, silently bypassing budgets
- * (issue #1949).
- */
-export async function recordUsage(
-  sessionId: string | null,
-  orgId: string,
-  model: string,
-  inputTokens: number,
-  outputTokens: number,
-  isToolExecution: boolean,
-  billingSource: AiBillingSource,
-  catalogPricing?: CatalogPricingSnapshot,
-  budgetReservationId?: string,
-  additionalCostCents = 0,
-  ledger?: InvocationLedgerContext,
-): Promise<void> {
-  if (!Number.isFinite(additionalCostCents) || additionalCostCents < 0) {
-    throw new Error('additionalCostCents must be a finite non-negative amount');
-  }
-  const tokenCostCents = catalogPricing
-    ? calculateCatalogCostCents(catalogPricing, inputTokens, outputTokens)
-    : calculateCostCents(model, inputTokens, outputTokens);
-  const costCents = tokenCostCents + additionalCostCents;
-  // #7600 W02 shadow ledger: what legacy charged. Emitted only once the legacy
-  // record below has been written (never inside its try/catch), so the emit
-  // cannot change what is written, what throws, or what is returned.
-  const legacyCostEvent: LegacyCostEvent = {
-    orgId, sessionId, model, billingSource,
-    catalogPricing: catalogPricing ?? null,
-    tokens: { input: inputTokens, output: outputTokens, cacheRead: 0, cacheWrite: 0 },
-    legacyCostCents: tokenCostCents,
-    legacyAdditionalCostCents: additionalCostCents,
-    legacyCostSource: catalogPricing ? 'catalog' : 'model_pricing',
-    sdkReportedCostUsd: null,
-    ledger: ledger ?? null,
-  };
-  const now = new Date();
-  const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
-  const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-
-  if (budgetReservationId) {
-    await settleAiBudgetReservationDurably({
-      orgId,
-      reservationId: budgetReservationId,
-      actualCostCents: costCents,
-      inputTokens,
-      outputTokens,
-      messageCount: 1,
-      toolExecutionCount: isToolExecution ? 1 : 0,
-      ...(sessionId !== null ? { session: { id: sessionId, turnCount: 1 } } : {}),
-    });
-    emitLegacyCostRecorded(legacyCostEvent);
-    checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
-      console.error('[AI] Cost anomaly check failed:', err);
-    });
-    return;
-  }
-
-  // Run queries individually instead of in a transaction to avoid
-  // SAVEPOINT errors with the postgres.js driver (postgres@3.4.8).
-  // These are additive counters so partial failure is acceptable.
-  if (sessionId !== null) {
-    try {
-      // #2190 — self-contexted: a contextless write under forced RLS silently
-      // matches 0 rows AND trips the contextless-write guard (#1375). The
-      // wrapper reuses any active ambient context (see checkBillingCredits), so
-      // existing in-request callers are unchanged; the fire-and-forget
-      // invocation from the sessionless enrichment path (which may run after
-      // its caller's context closed) now opens its own short system context.
-      await withSystemDbAccessContext(() => db
-        .update(aiSessions)
-        .set({
-          totalInputTokens: sql`${aiSessions.totalInputTokens} + ${inputTokens}`,
-          totalOutputTokens: sql`${aiSessions.totalOutputTokens} + ${outputTokens}`,
-          totalCostCents: sql`${aiSessions.totalCostCents} + ${costCents}`,
-          billingSource,
-          turnCount: sql`${aiSessions.turnCount} + 1`,
-          lastActivityAt: new Date(),
-          updatedAt: new Date()
-        })
-        .where(eq(aiSessions.id, sessionId)));
-    } catch (err) {
-      console.error(`[AI] Failed to update session totals for session=${sessionId}, cost=${costCents}:`, err);
-      throw err;
-    }
-  }
-
-  // Update daily/monthly aggregates
-  for (const [period, periodKey] of [['daily', dailyKey], ['monthly', monthlyKey]] as const) {
-    try {
-      // #2190 — self-contexted per upsert (keeps the "partial failure is
-      // acceptable" independence of the two periods; see the session update
-      // above for the escalation rationale).
-      await withSystemDbAccessContext(() => db
-        .insert(aiCostUsage)
-        .values({
-          orgId,
-          period,
-          periodKey,
-          inputTokens,
-          outputTokens,
-          totalCostCents: costCents,
-          sessionCount: 0,
-          messageCount: 1,
-          toolExecutionCount: isToolExecution ? 1 : 0,
-          billingSource,
-        })
-        .onConflictDoUpdate({
-          target: [aiCostUsage.orgId, aiCostUsage.period, aiCostUsage.periodKey],
-          set: {
-            inputTokens: sql`${aiCostUsage.inputTokens} + ${inputTokens}`,
-            outputTokens: sql`${aiCostUsage.outputTokens} + ${outputTokens}`,
-            totalCostCents: sql`${aiCostUsage.totalCostCents} + ${costCents}`,
-            messageCount: sql`${aiCostUsage.messageCount} + 1`,
-            toolExecutionCount: isToolExecution
-              ? sql`${aiCostUsage.toolExecutionCount} + 1`
-              : aiCostUsage.toolExecutionCount,
-            billingSource,
-            updatedAt: new Date()
-          }
-        }));
-    } catch (err) {
-      console.error(`[AI] Failed to update ${period} aggregate for org=${orgId}, key=${periodKey}, cost=${costCents}:`, err);
-      // Continue to attempt the other period
-    }
-  }
-
-  emitLegacyCostRecorded(legacyCostEvent);
-
-  // Cost anomaly detection (after counter updates)
-  checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
-    console.error('[AI] Cost anomaly check failed:', err);
-  });
-}
-
-/**
- * Record usage from the Claude Agent SDK result message.
- *
- * Catalog-backed sessions are always priced from their immutable pricing snapshot.
- * Otherwise, cost comes from the SDK's self-reported `total_cost_usd` when it is
- * present and non-zero. The SDK computes that from its own bundled model→price table,
- * so a model id newer than that table makes it report `total_cost_usd: 0`. To avoid
- * silently recording $0.00 in that case (issue #1326), we fall back to pricing the
- * reported `input_tokens`/`output_tokens` ourselves via MODEL_PRICING. The model id
- * is taken from `result.model` when available, otherwise looked up from the session row.
- */
-export async function recordUsageFromSdkResult(
-  sessionId: string,
-  orgId: string,
-  result: {
-    total_cost_usd: number;
-    usage: {
-      input_tokens: number;
-      output_tokens: number;
-      // Cache tokens are reported separately from input_tokens by the SDK usage
-      // object and are billed at different rates. Optional so older/partial usage
-      // payloads (and tests) don't have to supply them.
-      cache_read_input_tokens?: number;
-      cache_creation_input_tokens?: number;
-    };
-    num_turns: number;
-    /** Model id the SDK ran with. Used to price tokens when total_cost_usd is 0. */
-    model?: string;
-    /**
-     * Number of tool calls completed during this turn, for the
-     * `ai_cost_usage.tool_execution_count` rollup. Defaults to 0 — callers that
-     * don't track tool calls (or turns with none) leave the counter untouched.
-     */
-    toolExecutionCount?: number;
-  },
-  billingSource: AiBillingSource,
-  catalogPricing?: CatalogPricingSnapshot,
-  budgetReservationId?: string,
-): Promise<void> {
-  if (!orgId) {
-    console.warn(`[AI] Skipping recordUsageFromSdkResult — empty orgId for session=${sessionId}`);
-    return;
-  }
-  const {
-    input_tokens: inputTokens,
-    output_tokens: outputTokens,
-    cache_read_input_tokens: cacheReadTokens = 0,
-    cache_creation_input_tokens: cacheCreationTokens = 0,
-  } = result.usage;
-  const toolExecutionCount = result.toolExecutionCount ?? 0;
-
-  // What the `*_input_tokens` COLUMNS store. Kept distinct from the three
-  // variables above, which stay split because each is billed at its own rate.
-  const recordedInputTokens = sumInputTokens(result.usage);
-
-  let costCents: number;
-  let legacyCostSource: LegacyCostEvent['legacyCostSource'] = catalogPricing ? 'catalog' : 'sdk';
-  if (catalogPricing) {
-    costCents = calculateCatalogCostCents(
-      catalogPricing,
-      inputTokens,
-      outputTokens,
-      cacheReadTokens,
-      cacheCreationTokens,
-    );
-  } else {
-    // Prefer the SDK's self-reported cost. Fall back to token-based pricing only when
-    // the SDK reports 0/missing cost but actually consumed tokens — this is the case
-    // that was silently producing $0.00 sessions (the SDK can't price a model id newer
-    // than its bundled table).
-    costCents = Math.round(result.total_cost_usd * 100 * 100) / 100; // USD → cents, 2 decimal places
-    if (
-      costCents <= 0 &&
-      (inputTokens > 0 || outputTokens > 0 || cacheReadTokens > 0 || cacheCreationTokens > 0)
-    ) {
-      const model = result.model ?? (await getSessionModel(sessionId));
-      if (model) {
-        // Include cache read/creation tokens — pricing only input+output here would
-        // systematically undercount cost for cached requests (issue #1326 follow-up).
-        costCents = calculateCostCents(
-          model,
-          inputTokens,
-          outputTokens,
-          cacheReadTokens,
-          cacheCreationTokens
-        );
-        legacyCostSource = 'model_pricing';
-        console.warn(
-          `[AI] SDK reported total_cost_usd=${result.total_cost_usd} for session=${sessionId} ` +
-          `(${inputTokens} in / ${outputTokens} out / ${cacheReadTokens} cache-read / ` +
-          `${cacheCreationTokens} cache-write tokens). Priced from MODEL_PRICING ` +
-          `for model "${model}" → ${costCents} cents.`
-        );
-      } else {
-        console.warn(
-          `[AI] SDK reported total_cost_usd=${result.total_cost_usd} for session=${sessionId} ` +
-          `with ${inputTokens} in / ${outputTokens} out tokens but no model id available — ` +
-          `cannot price tokens, recording 0 cents.`
-        );
-      }
-    }
-  }
-  // #7600 W02 shadow ledger (see recordUsage): emitted only after the legacy
-  // record is written, before the credit deduction, which is unaffected.
-  const legacyCostEvent: LegacyCostEvent = {
-    orgId, sessionId, model: result.model ?? null, billingSource,
-    catalogPricing: catalogPricing ?? null,
-    tokens: { input: inputTokens, output: outputTokens, cacheRead: cacheReadTokens, cacheWrite: cacheCreationTokens },
-    legacyCostCents: costCents,
-    legacyAdditionalCostCents: 0,
-    legacyCostSource,
-    sdkReportedCostUsd: result.total_cost_usd,
-    ledger: null,
-  };
-  const now = new Date();
-  const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
-  const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-
-  if (budgetReservationId) {
-    await settleAiBudgetReservationDurably({
-      orgId,
-      reservationId: budgetReservationId,
-      actualCostCents: costCents,
-      inputTokens: recordedInputTokens,
-      outputTokens,
-      messageCount: 1,
-      toolExecutionCount,
-      session: { id: sessionId, turnCount: result.num_turns },
-    });
-    emitLegacyCostRecorded(legacyCostEvent);
-    checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
-      console.error('[AI] Cost anomaly check failed:', err);
-    });
-    if (billingSource === 'platform' && costCents > 0) {
-      await deductBillingCredits(orgId, costCents);
-    }
-    return;
-  }
-
-  // Update session totals
-  try {
-    await db
-      .update(aiSessions)
-      .set({
-        totalInputTokens: sql`${aiSessions.totalInputTokens} + ${recordedInputTokens}`,
-        totalOutputTokens: sql`${aiSessions.totalOutputTokens} + ${outputTokens}`,
-        totalCostCents: sql`${aiSessions.totalCostCents} + ${costCents}`,
-        billingSource,
-        turnCount: sql`${aiSessions.turnCount} + ${result.num_turns}`,
-        lastActivityAt: now,
-        updatedAt: now
-      })
-      .where(eq(aiSessions.id, sessionId));
-  } catch (err) {
-    console.error(`[AI] Failed to update session totals (SDK) for session=${sessionId}:`, err);
-    throw err;
-  }
-
-  // Update daily/monthly aggregates
-  for (const [period, periodKey] of [['daily', dailyKey], ['monthly', monthlyKey]] as const) {
-    try {
-      await db
-        .insert(aiCostUsage)
-        .values({
-          orgId,
-          period,
-          periodKey,
-          inputTokens: recordedInputTokens,
-          outputTokens,
-          totalCostCents: costCents,
-          sessionCount: 0,
-          messageCount: 1,
-          toolExecutionCount,
-          billingSource,
-        })
-        .onConflictDoUpdate({
-          target: [aiCostUsage.orgId, aiCostUsage.period, aiCostUsage.periodKey],
-          set: {
-            inputTokens: sql`${aiCostUsage.inputTokens} + ${recordedInputTokens}`,
-            outputTokens: sql`${aiCostUsage.outputTokens} + ${outputTokens}`,
-            totalCostCents: sql`${aiCostUsage.totalCostCents} + ${costCents}`,
-            messageCount: sql`${aiCostUsage.messageCount} + 1`,
-            // Was missing entirely — every SDK-path turn (the normal chat flow,
-            // as opposed to the sessionless recordUsage() path) upserted this row
-            // without ever touching tool_execution_count, so it stayed 0 forever
-            // even though ai_tool_executions rows were being written correctly.
-            toolExecutionCount: sql`${aiCostUsage.toolExecutionCount} + ${toolExecutionCount}`,
-            billingSource,
-            updatedAt: now
-          }
-        });
-    } catch (err) {
-      console.error(`[AI] Failed to update ${period} aggregate (SDK) for org=${orgId}:`, err);
-    }
-  }
-
-  emitLegacyCostRecorded(legacyCostEvent);
-
-  // Cost anomaly detection
-  checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
-    console.error('[AI] Cost anomaly check failed (SDK):', err);
-  });
-
-  if (billingSource === 'platform') {
-    await deductBillingCredits(orgId, costCents);
-  }
-}
-
-/**
- * Sessionless variant of `recordUsageFromSdkResult`, for SDK loops that have no
- * `ai_sessions` row at all — today the headless agent runner (wave 3c).
- *
- * `recordUsage(null, …)` is NOT a substitute and using it here was a real gap:
- * it re-prices from plain input/output counters, so it drops cache-read and
- * cache-creation tokens (most of a multi-turn agent prompt) and discards the
- * SDK's authoritative cost entirely, and it contains no `deductBillingCredits`
- * call — platform-billed agent traffic never touched the org's prepaid credit
- * balance, leaving BOTH budget gates (`checkBudget` and `checkBillingCredits`)
- * blind to spend they are supposed to cap.
- *
- * Everything a session would have received is still recorded: the org-level
- * `ai_cost_usage` daily/monthly aggregates, the anomaly check, and the credit
- * deduction for platform billing. Only the per-session totals are skipped,
- * because there is no session row to carry them.
- */
-export async function recordSessionlessSdkUsage(
-  orgId: string,
-  result: {
-    /**
-     * The SDK's authoritative cost, already converted to cents by the caller
-     * (which needs it mid-stream for its own per-run budget guard). Priced from
-     * tokens here only if it is 0 against a non-zero token count — the #1326
-     * "SDK cannot price a model id newer than its bundled table" case.
-     */
-    costCents: number;
-    usage: {
-      input_tokens: number;
-      output_tokens: number;
-      cache_read_input_tokens?: number;
-      cache_creation_input_tokens?: number;
-    };
-    /** SDK `num_turns`, summed across the run's result messages. */
-    numTurns: number;
-    /** Tool calls the run actually executed, for the tool_execution_count rollup. */
-    toolExecutionCount?: number;
-    /** Model id, for the token-pricing fallback. */
-    model?: string;
-  },
-  billingSource: AiBillingSource,
-  budgetReservationId?: string,
-  ledger?: InvocationLedgerContext,
-): Promise<void> {
-  if (!orgId) {
-    console.warn('[AI] Skipping recordSessionlessSdkUsage — empty orgId');
-    return;
-  }
-
-  const {
-    input_tokens: inputTokens,
-    output_tokens: outputTokens,
-    cache_read_input_tokens: cacheReadTokens = 0,
-    cache_creation_input_tokens: cacheCreationTokens = 0,
-  } = result.usage;
-  const anyTokens =
-    inputTokens > 0 || outputTokens > 0 || cacheReadTokens > 0 || cacheCreationTokens > 0;
-
-  let costCents = result.costCents;
-  let legacyCostSource: LegacyCostEvent['legacyCostSource'] = 'precomputed';
-  if (costCents <= 0 && anyTokens && result.model) {
-    costCents = calculateCostCents(
-      result.model,
-      inputTokens,
-      outputTokens,
-      cacheReadTokens,
-      cacheCreationTokens,
-    );
-    legacyCostSource = 'model_pricing';
-  }
-  // #7600 W02 shadow ledger (see recordUsage): emitted only after the legacy
-  // record is written, before the credit deduction, which is unaffected.
-  const legacyCostEvent: LegacyCostEvent = {
-    orgId, sessionId: null, model: result.model ?? null, billingSource,
-    catalogPricing: null,
-    tokens: { input: inputTokens, output: outputTokens, cacheRead: cacheReadTokens, cacheWrite: cacheCreationTokens },
-    legacyCostCents: Math.max(0, costCents),
-    legacyAdditionalCostCents: 0,
-    legacyCostSource,
-    sdkReportedCostUsd: null,
-    ledger: ledger ?? null,
-  };
-
-  // What the `*_input_tokens` COLUMNS store: the three disjoint input slices
-  // summed. Pricing above deliberately keeps them split (different rates).
-  const recordedInputTokens = sumInputTokens(result.usage);
-  const toolExecutionCount = result.toolExecutionCount ?? 0;
-  // One sessionless call covers a whole run, not one message. `num_turns` is
-  // the honest message count for it; 1 keeps the counter monotonic when the SDK
-  // reports no turns.
-  const messageCount = result.numTurns > 0 ? result.numTurns : 1;
-
-  if (budgetReservationId) {
-    await settleAiBudgetReservationDurably({
-      orgId,
-      reservationId: budgetReservationId,
-      actualCostCents: Math.max(0, costCents),
-      inputTokens: recordedInputTokens,
-      outputTokens,
-      messageCount,
-      toolExecutionCount,
-    });
-    emitLegacyCostRecorded(legacyCostEvent);
-    checkCostAnomalies(null, orgId, costCents).catch(err => {
-      console.error('[AI] Cost anomaly check failed (sessionless SDK):', err);
-    });
-    if (billingSource === 'platform' && costCents > 0) {
-      await deductBillingCredits(orgId, costCents);
-    }
-    return;
-  }
-
-  // A cache-only turn (every plain input/output counter 0, the whole prompt
-  // served from cache) still COSTS money — gating the write on
-  // input/output alone silently dropped those from the org rollup.
-  if (!anyTokens && costCents <= 0) return;
-
-  const now = new Date();
-  const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
-  const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-
-  for (const [period, periodKey] of [['daily', dailyKey], ['monthly', monthlyKey]] as const) {
-    try {
-      // Self-contexted per upsert, same as recordUsage: the caller is a BullMQ
-      // processor holding no ambient context, and a contextless write under
-      // forced RLS matches 0 rows (#2190/#1375).
-      await withSystemDbAccessContext(() => db
-        .insert(aiCostUsage)
-        .values({
-          orgId,
-          period,
-          periodKey,
-          inputTokens: recordedInputTokens,
-          outputTokens,
-          totalCostCents: costCents,
-          sessionCount: 0,
-          messageCount,
-          toolExecutionCount,
-          billingSource,
-        })
-        .onConflictDoUpdate({
-          target: [aiCostUsage.orgId, aiCostUsage.period, aiCostUsage.periodKey],
-          set: {
-            inputTokens: sql`${aiCostUsage.inputTokens} + ${recordedInputTokens}`,
-            outputTokens: sql`${aiCostUsage.outputTokens} + ${outputTokens}`,
-            totalCostCents: sql`${aiCostUsage.totalCostCents} + ${costCents}`,
-            messageCount: sql`${aiCostUsage.messageCount} + ${messageCount}`,
-            toolExecutionCount: sql`${aiCostUsage.toolExecutionCount} + ${toolExecutionCount}`,
-            billingSource,
-            updatedAt: now,
-          },
-        }));
-    } catch (err) {
-      console.error(`[AI] Failed to update ${period} aggregate (sessionless SDK) for org=${orgId}:`, err);
-      // Continue to attempt the other period.
-    }
-  }
-
-  emitLegacyCostRecorded(legacyCostEvent);
-
-  checkCostAnomalies(null, orgId, costCents).catch(err => {
-    console.error('[AI] Cost anomaly check failed (sessionless SDK):', err);
-  });
-
-  if (billingSource === 'platform' && costCents > 0) {
-    await deductBillingCredits(orgId, costCents);
-  }
-}
-
-/**
- * Record usage for a single openai-compatible turn.
- * Cost is calculated from declared per-token pricing (best-effort).
- * No prompt caching equivalent exists on vLLM; the full context is re-sent each turn.
- */
-export async function recordOpenAIUsage(
-  sessionId: string,
-  orgId: string,
-  inputTokens: number,
-  outputTokens: number,
-  costUsd: number,
-  billingSource: AiBillingSource,
-): Promise<void> {
-  if (!orgId) {
-    console.warn(`[AI] Skipping recordOpenAIUsage — empty orgId for session=${sessionId}`);
-    return;
-  }
-  const costCents = Math.round(costUsd * 100 * 100) / 100;
-  const now = new Date();
-  const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
-  const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-
-  try {
-    await db
-      .update(aiSessions)
-      .set({
-        totalInputTokens: sql`${aiSessions.totalInputTokens} + ${inputTokens}`,
-        totalOutputTokens: sql`${aiSessions.totalOutputTokens} + ${outputTokens}`,
-        totalCostCents: sql`${aiSessions.totalCostCents} + ${costCents}`,
-        billingSource,
-        lastActivityAt: now,
-        updatedAt: now,
-      })
-      .where(eq(aiSessions.id, sessionId));
-  } catch (err) {
-    console.error(`[AI] Failed to update session totals (OpenAI) for session=${sessionId}:`, err);
-    throw err;
-  }
-
-  for (const [period, periodKey] of [['daily', dailyKey], ['monthly', monthlyKey]] as const) {
-    try {
-      await db
-        .insert(aiCostUsage)
-        .values({
-          orgId,
-          period,
-          periodKey,
-          inputTokens,
-          outputTokens,
-          totalCostCents: costCents,
-          sessionCount: 0,
-          messageCount: 1,
-          toolExecutionCount: 0,
-          billingSource,
-        })
-        .onConflictDoUpdate({
-          target: [aiCostUsage.orgId, aiCostUsage.period, aiCostUsage.periodKey],
-          set: {
-            inputTokens: sql`${aiCostUsage.inputTokens} + ${inputTokens}`,
-            outputTokens: sql`${aiCostUsage.outputTokens} + ${outputTokens}`,
-            totalCostCents: sql`${aiCostUsage.totalCostCents} + ${costCents}`,
-            messageCount: sql`${aiCostUsage.messageCount} + 1`,
-            billingSource,
-            updatedAt: now,
-          },
-        });
-    } catch (err) {
-      console.error(`[AI] Failed to update ${period} aggregate (OpenAI) for org=${orgId}:`, err);
-    }
-  }
-
-  checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
-    console.error('[AI] Cost anomaly check failed (OpenAI):', err);
-  });
-
-  if (billingSource === 'platform') {
-    await deductBillingCredits(orgId, costCents);
-  }
-}
-
-/**
  * Get the remaining monthly budget for an org in USD.
  * Returns null if no budget is configured (unlimited).
  */
@@ -1543,16 +833,17 @@ export async function getRemainingBudgetUsd(orgId: string): Promise<number | nul
 }
 
 /**
- * Check for cost anomalies after recording usage.
- * Logs warnings for sessions consuming too much budget.
+ * Check for cost anomalies after spend is recorded: evaluates the budget alert
+ * rungs and logs a warning for a session consuming too much budget. Called
+ * fire-and-forget by aiModels/settleInvocation.ts after every settled spend.
  */
-async function checkCostAnomalies(
+export async function checkCostAnomalies(
   sessionId: string | null,
   orgId: string,
   costCents: number
 ): Promise<void> {
-  // #2190 — self-contexted: reached fire-and-forget from recordUsage on the
-  // (contextless) enrichment path; without a context these reads RLS-filter to
+  // #2190 — self-contexted: reached fire-and-forget after settlement, often
+  // with no context held; without a context these reads RLS-filter to
   // 0 rows and the anomaly warnings silently never fire. The whole body is
   // DB reads + console.warn, so one short context covers it; the wrapper
   // reuses any active ambient context (see checkBillingCredits).
@@ -1754,6 +1045,39 @@ async function readPartnerCreditsForUsage(orgId: string): Promise<CachedPartnerC
 }
 
 /**
+ * Task 15 (#7601): "what will a chat here bill to?" is the funding of the
+ * offering a chat in this org resolves to now (per offering, never inferred
+ * per org). When chat cannot resolve (no eligible model, registry not cut
+ * over yet, no partner), the label of the spend already recorded this month
+ * (the monthly rollup row the ledger settlement stamps), then `platform`.
+ * A display read: it never throws.
+ */
+async function resolveUsageBilledTo(
+  orgId: string,
+  monthlyBillingSource: AiBillingSource | null | undefined,
+): Promise<AiBillingSource> {
+  const rollupLabel: AiBillingSource = monthlyBillingSource === 'partner_key' ? 'partner_key' : 'platform';
+  try {
+    // Lazy: the resolver graph (registry cutover, legacy projection) must not
+    // load with every aiCostTracker importer.
+    const { readOrgPartnerId } = await import('./aiModels/candidateLoader');
+    const partnerId = await readOrgPartnerId(orgId);
+    if (!partnerId) return rollupLabel;
+    const { resolveModel } = await import('./aiModels/resolveModel');
+    const chat = await resolveModel({ partnerId, orgId, surface: 'chat' });
+    return chat.ok ? chat.funding : rollupLabel;
+  } catch (error) {
+    // /ai/usage is polled by the header indicator: one report per org per hour.
+    captureAtMostHourly(`usage-billed-to:${orgId}`, () => {
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        service: 'aiCostTracker.getUsageSummary', orgId,
+      });
+    });
+    return rollupLabel;
+  }
+}
+
+/**
  * Get usage summary for an org.
  *
  * `includeCredits` gates the partner-wide credit pool, which an org-scoped
@@ -1833,7 +1157,7 @@ export async function getUsageSummary(orgId: string, options: { includeCredits?:
     ORDER BY created_at, id
   `);
 
-  const billedTo = await getLlmBillingSourceForOrg(orgId);
+  const billedTo = await resolveUsageBilledTo(orgId, monthlyUsage?.billingSource);
 
   // Only worth a lookup when traffic is actually billed to the partner's own
   // key — platform-key orgs never stamp a catalog_entry_id on their sessions.

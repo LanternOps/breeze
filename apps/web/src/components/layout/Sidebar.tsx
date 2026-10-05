@@ -11,6 +11,7 @@ import {
   FileText,
   FileSignature,
   Receipt,
+  CreditCard,
   Tags,
   FileSpreadsheet,
   Building,
@@ -59,6 +60,7 @@ import {
   LayoutGrid,
   Cpu,
   TrendingUp,
+  BookCheck,
   Power,
   ServerCog,
   Inbox,
@@ -72,6 +74,7 @@ import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { SERVICE_MANAGEMENT_MODES, useOrgStore, type ServiceManagementMode } from '../../stores/orgStore';
 import { useToolSourcesGate, usePreAssignmentGate } from '../../stores/featuresStore';
+import { useAutopayEnabled } from '../../lib/autopayVisibility';
 import { isNavGateVisible } from '../../lib/navGates';
 import { sidebarSettingsEntries } from '../../lib/settingsCatalog';
 import { WEB_VERSION } from '../../lib/version';
@@ -152,6 +155,7 @@ function useSidebarScrollPersist(): React.RefObject<HTMLElement | null> {
 // Nav item type
 // ---------------------------------------------------------------------------
 type NavItem = {
+  requiresAutopay?: boolean;
   name: string;
   labelKey?: string;
   href: string;
@@ -259,6 +263,8 @@ export const navSections: NavSection[] = [
       // Fleet value accounting (Phase 2 wave P2-6, #4193) — the estimated
       // time-saved report over the same runs, so it sits beside them.
       { name: 'AI Impact', labelKey: 'nav.aiImpact', href: '/ai-agents/impact', icon: TrendingUp, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // AI Suggested Fixes W2 — observed fix track records (data, not settings).
+      { name: 'Fix memory', labelKey: 'nav.fixMemory', href: '/ai-agents/fix-memory', icon: BookCheck, requiredPermission: { resource: 'ai_agents', action: 'read' } },
       // Fleet Designer W03 (#5653) — apply/rollback surface for a Fleet
       // Design report, so it sits beside the other AI-report reads.
       { name: 'Fleet Design', labelKey: 'nav.fleetDesign', href: '/ai-agents/fleet-design', icon: DraftingCompass, requiredPermission: { resource: 'ai_agents', action: 'read' } },
@@ -354,6 +360,8 @@ export const navSections: NavSection[] = [
     requiresModule: 'service_management',
     items: [
       { name: 'Quotes', labelKey: 'nav.quotes', href: '/billing/quotes', icon: FileText, partnerScopeOnly: true, requiredPermission: { resource: 'quotes', action: 'read' } },
+      { name: 'Autopay', labelKey: 'nav.autopay', href: '/billing/autopay', icon: CreditCard,
+        partnerScopeOnly: true, requiresAutopay: true, requiredPermission: { resource: 'billing', action: 'manage' } },
       { name: 'Invoices', labelKey: 'nav.invoices', href: '/billing/invoices', icon: Receipt, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'read' } },
       { name: 'Contracts', labelKey: 'nav.contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true, requiredPermission: { resource: 'contracts', action: 'read' } },
       // ScrollText, not FileText: Quotes three rows up already uses FileText, and
@@ -596,8 +604,22 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const currentPath = useCurrentPath(initialPath);
   const navScrollRef = useSidebarScrollPersist();
   const isPlatformAdmin = useAuthStore((s) => s.user?.isPlatformAdmin === true);
-  const permissions = useAuthStore((s) => s.user?.permissions);
-  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide);
+  const storedPermissions = useAuthStore((s) => s.user?.permissions);
+  const storedCanManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide);
+  // Reactive trigger only: access tokens are never persisted, so the scope is
+  // unknown on a cold load and becomes known when the refresh lands.
+  const accessToken = useAuthStore((s) => s.tokens?.accessToken ?? null);
+  // #7498: the server render has no localStorage and no token, but the client's
+  // persisted auth store (`user.permissions`) is available synchronously during
+  // hydration. Reading it on the first client render makes the nav differ from
+  // the server HTML (hydration error). Until mounted, use the same inputs the
+  // server had; real values apply on the next commit.
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => { setHydrated(true); }, []);
+  const permissions = hydrated ? storedPermissions : undefined;
+  const canManagePartnerWide = hydrated ? storedCanManagePartnerWide : undefined;
+  // accessToken is the cache key for the decode (getJwtClaims reads the store, not React state).
+  const jwtScope = useMemo(() => (hydrated ? getJwtClaims().scope : null), [hydrated, accessToken]);
 
   // Runtime-extension navigation (see the comment above `navSections`).
   // `useExtensionNavigation` never throws — an empty list here (registry
@@ -626,6 +648,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [aiForOfficeEnabled, setAiForOfficeEnabled] = useState(false);
   // #5216 W01 — the server kill switch, read from /config through the shared
   // features store (the same one registration/aiOperatorTasks use).
+  const autopayEnabled = useAutopayEnabled();
   const { enabled: toolSourcesEnabled } = useToolSourcesGate();
   const { enabled: preAssignmentEnabled } = usePreAssignmentGate();
   // #5075 W04 — persisted, so the first paint after a reload already has the
@@ -660,8 +683,10 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // a non-partner scope; falls through to the server (which will 403) when the scope
   // cannot be decoded.
   useEffect(() => {
-    const { scope } = getJwtClaims();
-    if (scope !== null && scope !== 'partner') return;
+    // Partner-only endpoint. Wait until the scope is actually known (#7498): an
+    // org-scoped user would otherwise fire it before the token lands and take a
+    // 403 on every page. Gate the request, don't swallow the 403.
+    if (jwtScope !== 'partner') return;
 
     let cancelled = false;
     fetchWithAuth('/orgs/partners/me')
@@ -699,7 +724,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         console.warn('[Sidebar] Failed to fetch partner branding:', err);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [jwtScope]);
 
   useEffect(() => {
     const mqTablet = window.matchMedia('(max-width: 1023px)');
@@ -833,7 +858,8 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     isNavGateVisible(item, {
       isPlatformAdmin,
       permissions,
-      getScope: () => getJwtClaims().scope,
+      getScope: () => jwtScope,
+      autopayEnabled,
       toolSourcesEnabled,
       preAssignmentEnabled,
       aiForOfficeEnabled,
@@ -857,6 +883,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     const withRecents = item.href === RECENT_DEVICES_HREF && labels && recentDevices.length > 0;
     const anchor = (
       <a
+        data-testid={item.href === '/billing/autopay' ? 'autopay-nav' : undefined}
         key={withRecents ? undefined : item.name}
         href={item.href}
         title={narrow && !hovered ? label : undefined}

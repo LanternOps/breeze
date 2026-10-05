@@ -15,6 +15,7 @@ import {
   verifyReleaseArtifactBuffer,
   verifyReleaseArtifactManifestIntegrity,
   verifyManifestSignatureAgainstOfficialKeysOnly,
+  ReleaseManifestTooOldError,
 } from "./releaseArtifactManifest";
 import { requiredPlatformTrustFor } from "./releaseAssetTrust";
 
@@ -663,6 +664,157 @@ describe("releaseArtifactManifest", () => {
           signatureBytes: signed.signature,
         }),
       ).rejects.toThrow(/unknown edition/);
+    });
+  });
+
+  // #7830: v0.105.0 is the first release whose manifest records `edition`.
+  // A self-hoster pinning BINARY_VERSION to an older release got a 503
+  // "edition mismatch … expected self-host, got undefined" on every
+  // installer, because no pre-v0.105.0 manifest can ever carry the field.
+  describe("manifests predating the edition field (#7830)", () => {
+    const assetName = "breeze-agent-linux-amd64";
+    const asset = Buffer.from("linux agent bytes");
+
+    function verify(
+      release: string,
+      expectedEdition: string,
+      assetOverrides: Record<string, unknown> = {},
+      expectedRelease: string | null = release,
+    ) {
+      const signed = makeSignedManifest({ assetName, assetBuffer: asset, release, assetOverrides });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      return verifyReleaseArtifactBuffer({
+        assetName,
+        assetBuffer: asset,
+        manifestBytes: signed.manifest,
+        signatureBytes: signed.signature,
+        expectedEdition,
+        expectedRelease,
+      });
+    }
+
+    it.each(["v0.104.0", "v0.103.0", "v0.104.0-rc.1", "v0.99.12"])(
+      "accepts a pinned %s manifest with no edition as the self-host release it is",
+      async (release) => {
+        // edition stays null: the manifest made no claim, and nothing
+        // downstream (e.g. the unsigned-MSI relaxation) may read one into it.
+        await expect(verify(release, "self-host")).resolves.toMatchObject({ release, edition: null });
+      },
+    );
+
+    // Downgrade guard: without an explicit pin (unpinned "latest", or the
+    // local volume, which never pins), a replayed but genuinely signed old
+    // manifest must not be served.
+    it("refuses an UNPINNED pre-v0.105.0 manifest with no edition (no silent downgrade)", async () => {
+      await expect(verify("v0.104.0", "self-host", {}, null)).rejects.toThrow(
+        /edition mismatch.*predates the edition field.*only when BINARY_VERSION pins it explicitly/,
+      );
+    });
+
+    it("still accepts a current (unpinned/latest) manifest that records edition self-host", async () => {
+      await expect(verify("v0.120.0", "self-host", { edition: "self-host" }, null)).resolves.toMatchObject({
+        edition: "self-host",
+      });
+    });
+
+    it.each(["v0.105.0", "v0.105.0-rc.1", "v0.120.0"])(
+      "refuses a pinned %s manifest with no edition — every release since v0.105.0 records one",
+      async (release) => {
+        await expect(verify(release, "self-host")).rejects.toThrow(
+          /edition mismatch.*expected self-host.*records no edition.*v0\.105\.0/,
+        );
+      },
+    );
+
+    it("never assumes a legacy manifest is the hosted edition", async () => {
+      await expect(verify("v0.104.0", "hosted")).rejects.toThrow(/edition mismatch/);
+    });
+
+    it("refuses a legacy release that explicitly claims a different edition", async () => {
+      await expect(verify("v0.104.0", "self-host", { edition: "hosted" })).rejects.toThrow(
+        /edition mismatch.*expected self-host, got hosted/,
+      );
+    });
+
+    it("refuses a release tag it cannot order (no legacy assumption on a custom tag)", async () => {
+      await expect(verify("nightly-2026-08-01", "self-host")).rejects.toThrow(/edition mismatch/);
+    });
+
+    describe("macOS publisher identity on old releases", () => {
+      const pkgName = "breeze-agent-darwin-arm64.pkg";
+      const pkg = Buffer.from("notarized pkg");
+
+      function signedPkg(release: string, assetOverrides: Record<string, unknown> = {}) {
+        // Releases from v0.105.0 on carry edition; older ones do not.
+        const edition = releaseHasEdition(release) ? { edition: "self-host" } : {};
+        const signed = makeSignedManifest({
+          assetName: pkgName,
+          assetBuffer: pkg,
+          release,
+          assetOverrides: { ...edition, ...assetOverrides },
+        });
+        process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+        return signed;
+      }
+
+      function releaseHasEdition(release: string) {
+        return !["v0.104.0"].includes(release);
+      }
+
+      function viaBuffer(release: string, assetOverrides: Record<string, unknown> = {}) {
+        const signed = signedPkg(release, assetOverrides);
+        return verifyReleaseArtifactBuffer({
+          assetName: pkgName,
+          assetBuffer: pkg,
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+          expectedEdition: "self-host",
+          expectedRelease: release,
+          requireMacosPublisher: true,
+        });
+      }
+
+      it.each(["v0.104.0", "v0.111.9"])(
+        "refuses a %s pkg as too old, naming the release to pin",
+        async (release) => {
+          const result = viaBuffer(release);
+          await expect(result).rejects.toBeInstanceOf(ReleaseManifestTooOldError);
+          await expect(result).rejects.toThrow(
+            new RegExp(`${release.replace(/\./g, "\\.")}.*BINARY_VERSION.*v0\\.112\\.0 or later`),
+          );
+        },
+      );
+
+      it("applies on the manifest-only verification path too", async () => {
+        const signed = signedPkg("v0.104.0");
+        await expect(
+          verifyReleaseArtifactManifestAsset({
+            assetName: pkgName,
+            manifestBytes: signed.manifest,
+            signatureBytes: signed.signature,
+            expectedEdition: "self-host",
+            expectedRelease: "v0.104.0",
+            requireMacosPublisher: true,
+          }),
+        ).rejects.toBeInstanceOf(ReleaseManifestTooOldError);
+      });
+
+      it.each(["v0.112.0", "v0.112.0-rc.1", "v0.120.0"])(
+        "keeps refusing a missing identity on %s as invalid, not too old",
+        async (release) => {
+          const result = viaBuffer(release);
+          await expect(result).rejects.toThrow(/invalid macOS signing identity/);
+          await expect(result).rejects.not.toBeInstanceOf(ReleaseManifestTooOldError);
+        },
+      );
+
+      it("treats a partial identity on an old release as invalid, not too old", async () => {
+        const result = viaBuffer("v0.104.0", {
+          signingIdentity: "Developer ID Installer: LanternOps LLC (D8W6N2JYMA)",
+        });
+        await expect(result).rejects.toThrow(/invalid macOS signing identity/);
+        await expect(result).rejects.not.toBeInstanceOf(ReleaseManifestTooOldError);
+      });
     });
   });
 

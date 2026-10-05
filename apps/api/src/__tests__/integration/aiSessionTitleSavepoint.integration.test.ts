@@ -31,7 +31,7 @@ async function seedSession(): Promise<{ orgId: string; sessionId: string }> {
   return withSystemDbAccessContext(async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
-    const [session] = await db.insert(aiSessions).values({ orgId: org.id }).returning({ id: aiSessions.id });
+    const [session] = await db.insert(aiSessions).values({ orgId: org.id, model: 'claude-sonnet-5-5' }).returning({ id: aiSessions.id });
     return { orgId: org.id, sessionId: session!.id };
   });
 }

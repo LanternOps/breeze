@@ -1,5 +1,22 @@
-import { describe, expect, it, vi } from 'vitest';
-import { normalizeStripeFinancialEvent } from './stripeFinancialEventPoller';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
+import { stripeConnectAccounts } from '../db/schema/stripePayments';
+const m = vi.hoisted(() => ({ select: vi.fn(), update: vi.fn(), client: vi.fn(), ingest: vi.fn(),
+  replay: vi.fn(), setupReplay: vi.fn(), controls: vi.fn(), capture: vi.fn(), depth: 0 }));
+vi.mock('../db', () => ({ db: { select: m.select, update: m.update },
+  withSystemDbAccessContext: async (fn: () => unknown) => {
+    m.depth++; try { return await fn(); } finally { m.depth--; }
+  },
+  runOutsideDbContext: async (fn: () => unknown) => { expect(m.depth).toBe(0); return fn(); },
+}));
+vi.mock('./partnerStripe', () => ({ getPartnerStripeClient: m.client }));
+vi.mock('./stripeReversalState', () => ({ ingestStripeFinancialEvent: m.ingest, processPendingStripeFinancialEvents: m.replay }));
+vi.mock('./autopay/collectionControl', () => ({ reconcilePendingControls: m.controls }));
+vi.mock('./autopay/setupReconciliation', () => ({ AUTOPAY_STRIPE_EVENT_TYPES: [],
+  isAutopayStripeEvent: () => false, ingestAutopayStripeEvent: vi.fn(), replayAutopayStripeEvents: m.setupReplay }));
+vi.mock('./sentry', () => ({ captureException: m.capture }));
+import { STRIPE_FINANCIAL_EVENT_TYPES, normalizeStripeFinancialEvent, pollStripeFinancialEvents } from './stripeFinancialEventPoller';
 
 const base = {
   partnerId: '11111111-1111-4111-8111-111111111111',
@@ -76,5 +93,102 @@ describe('normalizeStripeFinancialEvent', () => {
       id: 'evt_wrong', type: 'charge.refunded', account: 'acct_other', livemode: false, created: 103,
       data: { object: { id: 'ch_1', payment_intent: 'pi_1', amount: 10000, amount_refunded: 1000, currency: 'usd' } },
     } as any })).rejects.toThrow(/account/);
+  });
+});
+
+it.each(['payment_intent.succeeded', 'payment_intent.payment_failed',
+  'payment_intent.processing', 'payment_intent.requires_action'])('normalizes durable %s identity', async type => {
+  expect(STRIPE_FINANCIAL_EVENT_TYPES).toContain(type);
+  const result = await normalizeStripeFinancialEvent({ ...base, stripe: {} as any, event: {
+    id: 'evt_pi', type, account: base.stripeAccountId, livemode: false, created: 106,
+    data: { object: { id: 'pi_1', amount: 10300, currency: 'usd' } },
+  } as any });
+  expect(result).toEqual({ ...base, stripeEventId: 'evt_pi', eventType: type,
+    livemode: false, providerCreated: 106, paymentIntentId: 'pi_1', chargeAmountMinor: 10300, currency: 'usd' });
+});
+
+
+describe('polling retained accounts after disconnect', () => {
+  const dialect = new PgDialect();
+  const now = new Date('2026-10-20T00:00:00Z');
+  beforeEach(() => {
+    vi.resetAllMocks(); vi.useFakeTimers(); vi.setSystemTime(now); m.depth = 0;
+    m.replay.mockResolvedValue(1); m.setupReplay.mockResolvedValue(0);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it.each([
+    ['succeeded', 'charge.dispute.funds_withdrawn', {
+      id: 'dp_ach_return', payment_intent: 'pi_1', charge: 'ch_ach', amount: 10300,
+      currency: 'usd', status: 'lost', reason: 'bank_cannot_process',
+    }],
+    ['failed', 'payment_intent.succeeded', { id: 'pi_1', amount: 10300, currency: 'usd' }],
+  ])('polls a %s attempt’s %s after disconnect', async (state, type, object) => {
+    const connection = { ...base, status: 'disconnected', apiKey: null, livemode: false,
+      cursorCreated: 1792368000, pageAfter: null, scanUpperCreated: null };
+    const predicates: ReturnType<PgDialect['sqlToQuery']>[] = [];
+    m.select.mockImplementation((projection: Record<string, unknown>) => {
+      let table: unknown;
+      const chain = {
+        from: (value: unknown) => { table = value; return chain; },
+        where: (predicate: SQL) => {
+          if (table === stripeConnectAccounts) {
+            const query = dialect.sqlToQuery(predicate); predicates.push(query);
+            // Both the global candidate query and the per-partner read must admit
+            // this terminal mapped attempt, despite the missing active credential.
+            expect(query.sql).toContain(`'${state}'`);
+            expect(query.sql).toMatch(/or.*EXISTS/s);
+            expect(query.sql).toContain('i.partner_id="stripe_connect_accounts"."partner_id"');
+            expect(query.sql).toContain('m.stripe_account_id="stripe_connect_accounts"."stripe_account_id"');
+            expect(query.sql).not.toMatch(/created_at|interval/i);
+            if ('stripeAccountId' in projection) expect(query.params).toContain(base.partnerId);
+          }
+          return chain;
+        },
+        orderBy: () => chain,
+        limit: async () => [connection],
+        then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([{ value: 0 }]).then(resolve),
+      };
+      return chain;
+    });
+    const event = { id: 'evt_after_disconnect', type, account: base.stripeAccountId,
+      livemode: false, created: connection.cursorCreated + 1, data: { object } };
+    const list = vi.fn(async () => {
+      expect(m.depth).toBe(0);
+      return { data: [event], has_more: false };
+    });
+    m.client.mockImplementation(async (partnerId, options) => {
+      expect(partnerId).toBe(base.partnerId);
+      expect(options).toEqual({ reconciliationAccountId: base.stripeAccountId, reason: 'financial_event_poll' });
+      return { stripeAccountId: base.stripeAccountId, stripe: { events: { list } } };
+    });
+    const writes: unknown[] = [];
+    m.update.mockImplementation((table: unknown) => ({ set: (values: unknown) => ({ where: (predicate: SQL) => {
+      expect(table).toBe(stripeConnectAccounts);
+      expect(m.ingest).toHaveBeenCalledOnce(); // durable ingestion precedes cursor movement
+      const query = dialect.sqlToQuery(predicate);
+      expect(query.params).toEqual([base.partnerId, base.stripeAccountId]);
+      expect(query.sql).not.toContain('"status"');
+      writes.push(values);
+      return { returning: async () => [{ id: 'connection' }] };
+    } }) }));
+
+    // #7897: the event applies while it is ingested (nothing left to replay) and still counts.
+    m.ingest.mockResolvedValue({ state: 'applied' }); m.replay.mockResolvedValue(0);
+    await expect(pollStripeFinancialEvents()).resolves.toEqual({ accounts: 1, events: 1, applied: 1 });
+    expect(predicates).toHaveLength(2);
+    expect(m.client).toHaveBeenCalledOnce();
+    expect(list).toHaveBeenCalledWith({ types: [...STRIPE_FINANCIAL_EVENT_TYPES],
+      created: { gte: connection.cursorCreated, lte: now.getTime() / 1000 }, limit: 100 });
+    expect(m.ingest).toHaveBeenCalledWith(expect.objectContaining({ ...base,
+      stripeEventId: event.id, eventType: type, paymentIntentId: 'pi_1', livemode: false, currency: 'usd',
+      ...(state === 'succeeded' ? { disputeFundsWithdrawn: true, disputeAmountMinor: 10300 } : { chargeAmountMinor: 10300 }),
+    }));
+    expect(writes).toEqual([expect.objectContaining({ financialEventCursorCreated: now.getTime() / 1000,
+      financialEventPageAfter: null, financialEventScanUpperCreated: null, financialEventLastError: null })]);
+    expect(m.replay).toHaveBeenCalledWith(100);
+    expect(m.setupReplay).toHaveBeenCalledOnce();
+    expect(m.controls).toHaveBeenCalledTimes(state === 'failed' ? 1 : 0);
+    expect(m.capture).not.toHaveBeenCalled();
   });
 });

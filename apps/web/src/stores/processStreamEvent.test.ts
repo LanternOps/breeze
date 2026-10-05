@@ -12,6 +12,44 @@ function makeState(): StreamableState {
   };
 }
 
+describe('W05 events', () => {
+  function harness() {
+    const h = { state: { ...makeState() } as StreamableState };
+    return {
+      get state() { return h.state; },
+      set: (fn: (s: StreamableState) => Partial<StreamableState>) => { h.state = { ...h.state, ...fn(h.state) }; },
+      get: () => h.state,
+    };
+  }
+  it('thinking_state toggles thinking; done clears it', () => {
+    const h = harness();
+    processStreamEvent({ type: 'thinking_state', state: 'started' }, h.set, h.get, null);
+    expect(h.state.thinking).toBe(true);
+    processStreamEvent({ type: 'thinking_state', state: 'stopped' }, h.set, h.get, null);
+    expect(h.state.thinking).toBe(false);
+    processStreamEvent({ type: 'thinking_state', state: 'started' }, h.set, h.get, null);
+    processStreamEvent({ type: 'done' }, h.set, h.get, null);
+    expect(h.state.thinking).toBe(false);
+  });
+  it('turn_model records what ran', () => {
+    const h = harness();
+    const turnModel = { requestedModel: 'a', requestedDisplayName: 'A', servedModel: 'b', servedDisplayName: 'B', fallbackUsed: true, appliedOptions: {}, fastDowngraded: false };
+    processStreamEvent({ type: 'turn_model', turnModel }, h.set, h.get, null);
+    expect(h.state.turnModel).toEqual(turnModel);
+  });
+  it('model_refusal records the suggested alternatives for the menu', () => {
+    const h = harness();
+    processStreamEvent({ type: 'model_refusal', category: 'cyber', alternatives: [{ offeringId: 'x', displayName: 'X' }], docsUrl: 'https://docs' }, h.set, h.get, null);
+    expect(h.state.refusalAlternatives).toEqual(['x']);
+  });
+  it('message_start clears stale refusal suggestions', () => {
+    const h = harness();
+    h.set(() => ({ refusalAlternatives: ['x'] }));
+    processStreamEvent({ type: 'message_start', messageId: 'm1' }, h.set, h.get, null);
+    expect(h.state.refusalAlternatives).toEqual([]);
+  });
+});
+
 function makeActivePlan(): ActivePlan {
   return {
     planId: 'plan-1',
@@ -646,5 +684,50 @@ describe('topology investigation events (M4)', () => {
   it('treats progress phases as status only, never as message text', () => {
     const state = run([{ type: 'message_start', messageId: 'm1' }, { type: 'topology_progress', phase: 'analyzing' }]);
     expect(state.messages.find((m) => m.role === 'assistant')?.content ?? '').toBe('');
+  });
+});
+
+/**
+ * §9.1a (W03 #7601): the refusal explanation already streamed as ordinary
+ * message events; the structured `model_refusal` twin must not add a second
+ * (blank) bubble or touch the transcript.
+ */
+describe('model_refusal is inert for the transcript', () => {
+  it('leaves messages and streaming state unchanged and keeps the current assistant id', () => {
+    const state: StreamableState = {
+      ...makeState(),
+      messages: [
+        { id: 'u1', role: 'user', content: 'hi', createdAt: new Date(0) },
+        { id: 'a1', role: 'assistant', content: 'I can\'t help with that.', createdAt: new Date(0), isStreaming: false },
+      ],
+    };
+    const before = JSON.stringify(state);
+    let calls = 0;
+    let patched: StreamableState = state;
+    const next = processStreamEvent(
+      {
+        type: 'model_refusal', category: 'cyber',
+        alternatives: [{ offeringId: 'off-2', displayName: 'Haiku' }], docsUrl: 'https://example.com/refusals',
+      },
+      (fn) => { calls += 1; patched = { ...patched, ...fn(patched) }; },
+      () => patched,
+      'a1',
+    );
+    expect(next).toBe('a1');
+    // Task 13 (W05): the only state it may touch is the suggestion list for the
+    // model menu; the transcript and streaming state stay exactly as they were.
+    expect(calls).toBe(1);
+    expect(patched.refusalAlternatives).toEqual(['off-2']);
+    expect(JSON.stringify({ ...patched, refusalAlternatives: undefined })).toBe(before);
+    expect(patched.messages).toHaveLength(2);
+  });
+});
+
+describe('turn_model staleness', () => {
+  it("message_start clears the previous turn's what-ran so a missing turn_model never shows it", () => {
+    const h = { state: { ...makeState(), turnModel: { requestedModel: 'a' } as never } as StreamableState };
+    const set = (fn: (s: StreamableState) => Partial<StreamableState>) => { h.state = { ...h.state, ...fn(h.state) }; };
+    processStreamEvent({ type: 'message_start', messageId: 'm2' } as AiStreamEvent, set, () => h.state, null);
+    expect(h.state.turnModel).toBeNull();
   });
 });

@@ -9,6 +9,9 @@ const registered = new Map<string, { handler: (input: Record<string, unknown>, a
 
 const contextState = vi.hoisted(() => ({ outside: false, scoped: false }));
 vi.mock('../db', () => ({
+  // These handlers run as under the per-call transaction: `inToolDbPhase`
+  // (#7918) joins it rather than opening a context of its own.
+  hasDbAccessContext: vi.fn(() => true),
   runOutsideDbContext: vi.fn(async (fn) => {
     contextState.outside = true;
     try { return await fn(); } finally { contextState.outside = false; }

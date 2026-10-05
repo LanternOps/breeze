@@ -60,11 +60,13 @@
     "billing": "Billing",
     "organizations": "Organizations",
     "aiUsage": "AI Usage",
+    "aiProvidersModels": "AI Providers & Models",
     "scriptAuthoring": "Script authoring",
     "toolSources": "Tool Sources",
     "aiAgents": "AI Agents",
     "aiAgentRuns": "AI Agent Runs",
     "aiImpact": "AI Impact",
+    "fixMemory": "Fix memory",
     "fleetDesign": "Fleet Design",
     "customFields": "Custom Fields",
     "variables": "Variables",
@@ -106,7 +108,9 @@
     "system": "System",
     "monitorConversion": "Monitor Conversion",
     "timeSync": "Time Sync",
-    "aiModels": "AI Models"
+    "aiModels": "AI Models",
+    "autopay": "Autopay",
+    "payments": "Payments"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -1427,6 +1431,7 @@
           "created": "Webhook created",
           "disabled": "Webhook disabled",
           "enabled": "Webhook enabled",
+          "testQueued": "Test delivery queued",
           "updated": "Webhook updated"
         },
         "title": "Webhooks"
@@ -2373,7 +2378,10 @@
           "script": "Script",
           "template": "Template",
           "playbook": "Playbook",
-          "diagnostic": "Diagnostic"
+          "diagnostic": "Diagnostic",
+          "builtin": "Built-in action",
+          "manualSteps": "Manual steps",
+          "scriptDraft": "Script draft"
         },
         "targetIdentifiers": {
           "script": "script {{id}}",
@@ -2382,7 +2390,8 @@
           "templateMissing": "template without a template ID",
           "playbook": "playbook {{id}}",
           "playbookMissing": "playbook without a playbook ID",
-          "diagnostic": "diagnostic action"
+          "diagnostic": "diagnostic action",
+          "builtin": "built-in action {{action}}"
         },
         "targetDevices": {
           "none": "No target device in this suggestion",
@@ -2394,9 +2403,12 @@
           "generateFailed": "Could not generate suggested fixes",
           "updateFailed": "Could not update suggested fix",
           "executeFailed": "Could not execute suggested fix",
-          "approvalFailed": "Could not request approval"
+          "approvalFailed": "Could not request approval",
+          "researchFailed": "Could not start research",
+          "draftFailed": "Could not open the script draft."
         },
         "messages": {
+          "draftCopied": "Storage is blocked — the brief was copied; paste it into the script builder.",
           "disabled": "Suggested fixes are disabled",
           "generated": "Suggested fixes generated",
           "accepted": "Suggested fix accepted",
@@ -2480,6 +2492,52 @@
             "inconclusive": "inconclusive",
             "cancelled": "cancelled"
           }
+        },
+        "groups": {
+          "proven": "Proven fixes",
+          "ai": "AI suggestions",
+          "similar": "Similar fixes",
+          "legacy": "Earlier keyword matches"
+        },
+        "badges": {
+          "aiResearched": "AI researched",
+          "aiWritten": "Written by AI — review before following"
+        },
+        "track": {
+          "lastVerified": "last verified {{days}}d ago",
+          "neverVerified": "not yet verified"
+        },
+        "research": {
+          "running": "Researching…",
+          "runningDeep": "Researching in depth…",
+          "stalled": "Still researching — check back in a few minutes.",
+          "failed": "Research failed.",
+          "noSafeFix": "AI found no safe fix for this problem.",
+          "checkBudget": "Check AI budget",
+          "deeper": "Research deeper",
+          "retry": "Retry",
+          "denial": {
+            "credits": "AI credits are used up for this billing period.",
+            "dailyBudget": "The daily AI budget for research has been reached.",
+            "orgBudget": "This organization's AI budget has been reached.",
+            "autoCap": "The automatic research limit has been reached. You can still start research manually.",
+            "busy": "Research is busy right now. Try again in a few minutes.",
+            "permission": "You do not have permission to start AI research.",
+            "unavailable": "AI research is temporarily unavailable.",
+            "modelUnavailable": "The AI model for research is not available.",
+            "notProvisioned": "AI research is not set up for this installation yet."
+          }
+        },
+        "runBuiltin": "Run {{action}}",
+        "draftScript": "Draft a script",
+        "emptyHint": "Generate checks proven fixes first, then asks AI.",
+        "reviewed": {
+          "pickerLabel": "Reviewed steps",
+          "asWritten": "Steps as written (not shared)",
+          "save": "Save as reviewed steps",
+          "saved": "Saved as reviewed steps",
+          "failed": "Could not save reviewed steps",
+          "stepsLabel": "Steps (one per line)"
         }
       }
     },
@@ -2538,5 +2596,66 @@
     "noneConfigured": "No {{source}} configured",
     "overriding": "Overrides {{source}}",
     "overridingWithValue": "Overrides {{source}} ({{value}})"
+  },
+  "fixMemoryPage": {
+    "title": "Fix memory",
+    "subtitle": "Fixes your team has run, and how often they actually stayed fixed.",
+    "tabs": {
+      "fixes": "Fixes",
+      "steps": "Reviewed steps"
+    },
+    "filters": {
+      "os": "Operating system",
+      "anyOs": "Any operating system",
+      "status": "Status",
+      "anyStatus": "Any status",
+      "scope": "Scope",
+      "anyScope": "Any scope",
+      "condition": "Search by condition"
+    },
+    "columns": {
+      "fix": "Fix",
+      "record": "Track record",
+      "rate": "Success rate",
+      "scope": "Scope",
+      "os": "OS",
+      "condition": "Condition",
+      "lastVerified": "Last verified",
+      "status": "Status",
+      "actions": "Actions"
+    },
+    "status": {
+      "active": "Active",
+      "demoted": "Demoted",
+      "retired": "Retired",
+      "stale": "Stale"
+    },
+    "scope": {
+      "everyClient": "All clients",
+      "oneClient": "This client"
+    },
+    "signature": "Signature {{prefix}}",
+    "retire": {
+      "action": "Retire",
+      "confirmTitle": "Retire this fix?",
+      "confirmBody": "Retired fixes are no longer suggested. Their history is kept.",
+      "confirm": "Retire fix",
+      "success": "Fix retired.",
+      "failed": "Could not retire the fix."
+    },
+    "steps": {
+      "heading": "Steps",
+      "retire": "Retire steps",
+      "success": "Steps retired.",
+      "failed": "Could not retire the steps.",
+      "empty": "No reviewed steps yet. Save steps from a suggestion to see them here."
+    },
+    "empty": "No fixes remembered yet. Fixes appear here after they are run and their outcome is observed.",
+    "loadMore": "Load more",
+    "never": "Never",
+    "retry": "Try again",
+    "errors": {
+      "loadFailed": "Could not load fix memory."
+    }
   }
 }

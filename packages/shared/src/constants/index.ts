@@ -24,6 +24,9 @@ export * from './googleDwdScopes';
 // alert resolution reasons. Leaf module, no imports.
 export * from './fixMemory';
 
+// Shared AI connection kind lists for registry and gateway dispatch.
+export * from './aiConnectionKinds';
+
 // Backup recovery-readiness score bands shared by the API summary/alerts and
 // the web readiness views. Leaf module, no imports.
 export * from './backupReadiness';

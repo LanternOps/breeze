@@ -400,6 +400,7 @@
       "addEntry": "Sağlayıcı ekle",
       "loading": "Katalog yükleniyor…",
       "empty": "Henüz katalog kaydı yok.",
+      "noRevisions": "Henüz revizyon yok.",
       "dismiss": "Kapat",
       "platformAdmin": {
         "title": "Platform yöneticisi erişimi gerekli",
@@ -663,7 +664,15 @@
       },
       "drawer": {
         "title": "{{name}} düzenle",
-        "prices": "Fiyatlar (milyon token başına ABD senti)",
+        "prices": "Fiyatlar (milyon token başına ABD doları)",
+        "storedPrice": "Kayıtlı: {{value}}",
+        "priceChangeTitle": "Büyük fiyat değişikliğini onayla",
+        "priceChangeIntro": "Bu fiyatlar kayıtlı değerlerden 10 kattan fazla farklı. Birimi kontrol edin: milyon token başına dolar giriyorsunuz.",
+        "priceChangeRow": "{{field}} ({{group}}): {{stored}} → {{next}}",
+        "priceChangeConfirm": "Onayla ve kaydet",
+        "priceChangeBack": "Geri dön",
+        "priceGroupStandard": "Standart",
+        "priceGroupFast": "Hızlı mod",
         "fastPrices": "Hızlı mod fiyatları (isteğe bağlı)",
         "fastPricesHint": "Dört hızlı fiyatın tümü ayarlanana kadar hızlı mod seçilemez.",
         "inputCentsPerM": "Giriş",
@@ -695,6 +704,33 @@
         "save": "Model kaydedilemedi.",
         "refresh": "Model yenileme kuyruğa alınamadı.",
         "invalidRates": "Dört fiyatı da negatif olmayan sayılar olarak girin veya dördünü de boş bırakın."
+      },
+      "variants": {
+        "title": "İstem varyantları",
+        "subtitle": "Bir özelliğin sistem istemine bir model ailesi için eklenen yönergeler; tüm iş ortaklarında temel istemle karşılaştırılır. Varyantlar sürümlerle değişir.",
+        "range": "{{from}} - {{to}}.",
+        "base": "Temel istem",
+        "columns": {
+          "variant": "Varyant",
+          "state": "Durum",
+          "conversations": "Konuşmalar",
+          "flagRate": "İşaretleme oranı",
+          "refusalRate": "Ret oranı",
+          "leftRate": "Başka modele geçti",
+          "turns": "Çözüme kadar tur",
+          "costPerConversation": "Maliyet / konuşma"
+        },
+        "states": {
+          "staged": "Hazırlandı",
+          "candidate": "Aday",
+          "active": "Etkin",
+          "retired": "Kullanımdan kaldırıldı"
+        },
+        "lowSample": "{{min}} konuşmadan az: karşılaştırma için çok az",
+        "incumbent": "Mevcut",
+        "loading": "İstem varyantları yükleniyor…",
+        "empty": "Kayıtlı istem varyantı yok.",
+        "error": "İstem varyantı raporu yüklenemedi."
       }
     }
   },

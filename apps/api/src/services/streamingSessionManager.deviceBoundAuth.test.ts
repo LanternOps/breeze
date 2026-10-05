@@ -42,10 +42,21 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('./aiCostTracker', () => ({
-  recordUsageFromSdkResult: vi.fn(() => Promise.resolve()),
   // Also consumed on the result/done path — see the note in clientLoop.test.ts.
   sumInputTokens: (u: Record<string, number | null | undefined> | null | undefined) =>
     (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0),
+}));
+vi.mock('./aiBudgetReservations', () => ({
+  markAiBudgetReservationIndeterminate: vi.fn(async () => ({ kind: 'indeterminate' })),
+  readSdkUsageSnapshot: vi.fn(async () => null),
+}));
+vi.mock('./aiModels/platformModels', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/platformModels')>()),
+  getPlatformModelByModelId: vi.fn(async () => null),
+}));
+vi.mock('./aiModels/settleInvocation', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/settleInvocation')>()),
+  settleInvocation: vi.fn(async () => ({ costCents: 0, invocationIds: [], deferred: false })),
 }));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
@@ -74,6 +85,7 @@ vi.mock('./toolSources/sdkBridge', () => ({
 }));
 
 import { StreamingSessionManager, buildDeviceBoundSessionAuth } from './streamingSessionManager';
+import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import { buildOrgAccessClosures, dbAccessContextFromAuth } from '../middleware/auth';
 import type { AuthContext } from '../middleware/auth';
 import { devices } from '../db/schema';
@@ -104,17 +116,12 @@ function makePartnerAuth(): AuthContext {
 const DB_SESSION = {
   orgId: DEVICE_ORG,
   sdkSessionId: null,
-  model: 'claude-sonnet-4-5-20250929',
   maxTurns: 50,
   turnCount: 0,
   systemPrompt: null,
 };
 
-const PLATFORM_CONFIG = {
-  source: 'platform' as const,
-  apiKey: 'platform-key',
-  model: 'claude-sonnet-4-6',
-};
+const PLATFORM_CONFIG = makeResolvedModel('platform');
 
 describe('buildDeviceBoundSessionAuth', () => {
   it('narrows a partner-scope login to the device org (sibling org under the same partner)', () => {

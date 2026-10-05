@@ -1161,6 +1161,7 @@
     "clearCategory": "Effacer la sélection",
     "columnPath": "Chemin",
     "columnSize": "Taille",
+    "selectionLimit": "Une seule exécution de nettoyage peut supprimer au maximum {{max}} éléments. Tout sélectionner remplit la sélection jusqu’à cette limite, en commençant par les plus volumineux. Supprimez-les, puis relancez l’aperçu du nettoyage pour ce qui reste.",
     "selectionSummary": "{{count}} sélectionné(s) · {{size}}",
     "executeSelected": "Supprimer la sélection ({{count}})",
     "confirmTitle": "Supprimer définitivement les cibles de nettoyage",
@@ -1921,6 +1922,10 @@
       "noReason": "Aucune raison signalée par l'agent",
       "failedAt": "Dernière tentative d'installation échouée : {{when}}"
     },
+    "awaitingRestart": {
+      "badge": "Installé, redémarrage nécessaire",
+      "installedAt": "Installé le {{when}}. Reste listé comme en attente jusqu’au redémarrage de l’appareil."
+    },
     "approval": {
       "approved": "Approuvé",
       "approvedTitle": "Approuvé manuellement.",
@@ -2430,6 +2435,7 @@
       "bulkWakeSomeFailed": "Bulk Wake Certains ont échoué",
       "commandQueued": "{{action}} en file d'attente — s'exécutera à la reconnexion de {{hostname}}",
       "commandSent": "{{action}} envoyé à {{hostname}}",
+      "commandCancelled": "{{action}} n’a pas été envoyé à {{hostname}} : commande annulée ({{reason}})",
       "compareNeedsTwo": "La comparaison nécessite au moins 2 appareils avec agent.",
       "decommissionCancelled": "Retrait annulé",
       "decommissionFailed": "Échec du retrait",

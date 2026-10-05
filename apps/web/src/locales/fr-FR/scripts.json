@@ -965,6 +965,7 @@
       "description": "Exécuter « {{name}} » sur {{count}} appareil(s) en tant que {{runAs}}. Les scripts sont mis en file d’attente et commencent à s’exécuter immédiatement."
     },
     "selectedCount": "{{count}} appareil(s) sélectionné(s)",
+    "executeBlocked": "L’exécution est indisponible : un appareil sélectionné ne peut pas exécuter ce script ici (il appartient peut-être à une autre organisation que celle affichée, ou il n’est plus accessible).",
     "languages": {
       "powershell": "PowerShell",
       "bash": "Bash",

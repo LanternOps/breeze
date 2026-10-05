@@ -240,7 +240,6 @@ describe('client-ai admin — policy', () => {
       userAccess: 'all',
       selectedUserIds: [],
       allowedProviders: ['anthropic'],
-      allowedModels: [],
       writeMode: 'readwrite',
       dlpConfig: {},
       dailyBudgetCents: null,
@@ -285,6 +284,22 @@ describe('client-ai admin — policy', () => {
         }),
       })
     );
+  });
+
+  it('PUT /client-ai/admin/orgs/:orgId/policy with allowedModels → 400 naming office_chat; nothing is written', async () => {
+    for (const allowedModels of [['x'], [], null]) {
+      const res = await buildApp().request(`/client-ai/admin/orgs/${ORG_ID}/policy`, {
+        method: 'PUT',
+        headers: AUTHED,
+        body: JSON.stringify({ enabled: true, allowedModels }),
+      });
+      expect(res.status).toBe(400);
+      const text = JSON.stringify(await res.json());
+      expect(text).toContain('allowedModels');
+      expect(text).toContain('office_chat');
+    }
+    expect(dbInsertMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
   });
 
   it('PUT persists writeApproval and audits it as a changed key', async () => {

@@ -5,6 +5,7 @@ vi.mock('../../services/quoteService', () => ({
   createQuote: vi.fn(),
   cloneQuote: vi.fn(),
   getQuote: vi.fn(),
+  refreshDraftQuoteTaxRate: vi.fn(async () => false),
   listQuotes: vi.fn(),
   updateQuote: vi.fn(),
   deleteDraftQuote: vi.fn(),
@@ -281,6 +282,18 @@ describe('quote crud + lines routes', () => {
     // through to their defaults, same as `branding` (Task 12).
     expect(body.data.presentation).toEqual({ theme: 'classic', pageSize: 'a4' });
     expect(svc.getQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything());
+  });
+
+  it('GET /:id refreshes a stale draft tax rate BEFORE loading the quote (#7507)', async () => {
+    (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID }, blocks: [], lines: [] });
+    const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(svc.refreshDraftQuoteTaxRate).toHaveBeenCalledWith(QUOTE_ID, expect.anything());
+    // Order matters: the detail must be read AFTER the refresh, or the editor
+    // shows the stale rate it was meant to replace.
+    const refreshOrder = (svc.refreshDraftQuoteTaxRate as any).mock.invocationCallOrder[0];
+    const getOrder = (svc.getQuote as any).mock.invocationCallOrder[0];
+    expect(refreshOrder).toBeLessThan(getOrder);
   });
 
   it('GET /:id resolves presentation.theme="condensed" from the partner default (no query beyond the existing branding selects)', async () => {
@@ -671,6 +684,10 @@ describe('quote crud + lines routes', () => {
       const res = await app().request(`/${QUOTE_ID}/pdf`, { method: 'GET' });
 
       expect(res.status).toBe(200);
+      // #7507: a draft PDF prints the current rate — refreshed before the read.
+      expect(svc.refreshDraftQuoteTaxRate).toHaveBeenCalledWith(QUOTE_ID, expect.anything());
+      expect((svc.refreshDraftQuoteTaxRate as any).mock.invocationCallOrder[0])
+        .toBeLessThan((svc.getQuote as any).mock.invocationCallOrder[0]);
       expect(res.headers.get('content-type')).toBe('application/pdf');
       const disposition = res.headers.get('content-disposition') ?? '';
       expect(disposition).toContain('inline');

@@ -776,9 +776,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     });
   }, [lines]);
 
-  // The tax rate is fixed at quote creation (org tax settings → partner default)
-  // and read-only in the editor, so the rail always computes with the committed
-  // server rate.
+  // The tax rate is read-only in the editor: the server re-resolves it (org tax
+  // settings → partner default) on every draft change and on open, and freezes
+  // it at send (#7507), so the rail always computes with the committed rate.
   const effectiveRate = quote.taxRate ? parseFloat(quote.taxRate) : null;
 
   // The figures the rail renders: optimistic recompute when any line is
@@ -1197,6 +1197,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     ...(cp?.title != null ? { title: cp.title } : {}),
     ...(cp?.coverImageId != null ? { coverImageId: cp.coverImageId } : {}),
     ...(cp?.preparedForName != null ? { preparedForName: cp.preparedForName } : {}),
+    // Only carried when on, so existing cover saves keep their exact payload.
+    ...(cp?.showContents ? { showContents: true } : {}),
   }), []);
   const [cover, setCover] = useState<CoverPage>(() => coverFromQuote(quote.coverPage));
   // Guard the resync exactly like the ContractBlockEditor / heading / rich-text
@@ -1227,6 +1229,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     if (next.title?.trim()) body.title = next.title.trim();
     if (next.coverImageId) body.coverImageId = next.coverImageId;
     if (next.preparedForName?.trim()) body.preparedForName = next.preparedForName.trim();
+    // Carried on every cover save (the row is replaced wholesale), so editing
+    // the cover title can't silently switch the contents list off.
+    if (next.showContents) body.showContents = true;
     void runScoped('cover-page', async () => {
       await runAction({
         request: () => updateQuote(quote.id, { coverPage: body }),
@@ -2537,6 +2542,22 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
             {t('quotes.editor.coverPage.enable')}
           </label>
         )}
+        {canWrite && (
+          <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground" data-testid="quote-contents">
+            <input
+              type="checkbox"
+              checked={cover.showContents === true}
+              onChange={(e) => {
+                const { showContents: _drop, ...rest } = cover;
+                saveCover(e.target.checked ? { ...rest, showContents: true } : rest);
+              }}
+              disabled={isPending('cover-page')}
+              data-testid="quote-contents-enabled"
+              className="h-3.5 w-3.5"
+            />
+            {t('quotes.editor.coverPage.showContents')}
+          </label>
+        )}
         {!internalControlled && (
           <button
             type="button"
@@ -2936,8 +2957,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                 onMissingCostClick={missingCostLineIds.length > 0 ? revealFirstMissingCost : undefined}
               />
             )}
-            {/* Read-only: the rate is resolved at quote creation (org tax settings,
-                falling back to the partner default) and isn't editable per-quote. */}
+            {/* Read-only: the rate is the org's tax settings (falling back to the
+                partner default), followed while drafting and fixed at send (#7507);
+                it isn't editable per-quote. */}
             <div className="mt-2 border-t pt-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-sm text-muted-foreground">{t('quotes.editor.liveTotals.taxRate')}</span>

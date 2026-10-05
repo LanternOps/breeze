@@ -182,3 +182,15 @@ describe('contract tool scope parity with the recurring-contract HTTP surface', 
     expect(contractService.listContracts).not.toHaveBeenCalled();
   });
 });
+
+it('rejects autopay exclusion writes through the AI tool while keeping ordinary contract edits available', async () => {
+  vi.mocked(contractService.updateContract).mockClear();
+  vi.mocked(contractService.updateContract).mockResolvedValue({ id: 'ct-1' } as never);
+  const result = JSON.parse(await getTool('manage_contracts').handler({
+    action: 'update', contractId: 'ct-1', patch: { autopayExcluded: false },
+  }, auth));
+  expect(result).toMatchObject({ code: 'VALIDATION_ERROR' });
+  expect(contractService.updateContract).not.toHaveBeenCalled();
+  await getTool('manage_contracts').handler({ action: 'update', contractId: 'ct-1', patch: { name: 'Updated contract' } }, auth);
+  expect(contractService.updateContract).toHaveBeenCalledWith('ct-1', { name: 'Updated contract' }, expect.anything());
+});

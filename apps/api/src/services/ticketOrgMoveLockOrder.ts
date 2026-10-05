@@ -85,6 +85,13 @@ export const TICKET_CHILD_ORG_REWRITE_LOCK_ORDER = [
   // ticket_checklist_items_ticket_org_fk in their SET CONSTRAINTS … DEFERRED
   // statements — list membership alone is not sufficient here.
   'ticket_checklist_items',
+  // ticket_external_refs (Partner API tickets) denormalizes org_id from its
+  // ticket and has no device_id, so it joins BOTH axes, appended last after
+  // ticket_checklist_items on each. Like ticket_checklist_items, its composite
+  // (ticket_id, org_id) FK is DEFERRABLE INITIALLY IMMEDIATE, so both movers
+  // also name ticket_external_refs_ticket_org_fk in their SET CONSTRAINTS …
+  // DEFERRED statements.
+  'ticket_external_refs',
 ] as const;
 
 /**
@@ -137,6 +144,7 @@ export const TICKET_ORG_DENORMALIZED_TABLES = [
   'ticket_attachments',
   'ticket_email_links',
   'ticket_checklist_items',
+  'ticket_external_refs',
 ] as const;
 
 /**

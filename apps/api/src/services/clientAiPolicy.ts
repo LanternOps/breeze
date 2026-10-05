@@ -22,8 +22,6 @@ export interface ClientAiOrgPolicy {
   /** portal_users UUIDs permitted when userAccess === 'selected'. */
   selectedUserIds: string[];
   allowedProviders: string[];
-  /** Empty = all models of the allowed providers (provider defaults). */
-  allowedModels: string[];
   writeMode: 'readwrite' | 'readonly';
   /**
    * Workbook-write approval policy (spec §7). 'ask' = the end user approves
@@ -49,7 +47,6 @@ export function defaultClientAiPolicy(orgId: string): ClientAiOrgPolicy {
     userAccess: 'all',
     selectedUserIds: [],
     allowedProviders: ['anthropic'],
-    allowedModels: [],
     writeMode: 'readwrite',
     writeApproval: 'ask',
     dlpConfig: {},
@@ -90,7 +87,6 @@ export async function getOrgPolicy(orgId: string): Promise<ClientAiOrgPolicy> {
     userAccess: row.userAccess === 'selected' ? 'selected' : 'all',
     selectedUserIds: asStringArray(row.selectedUserIds, defaults.selectedUserIds),
     allowedProviders: asStringArray(row.allowedProviders, defaults.allowedProviders),
-    allowedModels: asStringArray(row.allowedModels, defaults.allowedModels),
     writeMode: row.writeMode === 'readonly' ? 'readonly' : 'readwrite',
     // Default-deny: ONLY the explicit 'allow_auto' opens the door; anything else
     // (legacy null, garbage, an unknown future value) collapses to 'ask'.

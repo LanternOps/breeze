@@ -400,6 +400,7 @@
       "addEntry": "Ajouter un fournisseur",
       "loading": "Chargement du catalogue…",
       "empty": "Aucune entrée de catalogue pour le moment.",
+      "noRevisions": "Aucune révision pour l’instant.",
       "dismiss": "Ignorer",
       "platformAdmin": {
         "title": "Accès administrateur plateforme requis",
@@ -663,7 +664,15 @@
       },
       "drawer": {
         "title": "Modifier {{name}}",
-        "prices": "Tarifs (centimes de dollar par million de jetons)",
+        "prices": "Prix (dollars US par million de jetons)",
+        "storedPrice": "Enregistré : {{value}}",
+        "priceChangeTitle": "Confirmer le changement de prix important",
+        "priceChangeIntro": "Ces prix diffèrent des valeurs enregistrées de plus de 10×. Vérifiez l’unité : vous saisissez des dollars par million de jetons.",
+        "priceChangeRow": "{{field}} ({{group}}) : {{stored}} → {{next}}",
+        "priceChangeConfirm": "Confirmer et enregistrer",
+        "priceChangeBack": "Retour",
+        "priceGroupStandard": "Normal",
+        "priceGroupFast": "Mode rapide",
         "fastPrices": "Tarifs du mode rapide (facultatif)",
         "fastPricesHint": "Le mode rapide ne peut pas être sélectionné tant que les quatre tarifs rapides ne sont pas définis.",
         "inputCentsPerM": "Entrée",
@@ -695,6 +704,33 @@
         "save": "Impossible d'enregistrer le modèle.",
         "refresh": "Impossible de mettre en file d'attente l'actualisation des modèles.",
         "invalidRates": "Saisissez les quatre tarifs sous forme de nombres non négatifs, ou laissez les quatre vides."
+      },
+      "variants": {
+        "title": "Variantes de prompt",
+        "subtitle": "Consignes ajoutées au prompt système d'une fonctionnalité pour une famille de modèles, comparées au prompt de base chez tous les partenaires. Les variantes changent à chaque version.",
+        "range": "Du {{from}} au {{to}}.",
+        "base": "Prompt de base",
+        "columns": {
+          "variant": "Variante",
+          "state": "État",
+          "conversations": "Conversations",
+          "flagRate": "Taux de signalement",
+          "refusalRate": "Taux de refus",
+          "leftRate": "Passées à un autre modèle",
+          "turns": "Tours jusqu'à la résolution",
+          "costPerConversation": "Coût / conversation"
+        },
+        "states": {
+          "staged": "Préparée",
+          "candidate": "Candidate",
+          "active": "Active",
+          "retired": "Retirée"
+        },
+        "lowSample": "Moins de {{min}} conversations : trop peu pour comparer",
+        "incumbent": "Titulaire",
+        "loading": "Chargement des variantes de prompt…",
+        "empty": "Aucune variante de prompt n'est enregistrée.",
+        "error": "Impossible de charger le rapport des variantes de prompt."
       }
     }
   },

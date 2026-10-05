@@ -1,0 +1,58 @@
+---
+title: AI usage chargeback
+description: Bill your clients for the AI usage Breeze meters, using a price set on a billing profile.
+---
+
+Breeze records every AI request your technicians and agents make for a client. You can rebill that usage on the client's invoice.
+
+## Turn it on
+
+1. Go to **Settings → Billing → Rates** and open a billing profile.
+2. In the **AI usage** section, set **AI usage billing**:
+   - **Billable**: usage is billed to the client.
+   - **Included**: usage is covered by the client's agreement. It appears in reports and never on invoices.
+   - **Not billed**: the default for every profile.
+3. Set the price:
+   - **Markup on cost (%)**: a percentage over Breeze's metered cost. It applies only on a USD profile, because Breeze's cost is in USD and is never converted.
+   - **Price list**: a price per million tokens for specific models, in the profile's currency. Each row has an input, output, cache read and cache write price. A model on the price list uses its price. Any other model uses the markup.
+
+The organization's billing profile decides the price: the one assigned to it, otherwise your default profile in its currency. To give one client a different AI price, clone a profile, change its AI section, and assign it to that client.
+
+## What is billed
+
+- Only usage on client-work features: chat, the Helper, the script builder and script reviewer, the Office add-ins, and AI agents. Catalog enrichment, extension content and patch tests are never billed.
+- Only usage after you turn billing on. The price is fixed when the request is recorded. Changing the profile later never re-prices past usage.
+- A billable profile with no price for a model, for example a EUR profile with no price-list row, records that usage as **unpriced**. It appears in the report and is never billed at zero.
+
+## When it is billed
+
+- Usage is grouped by UTC calendar month. A request belongs to the month in which Breeze recorded it. A request made just before midnight UTC on the last day of a month, but recorded after midnight, belongs to the next month. This includes a request that Breeze had to replay later: it bills in the month of the replay.
+- Shortly after each month ends, Breeze closes it once per client. Each model becomes one charge, rounded once to the currency's smallest unit. A charge that rounds to zero is not billed.
+- Usage recorded for a month that was already closed, for example after merging two clients, is billed with the next month and labelled "usage from" and the month.
+- A month's charge exists only after that month closes, which happens shortly after 00:00 UTC on the 1st (by about 05:30 UTC). This month's usage therefore appears on the next invoice, not on one you create today.
+- Charges that round to zero, and usage older than 92 days, are never invoiced. They show in the report's unbilled column.
+
+## Putting it on an invoice
+
+AI usage reaches an invoice through **Create invoice from unbilled work**. When you create an invoice from unbilled work, Breeze adds every unbilled AI usage charge for a month that has already closed and started on or before the invoice's end date. A month closes shortly after it ends (UTC), so this month's usage appears on the next invoice. Each charge becomes a line: "AI usage — (model) — (month) · (n) requests · (n) tokens".
+
+- Issuing the invoice marks the charges billed.
+- Voiding it releases them to be invoiced again.
+- Charges in another currency are listed as blocked, never converted.
+- AI usage lines are **non-taxable** by default. You can edit a draft line to change that.
+
+Invoices that a [recurring contract](/features/contracts/) generates do not include AI usage.
+
+## The report
+
+**Reports → AI usage by client** shows each client's requests, tokens, Breeze cost, billable amount (billed and unbilled) and unpriced usage for a period. Report periods use your timezone, while billing uses UTC months, so a report period's edges can differ slightly from the invoice.
+
+## Rounding
+
+Each request's price is computed exactly and rounded to 6 decimal places. Each monthly charge is summed exactly, then rounded once (half up) to the currency's smallest unit. Because each model's charge is rounded separately, the invoice total can differ from the unrounded monthly total by at most half a cent per charge.
+
+## Related
+
+- [Rates](/features/rates/) -- billing profiles and how an organization picks one
+- [Invoices](/features/invoices/) -- assembling, issuing and voiding
+- [Reports & Analytics](/features/reports/#business-reports) -- the AI usage by client report

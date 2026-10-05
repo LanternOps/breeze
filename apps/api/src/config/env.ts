@@ -259,18 +259,6 @@ export function aiScriptAuthoringEnabled(): boolean {
   return envFlag('BREEZE_AI_SCRIPT_AUTHORING_ENABLED', true);
 }
 
-// W02 (#5612): the script-proposal reviewer's PLATFORM DEFAULT model.
-// `resolveReviewerModel(orgId)` in services/scriptProposals/reviewer.ts
-// reads the effective `ai_script_policies.reviewer_model` (org override, else
-// partner — W04) first and falls back to this constant. Unset ⇒ the platform
-// default model (which itself honours ANTHROPIC_MODEL for self-hosted
-// gateways, #1412).
-/** The reviewer's platform default from an env (extracted for the #7600 parity oracle). */
-export function resolveReviewerDefaultModel(env: NodeJS.ProcessEnv = process.env): string {
-  return env.BREEZE_AI_SCRIPT_REVIEWER_MODEL?.trim() || resolveDefaultModel(env);
-}
-export const AI_SCRIPT_REVIEWER_MODEL = resolveReviewerDefaultModel();
-
 // AI Operator durable tasks (#5205 W06, spec §11.2 "Feature controls").
 //
 // Two INDEPENDENT flags, both default OFF, both read at CALL time so a test

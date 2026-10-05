@@ -104,8 +104,11 @@ vi.mock('../aiCostTracker', () => ({
   settleComputeCents: vi.fn(async () => {}),
 }));
 
-const getLlmBillingSourceForOrg = vi.hoisted(() => vi.fn(async () => 'platform'));
-vi.mock('../llm/llmConfigResolver', () => ({ getLlmBillingSourceForOrg }));
+// AI model registry W03: admission resolves the agent's model (and its funding) first.
+const resolveModel = vi.hoisted(() => vi.fn());
+vi.mock('../aiModels/resolveModel', () => ({ resolveModel }));
+vi.mock('../aiModels/candidateLoader', () => ({ readOrgPartnerId: vi.fn(async () => 'partner-1') }));
+vi.mock('./modelBlocked', () => ({ notifyModelBlocked: vi.fn(async () => undefined) }));
 
 const resolveEffectiveAgentSystem = vi.hoisted(() => vi.fn());
 vi.mock('./effectivePolicy', () => ({ resolveEffectiveAgentSystem }));
@@ -124,6 +127,7 @@ vi.mock('./agentCircuit', () => ({
 }));
 
 import { WORKSPACE_TOOL_NAMES } from '../aiGuardrails';
+import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
 import {
   createAndEnqueueAgentRun, registerAgentRunEnqueuer, type CreateAgentRunInput,
 } from './runService';
@@ -132,7 +136,6 @@ function snapshot(allowlist: string[]): AiAgentPolicySnapshot {
   const effective: AiAgentPolicy = {
     enabled: true,
     mode: 'shadow',
-    model: null,
     toolAllowlist: allowlist,
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
     limits: { ...AI_AGENT_LIMIT_DEFAULTS },
@@ -221,7 +224,7 @@ beforeEach(() => {
   dbMockState.rowQueues = {};
   dbMockState.insertValues = [];
   dbMockState.insertRows = [];
-  getLlmBillingSourceForOrg.mockResolvedValue('platform');
+  resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents' }));
   resolveEffectiveAgentSystem.mockResolvedValue(snapshot([...WORKSPACE_TOOL_NAMES]));
   registerAgentRunEnqueuer(vi.fn(async () => ({ enqueued: true, jobId: 'job-1' })));
   process.env.BREEZE_REGION = 'eu';

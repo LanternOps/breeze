@@ -3,7 +3,6 @@ import { Hono } from 'hono';
 
 const {
   captureExceptionMock,
-  resolveLlmConfigMock,
   checkBudgetMock,
   checkSystemAiRateLimitMock,
   reserveAiBudgetMock,
@@ -11,12 +10,20 @@ const {
   getEffectiveAiBudgetMock,
 } = vi.hoisted(() => ({
   captureExceptionMock: vi.fn(),
-  resolveLlmConfigMock: vi.fn(),
   checkBudgetMock: vi.fn(),
   checkSystemAiRateLimitMock: vi.fn(),
   reserveAiBudgetMock: vi.fn(),
   releaseUnusedAiBudgetMock: vi.fn(),
   getEffectiveAiBudgetMock: vi.fn().mockResolvedValue({ maxTurnsPerSession: 50 }),
+}));
+const { resolveSessionTurnMock, chooseSessionModelMock } = vi.hoisted(() => ({
+  resolveSessionTurnMock: vi.fn(),
+  chooseSessionModelMock: vi.fn(),
+}));
+// W03: helper turns (Task 7) and session create (Task 9) resolve through the registry.
+vi.mock('../../services/aiModels/sessionModel', () => ({
+  resolveSessionTurn: (...args: unknown[]) => resolveSessionTurnMock(...args),
+  chooseSessionModel: (...args: unknown[]) => chooseSessionModelMock(...args),
 }));
 
 vi.mock('../../db', () => ({
@@ -96,6 +103,10 @@ vi.mock('../../services/helperPermissions', () => ({
   resolveHelperPermissionLevelForDevice: vi.fn(),
 }));
 
+vi.mock('../../services/helperSettings', () => ({
+  buildHelperConfigUpdate: vi.fn(async () => ({ enabled: true })),
+}));
+
 vi.mock('../../services/helperAiAgent', () => ({
   buildHelperSystemPrompt: vi.fn(() => 'helper system prompt'),
 }));
@@ -155,7 +166,6 @@ vi.mock('../../services/aiAgentSdk', () => ({
 }));
 
 vi.mock('../../services/llm/llmConfigResolver', () => ({
-  resolveLlmConfig: (...args: unknown[]) => resolveLlmConfigMock(...args),
   LlmUnavailableError: class LlmUnavailableError extends Error {
     readonly status = 503;
     readonly code = 'ai_unavailable';
@@ -184,12 +194,15 @@ vi.mock('../../services/clientSessionTools', async (importOriginal) => {
   };
 });
 
+import { makeResolvedModel } from '../../services/aiModels/__fixtures__/resolvedModel';
+import { turnBindingFrom } from '../../services/aiModels/turnBinding';
 import { helperRoutes } from './index';
 import { db, withDbAccessContext } from '../../db';
 import { settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { matchAgentTokenHash } from '../../middleware/agentAuth';
 import { resolveHelperPermissionLevelForDevice } from '../../services/helperPermissions';
 import { buildHelperSystemPrompt } from '../../services/helperAiAgent';
+import { buildHelperConfigUpdate } from '../../services/helperSettings';
 import { streamingSessionManager } from '../../services/streamingSessionManager';
 import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
 import { resolveClientDeclaredTool } from '../../services/clientSessionTools';
@@ -202,6 +215,17 @@ const VALID_TOOL_DECL = {
   description: 'search the estate for files',
   inputSchema: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },
 };
+
+function helperChoice() {
+  return {
+    resolved: makeResolvedModel('anthropic_byok', { surface: 'helper' }),
+    offeringId: 'off-1',
+    offeringPartnerId: 'partner-1',
+    options: null,
+    model: 'claude-sonnet-5-5',
+    billingSource: 'partner_key' as const,
+  };
+}
 
 function mockHelperAuthDevice() {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -241,14 +265,8 @@ describe('helper routes permission derivation', () => {
       monthlyPeriodKey: '2026-09-01',
       status: 'active',
     });
-    resolveLlmConfigMock.mockResolvedValue({
-      source: 'partner',
-      partnerId: 'partner-1',
-      apiKey: 'partner-key',
-      model: 'claude-opus-4-6',
-      configId: 'config-1',
-      configVersion: 5,
-    });
+    chooseSessionModelMock.mockResolvedValue(helperChoice());
+    resolveSessionTurnMock.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'helper' }));
     app = new Hono();
     app.route('/helper', helperRoutes);
   });
@@ -281,8 +299,14 @@ describe('helper routes permission derivation', () => {
     }));
     expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'basic');
     expect((insertedValues?.contextSnapshot as Record<string, unknown>).permissionLevel).toBe('standard');
-    expect(insertedValues?.model).toBe('claude-opus-4-6');
-    expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
+    // W03 Task 9: the session is created on the registry's helper offering.
+    expect(insertedValues).toMatchObject({
+      offeringId: 'off-1', offeringPartnerId: 'partner-1', options: null,
+      model: 'claude-sonnet-5-5', billingSource: 'partner_key',
+    });
+    expect(chooseSessionModelMock).toHaveBeenCalledWith({
+      partnerId: 'partner-1', orgId: 'org-1', userId: null, surface: 'helper',
+    });
   });
 
   // #6473 — Helper-originated sessions were the third createSession-shaped
@@ -314,11 +338,7 @@ describe('helper routes permission derivation', () => {
 
   it('returns ai_unavailable as 503 before inserting a helper session', async () => {
     mockHelperAuthDevice();
-    resolveLlmConfigMock.mockResolvedValue({
-      source: 'unavailable',
-      partnerId: 'partner-1',
-      reason: 'key_error',
-    });
+    chooseSessionModelMock.mockRejectedValue(new LlmUnavailableError());
 
     const res = await app.request('/helper/chat/sessions', {
       method: 'POST',
@@ -329,13 +349,14 @@ describe('helper routes permission derivation', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'ai_unavailable' });
     expect(db.insert).not.toHaveBeenCalled();
-    expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
+    // The body's partnerId is ignored: the device's own partner is resolved.
+    expect(chooseSessionModelMock).toHaveBeenCalledWith(expect.objectContaining({ partnerId: 'partner-1' }));
   });
 
   it('captures resolver throws and returns a generic retryable 503 when creating a session', async () => {
     mockHelperAuthDevice();
     const resolverError = new Error('database driver detail');
-    resolveLlmConfigMock.mockRejectedValueOnce(resolverError);
+    chooseSessionModelMock.mockRejectedValueOnce(resolverError);
 
     const res = await app.request('/helper/chat/sessions', {
       method: 'POST',
@@ -364,6 +385,32 @@ describe('helper routes permission derivation', () => {
     const body = await res.json();
     expect(body.permissionLevel).toBe('extended');
     expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'basic');
+  });
+
+  it('refuses /helper/config with helper_disabled when the effective setting is off', async () => {
+    mockHelperAuthDevice();
+    vi.mocked(buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: false } as never);
+
+    const res = await app.request('/helper/config', {
+      headers: { Authorization: 'Bearer brz_agent_token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('helper_disabled');
+    expect(buildHelperConfigUpdate).toHaveBeenCalledWith('device-1', 'org-1');
+  });
+
+  it('reports enabled:true when the effective setting is enabled', async () => {
+    mockHelperAuthDevice();
+    vi.mocked(resolveHelperPermissionLevelForDevice).mockResolvedValue('standard');
+    vi.mocked(buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: true } as never);
+
+    const res = await app.request('/helper/config', {
+      headers: { Authorization: 'Bearer brz_agent_token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).enabled).toBe(true);
   });
 
   it('uses server-derived permissionLevel and allowlist when sending messages', async () => {
@@ -429,9 +476,9 @@ describe('helper routes permission derivation', () => {
     expect(allowedTools).toContain('mcp__breeze__file_operations');
     expect(allowedTools).not.toContain('mcp__breeze__execute_command');
     expect(getOrCreateCall?.[6]).toEqual(expect.objectContaining({
-      source: 'partner',
-      configId: 'config-1',
-      configVersion: 5,
+      funding: 'partner_key',
+      connection: expect.objectContaining({ id: 'conn-1', kind: 'anthropic_byok' }),
+      configVersion: 2,
     }));
     // A-W04: Helper REGISTERS only its permission level's tools (onlyTools),
     // not the whole registry behind a permission-only allowlist, and resolves
@@ -445,13 +492,100 @@ describe('helper routes permission derivation', () => {
     const onlyTools = (serverCall[5] as { onlyTools: Set<string> }).onlyTools;
     expect([...onlyTools].sort()).toEqual(getHelperAllowedTools('standard').sort());
     expect(allowedTools!.map((n) => n.replace('mcp__breeze__', '')).sort()).toEqual([...onlyTools].sort());
-    expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
+    expect(resolveSessionTurnMock).toHaveBeenCalledWith({ sessionId: 'session-1', surface: 'helper', userId: null });
+    expect(chooseSessionModelMock).not.toHaveBeenCalled();
     expect(checkBudgetMock).toHaveBeenCalledWith('org-1', 'partner_key');
     // Org-axis AI rate limiter — the same ceiling technician chat enforces
     // via checkAiRateLimit. Helper sessions are device-scoped with no acting
     // user id, so this must be the org-only (no per-user bucket) form.
     expect(checkSystemAiRateLimitMock).toHaveBeenCalledWith('org-1');
     expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'basic');
+  });
+
+  function mockHelperMessageSession() {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'session-1',
+            orgId: 'org-1',
+            deviceId: 'device-1',
+            sdkSessionId: null,
+            model: 'claude-sonnet-4-5-20250929',
+            maxTurns: 50,
+            turnCount: 0,
+            status: 'active',
+            title: 'Existing title',
+            systemPrompt: 'stale extended helper prompt',
+            createdAt: new Date(),
+          }]),
+        }),
+      }),
+    } as never);
+  }
+
+  it('dispatches and reserves exactly the model resolved for the helper surface (finding 13)', async () => {
+    mockHelperAuthDevice();
+    vi.mocked(resolveHelperPermissionLevelForDevice).mockResolvedValue('standard');
+    const model = makeResolvedModel('anthropic_byok', { surface: 'helper' });
+    resolveSessionTurnMock.mockResolvedValue(model);
+    mockHelperMessageSession();
+    vi.mocked(db.insert).mockReturnValueOnce({ values: vi.fn().mockResolvedValue(undefined) } as never);
+    const activeSession = {
+      inputController: { pushMessage: vi.fn() },
+      eventBus: {
+        subscribe: vi.fn(async function* () { yield { type: 'done' }; }),
+        unsubscribe: vi.fn(),
+        publish: vi.fn(),
+      },
+      state: 'idle',
+    };
+    vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(activeSession as never);
+    vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
+
+    const res = await app.request('/helper/chat/sessions/session-1/messages', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'hello' }),
+    });
+    await res.text();
+
+    expect(res.status).toBe(200);
+    expect(resolveSessionTurnMock).toHaveBeenCalledWith({ sessionId: 'session-1', surface: 'helper', userId: null });
+    const call = vi.mocked(streamingSessionManager.getOrCreate).mock.calls[0]!;
+    expect(call[6]).toBe(model);
+    expect(call[1]).not.toHaveProperty('model');
+    expect(call[9]).toEqual(expect.objectContaining({ ledgerUserId: null }));
+    expect(reserveAiBudgetMock).toHaveBeenCalledWith(expect.objectContaining({
+      billingSource: 'partner_key', binding: turnBindingFrom(model),
+    }));
+    expect(streamingSessionManager.tryTransitionToProcessing).toHaveBeenCalledWith(
+      activeSession, expect.any(String), expect.objectContaining({ turnBinding: turnBindingFrom(model) }),
+    );
+  });
+
+  it('an ineligible stored model is a recoverable 409 and takes no reservation', async () => {
+    mockHelperAuthDevice();
+    vi.mocked(resolveHelperPermissionLevelForDevice).mockResolvedValue('standard');
+    resolveSessionTurnMock.mockResolvedValue({
+      ok: false, reason: 'model_unavailable', recoverable: true, offeringId: 'off-1',
+      message: 'Model Opus 5.5 is no longer available — choose another.',
+    });
+    mockHelperMessageSession();
+
+    const res = await app.request('/helper/chat/sessions/session-1/messages', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'hello' }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'Model Opus 5.5 is no longer available — choose another.', code: 'model_unavailable', recoverable: true,
+    });
+    expect(reserveAiBudgetMock).not.toHaveBeenCalled();
+    expect(checkBudgetMock).not.toHaveBeenCalled();
+    expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
   });
 
   it('429s a turn when the org-wide AI rate limit is exceeded', async () => {
@@ -581,12 +715,11 @@ describe('helper routes permission derivation', () => {
     expect(depth).toBe(0);
   });
 
-  it('returns ai_unavailable as 503 before touching the SDK manager on a turn', async () => {
+  it('an unusable connection on a turn is a recoverable 409 before touching the SDK manager; a client partnerId is ignored', async () => {
     mockHelperAuthDevice();
-    resolveLlmConfigMock.mockResolvedValue({
-      source: 'unavailable',
-      partnerId: 'partner-1',
-      reason: 'key_error',
+    resolveSessionTurnMock.mockResolvedValue({
+      ok: false, reason: 'connection_unavailable', recoverable: true, offeringId: 'off-1',
+      message: 'The AI provider connection for this model is unavailable. Reconnect it under AI Providers & Models.',
     });
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
@@ -610,18 +743,21 @@ describe('helper routes permission derivation', () => {
       body: JSON.stringify({ content: 'hello', partnerId: 'attacker-partner' }),
     });
 
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'The AI provider connection for this model is unavailable. Reconnect it under AI Providers & Models.',
+      code: 'connection_unavailable',
+      recoverable: true,
+    });
     expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
-    expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
+    expect(reserveAiBudgetMock).not.toHaveBeenCalled();
+    expect(resolveSessionTurnMock).toHaveBeenCalledWith({ sessionId: 'session-1', surface: 'helper', userId: null });
   });
 
   /**
-   * The resolver-level check above cannot see this one: `getOrCreate` resolves
-   * the WIRE model inside the manager, so a pinned revision with no verified
-   * mapping for this session's model throws only once the manager is already
-   * running (#3922 W3 review round 2). Unmapped, it reached Hono's onError as a
-   * 500 — telling the helper "we broke" instead of "reconnect your provider".
+   * Last-resort guard (#3922 W3 review round 2): the model is resolved in
+   * preflight now, but an LlmUnavailableError from the manager must still map
+   * to 503 ai_unavailable rather than reach Hono's onError as a 500.
    */
   it('maps a wire-model fail-close from the SDK manager to 503 ai_unavailable', async () => {
     mockHelperAuthDevice();
@@ -662,7 +798,7 @@ describe('helper routes permission derivation', () => {
 
   it('captures resolver throws and returns a generic retryable 503 on a turn', async () => {
     mockHelperAuthDevice();
-    resolveLlmConfigMock.mockRejectedValueOnce(new Error('decrypt subsystem failed'));
+    resolveSessionTurnMock.mockRejectedValueOnce(new Error('decrypt subsystem failed'));
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
@@ -704,14 +840,8 @@ describe('helper client-declared session tools', () => {
       monthlyPeriodKey: '2026-09-01',
       status: 'active',
     });
-    resolveLlmConfigMock.mockResolvedValue({
-      source: 'partner',
-      partnerId: 'partner-1',
-      apiKey: 'partner-key',
-      model: 'claude-opus-4-6',
-      configId: 'config-1',
-      configVersion: 5,
-    });
+    chooseSessionModelMock.mockResolvedValue(helperChoice());
+    resolveSessionTurnMock.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'helper' }));
     app = new Hono();
     app.route('/helper', helperRoutes);
   });
@@ -1001,14 +1131,8 @@ describe('helper session ownership scoping (cross-principal isolation)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    resolveLlmConfigMock.mockResolvedValue({
-      source: 'partner',
-      partnerId: 'partner-1',
-      apiKey: 'partner-key',
-      model: 'claude-opus-4-6',
-      configId: 'config-1',
-      configVersion: 5,
-    });
+    chooseSessionModelMock.mockResolvedValue(helperChoice());
+    resolveSessionTurnMock.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'helper' }));
     app = new Hono();
     app.route('/helper', helperRoutes);
   });

@@ -29,6 +29,7 @@ import { publishEvent } from './eventBus';
 import { resolveSensitiveDataKeySelection } from './sensitiveDataKeys';
 import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { aiExecuteCommand, aiQueueCommand } from './aiDispatch';
+import { inToolDbPhase } from './aiToolDbContext';
 // Static, from the pure type module — NOT from './commandQueue', whose lazy
 // import used to be this file's last route to the queue (#5022 W01).
 // `commandTypes.ts` is a constant table with no dispatch surface, so importing
@@ -75,6 +76,10 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
     domain: 'security',
     searchHint: 'device security: scan, status, quarantine, remove, restore, vulnerabilities',
     deviceArgs: ['deviceId'],
+    // The device actions wait up to 60 s for the agent, so they must not hold
+    // the per-call transaction across it (#7918; `AiTool.selfManagedDbContext`).
+    // `vulnerabilities` only reads the DB and keeps it.
+    selfManagedDbContext: ['scan', 'status', 'quarantine', 'remove', 'restore'],
     definition: {
       name: 'security_scan',
       description: 'Run security scans on a device, manage detected threats (quarantine, remove, restore), or query vulnerability data. Actions: scan, status, quarantine, remove, restore, vulnerabilities.',
@@ -93,7 +98,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
     handler: async (input, auth) => {
       const deviceId = input.deviceId as string;
 
-      const access = await verifyDeviceAccess(deviceId, auth);
+      const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth));
       if ('error' in access) return JSON.stringify({ error: access.error });
 
       if (input.action === 'vulnerabilities') {

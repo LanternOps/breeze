@@ -187,11 +187,42 @@ export const SENTRY_EVENT_CODES = [
   /** An org reached the AI billing path with no partner row to bill. */
   'ai_billing_org_partner_missing',
   /**
-   * AI model registry W01 (#7599): usage reached calculateCostCents with a
-   * NaN, infinite or negative token count. It was priced as 0, so that spend
-   * went unbilled; the upstream usage parser is wrong.
+   * AI model registry W03 (#7601): the billing service refused a KEYED credit
+   * debit with a 4xx (bad input, key reused with another amount, auth). The
+   * reservation is stamped credits_debit_failed_at for an operator; the sweep
+   * does not retry it (listFailedCreditDebits / clearCreditDebitFailure).
    */
-  'ai_usage_invalid_token_count',
+  'ai_credit_debit_rejected',
+  /** W03 (#7601): a keyed credit debit stayed unconfirmed (5xx / transport) through every retry. */
+  'ai_credit_debit_retries_exhausted',
+  /**
+   * AI model registry W11 (#7609): a settlement's prompt variant did not match
+   * its row's surface / prompt profile, so it was recorded as the base prompt
+   * (the settlement itself never fails on provenance). Any occurrence skews the
+   * prompt-variant comparison; post-deploy gate G3 expects zero.
+   */
+  'ai_prompt_variant_mismatch',
+  /**
+   * W03 (#7601, PR #7700 finding 5): a deferred (pending) AI settlement failed
+   * every replay attempt and was stamped pending_settlement_dead_at. Its spend
+   * is unrecorded until an operator acts (listDeadPendingSettlements).
+   */
+  'ai_settlement_replay_dead',
+  /**
+   * W03 (#7601, PR #7700 review S1): a settlement blocked twice on the org lock
+   * AND its pending_settlement write failed (or another one already held the
+   * slot). The spend is recorded nowhere; the reservation is left
+   * indeterminate. Tags carry org_id + ai_reservation_id for reconciliation.
+   */
+  'ai_settlement_unrecorded',
+  /**
+   * W03 (#7601, W05 spike): an Agent SDK cumulative modelUsage component went
+   * DOWN against the session's snapshot (the CLI's counters restarted, or a
+   * glitch). The snapshot is re-baselined to the current reading and the turn
+   * bills its own result.usage capped by modelUsage, unconfirmed (#7700
+   * review finding 3).
+   */
+  'ai_usage_snapshot_regressed',
   /**
    * Execution plane W04 (#5715): the sandbox backend's create circuit opened
    * after 5 consecutive failures — no analysis run can start in this region
@@ -201,11 +232,30 @@ export const SENTRY_EVENT_CODES = [
   /** A rejected partner AI key could not be stamped (config moved under us). */
   'ai_partner_key_error_stamp_stale',
   /**
+   * AI model registry W08 (#7606): a partner without a registry row was
+   * bootstrapped onto the one Anthropic connection it already owned (only a
+   * deployment that skipped the W03 cutover release); its legacy model
+   * settings were never migrated.
+   */
+  'ai_registry_bootstrap_existing_connection',
+  /**
    * Every in-memory AI session was mid-turn when the LRU cap was reached, so
    * nothing could be evicted and MAX_ACTIVE_SESSIONS was exceeded. Throttled by
    * the caller; a sustained stream means real capacity exhaustion.
    */
   'ai_session_cap_all_in_flight',
+  /**
+   * AI chargeback (#7608): one or more orgs' monthly close threw during the
+   * daily sweep. Each failure is also a captureException tagged org_id +
+   * ai_charge_period_start; the next daily sweep retries the month.
+   */
+  'ai_chargeback_close_failed',
+  /**
+   * AI chargeback (#7608): an org's close found chargeable usage that aged
+   * past the 92-day lookback without ever being closed. It will never be
+   * billed; tags carry org_id + ai_charge_period_start.
+   */
+  'ai_chargeback_usage_expired',
   /** A crossed AI budget rung (#4388) resolved to zero notifiable recipients. */
   'ai_budget_alert_no_recipients',
   /** An AI budget alert event never became visible before its retries ran out. */
@@ -221,6 +271,14 @@ export const SENTRY_EVENT_CODES = [
    * failing, so this is the only signal an operator gets.
    */
   'ai_agent_onlytools_unknown_name',
+  /**
+   * An AI chat tool call reached our handler without the SDK's tool_use id
+   * (`_meta['claudecode/toolUseId']`), so its result was paired by tool name
+   * instead (#7931). Reported once per session. Expected never to fire; if it
+   * does, the SDK/CLI stopped sending the id and same-name parallel calls can
+   * be mis-paired again.
+   */
+  'ai_tool_use_id_missing',
 
   // --- backup -----------------------------------------------------------
   /** A backup result matched no job row (deleted, or invisible under RLS). */

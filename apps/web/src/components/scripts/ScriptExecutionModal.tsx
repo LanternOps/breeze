@@ -46,6 +46,9 @@ type ScriptExecutionModalProps = {
   // new object identity does not fight the operator's in-progress edits.
   initialDeviceIds?: string[];
   initialParameters?: Record<string, string | number | boolean>;
+  // #7479 — pin the fetched device picker to this org instead of the top-bar
+  // org switcher's (callers opened from a device page pass the device's org).
+  orgId?: string;
 };
 
 type ExecutionState = 'idle' | 'submitting' | 'admitted' | 'partially_admitted' | 'rejected' | 'transport_error';
@@ -58,7 +61,8 @@ export default function ScriptExecutionModal({
   onClose,
   onExecute,
   initialDeviceIds,
-  initialParameters
+  initialParameters,
+  orgId
 }: ScriptExecutionModalProps) {
   const { t } = useTranslation('scripts');
   const [query, setQuery] = useState('');
@@ -81,7 +85,7 @@ export default function ScriptExecutionModal({
 
   const { preview: filterPreview } = useFilterPreview(
     showAdvancedFilter ? advancedFilter : null,
-    { enabled: showAdvancedFilter }
+    { enabled: showAdvancedFilter, orgId }
   );
   const advancedFilterIds = useMemo(() => {
     if (!showAdvancedFilter || !filterPreview) return null;
@@ -93,6 +97,7 @@ export default function ScriptExecutionModal({
     status: statusFilter === 'all' ? undefined : statusFilter,
     siteId: siteFilter === 'all' ? undefined : siteFilter,
     osType: script.osTypes.length === 1 ? script.osTypes[0] : undefined,
+    orgId,
     includeIds: [...selectedDeviceIds],
     enabled: devices === undefined && isOpen,
     limit: 100,
@@ -182,6 +187,7 @@ export default function ScriptExecutionModal({
     status: undefined,
     siteId: siteFilter === 'all' ? undefined : siteFilter,
     osType: script.osTypes.length === 1 ? script.osTypes[0] : undefined,
+    orgId,
     enabled: probeEnabled,
     limit: 1,
   });
@@ -625,9 +631,14 @@ export default function ScriptExecutionModal({
 
         {/* Footer */}
         <div className="flex items-center justify-between border-t px-6 py-4">
-          <p className="text-sm text-muted-foreground">
-            {t('scriptExecutionModal.selectedCount', { count: selectedDeviceIds.size })}
-          </p>
+          <div className="text-sm text-muted-foreground">
+            <p>{t('scriptExecutionModal.selectedCount', { count: selectedDeviceIds.size })}</p>
+            {selectedDeviceIds.size > 0 && deviceOptions.state === 'truncated' && (
+              <p data-testid="script-execute-blocked-reason" role="alert" className="mt-0.5 text-destructive">
+                {t('scriptExecutionModal.executeBlocked')}
+              </p>
+            )}
+          </div>
           <div className="flex items-center gap-3">
             <button
               type="button"

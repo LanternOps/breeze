@@ -23,6 +23,7 @@ import {
   closeScriptBuilderSession,
 } from '../services/scriptBuilderService';
 import { runPreFlightChecks, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
+import { turnBindingFrom } from '../services/aiModels/turnBinding';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { handleApproval } from '../services/aiAgent';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -43,8 +44,10 @@ import { db } from '../db';
 import { aiSessions, aiMessages } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { PERMISSIONS } from '../services/permissions';
-import { LlmUnavailableError, resolveLlmConfigForOrg } from '../services/llm/llmConfigResolver';
-import { AI_NOT_CONFIGURED_BODY, llmUnusableCode } from '../services/llm/llmAvailability';
+import { LlmUnavailableError, llmUnavailableBody } from '../services/llm/llmUnavailableError';
+import { AI_NOT_CONFIGURED_BODY, LlmNotConfiguredError } from '../services/llm/llmAvailability';
+import { readOrgPartnerId } from '../services/aiModels/candidateLoader';
+import { chooseSessionModel, type SessionModelChoice } from '../services/aiModels/sessionModel';
 import {
   isAiBudgetLockTimeout,
   releaseUnusedAiBudgetReservation,
@@ -93,25 +96,25 @@ scriptAiRoutes.post(
     const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
     if (!orgId) return c.json({ error: 'Organization context required' }, 400);
 
-    let resolved;
+    // The builder's model is picked through the registry (W03 #7601) and runs
+    // on the Agent SDK. An MCP_LLM_* OpenAI-compatible endpoint reaches it only
+    // as a registry offering (env-managed gateway connection), never as a
+    // separate provider branch. Refuse before a session exists: with no model
+    // the builder's first message could only come back empty.
+    let choice: SessionModelChoice;
     try {
-      resolved = await resolveLlmConfigForOrg(orgId);
+      const partnerId = await readOrgPartnerId(orgId);
+      if (!partnerId) return c.json({ error: 'ai_unavailable' }, 503);
+      choice = await chooseSessionModel({ partnerId, orgId, userId: auth.user.id, surface: 'script_builder' });
     } catch (err) {
+      if (err instanceof LlmNotConfiguredError) return c.json(AI_NOT_CONFIGURED_BODY, 503);
+      if (err instanceof LlmUnavailableError) return c.json(llmUnavailableBody(err), 503);
       captureException(err, c);
       return c.json({ error: 'AI configuration could not be loaded. Try again.' }, 503);
     }
 
     try {
-      // Refuse before a session exists: with no model provider the builder's
-      // first message could only come back empty.
-      // The builder always runs the Agent SDK, never the OpenAI-compatible provider.
-      if (llmUnusableCode(resolved, 'agent_sdk') === 'ai_not_configured') {
-        return c.json(AI_NOT_CONFIGURED_BODY, 503);
-      }
-      if (resolved.source === 'unavailable') {
-        return c.json({ error: 'ai_unavailable' }, 503);
-      }
-      const session = await createScriptBuilderSession(auth, body, resolved.model);
+      const session = await createScriptBuilderSession(auth, body, choice);
       writeRouteAudit(c, {
         orgId: session.orgId,
         action: 'ai.script_builder.session.create',
@@ -212,6 +215,8 @@ scriptAiRoutes.post(
       const err = preflight.error;
       if (err === 'ai_not_configured') return c.json(AI_NOT_CONFIGURED_BODY, 503);
       if (err === 'ai_unavailable') return c.json({ error: 'ai_unavailable' }, 503);
+      // W03: a stored model that went ineligible is recoverable (choose another).
+      if (preflight.code) return c.json({ error: err, code: preflight.code, recoverable: true }, preflight.status === 503 ? 503 : 409);
       if (preflight.status === 503) return c.json({ error: err }, 503);
       if (err === 'Session not found') return c.json({ error: err }, 404);
       if (err.includes('rate limit') || err.includes('Rate limit')) return c.json({ error: err }, 429);
@@ -225,7 +230,11 @@ scriptAiRoutes.post(
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, resolved } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, model: resolvedModel } = preflight;
+    // A script-builder session always runs the Agent SDK, so preflight always resolves its model.
+    if (!resolvedModel) throw new Error('script builder preflight returned no resolved model');
+    const model = resolvedModel;
+    const binding = turnBindingFrom(model);
 
     // Now safe to update editor context
     let updatedSystemPrompt: string | undefined;
@@ -264,9 +273,10 @@ scriptAiRoutes.post(
     try {
       reservation = await reserveAiBudget({
         orgId: dbSession.orgId,
-        billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
+        billingSource: model.funding,
         sessionId,
         idempotencyKey: `script-chat:${sessionId}:${crypto.randomUUID()}`,
+        binding,
       });
     } catch (err) {
       if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
@@ -278,14 +288,9 @@ scriptAiRoutes.post(
       ? reservation.reservedCostCents / 100
       : undefined;
 
-    // Get or create streaming session with script builder MCP tools.
-    //
-    // The pre-flight above already turns an unavailable partner config into a
-    // 503, but it cannot see this one: `getOrCreate` resolves the WIRE model
-    // inside the manager, so a catalog revision with no verified mapping for
-    // THIS session's model fails closed only here. Same catch shape as
-    // ai.ts — otherwise it reaches `app.onError` as a 500, telling the UI "we
-    // broke" instead of the documented "reconnect your AI provider".
+    // Get or create streaming session with script builder MCP tools. The model
+    // was resolved (wire id included) in preflight; the LlmUnavailableError
+    // catch is a last-resort guard with ai.ts's shape, never a 500.
     type ActiveScriptSession = Awaited<ReturnType<typeof streamingSessionManager.getOrCreate>>;
     const dispatch = await inRequestDb(async (): Promise<
       | { kind: 'dispatched'; activeSession: ActiveScriptSession }
@@ -299,7 +304,6 @@ scriptAiRoutes.post(
           {
             orgId: dbSession.orgId,
             sdkSessionId: dbSession.sdkSessionId,
-            model: dbSession.model,
             maxTurns: dbSession.maxTurns,
             turnCount: dbSession.turnCount,
             systemPrompt: dbSession.systemPrompt,
@@ -308,18 +312,18 @@ scriptAiRoutes.post(
           c,
           effectiveSystemPrompt,
           reservedMaxBudgetUsd,
-          resolved,
+          model,
           SCRIPT_BUILDER_MCP_TOOL_NAMES,
           // Custom MCP server factory for script builder tools
           (getAuth, onPreToolUse, onPostToolUse) => ({
             server: createScriptBuilderMcpServer(getAuth, onPreToolUse, onPostToolUse),
             name: SCRIPT_BUILDER_MCP_SERVER_NAME,
           }),
-          { budgetReservationId },
+          { budgetReservationId, ledgerUserId: auth.user.id },
         );
       } catch (err) {
         if (err instanceof LlmUnavailableError) {
-          return { kind: 'refused', response: c.json({ error: 'ai_unavailable' }, 503) };
+          return { kind: 'refused', response: c.json(llmUnavailableBody(err), 503) };
         }
         return { kind: 'failed', error: err };
       }
@@ -327,7 +331,7 @@ scriptAiRoutes.post(
       // Concurrent message guard - atomic check-and-set. If the turn is blocked
       // only on pending approval waits, settle them so the assistant can
       // conclude and answer this message (#3089 — shared helper, see ai.ts).
-      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetReservationId)) {
+      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetReservationId, { turnBinding: binding })) {
         return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
       }
 

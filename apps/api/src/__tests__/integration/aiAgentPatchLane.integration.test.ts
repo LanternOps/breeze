@@ -64,6 +64,11 @@ import {
 import { processSweepOccurrence } from '../../jobs/aiAgentSweepScheduler';
 import { registerAgentRunEnqueuer, type AgentRunEnqueuer } from '../../services/aiAgents/runService';
 import type { AuthContext } from '../../middleware/auth';
+import { usePlatformAiKeyPlaceholder } from './helpers/platformAiKey';
+
+// W03 (#7601): agent admission resolves the agent's model first; the
+// platform default is only usable with a platform key configured.
+usePlatformAiKeyPlaceholder();
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 

@@ -6,10 +6,12 @@ vi.mock('./auth', () => ({
 
 import { fetchWithAuth } from './auth';
 import { useAiStore } from './aiStore';
+import { useAiModelPickerStore } from './aiModelPickerStore';
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 // Captured before any case spies on the store's own actions.
 const realCreateSession = useAiStore.getState().createSession;
+const realSendMessage = useAiStore.getState().sendMessage;
 
 const makeResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -203,5 +205,61 @@ describe('ai store', () => {
     expect(body).not.toHaveProperty('delegantM365ConnectionId');
     expect(body).not.toHaveProperty('deviceId');
     expect(useAiStore.getState().sessionId).toBe('sess-topo');
+  });
+
+  describe('W05 model choice on sendMessage', () => {
+    const streamResponse = (events: unknown[]): Response => {
+      const enc = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(c) {
+          for (const e of events) c.enqueue(enc.encode(`data: ${JSON.stringify(e)}\n\n`));
+          c.close();
+        }
+      });
+      return { ok: true, status: 200, body: stream, json: vi.fn() } as unknown as Response;
+    };
+    const mockStreamResponse = (events: unknown[]) => fetchWithAuthMock.mockResolvedValueOnce(streamResponse(events));
+    const mockJsonResponse = (status: number, payload: unknown) =>
+      fetchWithAuthMock.mockResolvedValueOnce(makeResponse(payload, status < 400, status));
+    const lastPostBody = (suffix: string): string => {
+      const call = [...fetchWithAuthMock.mock.calls].reverse().find(([url, init]) =>
+        String(url).endsWith(suffix) && (init as RequestInit | undefined)?.method === 'POST');
+      return String((call?.[1] as RequestInit).body);
+    };
+
+    beforeEach(() => {
+      useAiModelPickerStore.getState().reset();
+      useAiStore.setState({ createSession: realCreateSession, sendMessage: realSendMessage } as never);
+    });
+
+    it('sends the composer\'s pending model choice, and commits it after the reply (W05)', async () => {
+      useAiStore.setState({ sessionId: 'session-1' });
+      useAiModelPickerStore.setState({ choices: { surface: 'chat', allowUserChoice: true, defaultOfferingId: 'def', choices: [], current: { offeringId: 'def', options: null } }, selection: { offeringId: 'haiku', options: {} } });
+      mockStreamResponse([{ type: 'done' }]);
+      await useAiStore.getState().sendMessage('hi');
+      expect(JSON.parse(lastPostBody('/messages')).model).toEqual({ offeringId: 'haiku', options: {} });
+      expect(useAiModelPickerStore.getState().choices!.current!.offeringId).toBe('haiku');
+    });
+
+    it('a model picked before the first message creates the session ON that model (Codex review finding 12)', async () => {
+      useAiStore.setState({ sessionId: null });
+      useAiModelPickerStore.setState({ choices: { surface: 'chat', allowUserChoice: true, defaultOfferingId: 'def', choices: [], current: null }, selection: { offeringId: 'haiku', options: { budgetThinking: 'on' } } });
+      mockJsonResponse(201, { id: 'new-1', orgId: 'o1' });
+      mockJsonResponse(200, { data: { surface: 'chat', allowUserChoice: true, defaultOfferingId: 'def', choices: [], current: { offeringId: 'haiku', options: { budgetThinking: 'on' } } } });
+      mockStreamResponse([{ type: 'done' }]);
+      await useAiStore.getState().sendMessage('first');
+      expect(JSON.parse(lastPostBody('/ai/sessions'))).toMatchObject({ offeringId: 'haiku', options: { budgetThinking: 'on' } });
+      expect(JSON.parse(lastPostBody('/messages'))).not.toHaveProperty('model');
+    });
+
+    it('a 409 continuation_required parks the message for the continuation prompt instead of showing an error (W05)', async () => {
+      useAiStore.setState({ sessionId: 'session-1' });
+      useAiModelPickerStore.setState({ selection: { offeringId: 'haiku' } });
+      mockJsonResponse(409, { error: 'too long', code: 'continuation_required', reason: 'transcript_too_large', recoverable: true, target: { offeringId: 'haiku', displayName: 'Haiku 4.5' } });
+      await useAiStore.getState().sendMessage('next question');
+      expect(useAiModelPickerStore.getState().continuation).toMatchObject({ pendingContent: 'next question', required: { reason: 'transcript_too_large' } });
+      expect(useAiStore.getState().error).toBeNull();
+      expect(useAiStore.getState().messages.some((m) => m.content === 'next question')).toBe(false);
+    });
   });
 });

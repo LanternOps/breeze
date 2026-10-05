@@ -6,6 +6,7 @@ import { devices } from './devices';
 import { portalUsers } from './portal';
 import { actionIntents } from './actionIntents';
 import { partnerAiModels } from './aiModelRegistry';
+import type { AiTurnModel } from '@breeze/shared';
 
 // ============================================
 // Enums
@@ -36,7 +37,9 @@ export const aiSessions = pgTable('ai_sessions', {
   status: aiSessionStatusEnum('status').notNull().default('active'),
   type: text('type').notNull().default('general'),
   title: varchar('title', { length: 255 }),
-  model: varchar('model', { length: 100 }).notNull().default('claude-sonnet-4-5-20250929'),
+  // No default (W03 #7601): every insert names its model, a provenance
+  // snapshot of the resolved offering (routing reads offering_id).
+  model: varchar('model', { length: 100 }).notNull(),
   billingSource: text('billing_source', { enum: ['platform', 'partner_key'] }).notNull().default('platform'),
   catalogEntryId: uuid('catalog_entry_id'),
   catalogRevisionId: uuid('catalog_revision_id'),
@@ -97,6 +100,23 @@ export const aiSessions = pgTable('ai_sessions', {
   offeringId: uuid('offering_id'),
   offeringPartnerId: uuid('offering_partner_id'),
   options: jsonb('options').$type<Record<string, unknown>>(),
+  // AI model registry W03 (#7601, W05 spike): the last cumulative Agent SDK
+  // modelUsage billed for this session (SdkUsageSnapshot). Advanced only in a
+  // settlement transaction, as a component-wise high-water mark — except a
+  // regressed turn's re-baseline, which is stored as-is (#7700 finding 3).
+  sdkUsageSnapshot: jsonb('sdk_usage_snapshot').$type<Record<string, unknown> | null>(),
+  // AI model registry W05 (#7603): what ran the session's last turn (an
+  // AiTurnModel: served model + applied options), written when `turn_model`
+  // is published. The object-only CHECK lives in SQL:
+  // 2026-11-29-100100-ai-sessions-last-turn-model.sql.
+  lastTurnModel: jsonb('last_turn_model').$type<AiTurnModel | null>(),
+  // AI model registry W05 (#7603): the session this one continues (a model
+  // switch that could not resume). Server-owned: written only by
+  // insertContinuationSession, never from a request body. Composite same-org
+  // self-FK (continued_from_session_id, org_id) → (id, org_id), ON DELETE SET
+  // NULL (continued_from_session_id), DEFERRABLE INITIALLY IMMEDIATE, and a
+  // not-self CHECK — declared in 2026-11-29-100200-ai-sessions-continued-from.sql.
+  continuedFromSessionId: uuid('continued_from_session_id'),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
   topologySiteIdx: index('ai_sessions_topology_site_idx').on(table.topologySiteId, table.orgId).where(sql`${table.topologySiteId} IS NOT NULL`),
@@ -115,6 +135,7 @@ export const aiSessions = pgTable('ai_sessions', {
     name: 'ai_sessions_offering_org_partner_fk',
   }),
   offeringIdx: index('ai_sessions_offering_idx').on(table.offeringId).where(sql`${table.offeringId} IS NOT NULL`),
+  continuedFromIdx: index('ai_sessions_continued_from_idx').on(table.continuedFromSessionId).where(sql`${table.continuedFromSessionId} IS NOT NULL`),
 }));
 
 // ============================================
@@ -208,7 +229,6 @@ export const aiBudgets = pgTable('ai_budgets', {
   monthlyBudgetCents: integer('monthly_budget_cents'),
   dailyBudgetCents: integer('daily_budget_cents'),
   maxTurnsPerSession: integer('max_turns_per_session').notNull().default(50),
-  allowedModels: jsonb('allowed_models').default(['claude-sonnet-4-5-20250929']),
   messagesPerMinutePerUser: integer('messages_per_minute_per_user').notNull().default(20),
   messagesPerHourPerOrg: integer('messages_per_hour_per_org').notNull().default(200),
   approvalMode: aiApprovalModeEnum('approval_mode').notNull().default('per_step'),
@@ -272,6 +292,24 @@ export const aiBudgetReservations = pgTable('ai_budget_reservations', {
     .default(sql`now() + interval '30 minutes'`),
   expiredAt: timestamp('expired_at', { withTimezone: true }),
   expiryReason: varchar('expiry_reason', { length: 32 }),
+  // AI model registry W03 (#7601, spec §9.2): the TurnBinding this reservation
+  // claimed. Settlement only bills a rate bound here.
+  modelBinding: jsonb('model_binding').$type<Record<string, unknown> | null>(),
+  // A settlement deferred by org-lock contention, replayed by the sweep.
+  pendingSettlement: jsonb('pending_settlement').$type<Record<string, unknown> | null>(),
+  // Replay dead-letter (#7700 finding 5): failed replays so far, the last
+  // scrubbed error, and when it was given up on (excluded from replay).
+  pendingSettlementAttempts: integer('pending_settlement_attempts').notNull().default(0),
+  pendingSettlementError: varchar('pending_settlement_error', { length: 128 }),
+  pendingSettlementDeadAt: timestamp('pending_settlement_dead_at', { withTimezone: true }),
+  // Exactly-once keyed platform credit debit (`ai-settlement:<id>`). `due` is
+  // set only by a ledger settlement of platform spend; failed = terminal (4xx
+  // or retries exhausted), excluded from the sweep's retry and operator-visible.
+  creditsDebitDueAt: timestamp('credits_debit_due_at', { withTimezone: true }),
+  creditsDebitedAt: timestamp('credits_debited_at', { withTimezone: true }),
+  creditsDebitFailedAt: timestamp('credits_debit_failed_at', { withTimezone: true }),
+  creditsDebitError: varchar('credits_debit_error', { length: 128 }),
+  creditsDebitAttempts: integer('credits_debit_attempts').notNull().default(0),
 }, (table) => ({
   orgIdempotencyIdx: uniqueIndex('ai_budget_reservations_org_idempotency_uidx')
     .on(table.orgId, table.idempotencyKey),
@@ -279,8 +317,11 @@ export const aiBudgetReservations = pgTable('ai_budget_reservations', {
     .on(table.orgId, table.dailyPeriodKey, table.monthlyPeriodKey, table.status),
   namespacePeriodIdx: index('ai_budget_reservations_namespace_period_idx')
     .on(table.orgId, table.namespace, table.dailyPeriodKey, table.monthlyPeriodKey, table.status),
-  // Partial index created via SQL migration
-  // (ai_budget_reservations_expiry_sweep_idx, WHERE status IN ('active','indeterminate')).
+  // Partial indexes created via SQL migration
+  // (ai_budget_reservations_expiry_sweep_idx, WHERE status IN ('active','indeterminate');
+  // W03: _pending_settlement_idx, _credits_undebited_idx, _credits_debit_failed_idx,
+  // _pending_replay_idx, _pending_dead_idx; W05: _session_turn_idx, WHERE session_id IS NOT NULL; CHECK
+  // ai_budget_reservations_credits_debit_attempts_chk, _pending_settlement_attempts_chk).
   // Composite (session_id, org_id) FK is SQL-only because Drizzle cannot
   // express PostgreSQL's column-specific ON DELETE SET NULL (session_id).
 }));

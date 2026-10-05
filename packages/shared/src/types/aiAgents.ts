@@ -1,5 +1,12 @@
-export const AI_AGENT_KINDS = ['triage', 'patch', 'helpdesk', 'designer'] as const;
+export const AI_AGENT_KINDS = ['triage', 'patch', 'helpdesk', 'designer', 'research'] as const;
 export type AiAgentKind = (typeof AI_AGENT_KINDS)[number];
+
+/**
+ * Kinds that can hold tool actions (and so earn supervised keys / graduation).
+ * `research` is read-only with zero actions (AI Suggested Fixes W2), so
+ * action-keyed surfaces enumerate this instead of AI_AGENT_KINDS.
+ */
+export const AI_AGENT_ACTING_KINDS = ['triage', 'patch', 'helpdesk', 'designer'] as const satisfies readonly AiAgentKind[];
 
 export const AI_AGENT_MODES = ['off', 'shadow', 'act'] as const;
 export type AiAgentMode = (typeof AI_AGENT_MODES)[number];
@@ -11,8 +18,15 @@ export type AiAgentMode = (typeof AI_AGENT_MODES)[number];
  * enforce this through `allowedModesForKind`.
  */
 export const DESIGNER_ALLOWED_MODES: readonly AiAgentMode[] = ['off', 'act'] as const;
+/**
+ * AI Suggested Fixes W2 — a research agent only ever produces suggestions
+ * (maxActionsPerRun 0), so `shadow` has nothing to shadow; `act` means "on".
+ */
+export const RESEARCH_ALLOWED_MODES: readonly AiAgentMode[] = ['off', 'act'] as const;
 export function allowedModesForKind(kind: AiAgentKind): readonly AiAgentMode[] {
-  return kind === 'designer' ? DESIGNER_ALLOWED_MODES : AI_AGENT_MODES;
+  if (kind === 'designer') return DESIGNER_ALLOWED_MODES;
+  if (kind === 'research') return RESEARCH_ALLOWED_MODES;
+  return AI_AGENT_MODES;
 }
 
 /** Ladder used by the tighten-only merge: lower rank = stricter. */
@@ -22,8 +36,14 @@ export function minAgentMode(a: AiAgentMode, b: AiAgentMode): AiAgentMode {
   return AI_AGENT_MODE_RANK[a] <= AI_AGENT_MODE_RANK[b] ? a : b;
 }
 
+/**
+ * `blocked` (AI model registry W03): a terminal status for a run whose model
+ * was unavailable at dispatch (error_code `model_unavailable`) or that the
+ * model refused (`model_refused`, category in `outcome`). Neutral for the
+ * circuit breaker: an admin's model choice is not an agent fault.
+ */
 export const AI_AGENT_RUN_STATUSES = [
-  'queued', 'running', 'awaiting_approval', 'completed', 'failed', 'cancelled', 'expired', 'skipped',
+  'queued', 'running', 'awaiting_approval', 'completed', 'failed', 'cancelled', 'expired', 'skipped', 'blocked',
 ] as const;
 export type AiAgentRunStatus = (typeof AI_AGENT_RUN_STATUSES)[number];
 
@@ -246,6 +266,22 @@ export interface AiAgentLimits {
   /** Spec §7.2 "pending cap ... 100 per org". A WAITING task consumes no
    *  active-run concurrency but does consume this quota. */
   taskMaxPendingPerOrg: number;
+  /**
+   * v16 (AI Suggested Fixes W2) — `remediation_research` caps. Turns and
+   * budgets are per DEPTH (quick = Generate/auto, deep = "Research deeper").
+   * The budgets are CEILINGS, not estimates; see services/llm/researchEval
+   * for the harness that measures real cost.
+   * `maxAutoResearchRunsPerHour` caps AUTO research (trigger_kind 'alert') per
+   * org; enforced by admission (rule 6c) under the (agent, org) advisory lock.
+   * 0 disables auto research.
+   */
+  maxConcurrentResearchRuns: number;
+  maxResearchRunsPerHour: number;
+  maxAutoResearchRunsPerHour: number;
+  researchQuickMaxTurns: number;
+  researchDeepMaxTurns: number;
+  researchQuickBudgetCentsPerRun: number;
+  researchDeepBudgetCentsPerRun: number;
 }
 
 export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
@@ -330,6 +366,14 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   taskDeadlineHours: 72,
   taskMaxActiveTargets: 1,
   taskMaxPendingPerOrg: 100,
+  // Research-profile caps (AI Suggested Fixes W2) — see the interface docstring.
+  maxConcurrentResearchRuns: 2,
+  maxResearchRunsPerHour: 30,
+  maxAutoResearchRunsPerHour: 6,
+  researchQuickMaxTurns: 4,
+  researchDeepMaxTurns: 10,
+  researchQuickBudgetCentsPerRun: 5,
+  researchDeepBudgetCentsPerRun: 25,
 });
 
 export interface AiAgentTriggers {
@@ -550,7 +594,16 @@ export interface AiAgentActAssets {
 export interface AiAgentPolicy {
   enabled: boolean;
   mode: AiAgentMode;
-  model: string | null;
+  /**
+   * AI model registry W03: the registry offering the policy is bound to
+   * (`ai_agents.offering_id`, written at policy-write time; the policy `model`
+   * string was retired in W08, #7606). Org row's
+   * binding wins, else the partner baseline's; null = follow the `ai_agents`
+   * assignment. Optional because snapshots frozen before W03 lack it — read it
+   * as `?? null`. The run-time resolver re-checks it against the `ai_agents`
+   * permitted set, so it never widens what the org may use.
+   */
+  offeringId?: string | null;
   toolAllowlist: string[];
   protectedResources: AiAgentProtectedResources;
   limits: AiAgentLimits;
@@ -676,12 +729,16 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * lacks them and MUST still execute; read sites fall back to
  * `AI_AGENT_LIMIT_DEFAULTS` for a pre-v15 snapshot. Every site that switches
  * on `schemaVersion` must tolerate 1 through 15.
+ *
+ * v16 (AI Suggested Fixes W2): the seven research-profile limits. Same rule as
+ * every prior bump: a v1-v15 in-flight run's snapshot lacks them and MUST still
+ * execute; read sites fall back to `AI_AGENT_LIMIT_DEFAULTS`.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 15 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 16 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), 10 (pre-patch-limits), 11 (pre-analysis-limits), 12 (pre-sweep-act-limits), 13 (pre-design-wall-clock), 14 (pre-task-limits), or 15 (current). Read sites must tolerate all fifteen. */
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), 10 (pre-patch-limits), 11 (pre-analysis-limits), 12 (pre-sweep-act-limits), 13 (pre-design-wall-clock), 14 (pre-task-limits), 15 (pre-research-limits), or 16 (current). Read sites must tolerate all sixteen. */
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;
@@ -772,7 +829,12 @@ export interface AiAgentDto {
   name: string;
   enabled: boolean;
   mode: AiAgentMode;
-  model: string | null;
+  /**
+   * AI model registry W05: the registry offering the policy is bound to
+   * (`ai_agents.offering_id`); null = the agent follows the `ai_agents`
+   * assignment default.
+   */
+  offeringId: string | null;
   orgId: string | null;
   partnerId: string | null;
   /** Derived from the owner columns; always consistent with them. */
@@ -1070,7 +1132,7 @@ export type AgentRunVerdict = 'remediated' | 'needs_attention' | 'partial' | 'no
  * counted against `analysisMaxConcurrentRuns`/`analysisMaxRunsPerHour`.
  */
 export const AI_AGENT_RUN_PROFILES = [
-  'full', 'verdict', 'sweep', 'narrative', 'triage', 'design', 'patch', 'analysis',
+  'full', 'verdict', 'sweep', 'narrative', 'triage', 'design', 'patch', 'analysis', 'remediation_research',
 ] as const;
 export type AiAgentRunProfile = (typeof AI_AGENT_RUN_PROFILES)[number];
 

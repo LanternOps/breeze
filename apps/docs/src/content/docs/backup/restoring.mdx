@@ -122,6 +122,31 @@ Otherwise the restore uses the previous path, where the device receives the stor
 
 ---
 
+## Integrity checks on restore
+
+**v0.120.0+.** Every restore, verification, test restore, SQL Server restore, Hyper-V restore, restore as VM, instant boot and bare-metal recovery carries what Breeze knows about the snapshot's **attestation**: the exact size and SHA-256 of its manifest (and, for whole-machine snapshots, its disk layout and system-state manifest), or why the snapshot has none.
+
+**Attested snapshots.** With a v0.120.0 or later backup helper on the device:
+
+- The manifest, layout and system-state manifest are checked against the attestation before they are read.
+- Every restored file must match its manifest entry exactly, size and SHA-256. A file whose entry has no checksum fails (`missing_checksum`).
+- Each file is downloaded to a staging file next to its destination and moved into place only after it passes, so a file that fails is never written over anything.
+- If a [vault](/backup/vault/) copy does not match, the helper reads the file from primary storage instead and adds a warning (`vault copy differs from backup; restored from primary storage`).
+
+A failed check is reported with a result code such as `checksum_mismatch`, `size_mismatch`, `integrity_mismatch`, `missing_checksum` or `not_attested`, shown on the restore as **Result code: …**.
+
+**Snapshots that failed their integrity check are refused.** If a snapshot's stored objects did not match its attestation, Breeze will not deliver any restore, verification or VM restore from it. The command fails with `This backup did not match its integrity record and cannot be read from storage.` (or `The stored backup does not match its integrity record…`). A restore already running from such a snapshot is stopped at its next storage request. If only the snapshot's file list was built before its attestation existed, Breeze rebuilds the list and the message says so; run the restore again afterwards.
+
+**Unattested snapshots** (taken before attestations existed, or whose attestation is still pending) still restore. The result carries the warning **Unattested snapshot: files were not checked against a snapshot attestation.** This, the vault-fallback warning and the [Windows files-only recovery](/backup/bare-metal-recovery/#windows-recovers-files-only) note are advisory: they are shown as warnings, never as the reason a restore failed.
+
+If the device's backup helper is older than the server's integrity checks and cannot read the attestation format it is sent, the restore fails with a message telling you to update the Breeze agent on the device.
+
+<Aside type="tip">
+  Self-hosted operators can track this from the `breeze_backup_restore_integrity_total` metric on `/metrics`. Its `type` label is the command type (or `recovery_bootstrap`), `status` is `attested`, `unattested` or `absent`, and `reason` says why.
+</Aside>
+
+---
+
 ## Cross-Device Restore
 
 The restore API (`POST /backup/restore`) accepts a target `deviceId`, so a snapshot can be restored to a different device than the one it was taken from — both devices must be in the same organization. This is **API-only today**: the Restore Wizard in the web UI never sends a `deviceId`, so any restore started from the wizard runs on the device that owns the snapshot. To restore to a different device, call the API directly with the target `deviceId`.
@@ -135,6 +160,8 @@ Cross-device restores also require the destination device to be online when you 
 - **Preserved** — file content byte-for-byte; on Linux and macOS, Unix mode permission bits and the original modification time (mtime) are reapplied to each restored file.
 - **Not preserved** — symlinks are skipped entirely, both in the backup and on restore; empty directories are not recreated; setuid/setgid/sticky bits are dropped (only the base permission bits are restored).
 - **Open files.** On Windows, files locked by running applications may fail to restore. Stop the relevant services first, or restore to an alternate path.
+- **Windows names.** A path component that contains `:`, ends in `.` or a space, or is a reserved device name (`CON`, `NUL`, `COM1`, …) is refused with `invalid_windows_name`. This applies to file restores, bare-metal recovery, VM file restore and Hyper-V restore.
+- **Windows permissions.** A recorded security descriptor is applied only when every owner, group and access-list account is one the machine recognises (a well-known account, the local machine, its domain or a trusted domain). Otherwise, or when the recorded descriptor cannot be read, the item gets a restrictive access list: owner Administrators, access for SYSTEM and Administrators only. The restore result shows **N items restored with a restrictive access list** with the affected paths (up to 100 listed); review and reassign their permissions. When only an auditing (SACL) entry names an unknown account, the descriptor is applied without its auditing entries. A whole-machine rebuild applies descriptors as recorded.
 
 ---
 

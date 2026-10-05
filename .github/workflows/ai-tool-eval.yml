@@ -9,6 +9,7 @@ on:
       model: { description: 'Model id (default: resolveDefaultModel())', required: false, default: '' }
       tool_search: { description: 'default | on | off', required: false, default: 'default' }
       surface: { description: 'chat | helper-standard | …', required: false, default: 'chat' }
+      prompt_variant: { description: 'Prompt variant id to append (W11), e.g. chat/claude-frontier@1; empty = base prompt', required: false, default: '' }
   schedule:
     - cron: '15 5 * * 1'   # Mondays 05:15 UTC
 
@@ -50,15 +51,21 @@ jobs:
           EVAL_SURFACE: ${{ github.event.inputs.surface || 'chat' }}
           EVAL_TOOL_SEARCH: ${{ github.event.inputs.tool_search || 'default' }}
           EVAL_MODEL: ${{ github.event.inputs.model || '' }}
+          EVAL_PROMPT_VARIANT: ${{ github.event.inputs.prompt_variant || '' }}
         run: |
           model_args=()
           if [ -n "$EVAL_MODEL" ]; then
             model_args=(--model "$EVAL_MODEL")
           fi
+          variant_args=()
+          if [ -n "$EVAL_PROMPT_VARIANT" ]; then
+            variant_args=(--prompt-variant "$EVAL_PROMPT_VARIANT")
+          fi
           pnpm --filter @breeze/api ai:tool-eval -- \
             --surface "$EVAL_SURFACE" \
             --tool-search "$EVAL_TOOL_SEARCH" \
             "${model_args[@]}" \
+            "${variant_args[@]}" \
             --out "$GITHUB_WORKSPACE/tool-eval-report.json" \
             --summary-md "$GITHUB_WORKSPACE/tool-eval-summary.md"
           cat "$GITHUB_WORKSPACE/tool-eval-summary.md" >> "$GITHUB_STEP_SUMMARY"

@@ -1,17 +1,25 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, desc, eq, gte, inArray, sql, type SQL } from 'drizzle-orm';
+import { RESEARCH_BUILTIN_PARAM_SCHEMAS } from '@breeze/shared';
+import { and, desc, eq, gte, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import { devices, elevationAudit, elevationRequests, mlFeedbackEvents, remediationSuggestions } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../middleware/auth';
+import { authMiddleware, type AuthContext, requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { emitRemediationSuggestionFeedback } from '../services/mlFeedbackEmitters';
 import { generateRemediationSuggestions } from '../services/remediationSuggestions';
-import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { canAccessSite, hasPermission, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { executeScriptOnDevices } from '../services/scriptExecution';
-import { createManualStepsOutcome, loadOutcomeSummaries, recordExecutionOutcome, recordOutcomeVote, type OutcomeSummary } from '../services/fixMemory/outcomeRecorder';
+import { requestResearch, researchSourceDeviceId, researchStatusForSource } from '../services/fixMemory/research';
+import { lookupFixes } from '../services/fixMemory/lookup';
+import { loadActiveInstructions } from '../services/fixMemory/instructions';
+import { dispatchBuiltinAction } from '../services/fixMemory/builtinActions';
+import { signatureForSource, sourceRefFor } from '../services/fixMemory/signatureLoader';
+import { resolveOrgPartnerId } from '../services/fixMemory/catalog';
+import { captureException } from '../services/sentry';
+import { createManualStepsOutcome, loadOutcomeSummaries, recordBuiltinOutcome, recordExecutionOutcome, recordOutcomeVote, type OutcomeSummary } from '../services/fixMemory/outcomeRecorder';
 
 export const remediationSuggestionRoutes = new Hono();
 
@@ -44,6 +52,44 @@ const generateBodySchema = z.object({
   limit: z.number().int().min(1).max(10).optional(),
 });
 
+const researchSourceTypeSchema = z.enum(['alert', 'anomaly', 'correlation']);
+const researchBodySchema = z.object({
+  sourceType: researchSourceTypeSchema,
+  sourceId: z.string().uuid(),
+  depth: z.enum(['quick', 'deep']),
+  orgId: z.string().uuid().optional(),
+});
+const sourceQuerySchema = z.object({
+  sourceType: researchSourceTypeSchema,
+  sourceId: z.string().uuid(),
+  orgId: z.string().uuid().optional(),
+});
+// Denial code -> HTTP status. The code itself always reaches the client verbatim
+// (the panel switches on it); anything not listed is a 409 "can't start now".
+const DENIAL_STATUS: Record<string, 402 | 403 | 404 | 503> = {
+  credits_exhausted: 402, daily_budget: 402, monthly_budget: 402,
+  plan_gate: 403, ai_disabled: 403, flag_off: 403, permission: 403,
+  source_not_found: 404,
+  research_unavailable: 503,
+};
+
+/** The org a research/memory request targets, or null when the caller cannot act on it. */
+function resolveOrgForSource(auth: AuthContext, orgId: string | undefined): string | null {
+  if (orgId) return auth.canAccessOrg(orgId) ? orgId : null;
+  return auth.orgId ?? null;
+}
+
+/** Thrown inside /done's savepoint so the outcome insert rolls back when the guarded link UPDATE matches no row. */
+class InstructionsLinkConflictError extends Error {
+  constructor() {
+    super('remediation suggestion already links different reviewed steps');
+    this.name = 'InstructionsLinkConflictError';
+  }
+}
+
+// Done on manual steps; instructionsId names a reviewed (active) fix_instructions row. An empty body is valid.
+const doneBodySchema = z.object({ instructionsId: z.string().uuid().optional() }).strict();
+
 const updateBodySchema = z.object({
   status: z.enum(['accepted', 'edited', 'rejected', 'executed', 'failed']),
   title: z.string().min(1).max(255).optional(),
@@ -67,7 +113,9 @@ function remediationFeedbackDedupeKey(input: {
   toolExecutionId?: string | null;
   scriptExecutionId?: string | null;
   playbookExecutionId?: string | null;
+  actionCommandId?: string | null;
 }): string {
+  if (input.actionCommandId) return `${input.status}:command:${input.actionCommandId}`;
   if (input.scriptExecutionId) return `${input.status}:script:${input.scriptExecutionId}`;
   if (input.playbookExecutionId) return `${input.status}:playbook:${input.playbookExecutionId}`;
   if (input.toolExecutionId) return `${input.status}:tool:${input.toolExecutionId}`;
@@ -282,6 +330,8 @@ function serializeSuggestion(row: typeof remediationSuggestions.$inferSelect, ou
     rejectedAt: row.rejectedAt?.toISOString() ?? null,
     executedAt: row.executedAt?.toISOString() ?? null,
     origin: row.origin,
+    builtinAction: row.builtinAction,
+    agentRunId: row.agentRunId,
     outcome,
   };
 }
@@ -397,6 +447,21 @@ async function resolveSiteAllowedDeviceIds(
   return orgDevices
     .filter((device) => typeof device.siteId === 'string' && canAccessSite(perms, device.siteId))
     .map((device) => device.id);
+}
+
+/** Site-limited callers may not act on (or read run state of) a research source whose device is outside their sites. */
+async function researchSourceSiteAllowed(
+  orgId: string,
+  sourceType: 'alert' | 'anomaly' | 'correlation',
+  sourceId: string,
+  perms: UserPermissions | undefined,
+): Promise<boolean> {
+  if (!perms?.allowedSiteIds) return true;
+  const source = await researchSourceDeviceId({ orgId, sourceType, sourceId });
+  // Fail CLOSED: a site-limited caller cannot be shown to be inside their sites
+  // when the source or its device is unresolved, so answer not-found.
+  if (!source?.deviceId) return false;
+  return siteAllowedForSuggestion({ deviceId: source.deviceId }, perms);
 }
 
 async function filterSiteAllowedSuggestions<T extends typeof remediationSuggestions.$inferSelect>(
@@ -655,11 +720,29 @@ remediationSuggestionRoutes.post(
       return c.json({ error: 'Organization not found or access denied' }, 403);
     }
 
+    // Self-managed DB-context route (selfManagedDbContextRoutes.ts): no request
+    // transaction is held here. Each phase opens its own short caller-scoped
+    // context; the quick research in between runs with none held, because it
+    // provisions and admits in its own system transactions (#2417 / #6671).
+    const runInDbContext = <T>(fn: () => Promise<T>) => withAuthDbAccessContext(auth, fn);
+    const sourceType = input.sourceType;
+    if (sourceType !== 'rca') {
+      const researchOrgId = resolveOrgForSource(auth, input.orgId);
+      if (researchOrgId && !(await runInDbContext(() => researchSourceSiteAllowed(researchOrgId, sourceType, input.sourceId, perms)))) {
+        return c.json({ error: 'Suggestion source not found' }, 404);
+      }
+    }
+
     const result = await generateRemediationSuggestions({
       ...input,
       actorUserId: auth.user.id,
+      allowResearch: Array.isArray(perms?.permissions)
+        && hasPermission(perms, PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action),
+    }, { runInDbContext });
+    const { visible, outcomes } = await runInDbContext(async () => {
+      const rows = await filterSiteAllowedSuggestions(result.suggestions, perms);
+      return { visible: rows, outcomes: await loadOutcomeSummaries(rows.map((row) => row.id)) };
     });
-    const visible = await filterSiteAllowedSuggestions(result.suggestions, perms);
 
     writeRouteAudit(c, {
       orgId: result.orgId,
@@ -674,12 +757,119 @@ remediationSuggestionRoutes.post(
     });
 
     // Same shape as the list: the panel replaces its list with this response,
-    // so a suggestion that already has an attempt must keep its outcome.
-    const outcomes = await loadOutcomeSummaries(visible.map((row) => row.id));
+    // so a suggestion that already has an attempt keeps its outcome (loaded above).
     return c.json({
       skipped: result.skipped,
+      research: result.research,
       data: visible.map((row) => serializeSuggestion(row, outcomes.get(row.id) ?? null)),
     }, result.skipped ? 200 : 201);
+  }
+);
+
+remediationSuggestionRoutes.post(
+  '/research',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action),
+  zValidator('json', researchBodySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+    const orgId = resolveOrgForSource(auth, body.orgId);
+    if (!orgId) {
+      return c.json({ error: body.orgId ? 'Organization not found or access denied' : 'Select an organization.' }, body.orgId ? 403 : 400);
+    }
+    // Self-managed DB-context route: no request transaction is held. The site
+    // gate runs in one short caller-scoped context; requestResearch then runs
+    // with none held (it asserts this) and does its own reads through the same
+    // RLS-scoped runner, so a source from another org is simply not found.
+    const runReads = <T>(fn: () => Promise<T>) => withAuthDbAccessContext(auth, fn);
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (!(await runReads(() => researchSourceSiteAllowed(orgId, body.sourceType, body.sourceId, perms)))) {
+      return c.json({ error: 'The alert or anomaly no longer exists.', code: 'source_not_found' }, 404);
+    }
+    const result = await requestResearch({
+      orgId, sourceType: body.sourceType, sourceId: body.sourceId, depth: body.depth,
+      trigger: 'manual', actorUserId: auth.user.id, runReads,
+    });
+    writeRouteAudit(c, {
+      orgId,
+      action: 'ml.remediation_suggestions.research',
+      resourceType: 'remediation_suggestion',
+      details: {
+        sourceType: body.sourceType, sourceId: body.sourceId, depth: body.depth,
+        result: result.status, code: result.status === 'denied' ? result.code : undefined,
+      },
+    });
+    if (result.status === 'denied') {
+      return c.json({ error: result.message, code: result.code }, DENIAL_STATUS[result.code] ?? 409);
+    }
+    return c.json({ data: result }, result.status === 'started' ? 202 : 200);
+  }
+);
+
+remediationSuggestionRoutes.get(
+  '/research',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('query', sourceQuerySchema),
+  async (c) => {
+    const q = c.req.valid('query');
+    const orgId = resolveOrgForSource(c.get('auth'), q.orgId);
+    if (!orgId) return c.json({ data: null });
+    if (!(await researchSourceSiteAllowed(orgId, q.sourceType, q.sourceId, c.get('permissions') as UserPermissions | undefined))) {
+      return c.json({ data: null });
+    }
+    return c.json({ data: await researchStatusForSource({ orgId, sourceType: q.sourceType, sourceId: q.sourceId }) });
+  }
+);
+
+// Memory never depends on research: this reads fix_memory only, so it renders
+// whether research is running, denied or failed.
+remediationSuggestionRoutes.get(
+  '/memory',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('query', sourceQuerySchema),
+  async (c) => {
+    const q = c.req.valid('query');
+    const orgId = resolveOrgForSource(c.get('auth'), q.orgId);
+    if (orgId && !(await researchSourceSiteAllowed(orgId, q.sourceType, q.sourceId, c.get('permissions') as UserPermissions | undefined))) {
+      return c.json({ data: { proven: [], similar: [] } });
+    }
+    const ref = sourceRefFor({ sourceType: q.sourceType, sourceId: q.sourceId });
+    const resolved = orgId && ref ? await signatureForSource(ref) : null;
+    const partnerId = orgId ? await resolveOrgPartnerId(orgId) : null;
+    if (!orgId || !resolved || !partnerId) return c.json({ data: { proven: [], similar: [] } });
+    const out = await lookupFixes({ orgId, partnerId, signature: resolved.signature, limit: 5 });
+    return c.json({ data: { proven: out.proven, similar: out.similar } });
+  }
+);
+
+remediationSuggestionRoutes.get(
+  '/:id/draft-brief',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action),
+  async (c) => {
+    const auth = c.get('auth');
+    const id = c.req.param('id') ?? '';
+    if (!z.string().uuid().safeParse(id).success) return c.json({ error: 'Suggestion not found' }, 404);
+    const conditions: SQL[] = [eq(remediationSuggestions.id, id)];
+    const orgCond = auth.orgCondition(remediationSuggestions.orgId);
+    if (orgCond) conditions.push(orgCond);
+    const [row] = await db.select().from(remediationSuggestions).where(and(...conditions)).limit(1);
+    if (!row) return c.json({ error: 'Suggestion not found' }, 404);
+    if (!(await siteAllowedForSuggestion(row, c.get('permissions') as UserPermissions | undefined))) {
+      return c.json({ error: 'Suggestion not found' }, 404);
+    }
+    if (row.targetType !== 'script_draft') return c.json({ error: 'not_a_draft_request' }, 400);
+    const p = (row.parameters ?? {}) as { brief?: unknown; language?: unknown };
+    return c.json({
+      data: {
+        brief: typeof p.brief === 'string' ? p.brief : '',
+        language: typeof p.language === 'string' ? p.language : 'powershell',
+        title: row.title,
+      },
+    });
   }
 );
 
@@ -712,8 +902,12 @@ remediationSuggestionRoutes.post(
     if (!requiresExecutionApproval(existing.riskTier)) {
       return c.json({ error: 'Only high-risk remediation suggestions require elevation approval' }, 400);
     }
-    if (existing.targetType !== 'script' || !existing.scriptId) {
-      return c.json({ error: 'Only script remediation suggestions can request elevation approval' }, 400);
+    const isBuiltin = existing.targetType === 'builtin_action' && Boolean(existing.builtinAction);
+    if (!isBuiltin && (existing.targetType !== 'script' || !existing.scriptId)) {
+      return c.json({ error: 'Only script or built-in action suggestions can request elevation approval' }, 400);
+    }
+    if (isBuiltin && (!perms || !hasPermission(perms, PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action))) {
+      return c.json({ error: 'Requesting approval for a built-in action requires permission to execute on devices' }, 403);
     }
 
     const deviceId = singleTargetDeviceId(existing);
@@ -757,7 +951,7 @@ remediationSuggestionRoutes.post(
         flowType: 'tech_jit_admin',
         subjectUserId: auth.user.id,
         subjectUsername: auth.user.email ?? auth.user.name ?? auth.user.id,
-        reason: `Remediation suggestion "${existing.title}" requires approval before script execution`,
+        reason: `Remediation suggestion "${existing.title}" requires approval before it runs`,
         status: 'pending',
         requestedAt: now,
         riskTier,
@@ -767,6 +961,7 @@ remediationSuggestionRoutes.post(
           sourceType: existing.sourceType,
           sourceId: existing.sourceId,
           scriptId: existing.scriptId,
+          builtinAction: existing.builtinAction,
           riskTier: existing.riskTier,
         },
       })
@@ -792,6 +987,7 @@ remediationSuggestionRoutes.post(
         sourceType: existing.sourceType,
         sourceId: existing.sourceId,
         scriptId: existing.scriptId,
+        builtinAction: existing.builtinAction,
       },
       occurredAt: now,
     });
@@ -836,6 +1032,174 @@ remediationSuggestionRoutes.post(
   }
 );
 
+/**
+ * /execute for a built-in action (W2). Same three phases as the script path
+ * (the route is self-managed, #7109), none nested:
+ *  1. the gate (a short context) checked everything and CLAIMED the row —
+ *     status `executed`, committed — so no second request can dispatch;
+ *  2. the dispatch holds NO context (dispatchBuiltinAction pins the org with
+ *     expectedOrgId and escapes any context itself);
+ *  3. the feedback + outcome record run in a second short context.
+ * A refused dispatch releases the claim (back to the gated status) and writes
+ * no fix_outcomes row. A dispatch that throws, or a phase 3 that fails after a
+ * successful dispatch, KEEPS the claim: the command may have been sent, and a
+ * retry must never send a second reboot/kill. The script path is unchanged
+ * (its idempotency is tracked in #7276).
+ */
+async function runBuiltinExecution(
+  c: Context,
+  auth: AuthContext,
+  gate: {
+    existing: typeof remediationSuggestions.$inferSelect;
+    claimed: typeof remediationSuggestions.$inferSelect;
+    deviceId: string;
+    builtinAction: NonNullable<(typeof remediationSuggestions.$inferSelect)['builtinAction']>;
+    device: { id: string; orgId: string; osType: string; agentVersion: string | null; status: string };
+  },
+) {
+  const { existing, claimed, deviceId, builtinAction, device } = gate;
+  let dispatched: Awaited<ReturnType<typeof dispatchBuiltinAction>>;
+  try {
+    dispatched = await dispatchBuiltinAction({
+      action: builtinAction,
+      parameters: existing.parameters,
+      device,
+      userId: auth.user.id,
+    });
+  } catch (err) {
+    // Unknown whether the command left: keep the claim (fail safe against a double send).
+    console.error('[remediationSuggestions] built-in dispatch threw; claim kept', { suggestionId: existing.id, err });
+    captureException(err, undefined, { component: 'remediationSuggestions.builtinDispatch', suggestionId: existing.id });
+    throw err;
+  }
+  if (!dispatched.ok) {
+    await releaseBuiltinClaim(auth, existing, claimed);
+    return c.json({ error: dispatched.error }, dispatched.status);
+  }
+
+  // The command is already sent. Any failure from here on keeps the claim and
+  // answers 202 with the commandId, so the technician can see what went out
+  // and a retry cannot re-send it.
+  const { commandId, cleanupRunId } = dispatched;
+  let phase3: { row: typeof remediationSuggestions.$inferSelect; outcome: OutcomeSummary | null } | undefined;
+  let phase3Error: unknown = null;
+  try {
+    phase3 = await withAuthDbAccessContext(auth, async () => {
+      // Idempotent: the claim already set status/executedBy/executedAt; this
+      // only re-asserts `executed` (and so matches the claimed row) and bumps
+      // updatedAt. The feedback dedupe key is the commandId.
+      const [row] = await db
+        .update(remediationSuggestions)
+        .set({ updatedAt: new Date() })
+        .where(and(eq(remediationSuggestions.id, existing.id), eq(remediationSuggestions.status, 'executed')))
+        .returning();
+      if (!row) return undefined;
+
+      await emitRemediationSuggestionFeedback({
+        orgId: row.orgId,
+        suggestionId: row.id,
+        eventType: 'suggestion.executed',
+        dedupeKey: remediationFeedbackDedupeKey({ status: 'executed', actionCommandId: commandId }),
+        outcome: 'executed',
+        actorUserId: auth.user.id,
+        metadata: {
+          route: 'remediation_suggestions.execute',
+          sourceType: row.sourceType,
+          sourceId: row.sourceId,
+          targetType: row.targetType,
+          builtinAction: row.builtinAction,
+          actionCommandId: commandId,
+          elevationRequestId: row.elevationRequestId,
+          riskTier: row.riskTier,
+        },
+      });
+
+      // SAVEPOINT + never throws, like the script path's recorder.
+      const outcome = await recordBuiltinOutcome({ suggestion: row, deviceId, commandId, cleanupRunId });
+      return { row, outcome };
+    });
+  } catch (err) {
+    phase3Error = err;
+  }
+  if (!phase3) {
+    const err = phase3Error ?? new Error('claimed built-in suggestion was no longer executed at record time');
+    console.error('[remediationSuggestions] built-in dispatched but not recorded; claim kept', { suggestionId: existing.id, commandId, cleanupRunId, err });
+    captureException(err, undefined, {
+      component: 'remediationSuggestions.builtinRecord', suggestionId: existing.id, commandId, ...(cleanupRunId ? { cleanupRunId } : {}),
+    });
+    writeRouteAudit(c, {
+      orgId: claimed.orgId,
+      action: 'ml.remediation_suggestion.execute',
+      resourceType: 'remediation_suggestion',
+      resourceId: claimed.id,
+      resourceName: claimed.title,
+      details: {
+        sourceType: claimed.sourceType, sourceId: claimed.sourceId, targetType: 'builtin_action', builtinAction: claimed.builtinAction,
+        commandId, cleanupRunId, elevationRequestId: claimed.elevationRequestId, riskTier: claimed.riskTier, recorded: false,
+      },
+    });
+    return c.json({
+      dispatched: true, recorded: false, commandId, cleanupRunId,
+      data: serializeSuggestion(claimed),
+    }, 202);
+  }
+  const { row: updated, outcome } = phase3;
+
+  writeRouteAudit(c, {
+    orgId: updated.orgId,
+    action: 'ml.remediation_suggestion.execute',
+    resourceType: 'remediation_suggestion',
+    resourceId: updated.id,
+    resourceName: updated.title,
+    details: {
+      sourceType: updated.sourceType,
+      sourceId: updated.sourceId,
+      targetType: 'builtin_action',
+      builtinAction: updated.builtinAction,
+      commandId,
+      cleanupRunId,
+      elevationRequestId: updated.elevationRequestId,
+      riskTier: updated.riskTier,
+    },
+  });
+
+  return c.json({
+    data: serializeSuggestion(updated, outcome),
+    execution: { commandId, cleanupRunId },
+  }, 201);
+}
+
+/**
+ * Undo a built-in claim after a REFUSED dispatch (nothing was sent): restore
+ * the gated status and execution stamps. Conditional on the claim still being
+ * ours (status executed + our executedAt), so it can never clobber a later
+ * change. A failure is logged and captured; the refusal is still returned, and
+ * the row stays `executed` (a human can re-accept it), never re-dispatchable.
+ */
+async function releaseBuiltinClaim(
+  auth: AuthContext,
+  existing: typeof remediationSuggestions.$inferSelect,
+  claimed: typeof remediationSuggestions.$inferSelect,
+): Promise<void> {
+  try {
+    await withAuthDbAccessContext(auth, async () => {
+      const conditions: SQL[] = [eq(remediationSuggestions.id, existing.id), eq(remediationSuggestions.status, 'executed')];
+      if (claimed.executedAt) conditions.push(eq(remediationSuggestions.executedAt, claimed.executedAt));
+      const released = await db
+        .update(remediationSuggestions)
+        .set({ status: existing.status, executedBy: existing.executedBy ?? null, executedAt: existing.executedAt ?? null, updatedAt: new Date() })
+        .where(and(...conditions))
+        .returning({ id: remediationSuggestions.id });
+      if (released.length === 0) {
+        console.warn('[remediationSuggestions] built-in claim release matched no row', { suggestionId: existing.id });
+      }
+    });
+  } catch (err) {
+    console.error('[remediationSuggestions] could not release a built-in claim after a refused dispatch', { suggestionId: existing.id, err });
+    captureException(err, undefined, { component: 'remediationSuggestions.builtinRelease', suggestionId: existing.id });
+  }
+}
+
 remediationSuggestionRoutes.post(
   '/:id/execute',
   requireScope('organization', 'partner', 'system'),
@@ -874,14 +1238,68 @@ remediationSuggestionRoutes.post(
       if (!(await siteAllowedForSuggestion(existing, perms))) {
         return { ok: false as const, error: 'Suggestion not found or access denied', status: 403 as const };
       }
+      if (existing.targetType === 'builtin_action' && existing.status === 'executed') {
+        // Claimed by an earlier /execute (dispatched, or mid-dispatch): a retry must never re-send.
+        return { ok: false as const, error: 'This built-in action was already run', code: 'already_executed' as const, status: 409 as const };
+      }
       if (existing.status !== 'accepted' && existing.status !== 'edited') {
         return { ok: false as const, error: 'Suggestion must be accepted or edited before it can be executed', status: 400 as const };
       }
       if (existing.scriptExecutionId) {
         return { ok: false as const, error: 'Suggestion already has a linked script execution', status: 409 as const };
       }
+      if (existing.targetType === 'builtin_action') {
+        // W2: a built-in needs devices:execute on top of the route's scripts:execute.
+        if (!perms || !hasPermission(perms, PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action)) {
+          return { ok: false as const, error: 'Running a built-in action requires permission to execute on devices', status: 403 as const };
+        }
+        const builtinDeviceId = singleTargetDeviceId(existing);
+        if (!builtinDeviceId || !existing.builtinAction) {
+          return { ok: false as const, error: 'A built-in action needs exactly one target device', status: 400 as const };
+        }
+        // PATCH accepts a free-form `parameters` record, so re-parse with the
+        // allowlist schema HERE, before the claim: an off-shape row is a 400
+        // that never claims or dispatches (dispatch re-parses as a backstop).
+        if (!RESEARCH_BUILTIN_PARAM_SCHEMAS[existing.builtinAction].safeParse(existing.parameters ?? {}).success) {
+          return { ok: false as const, error: 'The built-in action parameters are not valid', code: 'invalid_builtin_parameters' as const, status: 400 as const };
+        }
+        const builtinApprovalError = await validateRemediationExecutionApproval(existing, builtinDeviceId);
+        if (builtinApprovalError) {
+          return { ok: false as const, error: builtinApprovalError, status: 403 as const };
+        }
+        const [device] = await db
+          .select({
+            id: devices.id, orgId: devices.orgId, siteId: devices.siteId,
+            osType: devices.osType, agentVersion: devices.agentVersion, status: devices.status,
+          })
+          .from(devices)
+          .where(and(eq(devices.id, builtinDeviceId), eq(devices.orgId, existing.orgId)))
+          .limit(1);
+        if (!device || (perms?.allowedSiteIds && !canAccessSite(perms, device.siteId))) {
+          return { ok: false as const, error: 'Device not found or access denied', status: 404 as const };
+        }
+        // Atomic CLAIM before dispatch (#7276, built-in half): flip the row to
+        // `executed` only if it is still in the state we gated on. It commits
+        // with this context, so a retry or a concurrent /execute (blocked on the
+        // row lock, then re-evaluating the WHERE) matches nothing and gets a
+        // 409 instead of re-sending a reboot/kill. `executed` without a link is
+        // allowed for built-ins (remediation_suggestions_terminal_execution_link_check).
+        const claimedAt = new Date();
+        const [claimed] = await db
+          .update(remediationSuggestions)
+          .set({ status: 'executed', executedBy: auth.user.id, executedAt: claimedAt, updatedAt: claimedAt })
+          .where(and(eq(remediationSuggestions.id, existing.id), eq(remediationSuggestions.status, existing.status)))
+          .returning();
+        if (!claimed) {
+          return { ok: false as const, error: 'This built-in action is already being run', code: 'already_dispatching' as const, status: 409 as const };
+        }
+        return {
+          ok: true as const, kind: 'builtin' as const, existing, claimed, deviceId: builtinDeviceId,
+          builtinAction: existing.builtinAction, device,
+        };
+      }
       if (existing.targetType !== 'script' || !existing.scriptId) {
-        return { ok: false as const, error: 'Only script remediation suggestions can be executed', status: 400 as const };
+        return { ok: false as const, error: 'Only script or built-in action suggestions can be executed', status: 400 as const };
       }
 
       const deviceId = singleTargetDeviceId(existing);
@@ -893,10 +1311,13 @@ remediationSuggestionRoutes.post(
       if (approvalError) {
         return { ok: false as const, error: approvalError, status: 403 as const };
       }
-      return { ok: true as const, existing, scriptId: existing.scriptId, deviceId };
+      return { ok: true as const, kind: 'script' as const, existing, scriptId: existing.scriptId, deviceId };
     });
     if (!gate.ok) {
-      return c.json({ error: gate.error }, gate.status);
+      return c.json({ error: gate.error, ...('code' in gate ? { code: gate.code } : {}) }, gate.status);
+    }
+    if (gate.kind === 'builtin') {
+      return runBuiltinExecution(c, auth, gate);
     }
     const { existing, scriptId, deviceId } = gate;
 
@@ -1049,6 +1470,7 @@ remediationSuggestionRoutes.post(
   '/:id/done',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.SCRIPTS_EXECUTE.resource, PERMISSIONS.SCRIPTS_EXECUTE.action),
+  zValidator('json', doneBodySchema),
   async (c) => {
     const auth = c.get('auth');
     const perms = c.get('permissions') as UserPermissions | undefined;
@@ -1069,7 +1491,44 @@ remediationSuggestionRoutes.post(
     }
     const deviceId = singleTargetDeviceId(existing);
     if (!deviceId) return c.json({ error: 'Marking manual steps done requires exactly one target device' }, 400);
-    const outcome = await createManualStepsOutcome({ suggestion: existing, deviceId });
+    const { instructionsId } = c.req.valid('json');
+    if (instructionsId) {
+      // Request RLS: only the caller's own partner's active reviewed rows are visible.
+      const reviewed = await loadActiveInstructions(instructionsId);
+      if (!reviewed) return c.json({ error: 'Reviewed steps not found or retired' }, 404);
+    }
+    // Outcome + instructions link in ONE savepoint on the ambient request
+    // transaction (this route is not self-managed, so opening a caller context
+    // here would take a second pooled connection). Two 409s, both rolling the
+    // outcome back so a conflict never leaves a half-written Done:
+    //  - the guarded UPDATE matches no row: this suggestion already links a
+    //    DIFFERENT reviewed row;
+    //  - a unique violation (remediation_suggestions_source_instructions_uq):
+    //    another suggestion for this source already links these steps.
+    let outcome: Awaited<ReturnType<typeof createManualStepsOutcome>>;
+    try {
+      outcome = await withDbTransaction(async () => {
+        const created = await createManualStepsOutcome({ suggestion: existing, deviceId, instructionsId: instructionsId ?? null });
+        if (created && instructionsId) {
+          // Only ever fill an empty link (or re-set the same id) — never overwrite another reviewed row.
+          const linked = await db.update(remediationSuggestions).set({ instructionsId, updatedAt: new Date() })
+            .where(and(
+              eq(remediationSuggestions.id, existing.id),
+              or(isNull(remediationSuggestions.instructionsId), eq(remediationSuggestions.instructionsId, instructionsId)),
+            ))
+            .returning({ id: remediationSuggestions.id });
+          if (linked.length === 0) throw new InstructionsLinkConflictError();
+        }
+        return created;
+      });
+    } catch (err) {
+      if (err instanceof InstructionsLinkConflictError) {
+        return c.json({ error: 'This suggestion is already linked to different reviewed steps' }, 409);
+      }
+      const code = (err as { code?: string; cause?: { code?: string } })?.code ?? (err as { cause?: { code?: string } })?.cause?.code;
+      if (code === '23505') return c.json({ error: 'These reviewed steps are already linked to another suggestion for this source' }, 409);
+      throw err;
+    }
     if (!outcome) return c.json({ error: 'This suggestion was already marked done' }, 409);
     writeRouteAudit(c, {
       orgId: existing.orgId,
@@ -1077,7 +1536,7 @@ remediationSuggestionRoutes.post(
       resourceType: 'remediation_suggestion',
       resourceId: existing.id,
       resourceName: existing.title,
-      details: { sourceType: existing.sourceType, sourceId: existing.sourceId },
+      details: { sourceType: existing.sourceType, sourceId: existing.sourceId, instructionsId: instructionsId ?? null },
     });
     return c.json({ data: { outcome } }, 201);
   }
@@ -1116,6 +1575,13 @@ remediationSuggestionRoutes.patch(
       return c.json({ error: validationError }, 400);
     }
 
+    // `executed` is the built-in dispatch claim (/execute flips it BEFORE the
+    // command is sent). Moving it back would re-arm the action, even mid-dispatch.
+    const isBuiltin = existing.targetType === 'builtin_action';
+    if (isBuiltin && existing.status === 'executed' && input.status !== 'executed') {
+      return c.json({ error: 'This built-in action was already run', code: 'already_executed' }, 409);
+    }
+
     const now = new Date();
     const [updated] = await db
       .update(remediationSuggestions)
@@ -1140,10 +1606,14 @@ remediationSuggestionRoutes.patch(
         executedAt: input.status === 'executed' || input.status === 'failed' ? now : existing.executedAt,
         updatedAt: now,
       })
-      .where(eq(remediationSuggestions.id, existing.id))
+      // A concurrent /execute claim between the read and this write must win.
+      .where(isBuiltin
+        ? and(eq(remediationSuggestions.id, existing.id), ne(remediationSuggestions.status, 'executed'))
+        : eq(remediationSuggestions.id, existing.id))
       .returning();
 
     if (!updated) {
+      if (isBuiltin) return c.json({ error: 'This built-in action was already run', code: 'already_executed' }, 409);
       return c.json({ error: 'Failed to update suggestion' }, 500);
     }
 
@@ -1164,6 +1634,7 @@ remediationSuggestionRoutes.patch(
         sourceType: updated.sourceType,
         sourceId: updated.sourceId,
         targetType: updated.targetType,
+        builtinAction: updated.builtinAction,
         scriptId: updated.scriptId,
         playbookId: updated.playbookId,
         scriptExecutionId: updated.scriptExecutionId,

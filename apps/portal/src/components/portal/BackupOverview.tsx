@@ -118,7 +118,7 @@ export function BackupOverview({
 }) {
   // `no_data` means "no passed verification yet" (services/portal/backupReadModel
   // backupTile), NOT "no backups". Banding the page on it printed "No backup data
-  // is available yet." directly above "Protected devices 2 of 2" and a ledger
+  // is available yet." directly above "Devices backed up 2 of 2" and a ledger
   // listing a real restore point. The invariant: the band never contradicts what
   // the rows beneath it say, so any evidence of backups — protected devices, a
   // restore test, a restore point in the ledger — keeps it away, and the missing
@@ -128,6 +128,9 @@ export function BackupOverview({
   const status =
     overview.dataStatus === 'no_data' && hasBackups ? null : STATUS_COPY[overview.dataStatus];
 
+  // "Backed up" = covered by ANY backup source (Breeze or a connected provider),
+  // counted over the same rows the device ledger below lists (#7505). The
+  // dashboard's "Endpoint protection" tile is the security concept, not this.
   const protectedDevices =
     overview.protected === null || overview.total === null
       ? null
@@ -159,7 +162,7 @@ export function BackupOverview({
         className="divide-y divide-border/70 border-t border-border/70"
         data-testid="portal-backup-overview-summary"
       >
-        <LedgerRow testId="portal-backup-overview-protected" label="Protected devices">
+        <LedgerRow testId="portal-backup-overview-protected" label="Devices backed up">
           <Figure value={protectedDevices} />
         </LedgerRow>
 

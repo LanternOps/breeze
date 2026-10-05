@@ -1,16 +1,17 @@
 ---
 title: Bring Your Own LLM Key
-description: Use a partner-owned Anthropic API key for Breeze AI, optionally routed through a platform-vetted endpoint, or configure an instance-wide LLM backend on a self-hosted deployment.
+description: Connect a partner-owned Anthropic API key (directly or through a platform-vetted endpoint), choose which models each AI feature uses, connect your own OpenAI-compatible endpoint, or configure an instance-wide backend on a self-hosted deployment.
 ---
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-Breeze supports two ways to use your own LLM provider configuration:
+Breeze supports three ways to use your own LLM provider configuration:
 
-- **Hosted BYOK** lets a partner use its own Anthropic API key for Breeze AI.
+- **Anthropic connections** let a partner use its own Anthropic API key for Breeze AI, directly or through a platform-vetted endpoint.
+- **OpenAI-compatible connections** let a partner connect its own vLLM, Ollama, LiteLLM, or OpenRouter endpoint with full tool calling.
 - **Self-hosted instance configuration** routes platform-keyed AI usage to an Anthropic-compatible or OpenAI-compatible endpoint.
 
-If both are configured, a partner's BYOK configuration takes precedence. Instance environment variables apply only to AI usage that would otherwise use the platform key.
+A partner's connections and per-feature defaults decide where each AI request goes. Instance environment variables seed the platform connection on a self-hosted deployment; they never override a partner's connection.
 
 ## Hosted: use your own Anthropic key
 
@@ -26,21 +27,19 @@ You must be a partner admin with access to all organizations and the billing man
 
 <Steps>
 
-1. Open **Partner Settings → AI Provider**.
+1. Open **Partner Settings → AI Providers & Models** and click **Add connection** in the **Connections** card.
 
-2. Paste your Anthropic API key into the write-only key field.
+2. Choose **Anthropic API key**, give the connection a name, and paste the key into the write-only field.
 
-3. Optionally select a default model from the supported model list.
-
-4. Click **Save**. Breeze verifies the key with Anthropic before storing it.
+3. Click **Save** and complete MFA. Breeze verifies the key with Anthropic before storing it.
 
 </Steps>
 
+Your first Anthropic connection takes over every AI feature that was using the Breeze platform key (patch testing stays on the platform key). Pick a different model for any feature under **Defaults by feature**.
+
 The page shows that your key is active and displays only its last four characters. Breeze never returns the full key after you save it.
 
-To rotate the key, paste the replacement and save it. Breeze verifies the replacement before changing the stored key, so a failed verification leaves the existing working key in place.
-
-To return to the Breeze platform key and Breeze AI credits, click **Disconnect** and complete MFA. Breeze does not switch back automatically.
+To rotate a key, open the connection's drawer, paste the replacement and save; Breeze verifies it before replacing the stored key, so a failed verification leaves the working key in place. **Disconnect** (with MFA) moves the features that used this connection back to the same models on the Breeze platform key and revokes the stored key. Breeze never switches back on its own.
 
 ### Usage, budgets, and failures
 
@@ -60,9 +59,9 @@ Breeze maintains this list itself. **You choose from the list — you never ente
 
 <Steps>
 
-1. Open **Partner Settings → AI Provider**. Whenever at least one catalog entry is available — or you already have an endpoint selected — an **Endpoint** card appears below the key card, listing **Anthropic (direct)** plus one radio option per vetted endpoint. Selecting an endpoint requires a connected key: if you try it before connecting one, Breeze rejects the change with *"Connect an Anthropic API key before selecting an endpoint."* rather than storing a selection that could not be used.
+1. Open the connection's drawer in the **Connections** card and choose an **Endpoint**: Anthropic (direct) or one of the vetted endpoints. Breeze checks that the endpoint serves the model your **chat** feature uses before switching. Switching keeps the same connection and its feature assignments.
 
-2. Selecting **Anthropic (direct)** applies immediately — it always requires zero confirmation, since it is the safe fallback.
+2. Selecting Anthropic (direct) applies immediately — it always requires zero confirmation, since it is the safe fallback.
 
 3. Selecting a third-party endpoint opens a confirmation dialog. If the endpoint has a data-handling note, the dialog quotes it verbatim and requires you to check **"I understand my AI traffic and content will be processed by \<endpoint name\>"** before you can confirm. The note describes what that specific endpoint does with your traffic and content — read it before agreeing, since it varies per endpoint and Breeze cannot vouch for a third party's own data handling beyond the technical checks it ran.
 
@@ -76,11 +75,89 @@ While a third-party endpoint is selected, the AI usage page's "billed to your ke
   **If Breeze delists an endpoint you're using, AI is paused — not silently rerouted.** Breeze shows a banner explaining the endpoint was delisted, and no further AI requests succeed until you either pick another listed endpoint or switch back to **Anthropic (direct)**. The same fail-loud behavior applies if your selected endpoint stops verifying a model you rely on: Breeze pauses AI for that model rather than silently falling back to the platform key or a different provider.
 </Aside>
 
-This platform-vetted endpoint list is a hosted-only feature. If you're self-hosting, you point the instance at any Anthropic-compatible or OpenAI-compatible endpoint yourself with environment variables — see [Self-hosted: configure an instance-wide provider](#self-hosted-configure-an-instance-wide-provider) below for the variable matrix. There is no vetting step on self-hosted deployments: you're trusting whatever endpoint you configure.
+This platform-vetted endpoint list is a hosted-only feature. If you're self-hosting, you point the instance at any Anthropic-compatible or OpenAI-compatible endpoint yourself with environment variables — see [Self-hosted: configure an instance-wide provider](#self-hosted-configure-an-instance-wide-provider) below for the variable matrix. Hosted partners can also [connect an OpenAI-compatible endpoint](#connect-an-openai-compatible-endpoint) of their own. There is no vetting step on self-hosted deployments: you're trusting whatever endpoint you configure.
+
+### Connect an OpenAI-compatible endpoint
+
+Connect any server that speaks the OpenAI `chat/completions` API with function calling, such as vLLM, Ollama, LiteLLM, or OpenRouter. Once a model passes verification, every AI feature works on it, including tools: chat, the helper, the script builder, AI agents, and Office chat.
+
+<Steps>
+
+1. Open **Partner Settings → AI Providers & Models → Connections** and click **Add connection → OpenAI-compatible endpoint**.
+
+2. Enter a **name**, the **base URL** (it ends at the API root, for example `https://llm.example.com/v1`), and optionally an **API key** (at least 8 characters). The key is write-only.
+
+3. Get models onto the connection. Breeze discovers them from `GET {base_url}/models`, or you can click **Add model** and enter a model ID by hand. Discovered and manual models arrive **disabled, unpriced, and unverified**.
+
+4. Open the model and set a **price** in US dollars per million tokens. `0` is fine for a local model. A model without a price cannot be enabled.
+
+5. Click **Verify**. Breeze runs a fidelity test through the endpoint, including a tool call. This spends a few thousand tokens on your own endpoint; Breeze does not bill for it.
+
+6. Enable the model, then assign it as the default for the features you want under **Defaults by feature**.
+
+</Steps>
+
+Until a model is verified it has no tool calling and cannot be used for chat, the helper, the script builder, AI agents, or Office chat. If you change a connection's base URL, its models are marked **Re-verify: endpoint changed** and must be verified again. Rotating the API key does not require re-verification.
+
+<Aside type="caution">
+  These models do not support thinking or effort controls, documents and PDFs in chat, or server tools such as web search. A partner with **Require data residency** switched on cannot use them, because Breeze cannot attest where your endpoint processes data.
+</Aside>
+
+#### Network and key security
+
+- **Hosted Breeze connects only to public `https` endpoints.**
+- **Self-hosted deployments** may use private (RFC 1918 / ULA) addresses only when `IS_HOSTED` is explicitly set to `false`. Cleartext `http` is allowed only to a private address.
+- **Loopback, link-local, and cloud-metadata addresses are never reachable**, in either mode. Redirects are not followed.
+- **Your key stays on the Breeze API server** and is never given to the agent process. Requests go through Breeze's loopback model gateway, which attaches the key on the way out.
+
+#### Troubleshooting
+
+| Message | Cause and fix |
+|---|---|
+| **Verification failed: no tool_use block** | The server or model does not support function calling. For vLLM, start the server with `--enable-auto-tool-choice --tool-call-parser <parser>`. For Ollama, use a model that supports tools, such as `qwen2.5`. |
+| **egress_blocked** | The address is not allowed for this deployment: a private address on hosted Breeze, a private address on a self-hosted install without `IS_HOSTED=false`, `http` to a public address, or a loopback/link-local address. Use a public `https` URL, or fix the deployment setting. |
+| **Re-verify: endpoint changed** | The connection's base URL changed after the model was verified. Click **Verify** again. |
+
+## Default model and the offered model list
+
+The platform default model is **Claude Sonnet 5.5** (`claude-sonnet-5-5`) with adaptive thinking at medium effort (v0.120.0+; earlier releases defaulted to Sonnet 4.6). A self-hosted `ANTHROPIC_MODEL` still overrides the default. Existing chats keep the model they were started with; only new chats pick up the new default.
+
+A new chat can only use a model the platform offers, the configured default, or (on a vetted endpoint) a model that endpoint maps. Requesting anything else when creating a chat returns `400` with code `invalid_model`, and no chat is created.
+
+## Platform AI models (platform administrators)
+
+Platform administrators manage the models Breeze knows about at **Administration → AI Models** (`/admin/ai-models`, v0.120.0+). Each row shows the model's discovery status (**Available**, **Missing**, or **Retired**), its thinking support, its input and output price per million tokens, whether it is offered, and whether it is the platform default. Open a row to edit:
+
+- **Prices** in US dollars per million tokens (input, output, cache read, cache write). Breeze asks you to confirm any change of more than 10× from the stored value, to catch unit mistakes.
+- **Fast mode prices**, optional. Fast mode can't be selected for a model until all four fast prices are set.
+- **Option support**: effort levels, thinking display, fast mode, and inference geographies.
+- **Minimum plan** that may use the model, and the **prompt profile** Breeze uses with it.
+- **Offered on the platform key**. A model can only be offered once all four standard prices are set.
+- **Platform default**. In v0.120.0 this choice is recorded but does not yet change routing; the deployment default still comes from `ANTHROPIC_MODEL` or the built-in default.
+
+Every change requires MFA. The **AI Providers & Models** settings and the **LLM Provider Catalog** page read their model lists from this catalog.
+
+**Discovery.** Once a day (06:38 UTC) Breeze lists the models available to the platform Anthropic key. A model it has not seen before appears with a **New** badge and the platform operators are alerted. Discovery only flags models for review: it never offers, prices, or removes a model on its own, and a new model stays unpriced and offered to no one until you set it up. A model that stops appearing is marked **Missing** after several successful checks and two days, and **Retired** after 14 days; a model discovery has never seen is never moved. **Refresh models** queues a discovery run immediately. Discovery is skipped when no platform key is configured or when `ANTHROPIC_BASE_URL` points at a gateway rather than Anthropic.
+
+## AI Providers & Models
+
+**Partner Settings → AI Providers & Models** is the single home for where AI requests are sent, which models are available, and which model each feature uses. It requires the billing management permission. The sections below describe each card. Per-model spend by feature, technician, and organization is under **Settings → AI Usage**.
+
+### Connections and residency
+
+The **Connections** card lists the Breeze platform connection plus any connection you add, with its status, key state, inference region, and who is billed. Adding or editing a connection opens a drawer where you can set a name and inference region, replace the write-only API key, pick a catalog endpoint, or disconnect; **Refresh models** queues a fresh model discovery for that connection. The **Require data residency** switch restricts every feature to models that can keep data in the required region. Before it applies, Breeze shows which features and organization overrides would stop working so you can confirm or cancel.
+
+### Models
+
+The **Models** card groups the models each connection offers, with context size and per-1M-token prices. The switch on a row enables or disables the model and saves immediately; a model with no price cannot be enabled, and disabling a model that is still a feature default asks you to confirm and lists the affected features. A row's details drawer sets a display name, price, premium flag, default and allowed effort or speed options, and an optional refusal fallback, which must be another enabled model on the same connection.
+
+### Defaults by feature (and org overrides)
+
+The **Defaults by feature** card sets the default model, effort, and speed for each AI feature (chat, helper, script builder, script reviewer, and so on), which models are permitted, and whether users may choose their own. Changing the script reviewer's model requires the approvals decide permission. Each organization can narrow these under **Settings → Organizations → (organization) → Model defaults**: leave a field on **Inherit** to follow the partner default, or override it. An organization can only narrow what its partner allows, and the partner can lock user choice. The script-authoring and client-AI policy pages link here instead of holding their own model fields.
 
 ## Self-hosted: configure an instance-wide provider
 
-Self-hosted operators can configure an LLM backend for platform-keyed usage with environment variables. These settings apply across the instance, except for partners that have their own BYOK configuration.
+Self-hosted operators can configure an LLM backend for platform-keyed usage with environment variables. These settings configure the platform connection: the default model for new partners and the backend platform-key traffic goes to. A partner's own connection is never overridden by them.
 
 If you're a hosted partner instead, see [Route your key through a platform-vetted endpoint](#route-your-key-through-a-platform-vetted-endpoint) above — hosted deployments select from Breeze's vetted catalog rather than setting these variables.
 
@@ -96,26 +173,28 @@ Use this path to route the full, tool-capable Breeze Agent through an endpoint t
 
 `ANTHROPIC_BASE_URL` is self-hosted only. Breeze refuses to start with this variable set unless `IS_HOSTED` is explicitly set to `false` (or another recognized false value). Hosted deployments cannot use a custom per-partner or instance-wide base URL.
 
-### OpenAI-compatible chat without tool calling
+### Instance-wide OpenAI-compatible endpoint
 
-Use this path for a chat-only backend that implements the OpenAI API dialect. Tool calling is not supported on this path.
+Use this path to give every partner on a self-hosted instance a shared OpenAI-compatible backend. At boot, Breeze creates an **env-managed connection** for each partner from these variables. It appears in **AI Providers & Models → Connections** as read-only, labelled *managed by environment*, with one priced, enabled model that Breeze verifies automatically.
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `MCP_LLM_PROVIDER` | Yes | Set to `openai-compatible`. |
+| `MCP_LLM_PROVIDER` | Yes | Set to `openai-compatible`. Breeze refuses to start with this value unless `IS_HOSTED` is explicitly set to `false` (an unset `IS_HOSTED` is refused too). |
 | `MCP_LLM_BASE_URL` | Yes | Base URL for the OpenAI-compatible endpoint. It must be a valid URL. |
 | `MCP_LLM_MODEL` | Yes | Model ID exposed by the endpoint. |
-| `MCP_LLM_API_KEY` | Yes | API key used to authenticate with the endpoint. |
+| `MCP_LLM_API_KEY` | Optional | API key used to authenticate with the endpoint. Leave unset for a keyless local server; when set it must be at least 8 characters. |
 | `MCP_LLM_PRICE_INPUT_PER_M_USD` | Optional | Input-token price in USD per million tokens. Defaults to `0`. |
 | `MCP_LLM_PRICE_OUTPUT_PER_M_USD` | Optional | Output-token price in USD per million tokens. Defaults to `0`. |
 
-The API validates the base URL and requires the model and API key when `MCP_LLM_PROVIDER=openai-compatible`. Both price values must be zero or greater.
+Both price values must be zero or greater.
 
-Requests to this endpoint go through Breeze's SSRF egress guard, which pins DNS at connect time and refuses to follow redirects. Two consequences for where you can host the model:
-
-- **Loopback is never reachable.** `http://localhost:8000/v1` and `http://127.0.0.1:8000/v1` are refused. Point `MCP_LLM_BASE_URL` at the model host's container service name or LAN address instead — in a Compose deployment that is the service name, which resolves to a private address.
-- **Private (RFC1918/ULA) addresses require `IS_HOSTED=false`.** The opt-in that lets Breeze reach an on-LAN model is only active on a self-hosted install that has explicitly set `IS_HOSTED` to `false`. A cleartext `http://` endpoint is additionally restricted to private addresses, so the API key is never sent unencrypted over the open internet.
+- **Chat moves to this model only where chat used the platform default.** A partner that picked its own model or connection keeps it.
+- **The old chat-only runtime is removed.** The model now runs through the same verified path as a partner-added connection, so tools work.
+- **Partners cannot change the endpoint, key, prices or models** of an env-managed connection; they can enable or disable its model.
+- **If you remove the variables**, each env-managed connection stays in place, still read-only, and keeps working until a partner admin disconnects it. Setting the variables again picks the same connection back up; chat is not moved a second time.
+- **A model that fails tool verification cannot serve chat.** See [Troubleshooting](#troubleshooting) above; the most common cause is a server started without function calling enabled.
+- The same network rules apply as for a partner-added connection: loopback is never reachable, and private (RFC 1918 / ULA) addresses and cleartext `http` to a private address require `IS_HOSTED=false`. Point `MCP_LLM_BASE_URL` at the model host's container service name or LAN address, not `localhost`.
 
 <Aside type="note">
-  Provider precedence is **partner BYOK configuration → instance environment**. A partner-owned Anthropic key always overrides these instance settings. The instance environment applies only when Breeze resolves the request as platform-keyed usage.
+  A partner's own connection always wins: features assigned to it never use the instance settings. The instance settings apply to features on the platform connection.
 </Aside>

@@ -1,3 +1,6 @@
+import { existsSync, readdirSync, realpathSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const TEST_API_KEY = 'sk-fidelity-secret-key';
@@ -75,7 +78,7 @@ function toolUseReply(input: unknown) {
     stop_reason: 'tool_use',
     content: [
       { type: 'text', text: 'Let me check.' },
-      { type: 'tool_use', id: 'toolu_1', name: 'get_weather', input },
+      { type: 'tool_use', id: 'toolu_1', name: 'mcp__fidelity__get_weather', input },
     ],
   };
 }
@@ -127,6 +130,83 @@ beforeEach(() => {
   sdkState.query = happySubprocess();
 });
 
+// Before the runFidelityCheck suite: its last test un-mocks the agent SDK, so a
+// later stage-2 run would load the real SDK.
+describe('runFidelityCheck transport seam (W06 #7604)', () => {
+  function fakeTransportClient() {
+    const create = vi.fn()
+      .mockResolvedValueOnce(toolUseReply({ city: 'Berlin' }))
+      .mockResolvedValueOnce(finalReply('It is sunny and 21C in Berlin right now.'));
+    return { client: { messages: { create } }, create };
+  }
+  const sdkEnvOf = (call: number) =>
+    (sdkState.query.mock.calls[call]![0] as { options: { env: Record<string, string> } }).options.env;
+
+  it('without a transport, builds its own guarded endpoint client exactly as before', async () => {
+    stageOkAnthropic();
+    await runFidelityCheck(INPUT);
+    expect(anthropicState.constructorOptions.length).toBeGreaterThan(0);
+    for (const options of anthropicState.constructorOptions) {
+      expect(options.baseURL).toBe(INPUT.baseUrl);
+      expect(options.fetch).toBeTypeOf('function');
+    }
+    expect(sdkEnvOf(0)).toEqual(buildFidelityChildEnv(INPUT));
+    // The catalog path's subprocess spawn is unchanged: no cwd override.
+    expect((sdkState.query.mock.calls[0]![0] as { options: Record<string, unknown> }).options).not.toHaveProperty('cwd');
+  });
+
+  it('with a transport, the subprocess runs in the shared empty private temp directory, never the host cwd', async () => {
+    const { client } = fakeTransportClient();
+    await runFidelityCheck(INPUT, { client: client as never, childEnv: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:1/g/t' }, probeAdaptiveEffort: false });
+    const cwd = (sdkState.query.mock.calls[0]![0] as { options: { cwd?: string } }).options.cwd;
+    expect(typeof cwd).toBe('string');
+    expect(realpathSync(path.dirname(cwd!))).toBe(realpathSync(os.tmpdir()));
+    expect(cwd!.startsWith(process.cwd())).toBe(false);
+    expect(existsSync(cwd!)).toBe(true);
+    expect(readdirSync(cwd!)).toEqual([]);
+  });
+
+  it('with a transport, uses its client and child env and never builds an endpoint client', async () => {
+    const { client, create } = fakeTransportClient();
+    const childEnv = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:1/g/t' };
+    const result = await runFidelityCheck(INPUT, { client: client as never, childEnv, probeAdaptiveEffort: false });
+
+    expect(anthropicState.constructorOptions).toHaveLength(0);
+    expect(anthropicState.create).not.toHaveBeenCalled();
+    // Direct stages only: the adaptive probe is not sent when the kind cannot carry it.
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(sdkEnvOf(0)).toEqual(childEnv);
+    expect(result.passed).toBe(true);
+    expect(result.probes).toEqual([
+      expect.objectContaining({ name: FIDELITY_PROBE_NAMES.adaptiveEffort, ok: false, detail: expect.stringMatching(/^skipped:/) }),
+    ]);
+    expect(result.verifiedCapabilities.adaptiveEffort).toBe(false);
+  });
+
+  it('with a transport that may probe, the adaptive probe also goes through the transport client', async () => {
+    const { client, create } = fakeTransportClient();
+    create.mockResolvedValueOnce(finalReply('FIDELITY-OK'));
+    const result = await runFidelityCheck(INPUT, { client: client as never, childEnv: {}, probeAdaptiveEffort: true });
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(anthropicState.constructorOptions).toHaveLength(0);
+    expect(result.verifiedCapabilities.adaptiveEffort).toBe(true);
+  });
+
+  it('a transport never turns a failed direct stage into a pass', async () => {
+    const create = vi.fn().mockResolvedValueOnce(finalReply('It is sunny in Berlin.'));
+    const result = await runFidelityCheck(INPUT, { client: { messages: { create } } as never, childEnv: {}, probeAdaptiveEffort: false });
+    expect(result.passed).toBe(false);
+    expect(sdkState.query).not.toHaveBeenCalled();
+    expect(result.steps.find((s) => s.name === FIDELITY_STEP_NAMES.sdkSubprocess))
+      .toMatchObject({ ok: false, detail: expect.stringMatching(/^skipped/) });
+  });
+
+  it('FIDELITY_HARNESS_VERSION is still 1 (a bump would unverify every catalog revision)', () => {
+    expect(FIDELITY_HARNESS_VERSION).toBe('1');
+  });
+});
+
+
 describe('runFidelityCheck', () => {
   it('passes when both the direct SDK round-trip and the subprocess round-trip succeed', async () => {
     stageOkAnthropic();
@@ -158,6 +238,46 @@ describe('runFidelityCheck', () => {
     expect(stepByName(result, FIDELITY_STEP_NAMES.directToolResult).ok).toBe(false);
     expect(stepByName(result, FIDELITY_STEP_NAMES.sdkSubprocess).ok).toBe(false);
     expect(sdkState.query).not.toHaveBeenCalled();
+  });
+
+  // #7795: the direct stage is a forced-tool probe on the production tool-name
+  // shape (mcp__<server>__<tool>), so a server that drops such calls cannot
+  // be verified by luck.
+  it('the first direct request forces a call to the mcp__-named tool; the follow-up does not force', async () => {
+    stageOkAnthropic();
+
+    const result = await runFidelityCheck(INPUT);
+
+    expect(result.passed).toBe(true);
+    const [first, second] = anthropicState.create.mock.calls.map((c) => c[0] as Record<string, unknown>);
+    expect(first!.tools).toEqual([expect.objectContaining({ name: 'mcp__fidelity__get_weather' })]);
+    expect(first!.tool_choice).toEqual({ type: 'any' });
+    expect(second!.tools).toEqual([expect.objectContaining({ name: 'mcp__fidelity__get_weather' })]);
+    expect(second!.tool_choice).toBeUndefined();
+  });
+
+  it('fails when a server returns no tool call for the forced-tool probe (Ollama dropping mcp__ names, #7795)', async () => {
+    // What Ollama 0.35 returned: an empty assistant turn, no tool call.
+    anthropicState.create.mockResolvedValueOnce({ id: 'msg_1', stop_reason: 'end_turn', content: [] });
+
+    const result = await runFidelityCheck(INPUT);
+
+    expect(result.passed).toBe(false);
+    expect(stepByName(result, FIDELITY_STEP_NAMES.directToolUse)).toMatchObject({
+      ok: false, detail: expect.stringMatching(/forced tool call/),
+    });
+    expect(sdkState.query).not.toHaveBeenCalled();
+  });
+
+  it('fails when the forced call names some other tool than the one offered', async () => {
+    anthropicState.create.mockResolvedValueOnce({
+      id: 'msg_1', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'toolu_1', name: 'get_weather', input: { city: 'Berlin' } }],
+    });
+
+    const result = await runFidelityCheck(INPUT);
+
+    expect(result.passed).toBe(false);
+    expect(stepByName(result, FIDELITY_STEP_NAMES.directToolUse).detail).toMatch(/expected 'mcp__fidelity__get_weather'/);
   });
 
   it('fails the tool_use step when the tool input is malformed', async () => {

@@ -218,53 +218,450 @@
   "aiBudgetThresholds": {
     "invalid": "Geben Sie bis zu fünf ganze Zahlen zwischen 1 und 99 ein, durch Kommas getrennt."
   },
-  "partnerAiProvider": {
-    "title": "KI-Anbieter",
-    "subtitle": "Breeze-KI mit Ihrem eigenen Anthropic-API-Schlüssel statt mit dem Plattform-Schlüssel ausführen.",
-    "platformKey": "Plattform-Schlüssel",
-    "platformKeyDescription": "KI-Funktionen nutzen den Anthropic-Schlüssel von Breeze und werden als Breeze-KI-Guthaben abgerechnet.",
-    "yourKey": "Ihr Schlüssel •••• {{last4}}",
-    "verifiedAt": "Verifiziert am {{date}}",
-    "notVerifiedYet": "Noch nicht verifiziert",
-    "defaultModelValue": "Standardmodell: {{model}}",
-    "platformDefault": "Plattform-Standard",
-    "keyErrorTitle": "Ihr Anthropic-Schlüssel funktioniert nicht",
-    "reconnectHint": "KI-Funktionen sind für Ihre Organisationen nicht verfügbar, bis Sie unten einen funktionierenden Schlüssel speichern.",
-    "connectKeyTitle": "Ihren Anthropic-Schlüssel verbinden",
-    "replaceKeyTitle": "Ihren Anthropic-Schlüssel ersetzen",
-    "keyLabel": "Anthropic-API-Schlüssel",
-    "writeOnlyHint": "Der Schlüssel wird beim Speichern verifiziert und danach nie wieder angezeigt.",
-    "saveKey": "Schlüssel speichern",
-    "keySaved": "Anthropic-Schlüssel gespeichert und verifiziert.",
-    "keySaveFailed": "Der Anthropic-Schlüssel konnte nicht gespeichert werden.",
-    "defaultModelLabel": "Standardmodell",
-    "defaultModelHint": "Wird für neue KI-Sitzungen in allen Ihren Organisationen verwendet.",
-    "modelUpdated": "Standardmodell aktualisiert.",
-    "modelUpdateFailed": "Das Standardmodell konnte nicht aktualisiert werden.",
-    "disconnectTitle": "Zurück zum Plattform-Schlüssel wechseln",
-    "disconnectDescription": "Entfernt Ihren Anthropic-Schlüssel. Die KI-Nutzung wird wieder als Breeze-KI-Guthaben abgerechnet.",
-    "disconnect": "Trennen",
-    "disconnectConfirm": "Ihren Anthropic-Schlüssel trennen? KI-Funktionen wechseln zurück zum Plattform-Schlüssel und zu Breeze-KI-Guthaben.",
-    "disconnected": "Anthropic-Schlüssel entfernt. KI-Funktionen nutzen jetzt den Plattform-Schlüssel.",
-    "disconnectFailed": "Der Anthropic-Schlüssel konnte nicht getrennt werden.",
-    "permissionDenied": "Zum Verwalten des KI-Anbieters sind Abrechnungsberechtigungen und Zugriff auf alle Organisationen erforderlich.",
-    "loadFailed": "Die Konfiguration des KI-Anbieters konnte nicht geladen werden.",
-    "workspaceDisclosure": "Die Workspace-Inhaltsanreicherung verwendet Ihren konfigurierten KI-Anbieter und erscheint in Ihrer KI-Nutzung.",
-    "endpointCardTitle": "Endpunkt",
-    "endpointCardSubtitle": "Wählen Sie, wohin Ihr KI-Datenverkehr gesendet wird. Breeze prüft jede Option, bevor sie hier erscheint.",
-    "directOptionLabel": "Anthropic (direkt)",
-    "verifiedModelsLabel": "Verifizierte Modelle: {{models}}",
-    "noVerifiedModels": "Noch keine verifizierten Modelle",
-    "viewDataNote": "Datenschutzhinweis anzeigen",
-    "hideDataNote": "Datenschutzhinweis ausblenden",
-    "confirmDialogTitle": "Zu {{name}} wechseln?",
-    "confirmDialogMessageWithNote": "Bevor Ihr KI-Datenverkehr über {{name}} läuft, prüfen Sie, wie Ihre Daten verarbeitet werden:",
-    "confirmDialogMessageNoNote": "Ihren KI-Datenverkehr zu {{name}} wechseln?",
-    "consentCheckboxLabel": "Ich verstehe, dass mein KI-Datenverkehr und meine Inhalte von {{name}} verarbeitet werden",
-    "endpointUpdated": "KI-Endpunkt aktualisiert.",
-    "endpointUpdateFailed": "Der KI-Endpunkt konnte nicht aktualisiert werden.",
-    "endpointDelistedBanner": "Dieser Endpunkt wurde von Breeze aus der Liste entfernt — die KI ist pausiert, bis Sie einen anderen auswählen",
-    "endpointModelUnverifiedBanner": "Das Modell {{model}} ist für diesen Endpunkt nicht verifiziert. Wählen Sie ein anderes Modell oder einen anderen Endpunkt, um die KI fortzusetzen."
+  "aiModels": {
+    "title": "KI-Anbieter und Modelle",
+    "subtitle": "Verbinden Sie Anbieter, legen Sie fest, welche Modelle verfügbar sind, und wählen Sie das Standardmodell für jede KI-Funktion.",
+    "forbidden": "Sie haben keine Berechtigung, KI-Anbieter und Modelle zu verwalten.",
+    "loadFailed": "KI-Anbieter und Modelle konnten nicht geladen werden.",
+    "workspaceNote": "Die Workspace-Inhaltsanreicherung verwendet Ihren konfigurierten KI-Anbieter und erscheint in Ihrer KI-Nutzung.",
+    "connections": {
+      "title": "Verbindungen",
+      "subtitle": "Wohin Ihre KI-Anfragen gesendet werden und wer sie bezahlt.",
+      "add": "Verbindung hinzufügen",
+      "edit": "Bearbeiten",
+      "created": "Verbindung hinzugefügt",
+      "saved": "Verbindung gespeichert",
+      "saveFailed": "Die Verbindung konnte nicht gespeichert werden.",
+      "keyFailed": "Der API-Schlüssel konnte nicht ersetzt werden.",
+      "endpointFailed": "Der Endpunkt konnte nicht geändert werden.",
+      "credentialSavedSettingsFailed": "Der Schlüssel bzw. Endpunkt wurde gespeichert, Name und Region jedoch nicht. Speichern Sie sie erneut.",
+      "disconnected": "Verbindung entfernt",
+      "disconnectFailed": "Die Verbindung konnte nicht entfernt werden.",
+      "columns": {
+        "name": "Name",
+        "status": "Status",
+        "key": "Schlüssel",
+        "geo": "Inferenzregion",
+        "funding": "Abrechnung über"
+      },
+      "kind": {
+        "platform": "Breeze-Plattform",
+        "anthropic_byok": "Anthropic (Ihr Schlüssel)",
+        "catalog": "Katalog-Endpunkt",
+        "openai_compatible": "OpenAI-kompatibel"
+      },
+      "status": {
+        "active": "Aktiv",
+        "error": "Fehler",
+        "platform": "Inklusive"
+      },
+      "funding": {
+        "platform": "Breeze-Guthaben",
+        "partner_key": "Ihr API-Schlüssel"
+      },
+      "geoSource": {
+        "connection": "eigene Einstellung",
+        "platform": "Plattformeinstellung",
+        "provider_default": "Anbieter-Standard"
+      },
+      "geoProviderDefault": "Anbieter-Standard",
+      "supportedGeos": "Unterstützt: {{geos}}",
+      "refreshQueued": "Modellaktualisierung eingeplant",
+      "refreshFailed": "Die Modellaktualisierung konnte nicht eingeplant werden.",
+      "alreadyConnected": "Bereits verbunden",
+      "addKind": {
+        "anthropic_byok": "Anthropic-API-Schlüssel",
+        "openai_compatible": "OpenAI-kompatibler Endpunkt"
+      },
+      "openai": {
+        "name": "Bezeichnung",
+        "baseUrl": "Basis-URL",
+        "baseUrlHelp": "Die URL, die vor /chat/completions endet, z. B. https://llm.example.com/v1. Gehostetes Breeze verbindet sich nur mit öffentlichen https-Endpunkten.",
+        "apiKey": "API-Schlüssel (optional)",
+        "apiKeyHelp": "Wird verschlüsselt gespeichert und nie wieder angezeigt. Lokale Server wie Ollama oder vLLM brauchen meist keinen.",
+        "optional": "Freiwillig",
+        "keepKey": "Leer lassen, um den aktuellen Schlüssel zu behalten",
+        "removeKey": "Gespeicherten Schlüssel entfernen",
+        "keyTooShort": "Ein Schlüssel muss mindestens {{min}} Zeichen lang sein.",
+        "keyRequiredForNewUrl": "Geben Sie den Schlüssel für die neue URL ein oder entfernen Sie den Schlüssel. Der gespeicherte Schlüssel wird nie an eine neue URL gesendet.",
+        "envManaged": "Diese Verbindung wird über die Umgebung der Instanz verwaltet (MCP_LLM_*-Einstellungen). Ändern Sie sie dort; hier ist sie nicht bearbeitbar.",
+        "envReleased": "Diese Verbindung wurde über die Umgebung der Instanz (MCP_LLM_*-Einstellungen) eingerichtet, die sie nicht mehr verwaltet. Sie ist hier nicht bearbeitbar; Sie können sie trennen.",
+        "envManagedBadge": "Über Umgebung verwaltet",
+        "noKey": "Kein Schlüssel",
+        "discovered_one": "{{count}} Modell gefunden · {{when}}",
+        "discovered_other": "{{count}} Modelle gefunden · {{when}}",
+        "partialSaved": "Endpunkt oder Schlüssel wurden gespeichert, der Name jedoch nicht. Öffnen Sie die Verbindung erneut, um sie umzubenennen."
+      }
+    },
+    "drawer": {
+      "titleCreate": "Verbindung hinzufügen",
+      "titleEdit": "{{name}} bearbeiten",
+      "errorTitle": "Der Schlüssel dieser Verbindung funktioniert nicht mehr",
+      "reconnectHint": "Ersetzen Sie den Schlüssel unten, um die Verbindung wiederherzustellen.",
+      "name": "Name",
+      "geo": "Inferenzregion",
+      "geoProviderDefault": "Anbieter-Standard",
+      "geoHint": "Wo der Anbieter Anfragen verarbeitet. Belassen Sie den Anbieter-Standard, sofern Sie keine bestimmte Region benötigen.",
+      "keyLabel": "Anthropic-API-Schlüssel",
+      "replaceKey": "API-Schlüssel ersetzen",
+      "writeOnlyHint": "Nur Schreibzugriff: Der Schlüssel wird nach dem Speichern nie wieder angezeigt.",
+      "endpoint": "Endpunkt",
+      "endpointDirect": "Anthropic (direkt)",
+      "endpointDelisted": "Der von dieser Verbindung verwendete Endpunkt ist nicht mehr gelistet. Wechseln Sie zur Wiederherstellung zurück zu Anthropic (direkt).",
+      "verifiedModels": "Verifizierte Modelle: {{models}}",
+      "noVerifiedModels": "Keine verifizierten Modelle aufgeführt.",
+      "consent": "Ich verstehe, dass {{name}} meine Anfragen gemäß dem obigen Datenhinweis verarbeitet.",
+      "oneCredentialChange": "Speichern Sie zuerst den neuen Schlüssel und ändern Sie dann den Endpunkt (beides wird getrennt geprüft).",
+      "disconnect": "Trennen",
+      "disconnectTitle": "Diese Verbindung trennen?",
+      "disconnectMessage": "KI-Funktionen verwenden diesen Schlüssel nicht mehr. Sie können jederzeit mit einem neuen Schlüssel erneut verbinden.",
+      "refresh": "Modelle aktualisieren"
+    },
+    "residency": {
+      "label": "Datenresidenz erforderlich",
+      "savedOn": "Datenresidenz ist jetzt erforderlich",
+      "savedOff": "Datenresidenz ist nicht mehr erforderlich",
+      "saveFailed": "Die Einstellung zur Datenresidenz konnte nicht aktualisiert werden.",
+      "previewFailed": "Die Auswirkungen der Datenresidenz konnten nicht geprüft werden.",
+      "confirmTitle": "Datenresidenz erforderlich machen?",
+      "confirmBody": "Diese Funktionen funktionieren nicht mehr, bis ein Modell, das Daten in der erforderlichen Region halten kann, als Standard festgelegt wird.",
+      "confirmSubmit": "Residenz erforderlich machen",
+      "orgOverride": "{{org}}: {{surface}}"
+    },
+    "surfaces": {
+      "chat": "Chat",
+      "helper": "Helper",
+      "script_builder": "Skript-Generator",
+      "script_reviewer": "Skript-Prüfer",
+      "office_chat": "Office-Add-in-Chat",
+      "office_ticket": "Office-Ticket-Assistent",
+      "ai_agents": "KI-Agenten",
+      "catalog_enrichment": "Katalog-Anreicherung",
+      "extension_content": "Erweiterungsinhalte",
+      "patch_test": "Patch-Tests"
+    },
+    "blockers": {
+      "model_unavailable": "Dieses Modell ist nicht mehr verfügbar.",
+      "unpriced": "Für dieses Modell ist kein Preis festgelegt.",
+      "plan_required": "Ihr Tarif enthält dieses Modell nicht.",
+      "connection_unavailable": "Die zugehörige Verbindung funktioniert nicht.",
+      "residency_unavailable": "Es kann Daten nicht in der erforderlichen Region halten."
+    },
+    "errors": {
+      "not_found": "Dieses Element existiert nicht mehr. Laden Sie neu und versuchen Sie es erneut.",
+      "unpriced": "Dieses Modell hat noch keinen Preis und kann nicht aktiviert werden.",
+      "not_eligible": "Dieses Modell kann derzeit nicht so verwendet werden.",
+      "offering_in_use": "Eine Funktion verwendet dieses Modell noch als Standard. Wählen Sie zuerst einen anderen Standard.",
+      "stale_write": "Jemand hat dies geändert, während Sie es bearbeitet haben. Laden Sie neu und versuchen Sie es erneut.",
+      "conflict": "Dies steht im Konflikt mit einer bestehenden Einstellung.",
+      "invalid": "Diese Änderung ist ungültig.",
+      "tools_unsupported": "Dieses Modell kann keine Tools aufrufen, die diese Funktion benötigt.",
+      "widens_partner": "Eine Organisation kann nur einschränken, was der Partner erlaubt.",
+      "write_failed": "Die Änderung konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+      "registry_unavailable": "Die KI-Konfiguration wird gerade aktualisiert. Versuchen Sie es gleich noch einmal.",
+      "approvals_decide_required": "Zum Ändern des Skript-Prüfer-Modells ist die Berechtigung approvals:decide erforderlich.",
+      "queue_unavailable": "Die Anfragewarteschlange ist nicht verfügbar. Versuchen Sie es gleich noch einmal.",
+      "registry_busy": "Eine andere Änderung der KI-Konfiguration wird gerade ausgeführt. Versuchen Sie es gleich noch einmal.",
+      "crossesFunding": "Dieses Ausweichmodell wird über eine andere Quelle bezahlt. Erlauben Sie zuerst das Ausweichen zwischen Breeze-Guthaben und Ihrem eigenen API-Schlüssel.",
+      "egress_blocked": "Diese Adresse ist nicht zulässig.",
+      "invalid_url": "Diese URL ist ungültig.",
+      "managed_by_env": "Diese Verbindung wird über die Umgebung der Instanz verwaltet und kann hier nicht geändert werden.",
+      "connection_in_use": "Eine Funktion verwendet noch ein Modell dieser Verbindung. Wählen Sie zuerst einen anderen Standard.",
+      "duplicate_model": "Diese Modell-ID ist bei dieser Verbindung bereits vorhanden.",
+      "geo_not_supported": "Bei dieser Verbindungsart kann keine Inferenzregion festgelegt werden.",
+      "key_required_for_new_endpoint": "Geben Sie den Schlüssel für die neue URL ein (oder entfernen Sie den Schlüssel).",
+      "too_many_models": "Diese Verbindung hat bereits die maximale Anzahl manuell eingetragener Modelle."
+    },
+    "org": {
+      "title": "Modellstandards",
+      "subtitle": "Überschreiben Sie die Modellstandards des Partners für diese Organisation. Eine Organisation kann nur einschränken, was der Partner erlaubt; lassen Sie ein Feld auf „Erben“, um dem Partner zu folgen.",
+      "partnerLink": "Partnerstandards ansehen",
+      "inherit": "Erben",
+      "inheritModel": "Erben — {{model}} (Partnerstandard)",
+      "inheritNone": "Erben — kein Standard",
+      "inheritValue": "Erben — {{value}}",
+      "inheritModelDefault": "Erben — Modellstandard",
+      "inheritedFrom": "Erbt {{model}} (Partnerstandard)",
+      "inheritedNone": "Kein Partnerstandard für diese Funktion",
+      "effective": "Wirksam: {{model}} ({{source}})",
+      "effectiveNone": "Wirksam: kein Standard",
+      "lockChoice": "Benutzer nicht wählen lassen",
+      "lockedByPartner": "Vom Partner gesperrt",
+      "readonly": "Sie können diese Standards ansehen. Zum Ändern ist die Berechtigung zum Bearbeiten der Organisation nötig.",
+      "pickDefault": "Wählen Sie ein Standardmodell für diese Funktion: Der Partnerstandard ({{model}}) gehört nicht zu den erlaubten Modellen.",
+      "widensField": "Der Partner erlaubt diesen Wert für diese Funktion nicht.",
+      "loadFailed": "Die Modellstandards konnten nicht geladen werden.",
+      "saved": "Modellstandards gespeichert.",
+      "saveFailed": "Die Modellstandards konnten nicht gespeichert werden. Versuchen Sie es erneut.",
+      "source": {
+        "org": "Überschreibung der Organisation",
+        "partner": "Partner-Standard",
+        "none": "Kein Standard"
+      },
+      "noCrossFunding": "Nicht zwischen Breeze-Guthaben und dem eigenen Schlüssel des Partners ausweichen",
+      "crossFundingLocked": "Vom Partner nicht erlaubt",
+      "fallbackInherit_one": "Erben — {{count}} Ausweichmodell (Partner)",
+      "fallbackInherit_other": "Erben — {{count}} Ausweichmodelle (Partner)",
+      "fallbackOnlyThese": "Nur diese Ausweichmodelle",
+      "noBackups": "Keine Ausweichmodelle"
+    },
+    "models": {
+      "title": "Modelle",
+      "subtitle": "Legen Sie fest, welche Modelle Ihre Techniker und Funktionen nutzen dürfen. Preise gelten pro 1 Mio. Tokens.",
+      "empty": "Noch keine Modelle verfügbar.",
+      "otherGroup": "Weitere",
+      "ratePair": "{{input}} Eingabe / {{output}} Ausgabe pro 1 Mio. Tokens",
+      "fastRate": "Schnell: {{rate}}",
+      "noPrice": "Kein Preis",
+      "context": "Kontext: {{tokens}} Tokens",
+      "unverified": "Fähigkeiten nicht geprüft",
+      "lifecycle": {
+        "missing": "Beim Anbieter nicht mehr gelistet",
+        "retired": "Eingestellt"
+      },
+      "defaultFor": "Standard für {{count}} Funktion(en)",
+      "enabledAt": "{{name}} aktiviert zu {{rate}}",
+      "enabled": "{{name}} aktiviert",
+      "disabled": "{{name}} deaktiviert",
+      "toggleFailed": "Das Modell konnte nicht geändert werden. Versuchen Sie es erneut.",
+      "inUseFriendly": "Dieses Modell ist noch ein Standard. Bestätigen Sie, um es trotzdem zu deaktivieren.",
+      "enableFirst": "Aktivieren Sie zuerst das Modell und bearbeiten Sie dann die Details.",
+      "details": "Details",
+      "enableLabel": "{{name}} aktivieren",
+      "disableTitle": "{{name}} deaktivieren?",
+      "disableMessage": "Diese Funktionen nutzen dieses Modell als Standard. Sie haben kein Modell, bis Sie ein anderes wählen:",
+      "disableAnyway": "Trotzdem deaktivieren",
+      "orgOverrides": "Betroffene Organisations-Überschreibungen: {{count}}",
+      "verification": {
+        "verified": "Geprüft",
+        "unverified": "Nicht geprüft",
+        "failed": "Prüfung fehlgeschlagen",
+        "failedWithSummary": "Prüfung fehlgeschlagen: {{summary}}",
+        "stale": "Erneut prüfen: Endpunkt geändert"
+      },
+      "setPriceToEnable": "Preis festlegen, um zu aktivieren",
+      "manual": {
+        "add": "Modell hinzufügen",
+        "empty": "Noch keine Modelle. Fügen Sie eines von Hand hinzu oder aktualisieren Sie die Verbindung, um Modelle zu finden.",
+        "title": "Modell hinzufügen",
+        "modelId": "Modell-ID",
+        "modelIdHelp": "Genau so, wie der Endpunkt sie erwartet, z. B. qwen2.5-coder:7b.",
+        "modelIdInvalid": "Nur Buchstaben, Ziffern und . _ : / @ + - verwenden, keine Leerzeichen.",
+        "displayName": "Anzeigename (optional)",
+        "pricesHint": "Optional. Cent pro 1 Mio. Tokens. Füllen Sie alle vier aus oder lassen Sie alle leer und legen Sie vor dem Aktivieren einen Preis fest.",
+        "added": "Modell hinzugefügt",
+        "failed": "Das Modell konnte nicht hinzugefügt werden."
+      }
+    },
+    "offering": {
+      "displayName": "Anzeigename",
+      "displayNameHint": "Leer lassen, um den Namen des Anbieters zu verwenden. Modell-ID: {{modelId}}",
+      "pricesTitle": "Preis",
+      "pricesHint": "Cent pro 1 Mio. Tokens. Füllen Sie alle vier aus oder lassen Sie alle leer für keinen Preis (das Modell lässt sich dann nicht aktivieren).",
+      "prices": {
+        "input": "Eingabe",
+        "output": "Ausgabe",
+        "cacheRead": "Cache-Lesen",
+        "cacheWrite": "Cache-Schreiben"
+      },
+      "priceSource": {
+        "platform": "Preis der Breeze-Plattform",
+        "catalog": "Preis aus dem Katalog",
+        "linked_platform": "Preis des verknüpften Plattformmodells",
+        "offering": "Für dieses Modell festgelegter Preis",
+        "none": "Kein Preis festgelegt"
+      },
+      "allowedEffort": "Zulässige Aufwandsstufen",
+      "effort": {
+        "low": "Niedrig",
+        "medium": "Mittel",
+        "high": "Hoch",
+        "xhigh": "Sehr hoch",
+        "max": "Maximal"
+      },
+      "display": {
+        "omitted": "Ausgeblendet",
+        "summarized": "Zusammengefasst",
+        "updates": "Live-Updates"
+      },
+      "providerDefault": "Anbieterstandard",
+      "defaultEffort": "Standard-Aufwand",
+      "defaultDisplay": "Standardanzeige des Denkens",
+      "defaultSpeed": "Standard-Geschwindigkeit",
+      "speed": {
+        "standard": "Standard",
+        "fastWithRate": "Schnell ({{rate}})"
+      },
+      "allowFast": "Schnellmodus erlauben",
+      "allowFastHint": "Der Schnellmodus wird mit dem höheren Schnelltarif abgerechnet.",
+      "premium": "Berechtigung für Premium-Modelle verlangen",
+      "premiumHint": "Nur Rollen mit der Berechtigung ai_models:premium können dieses Modell nutzen.",
+      "premiumForced": "Erforderlich, solange der Schnellmodus bei einem von Breeze finanzierten Modell erlaubt ist.",
+      "refusalFallback": "Ausweichmodell bei Ablehnung",
+      "refusalNone": "Keines",
+      "refusalHint": "Ein anderes aktiviertes Modell derselben Verbindung, das verwendet wird, wenn dieses eine Anfrage ablehnt.",
+      "invalidPrices": "Geben Sie alle vier Preise als nicht negative Zahlen ein oder lassen Sie alle vier leer.",
+      "saved": "Modell gespeichert",
+      "saveFailed": "Das Modell konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+      "verify": "Prüfen",
+      "verifyQueued": "Modellprüfung eingeplant",
+      "verifyFailed": "Die Modellprüfung konnte nicht eingeplant werden.",
+      "verifyGatewayHint": "Führt einen kurzen Tool-Calling-Test gegen Ihren Endpunkt aus (verbraucht einige tausend Tokens)."
+    },
+    "defaults": {
+      "title": "Standards pro Funktion",
+      "subtitle": "Legen Sie für jede Funktion das Standardmodell, die erlaubten Modelle und die Denkoptionen fest. Änderungen gelten für alle Organisationen, sofern sie nicht überschrieben werden.",
+      "needsTools": "benötigt Tools",
+      "reviewerHelp": "Zum Ändern ist die Genehmigungsberechtigung erforderlich.",
+      "default": "Standardmodell",
+      "chooseDefault": "Modell wählen",
+      "permitted": "Erlaubte Modelle",
+      "permittedAll": "Alle aktivierten Modelle",
+      "permittedList": "Nur diese",
+      "userChoice": "Benutzer dürfen wählen",
+      "effort": "Aufwand",
+      "display": "Denkanzeige",
+      "speed": "Geschwindigkeit",
+      "modelDefault": "Modellstandard",
+      "orgOverrides_one": "{{count}} Organisations-Überschreibung",
+      "orgOverrides_other": "{{count}} Organisations-Überschreibungen",
+      "changedElsewhere": "Anderswo geändert; Speichern überschreibt dies",
+      "unsaved": "Nicht gespeicherte Änderungen",
+      "discard": "Verwerfen",
+      "saved": "Standards gespeichert.",
+      "saveFailed": "Die Standards konnten nicht gespeichert werden. Versuchen Sie es erneut.",
+      "needsDefault": "Wählen Sie für jede geänderte Funktion ein Standardmodell.",
+      "needsPermitted": "Wählen Sie bei „Nur diese“ mindestens ein Modell aus.",
+      "effortValues": {
+        "low": "Niedrig",
+        "medium": "Mittel",
+        "high": "Hoch",
+        "xhigh": "Sehr hoch",
+        "max": "Maximal"
+      },
+      "displayValues": {
+        "omitted": "Ausgeblendet",
+        "summarized": "Zusammengefasst",
+        "updates": "Live-Updates"
+      },
+      "speedValues": {
+        "standard": "Standard",
+        "fast": "Schnell"
+      },
+      "unavailableModel": "{{model}} (nicht verfügbar)",
+      "unavailableUnknown": "Nicht verfügbares Modell",
+      "roleInherit": "Wie Standard der KI-Agenten",
+      "fallbacks": "Ausweichmodelle, in Reihenfolge",
+      "addFallback": "Ausweichmodell hinzufügen …",
+      "moveUp": "Nach oben",
+      "moveDown": "Nach unten",
+      "removeFallback": "Entfernen",
+      "fallbackUnavailable": "Ein nicht mehr verfügbares Modell",
+      "crossFunding": "Ausweichen zwischen Breeze-Guthaben und Ihrem eigenen API-Schlüssel erlauben",
+      "crossFundingHelp": "Wenn aktiviert, darf ein über die andere Quelle bezahltes Ausweichmodell eine Anfrage bedienen. Die Abrechnung erfolgt über die Quelle, die sie tatsächlich bedient hat.",
+      "fundingPlatform": "Breeze-Guthaben",
+      "fundingOwnKey": "Ihr API-Schlüssel"
+    },
+    "usage": {
+      "title": "KI-Nutzung nach Modell",
+      "subtitleAll": "Kosten und Ablehnungen über alle Organisationen, aus dem Modellaufruf-Protokoll.",
+      "subtitleOrg": "Kosten und Ablehnungen für die ausgewählte Organisation, aus dem Modellaufruf-Protokoll.",
+      "from": "Von",
+      "to": "Bis",
+      "groupByLabel": "Nutzung gruppieren nach",
+      "groupBy": {
+        "model": "Modell",
+        "surface": "Funktion",
+        "user": "Techniker",
+        "org": "Organisation"
+      },
+      "calls": "Aufrufe",
+      "cost": "Kosten",
+      "inputTokens": "Eingabe-Tokens",
+      "outputTokens": "Ausgabe-Tokens",
+      "refusals": "Ablehnungen",
+      "fallbacks": "Ausweichaufrufe",
+      "total": "Gesamt",
+      "system": "System / Agenten",
+      "loading": "Nutzung wird geladen…",
+      "empty": "Keine Modellaufrufe in diesem Zeitraum.",
+      "error": "Die Nutzungsaufschlüsselung konnte nicht geladen werden.",
+      "disconnected": "Getrennt",
+      "disconnectedHint": "Die Verbindung, über die diese Aufrufe liefen, wurde inzwischen getrennt.",
+      "footnote": "Die Ablehnungsquote bezieht sich auf einen Modellaufruf. Die Zählung beginnt mit dem Start der Modellregistrierung; frühere Nutzung ist in den Summen oben enthalten.",
+      "view": {
+        "label": "Anzeigen",
+        "spend": "Kosten",
+        "quality": "Qualität"
+      },
+      "failovers": "Failover",
+      "failoversHelp": "Aufrufe, die von einem Ausweichmodell bedient wurden, weil das konfigurierte ausgefallen oder nicht verfügbar war"
+    },
+    "link": {
+      "summary": "Modell: {{model}} — festgelegt unter KI-Anbieter und Modelle → Standards pro Funktion",
+      "setPerFeature": "Pro Funktion festgelegt",
+      "noDefault": "kein Standard festgelegt",
+      "partner": "Partnerstandards",
+      "org": "Überschreibung dieser Organisation"
+    },
+    "quality": {
+      "title": "Modellqualität",
+      "subtitleAll": "Wie Unterhaltungen mit jedem Modell in allen Organisationen verlaufen: Ablehnungen, Markierungen, Wechsel zu einem anderen Modell und Schritte bis zur Lösung.",
+      "subtitleOrg": "Wie Unterhaltungen mit jedem Modell in der ausgewählten Organisation verlaufen.",
+      "groupBy": {
+        "model": "Modell",
+        "surface": "Funktion",
+        "prompt_profile": "Modellfamilie"
+      },
+      "columns": {
+        "conversations": "Unterhaltungen",
+        "costPerConversation": "Kosten / Unterhaltung",
+        "refusalRate": "Ablehnungsrate",
+        "failoverRate": "Failover-Rate",
+        "flagRate": "Markierungsrate",
+        "leftRate": "Zu anderem Modell gewechselt",
+        "turnsToResolution": "Schritte bis zur Lösung",
+        "agentCompletion": "Abgeschlossene Agent-Läufe"
+      },
+      "help": {
+        "conversations": "Chat-Sitzungen und Agent-Läufe, deren letzter Modellaufruf in diesem Zeitraum auf diese Zeile entfiel.",
+        "costPerConversation": "Durchschnittliche Kosten in dieser Zeile je Unterhaltung, die sie genutzt hat.",
+        "refusalRate": "Modellaufrufe, die das Modell abgelehnt hat, pro Aufruf.",
+        "failoverRate": "Aufrufe, die auf ein Ersatzmodell wechselten, weil dieses Modell ausfiel oder nicht verfügbar war.",
+        "flagRate": "Von einer Person markierte Sitzungen. Automatische Markierungen nach einem Tool-Fehler werden separat gezählt.",
+        "leftRate": "Unterhaltungen, die zu einem anderen Modell gewechselt haben oder in einer neuen Sitzung mit einem anderen Modell fortgesetzt wurden.",
+        "turnsToResolution": "Median der von einem Techniker gesendeten Nachrichten in Sitzungen, die ohne Markierung durch eine Person und ohne Wechsel in eine neue Sitzung endeten. Enthält die Sitzung, aus der fortgesetzt wurde.",
+        "agentCompletion": "Abgeschlossene Agent-Läufe, bezogen auf beendete Läufe."
+      },
+      "profiles": {
+        "claude-frontier": "Claude Frontier",
+        "claude-standard": "Claude Standard",
+        "claude-small": "Claude Klein",
+        "generic": "Andere Modelle"
+      },
+      "unrecorded": "Nicht erfasst",
+      "unattributed": "Keinem Modell zugeordnet",
+      "removedModel": "Entferntes Modell",
+      "platformConnection": "Breeze-Plattform",
+      "notRecorded": "Auf diesem Server noch nicht erfasst",
+      "switchesOnly": "Nur Wechsel",
+      "few": "Wenige Unterhaltungen",
+      "autoFlagged_one": "{{count}} automatisch markiert",
+      "autoFlagged_other": "{{count}} automatisch markiert",
+      "leftBreakdown": "{{switched}} gewechselt, {{continued}} fortgesetzt",
+      "resolvedCount_one": "{{count}} gelöst",
+      "resolvedCount_other": "{{count}} gelöst",
+      "loading": "Qualität wird geladen…",
+      "empty": "Keine Modellaufrufe in diesem Zeitraum.",
+      "error": "Die Qualitätsansicht konnte nicht geladen werden.",
+      "timeout": "Dieser Zeitraum ist zu groß, um schnell zusammengefasst zu werden. Wählen Sie einen kürzeren Zeitraum.",
+      "footnote": "Eine Unterhaltung zählt für das Modell, das sie zuletzt genutzt hat, ein Wechsel für das verlassene Modell. Aufrufe, die ein Ersatzmodell bedient hat, zählen für das gewählte Modell. Die Zählung beginnt mit dem Start der Qualitätserfassung. Kleine Zahlen mit Vorsicht lesen."
+    },
+    "roles": {
+      "triage": "Triage (erste Sichtung)",
+      "analysis": "Analyse (untersuchen und planen)",
+      "remediation": "Behebung (auf Geräten handeln)"
+    }
   },
   "partnerDefaults": {
     "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",
@@ -591,8 +988,8 @@
         "description": "KI-Ausgabenlimits"
       },
       "aiProvider": {
-        "label": "KI-Anbieter",
-        "description": "Eigenen Anthropic-Schlüssel verwenden"
+        "label": "KI-Anbieter und Modelle",
+        "description": "Verbindungen, Modelle und Standards für jede KI-Funktion"
       },
       "aiFeatures": {
         "label": "KI-Funktionen",
@@ -934,7 +1331,44 @@
       "invoice_number": "Rechnungsnummer",
       "due_date": "Fälligkeitsdatum",
       "invite_url": "Einladungs-URL",
-      "cta_button": "Schaltfläche"
+      "cta_button": "Schaltfläche",
+      "client_name": "Client name",
+      "setup_link": "Automatic payments setup link",
+      "ach_mode_text": "Available payment methods",
+      "payment_method": "Saved payment method",
+      "schedule_text": "Payment schedule",
+      "fee_text": "Processing fee terms",
+      "stopped_by": "Who stopped automatic payments",
+      "open_invoices_text": "Open invoice summary",
+      "expires_on": "Card expiry date",
+      "update_link": "Payment method update link",
+      "amount_due": "Fälliger Betrag",
+      "charge_date": "Abbuchungsdatum",
+      "fee_amount": "Bearbeitungsgebühr",
+      "invoice_link": "Rechnungslink",
+      "amount_paid": "Gezahlter Betrag",
+      "total_charged": "Abgebuchter Gesamtbetrag",
+      "paid_on": "Zahlungsdatum",
+      "balance_remaining": "Restbetrag",
+      "failure_text": "Fehlerdetails",
+      "action_link": "Aktionslink",
+      "action_label": "Aktionsbezeichnung",
+      "days_overdue": "Überfällige Tage",
+      "pay_link": "Zahlungslink",
+      "charge_total": "Abbuchungsbetrag gesamt",
+      "attempted_amount": "Versuchter Zahlungsbetrag"
+    },
+    "billingPayments": "Billing & payments",
+    "supportPortal": "Support & portal",
+    "labels": {
+      "autopay_request": "Automatic payments request",
+      "autopay_enrolled": "Automatic payments confirmed",
+      "autopay_stopped": "Automatic payments stopped",
+      "autopay_paused": "Automatische Zahlungen pausiert",
+      "autopay_resumed": "Automatische Zahlungen fortgesetzt",
+      "card_expiring": "Saved card expiring",
+      "payment_receipt": "Beleg für Onlinezahlung",
+      "payment_failed": "Zahlung konnte nicht abgeschlossen werden"
     }
   },
   "inboundEmail": {
@@ -1714,6 +2148,13 @@
     "failedToFetchReviewDetails": "Überprüfungsdetails konnten nicht abgerufen werden",
     "noReviewerEmailsAvailableForNotifications": "Für Benachrichtigungen sind keine E-Mail-Adressen der Prüfer verfügbar",
     "unableToLaunchEmailNotification": "E-Mail-Benachrichtigung kann nicht gestartet werden",
+    "reviewersEmailed": "Zugewiesener Prüfer per E-Mail benachrichtigt",
+    "assignedReviewerEmailedOnly": "Zugewiesener Prüfer per E-Mail benachrichtigt. Andere ausgewählte Prüfer wurden nicht per E-Mail benachrichtigt – eine Prüfung speichert nur einen zugewiesenen Prüfer.",
+    "fallbackToMailClient": "{{reason}} Stattdessen wird Ihr E-Mail-Programm geöffnet.",
+    "fallbackEmailNotConfigured": "E-Mail-Versand ist auf diesem Server nicht konfiguriert.",
+    "fallbackNoReviewerEmail": "Für den zugewiesenen Prüfer ist keine E-Mail-Adresse hinterlegt.",
+    "fallbackSendFailed": "Der Server konnte die E-Mail nicht senden.",
+    "fallbackRequestFailed": "Die Benachrichtigungsanfrage ist fehlgeschlagen.",
     "failedToCreateAccessReview": "Die Zugriffsüberprüfung konnte nicht erstellt werden",
     "failedToUpdateDecision": "Entscheidung konnte nicht aktualisiert werden",
     "failedToFetchReviewForReport": "Die Überprüfung für den Bericht konnte nicht abgerufen werden",
@@ -1728,7 +2169,12 @@
     "sending": "Senden...",
     "notifyReviewers": "Prüfer benachrichtigen",
     "completing": "Abschluss...",
-    "completeReview": "Überprüfung abschließen"
+    "completeReview": "Überprüfung abschließen",
+    "selfDecided": "Selbst entschieden",
+    "selfDecidedHint": "Vom betroffenen Benutzer selbst entschieden, da kein anderer Administrator die Prüfung übernehmen konnte (Ausnahme für einzigen Administrator).",
+    "ownItemBlocked": "Sie können nicht über Ihren eigenen Zugriff entscheiden. Ein anderer Administrator mit Benutzerverwaltungsrechten muss diesen Eintrag prüfen.",
+    "ownItemBlockedShort": "Anderer Prüfer erforderlich",
+    "ownItemSelfDecisionWarning": "Sie sind der einzige Administrator, der dies prüfen kann, und dürfen daher über Ihren eigenen Zugriff entscheiden. Dies wird als Selbstentscheidung protokolliert."
   },
   "aiUsagePage": {
     "aIUsageBudget": "KI-Nutzung",
@@ -1890,7 +2336,8 @@
       "triage": "Untersucht neue Warnungen und schlägt vor, was zu tun ist.",
       "patch": "Prüft fehlende Patches und schlägt vor, was installiert werden soll.",
       "helpdesk": "Nimmt Tickets auf und schlägt Antworten und nächste Schritte vor.",
-      "designer": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker."
+      "designer": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker.",
+      "research": "Integriert. Recherchiert auf Anfrage ein Problem auf einem Gerät und schlägt sichere Lösungen vor. Führt nie etwas aus."
     },
     "emptyState": {
       "title": "Noch keine Agenten",
@@ -2036,7 +2483,8 @@
       "triage": "Alarm-Triage",
       "patch": "Patch-Verwaltung",
       "helpdesk": "Helpdesk",
-      "designer": "Flottendesigner"
+      "designer": "Flottendesigner",
+      "research": "Fehlerbehebungs-Recherche"
     },
     "modes": {
       "off": "Aus",
@@ -2084,6 +2532,14 @@
       "recipientRolesEmpty": "Keine Rollen verfügbar.",
       "instructionsHint": "Nur zur Orientierung — Tonfall, was zuerst zu prüfen ist, interne Gepflogenheiten. Es werden dadurch keine Berechtigungen erteilt.",
       "charactersLeft": "Noch {{count}} Zeichen",
+      "model": "Modell",
+      "modelDefault": "Standard verwenden ({{model}})",
+      "modelDefaultUnknown": "der Standard für KI-Agenten",
+      "modelRequiresRole": "erfordert {{roles}}",
+      "modelRequiresPermission": "erfordert die Berechtigung für Premium-KI-Modelle",
+      "modelUnavailable": "Das gespeicherte Modell ist nicht mehr verfügbar. Wählen Sie ein anderes.",
+      "modelLoadFailed": "Die Modelle konnten nicht geladen werden. Der Agent behält sein aktuelles Modell.",
+      "modelHint": "Standard und zulässige Modelle legen Sie unter KI-Anbieter und -Modelle fest.",
       "recipientRolesFailed": "Rollen konnten nicht geladen werden; Benachrichtigungsempfänger lassen sich derzeit nicht ändern.",
       "supervisedActionKeysHint": "Vorgänge, die dieser Agent OHNE einen menschlichen Klick auf Genehmigen ausführen darf, wenn eine passende Richtlinie existiert und im Expositionslimit der Organisation noch Spielraum ist. Jeder Vorgang durchläuft zur Ausführungszeit weiterhin die Live-Schutzmechanismen, den Kill-Switch und die Organisationslimits.",
       "supervisedActionKeysEmpty": "Es sind keine per Richtlinie entscheidbaren Aktionen registriert.",
@@ -2155,7 +2611,8 @@
         "failed": "Fehlgeschlagen",
         "cancelled": "Abgebrochen",
         "expired": "Abgelaufen",
-        "skipped": "Übersprungen"
+        "skipped": "Übersprungen",
+        "blocked": "Blockiert"
       },
       "verdicts": {
         "remediated": "Behoben",
@@ -3331,6 +3788,11 @@
           "blurb": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker.",
           "runsWhen": "Sie ein Flottendesign für eine Organisation starten oder nach einem vierteljährlichen Zeitplan",
           "recommended": "eine Neueinrichtung von Grund auf oder ein vierteljährliches Konfigurationsaudit"
+        },
+        "research": {
+          "blurb": "Integriert. Recherchiert auf Anfrage ein Problem auf einem Gerät und schlägt sichere Lösungen vor. Führt nie etwas aus.",
+          "runsWhen": "ein Techniker Lösungsvorschläge für ein Geräteproblem anfordert",
+          "recommended": "automatische, schreibgeschützte Recherche zu jeweils einem Problem"
         }
       },
       "kindCard": {
@@ -3358,6 +3820,36 @@
       "title": "Dieser Agent liest nur und schreibt Berichte",
       "body": "Ein Fleet Designer führt nie etwas auf einem Gerät aus. „Ein“ bedeutet, dass er laufen und seine Designs an die von Ihnen gewählten Empfänger liefern darf.",
       "ack": "Ich verstehe, dass dieser Agent unbeaufsichtigt läuft und Fleet Designs liefert."
+    },
+    "research": {
+      "capsTitle": "Recherche-Limits",
+      "builtInNote": "Integriert und nur vorschlagend: Der Agent führt nie etwas aus. Sie können ihn ausschalten und seine Ausgabenlimits festlegen.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Gleichzeitige Recherchen",
+          "hint": "Wie viele Recherchen gleichzeitig laufen dürfen."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Recherchen pro Stunde",
+          "hint": "Obergrenze aller pro Stunde gestarteten Recherchen."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Automatische Recherchen pro Stunde",
+          "hint": "Obergrenze für Recherchen, die automatisch bei hohen und kritischen Alarmen starten. 0 schaltet die automatische Recherche aus."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Budget schnelle Recherche (Cent)",
+          "hint": "Ausgabenlimit für eine schnelle Recherche."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Budget tiefe Recherche (Cent)",
+          "hint": "Ausgabenlimit für eine tiefe Recherche."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Tagesausgaben Recherche (Cent)",
+          "hint": "Gesamtes Ausgabenlimit pro Tag über alle Läufe dieses Agenten."
+        }
+      }
     }
   },
   "apiKeyForm": {
@@ -3757,6 +4249,8 @@
     "lastUsed": "Zuletzt verwendet",
     "actions": "Aktionen",
     "requestFailed": "Anfrage fehlgeschlagen ({{status}})",
+    "notEnabledTitle": "Verbundene Apps sind auf diesem Server nicht aktiviert",
+    "notEnabledBody": "MCP OAuth ist auf diesem Server deaktiviert. Setzen Sie MCP_OAUTH_ENABLED=true und starten Sie die API neu, um verbundene Apps zuzulassen.",
     "revokeConfirm": "Zugriff für {{name}} entziehen? Ihr Zugriffstoken wird innerhalb von 10 Minuten nicht mehr funktionieren.",
     "revokeFailed": "Widerruf fehlgeschlagen ({{status}})",
     "networkError": "Netzwerkfehler",
@@ -5896,7 +6390,6 @@
       "allowedClasses": "Worauf ein unbeaufsichtigtes Skript zugreifen darf",
       "perHour": "Maximale unbeaufsichtigte Ausführungen pro Stunde",
       "reviewerModel": "Prüfmodell",
-      "reviewerModelHint": "Leer lassen, um die Plattformvorgabe zu verwenden.",
       "protectedResources": "Diese niemals anfassen",
       "protectedServices": "Dienste",
       "protectedPaths": "Pfade",

@@ -16,13 +16,13 @@ export const BREEZE_FALLBACK_MODEL = 'claude-sonnet-5-5';
 // Anthropic alias. With a LiteLLM gateway the alias route maps
 // claude-sonnet-5-5 → backend model, so the override is unnecessary there.
 // A whitespace-only/empty value falls back to the Anthropic default (never an
-// empty model id). Cost tracking stays best-effort: the SDK can't price a
-// non-Anthropic model id so it reports total_cost_usd=0, then aiCostTracker
-// falls back to token-based pricing — and an unrecognized model id is priced at
-// conservative DEFAULT_PRICING (Opus-tier $5/$25 per MTok), i.e. an OVER-estimate
-// for a cheap local model, not $0. For accurate accounting add the model to
-// MODEL_PRICING (aiCostTracker.ts), or use the openai-compatible path's
-// MCP_LLM_PRICE_* overrides.
+// empty model id). Billing never uses the SDK's own cost: every call is priced
+// from the model's registry row. The registry cutover bootstraps a platform row
+// for an env model it does not know at the legacy conservative rate (Opus-tier
+// $5/$25 per MTok), i.e. an OVER-estimate for a cheap local model, not $0. For
+// accurate accounting set its price on /admin/ai-models (or, for an env
+// OpenAI-compatible endpoint, MCP_LLM_PRICE_*, which price its env-managed
+// registry offering).
 export function resolveDefaultModel(env: NodeJS.ProcessEnv = process.env): string {
   return env.ANTHROPIC_MODEL?.trim() || BREEZE_FALLBACK_MODEL;
 }

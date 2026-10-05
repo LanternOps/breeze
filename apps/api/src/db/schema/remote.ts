@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { sql, type AnyColumn, type SQL } from 'drizzle-orm';
 import { pgTable, uuid, text, timestamp, jsonb, pgEnum, integer, bigint, index, check } from 'drizzle-orm/pg-core';
 import { devices } from './devices';
 import { users } from './users';
@@ -6,6 +6,20 @@ import { organizations } from './orgs';
 
 export const remoteSessionTypeEnum = pgEnum('remote_session_type', ['terminal', 'desktop', 'file_transfer']);
 export const remoteSessionStatusEnum = pgEnum('remote_session_status', ['pending', 'connecting', 'active', 'disconnected', 'failed', 'denied']);
+
+// A remote session that is still live (or coming up). Rendered as an inline
+// literal on purpose: the planner only proves a partial index usable when the
+// predicate is a constant in the query text (a bound parameter falls back to a
+// sequential scan under generic plans; see routes/devices/events.ts
+// NON_AGENT_ACTOR). It MUST match the predicate of remote_sessions_device_live_idx
+// as created by its migration, which is what actually defines the index (the
+// Drizzle declaration below creates nothing and db:check-drift does not compare
+// them). Changing this list is schema drift: it needs a new migration that
+// rebuilds the index. Same set as ACTIVE_REMOTE_SESSION_STATUSES
+// (services/remoteSessionTeardown.ts).
+export const REMOTE_SESSION_LIVE_STATUSES = ['pending', 'connecting', 'active'] as const;
+export const remoteSessionIsLive = (status: AnyColumn | SQL) =>
+  sql`${status} IN (${sql.raw(REMOTE_SESSION_LIVE_STATUSES.map((v) => `'${v}'`).join(', '))})`;
 
 export const remoteSessions = pgTable('remote_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -58,6 +72,11 @@ export const remoteSessions = pgTable('remote_sessions', {
   // declaration does not create it (same situation as the note on
   // notifications.ts:57-64).
   index('remote_sessions_user_ended_idx').on(t.userId, t.endedAt).where(sql`${t.endedAt} IS NOT NULL`),
+  // GET /remote/devices/:deviceId/active-sessions reads a device's live rows.
+  // Created CONCURRENTLY by 2026-12-05-100000-device-live-session-indexes.sql.
+  index('remote_sessions_device_live_idx')
+    .on(t.deviceId)
+    .where(remoteSessionIsLive(t.status)),
   check(
     'remote_sessions_desktop_prompt_mode_check',
     sql`${t.desktopPromptMode} IS NULL OR ${t.desktopPromptMode} IN ('off', 'notify', 'consent')`,

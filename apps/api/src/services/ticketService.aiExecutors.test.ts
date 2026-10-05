@@ -142,7 +142,7 @@ describe('applyAiFieldUpdates — CAS predicate (P2-4, #4191)', () => {
     expect(categorySql).toContain('case when');
     expect(categorySql).toContain('is not distinct from');
     expect(categorySql).toContain('coalesce');
-    expect(categorySql).toContain('<>');
+    expect(categorySql).toContain("not in ('user', 'service_principal')");
 
     const provenanceSql = sqlOf(setArg.fieldProvenance).sql.toLowerCase();
     expect(provenanceSql).toContain('||');
@@ -244,7 +244,7 @@ describe('applyAiFieldUpdates — CAS predicate (P2-4, #4191)', () => {
  * changing anything. So an AI that merely re-asserts the value already on the
  * ticket used to satisfy the predicate and stamp `field_provenance` to
  * 'ai_agent' anyway. On a field a human set through a path that left no
- * provenance entry (the stamp COALESCEs to '' and sails past the `<> 'user'`
+ * provenance entry (the stamp COALESCEs to '' and sails past the `NOT IN ('user', 'service_principal')`
  * guard), that silently transferred ownership of a human's value to the AI —
  * exactly the guarantee the provenance guard exists to provide.
  *
@@ -278,7 +278,7 @@ describe('applyAiFieldUpdates — a same-value confirmation must not take owners
   it('does not stamp provenance when the proposed priority is the value already on the ticket', async () => {
     queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
     // The ticket already sits at 'high' with NO provenance entry for it — a
-    // human set it via a path that never stamped, so the `<> 'user'` guard
+    // human set it via a path that never stamped, so the `NOT IN ('user', 'service_principal')` guard
     // alone cannot protect it. The AI re-proposes the same 'high'.
     dbState.updateReturningQueue.push([{ categoryId: null, priority: 'high', fieldProvenance: {} }]);
 
@@ -292,7 +292,7 @@ describe('applyAiFieldUpdates — a same-value confirmation must not take owners
     const { arm, params } = provenanceArm((setMock.mock.calls[0]![0] as Record<string, unknown>).fieldProvenance, 'priority');
     // The CAS half and the human guard both survive...
     expect(arm.toLowerCase()).toContain('is not distinct from');
-    expect(arm.toLowerCase()).toContain("<> 'user'");
+    expect(arm.toLowerCase()).toContain("not in ('user', 'service_principal')");
     // ...and both comparisons bind the SAME value, which makes the predicate
     // `x IS NOT DISTINCT FROM 'high' AND x IS DISTINCT FROM 'high'`
     // unsatisfiable: Postgres cannot reach the stamp on this call at all.
@@ -400,7 +400,7 @@ describe('applyAiFieldUpdates — a same-value confirmation must not take owners
     // the predicate that gates the stamp fails twice over — the human guard
     // AND the same-value guard — so Postgres cannot reach it.
     const { arm, params } = provenanceArm((setMock.mock.calls[0]![0] as Record<string, unknown>).fieldProvenance, 'priority');
-    expect(arm.toLowerCase()).toContain("<> 'user'");
+    expect(arm.toLowerCase()).toContain("not in ('user', 'service_principal')");
     expect(boundValue(arm, params, NOT_DISTINCT)).toBe('high');
     expect(boundValue(arm, params, DISTINCT)).toBe('high');
   });
@@ -455,7 +455,7 @@ describe('addAiTriageNote — AI-origin internal comment (P2-4, #4191)', () => {
 });
 
 describe('updateTicketFields — field_provenance stamped in the same UPDATE (P2-4, #4191)', () => {
-  const actor: TicketActor = { userId: 'user-1', name: 'Tess Tech' };
+  const actor: TicketActor = { kind: 'user', userId: 'user-1', name: 'Tess Tech' };
 
   it('stamps field_provenance for every changed field, in the SAME .set() call as the field write', async () => {
     queueSelect(tickets, [{

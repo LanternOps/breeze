@@ -304,7 +304,30 @@ describe('OrgBillingSettings — currency selector and change flow', () => {
   });
 });
 
-vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: () => true }) }));
+const reminderPermissions = vi.hoisted(() => ({ canManagePayments: true }));
+vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({
+  can: (resource: string, action: string) => resource === 'billing' && action === 'manage'
+    ? reminderPermissions.canManagePayments : true,
+}) }));
+beforeEach(() => { reminderPermissions.canManagePayments = true; });
+it.each([true, false])('preserves tax/address Save when payments cannot load (permission=%s)', async allowed => {
+  reminderPermissions.canManagePayments = allowed;
+  fetchMock.mockImplementation(async (url, init) => {
+    if (String(url).endsWith('/billing/payment-settings')) return json({ error: 'Unavailable' }, false, 403);
+    if (url === '/billing-profiles') return json({ profiles: [] });
+    if (url === '/billing-profiles/work-types') return json({ workTypes: [] });
+    if (String(url).endsWith('/billing-profile')) return json({ assignment: null });
+    return orgPayload();
+  });
+  render(<OrgBillingSettings orgId="org-1" />);
+  fireEvent.change(await screen.findByTestId('org-billing-taxid'), { target: { value: 'TEST-TAX' } });
+  await waitFor(() => expect(screen.getByTestId('org-billing-save')).not.toBeDisabled());
+  fireEvent.click(screen.getByTestId('org-billing-save'));
+  await waitFor(() => expect(findPatch()).toBeDefined());
+  expect(JSON.parse(findPatch()![1]!.body as string)).toMatchObject({ taxId: 'TEST-TAX' });
+  expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+});
+
 
 const standardProfile = { id: 'standard', name: 'Standard rates', currencyCode: 'USD', isActive: true, isDefault: true, baseCoverage: 'billable', baseHourlyRate: '150.00', baseMinimumMinutes: null, roundingIncrementMinutes: null, rules: [] };
 function profileApi(assignment: string | null = null, currency = 'USD', failSave = false) {
@@ -481,4 +504,144 @@ describe('OrgBillingSettings — payment terms override', () => {
     fireEvent.click(screen.getByTestId('org-billing-save'));
     expect(findPatch()).toBeUndefined();
   });
+});
+
+describe('OrgBillingSettings resolved card AI usage', () => {
+  beforeEach(() => vi.clearAllMocks());
+  const aiApi = (assignment: string | null, ai: Record<string, unknown>) => {
+    fetchMock.mockImplementation(async (url) => {
+      if (url === '/billing-profiles') return json({ profiles: [
+        { ...standardProfile, ...ai },
+        { ...standardProfile, id: 'silver', name: 'Silver', isDefault: false, aiCoverage: 'included', aiMarkupPercent: null, aiRates: [] },
+      ] });
+      if (url === '/billing-profiles/work-types') return json({ workTypes: [] });
+      if (String(url).endsWith('/billing-profile')) return json({ assignment: assignment ? { billingProfileId: assignment } : null });
+      return orgPayload();
+    });
+  };
+
+  it('shows the inherited default card AI terms read-only under the resolved card', async () => {
+    aiApi(null, { aiCoverage: 'billable', aiMarkupPercent: '25.00', aiRates: [] });
+    render(<OrgBillingSettings orgId="org-1" />);
+    const line = await screen.findByTestId('org-billing-profile-ai');
+    expect(line).toHaveTextContent('AI usage: Billable · cost +25%');
+    expect(line.closest('[data-testid="org-billing-profile-rates"]')).not.toBeNull();
+    expect(line.querySelector('input, select, button')).toBeNull();
+  });
+
+  it('describes a price-list card and follows a staged assignment without any request', async () => {
+    aiApi(null, { aiCoverage: 'billable', aiMarkupPercent: null, aiRates: [
+      { modelId: 'a', inputPricePerM: '3', outputPricePerM: '15', cacheReadPricePerM: '0.3', cacheWritePricePerM: '3.75' },
+      { modelId: 'b', inputPricePerM: '1', outputPricePerM: '5', cacheReadPricePerM: '0.1', cacheWritePricePerM: '1.25' },
+    ] });
+    render(<OrgBillingSettings orgId="org-1" />);
+    expect(await screen.findByTestId('org-billing-profile-ai')).toHaveTextContent('AI usage: Billable · price list (2 models)');
+    fireEvent.change(screen.getByTestId('org-billing-profile'), { target: { value: 'silver' } });
+    expect(screen.getByTestId('org-billing-profile-ai')).toHaveTextContent('AI usage: Included');
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method)).toHaveLength(0);
+  });
+
+  it('reads a profile without AI fields as Not billed', async () => {
+    aiApi('standard', {});
+    render(<OrgBillingSettings orgId="org-1" />);
+    expect(await screen.findByTestId('org-billing-profile-ai')).toHaveTextContent('AI usage: Not billed');
+  });
+});
+
+it('mounts org reminders independently of enrollment rollout', async () => {
+  const fields = {
+    autopayOffsetDays: { value: 0, source: 'default' }, autopayOffsetRule: { value: 'later', source: 'default' },
+    autopayCap: { value: { enabled: false }, source: 'default' }, achMode: { value: 'ach_preferred', source: 'default' },
+    cardFeeBps: { value: 0, source: 'default' }, achFeeAmount: { value: '0.00', source: 'default' }, feeAttested: false,
+    remindersEnabled: { value: false, source: 'default' },
+    reminderBeforeDueDays: { value: 3, source: 'default' },
+    reminderRepeatDays: { value: null, source: 'default' },
+    overdueReminderEveryDays: { value: 7, source: 'default' },
+  };
+  fetchMock.mockImplementation(async url => {
+    if (String(url).endsWith('/billing/payment-settings')) return json({
+      effective: fields, inherited: fields, autopayEnabled: false,
+      values: { autopayOffsetDays: null, autopayOffsetRule: null, autopayCapEnabled: null, autopayCapAmount: null, autopayCapCurrency: null, achMode: null, cardFeeBps: null, achFeeAmount: null },
+    });
+    if (url === '/billing-profiles') return json({ profiles: [] });
+    return json({ id: '11111111-1111-4111-8111-111111111111', currencyCode: 'USD', billingContact: null });
+  });
+  render(<OrgBillingSettings orgId="11111111-1111-4111-8111-111111111111" />);
+  expect(await screen.findByTestId('autopay-payments-shell')).toBeInTheDocument();
+  expect(await screen.findByTestId('autopay-reminders-section')).toBeInTheDocument();
+  expect(screen.queryByTestId('autopay-settings-section')).toBeNull();
+});
+
+describe('OrgBillingSettings reminder Save integration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    const fields = {
+      autopayOffsetDays: { value: 0, source: 'default' },
+      autopayOffsetRule: { value: 'later', source: 'default' },
+      autopayCap: { value: { enabled: false }, source: 'default' },
+      achMode: { value: 'ach_preferred', source: 'default' },
+      cardFeeBps: { value: 0, source: 'default' }, achFeeAmount: { value: '0.00', source: 'default' }, feeAttested: false,
+      remindersEnabled: { value: false, source: 'default' },
+      reminderBeforeDueDays: { value: 5, source: 'partner' },
+      reminderRepeatDays: { value: null, source: 'default' },
+      overdueReminderEveryDays: { value: 7, source: 'default' },
+    };
+    fetchMock.mockImplementation(async url => {
+      if (String(url).endsWith('/billing/payment-settings')) return json({
+        autopayEnabled: false, effective: fields, inherited: fields,
+        values: { autopayOffsetDays: null, autopayOffsetRule: null, autopayCapEnabled: null,
+          autopayCapAmount: null, autopayCapCurrency: null, achMode: null, cardFeeBps: null, achFeeAmount: null },
+      });
+      if (url === '/billing-profiles') return json({ profiles: [] });
+      if (url === '/billing-profiles/work-types') return json({ workTypes: [] });
+      if (String(url).endsWith('/billing-profile')) return json({ assignment: null });
+      return orgPayload();
+    });
+  });
+
+  it('saves reminder fields through the single page Save while enrollment is disabled', async () => {
+    render(<OrgBillingSettings orgId="org-1" />);
+    const before = await screen.findByTestId('autopay-reminders-before');
+    expect(before).toHaveValue(null);
+    expect(before).toHaveAttribute('placeholder', '5');
+    expect(screen.queryByTestId('autopay-settings-save')).toBeNull();
+    fireEvent.change(before, { target: { value: '9' } });
+    fireEvent.change(screen.getByTestId('autopay-reminders-enabled'), { target: { value: 'false' } });
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method)).toHaveLength(0);
+    fireEvent.click(screen.getByTestId('org-billing-save'));
+    await waitFor(() => expect(findPatch()).toBeDefined());
+    const puts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT');
+    expect(puts).toHaveLength(1);
+    expect(puts[0][0]).toBe('/orgs/org-1/billing/payment-settings');
+    expect(JSON.parse(puts[0][1]!.body as string)).toEqual({
+      remindersEnabled: false, reminderBeforeDueDays: 9, reminderRepeatDays: null, overdueReminderEveryDays: null,
+    });
+  });
+
+  it('blocks both page mutations when a loaded reminder interval is invalid', async () => {
+    render(<OrgBillingSettings orgId="org-1" />);
+    fireEvent.change(await screen.findByTestId('autopay-reminders-before'), { target: { value: '32' } });
+    expect(screen.getByTestId('org-billing-save')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('org-billing-save'));
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method)).toHaveLength(0);
+  });
+});
+
+function feeView(enabled=true){
+  const effective={autopayOffsetDays:{value:0,source:'default'},autopayOffsetRule:{value:'later',source:'default'},
+    autopayCap:{value:{enabled:false},source:'default'},achMode:{value:'ach_preferred',source:'default'},
+    cardFeeBps:{value:300,source:'partner'},achFeeAmount:{value:'2.50',source:'partner'},feeAttested:true,
+    remindersEnabled:{value:false,source:'default'},reminderBeforeDueDays:{value:3,source:'default'},
+    reminderRepeatDays:{value:null,source:'default'},overdueReminderEveryDays:{value:7,source:'default'}};
+  return {autopayEnabled:enabled,effective,inherited:effective,values:{autopayOffsetDays:null,autopayOffsetRule:null,
+    autopayCapEnabled:null,autopayCapAmount:null,autopayCapCurrency:null,achMode:null,cardFeeBps:null,achFeeAmount:null}};
+}
+
+it('mounts inherited fees without partner attestation in the org page',async()=>{
+  fetchMock.mockImplementation(async path=>String(path).endsWith('/payment-settings')?json(feeView()):
+    String(path).endsWith('/autopay')?json({status:'not_requested',method:null}):orgPayload());
+  render(<OrgBillingSettings orgId="11111111-1111-4111-8111-111111111111"/>);
+  expect(await screen.findByTestId('autopay-org-fee-settings-page')).toBeInTheDocument();
+  expect(await screen.findByTestId('autopay-card-fee-bps')).toHaveAttribute('placeholder','300');
+  expect(screen.queryByTestId('autopay-attest-notified')).toBeNull();
 });

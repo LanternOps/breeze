@@ -18,6 +18,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'routes/updateRingsHelpers.ts': { guards: 2, reason: 'update-ring partner assignment device resolution' },
   'services/networkExecutorSelection.ts': { guards: 1, reason: 'network monitor executor candidates' },
   'services/automationRuntime.ts': { guards: 2, reason: 'automation owner orgs and target devices' },
+  'services/automationWebhookContext.ts': { guards: 1, reason: 'partner-wide automation webhook: owner-context org allowlist the run targets' },
   // --- workers and schedulers ---------------------------------------------
   'jobs/alertWorker.ts': { guards: 2, reason: 'scheduled alert rule evaluation over orgs and devices' },
   'services/monitors/networkCheckAlertSweep.ts': { guards: 2, reason: 'network-check alert sweep org enumeration' },
@@ -76,7 +77,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'services/aiToolsVault.ts': { guards: 4, reason: 'device lookup carries the parked-device predicate' },
   'services/backupProviders/alerts.ts': { guards: 1, reason: 'device lookup carries the parked-device predicate' },
   'services/backupProviders/deviceMatching.ts': { guards: 1, reason: 'device lookup carries the parked-device predicate' },
-  'services/commandDispatch.ts': { guards: 2, reason: 'device lookup carries the parked-device predicate' },
+  'services/commandDispatch.ts': { guards: 1, reason: '1 guarded site: the narrowed (parked) batch claim reads the org type and cancels refused rows. The single-row push claim hands the org type to partitionClaimable (commandClaimEligibility.ts), which carries the parked cancel for both legs and is pinned by parkedCommandDelivery.contract.test.ts' },
   'services/commandQueue.ts': { guards: 1, reason: 'device lookup carries the parked-device predicate' },
   'services/dispatchDeviceCommand.ts': { guards: 1, reason: '1 guarded site: prepareDeviceCommand checks isParkedDevice before persisting a command' },
   'services/monitors/conversion/convert.ts': { guards: 2, reason: 'device lookup carries the parked-device predicate' },

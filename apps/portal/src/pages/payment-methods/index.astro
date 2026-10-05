@@ -1,0 +1,11 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import PaymentMethodsPage from '../../components/portal/PaymentMethodsPage';
+import { apiGet } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+import { redirectToLoginAfter401 } from '../../lib/session';
+const response = await apiGet('/portal/payment-methods', buildServerApiConfig(Astro.request));
+if (response.statusCode === 401) return redirectToLoginAfter401(Astro);
+if (response.statusCode === 404) return new Response('Not Found', { status: 404 });
+---
+<PortalLayout title="Payment methods"><PaymentMethodsPage client:load /></PortalLayout>

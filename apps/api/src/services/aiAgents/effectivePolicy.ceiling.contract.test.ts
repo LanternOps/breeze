@@ -33,7 +33,6 @@ function policy(over: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
   return {
     enabled: true,
     mode: 'act',
-    model: null,
     toolAllowlist: ['run_script'],
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
     limits: { ...AI_AGENT_LIMIT_DEFAULTS },
@@ -50,7 +49,7 @@ describe('supervisedActionKeys — partner keys are a ceiling, not a grant (C3)'
   it('no org row: effective supervisedActionKeys is [], never the partner list', () => {
     const partner = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });
 
-    const { effective } = mergeAgentPolicies(partner, null, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, null);
 
     expect(effective.actAssets.supervisedActionKeys).toEqual([]);
     // Every other field on this fast path still passes the partner baseline
@@ -62,7 +61,7 @@ describe('supervisedActionKeys — partner keys are a ceiling, not a grant (C3)'
     const partner = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A, KEY_B] } });
     const org = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A, KEY_B] } });
 
-    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, org);
 
     expect(effective.actAssets.supervisedActionKeys).toEqual([KEY_A, KEY_B]);
   });
@@ -71,7 +70,7 @@ describe('supervisedActionKeys — partner keys are a ceiling, not a grant (C3)'
     const partner = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });
     const org = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A, KEY_C] } });
 
-    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, org);
 
     expect(effective.actAssets.supervisedActionKeys).toEqual([KEY_A]);
   });
@@ -80,7 +79,7 @@ describe('supervisedActionKeys — partner keys are a ceiling, not a grant (C3)'
     const partner = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });
     const org = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_C] } });
 
-    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, org);
 
     expect(effective.actAssets.supervisedActionKeys).toEqual([]);
   });
@@ -104,7 +103,7 @@ describe('mergeLimits — promoteThreshold merges with max, every other limit wi
     const partner = policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, [key]: high } });
     const org = policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, [key]: low } });
 
-    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, org);
 
     const expected = MAX_MERGED_LIMIT_KEYS.has(key) ? high : low;
     expect(effective.limits[key]).toBe(expected);
@@ -123,7 +122,7 @@ describe('mergeLimits — promoteThreshold merges with max, every other limit wi
     const partner = policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, [key]: low } });
     const org = policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, [key]: high } });
 
-    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, org);
 
     const expected = MAX_MERGED_LIMIT_KEYS.has(key) ? high : low;
     expect(effective.limits[key]).toBe(expected);
@@ -139,7 +138,6 @@ describe('mergeLimits — promoteThreshold merges with max, every other limit wi
     const normalized = normalizeAgentPolicy({
       enabled: true,
       mode: 'act',
-      model: null,
       toolAllowlist: [],
       protectedResources: {},
       limits: v8Limits,
@@ -157,13 +155,11 @@ describe('mergeLimits — promoteThreshold merges with max, every other limit wi
     const a = mergeAgentPolicies(
       policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxUnattendedDevicesPerSweep: 5 } }),
       policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxUnattendedDevicesPerSweep: 1 } }),
-      { allowedModels: null },
     );
     expect(a.effective.limits.maxUnattendedDevicesPerSweep).toBe(1);
     const b = mergeAgentPolicies(
       policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxUnattendedDevicesPerSweep: 3 } }),
       policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxUnattendedDevicesPerSweep: 9 } }),
-      { allowedModels: null },
     );
     expect(b.effective.limits.maxUnattendedDevicesPerSweep).toBe(3);
   });
@@ -172,7 +168,6 @@ describe('mergeLimits — promoteThreshold merges with max, every other limit wi
     const merged = mergeAgentPolicies(
       policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, sweepPromoteThreshold: 25 } }),
       policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, sweepPromoteThreshold: 5 } }),
-      { allowedModels: null },
     );
     expect(merged.effective.limits.sweepPromoteThreshold).toBe(25);
   });
@@ -185,7 +180,6 @@ describe('mergeLimits — promoteThreshold merges with max, every other limit wi
     const normalized = normalizeAgentPolicy({
       enabled: true,
       mode: 'act',
-      model: null,
       toolAllowlist: [],
       protectedResources: {},
       limits: v12Limits,

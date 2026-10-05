@@ -522,6 +522,23 @@ async function resolvePartnerTimezoneForDeviceRow(partnerId: string | null): Pro
 export async function resolvePatchConfigDetailsForDevice(
   deviceId: string
 ): Promise<ResolvedPatchConfigDetails | null> {
+  const resolved = await resolvePatchConfigPolicyForDevice(deviceId);
+  if (!resolved) return null;
+  return { ...resolved, resolvedTimezone: await resolveDeviceTimezone(deviceId) };
+}
+
+/**
+ * `resolvePatchConfigDetailsForDevice` without `resolvedTimezone` (#7647).
+ * The timezone half reads the partner-axis `partners` row through
+ * `readWithPartnerAxisVisibility` — a SECOND pooled connection under any
+ * non-system request context. Callers that only need WHICH config policy won
+ * (the ring-aware approval evaluator behind the device Patches tab) use this
+ * so they stay on the caller's one connection. Runs entirely in the caller's
+ * context: every read here has an RLS read branch for the caller's own partner.
+ */
+export async function resolvePatchConfigPolicyForDevice(
+  deviceId: string
+): Promise<Omit<ResolvedPatchConfigDetails, 'resolvedTimezone'> | null> {
   const hierarchy = await loadDeviceHierarchy(deviceId);
   if (!hierarchy) return null;
 
@@ -588,7 +605,6 @@ export async function resolvePatchConfigDetailsForDevice(
     assignmentLevel: winner.assignmentLevel,
     assignmentTargetId: winner.assignmentTargetId,
     assignmentPriority: winner.assignmentPriority,
-    resolvedTimezone: await resolveDeviceTimezone(deviceId),
   };
 }
 
@@ -2235,6 +2251,17 @@ export async function checkDeviceMaintenanceWindow(deviceId: string, now?: Date)
 export async function resolveSecurityScanSettingsForDevice(
   deviceId: string,
 ): Promise<SecurityScanSettings | null> {
+  return (await resolveSecurityScanPolicyForDevice(deviceId))?.settings ?? null;
+}
+
+/**
+ * {@link resolveSecurityScanSettingsForDevice} plus the id of the winning
+ * `security` feature link (for an inherited link, the PARENT's link id — the
+ * row that carries the auto-quarantine authority stamp).
+ */
+export async function resolveSecurityScanPolicyForDevice(
+  deviceId: string,
+): Promise<{ settings: SecurityScanSettings; featureLinkId: string } | null> {
   const hierarchy = await loadDeviceHierarchy(deviceId);
   if (!hierarchy) return null;
 
@@ -2243,6 +2270,7 @@ export async function resolveSecurityScanSettingsForDevice(
 
   const rows = await db
     .select({
+      featureLinkId: configPolicyEffectiveFeatureLinks.id,
       inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
       assignmentLevel: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
@@ -2272,7 +2300,8 @@ export async function resolveSecurityScanSettingsForDevice(
     );
 
   if (rows.length === 0) return null;
-  return parseSecurityScanSettings(sortByHierarchy(rows)[0]!.inlineSettings);
+  const winner = sortByHierarchy(rows)[0]!;
+  return { settings: parseSecurityScanSettings(winner.inlineSettings), featureLinkId: winner.featureLinkId };
 }
 
 /**

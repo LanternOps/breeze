@@ -181,6 +181,41 @@ export async function getDeviceWithOrgCheck(
   return device;
 }
 
+// Same org + site gate as getDeviceWithOrgCheck, reading only the columns a
+// liveness check needs. For per-poll callers (the active-sessions banner),
+// which would otherwise fetch the full devices row every minute per open page.
+export async function getDeviceLivenessWithOrgCheck(
+  deviceId: string,
+  auth: { canAccessOrg: (orgId: string) => boolean },
+  permissions?: UserPermissions,
+) {
+  const [device] = await db
+    .select({
+      id: devices.id,
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      status: devices.status,
+      lastSeenAt: devices.lastSeenAt,
+    })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+
+  if (!device) {
+    return null;
+  }
+
+  if (!ensureOrgAccess(device.orgId, auth)) {
+    return null;
+  }
+
+  if (permissions?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId))) {
+    return 'SITE_ACCESS_DENIED' as const;
+  }
+
+  return device;
+}
+
 export async function getSessionWithOrgCheck(sessionId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
   const [session] = await db
     .select({

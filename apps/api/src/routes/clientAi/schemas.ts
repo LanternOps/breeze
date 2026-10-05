@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { dlpConfigSchema, DEFAULT_DLP_CONFIG } from '@breeze/shared/validators';
+import { dlpConfigSchema, DEFAULT_DLP_CONFIG, retiredAiModelField } from '@breeze/shared/validators';
 import type { ClientAiOrgPolicy } from '../../services/clientAiPolicy';
 import { CLIENT_HOSTS } from '../../services/clientAiHosts';
 import { compileRe2 } from '../../services/dlpRegexEngine';
@@ -88,7 +88,9 @@ export const putPolicySchema = z
     userAccess: z.enum(['all', 'selected']).optional(),
     selectedUserIds: z.array(z.string().guid()).max(1000).optional(),
     allowedProviders: z.array(z.string().min(1).max(50)).min(1).max(10).optional(),
-    allowedModels: z.array(z.string().min(1).max(100)).max(50).optional(),
+    /** Retired (W08, #7606): rejected with 400 naming its replacement, the office_chat model
+     * assignment under AI Providers & Models. Declared so the error names the field. */
+    allowedModels: retiredAiModelField('allowedModels'),
     writeMode: z.enum(['readwrite', 'readonly']).optional(),
     /** Org gate for pane auto-apply (spec §7). 'ask' is the default-deny value. */
     writeApproval: z.enum(['ask', 'allow_auto']).optional(),

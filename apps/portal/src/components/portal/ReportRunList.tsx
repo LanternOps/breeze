@@ -56,6 +56,8 @@ const NEVER_PORTAL_VISIBLE = new Set<string>([
   'ticket_sla_attainment',
   'technician_time_billability',
   'ar_aging',
+  // #7608 W10: per-client AI cost and chargeable amounts are the MSP's own numbers.
+  'ai_usage_by_client',
 ]);
 
 /** What the reader is told is happening, in their own language. The MSP-side

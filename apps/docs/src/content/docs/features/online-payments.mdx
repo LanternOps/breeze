@@ -72,3 +72,39 @@ Connecting and disconnecting Stripe requires billing management permission plus 
 - [Invoices](/features/invoices/) -- send payment links from issued invoices
 - [Customer Portal](/features/portal/) -- where customers view and pay online
 - [Recurring Contracts](/features/contracts/) -- auto-generated invoices can be paid online too
+
+### Restricted-key permissions
+
+For existing invoice checkout, the key must read the Stripe account and Events and have Checkout Sessions write access. Breeze also checks the following permissions for automatic payments:
+
+| Stripe resource | Required access |
+| --- | --- |
+| Customers | Write |
+| SetupIntents | Write |
+| PaymentIntents | Write |
+| PaymentMethods | Write |
+| Mandates | Read |
+
+Saving or refreshing the key checks these permissions without creating a payment or saving a customer's payment method. A missing automatic-payment permission does not disable existing card checkout. Automatic payments remain unavailable until every required permission is present and the feature is enabled for your partner account. Use **Refresh** after updating a restricted key's permissions.
+
+Automatic payments support Stripe accounts in the United States, Canada, United Kingdom, European Economic Area, Australia and New Zealand. Bank-account debit requires a United States Stripe account and a USD invoice. Existing one-time invoice checkout remains card-only.
+
+## Processing fees
+
+Processing fees are optional and apply to automatic payments only. One-time card pay links stay fee-free. The fee is added to the payment, never to the invoice balance, invoice PDF or accounting invoice.
+
+In **Billing settings → Payments**, set a credit-card fee from 0 to 300 basis points (100 basis points = 1%) and a flat bank-payment fee from USD 0.00 to 25.00. Organization Billing settings can override either value. Blank inherits the partner default; zero exempts that organization.
+
+A card fee remains inactive until a partner administrator affirms both statements: “I notified my acquirer (Stripe) and the card networks at least 30 days ago” and “this fee does not exceed my cost of card acceptance.” Breeze records the administrator and the time. Organization administrators cannot make this attestation for the partner.
+
+Breeze’s conservative card-fee policy requires a US Stripe account, a USD invoice, a known US customer billing state and a credit card. Debit, prepaid and unknown-funding cards have no fee. No card fee is applied in CA, CT, ME or MA; Colorado is capped at 2%, and other supported states at 3%. Unknown geography and non-US accounts receive no card fee. Bank fees require US accounts and USD payments.
+
+Customers see the applicable terms before saving a method, a confirmation after setup, the fee in each automatic-payment notice and principal/fee/total on their receipt. Rules are checked again before charging. The fee can decrease but cannot exceed the delivered notice. A change requiring a new notice postpones collection.
+
+Your business remains responsible for ACH returns and Stripe return fees. Returns on individual bank accounts can arrive up to 60 days later. Stopping automatic payments cannot recall a debit already processing.
+
+Refunds and disputes reverse principal and fee proportionally using cumulative totals. A full refund returns the full fee. A dispute reversal restores only the unrefunded share.
+
+Under **Integrations → accounting connection**, choose the processing-fee income item (QuickBooks) or income account (Xero). Fees are exported separately when automatic payment push is enabled. Both providers require the configured payment/deposit account; Xero also requires the configured exempt tax code. Fee exports default to non-taxable; your business determines the appropriate tax treatment. Missing mapping or uncertain provider results remain visible for investigation and do not undo a successful customer payment.
+
+Breeze is not legal advice. You are responsible for eligibility, required notices, acceptance-cost limits and tax treatment. Review your obligations before enabling fees.

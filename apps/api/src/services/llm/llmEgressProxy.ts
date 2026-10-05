@@ -72,10 +72,14 @@ export interface LlmEgressProxy {
    * Registers a session-scoped grant and returns the proxy URL to place in the
    * child's `HTTPS_PROXY`, with a freshly generated bearer token embedded.
    * Re-granting the same session id revokes the previous grant first.
+   *
+   * `allowed: null` issues a deny-all grant (W06): a child that must reach
+   * nothing but the loopback model gateway still gets an audited proxy, so a
+   * stray CLI request is refused AND visible instead of silently dialling out.
    */
   grant(
     sessionId: string,
-    allowed: EgressGrant,
+    allowed: EgressGrant | null,
     recordEgress: LlmEgressRecorder
   ): { proxyUrl: string };
   /** Invalidates the token and destroys any tunnel opened under it. */
@@ -103,8 +107,8 @@ export function __setResolverForTests(fn: SafeRecordResolver | null): void {
 
 interface GrantRecord {
   sessionId: string;
-  /** Lowercased; CONNECT targets are compared case-insensitively. */
-  host: string;
+  /** Lowercased; CONNECT targets are compared case-insensitively. null = deny-all grant. */
+  host: string | null;
   port: number;
   tokenDigest: Buffer;
   recordEgress: LlmEgressRecorder;
@@ -221,7 +225,9 @@ export async function startLlmEgressProxy(): Promise<LlmEgressProxy> {
     }
 
     const target = parseConnectTarget(req.url);
-    if (!target || target.host !== grant.host || target.port !== grant.port) {
+    // A deny-all grant (host null) matches nothing: refused exactly like an
+    // off-grant host, never resolved, never dialled.
+    if (!target || grant.host === null || target.host !== grant.host || target.port !== grant.port) {
       safeRecord(grant, {
         host: target?.host ?? String(req.url ?? ''),
         resolvedIp: null,
@@ -373,8 +379,8 @@ export async function startLlmEgressProxy(): Promise<LlmEgressProxy> {
       const token = randomBytes(32).toString('base64url');
       grants.set(sessionId, {
         sessionId,
-        host: allowed.host.toLowerCase(),
-        port: allowed.port,
+        host: allowed ? allowed.host.toLowerCase() : null,
+        port: allowed ? allowed.port : 0,
         tokenDigest: digest(token),
         recordEgress,
         sockets: new Set()

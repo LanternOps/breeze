@@ -1,5 +1,5 @@
 import type { MiddlewareHandler } from 'hono';
-import { partnerTrustMode } from '../config/partnerTrustMode';
+import { partnerTrustMode, type PartnerTrustMode } from '../config/partnerTrustMode';
 import type { PartnerTrustState } from '../db/schema/orgs';
 import { ANONYMOUS_ACTOR_ID } from './auditEvents';
 import { createAuditLog } from './auditService';
@@ -240,14 +240,19 @@ function decide(
   }
 }
 
-export async function evaluateCapability(cap: GatedCapability, ctx: GateContext): Promise<GateDecision> {
-  const mode = partnerTrustMode();
-  if (mode === 'off') return { allow: true };
-  const row = await readTrust(ctx.partnerId);
-  const denial = row
-    ? decide(cap, row, ctx)
-    : { code: 'TRUST_RESTRICTED' as const, reason: 'partner_unresolved' };
-  if (!denial) return { allow: true };
+/**
+ * The side effects of a capability denial: the denial audit row and, for
+ * probation, the auto-promotion check. Split out of `evaluateCapability` so a
+ * caller that evaluates trust inside a held transaction (the command claim)
+ * can defer them until that transaction has settled instead of writing them on
+ * a second pooled connection while it still holds the first.
+ */
+export async function recordCapabilityDenial(
+  cap: GatedCapability,
+  ctx: GateContext,
+  denial: { code: TrustDenyCode; reason: string },
+  mode: PartnerTrustMode,
+): Promise<void> {
   await createAuditLog({
     orgId: ctx.orgId ?? null,
     actorType: ctx.userId ? 'user' : 'system',
@@ -274,6 +279,17 @@ export async function evaluateCapability(cap: GatedCapability, ctx: GateContext)
   if (denial.code === 'TRUST_PROBATION') {
     void tryAutoPromote(ctx.partnerId).catch(() => undefined);
   }
+}
+
+export async function evaluateCapability(cap: GatedCapability, ctx: GateContext): Promise<GateDecision> {
+  const mode = partnerTrustMode();
+  if (mode === 'off') return { allow: true };
+  const row = await readTrust(ctx.partnerId);
+  const denial = row
+    ? decide(cap, row, ctx)
+    : { code: 'TRUST_RESTRICTED' as const, reason: 'partner_unresolved' };
+  if (!denial) return { allow: true };
+  await recordCapabilityDenial(cap, ctx, denial, mode);
   if (mode === 'shadow') return { allow: true, shadowDenied: denial };
   return { allow: false, code: denial.code, capability: cap, reason: denial.reason };
 }
@@ -308,6 +324,8 @@ export function evaluateCapabilityContinuationForState(
   return { allow: false, code: denial.code, capability: cap, reason: denial.reason };
 }
 
+export const UNRESOLVED_PARTNER_DENIAL = Object.freeze({ code: 'TRUST_RESTRICTED' as const, reason: 'partner_unresolved' });
+
 /**
  * Decision for chokepoints that cannot even resolve a partnerId to gate on
  * (e.g. `partnerIdForDevice` returns null for an orphaned/unresolvable
@@ -323,7 +341,19 @@ export function evaluateCapabilityContinuationForState(
 export async function unresolvedPartnerDecision(cap: GatedCapability): Promise<GateDecision> {
   const mode = partnerTrustMode();
   if (mode === 'off') return { allow: true };
-  const denial = { code: 'TRUST_RESTRICTED' as const, reason: 'partner_unresolved' };
+  const denial = UNRESOLVED_PARTNER_DENIAL;
+  await recordUnresolvedPartnerDenial(cap, mode);
+  if (mode === 'shadow') return { allow: true, shadowDenied: denial };
+  return { allow: false, code: denial.code, capability: cap, reason: denial.reason };
+}
+
+/**
+ * The audit side effect of `unresolvedPartnerDecision`, split out for the same
+ * reason as `recordCapabilityDenial`. Never throws: a failed audit write is
+ * logged and does not change the decision.
+ */
+export async function recordUnresolvedPartnerDenial(cap: GatedCapability, mode: PartnerTrustMode): Promise<void> {
+  const denial = UNRESOLVED_PARTNER_DENIAL;
   try {
     await createAuditLog({
       orgId: null,
@@ -344,8 +374,6 @@ export async function unresolvedPartnerDecision(cap: GatedCapability): Promise<G
   } catch (error) {
     console.warn('[partnerTrust] Failed to write audit log for unresolved-partner decision:', error);
   }
-  if (mode === 'shadow') return { allow: true, shadowDenied: denial };
-  return { allow: false, code: denial.code, capability: cap, reason: denial.reason };
 }
 
 export function trustDenyBody(d: Extract<GateDecision, { allow: false }>, reviewRequested: boolean) {

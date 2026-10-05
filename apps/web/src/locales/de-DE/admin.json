@@ -400,6 +400,7 @@
       "addEntry": "Anbieter hinzufügen",
       "loading": "Katalog wird geladen…",
       "empty": "Noch keine Katalogeinträge.",
+      "noRevisions": "Noch keine Revisionen.",
       "dismiss": "Verwerfen",
       "platformAdmin": {
         "title": "Plattform-Administratorzugriff erforderlich",
@@ -663,7 +664,15 @@
       },
       "drawer": {
         "title": "{{name}} bearbeiten",
-        "prices": "Preise (US-Cent pro Million Token)",
+        "prices": "Preise (US-Dollar pro Million Tokens)",
+        "storedPrice": "Gespeichert: {{value}}",
+        "priceChangeTitle": "Große Preisänderung bestätigen",
+        "priceChangeIntro": "Diese Preise weichen um mehr als das 10-Fache von den gespeicherten Werten ab. Prüfen Sie die Einheit: Sie geben US-Dollar pro Million Tokens ein.",
+        "priceChangeRow": "{{field}} ({{group}}): {{stored}} → {{next}}",
+        "priceChangeConfirm": "Bestätigen und speichern",
+        "priceChangeBack": "Zurück",
+        "priceGroupStandard": "Normal",
+        "priceGroupFast": "Schnellmodus",
         "fastPrices": "Preise im Schnellmodus (optional)",
         "fastPricesHint": "Der Schnellmodus kann erst ausgewählt werden, wenn alle vier Schnellmodus-Preise gesetzt sind.",
         "inputCentsPerM": "Eingabe",
@@ -695,6 +704,33 @@
         "save": "Das Modell konnte nicht gespeichert werden.",
         "refresh": "Die Modellaktualisierung konnte nicht eingereiht werden.",
         "invalidRates": "Geben Sie alle vier Preise als nicht negative Zahlen ein oder lassen Sie alle vier leer."
+      },
+      "variants": {
+        "title": "Prompt-Varianten",
+        "subtitle": "Zusätzliche Hinweise im System-Prompt einer Funktion für eine Modellfamilie, verglichen mit dem Basis-Prompt über alle Partner hinweg. Varianten ändern sich mit Releases.",
+        "range": "{{from}} bis {{to}}.",
+        "base": "Basis-Prompt",
+        "columns": {
+          "variant": "Variante",
+          "state": "Status",
+          "conversations": "Unterhaltungen",
+          "flagRate": "Markierungsrate",
+          "refusalRate": "Ablehnungsrate",
+          "leftRate": "Zu anderem Modell gewechselt",
+          "turns": "Schritte bis zur Lösung",
+          "costPerConversation": "Kosten / Unterhaltung"
+        },
+        "states": {
+          "staged": "Vorbereitet",
+          "candidate": "Kandidat",
+          "active": "Aktiv",
+          "retired": "Zurückgezogen"
+        },
+        "lowSample": "Weniger als {{min}} Unterhaltungen – zu wenige für einen Vergleich",
+        "incumbent": "Amtierend",
+        "loading": "Prompt-Varianten werden geladen…",
+        "empty": "Keine Prompt-Varianten registriert.",
+        "error": "Der Bericht zu den Prompt-Varianten konnte nicht geladen werden."
       }
     }
   },

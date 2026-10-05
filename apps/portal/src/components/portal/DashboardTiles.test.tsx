@@ -163,8 +163,16 @@ describe('DashboardTiles', () => {
     );
 
     expect(
-      screen.getByText('All 2 devices protected, backups verified yesterday.'),
+      screen.getByText('All 2 devices have endpoint protection, backups verified yesterday.'),
     ).toBeTruthy();
+  });
+
+  it('names the security tile "Endpoint protection", never the Backups page\'s "protected" (#7505)', () => {
+    render(<DashboardTiles dashboard={dashboard} />);
+    expect(screen.getByTestId('portal-dashboard-tile-devices').textContent).toContain(
+      'Endpoint protection',
+    );
+    expect(screen.queryByText('Devices protected')).toBeNull();
   });
 
   it('starts the headline with a capital when only the backup clause is stated', () => {

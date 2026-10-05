@@ -110,7 +110,7 @@ const PAGE_LIMIT = 25;
  * status as live too, so a run never silently stops updating just because
  * this list predates it. */
 const TERMINAL_RUN_STATUSES = new Set<AiAgentRunStatus>([
-  'completed', 'failed', 'cancelled', 'expired', 'skipped',
+  'completed', 'failed', 'cancelled', 'expired', 'skipped', 'blocked',
 ]);
 function isLiveRunStatus(status: AiAgentRunStatus): boolean {
   return !TERMINAL_RUN_STATUSES.has(status);
@@ -167,6 +167,8 @@ function statusLabel(t: (key: string) => string, value: AiAgentRunStatus): strin
       return t('aiAgentsPage.runs.statuses.expired');
     case 'skipped':
       return t('aiAgentsPage.runs.statuses.skipped');
+    case 'blocked':
+      return t('aiAgentsPage.runs.statuses.blocked');
     default:
       return value;
   }

@@ -107,6 +107,9 @@ func runDesktopHelper() {
 			AgentVersion: version + "-desktop-helper",
 			MinLevel:     cfg.LogShippingLevel,
 			AuthMonitor:  authMon,
+			// The WebRTC/ICE diagnostics live in this process, so it must
+			// follow the agent's set_log_level override too (#7416).
+			LevelOverridePath: config.LogLevelOverridePath(),
 		})
 		defer logging.StopShipper()
 	} else {

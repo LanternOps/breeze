@@ -96,6 +96,8 @@ export const RUN_TERMINAL_OUTBOX_TRANSITION_SEQ: Record<string, number> = {
   expired: 4,
   skipped: 5,
   awaiting_approval: 6,
+  // AI model registry W03: model unavailable / refused.
+  blocked: 7,
 };
 
 /**

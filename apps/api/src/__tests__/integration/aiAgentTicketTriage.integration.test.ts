@@ -62,6 +62,11 @@ import { persistTicketTriage } from '../../services/aiAgents/ticketTriageFinding
 import { releaseApprovedIntent } from '../../jobs/intentReleaseWorker';
 import { applyAiFieldUpdates } from '../../services/ticketService';
 import type { BreezeEvent } from '../../services/eventBus';
+import { usePlatformAiKeyPlaceholder } from './helpers/platformAiKey';
+
+// W03 (#7601): agent admission resolves the agent's model first; the
+// platform default is only usable with a platform key configured.
+usePlatformAiKeyPlaceholder();
 
 // publishEvent writes to a Redis stream — spy on it so admission/release
 // don't depend on a stream consumer existing (same precedent as

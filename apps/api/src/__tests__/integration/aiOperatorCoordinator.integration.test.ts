@@ -62,6 +62,11 @@ import {
   grantRolePermissions,
 } from './db-utils';
 import { PERMISSIONS } from '../../services/permissions';
+import { usePlatformAiKeyPlaceholder } from './helpers/platformAiKey';
+
+// W03 (#7601): agent admission resolves the agent's model first; the
+// platform default is only usable with a platform key configured.
+usePlatformAiKeyPlaceholder();
 
 const TOOL_NAME = 'manage_services';
 const TASK_STEP_KEY = 'investigate';

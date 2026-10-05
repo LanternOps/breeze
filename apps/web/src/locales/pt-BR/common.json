@@ -60,11 +60,13 @@
     "billing": "Faturamento",
     "organizations": "Organizações",
     "aiUsage": "Uso de IA",
+    "aiProvidersModels": "Provedores e modelos de IA",
     "scriptAuthoring": "Criação de scripts",
     "toolSources": "Fontes de ferramentas",
     "aiAgents": "Agentes de IA",
     "aiAgentRuns": "Execuções de Agentes de IA",
     "aiImpact": "Impacto da IA",
+    "fixMemory": "Memória de correções",
     "fleetDesign": "Design de frota",
     "customFields": "Campos Personalizados",
     "savedFilters": "Filtros Salvos",
@@ -106,7 +108,9 @@
     "system": "Sistema",
     "monitorConversion": "Conversão de monitores",
     "timeSync": "Sincronização de horário",
-    "aiModels": "Modelos de IA"
+    "aiModels": "Modelos de IA",
+    "autopay": "Autopay",
+    "payments": "Payments"
   },
   "documentTitles": {
     "dashboard": "Painel",
@@ -1427,6 +1431,7 @@
           "created": "Webhook criado",
           "disabled": "Webhook desativado",
           "enabled": "Webhook ativado",
+          "testQueued": "Entrega de teste enfileirada",
           "updated": "Webhook atualizado"
         },
         "title": "Webhooks"
@@ -2373,7 +2378,10 @@
           "script": "Script",
           "template": "Modelo",
           "playbook": "Playbook",
-          "diagnostic": "Diagnóstico"
+          "diagnostic": "Diagnóstico",
+          "builtin": "Ação integrada",
+          "manualSteps": "Passos manuais",
+          "scriptDraft": "Rascunho de script"
         },
         "targetIdentifiers": {
           "script": "script {{id}}",
@@ -2382,7 +2390,8 @@
           "templateMissing": "modelo sem ID de modelo",
           "playbook": "playbook {{id}}",
           "playbookMissing": "playbook sem ID de playbook",
-          "diagnostic": "ação de diagnóstico"
+          "diagnostic": "ação de diagnóstico",
+          "builtin": "ação integrada {{action}}"
         },
         "targetDevices": {
           "none": "Nenhum dispositivo de destino nesta sugestão",
@@ -2394,9 +2403,12 @@
           "generateFailed": "Não foi possível gerar correções sugeridas",
           "updateFailed": "Não foi possível atualizar a correção sugerida",
           "executeFailed": "Não foi possível executar a correção sugerida",
-          "approvalFailed": "Não foi possível solicitar aprovação"
+          "approvalFailed": "Não foi possível solicitar aprovação",
+          "researchFailed": "Não foi possível iniciar a pesquisa",
+          "draftFailed": "Não foi possível abrir o rascunho do script."
         },
         "messages": {
+          "draftCopied": "O armazenamento está bloqueado — o resumo foi copiado; cole-o no construtor de scripts.",
           "disabled": "Correções sugeridas estão desativadas",
           "generated": "Correções sugeridas geradas",
           "accepted": "Correção sugerida aceita",
@@ -2480,6 +2492,52 @@
             "inconclusive": "inconclusivo",
             "cancelled": "cancelado"
           }
+        },
+        "groups": {
+          "proven": "Correções comprovadas",
+          "ai": "Sugestões da IA",
+          "similar": "Correções semelhantes",
+          "legacy": "Correspondências anteriores por palavras-chave"
+        },
+        "badges": {
+          "aiResearched": "Pesquisado pela IA",
+          "aiWritten": "Escrito pela IA — revise antes de seguir"
+        },
+        "track": {
+          "lastVerified": "verificado pela última vez há {{days}} d",
+          "neverVerified": "ainda não verificado"
+        },
+        "research": {
+          "running": "Pesquisando…",
+          "runningDeep": "Pesquisando em profundidade…",
+          "stalled": "Ainda pesquisando — volte em alguns minutos.",
+          "failed": "A pesquisa falhou.",
+          "noSafeFix": "A IA não encontrou uma correção segura para este problema.",
+          "checkBudget": "Verificar orçamento de IA",
+          "deeper": "Pesquisar mais a fundo",
+          "retry": "Tentar novamente",
+          "denial": {
+            "credits": "Os créditos de IA deste período de cobrança acabaram.",
+            "dailyBudget": "O orçamento diário de IA para pesquisa foi atingido.",
+            "orgBudget": "O orçamento de IA desta organização foi atingido.",
+            "autoCap": "O limite de pesquisa automática foi atingido. Você ainda pode iniciar a pesquisa manualmente.",
+            "busy": "A pesquisa está ocupada no momento. Tente novamente em alguns minutos.",
+            "permission": "Você não tem permissão para iniciar uma pesquisa de IA.",
+            "unavailable": "A pesquisa de IA está temporariamente indisponível.",
+            "modelUnavailable": "O modelo de IA para pesquisa não está disponível.",
+            "notProvisioned": "A pesquisa de IA ainda não está configurada nesta instalação."
+          }
+        },
+        "runBuiltin": "Executar {{action}}",
+        "draftScript": "Rascunhar um script",
+        "emptyHint": "Gerar verifica primeiro as correções comprovadas e depois consulta a IA.",
+        "reviewed": {
+          "pickerLabel": "Passos revisados",
+          "asWritten": "Passos como escritos (não compartilhados)",
+          "save": "Salvar como passos revisados",
+          "saved": "Salvo como passos revisados",
+          "failed": "Não foi possível salvar os passos revisados",
+          "stepsLabel": "Passos (um por linha)"
         }
       }
     },
@@ -2538,5 +2596,66 @@
     "noneConfigured": "Nenhum {{source}} configurado",
     "overriding": "Substitui {{source}}",
     "overridingWithValue": "Substitui {{source}} ({{value}})"
+  },
+  "fixMemoryPage": {
+    "title": "Memória de correções",
+    "subtitle": "Correções que sua equipe executou e com que frequência elas realmente se mantiveram resolvidas.",
+    "tabs": {
+      "fixes": "Correções",
+      "steps": "Etapas revisadas"
+    },
+    "filters": {
+      "os": "Sistema operacional",
+      "anyOs": "Qualquer sistema operacional",
+      "status": "Status",
+      "anyStatus": "Qualquer status",
+      "scope": "Escopo",
+      "anyScope": "Qualquer escopo",
+      "condition": "Buscar por condição"
+    },
+    "columns": {
+      "fix": "Correção",
+      "record": "Histórico de resultados",
+      "rate": "Taxa de sucesso",
+      "scope": "Escopo",
+      "os": "SO",
+      "condition": "Condição",
+      "lastVerified": "Última verificação",
+      "status": "Status",
+      "actions": "Ações"
+    },
+    "status": {
+      "active": "Ativa",
+      "demoted": "Rebaixada",
+      "retired": "Aposentada",
+      "stale": "Desatualizada"
+    },
+    "scope": {
+      "everyClient": "Todos os clientes",
+      "oneClient": "Este cliente"
+    },
+    "signature": "Assinatura {{prefix}}",
+    "retire": {
+      "action": "Aposentar",
+      "confirmTitle": "Aposentar esta correção?",
+      "confirmBody": "Correções aposentadas deixam de ser sugeridas. O histórico é mantido.",
+      "confirm": "Aposentar correção",
+      "success": "Correção aposentada.",
+      "failed": "Não foi possível aposentar a correção."
+    },
+    "steps": {
+      "heading": "Etapas",
+      "retire": "Aposentar etapas",
+      "success": "Etapas aposentadas.",
+      "failed": "Não foi possível aposentar as etapas.",
+      "empty": "Nenhuma etapa revisada ainda. Salve etapas de uma sugestão para vê-las aqui."
+    },
+    "empty": "Nenhuma correção memorizada ainda. As correções aparecem aqui depois de executadas e de o resultado ser observado.",
+    "loadMore": "Carregar mais",
+    "never": "Nunca",
+    "retry": "Tentar novamente",
+    "errors": {
+      "loadFailed": "Não foi possível carregar a memória de correções."
+    }
   }
 }

@@ -45,6 +45,8 @@ import {
   PartnerWideWriteDeniedError,
 } from '../services/partnerWideAccess';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from '../services/aiAgents/access';
+import { AgentModelNotAllowedError } from '../services/aiAgents/agentModelErrors';
+import { ResearchAgentEditError } from '../services/aiAgents/researchAgentEdit';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { getCircuitState, resetCircuit } from '../services/aiAgents/agentCircuit';
 import { readAiKillState } from '../services/aiKillState';
@@ -164,7 +166,8 @@ function mapRow(row: AiAgentRow): AiAgentDto {
     name: row.name,
     enabled: row.enabled,
     mode: row.mode,
-    model: row.model,
+    // AI model registry W05: the offering the policy is bound to (null = follows the assignment).
+    offeringId: row.offeringId ?? null,
     orgId: row.orgId,
     partnerId: row.partnerId,
     ownerScope: row.partnerId ? 'partner' : 'organization',
@@ -224,6 +227,9 @@ function isAgentKindConflict(err: unknown): boolean {
 }
 
 export function mapError(c: Context, err: unknown) {
+  if (err instanceof ResearchAgentEditError) {
+    return c.json({ error: err.message, code: err.code, fields: err.fields }, 400);
+  }
   if (err instanceof UnsupportedAgentModeError) {
     // err.code, not a repeated literal — the class types it as a literal, so
     // this cannot drift from the value the client branches on.
@@ -260,6 +266,13 @@ export function mapError(c: Context, err: unknown) {
   }
   if (err instanceof AgentKindConflictError) {
     return c.json({ error: err.message, code: err.code }, 409);
+  }
+  // AI model registry W03 (Step 7A): the policy model could not be bound to a
+  // registry offering — 400 invalid_model / not_permitted / model_unavailable,
+  // 403 permission_required (W05: the WRITER lacks the offering's permission),
+  // or 503 registry_unavailable while the partner's one-time cutover is pending.
+  if (err instanceof AgentModelNotAllowedError) {
+    return c.json({ error: err.message, code: err.code }, err.status);
   }
   // Membership-validation failure on recipients (services/aiAgents/recipients.ts):
   // actionable client error — the body names exactly which ids were refused.

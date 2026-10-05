@@ -23,6 +23,7 @@ import {
 import { HELPER_FILENAMES } from './binarySource';
 import type { Context } from 'hono';
 import * as s3Storage from './s3Storage';
+import { ReleaseManifestTooOldError } from './releaseArtifactManifest';
 
 // `fetchRegularMsi` pulls the release artifact manifest + signature through
 // `releaseArtifactManifest.fetchSmallBuffer`, which moved off global `fetch` onto
@@ -1408,5 +1409,144 @@ describe('serveWindowsBootstrapMsi', () => {
     expect(headers.get('content-type')).toBe('application/octet-stream');
     expect(headers.get('content-length')).toBe(String(msi.length));
     expect(headers.get('cache-control')).toBe('no-store');
+  });
+});
+
+// #7830: a self-hoster holding the fleet at BINARY_VERSION=0.104 got a 503
+// "edition mismatch … expected self-host, got undefined" on every installer —
+// no manifest before v0.105.0 records `edition`. Exercised end to end through
+// the pinned GitHub release URLs, against the unpinned (latest) control.
+describe('installers for a BINARY_VERSION pinned before the edition field (#7830)', () => {
+  const originalEnv = process.env;
+  const identity = 'Developer ID Installer: LanternOps LLC (D8W6N2JYMA)';
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    safeFetchFollowingRedirectsMock.mockClear();
+    __resetVerifiedMacosPkgCache();
+    __resetVerifiedHelperInstallerCache();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.unstubAllGlobals();
+    __resetVerifiedMacosPkgCache();
+    __resetVerifiedHelperInstallerCache();
+  });
+
+  function serveRelease(
+    tagPath: string,
+    signed: { manifest: Buffer; signature: Buffer; publicKey: string },
+    assets: Record<string, Buffer>,
+  ): string[] {
+    process.env.BINARY_SOURCE = 'github';
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+    const seen: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      seen.push(url);
+      if (!url.includes(tagPath)) return new Response('not found', { status: 404 });
+      if (url.endsWith('/release-artifact-manifest.json')) return new Response(new Uint8Array(signed.manifest));
+      if (url.endsWith('/release-artifact-manifest.json.ed25519')) {
+        return new Response(new Uint8Array(signed.signature));
+      }
+      for (const [name, bytes] of Object.entries(assets)) {
+        if (url.endsWith(`/${name}`)) return new Response(new Uint8Array(bytes));
+      }
+      return new Response('not found', { status: 404 });
+    }));
+    return seen;
+  }
+
+  it('pinned: serves a Helper installer from a v0.104.0 release whose manifest has no edition', async () => {
+    const os = 'linux';
+    const assetName = HELPER_FILENAMES[os]!;
+    const asset = Buffer.from('v0.104.0 helper appimage');
+    const signed = signedReleaseManifest(
+      assetName,
+      asset,
+      { platformTrust: 'release-workflow-produced' },
+      { release: 'v0.104.0' },
+    );
+    process.env.BINARY_VERSION = '0.104.0';
+    const seen = serveRelease('/download/v0.104.0/', signed, { [assetName]: asset });
+
+    await expect(fetchVerifiedHelperInstaller(os)).resolves.toMatchObject({
+      buffer: asset,
+      artifact: { release: 'v0.104.0', edition: null },
+    });
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((u) => u.includes('/download/v0.104.0/'))).toBe(true);
+  });
+
+  it('unpinned (latest): refuses a replayed pre-v0.105.0 manifest instead of downgrading', async () => {
+    const os = 'linux';
+    const assetName = HELPER_FILENAMES[os]!;
+    const asset = Buffer.from('v0.104.0 helper appimage');
+    const signed = signedReleaseManifest(
+      assetName,
+      asset,
+      { platformTrust: 'release-workflow-produced' },
+      { release: 'v0.104.0' },
+    );
+    delete process.env.BINARY_VERSION;
+    serveRelease('/latest/download/', signed, { [assetName]: asset });
+
+    await expect(fetchVerifiedHelperInstaller(os)).rejects.toThrow(
+      /edition mismatch.*only when BINARY_VERSION pins it explicitly/,
+    );
+  });
+
+  it('pinned: refuses the macOS pkg with an operator-actionable reason, not an edition mismatch', async () => {
+    const packages = {
+      'breeze-agent-darwin-amd64.pkg': Buffer.from('v0.104.0 amd64 pkg'),
+      'breeze-agent-darwin-arm64.pkg': Buffer.from('v0.104.0 arm64 pkg'),
+    };
+    // Exactly the v0.104.0 manifest shape: platformTrust, no edition, no
+    // signingIdentity/signingTeamId (first recorded in v0.112.0).
+    const signed = signedReleaseManifestEntries(
+      Object.entries(packages).map(([name, bytes]) => ({
+        name,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        size: bytes.length,
+        platformTrust: 'macos-developer-id-notarization-required',
+      })),
+      { release: 'v0.104.0' },
+    );
+    process.env.BINARY_VERSION = '0.104.0';
+    serveRelease('/download/v0.104.0/', signed, packages);
+
+    const err = await assertMacosInstallerPkgsReachable().then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.cause).toBeInstanceOf(ReleaseManifestTooOldError);
+    const cause = err!.cause as ReleaseManifestTooOldError;
+    expect(cause.message).not.toMatch(/edition mismatch/);
+    expect(cause.message).toMatch(/BINARY_VERSION.*v0\.112\.0 or later/);
+    expect(cause.minimumRelease).toBe('v0.112.0');
+  });
+
+  it('unpinned (latest): a current manifest with edition + publisher still serves the macOS pkg', async () => {
+    const assetName = 'breeze-agent-darwin-arm64.pkg';
+    const asset = Buffer.from('latest arm64 pkg');
+    const signed = signedReleaseManifest(
+      assetName,
+      asset,
+      {
+        platformTrust: 'macos-developer-id-notarization-required',
+        edition: 'self-host',
+        signingIdentity: identity,
+        signingTeamId: 'D8W6N2JYMA',
+      },
+      { release: 'v0.120.0' },
+    );
+    delete process.env.BINARY_VERSION;
+    serveRelease('/latest/download/', signed, { [assetName]: asset });
+
+    await expect(fetchVerifiedMacosPkg('arm64')).resolves.toMatchObject({
+      buffer: asset,
+      artifact: { release: 'v0.120.0', edition: 'self-host', signingTeamId: 'D8W6N2JYMA' },
+    });
   });
 });

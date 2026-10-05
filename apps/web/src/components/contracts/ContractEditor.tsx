@@ -153,6 +153,7 @@ const INTERVAL_PRESETS = [
 ];
 
 interface Props {
+  autopayEnabled?: boolean;
   /** Present in edit mode (existing draft/active contract); absent when creating. */
   detail?: ContractDetail;
   /** Pre-select an org when creating (e.g. deep-linked from the org Contracts tab). */
@@ -161,7 +162,7 @@ interface Props {
   onChanged?: () => void;
 }
 
-export default function ContractEditor({ detail, presetOrgId, onChanged }: Props) {
+export default function ContractEditor({ detail, presetOrgId, onChanged, autopayEnabled = false }: Props) {
   const { t } = useTranslation('billing');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { can } = usePermissions();
@@ -190,6 +191,8 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     contract?.startDate ?? new Date().toISOString().slice(0, 10),
   );
   const [endDate, setEndDate] = useState(contract?.endDate ?? '');
+  const [autopayExcluded, setAutopayExcluded] = useState(contract?.autopayExcluded ?? false);
+  useEffect(() => { setAutopayExcluded(contract?.autopayExcluded ?? false); }, [contract?.autopayExcluded]);
   const [autoIssue, setAutoIssue] = useState(contract?.autoIssue ?? false);
   const [autoRenew, setAutoRenew] = useState<boolean>(contract?.autoRenew ?? false);
   const [renewalTermMonths, setRenewalTermMonths] = useState<string>(contract?.renewalTermMonths != null ? String(contract.renewalTermMonths) : '');
@@ -988,6 +991,17 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     className={`${dateInput} ${fieldRing(endDirty, isSaved('endDate'))}`}
                   />
                 </label>
+                {contract && autopayEnabled && ['draft', 'active'].includes(contract.status) && <label className="flex items-center gap-2 text-sm sm:col-span-2">
+                  <input type="checkbox" data-testid="autopay-contract-excluded"
+                    checked={autopayExcluded} disabled={!canWrite || isPending('autopayExcluded')}
+                    onChange={event => {
+                      const next = event.target.checked;
+                      setAutopayExcluded(next);
+                      void savePatch({ autopayExcluded: next }, 'autopayExcluded')
+                        .then(ok => { if (!ok) setAutopayExcluded(!next); });
+                    }} />
+                  {t('autopay.excludeContract')}
+                </label>}
                 <label className="flex items-center gap-2 text-sm sm:col-span-2">
                   <input
                     type="checkbox" checked={autoIssue} disabled={!canWrite || isPending('autoIssue')}

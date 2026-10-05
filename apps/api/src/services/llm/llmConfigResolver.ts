@@ -1,28 +1,11 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { and, eq } from 'drizzle-orm';
-import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { organizations, partnerLlmConfigs } from '../../db/schema';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { partnerAiConnections } from '../../db/schema';
 import type { LlmEgressSurface } from '../../db/schema/llmEgressEvents';
 import type { CatalogPricingSnapshot } from '../aiCostTracker';
 import { resolveDefaultModel } from '../aiModel';
 import { getListedProviderByEntryId, type ListedProvider } from '../llmProviderCatalog';
-import { decryptPartnerLlmApiKey } from '../partnerLlmConfig';
-import { SecretKeyMaterialError } from '../secretCrypto';
-import { captureException, captureMessage } from '../sentry';
-import { buildGuardedLlmFetch, type GuardedLlmFetchAttempt } from './guardedLlmFetch';
-import { isPlatformLlmConfigured, type LlmUnusableCode } from './llmAvailability';
-import { recordLlmEgressEvent } from './llmEgressRecorder';
-
-const SENTRY_CAPTURE_THROTTLE_MS = 60 * 60 * 1000;
-const sentryCaptureTimestamps = new Map<string, number>();
-
-function captureAtMostHourly(key: string, capture: () => void): void {
-  const now = Date.now();
-  const lastCapture = sentryCaptureTimestamps.get(key);
-  if (lastCapture !== undefined && now - lastCapture < SENTRY_CAPTURE_THROTTLE_MS) return;
-  sentryCaptureTimestamps.set(key, now);
-  capture();
-}
+import { LlmUnavailableError } from './llmUnavailableError';
 
 /**
  * Where a partner's traffic actually goes (#3922 phase 2).
@@ -61,7 +44,7 @@ export type ResolvedLlmEndpoint =
        * one-shot surface can be handed a session's model — neither is the
        * default, and neither is covered by the resolver's `model_unverified`
        * gate, which keys on the partner default alone. Carrying the whole map
-       * on the snapshot lets {@link resolveWireModel} translate (or fail
+       * on the snapshot lets the connection's wire-model mapping translate (or fail
        * closed on) any of them without re-reading the catalog and without
        * risking a half-rotated mixture of two revisions.
        */
@@ -92,72 +75,7 @@ export type ResolvedLlmConfig =
 
 export type UsableLlmConfig = Exclude<ResolvedLlmConfig, { source: 'unavailable' }>;
 
-export class LlmUnavailableError extends Error {
-  readonly status = 503;
-  readonly code = 'ai_unavailable';
-
-  constructor(message = 'AI is unavailable until the Anthropic API key is reconnected.') {
-    super(message);
-    this.name = 'LlmUnavailableError';
-  }
-}
-
-export class LlmOrgResolutionError extends Error {
-  readonly orgId: string;
-
-  constructor(orgId: string) {
-    super(`Organization ${orgId} could not be resolved for AI configuration.`);
-    this.name = 'LlmOrgResolutionError';
-    this.orgId = orgId;
-  }
-}
-
-async function readOrganizationPartnerId(orgId: string): Promise<string | null | undefined> {
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const [organization] = await db
-        .select({ partnerId: organizations.partnerId })
-        .from(organizations)
-        .where(eq(organizations.id, orgId))
-        .limit(1);
-      return organization?.partnerId;
-    }),
-  );
-}
-
-async function readPartnerLlmConfig(partnerId: string) {
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const [row] = await db
-        .select({
-          id: partnerLlmConfigs.id,
-          partnerId: partnerLlmConfigs.partnerId,
-          apiKeyEncrypted: partnerLlmConfigs.apiKeyEncrypted,
-          defaultModel: partnerLlmConfigs.defaultModel,
-          catalogEntryId: partnerLlmConfigs.catalogEntryId,
-          status: partnerLlmConfigs.status,
-          configVersion: partnerLlmConfigs.configVersion,
-        })
-        .from(partnerLlmConfigs)
-        .where(eq(partnerLlmConfigs.partnerId, partnerId))
-        .limit(1);
-      return row;
-    }),
-  );
-}
-
-async function partnerLlmConfigExists(partnerId: string): Promise<boolean> {
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const [row] = await db
-        .select({ id: partnerLlmConfigs.id })
-        .from(partnerLlmConfigs)
-        .where(eq(partnerLlmConfigs.partnerId, partnerId))
-        .limit(1);
-      return row !== undefined;
-    }),
-  );
-}
+export { LlmUnavailableError };
 
 /**
  * Gates every catalog code path (#3922 W3, Task 3.1). Read at call time rather
@@ -173,12 +91,12 @@ export function isLlmProviderCatalogEnabled(): boolean {
 }
 
 /**
- * Joins a partner's pinned catalog entry to a usable endpoint, or explains why
- * it cannot. Every failure is loud: phase 1's invariant is that AI stops rather
+ * Joins a catalog entry to a usable endpoint for one logical model, or explains
+ * why it cannot (registry readiness, aiModels/readiness.ts). Every failure is loud: phase 1's invariant is that AI stops rather
  * than quietly billing the platform key, and a delisted or unverified provider
  * is exactly that situation.
  */
-async function resolveCatalogEndpoint(
+export async function resolveCatalogEndpoint(
   catalogEntryId: string,
   model: string,
 ): Promise<
@@ -226,8 +144,8 @@ export function buildCatalogEndpointSnapshot(
   // plain literal that fails OPEN three ways: `modelMap['constructor']`
   // registers a binding whose wire id and every price are `undefined`;
   // `models['__proto__'] = …` silently REPLACES the map's prototype instead of
-  // adding a key; and the `models[logicalModel]` gate below (and in
-  // `resolveWireModel`) skips its fail-closed throw.
+  // adding a key; and a `models[logicalModel]` lookup downstream skips its
+  // fail-closed throw.
   const models: Record<string, CatalogModelBinding> = Object.create(null);
   for (const modelId of provider.verifiedModels) {
     if (!Object.hasOwn(provider.modelMap, modelId)) continue;
@@ -261,188 +179,18 @@ export function buildCatalogEndpointSnapshot(
   };
 }
 
-/**
- * Translates a logical (platform) model id into what actually goes on the wire
- * for this resolved config, plus the pricing that must be used to meter it.
- *
- * Every surface that sends a model id to the provider MUST route it through
- * here. A catalog endpoint speaks its own ids (`anthropic/claude-sonnet-4-6`
- * on OpenRouter, a deployment name on a self-hosted gateway), so sending the
- * platform id verbatim 404s at the provider; and the returned
- * `catalogPricing` is what keeps catalog traffic metered from the revision
- * snapshot instead of Anthropic list rates.
- *
- * Fails CLOSED for a model the pinned revision has not mapped AND verified —
- * silently re-pointing such a request at the partner's default model would run
- * a model nobody asked for while the ledger recorded the one that never ran.
- */
-export function resolveWireModel(
-  resolved: UsableLlmConfig,
-  logicalModel: string,
-): { model: string; catalogPricing?: CatalogPricingSnapshot } {
-  if (resolved.source !== 'partner' || resolved.endpoint.kind !== 'catalog') {
-    return { model: logicalModel };
-  }
-  // `Object.hasOwn` first: `logicalModel` is free-form client input, and a
-  // snapshot that crossed a serialization boundary may have regained
-  // Object.prototype even though the builder gives it a null one.
-  const binding = Object.hasOwn(resolved.endpoint.models, logicalModel)
-    ? resolved.endpoint.models[logicalModel]
-    : undefined;
-  if (!binding) {
-    throw new LlmUnavailableError(
-      `The selected AI provider endpoint has no verified mapping for model "${logicalModel}".`,
-    );
-  }
-  return { model: binding.providerModel, catalogPricing: binding.pricing };
-}
-
-export async function resolveLlmConfig(partnerId: string | null): Promise<ResolvedLlmConfig> {
-  const platform = (): ResolvedLlmConfig => ({
-    source: 'platform',
-    apiKey: process.env.ANTHROPIC_API_KEY,
-    model: resolveDefaultModel(),
-  });
-
-  if (!partnerId) return platform();
-
-  const row = await readPartnerLlmConfig(partnerId);
-  if (!row) return platform();
-  if (row.status === 'error') {
-    return { source: 'unavailable', partnerId, reason: 'key_error' };
-  }
-
-  let apiKey: string;
-  try {
-    apiKey = decryptPartnerLlmApiKey({ id: row.id, apiKeyEncrypted: row.apiKeyEncrypted });
-  } catch (error) {
-    if (error instanceof SecretKeyMaterialError) {
-      captureAtMostHourly(`key-material:${partnerId}`, () => {
-        captureException(error, undefined, { service: 'llmConfigResolver', partnerId });
-      });
-      console.error(
-        '[llmConfigResolver] partner config cannot be decrypted with this node key material',
-        { partnerId, error },
-      );
-      return { source: 'unavailable', partnerId, reason: 'key_material' };
-    }
-    captureException(error, undefined, { service: 'llmConfigResolver', partnerId });
-    try {
-      await markPartnerLlmError({
-        configId: row.id,
-        configVersion: row.configVersion,
-        reason: 'decrypt_failed',
-      });
-    } catch (markError) {
-      console.error('[llmConfigResolver] failed to mark unreadable partner config', {
-        partnerId,
-        configVersion: row.configVersion,
-        error: markError,
-      });
-      captureException(markError, undefined, { service: 'llmConfigResolver', partnerId });
-    }
-    return { source: 'unavailable', partnerId, reason: 'key_error' };
-  }
-
-  const model = row.defaultModel ?? resolveDefaultModel();
-
-  let endpoint: ResolvedLlmEndpoint = { kind: 'anthropic' };
-  if (row.catalogEntryId) {
-    const catalog = await resolveCatalogEndpoint(row.catalogEntryId, model);
-    if (!catalog.ok) return { source: 'unavailable', partnerId, reason: catalog.reason };
-    endpoint = catalog.endpoint;
-  }
-
-  return {
-    source: 'partner',
-    partnerId,
-    apiKey,
-    model,
-    configId: row.id,
-    configVersion: row.configVersion,
-    endpoint,
-  };
-}
-
-export async function resolveLlmConfigForOrg(orgId: string): Promise<ResolvedLlmConfig> {
-  const partnerId = await readOrganizationPartnerId(orgId);
-  if (partnerId === undefined) throw new LlmOrgResolutionError(orgId);
-  return resolveLlmConfig(partnerId ?? null);
-}
-
-/**
- * Readiness view of `resolveLlmConfigForOrg` + `llmUnusableCode` for a caller
- * ALREADY inside a system DB context (topology AI readiness, review R1): the
- * same decisions — no partner config means the platform path, which is usable
- * only with a platform credential (`isPlatformLlmConfigured`); an `error`
- * status, an undecryptable key or an unusable catalog pin means unavailable —
- * read on the caller's own connection. Returns null when a model can be
- * called. It never escapes to a second pooled connection (the resolver's
- * `runOutsideDbContext` reads would, which under a held transaction is the
- * #6671 pool-exhaustion shape) and has no side effects: it never marks a
- * config errored — only a real model call does. The authoritative resolution
- * still happens before any model call.
- */
-export async function llmUnusableCodeForOrgInSystemContext(orgId: string): Promise<LlmUnusableCode | null> {
-  if (getCurrentDbAccessContext()?.scope !== 'system') {
-    throw new Error('llmUnusableCodeForOrgInSystemContext requires a held system DB context');
-  }
-  const platform = (): LlmUnusableCode | null => (isPlatformLlmConfigured() ? null : 'ai_not_configured');
-  const [organization] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .limit(1);
-  if (!organization) return 'ai_unavailable';
-  if (!organization.partnerId) return platform();
-  const [row] = await db
-    .select({
-      id: partnerLlmConfigs.id,
-      apiKeyEncrypted: partnerLlmConfigs.apiKeyEncrypted,
-      defaultModel: partnerLlmConfigs.defaultModel,
-      catalogEntryId: partnerLlmConfigs.catalogEntryId,
-      status: partnerLlmConfigs.status,
-    })
-    .from(partnerLlmConfigs)
-    .where(eq(partnerLlmConfigs.partnerId, organization.partnerId))
-    .limit(1);
-  if (!row) return platform();
-  if (row.status === 'error') return 'ai_unavailable';
-  try {
-    decryptPartnerLlmApiKey({ id: row.id, apiKeyEncrypted: row.apiKeyEncrypted });
-  } catch {
-    return 'ai_unavailable';
-  }
-  if (!row.catalogEntryId) return null;
-  const catalog = await resolveCatalogEndpoint(row.catalogEntryId, row.defaultModel ?? resolveDefaultModel());
-  return catalog.ok ? null : 'ai_unavailable';
-}
-
-export async function getLlmBillingSourceForOrg(
-  orgId: string,
-): Promise<'platform' | 'partner_key'> {
-  try {
-    const partnerId = await readOrganizationPartnerId(orgId);
-    if (!partnerId) return 'platform';
-    return await partnerLlmConfigExists(partnerId) ? 'partner_key' : 'platform';
-  } catch (error) {
-    try {
-      captureAtMostHourly(`billing-source:${orgId}`, () => {
-        captureException(error, undefined, { service: 'llmConfigResolver', orgId });
-      });
-    } catch {
-      // Telemetry must not break this conservative, read-only billing fallback.
-    }
-    return 'platform';
-  }
+/** The deployment's own key and default model (dev scripts; the connection half for the platform). */
+export function platformLlmConfig(): UsableLlmConfig {
+  return { source: 'platform', apiKey: process.env.ANTHROPIC_API_KEY, model: resolveDefaultModel() };
 }
 
 export type PartnerLlmErrorReason = 'decrypt_failed' | 'auth_rejected';
 
 /**
- * Marks normalized credential failures only when the exact config row id and
- * version still match. Callers must not invoke this for Anthropic 429, 5xx,
- * network, timeout, or other retryable failures.
+ * Marks normalized credential failures only when the exact connection id and
+ * config version still match (a rotation in between wins). Callers must not
+ * invoke this for Anthropic 429, 5xx, network, timeout, or other retryable
+ * failures. `configId` is the partner_ai_connections id.
  */
 export async function markPartnerLlmError(input: {
   configId: string;
@@ -452,17 +200,17 @@ export async function markPartnerLlmError(input: {
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const [updated] = await db
-        .update(partnerLlmConfigs)
+        .update(partnerAiConnections)
         .set({
           status: 'error',
           lastError: input.reason,
           updatedAt: new Date(),
         })
         .where(and(
-          eq(partnerLlmConfigs.id, input.configId),
-          eq(partnerLlmConfigs.configVersion, input.configVersion),
+          eq(partnerAiConnections.id, input.configId),
+          eq(partnerAiConnections.configVersion, input.configVersion),
         ))
-        .returning({ id: partnerLlmConfigs.id });
+        .returning({ id: partnerAiConnections.id });
       return updated !== undefined;
     }),
   );
@@ -473,134 +221,11 @@ export async function markPartnerLlmError(input: {
  * that made the outbound call. `orgId` is the audit's tenant axis: the table's
  * `org_id` is NOT NULL behind a composite `(org_id, partner_id)` FK, so a
  * caller with no org in hand (a partner-scoped actor enriching a catalog item,
- * for instance) cannot be attributed and is handled by
- * {@link buildCatalogEgressRecorder} rather than silently writing a wrong org.
+ * for instance) cannot be attributed and is handled by the connection
+ * factory's egress recorder (aiModels/connectionFactory.ts) rather than
+ * silently writing a wrong org.
  */
 export interface LlmClientCallerContext {
   surface: LlmEgressSurface;
   orgId: string | null;
-}
-
-/**
- * Bridges the guarded fetch's synchronous, fire-and-forget attempt callback to
- * the queued egress recorder, stamping the caller's surface and the endpoint's
- * catalog provenance onto every attempt.
- *
- * With no `orgId` the attempt cannot be persisted (see the FK note above). It
- * warns ONCE per client rather than per request — a partner-scoped caller
- * makes many calls and a per-request warning would bury the signal — and lets
- * the request proceed: the security controls (origin pin, connect-time SSRF
- * pin, no redirects) are enforced inside the guarded fetch itself and are
- * entirely unaffected by whether the audit row lands. Refusing the call here
- * would take AI away from a legitimate partner for a bookkeeping gap.
- */
-function buildCatalogEgressRecorder(input: {
-  caller: LlmClientCallerContext;
-  partnerId: string;
-  catalogEntryId: string;
-  revisionId: string;
-}): (attempt: GuardedLlmFetchAttempt) => void {
-  let warnedAboutMissingOrg = false;
-  return (attempt) => {
-    if (!input.caller.orgId) {
-      if (!warnedAboutMissingOrg) {
-        warnedAboutMissingOrg = true;
-        console.warn(
-          '[llmConfigResolver] catalog LLM egress could not be audited: no organization in ' +
-            `context for partner ${input.partnerId} (surface ${input.caller.surface}).`,
-        );
-      }
-      return;
-    }
-    recordLlmEgressEvent({
-      orgId: input.caller.orgId,
-      partnerId: input.partnerId,
-      surface: input.caller.surface,
-      host: attempt.host,
-      resolvedIp: attempt.resolvedIp,
-      blocked: attempt.blocked,
-      catalogEntryId: input.catalogEntryId,
-      revisionId: input.revisionId,
-    });
-  };
-}
-
-export async function getAnthropicClientForPartner(
-  partnerId: string | null,
-  caller: LlmClientCallerContext,
-): Promise<{
-  client: Anthropic;
-  resolved: UsableLlmConfig;
-}> {
-  const resolved = await resolveLlmConfig(partnerId);
-  if (resolved.source === 'unavailable') {
-    throw new LlmUnavailableError();
-  }
-  if (!resolved.apiKey?.trim()) {
-    const error = new LlmUnavailableError('AI is not configured on this deployment.');
-    captureAtMostHourly('blank-platform-key:platform', () => {
-      captureMessage('AI is not configured on this deployment.', {
-        eventCode: 'llm_platform_key_missing',
-      });
-    });
-    throw error;
-  }
-
-  if (resolved.source === 'partner' && resolved.endpoint.kind === 'catalog') {
-    const { endpoint } = resolved;
-    return {
-      client: new Anthropic({
-        baseURL: endpoint.baseUrl,
-        // Exactly one credential header, and the other explicitly nulled so the
-        // SDK cannot fall back to an inherited ANTHROPIC_API_KEY /
-        // ANTHROPIC_AUTH_TOKEN and leak the platform's credential to a third
-        // party.
-        ...(endpoint.authMode === 'x-api-key'
-          ? { apiKey: resolved.apiKey, authToken: null }
-          : { authToken: resolved.apiKey, apiKey: null }),
-        fetch: buildGuardedLlmFetch({
-          allowedOrigin: new URL(endpoint.baseUrl).origin,
-          recordEgress: buildCatalogEgressRecorder({
-            caller,
-            partnerId: resolved.partnerId,
-            catalogEntryId: endpoint.catalogEntryId,
-            revisionId: endpoint.revisionId,
-          }),
-        }),
-      }),
-      resolved,
-    };
-  }
-
-  return { client: buildAnthropicClient(resolved), resolved };
-}
-
-/**
- * Construct the Anthropic client for an already-resolved config. The partner
- * branch pins `baseURL` and clears `authToken` so a partner key can never be
- * sent through a proxy base URL or alongside an ambient bearer token — that
- * pinning is a security control, so callers that resolve for themselves
- * (`resolveLlmConfigForOrg`) MUST come back through here rather than
- * constructing their own client.
- *
- * A catalog-routed partner is REFUSED rather than served here (#3922 W3): that
- * partner's stored key belongs to a third-party provider, so pinning it at
- * api.anthropic.com would ship someone else's credential to Anthropic, and the
- * catalog path additionally needs the guarded fetch + egress audit that only
- * {@link getAnthropicClientForPartner} can wire (it needs the caller's
- * surface/orgId). Callers wanting catalog support must go through that.
- */
-export function buildAnthropicClient(resolved: UsableLlmConfig): Anthropic {
-  if (resolved.source === 'partner' && resolved.endpoint.kind !== 'anthropic') {
-    throw new LlmUnavailableError(
-      'This AI surface does not yet support a custom provider endpoint.',
-    );
-  }
-  return resolved.source === 'partner'
-    ? new Anthropic({
-        apiKey: resolved.apiKey,
-        authToken: null,
-        baseURL: 'https://api.anthropic.com',
-      })
-    : new Anthropic({ apiKey: resolved.apiKey });
 }

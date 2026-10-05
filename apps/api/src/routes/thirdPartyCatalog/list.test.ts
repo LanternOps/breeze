@@ -31,6 +31,11 @@ const mockCatalogTable = vi.hoisted(() => ({
   updatedAt: 'thirdPartyPackageCatalog.updatedAt',
 }));
 
+// services/aiAgent.ts (reached transitively) resolves session models through
+// the registry (W03 #7601); stub its DB adapters under this partial schema mock.
+vi.mock('../../services/aiModels/sessionModel', () => ({ chooseSessionModel: vi.fn() }));
+vi.mock('../../services/aiModels/candidateLoader', () => ({ readOrgPartnerId: vi.fn() }));
+
 vi.mock('drizzle-orm', () => ({
   and: (...conditions: unknown[]) => ({ op: 'and', conditions }),
   eq: (left: unknown, right: unknown) => ({ op: 'eq', left, right }),

@@ -217,7 +217,6 @@ clientAiAdminRoutes.put(
     if (body.userAccess !== undefined) set.userAccess = body.userAccess;
     if (body.selectedUserIds !== undefined) set.selectedUserIds = body.selectedUserIds;
     if (body.allowedProviders !== undefined) set.allowedProviders = body.allowedProviders;
-    if (body.allowedModels !== undefined) set.allowedModels = body.allowedModels;
     if (body.writeMode !== undefined) set.writeMode = body.writeMode;
     if (body.writeApproval !== undefined) set.writeApproval = body.writeApproval;
     if (body.dlpConfig !== undefined) set.dlpConfig = body.dlpConfig;

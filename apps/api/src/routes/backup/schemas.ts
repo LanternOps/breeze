@@ -9,6 +9,8 @@ import { drRestoreConfigSchema } from '../../services/drBareMetalRebuildStep';
 // Pool-free leaf (imports only zod) — this module must stay pool-free at load.
 import { hypervOptionsSchema, isAbsoluteRebuildPath } from '../../services/bareMetalRebuildSchemas';
 import { BACKUP_HEALTH_MAX_LIMIT } from '../../services/backupHealthCursor';
+// Pool-free leaf (secretCrypto only).
+import { findCiphertextShapedValue } from '../../services/backupProviderConfigSealing';
 
 const queryBoolean = z.preprocess((value) => {
   if (typeof value === 'boolean') return value;
@@ -104,6 +106,11 @@ export function canonicalizeS3CredentialFields(details: Record<string, unknown>)
   delete details.secretAccessKey;
 }
 
+// A destination setting can't be submitted in the stored (sealed) format:
+// the server would open it as if it had sealed it itself. See
+// findCiphertextShapedValue.
+const DETAILS_IN_STORED_FORMAT_MESSAGE = 'Destination settings cannot contain values in the internal encrypted format';
+
 export const configSchema = z.object({
   name: z.string().min(1),
   provider: z.enum(['s3', 'local']),
@@ -113,6 +120,9 @@ export const configSchema = z.object({
   details: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
+  ).refine(
+    (val) => findCiphertextShapedValue(val) === null,
+    { message: DETAILS_IN_STORED_FORMAT_MESSAGE }
   ).optional()
 }).superRefine((data, ctx) => {
   if (data.provider !== 's3') return;
@@ -130,6 +140,9 @@ export const configUpdateSchema = z.object({
   details: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
+  ).refine(
+    (val) => findCiphertextShapedValue(val) === null,
+    { message: DETAILS_IN_STORED_FORMAT_MESSAGE }
   ).optional()
 });
 

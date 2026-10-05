@@ -129,6 +129,8 @@ vi.mock('../../db', () => {
     },
     getCurrentDbAccessContext: vi.fn(() => dbMockState.ambientContext),
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+    // W3: a savepoint on the ambient connection — same depth, no new context.
+    withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
       const previous = dbMockState.ambientContext;
       dbMockState.ambientContext = { scope: 'system' };
@@ -158,8 +160,21 @@ vi.mock('../aiCostTracker', () => ({
   checkBudget, checkComputeCredits, reserveComputeCents, settleComputeCents,
 }));
 
-const getLlmBillingSourceForOrg = vi.hoisted(() => vi.fn());
-vi.mock('../llm/llmConfigResolver', () => ({ getLlmBillingSourceForOrg }));
+// AI model registry W03 (Task 12): admission resolves the agent's model first;
+// its funding (not a per-org guess) feeds every budget gate and the run row.
+const resolveModel = vi.hoisted(() => vi.fn());
+vi.mock('../aiModels/resolveModel', () => ({ resolveModel }));
+// Gap 3: a keyless deployment raises the shared hourly platform-key alert, like the one-shot surfaces.
+const reportPlatformKeyMissing = vi.hoisted(() => vi.fn());
+vi.mock('../llm/platformKeyAlert', () => ({
+  reportPlatformKeyMissing,
+  PLATFORM_KEY_MISSING_MESSAGE: 'AI is not configured on this deployment.',
+}));
+
+const readOrgPartnerId = vi.hoisted(() => vi.fn());
+vi.mock('../aiModels/candidateLoader', () => ({ readOrgPartnerId }));
+const notifyModelBlocked = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('./modelBlocked', () => ({ notifyModelBlocked }));
 
 const isDeviceInMaintenanceWindow = vi.hoisted(() => vi.fn());
 vi.mock('../deploymentEngine', () => ({ isDeviceInMaintenanceWindow }));
@@ -196,6 +211,7 @@ vi.mock('./agentCircuit', () => ({
   isTerminalRunStatus: (status: string) => status !== 'queued' && status !== 'running',
 }));
 
+import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
 import {
   createAndEnqueueAgentRun,
   evaluateAgentTriggerFilters,
@@ -230,7 +246,6 @@ function policy(over: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
   return {
     enabled: true,
     mode: 'shadow',
-    model: null,
     toolAllowlist: ['get_device_details'],
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
     limits: { ...AI_AGENT_LIMIT_DEFAULTS },
@@ -345,7 +360,8 @@ beforeEach(() => {
   dbMockState.contextAtEnqueue = undefined;
   resolveEffectiveAgentSystem.mockResolvedValue(snapshot());
   checkBudget.mockResolvedValue(null);
-  getLlmBillingSourceForOrg.mockResolvedValue('platform');
+  readOrgPartnerId.mockResolvedValue(PARTNER_ID);
+  resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents' }));
   isDeviceInMaintenanceWindow.mockResolvedValue(false);
   publishEvent.mockResolvedValue('event-id');
   isCircuitOpen.mockResolvedValue(false);
@@ -807,9 +823,88 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
 
   it('passes the partner BYOK billing source through to checkBudget', async () => {
     seedAdmissionReads();
-    getLlmBillingSourceForOrg.mockResolvedValue('partner_key');
+    resolveModel.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'ai_agents' }));
     await createAndEnqueueAgentRun(input());
     expect(checkBudget).toHaveBeenCalledWith(ORG_ID, 'partner_key');
+  });
+
+  describe('agent model (AI model registry W03, Task 12)', () => {
+    it('admission resolves the agent model first: funding feeds checkBudget and the run row', async () => {
+      seedAdmissionReads();
+      resolveModel.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'ai_agents' }));
+      expect(await createAndEnqueueAgentRun(input())).toMatchObject({ created: true });
+      expect(resolveModel).toHaveBeenCalledWith({ partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'ai_agents', role: 'analysis' });
+      expect(checkBudget).toHaveBeenCalledWith(ORG_ID, 'partner_key');
+      expect(dbMockState.insertValues[0]).toMatchObject({ fundingSource: 'partner_key', admittedOfferingId: 'off-1' });
+    });
+
+    it('requests the policy\'s bound offering with origin policy', async () => {
+      seedAdmissionReads();
+      resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ offeringId: 'off-77' }));
+      await createAndEnqueueAgentRun(input());
+      expect(resolveModel).toHaveBeenCalledWith(expect.objectContaining({
+        surface: 'ai_agents', requested: { offeringId: 'off-77', origin: 'policy' },
+      }));
+    });
+
+    it('admission resolves the run\'s escalation role (verdict -> triage)', async () => {
+      seedAdmissionReads();
+      await createAndEnqueueAgentRun(input({ profile: 'verdict', triggerKind: 'alert' }));
+      expect(resolveModel).toHaveBeenCalledWith(expect.objectContaining({ surface: 'ai_agents', role: 'triage' }));
+    });
+
+    it('resolves OUTSIDE the admission transaction (no second pooled connection under the advisory lock)', async () => {
+      seedAdmissionReads();
+      let depthAtResolve = -1;
+      resolveModel.mockImplementation(async () => {
+        depthAtResolve = dbMockState.systemContextDepth;
+        return makeResolvedModel('platform', { surface: 'ai_agents' });
+      });
+      await createAndEnqueueAgentRun(input());
+      expect(depthAtResolve).toBe(0);
+    });
+
+    it('an unavailable agent model skips with model_unavailable and notifies once per day', async () => {
+      seedAdmissionReads();
+      resolveModel.mockResolvedValue({ ok: false, reason: 'not_permitted', recoverable: true, offeringId: 'x', message: 'm' });
+      expect(await createAndEnqueueAgentRun(input())).toEqual({ created: false, skipped: 'model_unavailable' });
+      expect(notifyModelBlocked).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: ORG_ID, agentId: AGENT_ID, agentName: 'Triage', reason: 'model_unavailable', message: 'm',
+        agent: { orgId: null, partnerId: PARTNER_ID, recipients: { userIds: [], roleIds: [] } },
+      }));
+      expect(checkBudget).not.toHaveBeenCalled();
+      expect(dbMockState.insertValues).toHaveLength(0);
+      expect(recordAgentRunSkip).toHaveBeenCalledWith(expect.objectContaining({ reason: 'model_unavailable' }));
+    });
+
+    it('a notify failure never turns the skip into a throw', async () => {
+      seedAdmissionReads();
+      resolveModel.mockResolvedValue({ ok: false, reason: 'model_unavailable', recoverable: true, offeringId: 'x', message: 'm' });
+      notifyModelBlocked.mockRejectedValueOnce(new Error('smtp down'));
+      expect(await createAndEnqueueAgentRun(input())).toEqual({ created: false, skipped: 'model_unavailable' });
+    });
+
+    it('connection_unavailable on a deployment with NO platform key raises the platform-key alert at admission', async () => {
+      seedAdmissionReads();
+      resolveModel.mockResolvedValue({ ok: false, reason: 'connection_unavailable', recoverable: true, offeringId: null, message: 'm' });
+      const savedEnv = { ...process.env };
+      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+      try {
+        expect(await createAndEnqueueAgentRun(input())).toEqual({ created: false, skipped: 'model_unavailable' });
+      } finally {
+        process.env = savedEnv;
+      }
+      expect(reportPlatformKeyMissing).toHaveBeenCalledTimes(1);
+    });
+
+    it('registry_unavailable (cutover not done yet) skips WITHOUT telling an admin the model is gone', async () => {
+      seedAdmissionReads();
+      resolveModel.mockResolvedValue({ ok: false, reason: 'registry_unavailable', recoverable: true, offeringId: null, message: 'm' });
+      expect(await createAndEnqueueAgentRun(input())).toEqual({ created: false, skipped: 'model_unavailable' });
+      expect(notifyModelBlocked).not.toHaveBeenCalled();
+    });
   });
 
   it('agent_daily_budget_exceeded when this agent spent its daily cap in this org', async () => {
@@ -1765,6 +1860,15 @@ describe('transitionRunStatus — compute reservation release (execution plane W
     expect(settleComputeCents).toHaveBeenCalledWith(ORG_ID, RUN_ID, 25, 'platform');
   });
 
+  it('releases on the run\'s ADMITTED funding source, never a re-derived one (W03)', async () => {
+    dbMockState.updateRows = [{
+      id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'stalled', outcome: {},
+      profile: 'analysis', computeReservedCents: 25, fundingSource: 'partner_key',
+    }];
+    await transitionRunStatus(RUN_ID, ['queued', 'running'], 'failed', { errorCode: 'stalled' });
+    expect(settleComputeCents).toHaveBeenCalledWith(ORG_ID, RUN_ID, 25, 'partner_key');
+  });
+
   it('does NOT settle on a non-terminal transition', async () => {
     dbMockState.updateRows = [{
       id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: null, outcome: {},
@@ -2658,5 +2762,142 @@ describe('createAndEnqueueAgentRun patch-profile admission (AI patch agent W01)'
     const result = await createAndEnqueueAgentRun(input({ kind: 'patch', dedupeKey: 'patch:p8' }));
     expect(result).toMatchObject({ created: true });
     expect(dbMockState.insertValues[0]).toMatchObject({ profile: 'full', deviceId: DEVICE_ID });
+  });
+});
+
+describe('createAndEnqueueAgentRun research-profile admission (AI Suggested Fixes W2, Review Focus 2)', () => {
+  /** Same read order as the design arm: a non-full profile skips cooldown. */
+  function seedResearchAdmissionReads(options: { agentKind?: string; concurrent?: number } = {}): void {
+    const { agentKind = 'research', concurrent = 0 } = options;
+    seedAdmissionReads({ concurrent, perHour: 0, dailyCents: 0, deviceInOrg: true, agentKind });
+    dbMockState.rowQueues.ai_agent_runs = [
+      [], // 4c reap candidates
+      [{ value: concurrent }], // 6b concurrency
+      [{ value: 0 }], // 6b hourly rate
+      [{ totalCostCents: 0 }], // 7 daily spend
+    ];
+  }
+  const researchInput = (over: Partial<CreateAgentRunInput> = {}) =>
+    input({ kind: 'research', profile: 'remediation_research', ...over });
+
+  it('admits a research agent on its own profile against one device', async () => {
+    seedResearchAdmissionReads();
+    const result = await createAndEnqueueAgentRun(researchInput({ dedupeKey: 'research:r1' }));
+    expect(result).toMatchObject({ created: true });
+    expect(dbMockState.insertValues[0]).toMatchObject({ profile: 'remediation_research', deviceId: DEVICE_ID });
+  });
+
+  it('ownership_mismatch when a research agent is admitted on any other profile', async () => {
+    // 'analysis' is omitted: its hosted/breaker gates run before rule 2a.
+    for (const profile of ['full', 'verdict', 'sweep', 'narrative', 'triage', 'design', 'patch'] as const) {
+      seedResearchAdmissionReads();
+      const result = await createAndEnqueueAgentRun(researchInput({ dedupeKey: `research:r2:${profile}`, profile }));
+      expect(result, profile).toEqual({ created: false, skipped: 'ownership_mismatch' });
+    }
+  });
+
+  it('ownership_mismatch when a non-research agent is admitted on remediation_research', async () => {
+    seedResearchAdmissionReads({ agentKind: 'triage' });
+    const result = await createAndEnqueueAgentRun(researchInput({ kind: 'triage', dedupeKey: 'research:r3' }));
+    expect(result).toEqual({ created: false, skipped: 'ownership_mismatch' });
+  });
+
+  it('ownership_mismatch when a research run is device-less', async () => {
+    seedResearchAdmissionReads();
+    const result = await createAndEnqueueAgentRun(researchInput({ dedupeKey: 'research:r4', deviceId: null }));
+    expect(result).toEqual({ created: false, skipped: 'ownership_mismatch' });
+  });
+
+  it('max_concurrent_research_runs at the research-only cap', async () => {
+    seedResearchAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentResearchRuns });
+    const result = await createAndEnqueueAgentRun(researchInput({ dedupeKey: 'research:r5' }));
+    expect(result).toEqual({ created: false, skipped: 'max_concurrent_research_runs' });
+  });
+
+  it('auto research at the hourly auto cap skips research_auto_cap; below it admits; manual is never counted', async () => {
+    const auto = (dedupeKey: string) => researchInput({ triggerKind: 'alert', dedupeKey });
+    const queue = (autoCount: number) => {
+      seedResearchAdmissionReads();
+      dbMockState.rowQueues.ai_agent_runs = [[], [{ value: 0 }], [{ value: 0 }], [{ value: autoCount }], [{ totalCostCents: 0 }]];
+    };
+    queue(AI_AGENT_LIMIT_DEFAULTS.maxAutoResearchRunsPerHour);
+    expect(await createAndEnqueueAgentRun(auto('research:auto-1'))).toEqual({ created: false, skipped: 'research_auto_cap' });
+
+    queue(AI_AGENT_LIMIT_DEFAULTS.maxAutoResearchRunsPerHour - 1);
+    expect(await createAndEnqueueAgentRun(auto('research:auto-2'))).toMatchObject({ created: true });
+
+    // manual: the queue without the auto-count entry has no auto count; an extra read would throw "No queued rows"
+    seedResearchAdmissionReads();
+    expect(await createAndEnqueueAgentRun(researchInput({ triggerKind: 'manual', dedupeKey: 'research:manual-1' }))).toMatchObject({ created: true });
+  });
+});
+
+describe('proven-fix short-circuit for shadow triage (AI Suggested Fixes W3)', () => {
+  it('shadow + proven fix → proven_fix_available, nothing inserted, no admission lock taken', async () => {
+    let depthAtProbe = -1;
+    const probe = vi.fn(async () => { depthAtProbe = dbMockState.systemContextDepth; return true; });
+    const result = await createAndEnqueueAgentRun(input({ provenFixProbe: probe }));
+    expect(result).toEqual({ created: false, skipped: 'proven_fix_available' });
+    expect(probe).toHaveBeenCalledTimes(1);
+    // The probe joins admission's ONE system context, never a second pooled
+    // connection (W3 plan Global Constraints, "Contexts").
+    expect(depthAtProbe).toBe(1);
+    expect(dbMockState.insertValues).toEqual([]);
+    expect(dbMockState.executed).toEqual([]);
+    expect(enqueueAgentRunJob).not.toHaveBeenCalled();
+  });
+
+  it('act mode never consults the probe and admits the full run', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'act' }));
+    seedAdmissionReads();
+    const probe = vi.fn(async () => true);
+    expect(await createAndEnqueueAgentRun(input({ provenFixProbe: probe }))).toMatchObject({ created: true });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['agent_disabled', () => resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ enabled: false }))],
+    ['mode_off', () => resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'off' }))],
+    ['circuit_open', () => isCircuitOpen.mockResolvedValue(true)],
+    ['maintenance_window', () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers({ respectMaintenanceWindows: true }) }));
+      isDeviceInMaintenanceWindow.mockResolvedValue(true);
+    }],
+  ] as const)('an admission opt-out (%s) keeps its own skip; the probe is never asked', async (reason, arrange) => {
+    arrange();
+    const probe = vi.fn(async () => true);
+    expect(await createAndEnqueueAgentRun(input({ provenFixProbe: probe }))).toEqual({ created: false, skipped: reason });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('the probe runs BEFORE the dedupe insert: a redelivered shadow alert answers proven_fix_available, not duplicate', async () => {
+    // Deliberate ordering (W3 plan Task 5: probe after the opt-outs, before
+    // the admission lock). A redelivery whose dedupe row already exists would
+    // otherwise answer `duplicate`; answering proven_fix_available instead is
+    // benign — the lane's attach is idempotent and no row is inserted.
+    seedAdmissionReads();
+    dbMockState.insertRows = []; // what makes the same admission answer `duplicate` without a probe
+    expect(await createAndEnqueueAgentRun(input())).toEqual({ created: false, skipped: 'duplicate' });
+    seedAdmissionReads();
+    dbMockState.insertRows = [];
+    dbMockState.insertConflictTargets = [];
+    expect(await createAndEnqueueAgentRun(input({ provenFixProbe: async () => true }))).toEqual({
+      created: false, skipped: 'proven_fix_available',
+    });
+    expect(dbMockState.insertConflictTargets).toEqual([]);
+  });
+
+  it('no proven fix admits the full run as today', async () => {
+    seedAdmissionReads();
+    const probe = vi.fn(async () => false);
+    expect(await createAndEnqueueAgentRun(input({ dedupeKey: 'alert:p1', provenFixProbe: probe }))).toMatchObject({ created: true });
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it('a throwing probe admits the full run as today', async () => {
+    seedAdmissionReads();
+    expect(await createAndEnqueueAgentRun(input({
+      dedupeKey: 'alert:p2', provenFixProbe: async () => { throw new Error('db'); },
+    }))).toMatchObject({ created: true });
   });
 });

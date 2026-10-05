@@ -7,6 +7,11 @@ set -e
 # Install-location rules shared with the running agent (#7211).
 # shellcheck source=install-location.sh
 . "$(dirname "$0")/install-location.sh"
+# ensure_breeze_group: create or repair the IPC socket group (#7829). The same
+# file the daemon embeds (agent/internal/sessionbroker/ensure_ipc_group.sh);
+# build-pkg.sh copies it here.
+# shellcheck source=../../internal/sessionbroker/ensure_ipc_group.sh
+. "$(dirname "$0")/ensure_ipc_group.sh"
 
 # The payload stages the root-daemon binaries here, never in /usr/local/bin:
 # on the hosts where /usr/local/bin is unsafe, a non-root identity could
@@ -25,6 +30,9 @@ DESKTOP_LOGINWINDOW_PLIST="/Library/LaunchAgents/com.breeze.desktop-helper-login
 BIN_DIR="$(choose_bin_dir)"
 echo "Installing Breeze daemon binaries to $BIN_DIR"
 if [ "$BIN_DIR" = "$TRUSTED_BIN_DIR" ]; then
+    if ! legacy_dir_is_safe "$LEGACY_BIN_DIR"; then
+        explain_unsafe_legacy_dir "$LEGACY_BIN_DIR"
+    fi
     ensure_trusted_bin_dir
 fi
 BINARY="$BIN_DIR/breeze-agent"
@@ -48,26 +56,6 @@ if [ "$BIN_DIR" != "$LEGACY_BIN_DIR" ]; then
     point_plist_at "$WATCHDOG_PLIST" "$LEGACY_BIN_DIR" "$BIN_DIR" breeze-watchdog
 fi
 
-ensure_breeze_group() {
-    if dscl . -read /Groups/breeze &>/dev/null; then
-        dscl . -read /Groups/breeze PrimaryGroupID &>/dev/null
-        return
-    fi
-
-    gid=350
-    while [ "$gid" -le 499 ]; do
-        if ! dscl . -list /Groups PrimaryGroupID 2>/dev/null | awk '{print $2}' | grep -qx "$gid"; then
-            dscl . -create /Groups/breeze
-            dscl . -create /Groups/breeze PrimaryGroupID "$gid"
-            return
-        fi
-        gid=$((gid + 1))
-    done
-
-    echo "No free local system GID available for breeze group" >&2
-    exit 1
-}
-
 # Create directories
 mkdir -p "$CONFIG_DIR"
 chmod 0700 "$CONFIG_DIR"
@@ -84,13 +72,6 @@ chmod 0755 "$DESKTOP_HELPER_BINARY"
 chmod 0644 "$DAEMON_PLIST"
 chmod 0644 "$DESKTOP_USER_PLIST"
 chmod 0644 "$DESKTOP_LOGINWINDOW_PLIST"
-
-# Bootstrap watchdog daemon
-if [ -f "$WATCHDOG_PLIST" ]; then
-    launchctl bootout system/com.breeze.watchdog 2>/dev/null || true
-    launchctl bootstrap system "$WATCHDOG_PLIST" 2>/dev/null || \
-        launchctl load "$WATCHDOG_PLIST" 2>/dev/null || true
-fi
 
 # breeze_group_has_member reports whether $1 is in the breeze group.
 breeze_group_has_member() {
@@ -135,8 +116,16 @@ add_console_users_to_breeze_group() {
     done
 }
 
-# Create breeze group for IPC socket access.
-ensure_breeze_group
+# Create the breeze group for IPC socket access, or give a GID-less one left by
+# an earlier failed install its GID (#7829). Deliberately not fatal: this
+# script is also the unattended self-update path, the agent daemon is not
+# bootstrapped yet, and aborting here would leave the whole agent down over a
+# group that only user-session helpers need. The daemon retries the same rule
+# on every start (sessionbroker.EnsureIPCGroup) and logs an error if the socket
+# still cannot get its group.
+if ! ensure_breeze_group; then
+    echo "Warning: could not ensure the breeze group; desktop helpers will be denied the agent socket until the agent repairs it on a later start" >&2
+fi
 add_console_users_to_breeze_group
 
 # Group-own the config directory so anything created inside it inherits the
@@ -147,11 +136,22 @@ add_console_users_to_breeze_group
 chgrp breeze "$CONFIG_DIR" 2>/dev/null || \
     echo "Warning: could not group-own $CONFIG_DIR as breeze" >&2
 
-# Stop existing service if running
-launchctl bootout system/com.breeze.agent 2>/dev/null || true
-
-# Load the daemon (starts automatically via RunAtLoad)
-launchctl bootstrap system "$DAEMON_PLIST"
+# Load the agent daemon (starts via RunAtLoad), THEN the watchdog. A watchdog
+# loaded first finds no agent and, on its first process tick, bootstraps the
+# agent itself, racing this script's own bootout/bootstrap (#7831).
+# `breeze-agent service install` uses the same agent-first order. Failing to
+# load the agent fails the install; bootstrap_system_daemon prints why and how
+# to recover.
+if ! bootstrap_system_daemon com.breeze.agent "$DAEMON_PLIST"; then
+    exit 1
+fi
+# The watchdog only supervises; the agent runs without it, so a failure here
+# warns rather than failing an install whose agent is already up.
+if [ -f "$WATCHDOG_PLIST" ]; then
+    if ! bootstrap_system_daemon com.breeze.watchdog "$WATCHDOG_PLIST"; then
+        echo "Warning: the watchdog did not load; the agent was loaded but has no supervisor" >&2
+    fi
+fi
 
 # Load the user helper LaunchAgent for all currently logged-in GUI users.
 # The plist lives in /Library/LaunchAgents/ so launchd will auto-load it

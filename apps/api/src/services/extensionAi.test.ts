@@ -1,28 +1,27 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExtensionAiError, type ExtensionAiInvokeInput } from '@breeze/extension-sdk';
 
 const {
-  buildAnthropicClient,
-  calculateCatalogCostCents,
-  calculateCostCents,
+  anthropicClientFor,
   captureException,
   captureMessage,
   checkAiRateLimit,
   checkBudgetDetailed,
   checkSystemAiRateLimit,
   create,
-  deductBillingCredits,
+  ensurePartnerCutover,
+  findOfferingIdByModel,
+  isPlatformLlmConfigured,
   markPartnerLlmError,
   markAiBudgetReservationIndeterminate,
-  recordUsage,
+  readOrgPartnerId,
   releaseUnusedAiBudgetReservation,
+  reportPlatformKeyMissing,
   reserveAiBudget,
-  resolveLlmConfigForOrg,
-  resolveWireModel,
+  resolveModel,
+  settleInvocation,
 } = vi.hoisted(() => ({
-  buildAnthropicClient: vi.fn(),
-  calculateCatalogCostCents: vi.fn<(...args: unknown[]) => number>(),
-  calculateCostCents: vi.fn<(...args: unknown[]) => number>(),
+  anthropicClientFor: vi.fn(),
   captureException: vi.fn(),
   captureMessage: vi.fn(),
   checkAiRateLimit: vi.fn<() => Promise<string | null>>(),
@@ -31,28 +30,23 @@ const {
   } | null>>(),
   checkSystemAiRateLimit: vi.fn<() => Promise<string | null>>(),
   create: vi.fn(),
-  deductBillingCredits: vi.fn<() => Promise<void>>(),
+  ensurePartnerCutover: vi.fn<() => Promise<boolean>>(),
+  findOfferingIdByModel: vi.fn<() => Promise<string | null>>(),
+  isPlatformLlmConfigured: vi.fn<() => boolean>(),
   markPartnerLlmError: vi.fn<() => Promise<boolean>>(),
   markAiBudgetReservationIndeterminate: vi.fn(),
-  recordUsage: vi.fn<() => Promise<void>>(),
+  readOrgPartnerId: vi.fn<() => Promise<string | null>>(),
   releaseUnusedAiBudgetReservation: vi.fn(),
+  reportPlatformKeyMissing: vi.fn(),
   reserveAiBudget: vi.fn(),
-  resolveLlmConfigForOrg: vi.fn(),
-  resolveWireModel: vi.fn(),
+  resolveModel: vi.fn(),
+  settleInvocation: vi.fn(),
 }));
 
 vi.mock('./aiCostTracker', () => ({
-  calculateCatalogCostCents,
-  calculateCostCents,
   checkAiRateLimit,
   checkBudgetDetailed,
   checkSystemAiRateLimit,
-  deductBillingCredits,
-  isPricedModel: (model: string) => [
-    'claude-haiku-4-5',
-    'claude-sonnet-4-6',
-  ].includes(model),
-  recordUsage,
 }));
 
 vi.mock('./sentry', () => ({ captureException, captureMessage }));
@@ -64,45 +58,51 @@ vi.mock('./aiBudgetReservations', async (importOriginal) => ({
   reserveAiBudget,
 }));
 
-const { LlmOrgResolutionError } = vi.hoisted(() => ({
-  LlmOrgResolutionError: class LlmOrgResolutionError extends Error {
-    readonly orgId: string;
-    constructor(orgId: string) {
-      super(`Organization ${orgId} could not be resolved for AI configuration.`);
-      this.name = 'LlmOrgResolutionError';
-      this.orgId = orgId;
-    }
-  },
+vi.mock('./llm/llmConfigResolver', () => ({ markPartnerLlmError }));
+// Partial: the SDK-child env builder (via connectionFactory) reads the real credential key list.
+vi.mock('./llm/llmAvailability', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./llm/llmAvailability')>()),
+  isPlatformLlmConfigured,
 }));
-
-vi.mock('./llm/llmConfigResolver', () => ({
-  buildAnthropicClient,
-  markPartnerLlmError,
-  resolveLlmConfigForOrg,
-  resolveWireModel,
-  LlmOrgResolutionError,
+vi.mock('./llm/platformKeyAlert', () => ({ reportPlatformKeyMissing }));
+vi.mock('./aiModels/resolveModel', () => ({ resolveModel }));
+vi.mock('./aiModels/candidateLoader', () => ({ readOrgPartnerId, findOfferingIdByModel }));
+vi.mock('./aiModels/registryCutover', () => ({ ensurePartnerCutover }));
+// Real createMessage over the fake client; only the client factory is replaced.
+vi.mock('./aiModels/connectionFactory', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiModels/connectionFactory')>()),
+  anthropicClientFor,
 }));
+// Real pricing (costEstimator); only settlement is mocked.
+vi.mock('./aiModels/settleInvocation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiModels/settleInvocation')>()),
+  settleInvocation,
+}));
+// W09 failover cools a failed offering down in Redis: never touched here.
+vi.mock('./aiModels/offeringHealth', () => ({ noteProviderFailure: vi.fn(async () => undefined) }));
 
 import { buildExtensionAiContext } from './extensionAi';
+import { LlmUnavailableError } from './llm/llmUnavailableError';
+import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
+import { turnBindingFrom } from './aiModels/turnBinding';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const PARTNER_ID = '22222222-2222-4222-8222-222222222222';
 const USER_ID = '33333333-3333-4333-8333-333333333333';
+const RESERVATION_ID = '44444444-4444-4444-8444-444444444444';
+const OFFERING_ID = '77777777-7777-4777-8777-777777777777';
 
-const PARTNER_CONFIG = {
-  source: 'partner' as const,
-  partnerId: PARTNER_ID,
-  apiKey: 'partner-key',
-  model: 'claude-sonnet-4-6',
-  configId: 'config-1',
-  configVersion: 3,
-};
-
-const PLATFORM_CONFIG = {
-  source: 'platform' as const,
-  apiKey: 'platform-key',
-  model: 'claude-sonnet-4-6',
-};
+const byok = () => makeResolvedModel('anthropic_byok', {
+  surface: 'extension_content', wireModel: 'claude-haiku-4-5', logicalModel: 'claude-haiku-4-5',
+});
+const platform = () => makeResolvedModel('platform', {
+  surface: 'extension_content', wireModel: 'claude-haiku-4-5', logicalModel: 'claude-haiku-4-5',
+});
+/** Free input, 0.01 cent per output token: output tokens price as n / 100 cents. */
+const outputOnlyPricing = () => makeResolvedModel('anthropic_byok', {
+  surface: 'extension_content', wireModel: 'claude-haiku-4-5',
+  rateSnapshot: { source: 'linked_platform', standard: { inputCentsPerM: 0, outputCentsPerM: 10_000, cacheReadCentsPerM: 0, cacheWriteCentsPerM: 0 } },
+});
 
 const input: ExtensionAiInvokeInput = {
   orgId: ORG_ID,
@@ -138,94 +138,150 @@ function apiError(status: number, message = `HTTP ${status}`) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  resolveLlmConfigForOrg.mockResolvedValue(PARTNER_CONFIG);
-  buildAnthropicClient.mockReturnValue({ messages: { create } });
+  readOrgPartnerId.mockResolvedValue(PARTNER_ID);
+  ensurePartnerCutover.mockResolvedValue(true);
+  findOfferingIdByModel.mockResolvedValue(OFFERING_ID);
+  isPlatformLlmConfigured.mockReturnValue(true);
+  resolveModel.mockResolvedValue(byok());
+  anthropicClientFor.mockReturnValue({ messages: { create } });
   checkAiRateLimit.mockResolvedValue(null);
   checkSystemAiRateLimit.mockResolvedValue(null);
   checkBudgetDetailed.mockResolvedValue(null);
   create.mockResolvedValue(response());
-  recordUsage.mockResolvedValue(undefined);
-  deductBillingCredits.mockResolvedValue(undefined);
+  settleInvocation.mockResolvedValue({ costCents: 0, invocationIds: [], deferred: false });
   markPartnerLlmError.mockResolvedValue(true);
-  calculateCostCents.mockReturnValue(4);
-  calculateCatalogCostCents.mockReturnValue(4);
-  resolveWireModel.mockImplementation((_resolved, logicalModel) => ({ model: logicalModel }));
   reserveAiBudget.mockResolvedValue({
     kind: 'unlimited',
-    reservationId: '44444444-4444-4444-8444-444444444444',
+    reservationId: RESERVATION_ID,
     dailyPeriodKey: '2026-09-06',
     monthlyPeriodKey: '2026-09-01',
     status: 'active',
   });
-  markAiBudgetReservationIndeterminate.mockResolvedValue({
-    kind: 'indeterminate', reservationId: '44444444-4444-4444-8444-444444444444',
-  });
-  releaseUnusedAiBudgetReservation.mockResolvedValue({
-    kind: 'released', reservationId: '44444444-4444-4444-8444-444444444444',
-  });
+  markAiBudgetReservationIndeterminate.mockResolvedValue({ kind: 'indeterminate', reservationId: RESERVATION_ID });
+  releaseUnusedAiBudgetReservation.mockResolvedValue({ kind: 'released', reservationId: RESERVATION_ID });
 });
 
 describe('buildExtensionAiContext', () => {
   it('caps a finite reservation before provider dispatch', async () => {
+    resolveModel.mockResolvedValue(outputOnlyPricing());
     reserveAiBudget.mockResolvedValueOnce({
       kind: 'reserved',
-      reservationId: '44444444-4444-4444-8444-444444444444',
+      reservationId: RESERVATION_ID,
       reservedCostCents: 2,
       dailyPeriodKey: '2026-09-06',
       monthlyPeriodKey: '2026-09-01',
       status: 'active',
     });
-    calculateCostCents.mockImplementation((_model, _inputTokens, outputTokens) => Number(outputTokens) / 100);
 
     await buildExtensionAiContext().invoke(input);
 
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 200 }));
   });
 
-  it('uses the verified catalog wire model and revision pricing for cap and settlement', async () => {
-    const pricing = {
-      catalogEntryId: '55555555-5555-4555-8555-555555555555',
-      revisionId: '66666666-6666-4666-8666-666666666666',
-      inputCentsPerM: 3,
-      outputCentsPerM: 25,
-      cacheReadCentsPerM: 1,
-      cacheWriteCentsPerM: 4,
-    };
-    resolveWireModel.mockReturnValueOnce({
-      model: 'provider/verified-haiku',
-      catalogPricing: pricing,
+  it('uses the extension_content assignment and returns the SERVED model', async () => {
+    resolveModel.mockResolvedValue(platform());
+
+    const out = await buildExtensionAiContext().invoke(input);
+
+    expect(resolveModel).toHaveBeenCalledWith(expect.objectContaining({
+      surface: 'extension_content', orgId: ORG_ID, partnerId: PARTNER_ID, userId: USER_ID,
+    }));
+    expect(resolveModel.mock.calls[0]![0]).not.toHaveProperty('requested');
+    expect(out).toMatchObject({ model: 'claude-haiku-4-5', billingSource: 'platform' });
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ sourceRef: 'extension:workspace_enrichment' }));
+  });
+
+  it('settles from the bound registry rate with the funding it admitted under (BYOK: partner_key, no SDK cost field)', async () => {
+    const model = byok();
+    resolveModel.mockResolvedValue(model);
+
+    const result = await buildExtensionAiContext().invoke(input);
+
+    expect(result).toEqual({
+      text: 'workspace summary',
+      model: 'claude-haiku-4-5',
+      billingSource: 'partner_key',
+      usage: { inputTokens: 17, outputTokens: 9 },
     });
-    reserveAiBudget.mockResolvedValueOnce({
-      kind: 'reserved',
-      reservationId: '44444444-4444-4444-8444-444444444444',
-      reservedCostCents: 2,
-      dailyPeriodKey: '2026-09-06',
-      monthlyPeriodKey: '2026-09-01',
-      status: 'active',
+    expect(checkAiRateLimit).toHaveBeenCalledWith(USER_ID, ORG_ID);
+    expect(checkBudgetDetailed).toHaveBeenCalledWith(ORG_ID, 'partner_key');
+    expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_ID, billingSource: 'partner_key', binding: turnBindingFrom(model as never),
+    }));
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'claude-haiku-4-5',
+      max_tokens: 512,
+      system: 'Return concise prose.',
+      messages: [{ role: 'user', content: 'Summarize this workspace.' }],
+    }));
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    const settled = settleInvocation.mock.calls[0]![0] as Record<string, any>;
+    expect(settled).toMatchObject({
+      orgId: ORG_ID, userId: USER_ID, sessionId: null, agentRunId: null,
+      sourceRef: 'extension:workspace_enrichment', reservationId: RESERVATION_ID,
     });
-    calculateCatalogCostCents.mockImplementation((_pricing, _inputTokens, outputTokens) =>
-      Number(outputTokens) / 100);
+    expect(settled).not.toHaveProperty('costUsd');
+  });
+
+  it('a system principal settles with no user', async () => {
+    await buildExtensionAiContext().invoke(systemInput);
+    expect(resolveModel).toHaveBeenCalledWith(expect.objectContaining({ userId: null }));
+    expect((settleInvocation.mock.calls[0]![0] as { userId: unknown }).userId).toBeNull();
+  });
+
+  it('uses the catalog wire model for dispatch and the bound revision snapshot for settlement', async () => {
+    resolveModel.mockResolvedValue(makeResolvedModel('catalog', { surface: 'extension_content' }));
 
     await buildExtensionAiContext().invoke(input);
 
-    expect(create).toHaveBeenCalledWith(expect.objectContaining({
-      model: 'provider/verified-haiku',
-      max_tokens: 200,
-    }));
-    expect(calculateCatalogCostCents).toHaveBeenCalledWith(pricing, expect.any(Number), expect.any(Number));
-    expect(recordUsage).toHaveBeenCalledWith(
-      null,
-      ORG_ID,
-      'claude-haiku-4-5',
-      17,
-      9,
-      true,
-      'partner_key',
-      pricing,
-      '44444444-4444-4444-8444-444444444444',
-      0,
-      { surface: 'extension_content' },
-    );
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ model: 'anthropic/claude-sonnet-5.5' }));
+    const settled = settleInvocation.mock.calls[0]![0] as { binding: { rateSnapshot: { source: string } } };
+    expect(settled.binding.rateSnapshot.source).toBe('catalog');
+  });
+
+  it('a catalog partner is now served (legacy refused catalog endpoints)', async () => {
+    resolveModel.mockResolvedValue(makeResolvedModel('catalog', { surface: 'extension_content' }));
+    await expect(buildExtensionAiContext().invoke(input)).resolves.toMatchObject({ billingSource: 'partner_key' });
+  });
+
+  describe('explicit input.model', () => {
+    it('maps to a policy-origin request for the partner offering', async () => {
+      await buildExtensionAiContext().invoke({ ...input, model: 'claude-haiku-4-5' });
+
+      expect(findOfferingIdByModel).toHaveBeenCalledWith({
+        partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'extension_content', modelId: 'claude-haiku-4-5',
+      });
+      expect(resolveModel).toHaveBeenCalledWith(expect.objectContaining({
+        requested: { offeringId: OFFERING_ID, origin: 'policy' },
+      }));
+    });
+
+    it('must map to a permitted offering, else permanent ai_unavailable (before limits, resolve or dispatch)', async () => {
+      findOfferingIdByModel.mockResolvedValue(null);
+
+      const error = await buildExtensionAiContext()
+        .invoke({ ...input, model: 'claude-nope-1' })
+        .catch((caught) => caught);
+
+      expect(error).toMatchObject({ name: 'ExtensionAiError', code: 'ai_unavailable', permanent: true });
+      expect(resolveModel).not.toHaveBeenCalled();
+      expect(checkAiRateLimit).not.toHaveBeenCalled();
+      expect(checkBudgetDetailed).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+      expect(settleInvocation).not.toHaveBeenCalled();
+    });
+
+    it('is a TRANSIENT ai_unavailable while the partner is not yet cut over to the registry', async () => {
+      ensurePartnerCutover.mockResolvedValue(false);
+
+      const error = await buildExtensionAiContext()
+        .invoke({ ...input, model: 'claude-haiku-4-5' })
+        .catch((caught) => caught);
+
+      expect(error).toMatchObject({ code: 'ai_unavailable', permanent: false });
+      expect(findOfferingIdByModel).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+    });
   });
 
   it('does not dispatch when durable admission denies the request', async () => {
@@ -247,52 +303,42 @@ describe('buildExtensionAiContext', () => {
     });
     expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({
       orgId: ORG_ID,
-      reservationId: '44444444-4444-4444-8444-444444444444',
+      reservationId: RESERVATION_ID,
     });
+    expect(settleInvocation).not.toHaveBeenCalled();
   });
 
-  it('meters a BYOK invocation and records partner_key usage', async () => {
-    const result = await buildExtensionAiContext().invoke(input);
+  it('a refused attempt whose client-side fallback then throws is settled (billed) as an error, not left indeterminate', async () => {
+    const base = makeResolvedModel('catalog', { surface: 'extension_content' });
+    resolveModel.mockResolvedValue(makeResolvedModel('catalog', {
+      surface: 'extension_content',
+      refusalFallback: {
+        offeringId: 'fb', displayName: 'Haiku', wireModel: 'anthropic/claude-haiku-4.5',
+        wireParams: { betas: [], applied: {} }, options: {}, rateSnapshot: base.rateSnapshot,
+      } as never,
+    }));
+    create
+      .mockResolvedValueOnce({ ...response(''), model: 'anthropic/claude-sonnet-5.5', stop_reason: 'refusal', stop_details: { category: 'cyber' } })
+      .mockRejectedValueOnce(apiError(503, 'overloaded'));
 
-    expect(result).toEqual({
-      text: 'workspace summary',
-      model: 'claude-haiku-4-5',
-      billingSource: 'partner_key',
-      usage: { inputTokens: 17, outputTokens: 9 },
+    await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+      name: 'ExtensionAiError', code: 'ai_unavailable', message: 'overloaded',
     });
-    expect(resolveLlmConfigForOrg).toHaveBeenCalledWith(ORG_ID);
-    expect(buildAnthropicClient).toHaveBeenCalledWith(PARTNER_CONFIG);
-    expect(checkAiRateLimit).toHaveBeenCalledWith(USER_ID, ORG_ID);
-    expect(checkBudgetDetailed).toHaveBeenCalledWith(ORG_ID, 'partner_key');
-    expect(create).toHaveBeenCalledWith({
-      model: 'claude-haiku-4-5',
-      max_tokens: 512,
-      system: 'Return concise prose.',
-      messages: [{ role: 'user', content: 'Summarize this workspace.' }],
-    });
-    expect(recordUsage).toHaveBeenCalledWith(
-      null,
-      ORG_ID,
-      'claude-haiku-4-5',
-      17,
-      9,
-      true,
-      'partner_key',
-      undefined,
-      '44444444-4444-4444-8444-444444444444',
-      0,
-      { surface: 'extension_content' },
-    );
-    // A partner-funded call must never touch the org's prepaid platform credits.
-    expect(deductBillingCredits).not.toHaveBeenCalled();
+    expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      reservationId: RESERVATION_ID, sourceRef: 'extension:workspace_enrichment',
+      usage: [expect.objectContaining({ model: 'anthropic/claude-sonnet-5.5', tokens: expect.objectContaining({ input: 17, output: 9 }) })],
+      outcome: expect.objectContaining({ stopReason: 'error' }),
+    }));
   });
 
-  it('does not resolve until usage recording has completed', async () => {
-    // Discriminating by construction: recordUsage is held open on a deferred, so
-    // `void recordUsage(...)` (accounting skipped) resolves invoke early and fails.
-    let releaseRecordUsage!: () => void;
-    recordUsage.mockReturnValueOnce(new Promise<void>((resolve) => {
-      releaseRecordUsage = () => resolve();
+  it('does not resolve until settlement has completed', async () => {
+    // Discriminating by construction: settleInvocation is held open on a deferred, so
+    // `void settleInvocation(...)` (accounting skipped) resolves invoke early and fails.
+    let releaseSettle!: () => void;
+    settleInvocation.mockReturnValueOnce(new Promise((resolve) => {
+      releaseSettle = () => resolve({ costCents: 0, invocationIds: [], deferred: false });
     }));
 
     let settled = false;
@@ -305,71 +351,106 @@ describe('buildExtensionAiContext', () => {
     for (let i = 0; i < 20; i++) await Promise.resolve();
     expect(settled).toBe(false);
 
-    releaseRecordUsage();
+    releaseSettle();
     await expect(invocation).resolves.toMatchObject({ billingSource: 'partner_key' });
   });
 
-  it('attributes platform usage to the platform billing source and deducts credits', async () => {
-    resolveLlmConfigForOrg.mockResolvedValueOnce(PLATFORM_CONFIG);
-    calculateCostCents.mockReturnValueOnce(7);
+  it('a failed settlement marks the reservation indeterminate and throws a classified, scrubbed ExtensionAiError (review S8)', async () => {
+    settleInvocation.mockRejectedValueOnce(Object.assign(new Error('Failed query: insert … params: sk-ant-secret'), { params: ['sk-ant-secret'] }));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const thrown = await buildExtensionAiContext().invoke(input).catch((e: unknown) => e);
+    const logged = JSON.stringify(error.mock.calls);
+    error.mockRestore();
+
+    expect(thrown).toBeInstanceOf(ExtensionAiError);
+    expect(thrown).toMatchObject({ code: 'ai_unavailable', permanent: false });
+    expect(String((thrown as Error).message)).not.toContain('sk-ant-secret');
+    expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_ID, reservationId: RESERVATION_ID });
+    expect(logged).not.toContain('sk-ant-secret');
+    const messages = captureException.mock.calls.map(([e]) => String((e as Error).message));
+    expect(messages.some((m) => /extension AI settlement failed/.test(m))).toBe(true);
+    expect(messages.join(' ')).not.toContain('sk-ant-secret');
+  });
+
+  it('an UNRECORDED settlement keeps the reservation indeterminate (review S1)', async () => {
+    settleInvocation.mockResolvedValueOnce({ costCents: 1, invocationIds: [], deferred: true, unrecorded: true });
+    await expect(buildExtensionAiContext().invoke(input)).resolves.toMatchObject({ text: 'workspace summary' });
+    expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_ID, reservationId: RESERVATION_ID });
+  });
+
+  it('a failing release cannot replace the budget_exceeded error (review S8)', async () => {
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'reserved', reservedCostCents: 0, reservationId: RESERVATION_ID,
+      dailyPeriodKey: '2026-09-06', monthlyPeriodKey: '2026-09-01', status: 'active',
+    });
+    releaseUnusedAiBudgetReservation.mockRejectedValueOnce(new Error('Failed query: update … params: x'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({ name: 'ExtensionAiError', code: 'budget_exceeded' });
+    error.mockRestore();
+    expect(create).not.toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalled();
+  });
+
+  it('attributes platform usage to the platform funding (credits are drawn down by settlement)', async () => {
+    resolveModel.mockResolvedValue(platform());
 
     const result = await buildExtensionAiContext().invoke(input);
 
     expect(result.billingSource).toBe('platform');
-    expect(recordUsage).toHaveBeenCalledWith(
-      null,
-      ORG_ID,
-      'claude-haiku-4-5',
-      17,
-      9,
-      true,
-      'platform',
-      undefined,
-      '44444444-4444-4444-8444-444444444444',
-      0,
-      { surface: 'extension_content' },
-    );
-    expect(calculateCostCents).toHaveBeenCalledWith('claude-haiku-4-5', 17, 9);
-    expect(deductBillingCredits).toHaveBeenCalledWith(ORG_ID, 7);
+    expect(checkBudgetDetailed).toHaveBeenCalledWith(ORG_ID, 'platform');
+    expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({ billingSource: 'platform' }));
   });
 
   it('rejects an unresolvable organization instead of billing the platform key', async () => {
-    resolveLlmConfigForOrg.mockRejectedValueOnce(new LlmOrgResolutionError(ORG_ID));
+    readOrgPartnerId.mockResolvedValueOnce(null);
 
     await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
       name: 'ExtensionAiError',
       code: 'ai_unavailable',
     });
+    expect(resolveModel).not.toHaveBeenCalled();
     expect(create).not.toHaveBeenCalled();
-    expect(recordUsage).not.toHaveBeenCalled();
-    expect(deductBillingCredits).not.toHaveBeenCalled();
+    expect(settleInvocation).not.toHaveBeenCalled();
   });
 
-  it('maps a broken partner BYOK config to ai_unavailable before calling the client', async () => {
-    resolveLlmConfigForOrg.mockResolvedValueOnce({
-      source: 'unavailable',
-      partnerId: PARTNER_ID,
-      reason: 'key_error',
+  it('maps a broken partner connection to a loud, transient ai_unavailable before calling the client', async () => {
+    resolveModel.mockResolvedValueOnce({
+      ok: false, reason: 'connection_unavailable', recoverable: true, offeringId: OFFERING_ID, message: 'Connection unavailable.',
     });
 
-    await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
-      name: 'ExtensionAiError',
-      code: 'ai_unavailable',
+    const error = await buildExtensionAiContext().invoke(input).catch((caught) => caught);
+
+    expect(error).toMatchObject({ name: 'ExtensionAiError', code: 'ai_unavailable', permanent: false });
+    expect(create).not.toHaveBeenCalled();
+    expect(reportPlatformKeyMissing).not.toHaveBeenCalled();
+  });
+
+  it('reports a deployment with no platform key as not_configured (permanent) and raises the platform-key alert', async () => {
+    isPlatformLlmConfigured.mockReturnValue(false);
+    resolveModel.mockResolvedValueOnce({
+      ok: false, reason: 'connection_unavailable', recoverable: true, offeringId: null, message: 'Connection unavailable.',
     });
+
+    const error = await buildExtensionAiContext().invoke(input).catch((caught) => caught);
+
+    expect(error).toMatchObject({ name: 'ExtensionAiError', code: 'not_configured', permanent: true });
+    expect(reportPlatformKeyMissing).toHaveBeenCalledTimes(1);
     expect(create).not.toHaveBeenCalled();
   });
 
-  it('reports a deployment with no platform key as not_configured, not a failure', async () => {
-    resolveLlmConfigForOrg.mockResolvedValueOnce({
-      source: 'platform',
-      apiKey: '  ',
-      model: 'claude-sonnet-4-6',
-    });
+  it.each([
+    ['not_permitted', true],
+    ['model_unavailable', true],
+    ['unpriced', true],
+    ['registry_unavailable', false],
+  ] as const)('maps an unresolved %s to ai_unavailable (permanent: %s)', async (reason, permanent) => {
+    resolveModel.mockResolvedValueOnce({ ok: false, reason, recoverable: true, offeringId: null, message: 'nope' });
 
-    await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
-      name: 'ExtensionAiError',
-      code: 'not_configured',
-    });
+    const error = await buildExtensionAiContext().invoke(input).catch((caught) => caught);
+
+    expect(error).toMatchObject({ code: 'ai_unavailable', permanent, message: 'nope' });
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -402,22 +483,6 @@ describe('buildExtensionAiContext', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it('rejects an unpriced model before resolving or enforcing limits', async () => {
-    await expect(buildExtensionAiContext().invoke({
-      ...input,
-      model: 'not-a-real-model',
-    })).rejects.toMatchObject({
-      name: 'ExtensionAiError',
-      code: 'ai_unavailable',
-    });
-
-    expect(resolveLlmConfigForOrg).not.toHaveBeenCalled();
-    expect(checkAiRateLimit).not.toHaveBeenCalled();
-    expect(checkBudgetDetailed).not.toHaveBeenCalled();
-    expect(create).not.toHaveBeenCalled();
-    expect(recordUsage).not.toHaveBeenCalled();
-  });
-
   it('concatenates all text blocks in order and skips non-text blocks', async () => {
     create.mockResolvedValueOnce({
       ...response(),
@@ -441,7 +506,7 @@ describe('buildExtensionAiContext', () => {
         name: 'ExtensionAiError',
         code: 'rate_limited',
       });
-      expect(recordUsage).not.toHaveBeenCalled();
+      expect(settleInvocation).not.toHaveBeenCalled();
       expect(markPartnerLlmError).not.toHaveBeenCalled();
     });
 
@@ -472,15 +537,16 @@ describe('buildExtensionAiContext', () => {
         name: 'ExtensionAiError',
         code: 'ai_unavailable',
       });
+      // The config identity comes from the resolved connection (conn-1 / v2 in the fixture).
       expect(markPartnerLlmError).toHaveBeenCalledWith({
-        configId: 'config-1',
-        configVersion: 3,
+        configId: 'conn-1',
+        configVersion: 2,
         reason: 'auth_rejected',
       });
     });
 
     it('does not mark a partner config when the platform key is rejected', async () => {
-      resolveLlmConfigForOrg.mockResolvedValueOnce(PLATFORM_CONFIG);
+      resolveModel.mockResolvedValueOnce(platform());
       create.mockRejectedValueOnce(apiError(403, 'forbidden'));
 
       await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
@@ -488,6 +554,51 @@ describe('buildExtensionAiContext', () => {
         code: 'ai_unavailable',
       });
       expect(markPartnerLlmError).not.toHaveBeenCalled();
+    });
+
+    it('W06: a gateway 401 (expired or invalid grant) raises ai_unavailable and NEVER marks the connection broken', async () => {
+      resolveModel.mockResolvedValueOnce(makeResolvedModel('openai_compatible', { surface: 'extension_content' }));
+      create.mockRejectedValueOnce(apiError(401, 'Invalid or expired gateway grant.'));
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        name: 'ExtensionAiError',
+        code: 'ai_unavailable',
+      });
+      expect(markPartnerLlmError).not.toHaveBeenCalled();
+    });
+
+    it('W06: a gateway 403 (model not bound to the grant) raises ai_unavailable without a stamp', async () => {
+      resolveModel.mockResolvedValueOnce(makeResolvedModel('openai_compatible', { surface: 'extension_content' }));
+      create.mockRejectedValueOnce(apiError(403, 'This connection is not authorised for the requested model.'));
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        name: 'ExtensionAiError',
+        code: 'ai_unavailable',
+      });
+      expect(markPartnerLlmError).not.toHaveBeenCalled();
+    });
+
+    it('W06: a gateway connection is dispatched and settled like any other partner_key connection', async () => {
+      resolveModel.mockResolvedValueOnce(makeResolvedModel('openai_compatible', { surface: 'extension_content' }));
+
+      const result = await buildExtensionAiContext().invoke(input);
+
+      expect(result.billingSource).toBe('partner_key');
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ model: 'qwen2.5-coder:7b' }));
+      expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ reservationId: RESERVATION_ID }));
+    });
+
+    it('a client that cannot be built is refused BEFORE any reservation is taken (no leaked hold)', async () => {
+      anthropicClientFor.mockImplementationOnce(() => {
+        throw new LlmUnavailableError('This AI model needs an organization context on this surface.');
+      });
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        name: 'ExtensionAiError',
+        code: 'ai_unavailable',
+      });
+      expect(reserveAiBudget).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
     });
 
     it('rethrows a permanent per-request 4xx unchanged so the caller can fail soft', async () => {
@@ -498,7 +609,7 @@ describe('buildExtensionAiContext', () => {
 
       expect(error).toBe(rejection);
       expect(error).not.toBeInstanceOf(ExtensionAiError);
-      expect(recordUsage).not.toHaveBeenCalled();
+      expect(settleInvocation).not.toHaveBeenCalled();
       expect(markPartnerLlmError).not.toHaveBeenCalled();
     });
   });
@@ -507,33 +618,13 @@ describe('buildExtensionAiContext', () => {
    * PERMANENT vs TRANSIENT.
    *
    * The `code` alone never answered "can retrying help?", and the workspace
-   * ingest job treated every ExtensionAiError as retryable. A deployment whose
-   * WORKSPACE_CONTENT_LLM_MODEL is a typo, or a tenant who simply switched AI
-   * off, therefore burned all `max_attempts`, failed the job, and had a fresh
-   * job repeat it forever — crosswalk never ran. Each of these pins which side
-   * of that line one failure falls on.
+   * ingest job treated every ExtensionAiError as retryable. A requested model
+   * the partner has not enabled, or a tenant who simply switched AI off,
+   * therefore burned all `max_attempts`, failed the job, and had a fresh job
+   * repeat it forever — crosswalk never ran. Each of these pins which side of
+   * that line one failure falls on.
    */
   describe('permanent-vs-transient classification', () => {
-    it('marks an unpriced model PERMANENT (a deployment typo no retry can fix)', async () => {
-      const error = await buildExtensionAiContext()
-        .invoke({ ...input, model: 'not-a-real-model' })
-        .catch((caught) => caught);
-
-      expect(error).toMatchObject({ code: 'ai_unavailable', permanent: true });
-    });
-
-    it('marks not_configured PERMANENT (no provider exists on this deployment)', async () => {
-      resolveLlmConfigForOrg.mockResolvedValueOnce({
-        source: 'platform',
-        apiKey: '  ',
-        model: 'claude-sonnet-4-6',
-      });
-
-      const error = await buildExtensionAiContext().invoke(input).catch((caught) => caught);
-
-      expect(error).toMatchObject({ code: 'not_configured', permanent: true });
-    });
-
     it('propagates a PERMANENT budget denial (org has AI switched off)', async () => {
       checkBudgetDetailed.mockResolvedValueOnce({
         message: 'AI features are disabled for this organization',
@@ -579,21 +670,6 @@ describe('buildExtensionAiContext', () => {
       expect(error).toMatchObject({ code: 'rate_limited', permanent: false });
     });
 
-    it('keeps a broken partner BYOK key TRANSIENT so it stays loud', async () => {
-      // Deliberately NOT permanent: a partner whose key stopped working must
-      // keep seeing a visible failure, never a quietly degraded feature (and
-      // never a fallback to the platform key).
-      resolveLlmConfigForOrg.mockResolvedValueOnce({
-        source: 'unavailable',
-        partnerId: PARTNER_ID,
-        reason: 'key_error',
-      });
-
-      const error = await buildExtensionAiContext().invoke(input).catch((caught) => caught);
-
-      expect(error).toMatchObject({ code: 'ai_unavailable', permanent: false });
-    });
-
     it.each([429, 503])('keeps a provider-side %i TRANSIENT', async (status) => {
       create.mockRejectedValueOnce(apiError(status));
 
@@ -606,7 +682,7 @@ describe('buildExtensionAiContext', () => {
       // A missing/unreadable organization row can be an RLS-context fault, not
       // a settled configuration state — degrading a feature over it would hide
       // a real bug.
-      resolveLlmConfigForOrg.mockRejectedValueOnce(new LlmOrgResolutionError(ORG_ID));
+      readOrgPartnerId.mockResolvedValueOnce(null);
 
       const error = await buildExtensionAiContext().invoke(input).catch((caught) => caught);
 
@@ -655,30 +731,6 @@ describe('buildExtensionAiContext', () => {
     });
   });
 
-  it('does not resolve until the platform credit deduction has completed', async () => {
-    // Same deferred-promise discrimination as the recordUsage test above: a
-    // `void deductBillingCredits(...)` would resolve invoke() before the org's
-    // prepaid balance moved, so a caller could observe a completed, charged
-    // call whose charge had not landed yet.
-    resolveLlmConfigForOrg.mockResolvedValueOnce(PLATFORM_CONFIG);
-    let releaseDeduction!: () => void;
-    deductBillingCredits.mockReturnValueOnce(new Promise<void>((resolve) => {
-      releaseDeduction = () => resolve();
-    }));
-
-    let settled = false;
-    const invocation = buildExtensionAiContext().invoke(input).then((value) => {
-      settled = true;
-      return value;
-    });
-
-    for (let i = 0; i < 20; i++) await Promise.resolve();
-    expect(settled).toBe(false);
-
-    releaseDeduction();
-    await expect(invocation).resolves.toMatchObject({ billingSource: 'platform' });
-  });
-
   describe('rate-limit actor', () => {
     it('uses the org-scoped system limiter for non-user principals', async () => {
       await buildExtensionAiContext().invoke(systemInput);
@@ -697,6 +749,184 @@ describe('buildExtensionAiContext', () => {
         code: 'rate_limited',
       });
       expect(create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('W09 failover (#7607)', () => {
+    const HOP0_RESERVATION = '55555555-5555-4555-8555-555555555555';
+    const HOP1_RESERVATION = '66666666-6666-4666-8666-666666666666';
+    const reserved = (reservationId: string, reservedCostCents: number) => ({
+      kind: 'reserved', reservationId, reservedCostCents,
+      dailyPeriodKey: '2026-09-06', monthlyPeriodKey: '2026-09-01', status: 'active',
+    });
+    const overloaded = () => Object.assign(new Error('Overloaded'), {
+      status: 529, error: { type: 'error', error: { type: 'overloaded_error' } },
+    });
+    // Free input, 0.01 cent per output token: max_tokens = reservedCostCents * 100.
+    const rates = { source: 'linked_platform' as const, standard: { inputCentsPerM: 0, outputCentsPerM: 10_000, cacheReadCentsPerM: 0, cacheWriteCentsPerM: 0 } };
+    const primary = () => makeResolvedModel('anthropic_byok', {
+      surface: 'extension_content', offering: { id: 'p', displayName: 'P' }, wireModel: 'claude-sonnet-5-5',
+      rateSnapshot: rates, failoverRemaining: ['k'],
+    });
+    const backup = () => makeResolvedModel('platform', {
+      surface: 'extension_content', offering: { id: 'k', displayName: 'K' }, wireModel: 'claude-haiku-4-5',
+      rateSnapshot: { ...rates, source: 'platform' }, failover: { fromOfferingId: 'p', hop: 1, cause: 'overloaded' }, failoverRemaining: [],
+    });
+    const settledRows = () => settleInvocation.mock.calls.map((c) => {
+      const arg = c[0] as { binding: { offeringId: string }; usage: unknown[]; reservationId: string };
+      return [arg.binding.offeringId, arg.reservationId, arg.usage.length];
+    });
+    let warnSpy: { mockRestore: () => void };
+
+    beforeEach(() => {
+      // clearAllMocks keeps queued *Once values: reset what these cases script.
+      resolveModel.mockReset();
+      reserveAiBudget.mockReset();
+      create.mockReset();
+      checkBudgetDetailed.mockReset();
+      checkBudgetDetailed.mockResolvedValue(null);
+      resolveModel.mockResolvedValueOnce(primary()).mockResolvedValueOnce(backup());
+      reserveAiBudget
+        .mockResolvedValueOnce(reserved(HOP0_RESERVATION, 4))
+        .mockResolvedValueOnce(reserved(HOP1_RESERVATION, 2));
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => warnSpy.mockRestore());
+
+    it('a 529 fails over; each hop is reserved, sized and settled on its own, and the SERVED hop is reported', async () => {
+      create.mockRejectedValueOnce(overloaded()).mockResolvedValueOnce(response());
+
+      const out = await buildExtensionAiContext().invoke(input);
+
+      expect(resolveModel).toHaveBeenLastCalledWith(expect.objectContaining({
+        partnerId: PARTNER_ID, orgId: ORG_ID, userId: USER_ID, surface: 'extension_content', maxTokens: 512,
+        excludeOfferingIds: ['p'], failoverCause: 'overloaded',
+        failoverOrigin: { offeringId: 'p', funding: 'partner_key', connectionId: 'conn-1' },
+      }));
+      expect(checkBudgetDetailed).toHaveBeenLastCalledWith(ORG_ID, 'platform');
+      const keys = reserveAiBudget.mock.calls.map((c) => (c[0] as { idempotencyKey: string }).idempotencyKey);
+      expect(keys).toHaveLength(2);
+      expect(keys[0]).toMatch(/^extension-ai:/);
+      expect(keys[1]).toBe(`${keys[0]}:hop:1`);
+      // Each hop's max_tokens comes from ITS OWN reservation (4¢ → 400, 2¢ → 200).
+      expect(create.mock.calls.map((c) => [(c[0] as { model: string }).model, (c[0] as { max_tokens: number }).max_tokens]))
+        .toEqual([['claude-sonnet-5-5', 400], ['claude-haiku-4-5', 200]]);
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0], ['k', HOP1_RESERVATION, 1]]);
+      expect(settleInvocation.mock.calls.every(([arg]) => (arg as { sourceRef: string }).sourceRef === 'extension:workspace_enrichment')).toBe(true);
+      expect(out).toMatchObject({ model: 'claude-haiku-4-5', billingSource: 'platform' });
+      expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    });
+
+    it('a refusal answered before its fallback threw never fails over (burned tokens bill on hop 0)', async () => {
+      resolveModel.mockReset();
+      const base = makeResolvedModel('catalog', { surface: 'extension_content' });
+      resolveModel.mockResolvedValueOnce(makeResolvedModel('catalog', {
+        surface: 'extension_content', offering: { id: 'p', displayName: 'P' }, failoverRemaining: ['k'],
+        refusalFallback: {
+          offeringId: 'fb', displayName: 'Haiku', wireModel: 'anthropic/claude-haiku-4.5',
+          wireParams: { betas: [], applied: {} }, options: {}, rateSnapshot: base.rateSnapshot,
+        } as never,
+      })).mockResolvedValueOnce(backup());
+      create
+        .mockResolvedValueOnce({ ...response(''), model: 'anthropic/claude-sonnet-5.5', stop_reason: 'refusal', stop_details: { category: 'cyber' } })
+        .mockRejectedValueOnce(overloaded());
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({ name: 'ExtensionAiError' });
+      expect(resolveModel).toHaveBeenCalledTimes(1);
+      expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 1]]);
+    });
+
+    it('with no fallback list configured, a 529 keeps the W03 single-reservation behaviour', async () => {
+      resolveModel.mockReset();
+      resolveModel.mockResolvedValue(byok());
+      create.mockRejectedValueOnce(overloaded());
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({ name: 'ExtensionAiError', code: 'ai_unavailable' });
+      expect(resolveModel).toHaveBeenCalledTimes(1);
+      expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+      expect(settleInvocation).not.toHaveBeenCalled();
+      expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_ID, reservationId: HOP0_RESERVATION });
+    });
+
+    it('a backup refused at admission throws a transient ai_unavailable with hop 0 already settled and nothing held', async () => {
+      create.mockRejectedValueOnce(overloaded());
+      checkBudgetDetailed
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ message: 'You are out of AI credits.', reason: 'credits_exhausted', permanent: false });
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        name: 'ExtensionAiError', code: 'ai_unavailable', permanent: false,
+      });
+      expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0]]);
+      expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+      expect(releaseUnusedAiBudgetReservation).not.toHaveBeenCalled();
+    });
+
+    const gatewayPrimary = () => makeResolvedModel('openai_compatible', {
+      surface: 'extension_content', offering: { id: 'p', displayName: 'P' }, rateSnapshot: rates, failoverRemaining: ['k'],
+    });
+
+    it.each([
+      ['a gateway 529', () => overloaded(), 'overloaded'],
+      ['a gateway 429', () => Object.assign(apiError(429, 'rate limited'), { error: { type: 'error', error: { type: 'rate_limit_error' } } }), 'rate_limited'],
+      ['a gateway 502', () => apiError(502, 'upstream unavailable'), 'server_error'],
+    ] as const)('%s fails over like any provider\'s, and the connection is never marked', async (_label, failure, cause) => {
+      resolveModel.mockReset();
+      resolveModel.mockResolvedValueOnce(gatewayPrimary()).mockResolvedValueOnce(backup());
+      create.mockRejectedValueOnce(failure()).mockResolvedValueOnce(response());
+
+      const out = await buildExtensionAiContext().invoke(input);
+
+      expect(resolveModel).toHaveBeenLastCalledWith(expect.objectContaining({
+        excludeOfferingIds: ['p'], failoverCause: cause,
+        failoverOrigin: { offeringId: 'p', funding: 'partner_key', connectionId: 'conn-oai' },
+      }));
+      expect(out).toMatchObject({ billingSource: 'platform', model: 'claude-haiku-4-5' });
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0], ['k', HOP1_RESERVATION, 1]]);
+      expect(markPartnerLlmError).not.toHaveBeenCalled();
+    });
+
+    it('a gateway 401 (expired grant or rejected endpoint key) fails over without ever stamping the connection', async () => {
+      resolveModel.mockReset();
+      resolveModel.mockResolvedValueOnce(gatewayPrimary()).mockResolvedValueOnce(backup());
+      create.mockRejectedValueOnce(apiError(401, 'Invalid or expired gateway grant.')).mockResolvedValueOnce(response());
+
+      const out = await buildExtensionAiContext().invoke(input);
+
+      expect(resolveModel).toHaveBeenLastCalledWith(expect.objectContaining({ failoverCause: 'auth_failed' }));
+      expect(out).toMatchObject({ billingSource: 'platform' });
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0], ['k', HOP1_RESERVATION, 1]]);
+      expect(markPartnerLlmError).not.toHaveBeenCalled();
+    });
+
+    it('a failover hop whose client cannot be built releases THAT hop\'s reservation and raises a transient ai_unavailable', async () => {
+      create.mockRejectedValueOnce(overloaded());
+      anthropicClientFor
+        .mockReturnValueOnce({ messages: { create } })
+        .mockImplementationOnce(() => { throw new LlmUnavailableError('This AI model needs an organization context on this surface.'); });
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        name: 'ExtensionAiError', code: 'ai_unavailable', permanent: false,
+      });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0]]);
+      expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledTimes(1);
+      expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledWith({ orgId: ORG_ID, reservationId: HOP1_RESERVATION });
+      expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    });
+
+    it('a rejected partner credential is still stamped when the backup serves', async () => {
+      create.mockRejectedValueOnce(apiError(401, 'invalid x-api-key')).mockResolvedValueOnce(response());
+
+      const out = await buildExtensionAiContext().invoke(input);
+
+      expect(out).toMatchObject({ billingSource: 'platform' });
+      expect(markPartnerLlmError).toHaveBeenCalledWith({ configId: 'conn-1', configVersion: 2, reason: 'auth_rejected' });
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0], ['k', HOP1_RESERVATION, 1]]);
     });
   });
 });

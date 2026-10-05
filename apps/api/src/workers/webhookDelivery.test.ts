@@ -128,6 +128,17 @@ describe('webhook delivery worker', () => {
     expect(validateWebhookUrlSafetyWithDnsMock).not.toHaveBeenCalled();
   });
 
+  it('stores a transport error with URLs reduced to scheme + host', async () => {
+    safeFetchMock.mockRejectedValueOnce(new Error(
+      'request to https://ops:hunter2@hooks.example.test/services/T1/B1/abc123?token=xyz789 failed, reason: ECONNRESET',
+    ));
+
+    const result = await deliverWebhook(makeJob());
+
+    expect(result.success).toBe(false);
+    expect(result.errorMessage).toBe('request to https://hooks.example.test failed, reason: ECONNRESET');
+  });
+
   it('does not re-resolve the URL before delivering — one pinned lookup only', async () => {
     // Regression pin for the TOCTOU split: a second DNS resolution here could
     // disagree with the record safeFetch pins and connects to.

@@ -320,7 +320,7 @@ describe('AI Operator task graph — tenant-lifecycle cascade wiring (#6167 wave
     );
 
     await withSystemDbAccessContext(() =>
-      moveTicketOrg(ticketId, orgA2.id, { userId: actor.id }));
+      moveTicketOrg(ticketId, orgA2.id, { kind: 'user' as const, userId: actor.id }));
 
     const severed = await readTarget(ticketTargetId);
     expect(severed.ticketId).toBeNull();

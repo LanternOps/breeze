@@ -39,6 +39,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   vulnerabilities: 'Vulnerabilities',
   ai_sessions: 'AI Sessions',
   ai_agents: 'AI Agents',
+  ai_models: 'AI Models',
   approvals: 'Approvals',
   variables: 'Variables',
   pam: 'Privileged Access',
@@ -53,6 +54,7 @@ const RESOURCE_LABELS: Record<string, string> = {
 const ACTION_LABELS: Record<string, string> = {
   read: 'Read',
   write: 'Write',
+  premium: 'Use Premium Models',
   cross_site_restore: 'Cross-Site Restore',
   delete: 'Delete',
   execute: 'Execute',

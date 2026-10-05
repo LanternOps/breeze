@@ -13,6 +13,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { ScriptBuilderContext } from '@breeze/shared/types/ai';
 import { buildScriptBuilderSystemPrompt } from './scriptBuilderPrompt';
 import { getEffectiveAiBudget } from './effectiveSettings';
+import type { SessionModelChoice } from './aiModels/sessionModel';
 
 /**
  * Create a script builder session in the database.
@@ -20,7 +21,7 @@ import { getEffectiveAiBudget } from './effectiveSettings';
 export async function createScriptBuilderSession(
   auth: AuthContext,
   options: { context?: ScriptBuilderContext; title?: string },
-  model: string,
+  choice: Pick<SessionModelChoice, 'offeringId' | 'offeringPartnerId' | 'options' | 'model' | 'billingSource'>,
 ): Promise<{ id: string; orgId: string }> {
   const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
   if (!orgId) throw new Error('Organization context required');
@@ -38,7 +39,12 @@ export async function createScriptBuilderSession(
     .values({
       orgId,
       userId: auth.user.id,
-      model,
+      // W03 (#7601): the registry choice; `model` is a provenance snapshot.
+      model: choice.model,
+      offeringId: choice.offeringId,
+      offeringPartnerId: choice.offeringPartnerId,
+      options: choice.options,
+      billingSource: choice.billingSource,
       title: options.title ?? 'Script Builder',
       contextSnapshot: options.context ?? null,
       systemPrompt,

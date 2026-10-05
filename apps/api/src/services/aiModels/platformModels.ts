@@ -336,3 +336,59 @@ export function startPlatformModelSnapshotRefresher(
   tick();
   return stop;
 }
+
+// ---------------------------------------------------------------------------
+// Platform inference geography (spec §7, §15 #5; W01 spike D3).
+// ---------------------------------------------------------------------------
+
+/**
+ * The inference geographies the PLATFORM key accepts (W01 spike D3, checked
+ * against the live API): `us` and `global`. `eu` is rejected with HTTP 400,
+ * so EU residency is not available on the platform key. Seeded rows store
+ * `option_support.inferenceGeo: []`; this is the effective list for them.
+ */
+export const PLATFORM_KEY_INFERENCE_GEOS: readonly string[] = Object.freeze(['us', 'global']);
+
+/**
+ * The geographies a platform row can actually be served in: the platform
+ * key's set when the operator listed none, else the intersection of the
+ * operator's list with it (an operator cannot widen what the key accepts).
+ */
+export function effectivePlatformInferenceGeos(rowGeos: readonly string[]): string[] {
+  if (rowGeos.length === 0) return [...PLATFORM_KEY_INFERENCE_GEOS];
+  return rowGeos.filter((geo) => PLATFORM_KEY_INFERENCE_GEOS.includes(geo));
+}
+
+function readPlatformInferenceGeo(env: Record<string, string | undefined>): string | null {
+  return env.AI_PLATFORM_INFERENCE_GEO?.trim().toLowerCase() || null;
+}
+
+/**
+ * Platform inference geography, sent where the model's effective geographies
+ * include it AND the transport can carry it. A value outside
+ * PLATFORM_KEY_INFERENCE_GEOS makes every platform candidate ineligible
+ * (`residency_unavailable`): never a provider 400, never a silent drop.
+ * Env-only until an /admin/ai-models field exists.
+ */
+export async function getPlatformInferenceGeo(): Promise<string | null> {
+  return readPlatformInferenceGeo(process.env);
+}
+
+/**
+ * Boot-time and non-fatal: says loudly that a configured platform geography
+ * the key cannot serve takes every platform model offline. Returns whether
+ * it warned.
+ */
+export function warnOnUnsupportedPlatformInferenceGeo(
+  env: Record<string, string | undefined> = process.env,
+  warn: (message: string) => void = console.warn,
+): boolean {
+  const geo = readPlatformInferenceGeo(env);
+  if (geo === null || PLATFORM_KEY_INFERENCE_GEOS.includes(geo)) return false;
+  warn(
+    `[aiModels] AI_PLATFORM_INFERENCE_GEO="${geo}" is not accepted by the platform key `
+    + `(supported: ${PLATFORM_KEY_INFERENCE_GEOS.join(', ')}). Platform models are unavailable `
+    + '(residency_unavailable) until it is unset or set to a supported value.',
+  );
+  return true;
+}

@@ -290,7 +290,7 @@ describe('deliverable -> checklist seeding (#5808 W03)', () => {
     const tech = await createUser({ partnerId: partner.id, orgId: null, email: `tech-${randomUUID()}@example.test`, name: 'Tess Tech' });
 
     const baitTicket = await system(() =>
-      createTicket({ orgId: otherOrg.id, source: 'api', subject: 'Bait (wrong org)', workKind: 'deliverable' }, { userId: tech.id, name: tech.name }));
+      createTicket({ orgId: otherOrg.id, source: 'api', subject: 'Bait (wrong org)', workKind: 'deliverable' }, { kind: 'user' as const, userId: tech.id, name: tech.name }));
     forcedTicketId.value = baitTicket.id;
 
     const templateId = await seedTemplate({ orgId: orgA.id, name: uniqueName('Rollback runbook') });

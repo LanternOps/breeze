@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
-import { TOUCH_CLASSES, riskTierRank, type EffectiveScriptPolicyDto, type ScriptLaneStateDto, type ScriptPolicyDto } from '@breeze/shared';
+import { TOUCH_CLASSES, retiredAiModelField, riskTierRank, type EffectiveScriptPolicyDto, type ScriptLaneStateDto, type ScriptPolicyDto } from '@breeze/shared';
 import { db } from '../../db';
 import { aiScriptLaneState, type AiScriptLaneStateRow } from '../../db/schema/aiScriptLaneState';
 import { aiScriptPolicies, type AiScriptPolicyRow } from '../../db/schema/aiScriptPolicies';
@@ -24,8 +24,8 @@ import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '.
  * (`requireMfa()` — org-wide AI-execution governance is not a claim-optional
  * surface, even for a save that does not touch the lane). Flipping
  * `unattended_enabled` TO TRUE, and any WIDENING save while it is already
- * true (raising tier/classes/rate, emptying protectedResources, or changing
- * reviewerModel/proposingEnabled), additionally needs `approvals:decide` and
+ * true (raising tier/classes/rate, emptying protectedResources, or turning
+ * proposingEnabled on), additionally needs `approvals:decide` and
  * — when 2FA is enabled — a fresh `ai_script_lane_grant` step-up grant bound
  * to the exact values being saved, mirroring act-mode enablement. Turning it
  * OFF, or only tightening an already-enabled lane, needs no step-up: reducing
@@ -56,7 +56,9 @@ const orgUpdateSchema = z
     unattendedAllowedClasses: z.array(z.enum(TOUCH_CLASSES)).max(TOUCH_CLASSES.length).optional(),
     maxUnattendedPerHour: z.number().int().min(0).max(100).optional(),
     protectedResources: protectedResourcesSchema.optional(),
-    reviewerModel: z.string().trim().min(1).max(200).nullable().optional(),
+    /** Retired (W08, #7606): rejected with 400 naming its replacement, the script_reviewer
+     * assignment under /ai/models. Declared so the strict schema names the field, not "unrecognized key". */
+    reviewerModel: retiredAiModelField('reviewerModel'),
     stepUpGrant: z.string().min(1).max(200).optional(),
   })
   .strict();
@@ -90,7 +92,6 @@ export function toScriptPolicyDto(row: AiScriptPolicyRow): ScriptPolicyDto {
       registryKeys: row.protectedResources?.registryKeys ?? [],
       deviceTags: row.protectedResources?.deviceTags ?? [],
     },
-    reviewerModel: row.reviewerModel,
     unattendedEnabledAt: row.unattendedEnabledAt?.toISOString() ?? null,
   };
 }
@@ -127,7 +128,6 @@ const GRANT_SCHEMA_DEFAULTS = {
   unattendedAllowedClasses: [] as string[],
   maxUnattendedPerHour: 0,
   protectedResources: { services: [] as string[], paths: [] as string[], registryKeys: [] as string[], deviceTags: [] as string[] },
-  reviewerModel: null as string | null,
   proposingEnabled: true,
 };
 
@@ -135,7 +135,7 @@ const GRANT_SCHEMA_DEFAULTS = {
  * The full effective grant values this request will persist, regardless of
  * whether they count as a "widening" relative to `existing` — used to bind
  * an ENABLING save's step-up grant to the exact tier/classes/rate/
- * reviewerModel/proposingEnabled it is arming, not just the boolean. Falls
+ * protectedResources/proposingEnabled it is arming, not just the boolean. Falls
  * back to the row's real column defaults when there is no existing row
  * (first-ever save for this org).
  */
@@ -149,7 +149,6 @@ function effectiveGrantValues(
     unattendedAllowedClasses: body.unattendedAllowedClasses ?? base.unattendedAllowedClasses,
     maxUnattendedPerHour: body.maxUnattendedPerHour ?? base.maxUnattendedPerHour,
     protectedResourcesEmptied: protectedResourcesEmpty(body.protectedResources ?? base.protectedResources),
-    reviewerModel: body.reviewerModel !== undefined ? body.reviewerModel : base.reviewerModel,
     proposingEnabled: body.proposingEnabled ?? base.proposingEnabled,
   };
 }
@@ -158,7 +157,7 @@ function effectiveGrantValues(
  * True when `body`, applied on top of `existing`, WIDENS the org grant while
  * it is (or remains) enabled: raises the tier/classes/rate above the row's
  * own prior value, empties a previously non-empty protectedResources,
- * changes reviewerModel, or turns proposingEnabled on. `existing` values —
+ * or turns proposingEnabled on. `existing` values —
  * never the partner ceiling — are the comparison baseline: the ceiling check
  * above already stops anything above the ceiling; this is about what the
  * operator who last saved THIS row actually saw and approved.
@@ -175,10 +174,9 @@ function computeWidening(
   const protectedResourcesEmptied = body.protectedResources !== undefined
     && !protectedResourcesEmpty(existing.protectedResources)
     && protectedResourcesEmpty(body.protectedResources);
-  const reviewerModelChanged = body.reviewerModel !== undefined && body.reviewerModel !== existing.reviewerModel;
   const proposingWidened = body.proposingEnabled === true && existing.proposingEnabled !== true;
 
-  if (!tierWidened && !classesWidened && !rateWidened && !protectedResourcesEmptied && !reviewerModelChanged && !proposingWidened) {
+  if (!tierWidened && !classesWidened && !rateWidened && !protectedResourcesEmptied && !proposingWidened) {
     return null;
   }
   return {
@@ -186,7 +184,6 @@ function computeWidening(
     unattendedAllowedClasses: body.unattendedAllowedClasses ?? existing.unattendedAllowedClasses,
     maxUnattendedPerHour: body.maxUnattendedPerHour ?? existing.maxUnattendedPerHour,
     protectedResourcesEmptied,
-    reviewerModel: body.reviewerModel !== undefined ? body.reviewerModel : existing.reviewerModel,
     proposingEnabled: body.proposingEnabled ?? existing.proposingEnabled,
   };
 }

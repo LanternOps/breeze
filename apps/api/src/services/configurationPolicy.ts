@@ -75,6 +75,12 @@ import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
 import { getPolicyBaselineDefaults } from './policyBaselineDefaults';
 import type { AutomationAction } from './automationRuntime';
 import { scheduleComplianceAlertReconcile } from './complianceAlertReconcileTrigger';
+import {
+  describeQuarantineApproval,
+  securityLinkAuthorityColumns,
+  withoutFeatureLinkAuthority,
+} from './securityScanQuarantineAuthority';
+import type { SensitiveDataAuthorityValues } from './sensitiveDataPolicyAuthority';
 
 // ============================================
 // Inline settings schemas
@@ -1710,13 +1716,25 @@ async function reloadMonitorsInterval(
   return { ...link, inlineSettings };
 }
 
+/**
+ * Options for feature-link writes. `executionAuthority` is the stored authority
+ * a route captured from a devices:execute + MFA caller (see
+ * routes/configurationPolicies/securityQuarantineGate.ts). For a `security`
+ * link it is persisted only while auto-quarantine is effectively on; any
+ * security settings write without one clears the stamp (detect-only).
+ */
+export type FeatureLinkWriteOptions = {
+  executionAuthority?: SensitiveDataAuthorityValues | null;
+};
+
 export async function addFeatureLink(
   configPolicyId: string,
   featureType: ConfigFeatureType,
   featurePolicyId?: string | null,
   inlineSettings?: unknown,
   consentActor?: WarrantyConsentActor,
-  executor: DbExecutor = db
+  executor: DbExecutor = db,
+  options: FeatureLinkWriteOptions = {},
 ) {
   if (inlineSettings !== undefined && inlineSettings !== null) {
     inlineSettings = configFeatureInlineSettingsSchema.parse(inlineSettings);
@@ -1785,6 +1803,7 @@ export async function addFeatureLink(
         featurePolicyId: featurePolicyId ?? null,
         // Keep JSONB as a compatibility/UI mirror; runtime must read normalized settings.
         inlineSettings: effectiveInlineSettings ?? null,
+        ...(securityLinkAuthorityColumns(featureType, effectiveInlineSettings, options.executionAuthority) ?? {}),
       })
       .onConflictDoNothing()
       .returning();
@@ -1833,7 +1852,8 @@ export async function updateFeatureLink(
   updates: { featurePolicyId?: string | null; inlineSettings?: unknown },
   configPolicyId?: string,
   consentActor?: WarrantyConsentActor,
-  executor: DbExecutor = db
+  executor: DbExecutor = db,
+  options: FeatureLinkWriteOptions = {},
 ) {
   if (updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
     updates.inlineSettings = configFeatureInlineSettingsSchema.parse(updates.inlineSettings);
@@ -1916,6 +1936,10 @@ export async function updateFeatureLink(
     if (updates.inlineSettings !== undefined) {
       // Keep JSONB as a compatibility/UI mirror; runtime must read normalized settings.
       setValues.inlineSettings = normalizedInlineSettings;
+      Object.assign(
+        setValues,
+        securityLinkAuthorityColumns(existing.featureType, normalizedInlineSettings, options.executionAuthority) ?? {},
+      );
     }
 
     // Validate BEFORE any write. The normalized rows are replaced further down
@@ -2055,6 +2079,16 @@ export async function listFeatureLinks(configPolicyId: string, executor: DbExecu
       notInArray(configPolicyFeatureLinks.featureType, [...RETIRED_CONFIG_FEATURE_TYPES]),
     ));
 
+  // Owner of this policy — needed to verify a security link's stored
+  // auto-quarantine authority for the `autoQuarantineApproval` read field.
+  const owner = links.some((link) => link.featureType === 'security')
+    ? (await executor
+        .select({ orgId: configurationPolicies.orgId, partnerId: configurationPolicies.partnerId })
+        .from(configurationPolicies)
+        .where(eq(configurationPolicies.id, configPolicyId))
+        .limit(1))[0] ?? { orgId: null, partnerId: null }
+    : { orgId: null, partnerId: null };
+
   // Assemble inlineSettings from normalized tables for each link
   const enriched = await Promise.all(
     links.map(async (link) => {
@@ -2096,10 +2130,20 @@ export async function listFeatureLinks(configPolicyId: string, executor: DbExecu
       } else {
         effectiveInlineSettings = assembled ?? link.inlineSettings;
       }
+      const autoQuarantineApproval = describeQuarantineApproval(link, owner);
       return {
-        ...link,
+        // The raw authority envelope never leaves the API.
+        ...withoutFeatureLinkAuthority(link),
         // Prefer assembled normalized data; fall back to stored JSONB
         inlineSettings: effectiveInlineSettings,
+        // security links only: 'reapproval_required' = auto-quarantine is on but
+        // has no valid stored authority, so scans run detect-only.
+        ...(autoQuarantineApproval
+          ? {
+              autoQuarantineApproval: autoQuarantineApproval.status,
+              autoQuarantineApprovalReason: autoQuarantineApproval.reason,
+            }
+          : {}),
       };
     })
   );

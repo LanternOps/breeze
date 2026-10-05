@@ -1,5 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
+// Real receipt atomicity is covered by stripeSettle.integration.test.ts. Keep
+// this ledger mock's queued results scoped to its own statements.
+vi.mock('./autopay/paymentNotices', () => ({ enqueueOnlineReceipt: vi.fn(async () => undefined) }));
+
 // Controllable Drizzle chain mock (same pattern as invoiceService.test.ts): every
 // builder method returns the same chain; an awaited query resolves to the next
 // queued result. Tests queue the rows each db call should resolve to, in order.
@@ -172,6 +176,25 @@ beforeEach(() => {
 });
 
 describe('recordStripePayment', () => {
+  it.each([
+    ['payment_intent', 'failed', 'us_bank_account', '3.00', '103.00', 'ach_debit', true],
+    ['payment_intent', 'pending', 'card', '3.00', '103.00', 'card', true],
+    ['checkout_session', 'pending', null, '0.00', '100.00', 'card', true],
+    ['checkout_session', 'failed', null, '0.00', '100.00', 'card', false],
+    ['payment_intent', 'pending', 'card', '3.00', '100.00', 'card', false],
+  ])('captures %s/%s/%s with fee %s and gross %s', async (stripeObjectType, status, paymentMethodType, feeAmount, gross, method, records) => {
+    const mapping = { id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1', stripeObjectType, status, paymentMethodType, feeAmount, amount: '100.00', currency: 'USD', stripePaymentIntentId: 'pi_1' };
+    queueResult([mapping]);
+    queueResult([{ id: 'inv1', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'USD' }]);
+    queueResult([mapping]);
+    if (records) {
+      queueResult([{ id: 'pay1' }]); queueResult([{ id: 'm1' }]); queueResult([{ status: 'paid' }]);
+    }
+    await recordStripePayment({ stripeObjectId: stripeObjectType === 'payment_intent' ? 'pi_1' : 'cs_1', stripePaymentIntentId: 'pi_1', stripeAccountId: 'acct_1', amount: gross, currency: 'USD' });
+    if (records) expect(insertValues.calls).toContainEqual(expect.objectContaining({ amount: '100.00', method }));
+    else expect(insertValues.calls).toHaveLength(0);
+  });
+
   it('inserts a card payment, links the mapping, recomputes, emits payment.recorded', async () => {
     // db call order (B10 lock order): select mapping (discovery) → select invoice
     // FOR UPDATE → re-read mapping FOR UPDATE → insert payment returning →
@@ -762,4 +785,14 @@ describe('Phase D2 — QuickBooks payment push/delete hooks', () => {
       .resolves.toBeUndefined();
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'payment.voided' }));
   });
+});
+
+it('does not emit legacy payment.failed for an unapplied autopay capture', async () => {
+  const mapping = { id: 'm2', invoiceId: 'inv2', invoicePaymentId: null, stripeAccountId: 'acct_1',
+    source: 'autopay', stripeObjectType: 'payment_intent', amount: '100.00', feeAmount: '0.00', currency: 'USD' };
+  queueResult([mapping]);
+  queueResult([{ id: 'inv2', orgId: 'org1', partnerId: 'p1', status: 'void', balance: '100.00', currencyCode: 'USD' }]);
+  queueResult([mapping]); queueResult([]);
+  await recordStripePayment({ stripeObjectId: 'pi_2', stripePaymentIntentId: 'pi_2', stripeAccountId: 'acct_1', amount: '100.00', currency: 'USD' });
+  expect(emit).not.toHaveBeenCalled(); expect(recompute).not.toHaveBeenCalled();
 });

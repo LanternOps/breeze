@@ -4,7 +4,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { scriptParametersSchema } from '@breeze/shared';
 import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
-import { db } from '../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import {
   automations,
   automationActionResults,
@@ -56,6 +56,7 @@ import {
 } from '../services/aiAgents/managedAutomation';
 import { UUID_REGEX } from '../utils/uuid';
 import { captureException } from '../services/sentry';
+import { resolveAutomationWebhookOwnerContext } from '../services/automationWebhookContext';
 import { projectAutomationRunsToSites, scanProjectedAutomationRuns } from '../services/automationReadProjection';
 import { managedByMonitorResponse } from '../services/monitors/managedRowGuard';
 
@@ -1853,11 +1854,20 @@ automationWebhookRoutes.post('/:id', async (c) => {
     return c.json({ error: 'Automation not found' }, 404);
   }
 
-  const [automation] = await db
-    .select()
-    .from(automations)
-    .where(eq(automations.id, automationId))
-    .limit(1);
+  // #7363 — this route is unauthenticated (mounted without authMiddleware), so
+  // nothing has opened a DB context and a bare query runs as `breeze_app` with
+  // scope 'none': RLS hides every automation. System scope is used ONLY for
+  // two read-only lookups: this one (the automation row, before the secret
+  // check) and the owner's tenant context (after it). Every write runs as the
+  // automation's owner, never as system.
+  const automation = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select()
+      .from(automations)
+      .where(eq(automations.id, automationId))
+      .limit(1);
+    return row ?? null;
+  }, 'automations.webhook.lookup'));
 
   if (!automation || !automation.enabled) {
     return c.json({ error: 'Automation not found' }, 404);
@@ -1935,17 +1945,93 @@ automationWebhookRoutes.post('/:id', async (c) => {
     return c.json({ error: 'Invalid JSON payload' }, 400);
   }
 
-  const { run, targetDeviceIds } = await createAutomationRunRecord({
-    automation,
-    triggeredBy: 'webhook',
-    details: {
-      sourceIp: getTrustedClientIp(c, 'unknown'),
-      userAgent: c.req.header('user-agent') ?? 'unknown',
-      payload,
-    },
-  });
+  // Resolved only now, so an unverified caller neither learns the tenant's
+  // status nor makes the server read organizations/partners for it.
+  const ownerContext = await runOutsideDbContext(() => withSystemDbAccessContext(
+    () => resolveAutomationWebhookOwnerContext(automation),
+    'automations.webhook.owner',
+  ));
+  if (!ownerContext) {
+    // Verified sender, but the owning org/partner is not active. Leave a trace
+    // for the tenant: their integration silently stopping is otherwise invisible.
+    console.warn(`[automations] Webhook ${automationId} refused: owning tenant is not active`);
+    writeAuditEvent(c, {
+      orgId: automation.orgId,
+      action: 'automation.trigger.webhook',
+      resourceType: 'automation',
+      resourceId: automation.id,
+      resourceName: automation.name,
+      actorType: 'system',
+      details: { triggeredBy: 'webhook', reason: 'owner_inactive' },
+      result: 'denied',
+    });
+    return c.json({ error: 'Automation owner is not active' }, 403);
+  }
 
-  await enqueueAutomationRun(run.id, targetDeviceIds);
+  // Write phase, as the automation's owner — the context a user of that owner
+  // triggering the automation by hand would have. The automation is re-read
+  // under it so a row disabled, deleted, re-owned or re-keyed (trigger/secret
+  // changed) since the lookup is refused rather than run.
+  const admitted = await runOutsideDbContext(() => withDbAccessContext(ownerContext, async () => {
+    const [current] = await db
+      .select()
+      .from(automations)
+      .where(eq(automations.id, automationId))
+      .limit(1);
+    if (
+      !current
+      || !current.enabled
+      || current.orgId !== automation.orgId
+      || current.partnerId !== automation.partnerId
+      || JSON.stringify(current.trigger) !== JSON.stringify(automation.trigger)
+    ) {
+      return null;
+    }
+    return createAutomationRunRecord({
+      automation: current,
+      triggeredBy: 'webhook',
+      details: {
+        sourceIp: getTrustedClientIp(c, 'unknown'),
+        userAgent: c.req.header('user-agent') ?? 'unknown',
+        payload,
+      },
+    });
+  }));
+
+  if (!admitted) {
+    return c.json({ error: 'Automation not found' }, 404);
+  }
+  const { run, targetDeviceIds } = admitted;
+
+  // Enqueued only after the run committed: the worker reads it on another connection.
+  try {
+    await enqueueAutomationRun(run.id, targetDeviceIds);
+  } catch (error) {
+    // Same as the manual trigger: nothing reaps a `running` run no job will
+    // ever execute, so fail it rather than leave it spinning forever.
+    console.error(`[automations] Failed to enqueue webhook-triggered run ${run.id}:`, error);
+    captureException(error, undefined, { runId: run.id, automationId: automation.id });
+    await runOutsideDbContext(() => withDbAccessContext(ownerContext, () =>
+      db
+        .update(automationRuns)
+        .set({ status: 'failed', completedAt: new Date() })
+        .where(and(eq(automationRuns.id, run.id), eq(automationRuns.status, 'running'))),
+    )).catch((cleanupError: unknown) => {
+      console.error(`[automations] Failed to mark unenqueued run ${run.id} failed:`, cleanupError);
+      captureException(cleanupError, undefined, { runId: run.id, automationId: automation.id, stage: 'enqueue-cleanup' });
+    });
+    writeAuditEvent(c, {
+      orgId: automation.orgId,
+      action: 'automation.trigger.webhook',
+      resourceType: 'automation',
+      resourceId: automation.id,
+      resourceName: automation.name,
+      actorType: 'system',
+      details: { runId: run.id, devicesTargeted: targetDeviceIds.length, triggeredBy: 'webhook' },
+      result: 'failure',
+    });
+    return c.json({ error: 'Failed to queue the automation run', runId: run.id }, 500);
+  }
 
   // Webhook callers are anonymous (no auth user / no JWT), so writeRouteAudit's
   // auth-derived actor doesn't apply. Use writeAuditEvent directly with a

@@ -1,11 +1,15 @@
+import { getPartnerStripeClient } from './partnerStripeClient';
+export { getPartnerStripeClient } from './partnerStripeClient';
 import Stripe from 'stripe';
-import { and, eq, isNotNull, isNull, lt, or } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, lt, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { invoiceStripePayments, stripeConnectAccounts } from '../db/schema/stripePayments';
-import { encryptSecret, decryptSecret } from './secretCrypto';
+import { orgAutopayEnrollments } from '../db/schema/autopay';
+import { encryptSecret } from './secretCrypto';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { stripeSessionRevocationMode } from '../config/env';
 import { archiveSupersededCredential } from './stripeCredentialArchive';
+import { probeAutopayCapabilities, type AutopayStripeCapability } from './autopay/stripeCapabilities';
 import {
   countUnresolvedSessionsForAccount,
   DISCONNECT_PROVIDER_BUDGET_MS,
@@ -14,8 +18,6 @@ import {
   revokeOpenSessionsForAccount,
 } from './stripeSessionRevocation';
 
-// Pinned API version — do not rely on the SDK default (it moves on upgrade).
-const API_VERSION = '2026-08-26.dahlia';
 
 export type PartnerStripeErrorCode =
   | 'NO_STRIPE_KEY'        // partner never configured a key / disconnected
@@ -112,6 +114,35 @@ export const STRIPE_ACCOUNT_BOOTSTRAP_RECHECK_MS = 23 * 60 * 60 * 1000;
  * on the partner's account with this key (no platform, no Connect, no Stripe-Account
  * header). One row per partner (partner-axis RLS; unique on partner_id).
  */
+const ALL_AUTOPAY_PERMISSIONS: AutopayStripeCapability[] = [
+  'customers_write', 'setup_intents_write', 'payment_intents_write', 'payment_methods_write', 'mandates_read',
+];
+
+async function probeAutopayPermissions(stripe: Stripe, partnerId: string): Promise<{
+  missing: AutopayStripeCapability[]; confirmed: boolean;
+}> {
+  try { return { ...(await probeAutopayCapabilities(stripe)), confirmed: true }; }
+  catch (error) {
+    console.error('[partnerStripe] autopay capability probe unavailable', { partnerId, phase: 'autopay_capabilities' });
+    // Fail closed for autopay without breaking existing Checkout connection flows.
+    // Authentication refusal proves the key is unusable; an outage does not.
+    return { missing: ALL_AUTOPAY_PERMISSIONS, confirmed: isStripeKeyAuthFailure(error) };
+  }
+}
+
+/** Caller holds the connection write lock; preserve method-specific attention and all authority. */
+async function setStripeEnrollmentAttention(
+  partnerId: string, stripeAccountId: string,
+  reason: 'stripe_account_changed' | 'key_missing_permissions' | null,
+): Promise<void> {
+  const stripeAttention = inArray(orgAutopayEnrollments.needsAttentionReason, ['stripe_account_changed', 'key_missing_permissions']);
+  await db.update(orgAutopayEnrollments).set({ needsAttentionReason: reason }).where(and(
+    eq(orgAutopayEnrollments.partnerId, partnerId),
+    eq(orgAutopayEnrollments.stripeAccountId, stripeAccountId),
+    reason === null ? stripeAttention : or(isNull(orgAutopayEnrollments.needsAttentionReason), stripeAttention),
+  ));
+}
+
 export async function savePartnerStripeKey(input: {
   partnerId: string;
   apiKey: string;
@@ -123,12 +154,14 @@ export async function savePartnerStripeKey(input: {
   defaultCurrency: string | null;
   accountCountry: string | null;
   accountRefreshedAt: Date;
+  autopayCapabilitiesCheckedAt: Date;
+  autopayMissingPermissions: AutopayStripeCapability[];
 }> {
   const apiKey = input.apiKey.trim();
 
   // Validate by retrieving the account the key belongs to. Any rejection (bad key,
   // revoked, insufficient scope) → INVALID_STRIPE_KEY rather than a 500.
-  const probe = new Stripe(apiKey, { apiVersion: API_VERSION });
+  const { stripe: probe } = await getPartnerStripeClient(input.partnerId, { candidateApiKey: apiKey });
   let account: Stripe.Account;
   try {
     // No-arg accounts.retrieve() hits GET /v1/account — the account the KEY belongs
@@ -218,6 +251,9 @@ export async function savePartnerStripeKey(input: {
       // resource_missing / invalid_request: the permission gate was passed.
     }
   }
+
+  const capabilityProbe = await probeAutopayPermissions(probe, input.partnerId);
+  const autopayMissingPermissions = capabilityProbe.missing;
 
   const accountId = account.id;
   const defaultCurrency = account.default_currency ? account.default_currency.toUpperCase() : null;
@@ -344,6 +380,11 @@ export async function savePartnerStripeKey(input: {
               'STRIPE_ACCOUNT_CHANGE_BLOCKED',
             );
           }
+          const [activeEnrollment] = await db.select({ id: orgAutopayEnrollments.id }).from(orgAutopayEnrollments)
+            .where(and(eq(orgAutopayEnrollments.partnerId, input.partnerId), eq(orgAutopayEnrollments.status, 'active'))).limit(1);
+          if (activeEnrollment && current.stripeAccountId !== accountId) {
+            throw new PartnerStripeError('Turn off automatic payments before changing Stripe accounts.', 'STRIPE_ACCOUNT_CHANGE_BLOCKED');
+          }
         }
         await db
           .insert(stripeConnectAccounts)
@@ -356,6 +397,8 @@ export async function savePartnerStripeKey(input: {
             defaultCurrency,
             accountCountry,
             accountRefreshedAt: now,
+            autopayCapabilitiesCheckedAt: now,
+            autopayMissingPermissions,
             financialEventCursorCreated,
             financialEventPageAfter: null,
             financialEventScanUpperCreated: null,
@@ -377,6 +420,8 @@ export async function savePartnerStripeKey(input: {
               defaultCurrency,
               accountCountry,
               accountRefreshedAt: now,
+              autopayCapabilitiesCheckedAt: now,
+              autopayMissingPermissions,
               financialEventCursorCreated,
               financialEventPageAfter: null,
               financialEventScanUpperCreated: null,
@@ -389,6 +434,16 @@ export async function savePartnerStripeKey(input: {
               updatedAt: now,
             },
           });
+        if (current && current.stripeAccountId !== accountId) {
+          await setStripeEnrollmentAttention(input.partnerId, current.stripeAccountId, 'stripe_account_changed');
+        }
+        if (capabilityProbe.confirmed) {
+          if (autopayMissingPermissions.length > 0) {
+            await setStripeEnrollmentAttention(input.partnerId, accountId, 'key_missing_permissions');
+          } else if (current?.stripeAccountId === accountId) {
+            await setStripeEnrollmentAttention(input.partnerId, accountId, null);
+          }
+        }
       });
     } catch (err) {
       // Concurrent-writer backstop only: the system-context pre-check above
@@ -442,53 +497,31 @@ export async function savePartnerStripeKey(input: {
     defaultCurrency,
     accountCountry,
     accountRefreshedAt: now,
+    autopayCapabilitiesCheckedAt: now,
+    autopayMissingPermissions,
   };
 }
 
 /**
- * Build a Stripe client bound to the partner's own key AND return their account id
- * in a single row read (callers that need both — e.g. createInvoicePayLink for the
- * payment mapping — avoid a second query). Throws NO_STRIPE_KEY if unconfigured,
- * STRIPE_KEY_UNREADABLE if the stored ciphertext can't be decrypted.
+ * THE answer to "can a customer pay this partner's invoices online?" — a
+ * connected row that still holds a key, exactly the precondition
+ * getPartnerStripeClient enforces (without decrypting). Every customer-facing
+ * pay affordance (public page, portal, invoice PDF line, send-email CTA) must
+ * ask this instead of re-deriving it, or a CTA appears that 409s on click (#7509).
+ *
+ * stripe_connect_accounts is partner-axis, so an org-scoped (portal) read would be
+ * silently RLS-filtered to "not available". The read therefore elects system
+ * scope itself on a short-lived connection (runOutsideDbContext — a bare nested
+ * system context would stay inside the caller's scoped transaction), making the
+ * answer independent of the caller's context.
  */
-export async function getPartnerStripeClient(partnerId: string): Promise<{
-  stripe: Stripe;
-  stripeAccountId: string;
-  defaultCurrency: string | null;
-}> {
-  const [row] = await db
-    .select({
-      apiKey: stripeConnectAccounts.apiKey,
-      status: stripeConnectAccounts.status,
-      stripeAccountId: stripeConnectAccounts.stripeAccountId,
-      defaultCurrency: stripeConnectAccounts.defaultCurrency,
-    })
+export async function isPartnerOnlinePaymentAvailable(partnerId: string): Promise<boolean> {
+  const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+    .select({ status: stripeConnectAccounts.status, apiKey: stripeConnectAccounts.apiKey })
     .from(stripeConnectAccounts)
     .where(eq(stripeConnectAccounts.partnerId, partnerId))
-    .limit(1);
-  if (!row || row.status !== 'connected' || !row.apiKey) {
-    throw new PartnerStripeError('Online payment is not available — connect Stripe first.', 'NO_STRIPE_KEY');
-  }
-  // A connected row whose ciphertext can't be decrypted is a CORRUPT-KEY fault (DB
-  // corruption, or KEK rotated away), NOT "not connected". decryptSecret throws on
-  // a bad payload/auth-tag and returns null only on empty input — handle both, and
-  // log: a wave of these means an APP_ENCRYPTION_KEY misconfig, a platform incident.
-  let key: string | null;
-  try {
-    key = decryptSecret(row.apiKey);
-  } catch (err) {
-    console.error('[partnerStripe] failed to decrypt stored key for connected partner', { partnerId, message: err instanceof Error ? err.message : String(err) });
-    throw new PartnerStripeError('Stored Stripe key could not be read — please reconnect Stripe.', 'STRIPE_KEY_UNREADABLE');
-  }
-  if (!key) {
-    console.error('[partnerStripe] decrypt returned empty for connected partner', { partnerId });
-    throw new PartnerStripeError('Stored Stripe key could not be read — please reconnect Stripe.', 'STRIPE_KEY_UNREADABLE');
-  }
-  return {
-    stripe: new Stripe(key, { apiVersion: API_VERSION }),
-    stripeAccountId: row.stripeAccountId,
-    defaultCurrency: row.defaultCurrency,
-  };
+    .limit(1)));
+  return row != null && row.status === 'connected' && !!row.apiKey;
 }
 
 export interface StripeAccountRefreshResult {
@@ -498,6 +531,8 @@ export interface StripeAccountRefreshResult {
   defaultCurrency: string | null;
   accountCountry: string | null;
   accountRefreshedAt: Date;
+  autopayCapabilitiesCheckedAt: Date;
+  autopayMissingPermissions: AutopayStripeCapability[];
 }
 
 /**
@@ -510,7 +545,14 @@ export interface StripeAccountRefreshResult {
  * surfaces NO_STRIPE_KEY). Review F9.
  */
 export async function refreshPartnerStripeAccount(partnerId: string, attempt = 0): Promise<StripeAccountRefreshResult> {
-  const { stripe, stripeAccountId } = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId));
+  const snapshot = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const [generation] = await db.select({ apiKey: stripeConnectAccounts.apiKey, connectedAt: stripeConnectAccounts.connectedAt })
+      .from(stripeConnectAccounts).where(eq(stripeConnectAccounts.partnerId, partnerId)).limit(1);
+    const client = await getPartnerStripeClient(partnerId);
+    if (!generation?.apiKey) throw new PartnerStripeError('Online payment is not available — connect Stripe first.', 'NO_STRIPE_KEY');
+    return { ...client, encryptedKey: generation.apiKey, connectedAt: generation.connectedAt };
+  }));
+  const { stripe, stripeAccountId } = snapshot;
 
   let account: Stripe.Account;
   try {
@@ -533,6 +575,20 @@ export async function refreshPartnerStripeAccount(partnerId: string, attempt = 0
       throw new PartnerStripeError('Could not reach Stripe right now — try again in a moment.', 'STRIPE_UNAVAILABLE');
     }
     if (classification === 'key-auth-failure') {
+      // Fence new collection on confirmed revocation without destroying the
+      // historical credential/account binding used by reconciliation.
+      await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+        const [fenced] = await db.update(stripeConnectAccounts).set({
+          autopayCapabilitiesCheckedAt: new Date(), autopayMissingPermissions: ALL_AUTOPAY_PERMISSIONS,
+          updatedAt: new Date(),
+        }).where(and(
+          eq(stripeConnectAccounts.partnerId, partnerId),
+          eq(stripeConnectAccounts.stripeAccountId, stripeAccountId),
+          eq(stripeConnectAccounts.status, 'connected'),
+          eq(stripeConnectAccounts.apiKey, snapshot.encryptedKey),
+        )).returning({ stripeAccountId: stripeConnectAccounts.stripeAccountId });
+        if (fenced) await setStripeEnrollmentAttention(partnerId, stripeAccountId, 'key_missing_permissions');
+      }));
       throw new PartnerStripeError('Stripe rejected the stored key — reconnect Stripe.', 'INVALID_STRIPE_KEY');
     }
     throw new PartnerStripeError(
@@ -543,12 +599,14 @@ export async function refreshPartnerStripeAccount(partnerId: string, attempt = 0
 
   const defaultCurrency = account.default_currency ? account.default_currency.toUpperCase() : null;
   const accountCountry = account.country ?? null;
+  const capabilityProbe = await probeAutopayPermissions(stripe, partnerId);
+  const autopayMissingPermissions = capabilityProbe.missing;
   const now = new Date();
 
-  const [updated] = await withSystemDbAccessContext(() =>
-    db
+  const updated = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const [updated] = await db
       .update(stripeConnectAccounts)
-      .set({ defaultCurrency, accountCountry, accountRefreshedAt: now, updatedAt: now })
+      .set({ defaultCurrency, accountCountry, accountRefreshedAt: now, autopayCapabilitiesCheckedAt: now, autopayMissingPermissions, updatedAt: now })
       // Guarded by the account id AND connected status read BEFORE the Stripe
       // round-trip: if an admin replaced the key (new account) or disconnected
       // while this refresh was in flight, the stale account's currency/country
@@ -557,6 +615,7 @@ export async function refreshPartnerStripeAccount(partnerId: string, attempt = 0
         eq(stripeConnectAccounts.partnerId, partnerId),
         eq(stripeConnectAccounts.stripeAccountId, stripeAccountId),
         eq(stripeConnectAccounts.status, 'connected'),
+        eq(stripeConnectAccounts.apiKey, snapshot.encryptedKey),
       ))
       .returning({
         stripeAccountId: stripeConnectAccounts.stripeAccountId,
@@ -565,8 +624,14 @@ export async function refreshPartnerStripeAccount(partnerId: string, attempt = 0
         defaultCurrency: stripeConnectAccounts.defaultCurrency,
         accountCountry: stripeConnectAccounts.accountCountry,
         accountRefreshedAt: stripeConnectAccounts.accountRefreshedAt,
-      })
-  );
+        autopayCapabilitiesCheckedAt: stripeConnectAccounts.autopayCapabilitiesCheckedAt,
+        autopayMissingPermissions: stripeConnectAccounts.autopayMissingPermissions,
+      });
+    if (updated && capabilityProbe.confirmed && autopayMissingPermissions.length > 0) {
+      await setStripeEnrollmentAttention(partnerId, stripeAccountId, 'key_missing_permissions');
+    }
+    return updated;
+  }));
 
   if (updated) {
     return {
@@ -576,6 +641,8 @@ export async function refreshPartnerStripeAccount(partnerId: string, attempt = 0
       defaultCurrency: updated.defaultCurrency,
       accountCountry: updated.accountCountry,
       accountRefreshedAt: updated.accountRefreshedAt ?? now,
+      autopayCapabilitiesCheckedAt: updated.autopayCapabilitiesCheckedAt ?? now,
+      autopayMissingPermissions: updated.autopayMissingPermissions as AutopayStripeCapability[],
     };
   }
 
@@ -644,7 +711,7 @@ export async function getPartnerStripeAccountSnapshot(partnerId: string): Promis
   if (!stale) return { ...status, cacheState: 'fresh', error: null };
 
   try {
-    const fresh = await refreshPartnerStripeAccount(partnerId);
+    const { autopayCapabilitiesCheckedAt: _autopayChecked, autopayMissingPermissions: _autopayMissing, ...fresh } = await refreshPartnerStripeAccount(partnerId);
     return {
       connected: true, ...fresh,
       financialEventLastPolledAt: status.financialEventLastPolledAt,
@@ -771,6 +838,7 @@ export async function disconnectPartnerStripe(partnerId: string, actorUserId: st
       .update(stripeConnectAccounts)
       .set({ status: 'disconnected', apiKey: null, keyLast4: null, disconnectedAt: now, updatedAt: now })
       .where(eq(stripeConnectAccounts.partnerId, partnerId));
+    await setStripeEnrollmentAttention(partnerId, current.stripeAccountId, 'stripe_account_changed');
     return current.apiKey ? current.stripeAccountId : null;
   }));
 

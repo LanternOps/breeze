@@ -57,15 +57,25 @@ const REACH_FILES = [
   'services/reportSeries/targets.ts',
   // Series W04 Combine: candidates and adoption only in series-eligible orgs.
   'services/reportSeries/combine.ts',
+  // #7363: partner-wide automation webhook runs under a partner context over
+  // the partner's customer orgs.
+  'services/automationWebhookContext.ts',
 ];
 /** file -> reason. Add only with a reason a reviewer can check. */
-const REACH_EXEMPT: Record<string, string> = {};
+const REACH_EXEMPT: Record<string, string> = {
+  'services/autopay/paymentSettingsView.ts': 'Fee authorization gaps positively select customer organizations only; holding organizations cannot match.',
+};
 
 describe('holding org is outside every human org-reach computation', () => {
   it.each(REACH_FILES)('%s excludes the holding org (UNASSIGNED_POOL_ORG_TYPE or the hidden-org visibility list)', (file) => {
     const entry = SOURCE.find((s) => s.file === file);
     expect(entry, `${file} not found`).toBeDefined();
     expect(entry!.text).toMatch(/UNASSIGNED_POOL_ORG_TYPE|notHiddenOrgType\(\)/);
+  });
+
+  it('the fee authorization gap exemption retains its customer-only predicate',()=>{
+    expect(SOURCE.find(s=>s.file==='services/autopay/paymentSettingsView.ts')!.text)
+      .toContain("eq(organizations.type, 'customer')");
   });
 
   it('every file carrying the reach fingerprint is classified', () => {

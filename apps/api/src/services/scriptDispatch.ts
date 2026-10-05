@@ -13,6 +13,7 @@ import {
   claimPendingCommandForDelivery,
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
+import { cancelledCommandError } from './commandCancelMessage';
 import { CommandTypes, queueCommand } from './commandQueue';
 import { aiOriginColumns } from './aiOriginColumns';
 import type { AiOriginRef } from '@breeze/shared';
@@ -320,7 +321,15 @@ export type DispatchScriptResult =
         //       stay OUT of DISPATCH_CODES_ALREADY_RECORDED, and its message
         //       must not blame an agent version that may be perfectly current.
         | 'agent_upgrade_required_recorded'
-        | 'secret_gate_unavailable';
+        | 'secret_gate_unavailable'
+        // The push's claim-time eligibility check (the same one the heartbeat
+        // claim runs: requester still active, device still in the org it was
+        // queued for, lifecycle, partner trust, …) refused the command and,
+        // in the same transaction, cancelled it AND its execution row (batch
+        // counters included). Row ownership matches
+        // 'agent_upgrade_required_recorded': a fan-out records it WITHOUT
+        // writing its own failure row. `error` carries the reason.
+        | 'delivery_cancelled_recorded';
       error: string;
     };
 
@@ -786,7 +795,10 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     let deliveryOutcome: ScriptDeliveryOutcome = 'no_agent';
     if (device.agentId) {
       const claimed = await claimPendingCommandForDelivery(commandId);
-      if (claimed) {
+      if (claimed.status === 'cancelled') {
+        return { ok: false, code: 'delivery_cancelled_recorded', error: cancelledCommandError(claimed.reason) };
+      }
+      if (claimed.status === 'claimed') {
         // #3409 PR4c-2: the immediate-send path claims the command itself and
         // hands it straight to the WS, bypassing
         // `prepareClaimedCommandsForDelivery` — so the claim-time gate has to

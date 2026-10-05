@@ -41,7 +41,6 @@ export interface EffectiveScriptPolicy {
   unattendedAllowedClasses: TouchClass[];
   maxUnattendedPerHour: number;
   protectedResources: AiAgentProtectedResources;
-  reviewerModel: string | null;
   source: { partnerRowId: string | null; orgRowId: string | null };
 }
 
@@ -59,7 +58,6 @@ export type ScriptPolicyMergeInput = Pick<
   | 'unattendedAllowedClasses'
   | 'maxUnattendedPerHour'
   | 'protectedResources'
-  | 'reviewerModel'
 >;
 
 /**
@@ -97,7 +95,6 @@ export function mergeScriptPolicies(
       registryKeys: union(pr.registryKeys ?? [], orr.registryKeys ?? []),
       deviceTags: union(pr.deviceTags ?? [], orr.deviceTags ?? []),
     },
-    reviewerModel: org?.reviewerModel ?? partner?.reviewerModel ?? null,
     source: { partnerRowId: partner?.id ?? null, orgRowId: org?.id ?? null },
   };
 }

@@ -40,9 +40,20 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('./aiCostTracker', () => ({
-  recordUsageFromSdkResult: vi.fn(() => Promise.resolve()),
   sumInputTokens: (u: Record<string, number | null | undefined> | null | undefined) =>
     (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0),
+}));
+vi.mock('./aiBudgetReservations', () => ({
+  markAiBudgetReservationIndeterminate: vi.fn(async () => ({ kind: 'indeterminate' })),
+  readSdkUsageSnapshot: vi.fn(async () => null),
+}));
+vi.mock('./aiModels/platformModels', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/platformModels')>()),
+  getPlatformModelByModelId: vi.fn(async () => null),
+}));
+vi.mock('./aiModels/settleInvocation', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/settleInvocation')>()),
+  settleInvocation: vi.fn(async () => ({ costCents: 0, invocationIds: [], deferred: false })),
 }));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
@@ -62,6 +73,7 @@ vi.mock('./aiToolOutput', () => ({
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
 
 import { StreamingSessionManager } from './streamingSessionManager';
+import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import type { TopologyTurnRuntime } from './topology/aiInvestigation';
 import type { AuthContext } from '../middleware/auth';
 
@@ -70,17 +82,12 @@ const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
 const DB_SESSION = {
   orgId: ORG,
   sdkSessionId: null,
-  model: 'claude-sonnet-4-5-20250929',
   maxTurns: 50,
   turnCount: 0,
   systemPrompt: null,
 };
 
-const PLATFORM_CONFIG = {
-  source: 'platform' as const,
-  apiKey: 'platform-key',
-  model: 'claude-sonnet-4-6',
-};
+const PLATFORM_CONFIG = makeResolvedModel('platform');
 
 const AUTH = {
   orgId: ORG,
@@ -222,6 +229,26 @@ describe('topology investigation output (M4 Task 3)', () => {
     expect(replay.some((e) => e.type === 'topology_explanation')).toBe(false);
     expect(JSON.stringify(replay)).not.toContain('FOREIGN-SITE-SECRET');
     expect(replay).toContainEqual({ type: 'error', message: 'The topology explanation could not be completed.' });
+    expect(insertedRows.filter((r) => r.role === 'assistant')).toHaveLength(0);
+  });
+
+  it('a transport that dies mid-turn publishes only the fixed topology error, never the generic or provider text (W06: the only topology transport)', async () => {
+    const { rt } = runtime();
+    queryMock.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() {
+        yield* HOSTILE_TURN as never[];
+        throw new Error('upstream 500 FOREIGN-SITE-SECRET');
+      },
+      interrupt: vi.fn(),
+      close: vi.fn(),
+    }));
+    const session = await manager.getOrCreate('sess-topo-crash', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG, undefined, undefined, { topologyInvestigation: rt });
+    await session.processorPromise;
+    const replay = session.eventBus.getReplayEvents();
+    expect(rt.abort).toHaveBeenCalled();
+    expect(rt.complete).not.toHaveBeenCalled();
+    expect(JSON.stringify(replay)).not.toContain('FOREIGN-SITE-SECRET');
+    expect(replay.filter((e) => e.type === 'error')).toEqual([{ type: 'error', message: 'The topology explanation could not be completed.' }]);
     expect(insertedRows.filter((r) => r.role === 'assistant')).toHaveLength(0);
   });
 

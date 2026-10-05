@@ -1,6 +1,7 @@
 /**
  * Eviction contract for the DEFAULT (Anthropic) session manager — issue #4514,
- * the deferred twin of #4384/#4406 (llm/openaiSessionManager.eviction.test.ts).
+ * the deferred twin of #4384/#4406 (fixed first on the env-only OpenAI-compatible
+ * session manager, deleted in W06).
  *
  * Two defects are pinned here:
  *   1. Neither eviction path checked `state === 'processing'`, so under cap
@@ -96,11 +97,20 @@ vi.mock('./sentry', () => ({
 }));
 
 vi.mock('./aiCostTracker', () => ({
-  recordUsageFromSdkResult: vi.fn(() => Promise.resolve()),
-  calculateCostCents: vi.fn(() => 0),
-  calculateCatalogCostCents: vi.fn(() => 0),
   sumInputTokens: (u: Record<string, number | null | undefined> | null | undefined) =>
     (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0),
+}));
+vi.mock('./aiBudgetReservations', () => ({
+  markAiBudgetReservationIndeterminate: vi.fn(async () => ({ kind: 'indeterminate' })),
+  readSdkUsageSnapshot: vi.fn(async () => null),
+}));
+vi.mock('./aiModels/platformModels', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/platformModels')>()),
+  getPlatformModelByModelId: vi.fn(async () => null),
+}));
+vi.mock('./aiModels/settleInvocation', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/settleInvocation')>()),
+  settleInvocation: vi.fn(async () => ({ costCents: 0, invocationIds: [], deferred: false })),
 }));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./aiAgentSdkTools', () => ({
@@ -125,8 +135,8 @@ import {
   type ActiveSession,
   type SessionState,
 } from './streamingSessionManager';
+import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import type { AuthContext } from '../middleware/auth';
-import type { UsableLlmConfig } from './llm/llmConfigResolver';
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
@@ -162,7 +172,6 @@ function seed(
     breezeSessionId: id,
     orgId,
     deviceId: null,
-    model: 'claude-sonnet-4-5',
     sdkSessionId: null,
     query: { close: vi.fn(), interrupt: vi.fn() },
     abortController: new AbortController(),
@@ -226,7 +235,6 @@ const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
 const DB_SESSION = {
   orgId: ORG,
   sdkSessionId: null,
-  model: 'claude-sonnet-4-5-20250929',
   maxTurns: 50,
   turnCount: 0,
   systemPrompt: null,
@@ -237,11 +245,7 @@ const AUTH = {
   accessibleOrgIds: [ORG],
   user: { id: 'beefbeef-1111-4222-8333-444455556666', email: 'tech@contoso.com' },
 } as unknown as AuthContext;
-const PLATFORM_CONFIG = {
-  source: 'platform' as const,
-  apiKey: 'platform-key',
-  model: 'claude-sonnet-4-6',
-} as unknown as UsableLlmConfig;
+const PLATFORM_CONFIG = makeResolvedModel('platform');
 
 function mockSdkQuery(messages: unknown[], gate: Promise<void> = Promise.resolve()) {
   queryMock.mockImplementation(() => ({

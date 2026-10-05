@@ -6,13 +6,14 @@
  * the script must be undeleted, still support this OS, still be at the
  * pinned head version, and its current owner must still be visible to the
  * target org/partner; for a `playbook` kind, the playbook must still exist
- * and be active. `builtin_action` and `manual_steps` have no backing record
- * to check and are always dispatchable.
+ * and be active; a `manual_steps` row's reviewed fix_instructions row must still
+ * exist (retirement is handled by the sweeper, deletion drops the title).
+ * `builtin_action` has no backing record and is always dispatchable.
  */
 import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import type { FixKind, FixMemoryStatus } from '@breeze/shared';
 import { db } from '../../db';
-import { fixMemory, playbookDefinitions, scripts, scriptVersions } from '../../db/schema';
+import { fixInstructions, fixMemory, playbookDefinitions, scripts, scriptVersions } from '../../db/schema';
 import { isProven } from './aggregate';
 import type { FixSignature } from './signature';
 
@@ -25,6 +26,9 @@ export interface FixTrackRecord {
   scriptName: string | null;
   builtinAction: string | null;
   playbookId: string | null;
+  instructionsRef: string | null;
+  /** Human-authored; shown to the org's own users. NEVER include in AI tool output. */
+  instructionsTitle: string | null;
   attempts: number;
   verified: number;
   failed: number;
@@ -54,6 +58,8 @@ export interface MemoryCandidateRow {
   scriptVersionId: string | null;
   builtinAction: string | null;
   playbookId: string | null;
+  instructionsRef: string | null;
+  instructionsTitle: string | null;
   attempts: number;
   verifiedCount: number;
   failedCount: number;
@@ -94,6 +100,7 @@ function isDispatchable(row: MemoryCandidateRow, ctx: { orgId: string; partnerId
     );
   }
   if (row.fixKind === 'playbook') return Boolean(row.playbook?.isActive);
+  if (row.fixKind === 'manual_steps') return row.instructionsTitle !== null;
   return true;
 }
 
@@ -103,6 +110,7 @@ function track(row: MemoryCandidateRow): FixTrackRecord {
     scope: row.orgId === null ? 'all_clients' : 'this_client',
     fixKind: row.fixKind, scriptId: row.scriptId, scriptVersionId: row.scriptVersionId,
     scriptName: row.script?.name ?? null, builtinAction: row.builtinAction, playbookId: row.playbookId,
+    instructionsRef: row.instructionsRef, instructionsTitle: row.instructionsTitle,
     attempts: row.attempts, verified: row.verifiedCount, failed: row.failedCount, recurred: row.recurredCount,
     upVotes: row.upVotes, downVotes: row.downVotes,
     successRate: Math.round(row.rollingSuccessRate * 100) / 100,
@@ -142,7 +150,7 @@ export async function lookupFixes(input: { orgId: string; partnerId: string; sig
       id: fixMemory.id, orgId: fixMemory.orgId, partnerId: fixMemory.partnerId,
       signatureKey: fixMemory.signatureKey, broadKey: fixMemory.broadKey, osType: fixMemory.osType, fixKind: fixMemory.fixKind,
       scriptId: fixMemory.scriptId, scriptVersionId: fixMemory.scriptVersionId, builtinAction: fixMemory.builtinAction,
-      playbookId: fixMemory.playbookId, attempts: fixMemory.attempts, verifiedCount: fixMemory.verifiedCount,
+      playbookId: fixMemory.playbookId, instructionsRef: fixMemory.instructionsRef, instructionsTitle: fixInstructions.title, attempts: fixMemory.attempts, verifiedCount: fixMemory.verifiedCount,
       failedCount: fixMemory.failedCount, recurredCount: fixMemory.recurredCount, upVotes: fixMemory.upVotes,
       downVotes: fixMemory.downVotes, rollingSuccessRate: fixMemory.rollingSuccessRate, recentOutcomes: fixMemory.recentOutcomes,
       status: fixMemory.status, staleSince: fixMemory.staleSince, lastVerifiedAt: fixMemory.lastVerifiedAt,
@@ -155,6 +163,7 @@ export async function lookupFixes(input: { orgId: string; partnerId: string; sig
     .leftJoin(scripts, eq(scripts.id, fixMemory.scriptId))
     .leftJoin(scriptVersions, and(eq(scriptVersions.id, fixMemory.scriptVersionId), eq(scriptVersions.scriptId, fixMemory.scriptId)))
     .leftJoin(playbookDefinitions, eq(playbookDefinitions.id, fixMemory.playbookId))
+    .leftJoin(fixInstructions, eq(sql`${fixInstructions.id}::text`, fixMemory.instructionsRef))
     .where(and(
       eq(fixMemory.signatureVersion, sig.version),
       eq(fixMemory.osType, sig.facets.osFamily),
@@ -170,7 +179,8 @@ export async function lookupFixes(input: { orgId: string; partnerId: string; sig
   const candidates: MemoryCandidateRow[] = rows.map((r) => ({
     id: r.id, orgId: r.orgId, partnerId: r.partnerId, signatureKey: r.signatureKey, broadKey: r.broadKey,
     osType: r.osType, fixKind: r.fixKind, scriptId: r.scriptId, scriptVersionId: r.scriptVersionId,
-    builtinAction: r.builtinAction, playbookId: r.playbookId, attempts: r.attempts, verifiedCount: r.verifiedCount,
+    builtinAction: r.builtinAction, playbookId: r.playbookId,
+    instructionsRef: r.instructionsRef, instructionsTitle: r.instructionsTitle, attempts: r.attempts, verifiedCount: r.verifiedCount,
     failedCount: r.failedCount, recurredCount: r.recurredCount, upVotes: r.upVotes, downVotes: r.downVotes,
     rollingSuccessRate: r.rollingSuccessRate, recentOutcomes: r.recentOutcomes, status: r.status,
     staleSince: r.staleSince, lastVerifiedAt: r.lastVerifiedAt,

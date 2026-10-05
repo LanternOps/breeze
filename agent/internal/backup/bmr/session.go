@@ -199,7 +199,14 @@ func ExchangeRecoveryCode(ctx context.Context, serverURL, code, helperVersion st
 
 	resp, err := newHTTPClient().Do(req)
 	if err != nil {
-		return "", nil, fmt.Errorf("bmr: exchange request failed: %w", err)
+		// A cancelled/expired caller context is the caller's own doing, not
+		// a reachability problem with the server — keep it a plain error.
+		if ctx.Err() != nil {
+			return "", nil, fmt.Errorf("bmr: exchange request failed: %w", err)
+		}
+		// No HTTP response at all (DNS, connect, TLS, timeout): the code
+		// never reached a server, so it must not read as a rejected code.
+		return "", nil, &ServerUnreachableError{Host: req.URL.Host, Err: err}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -208,20 +215,39 @@ func ExchangeRecoveryCode(ctx context.Context, serverURL, code, helperVersion st
 		return "", nil, fmt.Errorf("bmr: read exchange response: %w", err)
 	}
 
-	if resp.StatusCode == http.StatusNotFound {
-		return "", nil, ErrCodeInvalid
+	// Every non-success Breeze answer on this route is a JSON object with a
+	// string `error` (code_invalid, a negotiation code, a rate-limit
+	// message). Anything else came from some other web server — the usual
+	// cause is a wrong server URL — and says nothing about the code (#7649).
+	notBreeze := func() error {
+		return &UnexpectedServerResponseError{Host: req.URL.Host, StatusCode: resp.StatusCode, ContentType: resp.Header.Get("Content-Type")}
 	}
 	if resp.StatusCode == http.StatusConflict {
+		// Always a terminal negotiation refusal, JSON or not (a non-JSON 409
+		// degrades to Code "unknown" — see parseRecoveryNegotiationError).
 		return "", nil, parseRecoveryNegotiationError(resp.StatusCode, data)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var errorBody map[string]any
-		if err := json.Unmarshal(data, &errorBody); err == nil {
-			if message, ok := errorBody["error"].(string); ok && message != "" {
-				return "", nil, fmt.Errorf("bmr: exchange failed: %s", message)
-			}
+		errorCode, isBreezeError := breezeErrorCode(data)
+		if !isBreezeError {
+			return "", nil, notBreeze()
 		}
-		return "", nil, fmt.Errorf("bmr: exchange failed with status %d", resp.StatusCode)
+		// 404 {"error":"code_invalid"} is an unknown/used/expired/
+		// wrong-status code. A Breeze 400 is the typed input itself being
+		// refused: {"error":"code_invalid"} when it does not normalize to a
+		// code, or zValidator's object-shaped error for an over-long one
+		// (routes/backup/bmrRecoveries.ts, bmrExchangeSchema).
+		if (resp.StatusCode == http.StatusBadRequest && (errorCode == "code_invalid" || isRequestValidationError(data))) ||
+			(resp.StatusCode == http.StatusNotFound && errorCode == "code_invalid") {
+			return "", nil, ErrCodeInvalid
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			return "", nil, notBreeze()
+		}
+		if errorCode == "" {
+			return "", nil, fmt.Errorf("bmr: exchange failed with status %d", resp.StatusCode)
+		}
+		return "", nil, fmt.Errorf("bmr: exchange failed: %s", errorCode)
 	}
 
 	var body struct {
@@ -229,7 +255,7 @@ func ExchangeRecoveryCode(ctx context.Context, serverURL, code, helperVersion st
 		Bootstrap json.RawMessage `json:"bootstrap"`
 	}
 	if err := json.Unmarshal(data, &body); err != nil {
-		return "", nil, fmt.Errorf("bmr: decode exchange response: %w", err)
+		return "", nil, notBreeze()
 	}
 	if body.Token == "" || len(body.Bootstrap) == 0 {
 		return "", nil, fmt.Errorf("bmr: exchange response missing token or bootstrap")

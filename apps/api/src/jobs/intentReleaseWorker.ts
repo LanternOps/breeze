@@ -43,7 +43,7 @@ import { readAiKillState } from '../services/aiKillState';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
 import { requiresPinnedEffectDigest } from '../services/actionIntents/pinnedEffectPolicy';
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
-import { executeTool, requiresLiveSession } from '../services/aiTools';
+import { aiTools, executeTool, requiresLiveSession, toolManagesDbContext } from '../services/aiTools';
 import { executeTenantToolDetailed } from '../services/toolSources/execute';
 import { withAuthDbAccessContext } from '../middleware/auth';
 import { withTopologyReleasePreconditions } from '../services/topology/aiToolGate';
@@ -1456,7 +1456,19 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
         // the release context opens, and carried in — never read through a
         // second pooled connection while that lock is held. A no-op for
         // every other action.
-        withTopologyReleasePreconditions(intent.actionName, intent.orgId, () => withAuthDbAccessContext(auth, invoke)),
+        //
+        // #7918: a CORE tool that declares `selfManagedDbContext` (run_script,
+        // the screen and agent-management tools, …) opens its own short
+        // contexts and waits on the device with none held. Wrapping it here
+        // would pin this release's connection idle in transaction for the
+        // whole wait — the production idle-in-transaction timeout killed it
+        // after one minute. The same predicate the chat wrapper and the MCP
+        // route use; external/Google/M365 tools are never self-managed.
+        withTopologyReleasePreconditions(intent.actionName, intent.orgId, () =>
+          (!tenantTool && !isHeadlessGoogleTool(intent.actionName) && !isHeadlessM365Tool(intent.actionName)
+            && toolManagesDbContext(aiTools.get(intent.actionName), intent.arguments)
+            ? runOutsideDbContext(invoke)
+            : withAuthDbAccessContext(auth, invoke))),
         getToolTimeout(intent.actionName),
         intent.actionName,
       );

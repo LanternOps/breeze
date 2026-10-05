@@ -316,3 +316,93 @@ describe('compactToolResultForChat — secret material is still redacted (#6140)
     expect(out.apiKeyExpiresAt).toBe(REDACTED);
   });
 });
+
+describe('compactToolResultForChat — stored key material is redacted by name', () => {
+  it('a backup encryption key string is masked while its on/off flag survives', () => {
+    const out = parse('manage_backup_configs', {
+      config: { id: 'cfg_1', encryption: true, encryptionKey: 'plain-backup-key', encryption_key: 'plain-backup-key' },
+    });
+    expect(out.config.encryptionKey).toBe(REDACTED);
+    expect(out.config.encryption_key).toBe(REDACTED);
+    expect(out.config.encryption).toBe(true);
+    expect(out.config.id).toBe('cfg_1');
+  });
+
+  it('key-material names are masked; ids and references to a key are not', () => {
+    const out = parse('some_tool', {
+      encryptedKey: 'sealed',
+      recoveryKey: '123456-123456',
+      snmpCommunities: ['public', 'private'],
+      clientIdEncrypted: 'enc:v1:abc',
+      keyHash: 'abc123',
+      encryptionKeyId: 'key_42',
+      encryptionKeyVersion: 'v3',
+      hasEncryptionKey: true,
+      encrypted: 'BitLocker',
+    });
+    expect(out.encryptedKey).toBe(REDACTED);
+    expect(out.recoveryKey).toBe(REDACTED);
+    expect(out.snmpCommunities).toBe(REDACTED);
+    expect(out.clientIdEncrypted).toBe(REDACTED);
+    expect(out.keyHash).toBe(REDACTED);
+    expect(out.encryptionKeyId).toBe('key_42');
+    expect(out.encryptionKeyVersion).toBe('v3');
+    expect(out.hasEncryptionKey).toBe(true);
+    expect(out.encrypted).toBe('BitLocker');
+  });
+});
+
+describe('compactToolResultForChat — header maps keep their names, not their values', () => {
+  it('manage_monitors get: http check headers show names with every value masked', () => {
+    const out = parse('manage_monitors', {
+      monitor: {
+        id: 'mon_1',
+        monitorType: 'http_check',
+        target: 'https://status.example.com/health',
+        config: {
+          method: 'GET',
+          expectStatus: 200,
+          headers: {
+            Authorization: 'Bearer hdr-value-1',
+            'X-Custom-Auth': 'hdr-value-2',
+            'X-Tenant': 'hdr-value-3',
+            Accept: 'application/json',
+          },
+        },
+      },
+      recentResults: [],
+      alertRules: [],
+    });
+    expect(Object.keys(out.monitor.config.headers)).toEqual([
+      'Authorization', 'X-Custom-Auth', 'X-Tenant', 'Accept',
+    ]);
+    for (const value of Object.values(out.monitor.config.headers)) expect(value).toBe(REDACTED);
+    expect(JSON.stringify(out)).not.toMatch(/hdr-value-|application\/json/);
+    expect(out.monitor.config.method).toBe('GET');
+    expect(out.monitor.config.expectStatus).toBe(200);
+  });
+
+  it('monitor definition conditions and other *Headers maps are masked the same way', () => {
+    const out = parse('list_monitors', {
+      monitors: [{ id: 'm1', condition: { checkType: 'http_check', headers: { 'X-Api': 'hdr-value-4' } } }],
+      customHeaders: { 'X-Signature': 'hdr-value-5' },
+      request_headers: { Cookie: 'hdr-value-6' },
+    });
+    expect(out.monitors[0].condition.headers).toEqual({ 'X-Api': REDACTED });
+    expect(out.customHeaders).toEqual({ 'X-Signature': REDACTED });
+    expect(out.request_headers).toEqual({ Cookie: REDACTED });
+  });
+
+  it('a headers entry that is not a name→value map is masked whole', () => {
+    const out = parse('some_tool', {
+      headers: 'Authorization: Bearer hdr-value-7',
+      responseHeaders: [{ name: 'X-Key', value: 'hdr-value-8' }],
+    });
+    expect(JSON.stringify(out)).not.toContain('hdr-value-');
+  });
+
+  it('header counts and flags are not header maps', () => {
+    const out = parse('some_tool', { headerCount: 3, hasHeaders: true, headersConfigured: 2 });
+    expect(out).toEqual({ headerCount: 3, hasHeaders: true, headersConfigured: 2 });
+  });
+});

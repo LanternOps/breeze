@@ -20,6 +20,7 @@ import type {
 import { transition, InvalidTransitionError, type OccurrenceStatus } from './serviceDeliverableState';
 import { isInLeadWindow, isPastGrace, planOccurrences, type Cadence } from './recurrence';
 import { addDaysISO } from './contractMath';
+import type { TicketActor } from './ticketService';
 import { createPlannedWorkTicket } from './plannedWorkTicket';
 import { captureException } from './sentry';
 import { isPgUniqueViolation } from '../utils/pgErrors';
@@ -837,7 +838,7 @@ export function periodLabel(cadence: Cadence, periodEnd: string): string {
  * audit_logs.actor_id, which is NOT NULL with no FK to users (precedent:
  * inboundEmailService.ts). createTicket writes no `tickets` column from it.
  */
-const DELIVERABLE_SWEEP_ACTOR = { userId: '00000000-0000-0000-0000-000000000000', name: 'Service deliverables' } as const;
+const DELIVERABLE_SWEEP_ACTOR: TicketActor = { kind: 'system', source: 'planned_work', name: 'Service deliverables' };
 
 type SweepOccurrence = { id: string; nameSnapshot: string; periodStart: string; periodEnd: string; dueAt: string };
 

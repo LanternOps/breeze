@@ -3,6 +3,7 @@
 package heartbeat
 
 import (
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -15,7 +16,10 @@ const createNoWindow = 0x08000000
 
 // startSupportSelfDelete launches the detached self-delete trampoline:
 //
-//	cmd /C ping 127.0.0.1 -n 3 >NUL & del /f "<exe>"
+//	cmd /V:ON /C for /L %i in (1,1,60) do (ping ... & del /f /q "!BREEZE_SUPPORT_CLEANUP_EXE!" ...)
+//
+// with the paths in the child's environment (see
+// buildSupportSelfDeleteCmdLine).
 //
 // The ping is a dependency-free sleep (no PowerShell, no execution policy) —
 // a running .exe cannot delete itself, so the trampoline has to outlive this
@@ -31,12 +35,14 @@ const createNoWindow = 0x08000000
 // path containing a space (C:\Users\John Smith\Downloads\...) needs those
 // inner quotes, so the escaped form is not an option: build the command line
 // verbatim.
-func startSupportSelfDelete(exePath string) error {
+func startSupportSelfDelete(exePath, workDir string) error {
+	cmdLine, env := buildSupportSelfDeleteCmdLine(exePath, workDir)
 	cmd := exec.Command("cmd")
+	cmd.Env = append(os.Environ(), env...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | createNoWindow,
 		HideWindow:    true,
-		CmdLine:       buildSupportSelfDeleteCmdLine(exePath),
+		CmdLine:       cmdLine,
 	}
 	if err := cmd.Start(); err != nil {
 		return err

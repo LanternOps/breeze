@@ -23,7 +23,8 @@ import * as identityAccessPdf from './identityAccessPdf';
 import * as ticketSlaPdf from './ticketSlaPdf';
 import * as technicianTimePdf from './technicianTimePdf';
 import * as arAgingPdf from './arAgingPdf';
-import type { TicketSlaSummary, TechnicianTimeSummary, ArAgingSummary } from '../types/businessReports';
+import * as aiUsageByClientPdf from './aiUsageByClientPdf';
+import type { TicketSlaSummary, TechnicianTimeSummary, ArAgingSummary, AiUsageByClientSummary } from '../types/businessReports';
 import {
   NARRATIVE_BULLET_MAX_CHARS,
   NARRATIVE_HEADLINE_MAX_CHARS,
@@ -161,7 +162,7 @@ export type BuildOpts = {
   /** IANA timezone for formatting ISO date cells in generic tables. */
   timezone: string;
   summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | HardwareLifecycleSummary | ThreatDetectionSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary
-    | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary | BackupStatusReportData;
+    | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary | AiUsageByClientSummary | BackupStatusReportData;
   /** Slim baseline from the previous completed run, when the caller supplied
    * one (report_runs.result.previous) — drives the scorecard trend chip and
    * its "since <date>" label. */
@@ -180,6 +181,7 @@ const DESIGNED_BUSINESS_TYPES: ReadonlySet<string> = new Set([
   'ticket_sla_attainment',
   'technician_time_billability',
   'ar_aging',
+  'ai_usage_by_client',
 ]);
 
 const PAGE = { w: 297, h: 210, mx: 14, bandH: 19, footY: 199 } as const;
@@ -210,6 +212,7 @@ const REPORT_TYPE_LABELS: Record<string, string> = {
   ticket_sla_attainment: 'Ticket SLA Attainment',
   technician_time_billability: 'Technician Time & Billability',
   ar_aging: 'AR Aging',
+  ai_usage_by_client: 'AI Usage by Client',
 };
 
 const reportTypeLabel = (t: string): string => REPORT_TYPE_LABELS[t] ?? titleCase(t);
@@ -2319,6 +2322,37 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
     arAgingPdf.renderArAgingReport(
       doc,
       opts.summary as ArAgingSummary,
+      {
+        generatedAt: opts.generatedAt,
+        partnerName: opts.branding?.name ?? null,
+        contactEmail: opts.branding?.contactEmail ?? null,
+        contactName: opts.branding?.contactName ?? null,
+        previous: opts.previous,
+      },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
+  } else if (
+    opts.reportType === 'ai_usage_by_client'
+    && opts.summary
+    // Same guard shape as the SLA / technician arms: `!= null` first
+    // (typeof null === 'object'), and `groups` is what separates this summary
+    // from the other period-bearing business summaries.
+    && (opts.summary as AiUsageByClientSummary).period != null
+    && typeof (opts.summary as AiUsageByClientSummary).period === 'object'
+    && Array.isArray((opts.summary as AiUsageByClientSummary).groups)
+  ) {
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    aiUsageByClientPdf.renderAiUsageByClientReport(
+      doc,
+      opts.summary as AiUsageByClientSummary,
       {
         generatedAt: opts.generatedAt,
         partnerName: opts.branding?.name ?? null,

@@ -86,7 +86,8 @@
         "prompt": "Mostre as entradas mais recentes do log de auditoria — quais ações foram realizadas nas últimas horas?"
       }
     },
-    "unattendedRelease": "Revisado pelo revisor de scripts de IA e liberado sem um cartão de aprovação."
+    "unattendedRelease": "Revisado pelo revisor de scripts de IA e liberado sem um cartão de aprovação.",
+    "openScriptProposal": "Abrir a proposta para ver as execuções ou salvá-la na biblioteca"
   },
   "aiChatSidebar": {
     "history": "Histórico",
@@ -256,8 +257,7 @@
       "allowAuto": "Permitir aplicação automática (o usuário final pode optar por ela)"
     },
     "autoApplyHint": "A aplicação automática fica desativada por padrão e só é possível quando permitida aqui.",
-    "allowedModels": "Modelos permitidos",
-    "allModelsHint": "Sem seleção = todos os modelos disponíveis.",
+    "aiModel": "Modelo de IA",
     "whoCanUse": "Quem pode usar o assistente",
     "userAccessOptions": {
       "all": "Todos os usuários do locatário mapeado",
@@ -507,5 +507,48 @@
       "expired": "expirado",
       "skipped": "ignorado"
     }
+  },
+  "aiModelPicker": {
+    "chooseModel": "Escolher um modelo",
+    "default": "(padrão)",
+    "suggested": "Sugerido",
+    "context": "Contexto de {{size}}",
+    "price": "{{input}} de entrada / {{output}} de saída por M de tokens",
+    "requiresRole": "Requer {{roles}}",
+    "requiresPermission": "Requer a permissão de modelos de IA premium",
+    "effort": "Esforço",
+    "effortDefault": "Padrão",
+    "effortLevels": {
+      "low": "Baixo",
+      "medium": "Médio",
+      "high": "Alto",
+      "xhigh": "Muito alto",
+      "max": "Máximo"
+    },
+    "fast": "Rápido ({{input}} de entrada / {{output}} de saída por M)",
+    "thinking": "Raciocínio"
+  },
+  "aiThinking": {
+    "label": "Pensando… {{seconds}} s"
+  },
+  "aiTurnModel": {
+    "answeredBy": "Respondido por {{model}}",
+    "fast": "Rápido",
+    "fellBack": "{{requested}} recusou; outro modelo respondeu",
+    "fastDowngraded": "O modo rápido não estava disponível; executado em velocidade padrão"
+  },
+  "aiContinuation": {
+    "reason": {
+      "cross_connection": "{{model}} usa outra conexão de IA, então este chat não pode mudar para ele.",
+      "connection_changed": "A conexão de IA mudou desde a última resposta, então este chat não pode trocar de modelo.",
+      "transcript_too_large": "Esta conversa é longa demais para {{model}}.",
+      "fit_unverifiable": "O Breeze não conseguiu confirmar que esta conversa cabe em {{model}}."
+    },
+    "messageKept": "Sua mensagem foi mantida. Continue em um novo chat que parte de um resumo deste, ou mantenha o modelo atual.",
+    "continue": "Continuar com {{model}} em um novo chat",
+    "keep": "Manter o modelo atual",
+    "created": "Novo chat em {{model}} iniciado a partir de um resumo.",
+    "failed": "Não foi possível iniciar o novo chat. Tente novamente.",
+    "openFailed": "O novo chat foi criado, mas não foi possível abri-lo. Encontre-o no histórico de chats; sua mensagem não foi enviada."
   }
 }

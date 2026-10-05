@@ -34,6 +34,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/safemode"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/securefs"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"github.com/breeze-rmm/agent/internal/state"
 	"github.com/breeze-rmm/agent/internal/unifi"
 	"github.com/breeze-rmm/agent/internal/userhelper"
@@ -423,6 +424,25 @@ func repairConfigThenInitLogging(cfg *config.Config, repair func()) {
 	initLogging(cfg)
 }
 
+// repairStartupPermissions ensures the macOS breeze group (no-op elsewhere)
+// and then repairs config/secret/helper-token permissions. The order matters
+// (#7829): fixPerms group-owns helper_token.yaml by the breeze group, so a
+// group created or repaired on this start must exist first, or the desktop
+// helper could not read its token until the NEXT restart. A group failure is
+// logged and does not skip the rest; the session broker retries it when it
+// sets up the socket. Support mode touches neither: it does not own the real
+// config dir.
+func repairStartupPermissions(supportMode bool, ensureGroup func() error, fixPerms func()) {
+	if supportMode {
+		return
+	}
+	if err := ensureGroup(); err != nil {
+		log.Warn("could not ensure IPC socket group before repairing config permissions",
+			"error", err.Error())
+	}
+	fixPerms()
+}
+
 // initLogging sets up structured logging from config. Call after config.Load().
 func initLogging(cfg *config.Config) {
 	var output io.Writer = os.Stdout
@@ -431,6 +451,9 @@ func initLogging(cfg *config.Config) {
 
 	if cfg.LogFile != "" {
 		rw, err := logging.NewRotatingWriter(cfg.LogFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
+		if err == nil {
+			trackLogFile(rw)
+		}
 		if err != nil {
 			logFileFallbackReason = describeLogFileError(err)
 			fmt.Fprintf(os.Stderr, "Failed to open log file %s: %s (logging to stdout)\n", cfg.LogFile, logFileFallbackReason)
@@ -736,9 +759,7 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// them. secrets.yaml stays root-only (0600). Skipped in support mode: this
 	// operates on the REAL config dir, which a support client does not own.
 	repairConfigThenInitLogging(cfg, func() {
-		if !cfg.SupportMode {
-			config.FixConfigPermissions()
-		}
+		repairStartupPermissions(cfg.SupportMode, sessionbroker.EnsureIPCGroup, config.FixConfigPermissions)
 	})
 
 	// Record this process's live PID immediately, before any startup step that
@@ -811,6 +832,8 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 			HTTPClient:   nil, // will use default
 			MinLevel:     cfg.LogShippingLevel,
 			AuthMonitor:  authMon,
+			// Restores a set_log_level override across restarts (#7416).
+			LevelOverridePath: config.LogLevelOverridePath(),
 		})
 		// Dev builds ship info-level logs for performance tuning and diagnostics.
 		if strings.HasPrefix(version, "dev-") && cfg.LogShippingLevel == "warn" {
@@ -1231,6 +1254,37 @@ func runAgent() {
 	serviceMode := isWindowsService()
 	startup := currentProcessStartup("run", "", serviceMode)
 	cacheMainProcessStartup(startup)
+
+	// On Windows, if launched by the SCM, run under the service framework
+	// so we report Running/Stopped status back to the SCM correctly. The
+	// service registers first and then takes the config folder back and the
+	// instance guard itself (prepareServiceStart), retrying while it cannot
+	// rather than exiting: a service that exits before registering counts as
+	// a failed start, which the service manager does not retry. The service
+	// wrapper owns its own config loading, enrollment check, and
+	// cancellation via the SCM request channel.
+	if serviceMode {
+		if err := runAsService(cfgFile, startup); err != nil {
+			log.Error("service failed", "error", err.Error())
+			mainAgentExitFn(1)
+		}
+		return
+	}
+
+	// Before anything reads the config, and before the instance guard
+	// (which hardens the folder and so would hide that another account had
+	// it): the agent re-secures its config folder if another account created
+	// it (e.g. through an older Quick Support client run by a standard user),
+	// and refuses one that is a link. The console path stops here; the
+	// service path retries (prepareServiceStart).
+	if err := reclaimConfigDirFn(false); err != nil {
+		// The instance-guard marker (the Windows Event Log; stderr), so a
+		// service that stops here is not just an SCM start error.
+		writeInstanceGuardMarkerFn(startup, fmt.Errorf("agent config folder: %w", err))
+		mainAgentExitFn(exitConfigDirUntrusted)
+		return
+	}
+
 	guard, err := acquireMainAgentGuardFn(startup)
 	if err != nil {
 		writeInstanceGuardMarkerFn(startup, err)
@@ -1254,18 +1308,6 @@ func runAgent() {
 	// Self-heal the installed service unit from older installs (launchd plists on
 	// macOS; systemd unit on Linux) after a binary-only auto-update.
 	reconcileServiceUnitIfNeededFn()
-
-	// On Windows, if launched by the SCM, run under the service framework
-	// so we report Running/Stopped status back to the SCM correctly. The
-	// service wrapper owns its own config loading, enrollment check, and
-	// cancellation via the SCM request channel.
-	if serviceMode {
-		if err := runAsService(cfgFile); err != nil {
-			log.Error("service failed", "error", err.Error())
-			mainAgentExitFn(1)
-		}
-		return
-	}
 
 	// Console / Unix service-manager mode. Load config, prepare bootstrap
 	// logging, and wait for enrollment if needed. signal.NotifyContext
@@ -1472,6 +1514,18 @@ func enrollDevice(enrollmentKey string) {
 	enrollmentKey, serverURL, enrollmentSecret = trimEnrollInputs(
 		enrollmentKey, serverURL, enrollmentSecret,
 	)
+
+	// Before reading the existing config: take the config folder back if
+	// another account created it, and remove an agent.yaml / secrets.yaml it
+	// could have written rather than carry their contents into this
+	// enrollment. Only for the machine-wide folder; a --config elsewhere is
+	// the caller's own.
+	if configFileInMachineDir(cfgFile) {
+		if err := reclaimConfigDirFn(true); err != nil {
+			enrollError(catConfig, "the agent config folder "+config.ConfigDir()+" cannot be used", err)
+			return
+		}
+	}
 
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
@@ -1893,6 +1947,9 @@ func initEnrollLogging(cfg *config.Config, quiet bool) {
 	}
 
 	rw, err := logging.NewRotatingWriter(cfg.LogFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
+	if err == nil {
+		trackLogFile(rw)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not open log file %s: %s — structured logs will go to stdout\n", cfg.LogFile, describeLogFileError(err))
 		logging.Init(cfg.LogFormat, cfg.LogLevel, os.Stdout)
@@ -2105,6 +2162,8 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 			AgentVersion: version + "-helper",
 			MinLevel:     cfg.LogShippingLevel,
 			AuthMonitor:  helperAuthMon,
+			// Follows the agent's set_log_level override (#7416).
+			LevelOverridePath: config.LogLevelOverridePath(),
 		})
 		// Dev builds ship info-level logs for performance tuning and diagnostics.
 		if strings.HasPrefix(version, "dev-") && cfg.LogShippingLevel == "warn" {

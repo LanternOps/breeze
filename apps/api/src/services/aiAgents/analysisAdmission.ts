@@ -44,7 +44,9 @@ export type AnalysisAdmissionRefusal =
   | 'too_many_input_devices'
   | 'device_not_in_org'
   | 'artifact_forbidden'
-  | 'enqueue_failed';
+  | 'enqueue_failed'
+  // AI model registry W03: the agents' AI model is unusable here right now.
+  | 'model_unavailable';
 
 export interface AdmitAnalysisRunInput {
   orgId: string;
@@ -110,6 +112,9 @@ export const SKIP_REASON_REFUSALS = {
   design_rate: 'analysis_rate',
   max_concurrent_patch_runs: 'max_concurrent_analysis_runs',
   patch_rate: 'analysis_rate',
+  max_concurrent_research_runs: 'max_concurrent_analysis_runs',
+  research_rate: 'analysis_rate',
+  research_auto_cap: 'analysis_rate',
   // This wave's own.
   analysis_not_available: 'analysis_not_available',
   external_processing_disabled: 'external_processing_disabled',
@@ -121,6 +126,12 @@ export const SKIP_REASON_REFUSALS = {
   compute_credits_exhausted: 'compute_budget_exceeded',
   too_many_input_devices: 'too_many_input_devices',
   workspace_unavailable: 'analysis_not_available',
+  // AI model registry W03 — its own refusal: the setting to change is the AI
+  // agents' model, not a budget or the analysis feature.
+  model_unavailable: 'model_unavailable',
+  // AI Suggested Fixes W3 — only the automation ai_triage lane supplies the
+  // probe that yields this, so it is unreachable from an analysis admission.
+  proven_fix_available: 'analysis_not_available',
 } satisfies Record<AgentRunSkipReason, AnalysisAdmissionRefusal>;
 
 /** Extra sentence for the reasons whose refusal alone would mislead. */
@@ -128,6 +139,7 @@ const SKIP_REASON_DETAILS: Partial<Record<AgentRunSkipReason, string>> = {
   compute_credits_exhausted: 'This organization has no AI credits left for sandbox compute.',
   workspace_unavailable: 'Compute workspaces are temporarily unavailable. Try again shortly.',
   duplicate: 'An identical analysis is already queued for this organization.',
+  model_unavailable: 'The AI model configured for AI agents is not available. An administrator must choose another.',
 };
 
 export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<AdmitAnalysisRunResult> {

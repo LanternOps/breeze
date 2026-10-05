@@ -11,7 +11,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const selectMock = vi.fn();
 const insertMock = vi.fn();
 const updateMock = vi.fn();
-const resolveLlmConfigForOrgMock = vi.fn();
 const getEffectiveAiBudgetMock = vi.fn();
 const withSystemDbAccessContextMock = vi.fn((fn: () => unknown) => fn());
 
@@ -46,10 +45,18 @@ vi.mock('./aiAgentSdkTools', () => ({ listChatSurfaceToolNames: () => [] }));
 vi.mock('./brainDeviceContext', () => ({ getActiveDeviceContext: vi.fn().mockResolvedValue([]) }));
 vi.mock('./llm/llmConfigResolver', () => ({
   LlmUnavailableError: class LlmUnavailableError extends Error {},
-  resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
 }));
 vi.mock('./effectiveSettings', () => ({
   getEffectiveAiBudget: (...args: unknown[]) => getEffectiveAiBudgetMock(...args),
+}));
+
+// W03 Task 9 (#7601): createSession picks its model through the registry.
+vi.mock('./aiModels/candidateLoader', () => ({ readOrgPartnerId: vi.fn(async () => 'partner-1') }));
+vi.mock('./aiModels/sessionModel', () => ({
+  chooseSessionModel: vi.fn(async () => ({
+    offeringId: 'off-1', offeringPartnerId: 'partner-1', options: null,
+    model: 'claude-sonnet-4-6', billingSource: 'platform',
+  })),
 }));
 
 import { createSession } from './aiAgent';
@@ -78,11 +85,6 @@ describe('createSession wires the effective maxTurnsPerSession budget (#6473)', 
   beforeEach(() => {
     vi.clearAllMocks();
     withSystemDbAccessContextMock.mockImplementation((fn: () => unknown) => fn());
-    resolveLlmConfigForOrgMock.mockResolvedValue({
-      source: 'platform',
-      apiKey: 'platform-key',
-      model: 'claude-sonnet-4-6',
-    });
   });
 
   it('sets maxTurns from getEffectiveAiBudget instead of leaving it to the schema default', async () => {

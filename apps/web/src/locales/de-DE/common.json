@@ -60,11 +60,13 @@
     "billing": "Abrechnung",
     "organizations": "Organisationen",
     "aiUsage": "KI-Nutzung",
+    "aiProvidersModels": "KI-Anbieter und -Modelle",
     "scriptAuthoring": "Skripterstellung",
     "toolSources": "Tool-Quellen",
     "aiAgents": "KI-Agenten",
     "aiAgentRuns": "KI-Agenten-Läufe",
     "aiImpact": "KI-Wirkung",
+    "fixMemory": "Fix-Gedächtnis",
     "fleetDesign": "Flottendesign",
     "customFields": "Benutzerdefinierte Felder",
     "savedFilters": "Gespeicherte Filter",
@@ -106,7 +108,9 @@
     "system": "System",
     "monitorConversion": "Monitor-Konvertierung",
     "timeSync": "Zeitsynchronisierung",
-    "aiModels": "KI-Modelle"
+    "aiModels": "KI-Modelle",
+    "autopay": "Autopay",
+    "payments": "Payments"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -1427,6 +1431,7 @@
           "created": "Webhook erstellt",
           "disabled": "Webhook deaktiviert",
           "enabled": "Webhook aktiviert",
+          "testQueued": "Testzustellung in die Warteschlange gestellt",
           "updated": "Webhook aktualisiert"
         },
         "title": "Webhooks"
@@ -2373,7 +2378,10 @@
           "script": "Skript",
           "template": "Vorlage",
           "playbook": "Spielbuch",
-          "diagnostic": "Diagnose"
+          "diagnostic": "Diagnose",
+          "builtin": "Integrierte Aktion",
+          "manualSteps": "Manuelle Schritte",
+          "scriptDraft": "Skriptentwurf"
         },
         "targetIdentifiers": {
           "script": "Skript {{id}}",
@@ -2382,7 +2390,8 @@
           "templateMissing": "Vorlage ohne Vorlagen-ID",
           "playbook": "Spielbuch {{id}}",
           "playbookMissing": "Playbook ohne Playbook-ID",
-          "diagnostic": "diagnostische Maßnahme"
+          "diagnostic": "diagnostische Maßnahme",
+          "builtin": "integrierte Aktion {{action}}"
         },
         "targetDevices": {
           "none": "In diesem Vorschlag ist kein Zielgerät enthalten",
@@ -2394,9 +2403,12 @@
           "generateFailed": "Vorgeschlagene Korrekturen konnten nicht generiert werden",
           "updateFailed": "Der vorgeschlagene Fix konnte nicht aktualisiert werden",
           "executeFailed": "Der vorgeschlagene Fix konnte nicht ausgeführt werden",
-          "approvalFailed": "Die Genehmigung konnte nicht angefordert werden"
+          "approvalFailed": "Die Genehmigung konnte nicht angefordert werden",
+          "researchFailed": "Recherche konnte nicht gestartet werden",
+          "draftFailed": "Der Skriptentwurf konnte nicht geöffnet werden."
         },
         "messages": {
+          "draftCopied": "Speicher ist blockiert — der Auftrag wurde kopiert; füge ihn im Skript-Builder ein.",
           "disabled": "Vorgeschlagene Korrekturen sind deaktiviert",
           "generated": "Vorgeschlagene Korrekturen generiert",
           "accepted": "Vorgeschlagener Fix akzeptiert",
@@ -2480,6 +2492,52 @@
             "inconclusive": "nicht eindeutig",
             "cancelled": "abgebrochen"
           }
+        },
+        "groups": {
+          "proven": "Bewährte Lösungen",
+          "ai": "KI-Vorschläge",
+          "similar": "Ähnliche Lösungen",
+          "legacy": "Frühere Stichwort-Treffer"
+        },
+        "badges": {
+          "aiResearched": "KI-recherchiert",
+          "aiWritten": "Von KI verfasst — vor dem Befolgen prüfen"
+        },
+        "track": {
+          "lastVerified": "zuletzt vor {{days}} Tagen bestätigt",
+          "neverVerified": "noch nicht bestätigt"
+        },
+        "research": {
+          "running": "Recherche läuft…",
+          "runningDeep": "Ausführliche Recherche läuft…",
+          "stalled": "Recherche läuft noch — schauen Sie in einigen Minuten wieder vorbei.",
+          "failed": "Recherche fehlgeschlagen.",
+          "noSafeFix": "Die KI hat für dieses Problem keine sichere Lösung gefunden.",
+          "checkBudget": "KI-Budget prüfen",
+          "deeper": "Tiefer recherchieren",
+          "retry": "Erneut versuchen",
+          "denial": {
+            "credits": "Die KI-Guthaben für diesen Abrechnungszeitraum sind aufgebraucht.",
+            "dailyBudget": "Das tägliche KI-Budget für Recherchen ist erreicht.",
+            "orgBudget": "Das KI-Budget dieser Organisation ist erreicht.",
+            "autoCap": "Das Limit für automatische Recherchen ist erreicht. Sie können weiterhin manuell recherchieren.",
+            "busy": "Die Recherche ist gerade ausgelastet. Versuchen Sie es in einigen Minuten erneut.",
+            "permission": "Sie haben keine Berechtigung, eine KI-Recherche zu starten.",
+            "unavailable": "Die KI-Recherche ist vorübergehend nicht verfügbar.",
+            "modelUnavailable": "Das KI-Modell für die Recherche ist nicht verfügbar.",
+            "notProvisioned": "Die KI-Recherche ist für diese Installation noch nicht eingerichtet."
+          }
+        },
+        "runBuiltin": "{{action}} ausführen",
+        "draftScript": "Skript entwerfen",
+        "emptyHint": "„Generieren“ prüft zuerst bewährte Lösungen und fragt dann die KI.",
+        "reviewed": {
+          "pickerLabel": "Geprüfte Schritte",
+          "asWritten": "Schritte wie geschrieben (nicht geteilt)",
+          "save": "Als geprüfte Schritte speichern",
+          "saved": "Als geprüfte Schritte gespeichert",
+          "failed": "Geprüfte Schritte konnten nicht gespeichert werden",
+          "stepsLabel": "Schritte (einer pro Zeile)"
         }
       }
     },
@@ -2538,5 +2596,66 @@
     "noneConfigured": "Kein {{source}} konfiguriert",
     "overriding": "Überschreibt {{source}}",
     "overridingWithValue": "Überschreibt {{source}} ({{value}})"
+  },
+  "fixMemoryPage": {
+    "title": "Fix-Gedächtnis",
+    "subtitle": "Fixes, die Ihr Team ausgeführt hat, und wie oft sie tatsächlich behoben blieben.",
+    "tabs": {
+      "fixes": "Fixes",
+      "steps": "Geprüfte Schritte"
+    },
+    "filters": {
+      "os": "Betriebssystem",
+      "anyOs": "Beliebiges Betriebssystem",
+      "status": "Status",
+      "anyStatus": "Beliebiger Status",
+      "scope": "Geltungsbereich",
+      "anyScope": "Beliebiger Geltungsbereich",
+      "condition": "Nach Bedingung suchen"
+    },
+    "columns": {
+      "fix": "Fix",
+      "record": "Erfolgsbilanz",
+      "rate": "Erfolgsquote",
+      "scope": "Geltungsbereich",
+      "os": "BS",
+      "condition": "Bedingung",
+      "lastVerified": "Zuletzt verifiziert",
+      "status": "Status",
+      "actions": "Aktionen"
+    },
+    "status": {
+      "active": "Aktiv",
+      "demoted": "Herabgestuft",
+      "retired": "Zurückgezogen",
+      "stale": "Veraltet"
+    },
+    "scope": {
+      "everyClient": "Alle Kunden",
+      "oneClient": "Dieser Kunde"
+    },
+    "signature": "Signatur {{prefix}}",
+    "retire": {
+      "action": "Zurückziehen",
+      "confirmTitle": "Diesen Fix zurückziehen?",
+      "confirmBody": "Zurückgezogene Fixes werden nicht mehr vorgeschlagen. Ihr Verlauf bleibt erhalten.",
+      "confirm": "Fix zurückziehen",
+      "success": "Fix zurückgezogen.",
+      "failed": "Der Fix konnte nicht zurückgezogen werden."
+    },
+    "steps": {
+      "heading": "Schritte",
+      "retire": "Schritte zurückziehen",
+      "success": "Schritte zurückgezogen.",
+      "failed": "Die Schritte konnten nicht zurückgezogen werden.",
+      "empty": "Noch keine geprüften Schritte. Speichern Sie Schritte aus einem Vorschlag, damit sie hier erscheinen."
+    },
+    "empty": "Noch keine Fixes gespeichert. Fixes erscheinen hier, nachdem sie ausgeführt und ihr Ergebnis beobachtet wurde.",
+    "loadMore": "Mehr laden",
+    "never": "Nie",
+    "retry": "Erneut versuchen",
+    "errors": {
+      "loadFailed": "Fix-Gedächtnis konnte nicht geladen werden."
+    }
   }
 }

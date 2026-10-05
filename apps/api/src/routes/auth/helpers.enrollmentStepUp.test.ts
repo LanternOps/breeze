@@ -361,64 +361,99 @@ describe('resolveEnrollmentStepUp', () => {
     });
   });
 
-  // The gap two reviewers flagged in the plan: `enroll_first_factor` authorizes
-  // a FIRST factor and nothing else. Without the userIsMfaProtected check a
-  // passwordless account that ALREADY holds a factor could re-auth at its IdP
-  // and use the grant to add a SECOND one, side-stepping
+  // `enroll_first_factor` authorizes a FIRST factor and nothing else. Without
+  // a purpose check a passwordless account that ALREADY holds a factor could
+  // re-auth at its IdP and use that grant to add a SECOND one, side-stepping
   // enforceExistingFactorStepUp (SR2-20).
-  describe('FIRST factor only — the SSO road is refused for an already-protected account', () => {
-    it('allows a passwordless account with ZERO factors', async () => {
+  //
+  // #7369: refusing the protected account the SSO road OUTRIGHT closed that
+  // hole but also left it with no road at all — it has no password, so it
+  // could never add a second factor. A protected passwordless account now
+  // takes the SSO road with the grant the callback mints for it,
+  // `sso_reauth_manage_factor`, which stands in for the PASSWORD leg only.
+  // The existing-factor leg (SR2-20, enforced by every enrollment route) is
+  // untouched and stays mandatory.
+  describe('grant purpose follows the factor state (#7369)', () => {
+    // Grant store keyed by id -> the operation it was minted for. Mirrors
+    // bindsMatch, which fails closed on any operation mismatch.
+    function useGrants(grants: Record<string, string>) {
+      const store = new Map(Object.entries(grants));
+      validateStepUpGrant.mockImplementation(async (id: string, bind: { operation: string }) =>
+        store.get(id) === bind.operation);
+      consumeStepUpGrant.mockImplementation(async (id: string, bind: { operation: string }) => {
+        const op = store.get(id);
+        store.delete(id);
+        return op === bind.operation;
+      });
+      return store;
+    }
+
+    const manageBind = {
+      userId: USER_ID,
+      operation: 'sso_reauth_manage_factor',
+      authEpoch: 3,
+      mfaEpoch: 1,
+      sid: SID,
+    };
+
+    it('a passwordless account with ZERO factors still binds enroll_first_factor (unchanged)', async () => {
       queuePasswordlessNoFactor();
-      consumeStepUpGrant.mockResolvedValue(true);
+      useGrants({ [GRANT]: 'enroll_first_factor' });
 
       const res = await resolveEnrollmentStepUp(ctx(), authCtx(), { ssoReauthGrantId: GRANT }, TERMINAL);
 
       expect(res).toBeNull();
-      expect(consumeStepUpGrant).toHaveBeenCalledTimes(1);
+      expect(consumeStepUpGrant).toHaveBeenCalledWith(GRANT, expect.objectContaining({ operation: 'enroll_first_factor' }));
     });
 
-    it('REFUSES a passwordless account that already has TOTP', async () => {
-      queuePasswordlessWithFactor({ mfaEnabled: true });
-      consumeStepUpGrant.mockResolvedValue(true);
-
-      const res = await resolveEnrollmentStepUp(ctx(), authCtx(), { ssoReauthGrantId: GRANT }, TERMINAL);
-
-      expect((res as any).__status).toBe(401);
-      expect((res as any).__body).toEqual({
-        error: 'Invalid credentials',
-        message: 'Invalid credentials',
-        code: 'invalid_credentials',
-      });
-      // Refused BEFORE the grant is touched: a rejected enrollment must not
-      // burn the caller's single-use grant.
-      expect(consumeStepUpGrant).not.toHaveBeenCalled();
-      expect(validateStepUpGrant).not.toHaveBeenCalled();
-    });
-
-    it('REFUSES a passwordless account that already has a non-disabled passkey', async () => {
-      queuePasswordlessWithFactor({ passkeyCount: 1 });
-      consumeStepUpGrant.mockResolvedValue(true);
-
-      const res = await resolveEnrollmentStepUp(ctx(), authCtx(), { ssoReauthGrantId: GRANT }, TERMINAL);
-
-      expect((res as any).__status).toBe(401);
-      expect(consumeStepUpGrant).not.toHaveBeenCalled();
-      expect(validateStepUpGrant).not.toHaveBeenCalled();
-    });
-
-    it('REFUSES at the non-consuming gate too, not just the terminal write', async () => {
-      queuePasswordlessWithFactor({ mfaEnabled: true });
-      validateStepUpGrant.mockResolvedValue(true);
+    it('REFUSES a sso_reauth_manage_factor grant from a passwordless account with ZERO factors', async () => {
+      queuePasswordlessNoFactor();
+      useGrants({ [GRANT]: 'sso_reauth_manage_factor' });
 
       const res = await resolveEnrollmentStepUp(ctx(), authCtx(), { ssoReauthGrantId: GRANT }, GATE);
 
       expect((res as any).__status).toBe(401);
+      expect((res as any).__body).toMatchObject({ code: 'enrollment_grant_expired' });
+    });
+
+    it('a passwordless account holding TOTP validates its SSO grant as sso_reauth_manage_factor at the gate', async () => {
+      queuePasswordlessWithFactor({ mfaEnabled: true });
+      useGrants({ [GRANT]: 'sso_reauth_manage_factor' });
+
+      const res = await resolveEnrollmentStepUp(ctx(), authCtx(), { ssoReauthGrantId: GRANT }, GATE);
+
+      expect(res).toBeNull();
+      expect(validateStepUpGrant).toHaveBeenCalledWith(GRANT, manageBind);
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+    });
+
+    it('a passwordless account holding a passkey consumes its sso_reauth_manage_factor grant at the terminal write', async () => {
+      queuePasswordlessWithFactor({ passkeyCount: 1 });
+      useGrants({ [GRANT]: 'sso_reauth_manage_factor' });
+
+      const res = await resolveEnrollmentStepUp(ctx(), authCtx(), { ssoReauthGrantId: GRANT }, TERMINAL);
+
+      expect(res).toBeNull();
+      expect(consumeStepUpGrant).toHaveBeenCalledWith(GRANT, manageBind);
       expect(validateStepUpGrant).not.toHaveBeenCalled();
     });
 
-    it('REFUSES even when passwordAlreadyProven is set (that flag never opens the SSO road)', async () => {
+    it('REFUSES an enroll_first_factor grant from an account that ALREADY holds a factor', async () => {
+      queuePasswordlessWithFactor({ passkeyCount: 1 });
+      useGrants({ [GRANT]: 'enroll_first_factor' });
+
+      const res = await resolveEnrollmentStepUp(ctx(), authCtx(), { ssoReauthGrantId: GRANT }, TERMINAL);
+
+      expect((res as any).__status).toBe(401);
+      expect((res as any).__body).toMatchObject({ code: 'enrollment_grant_expired', reauthUrl: '/sso/reauth/start' });
+      // Bound as a management grant, never as a first-factor enrollment.
+      expect(consumeStepUpGrant).toHaveBeenCalledWith(GRANT, expect.objectContaining({ operation: 'sso_reauth_manage_factor' }));
+      expect(consumeStepUpGrant).not.toHaveBeenCalledWith(GRANT, expect.objectContaining({ operation: 'enroll_first_factor' }));
+    });
+
+    it('passwordAlreadyProven never skips the SSO road for a protected account — the grant is still spent', async () => {
       queuePasswordlessWithFactor({ passkeyCount: 2 });
-      consumeStepUpGrant.mockResolvedValue(true);
+      useGrants({ [GRANT]: 'sso_reauth_manage_factor' });
 
       const res = await resolveEnrollmentStepUp(
         ctx(),
@@ -427,8 +462,28 @@ describe('resolveEnrollmentStepUp', () => {
         { keyPrefix: 'passkey:pwd', consume: true, passwordAlreadyProven: true },
       );
 
+      expect(res).toBeNull();
+      expect(consumeStepUpGrant).toHaveBeenCalledWith(GRANT, manageBind);
+    });
+
+    it('a passwordless account offering NO proof still gets the actionable enrollment_proof_required', async () => {
+      dbState.selectQueue.push([{ passwordHash: null }]);
+
+      const res = await resolveEnrollmentStepUp(ctx(), authCtx(), {}, TERMINAL);
+
       expect((res as any).__status).toBe(401);
+      expect((res as any).__body).toMatchObject({ error: 'enrollment_proof_required', reauthUrl: '/sso/reauth/start' });
       expect(consumeStepUpGrant).not.toHaveBeenCalled();
+    });
+
+    it('never charges the password rate limiter on the protected SSO road', async () => {
+      queuePasswordlessWithFactor({ mfaEnabled: true });
+      useGrants({ [GRANT]: 'sso_reauth_manage_factor' });
+
+      await resolveEnrollmentStepUp(ctx(), authCtx(), { ssoReauthGrantId: GRANT }, TERMINAL);
+
+      expect(rateLimiter).not.toHaveBeenCalled();
+      expect(verifyPassword).not.toHaveBeenCalled();
     });
   });
 });

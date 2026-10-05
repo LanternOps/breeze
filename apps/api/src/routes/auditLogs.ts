@@ -206,6 +206,18 @@ export function resolveActorName(row: DbRow, details?: Record<string, unknown> |
   }
 
   if (row.log.actorType === 'api_key') {
+    // A partner service principal acts as ITSELF (Partner API): its domain
+    // rows carry the PRINCIPAL id as actor_id, not a key id, and name the
+    // principal in details. Render those by principal so they never read as
+    // "API Key <slice of a principal id>" next to rows that are keyed by a
+    // key id. The credential-level `partner_api.request` row IS keyed by the
+    // key id (it is about the credential) and keeps the label below.
+    const principalName = typeof details?.partnerServicePrincipalName === 'string'
+      ? details.partnerServicePrincipalName.trim()
+      : '';
+    if (principalName) return `Service principal ${principalName}`;
+    const principalId = typeof details?.partnerServicePrincipalId === 'string' ? details.partnerServicePrincipalId : null;
+    if (principalId) return `Service principal ${principalId.slice(0, 8)}`;
     return rawActorId ? `API Key ${rawActorId.slice(0, 8)}` : 'API Key';
   }
 

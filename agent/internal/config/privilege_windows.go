@@ -100,3 +100,79 @@ func setRestorePrivilege(enable bool) (wasEnabled bool, err error) {
 	}
 	return prev.Privileges[0].Attributes&windows.SE_PRIVILEGE_ENABLED != 0, nil
 }
+
+// enableTokenPrivileges enables each named privilege this process holds
+// (one it does not hold is skipped) and returns a func restoring the ones it
+// changed. It holds restorePrivilegeMu until released, like
+// enableRestorePrivilege.
+func enableTokenPrivileges(names ...string) (release func(), err error) {
+	restorePrivilegeMu.Lock()
+	var changed []string
+	for _, name := range names {
+		was, err := setTokenPrivilege(name, true)
+		if err != nil {
+			if errors.Is(err, errPrivilegeNotHeld) {
+				continue
+			}
+			for _, n := range changed {
+				_, _ = setTokenPrivilege(n, false)
+			}
+			restorePrivilegeMu.Unlock()
+			return nil, err
+		}
+		if !was {
+			changed = append(changed, name)
+		}
+	}
+	return sync.OnceFunc(func() {
+		defer restorePrivilegeMu.Unlock()
+		for _, n := range changed {
+			if _, err := setTokenPrivilege(n, false); err != nil {
+				log.Warn("failed to disable a privilege after use", "privilege", n, "error", err.Error())
+			}
+		}
+	}), nil
+}
+
+var errPrivilegeNotHeld = errors.New("the privilege is not held by the process token")
+
+// setTokenPrivilege is setRestorePrivilege for any privilege name.
+func setTokenPrivilege(name string, enable bool) (wasEnabled bool, err error) {
+	var token windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_ADJUST_PRIVILEGES|windows.TOKEN_QUERY, &token); err != nil {
+		return false, fmt.Errorf("open process token: %w", err)
+	}
+	defer func() { _ = token.Close() }()
+	n16, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return false, err
+	}
+	var luid windows.LUID
+	if err := windows.LookupPrivilegeValue(nil, n16, &luid); err != nil {
+		return false, fmt.Errorf("lookup %s: %w", name, err)
+	}
+	var attrs uint32
+	if enable {
+		attrs = windows.SE_PRIVILEGE_ENABLED
+	}
+	newState := windows.Tokenprivileges{
+		PrivilegeCount: 1,
+		Privileges:     [1]windows.LUIDAndAttributes{{Luid: luid, Attributes: attrs}},
+	}
+	var prev windows.Tokenprivileges
+	var retLen uint32
+	r1, _, callErr := procConfigAdjustTokenPrivileges.Call(
+		uintptr(token), 0, uintptr(unsafe.Pointer(&newState)),
+		unsafe.Sizeof(prev), uintptr(unsafe.Pointer(&prev)), uintptr(unsafe.Pointer(&retLen)),
+	)
+	if r1 == 0 {
+		return false, fmt.Errorf("adjust token privileges for %s: %w", name, callErr)
+	}
+	if errors.Is(callErr, windows.ERROR_NOT_ALL_ASSIGNED) {
+		return false, fmt.Errorf("%s: %w", name, errPrivilegeNotHeld)
+	}
+	if prev.PrivilegeCount == 0 {
+		return enable, nil
+	}
+	return prev.Privileges[0].Attributes&windows.SE_PRIVILEGE_ENABLED != 0, nil
+}

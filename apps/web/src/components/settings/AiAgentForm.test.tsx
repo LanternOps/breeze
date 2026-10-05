@@ -34,6 +34,12 @@ vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (sel?: (s: typeof orgState.current) => unknown) => (sel ? sel(orgState.current) : orgState.current),
 }));
 
+vi.mock('./aiAgents/AgentModelSelect', () => ({
+  default: ({ onChange }: { onChange: (id: string | null) => void }) => (
+    <button type="button" data-testid="ai-agent-model" onClick={() => onChange('opus')}>stub</button>
+  ),
+}));
+
 import { type AgentToolCatalogDto } from '@breeze/shared';
 import AiAgentForm, { type AiAgentDto } from './AiAgentForm';
 import { fetchWithAuth } from '../../stores/auth';
@@ -74,7 +80,7 @@ function makeAgent(overrides: Partial<AiAgentDto> = {}): AiAgentDto {
     name: 'Triage',
     enabled: true,
     mode: 'shadow',
-    model: null,
+    offeringId: null,
     orgId: 'org-1',
     partnerId: null,
     ownerScope: 'organization',
@@ -131,7 +137,7 @@ const CATALOG: AgentToolCatalogDto = {
       operations: [{ key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false, actRequiresAuthorizedScripts: false }],
     },
   ],
-  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [] },
+  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [], research: [] },
   unreachableTools: ['manage_ai_agents'],
 };
 
@@ -706,5 +712,43 @@ describe('AiAgentForm — disable confirmation', () => {
     expect(dialog).not.toBeNull();
     expect((dialog as HTMLElement).innerHTML).toContain('bg-warning/10');
     expect((dialog as HTMLElement).innerHTML).not.toContain('bg-destructive/10');
+  });
+});
+
+describe('AiAgentForm — model select (W05)', () => {
+  const patched = () => fetchMock.mock.calls.some(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH');
+  it('an untouched save never sends offeringId', async () => {
+    mockEndpoints();
+    renderForm();
+    fireEvent.click(await screen.findByTestId('ai-agent-save'));
+    await waitFor(() => expect(patched()).toBe(true));
+    expect(writeBody()).not.toHaveProperty('offeringId');
+    // W08 (#7606): the retired policy model string is never sent (the API 400s it).
+    expect(writeBody()).not.toHaveProperty('model');
+  });
+  it('renders the model select; a change is sent as offeringId', async () => {
+    mockEndpoints();
+    renderForm();
+    fireEvent.click(await screen.findByTestId('ai-agent-model'));
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+    await waitFor(() => expect(patched()).toBe(true));
+    expect(writeBody()).toMatchObject({ offeringId: 'opus' });
+  });
+});
+
+describe('AiAgentForm — built-in research agent (W2)', () => {
+  it('shows only name, enabled and research caps, and saves the projected body', async () => {
+    fetchMock.mockResolvedValue(json({ data: makeAgent({ kind: 'research' }) }));
+    renderForm({ agent: makeAgent({ kind: 'research', mode: 'act', toolAllowlist: [], orgId: null, partnerId: 'p-1', ownerScope: 'partner' }) });
+    expect(screen.getByTestId('ai-agent-research-caps')).toBeTruthy();
+    expect(screen.queryByTestId('ai-agent-instructions')).toBeNull();
+    fireEvent.change(screen.getByTestId('ai-agent-research-cap-researchDeepBudgetCentsPerRun'), { target: { value: '40' } });
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) =>
+        (init as RequestInit | undefined)?.method === 'PATCH')).toBe(true));
+    const sent = writeBody();
+    expect(Object.keys(sent).sort()).toEqual(['enabled', 'limits', 'name']);
+    expect((sent.limits as Record<string, number>).researchDeepBudgetCentsPerRun).toBe(40);
   });
 });

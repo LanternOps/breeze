@@ -8,8 +8,10 @@ import {
   alertVerdictOutcomeSchema,
   analysisOutcomeSchema,
   createAiAgentSchema,
+  previewAiAgentSchema,
   updateAiAgentSchema,
 } from './aiAgents';
+import { retiredAiModelFieldMessage } from './retiredAiModelFields';
 import {
   AI_AGENT_KINDS,
   AI_AGENT_LIMIT_DEFAULTS,
@@ -161,7 +163,7 @@ describe('aiAgents validators', () => {
   });
 
   it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 13 (sweep act-limits bump, #4442 W05)', () => {
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(15);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(16);
   });
 
   it('rejects instructions over 2000 chars and unknown allowlist shapes', () => {
@@ -175,6 +177,19 @@ describe('aiAgents validators', () => {
     expect(createAiAgentSchema.safeParse({ kind: 'triage', name: 'Triage', ownerScope: 'partner' }).success).toBe(true);
     const parsed = updateAiAgentSchema.parse({ ownerScope: 'partner', kind: 'patch', orgId: 'x', name: 'New' });
     expect(parsed).toEqual({ name: 'New' });
+  });
+
+  it('policy create / update accept an offering id or null (AI model registry W05)', () => {
+    const id = '0b8f1f2e-6a1c-4c55-9a39-6a7f1e1c0a01';
+    expect(updateAiAgentSchema.parse({ offeringId: id }).offeringId).toBe(id);
+    expect(updateAiAgentSchema.parse({ offeringId: null }).offeringId).toBeNull();
+    expect(updateAiAgentSchema.safeParse({ offeringId: 'opus' }).success).toBe(false);
+    expect(createAiAgentSchema.parse({ kind: 'triage', name: 'T', offeringId: id }).offeringId).toBe(id);
+    expect(createAiAgentSchema.safeParse({ kind: 'triage', name: 'T', offeringId: 'opus' }).success).toBe(false);
+    // Absent stays absent on create: no default — an omitted offeringId means
+    // the write does not choose by offering.
+    expect(createAiAgentSchema.parse({ kind: 'triage', name: 'T' })).not.toHaveProperty('offeringId');
+    expect(updateAiAgentSchema.parse({})).not.toHaveProperty('offeringId');
   });
 
   it('a PATCH never invents a value the caller did not send — at any depth', () => {
@@ -468,7 +483,7 @@ describe('limits v6', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour).toBe(20);
     expect(AI_AGENT_LIMIT_DEFAULTS.sweepBudgetCentsPerRun).toBe(30);
     expect(AI_AGENT_LIMIT_DEFAULTS.sweepMaxTurns).toBe(8);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(15);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(16);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentSweepRuns: 11 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxSweepRunsPerHour: 201 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, sweepBudgetCentsPerRun: 4 }).success).toBe(false);
@@ -482,7 +497,7 @@ describe('limits v7', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxNarrativeRunsPerHour).toBe(5);
     expect(AI_AGENT_LIMIT_DEFAULTS.narrativeBudgetCentsPerRun).toBe(20);
     expect(AI_AGENT_LIMIT_DEFAULTS.narrativeMaxTurns).toBe(3);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(15);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(16);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentNarrativeRuns: 6 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxNarrativeRunsPerHour: 51 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, narrativeBudgetCentsPerRun: 4 }).success).toBe(false);
@@ -500,7 +515,7 @@ describe('limits v8', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxTriageRunsPerHour).toBe(30);
     expect(AI_AGENT_LIMIT_DEFAULTS.triageBudgetCentsPerRun).toBe(10);
     expect(AI_AGENT_LIMIT_DEFAULTS.triageMaxTurns).toBe(6);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(15);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(16);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentTriageRuns: 11 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxTriageRunsPerHour: 201 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, triageBudgetCentsPerRun: 51 }).success).toBe(false);
@@ -525,7 +540,7 @@ describe('designer kind', () => {
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxDesignRunsPerDay: 25 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, designBudgetCentsPerRun: 24 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse(AI_AGENT_LIMIT_DEFAULTS).success).toBe(true);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(15);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(16);
   });
   it('#5870: bounds designWallClockSeconds like analysisWallClockSeconds (60s-1800s)', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.designWallClockSeconds).toBe(1800);
@@ -638,5 +653,25 @@ describe('analysisOutcomeSchema (execution plane W04)', () => {
     expect(analysisOutcomeSchema.safeParse({
       summary: 'ok', findings: [], artifactHandles: ['../../etc/passwd'], proposedActions: [],
     }).success).toBe(false);
+  });
+});
+
+describe('agent policy model string is retired (W08, #7606)', () => {
+  it.each([
+    ['create', () => createAiAgentSchema.safeParse({ kind: 'triage', name: 'T', model: 'claude-x' })],
+    ['create (null)', () => createAiAgentSchema.safeParse({ kind: 'triage', name: 'T', model: null })],
+    ['update', () => updateAiAgentSchema.safeParse({ model: 'claude-x' })],
+    ['update (null)', () => updateAiAgentSchema.safeParse({ model: null })],
+    ['preview', () => previewAiAgentSchema.safeParse({ kind: 'triage', model: 'claude-x' })],
+  ])('%s with model → rejected naming offeringId', (_n, parse) => {
+    const r = parse();
+    expect(r.success).toBe(false);
+    expect(r.error!.issues.map((i) => i.message)).toContain(retiredAiModelFieldMessage('model'));
+    expect(JSON.stringify(r.error!.issues)).toContain('offeringId');
+  });
+
+  it('create / update without model still parse and have no model key', () => {
+    expect(createAiAgentSchema.parse({ kind: 'triage', name: 'T' })).not.toHaveProperty('model');
+    expect(updateAiAgentSchema.parse({ name: 'x' })).not.toHaveProperty('model');
   });
 });

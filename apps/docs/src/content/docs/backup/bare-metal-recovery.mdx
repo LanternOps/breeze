@@ -151,7 +151,9 @@ To build bundles that run, set `RECOVERY_SIGNING_PRIVATE_KEY` and `RECOVERY_SIGN
 
 #### Reading the result
 
-The run ends with a status and a short result summary (`filesRestored`, `failedFiles`, `bytesRestored`, `stateApplied`, `validated`, `warnings`). The same fields are recorded against the recovery in Breeze.
+The run ends with a status and a short result summary (`filesRestored`, `failedFiles`, `bytesRestored`, `stateApplied`, `validated`, `warnings`, and an optional result `code`). The same fields are recorded against the recovery in Breeze, and the **Recovery Bootstrap** tab shows any code as **Result code: …** — for example an integrity code such as `checksum_mismatch` (see [Integrity checks on restore](/backup/restoring/#integrity-checks-on-restore)). Advisory warnings (unattested snapshot, vault fallback, files-only Windows recovery) are shown as warnings, never as the failure reason.
+
+For an attested snapshot, the recovery checks the manifest, the system-state manifest and every file against the attestation before using them, and stages each file privately (readable only by root, or SYSTEM and Administrators) before moving it into place, keeping the replaced file's owner, mode and permissions. A snapshot that failed its integrity check is refused.
 
 | Status | Meaning |
 |---|---|
@@ -176,7 +178,7 @@ The artifacts are collected by the agent at backup time and applied by the platf
 | Step | What is applied |
 |---|---|
 | `/etc` | Copied onto the live `/etc` — regular files, symlinks, modes and timestamps. **Excluded**, so the booted OS keeps its own identity and networking: `fstab`, `machine-id`, `hostname`, `netplan/`, `network/interfaces`, `NetworkManager/system-connections/`. The skipped paths are logged. |
-| Packages | The captured package list is reinstalled — `dpkg --set-selections` + `apt-get dselect-upgrade` on Debian/Ubuntu, `dnf install` on RHEL-family. Needs working package repositories. |
+| Packages | The captured package list is reinstalled — `dpkg --set-selections` + `apt-get dselect-upgrade` on Debian/Ubuntu, `dnf install` on RHEL-family. Needs working package repositories. Entries are validated first: on RHEL-family an invalid package name is skipped with a warning; on Debian/Ubuntu a selections list with any invalid line is not applied at all, with a warning. |
 | Services | Every unit the source machine had **enabled** is re-enabled with `systemctl enable`. |
 | Firewall | `iptables-restore` of the captured rules. |
 | Scheduled tasks | Per-user crontabs are reinstalled with `crontab -u <user>`. The system `/etc/crontab` is deliberately left alone. |
@@ -185,17 +187,21 @@ The artifacts are collected by the agent at backup time and applied by the platf
   Permissions and ownership inside the restored `/etc` currently reflect the staging copy (`0600`/`0700`, root-owned), not the source machine. Review anything that must be world-readable (for example `/etc/hosts`, `/etc/ssl/certs`) after a Linux recovery.
 </Aside>
 
-**Windows** — `SYSTEM`, `SOFTWARE`, `SAM` and `SECURITY` hives are imported with `reg restore`, the BCD store with `bcdedit /import`, the certificate store with `certutil -restoreDB`, firewall policy with `netsh advfirewall import`, and captured driver packages are staged with `pnputil /add-driver … /install`. Each step is best-effort: a hive that fails to import is logged and skipped.
+**Windows** — <span id="windows-recovers-files-only"></span>**v0.120.0+: `bmr-recover` on Windows restores files only.** It no longer imports registry hives, the BCD store, certificates, firewall policy or drivers into the running system. The result carries `stateApplied: false`, the code `system_state_requires_rebuild` and a warning saying so; this is not a failure, and the **Recovery Bootstrap** tab shows the note **System state is applied by a bare-metal rebuild**. To apply a Windows snapshot's system state, rebuild it with the rebuild engine instead — for example [Restore as VM](#restore-as-vm) — which applies the hives, boot configuration and the rest offline.
+
+Earlier agents imported the `SYSTEM`, `SOFTWARE`, `SAM` and `SECURITY` hives with `reg restore`, the BCD store with `bcdedit /import`, the certificate store with `certutil -restoreDB`, firewall policy with `netsh advfirewall import`, and staged captured driver packages with `pnputil /add-driver … /install`, each best-effort.
+
+Since v0.120.0 the Windows agent flushes the loaded registry hives to disk just before it takes the VSS snapshot for a system-state backup, so registry changes made shortly before the backup (a newly created service, for example) are included. Earlier backups could miss changes that were still only in memory.
 
 **macOS** — preference plists into `/Library/Preferences`, LaunchDaemon/LaunchAgent items into `/Library/LaunchDaemons` and `/Library/LaunchAgents`, and the network configuration into `SystemConfiguration/preferences.plist` (followed by a `configd` restart). Best-effort, warnings only.
 
-On Windows and macOS the apply steps never fail the run, so a `stateApplied: false` there always means an artifact failed download or verification — check `warnings` for which one.
+On macOS the apply steps never fail the run, so a `stateApplied: false` there always means an artifact failed download or verification — check `warnings` for which one. On Windows, `stateApplied: false` is expected from v0.120.0 on (files only, see above).
 
 ---
 
 ## What a Recovered Machine Is — and Isn't
 
-A machine recovered with a `file` snapshot is: the OS you installed or booted, plus the recovered files, otherwise unchanged. A machine recovered with a `system_image` snapshot is: the OS you installed or booted, with the source machine's configuration layered back on top — its registry hives or `/etc`, services, firewall rules, scheduled tasks and (Linux) package set — while keeping the booted OS's own disk layout, boot identity, hostname, machine ID and network configuration. Neither snapshot type produces a byte-identical clone of the original machine: `bmr-recover` does no disk or partition imaging, and kernel and driver binaries come from the OS you installed. For a from-scratch rebuild of a Linux disk, use [`breeze-backup rebuild`](#rebuilding-a-linux-disk-from-scratch-breeze-backup-rebuild) instead.
+A machine recovered with a `file` snapshot is: the OS you installed or booted, plus the recovered files, otherwise unchanged. A machine recovered with a `system_image` snapshot on Linux or macOS is: the OS you installed or booted, with the source machine's configuration layered back on top — its registry hives or `/etc`, services, firewall rules, scheduled tasks and (Linux) package set — while keeping the booted OS's own disk layout, boot identity, hostname, machine ID and network configuration. Neither snapshot type produces a byte-identical clone of the original machine: `bmr-recover` does no disk or partition imaging, and kernel and driver binaries come from the OS you installed. For a from-scratch rebuild of a Linux disk, use [`breeze-backup rebuild`](#rebuilding-a-linux-disk-from-scratch-breeze-backup-rebuild) instead.
 
 ---
 
@@ -362,3 +368,4 @@ For recovering individual files or databases onto an already-enrolled device, us
 - Tokens are hashed (SHA-256) at rest and cannot be retrieved after creation
 - Each token is scoped to a single snapshot and organization
 - Expired tokens are automatically invalidated
+- A token is consumed by the first recovery that completes (fully or with some files failed). A run that fails before completing — for example a network drop mid-download — is recorded against the token but does not consume it, so you can rerun `bmr-recover` with the same token until it expires. Revoke the token from the console if you no longer want it usable.

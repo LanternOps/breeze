@@ -6,6 +6,11 @@ import { agentRoutes } from './agents';
 
 // Public download routes (routes/agents/download.ts) take their per-IP
 // limiter's Redis client from ../services and fail closed (503) without one.
+// services/aiAgent.ts (reached transitively) resolves session models through
+// the registry (W03 #7601); stub its DB adapters under this partial schema mock.
+vi.mock('../services/aiModels/sessionModel', () => ({ chooseSessionModel: vi.fn() }));
+vi.mock('../services/aiModels/candidateLoader', () => ({ readOrgPartnerId: vi.fn() }));
+
 vi.mock('../services', () => ({
   getRedis: vi.fn(() => ({})),
 }));

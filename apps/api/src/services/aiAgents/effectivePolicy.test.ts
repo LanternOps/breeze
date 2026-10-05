@@ -8,6 +8,7 @@ const dbMockState = vi.hoisted(() => ({
   ambientContext: undefined as { scope: string } | undefined,
   systemContextActive: false,
   order: [] as string[],
+  selectedTables: [] as string[],
 }));
 
 vi.mock('../../db', () => ({
@@ -15,6 +16,7 @@ vi.mock('../../db', () => ({
     select: vi.fn(() => ({
       from: vi.fn((table: unknown) => {
         const tableName = (table as Record<symbol, unknown>)[Symbol.for('drizzle:Name')];
+        dbMockState.selectedTables.push(String(tableName));
         let rows: unknown[];
 
         if (tableName === 'organizations') {
@@ -96,7 +98,6 @@ function policy(over: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
   return {
     enabled: true,
     mode: 'act',
-    model: null,
     toolAllowlist: ['run_script', 'manage_services:restart', 'disk_cleanup'],
     protectedResources: {
       services: ['MSSQLSERVER'],
@@ -125,7 +126,6 @@ function seedResolverRows(options: { partnerBaseline?: boolean } = {}): void {
     orgId: null,
     kind: 'triage',
     ...policy({
-      model: 'partner-model',
       toolAllowlist: ['run_script', 'disk_cleanup'],
       limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxDevicesPerRun: 10 },
     }),
@@ -137,7 +137,6 @@ function seedResolverRows(options: { partnerBaseline?: boolean } = {}): void {
     kind: 'triage',
     ...policy({
       mode: 'shadow',
-      model: 'org-model',
       toolAllowlist: ['run_script'],
       limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxDevicesPerRun: 3 },
       cooldownSeconds: 600,
@@ -146,7 +145,6 @@ function seedResolverRows(options: { partnerBaseline?: boolean } = {}): void {
 
   dbMockState.organizationRows = [{ id: ORG_ID, partnerId: PARTNER_ID }];
   dbMockState.aiAgentRows = [[org], partnerBaseline ? [partner] : []];
-  dbMockState.budgetRows = [{ allowedModels: ['org-model'] }];
 }
 
 function withoutResolvedAt<T extends { resolvedAt: string }>(snapshot: T): Omit<T, 'resolvedAt'> {
@@ -166,6 +164,7 @@ beforeEach(() => {
   dbMockState.ambientContext = undefined;
   dbMockState.systemContextActive = false;
   dbMockState.order = [];
+  dbMockState.selectedTables = [];
 });
 
 afterEach(() => {
@@ -179,13 +178,13 @@ describe('mergeAgentPolicies — tighten only', () => {
       const org = policy();
       partner.triggers = { ...partner.triggers, [key]: ['a'] };
       org.triggers = { ...org.triggers, [key]: ['b'] };
-      expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.triggers[key]).toEqual([]);
+      expect(mergeAgentPolicies(partner, org).effective.triggers[key]).toEqual([]);
     },
   );
 
   it('uses the partner policy unchanged when there is no org override', () => {
     const partner = policy();
-    const { effective, provenance } = mergeAgentPolicies(partner, null, { allowedModels: null });
+    const { effective, provenance } = mergeAgentPolicies(partner, null);
 
     expect(effective).toEqual(partner);
     for (const field of Object.keys(partner) as Array<keyof AiAgentPolicy>) {
@@ -197,7 +196,6 @@ describe('mergeAgentPolicies — tighten only', () => {
     const partner = policy({
       enabled: false,
       mode: 'shadow',
-      model: 'partner-model',
       toolAllowlist: ['run_script', 'manage_services:restart'],
       protectedResources: {
         services: ['MSSQLSERVER'],
@@ -220,7 +218,6 @@ describe('mergeAgentPolicies — tighten only', () => {
     const org = policy({
       enabled: true,
       mode: 'act',
-      model: 'org-model',
       toolAllowlist: ['run_script', 'file_operations:delete'],
       protectedResources: {
         services: ['Spooler'],
@@ -242,13 +239,10 @@ describe('mergeAgentPolicies — tighten only', () => {
       cooldownSeconds: 60,
     });
 
-    const { effective, provenance } = mergeAgentPolicies(partner, org, {
-      allowedModels: ['partner-model'],
-    });
+    const { effective, provenance } = mergeAgentPolicies(partner, org);
     const expected: { [K in keyof AiAgentPolicy]: AiAgentPolicy[K] } = {
       enabled: false,
       mode: 'shadow',
-      model: 'partner-model',
       toolAllowlist: ['run_script'],
       protectedResources: {
         services: ['MSSQLSERVER', 'Spooler'],
@@ -274,11 +268,12 @@ describe('mergeAgentPolicies — tighten only', () => {
         '[partner guidance]\npartner says hi\n[/partner guidance]\n\n' +
         '[organization guidance]\norg says hi\n[/organization guidance]',
       cooldownSeconds: 300,
+      offeringId: null,
     };
     const expectedProvenance = {
       enabled: 'partner',
       mode: 'partner',
-      model: 'partner',
+      offeringId: 'partner',
       toolAllowlist: 'merged',
       protectedResources: 'merged',
       limits: 'merged',
@@ -313,7 +308,7 @@ describe('mergeAgentPolicies — tighten only', () => {
       },
     });
 
-    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, org);
 
     expect(effective.triggers.ticketCategories).toEqual(['network', 'software']);
     expect(effective.triggers.ticketPriorities).toEqual(['high']);
@@ -326,35 +321,43 @@ describe('mergeAgentPolicies — tighten only', () => {
     const org = policy({
       triggers: { alertSeverities: ['critical', 'high'], alertCategories: ['patching'], respectMaintenanceWindows: false },
     });
-    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.triggers.alertCategories).toEqual(['patching']);
-    expect(mergeAgentPolicies(policy(), policy(), { allowedModels: null }).effective.triggers.alertCategories).toBeUndefined();
+    expect(mergeAgentPolicies(partner, org).effective.triggers.alertCategories).toEqual(['patching']);
+    expect(mergeAgentPolicies(policy(), policy()).effective.triggers.alertCategories).toBeUndefined();
   });
 
   it('ticketCategories/ticketPriorities stay undefined (unrestricted) when neither side sets them', () => {
     const partner = policy();
     const org = policy();
 
-    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, org);
 
     expect(effective.triggers.ticketCategories).toBeUndefined();
     expect(effective.triggers.ticketPriorities).toBeUndefined();
   });
 
-  it('uses the org model only when the org budget allows it', () => {
-    const partner = policy({ model: 'partner-model' });
-    const org = policy({ model: 'org-model' });
+  it('the merge has no model string and no allowlist: the org offering wins, else the partner one (W08, #7606)', () => {
+    const partner = policy({ offeringId: 'off-p' });
+    const org = policy({ offeringId: 'off-o' });
+    expect(mergeAgentPolicies(partner, org).effective.offeringId).toBe('off-o');
+    expect(mergeAgentPolicies(partner, { ...org, offeringId: null }).effective.offeringId).toBe('off-p');
+    expect(mergeAgentPolicies(partner, org).effective).not.toHaveProperty('model');
+    expect(mergeAgentPolicies(partner, org).provenance).not.toHaveProperty('model');
+  });
 
-    expect(mergeAgentPolicies(partner, org, { allowedModels: ['partner-model'] }).effective.model)
-      .toBe('partner-model');
-    expect(mergeAgentPolicies(partner, org, { allowedModels: ['org-model'] }).effective.model)
-      .toBe('org-model');
+  it('normalizing a row that still carries the retired model column drops it (W08, #7606)', () => {
+    const row = {
+      enabled: false, mode: 'off' as const, toolAllowlist: [], protectedResources: {},
+      limits: {}, triggers: {}, recipients: {}, actAssets: {}, instructions: null, cooldownSeconds: 900,
+      offeringId: null, model: 'claude-legacy',
+    };
+    expect(normalizeAgentPolicy(row as never)).not.toHaveProperty('model');
   });
 
   it('mergeLimits min-wins on maxActionsPerRun: partner 5 + org 2 -> 2', () => {
     const partner = policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxActionsPerRun: 5 } });
     const org = policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxActionsPerRun: 2 } });
 
-    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.limits.maxActionsPerRun)
+    expect(mergeAgentPolicies(partner, org).effective.limits.maxActionsPerRun)
       .toBe(2);
   });
 
@@ -362,15 +365,38 @@ describe('mergeAgentPolicies — tighten only', () => {
     const partner = policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxPolicyDecisionsPerDay: 50 } });
     const org = policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxPolicyDecisionsPerDay: 10 } });
 
-    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.limits.maxPolicyDecisionsPerDay)
+    expect(mergeAgentPolicies(partner, org).effective.limits.maxPolicyDecisionsPerDay)
       .toBe(10);
+  });
+
+  // AI model registry W03 (W02 handoff #5): the bound offering follows the
+  // registry projection's rule — the org row's binding, else the partner
+  // baseline's — and is NOT gated on the legacy ai_budgets.allowed_models list
+  // (the run-time resolver re-checks it against the ai_agents permitted set).
+  it('carries the bound offering: org binding wins, else the partner baseline, else null', () => {
+    const partner = policy({ offeringId: 'off-partner' });
+    const orgWins = mergeAgentPolicies(partner, policy({ offeringId: 'off-org' }));
+    expect(orgWins.effective.offeringId).toBe('off-org');
+    expect(orgWins.provenance.offeringId).toBe('org');
+    expect(mergeAgentPolicies(partner, policy({ offeringId: null })).effective.offeringId)
+      .toBe('off-partner');
+    expect(mergeAgentPolicies(partner, null).effective.offeringId).toBe('off-partner');
+    expect(mergeAgentPolicies(policy(), policy()).effective.offeringId).toBeNull();
+  });
+
+  it('normalizes the row\'s offering_id (null when unbound)', () => {
+    const row = {
+      enabled: false, mode: 'off' as const, toolAllowlist: [], protectedResources: {},
+      limits: {}, triggers: {}, recipients: {}, actAssets: {}, instructions: null, cooldownSeconds: 900,
+    };
+    expect(normalizeAgentPolicy({ ...row, offeringId: 'off-1' }).offeringId).toBe('off-1');
+    expect(normalizeAgentPolicy({ ...row, offeringId: null }).offeringId).toBeNull();
   });
 
   it('fills JSONB defaults when normalizing a sparse row', () => {
     const normalized = normalizeAgentPolicy({
       enabled: false,
       mode: 'off',
-      model: null,
       toolAllowlist: [],
       protectedResources: {},
       limits: {},
@@ -397,35 +423,35 @@ describe('mergeAgentPolicies — tighten only', () => {
     // demotion the only one that removes one. See mergeAgentPolicies'
     // `if (!org)` branch docstring for the full rationale.
     const partnerOnly = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });
-    expect(mergeAgentPolicies(partnerOnly, null, { allowedModels: null }).effective.actAssets)
+    expect(mergeAgentPolicies(partnerOnly, null).effective.actAssets)
       .toEqual({ scriptIds: [], supervisedActionKeys: [] });
 
     // Org narrows: intersection, never union — org's KEY_C (not on the
     // partner baseline) is dropped.
     const partner = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A, KEY_B] } });
     const org = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_B, KEY_C] } });
-    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.actAssets)
+    expect(mergeAgentPolicies(partner, org).effective.actAssets)
       .toEqual({ scriptIds: [], supervisedActionKeys: [KEY_B] });
 
     // An empty partner baseline narrows the org to empty too — "never
     // policy-decidable" is the correct default, same as scriptIds/run_script.
     const emptyPartner = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [] } });
     const wideOrg = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });
-    expect(mergeAgentPolicies(emptyPartner, wideOrg, { allowedModels: null }).effective.actAssets)
+    expect(mergeAgentPolicies(emptyPartner, wideOrg).effective.actAssets)
       .toEqual({ scriptIds: [], supervisedActionKeys: [] });
 
     // A row missing the key entirely (pre-this-deploy jsonb, no version bump)
     // merges as if it were an empty array, on either side.
     const legacyPartner = policy({ actAssets: { scriptIds: [] } });
     const orgWithKeys = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });
-    expect(mergeAgentPolicies(legacyPartner, orgWithKeys, { allowedModels: null }).effective.actAssets)
+    expect(mergeAgentPolicies(legacyPartner, orgWithKeys).effective.actAssets)
       .toEqual({ scriptIds: [], supervisedActionKeys: [] });
   });
 
   it('toolAllowlist: an org row that scopes what the partner left bare keeps the scoped entries (not ∅)', () => {
     const partner = policy({ toolAllowlist: ['manage_services', 'run_script'] });
     const org = policy({ toolAllowlist: ['manage_services:restart', 'run_script'] });
-    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.toolAllowlist)
+    expect(mergeAgentPolicies(partner, org).effective.toolAllowlist)
       .toEqual(['run_script', 'manage_services:restart']);
   });
 
@@ -435,21 +461,21 @@ describe('mergeAgentPolicies — tighten only', () => {
   it('minAnomalyScore: the stricter (higher) floor wins', () => {
     const partner = policy({ triggers: { ...policy().triggers, minAnomalyScore: 5 } });
     const org = policy({ triggers: { ...policy().triggers, minAnomalyScore: 3 } });
-    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.triggers.minAnomalyScore)
+    expect(mergeAgentPolicies(partner, org).effective.triggers.minAnomalyScore)
       .toBe(5);
   });
 
   it('minAnomalyScore: an unset partner floor leaves the org floor intact', () => {
     const partner = policy();
     const org = policy({ triggers: { ...policy().triggers, minAnomalyScore: 3 } });
-    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.triggers.minAnomalyScore)
+    expect(mergeAgentPolicies(partner, org).effective.triggers.minAnomalyScore)
       .toBe(3);
   });
 
   it('supervisedActionKeys: bare partner key is a ceiling over its actions', () => {
     const partner = policy({ actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services'] } });
     const org = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });
-    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.actAssets.supervisedActionKeys)
+    expect(mergeAgentPolicies(partner, org).effective.actAssets.supervisedActionKeys)
       .toEqual([KEY_A]);
   });
 });
@@ -462,7 +488,7 @@ describe('mergeAgentPolicies — tighten only', () => {
 describe('mergeAgentPolicies — anomalyEnabled conservative opt-in (wave-6-4 follow-up, #3828)', () => {
   it('a partner baseline alone can NEVER opt an org in: no org override at all, partner sets true -> effective is falsy', () => {
     const partner = policy({ triggers: { ...policy().triggers, anomalyEnabled: true } });
-    const { effective } = mergeAgentPolicies(partner, null, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, null);
 
     expect(effective.triggers.anomalyEnabled).not.toBe(true);
   });
@@ -470,7 +496,7 @@ describe('mergeAgentPolicies — anomalyEnabled conservative opt-in (wave-6-4 fo
   it('org override present but does not set anomalyEnabled -> effective is falsy even when partner is true', () => {
     const partner = policy({ triggers: { ...policy().triggers, anomalyEnabled: true } });
     const org = policy(); // no anomalyEnabled key at all
-    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, org);
 
     expect(effective.triggers.anomalyEnabled).not.toBe(true);
   });
@@ -478,7 +504,7 @@ describe('mergeAgentPolicies — anomalyEnabled conservative opt-in (wave-6-4 fo
   it('org override explicitly sets anomalyEnabled: false -> effective is false even when partner is true', () => {
     const partner = policy({ triggers: { ...policy().triggers, anomalyEnabled: true } });
     const org = policy({ triggers: { ...policy().triggers, anomalyEnabled: false } });
-    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, org);
 
     expect(effective.triggers.anomalyEnabled).not.toBe(true);
   });
@@ -486,7 +512,7 @@ describe('mergeAgentPolicies — anomalyEnabled conservative opt-in (wave-6-4 fo
   it("the org's OWN override governs regardless of the partner's value: org true + partner false -> effective true", () => {
     const partner = policy({ triggers: { ...policy().triggers, anomalyEnabled: false } });
     const org = policy({ triggers: { ...policy().triggers, anomalyEnabled: true } });
-    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, org);
 
     expect(effective.triggers.anomalyEnabled).toBe(true);
   });
@@ -494,14 +520,14 @@ describe('mergeAgentPolicies — anomalyEnabled conservative opt-in (wave-6-4 fo
   it("the org's OWN override governs even when the partner never set it at all: org true + partner absent -> effective true", () => {
     const partner = policy(); // no anomalyEnabled key at all
     const org = policy({ triggers: { ...policy().triggers, anomalyEnabled: true } });
-    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, org);
 
     expect(effective.triggers.anomalyEnabled).toBe(true);
   });
 
   it('does not disturb the general "no org override -> effective === partner" invariant for every other field', () => {
     const partner = policy({ triggers: { ...policy().triggers, anomalyEnabled: true } });
-    const { effective } = mergeAgentPolicies(partner, null, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, null);
 
     expect(effective).toEqual({ ...partner, triggers: { ...partner.triggers, anomalyEnabled: undefined } });
   });
@@ -515,7 +541,7 @@ describe('mergeAgentPolicies — anomalyEnabled conservative opt-in (wave-6-4 fo
 describe('mergeAgentPolicies — ticketAutonomousWrites conservative opt-in (P2-4 #4191)', () => {
   it('a partner baseline alone can NEVER opt an org in: no org override at all, partner sets true -> effective is falsy', () => {
     const partner = policy({ triggers: { ...policy().triggers, ticketAutonomousWrites: true } });
-    const { effective } = mergeAgentPolicies(partner, null, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, null);
 
     expect(effective.triggers.ticketAutonomousWrites).not.toBe(true);
   });
@@ -523,7 +549,7 @@ describe('mergeAgentPolicies — ticketAutonomousWrites conservative opt-in (P2-
   it('org override present but does not set ticketAutonomousWrites -> effective is falsy even when partner is true', () => {
     const partner = policy({ triggers: { ...policy().triggers, ticketAutonomousWrites: true } });
     const org = policy(); // no ticketAutonomousWrites key at all
-    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, org);
 
     expect(effective.triggers.ticketAutonomousWrites).not.toBe(true);
   });
@@ -531,7 +557,7 @@ describe('mergeAgentPolicies — ticketAutonomousWrites conservative opt-in (P2-
   it('org override explicitly sets ticketAutonomousWrites: false -> effective is false even when partner is true', () => {
     const partner = policy({ triggers: { ...policy().triggers, ticketAutonomousWrites: true } });
     const org = policy({ triggers: { ...policy().triggers, ticketAutonomousWrites: false } });
-    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, org);
 
     expect(effective.triggers.ticketAutonomousWrites).not.toBe(true);
   });
@@ -539,7 +565,7 @@ describe('mergeAgentPolicies — ticketAutonomousWrites conservative opt-in (P2-
   it("the org's OWN override governs regardless of the partner's value: org true + partner false -> effective true", () => {
     const partner = policy({ triggers: { ...policy().triggers, ticketAutonomousWrites: false } });
     const org = policy({ triggers: { ...policy().triggers, ticketAutonomousWrites: true } });
-    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, org);
 
     expect(effective.triggers.ticketAutonomousWrites).toBe(true);
   });
@@ -547,14 +573,14 @@ describe('mergeAgentPolicies — ticketAutonomousWrites conservative opt-in (P2-
   it("the org's OWN override governs even when the partner never set it at all: org true + partner absent -> effective true", () => {
     const partner = policy(); // no ticketAutonomousWrites key at all
     const org = policy({ triggers: { ...policy().triggers, ticketAutonomousWrites: true } });
-    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, org);
 
     expect(effective.triggers.ticketAutonomousWrites).toBe(true);
   });
 
   it('does not disturb the general "no org override -> effective === partner" invariant for every other field', () => {
     const partner = policy({ triggers: { ...policy().triggers, ticketAutonomousWrites: true } });
-    const { effective } = mergeAgentPolicies(partner, null, { allowedModels: null });
+    const { effective } = mergeAgentPolicies(partner, null);
 
     expect(effective).toEqual({
       ...partner,
@@ -570,7 +596,6 @@ describe('resolveEffectiveAgentSystem', () => {
     expect(canAccessOrg).toHaveBeenCalledWith(ORG_ID);
     expect(authorized?.effective).toMatchObject({
       mode: 'shadow',
-      model: 'org-model',
       toolAllowlist: ['run_script'],
       cooldownSeconds: 600,
     });
@@ -589,6 +614,13 @@ describe('resolveEffectiveAgentSystem', () => {
 
     seedResolverRows({ partnerBaseline: false });
     await expect(resolveEffectiveAgent(authStub, ORG_ID, 'triage')).resolves.toBeNull();
+  });
+
+  it('resolving the effective policy reads no ai_budgets row (W08, #7606)', async () => {
+    seedResolverRows();
+    await expect(resolveEffectiveAgentSystem(ORG_ID, 'triage')).resolves.not.toBeNull();
+    expect(dbMockState.selectedTables).toContain('ai_agents');
+    expect(dbMockState.selectedTables).not.toContain('ai_budgets');
   });
 
   it('does not touch the authorized resolver auth gate', async () => {

@@ -4,11 +4,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { and, eq, inArray } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-vi.mock('../../services/llm/llmConfigResolver', async (original) => ({
-  ...await original<object>(),
-  resolveLlmConfigForOrg: vi.fn(async () => ({ source: 'platform', apiKey: 'test-key', model: 'claude-sonnet-4-6' })),
-}));
-
 import { aiMessages, aiSessions, aiToolExecutions, auditLogs, organizations, sites } from '../../db/schema';
 import { orgRoutes } from '../../routes/orgs';
 import { createAccessToken } from '../../services/jwt';
@@ -31,7 +26,7 @@ const GRANTS = [
 async function seedSession(orgId: string, userId: string, siteId: string | null) {
   const db = getTestDb();
   const [session] = await db.insert(aiSessions).values({
-    orgId, userId, ...(siteId ? { type: 'topology', topologySiteId: siteId } : {}),
+    orgId, userId, model: 'claude-sonnet-5-5', ...(siteId ? { type: 'topology', topologySiteId: siteId } : {}),
   }).returning({ id: aiSessions.id });
   const [message] = await db.insert(aiMessages).values({ sessionId: session!.id, role: 'user', content: 'why is the uplink down?' })
     .returning({ id: aiMessages.id });

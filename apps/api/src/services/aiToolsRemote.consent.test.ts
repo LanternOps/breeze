@@ -11,6 +11,9 @@ const { checkScreenAccessConsentGate } = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({
+  // These handlers run as under the per-call transaction: `inToolDbPhase`
+  // (#7918) joins it rather than opening a context of its own.
+  hasDbAccessContext: vi.fn(() => true),
   runOutsideDbContext: vi.fn((fn: any) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -109,6 +112,25 @@ describe('aiToolsRemote — screen tools honour the remote-access consent policy
       hostname: 'host-1',
       surface: name,
     }));
+  });
+
+  it.each(SCREEN_TOOLS)('%s tells the gate whether the device is a Quick Support device', async (name) => {
+    mockDb.select.mockImplementation(() =>
+      createQueryChain([
+        { id: DEVICE_ID, status: 'online', siteId: null, hostname: 'host-1', orgId: ORG_ID, isEphemeral: true },
+      ]),
+    );
+    checkScreenAccessConsentGate.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      body: { error: 'not available on a Quick Support device', code: 'SCREEN_ACCESS_UNAVAILABLE_IN_QUICK_SUPPORT' },
+    });
+
+    const result = JSON.parse(await tools().get(name)!.handler(inputFor(name), makeAuth()));
+
+    expect(result.code).toBe('SCREEN_ACCESS_UNAVAILABLE_IN_QUICK_SUPPORT');
+    expect(mockExecuteCommand).not.toHaveBeenCalled();
+    expect(checkScreenAccessConsentGate).toHaveBeenCalledWith(expect.objectContaining({ surface: name, isEphemeral: true }));
   });
 
   it.each(SCREEN_TOOLS)('%s refuses without dispatching when the prompt policy cannot be read', async (name) => {

@@ -15,6 +15,7 @@ import {
   Key,
   KeyRound,
   LayoutTemplate,
+  Cpu,
   ListChecks,
   Plug,
   Puzzle,
@@ -75,6 +76,9 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'partner-service-principals', name: 'Service principals', labelKey: card('partnerServicePrincipals', 'title'), href: '/settings/partner-service-principals', icon: KeyRound, group: 'account', partnerScopeOnly: true },
 
   // Billing & Service Desk
+  { id: 'billing-payments', name: 'Payments', labelKey: 'nav.payments', href: '/settings/billing#payments',
+    icon: CreditCard, group: 'billing', partnerScopeOnly: true,
+    requiredPermission: { resource: 'billing', action: 'manage' } },
   { id: 'billing', name: 'Billing', labelKey: 'nav.billing', descriptionKey: card('billing', 'description'), href: '/settings/billing', icon: CreditCard, group: 'billing', partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'write' } },
   { id: 'ticketing', name: 'Ticketing', labelKey: 'nav.ticketing', descriptionKey: card('ticketing', 'description'), href: '/settings/ticketing', icon: Ticket, group: 'billing', partnerScopeOnly: true },
   { id: 'ticket-checklist-templates', name: 'Ticket checklist templates', labelKey: card('ticketChecklistTemplates', 'title'), descriptionKey: card('ticketChecklistTemplates', 'description'), href: '/settings/ticketing#templates', icon: ClipboardList, group: 'billing', partnerScopeOnly: true },
@@ -93,6 +97,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   // AI
   { id: 'ai-agents', name: 'AI Agents', labelKey: 'nav.aiAgents', href: '/settings/ai-agents', icon: Bot, group: 'ai', requiredPermission: { resource: 'ai_agents', action: 'read' } },
   { id: 'ai-usage', name: 'AI Usage', labelKey: 'nav.aiUsage', href: '/settings/ai-usage', icon: BrainCircuit, group: 'ai', partnerScopeOnly: true },
+  { id: 'ai-models', name: 'AI Providers & Models', labelKey: 'nav.aiProvidersModels', href: '/settings/partner#ai-provider', icon: Cpu, group: 'ai', partnerScopeOnly: true, requiredPermission: { resource: 'billing', action: 'manage' } },
   { id: 'ai-script-authoring', name: 'Script authoring', labelKey: 'nav.scriptAuthoring', href: '/settings/ai-script-authoring', icon: FileCode, group: 'ai', requiredPermission: { resource: 'ai_agents', action: 'read' } },
   { id: 'tool-sources', name: 'Tool Sources', labelKey: 'nav.toolSources', href: '/settings/tool-sources', icon: Plug, group: 'ai', requiresToolSources: true, requiredPermission: { resource: 'tool_sources', action: 'read' } },
 

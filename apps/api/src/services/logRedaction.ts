@@ -31,6 +31,23 @@ const SECRET_MATERIAL_KEY_PATTERN =
   /password|passwd|pwd|token|secret|api.*key|access.*key|private.*key|client.*secret|authorization|cookie|credential|community|authpassphrase|privacypassphrase|connection.?string|conn.?string|sas.?token|shared.?key/i;
 
 /**
+ * Stored key material named by what it is rather than by the words above:
+ * `encryptionKey` / `encryption_key` / `encryptedKey`, `recoveryKey`,
+ * `keyHash`, `snmpCommunities`, and any `<name>Encrypted` column (a sealed
+ * value, e.g. `clientIdEncrypted`; a bare `encrypted` flag is not one). Anchored at the end of the
+ * key so a reference TO a key (`encryptionKeyId`, `encryptionKeyVersion`)
+ * survives. Tool output only — see `toolOutputFieldPolicy`. The encrypted-column
+ * registry contract in aiToolOutput.encryptedColumns.test.ts keeps this in step with
+ * services/encryptedColumnRegistry.ts.
+ */
+const KEY_MATERIAL_KEY_PATTERN =
+  /(?:encrypt(?:ed|ion)_?keys?|recovery_?keys?|key_?hash(?:es)?|communities|[a-z0-9]_?encrypted)$/i;
+
+function isToolOutputSecretMaterialKey(key: string): boolean {
+  return SECRET_MATERIAL_KEY_PATTERN.test(key) || KEY_MATERIAL_KEY_PATTERN.test(key);
+}
+
+/**
  * A key that names a session IDENTIFIER rather than a session's attributes
  * (#6140): `session`, `sessionId`, `session_key`, `rdpSession`. A string under
  * one of these is bearer-ish and stays redacted. `sessionType`, `sessionState`,
@@ -51,8 +68,20 @@ function isSecretKey(key: string): boolean {
   return SECRET_KEY_PATTERN.test(key);
 }
 
-/** What to do with one `key: value` pair. */
-type FieldAction = 'redact' | 'keep' | 'recurse';
+/**
+ * A key holding a map of HTTP header names to values: `headers`,
+ * `customHeaders`, `request_headers`. Any header value can be a credential
+ * (`Authorization`, `X-Api-Key`, a vendor-specific auth header), and the header
+ * name says nothing reliable about which, so tool output keeps the names and
+ * masks every value. Tool output only — see `toolOutputFieldPolicy`.
+ */
+const HEADER_MAP_KEY_PATTERN = /headers$/i;
+
+/**
+ * What to do with one `key: value` pair. `maskValues` keeps a record's keys
+ * and replaces each value; anything other than a record is replaced whole.
+ */
+type FieldAction = 'redact' | 'keep' | 'recurse' | 'maskValues';
 
 type FieldPolicy = (key: string, value: unknown) => FieldAction;
 
@@ -80,6 +109,13 @@ function applyPolicy(
   const action = policy(key, entry);
   if (action === 'redact') return REDACTED;
   if (action === 'keep') return entry;
+  if (action === 'maskValues') {
+    // Object.fromEntries defines own properties, so a `__proto__` header name
+    // stays an ordinary key (see the note in redactFieldsWith).
+    return isRecord(entry)
+      ? Object.fromEntries(Object.keys(entry).map((name) => [name, REDACTED]))
+      : REDACTED;
+  }
   return redactFieldsWith(entry, redactString, depth + 1, policy, key);
 }
 
@@ -181,18 +217,27 @@ export function redactLogFields(value: unknown, depth = 0): unknown {
 //     `rdpSession`). A string under a key that merely DESCRIBES a session
 //     (`sessionType`, `sessionState`, `sessionName`) is an enum or a label, not
 //     a credential, and falls through to the inline-assignment string pass.
+//   * header map (`headers`, `customHeaders`) -> names kept, every value
+//     masked (HEADER_MAP_KEY_PATTERN). A list or raw string under such a key
+//     is masked whole.
 //
 // Scope: tool output only. Log, audit-payload and tool-INPUT callers keep
 // `redactLogFields` — for a persisted `tool_input`, a `password` argument is the
 // secret and there is no structure worth preserving.
 // ---------------------------------------------------------------------------
 const toolOutputFieldPolicy: FieldPolicy = (key, value) => {
+  if (
+    HEADER_MAP_KEY_PATTERN.test(key) &&
+    (isRecord(value) || Array.isArray(value) || typeof value === 'string')
+  ) {
+    return 'maskValues';
+  }
   if (Array.isArray(value) || isRecord(value)) {
-    return SECRET_MATERIAL_KEY_PATTERN.test(key) ? 'redact' : 'recurse';
+    return isToolOutputSecretMaterialKey(key) ? 'redact' : 'recurse';
   }
   if (typeof value === 'string') {
     const secretNamed =
-      SECRET_MATERIAL_KEY_PATTERN.test(key) || SESSION_IDENTIFIER_KEY_PATTERN.test(key);
+      isToolOutputSecretMaterialKey(key) || SESSION_IDENTIFIER_KEY_PATTERN.test(key);
     if (!secretNamed) return 'recurse';
     return ISO_TIMESTAMP.test(value) ? 'keep' : 'redact';
   }

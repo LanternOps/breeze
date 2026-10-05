@@ -32,7 +32,7 @@
  * set (`pending` may authenticate to see a billing screen, but must not keep
  * transacting through an unauthenticated public link).
  */
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
   db,
   getCurrentDbAccessContext,
@@ -40,6 +40,7 @@ import {
   withSystemDbAccessContext,
 } from '../db';
 import { organizations, partners } from '../db/schema';
+import { alias, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { quotes } from '../db/schema/quotes';
 
 /**
@@ -60,6 +61,24 @@ export const PUBLIC_LINK_LIVE_ORG_STATUSES = ['active', 'trial'] as const;
  * `pending`-inclusive set that governs authenticated *session* establishment.
  */
 export const PUBLIC_LINK_LIVE_PARTNER_STATUSES = ['active'] as const;
+
+/** SQL counterpart of the public-link gate, including soft-deletion liveness.
+ * Aliases keep the org-id correlation valid even in an outer org query.
+ */
+export function buildPublicLinkLiveOrgPredicate(orgId: AnyPgColumn) {
+  const org = alias(organizations, 'public_link_live_org');
+  const partner = alias(partners, 'public_link_live_partner');
+  return sql`EXISTS (
+    SELECT 1 FROM ${organizations} AS ${sql.identifier('public_link_live_org')}
+    INNER JOIN ${partners} AS ${sql.identifier('public_link_live_partner')}
+      ON ${partner.id} = ${org.partnerId}
+    WHERE ${and(
+      eq(org.id, orgId), inArray(org.status, [...PUBLIC_LINK_LIVE_ORG_STATUSES]),
+      isNull(org.deletedAt), inArray(partner.status, [...PUBLIC_LINK_LIVE_PARTNER_STATUSES]),
+      isNull(partner.deletedAt),
+    )}
+  )`;
+}
 
 /** The single 410 body every public route returns for a non-live tenant. */
 export const PUBLIC_LINK_ORG_UNAVAILABLE = {

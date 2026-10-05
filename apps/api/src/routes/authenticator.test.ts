@@ -488,6 +488,33 @@ describe('approver device routes', () => {
     expect(set).toMatchObject({ disabledReason: 'lost device' });
   });
 
+  // #7811: the web's fetchWithAuth always sets Content-Type: application/json,
+  // and revokeApproverDevice sends NO body — the reason field is optional.
+  it('revokes with an empty body + JSON content-type (web fetchWithAuth shape)', async () => {
+    dbState.selectQueue.push([deviceRow]);
+
+    const res = await app.request('/me/approver-devices/device-1/revoke', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ success: true });
+    const set = dbState.updateSets.find((s) => 'disabledAt' in s);
+    expect(set).toMatchObject({ disabledReason: 'user_revoked' });
+  });
+
+  it('still rejects a genuinely malformed JSON body on revoke with a 400', async () => {
+    const res = await app.request('/me/approver-devices/device-1/revoke', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: '{not json',
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbState.updateSets).toHaveLength(0);
+  });
+
   it('returns 404 revoking a device the user does not own', async () => {
     dbState.selectQueue.push([]);
 

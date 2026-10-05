@@ -5,7 +5,6 @@ const mocks = vi.hoisted(() => ({
   permissions: vi.fn(),
   access: vi.fn(),
   flags: vi.fn(),
-  llm: vi.fn(),
   providerUsable: vi.fn(),
   budget: vi.fn(),
 }));
@@ -44,10 +43,12 @@ vi.mock('../../db', async () => {
 vi.mock('../permissions', () => ({ getUserPermissions: mocks.permissions }));
 vi.mock('./access', async (original) => ({ ...await original<object>(), requireTopologySiteAccess: mocks.access }));
 vi.mock('./flags', async (original) => ({ ...await original<object>(), loadTopologyFlags: mocks.flags }));
-vi.mock('../llm/llmConfigResolver', () => ({ resolveLlmConfigForOrg: mocks.llm, llmUnusableCodeForOrgInSystemContext: mocks.providerUsable }));
+vi.mock('../aiModels/readiness', () => ({ chatReadinessInSystemContext: mocks.providerUsable }));
 vi.mock('../effectiveSettings', () => ({ getEffectiveAiBudget: mocks.budget }));
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 
 import * as dbModule from '../../db';
+import { captureException } from '../sentry';
 import { TopologyError } from './access';
 import {
   authorizeTopologyAiToolCall, authorizeTopologySessionSite, isTopologyAiToolName, loadTopologyAiPreconditions, TOPOLOGY_AI_TOOL_NAMES, withTopologyAiPreconditions, withTopologyReleasePreconditions,
@@ -74,7 +75,6 @@ beforeEach(() => {
   mocks.permissions.mockResolvedValue({ permissions: [] });
   mocks.access.mockImplementation(async (_auth, _perm, siteId: string) => ({ auth: _auth, permissions: _perm, scope: { orgId: ORG, siteId } }));
   mocks.flags.mockResolvedValue(ALL_ON);
-  mocks.llm.mockResolvedValue({ source: 'platform' });
   mocks.providerUsable.mockImplementation(async () => {
     // Readiness reads only ever run on a SYSTEM connection.
     if (dbModule.getCurrentDbAccessContext()?.scope !== 'system') throw new Error('provider readiness outside a system context');
@@ -150,6 +150,15 @@ describe('topology AI tool gate (M4-D1)', () => {
     expect(await authorizeTopologyAiToolCall({ site_id: SITE_A }, auth(), bound)).toMatchObject({ ok: false, code: 'topology_ai_disabled' });
   });
 
+  it('a readiness read that THROWS still fails closed (ai_unavailable) and is reported, not swallowed', async () => {
+    const bound = { kind: 'ai_session', sessionId: SESSION } as const;
+    mocks.providerUsable.mockRejectedValueOnce(new Error('registry read failed'));
+    expect(await authorizeTopologyAiToolCall({ site_id: SITE_A }, auth(), bound)).toMatchObject({ ok: false, code: 'topology_ai_disabled' });
+    expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'registry read failed' }), undefined, { service: 'topology', stage: 'ai_readiness' },
+    );
+  });
+
   it('an MCP site key still reads topology on a server with no model key (the MCP client brings its own model)', async () => {
     const mcp = { kind: 'mcp_site_key' } as const;
     mocks.providerUsable.mockResolvedValueOnce('ai_not_configured');
@@ -206,12 +215,10 @@ describe('topology AI readiness never double-holds the pool (review R1)', () => 
     expect(result).toMatchObject({ ok: true, pinnedSiteId: SITE_A });
     expect(pool.acquisitions).toEqual([{ scope: 'organization', nested: false }]);
     expect(mocks.providerUsable).toHaveBeenCalledTimes(1);
-    expect(mocks.llm).not.toHaveBeenCalled();
   });
 
-  it('never runs the full LLM resolver (its unconditional escapes) for readiness; an uncarried held check takes at most ONE escape, none when system-scoped', async () => {
+  it('readiness takes no escape of its own (registry readiness reads on the held connection); an uncarried held check takes at most ONE escape, none when system-scoped', async () => {
     expect(await inRequestContext('organization', () => authorizeTopologyAiToolCall({ site_id: SITE_A }, auth(), bound))).toMatchObject({ ok: true });
-    expect(mocks.llm).not.toHaveBeenCalled();
     expect(pool.acquisitions.filter((a) => a.nested)).toHaveLength(1);
     pool.acquisitions.length = 0;
     expect(await inRequestContext('system', () => authorizeTopologyAiToolCall({ site_id: SITE_A }, auth(), bound))).toMatchObject({ ok: true });

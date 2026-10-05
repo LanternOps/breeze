@@ -1,3 +1,13 @@
+const controls = vi.hoisted(() => ({ renotice: vi.fn(), view: vi.fn().mockResolvedValue(null) }));
+vi.mock('./autopay/invoiceControls', () => ({ renoticeSchedule: controls.renotice, getInvoiceAutopayView: controls.view }));
+const { plan } = vi.hoisted(() => ({ plan: vi.fn().mockResolvedValue(null) }));
+vi.mock('./autopay/scheduler', () => ({ planAutopayForInvoice: plan }));
+
+vi.mock('./autopay/reservation', () => ({
+  assertCollectionAmountAvailable: vi.fn().mockResolvedValue(undefined),
+  assertNoActiveCollection: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Controllable Drizzle chain mock: every builder method returns the same
@@ -100,6 +110,7 @@ vi.mock('./invoiceAssembly', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./invoiceAssembly')>()),
   gatherOrgTimeEntries: vi.fn(),
   gatherOrgParts: vi.fn(),
+  gatherOrgAiUsageCharges: vi.fn(),
   gatherTicketBillables: vi.fn(),
 }));
 
@@ -162,7 +173,7 @@ const enqueuePaymentDeleteMock = vi.mocked(enqueueAccountingPaymentDelete);
 
 const enqueueAccountingInvoicePushMock = vi.mocked(enqueueAccountingInvoicePush);
 const enqueueAccountingInvoiceVoidMock = vi.mocked(enqueueAccountingInvoiceVoid);
-import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, type DraftLineSpec } from './invoiceAssembly';
+import { gatherOrgTimeEntries, gatherOrgParts, gatherOrgAiUsageCharges, gatherTicketBillables, type DraftLineSpec } from './invoiceAssembly';
 
 const resolvePriceMock = vi.mocked(resolvePrice);
 const bundleEconMock = vi.mocked(computeBundleEconomics);
@@ -1014,6 +1025,8 @@ describe('issueInvoice document_locale stamp', () => {
     queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: { language: 'fr-CA' } });
     await svc.issueInvoice('inv1', actor);
     expect(issueSet().documentLocale).toBe('fr-CA');
+    expect(plan).toHaveBeenCalledWith(db, 'inv1');
+    expect(plan).toHaveBeenCalledTimes(1);
   });
 
   it('never overwrites a documentLocale the draft already carries', async () => {
@@ -1125,6 +1138,7 @@ describe('updateIssuedDueDate', () => {
     const result = await svc.updateIssuedDueDate('i1', '2026-09-01', actor);
     expect(result.audit).toEqual({ orgId: 'org1', invoiceId: 'i1', oldDueDate: '2026-06-01', newDueDate: '2026-09-01' });
     expect(result.invoice.dueDate).toBe('2026-09-01');
+    expect(controls.renotice).toHaveBeenCalledWith(expect.anything(), 'i1');
   });
 
   it('re-derives status: an overdue invoice moved to a future due date flips back to partially_paid', async () => {
@@ -1574,7 +1588,11 @@ describe('changeInvoiceCurrency (draft currency immutability, #3774)', () => {
 });
 
 describe('assembly consumers — currency override + blocked-by-currency groups (#3776)', () => {
-  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  beforeEach(() => {
+    results.length = 0; vi.clearAllMocks();
+    // AI chargeback (#7608): no AI usage charges unless a test says otherwise.
+    (gatherOrgAiUsageCharges as Mock).mockResolvedValue({ included: [], blockedByCurrency: {}, missingRate: [] });
+  });
   const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
   const spec = (lineTotal: string, sourceId = 'te1'): DraftLineSpec => ({
     sourceType: 'time_entry', sourceId, catalogItemId: null, ticketId: null, description: 'Work',
@@ -1672,6 +1690,31 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     const valuesMock = (db as unknown as { values: Mock }).values;
     expect(valuesMock.mock.calls[0]![0]).toEqual(expect.objectContaining({ currencyCode: 'GBP' }));
     expect(gatherOrgTimeEntries).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'GBP');
+  });
+
+  it('(c\'\') org: AI usage charges (#7608) are gathered in the header currency through the range end and materialize with the rest', async () => {
+    queueResult([{ currencyCode: 'USD' }]);
+    queueResult([draftRow('USD')]);
+    queueTail('USD');
+    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('50.00', 'te-usd')], blockedByCurrency: {}, missingRate: [] });
+    (gatherOrgParts as Mock).mockResolvedValue(empty());
+    (gatherOrgAiUsageCharges as Mock).mockResolvedValue({
+      included: [{ ...spec('41.27', 'ch-usd'), sourceType: 'ai_usage', description: 'AI usage' }],
+      blockedByCurrency: { EUR: [{ ...spec('9.00', 'ch-eur'), sourceType: 'ai_usage' }] }, missingRate: [],
+    });
+    const out = await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-11-01', to: '2026-11-30' }, actor);
+    // No lower bound: a closed month's charge exists only from the 1st of the
+    // next month, so any unbilled charge billed on or before `to` is gathered.
+    const aiCall = (gatherOrgAiUsageCharges as Mock).mock.calls[0]!;
+    expect(aiCall).toHaveLength(3);
+    const [, through, header] = aiCall;
+    expect([(through as Date).toISOString(), header]).toEqual(['2026-11-30T23:59:59.000Z', 'USD']);
+    const [, from, to] = (gatherOrgTimeEntries as Mock).mock.calls[0]!;
+    expect([(from as Date).toISOString(), to]).toEqual(['2026-11-01T00:00:00.000Z', through]);
+    const valuesMock = (db as unknown as { values: Mock }).values;
+    const lines = valuesMock.mock.calls[1]![0] as Array<{ sourceId: string; sourceType: string }>;
+    expect(lines.map((l) => [l.sourceType, l.sourceId])).toEqual([['time_entry', 'te-usd'], ['ai_usage', 'ch-usd']]);
+    expect(out.blockedByCurrency).toEqual([{ currencyCode: 'EUR', count: 1, amount: '9.00' }]);
   });
 
   it('(d) org: mixed → only included specs materialize; blocked groups come back summarized, never as lines', async () => {
@@ -1981,6 +2024,7 @@ describe('getInvoice — billing evidence counts (#3205 W07)', () => {
     queueResult([{ lineId: 'l1', n: 3 }]);
     queueResult([]); // Stripe connection
     queueResult([]); // accounting sync
+    queueResult([{count:0}]); // ungated money attention
     queueResult([{ id: 'i1', orgId: 'org1' }]); // listInvoices
 
     const detail = await svc.getInvoice('i1', actor);
@@ -2972,4 +3016,20 @@ describe('getInvoice — effectiveTaxRate on drafts (#6338)', () => {
     const out = await svc.getInvoice('i1', actor);
     expect(out.effectiveTaxRate).toBeNull();
   });
+});
+
+it('projects all unresolved money after invoice authorization even with no autopay panel',async()=>{
+ results.length=0; vi.clearAllMocks();
+ const actor={userId:'u1',partnerId:'p1',accessibleOrgIds:['org1']};
+ queueResult([{id:'i1',orgId:'org1',partnerId:'p1',status:'sent'}]);
+ queueResult([]); // lines
+ queueResult([]); // evidence
+ queueResult([]); // Stripe
+ queueResult([]); // accounting
+ queueResult([{count:2}]);
+ const detail=await svc.getInvoice('i1',actor);
+ expect(detail.unappliedCount).toBe(2);
+ const predicate=(db as unknown as {where:Mock}).where.mock.calls.at(-1)![0] as SQL;
+ expect(new PgDialect().sqlToQuery(predicate).params).toEqual(['i1','org1','unapplied']);
+ expect(detail.autopay).toBeNull();
 });

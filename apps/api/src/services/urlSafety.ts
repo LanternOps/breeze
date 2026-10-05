@@ -18,6 +18,7 @@ import type { LookupAddress } from 'dns';
 import https from 'https';
 import http from 'http';
 import type { LookupFunction } from 'net';
+import type { Duplex } from 'stream';
 import { assertOutsideHeldDbContext } from '../db';
 import {
   canonicalIpLiteral,
@@ -63,6 +64,18 @@ export class ResponseTooLargeError extends Error {
   constructor(public readonly maxBytes: number) {
     super(`response body exceeded maxBytes (${maxBytes})`);
     this.name = 'ResponseTooLargeError';
+  }
+}
+
+/**
+ * The response headers did not arrive within the caller's `headersTimeoutMs`
+ * (measured from the call, so it covers DNS, connect and the wait for the
+ * status line). The request is destroyed.
+ */
+export class ResponseHeadersTimeoutError extends Error {
+  constructor(public readonly timeoutMs: number) {
+    super(`response headers not received within ${timeoutMs}ms`);
+    this.name = 'ResponseHeadersTimeoutError';
   }
 }
 
@@ -227,6 +240,12 @@ export function createGuardedLookup(opts?: SsrfGuardOptions): LookupFunction {
  * For SDKs that build their own HTTP client and therefore cannot go through
  * `safeFetch` (the AWS SDK is the motivating case), handing them these agents
  * applies the same connect-time policy to every request they make.
+ *
+ * These agents keep sockets alive, and a reused socket skips the lookup. That
+ * is sound only because every socket in a pair's pool was opened under the one
+ * `opts` the pair was built with. Never share a pair between callers with
+ * different policies — build a new pair per policy, as `createGuardedS3Client`
+ * does per client.
  */
 export function createGuardedHttpAgents(opts?: SsrfGuardOptions): {
   httpAgent: http.Agent;
@@ -316,6 +335,69 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    * Defaults to false — every existing caller keeps byte-identical behavior.
    */
   streamResponse?: boolean;
+  /**
+   * Deadline, from the moment `safeFetch` is called, for the response HEADERS
+   * to arrive — DNS resolution, connect, TLS and the wait for the status line.
+   * Once headers arrive it no longer applies: a body that takes longer (a slow
+   * non-streamed generation, say) is bounded only by `timeoutMs` inactivity,
+   * `maxBytes` and the caller's `signal`. On expiry the request is destroyed
+   * and the call rejects with `ResponseHeadersTimeoutError`.
+   *
+   * Distinct from `timeoutMs`, which is a socket-INACTIVITY timeout. Unset =
+   * no headers deadline (existing behaviour).
+   */
+  headersTimeoutMs?: number;
+}
+
+/**
+ * Bound the pre-dial work (DNS resolution) by the request's signal and
+ * deadlines. The OS resolver cannot be cancelled, so a stalled lookup keeps
+ * running in the background; what matters is that the CALLER is released
+ * promptly instead of waiting on it past every deadline it set. The abandoned
+ * lookup's eventual result or error is ignored.
+ */
+function boundPreDial<T>(
+  work: Promise<T>,
+  bounds: { signal?: AbortSignal; timeoutMs?: number; headersTimeoutMs?: number }
+): Promise<T> {
+  const { signal, timeoutMs, headersTimeoutMs } = bounds;
+  const hasTimeout = timeoutMs !== undefined && timeoutMs > 0;
+  if (!signal && !hasTimeout && headersTimeoutMs === undefined) return work;
+
+  return new Promise<T>((resolve, reject) => {
+    const timers: NodeJS.Timeout[] = [];
+    let done = false;
+    const onAbort = (): void => finish(() => reject(new Error('aborted')));
+    function finish(settle: () => void): void {
+      if (done) return;
+      done = true;
+      for (const t of timers) clearTimeout(t);
+      signal?.removeEventListener('abort', onAbort);
+      settle();
+    }
+
+    work.then(
+      (value) => finish(() => resolve(value)),
+      (err: unknown) => finish(() => reject(err))
+    );
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (hasTimeout) {
+      timers.push(setTimeout(
+        () => finish(() => reject(new Error(`request timed out after ${timeoutMs}ms`))),
+        timeoutMs
+      ));
+    }
+    if (headersTimeoutMs !== undefined) {
+      timers.push(setTimeout(
+        () => finish(() => reject(new ResponseHeadersTimeoutError(headersTimeoutMs))),
+        headersTimeoutMs
+      ));
+    }
+  });
 }
 
 /**
@@ -459,14 +541,22 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
 
   const hostname = bareHostname(u.hostname);
 
+  const headersTimeoutMs =
+    init.headersTimeoutMs !== undefined && init.headersTimeoutMs > 0 ? init.headersTimeoutMs : undefined;
+  const startedAt = Date.now();
+
   // Resolve + filter through the SHARED policy helper, so `safeFetch`,
   // `assertSafeUrl` and `createGuardedLookup` can never drift apart on what
   // counts as a blocked address. It rejects literal private IPs without any DNS
-  // work, and throws when every resolved record is blocked.
-  const { safe, allIps } = await resolveSafeRecords(hostname, {
-    allowPrivateNetwork: init.allowPrivateNetwork,
-    allowCarrierNat: init.allowCarrierNat
-  });
+  // work, and throws when every resolved record is blocked. Resolution is
+  // bounded by the caller's signal and deadlines like the rest of the request.
+  const { safe, allIps } = await boundPreDial(
+    resolveSafeRecords(hostname, {
+      allowPrivateNetwork: init.allowPrivateNetwork,
+      allowCarrierNat: init.allowCarrierNat
+    }),
+    { signal: init.signal, timeoutMs: init.timeoutMs, headersTimeoutMs }
+  );
   const safeRecord = safe[0]!;
 
   if (init.onConnect) {
@@ -570,7 +660,14 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
     port,
     path: u.pathname + u.search,
     headers,
-    lookup: pinnedLookup
+    lookup: pinnedLookup,
+    // A fresh connection per request. Node's global agent keeps sockets alive
+    // and pools them by host:port alone, so a pooled socket would carry this
+    // request to whatever address an EARLIER request pinned — possibly under a
+    // looser policy (`allowPrivateNetwork` / `allowCarrierNat`) — without ever
+    // calling `pinnedLookup` or re-checking the address. `agent: false` makes
+    // every request dial through its own pinned, policy-checked lookup.
+    agent: false
     // No `rejectUnauthorized: false` — cert chain validation stays on.
     // Node's default `servername` for https.request is `host`, which is the
     // original hostname — so SNI and cert hostname check both work correctly.
@@ -583,14 +680,52 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
     // that moment a transport error can no longer `reject` (the promise is
     // settled), so it has to be raised on the body instead.
     let failStream: ((err: Error) => void) | null = null;
+    let headersTimer: NodeJS.Timeout | undefined;
+    const clearHeadersTimer = (): void => {
+      if (headersTimer !== undefined) clearTimeout(headersTimer);
+      headersTimer = undefined;
+    };
+
+    /**
+     * Build and resolve the caller's `Response`. The constructor throws for a
+     * status outside 200-599 and for any body on a null-body status, and this
+     * runs inside socket callbacks where a throw would escape as an uncaught
+     * exception. So a null-body status always gets a null body, and anything
+     * else that throws becomes an ordinary rejection.
+     */
+    const respond = (res: http.IncomingMessage, body: BodyInit | null): void => {
+      const status = res.statusCode ?? 0;
+      try {
+        resolve(new Response(NULL_BODY_STATUSES.has(status) ? null : body, {
+          status,
+          statusText: res.statusMessage ?? '',
+          headers: toResponseHeaders(res.headers)
+        }));
+      } catch (err) {
+        req.destroy();
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    };
+
+    // True once the response callback has run (the promise is then settled or
+    // about to be, by `respond` or by a body error).
+    let responded = false;
 
     const req = requester(reqOptions, (res) => {
+      responded = true;
+      clearHeadersTimer();
       // Follow no redirects by default — caller gets the raw response and can
       // re-invoke safeFetch if they want to trust the Location header.
       const status = res.statusCode ?? 0;
 
+      if (!Number.isInteger(status) || status < 200 || status > 599) {
+        // Not representable as a `Response`; refuse it as a transport failure.
+        req.destroy();
+        reject(new Error(`upstream answered with an invalid HTTP status (${status})`));
+        return;
+      }
+
       if (init.streamResponse) {
-        const headers = toResponseHeaders(res.headers);
         // 204/304 and friends may not carry a body at all; draining is the only
         // correct thing to do with the (empty) stream.
         if (NULL_BODY_STATUSES.has(status)) {
@@ -610,13 +745,13 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
           res.on('error', noteLateError);
           failStream = noteLateError;
           res.resume();
-          resolve(new Response(null, { status, statusText: res.statusMessage ?? '', headers }));
+          respond(res, null);
           return;
         }
         const body = streamedResponseBody(req, res, init.maxBytes, (fail) => {
           failStream = fail;
         });
-        resolve(new Response(body, { status, statusText: res.statusMessage ?? '', headers }));
+        respond(res, body);
         return;
       }
 
@@ -640,16 +775,34 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
       });
       res.on('end', () => {
         if (aborted) return;
-        const bodyBytes = Buffer.concat(chunks);
-        resolve(
-          new Response(bodyBytes, {
-            status: res.statusCode ?? 0,
-            statusText: res.statusMessage ?? '',
-            headers: toResponseHeaders(res.headers)
-          })
-        );
+        respond(res, Buffer.concat(chunks));
       });
       res.on('error', reject);
+      // A peer that drops mid-body may emit only 'close'; never resolve or
+      // hang on a truncated buffer.
+      res.on('close', () => {
+        if (!res.complete) reject(new Error('response closed before the body was complete'));
+      });
+    });
+
+    // A 101 (protocol upgrade) or a CONNECT tunnel never reaches the response
+    // callback: Node hands over the raw socket on these events instead, or
+    // destroys it when nobody listens, leaving the promise pending forever.
+    // Neither is an HTTP response this function can return, so refuse both.
+    const refuseRawSocket = (kind: string) => (_res: http.IncomingMessage, socket: Duplex): void => {
+      // Node detaches its own socket listeners on hand-over; keep one so a
+      // queued socket error cannot surface as an unhandled 'error' event.
+      socket.on('error', () => {});
+      socket.destroy();
+      req.destroy();
+      reject(new Error(`upstream attempted a ${kind}, which is not supported`));
+    };
+    req.on('upgrade', refuseRawSocket('protocol upgrade'));
+    req.on('connect', refuseRawSocket('CONNECT tunnel (protocol upgrade)'));
+    // The request closed without ever producing a response (and without an
+    // 'error' carrying a more specific reason): settle rather than hang.
+    req.once('close', () => {
+      if (!responded) reject(new Error('connection closed before a response was received'));
     });
 
     req.on('error', (err) => {
@@ -672,15 +825,33 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
       });
     }
 
+    if (headersTimeoutMs !== undefined) {
+      // Whatever is left of the deadline after DNS resolution.
+      const remaining = Math.max(0, headersTimeoutMs - (Date.now() - startedAt));
+      headersTimer = setTimeout(() => {
+        headersTimer = undefined;
+        req.destroy(new ResponseHeadersTimeoutError(headersTimeoutMs));
+      }, remaining);
+      req.once('close', clearHeadersTimer);
+    }
+
     if (init.signal) {
+      // Abort settles the promise directly: an already-closed request emits no
+      // further 'error', so relying on destroy() alone could leave it pending.
+      // Once a response is out, a live body is failed through req's 'error'.
+      const onAbort = (): void => {
+        const err = new Error('aborted');
+        if (!responded) reject(err);
+        req.destroy(err);
+      };
       if (init.signal.aborted) {
-        req.destroy(new Error('aborted'));
+        onAbort();
       } else {
-        init.signal.addEventListener(
-          'abort',
-          () => req.destroy(new Error('aborted')),
-          { once: true }
-        );
+        const signal = init.signal;
+        signal.addEventListener('abort', onAbort, { once: true });
+        // Drop the listener once the request is finished with, so a long-lived
+        // caller signal does not accumulate one closure per completed request.
+        req.once('close', () => signal.removeEventListener('abort', onAbort));
       }
     }
 

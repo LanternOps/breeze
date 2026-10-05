@@ -475,3 +475,97 @@ describe('Graph-read executor client — sync-action', () => {
     expect(signals[0]!.aborted).toBe(false);
   });
 });
+
+describe('Graph-read executor client: verify-identity', () => {
+  function verifyInput(overrides: Record<string, unknown> = {}) {
+    return {
+      correlationId: CORRELATION_ID,
+      consentAttemptId: ATTEMPT_ID,
+      expectedTenantId: null,
+      authorizationCode: 'authorization-code',
+      codeVerifier: 'v'.repeat(43),
+      nonce: 'nonce',
+      redirectUri: 'https://console.example.test/api/v1/m365/consent/callback',
+      ...overrides,
+    };
+  }
+
+  const verified = {
+    success: true as const,
+    tenantId: TENANT_ID,
+    administratorObjectId: ADMIN_ID,
+    administratorUsername: null,
+    verifiedAt: '2026-10-03T12:00:00.000Z',
+  };
+
+  function jsonResponse(body: unknown, status = 200) {
+    return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  }
+
+  it('posts verify-identity with a verify-identity operation claim and parses the result', async () => {
+    const { privateJwk, publicKey } = await signingFixture();
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = String(init?.body);
+      const token = String(new Headers(init?.headers).get('authorization')).slice('Bearer '.length);
+      const claims = await jwtVerify(token, publicKey, {
+        algorithms: ['EdDSA'],
+        issuer: 'breeze-api',
+        audience: 'm365-graph-read-executor',
+        subject: 'breeze-control-plane',
+      });
+      expect(claims.payload).toMatchObject({
+        correlationId: CORRELATION_ID,
+        operation: 'verify-identity',
+        bodySha256: createHash('sha256').update(body).digest('base64url'),
+      });
+      return jsonResponse(verified);
+    });
+    const client = createGraphReadExecutorClient({ executorUrl: 'https://executor.internal.example.test', executorAudience: 'm365-graph-read-executor', signingPrivateJwk: privateJwk, signingKid: 'api-key-1', fetch: fetchMock as never });
+
+    await expect(client.verifyConsentIdentity(verifyInput())).resolves.toEqual(verified);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://executor.internal.example.test/v1/verify-identity');
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'POST', redirect: 'error' });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(verifyInput());
+  });
+
+  it('passes a pinned expected tenant and an identity failure through', async () => {
+    const { privateJwk } = await signingFixture();
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: false, errorCode: 'tenant_mismatch' }));
+    const client = createGraphReadExecutorClient({ executorUrl: 'https://executor.internal.example.test', executorAudience: 'm365-graph-read-executor', signingPrivateJwk: privateJwk, signingKid: 'api-key-1', fetch: fetchMock as never });
+
+    await expect(client.verifyConsentIdentity(verifyInput({ expectedTenantId: TENANT_ID })))
+      .resolves.toEqual({ success: false, errorCode: 'tenant_mismatch' });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).expectedTenantId).toBe(TENANT_ID);
+  });
+
+  it.each([
+    ['the legacy tenantHint field', { tenantHint: TENANT_ID }],
+    ['the organizations literal', { expectedTenantId: 'organizations' }],
+    ['a missing expectedTenantId', { expectedTenantId: undefined }],
+  ])('rejects a request carrying %s before any network call', async (_label, overrides) => {
+    const { privateJwk } = await signingFixture();
+    const fetchMock = vi.fn();
+    const client = createGraphReadExecutorClient({ executorUrl: 'https://executor.internal.example.test', executorAudience: 'm365-graph-read-executor', signingPrivateJwk: privateJwk, signingKid: 'api-key-1', fetch: fetchMock as never });
+
+    await expect(client.verifyConsentIdentity(verifyInput(overrides) as never))
+      .rejects.toBeInstanceOf(GraphReadExecutorClientError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a pre-W1 executor 404', () => jsonResponse({ error: 'not_found' }, 404)],
+    ['an id_token in the result', () => jsonResponse({ ...verified, idToken: 'eyJ.leak.token' })],
+    ['an application-proof failure code', () => jsonResponse({ success: false, errorCode: 'application_token_invalid' })],
+    ['a non-JSON body', () => new Response('provider body secret', { headers: { 'content-type': 'text/plain' } })],
+  ])('maps %s to one sanitized executor_unavailable error', async (_label, makeResponse) => {
+    const { privateJwk } = await signingFixture();
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse());
+    const client = createGraphReadExecutorClient({ executorUrl: 'https://executor.internal.example.test', executorAudience: 'm365-graph-read-executor', signingPrivateJwk: privateJwk, signingKid: 'api-key-1', fetch: fetchMock as never });
+
+    const error = await client.verifyConsentIdentity(verifyInput()).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(GraphReadExecutorClientError);
+    expect(error).toMatchObject({ code: 'executor_unavailable', message: 'executor_unavailable' });
+    expect(String(error)).not.toContain('leak');
+  });
+});

@@ -66,6 +66,11 @@ import { enqueueVerdictRunForAlert } from '../../services/aiAgents/alertVerdictS
 import { finalizePatchJobDevice } from '../../services/patchJobFinalizer';
 import { checkDeviceMaintenanceWindow } from '../../services/featureConfigResolver';
 import { resolveNextMaintenanceWindow } from '../../services/maintenanceWindowProjection';
+import { usePlatformAiKeyPlaceholder } from './helpers/platformAiKey';
+
+// W03 (#7601): agent admission resolves the agent's model first; the
+// platform default is only usable with a platform key configured.
+usePlatformAiKeyPlaceholder();
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 

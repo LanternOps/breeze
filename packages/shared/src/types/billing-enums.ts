@@ -10,11 +10,14 @@ export const INVOICE_STATUSES = [
 ] as const;
 
 export const PAYMENT_METHODS = [
-  'cash', 'check', 'bank_transfer', 'card', 'other',
+  'cash', 'check', 'bank_transfer', 'card', 'other', 'ach_debit',
 ] as const;
 
 export const INVOICE_LINE_SOURCE_TYPES = [
   'time_entry', 'part', 'catalog', 'bundle', 'manual', 'contract',
+  // AI chargeback W10 (#7608): source_id = ai_usage_charges.id. Appended last
+  // (2026-11-26-100410-invoice-line-source-ai-usage.sql).
+  'ai_usage',
 ] as const;
 
 export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];

@@ -111,6 +111,10 @@ vi.mock('../services/scriptBuilderTools', () => ({
   SCRIPT_BUILDER_MCP_TOOL_NAMES: [],
 }));
 
+// W03 Task 9: session create resolves through the registry (not exercised here).
+vi.mock('../services/aiModels/sessionModel', () => ({ chooseSessionModel: vi.fn() }));
+vi.mock('../services/aiModels/candidateLoader', () => ({ readOrgPartnerId: vi.fn() }));
+
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
@@ -126,6 +130,8 @@ import { db } from '../db';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 import { handleApproval } from '../services/aiAgent';
+import { makeResolvedModel } from '../services/aiModels/__fixtures__/resolvedModel';
+import { turnBindingFrom } from '../services/aiModels/turnBinding';
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -238,7 +244,7 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
           sanitizedContent: 'Hello',
           systemPrompt: 'System prompt',
           maxBudgetUsd: 1,
-          resolved: { source: 'platform', apiKey: 'k', model: 'claude-sonnet-4-6' },
+          model: makeResolvedModel('platform', { surface: 'script_builder' }),
         } as any;
       });
       const activeSession = {
@@ -285,15 +291,8 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
       expect(dbCtx.depth).toBe(0);
     });
 
-    it('threads the resolved config into SDK session creation', async () => {
-      const resolved = {
-        source: 'partner' as const,
-        partnerId: 'partner-1',
-        apiKey: 'partner-key',
-        model: 'claude-sonnet-4-6',
-        configId: 'config-1',
-        configVersion: 4,
-      };
+    it('dispatches and reserves exactly the model preflight resolved (finding 13)', async () => {
+      const model = makeResolvedModel('anthropic_byok', { surface: 'script_builder' });
       vi.mocked(runPreFlightChecks).mockResolvedValue({
         ok: true,
         session: {
@@ -301,7 +300,7 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
           type: 'script_builder',
           orgId: ORG_ID,
           sdkSessionId: null,
-          model: resolved.model,
+          model: 'claude-sonnet-5-5',
           maxTurns: 50,
           turnCount: 0,
           systemPrompt: 'System prompt',
@@ -309,7 +308,7 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
         sanitizedContent: 'Hello',
         systemPrompt: 'System prompt',
         maxBudgetUsd: 1,
-        resolved,
+        model,
       } as any);
       vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue({ state: 'processing' } as any);
       vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(false);
@@ -323,20 +322,45 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
       expect(res.status).toBe(409);
       expect(streamingSessionManager.getOrCreate).toHaveBeenCalledWith(
         SESSION_ID,
-        expect.anything(),
+        expect.not.objectContaining({ model: expect.anything() }),
         expect.anything(),
         expect.anything(),
         'System prompt',
         undefined,
-        resolved,
+        model,
         expect.anything(),
         expect.anything(),
-        expect.objectContaining({ budgetReservationId: expect.any(String) }),
+        expect.objectContaining({ budgetReservationId: expect.any(String), ledgerUserId: expect.any(String) }),
+      );
+      expect(vi.mocked(streamingSessionManager.getOrCreate).mock.calls[0]![6]).toBe(model);
+      expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({
+        billingSource: 'partner_key', binding: turnBindingFrom(model),
+      }));
+      expect(streamingSessionManager.tryTransitionToProcessing).toHaveBeenCalledWith(
+        expect.anything(), expect.any(String), expect.objectContaining({ turnBinding: turnBindingFrom(model) }),
       );
     });
 
+    it('an ineligible stored model is a recoverable 409 with its code and takes no reservation', async () => {
+      vi.mocked(runPreFlightChecks).mockResolvedValue({
+        ok: false, error: 'Model Opus 5.5 is no longer available — choose another.', status: 409, code: 'model_unavailable',
+      });
+
+      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Hello' }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'Model Opus 5.5 is no longer available — choose another.', code: 'model_unavailable', recoverable: true,
+      });
+      expect(reserveAiBudget).not.toHaveBeenCalled();
+      expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
+    });
+
     it('maps a wire-model fail-close from the SDK manager to 503 ai_unavailable', async () => {
-      const resolved = { source: 'platform', apiKey: 'k', model: 'claude-sonnet-4-6' };
       vi.mocked(runPreFlightChecks).mockResolvedValue({
         ok: true,
         session: {
@@ -344,7 +368,7 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
           orgId: ORG_ID,
           type: 'script_builder',
           sdkSessionId: null,
-          model: resolved.model,
+          model: 'claude-sonnet-4-6',
           maxTurns: 50,
           turnCount: 0,
           systemPrompt: 'System prompt',
@@ -352,12 +376,10 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
         sanitizedContent: 'Hello',
         systemPrompt: 'System prompt',
         maxBudgetUsd: 1,
-        resolved,
+        model: makeResolvedModel('platform', { surface: 'script_builder' }),
       } as any);
-      // `getOrCreate` resolves the wire model INSIDE the manager, so a pinned
-      // revision with no verified mapping for this session's model throws from
-      // here — the resolver-level 503 the caller already handles elsewhere has
-      // no visibility into it (#3922 W3 review round 2).
+      // Last-resort guard: an LlmUnavailableError from the manager (e.g. a
+      // wire option the transport cannot carry) maps to 503, never a 500.
       vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValue(new LlmUnavailableError());
 
       const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}/messages`, {

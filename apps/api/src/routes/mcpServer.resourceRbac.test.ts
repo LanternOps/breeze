@@ -265,3 +265,36 @@ describe('resources/read fail-closed resource RBAC (MCP-OAUTH-03)', () => {
     expect(mocks.dbSelect).not.toHaveBeenCalled();
   });
 });
+
+describe('resources/read breeze://automations uses the tool-result field rules', () => {
+  it('masks secret-named trigger fields while keeping the rest of the row', async () => {
+    mockPermissions([{ resource: 'automations', action: 'read' }]);
+    mockDb([
+      {
+        id: 'auto-1',
+        name: 'Inbound hook',
+        description: 'Runs on webhook',
+        enabled: true,
+        trigger: {
+          type: 'webhook',
+          secret: 'trigger-field-value-1',
+          headers: { 'X-Signature': 'trigger-field-value-2' },
+          eventType: 'device.offline',
+        },
+      },
+    ]);
+
+    const res = await readResource('breeze://automations');
+    const body = await res.json();
+    expect(body.error).toBeUndefined();
+    const text = body.result.contents[0].text as string;
+    expect(text).not.toContain('trigger-field-value-');
+    const rows = JSON.parse(text);
+    expect(rows[0]).toMatchObject({
+      id: 'auto-1',
+      name: 'Inbound hook',
+      enabled: true,
+      trigger: { type: 'webhook', secret: '[REDACTED]', headers: { 'X-Signature': '[REDACTED]' }, eventType: 'device.offline' },
+    });
+  }, 15_000);
+});

@@ -14,6 +14,7 @@ interface ConnectedApp {
 type Status =
   | { kind: 'loading' }
   | { kind: 'unauthenticated' }
+  | { kind: 'disabled' }
   | { kind: 'error'; message: string }
   | { kind: 'ready'; apps: ConnectedApp[] };
 
@@ -34,6 +35,12 @@ export default function ConnectedAppsList() {
       if (res.status === 401) {
         window.location.href = '/login?next=/settings/connected-apps';
         setStatus({ kind: 'unauthenticated' });
+        return;
+      }
+      // The API only mounts this route when MCP_OAUTH_ENABLED=true, so a 404
+      // means the feature is off on this server, not that the request broke.
+      if (res.status === 404) {
+        setStatus({ kind: 'disabled' });
         return;
       }
       if (!res.ok) {
@@ -78,6 +85,15 @@ export default function ConnectedAppsList() {
 
   if (status.kind === 'unauthenticated') {
     return <p className="text-sm text-muted-foreground">{t('connectedAppsList.redirectingToSignIn')}</p>;
+  }
+
+  if (status.kind === 'disabled') {
+    return (
+      <div className="rounded-md border border-dashed bg-muted/30 p-8 text-center" role="status">
+        <p className="text-sm font-medium">{t('connectedAppsList.notEnabledTitle')}</p>
+        <p className="mt-1 text-sm text-muted-foreground">{t('connectedAppsList.notEnabledBody')}</p>
+      </div>
+    );
   }
 
   if (status.kind === 'error') {

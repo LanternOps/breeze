@@ -26,7 +26,7 @@
 //   - rest must not end in '/'
 //   - the key is served/compared VERBATIM: no percent-decoding, no case
 //     folding, no trimming of a trailing .gz (a writer may legitimately
-//     produce x.gz.gz — agent/internal/backup/snapshot.go:1765 — and trimming
+//     produce x.gz.gz — ensureGzipExtension in agent/internal/backup/snapshot.go — and trimming
 //     it here would silently rewrite a caller's requested key to a DIFFERENT
 //     object than the one on disk).
 export const BACKUP_SNAPSHOT_FILE_MEMBERSHIP_CAPABILITY = 'snapshot-file-membership-v1' as const;

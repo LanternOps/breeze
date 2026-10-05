@@ -2,10 +2,15 @@ package recoveryconsole
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
@@ -90,6 +95,11 @@ type Console struct {
 	// call, so waitAndRetryPending can bound it to 20 minutes overall
 	// rather than per-attempt.
 	pendingWaitElapsed time.Duration
+	// codeRejections counts recovery codes the server definitively
+	// rejected (bmr.ErrCodeInvalid) across one connect call — including
+	// across a return to the server prompt — so maxCodeAttempts bounds
+	// rejected codes, not network failures (#7649).
+	codeRejections int
 	// sleep is the time seam waitAndRetryPending uses instead of calling
 	// time.After directly, so tests can make a "30 second" wait resolve
 	// instantly. nil (the zero value, used by every real build) falls
@@ -211,12 +221,7 @@ func (c *Console) Run(ctx context.Context) error {
 		defer func() { releaseLock() }()
 	}
 
-	server, err := c.promptServer(ci, answers)
-	if err != nil {
-		return err
-	}
-
-	token, bs, err := c.promptCodeAndExchange(ctx, ci, answers, server)
+	server, token, bs, err := c.connect(ctx, ci, answers)
 	if err != nil {
 		return err
 	}
@@ -525,7 +530,38 @@ func (c *Console) promptServer(ci bool, answers Answers) (string, error) {
 	}
 }
 
+// maxCodeAttempts bounds how many recovery codes the server may reject
+// (bmr.ErrCodeInvalid) before the console gives up. Failures that are not a
+// verdict on the code — the server could not be reached, the URL is not a
+// Breeze server, or the server errored — never count against it (#7649).
 const maxCodeAttempts = 3
+
+// errReenterServer is returned by promptCodeAndExchange when the exchange
+// failed because of the server URL (unreachable, or not a Breeze server)
+// rather than the code; the message has already been printed and connect
+// sends the operator back to the server prompt.
+var errReenterServer = errors.New("recovery server could not be used; re-enter the server URL")
+
+// connect prompts for the server URL and a recovery code and exchanges the
+// code, returning to the server prompt whenever the exchange fails because
+// of the server rather than the code.
+func (c *Console) connect(ctx context.Context, ci bool, answers Answers) (string, string, *bmr.BootstrapResponse, error) {
+	c.codeRejections = 0
+	for {
+		server, err := c.promptServer(ci, answers)
+		if err != nil {
+			return "", "", nil, err
+		}
+		token, bs, err := c.promptCodeAndExchange(ctx, ci, answers, server)
+		if errors.Is(err, errReenterServer) {
+			continue
+		}
+		if err != nil {
+			return "", "", nil, err
+		}
+		return server, token, bs, nil
+	}
+}
 
 func (c *Console) promptCodeAndExchange(ctx context.Context, ci bool, answers Answers, server string) (string, *bmr.BootstrapResponse, error) {
 	// pendingWaitElapsed's own doc comment says the 20-minute
@@ -544,29 +580,220 @@ func (c *Console) promptCodeAndExchange(ctx context.Context, ci bool, answers An
 		return token, bs, nil
 	}
 
-	for attempt := 1; attempt <= maxCodeAttempts; attempt++ {
+	serverErrors := 0
+	for {
 		code, err := c.IO.ReadLine("Recovery code: ")
 		if err != nil {
 			return "", nil, err
 		}
-		token, bs, exErr := c.exchangeWithNegotiation(ctx, strings.TrimSpace(code), server)
+		code = strings.TrimSpace(code)
+		if code == "" {
+			c.IO.Print("A recovery code is required.\n")
+			continue
+		}
+		token, bs, exErr := c.exchangeWithNegotiation(ctx, code, server)
 		if exErr == nil {
 			return token, bs, nil
 		}
-		var negErr *bmr.RecoveryNegotiationError
-		if errors.As(exErr, &negErr) {
+		switch classifyExchangeError(exErr) {
+		case failureRefused:
 			// A terminal negotiation refusal (message already printed by
 			// exchangeWithNegotiation) is not a wrong code — re-prompting
 			// for another code would never help, so stop here instead of
 			// spending one of the operator's three attempts on it.
 			return "", nil, fmt.Errorf("recovery refused: %w", exErr)
+		case failureServerUnreachable:
+			var su *bmr.ServerUnreachableError
+			errors.As(exErr, &su)
+			c.IO.Print("Could not reach %s: %s.\n", su.Host, unreachableReason(exErr))
+			if failedBeforeSending(exErr) {
+				c.IO.Print("The recovery code was not sent and this did not count as a failed attempt. Check the server URL and the network connection.\n")
+			} else {
+				c.IO.Print(codeMayBeUsedNotice)
+			}
+			return "", nil, errReenterServer
+		case failureNotBreezeServer:
+			var ue *bmr.UnexpectedServerResponseError
+			errors.As(exErr, &ue)
+			if ue.StatusCode >= 500 {
+				// A proxy error page: the URL may be right and the Breeze
+				// server behind it down, restarting, or slow (a 504 can
+				// arrive after the server already claimed the code).
+				c.IO.Print("%s returned a gateway/server error page (HTTP %d%s): the Breeze server may be down or restarting, or the URL may be wrong.\n", ue.Host, ue.StatusCode, contentTypeSuffix(ue.ContentType))
+				c.IO.Print(codeMayBeUsedNotice)
+			} else {
+				c.IO.Print("%s answered, but not as a Breeze recovery server (HTTP %d%s).\n", ue.Host, ue.StatusCode, contentTypeSuffix(ue.ContentType))
+				c.IO.Print("The recovery code was not used and this did not count as a failed attempt. Check the server URL.\n")
+			}
+			return "", nil, errReenterServer
+		case failureServerError:
+			// The server (or our own context) failed without judging the
+			// code — a rate limit, a 5xx, a cancelled request. Show what
+			// happened and ask again without spending an attempt, but
+			// never forever: after maxCodeAttempts in a row, go back to
+			// the server prompt in case the URL points at the wrong API.
+			if ctx.Err() != nil {
+				return "", nil, exErr
+			}
+			serverErrors++
+			c.IO.Print("The server could not check that code: %v\n", exErr)
+			if serverErrors >= maxCodeAttempts {
+				c.IO.Print("This did not count as a failed attempt. The server keeps failing; check the server URL, or try again later.\n")
+				return "", nil, errReenterServer
+			}
+			c.IO.Print("This did not count as a failed attempt. Try the code again.\n")
+			continue
 		}
+		c.codeRejections++
 		c.IO.Print("That code did not work: %v\n", exErr)
-		if attempt == maxCodeAttempts {
+		if c.codeRejections >= maxCodeAttempts {
 			return "", nil, fmt.Errorf("too many invalid recovery codes: %w", exErr)
 		}
 	}
-	return "", nil, errors.New("unreachable")
+}
+
+// exchangeFailure is what a failed code exchange means for the operator.
+type exchangeFailure int
+
+const (
+	// failureCodeRejected: the Breeze server rejected the code itself.
+	failureCodeRejected exchangeFailure = iota
+	// failureServerUnreachable: no HTTP response (DNS, connect, TLS, timeout).
+	failureServerUnreachable
+	// failureNotBreezeServer: a response, but not from a Breeze recovery endpoint.
+	failureNotBreezeServer
+	// failureRefused: a terminal capability/version negotiation refusal.
+	failureRefused
+	// failureServerError: any other failure that is not a verdict on the code.
+	failureServerError
+)
+
+func (f exchangeFailure) String() string {
+	switch f {
+	case failureCodeRejected:
+		return "code-rejected"
+	case failureServerUnreachable:
+		return "server-unreachable"
+	case failureNotBreezeServer:
+		return "not-breeze-server"
+	case failureRefused:
+		return "refused"
+	case failureServerError:
+		return "server-error"
+	}
+	return fmt.Sprintf("exchangeFailure(%d)", int(f))
+}
+
+// classifyExchangeError maps a Deps.Exchange error to what it means for the
+// operator. Only bmr.ErrCodeInvalid — the server's definitive code_invalid
+// answer — is a rejected code (#7649).
+func classifyExchangeError(err error) exchangeFailure {
+	var negErr *bmr.RecoveryNegotiationError
+	var su *bmr.ServerUnreachableError
+	var ue *bmr.UnexpectedServerResponseError
+	switch {
+	case errors.Is(err, bmr.ErrCodeInvalid):
+		return failureCodeRejected
+	case errors.As(err, &negErr):
+		return failureRefused
+	case errors.As(err, &su):
+		return failureServerUnreachable
+	case errors.As(err, &ue):
+		return failureNotBreezeServer
+	default:
+		return failureServerError
+	}
+}
+
+// unreachableReason turns a transport failure into the operator-facing
+// reason the server could not be reached.
+func unreachableReason(err error) string {
+	var dnsErr *net.DNSError
+	var unknownAuthority x509.UnknownAuthorityError
+	var hostnameErr x509.HostnameError
+	var invalidCert x509.CertificateInvalidError
+	var certVerify *tls.CertificateVerificationError
+	var recordHeader tls.RecordHeaderError
+	var netErr net.Error
+	switch {
+	case errors.Is(err, bmr.ErrServerCertPinMismatch):
+		return "the server's TLS certificate does not match the one pinned into this recovery media"
+	case errors.As(err, &dnsErr):
+		if dnsErr.IsNotFound {
+			return "server name not found (DNS lookup failed) — check the server URL"
+		}
+		return fmt.Sprintf("DNS lookup failed (%s)", dnsErr.Err)
+	case errors.As(err, &hostnameErr):
+		return fmt.Sprintf("TLS certificate error (%v) — the certificate is for a different name; check the server URL", innermost(err))
+	case errors.As(err, &invalidCert) && (invalidCert.Reason == x509.Expired):
+		// x509 reports both "expired" and "not yet valid" as Expired; on
+		// bare-metal media a wrong BIOS clock is the usual cause.
+		return fmt.Sprintf("TLS certificate error (%v) — check this machine's date and time (BIOS clock)", innermost(err))
+	case errors.As(err, &unknownAuthority):
+		return fmt.Sprintf("TLS certificate error (%v) — the certificate is not trusted by this recovery media; check the server URL, or for a TLS-intercepting proxy on this network", innermost(err))
+	case errors.As(err, &invalidCert), errors.As(err, &certVerify):
+		return fmt.Sprintf("TLS certificate error (%v)", innermost(err))
+	case errors.As(err, &recordHeader):
+		return "TLS handshake failed — the server did not answer as an https:// server"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "connection refused — check the server URL and port"
+	case errors.Is(err, syscall.EHOSTUNREACH), errors.Is(err, syscall.ENETUNREACH):
+		return "no route to the server — check the network connection"
+	case errors.As(err, &netErr) && netErr.Timeout():
+		return "connection timed out — check the network connection and server URL"
+	default:
+		return innermost(err).Error()
+	}
+}
+
+// codeMayBeUsedNotice is printed when the request may have reached the
+// server before failing, so the one-time code may already be claimed.
+const codeMayBeUsedNotice = "This did not count as a failed attempt, but the request may have reached the server: if the same code is then reported as invalid, create a new recovery code in Breeze.\n"
+
+// failedBeforeSending reports whether a transport failure provably happened
+// before the request (and so the recovery code) was sent: name resolution,
+// the TCP dial, or the TLS handshake. A timeout or reset after that point
+// may have reached a server that already claimed the one-time code.
+func failedBeforeSending(err error) bool {
+	var dnsErr *net.DNSError
+	var opErr *net.OpError
+	var unknownAuthority x509.UnknownAuthorityError
+	var hostnameErr x509.HostnameError
+	var invalidCert x509.CertificateInvalidError
+	var certVerify *tls.CertificateVerificationError
+	var recordHeader tls.RecordHeaderError
+	switch {
+	case errors.Is(err, bmr.ErrServerCertPinMismatch),
+		errors.As(err, &dnsErr),
+		errors.As(err, &opErr) && opErr.Op == "dial",
+		errors.As(err, &unknownAuthority), errors.As(err, &hostnameErr),
+		errors.As(err, &invalidCert), errors.As(err, &certVerify),
+		errors.As(err, &recordHeader):
+		return true
+	}
+	return false
+}
+
+// innermost unwraps err (through *bmr.ServerUnreachableError and *url.Error)
+// to the transport error itself, so the printed reason does not repeat the
+// request URL the operator just typed.
+func innermost(err error) error {
+	var su *bmr.ServerUnreachableError
+	if errors.As(err, &su) && su.Err != nil {
+		err = su.Err
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) && ue.Err != nil {
+		err = ue.Err
+	}
+	return err
+}
+
+func contentTypeSuffix(ct string) string {
+	if ct == "" {
+		return ""
+	}
+	return ", " + ct
 }
 
 // exchangeWithNegotiation calls Deps.Exchange with code, transparently

@@ -24,6 +24,7 @@ import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
 // on the mock") before a single test runs.
 import { psaConnections } from '../db/schema/integrations';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
+import { markPermissionGate } from '../middleware/permissionGate';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
 import { getAiApprovalTimeout } from '../services/aiApprovalTimeout';
@@ -59,6 +60,8 @@ import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry'
 import {
   LOG_FORWARDING_ORIGIN_CHANGE_MESSAGE,
   LOG_FORWARDING_SECRET_DESTINATIONS,
+  REMOTE_ACCESS_LAUNCHER_ORIGIN_CHANGE_MESSAGE,
+  REMOTE_ACCESS_LAUNCHER_SECRET_DESTINATIONS,
   SettingsSecretInputError,
   maskSettingsSecrets,
   restoreMaskedSettingsSecrets,
@@ -436,9 +439,9 @@ async function ensureOrgAccess(
 /**
  * Resolve an incoming `settings` value (organization, partner or site) against
  * the stored one before it is sealed and written: masked markers and omitted
- * secret keys keep the stored secret, and a log-forwarding destination may not
- * move to a new origin while a stored credential is kept rather than
- * re-entered. `stored` is undefined on create, where there is nothing to keep.
+ * secret keys keep the stored secret, and a log-forwarding destination or a
+ * remote-access launcher may not move to a new origin while a stored
+ * credential is kept rather than re-entered. `stored` is undefined on create, where there is nothing to keep.
  */
 function resolveIncomingSettingsSecrets(
   incoming: unknown,
@@ -446,6 +449,9 @@ function resolveIncomingSettingsSecrets(
 ): { ok: true; settings: unknown } | { ok: false; error: string } {
   if (settingsSecretWouldFollowNewOrigin(incoming, stored, LOG_FORWARDING_SECRET_DESTINATIONS, isMaskedIntegrationSecret)) {
     return { ok: false, error: LOG_FORWARDING_ORIGIN_CHANGE_MESSAGE };
+  }
+  if (settingsSecretWouldFollowNewOrigin(incoming, stored, REMOTE_ACCESS_LAUNCHER_SECRET_DESTINATIONS, isMaskedIntegrationSecret)) {
+    return { ok: false, error: REMOTE_ACCESS_LAUNCHER_ORIGIN_CHANGE_MESSAGE };
   }
   try {
     return { ok: true, settings: restoreMaskedSettingsSecrets(incoming, stored) };
@@ -1397,6 +1403,11 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
           currentPartner.settings,
           updates.settings as Record<string, unknown>,
         );
+        // settings.ai is owned by /ai/models/residency (one home, W04 #7602): a
+        // wholesale settings write keeps the stored subtree and ignores any incoming one.
+        const next = updates.settings as Record<string, unknown>;
+        const stored = (currentPartner.settings as Record<string, unknown> | null)?.ai;
+        if (stored === undefined) delete next.ai; else next.ai = stored;
       }
 
       // Keep the first-class `partners.timezone` column in sync with the
@@ -2399,13 +2410,13 @@ async function readOrgLifecycleStatus(orgId: string): Promise<string | null> {
 // and platformAdminMiddleware (/admin/*) already treats that flag as the
 // grant, so this mirrors the established authority model. Applied ONLY to the
 // org update route, not globally.
-const requireOrgWriteOrPlatformAdmin = async (c: Context, next: Next) => {
+const requireOrgWriteOrPlatformAdmin = markPermissionGate(async (c: Context, next: Next) => {
   const auth = c.get('auth') as AuthContext | undefined;
   if (auth?.scope === 'system' && auth.user?.isPlatformAdmin === true) {
     return next();
   }
   return requireOrgWrite(c, next);
-};
+}, 'orgs:write|platform-admin');
 
 const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPlatformAdmin, requireMfa(), zValidator('json', updateOrganizationSchema), async (c: any) => {
   const auth = c.get('auth') as AuthContext;
@@ -2936,6 +2947,7 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
   // `devices` is org-scoped under RLS so this stays tenant-isolated. Guard on a
   // non-empty page so an empty list never issues a `site_id IN ()` query.
   const deviceCountBySite = new Map<string, number>();
+  const removedCountBySite = new Map<string, number>();
   const siteIds = data.map((s) => s.id);
   if (siteIds.length > 0) {
     const counts = await db
@@ -2954,11 +2966,24 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
     for (const row of counts) {
       deviceCountBySite.set(row.siteId, Number(row.count));
     }
+    // `removedDeviceCount` (#7471): decommissioned rows keep their site FK and
+    // block site deletion, so surface them next to the active count — the
+    // DELETE guard (409 SITE_HAS_DEVICES) counts decommissioned rows the same
+    // way. (The guard also counts ephemeral/parked rows that `deviceCount` hides.)
+    const removedCounts = await db
+      .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
+      .from(devices)
+      .where(and(inArray(devices.siteId, siteIds), eq(devices.status, 'decommissioned')))
+      .groupBy(devices.siteId);
+    for (const row of removedCounts) {
+      removedCountBySite.set(row.siteId, Number(row.count));
+    }
   }
 
   const dataWithCounts = data.map((site) => ({
     ...withMaskedSettings(site),
-    deviceCount: deviceCountBySite.get(site.id) ?? 0
+    deviceCount: deviceCountBySite.get(site.id) ?? 0,
+    removedDeviceCount: removedCountBySite.get(site.id) ?? 0,
   }));
 
   // Ride the org's resolved enrollment defaults along on this response (#2776).
@@ -3207,6 +3232,24 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
   // Both counts land on the audit row.
   const removed = await db.transaction(async (tx) => {
     if (!(await lockSiteForDelete(tx, site.id))) return null;
+    // #7471 — devices.site_id is NO ACTION, so ANY device row still pointing at
+    // the site (including soft-deleted 'decommissioned' ones, which the Sites
+    // list does not count) aborts the delete with 23503 → opaque 500. Count them
+    // here, under the site row lock, and refuse with a 409 that says what to do.
+    // Removed rows are deliberately NOT detached: they keep their site for
+    // history/reporting until an operator permanently deletes them.
+    const [siteDevices] = await tx
+      .select({
+        removed: sql<number>`count(*) filter (where ${devices.status} = 'decommissioned')`,
+        other: sql<number>`count(*) filter (where ${devices.status} <> 'decommissioned')`,
+      })
+      .from(devices)
+      .where(eq(devices.siteId, site.id));
+    const removedDevices = Number(siteDevices?.removed ?? 0);
+    const otherDevices = Number(siteDevices?.other ?? 0);
+    if (removedDevices > 0 || otherDevices > 0) {
+      return { blocked: { removedDevices, otherDevices } } as const;
+    }
     const removedTopologyAlerts = await deleteSiteOwnedTopologyAlerts(tx, site.orgId, site.id);
     const topologyAiSessions = await deleteSiteTopologyAiSessions(tx, { orgId: site.orgId, siteId: site.id });
     await tx.delete(sites).where(eq(sites.id, id));
@@ -3214,6 +3257,22 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
   });
   if (removed === null) {
     return c.json({ error: 'Site not found' }, 404);
+  }
+  if (removed.blocked) {
+    const { removedDevices, otherDevices } = removed.blocked;
+    const parts: string[] = [];
+    if (otherDevices > 0) {
+      parts.push(`${otherDevices} device${otherDevices === 1 ? '' : 's'} still assigned to it (move or remove them first; this includes Quick Support sessions the list hides)`);
+    }
+    if (removedDevices > 0) {
+      parts.push(`${removedDevices} removed device${removedDevices === 1 ? '' : 's'} that must be permanently deleted first (Devices → show removed → Delete permanently)`);
+    }
+    return c.json({
+      error: `This site cannot be deleted: it still has ${parts.join(' and ')}.`,
+      code: 'SITE_HAS_DEVICES',
+      removedDeviceCount: removedDevices,
+      deviceCount: otherDevices,
+    }, 409);
   }
   const { removedTopologyAlerts, topologyAiSessions } = removed;
   const siteDeleteDetails = {

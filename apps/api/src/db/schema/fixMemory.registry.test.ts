@@ -10,9 +10,11 @@ import {
   FIX_OUTCOME_STATES,
   FIX_VOTES,
   REMEDIATION_SUGGESTION_ORIGINS,
+  RESEARCH_BUILTIN_ACTIONS,
 } from '@breeze/shared';
 import { checkConstraintLiterals } from './checkConstraintTestHelpers';
 import { fixMemory, fixOutcomes } from './fixMemory';
+import { fixInstructions } from './fixInstructions';
 import { alerts } from './alerts';
 import { remediationSuggestions } from './remediationSuggestions';
 import { getOrgCascadeDeleteOrder } from '../../services/tenantCascade';
@@ -135,5 +137,39 @@ describe('suggestion origin + alert resolution reason', () => {
     expect(alerts).toHaveProperty('resolutionReason');
     expect(CORE_TENANT_EXPORT_POLICY['remediation_suggestions']!.columns['origin']?.decision).toBe('include');
     expect(CORE_TENANT_EXPORT_POLICY['alerts']!.columns['resolution_reason']?.decision).toBe('include');
+  });
+});
+
+const W2_SUGGESTIONS_SQL = readFileSync(
+  new URL('../../../migrations/2026-12-07-100200-remediation-research-suggestions.sql', import.meta.url),
+  'utf8',
+);
+const W2_INSTRUCTIONS_SQL = readFileSync(
+  new URL('../../../migrations/2026-12-07-100100-fix-instructions.sql', import.meta.url),
+  'utf8',
+);
+
+describe('W2 research columns + reviewed steps', () => {
+  it('builtin_action CHECK mirrors RESEARCH_BUILTIN_ACTIONS', () => {
+    expect(checkConstraintLiterals(W2_SUGGESTIONS_SQL, 'remediation_suggestions_builtin_action_check', 'builtin_action').sort())
+      .toEqual([...RESEARCH_BUILTIN_ACTIONS].sort());
+    expect(checkConstraintLiterals(W2_SUGGESTIONS_SQL, 'remediation_suggestions_target_type_check', 'target_type'))
+      .toEqual(expect.arrayContaining(['builtin_action', 'script_draft', 'manual_steps']));
+  });
+
+  it('fix_instructions is partner-axis with a separate SELECT-only own-partner branch', () => {
+    expect(W2_INSTRUCTIONS_SQL).toMatch(/partner_id\s+uuid NOT NULL REFERENCES partners\(id\) ON DELETE CASCADE/);
+    expect(W2_INSTRUCTIONS_SQL).toMatch(/CREATE POLICY fix_instructions_partner_select[\s\S]*FOR SELECT[\s\S]*partner_id = public\.breeze_current_partner_id\(\)/);
+    expect(W2_INSTRUCTIONS_SQL).not.toMatch(/org_id/);
+    expect(fixInstructions).toHaveProperty('steps');
+  });
+
+  it('classifies every new column of an org-cascade table for export', () => {
+    for (const col of ['agent_run_id', 'builtin_action', 'research_ordinal', 'instructions_id']) {
+      expect(CORE_TENANT_EXPORT_POLICY['remediation_suggestions']!.columns[col]?.decision, col).toBe('include');
+    }
+    for (const col of ['action_command_id', 'action_cleanup_run_id']) {
+      expect(CORE_TENANT_EXPORT_POLICY['fix_outcomes']!.columns[col]?.decision, col).toBe('include');
+    }
   });
 });

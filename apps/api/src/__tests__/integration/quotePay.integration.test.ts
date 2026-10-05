@@ -76,7 +76,7 @@ describe('createQuotePayLink (breeze_app, real DB)', () => {
     await withDbAccessContext(ctx, () => sendQuote(created.id, qActor(org.id, partner.id)));
     await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Jane' }));
 
-    const res = await withSystemDbAccessContext(() => createQuotePayLink(created.id, iActor(org.id, partner.id)));
+    const res = await createQuotePayLink(created.id, iActor(org.id, partner.id));
     expect(res.url).toBe('https://checkout.stripe.com/c/pay/quote');
     expect(sessionsCreateMock).toHaveBeenCalledTimes(1);
     // $250.00 → 25000 minor units, charged on the converted invoice.
@@ -89,7 +89,7 @@ describe('createQuotePayLink (breeze_app, real DB)', () => {
     const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, qActor(org.id, partner.id)));
     await withDbAccessContext(ctx, () => sendQuote(created.id, qActor(org.id, partner.id))); // sent, not converted
 
-    await expect(withSystemDbAccessContext(() => createQuotePayLink(created.id, iActor(org.id, partner.id))))
+    await expect(createQuotePayLink(created.id, iActor(org.id, partner.id)))
       .rejects.toMatchObject({ status: 409, code: 'NOT_CONVERTED' });
     expect(sessionsCreateMock).not.toHaveBeenCalled();
   });
@@ -102,7 +102,7 @@ describe('createQuotePayLink (breeze_app, real DB)', () => {
     await withDbAccessContext(ctx, () => sendQuote(created.id, qActor(org.id, partner.id)));
     await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Bob' }));
 
-    await expect(withSystemDbAccessContext(() => createQuotePayLink(created.id, iActor(org.id, partner.id))))
+    await expect(createQuotePayLink(created.id, iActor(org.id, partner.id)))
       .rejects.toMatchObject({ status: 409, code: 'NOT_PAYABLE' });
     expect(sessionsCreateMock).not.toHaveBeenCalled();
   });
@@ -119,7 +119,7 @@ describe('createQuotePayLink (breeze_app, real DB)', () => {
     await withDbAccessContext(ctx, () => sendQuote(created.id, qActor(org.id, partner.id)));
     await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Jane' }));
 
-    await expect(withSystemDbAccessContext(() => createQuotePayLink(created.id, iActor(org.id, partner.id))))
+    await expect(createQuotePayLink(created.id, iActor(org.id, partner.id)))
       .rejects.toMatchObject({ status: 500, code: 'STRIPE_INIT_FAILED' });
     expect(sessionsCreateMock).not.toHaveBeenCalled();
   });

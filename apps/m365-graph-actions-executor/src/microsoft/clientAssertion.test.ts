@@ -22,7 +22,7 @@ describe('createClientAssertion', () => {
 
     const assertion = await createClientAssertion({
       clientId: CLIENT_ID,
-      tenantId: TENANT_ID,
+      authority: TENANT_ID,
       certificatePem,
       privateKeyPem,
       now,
@@ -53,7 +53,7 @@ describe('createClientAssertion', () => {
   it('derives Microsoft x5t directly from the parsed certificate DER', async () => {
     const assertion = await createClientAssertion({
       clientId: CLIENT_ID,
-      tenantId: TENANT_ID,
+      authority: TENANT_ID,
       certificatePem,
       privateKeyPem,
     });
@@ -68,7 +68,7 @@ describe('createClientAssertion', () => {
   it('uses a fresh jti for every assertion', async () => {
     const input = {
       clientId: CLIENT_ID,
-      tenantId: TENANT_ID,
+      authority: TENANT_ID,
       certificatePem,
       privateKeyPem,
       now: new Date('2026-07-14T12:00:00.000Z'),
@@ -82,23 +82,45 @@ describe('createClientAssertion', () => {
   });
 
   it.each([
-    ['non-canonical tenant ID', 'organizations'],
+    ['non-canonical tenant ID', 'common'],
     ['upper-case tenant ID', TENANT_ID.toUpperCase()],
     ['non-canonical client ID', 'client-id'],
   ])('rejects a %s before signing', async (_label, value) => {
     await expect(createClientAssertion({
       clientId: _label.includes('client') ? value : CLIENT_ID,
-      tenantId: _label.includes('tenant') ? value : TENANT_ID,
+      authority: _label.includes('tenant') ? value : TENANT_ID,
       certificatePem,
       privateKeyPem,
     })).rejects.toMatchObject({ code: 'client_assertion_failed' });
   });
 
+  it('targets the organizations token endpoint when the authority is organizations', async () => {
+    const now = new Date('2026-07-14T12:00:00.000Z');
+    const assertion = await createClientAssertion({
+      clientId: CLIENT_ID,
+      authority: 'organizations',
+      certificatePem,
+      privateKeyPem,
+      now,
+    });
+    const claims = decodeJwt(assertion);
+    expect(claims.aud).toBe('https://login.microsoftonline.com/organizations/oauth2/v2.0/token');
+    expect(claims).toMatchObject({ iss: CLIENT_ID, sub: CLIENT_ID });
+  });
+
+  it.each(['common', 'consumers', 'Organizations', 'ORGANIZATIONS', 'organizations/', 'contoso.example', '../x', ''])(
+    'rejects authority %j',
+    async (authority) => {
+      await expect(createClientAssertion({ clientId: CLIENT_ID, authority, certificatePem, privateKeyPem }))
+        .rejects.toMatchObject({ code: 'client_assertion_failed' });
+    },
+  );
+
   it('replaces certificate and key failures with a stable secret-free code', async () => {
     const sentinel = 'SENTINEL-PRIVATE-KEY-MATERIAL';
     const failure = await createClientAssertion({
       clientId: CLIENT_ID,
-      tenantId: TENANT_ID,
+      authority: TENANT_ID,
       certificatePem,
       privateKeyPem: sentinel,
     }).catch((error: unknown) => error);

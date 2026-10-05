@@ -76,6 +76,9 @@ export const DAILY_REPEAT_INTERVAL_MS = 24 * 60 * 60 * 1000;
  * so an unused slot is easy to spot.
  */
 export const JOB_SCHEDULES = {
+  // Fine-grained billing outbox tick; intentionally outside the coarse collision grid.
+  'billing-notice-dispatch': '* * * * *',
+  'autopay-card-expiry-check': '28 6 * * *',
   // ---------------------------------------------------------------- daily tier
   // Minutes ≡ 3 (mod 5), one job per (hour, minute).
   'device-metrics-retention': '3 0 * * *',
@@ -98,11 +101,19 @@ export const JOB_SCHEDULES = {
   // Service deliverables W02 (#5573 spec §5.1). Daily tier, minute ≡ 3 (mod 5).
   // Ten minutes after the billing sweep so the two never hold the pool together.
   'deliverable-sweep': '18 5 * * *',
+  // AI chargeback W10 (#7608): daily close of the last UTC month (no-op once
+  // closed). Daily tier, minute ≡ 3 (mod 5), twenty minutes after contract
+  // billing so the two billing producers never hold the pool together.
+  'ai-chargeback-sweep': '28 5 * * *',
   'tdsynnex-sftp-sync': '38 5 * * *',
   'auth-browser-transition-cleanup': '58 5 * * *',
   'invoice-overdue-sweep': '8 6 * * *',
+  'invoice-reminder-sweep': '18 6 * * *',
   // AI model registry W01 (#7599): daily Anthropic model discovery for the platform key.
   'ai-model-discovery-sync': '38 6 * * *',
+  // AI model registry W03 (#7601): daily fan-out of one discovery job per
+  // BYOK/catalog connection, ten minutes after the platform sync.
+  'ai-model-discovery-connections': '48 6 * * *',
   'event-log-retention': '3 7 * * *',
   'hardware-health-retention': '8 7 * * *',
   'time-sync-retention': '18 7 * * *',
@@ -210,6 +221,8 @@ export const JOB_SCHEDULES = {
   // least one hour, so this takes :21, free in every hour and outside the
   // ≡0 (mod 5) minutes the fine-grained ticks land on.
   'parked-device-expiry': '21 * * * *',
+  // Autopay collection: :26 is free in every hour; the mod-5 sub-daily lane is full.
+  'autopay-collection-run': '26 * * * *',
   // Helper screenshot cleanup — sweeps ai_screenshots rows (and their files)
   // past their 24h retention. 4x/day is plenty against a 24h TTL; minute 27
   // on hours 1,7,13,19 is unused by any existing hour/minute combination in

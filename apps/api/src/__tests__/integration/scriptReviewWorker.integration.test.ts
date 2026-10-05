@@ -4,9 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { asc, eq } from 'drizzle-orm';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { db, withSystemDbAccessContext } from '../../db';
-import { aiBudgetReservations, scriptProposalReviews, scriptProposals } from '../../db/schema';
-import { createOrganization, createPartner } from './db-utils';
-import { AI_SCRIPT_REVIEWER_MODEL } from '../../config/env';
+import { aiBudgetReservations, aiInvocations, scriptProposalReviews, scriptProposals } from '../../db/schema';
+import { seedRegistryPartner } from './helpers/aiModelRegistrySeed';
 
 /**
  * AI script authoring W02 — `runScriptReview` against a real Postgres: the
@@ -14,23 +13,29 @@ import { AI_SCRIPT_REVIEWER_MODEL } from '../../config/env';
  * review_failed transition, classifier-derived floors, the budget
  * reservation settling exactly once, retry idempotency, and the inline
  * wait (`waitForReviewCompletion`) returning the MODEL row, never the
- * static-scan row. Only the Anthropic client is faked — `llmConfigResolver`'s
- * billing-source resolution, `aiBudgetReservations`, `aiCostTracker`,
- * `transitionProposal` and the RLS-enforced writes are all real.
+ * static-scan row. Only the Anthropic client is faked — `resolveModel` (the
+ * org's `script_reviewer` assignment on a seeded registry partner),
+ * `aiBudgetReservations`, `settleInvocation`, `transitionProposal` and the
+ * RLS-enforced writes are all real.
  */
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-const { messagesCreateMock } = vi.hoisted(() => ({ messagesCreateMock: vi.fn() }));
+const { messagesCreateMock, createMessageOverride } = vi.hoisted(() => ({
+  messagesCreateMock: vi.fn(),
+  // Set by one case to fail the dispatch the way createMessage does when a
+  // refusal's client-side fallback throws; null = the real createMessage.
+  createMessageOverride: { fn: null as null | ((...args: unknown[]) => Promise<never>) },
+}));
 
-vi.mock('../../services/llm/llmConfigResolver', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../services/llm/llmConfigResolver')>();
+vi.mock('../../services/aiModels/connectionFactory', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/aiModels/connectionFactory')>();
   return {
     ...actual,
-    getAnthropicClientForPartner: vi.fn(async () => ({
-      client: { messages: { create: messagesCreateMock } },
-      resolved: { source: 'platform', model: 'claude-sonnet-4-6', catalog: null },
-    })),
-    resolveWireModel: vi.fn((_resolved: unknown, model: string) => ({ model })),
+    // Only the client is faked; resolveModel, createMessage, settlement and the
+    // reservation are the real ones.
+    anthropicClientFor: vi.fn(() => ({ messages: { create: messagesCreateMock } })),
+    createMessage: (...args: Parameters<typeof actual.createMessage>) =>
+      createMessageOverride.fn ? createMessageOverride.fn(...args) : actual.createMessage(...args),
   };
 });
 
@@ -49,9 +54,8 @@ const VALID_VERDICT = {
 };
 
 async function seedOrg() {
-  const partner = await withSystemDbAccessContext(() => createPartner());
-  const org = await withSystemDbAccessContext(() => createOrganization({ partnerId: partner.id }));
-  return { partner, org };
+  const seeded = await seedRegistryPartner('platform');
+  return { partner: { id: seeded.partnerId }, org: { id: seeded.orgId }, modelId: seeded.modelId };
 }
 
 async function seedProposedProposal(orgId: string, touchClasses: string[] = ['services']) {
@@ -87,12 +91,15 @@ async function reservationsFor(orgId: string) {
 }
 
 beforeEach(() => {
+  // The seeded platform connection is only usable on a deployment with a platform key.
+  process.env.ANTHROPIC_API_KEY = 'sk-ant-script-review-integration-placeholder';
   messagesCreateMock.mockReset();
+  createMessageOverride.fn = null;
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 
 runDb('a clean proposal becomes reviewed: static_scan + model rows, classifier floor applied, reservation settled once', async () => {
-  const { org } = await seedOrg();
+  const { org, modelId } = await seedOrg();
   // `credentials` is a HIGH floor class; the model under-scores it as `low`.
   const proposal = await seedProposedProposal(org.id, ['credentials']);
   messagesCreateMock.mockResolvedValueOnce({
@@ -108,8 +115,8 @@ runDb('a clean proposal becomes reviewed: static_scan + model rows, classifier f
   const rows = await reviewsFor(proposal.id);
   expect(rows.map((r) => [r.reviewerKind, r.status])).toEqual([['static_scan', 'completed'], ['model', 'completed']]);
   expect(rows[1]).toMatchObject({
-    // The reviewer runs its own default (#7587), not the resolved chat model.
-    model: AI_SCRIPT_REVIEWER_MODEL, inputTokens: 420, outputTokens: 90, goalMatch: 'yes', reversible: true,
+    // The model is the org's script_reviewer assignment (W03), not the env default.
+    model: modelId, inputTokens: 420, outputTokens: 90, goalMatch: 'yes', reversible: true,
     verificationAdequate: true,
   });
   expect(rows[1]!.budgetReservationId).toBeTruthy();
@@ -126,6 +133,14 @@ runDb('a clean proposal becomes reviewed: static_scan + model rows, classifier f
     idempotencyKey: `script-review:${proposal.id}:1`, status: 'settled', billingSource: 'platform',
   });
   expect(reservations[0]!.id).toBe(rows[1]!.budgetReservationId);
+
+  // One ledger row, priced from the registry rate bound at admission (200/1000
+  // cents per M): 420 in + 90 out = 0.084 + 0.09 cents.
+  const ledger = await withSystemDbAccessContext(() =>
+    db.select().from(aiInvocations).where(eq(aiInvocations.orgId, org.id)));
+  expect(ledger).toHaveLength(1);
+  expect(ledger[0]).toMatchObject({ surface: 'script_reviewer', sourceRef: `script-review:${proposal.id}`, fundingSource: 'platform' });
+  expect(Number(ledger[0]!.costCents)).toBeCloseTo(0.174, 4);
 
   // The inline wait W01b's propose_script uses returns the MODEL row.
   const awaited = await waitForReviewCompletion(proposal.id, 5_000);
@@ -175,6 +190,33 @@ runDb('an unparseable verdict fails closed: model row failed, proposal review_fa
   // The failed model row is what the inline wait reports — never the scan row.
   const awaited = await waitForReviewCompletion(proposal.id, 5_000);
   expect(awaited).toMatchObject({ reviewerKind: 'model', status: 'failed' });
+});
+
+runDb('a refused attempt whose fallback call then fails is BILLED: reservation settled at its real cost, one ledger row', async () => {
+  const { org, modelId } = await seedOrg();
+  const proposal = await seedProposedProposal(org.id);
+  const { MessageDispatchError } = await import('../../services/aiModels/connectionFactory');
+  const timeout = new Error('The operation was aborted due to timeout');
+  timeout.name = 'TimeoutError';
+  createMessageOverride.fn = async () => {
+    throw new MessageDispatchError([{ wireModel: modelId, message: {
+      model: modelId, stop_reason: 'refusal', stop_details: { category: 'cyber' }, content: [],
+      usage: { input_tokens: 420, output_tokens: 90 },
+    } as never }], timeout);
+  };
+
+  const review = await runScriptReview({ proposalId: proposal.id, orgId: org.id, attempt: 1 });
+
+  // Classified on the underlying cause, as before.
+  expect(review).toMatchObject({ reviewerKind: 'model', status: 'timeout' });
+  const [reservation] = await reservationsFor(org.id);
+  expect(reservation).toMatchObject({ status: 'settled' });
+  // 420 in + 90 out at the registry rate (200/1000 cents per M) — not zero.
+  expect(Number(reservation!.actualCostCents)).toBeCloseTo(0.174, 4);
+  const ledger = await withSystemDbAccessContext(() =>
+    db.select().from(aiInvocations).where(eq(aiInvocations.orgId, org.id)));
+  expect(ledger).toHaveLength(1);
+  expect(ledger[0]).toMatchObject({ stopReason: 'error', refusalCategory: 'cyber' });
 });
 
 runDb('a provider timeout fails closed with a timeout-classified row and the reservation settled at zero', async () => {

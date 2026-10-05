@@ -208,19 +208,32 @@ func refuseOtherVolumes(man *backup.Snapshot, src *layout.Disk) error {
 			rootVol = strings.TrimRight(p.MountPoint, `\/`)
 		}
 	}
-	var n int
+	var n, junctions int
 	var first string
-	for _, f := range man.Files {
-		vol := backup.RestoreVolume(f)
+	offVolume := func(vol string) bool {
 		if !isDriveLetterVolume(vol) || strings.EqualFold(vol, rootVol) {
-			continue
+			return false
 		}
 		if first == "" {
 			first = strings.ToUpper(vol)
 		}
-		n++
+		return true
 	}
-	if n > 0 {
+	for _, f := range man.Files {
+		if offVolume(backup.RestoreVolume(f)) {
+			n++
+		}
+	}
+	// Junctions (#7325) restore under the same volume-stripped path.
+	for _, j := range man.Junctions {
+		if offVolume(backup.RestoreJunctionVolume(j)) {
+			junctions++
+		}
+	}
+	switch {
+	case junctions > 0:
+		return &RefusalError{Reason: fmt.Sprintf("snapshot contains %d files and %d junctions from volume %s; multi-volume Windows rebuilds are not supported in this build", n, junctions, first)}
+	case n > 0:
 		return &RefusalError{Reason: fmt.Sprintf("snapshot contains %d files from volume %s; multi-volume Windows rebuilds are not supported in this build", n, first)}
 	}
 	return nil

@@ -5,7 +5,15 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { auditLogs, devices, scriptExecutions, scriptProposalReviews, scriptProposals } from '../../db/schema';
-import { createOrganization, createPartner, createSite, createUser } from './db-utils';
+import {
+  assignUserToOrganization,
+  createOrganization,
+  createPartner,
+  createRole,
+  createSite,
+  createUser,
+  grantRolePermissions,
+} from './db-utils';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
 import { executeOrgMerge } from '../../services/orgMerge';
 import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
@@ -123,6 +131,16 @@ runDb('a reviewer-decided (unattended) release stamps unattended_reviewer_gated 
   const user = await withSystemDbAccessContext(() => createUser({
     partnerId: partner.id, orgId: org.id, email: `sp-method-${randomUUID().slice(0, 8)}@example.test`,
   }));
+  // A real membership with `scripts:execute`: the delivery-time script
+  // revalidation (scriptCommandRevalidation.ts) rehydrates the releasing
+  // user's live RBAC and cancels the command for a user who cannot run
+  // scripts, as the real release path (buildAuthContextForIntent) would
+  // refuse a user with no membership at all.
+  await withSystemDbAccessContext(async () => {
+    const role = await createRole({ scope: 'organization', orgId: org.id, partnerId: partner.id });
+    await grantRolePermissions(role!.id, [{ resource: 'scripts', action: 'execute' }]);
+    await assignUserToOrganization(user.id, org.id, role!.id);
+  });
   const site = await withSystemDbAccessContext(() => createSite({ orgId: org.id }));
   // Online, but its agent has no live socket: the command stays pending
   // rather than being sent, and the mocked wait above returns at once.

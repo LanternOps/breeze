@@ -68,6 +68,7 @@ async function seed() {
     userId: user.id,
     deviceId: device.id,
     type: 'general',
+    model: 'claude-sonnet-5-5',
   }).returning();
 
   // ai_agent_run_id is a bare uuid (no FK — see the column's own doc comment

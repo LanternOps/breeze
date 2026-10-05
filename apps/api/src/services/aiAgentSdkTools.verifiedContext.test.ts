@@ -170,3 +170,49 @@ describe.each([
     expect(mockExecuteTool).not.toHaveBeenCalled();
   });
 });
+
+// #7931: the result is paired with its tool_use by the id the SDK sends with
+// the MCP call (`extra._meta['claudecode/toolUseId']`), so every handler
+// factory must hand that id to onPostToolUse — never leave pairing to queue
+// position.
+describe('the SDK tool_use id reaches onPostToolUse (#7931)', () => {
+  const extra = { _meta: { 'claudecode/toolUseId': 'toolu_own_call' } };
+  type Post = NonNullable<Parameters<typeof makeHandler>[3]>;
+  const sdkTool = (name: string, post: Post) => {
+    const registered = buildScriptBuilderTools(() => fakeAuth, undefined, post).find(t => t.name === name);
+    if (!registered) throw new Error(`Missing tool: ${name}`);
+    return registered;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExecuteTool.mockResolvedValue(JSON.stringify({ ok: true }));
+  });
+
+  it.each([
+    {
+      name: 'Fleet AI handler',
+      call: (post: Post) => makeHandler('list_scripts', () => fakeAuth, undefined, post)({}, extra),
+    },
+    {
+      name: 'Script Builder existing-tool handler',
+      call: (post: Post) => sdkTool('list_scripts', post).handler({} as never, extra as never),
+    },
+    {
+      name: 'Script Builder apply handler',
+      call: (post: Post) =>
+        sdkTool('apply_script_code', post).handler({ code: 'Get-Date', language: 'powershell' } as never, extra as never),
+    },
+  ])('$name', async ({ call }) => {
+    const post = vi.fn(async () => undefined);
+    await call(post);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect((post.mock.calls[0] as unknown[])[7]).toBe('toolu_own_call');
+  });
+
+  it('passes undefined when the SDK sent no id', async () => {
+    const post = vi.fn(async () => undefined);
+    await makeHandler('list_scripts', () => fakeAuth, undefined, post)({}, {});
+    expect((post.mock.calls[0] as unknown[])[7]).toBeUndefined();
+  });
+});

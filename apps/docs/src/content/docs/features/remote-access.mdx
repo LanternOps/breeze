@@ -191,7 +191,9 @@ The consent dialog asks the user to allow or deny the remote session, with **Den
   **Upgrade behavior:** Because the default prompt mode is **Notify**, devices with the Breeze Helper installed begin showing a start notice for remote sessions after upgrade. To restore silent behavior, set the **Remote Access** feature on a Configuration Policy to prompt mode **Off**.
 </Aside>
 
-Every consent outcome is audit logged — granted, denied, blocked, or bypassed — with the reason (for example `no_user_session` when nobody is signed in, or `helper_unreachable` when a signed-in user could not be asked) and, from current agents, whether the prompt was shown (`consentOutcome`) and whether anyone was signed in (`consentOccupancy`).
+Every consent outcome is audit logged — granted, denied, blocked, or bypassed — with the reason (for example `no_user_session` when nobody is signed in, or `helper_unreachable` when a signed-in user could not be asked) and, from current agents, whether the prompt was shown (`consentOutcome`) and whether anyone was signed in (`consentOccupancy`). Each consent audit entry also records `consentProtocol`: `2` for current agents, `1` for older agents that do not report these fields.
+
+When a session is refused, the technician sees a message naming the specific cause: nobody is signed in, the prompt could not be shown, the user could not see it, or another consent request is already waiting on that device. If the device's answer to the session start cannot be read (typically an agent and server on mismatched releases), the session fails with a message saying so instead of waiting for a timeout.
 
 The same prompt, notice and indicator apply when the viewer falls back to the WebSocket (JPEG) transport. The technician's view stays on *connecting* until the agent reports that the stream started, so in Consent mode nothing is shown or sent before the user allows it; a denial or an unanswered prompt ends the session with the reason, just as on WebRTC.
 
@@ -391,6 +393,10 @@ Clicking a row in the session history re-opens a live detail panel for that sess
 
 **How a session ends.** Whichever comes first: you end it; the end user closes the client (detected when the device goes offline); or the eight-hour hard cap expires. If the self-destruct command is ever lost, the client's own ten-minute dead-man switch shuts it down.
 
+**What the end user sees (v0.121.0+).** A standard (non-admin) Windows user can start Quick Support. The client keeps its configuration, state and logs in its own private session folder, never in an installed agent's folders. While a technician is viewing, the user sees an always-on-top "*Technician* is viewing your screen" pill with a session clock, and the support window names the technician and says how to stop sharing (close the window or press Ctrl+C). The indicator always shows during Quick Support, whatever the remote access policy's indicator setting says, because the user started the session themselves.
+
+**AI screen tools are refused.** AI screenshots, screen analysis, computer control and **Diagnose** are refused for a Quick Support device with `409 SCREEN_ACCESS_UNAVAILABLE_IN_QUICK_SUPPORT`, because they would act outside the desktop session where the indicator is shown. Use the remote desktop session instead.
+
 <Aside>
   Phase 1 ships a **Windows** client. macOS is planned. The elevated mode that allows control of UAC prompts is not yet available — the client currently runs with the end user's own privileges.
 </Aside>
@@ -450,6 +456,15 @@ These defaults are configurable via environment variables on the API server:
 |----------|---------|
 | `MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG` | 10 |
 | `MAX_ACTIVE_REMOTE_SESSIONS_PER_USER` | 5 |
+
+### Terminal input ceiling
+
+Each terminal session has an abuse ceiling on keyboard/paste input, measured over a sliding 60-second window. It is deliberately far above normal use (every key press, arrow key and key repeat is one message). If a client exceeds it, the excess input is dropped and the terminal shows a one-time warning; the session stays open and input resumes once the burst leaves the window.
+
+| Variable | Default |
+|----------|---------|
+| `TERMINAL_INPUT_MAX_MESSAGES_PER_MIN` | 6000 |
+| `TERMINAL_INPUT_MAX_BYTES_PER_MIN` | 8388608 (8 MiB) |
 
 To free session capacity, close active sessions from the Active Sessions list on the device detail page, or call `DELETE /remote/sessions/stale` — this marks `pending`, `connecting`, and `active` sessions as `disconnected`. Be aware this terminates any currently active sessions, not just stale ones.
 

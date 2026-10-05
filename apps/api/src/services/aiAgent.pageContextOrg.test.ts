@@ -12,7 +12,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const selectMock = vi.fn();
 const insertMock = vi.fn();
 const updateMock = vi.fn();
-const resolveLlmConfigForOrgMock = vi.fn();
 
 vi.mock('../db', () => ({
   db: {
@@ -49,10 +48,20 @@ vi.mock('./aiAgentSdkTools', () => ({ listChatSurfaceToolNames: () => [] }));
 vi.mock('./brainDeviceContext', () => ({ getActiveDeviceContext: vi.fn().mockResolvedValue([]) }));
 vi.mock('./llm/llmConfigResolver', () => ({
   LlmUnavailableError: class LlmUnavailableError extends Error {},
-  resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
+}));
+
+// W03 Task 9 (#7601): createSession picks its model through the registry.
+vi.mock('./aiModels/candidateLoader', () => ({ readOrgPartnerId: vi.fn(async () => 'partner-1') }));
+vi.mock('./aiModels/sessionModel', () => ({
+  chooseSessionModel: vi.fn(async () => ({
+    offeringId: 'off-1', offeringPartnerId: 'partner-1', options: null,
+    model: 'claude-sonnet-4-6', billingSource: 'platform',
+  })),
 }));
 
 import { createSession } from './aiAgent';
+import { chooseSessionModel } from './aiModels/sessionModel';
+import { readOrgPartnerId } from './aiModels/candidateLoader';
 
 const ORG_A = 'aaaaaaaa-1111-4222-8333-444455556666';
 const ORG_B = 'bbbbbbbb-1111-4222-8333-444455556666';
@@ -103,11 +112,6 @@ function expectInsert() {
 describe('createSession page-context org anchoring (#5593)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resolveLlmConfigForOrgMock.mockResolvedValue({
-      source: 'platform',
-      apiKey: 'platform-key',
-      model: 'claude-sonnet-4-6',
-    });
   });
 
   it('anchors a partner-scoped session to the page-context device org, not accessibleOrgIds[0]', async () => {
@@ -121,7 +125,8 @@ describe('createSession page-context org anchoring (#5593)', () => {
 
     expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_B }));
     expect(result.orgId).toBe(ORG_B);
-    expect(resolveLlmConfigForOrgMock).toHaveBeenCalledWith(ORG_B);
+    expect(vi.mocked(readOrgPartnerId)).toHaveBeenCalledWith(ORG_B);
+    expect(vi.mocked(chooseSessionModel)).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_B, surface: 'chat' }));
   });
 
   it('falls back to accessibleOrgIds[0] when the page-context device is outside the caller org axis', async () => {
@@ -207,7 +212,7 @@ describe('createSession page-context org anchoring (#5593)', () => {
     const valuesSpy = expectInsert();
 
     await createSession(partnerAuth(), {
-      pageContext: { type: 'dashboard', orgName: 'Mountain Capital' },
+      pageContext: { type: 'dashboard', orgName: 'Summit Peak' },
     });
 
     expect(selectMock).not.toHaveBeenCalled();
@@ -218,11 +223,6 @@ describe('createSession page-context org anchoring (#5593)', () => {
 describe('createSession records the page-context org anchor server-side (#6675)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resolveLlmConfigForOrgMock.mockResolvedValue({
-      source: 'platform',
-      apiKey: 'platform-key',
-      model: 'claude-sonnet-4-6',
-    });
   });
 
   function snapshotOf(valuesSpy: ReturnType<typeof vi.fn>) {

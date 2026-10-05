@@ -149,7 +149,27 @@ docker compose config --quiet
 
 Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
 
-### Next release — `APP_VERSION` comes from the image
+### v0.121.0 — new optional AI and enrollment settings; production Compose catches up
+
+The [v0.121.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.121.0/docker-compose.yml) change the `api` environment:
+
+| Change | Required action |
+|---|---|
+| `AGENT_ENROLL_RATE_LIMIT`, `AGENT_ENROLL_RATE_WINDOW_SECONDS`, `AI_PLATFORM_INFERENCE_GEO` and `AI_GATEWAY_HEADERS_TIMEOUT_SECONDS` are mapped in both `docker-compose.yml` and `deploy/docker-compose.prod.yml`. All are optional; empty keeps the defaults. | Copy the lines into your own Compose file if you want to set any of them. See [Environment Variables](/deploy/environment/). |
+| `deploy/docker-compose.prod.yml` passes 82 more variables to the API, the same lines the root `docker-compose.yml` already carries (for example the MCP OAuth, Mailgun, Twilio, SMTP, M365, Cloudflare and Redis memory monitor settings, `SESSION_SECRET`, `JWT_SIGNING_KEYRING` and `SENTRY_TRACES_SAMPLE_RATE`). | If you deploy that file, a value in your `.env` that it used to ignore now takes effect. Check `.env` for stale entries before upgrading. Installs on the root `docker-compose.yml` (including `guided-setup.sh`) are unaffected. |
+| The stock Compose file does not pass `MCP_LLM_*` to the API. | If you use `MCP_LLM_PROVIDER=openai-compatible`, keep your own mapping and read [the v0.121.0 notes](#v01210--ai-model-registry-byo-openai-compatible-models-encrypted-backup-credentials) first. |
+
+### v0.120.0 — start fence default and newly mapped API settings
+
+The [v0.120.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.120.0/docker-compose.yml) change the `api` environment in both `docker-compose.yml` and `deploy/docker-compose.prod.yml`:
+
+| Change | Required action |
+|---|---|
+| `REMOTE_DESKTOP_FENCE_REQUIRED` defaults to `true` (was `false`). | See [v0.120.0 — remote desktop start fence](#v01200--s3-backups-through-storage-sessions-restore-integrity-consent-prompt-protocol-2). Until you take this change, an unset variable keeps the fence **off**. |
+| `AUDIT_ANCHOR_SIGNING_KEY`, `AUDIT_CHAIN_ANCHOR_ENABLED`, `AUDIT_CHAIN_VERIFY_ENABLED`, `AUDIT_CHAIN_VERIFY_MODE`, `AUDIT_CHAIN_VERIFY_RESCAN_SLICES` and `AUDIT_ADMIN_DATABASE_URL` are now passed to the API. Before this release Compose installs ignored them even when they were set in `.env`. | Copy the entries into your own Compose file if you set any of them. All are optional; leaving them empty keeps today's behaviour. See [Environment Variables](/deploy/environment/). |
+| `AI_INVOCATIONS_RETENTION_DAYS`, `AI_INVOCATIONS_RETENTION_BATCH_SIZE` and `AI_INVOCATIONS_RETENTION_MAX_BATCHES` are mapped (optional; retention defaults to 400 days). `deploy/docker-compose.prod.yml` also gains the three `DEVICE_COMMAND_QUEUE_*_TTL_HOURS` deadlines. | Copy them if you maintain your own Compose file and want to tune them. |
+
+### v0.119.0 — `APP_VERSION` comes from the image
 
 Earlier Compose files set `APP_VERSION: ${BREEZE_VERSION...}` in the API environment. That value replaced the version baked into the image, so `/health`, the upgrade preflight, and the recorded version history reported whatever `.env` said, even when the running image was older. The shipped `docker-compose.yml` and `deploy/docker-compose.prod.yml` no longer set it.
 
@@ -157,12 +177,13 @@ Earlier Compose files set `APP_VERSION: ${BREEZE_VERSION...}` in the API environ
 |---|---|
 | The `APP_VERSION:` line is removed from the shared API environment block (`x-api-env` in `docker-compose.yml`, the API environment in `deploy/docker-compose.prod.yml`). | Delete the `APP_VERSION:` line from your own Compose file. Keep `BREEZE_VERSION:`, which still selects the agent release. Until you remove the line, `/health` keeps reporting `BREEZE_VERSION` and the version-mismatch warning cannot fire. |
 
-### Next release — coturn relays again
+### v0.119.0 — coturn relays again
 
 | Change | Required action |
 |---|---|
 | The v0.118.0 coturn configuration listed `denied-peer-ip=::`. coturn reads an all-zero address as "no bound", so that one entry refused every peer and relayed (TURN) connections could not be set up. The entry is removed from `docker/turnserver.conf`, `docker-compose.yml` and `deploy/docker-compose.prod.yml`; coturn already refuses the unspecified address on its own. | Delete the `denied-peer-ip=::` line (`'--denied-peer-ip=::'` in a Compose file) from your coturn configuration and restart coturn, even if you skip this release. Do not replace it with `0.0.0.0` or a range starting at `::`. |
-### Next release — coturn refuses IPv4-mapped and NAT64 peers
+
+### v0.119.0 — coturn refuses IPv4-mapped and NAT64 peers
 
 | Change | Required action |
 |---|---|
@@ -195,7 +216,141 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 ## Version-specific notes
 
-### Next release — remote desktop start fence required by default
+### v0.122.0 — legacy AI model settings removed
+
+The AI model registry (AI Providers & Models) has been the only source of AI model decisions since v0.121.0. This release deletes what it replaced.
+
+- **`/api/v1/ai/provider` is gone.** Use `/api/v1/ai/models`: `GET /ai/models`, `POST /ai/models/connections`, `POST /ai/models/connections/:id/key`, `POST /ai/models/connections/:id/endpoint`, `DELETE /ai/models/connections/:id`, and `PUT /ai/models/assignments` for per-feature defaults. Requests to the old paths return 404.
+- **Retired request fields are rejected with HTTP 400** that names the field and its replacement: `reviewerModel` on both script-policy endpoints, `allowedModels` on the AI for Office organization policy, and `model` on AI agent create/update/preview (send `offeringId`). They were already ignored; a client that kept sending them now gets an error instead of a silent no-op. The GET responses no longer include them.
+- **`BREEZE_AI_SCRIPT_REVIEWER_MODEL` and `WORKSPACE_CONTENT_LLM_MODEL` are no longer read.** Remove them from your `.env`. New partners start every feature on the platform default model (`ANTHROPIC_MODEL`, else the default set on Admin → AI models); change any feature under AI Providers & Models.
+- **Skipping releases:** the one-time conversion of legacy AI settings into the registry ran only in v0.121.0. If you upgrade straight from an older release, each partner is set up from the platform default instead; a partner that had its own Anthropic key keeps using that key, but its legacy per-feature choices (script reviewer, AI for Office, AI agent allowlists) are not carried over. Set them again under AI Providers & Models. The next release archives the old values before it drops them (see the next section when it ships).
+- **Database:** no schema change in this release. The legacy table and columns are dropped in the following release, after their values are archived.
+
+### v0.121.0 — AI model registry, BYO OpenAI-compatible models, encrypted backup credentials
+
+<Aside type="caution" title="Roll forward only">
+  Backup destination credentials are encrypted at rest on the first start of v0.121.0. After the API logs `[startup] Backup destination credentials sealed: <sealed>/<scanned> config(s) …`, do not roll back to an earlier release: older code would hand the encrypted values to agents as storage credentials and S3 backups would fail. Take your usual database backup before upgrading, and fix forward if something goes wrong.
+</Aside>
+
+**Security.** v0.121.0 fixes [GHSA-vjqq-fmr4-m576](https://github.com/LanternOps/breeze/security/advisories/GHSA-vjqq-fmr4-m576) (High: a user who can configure a webhook, alert channel or image-from-URL field, or whoever runs the URL it points at, could repeatedly stop the API process) and [GHSA-7xq8-mcq6-j438](https://github.com/LanternOps/breeze/security/advisories/GHSA-7xq8-mcq6-j438) (Low: a technician limited to selected organizations could read, edit or delete ticket comments in the partner's other organizations). Upgrade from 0.120.0 or earlier.
+
+**Don't skip this release on the way to v0.122.0.** The one-time move of legacy AI settings (script reviewer, AI for Office and AI agent model choices) into the AI model registry runs in v0.121.0. An install that jumps straight to v0.122.0 starts each partner from the platform default and loses those choices.
+
+**Upgrade order.**
+
+<Steps>
+1. Back up the database.
+2. If you use `MCP_LLM_PROVIDER=openai-compatible`, prepare the changes below (explicit `IS_HOSTED=false`, no `localhost` URL, a tool-capable model).
+3. Upgrade the server: `bash guided-setup.sh --upgrade 0.121.0` on a digest-pinned install, or set `BREEZE_VERSION=0.121.0` and run `docker compose pull api web portal && docker compose up -d`.
+4. Merge the [Compose file changes](#v01210--new-optional-ai-and-enrollment-settings-production-compose-catches-up) if you maintain your own Compose file.
+5. Let agents and Breeze Assist update to 0.121.0.
+</Steps>
+
+#### `MCP_LLM_PROVIDER=openai-compatible` installs
+
+The instance-wide OpenAI-compatible chat path becomes a connection in the AI model registry. See [Bring Your Own LLM Key](/features/bring-your-own-llm-key/).
+
+- **Set `IS_HOSTED=false` explicitly.** If `IS_HOSTED` is unset, empty or not a recognised self-host value, the API refuses to start with `MCP_LLM_PROVIDER=openai-compatible is for self-hosted Breeze (set IS_HOSTED explicitly to false)…`. The stock `docker-compose.yml` passes `IS_HOSTED: ${IS_HOSTED:-false}`, so a Compose install gets `false` unless it overrides it; systemd, Kubernetes and bare Node installs must set it.
+- **At boot**, each partner gets one read-only, env-managed connection and a priced, enabled model (prices from `MCP_LLM_PRICE_INPUT_PER_M_USD` / `MCP_LLM_PRICE_OUTPUT_PER_M_USD`), verified once. Chat is pointed at it once, only where chat used the platform default. Restarts and multiple replicas don't create duplicates. Partners created later get their connection within 10 minutes.
+- **The model must support tool calling to serve chat.** A model that fails tool-use verification can't serve chat; chat says to choose a tool-capable model.
+- **Loopback, link-local and cloud-metadata URLs are refused**, so `http://localhost:11434` (the usual Ollama URL) no longer works. Use the Docker service name or the host's LAN address; private-network addresses over `http://` are allowed on self-host. The API still starts, bootstraps nothing, logs `[envOpenAiBootstrap] MCP_LLM_BASE_URL refused: …` and retries at 1, 5, 15 and 60 minutes, then every 10 minutes.
+- `MCP_LLM_API_KEY` is optional but must be at least 8 characters when set.
+- **Removing the variables** keeps the connection active and read-only; you can disconnect it in the UI. Delete the `MCP_LLM_BASE_URL` line rather than blanking it: an empty value fails config validation.
+- **Model server sizing.** Allow at least 70k tokens of context. The gateway waits up to 120 seconds for a self-hosted model server to start responding (30 seconds on hosted); raise `AI_GATEWAY_HEADERS_TIMEOUT_SECONDS` (5–600) for slow or CPU-only servers. When it runs out, the request returns `504` naming the setting and the API logs `[modelGateway] upstream sent no response headers within the <N> ms response-header deadline`.
+
+#### AI model settings move to AI Providers & Models
+
+- Model choices from the Office policy editor, the script-reviewer model fields and the partner AI provider default are migrated once, on first start, into **Partner Settings → AI Providers & Models**. The API logs `[startup] AI model registry cutover sweep: … N partner(s) cut over, 0 failed`.
+- `BREEZE_AI_SCRIPT_REVIEWER_MODEL` and `WORKSPACE_CONTENT_LLM_MODEL` are no longer read at runtime; their values are migrated at that first start. `ANTHROPIC_MODEL` remains the bootstrap default.
+- **Deprecated, removed in v0.122.0:** `/api/v1/ai/provider` and the `reviewerModel`, `allowedModels` and AI agent `model` request fields. In v0.121.0 they still work and the retired fields are ignored. See the [API reference](/reference/api/#ai-model-registry) for the replacements.
+- **Residency switch.** Turning on the residency requirement disables every AI feature whose model can't guarantee it; BYO OpenAI-compatible models are never residency-eligible. `AI_PLATFORM_INFERENCE_GEO` (new, optional) accepts `us` or `global`; any other value takes platform models offline, and the API warns at boot.
+- **AI chargeback is off until you configure it.** Every billing profile starts as **not billed**, and usage from before this release is never billable. A daily job (05:28 UTC) closes the previous UTC month per organization. Chargeable usage is kept at least 156 days regardless of `AI_INVOCATIONS_RETENTION_DAYS`. Installs without a billing service never mark AI usage for credit debit. See [AI Usage Chargeback](/features/ai-usage-chargeback/).
+
+#### Other behaviour changes
+
+- **API keys and sign-out.** A sign-out, role change, email change or organization merge no longer stops a key minted by a person; a password change or reset, invite acceptance, an admin status change or an MFA factor change still does. Keys that stopped working after a sign-out on v0.120.0 are not revived: mint a replacement. See [API Keys](/reference/api-keys/#when-a-key-stops-working-because-of-its-creator).
+- **Duplicate built-in alert rules are merged once at upgrade.** The oldest copy is kept; if any copy was switched off, the merged rule is off. Open alerts from removed copies move to the kept rule, and where two were open for the same device the extra one is resolved as `source_retired`. The API logs `#7650: …` warnings with the counts.
+- **Metric history.** On the first daily metric-rollup maintenance run, rows in the catch-all `metric_rollups_default` partition move into monthly partitions (rows past your 5-minute retention are discarded, as before). Until it finishes, those older points are missing from charts. Look for `[MetricRollupMaintenance] … drained metric_rollups_default: moved=N discarded=M`.
+- **Quick Support** always shows the viewing indicator, whatever the device's remote access indicator setting, and AI screen tools are refused on Quick Support devices. See [Remote Access](/features/remote-access/#quick-support-ad-hoc-sessions).
+- **Agent enrollment rate limit** is configurable with `AGENT_ENROLL_RATE_LIMIT` (default 10) per `AGENT_ENROLL_RATE_WINDOW_SECONDS` (default 60), per source IP. Raise it for mass deployments behind one NAT address. A non-integer or non-positive value stops the API from starting.
+- **Breeze Viewer on Windows.** Viewers on 0.118–0.120 whose in-app update kept failing pick up 0.121.0 on their next launch; no reinstall is needed. A failed update now names the stage and the log path (`%LOCALAPPDATA%\com.breeze.viewer\logs\updater.log`). As a fallback, download `breeze-viewer-windows.msi` from the release and run it once.
+
+#### Environment variables
+
+**No new required variables**, except `IS_HOSTED=false` on `MCP_LLM_PROVIDER=openai-compatible` installs (above). New optional: `AI_PLATFORM_INFERENCE_GEO`, `AI_GATEWAY_HEADERS_TIMEOUT_SECONDS`, `AGENT_ENROLL_RATE_LIMIT` and `AGENT_ENROLL_RATE_WINDOW_SECONDS`, all mapped in both Compose files. Deprecated (no longer read): `BREEZE_AI_SCRIPT_REVIEWER_MODEL`, `WORKSPACE_CONTENT_LLM_MODEL`.
+
+#### Migrations
+
+45 idempotent migrations apply on boot (`[auto-migrate] Applied 45 migration(s)`). Some are named earlier than v0.120.0's newest; they still apply, in order. Most are additive: tables for the AI registry cutover and AI chargeback, autopay foundation tables (off for every partner), new columns on AI, billing profile, user and API key tables, a unique index on built-in alert rules, the Partner API ticket groundwork (`ticket_external_refs`, and `tickets:read` / `tickets:write` as allowed service-principal scopes that have no effect yet), and a topology index.
+
+- **Three indexes are built with `CREATE INDEX CONCURRENTLY`**, outside a transaction, so writes continue. If the `ai_budget_reservations` build is interrupted, the next start refuses with an "INVALID index" message: run `DROP INDEX CONCURRENTLY ai_budget_reservations_session_turn_idx;` and restart. The other two have no such guard, so check them after the upgrade:
+  ```sql
+  SELECT c.relname, i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+   WHERE c.relname IN ('ai_invocations_chargeable_idx', 'idx_device_commands_install_patches_device_created');
+  ```
+  If either is `false`, drop it with `DROP INDEX CONCURRENTLY <name>;` and re-run the `CREATE INDEX CONCURRENTLY` from its migration (`2026-11-26-100150-ai-invocations-chargeable-idx.sql` or `2026-11-19-101100-device-commands-install-patches-index.sql`).
+- **Brief locks.** A few constraint and index steps on AI session, budget and egress tables scan while holding a write lock (well under a second at 300,000 rows per table in testing; expect a few seconds of paused AI chat writes on very large tables). No migration sets a lock timeout, so a long idle-in-transaction session on these tables delays boot.
+- **Device mTLS certificate repair.** One migration records every device's issued client certificate in the certificate history. It holds only a read lock on `devices`, so agents keep checking in, but it runs inside the boot and can add seconds to minutes on a large fleet. It always logs `WARNING device mTLS history reconcile: demoted <D> stale active rows, imported <I> issued certificates, skipped <S> devices…`. Demoted certificates are revoked at Cloudflare in the background, 200 every 5 minutes.
+
+### v0.119.0 — network topology, time sync, Xero, S3 restores through storage sessions
+
+<Aside type="caution" title="Before you upgrade: coturn and HTTPS for S3 restores">
+  The v0.118.x Compose files pass `--denied-peer-ip=::` to coturn, which refuses every relayed (TURN) connection. Remove that line on every install, even if you skip v0.119.0; see [Compose file changes](#v01190--coturn-relays-again). S3 restores, test restores and verification now go only through a short-lived storage session, with no fallback: they need HTTPS end to end (MinIO endpoint and agent API), `PUBLIC_API_URL` set and matching, and agents on v0.118.0 or later. See [HTTPS for Restores](/backup/https-restores/).
+</Aside>
+
+**Security.** v0.119.0 fixes [GHSA-9qpw-p6rx-5f2h](https://github.com/LanternOps/breeze/security/advisories/GHSA-9qpw-p6rx-5f2h) (High, agent: restoring a Windows backup as a Hyper-V VM could run code from that backup on the host), [GHSA-c445-q84m-rph4](https://github.com/LanternOps/breeze/security/advisories/GHSA-c445-q84m-rph4) (Medium, server on a non-UTC host time zone) and [GHSA-vjq5-x2g3-pjhq](https://github.com/LanternOps/breeze/security/advisories/GHSA-vjq5-x2g3-pjhq) (Low, AI file tools). Upgrade the server and let agents and Breeze Assist update to 0.119.0.
+
+**Upgrade command.** On a digest-pinned install (every `guided-setup.sh` install from v0.112.0), fetch the current `guided-setup.sh` from `main` and run `bash guided-setup.sh --upgrade 0.119.0`; it verifies the signed image inventory and rewrites `BREEZE_VERSION` and all four image digests together. **Do not upgrade by only editing `BREEZE_VERSION`** on a digest-pinned install: that pulls the images you already run. Delete the `APP_VERSION:` line from your own Compose file ([details](#v01190--app_version-comes-from-the-image)). Coming from v0.117.x or earlier, read the v0.118.0 notes first.
+
+#### Behaviour changes
+
+- **Live device inspection needs `devices:execute`.** Process, service, scheduled-task, event-log, file and registry reads, and the live session list, need it (`/devices/:id/sessions/live` also accepts `remote:access`). Org Viewer, Partner Viewer and the two seeded approver roles lose live inspection; custom roles that should keep it need `devices:execute`. API keys with only `ai:read` can no longer trigger live reads.
+- **Site scoping.** Fleet security posture, threats, the executive summary and OS distribution respect site-restricted access.
+- **Remote consent.** On devices whose policy is **Require consent**, VNC is refused (`409 CONSENT_REQUIRED_TRANSPORT_UNAVAILABLE`) and desktop starts need a consent-capable agent (`409 CONSENT_UPGRADE_REQUIRED`); update those agents before the server. AI screen tools and **Diagnose** are refused on consent-mode devices. Audit actions are renamed: `session_consent_denied` → `session_consent_blocked_unanswered`, `session_consent_bypassed` → `session_consent_blocked_unavailable`. Update saved audit filters and SIEM rules; older rows keep the old names.
+- **Approver assurance** becomes the default for high- and critical-risk approvals from **2026-11-05** for partners that never saved an **Approval Security** choice. Move the date with `APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM`.
+- **Settings secrets are encrypted and masked.** Notification secrets in partner, organization and site settings are encrypted by a background sweep after first boot (using `APP_ENCRYPTION_KEY`) and returned as `********`; integrations that GET then PUT settings must send the marker back unchanged. **If you run a separate `worker` container, roll it together with `api`.**
+- **Billing contact.** Invoices and quotes go to the organization contact with the **Billing** role, with no fallback to the primary contact. Fix affected organizations in **Contacts**.
+- **Compliance alerts** stay open until the device is compliant. Duplicate rule set names within one policy are refused.
+- **Built-in time-sync monitors** are provisioned for every partner but not attached, so nothing alerts until you attach them. Opt out with `BREEZE_BUILTIN_MONITORS_AUTOSEED=false`.
+- **AI not configured.** Without a usable model provider, chat and the script builder answer `503 ai_not_configured`.
+
+#### Environment variables
+
+**No new required variables.** New optional: `XERO_CLIENT_ID`, `XERO_CLIENT_SECRET`, `XERO_REDIRECT_URI`, `XERO_WEBHOOK_KEY`, `XERO_DAILY_CALL_LIMIT` (Xero stays hidden until configured), `AI_TOOL_SEARCH` (`auto`, `on`, `off`), `APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM`, `PRE_ASSIGNMENT_ENROLLMENT_ENABLED` (default `false`) and `METRIC_ANOMALY_EPISODE_MIN_BUCKETS`. `METRIC_ROLLUP_MAX_DELETE_BATCHES` is no longer read. Never set `BREEZE_BINARIES_VERSION`; it is baked into the image. See [Environment Variables](/deploy/environment/).
+
+#### Migrations
+
+50 idempotent migrations apply on boot, all before the API serves. Take a database backup first.
+
+- **Backup history backfill.** One migration writes a reservation row per existing backup snapshot (about 13 seconds per 300,000 snapshots in testing). Check `SELECT count(*) FROM backup_snapshots;` beforehand if your backup history is large.
+- **`notification_channels.config` is dropped.** On a v0.118.x image, alert delivery keeps working but creating or editing a notification channel fails. Do not roll back below v0.118.0.
+- **Metric history storage.** Older months are rewritten by the nightly maintenance job once their 5-minute data has expired. Set `METRIC_ROLLUP_5M_RETENTION_DAYS=30` (in `.env` and the `api` service's `environment:` block) to reclaim space sooner. If the migration role can't create the `metric_rollups_staging` schema, create it by hand.
+
+### v0.120.0 — S3 backups through storage sessions, restore integrity, consent prompt protocol 2
+
+<Aside type="caution" title="Before you upgrade: agents and HTTPS for S3 backups">
+  Backups to S3 and S3-compatible storage are now written only through a short-lived, write-scoped storage session, with no fallback. Before upgrading, update every device that backs up to S3 to agent **v0.119.0 or later**, switch MinIO and other S3-compatible endpoints to `https://` (same host and port), and make sure agents reach the API over HTTPS with `PUBLIC_API_URL` set. Local and NAS destinations are unchanged. See [HTTPS for Backups](/backup/https-backups/).
+</Aside>
+
+**Upgrade order.**
+
+<Steps>
+1. Update every device that backs up to S3 to agent v0.119.0 or later, and move storage endpoints and the agent API to HTTPS (above).
+2. Back up the database.
+3. Upgrade the server: `bash guided-setup.sh --upgrade 0.120.0` on a digest-pinned install, or set `BREEZE_VERSION=0.120.0` and run `docker compose pull api web portal && docker compose up -d`.
+4. Merge the [Compose file changes](#v01200--start-fence-default-and-newly-mapped-api-settings) if you maintain your own Compose file.
+5. Let agents and Breeze Assist update to 0.120.0. **Server first:** a server older than this release refuses consent- and notify-mode desktop starts on updated agents.
+6. Open each Backup policy's **Destination** section and work through the storage key card: replace each listed key with your storage provider, disable the old one, then use **Check old key** or **I disabled this key**.
+</Steps>
+
+#### Backups and restores
+
+- **Who is refused for S3 backups.** A device whose backup component has reported it cannot write through a storage session (`409 helper_update_required` on the on-demand SQL Server and Hyper-V routes; scheduled jobs fail with "Update the Breeze agent on this device, then try again."), an `http://` storage endpoint, a plain-`http://` agent API or a missing `PUBLIC_API_URL`, and providers other than S3 and local. Devices that have not reported yet are held until their first heartbeat. The `manage_backup_configs` AI tool accepts only the `s3` and `local` providers.
+- **Restores are checked against the snapshot's integrity record.** Every restore, verify, test restore, VM restore and bare-metal recovery carries the snapshot's integrity expectations, and the updated backup helper checks the manifest and each file before installing it. A snapshot that failed its integrity check is refused; a snapshot without an attestation still restores and is labelled *unattested*. See [Restoring from Backup](/backup/restoring/).
+- **Windows restores are stricter.** Reserved Windows names (`CON`, `NUL`, `COM1` and the like), and path components containing `:` or ending in `.` or a space, are refused. A restored security descriptor naming accounts the machine doesn't recognise is replaced with a restrictive one (owner Administrators; SYSTEM and Administrators only), and the result lists those paths. `bmr_recover` on Windows restores files only; system state is applied by a bare-metal rebuild.
+- **DR plans.** A **Bare metal rebuild** step now waits up to 24 hours by default (was 4 hours).
+
+#### Remote desktop start fence required by default
 
 - **`REMOTE_DESKTOP_FENCE_REQUIRED` now defaults to `true`.** Remote desktop
   (WebRTC and the WebSocket fallback) starts only on agents that report the
@@ -207,8 +362,13 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
   themselves; if you pin agent versions below v0.114.0, move the pin, or set
   `REMOTE_DESKTOP_FENCE_REQUIRED=false` until they have updated. If your `.env`
   still carries `REMOTE_DESKTOP_FENCE_REQUIRED=false` copied from an older
-  `.env.example`, that line keeps the fence off; remove it. A value that is not
-  a recognized boolean now refuses boot.
+  `.env.example`, that line keeps the fence off; remove it. A Compose file from
+  an earlier release also passes `false` when the variable is unset, so an
+  existing install keeps the fence **off** until you either set
+  `REMOTE_DESKTOP_FENCE_REQUIRED=true` in `.env` or take the
+  [v0.120.0 Compose change](#v01200--start-fence-default-and-newly-mapped-api-settings).
+  New installs get it on. A value that is not a recognized boolean (true/false,
+  1/0, yes/no, on/off) now refuses boot.
 - **The WebSocket desktop fallback now behaves like WebRTC.** The technician's
   view stays on *connecting* until the agent reports the stream started, so a
   consent prompt is answered before anything is shown; a denial ends the session
@@ -217,6 +377,43 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
   keep the session lease (a Redis or API outage longer than about 90 seconds ends
   the stream, as it already does on WebRTC), and refuse a start that arrives after
   the session was stopped.
+
+#### Consent prompts report whether they were shown
+
+Only devices whose remote access policy uses the **consent** prompt are affected.
+
+- **A signed-in user who cannot be shown the prompt is always refused**, whatever "If no one can respond" says (for example, Breeze Assist not running or a native dialog failing). That setting still applies when nobody is signed in, and when a prompt the user could see went unanswered.
+- **On macOS and Linux an unanswered prompt is refused,** because only Windows reports the lock state reliably.
+- **Update Breeze Assist with the agent.** An older Assist still handles Allow and Deny, but its unanswered prompts are refused.
+- The technician sees a specific message for each outcome, and consent audit events gain `consentOutcome`, `consentOccupancy` and `consentProtocol`, plus the reasons `no_user_session` and `helper_unreachable`. See [Remote Access](/features/remote-access/).
+
+#### Breeze Assist on Windows
+
+- **Console session only.** The agent delivers Assist's credential only over its local channel to the active console session and no longer stores it in `agent.yaml`. Assist in an RDP or other non-console session shows that it has not received its credentials until a later release adds support.
+- On first start the agent moves any credential it finds in `agent.yaml` into its protected secrets file and rotates it once. macOS and Linux are unaffected.
+
+#### AI
+
+- **The default model is `claude-sonnet-5-5` with adaptive thinking.** Existing chats keep their stored model, and `BREEZE_AI_SCRIPT_REVIEWER_MODEL` follows the new default. If AI runs through a LiteLLM or other gateway alias, add an alias for `claude-sonnet-5-5` and let the gateway accept or drop the thinking parameters (LiteLLM `drop_params`), or set `ANTHROPIC_MODEL` to your backend's model id. See [Environment Variables](/deploy/environment/).
+- `POST /ai/sessions` rejects a model that isn't offered (`400 invalid_model`).
+- **AI model registry.** Platform admins get **Admin → AI models** (`/admin/ai-models`). A daily discovery job lists new Anthropic models for review; it never enables, prices or removes anything, and it is skipped when `ANTHROPIC_BASE_URL` points at a gateway. Routing, pricing and billing still come from your existing settings in this release.
+
+#### Other behaviour changes
+
+- **API error codes.** Five codes from device and agent routes now use the standard uppercase form: `SCHEME_NOT_ALLOWED`, `INVALID_CUSTOM_FIELD_VALUE` (was `invalid-custom-field-value`), `RACE_LOST`, `RE_ENROLLMENT_REQUIRED` and `SOFTWARE_INVENTORY_LOCK_TIMEOUT`. HTTP statuses and messages are unchanged; update integrations that match on the old codes.
+- **S3-backed binary hosting.** Backup, watchdog, user-helper and recovery-media downloads are served from the `agent/` prefix, and the Breeze Assist installer is synced to `helper/` at boot. The `backup/`, `watchdog/`, `user-helper/` and `recovery-iso/` prefixes are no longer read and can be deleted. An unset `HELPER_BINARY_DIR` now means the agent binaries directory. See [Binary Distribution](/deploy/binaries/).
+- **Device restores count against the device limit,** like enrollment.
+
+#### Environment variables
+
+**No new required variables.** `REMOTE_DESKTOP_FENCE_REQUIRED` now defaults to `true` (see above). New optional: `AI_INVOCATIONS_RETENTION_DAYS` (default 400), `AI_INVOCATIONS_RETENTION_BATCH_SIZE` and `AI_INVOCATIONS_RETENTION_MAX_BATCHES`. The audit-chain settings are now passed to the API by Compose; see [Compose file changes](#v01200--start-fence-default-and-newly-mapped-api-settings).
+
+#### Migrations
+
+Twelve idempotent migrations apply on boot. They add tables for portal session revocations, backup storage key history and the AI model registry, seed the platform model catalog, and copy each partner's AI provider setup into the registry. No large rewrites.
+
+- **`ai_sessions` index.** Built with `CREATE INDEX CONCURRENTLY` outside a transaction. If the build is interrupted, the next start refuses with "ai_sessions offering index build left INVALID index". Run `DROP INDEX CONCURRENTLY public.ai_sessions_offering_idx;` and restart the API.
+- **First start.** The API records the storage key each S3 destination uses and builds the AI registry from your current AI settings, logging one `[startup]` line for each.
 
 ### v0.118.0 — legacy alerting retired, network checks become monitors
 

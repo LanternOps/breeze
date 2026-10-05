@@ -45,6 +45,7 @@ diagnoseRoutes.post(
         hostname: device.hostname,
         surface: 'device_diagnose',
         actor: auth,
+        isEphemeral: device.isEphemeral === true,
       });
       if (!consent.ok) {
         return c.json(consent.body, consent.status);

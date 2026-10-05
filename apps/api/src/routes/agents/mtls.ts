@@ -47,6 +47,7 @@ import {
   queueCertificateRevocationCore,
   revokeCertificateNowOrEnqueue,
 } from '../../services/deviceMtlsCertificateLifecycle';
+import { activateIssuedCertificateCore } from '../../services/deviceMtlsCertificateIssuance';
 
 export const mtlsRoutes = new Hono();
 
@@ -1121,83 +1122,23 @@ mtlsRoutes.post('/renew-cert', agentBearerAuthMiddleware, async (c) => {
     });
   }
 
-  // ---- Legacy (no protocolVersion): activate immediately, one transaction.
-  // Insert the new row as pending_activation FIRST (satisfies
-  // queueCertificateRevocationCore's "a replacement already exists" guard),
-  // demote the old active row (if any), THEN promote the new row to active —
-  // never both active at once, honoring the partial unique index. ----
-  const now = new Date();
+  // ---- Legacy (no protocolVersion): activate immediately, one transaction:
+  // record the new certificate, demote the old active row, promote the new
+  // one and update the legacy devices.mtls_cert_* columns. The same core
+  // records certificates issued at enrollment, provisioning and quarantine
+  // approve (services/deviceMtlsCertificateIssuance.ts). ----
   let txResult: { demotedOldCertId: string | null } | null = null;
   try {
     txResult = await withSystemDbAccessContext(() =>
       db.transaction(async (tx) => {
-        const [existingActive] = await tx
-          .select({ id: deviceMtlsCertificates.id })
-          .from(deviceMtlsCertificates)
-          .where(and(eq(deviceMtlsCertificates.deviceId, device.id), eq(deviceMtlsCertificates.state, 'active')))
-          .limit(1);
-
-        const [inserted] = await tx
-          .insert(deviceMtlsCertificates)
-          .values({
-            orgId: device.orgId,
-            deviceId: device.id,
-            providerCertificateId: cert.id,
-            serialNumber: parsedCert.serialNumber,
-            fingerprintSha256: parsedCert.fingerprintSha256,
-            publicKeySpki: parsedCert.publicKeySpkiBase64,
-            legacyProvenance: false,
-            state: 'pending_activation',
-            issuedAt: new Date(cert.issuedOn),
-            expiresAt: new Date(cert.expiresOn),
-            activationExpiresAt: now,
-          })
-          .returning({ id: deviceMtlsCertificates.id });
-
-        if (!inserted) {
-          throw new Error('mtls_history_insert_failed');
-        }
-
-        let demoted = false;
-        if (existingActive) {
-          demoted = await queueCertificateRevocationCore(tx, existingActive.id);
-        }
-
-        const activated = await tx
-          .update(deviceMtlsCertificates)
-          .set({ state: 'active', activatedAt: now, updatedAt: now })
-          .where(and(eq(deviceMtlsCertificates.id, inserted.id), eq(deviceMtlsCertificates.state, 'pending_activation')))
-          .returning({ id: deviceMtlsCertificates.id });
-
-        if (activated.length !== 1) {
-          throw new Error('mtls_history_activation_failed');
-        }
-
-        // Fix round 3 (code review): `cert.serialNumber` is Cloudflare's raw
-        // `serial_number` API field — format is NOT guaranteed to match the
-        // canonical uppercase-hex-no-separators form the certificate binding
-        // decision (services/agentCertificateBinding.ts) compares against.
-        // Normalize with the SAME shared helper that read side uses, so new
-        // rows are stored canonical (the loader also defensively normalizes
-        // on read, for rows written before this fix and for Task 1's
-        // migration import of historical raw values).
-        const legacyUpdated = await tx
-          .update(devices)
-          .set({
-            mtlsCertSerialNumber: normalizeCertificateSerial(cert.serialNumber),
-            mtlsCertExpiresAt: new Date(cert.expiresOn),
-            mtlsCertIssuedAt: new Date(cert.issuedOn),
-            mtlsCertCfId: cert.id,
-            updatedAt: now,
-          })
-          .where(eq(devices.id, device.id))
-          .returning({ id: devices.id });
-
-        if (legacyUpdated.length !== 1) {
-          throw new Error('legacy_device_update_failed');
-        }
-
-        return { demotedOldCertId: demoted ? existingActive!.id : null };
+        const activation = await activateIssuedCertificateCore(tx, {
+          orgId: device.orgId,
+          deviceId: device.id,
+          cert,
+          parsedCert,
+          now: new Date(),
+        });
+        return { demotedOldCertId: activation.demotedCertificateId };
       }),
     );
   } catch (txErr) {

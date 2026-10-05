@@ -41,7 +41,7 @@
  *    principal outright, so a model cannot reach this tool at all.
  */
 
-import { AI_AGENT_KINDS, AI_AGENT_RUN_STATUSES, type AiAgentKind, type AiAgentRunStatus } from '@breeze/shared';
+import { AI_AGENT_ACTING_KINDS, AI_AGENT_RUN_STATUSES, type AiAgentKind, type AiAgentRunStatus } from '@breeze/shared';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
@@ -143,7 +143,7 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
         type: 'object', properties: {
           agentId: { type: 'string', description: 'Agent UUID' },
           orgId: { type: 'string', description: 'Organization UUID' },
-          status: { type: 'string', enum: [...AI_AGENT_RUN_STATUSES], description: 'Run status: queued, running, awaiting_approval, completed, failed, cancelled, expired, skipped' },
+          status: { type: 'string', enum: [...AI_AGENT_RUN_STATUSES], description: 'Run status: queued, running, awaiting_approval, completed, failed, cancelled, expired, skipped, blocked' },
           limit: { type: 'number', description: 'Max rows (default 25, max 50)' },
         },
       },
@@ -253,7 +253,7 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
           },
           kind: {
             type: 'string',
-            enum: [...AI_AGENT_KINDS],
+            enum: [...AI_AGENT_ACTING_KINDS],
             description: 'Which agent to grant the key to (triage, patch, helpdesk)',
           },
           opKey: {

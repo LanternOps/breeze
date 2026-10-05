@@ -12,8 +12,7 @@
  * 1-minute minimum increments. Regional rates "vary by region" and were not
  * extracted; AI_COMPUTE_PRICE_MULTIPLIER covers that gap (and any margin
  * product later decides) without another code change. Do NOT edit these
- * numbers without re-confirming against the vendor pricing page, exactly as
- * MODEL_PRICING in aiCostTracker.ts says of the token rates.
+ * numbers without re-confirming against the vendor pricing page.
  *
  * TWO RULES THIS MODULE EXISTS TO ENFORCE (spec §5.6, §9):
  *  1. An unknown or unimplemented backend REFUSES — it never prices at $0.

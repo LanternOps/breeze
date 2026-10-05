@@ -47,6 +47,13 @@ export interface RunActionOptions<T> {
    * non-matching one keeps the session-expiry path (onUnauthorized, no toast).
    */
   treatUnauthorizedAsError?: boolean | ((body: unknown) => boolean);
+  /**
+   * Skip the error toast for a failure the caller handles as an expected
+   * outcome (still throws ActionError). Receives the HTTP status and `code`.
+   * E.g. the accounting workbench treats a post-decision `sync_in_progress`
+   * 409 as "the worker is already syncing this row" (#7386).
+   */
+  suppressErrorToast?: (status: number, code: string | undefined) => boolean;
 }
 
 function isZodValidationFailure(data: unknown): boolean {
@@ -168,7 +175,9 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
         message = headline;
       }
     }
-    if (response.status === 403 && isTrustDenial(data)) {
+    if (opts.suppressErrorToast?.(response.status, code)) {
+      // Caller treats this as an expected outcome and renders its own state.
+    } else if (response.status === 403 && isTrustDenial(data)) {
       // Best-effort UI handoff: if a mounted TrustProbationBanner picks this
       // up (it calls preventDefault()), it owns showing the denial and a
       // generic toast on top would be redundant noise. If nothing handled

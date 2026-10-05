@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { fireEvent, render, screen, cleanup } from '@testing-library/react';
+import { fireEvent, render, screen, cleanup, waitFor } from '@testing-library/react';
 import type { InvoiceDetail, InvoiceLine } from '@/lib/api';
 
 // Same stub the other portal component suites use: the real module reaches
@@ -9,7 +9,7 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 import InvoiceDetailView from './InvoiceDetailView';
 
-afterEach(() => cleanup());
+afterEach(() => { cleanup(); vi.restoreAllMocks(); window.history.replaceState({}, "", "/"); });
 
 // #3319: the customer-facing surface where the dropped line name actually
 // showed up. The title/blurb derivation here must stay identical to
@@ -142,6 +142,16 @@ describe('InvoiceDetailView worked-vs-billed note (#6467)', () => {
 });
 
 describe('InvoiceDetailView — payment unavailable', () => {
+  it('still shows the Pay button when online payment is available (positive control)', () => {
+    render(<InvoiceDetailView detail={{ ...detail([line()]), onlinePaymentAvailable: true }} />);
+    expect(screen.getByTestId('invoice-pay-button')).toBeTruthy();
+  });
+
+  it('shows no Pay button when the partner has no online payment set up (#7509)', () => {
+    render(<InvoiceDetailView detail={{ ...detail([line()]), onlinePaymentAvailable: false }} />);
+    expect(screen.queryByTestId('invoice-pay-button')).toBeNull();
+  });
+
   it('tells the customer what to do next when online payment is switched off (409)', async () => {
     const { portalApi } = await import('@/lib/api');
     vi.spyOn(portalApi, 'payInvoice').mockResolvedValue({ data: null, error: 'Online payment is not available', statusCode: 409 } as never);
@@ -150,5 +160,113 @@ describe('InvoiceDetailView — payment unavailable', () => {
     const alert = await screen.findByTestId('invoice-pay-error');
     expect(alert).toHaveTextContent('Online payment is not available');
     expect(screen.getByTestId('invoice-pay-next-step')).toHaveTextContent(/how to pay this invoice/);
+  });
+});
+
+describe('InvoiceDetailView — autopay collection in flight (#7824)', () => {
+  it('disables the Pay button and explains why while a collection is processing', async () => {
+    const { portalApi } = await import('@/lib/api');
+    const pay = vi.spyOn(portalApi, 'payInvoice');
+    pay.mockClear(); // spy is shared with the earlier 409 test
+    render(<InvoiceDetailView detail={{ ...detail([line()]), collectionInProgress: { amount: '100.00' } }} />);
+    const btn = screen.getByTestId('invoice-pay-button') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    fireEvent.click(btn);
+    expect(pay).not.toHaveBeenCalled();
+    const note = screen.getByTestId('invoice-collection-processing');
+    expect(note.textContent).toContain('Payment processing via autopay');
+    expect(note.textContent).toContain('$100.00');
+  });
+
+  it('keeps the Pay button enabled when nothing is in flight (null)', () => {
+    render(<InvoiceDetailView detail={{ ...detail([line()]), collectionInProgress: null }} />);
+    expect((screen.getByTestId('invoice-pay-button') as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByTestId('invoice-collection-processing')).toBeNull();
+  });
+});
+
+it('future-card authorization starts unticked and is sent only with explicit consent', async () => {
+  const { portalApi } = await import('@/lib/api');
+  const pay = vi.spyOn(portalApi, 'payInvoice').mockResolvedValue({ error: 'Test payment was not started.', statusCode: 409 });
+  const input = detail([]);
+  input.autopay = { eligible: true, consentText: 'I authorize Example MSP for future invoices.',
+    consentVersion: '2026-10-01', disclosureHash: 'a'.repeat(64) };
+  render(<InvoiceDetailView detail={input} />);
+  const box = screen.getByTestId('autopay-save-card');
+  expect((box as HTMLInputElement).checked).toBe(false);
+  fireEvent.click(box);
+  fireEvent.click(screen.getByTestId('invoice-pay-button'));
+  await vi.waitFor(() => expect(pay).toHaveBeenCalledWith(input.invoice.id, {}, {
+    saveForAutopay: true, consentAccepted: true, disclosureHash: 'a'.repeat(64) }));
+  expect(screen.getByTestId('autopay-save-card-text')).toHaveTextContent(input.autopay.consentText);
+  pay.mockRestore();
+});
+
+it('requires fresh consent when the invoice disclosure changes', async () => {
+  const { portalApi } = await import('@/lib/api');
+  const pay = vi.spyOn(portalApi, 'payInvoice').mockResolvedValue({ error: 'Payment unavailable', statusCode: 409 });
+  const input = detail([]);
+  input.autopay = { eligible: true, consentText: 'Original terms', consentVersion: '2026-10-01', disclosureHash: 'a'.repeat(64) };
+  const view = render(<InvoiceDetailView detail={input} />);
+  fireEvent.click(screen.getByTestId('autopay-save-card'));
+  view.rerender(<InvoiceDetailView detail={{ ...input, autopay: { ...input.autopay, consentText: 'Changed terms', disclosureHash: 'b'.repeat(64) } }} />);
+  expect(screen.getByTestId('autopay-save-card')).not.toBeChecked();
+  fireEvent.click(screen.getByTestId('invoice-pay-button'));
+  await vi.waitFor(() => expect(pay).toHaveBeenCalledWith(input.invoice.id, {}, { saveForAutopay: false }));
+});
+
+it('does not send consent after eligibility is withdrawn', async () => {
+  const { portalApi } = await import('@/lib/api');
+  const pay = vi.spyOn(portalApi, 'payInvoice').mockResolvedValue({ error: 'Payment unavailable', statusCode: 409 });
+  const input = detail([]);
+  input.autopay = { eligible: true, consentText: 'Terms', consentVersion: '2026-10-01', disclosureHash: 'a'.repeat(64) };
+  const view = render(<InvoiceDetailView detail={input} />);
+  fireEvent.click(screen.getByTestId('autopay-save-card'));
+  view.rerender(<InvoiceDetailView detail={{ ...input, autopay: { ...input.autopay, eligible: false } }} />);
+  expect(screen.queryByTestId('autopay-save-card')).toBeNull();
+  fireEvent.click(screen.getByTestId('invoice-pay-button'));
+  await vi.waitFor(() => expect(pay).toHaveBeenCalledWith(input.invoice.id, {}, { saveForAutopay: false }));
+});
+
+it('surfaces settlement request failures on checkout return', async () => {
+  const { portalApi } = await import('@/lib/api');
+  vi.spyOn(portalApi, 'settleInvoice').mockRejectedValue(new Error('offline'));
+  window.history.replaceState({}, '', '/?paid=1&session_id=cs_test');
+  render(<InvoiceDetailView detail={detail([])} />);
+  expect(await screen.findByTestId('invoice-pay-error')).toHaveTextContent('Could not confirm payment. Please try again.');
+  expect(screen.getByTestId('invoice-settle-failed')).toBeInTheDocument();
+});
+
+it('mounts bank pay only when the server offers it', () => {
+ const data=detail([]);
+ const view=render(<InvoiceDetailView detail={{...data,bankAutopay:{available:true,principal:'100.00',fee:'0.00',currency:'USD',consentText:'Authorize bank payment.',disclosureHash:'a'.repeat(64),methodStatus:null}}}/>);
+ expect(screen.getByTestId('autopay-bank-pay')).toBeTruthy();view.unmount();
+ render(<InvoiceDetailView detail={data}/>);expect(screen.queryByTestId('autopay-bank-pay')).toBeNull();
+});
+
+describe('InvoiceDetailView — autopay payment waiting on the bank (off-session 3DS)', () => {
+  const waiting = () => ({ ...detail([line()]), collectionInProgress: { amount: '100.00', actionRequired: true } });
+
+  it('tells the truth instead of "no action needed" and offers the way out', () => {
+    render(<InvoiceDetailView detail={waiting()} />);
+    expect(screen.getByTestId('autopay-confirmation-notice').textContent).toContain('Your bank needs you to confirm this payment');
+    expect(screen.queryByTestId('invoice-collection-processing')).toBeNull();
+    expect(document.body.textContent).not.toContain('No action needed');
+    expect((screen.getByTestId('invoice-pay-button') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('releases the off-session payment so the card Pay button works', async () => {
+    const { portalApi } = await import('@/lib/api');
+    const release = vi.spyOn(portalApi, 'releaseAutopayConfirmation').mockResolvedValue({ data: { outcome: 'released' }, statusCode: 200 });
+    const pay = vi.spyOn(portalApi, 'payInvoice').mockResolvedValue({ error: 'stop here', statusCode: 409 });
+    pay.mockClear();
+    render(<InvoiceDetailView detail={waiting()} />);
+    fireEvent.click(screen.getByTestId('autopay-confirmation-continue'));
+    await waitFor(() => expect(release).toHaveBeenCalledWith('inv-1'));
+    await waitFor(() => expect((screen.getByTestId('invoice-pay-button') as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByTestId('autopay-confirmation-notice')).toBeNull();
+    expect(screen.getByTestId('autopay-confirmation-released')).toHaveTextContent('Pay');
+    fireEvent.click(screen.getByTestId('invoice-pay-button'));
+    await waitFor(() => expect(pay).toHaveBeenCalled());
   });
 });

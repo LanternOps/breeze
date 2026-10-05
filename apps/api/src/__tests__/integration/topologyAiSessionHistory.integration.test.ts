@@ -3,11 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-vi.mock('../../services/llm/llmConfigResolver', async (original) => ({
-  ...await original<object>(),
-  resolveLlmConfigForOrg: vi.fn(async () => ({ source: 'platform', apiKey: 'test-key', model: 'claude-sonnet-4-6' })),
-}));
-
 import { authMiddleware } from '../../middleware/auth';
 import { getSession, getSessionMessages, listSessions, searchSessions } from '../../services/aiAgent';
 import { getSessionHistory } from '../../services/aiCostTracker';
@@ -42,7 +37,7 @@ const get = async <T>(env: TestEnvironment, path: string): Promise<T> => {
 
 async function insertSession(env: TestEnvironment, title: string, siteId: string | null, minutesAgo: number) {
   const [row] = await getTestDb().insert(aiSessions).values({
-    orgId: env.organization.id, userId: env.user.id, title, type: siteId ? 'topology' : 'general', topologySiteId: siteId,
+    orgId: env.organization.id, userId: env.user.id, model: 'claude-sonnet-5-5', title, type: siteId ? 'topology' : 'general', topologySiteId: siteId,
     lastActivityAt: new Date(Date.now() - minutesAgo * 60_000),
   }).returning();
   await getTestDb().insert(aiMessages).values({ sessionId: row!.id, role: 'assistant', content: `answer for ${title}` });

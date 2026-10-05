@@ -17,6 +17,7 @@ import { fetchWithAuth } from '@/stores/auth';
 import { runAction, ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { Drawer } from '../shared/Drawer';
+import PromptVariantsCard from './PromptVariantsCard';
 // Initializes the shared i18next singleton before any island renders translated text.
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
@@ -61,12 +62,30 @@ interface Draft {
   isPlatformDefault: boolean;
 }
 
+/** The API and DB store cents per million tokens; the drawer edits dollars (the table's unit). Convert only here. */
+function centsToDollarsText(cents: number): string {
+  return String(Number((cents / 100).toFixed(4)));
+}
+
+function dollarsToCents(dollars: number): number {
+  return Number((dollars * 100).toFixed(4));
+}
+
+/** More than 10× apart in either direction (a drop to zero counts). */
+const PRICE_JUMP_FACTOR = 10;
+function isLargePriceChange(storedCents: number, nextCents: number): boolean {
+  if (storedCents === nextCents) return false;
+  if (storedCents === 0) return true; // 0 → anything is an unbounded jump
+  return nextCents > storedCents * PRICE_JUMP_FACTOR || nextCents < storedCents / PRICE_JUMP_FACTOR;
+}
+
 function ratesToDraft(rates: ModelRates | null | undefined): RateDraft {
+  const field = (key: RateKey) => (rates ? centsToDollarsText(rates[key]) : '');
   return {
-    inputCentsPerM: rates ? String(rates.inputCentsPerM) : '',
-    outputCentsPerM: rates ? String(rates.outputCentsPerM) : '',
-    cacheReadCentsPerM: rates ? String(rates.cacheReadCentsPerM) : '',
-    cacheWriteCentsPerM: rates ? String(rates.cacheWriteCentsPerM) : '',
+    inputCentsPerM: field('inputCentsPerM'),
+    outputCentsPerM: field('outputCentsPerM'),
+    cacheReadCentsPerM: field('cacheReadCentsPerM'),
+    cacheWriteCentsPerM: field('cacheWriteCentsPerM'),
   };
 }
 
@@ -74,10 +93,32 @@ function ratesToDraft(rates: ModelRates | null | undefined): RateDraft {
 function draftToRates(draft: RateDraft): ModelRates | null | 'invalid' {
   const raw = RATE_KEYS.map((key) => draft[key].trim());
   if (raw.every((value) => value === '')) return null;
-  const numbers = raw.map(Number);
+  const numbers = raw.map((value) => dollarsToCents(Number(value)));
   if (raw.some((value) => value === '') || numbers.some((n) => !Number.isFinite(n) || n < 0)) return 'invalid';
   const [inputCentsPerM, outputCentsPerM, cacheReadCentsPerM, cacheWriteCentsPerM] = numbers as [number, number, number, number];
   return { inputCentsPerM, outputCentsPerM, cacheReadCentsPerM, cacheWriteCentsPerM };
+}
+
+interface PriceChange {
+  group: 'standard' | 'fast';
+  key: RateKey;
+  storedCents: number;
+  /** null = the whole group was cleared (model becomes unpriced for it). */
+  nextCents: number | null;
+}
+
+/** Fields whose new price is >10× away from the stored one. Invalid/blank drafts yield none (save rejects those first). */
+function findLargePriceChanges(model: AdminPlatformModel, draft: Draft): PriceChange[] {
+  const groups = [
+    { group: 'standard' as const, stored: model.rates, next: draftToRates(draft.rates) },
+    { group: 'fast' as const, stored: model.optionRates?.['speed:fast'] ?? null, next: draftToRates(draft.fastRates) },
+  ];
+  return groups.flatMap(({ group, stored, next }): PriceChange[] => {
+    if (!stored || next === 'invalid') return [];
+    if (next === null) return RATE_KEYS.map((key) => ({ group, key, storedCents: stored[key], nextCents: null }));
+    return RATE_KEYS.filter((key) => isLargePriceChange(stored[key], next[key]))
+      .map((key) => ({ group, key, storedCents: stored[key], nextCents: next[key] }));
+  });
 }
 
 function draftFrom(model: AdminPlatformModel): Draft {
@@ -100,8 +141,11 @@ function withValue<T>(list: T[], value: T, on: boolean): T[] {
   return list.filter((item) => item !== value);
 }
 
+/** Dollars with at least 2 and at most 4 decimals, so sub-cent-precision prices aren't rounded away. */
 function dollarsPerM(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
+  const dollars = Number((cents / 100).toFixed(4));
+  const decimals = Math.min(4, Math.max(2, (String(dollars).split('.')[1] ?? '').length));
+  return `$${dollars.toFixed(decimals)}`;
 }
 
 function displayChoices(mode: ThinkingMode): readonly ThinkingDisplay[] {
@@ -122,6 +166,7 @@ export default function AiModels() {
   const [editing, setEditing] = useState<AdminPlatformModel | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
+  const [confirmingPrices, setConfirmingPrices] = useState(false);
 
   const fetchModels = useCallback(async () => {
     setLoading(true);
@@ -151,7 +196,10 @@ export default function AiModels() {
     void fetchModels();
   }, [fetchModels]);
 
+  const largePriceChanges = editing && draft ? findLargePriceChanges(editing, draft) : [];
+
   const openEditor = (model: AdminPlatformModel) => {
+    setConfirmingPrices(false);
     setEditing(model);
     setDraft(draftFrom(model));
   };
@@ -162,7 +210,10 @@ export default function AiModels() {
     setDraft(null);
   };
 
-  const updateDraft = (patch: Partial<Draft>) => setDraft((current) => (current ? { ...current, ...patch } : current));
+  const updateDraft = (patch: Partial<Draft>) => {
+    setConfirmingPrices(false);
+    setDraft((current) => (current ? { ...current, ...patch } : current));
+  };
 
   const handleRefresh = async () => {
     if (refreshing) return;
@@ -181,7 +232,7 @@ export default function AiModels() {
     }
   };
 
-  const handleSave = async () => {
+  const handleSave = async (confirmedPriceChange = false) => {
     if (!editing || !draft || saving) return;
     const rates = draftToRates(draft.rates);
     const fastRates = draftToRates(draft.fastRates);
@@ -189,6 +240,11 @@ export default function AiModels() {
       showToast({ type: 'error', message: t('admin.aiModels.errors.invalidRates') });
       return;
     }
+    if (!confirmedPriceChange && largePriceChanges.length > 0) {
+      setConfirmingPrices(true);
+      return;
+    }
+    setConfirmingPrices(false);
     const patch = {
       rates,
       optionRates: fastRates ? { 'speed:fast': fastRates } : null,
@@ -338,6 +394,8 @@ export default function AiModels() {
         </div>
       )}
 
+      <PromptVariantsCard />
+
       <Drawer
         open={editing !== null}
         onClose={closeEditor}
@@ -363,6 +421,11 @@ export default function AiModels() {
                       onChange={(e) => updateDraft({ rates: { ...draft.rates, [key]: e.target.value } })}
                       className="w-full rounded border px-2 py-1"
                     />
+                    {editing.rates && (
+                      <span className="block text-xs text-gray-500" data-testid={`ai-models-rate-${key}-stored`}>
+                        {t('admin.aiModels.drawer.storedPrice', { value: dollarsPerM(editing.rates[key]) })}
+                      </span>
+                    )}
                   </label>
                 ))}
               </div>
@@ -384,6 +447,11 @@ export default function AiModels() {
                       onChange={(e) => updateDraft({ fastRates: { ...draft.fastRates, [key]: e.target.value } })}
                       className="w-full rounded border px-2 py-1"
                     />
+                    {editing.optionRates?.['speed:fast'] && (
+                      <span className="block text-xs text-gray-500" data-testid={`ai-models-fast-rate-${key}-stored`}>
+                        {t('admin.aiModels.drawer.storedPrice', { value: dollarsPerM(editing.optionRates['speed:fast'][key]) })}
+                      </span>
+                    )}
                   </label>
                 ))}
               </div>
@@ -496,6 +564,34 @@ export default function AiModels() {
                 </span>
               </span>
             </label>
+
+            {confirmingPrices && largePriceChanges.length > 0 && (
+              <div role="alertdialog" aria-labelledby="ai-models-price-confirm-title" data-testid="ai-models-price-confirm"
+                className="space-y-2 rounded border border-amber-400 bg-amber-50 p-3">
+                <p id="ai-models-price-confirm-title" className="font-medium">{t('admin.aiModels.drawer.priceChangeTitle')}</p>
+                <p className="text-xs text-gray-700">{t('admin.aiModels.drawer.priceChangeIntro')}</p>
+                <ul className="space-y-1 text-xs">
+                  {largePriceChanges.map((change) => (
+                    <li key={`${change.group}-${change.key}`} data-testid={`ai-models-price-confirm-${change.group}-${change.key}`}>
+                      {t('admin.aiModels.drawer.priceChangeRow', {
+                        group: change.group === 'fast' ? t('admin.aiModels.drawer.priceGroupFast') : t('admin.aiModels.drawer.priceGroupStandard'),
+                        field: t(/* i18n-dynamic */ `admin.aiModels.drawer.${change.key}`),
+                        stored: dollarsPerM(change.storedCents),
+                        next: change.nextCents === null ? t('admin.aiModels.unpriced') : dollarsPerM(change.nextCents),
+                      })}
+                    </li>
+                  ))}
+                </ul>
+                <div className="flex justify-end gap-2">
+                  <button type="button" data-testid="ai-models-price-confirm-back" onClick={() => setConfirmingPrices(false)} disabled={saving} className="rounded border px-3 py-1.5">
+                    {t('admin.aiModels.drawer.priceChangeBack')}
+                  </button>
+                  <button type="button" data-testid="ai-models-price-confirm-save" onClick={() => void handleSave(true)} disabled={saving} className="rounded bg-amber-600 px-3 py-1.5 text-white disabled:opacity-50">
+                    {t('admin.aiModels.drawer.priceChangeConfirm')}
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div className="flex justify-end gap-2 border-t pt-4">
               <button type="button" data-testid="ai-models-cancel" onClick={closeEditor} disabled={saving} className="rounded border px-3 py-1.5">

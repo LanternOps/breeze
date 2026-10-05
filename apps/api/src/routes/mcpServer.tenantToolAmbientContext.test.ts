@@ -107,6 +107,8 @@ vi.mock('../services/aiTools', () => ({
   getToolDefinitions: mocks.getToolDefinitions,
   executeTool: mocks.executeTool,
   getToolTier: mocks.getToolTier,
+  aiTools: new Map(['manage_invoices', 'manage_quotes'].map(name => [name, { selfManagedDbContext: ['create_pay_link'] }])),
+  toolManagesDbContext: (tool: any, input: any) => tool?.selfManagedDbContext?.includes(input.action) ?? false,
 }));
 
 vi.mock('../services/aiGuardrails', () => ({
@@ -163,6 +165,13 @@ describe('mcpServer — tenant-tool-call ambient DB context skip', () => {
   it('flags a tools/call naming a tenant tool (slug__name shape)', async () => {
     await post({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'hudu__get_asset', arguments: {} } });
     expect(mocks.observedSkipFlags).toEqual([true]);
+  });
+
+  it.each(['manage_invoices', 'manage_quotes'])('flags only the self-managed create_pay_link action for %s', async name => {
+    await post({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { action: 'create_pay_link' } } });
+    expect(mocks.observedSkipFlags).toEqual([true]);
+    await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: { action: 'list' } } });
+    expect(mocks.observedSkipFlags).toEqual([true, false]);
   });
 
   it('does NOT flag a tools/call naming a core tool', async () => {

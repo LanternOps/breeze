@@ -179,7 +179,7 @@ export default function ContractWorkspace({ contractId }: Props) {
         )}
       </div>
       {showEditor ? (
-        <ContractEditor detail={detail} onChanged={() => void load()} />
+        <ContractEditor detail={detail} autopayEnabled={detail.autopayEnabled} onChanged={() => void load()} />
       ) : (
         <ContractDetail detail={detail} onChanged={() => void load()} />
       )}

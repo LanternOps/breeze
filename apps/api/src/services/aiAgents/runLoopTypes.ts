@@ -1,4 +1,6 @@
-import type { AnalysisOutcome, RemediationTriggerKind } from '@breeze/shared';
+import type { AnalysisOutcome, RemediationTriggerKind, ResearchOutcome } from '@breeze/shared';
+import type { ResearchRunContext } from './researchContext';
+import type { RunProvenFixes } from '../fixMemory/runMemory';
 /**
  * The run loop's internal shape contracts, split out of `runLoop.ts` (issue
  * #4451) so the loop itself and its per-profile finalizers (`runFinalizers.ts`)
@@ -312,6 +314,8 @@ export interface AgentRunOutcome {
    * and `maxActionsPerRun` is 0.
    */
   analysis?: AnalysisOutcome;
+  /** AI Suggested Fixes W2 — the validated research submission (accepted items + recorded rejections). */
+  research?: ResearchOutcome;
   /** Sandbox compute charged to this run, in cents (spec §5.6). */
   computeCents?: number;
   /**
@@ -370,6 +374,24 @@ export interface RunRow {
    * workspace finalizer settles at when provider usage is unavailable.
    */
   computeReservedCents: number | null;
+  /**
+   * AI model registry W03 — the funding of the offering admission resolved
+   * (`ai_agent_runs.funding_source`) and that offering's id (finding 6: the
+   * loop re-resolves exactly it). Both null on a run admitted before W03;
+   * optional so a fixture that predates them stays a valid row.
+   */
+  fundingSource?: 'platform' | 'partner_key' | null;
+  admittedOfferingId?: string | null;
+  /**
+   * AI model registry W09 (#7607) — the failover hop the run last recorded
+   * (`ai_agent_runs.served_*`, all four set together or all null). A re-driven
+   * run resumes on this hop's offering and reservation key. `servedFundingSource`
+   * is the TOKEN funding only; compute stays on `fundingSource` (D7).
+   */
+  servedOfferingId?: string | null;
+  servedFundingSource?: 'platform' | 'partner_key' | null;
+  servedFailoverHop?: number | null;
+  servedFailoverCause?: string | null;
 }
 
 export interface AgentRow {
@@ -460,6 +482,15 @@ export interface RunContext {
     siteId: string | null;
     evidence: DesignEvidence;
   } | null;
+  /** AI Suggested Fixes W2 — set only for a `remediation_research` run. Optional like `patch`. */
+  research?: ResearchRunContext | null;
+  /**
+   * AI Suggested Fixes W3 — proven fixes for this run's alert or correlation
+   * group. Set only for `verdict`/`full` runs whose org-pinned alert or group
+   * read resolved; null otherwise, and whenever memory is off, empty or
+   * unavailable. Optional (absent ≡ null) like `research`.
+   */
+  provenFixes?: RunProvenFixes | null;
   /**
    * AI patch agent W01 (#5747) — the schedule occurrence (or manual trigger)
    * and the bounded, org-pinned patch evidence a `patch`-profile run plans

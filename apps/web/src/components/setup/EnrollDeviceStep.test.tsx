@@ -38,7 +38,7 @@ global.URL.revokeObjectURL = vi.fn();
 function mockHappyPath() {
   fetchWithAuthMock.mockImplementation(async (input) => {
     const url = String(input);
-    if (url === '/enrollment-keys') {
+    if (url === '/enrollment-keys/add-device-parent') {
       return makeJsonResponse({ id: 'key-abc', key: 'raw-key' }, true, 201);
     }
     if (url.startsWith('/enrollment-keys/key-abc/installer/')) {
@@ -50,7 +50,7 @@ function mockHappyPath() {
 
 /**
  * #2992 — guided setup mints its installer through the same two-step flow as
- * the Add Device modal: POST /enrollment-keys for a parent, then
+ * the Add Device modal: POST /enrollment-keys/add-device-parent for the site's parent, then
  * GET /enrollment-keys/:id/installer/:platform?count=N.
  *
  * The device count belongs on the bootstrap token that the second call mints,
@@ -77,7 +77,7 @@ describe('EnrollDeviceStep — installer device count (#2992)', () => {
     });
 
     const createCall = fetchWithAuthMock.mock.calls[0];
-    expect(String(createCall[0])).toBe('/enrollment-keys');
+    expect(String(createCall[0])).toBe('/enrollment-keys/add-device-parent');
     const createBody = JSON.parse((createCall[1] as RequestInit).body as string);
     expect(createBody.siteId).toBe('site-1');
     expect(createBody.orgId).toBe('org-1');
@@ -118,6 +118,26 @@ describe('EnrollDeviceStep — installer device count (#2992)', () => {
       expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
     });
     expect(String(fetchWithAuthMock.mock.calls[1][0])).toContain('discardKeyOnFailure=1');
+  });
+
+  // #7345 — a reused site parent already backs earlier installers; a failed
+  // build must never ask for it to be discarded.
+  it('never asks to discard a reused parent', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/enrollment-keys/add-device-parent') {
+        return makeJsonResponse({ id: 'key-abc', reused: true }, true, 200);
+      }
+      if (url.startsWith('/enrollment-keys/key-abc/installer')) {
+        return makeJsonResponse({ shortUrl: 'https://x/s/abc' }, true);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<EnrollDeviceStep orgId="org-1" siteId="site-1" onFinish={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('setup-download-installer'));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+    expect(String(fetchWithAuthMock.mock.calls[1][0])).not.toContain('discardKeyOnFailure');
   });
 });
 

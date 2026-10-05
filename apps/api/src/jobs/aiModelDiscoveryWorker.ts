@@ -1,28 +1,65 @@
 // apps/api/src/jobs/aiModelDiscoveryWorker.ts
 /**
  * AI model registry (#7598) discovery queue. W01: `sync-platform` (daily,
- * manual "Refresh", and once shortly after boot). W03 adds
- * `sync-connection:{id}` for BYOK keys.
+ * manual "Refresh", and once shortly after boot). W03 (#7601) adds
+ * `sync-connection` (one BYOK/catalog connection; on connect, on key or
+ * endpoint rotation, and on demand) and the daily `sync-all-connections`
+ * fan-out. W06 (#7604) adds gateway kinds (openai_compatible) to the fan-out,
+ * and `verify-offering`: the fidelity harness run through the model gateway
+ * against ONE gateway-kind offering, on the admin's request only (never on
+ * discovery, D5). Job payloads carry only ids, never key material.
  */
 import { Queue, Worker, type Job } from 'bullmq';
+import { and, eq, inArray } from 'drizzle-orm';
+import { GATEWAY_CONNECTION_KINDS } from '@breeze/shared';
+import { db, withSystemDbAccessContext } from '../db';
+import { partnerAiConnections } from '../db/schema';
 import { enqueueOrReplaceStale } from '../services/bullmqUtils';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
-import { syncPlatformModels, type SyncReport } from '../services/aiModels/discovery';
+import {
+  syncConnectionModels,
+  syncPlatformModels,
+  type ConnectionSyncReport,
+  type SyncReport,
+} from '../services/aiModels/discovery';
+import { verifyConnectionOffering, type OfferingVerificationState } from '../services/aiModels/offeringVerification';
 import { jobSchedule } from './scheduleRegistry';
 import { attachWorkerObservability } from './workerObservability';
 
 export const AI_MODEL_DISCOVERY_QUEUE = 'ai-model-discovery';
 export const SYNC_PLATFORM_JOB = 'sync-platform';
+export const SYNC_CONNECTION_JOB = 'sync-connection';
+export const SYNC_ALL_CONNECTIONS_JOB = 'sync-all-connections';
+export const VERIFY_OFFERING_JOB = 'verify-offering';
 
 // BullMQ 5 rejects ':' in a custom jobId.
 const DAILY_REPEAT_JOB_ID = 'ai-model-discovery-sync-platform-daily';
+const DAILY_CONNECTIONS_REPEAT_JOB_ID = 'ai-model-discovery-sync-all-connections-daily';
 const MANUAL_JOB_ID = 'ai-model-discovery-sync-platform-manual';
 const BOOT_JOB_ID = 'ai-model-discovery-sync-platform-boot';
 const DAILY_CRON = jobSchedule('ai-model-discovery-sync');
+const DAILY_CONNECTIONS_CRON = jobSchedule('ai-model-discovery-connections');
 const BOOT_DELAY_MS = 60_000;
 
-export type AiModelDiscoveryJobData = { type: 'sync-platform'; trigger: 'schedule' | 'manual' | 'boot' };
+export type AiModelDiscoveryJobData =
+  | { type: 'sync-platform'; trigger: 'schedule' | 'manual' | 'boot' }
+  | { type: 'sync-connection'; connectionId: string }
+  | { type: 'sync-all-connections' }
+  /** `retryFailed`: the env bootstrap's run — a failed verdict is retried with a delay (see enqueueOfferingVerification). */
+  | { type: 'verify-offering'; offeringId: string; partnerId: string; retryFailed?: true };
+
+/**
+ * Thrown by an env-path verification whose verdict was 'failed', so BullMQ
+ * retries it with a delay. The failed record is already stored; this is not
+ * an incident (logged, not captured).
+ */
+export class OfferingVerificationRetry extends Error {
+  constructor(offeringId: string) {
+    super(`Offering ${offeringId} failed verification; the queue will retry it`);
+    this.name = 'OfferingVerificationRetry';
+  }
+}
 
 let queue: Queue<AiModelDiscoveryJobData> | null = null;
 let worker: Worker<AiModelDiscoveryJobData> | null = null;
@@ -32,15 +69,122 @@ export function getAiModelDiscoveryQueue(): Queue<AiModelDiscoveryJobData> {
   return queue;
 }
 
-export async function processAiModelDiscoveryJob(job: Pick<Job<AiModelDiscoveryJobData>, 'data'>): Promise<SyncReport> {
-  if (job.data.type !== 'sync-platform') {
-    throw new Error(`Unknown ai-model-discovery job type: ${String((job.data as { type?: unknown }).type)}`);
+/** The index's `sync-connection:{id}`, colon-free: BullMQ rejects a custom id with ':' unless it splits into exactly 3 parts. */
+export function aiModelConnectionSyncJobId(connectionId: string): string {
+  return `sync-connection-${connectionId}`;
+}
+
+/**
+ * Queue one connection's discovery. Collapses onto a waiting/active job for the
+ * same connection; a spent (completed/failed) record is replaced. Call it
+ * OUTSIDE any held DB context, after the write that motivates it committed.
+ */
+export async function enqueueConnectionSync(connectionId: string): Promise<void> {
+  await enqueueOrReplaceStale(
+    getAiModelDiscoveryQueue() as unknown as Queue,
+    SYNC_CONNECTION_JOB,
+    aiModelConnectionSyncJobId(connectionId),
+    { type: 'sync-connection', connectionId } satisfies AiModelDiscoveryJobData,
+    {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 60_000 },
+      removeOnComplete: { count: 200 },
+      removeOnFail: { count: 200 },
+    },
+    '[aiModelDiscovery]',
+  );
+}
+
+/** Colon-free, per offering: a second request collapses onto a waiting/active run. */
+export function verifyOfferingJobId(offeringId: string): string {
+  return `verify-offering-${offeringId}`;
+}
+
+/**
+ * Queue a harness verification of one gateway-kind offering. The payload is
+ * ids only (plus the retry flag). By default one attempt: an admin's click
+ * stores a failed verification as a RESULT (tools off), and a retry would
+ * spend the partner's tokens again. `retryFailed` (the MCP_LLM_* env bootstrap,
+ * whose endpoint is often still loading at boot) retries a failed verdict
+ * twice more with an exponential delay. Call it OUTSIDE any held DB context.
+ */
+export async function enqueueOfferingVerification(
+  input: { offeringId: string; partnerId: string },
+  opts: { retryFailed?: boolean } = {},
+): Promise<void> {
+  const payload: AiModelDiscoveryJobData = {
+    type: 'verify-offering', offeringId: input.offeringId, partnerId: input.partnerId,
+    ...(opts.retryFailed ? { retryFailed: true as const } : {}),
+  };
+  await enqueueOrReplaceStale(
+    getAiModelDiscoveryQueue() as unknown as Queue,
+    VERIFY_OFFERING_JOB,
+    verifyOfferingJobId(input.offeringId),
+    payload,
+    {
+      ...(opts.retryFailed ? { attempts: 3, backoff: { type: 'exponential', delay: 60_000 } } : { attempts: 1 }),
+      removeOnComplete: { count: 100 },
+      removeOnFail: { count: 100 },
+    },
+    '[aiModelDiscovery]',
+  );
+}
+
+async function enqueueAllConnectionSyncs(): Promise<{ enqueued: number }> {
+  const ids = await withSystemDbAccessContext(async () => (await db
+    .select({ id: partnerAiConnections.id })
+    .from(partnerAiConnections)
+    .where(and(
+      // W06: gateway kinds too; a kind without a discoverer is skipped by the sync itself.
+      inArray(partnerAiConnections.kind, ['anthropic_byok', 'catalog', ...GATEWAY_CONNECTION_KINDS]),
+      eq(partnerAiConnections.status, 'active'),
+    ))).map((row) => row.id), 'aiModelDiscovery.listConnections');
+  for (const id of ids) await enqueueConnectionSync(id);
+  return { enqueued: ids.length };
+}
+
+export async function processAiModelDiscoveryJob(
+  job: Pick<Job<AiModelDiscoveryJobData>, 'data'>,
+): Promise<SyncReport | ConnectionSyncReport | { enqueued: number } | { offeringId: string; state: OfferingVerificationState }> {
+  switch (job.data.type) {
+    case 'sync-platform': {
+      const report = await syncPlatformModels();
+      // A failed listing changed nothing (spec §6). Throwing lets BullMQ retry with backoff.
+      if (report.status === 'failed') throw new Error(`Platform model sync failed: ${report.error}`);
+      if (report.status === 'skipped') console.info(`[aiModelDiscovery] platform sync skipped: ${report.reason}`);
+      return report;
+    }
+    case 'sync-connection': {
+      const report = await syncConnectionModels(job.data.connectionId);
+      // A failed listing is recorded on the connection (discovery_error) and
+      // retried by the daily fan-out; a rejected partner key is not transient.
+      // A listing superseded by a concurrent rotation re-runs with the new key.
+      if (report.status === 'skipped' && report.retry) {
+        throw new Error(`Connection model sync must re-run: ${report.error ?? 'superseded'}`);
+      }
+      return report;
+    }
+    case 'sync-all-connections':
+      return enqueueAllConnectionSyncs();
+    case 'verify-offering': {
+      // Refusals (missing / foreign / non-gateway / disconnected) throw and fail
+      // the job; a failed run is stored on the offering and returned. The return
+      // value (kept in Redis) is the verdict only, never the record's detail.
+      const input = { offeringId: job.data.offeringId, partnerId: job.data.partnerId };
+      let result = await verifyConnectionOffering(input);
+      // A request for this offering collapses onto the in-flight job, which
+      // may have started before the connection's URL or key changed: its
+      // verdict is then discarded as superseded. Run once more against the
+      // current connection so that request is not silently dropped.
+      if (result.state === 'superseded' && result.connectionChanged) {
+        result = await verifyConnectionOffering(input);
+      }
+      if (result.state === 'failed' && job.data.retryFailed) throw new OfferingVerificationRetry(result.offeringId);
+      return { offeringId: result.offeringId, state: result.state };
+    }
+    default:
+      throw new Error(`Unknown ai-model-discovery job type: ${String((job.data as { type?: unknown }).type)}`);
   }
-  const report = await syncPlatformModels();
-  // A failed listing changed nothing (spec §6). Throwing lets BullMQ retry with backoff.
-  if (report.status === 'failed') throw new Error(`Platform model sync failed: ${report.error}`);
-  if (report.status === 'skipped') console.info(`[aiModelDiscovery] platform sync skipped: ${report.reason}`);
-  return report;
 }
 
 export async function enqueuePlatformModelSync(trigger: 'manual' | 'boot' = 'manual'): Promise<{ id: string }> {
@@ -71,6 +215,14 @@ export async function scheduleAiModelDiscoveryJobs(): Promise<void> {
     removeOnComplete: { count: 10 },
     removeOnFail: { count: 25 },
   });
+  await q.add(SYNC_ALL_CONNECTIONS_JOB, { type: 'sync-all-connections' }, {
+    jobId: DAILY_CONNECTIONS_REPEAT_JOB_ID,
+    repeat: { pattern: DAILY_CONNECTIONS_CRON },
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 60_000 },
+    removeOnComplete: { count: 10 },
+    removeOnFail: { count: 25 },
+  });
 }
 
 export async function initializeAiModelDiscoveryWorker(): Promise<void> {
@@ -84,6 +236,11 @@ export async function initializeAiModelDiscoveryWorker(): Promise<void> {
     captureException(error);
   });
   worker.on('failed', (job, error) => {
+    if (error instanceof OfferingVerificationRetry) {
+      // A stored verdict, retried by design: not an incident.
+      console.warn(`[aiModelDiscovery] job ${job?.id ?? '?'}: ${error.message}`);
+      return;
+    }
     console.error(`[aiModelDiscovery] job ${job?.id ?? '?'} failed:`, error);
     captureException(error);
   });
@@ -102,4 +259,4 @@ export async function shutdownAiModelDiscoveryWorker(): Promise<void> {
   }
 }
 
-export const __testOnly = { DAILY_REPEAT_JOB_ID, MANUAL_JOB_ID, BOOT_JOB_ID, DAILY_CRON };
+export const __testOnly = { DAILY_REPEAT_JOB_ID, DAILY_CONNECTIONS_REPEAT_JOB_ID, MANUAL_JOB_ID, BOOT_JOB_ID, DAILY_CRON, DAILY_CONNECTIONS_CRON };

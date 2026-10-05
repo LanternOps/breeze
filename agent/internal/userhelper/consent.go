@@ -301,11 +301,18 @@ func sanitizeConsentRequest(req ipc.ConsentRequest) ipc.ConsentRequest {
 
 func stripControl(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || r == 0x7f || isBidiFormattingRune(r) {
 			return -1
 		}
 		return r
 	}, s)
+}
+
+// isBidiFormattingRune reports the bidirectional embedding, override and
+// isolate characters (U+202A–U+202E, U+2066–U+2069), which reorder the text
+// shown around them.
+func isBidiFormattingRune(r rune) bool {
+	return (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069)
 }
 
 // buildConsentDialogText renders the platform-neutral dialog copy.

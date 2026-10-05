@@ -7,6 +7,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  smallint,
   text,
   timestamp,
   unique,
@@ -52,9 +53,8 @@ export const aiAgents = pgTable('ai_agents', {
   name: varchar('name', { length: 120 }).notNull(),
   enabled: boolean('enabled').notNull().default(false),
   mode: text('mode').$type<AiAgentMode>().notNull().default('off'),
-  model: varchar('model', { length: 100 }),
-  // AI model registry W02 (#7600): the offering this policy is bound to
-  // (backfilled from `model` by the boot reconcile; runs read `model` until W03).
+  // AI model registry W02 (#7600): the offering this policy is bound to. The
+  // legacy `model` column is no longer mapped (retired W08 #7606; W08b drops it).
   offeringId: uuid('offering_id'),
   offeringPartnerId: uuid('offering_partner_id'),
   toolAllowlist: jsonb('tool_allowlist').$type<string[]>().notNull().default([]),
@@ -71,7 +71,10 @@ export const aiAgents = pgTable('ai_agents', {
   cooldownSeconds: integer('cooldown_seconds').notNull().default(900),
   disabledAt: timestamp('disabled_at', { withTimezone: true }),
   disabledBy: uuid('disabled_by').references(() => users.id),
-  createdBy: uuid('created_by').notNull().references(() => users.id),
+  // AI Suggested Fixes W2: nullable only for system-provisioned rows, which
+  // must set provisionedBy instead (ai_agents_creator_chk).
+  createdBy: uuid('created_by').references(() => users.id),
+  provisionedBy: varchar('provisioned_by', { length: 64 }),
   lastUpdatedBy: uuid('last_updated_by').references(() => users.id),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -202,6 +205,18 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // `analysis`-profile run — `{ handles, deviceIds, region }`. NULL for every
   // other profile. Read DEFENSIVELY (jsonb has no compile-time shape).
   stagedInputs: jsonb('staged_inputs').$type<AiAgentRunStagedInputs>(),
+  /** AI model registry W03 (#7601): funding of the offering resolved at admission. NULL = admitted before W03. */
+  fundingSource: text('funding_source').$type<'platform' | 'partner_key'>(),
+  /** W03 (review finding 6): the offering admission resolved; the run dispatches this one or is blocked. No FK (provenance id). */
+  admittedOfferingId: uuid('admitted_offering_id'),
+  /** W09 (#7607): the offering that served the run's model tokens when it was a failover hop. */
+  servedOfferingId: uuid('served_offering_id'),
+  /** W09: that hop's funding. Sandbox compute stays on `fundingSource` (D7). */
+  servedFundingSource: text('served_funding_source').$type<'platform' | 'partner_key'>(),
+  /** W09: the hop index; a re-driven run resumes on this hop's reservation key. */
+  servedFailoverHop: smallint('served_failover_hop'),
+  /** W09: why it failed over; restores the ledger provenance on a re-driven run. */
+  servedFailoverCause: text('served_failover_cause'),
 }, (table) => ({
   // Tenant-scoped (see 2026-09-02-ai-agents.sql): a global unique on
   // dedupe_key is enforced below RLS and leaks cross-tenant existence.

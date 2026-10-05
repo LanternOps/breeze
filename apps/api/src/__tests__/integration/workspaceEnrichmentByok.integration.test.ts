@@ -31,7 +31,6 @@
  */
 import './setup';
 import { readFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { and, eq, sql } from 'drizzle-orm';
@@ -46,11 +45,10 @@ import {
   withSystemDbAccessContext,
   type DbAccessContext,
 } from '../../db';
-import { aiCostUsage, partnerLlmConfigs } from '../../db/schema';
+import { aiCostUsage, aiInvocations, partnerAiConnections } from '../../db/schema';
 import { buildExtensionAiContext } from '../../services/extensionAi';
-import { columnAad, encryptedColumnRegistry } from '../../services/encryptedColumnRegistry';
-import { encryptSecret, hmacFingerprint } from '../../services/secretCrypto';
-import { createOrganization, createPartner } from './db-utils';
+import { seedRegistryPartner } from './helpers/aiModelRegistrySeed';
+import { usePlatformAiKeyPlaceholder } from './helpers/platformAiKey';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -97,7 +95,7 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
  * sufficient; a per-file throwaway database (the approach
  * `extensions/builtinTableProbe.integration.test.ts` takes) is not, because
  * unlike that probe this suite needs the FULL core schema — organizations,
- * partners, devices, ai_sessions, partner_llm_configs, ai_cost_usage, the
+ * partners, devices, ai_sessions, partner_ai_connections, ai_cost_usage, the
  * `breeze_app` role and the `breeze_has_org_access` helpers — i.e. a complete
  * 400+ file `autoMigrate()` replay per run, plus a `DATABASE_URL` swap before
  * the module-level `../../db` handle is constructed.
@@ -288,26 +286,11 @@ function orgContext(orgId: string): DbAccessContext {
   };
 }
 
-const API_KEY_SPEC = encryptedColumnRegistry.find(
-  (entry) => entry.table === 'partner_llm_configs' && entry.column === 'api_key_encrypted',
-);
-if (!API_KEY_SPEC) {
-  throw new Error('partner_llm_configs.api_key_encrypted is missing from encryptedColumnRegistry');
-}
 
-// Real column-level encryption (row-bound AAD), mirroring
-// partnerLlmConfig.ts's private encryptPartnerLlmApiKey — this suite needs a
-// key that DECRYPTS successfully so the resolver actually reaches 'partner'
-// source, unlike the RLS-only fixtures elsewhere that use a literal 'enc:...'
-// string and never exercise decryption.
-function encryptTestApiKey(id: string, apiKey: string): string {
-  const encrypted = encryptSecret(apiKey, { aad: columnAad(API_KEY_SPEC!, id) });
-  if (!encrypted) throw new Error('failed to encrypt test Anthropic API key');
-  return encrypted;
-}
-
-function mockClassificationResponse(text: string) {
+function mockClassificationResponse(text: string, model: string) {
   return {
+    model,
+    stop_reason: 'end_turn' as const,
     content: [{ type: 'text' as const, text }],
     usage: { input_tokens: 120, output_tokens: 40 },
   };
@@ -323,6 +306,10 @@ const CLASSIFICATION_JSON = JSON.stringify({
 });
 
 describe('workspace enrichment honors partner BYOK', () => {
+  // A deployment WITH a platform credential: a broken BYOK connection must then
+  // fail LOUD (transient) rather than read as "no AI on this deployment".
+  usePlatformAiKeyPlaceholder();
+
   beforeAll(async () => {
     if (!process.env.DATABASE_URL) return;
     await ensureWorkspaceSchema();
@@ -340,10 +327,11 @@ describe('workspace enrichment honors partner BYOK', () => {
   runDb(
     'BYOK partner: enrichment bills partner_key and never falls back to the platform key on a broken config',
     async () => {
+      let servedModel = '';
       const createSpy = vi
         .spyOn(Anthropic.Messages.prototype, 'create')
         // @ts-expect-error - real SDK response type is far richer than this test needs
-        .mockResolvedValue(mockClassificationResponse(CLASSIFICATION_JSON));
+        .mockImplementation(async () => mockClassificationResponse(CLASSIFICATION_JSON, servedModel));
 
       const previousBillingUrl = process.env.BILLING_SERVICE_URL;
       const previousBillingKey = process.env.BILLING_SERVICE_API_KEY;
@@ -359,20 +347,16 @@ describe('workspace enrichment honors partner BYOK', () => {
         );
 
       try {
+        // W03 Task 13: a cut-over partner whose `extension_content` assignment
+        // points at an offering on its own BYOK connection (real row-bound
+        // encryption, so the resolver decrypts and dispatches on that key).
+        // Seeded outside the system transaction: the helper writes the offering
+        // over a separate connection that must see the committed connection row.
+        const seeded = await seedRegistryPartner('byok');
+        servedModel = seeded.modelId;
         const { org, configId } = await withSystemDbAccessContext(async () => {
-          const partner = await createPartner();
-          const org = await createOrganization({ partnerId: partner.id });
-
-          const configId = randomUUID();
-          const apiKey = 'sk-ant-integration-test-key-0000000000';
-          await db.insert(partnerLlmConfigs).values({
-            id: configId,
-            partnerId: partner.id,
-            apiKeyEncrypted: encryptTestApiKey(configId, apiKey),
-            keyLast4: apiKey.slice(-4),
-            keyFingerprint: hmacFingerprint(apiKey),
-            status: 'active',
-          });
+          const org = { id: seeded.orgId };
+          const configId = seeded.connectionId!;
 
           await db.execute(sql`
             INSERT INTO workspace_org_settings (org_id, content_enabled)
@@ -439,6 +423,15 @@ describe('workspace enrichment honors partner BYOK', () => {
         );
         expect(usageAfterSuccess).toEqual([{ billingSource: 'partner_key' }]);
 
+        // One ledger row, from the registry rate bound at admission, on the
+        // extension_content surface and partner funding.
+        const ledger = await withSystemDbAccessContext(() =>
+          db.select().from(aiInvocations).where(eq(aiInvocations.orgId, org.id)));
+        expect(ledger).toHaveLength(1);
+        expect(ledger[0]).toMatchObject({
+          surface: 'extension_content', sourceRef: 'extension:workspace_enrichment', fundingSource: 'partner_key',
+        });
+
         const deductCalls = fetchSpy.mock.calls.filter(([url]) =>
           String(url).includes('/ai-credits/deduct'),
         );
@@ -448,9 +441,9 @@ describe('workspace enrichment honors partner BYOK', () => {
         // back to the platform key ---
         await withSystemDbAccessContext(() =>
           db
-            .update(partnerLlmConfigs)
+            .update(partnerAiConnections)
             .set({ status: 'error', lastError: 'decrypt_failed' })
-            .where(eq(partnerLlmConfigs.id, configId)),
+            .where(eq(partnerAiConnections.id, configId)),
         );
 
         await expect(

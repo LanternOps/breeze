@@ -92,7 +92,7 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     // in the CI integration glob.
     expect(inv.sentAt).toBeNull();
 
-    const res = await withSystemDbAccessContext(() => createInvoicePayLink(inv.id, actor));
+    const res = await createInvoicePayLink(inv.id, actor);
     expect(res.url).toBe('https://checkout.stripe.com/c/pay/abc');
     expect(sessionsCreateMock).toHaveBeenCalledTimes(1);
     // currency-aware minor units: $100.00 → 10000
@@ -119,7 +119,7 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     const inv = await seedIssuedInvoice(f, actor);
     getClientMock.mockRejectedValue(new PartnerStripeError('not connected', 'NO_STRIPE_KEY'));
 
-    await expect(withSystemDbAccessContext(() => createInvoicePayLink(inv.id, actor)))
+    await expect(createInvoicePayLink(inv.id, actor))
       .rejects.toMatchObject({ status: 409, code: 'STRIPE_NOT_CONNECTED' });
     expect(sessionsCreateMock).not.toHaveBeenCalled();
     const mappings = await withSystemDbAccessContext(() =>
@@ -136,7 +136,7 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     const inv = await seedIssuedInvoice(f, actor);
     getClientMock.mockRejectedValue(new Error('decrypt failed'));
 
-    await expect(withSystemDbAccessContext(() => createInvoicePayLink(inv.id, actor)))
+    await expect(createInvoicePayLink(inv.id, actor))
       .rejects.toMatchObject({ status: 500, code: 'STRIPE_INIT_FAILED' });
     expect(sessionsCreateMock).not.toHaveBeenCalled();
     const mappings = await withSystemDbAccessContext(() =>
@@ -149,7 +149,7 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     const actor: InvoiceActor = { userId: f.userId, partnerId: f.partnerId, accessibleOrgIds: [f.orgId] };
     const draft = await withSystemDbAccessContext(() => svc.createManualInvoice({ orgId: f.orgId }, actor));
 
-    await expect(withSystemDbAccessContext(() => createInvoicePayLink(draft.id, actor)))
+    await expect(createInvoicePayLink(draft.id, actor))
       .rejects.toMatchObject({ status: 409, code: 'NOT_PAYABLE' });
     expect(sessionsCreateMock).not.toHaveBeenCalled();
   });
@@ -161,7 +161,7 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     // Force a paid-in-full balance while keeping the payable 'sent' status.
     await withSystemDbAccessContext(() => db.update(invoices).set({ balance: '0.00' }).where(eq(invoices.id, inv.id)));
 
-    await expect(withSystemDbAccessContext(() => createInvoicePayLink(inv.id, actor)))
+    await expect(createInvoicePayLink(inv.id, actor))
       .rejects.toMatchObject({ status: 409, code: 'NOTHING_TO_PAY' });
     expect(sessionsCreateMock).not.toHaveBeenCalled();
   });

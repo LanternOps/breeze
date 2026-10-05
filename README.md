@@ -364,7 +364,7 @@ For detailed architecture documentation, see [docs/guides/architecture.md](docs/
 - [x] Health checks & alerting
 - [x] Configuration policies (hierarchical with feature links)
 - [x] Advanced filtering
-- [x] AI chat with tool-equipped agent (BYOK)
+- [x] AI chat with tool-equipped agent (your own provider key)
 - [x] Risk-classified action engine
 - [x] Multi-tenant hierarchy
 - [x] macOS, Windows, and Linux agents
@@ -461,9 +461,18 @@ Thank you to everyone who has contributed to Breeze.
 <!-- contributors:start -->
 <a href="https://github.com/ToddHebebrand"><img src="https://avatars.githubusercontent.com/u/8375744?v=4&amp;s=128" width="64" height="64" alt="ToddHebebrand" title="ToddHebebrand (@ToddHebebrand)" /></a>
 <a href="https://github.com/bdunncompany"><img src="https://avatars.githubusercontent.com/u/17571793?v=4&amp;s=128" width="64" height="64" alt="bdunncompany" title="bdunncompany (@bdunncompany)" /></a>
+<a href="https://github.com/fabicarvano"><img src="https://avatars.githubusercontent.com/u/205927015?v=4&amp;s=128" width="64" height="64" alt="fabicarvano" title="fabicarvano (@fabicarvano)" /></a>
 <a href="https://github.com/ramphex"><img src="https://avatars.githubusercontent.com/u/43665314?v=4&amp;s=128" width="64" height="64" alt="ramphex" title="ramphex (@ramphex)" /></a>
+<a href="https://github.com/advenimus"><img src="https://avatars.githubusercontent.com/u/102630001?v=4&amp;s=128" width="64" height="64" alt="advenimus" title="advenimus (@advenimus)" /></a>
+<a href="https://github.com/hcaldicott"><img src="https://avatars.githubusercontent.com/u/1539430?v=4&amp;s=128" width="64" height="64" alt="hcaldicott" title="hcaldicott (@hcaldicott)" /></a>
+<a href="https://github.com/mvthul"><img src="https://avatars.githubusercontent.com/u/53946558?v=4&amp;s=128" width="64" height="64" alt="mvthul" title="mvthul (@mvthul)" /></a>
 <a href="https://github.com/Emilien-Etadam"><img src="https://avatars.githubusercontent.com/u/56485277?v=4&amp;s=128" width="64" height="64" alt="Emilien-Etadam" title="Emilien-Etadam (@Emilien-Etadam)" /></a>
+<a href="https://github.com/lennonflima"><img src="https://avatars.githubusercontent.com/u/62125964?v=4&amp;s=128" width="64" height="64" alt="lennonflima" title="lennonflima (@lennonflima)" /></a>
+<a href="https://github.com/aayush-ashok"><img src="https://avatars.githubusercontent.com/u/54711854?v=4&amp;s=128" width="64" height="64" alt="aayush-ashok" title="aayush-ashok (@aayush-ashok)" /></a>
 <a href="https://github.com/CookieSource"><img src="https://avatars.githubusercontent.com/u/36531905?v=4&amp;s=128" width="64" height="64" alt="CookieSource" title="CookieSource (@CookieSource)" /></a>
+<a href="https://github.com/obsidiangroup"><img src="https://avatars.githubusercontent.com/u/54423468?v=4&amp;s=128" width="64" height="64" alt="obsidiangroup" title="obsidiangroup (@obsidiangroup)" /></a>
+<a href="https://github.com/LewisLosa"><img src="https://avatars.githubusercontent.com/u/95869100?v=4&amp;s=128" width="64" height="64" alt="LewisLosa" title="LewisLosa (@LewisLosa)" /></a>
+<a href="https://github.com/JayDawgZA"><img src="https://avatars.githubusercontent.com/u/278054780?v=4&amp;s=128" width="64" height="64" alt="JayDawgZA" title="JayDawgZA (@JayDawgZA)" /></a>
 <!-- contributors:end -->
 
 ### Community
@@ -495,7 +504,7 @@ No. Tickets, time tracking, quotes, invoicing, a priced service catalog, and a c
 Absolutely. The multi-tenant hierarchy works for internal IT too. Use Organizations as departments or offices.
 
 **What AI models are supported?**
-For the in-product AI operator, Breeze uses the Claude Agent SDK (Anthropic). BYOK mode takes an Anthropic API key, and self-hosted deployments can point at any Anthropic-compatible endpoint (such as a LiteLLM gateway). We chose Claude for its tool-use capabilities and reasoning quality. Separately, Breeze runs a built-in MCP server with OAuth 2.1 + PKCE, so you can connect Claude.ai, ChatGPT, Cursor, or any other MCP-compatible AI agent, using whichever model that platform runs. We're open to community contributions for additional in-product model providers.
+For the in-product AI operator, Breeze uses the Claude Agent SDK (Anthropic). You can bring your own Anthropic API key, and self-hosted deployments can point at any Anthropic-compatible endpoint (such as a LiteLLM gateway). We chose Claude for its tool-use capabilities and reasoning quality. Separately, Breeze runs a built-in MCP server with OAuth 2.1 + PKCE, so you can connect Claude.ai, ChatGPT, Cursor, or any other MCP-compatible AI agent, using whichever model that platform runs. We're open to community contributions for additional in-product model providers.
 
 **Is there an agent auto-update?**
 Yes. The Breeze agent has a built-in updater that pulls signed release artifacts and self-installs across macOS, Windows, and Linux. The Watchdog service supervises the agent process and restarts it on failure. Production deployments verify Ed25519-signed release manifests via `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`.

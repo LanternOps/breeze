@@ -200,6 +200,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('inboundEmailWorker'),
   consumers('ticketMailboxPollWorker'),
   consumers('invoiceWorker'),
+  consumers('autopayWorker'),
   consumers('contractWorker'),
   // ONE initializer constructing TWO Workers, so both stable names are declared.
   // They must match the attachWorkerObservability strings character for
@@ -222,6 +223,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('metricAnomalyIncidentPublisher'),
   consumers('aiUnattendedExposureRetention'),
   consumers('aiInvocationRetention'),
+  consumers('aiChargebackWorker'),
   consumers('alertVerdictScheduler'),
   consumers('aiAgentSweepScheduler'),
   // Task 8 merge-forward (origin/main fcd5b498a): three more `global` registry

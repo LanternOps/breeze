@@ -318,6 +318,49 @@ The page includes pre-populated AI chat buttons that open the AI sidebar with a 
 
 ---
 
+## Suggested fixes and fix memory
+
+On an alert or anomaly, **Suggested Fixes** lists things a technician could do about it. The panel groups suggestions as **Proven fixes** (fixes your fleet has already seen work), **AI suggestions** (from the built-in research agent), **Similar fixes**, and a collapsed **Earlier keyword matches** group. AI suggestions carry an **AI researched** badge. The feature is controlled by the `ml.remediation_suggestions.enabled` flag (see [ML Insights](/features/ml-insights/)); research also needs AI credits (or the organization's AI budget) to be available, and a manual request needs the `ai_sessions:use` permission.
+
+### Generate and Research deeper
+
+- **Generate** attaches proven fix memory first: a fix that worked for the same kind of problem on the same operating system is suggested straight away with its track record. It then also starts a **quick** research run, whether or not a proven fix exists, provided you have `ai_sessions:use`. Without that permission the panel tells you so.
+- **Research deeper** starts a **deep** research run for the same alert or anomaly. It gets a larger turn and budget ceiling than a quick run, and is meant for when the first answer was not enough.
+
+Every attempt ends in an explicit state on the panel, never a silent blank: researching; "AI found no safe fix for this problem"; research failed, with a **Retry** button; still researching after about five minutes ("check back", with **Refresh**); busy, when concurrency or rate limits are reached; no permission; or one of the other reasons a run could not start, such as the feature being off for the organization, AI credits being used up, or the alert having no single device. Asking again while a run is active shows that run instead of starting a second one.
+
+**Research never runs anything.** The research agent is read-only: it can look at device details, logs, your script and playbook catalog and proven fixes, and it submits suggestions. It cannot execute, change or draft a script on its own. A technician always chooses what to accept and run.
+
+### What a suggestion can be
+
+| Kind | What it is |
+|---|---|
+| Catalog script or playbook | One from your own catalog that runs on the device's operating system. Anything else the agent names is dropped by the server. |
+| Built-in action | One of `reboot`, `restart_service`, `kill_process` or `disk_cleanup`, with typed parameters (a service name, a process name, or cleanup action IDs). |
+| Manual steps | A short list of steps for a person to follow. |
+| Script draft request | A brief for a script that does not exist yet. |
+
+**Built-in actions and approval.** Running a built-in action needs `devices:execute` in addition to `scripts:execute`. Each action has a minimum risk level the server enforces regardless of what the agent proposed: `reboot` is always high risk, so it always goes through approval before it runs; `restart_service` and `kill_process` are at least medium; `disk_cleanup` is low. `kill_process` resolves the process by name when you run it and refuses if none or more than one process matches.
+
+**Draft a script.** On a script draft request, **Draft a script** opens the script builder with the brief and language pre-filled (it needs `scripts:write`). If the hand-off cannot be stashed in your browser, the brief is copied to the clipboard as a prompt instead. Nothing is sent or saved until you do it yourself.
+
+### Written by AI and reviewed steps
+
+Manual steps written by the research agent are labelled **Written by AI — review before following**, and that label stays on the suggestion. After checking the steps, a user with `scripts:write` and partner-wide management rights can use **Save as reviewed steps** to keep a reusable copy for an operating system. When a technician later marks a manual-steps suggestion **Done**, a picker offers the reviewed steps (or "Steps as written (not shared)"). The choice is recorded with the outcome, and once verified outcomes accumulate the fix appears as a proven fix labelled with the reviewed title, visible to your organizations' users. The research agent does not read reviewed steps; it only sees that a proven manual-steps fix exists and its track record.
+
+### The Fix memory page
+
+**Fix memory** (in the AI Agents section of the navigation) has two tabs. **Fixes** lists what Breeze has learned from observed outcomes, each with its condition, operating system, kind, scope (this client or all clients), status (including Demoted and Stale) and track record. **Reviewed steps** lists the saved reviewed steps and lets you retire them. Only counts are shared across clients, never another client's details. Retire an entry to stop it being suggested. Retiring a fix on the **Fixes** tab needs the AI agents write permission and MFA, and retiring an all-clients fix also needs partner-wide management rights. Saving reviewed steps, and retiring a saved entry on the **Reviewed steps** tab, each need partner-level access, `scripts:write`, partner-wide management rights and MFA.
+
+### The "Fix research (built-in)" agent
+
+- **Provisioned for you.** Each partner gets one built-in agent, named "Fix research (built-in)", created the first time research is requested. It cannot be created by hand at partner level.
+- **Only a few things are editable.** You can enable or disable it, rename it and adjust its research caps. Its instructions, tools and mode are fixed.
+- **Default ceilings.** A quick run is limited to 4 turns and 5 cents; a deep run to 10 turns and 25 cents. These are configurable ceilings, not typical costs. There are also per-hour and concurrency limits.
+- **Organization override.** An organization can have its own override of the agent, for example to disable it or set tighter caps for that client. The override carries only those same editable settings.
+- **Automatic research.** For **high** and **critical** alerts where no proven fix could be attached, research starts on its own at quick depth, once per alert, and is capped per organization per hour (6 by default). Medium and low alerts are only researched when a technician asks.
+- **Credits.** Research runs are billed like other AI agent runs. If credits are exhausted, runs are refused and the panel says why.
+
 ## AI Device Context Memory
 
 The AI can remember device-specific facts across conversations. When you ask the AI about a device, it automatically loads that device's context entries and incorporates them into its analysis — so it won't re-alert on known quirks or forget about open follow-ups.
@@ -402,9 +445,28 @@ Navigate to **Settings → AI Usage** to view:
 
 Cost data is stored alongside the conversation history.
 
+### Model quality
+
+The **AI usage by model** card has two views. **Spend** shows cost, tokens and refusals by the model that served each call. **Quality** shows how conversations went, grouped by model, feature, or model family:
+
+| Column | What it counts |
+|---|---|
+| Conversations | Chat sessions and agent runs whose last model call in the period was on that row |
+| Cost / conversation | Average spend on that row for each conversation that used it |
+| Refusal rate | Calls the model declined, per call |
+| Failover rate | Calls that moved to a backup model because this one failed or was unavailable |
+| Flag rate | Sessions a person flagged. Automatic flags after a tool error are listed separately |
+| Left for another model | Conversations that switched model, or continued in a new session on another model |
+| Turns to resolve | Median messages a technician sent in sessions that finished without a person's flag or a move to a new session |
+| Agent runs completed | Agent runs that completed, out of runs that finished |
+
+A call served by a refusal fallback or a backup model counts toward the model that was **chosen**, so a model that often needs its fallback shows it. A conversation counts toward the model it last used, and a switch counts toward the model it left. A session counts as finished when it is closed, expired, or idle for 24 hours.
+
+Breeze has no explicit "this was solved" signal, so **Turns to resolve** is an estimate. Compare rows with many conversations; rows with fewer than 20 are marked. Columns that need data this server does not record yet show "—".
+
 ### Billing credit integration
 
-When a billing service is configured (`BILLING_SERVICE_URL` and `BILLING_SERVICE_API_KEY`), AI sessions check the organization's credit balance before starting. If credits are exhausted, the user sees a message to purchase more credits. After each session completes, the estimated cost is deducted from the balance.
+When a billing service is configured (`BILLING_SERVICE_URL` and `BILLING_SERVICE_API_KEY`), AI sessions check the organization's credit balance before starting. If credits are exhausted, the user sees a message to purchase more credits. After each chat turn, that turn's estimated cost is deducted from the balance. Each turn is charged only for its own usage (v0.120.0+; earlier releases charged some chat turns the running total of the conversation so far).
 
 When billing is not configured, AI usage is unlimited — cost tracking still records usage for visibility, but no spending limits are enforced.
 
@@ -591,6 +653,82 @@ Breeze also provides AI tools for the PSA side of the platform — tickets, invo
 This list is exposed to external AI clients through the [MCP Server](/features/mcp-server/#ticketing-tools); as of #6755 it is stale for the assistant chat itself — `list_invoices`, `get_invoice`, `manage_invoices`, `search_catalog`, `get_catalog_item`, `list_contracts`, `get_contract`, and `manage_contracts` are tiered and reach chat today, while `manage_catalog`, `manage_quotes`, and `manage_tickets` remain untiered (MCP-only) until a later wave. Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, and moving a ticket to another organization — are classified Tier 3, so they are gated behind the execute scope and production allowlist rather than auto-executing. Drafting and editing (create_draft, adding lines, updating a draft) stays Tier 2 no matter how large the draft's total is — the tier boundary here is reversibility, not financial size: a draft is an internal, editable record until the commit action (send/issue/activate) exposes it beyond Breeze. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions, including the note on why this differs from the tenant-structure gating on tools like `create_org`.
 
 ---
+
+## Model refusals
+
+Some Claude models decline requests that resemble harmful work. The category is reported with the refusal, for example `cyber` for malware analysis or exploit-like scripts. Security triage in an RMM can trigger this even when the work is legitimate.
+
+When a model declines, Breeze:
+
+- records the refusal and its category against the model in AI usage;
+- shows the technician "The model declined this request (category: …)", lists the other models they are allowed to switch to, and links here;
+- ends an AI agent run as **Blocked — model refused**, with the category in the run outcome.
+
+### Configuring a refusal fallback
+
+An administrator can give a model a **refusal fallback** under **Partner Settings → AI Providers & Models**. The fallback must be another enabled model on the **same connection**, so it never changes who pays for the request. On the Claude API, Breeze asks Anthropic to retry the turn on the fallback model in the same request. On a catalog provider, Breeze retries once itself. The turn is billed at the rate of the model that served it.
+
+## Choosing a model in chat
+
+When your partner allows it, the chat composer has a model menu. It lists the models you may use, with each model's context size and price per million tokens. A model your role can't use is shown greyed out with the role that grants it. Next to the menu, set the options the chosen model supports:
+
+- **Effort** — how much the model reasons before answering (adaptive-thinking models).
+- **Fast** — a faster, more expensive mode, shown where your administrator enables it and the model supports it; its rate is shown next to the switch.
+- **Thinking** — an on/off switch for models that think with a fixed budget.
+
+Your choice applies from your next message. While the model reasons, the chat shows **Thinking…**. Under each answer, the chat shows the model and options that actually answered. A model can decline a request and hand it to another, and Fast can be unavailable for a moment, so this can differ from what you picked.
+
+Administrators can lock a feature to one model under **Partner Settings → AI Providers & Models → Defaults by feature** (turn off **Users may choose**). The menu is then hidden for that feature.
+
+## Switching models mid-conversation
+
+Switching to another model keeps the conversation when the new model is on the same AI connection and the conversation fits its context window. Breeze counts the conversation with the new model before switching. Otherwise Breeze offers **Continue with the new model in a new chat**: the newly chosen model summarises the conversation and a linked chat starts from that summary. Your message is kept either way, and you can choose **Keep the current model** instead.
+
+## The model an AI agent uses
+
+An agent's settings include a **Model** field: use the AI agents default, or pick one of the models allowed for AI agents. Picking a model that needs a permission requires you to hold that permission.
+
+## Failover and escalation roles
+
+### Backup models
+
+Each feature's default model can have an ordered list of up to five **backup models** (**Partner Settings → AI Providers & Models → Defaults by feature**). Breeze moves to the next usable backup when the model:
+
+- is disabled or retired, or its connection stops working;
+- is rate-limited, overloaded or returns a server error;
+- rejects its API key, or the provider account is out of quota.
+
+Backups follow the same rules as the default: the feature's allowed models, plan, data residency and tool support. A backup that was just tried, or that is cooling down after a recent failure, is skipped. A model cools down for about a minute after a rate limit, overload or server error, and for up to 15 minutes after a key or quota failure. Replacing the connection's API key clears that wait at once. If every backup is unusable, Breeze still uses the default rather than failing the feature.
+
+A timeout is never a reason to fail over, because the provider may still have run the request. A model you picked yourself in the chat model menu is never swapped for a backup.
+
+### Billing
+
+Each attempt is billed to the source that served it: Breeze AI credits for a Breeze-provided model, or your provider account for a model on your own API key. An attempt the provider rejected costs nothing. Failover moves between Breeze credits and your own API key only when **Allow failover between Breeze credits and your own API key** is on for that feature. Before a backup on Breeze credits is used, Breeze checks your credit balance and AI budget again.
+
+### Chat
+
+A chat message is never re-sent to another model partway through a reply. If a message fails before the model writes anything, the model cools down and your next message uses a backup. A conversation that already has history only moves to a backup on the same AI connection, and only when the conversation fits that model; otherwise it stays on its model. Your own model choice is kept, and Breeze goes back to it once it recovers. If the model you were using was disabled or retired, the conversation moves to the backup for good.
+
+### Escalation roles for AI agents
+
+The AI agents feature has three roles, each with its own default and backups:
+
+| Role | Runs |
+|---|---|
+| **Triage** | Alert verdicts, ticket triage, and sweeps in shadow mode |
+| **Analysis** | Investigations, narratives, designs, patch planning, and full runs in shadow mode |
+| **Remediation** | Full runs and sweeps in act mode, which can change devices |
+
+A role you leave unset uses the AI agents default. An agent pinned to a specific model in its own settings keeps that model; the role's allowed models and backups still apply to it. An agent run fails over only before the model has written anything or run a tool, so no action is ever run twice.
+
+### Organization overrides
+
+**Organization Settings → AI → Model defaults** can narrow a feature's backup list (or set it to no backups) and can turn cross-funding failover off. An organization cannot add backups the partner did not allow, and cannot turn cross-funding failover on. An organization that overrides the AI agents default keeps the partner's triage, analysis and remediation defaults, within the models it allows.
+
+### Usage
+
+The **Failovers** column on the AI usage page counts calls that a backup model served.
 
 ## Troubleshooting
 

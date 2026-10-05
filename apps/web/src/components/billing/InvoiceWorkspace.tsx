@@ -229,6 +229,7 @@ export default function InvoiceWorkspace({ id }: Props) {
       activeTab={activeTab}
       onTabChange={selectTab}
     >
+      {(detail.unappliedCount ?? 0) > 0 && <div role="status" data-testid="autopay-unapplied-banner" className="rounded-lg border border-amber-400 bg-amber-50 p-4 text-amber-950">{t('autopay.unapplied', { count: detail.unappliedCount })}</div>}
       {/* The editor stays MOUNTED across tab switches (hidden, not unmounted):
           unmounting discarded any half-typed add-line input the moment a tech
           flipped to Preview "just to check" — brutal mid-flow data loss.

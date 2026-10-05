@@ -104,7 +104,23 @@ const DEV_ENV: Record<string, string> = {
 /** Keys set after compose runs (see setStackEnvValues); a rewrite keeps them. */
 const RUNTIME_KEYS = ['WEBAUTHN_ORIGIN', 'WEBAUTHN_RP_ID'] as const;
 
-export function writeEnvStack(worktreePath: string): string {
+/**
+ * The dev images are built locally from the worktree, but docker-compose.yml
+ * defaults DOCKER_PLATFORM to linux/amd64. On an arm64 host that builds and
+ * runs the API under emulation: the main thread then blocks ~15 s after boot,
+ * and every detached startup task (AI model registry reconcile, backup storage
+ * key history, built-in monitors) times out on its database prologue. Build
+ * native, unless the root .env pins a platform explicitly.
+ */
+function nativeDockerPlatform(worktreePath: string, arch: string): string | null {
+  if (arch !== 'arm64') return null;
+  const rootEnv = path.join(worktreePath, '.env');
+  const pinned = existsSync(rootEnv)
+    && readFileSync(rootEnv, 'utf8').split('\n').some((line) => /^\s*DOCKER_PLATFORM\s*=/.test(line));
+  return pinned ? null : 'linux/arm64';
+}
+
+export function writeEnvStack(worktreePath: string, opts: { arch?: string } = {}): string {
   const p = envStackPath(worktreePath);
   // Carry runtime keys across a re-`up` so an unchanged stack is not recreated
   // twice (drop, then re-add); `up` still corrects a value that went stale.
@@ -112,7 +128,12 @@ export function writeEnvStack(worktreePath: string): string {
   const previous = existsSync(p) ? readFileSync(p, 'utf8').split('\n') : [];
   const kept = previous.filter((line) =>
     RUNTIME_KEYS.some((k) => new RegExp(`^\\s*${k}\\s*=`).test(line)));
-  const body = [...Object.entries(DEV_ENV).map(([k, v]) => `${k}=${v}`), ...kept].join('\n') + '\n';
+  const platform = nativeDockerPlatform(worktreePath, opts.arch ?? process.arch);
+  const body = [
+    ...Object.entries(DEV_ENV).map(([k, v]) => `${k}=${v}`),
+    ...(platform ? [`DOCKER_PLATFORM=${platform}`] : []),
+    ...kept,
+  ].join('\n') + '\n';
   writeFileSync(p, body, 'utf8');
   return p;
 }

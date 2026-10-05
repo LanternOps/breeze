@@ -10,7 +10,7 @@ Customer Graph Read uses one dedicated multitenant Entra application, the fixed 
 - user-owned delegated mail and Teams communications;
 - future Graph mutation and Exchange PowerShell executors.
 
-Only the executor deployment receives Key Vault data-plane access. The Breeze API owns authorization, organization mapping, consent sessions, lifecycle, and audit. It calls only the private executor operations `POST /v1/complete-consent`, `POST /v1/retest`, `POST /v1/read-action`, and `POST /v1/sync-action`. `GET /healthz` is the executor's process health endpoint; it does not prove Key Vault or Microsoft Graph access.
+Only the executor deployment receives Key Vault data-plane access. The Breeze API owns authorization, organization mapping, consent sessions, lifecycle, and audit. It calls only the private executor operations `POST /v1/verify-identity`, `POST /v1/retest`, `POST /v1/read-action`, and `POST /v1/sync-action`. (`POST /v1/complete-consent` still exists for one release so an API older than the identity-first flow keeps working; the current API never calls it, and it is removed in a later release.) `GET /healthz` is the executor's process health endpoint; it does not prove Key Vault or Microsoft Graph access.
 
 `POST /v1/read-action` executes one typed Microsoft Graph read (the twelve actions behind the `m365_query_*` AI tools) and uses the same internal EdDSA request authentication as the other two operations — no separate trust boundary. It is additive, so deploy order is safe in either direction: an executor deployed before this operation exists returns a plain `404` for the route, and the API's executor client treats that the same as any other unreachable/unhealthy executor, surfacing the existing `executor_unavailable` outcome rather than failing insecurely or leaking a raw transport error.
 
@@ -29,6 +29,23 @@ Deploy in this order:
 7. Expand the organization allowlist gradually. Use `*` only after the limited rollout is accepted.
 
 The migration deliberately aborts on incompatible M365 rows, noncanonical observed grants, or duplicate verified tenant/profile ownership. Resolve the reported data; do not bypass or rewrite the preflight.
+
+### Identity-first release gate
+
+The identity-first consent flow (#7910) needs `POST /v1/verify-identity` on the executor. Deploy the executor image that serves it to **every region** before releasing an API build that uses it. Against an older executor the route returns `404`, the API records `executor_unavailable`, and the attempt fails without binding anything: safe, but onboarding stops working until the executor catches up.
+
+## Consent flow (identity first)
+
+Breeze proves who the administrator is, and which tenant they belong to, before it asks Microsoft for consent. Consent can then only land in that verified tenant.
+
+1. **Identity.** `POST …/consent` returns a Microsoft v2 OpenID Connect sign-in URL (`/oauth2/v2.0/authorize`, `scope=openid profile`, a nonce, PKCE S256, `prompt=select_account`). A first connect, or a reconnect after a disconnect cleared the tenant, signs in at `/organizations`. A reconnect of a still-bound connection, and a permission upgrade, sign in at the bound tenant instead. The callback hands the code to the executor's `verify-identity`, which redeems it and fully validates the ID token: signature against Microsoft's keys, issuer derived from `tid`, audience, expiry, nonce, `oid`, and a `wids` claim containing Global Administrator or Privileged Role Administrator. The API stores the verified tenant and administrator object ID server-side under a new one-use state.
+2. **Confirm tenant.** For an `/organizations` sign-in only, the browser returns to the card (`/integrations#m365/customer-graph-read/confirm-tenant`). The card shows the verified tenant ID and the signed-in username, and the operator must confirm (`POST …/consent/continue`) or cancel (`POST …/consent/cancel`). This is the guard against an MSP technician consenting their own tenant for a customer organization: `/organizations` signs a guest administrator in to their home tenant, not the customer's. Neither route accepts a tenant; the confirmation is bound to the same organization, profile, consent attempt and Breeze user, is one-use, and expires with the session (10 minutes). A pinned reconnect or upgrade skips this step.
+3. **Consent.** The browser goes to Microsoft's v1 tenant-specific authorize endpoint, `https://login.microsoftonline.com/{verifiedTenantId}/oauth2/authorize?client_id&response_type=code&redirect_uri&resource=https://graph.microsoft.com&prompt=admin_consent&state`. The v1 endpoint is used for consent only: it continues past the Conditional Access device-authentication interrupt (AADSTS50097) that stops `/adminconsent`. **The code Microsoft returns is discarded.** It is never redeemed, forwarded to the executor, stored, logged or audited.
+4. **Verify and bind.** The executor's `retest` obtains an application token for the verified tenant, probes the organization and reconciles the app-role grants. Only when that proof names exactly the verified tenant does the API bind the tenant to the organization. An upgrade that fails at any step leaves the live connection unchanged.
+
+Both phases return to the same registered callback URI; no new redirect URI is needed. The identity-phase ID token must carry the `wids` claim, which is unchanged from earlier releases.
+
+Microsoft errors in either phase are classified without echoing Microsoft's text: a Conditional Access block (for example AADSTS50097 device authentication) is `conditional_access_blocked`, a cancel is `consent_cancelled`, and any other provider error is `consent_provider_error`. Only the error code, the AADSTS number and Microsoft's correlation ID are logged.
 
 ## Entra application and permission manifest
 
@@ -128,7 +145,7 @@ The callback origin is selected in this precedence order: `PUBLIC_URL`, `PUBLIC_
 | `M365_GRAPH_READ_EXECUTOR_ISSUER` | Exactly `breeze-api`. |
 | `M365_GRAPH_READ_EXECUTOR_AUDIENCE` | Exactly `m365-graph-read-executor`. |
 | `M365_GRAPH_READ_EXECUTOR_AZURE_CREDENTIAL_MODE` | `managed-identity` or `workload-identity`; there is no default/CLI credential fallback. |
-| `M365_GRAPH_READ_EXECUTOR_BIND_HOST` | A private RFC1918 or RFC 6598 shared-space (`100.64.0.0/10`, e.g. the Azure Container Apps replica overlay) IPv4 or unique-local IPv6 interface, not a hostname or public/loopback/link-local address. |
+| `M365_GRAPH_READ_EXECUTOR_BIND_HOST` | A private RFC1918 or RFC 6598 shared-space (`100.64.0.0/10`) IPv4 or unique-local IPv6 interface, or exactly `127.0.0.1` / `::1`; not a hostname, wildcard, other `127/8` address, or public/link-local address. On Azure Container Apps set it to `127.0.0.1`: ingress and health probes arrive from the in-pod Envoy sidecar over loopback, so a replica bound to its overlay IP never becomes healthy. Elsewhere, bind the private interface the TLS proxy reaches. |
 | `M365_GRAPH_READ_EXECUTOR_PORT` | Integer from 1 through 65535. |
 | `M365_SYNC_MAX_IN_FLIGHT` | Optional, default `4`. Concurrent whole-domain sync actions per replica. Must be ≤ `M365_MAX_IN_FLIGHT`; boot refuses otherwise. |
 | `M365_MAX_IN_FLIGHT` | Optional, default `32`. Total concurrent operations per replica across all four routes. The difference between the two caps is the headroom reserved for interactive AI-tool reads. |
@@ -157,7 +174,7 @@ Managed identity may use `AZURE_CLIENT_ID` to select a user-assigned identity. W
 ## Tenant sync
 
 The executor serves whole-domain snapshot pulls on `POST /v1/sync-action`, a
-fourth operation alongside `complete-consent`, `retest`, and `read-action`.
+fourth operation alongside `verify-identity`, `retest`, and `read-action`.
 It uses the same EdDSA internal-auth scheme, with the operation bound into the
 token, and it is only ever called by the Breeze API.
 
@@ -237,13 +254,17 @@ The narrow Breeze route templates are:
 
 - `GET /m365/connections?orgId=...`
 - `POST /m365/connections/customer-graph-read/consent?orgId=...`
+- `GET /m365/connections/customer-graph-read/consent/pending?orgId=...` (confirm-tenant: the verified tenant ID and display-only username)
+- `POST /m365/connections/customer-graph-read/consent/continue?orgId=...` (confirm-tenant: returns the tenant-pinned consent URL)
+- `POST /m365/connections/customer-graph-read/consent/cancel?orgId=...` (confirm-tenant: records `consent_cancelled`)
+- `POST /m365/connections/:id/upgrade-consent?orgId=...`
 - public `GET /m365/consent/callback`
 - `POST /m365/connections/:id/retest?orgId=...`
 - `POST /m365/connections/:id/disconnect?orgId=...`
 
 The API mounts the callback at `/api/v1/m365/consent/callback`. Authenticated reads require organization read permission. Mutations require organization write permission, current MFA, concrete organization scope, and the partner-wide management guard when applicable. Normal list/consent/retest/disconnect success is HTTP 200; malformed organization queries are 400, denied partner-wide management is 403, and disabled onboarding, scope misses, ownership conflicts, revoked/non-executable rows, and stale attempts are deliberately non-oracular 404 responses where applicable.
 
-Connection statuses are exactly `pending-consent`, `verifying`, `active`, `degraded`, `suspended`, and `revoked`. Stable failure/outcome codes exposed by this slice are `consent_expired`, `consent_state_mismatch`, `consent_cancelled`, `admin_role_required`, `tenant_mismatch`, `tenant_already_bound`, `credential_unavailable`, `identity_token_invalid`, `application_token_invalid`, `grant_reconciliation_unavailable`, `grant_missing`, `grant_unexpected`, `manifest_stale`, `organization_probe_failed`, and `executor_unavailable`.
+Connection statuses are exactly `pending-consent`, `verifying`, `active`, `degraded`, `suspended`, and `revoked`. Stable failure/outcome codes exposed by this slice are `consent_expired`, `consent_state_mismatch`, `consent_cancelled`, `conditional_access_blocked`, `consent_provider_error`, `admin_role_required`, `tenant_mismatch`, `tenant_already_bound`, `credential_unavailable`, `identity_token_invalid`, `application_token_invalid`, `grant_reconciliation_unavailable`, `grant_missing`, `grant_unexpected`, `manifest_stale`, `organization_probe_failed`, and `executor_unavailable`.
 
 ## Exact-digest deployment
 
@@ -257,10 +278,10 @@ Deploy the repository plus the signed `sha256` digest, not a mutable version or 
 
 1. Keep `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED=false` and confirm the legacy M365 card/routes still work.
 2. Confirm the executor process is healthy at private `GET /healthz` and returns only `{"status":"ok"}`.
-3. Confirm no public route reaches `/v1/complete-consent`, `/v1/retest`, or `/healthz`.
+3. Confirm no public route reaches `/v1/verify-identity`, `/v1/complete-consent`, `/v1/retest`, `/v1/read-action`, `/v1/sync-action`, or `/healthz`.
 4. Confirm the executor identity can read only the pinned Key Vault secret version and API/general identities cannot.
 5. Confirm controlled egress permits the fixed Microsoft/Key Vault dependencies and blocks an unrelated destination.
-6. Enable one internal organization UUID, complete the real-tenant checklist, and watch `breeze_m365_customer_graph_read_events_total{event,outcome}` plus the seven fixed audit event names.
+6. Enable one internal organization UUID, complete the real-tenant checklist, and watch `breeze_m365_customer_graph_read_events_total{event,outcome}` plus the fixed audit event names below.
 
 ### Rollback
 
@@ -277,12 +298,18 @@ If the credential version changed during the failed rollout, restore the API and
 The Prometheus counter is `breeze_m365_customer_graph_read_events_total` with bounded `event` and `outcome` labels. Audit actions are exactly:
 
 - `m365.customer_graph_read.consent_initiated`
-- `m365.customer_graph_read.admin_consent_returned`
+- `m365.customer_graph_read.upgrade_consent_initiated`
+- `m365.customer_graph_read.admin_identity_verified` — the identity phase verified an administrator (outcome `identity_verified`, with the verified tenant and `verifiedAdministratorObjectId`)
+- `m365.customer_graph_read.tenant_confirmed` — the Breeze user confirmed that verified tenant on the confirm-tenant screen (outcome `tenant_confirmed`)
+- `m365.customer_graph_read.admin_consent_returned` — Microsoft's consent screen returned and the application proof is starting (outcome `application_verification_started`)
 - `m365.customer_graph_read.tenant_binding_verified`
-- `m365.customer_graph_read.verification_failed`
+- `m365.customer_graph_read.verification_failed` (including `consent_cancelled` from the confirm-tenant cancel)
 - `m365.customer_graph_read.grant_drift_detected`
 - `m365.customer_graph_read.retested`
 - `m365.customer_graph_read.disconnected`
+- `m365.customer_graph_read.sync_requested`
+
+`tenant_binding_verified` records `verifiedAdministratorObjectId`: the administrator whose identity Breeze verified in the identity phase. It is **not** a claim that this person clicked Accept on Microsoft's consent screen; Microsoft does not report who approved. `actorId` is always the Breeze user who started the flow.
 
 A second, independent Prometheus counter, `breeze_m365_graph_read_actions_total{action,outcome}`, covers per-call typed Graph read outcomes (the `m365_query_*` AI tools going through `POST /v1/read-action`), not connection lifecycle events — it does not replace the counter above. Its matching audit action is `m365.customer_graph_read.action_executed`, with details limited to `actionType`, `outcome`, `itemCount`, and `truncated`; it never carries the read's Graph payload. Both counters are registered on the same `/metrics` route.
 

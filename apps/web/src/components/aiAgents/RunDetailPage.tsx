@@ -48,7 +48,7 @@ interface RunDetailPageProps {
 /** Every status NOT in this set is "live" — mirrors RunsListPage's
  * TERMINAL_RUN_STATUSES so both surfaces agree on when a run stops updating. */
 const TERMINAL_RUN_STATUSES = new Set<AiAgentRunStatus>([
-  'completed', 'failed', 'cancelled', 'expired', 'skipped',
+  'completed', 'failed', 'cancelled', 'expired', 'skipped', 'blocked',
 ]);
 function isLiveRunStatus(status: AiAgentRunStatus): boolean {
   return !TERMINAL_RUN_STATUSES.has(status);
@@ -120,6 +120,8 @@ function statusLabel(t: (key: string) => string, value: string): string {
       return t('aiAgentsPage.runs.statuses.expired');
     case 'skipped':
       return t('aiAgentsPage.runs.statuses.skipped');
+    case 'blocked':
+      return t('aiAgentsPage.runs.statuses.blocked');
     default:
       return value;
   }

@@ -8,9 +8,12 @@ import { actionSideEffects, MockLlm, mockLlmUrl, seedTopologyAi, type TopologyAi
  *
  * How the model is mocked
  * -----------------------
- * The API runs with MCP_LLM_PROVIDER=openai-compatible (chat-only transport,
- * apps/api/src/services/llm/openaiCompatibleProvider.ts) pointed at
- * `e2e-tests/fixtures/mockLlmServer.mjs`, which runs as the `mock-llm` service
+ * The API runs with MCP_LLM_PROVIDER=openai-compatible pointed at
+ * `e2e-tests/fixtures/mockLlmServer.mjs`. Since W06 (#7604) boot bootstraps
+ * that env config into an env-managed OpenAI-compatible registry connection
+ * (verified against the mock, which answers the capability harness), and the
+ * topology turn runs the Agent SDK through the loopback model gateway, which
+ * calls the mock's /chat/completions. The mock runs as the `mock-llm` service
  * INSIDE the stack network. It cannot run on the host: safeFetch refuses
  * loopback and OrbStack's host.docker.internal (0.250.250.254), while an
  * RFC1918 container address is dialable on a self-hosted (IS_HOSTED=false)
@@ -39,6 +42,9 @@ import { actionSideEffects, MockLlm, mockLlmUrl, seedTopologyAi, type TopologyAi
  * string, a peer node and one relationship.
  */
 test.describe.configure({ mode: 'serial' });
+
+/** The topology investigation tools (aiInvestigation.ts TOPOLOGY_INVESTIGATION_MCP_TOOL_NAMES). */
+const TOPOLOGY_TOOL_NAME = /^mcp__breeze__(get_topology|get_link_evidence|get_link_health|get_recent_network_changes|get_diagnostic_run|get_interface_history|get_topology_impact|get_topology_monitoring_status|diagnose_connectivity)$/;
 
 const mockUrl = mockLlmUrl();
 test.skip(!mockUrl, 'needs the mock-llm overlay (docker-compose.override.yml.topology-ai-e2e) — see the header');
@@ -79,10 +85,12 @@ test('Explain calls the model exactly once, renders the cited answer, and never 
   expect(sent).not.toContain(fixture.orgId);
   expect(sent).not.toContain(fixture.siteId);
   expect(sent).not.toContain(fixture.deviceId);
-  expect((request!.body as { tools?: unknown }).tools).toBeUndefined();
+  // The SDK turn offers the model ONLY the topology investigation tools.
+  const offered = ((request!.body as { tools?: Array<{ function?: { name?: string } }> }).tools ?? []).map((t) => t.function?.name);
+  for (const name of offered) expect(name).toMatch(TOPOLOGY_TOOL_NAME);
 
-  // The server-validated answer renders (the chat-only transport publishes it
-  // AFTER `message_end`; the store must still attach it).
+  // The server-validated answer renders (it is published at the turn's
+  // result, after `message_end`; the store must still attach it).
   await expect(topology.explanation()).toBeVisible({ timeout: 30_000 });
   expect(await mock.count()).toBe(1);
 
@@ -95,7 +103,8 @@ test('Explain calls the model exactly once, renders the cited answer, and never 
   await expect(topology.nextChecks()).toBeVisible();
   await expect(topology.nextCheck()).toHaveCount(1);
   await expect(topology.fallback()).toHaveCount(0);
-  // A model suggestion is text, never a proposal: the chat-only transport has no tools.
+  // A model suggestion is text, never a proposal (the mock answers the
+  // evidence prompt with text and never calls diagnose_connectivity).
   await expect(topology.proposedCheck()).toHaveCount(0);
 
 
@@ -163,9 +172,10 @@ test('a provider failure yields the deterministic fallback, no raw text, and Dia
 });
 
 test('nothing the model said became an action: no runs, commands, intents or tool executions', async () => {
-  // The chat-only (openai-compatible) transport sends no `tools`, so a
-  // diagnose_connectivity proposal / approve / deny flow cannot occur on this
-  // path; the model's "run execute_command" text must stay inert text.
+  // The mock never calls a tool on an evidence prompt, so no
+  // diagnose_connectivity proposal / approve / deny flow occurs here (that flow
+  // is pinned by topologyAiApproval.integration.test.ts); the model's
+  // "run execute_command" text must stay inert text.
   expect(await mock.count()).toBeGreaterThanOrEqual(1);
   expect(actionSideEffects(fixture)).toEqual({ diagnosticRuns: 0, deviceCommands: 0, actionIntents: 0, toolExecutions: 0 });
 });

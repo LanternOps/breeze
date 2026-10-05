@@ -4,12 +4,12 @@
  * client_ai_usage (Plan 1 migration; RLS shape 1) mirrors the ai_cost_usage
  * daily/monthly bucket pattern PLUS a client_user_id dimension so the MSP can
  * invoice per end-user. recordClientUsage runs ALONGSIDE the org-level
- * recordUsageFromSdkResult (which keeps partner billing-credit deduction and
+ * turn settlement (settleInvocation, which keeps platform credit debits and
  * ai_cost_usage flowing unchanged) — wired via ActiveSession.recordExtraUsage.
  *
  * Budget semantics (spec §4/§7): org daily/monthly caps live in
  * client_ai_org_policies; spend is the SUM of this table's org buckets across
- * users. Upserts mirror aiCostTracker.ts:297-325 (no transaction — additive
+ * users. Upserts mirror the ai_cost_usage rollups (no transaction — additive
  * counters, partial failure acceptable).
  *
  * Callers must be inside a DB access context that can see the org's rows

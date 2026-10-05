@@ -329,6 +329,7 @@
         "ticket_sla_attainment": "Ticket SLA attainment",
         "technician_time_billability": "Technician time & billability",
         "ar_aging": "AR aging",
+        "ai_usage_by_client": "AI usage by client",
         "backup_status": "Backup Status"
       },
       "threatDetection": {
@@ -431,6 +432,7 @@
         "ticket_sla_attainment": "Ticket SLA attainment",
         "technician_time_billability": "Technician time & billability",
         "ar_aging": "AR aging",
+        "ai_usage_by_client": "AI usage by client",
         "backup_status": "Backup Status"
       },
       "runsTable": {
@@ -979,6 +981,7 @@
         "ticket_sla_attainment": "Ticket SLA attainment",
         "technician_time_billability": "Technician time & billability",
         "ar_aging": "AR aging",
+        "ai_usage_by_client": "AI usage by client",
         "backup_status": "Backup Status"
       },
       "schedules": {
@@ -1047,6 +1050,10 @@
         "ar_aging": {
           "name": "AR aging",
           "description": "Unpaid invoice balances bucketed current / 1–30 / 31–60 / 61–90 / 90+ days past due, one set of totals per currency with no conversion. Invoices with no due date get their own bucket, never \"current\"."
+        },
+        "ai_usage_by_client": {
+          "name": "AI usage by client",
+          "description": "Platform AI usage per client for the period: requests, tokens, Breeze cost, the amount to charge from the client's billing profile, and what has already been invoiced. Included usage and unpriced models are shown separately, never blended in."
         },
         "backup_status": {
           "name": "Backup Status Report",
@@ -1151,6 +1158,18 @@
       "currencyNote": "Each currency gets its own totals. Amounts are not converted between currencies.",
       "includePaidInPeriod": "List invoices paid month to date",
       "includePaidInPeriodHelp": "Adds a note listing invoices fully paid from the first of the as-of month through the as-of date. It never changes the aging buckets.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
+    },
+    "aiUsageByClientOptions": {
+      "groupBy": "Group by",
+      "groupByAutomatic": "Automatic: by organization for all organizations, by model for one organization",
+      "groupByValues": {
+        "organization": "Organization",
+        "model": "Model"
+      },
+      "periodNote": "Charges bill by UTC calendar month. A period set in another timezone can differ from the invoice for usage near month boundaries.",
+      "unpricedNote": "Usage on a model with no rate on the client's billing profile is counted as unpriced. It is never treated as free.",
       "cancel": "Cancel",
       "createReport": "Create report"
     },

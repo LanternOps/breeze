@@ -14,11 +14,14 @@ vi.mock('../../aiModel', async (importOriginal) => ({
 vi.mock('../../streamingSessionManager', () => ({
   buildClaudeSdkChildEnv: () => ({ ANTHROPIC_API_KEY: 'test-key', ENABLE_TOOL_SEARCH: 'inherited' }),
 }));
-vi.mock('../llmConfigResolver', () => ({ resolveLlmConfig: async () => ({ source: 'env' }) }));
+vi.mock('../llmConfigResolver', () => ({ platformLlmConfig: () => ({ source: 'platform', apiKey: 'test-key', model: 'default-model' }) }));
 // 1 cent per 1k context-equivalent tokens: input×1, cache write×1.25, cache read×0.1, output×5.
-vi.mock('../../aiCostTracker', () => ({
-  calculateCostCents: (_model: string, input: number, output: number, read = 0, write = 0) =>
-    (input + output * 5 + read * 0.1 + write * 1.25) / 1000,
+// Priced from the registry row (W03 Task 17), rates in cents per MTok.
+vi.mock('../../aiModels/platformModels', () => ({
+  getPlatformModelByModelId: async () => ({
+    rates: { inputCentsPerM: 1000, outputCentsPerM: 5000, cacheReadCentsPerM: 100, cacheWriteCentsPerM: 1250 },
+    optionRates: null,
+  }),
 }));
 vi.mock('../toolCapture/runSurface', () => ({
   runSurfaceCapture: vi.fn(),
@@ -41,6 +44,13 @@ vi.mock('../toolEval/agentGoldenTasks', () => ({
   AGENT_GOLDEN_TASKS: [
     { id: 'a01', title: 'disk', surface: 'agent-full-remediation', context: { profile: 'full', tag: 'a01' }, expect: [{ tool: 'analyze_disk_usage' }] },
     { id: 'b01', title: 'cpu', surface: 'agent-analysis', context: { profile: 'analysis', tag: 'b01' }, expect: [{ tool: 'export_dataset' }] },
+  ],
+}));
+vi.mock('../../aiModels/promptVariants', async (orig) => ({
+  ...(await orig<typeof import('../../aiModels/promptVariants')>()),
+  PROMPT_VARIANTS: [
+    { id: 'chat/claude-small@1', surface: 'chat', profile: 'claude-small', version: 1, state: 'staged', canaryPercent: 0, guidance: 'Small guidance.', hypothesis: 'h' },
+    { id: 'ai_agents/claude-small@1', surface: 'ai_agents', profile: 'claude-small', version: 1, state: 'staged', canaryPercent: 0, guidance: 'Agent guidance.', hypothesis: 'h' },
   ],
 }));
 vi.mock('../../aiAgents/runnerPrompt', () => ({
@@ -202,6 +212,37 @@ describe('--suite agent (#7428)', () => {
     [['--suite', 'agent', '--cases', 'g01']], [['--suite', 'agent', '--surface', 'chat']],
     [['--suite', 'nope']], [['--surface-search', 'maybe']], [['--cases', 'a01']],
   ])('rejects %j with exit 2', async (args) => {
+    expect(await runCli(args)).toBe(2);
+    expect(runSurfaceCapture).not.toHaveBeenCalled();
+  });
+});
+
+describe('--prompt-variant (W11)', () => {
+  it('appends the variant to the surface prompt and records it in the report', async () => {
+    expect(await runCli(['--cases', 'g01', '--model', 'claude-haiku-4-5', '--prompt-variant', 'chat/claude-small@1'])).toBe(0);
+    expect(runSurfaceCapture).toHaveBeenCalledWith(expect.objectContaining({
+      systemPrompt: 'complete prompt — index and tail\n\n## Model Guidance\nSmall guidance.',
+    }));
+    const report = JSON.parse(String(vi.mocked(writeFile).mock.calls[0]![1]));
+    expect(report.promptVariant).toBe('chat/claude-small@1');
+    expect(report.systemPromptBytes).toBe(Buffer.byteLength('complete prompt — index and tail\n\n## Model Guidance\nSmall guidance.', 'utf8'));
+    expect(vi.mocked(writeFile).mock.calls[1]![1]).toEqual(expect.stringContaining('prompt: chat/claude-small@1'));
+  });
+  it('agent suite: appends to each task\'s own production prompt', async () => {
+    expect(await runCli(['--suite', 'agent', '--model', 'claude-haiku-4-5', '--prompt-variant', 'ai_agents/claude-small@1'])).toBe(0);
+    expect(vi.mocked(runSurfaceCapture).mock.calls.map((c) => c[0].systemPrompt))
+      .toEqual(['system:a01\n\n## Model Guidance\nAgent guidance.', 'system:b01\n\n## Model Guidance\nAgent guidance.']);
+  });
+  it('without the flag the report says base and the prompt is untouched', async () => {
+    expect(await runCli(['--cases', 'g01'])).toBe(0);
+    expect(vi.mocked(runSurfaceCapture).mock.calls[0]![0].systemPrompt).toBeUndefined();
+    expect(JSON.parse(String(vi.mocked(writeFile).mock.calls[0]![1])).promptVariant).toBeNull();
+  });
+  it.each([
+    ['an unknown id', ['--prompt-variant', 'chat/claude-small@9', '--model', 'claude-haiku-4-5']],
+    ['a model of another profile', ['--prompt-variant', 'chat/claude-small@1', '--model', 'claude-sonnet-5-5']],
+    ['a variant of another surface', ['--suite', 'agent', '--prompt-variant', 'chat/claude-small@1', '--model', 'claude-haiku-4-5']],
+  ])('exits 2 on %s', async (_n, args) => {
     expect(await runCli(args)).toBe(2);
     expect(runSurfaceCapture).not.toHaveBeenCalled();
   });

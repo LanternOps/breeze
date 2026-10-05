@@ -307,4 +307,44 @@ describe('CleanupPanel', () => {
     if (error === 'agent_update_required') expect(showToastMock.mock.calls[0][0].message).toContain('2.4.0');
   });
 
+  describe('API execute cap (#7469)', () => {
+    const big = () => {
+      const candidates = Array.from({ length: 250 }, (_, i) => ({
+        path: `C:\\Windows\\Temp\\f${i}`, category: 'temp_files', sizeBytes: 1000 - i,
+      }));
+      return preview({
+        categories: [{ category: 'temp_files', count: 250, estimatedBytes: 250000 }],
+        candidates,
+        candidateCount: 250,
+      });
+    };
+
+    it('select-all in a >200 category selects the largest 200 and says so', async () => {
+      render(<CleanupPanel deviceId="dev-1" volumeLabel="C:\\" preview={big()} onExecuted={vi.fn()} />);
+      await userEvent.click(screen.getByTestId('cleanup-category-select-all-temp_files'));
+
+      expect(screen.getByTestId('cleanup-execute')).toHaveTextContent('200');
+      expect(screen.getByTestId('cleanup-candidate-checkbox-C:\\Windows\\Temp\\f0')).toBeChecked();
+      expect(screen.getByTestId('cleanup-candidate-checkbox-C:\\Windows\\Temp\\f199')).toBeChecked();
+      expect(screen.getByTestId('cleanup-candidate-checkbox-C:\\Windows\\Temp\\f200')).not.toBeChecked();
+      expect(screen.getByTestId('cleanup-selection-limit')).toHaveTextContent('200');
+    });
+
+    it('offers Clear after a capped select-all, which unticks and re-enables the rest', async () => {
+      render(<CleanupPanel deviceId="dev-1" volumeLabel="C:\\" preview={big()} onExecuted={vi.fn()} />);
+      const btn = screen.getByTestId('cleanup-category-select-all-temp_files');
+      await userEvent.click(btn);
+      expect(btn).toHaveTextContent('Clear');
+      await userEvent.click(btn);
+      expect(screen.getByTestId('cleanup-execute')).toBeDisabled();
+      expect(screen.getByTestId('cleanup-candidate-checkbox-C:\\Windows\\Temp\\f200')).not.toBeDisabled();
+    });
+
+    it('does not let individual ticks exceed 200', async () => {
+      render(<CleanupPanel deviceId="dev-1" volumeLabel="C:\\" preview={big()} onExecuted={vi.fn()} />);
+      await userEvent.click(screen.getByTestId('cleanup-category-select-all-temp_files'));
+      expect(screen.getByTestId('cleanup-candidate-checkbox-C:\\Windows\\Temp\\f200')).toBeDisabled();
+      expect(screen.getByTestId('cleanup-candidate-checkbox-C:\\Windows\\Temp\\f0')).not.toBeDisabled();
+    });
+  });
 });

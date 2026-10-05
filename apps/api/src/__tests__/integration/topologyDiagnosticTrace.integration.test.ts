@@ -265,7 +265,7 @@ describe('bounded routed trace through the durable executor', () => {
     await clearPermissionCache(f.env.user.id);
     expect(await f.revalidate(run.id)).toEqual({ allow: false, reason: 'scope_changed' });
     const commandId = (await f.command(run.id))!.id;
-    expect(await claimPendingCommandForDelivery(commandId)).toBeNull();
+    expect(await claimPendingCommandForDelivery(commandId)).toEqual({ status: 'cancelled', id: commandId, reason: 'scope_changed' });
     expect((await f.command(run.id))?.status).toBe('cancelled');
   });
 

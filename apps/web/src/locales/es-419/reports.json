@@ -329,6 +329,7 @@
         "ticket_sla_attainment": "Cumplimiento de SLA de tickets",
         "technician_time_billability": "Tiempo y facturabilidad del técnico",
         "ar_aging": "Antigüedad de cuentas por cobrar",
+        "ai_usage_by_client": "Uso de IA por cliente",
         "backup_status": "Estado de respaldo"
       },
       "threatDetection": {
@@ -431,6 +432,7 @@
         "ticket_sla_attainment": "Cumplimiento de SLA de tickets",
         "technician_time_billability": "Tiempo y facturabilidad del técnico",
         "ar_aging": "Antigüedad de cuentas por cobrar",
+        "ai_usage_by_client": "Uso de IA por cliente",
         "backup_status": "Estado de respaldo"
       },
       "runsTable": {
@@ -979,6 +981,7 @@
         "ticket_sla_attainment": "Cumplimiento de SLA de tickets",
         "technician_time_billability": "Tiempo y facturabilidad del técnico",
         "ar_aging": "Antigüedad de cuentas por cobrar",
+        "ai_usage_by_client": "Uso de IA por cliente",
         "backup_status": "Estado de respaldo"
       },
       "schedules": {
@@ -1047,6 +1050,10 @@
         "ar_aging": {
           "name": "Antigüedad de cuentas por cobrar",
           "description": "Saldos de facturas impagas agrupados en corriente / 1–30 / 31–60 / 61–90 / más de 90 días de mora, un conjunto de totales por moneda sin conversión. Las facturas sin fecha de vencimiento reciben su propio grupo, nunca \"corriente\"."
+        },
+        "ai_usage_by_client": {
+          "name": "Uso de IA por cliente",
+          "description": "Uso de IA de la plataforma por cliente en el período: solicitudes, tokens, costo de Breeze, el monto a cobrar según el perfil de facturación del cliente y lo que ya se facturó. El uso incluido y los modelos sin precio se muestran por separado, nunca mezclados."
         },
         "backup_status": {
           "name": "Informe de estado de respaldo",
@@ -1151,6 +1158,18 @@
       "currencyNote": "Cada moneda tiene sus propios totales. Los montos no se convierten entre monedas.",
       "includePaidInPeriod": "Listar facturas pagadas en lo que va del mes",
       "includePaidInPeriodHelp": "Agrega una nota con las facturas pagadas por completo desde el primer día del mes de referencia hasta la fecha de referencia. Nunca cambia los tramos de antigüedad.",
+      "cancel": "Cancelar",
+      "createReport": "Crear informe"
+    },
+    "aiUsageByClientOptions": {
+      "groupBy": "Agrupar por",
+      "groupByAutomatic": "Automático: por organización para todas las organizaciones, por modelo para una sola organización",
+      "groupByValues": {
+        "organization": "Organización",
+        "model": "Modelo"
+      },
+      "periodNote": "Los cargos se facturan por mes calendario UTC. Un período definido en otra zona horaria puede diferir de la factura para el uso cercano a los límites del mes.",
+      "unpricedNote": "El uso de un modelo sin tarifa en el perfil de facturación del cliente se cuenta como sin precio. Nunca se trata como gratuito.",
       "cancel": "Cancelar",
       "createReport": "Crear informe"
     },

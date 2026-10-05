@@ -84,6 +84,14 @@ function nextRows(table: string): unknown[] {
   throw new Error(`No queued rows for table ${table}`);
 }
 
+// AI Suggested Fixes W3 — loadRunContext's proven-fix lookup. Mocked so it never
+// consumes this file's queued db rows; returns null (no memory) by default.
+const loadProvenFixesForRun = vi.hoisted(() => vi.fn(async (): Promise<unknown> => null));
+vi.mock('../fixMemory/runMemory', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../fixMemory/runMemory')>()),
+  loadProvenFixesForRun,
+}));
+
 vi.mock('../../db', () => {
   const makeSelect = () => ({
     from: vi.fn((table: unknown) => {
@@ -226,23 +234,22 @@ vi.mock('../../jobs/agentNotifyRetryWorker', () => ({ enqueueAgentNotifyRetry })
 const scheduleFixWatch = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined));
 vi.mock('../../jobs/fixWatchWorker', () => ({ scheduleFixWatch }));
 
-const resolveLlmConfigForOrg = vi.hoisted(() =>
-  vi.fn<(orgId: string) => Promise<{ source: string; apiKey?: string; model: string }>>());
-// `finalizeWorkspaceForRun` re-resolves the billing source ITSELF (it also
-// runs on the throw path, where `driveSdkLoop`'s own `llm` resolution may
-// never have happened) — a separate mock from `resolveLlmConfigForOrg` on
-// purpose, so a test can prove settlement follows THIS function, not the
-// SDK-loop cost-recording source.
-const getLlmBillingSourceForOrg = vi.hoisted(() =>
-  vi.fn<(orgId: string) => Promise<'platform' | 'partner_key'>>());
-vi.mock('../llm/llmConfigResolver', () => ({ resolveLlmConfigForOrg, getLlmBillingSourceForOrg }));
+// AI model registry W03 (Task 12): the run loop resolves `ai_agents` through
+// the registry and settles through the single billing path.
+const resolveModel = vi.hoisted(() => vi.fn());
+vi.mock('../aiModels/resolveModel', () => ({ resolveModel }));
+const settleInvocation = vi.hoisted(() =>
+  vi.fn<(input: Record<string, unknown>) => Promise<{ costCents: number; invocationIds: string[]; deferred: boolean }>>(
+    async () => ({ costCents: 0, invocationIds: [], deferred: false })));
+vi.mock('../aiModels/settleInvocation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../aiModels/settleInvocation')>()),
+  settleInvocation,
+}));
 
 const buildClaudeSdkChildEnv = vi.hoisted(() =>
   vi.fn<(resolved: { source: string }) => Record<string, string>>(() => ({ CI: 'true' })));
 vi.mock('../streamingSessionManager', () => ({ buildClaudeSdkChildEnv }));
 
-const recordSessionlessSdkUsage = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined));
-const calculateCostCents = vi.hoisted(() => vi.fn<(...args: unknown[]) => number>(() => 0));
 const settleComputeCents = vi.hoisted(() =>
   vi.fn<(orgId: string, runId: string, cents: number, source: 'platform' | 'partner_key') => Promise<void>>(
     async () => undefined,
@@ -250,7 +257,7 @@ const settleComputeCents = vi.hoisted(() =>
 const calculateComputeCents = vi.hoisted(() =>
   vi.fn<(backend: string, usage: unknown, memGb: number) => number>(() => 0));
 vi.mock('../aiCostTracker', () => ({
-  recordSessionlessSdkUsage, calculateCostCents, settleComputeCents, calculateComputeCents,
+  settleComputeCents, calculateComputeCents,
 }));
 const reserveAiBudget = vi.hoisted(() => vi.fn());
 const markAiBudgetReservationIndeterminate = vi.hoisted(() => vi.fn());
@@ -305,6 +312,7 @@ vi.mock('../workspace/workspaceService', async (importOriginal) => {
 import { __resetWorkspaceRegistry, getWorkspaceForRun } from '../workspace/workspaceRegistry';
 
 import { executeAgentRun } from './runLoop';
+import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
 import { ANALYSIS_TOOL_ALLOWLIST } from './analysisProfile';
 
 // ---------------------------------------------------------------------------
@@ -314,7 +322,6 @@ function policy(overrides: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
   return {
     enabled: true,
     mode: 'shadow',
-    model: 'claude-test-model',
     toolAllowlist: [],
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
     limits: { ...AI_AGENT_LIMIT_DEFAULTS },
@@ -345,6 +352,7 @@ function seedRows(options: {
   effective?: AiAgentPolicy;
   stagedInputs?: AiAgentRunStagedInputs | null;
   computeReservedCents?: number | null;
+  fundingSource?: 'platform' | 'partner_key' | null;
 } = {}) {
   const effective = options.effective ?? policy();
   const stagedInputs = options.stagedInputs === undefined ? STAGED_INPUTS : options.stagedInputs;
@@ -371,6 +379,7 @@ function seedRows(options: {
     taskAttemptOrdinal: null,
     stagedInputs,
     computeReservedCents,
+    fundingSource: options.fundingSource ?? null,
   }]];
   dbMockState.rowQueues.ai_agents = [[{
     id: AGENT_ID,
@@ -462,8 +471,7 @@ beforeEach(() => {
   completeToolExecution.mockResolvedValue(undefined);
   reconcileHungExecutions.mockResolvedValue(0);
   closeAgentRunSession.mockResolvedValue(undefined);
-  resolveLlmConfigForOrg.mockResolvedValue({ source: 'platform', apiKey: 'sk-test', model: 'claude-fallback' });
-  getLlmBillingSourceForOrg.mockResolvedValue('platform');
+  resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents' }));
   resolveRecipientUserIds.mockResolvedValue([]);
   enqueueAgentNotifyRetry.mockResolvedValue(undefined);
   createActionIntent.mockResolvedValue({ id: 'intent-1', status: 'pending_approval' });
@@ -598,17 +606,37 @@ describe('sandbox lifecycle + compute settlement (execution plane W04)', () => {
     expect(getWorkspaceForRun(RUN_ID)).toBeNull();
   });
 
-  it('settles against the re-resolved ORG billing source — a partner-key org still settles', async () => {
-    seedRows({ computeReservedCents: 25 });
-    // The SDK-loop's OWN billing source (used for token cost recording) is a
-    // DIFFERENT resolution from the compute-settlement one below — see the
-    // `getLlmBillingSourceForOrg` mock's own comment above. Setting both
-    // consistently here is what makes this a realistic partner-key org.
-    resolveLlmConfigForOrg.mockResolvedValue({ source: 'partner', apiKey: 'sk-partner', model: 'claude-fallback' });
-    getLlmBillingSourceForOrg.mockResolvedValue('partner_key');
+  it('settles compute against the run\'s ADMITTED funding source — a partner-key run still settles (W03)', async () => {
+    seedRows({ computeReservedCents: 25, fundingSource: 'partner_key' });
+    resolveModel.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'ai_agents' }));
 
     await executeAgentRun(RUN_ID);
 
     expect(settleComputeCents).toHaveBeenCalledWith(ORG_ID, RUN_ID, 0, 'partner_key');
+  });
+
+  it('settles compute on the throw path too (a refusal ends the run blocked), from the run row (W03)', async () => {
+    seedRows({ computeReservedCents: 25, fundingSource: 'partner_key' });
+    resolveModel.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'ai_agents' }));
+    scriptQuery({
+      results: [
+        { type: 'system', subtype: 'model_refusal_no_fallback', api_refusal_category: 'cyber' },
+        resultMessage({ stop_reason: 'refusal' }),
+      ],
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(transitionRunStatus).toHaveBeenCalledWith(RUN_ID, 'running', 'blocked', expect.objectContaining({ errorCode: 'model_refused' }));
+    expect(settleComputeCents).toHaveBeenCalledTimes(1);
+    expect(settleComputeCents).toHaveBeenCalledWith(ORG_ID, RUN_ID, 0, 'partner_key');
+  });
+
+  it('a run admitted before W03 (no funding_source) settles compute as platform, the previous fail-safe', async () => {
+    seedRows({ computeReservedCents: 25, fundingSource: null });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(settleComputeCents).toHaveBeenCalledWith(ORG_ID, RUN_ID, 0, 'platform');
   });
 });

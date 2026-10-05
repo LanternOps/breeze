@@ -57,11 +57,14 @@ describe('accept on behalf — draft straight to issued invoice', () => {
       taxable: true, customerVisible: true, recurrence: 'monthly',
     } as never, actor));
 
-    // Pin the quote's tax snapshot at 10%, then move the ORG's live rate to
-    // 25% — the invoice must issue at the quote's frozen 10%, never the org's
-    // current rate (the whole point of "lock the quote total").
-    await withSystemDbAccessContext(() => db.update(quotes).set({ taxRate: '0.10000' }).where(eq(quotes.id, created.id)));
-    await withSystemDbAccessContext(() => db.update(organizations).set({ taxRate: '0.25000' }).where(eq(organizations.id, org.id)));
+    // The draft was created and last edited with NO rate; the org's rate becomes
+    // 10% only afterwards. Claiming the draft is its snapshot moment (#7507), so
+    // the quote must freeze at 10% and the invoice issue at the quote's frozen
+    // rate — never the stale draft value (0%).
+    await withSystemDbAccessContext(() => db.update(organizations).set({ taxRate: '0.10000' }).where(eq(organizations.id, org.id)));
+    const [stale] = await withSystemDbAccessContext(() =>
+      db.select({ taxRate: quotes.taxRate }).from(quotes).where(eq(quotes.id, created.id)));
+    expect(stale!.taxRate).toBeNull();
 
     // NOT sent. The tech closed it on the phone before it ever went out.
     const before = await withSystemDbAccessContext(() =>
@@ -95,7 +98,7 @@ describe('accept on behalf — draft straight to issued invoice', () => {
     expect(inv!.taxRate).toBe(q!.taxRate);
     expect(inv!.taxRate).toBe('0.10000');
     expect(inv!.subtotal).toBe('250.00');   // only the one-time line
-    expect(inv!.total).toBe('275.00');      // 250 + 10% (NOT 312.50, the 25% org rate)
+    expect(inv!.total).toBe('275.00');      // 250 + 10% (NOT 250.00, the stale draft's 0%)
 
     // The invoice's bill-to is the CLAIM's frozen snapshot of the org's
     // billing profile, not blank — the overlay→invoice linkage.

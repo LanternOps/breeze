@@ -9,6 +9,8 @@ import AccessReviewForm from './AccessReviewForm';
 import { formatDate as formatLocaleDate } from '@/lib/dateTimeFormat';
 import { asList } from '@/lib/asList';
 import { csvRow } from '@/lib/csvExport';
+import { showToast } from '@/components/shared/Toast';
+import { requestReviewerNotification, type NotifyFallbackReason } from '@/lib/accessReviewNotify';
 
 type AccessReviewDecision = 'pending' | 'approved' | 'revoked';
 
@@ -24,11 +26,47 @@ type AccessReviewItem = {
   reviewedAt?: string;
   permissions?: string[];
   lastActiveAt?: string | null;
+  /** Decided by the user it is about, under the single-admin exception. */
+  selfDecided?: boolean;
 };
+
+/**
+ * How the viewer's own item may be decided (server-computed; PATCH enforces).
+ * 'blocked': another admin can decide it, so the viewer may not.
+ * 'single_admin_exception': nobody else can, so the viewer may, and the
+ * decision is recorded as a self-decision. null: no own item in an open review.
+ */
+type SelfDecisionGate = 'blocked' | 'single_admin_exception' | null;
 
 type AccessReviewDetail = AccessReview & {
   items: AccessReviewItem[];
+  viewer?: { userId: string; selfDecision: SelfDecisionGate };
 };
+
+/** True when the viewer may not decide this item (it is their own and another admin can). */
+function isOwnItemBlocked(review: AccessReviewDetail, item: AccessReviewItem): boolean {
+  return (
+    review.viewer?.userId === item.userId && review.viewer.selfDecision !== 'single_admin_exception'
+  );
+}
+
+/**
+ * User-facing message for a failed decision PATCH: the localized `errors:<CODE>`
+ * string when the API sent a known code (e.g. ACCESS_REVIEW_SELF_DECISION),
+ * else the API's `error` prose, else `fallback`. Same precedence as runAction.
+ */
+export async function decisionErrorMessage(response: Response, fallback: string): Promise<string> {
+  let body: { error?: unknown; code?: unknown } | null = null;
+  try {
+    body = (await response.json()) as { error?: unknown; code?: unknown };
+  } catch {
+    return fallback;
+  }
+  if (typeof body?.code === 'string' && i18n.exists(`errors:${body.code}`)) {
+    return i18n.t(/* i18n-dynamic */ `errors:${body.code}`);
+  }
+  return typeof body?.error === 'string' && body.error ? body.error : fallback;
+}
 
 type ModalMode = 'closed' | 'create' | 'review';
 
@@ -70,7 +108,9 @@ function formatDate(dateString?: string | null): string {
   if (!dateString) return '-';
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return '-';
-  return formatLocaleDate(date, { year: 'numeric', month: 'short', day: 'numeric' });
+  // Due dates are date-only values stored as UTC midnight; format in UTC so a
+  // US-timezone browser doesn't show the previous day (#7805).
+  return formatLocaleDate(date, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
 }
 
 function formatRelativeDate(dateString?: string | null): string {
@@ -120,7 +160,7 @@ function buildReviewCsv(review: AccessReviewDetail, t: TFunction): string {
     ['']
   ];
 
-  rows.push(['User', 'Email', 'Role', 'Permissions', 'Last Active', 'Decision', 'Notes', 'Reviewed At']);
+  rows.push(['User', 'Email', 'Role', 'Permissions', 'Last Active', 'Decision', 'Notes', 'Reviewed At', 'Self-Decided']);
 
   review.items.forEach((item) => {
     rows.push([
@@ -131,7 +171,8 @@ function buildReviewCsv(review: AccessReviewDetail, t: TFunction): string {
       item.lastActiveAt ? formatDate(item.lastActiveAt) : i18n.t('settings:accessReviewPage.never'),
       t(/* i18n-dynamic */ decisionLabelKeys[item.decision]),
       item.notes ?? '',
-      item.reviewedAt ? formatDate(item.reviewedAt) : ''
+      item.reviewedAt ? formatDate(item.reviewedAt) : '',
+      item.selfDecided ? 'Yes (single-admin exception)' : 'No'
     ]);
   });
 
@@ -244,21 +285,37 @@ export default function AccessReviewPage() {
       setNotifying(true);
       setError(undefined);
       try {
-        const response = await fetchWithAuth(`/access-reviews/${context.id}/notify`, {
-          method: 'POST',
-          body: JSON.stringify({ reviewerIds: context.reviewerIds, name: context.name })
-        });
+        const outcome = await requestReviewerNotification(fetchWithAuth, context.id);
 
-        if (response.ok) {
+        if (outcome.emailed) {
+          // Reviews persist a single assigned reviewer; only that user is emailed.
+          const extra = (context.reviewerIds?.length ?? 0) > 1;
+          showToast({
+            type: extra ? 'warning' : 'success',
+            message: t(/* i18n-dynamic */ extra ? 'accessReviewPage.assignedReviewerEmailedOnly' : 'accessReviewPage.reviewersEmailed')
+          });
           return true;
         }
+
+        if (outcome.reason === 'rejected') {
+          throw new Error(outcome.message);
+        }
+
+        const fallbackReasonKeys: Record<NotifyFallbackReason, string> = {
+          email_not_configured: 'accessReviewPage.fallbackEmailNotConfigured',
+          no_reviewer_email: 'accessReviewPage.fallbackNoReviewerEmail',
+          send_failed: 'accessReviewPage.fallbackSendFailed',
+          request_failed: 'accessReviewPage.fallbackRequestFailed'
+        };
 
         const reviewerEmails = (context.reviewerIds ?? [])
           .map((id) => reviewers.find((reviewer) => reviewer.id === id)?.email)
           .filter((email): email is string => Boolean(email));
 
         if (reviewerEmails.length === 0) {
-          throw new Error(t('accessReviewPage.noReviewerEmailsAvailableForNotifications'));
+          throw new Error(
+            `${t(/* i18n-dynamic */ fallbackReasonKeys[outcome.reason])} ${t('accessReviewPage.noReviewerEmailsAvailableForNotifications')}`
+          );
         }
 
         if (typeof window !== 'undefined') {
@@ -269,6 +326,10 @@ export default function AccessReviewPage() {
           const body = encodeURIComponent(
             t('accessReviewPage.emailBody', { name: context.name, dueLabel })
           );
+          showToast({
+            type: 'warning',
+            message: t('accessReviewPage.fallbackToMailClient', { reason: t(/* i18n-dynamic */ fallbackReasonKeys[outcome.reason]) })
+          });
           window.location.href = `mailto:${reviewerEmails.join(',')}?subject=${subject}&body=${body}`;
           return true;
         }
@@ -341,7 +402,7 @@ export default function AccessReviewPage() {
       );
 
       if (!response.ok) {
-        throw new Error(t('accessReviewPage.failedToUpdateDecision'));
+        throw new Error(await decisionErrorMessage(response, t('accessReviewPage.failedToUpdateDecision')));
       }
 
       await fetchReviewDetail(selectedReview.id);
@@ -356,10 +417,18 @@ export default function AccessReviewPage() {
   const handleBulkDecision = async (decision: AccessReviewDecision) => {
     if (!selectedReview || selectedItemIds.length === 0) return;
 
+    // Never send the viewer's own item when another admin must decide it — the
+    // server would refuse it and fail the whole batch.
+    const decidableIds = selectedItemIds.filter((itemId) => {
+      const item = selectedReview.items.find((i) => i.id === itemId);
+      return !item || !isOwnItemBlocked(selectedReview, item);
+    });
+    if (decidableIds.length === 0) return;
+
     setSubmitting(true);
     try {
       await Promise.all(
-        selectedItemIds.map(async (itemId) => {
+        decidableIds.map(async (itemId) => {
           const notes = bulkReason || itemNotes[itemId];
           const response = await fetchWithAuth(
             `/access-reviews/${selectedReview.id}/items/${itemId}`,
@@ -370,7 +439,7 @@ export default function AccessReviewPage() {
           );
 
           if (!response.ok) {
-            throw new Error(t('accessReviewPage.failedToUpdateDecision'));
+            throw new Error(await decisionErrorMessage(response, t('accessReviewPage.failedToUpdateDecision')));
           }
         })
       );
@@ -465,9 +534,13 @@ export default function AccessReviewPage() {
     return selectedReview.items.filter((item) => item.decision === decisionFilter);
   }, [decisionFilter, selectedReview]);
 
+  const selectableItems = useMemo(
+    () => (selectedReview ? filteredItems.filter((item) => !isOwnItemBlocked(selectedReview, item)) : []),
+    [filteredItems, selectedReview]
+  );
   const selectedItemSet = useMemo(() => new Set(selectedItemIds), [selectedItemIds]);
   const allSelected =
-    filteredItems.length > 0 && filteredItems.every((item) => selectedItemSet.has(item.id));
+    selectableItems.length > 0 && selectableItems.every((item) => selectedItemSet.has(item.id));
 
   const decisionCounts = useMemo(() => {
     if (!selectedReview) {
@@ -802,10 +875,10 @@ export default function AccessReviewPage() {
                             setSelectedItemIds([]);
                             return;
                           }
-                          setSelectedItemIds(filteredItems.map((item) => item.id));
+                          setSelectedItemIds(selectableItems.map((item) => item.id));
                         }}
                         disabled={
-                          selectedReview.status === 'completed' || filteredItems.length === 0
+                          selectedReview.status === 'completed' || selectableItems.length === 0
                         }
                         className="h-4 w-4 rounded border-muted-foreground"
                         aria-label={t('accessReviewPage.selectAll')}
@@ -823,6 +896,10 @@ export default function AccessReviewPage() {
                 <tbody>
                   {filteredItems.map((item) => {
                     const permissions = item.permissions ?? [];
+                    const ownItemBlocked = isOwnItemBlocked(selectedReview, item);
+                    const ownItemSelfDecision =
+                      selectedReview.viewer?.userId === item.userId &&
+                      selectedReview.viewer.selfDecision === 'single_admin_exception';
                     return (
                       <tr key={item.id} className="border-t">
                         <td className="px-4 py-3">
@@ -836,7 +913,8 @@ export default function AccessReviewPage() {
                                   : [...prev, item.id]
                               );
                             }}
-                            disabled={selectedReview.status === 'completed'}
+                            disabled={selectedReview.status === 'completed' || ownItemBlocked}
+                            title={ownItemBlocked ? t('accessReviewPage.ownItemBlocked') : undefined}
                             className="h-4 w-4 rounded border-muted-foreground"
                             aria-label={t('accessReviewPage.selectUser', { name: item.userName })}
                           />
@@ -880,6 +958,15 @@ export default function AccessReviewPage() {
                           >
                             {t(/* i18n-dynamic */ decisionLabelKeys[item.decision])}
                           </span>
+                          {item.selfDecided && (
+                            <span
+                              className="ml-1.5 inline-flex items-center rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700"
+                              title={t('accessReviewPage.selfDecidedHint')}
+                              data-testid={`access-review-self-decided-${item.id}`}
+                            >
+                              {t('accessReviewPage.selfDecided')}
+                            </span>
+                          )}
                         </td>
                         <td className="px-4 py-3">
                           {selectedReview.status === 'completed' ? (
@@ -897,7 +984,16 @@ export default function AccessReviewPage() {
                           )}
                         </td>
                         <td className="px-4 py-3 text-right">
-                          {selectedReview.status !== 'completed' && (
+                          {selectedReview.status !== 'completed' && ownItemBlocked && (
+                            <span
+                              className="cursor-help text-xs text-muted-foreground"
+                              title={t('accessReviewPage.ownItemBlocked')}
+                              data-testid={`access-review-own-item-blocked-${item.id}`}
+                            >
+                              {t('accessReviewPage.ownItemBlockedShort')}
+                            </span>
+                          )}
+                          {selectedReview.status !== 'completed' && !ownItemBlocked && (
                             <div className="flex items-center justify-end gap-2">
                               <button
                                 type="button"
@@ -925,6 +1021,14 @@ export default function AccessReviewPage() {
                               >
                                 {t('accessReviewPage.revoke')}</button>
                             </div>
+                          )}
+                          {selectedReview.status !== 'completed' && ownItemSelfDecision && (
+                            <p
+                              className="mt-1 text-xs text-amber-700"
+                              data-testid={`access-review-self-decision-warning-${item.id}`}
+                            >
+                              {t('accessReviewPage.ownItemSelfDecisionWarning')}
+                            </p>
                           )}
                           {selectedReview.status === 'completed' && (
                             <span className="text-sm text-muted-foreground">-</span>

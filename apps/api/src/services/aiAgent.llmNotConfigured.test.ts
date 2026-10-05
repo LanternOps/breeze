@@ -4,13 +4,17 @@
  * created anyway, the model turn then ran with no credentials, and the surface
  * showed an empty or "partial" answer. Mirrors the harness of
  * aiAgent.maxTurns.test.ts.
+ *
+ * W03 (#7601): the model comes from the registry. The REAL chooseSessionModel
+ * runs here; only resolveModel's outcome is scripted, so this pins the
+ * `connection_unavailable` + no platform credential → ai_not_configured map.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const selectMock = vi.fn();
 const insertMock = vi.fn();
-const resolveLlmConfigForOrgMock = vi.fn();
 const getEffectiveAiBudgetMock = vi.fn();
+const resolveModelMock = vi.fn();
 
 vi.mock('../db', () => ({
   db: {
@@ -35,14 +39,24 @@ vi.mock('./aiAgentSdkTools', () => ({ listChatSurfaceToolNames: () => [] }));
 vi.mock('./brainDeviceContext', () => ({ getActiveDeviceContext: vi.fn().mockResolvedValue([]) }));
 vi.mock('./llm/llmConfigResolver', () => ({
   LlmUnavailableError: class LlmUnavailableError extends Error {},
-  resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
 }));
 vi.mock('./effectiveSettings', () => ({
   getEffectiveAiBudget: (...args: unknown[]) => getEffectiveAiBudgetMock(...args),
 }));
+vi.mock('./aiModels/candidateLoader', () => ({
+  readOrgPartnerId: vi.fn(async () => 'partner-1'),
+  findOfferingIdByModel: vi.fn(),
+  readSessionModelRow: vi.fn(),
+}));
+vi.mock('./aiModels/registryCutover', () => ({ ensurePartnerCutover: vi.fn(async () => true) }));
+vi.mock('./aiModels/resolveModel', () => ({
+  resolveModel: (...args: unknown[]) => resolveModelMock(...args),
+  unavailableMessage: () => 'unavailable',
+}));
 
 import { createSession } from './aiAgent';
 import { LlmNotConfiguredError } from './llm/llmAvailability';
+import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 
 const ORG_A = 'aaaaaaaa-1111-4222-8333-444455556666';
 
@@ -69,17 +83,25 @@ describe('createSession refuses when no model provider is configured', () => {
     vi.unstubAllEnvs();
   });
 
-  it('throws LlmNotConfiguredError and writes no session row for a platform config with no key', async () => {
-    resolveLlmConfigForOrgMock.mockResolvedValue({ source: 'platform', apiKey: undefined, model: 'claude-sonnet-4-6' });
+  it('throws LlmNotConfiguredError and writes no session row when the platform default has no credential', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', '');
+    resolveModelMock.mockResolvedValue({
+      ok: false, reason: 'connection_unavailable', recoverable: true, offeringId: null, message: 'm',
+    });
 
     await expect(createSession(orgAuth(), {})).rejects.toBeInstanceOf(LlmNotConfiguredError);
     expect(insertMock).not.toHaveBeenCalled();
   });
 
-  it('creates the session when the platform key is present', async () => {
-    resolveLlmConfigForOrgMock.mockResolvedValue({ source: 'platform', apiKey: 'platform-key', model: 'claude-sonnet-4-6' });
-    insertMock.mockReturnValueOnce({ values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sess-1' }]) }) });
+  it('creates the session when the registry resolves a model', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'platform-key');
+    resolveModelMock.mockResolvedValue(makeResolvedModel('platform'));
+    const values = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sess-1' }]) });
+    insertMock.mockReturnValueOnce({ values });
 
     await expect(createSession(orgAuth(), {})).resolves.toMatchObject({ id: 'sess-1', orgId: ORG_A });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      offeringId: 'off-1', offeringPartnerId: 'partner-1', model: 'claude-sonnet-5-5', billingSource: 'platform',
+    }));
   });
 });

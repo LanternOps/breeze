@@ -12,6 +12,8 @@ import InterfaceTelemetrySettings from './InterfaceTelemetrySettings';
 import ImpactPanel from './ImpactPanel';
 import TopologyExplanationPanel from './TopologyExplanationPanel';
 import type { TopologyEvidenceTarget } from './TopologyEvidenceCitation';
+import { INFRASTRUCTURE_GLYPHS, topologyGlyph } from './topologyGlyphs';
+import { NodeIdentity, GroupSummary } from './TopologyInspectorSections';
 
 /** M4 "Explain this" wiring for the inspector (absent when AI is unavailable for the site). */
 export type TopologyExplainOptions = {
@@ -50,9 +52,9 @@ function useRelationshipDetail(siteId: string | undefined, relationshipId: strin
   return { detail, evidence, error, loadMore };
 }
 
-export default function TopologyInspector({ selection, graph, canDiagnose, onDiagnose, onClose, onExpand, onPin, pinned, siteId, view, onChanged, operations, historyInterfaceId, onHistory, onSelectNode, explain, aiNotConfigured }: {
+export default function TopologyInspector({ selection, graph, canDiagnose, onDiagnose, onClose, onExpand, onPin, pinned, siteId, view, onChanged, operations, historyInterfaceId, onHistory, onSelectNode, explain, aiNotConfigured, sharedAddressCount }: {
   selection: TopologySelection; graph: GraphResponse; canDiagnose: boolean; onDiagnose: () => void; onClose: () => void;
-  onExpand: (token: string) => void; onPin?: () => void; pinned?: boolean;
+  onExpand: (token: string) => void; onPin?: () => void; pinned?: boolean; sharedAddressCount?: number;
   /** With a site, an edge selection also reads its authorized detail/evidence (M2 D11) and offers exclusion (D17). */
   siteId?: string; view?: TopologyView; onChanged?: () => void;
   /** M3 (Task 11): with a site and capabilities, the inspector adds link health, port history, monitoring status, port measurement and impact. */
@@ -78,22 +80,25 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
     : null;
   return <aside data-testid="topology-inspector" className="min-w-0 space-y-4 border-t bg-card p-4 lg:w-80 lg:shrink-0 lg:border-l lg:border-t-0" onKeyDown={(event) => { if (event.key === 'Escape') onClose(); }}>
     <div className="flex items-start justify-between gap-3"><h3 ref={heading} tabIndex={-1} className="break-words text-lg font-semibold">{'label' in entity ? entity.label : entity.meaning}</h3><button data-testid="topology-inspector-close" className="rounded border px-3 py-2" onClick={onClose}>{t('close')}</button></div>
-    {schematic && <p>{t('schematicExplanation')}</p>}
-    {'kind' in entity && <p className="text-sm text-muted-foreground">{entity.kind.replaceAll('_', ' ')}</p>}
-    {'evidence' in entity && <dl className="space-y-3 text-sm">
+    {schematic && !('group' in entity && entity.group) && <p>{t('schematicExplanation')}</p>}
+    {'group' in entity && entity.group && <GroupSummary graph={graph} group={entity} onSelectNode={onSelectNode} />}
+    {'kind' in entity && !('inventory' in entity && entity.inventory) && <p className="text-sm text-muted-foreground">{entity.kind.replaceAll('_', ' ')}</p>}
+    {'inventory' in entity && entity.inventory && <NodeIdentity graph={graph} node={entity} onSelectNode={onSelectNode} sharedAddressCount={sharedAddressCount} />}
+    {'evidence' in entity && <details className="rounded border px-3 py-2 text-sm" open={!('inventory' in entity && entity.inventory)}><summary className="cursor-pointer font-medium">{t('grouped.evidenceSection')}</summary><dl className="mt-2 space-y-3 text-sm">
       <div><dt className="font-medium">{t('evidence')}</dt><dd>{entity.evidence.classes.join(', ') || t('none')} · {entity.evidence.methods.join(', ') || t('none')}</dd></div>
       <div><dt className="font-medium">{t('freshness')}</dt><dd>{entity.freshness} · {entity.evidence.lastObservedAt ? new Date(entity.evidence.lastObservedAt).toLocaleString() : t('notObserved')}</dd></div>
       {'confidence' in entity && <div><dt className="font-medium">{t('confidence')}</dt><dd>{entity.confidence}</dd></div>}
       <div><dt className="font-medium">{t('health')}</dt><dd>{t(/* i18n-dynamic */ `healthStatus.${entity.health.status}`, { defaultValue: topologyHealthLabel(entity.health.status, entity.health.reasons) })}</dd><dd>{entity.health.coverage} · {entity.health.freshness}</dd></div>
       {entity.health.originNodeId && <div><dt className="font-medium">{t('measuredFrom')}</dt><dd>{graph.nodes.find((n) => n.id === entity.health.originNodeId)?.label ?? t('outsideProjection')}</dd></div>}
-    </dl>}
+    </dl></details>}
     {'health' in entity && entity.health.reasons.map((reason) => <p key={reason.code} className="text-sm">{reason.message}</p>)}
-    {'contributingRelationshipIds' in entity && entity.meaning === 'aggregate' && <div><h4 className="font-medium">{t('reportedBy')}</h4><ul className="list-inside list-disc text-sm">{entity.contributingRelationshipIds.map((id) => {
+    {'contributingRelationshipIds' in entity && entity.meaning === 'aggregate' && !('group' in entity) && <div><h4 className="font-medium">{t('reportedBy')}</h4><ul className="list-inside list-disc text-sm">{entity.contributingRelationshipIds.map((id) => {
       const relationship = graph.relationships.find((r) => r.id === id);
       return <li key={id}>{graph.nodes.find((n) => n.id === relationship?.sourceNodeId)?.label ?? t('outsideProjection')}</li>;
     })}</ul></div>}
     {'bindings' in entity && entity.bindings.filter((binding) => binding.type !== 'manual_node').map((binding) => <a key={binding.id} className="block text-sm text-primary underline" href={binding.type === 'device' ? `/devices/${binding.referenceId}` : `/devices/network/${binding.referenceId}`}>{t('openInventory')}</a>)}
-    {'memberCount' in entity && <p className="text-sm">{t('members', { count: entity.memberCount })}</p>}
+    {'memberCount' in entity && !('group' in entity && entity.group) && <p className="text-sm">{t('members', { count: entity.memberCount })}</p>}
+    {/* A card's token expands its whole group (#7818); a frontier or edge token its own slice. */}
     {'frontierToken' in entity && <button data-testid="topology-expand" className="rounded border px-3 py-2" onClick={() => onExpand(entity.frontierToken)}>{t('expand')}</button>}
     {'kind' in entity && 'directionality' in entity && siteId && <>
       <PhysicalEvidencePanel relationship={detail?.relationship ?? entity} detail={detail} evidence={evidence} onLoadMoreEvidence={() => void loadMore()} />
@@ -104,7 +109,8 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
     </>}
     {siteId && operations && !schematic && <OperationsSections siteId={siteId} graph={graph} selection={selection} entityId={entity.id} operations={operations}
       ports={{ source: detail?.endpoints.source.port ?? null, target: detail?.endpoints.target.port ?? null }}
-      historyInterfaceId={historyInterfaceId} onHistory={onHistory} onSelectNode={onSelectNode} />}
+      historyInterfaceId={historyInterfaceId} onHistory={onHistory} onSelectNode={onSelectNode}
+      portMeasurement={'kind' in entity && !('directionality' in entity) && INFRASTRUCTURE_GLYPHS.has(topologyGlyph(entity))} />}
     {aiSelection && explain && siteId && <TopologyExplanationPanel siteId={siteId} selection={aiSelection} graph={graph} canApprove={explain.canApprove}
       initialSessionId={explain.investigationId} initialRunId={explain.runId} onInvestigation={explain.onInvestigation} onRun={explain.onRun} onEvidenceSelect={explain.onEvidenceSelect} />}
     {!explain && aiNotConfigured && !schematic && <p data-testid="topology-explain-not-configured" className="text-sm text-muted-foreground">{t('ai.errors.notConfigured')}</p>}
@@ -116,9 +122,11 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
 
 type PortRef = { interfaceId: string; name: string | null; alias?: string | null; key?: string | null } | null;
 /** M3 operational sections of the inspector. Every read is passive; every write is an explicit, human-only action inside its panel. */
-function OperationsSections({ siteId, graph, selection, entityId, operations, ports, historyInterfaceId, onHistory, onSelectNode }: {
+function OperationsSections({ siteId, graph, selection, entityId, operations, ports, historyInterfaceId, onHistory, onSelectNode, portMeasurement }: {
   siteId: string; graph: GraphResponse; selection: TopologySelection; entityId: string; operations: TopologyOperationsCapabilities;
   ports: { source: PortRef; target: PortRef }; historyInterfaceId?: string; onHistory?: (interfaceId: string | undefined) => void; onSelectNode?: (nodeId: string) => void;
+  /** SNMP port measurement is offered for network infrastructure, not for workstations or phones. */
+  portMeasurement: boolean;
 }) {
   const { t } = useTranslation('topology');
   const edge = selection.kind === 'edge';
@@ -131,7 +139,7 @@ function OperationsSections({ siteId, graph, selection, entityId, operations, po
       label={portName(historyLabel ?? null) ?? t('operations.link.portNotIdentified')} onClose={() => onHistory?.(undefined)} />}
     {operations.monitoring && <MonitoringPolicyPanel siteId={siteId} canConfigure={operations.canConfigure}
       subject={{ kind: edge ? 'relationship' : 'node', id: entityId }} />}
-    {!edge && operations.interfaceHealth && <InterfaceTelemetrySettings siteId={siteId} nodeId={entityId} graph={graph} canConfigure={operations.canConfigure} />}
+    {!edge && portMeasurement && operations.interfaceHealth && <InterfaceTelemetrySettings siteId={siteId} nodeId={entityId} graph={graph} canConfigure={operations.canConfigure} />}
     <ImpactPanel siteId={siteId} subject={{ kind: edge ? 'relationship' : 'node', id: entityId }} graphRevision={graph.revisions.graph} onSelectNode={onSelectNode} />
   </>;
 }

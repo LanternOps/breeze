@@ -1,8 +1,10 @@
 import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AI_AGENT_KINDS, type AiAgentDto, type AiAgentKind } from '@breeze/shared';
+import type { AiAgentDto, AiAgentKind } from '@breeze/shared';
 import ModeChoice from '../ModeChoice';
-import { freeKinds, firstFreeKind, type Draft } from '../agentDraft';
+import AgentModelSelect from '../AgentModelSelect';
+import ResearchAgentFields from '../ResearchAgentFields';
+import { creatableKinds, freeKinds, firstFreeKind, type Draft } from '../agentDraft';
 
 const inputCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
 const INSTRUCTIONS_MAX = 2000;
@@ -30,15 +32,6 @@ export interface PurposeStepProps {
  * name, and instructions. Mirrors `AiAgentForm.tsx`'s field order and test
  * ids everywhere the same control is reused (`ModeChoice`, the owner-scope
  * fieldset, the no-baseline hint, the name field, the instructions fieldset).
- *
- * Deviation from spec §4.6's literal "name, model, instructions": there is no
- * `model` field anywhere in this codebase's agent policy UI today —
- * `AiAgentForm.tsx`'s `Draft` has never carried one, `createAiAgentSchema`'s
- * `model` always defaults to `null` server-side, and no i18n/test-id
- * convention exists to follow. Adding a first-of-its-kind model selector is
- * out of scope for a task whose job is to reuse the drawer's existing
- * fields — it would need its own design pass (an options source, a default,
- * a save-body slot), not a copy of something that already exists.
  */
 export default function PurposeStep({
   draft,
@@ -64,9 +57,12 @@ export default function PurposeStep({
   // there is no prior mode to compare against (mirrors AiAgentForm's
   // `initialMode` always being 'off' on create).
   const enteringActMode = draft.mode === 'act';
+  // W2: a research draft (an org override) is name + caps only.
+  const isResearch = draft.kind === 'research';
 
   return (
     <div className="grid gap-3 md:grid-cols-2">
+      {!isResearch && (
       <ModeChoice
         mode={draft.mode}
         onChange={(mode) => patch({ mode })}
@@ -77,6 +73,7 @@ export default function PurposeStep({
         onActAckChange={onActAckChange}
         actKeysWillBeOmitted={actKeysWillBeOmitted}
       />
+      )}
 
       {/* Kind, as cards rather than the drawer's `<select>`: each names what
           the kind does, when it runs, and what its recommended preset
@@ -89,7 +86,7 @@ export default function PurposeStep({
           {t('aiAgentsPage.fields.kind')}
         </legend>
         <div role="radiogroup" aria-label={t('aiAgentsPage.fields.kind')} className="grid gap-2 sm:grid-cols-3">
-          {AI_AGENT_KINDS.map((kind) => {
+          {creatableKinds(agents, draft.ownerScope).map((kind) => {
             const selected = draft.kind === kind;
             const taken = !availableKinds.includes(kind);
             return (
@@ -106,7 +103,8 @@ export default function PurposeStep({
                 // rather than on off, which sent every first-time operator
                 // back to the Fleet Design page to find the agent "turned
                 // off". Off stays the fallback when act is not offered.
-                onClick={() => patch(kind === 'designer' ? { kind, mode: actSupported ? 'act' : 'off' } : { kind })}
+                // Research (W2) likewise has no shadow mode (RESEARCH_ALLOWED_MODES).
+                onClick={() => patch(kind === 'designer' || kind === 'research' ? { kind, mode: actSupported ? 'act' : 'off' } : { kind })}
                 className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 ${
                   selected ? 'border-primary bg-primary/10 ring-1 ring-primary' : 'bg-background hover:border-primary/50 hover:bg-muted/40'
                 }`}
@@ -205,6 +203,15 @@ export default function PurposeStep({
         )}
       </div>
 
+      {isResearch ? (
+        <ResearchAgentFields draft={draft} patch={patch} />
+      ) : (<>
+      <AgentModelSelect
+        orgId={draft.ownerScope === 'partner' ? null : orgId}
+        value={draft.offeringId}
+        onChange={(offeringId) => patch({ offeringId, offeringIdTouched: true })}
+      />
+
       <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">
         <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
           {t('aiAgentsPage.sections.instructions')}
@@ -222,6 +229,7 @@ export default function PurposeStep({
           {t('aiAgentsPage.fields.charactersLeft', { count: INSTRUCTIONS_MAX - draft.instructions.length })}
         </p>
       </fieldset>
+      </>)}
 
       <p className="text-xs text-muted-foreground md:col-span-2" data-testid="agent-create-flow-disabled-note">
         {t('aiAgentsPage.flow.createdDisabledNote')}

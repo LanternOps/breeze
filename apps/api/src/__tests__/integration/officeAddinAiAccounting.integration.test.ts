@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { and, eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { aiBudgets, aiCostUsage, partners } from '../../db/schema';
+import { aiBudgets, aiCostUsage, aiInvocations, partners } from '../../db/schema';
 import { buildDbAccessContext } from '../../middleware/auth';
 import { createOrganization, createPartner, createUser } from './db-utils';
 
@@ -48,17 +48,23 @@ vi.mock('../../middleware/officeAddinTechAuth', () => ({
   requireAddinCapability: () => async (_c: any, next: any) => next(),
 }));
 
-vi.mock('../../services/llm/llmConfigResolver', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../services/llm/llmConfigResolver')>()),
-  getAnthropicClientForPartner: vi.fn(async () => ({
-    client: { messages: { create: vi.fn() } },
-    resolved: {
-      source: 'platform' as const,
-      apiKey: 'synthetic-key',
-      model: 'claude-sonnet-4-6',
-    },
-  })),
-  resolveWireModel: vi.fn((_resolved: unknown, model: string) => ({ model })),
+// The registry rows are exercised by the resolver's own suites; this file
+// proves the route -> budget reservation -> settleInvocation -> rollup path on
+// real Postgres, so the resolver and the client factory are the only fakes.
+vi.mock('../../services/aiModels/resolveModel', async (importOriginal) => {
+  const { makeResolvedModel } = await import('../../services/aiModels/__fixtures__/resolvedModel');
+  return {
+    ...(await importOriginal<typeof import('../../services/aiModels/resolveModel')>()),
+    resolveModel: vi.fn(async () => makeResolvedModel('platform', {
+      surface: 'office_ticket',
+      offering: { id: null, displayName: 'Synthetic' },
+    })),
+  };
+});
+
+vi.mock('../../services/aiModels/connectionFactory', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/aiModels/connectionFactory')>()),
+  anthropicClientFor: vi.fn(() => ({ messages: { create: vi.fn() } })),
 }));
 
 vi.mock('../../services/officeAddin/aiEmailDraft', async (importOriginal) => ({
@@ -110,8 +116,13 @@ beforeEach(() => {
     subject: 'Fix Outlook startup',
     summary: 'The synthetic fixture reports a startup failure.',
     suggestedTimeMinutes: 15,
-    inputTokens: 100,
-    outputTokens: 50,
+    attempts: [{
+      wireModel: 'claude-sonnet-5-5',
+      message: {
+        model: 'claude-sonnet-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: '{}' }],
+        usage: { input_tokens: 100, output_tokens: 50 },
+      },
+    }],
   });
   delete process.env.BILLING_SERVICE_URL;
   delete process.env.BILLING_SERVICE_API_KEY;
@@ -173,5 +184,19 @@ describe('Office add-in AI accounting', () => {
       expect.objectContaining({ period: 'daily', inputTokens: 100, outputTokens: 50, messageCount: 1 }),
       expect.objectContaining({ period: 'monthly', inputTokens: 100, outputTokens: 50, messageCount: 1 }),
     ]));
+    // One authoritative ledger row: the rollups above are derived from it.
+    const ledger = await withSystemDbAccessContext(() => db
+      .select({
+        surface: aiInvocations.surface,
+        sourceRef: aiInvocations.sourceRef,
+        fundingSource: aiInvocations.fundingSource,
+        ledgerMode: aiInvocations.ledgerMode,
+        costCents: aiInvocations.costCents,
+      })
+      .from(aiInvocations)
+      .where(eq(aiInvocations.orgId, org.id)));
+    expect(ledger).toEqual([expect.objectContaining({
+      surface: 'office_ticket', sourceRef: 'office_email_draft', fundingSource: 'platform', ledgerMode: 'authoritative',
+    })]);
   });
 });

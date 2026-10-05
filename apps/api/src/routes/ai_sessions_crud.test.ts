@@ -1,13 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// routes/ai.ts reaches the model registry (ticket-draft) -> candidateLoader,
+// which this file's partial schema mock does not cover. Not under test here.
+vi.mock('../services/aiModels/sessionModel', () => ({
+  resolveSessionTurn: vi.fn(),
+}));
+// W05 (#7603): the messages route runs the model-transition gate before it
+// reserves. Not under test here: a session with no previous chat turn.
+vi.mock('../services/aiModels/modelTransition', async (orig) => ({
+  ...(await orig<typeof import('../services/aiModels/modelTransition')>()),
+  readPreviousTurn: vi.fn(async () => null),
+  planModelTransition: vi.fn(async () => ({ kind: 'fresh' })),
+  readSessionOfferingId: vi.fn(async () => undefined),
+}));
+import { makeResolvedModel } from '../services/aiModels/__fixtures__/resolvedModel';
 import { Hono } from 'hono';
-
-const configRef = vi.hoisted(() => ({
-  provider: 'anthropic' as 'anthropic' | 'openai-compatible',
-}));
-
-vi.mock('../config/validate', () => ({
-  getConfig: vi.fn(() => ({ MCP_LLM_PROVIDER: configRef.provider })),
-}));
 
 vi.mock('../services/llm/llmConfigResolver', () => ({
   LlmUnavailableError: class LlmUnavailableError extends Error {
@@ -18,7 +25,6 @@ vi.mock('../services/llm/llmConfigResolver', () => ({
       this.name = 'LlmUnavailableError';
     }
   },
-  resolveLlmConfigForOrg: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -127,6 +133,7 @@ vi.mock('../services/aiBudgetReservations', () => ({
   markAiBudgetReservationIndeterminate: vi.fn(async () => ({
     kind: 'indeterminate', reservationId: '66666666-6666-4666-8666-666666666666',
   })),
+  AiBudgetSessionBusyError: class AiBudgetSessionBusyError extends Error {},
 }));
 
 vi.mock('../services/streamingSessionManager', () => ({
@@ -168,7 +175,7 @@ import {
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
-import { InvalidSessionModelError } from '../services/aiOfferableModels';
+import { InvalidSessionModelError } from '../services/aiModels/invalidSessionModelError';
 import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 import { LlmNotConfiguredError } from '../services/llm/llmAvailability';
 
@@ -181,7 +188,6 @@ describe('AI routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    configRef.provider = 'anthropic';
     app = new Hono();
     app.route('/ai', aiRoutes);
   });
@@ -247,8 +253,29 @@ describe('AI routes', () => {
       expect(await res.json()).toEqual({ error: 'ai_unavailable' });
     });
 
+    it('#7793: a resolver refusal returns its user-facing reason and code, not the raw ai_unavailable', async () => {
+      vi.mocked(createSession).mockRejectedValueOnce(Object.assign(new LlmUnavailableError(), {
+        message: 'This AI model cannot use tools, which this feature needs.',
+        reason: 'tools_unsupported',
+      }));
+
+      const res = await app.request('/ai/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ title: 'Test' }),
+      });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({
+        error: 'This AI model cannot use tools, which this feature needs.',
+        code: 'tools_unsupported',
+      });
+    });
+
     it('returns 400 invalid_model when the requested model is not allowed (#7587)', async () => {
-      vi.mocked(createSession).mockRejectedValueOnce(new InvalidSessionModelError('claude-made-up-9'));
+      vi.mocked(createSession).mockRejectedValueOnce(
+        new InvalidSessionModelError('Model "claude-made-up-9" is not available for AI sessions.', 'invalid_model'),
+      );
 
       const res = await app.request('/ai/sessions', {
         method: 'POST',
@@ -261,6 +288,59 @@ describe('AI routes', () => {
         error: 'Model "claude-made-up-9" is not available for AI sessions.',
         code: 'invalid_model',
       });
+    });
+
+    it('returns 400 not_permitted for a foreign / not-permitted offering id, with no detail about it (W03 #7601)', async () => {
+      const foreign = 'cccccccc-1111-4222-8333-444455556666';
+      vi.mocked(createSession).mockRejectedValueOnce(
+        new InvalidSessionModelError('This AI model is not available here. Choose another model.', 'not_permitted'),
+      );
+
+      const res = await app.request('/ai/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ title: 'Test', offeringId: foreign, options: { effort: 'high' } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'This AI model is not available here. Choose another model.',
+        code: 'not_permitted',
+      });
+      expect(vi.mocked(createSession)).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ offeringId: foreign, options: { effort: 'high' } }),
+      );
+    });
+
+    it('returns 400 permission_required for a premium offering without the permission (W03 #7601)', async () => {
+      vi.mocked(createSession).mockRejectedValueOnce(
+        new InvalidSessionModelError('Your role does not allow this AI model. Choose another model.', 'permission_required'),
+      );
+
+      const res = await app.request('/ai/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ offeringId: 'cccccccc-1111-4222-8333-444455556666' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'permission_required' });
+    });
+
+    it.each([
+      [{ offeringId: 'not-a-uuid' }],
+      [{ options: { effort: 'ludicrous' } }],
+      [{ options: { inferenceGeo: 'eu' } }],
+    ])('rejects a malformed model choice %j before createSession', async (body) => {
+      const res = await app.request('/ai/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify(body),
+      });
+
+      expect(res.status).toBe(400);
+      expect(vi.mocked(createSession)).not.toHaveBeenCalled();
     });
 
     it('returns ai_not_configured as 503 when no model provider is configured', async () => {
@@ -492,33 +572,8 @@ describe('AI routes', () => {
       expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
     });
 
-    it('refuses partner-key traffic before entering the instance OpenAI-compatible path', async () => {
-      configRef.provider = 'openai-compatible';
-      vi.mocked(runPreFlightChecks).mockResolvedValueOnce({
-        ok: true,
-        session: {
-          id: SESSION_ID,
-          orgId: ORG_ID,
-          sdkSessionId: null,
-          model: 'claude-opus-4-6',
-          maxTurns: 50,
-          turnCount: 0,
-          systemPrompt: null,
-          title: 'Existing title',
-        } as any,
-        sanitizedContent: 'hello',
-        systemPrompt: 'SYSTEM PROMPT',
-        maxBudgetUsd: undefined,
-        resolved: {
-          source: 'partner',
-          partnerId: 'partner-1',
-          apiKey: 'partner-key',
-          model: 'claude-opus-4-6',
-          configId: 'config-1',
-          configVersion: 3,
-          endpoint: { kind: 'anthropic' as const },
-        },
-      });
+    it('a preflight ai_unavailable refusal is a 503 before any session or message write', async () => {
+      vi.mocked(runPreFlightChecks).mockResolvedValueOnce({ ok: false, error: 'ai_unavailable', status: 503 });
 
       const res = await app.request(`/ai/sessions/${SESSION_ID}/messages`, {
         method: 'POST',
@@ -533,6 +588,7 @@ describe('AI routes', () => {
     });
 
     it('passes the bound device id from the DB session into streamingSessionManager.getOrCreate (#3087 route wiring)', async () => {
+      const BYOK_MODEL = makeResolvedModel('anthropic_byok');
       // This is the seam that arms the #3087 fix: getOrCreate uses `deviceId`
       // to decide whether to narrow tool execution to the device's org. If
       // this route ever stops forwarding it, the whole narrowing mechanism in
@@ -553,15 +609,7 @@ describe('AI routes', () => {
         sanitizedContent: 'hello there',
         systemPrompt: 'SYSTEM PROMPT',
         maxBudgetUsd: undefined,
-        resolved: {
-          source: 'partner',
-          partnerId: 'partner-1',
-          apiKey: 'partner-key',
-          model: 'claude-sonnet-4-6',
-          configId: 'config-1',
-          configVersion: 3,
-          endpoint: { kind: 'anthropic' as const },
-        },
+        model: BYOK_MODEL,
       });
 
       const fakeActiveSession = {
@@ -591,10 +639,10 @@ describe('AI routes', () => {
         expect.anything(),
         'SYSTEM PROMPT',
         undefined,
-        expect.objectContaining({ source: 'partner', configId: 'config-1', configVersion: 3 }),
+        BYOK_MODEL,
         undefined,
         undefined,
-        expect.objectContaining({ budgetReservationId: expect.any(String), toolSearch: true }),
+        expect.objectContaining({ budgetReservationId: expect.any(String), toolSearch: true, ledgerUserId: expect.any(String) }),
       );
     });
   });

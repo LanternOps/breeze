@@ -129,6 +129,31 @@ describe('customFields routes', () => {
       expect(body.total).toBe(2);
     });
 
+    it('returns definitions alphabetically by name (case-insensitive), key as tie-break (#7572)', async () => {
+      const fields = [
+        makeField({ id: FIELD_ID_1, fieldKey: 'zeta', name: 'zeta' }),
+        makeField({ id: FIELD_ID_2, fieldKey: 'b_key', name: 'Beta' }),
+        makeField({ id: FIELD_ID_1, fieldKey: 'a_key', name: 'alpha' }),
+        makeField({ id: FIELD_ID_2, fieldKey: 'a_key2', name: 'Alpha' }),
+        makeField({ id: FIELD_ID_1, fieldKey: 'e_acute', name: 'Épsilon' })
+      ];
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue(fields)
+          })
+        })
+      } as any);
+
+      const res = await app.request('/custom-fields', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      const body = await res.json();
+      expect(body.data.map((f: any) => f.fieldKey)).toEqual(['a_key', 'a_key2', 'b_key', 'e_acute', 'zeta']);
+    });
+
     it('should filter by type', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({

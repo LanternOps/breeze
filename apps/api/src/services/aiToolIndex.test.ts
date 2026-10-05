@@ -1,4 +1,5 @@
 import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL } from './aiAgentSystemPrompt';
+import { AI_SYSTEM_PROMPT_DIAGNOSIS } from './aiAgentDiagnosisPrompt';
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { AI_TOOL_DOMAINS, AI_TOOL_DOMAIN_LABELS } from '@breeze/shared';
@@ -204,6 +205,7 @@ describe('the generated index tracks env-gated tool declarations (A-W02 review f
 // Preserve the exact static prefix previously assembled inline by buildSystemPrompt.
 it('composes byte-identically to the original production static prompt', () => {
   const names = listChatSurfaceToolNames();
-  const original = [AI_SYSTEM_PROMPT_BASE, renderToolIndexByDomain(names), AI_SYSTEM_PROMPT_TAIL].join('\n');
+  // #7582 appended the diagnosis + agent ground-truth block after the tail.
+  const original = [AI_SYSTEM_PROMPT_BASE, renderToolIndexByDomain(names), AI_SYSTEM_PROMPT_TAIL, AI_SYSTEM_PROMPT_DIAGNOSIS].join('\n');
   expect(Buffer.from(composeStaticSystemPrompt(names))).toEqual(Buffer.from(original));
 });

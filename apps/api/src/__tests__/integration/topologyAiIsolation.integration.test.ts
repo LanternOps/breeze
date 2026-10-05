@@ -3,12 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi, beforeAll, afterAll } 
 import { and, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-// Provider governance is mocked so topology AI reads as available. Nothing in
-// this suite reaches a model: there is no model call on any path exercised.
-vi.mock('../../services/llm/llmConfigResolver', async (original) => ({
-  ...await original<object>(),
-  resolveLlmConfigForOrg: vi.fn(async () => ({ source: 'platform', apiKey: 'test-key', model: 'claude-sonnet-4-6' })),
-}));
+// Nothing in this suite reaches a model: there is no model call on any path
+// exercised.
 // Topology AI readiness requires a usable model provider (no key = not
 // configured). These suites exercise the gate itself, so give the platform
 // path a key for their duration.

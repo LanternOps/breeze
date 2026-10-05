@@ -64,6 +64,7 @@ import {
   createTerminalWsRoutes,
   __createTerminalSharedLeasesForTest,
   __resetTerminalWsForTest,
+  __TERMINAL_INPUT_LIMITS_FOR_TEST,
 } from './terminalWs';
 
 const SESSION_ID = 'session-term-rate-001';
@@ -218,49 +219,72 @@ describe('terminalWs — E2 per-session input rate limit', () => {
     }));
   });
 
-  it('closes the session with code 1008 after 201 data messages in under 60s', async () => {
+  const dataMsg = (d: string) => ({ data: JSON.stringify({ type: 'data', data: d }) });
+  const terminalDataCalls = () =>
+    vi.mocked(sendCommandToAgent).mock.calls.filter((c: any[]) => c[1]?.type === 'terminal_data');
+
+  async function openSession() {
     setupSuccessfulValidation();
     const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
     const ws = wsMock();
     await handlers.onOpen({}, ws);
+    vi.mocked(sendCommandToAgent).mockClear();
+    return { handlers, ws };
+  }
 
-    // 200 should pass, the 201st should trip the limit.
-    for (let i = 0; i < 200; i += 1) {
-      await handlers.onMessage(
-        { data: JSON.stringify({ type: 'data', data: 'a' }) },
-        ws
-      );
-    }
+  it('does not throttle ordinary typing: 1000 single-key messages in a minute all reach the agent (#7475)', async () => {
+    const { handlers, ws } = await openSession();
+    for (let i = 0; i < 1000; i += 1) await handlers.onMessage(dataMsg('a'), ws);
     expect(ws.close).not.toHaveBeenCalled();
-
-    await handlers.onMessage(
-      { data: JSON.stringify({ type: 'data', data: 'a' }) },
-      ws
-    );
-
-    expect(ws.close).toHaveBeenCalledWith(1008, 'input_rate_limited');
+    expect(terminalDataCalls()).toHaveLength(1000);
   });
 
-  it('trips the 1MB byte-cap well before the message count cap', async () => {
-    setupSuccessfulValidation();
-    const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
-    const ws = wsMock();
-    await handlers.onOpen({}, ws);
+  it('a long pasted line is one message and passes (#7475)', async () => {
+    const { handlers, ws } = await openSession();
+    await handlers.onMessage(dataMsg('x'.repeat(5000)), ws);
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(terminalDataCalls()).toHaveLength(1);
+  });
 
-    // 100 messages of 16KB = ~1.6MB — well over 1MB cap, well under 200 msg cap.
-    const big = 'x'.repeat(16_000);
-    let closed = false;
-    for (let i = 0; i < 100; i += 1) {
-      await handlers.onMessage(
-        { data: JSON.stringify({ type: 'data', data: big }) },
-        ws
-      );
-      if (ws.close.mock.calls.length > 0) {
-        closed = true;
-        break;
-      }
+  it('past the message ceiling it drops input and warns once, without closing the session', async () => {
+    const { handlers, ws } = await openSession();
+    const limit = __TERMINAL_INPUT_LIMITS_FOR_TEST.maxMessages;
+    for (let i = 0; i < limit + 50; i += 1) await handlers.onMessage(dataMsg('a'), ws);
+
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(terminalDataCalls()).toHaveLength(limit);
+    const warnings = ws.send.mock.calls
+      .map((c: any[]) => c[0])
+      .filter((m: string) => m.includes('INPUT_RATE_LIMITED'));
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('past the byte ceiling it drops the oversized input without closing the session', async () => {
+    const { handlers, ws } = await openSession();
+    const chunk = 'x'.repeat(16_000);
+    const n = Math.ceil(__TERMINAL_INPUT_LIMITS_FOR_TEST.maxBytes / chunk.length) + 5;
+    for (let i = 0; i < n; i += 1) await handlers.onMessage(dataMsg(chunk), ws);
+
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(terminalDataCalls().length).toBeLessThan(n);
+    expect(ws.send.mock.calls.some((c: any[]) => String(c[0]).includes('INPUT_RATE_LIMITED'))).toBe(true);
+  });
+
+  it('resumes forwarding input once the window slides past the burst', async () => {
+    const realNow = Date.now.bind(Date);
+    let offset = 0;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offset);
+    try {
+      const { handlers, ws } = await openSession();
+      const limit = __TERMINAL_INPUT_LIMITS_FOR_TEST.maxMessages;
+      for (let i = 0; i < limit + 5; i += 1) await handlers.onMessage(dataMsg('a'), ws);
+      vi.mocked(sendCommandToAgent).mockClear();
+      offset = 61_000;
+      await handlers.onMessage(dataMsg('b'), ws);
+      expect(terminalDataCalls()).toHaveLength(1);
+      expect(ws.close).not.toHaveBeenCalled();
+    } finally {
+      nowSpy.mockRestore();
     }
-    expect(closed).toBe(true);
-    expect(ws.close).toHaveBeenCalledWith(1008, 'input_rate_limited');
   });
 });

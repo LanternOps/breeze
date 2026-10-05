@@ -43,6 +43,7 @@ import {
   readPlanPreviewCandidates,
 } from './filesystemAnalysis';
 import { aiExecuteCommand, aiExecuteCommandWithSystemPrecheck, requireAiOrigin } from './aiDispatch';
+import { inToolDbPhase } from './aiToolDbContext';
 import {
   AGENT_UPDATE_REQUIRED_ERROR,
   MIN_AGENT_VERSION_SYSTEM_CLEANUP,
@@ -215,6 +216,10 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
     domain: 'devices',
     searchHint: 'disk space, low disk, largest folders and files on one device',
     deviceArgs: ['deviceId'],
+    // A refresh waits up to timeoutSeconds + 75 s (90 s minimum, 975 s max)
+    // for the scan, so the handler opens its own short contexts instead of
+    // holding the per-call transaction across it (#7918).
+    selfManagedDbContext: true,
     definition: {
       name: 'analyze_disk_usage',
       description: 'Analyze filesystem usage for a device and explain what is consuming disk space. Reads the latest stored scan; refresh=true runs a fresh scan on the device (needs execute permission).',
@@ -242,7 +247,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       const refresh = requestsLiveDeviceRead('analyze_disk_usage', input);
       const maxCandidates = Math.min(Math.max(1, Number(input.maxCandidates) || 50), 200);
 
-      const access = await verifyDeviceAccess(deviceId, auth, refresh);
+      const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, refresh));
       if ('error' in access) return JSON.stringify({ error: access.error });
       const osType = access.device.osType;
       const scanPath = normalizeScanPath(
@@ -258,7 +263,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       // second volume's scan simply does not self-resume from the AI lane.
       const isRootScopedScan = scanPath === osRootScanPath(osType);
 
-      const snapshot = await getLatestFilesystemSnapshot(deviceId, scanPath);
+      const snapshot = await inToolDbPhase(auth, () => getLatestFilesystemSnapshot(deviceId, scanPath));
       let freshPayload: Record<string, unknown> | null = null;
 
       // No stored scan is NOT a reason to scan: that would reach the device
@@ -382,6 +387,11 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
     domain: 'devices',
     searchHint: 'disk cleanup: preview candidates, execute removal and report reclaimed space',
     deviceArgs: ['deviceId'],
+    // `execute` deletes path by path, up to a 240 s budget, waiting on the
+    // device for each (#7918). Its writes already run in their own committed
+    // contexts (inCleanupContext); only the access check needed one. `preview`
+    // only touches the DB and keeps the per-call transaction.
+    selfManagedDbContext: ['execute'],
     definition: {
       name: 'disk_cleanup',
       description: 'Preview or execute disk cleanup. Preview is read-only. Execute deletes approved safe candidates and reports reclaimed space. Actions: preview, execute.',
@@ -408,7 +418,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       const sessionKey = auth.aiOrigin?.kind === 'ai_assistant'
         ? `${auth.aiOrigin.sessionId}:${auth.user.id}:${deviceId}` : undefined;
 
-      const access = await verifyDeviceAccess(deviceId, auth, action === 'execute');
+      const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, action === 'execute'));
       if ('error' in access) return JSON.stringify({ error: access.error });
 
       const inCleanupContext = <T>(fn: () => Promise<T>) => runOutsideDbContext(() =>
@@ -713,6 +723,10 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
     domain: 'devices',
     searchHint: 'OS-native disk cleanup: Windows Disk Cleanup/DISM, macOS snapshots/brew, Linux package cache/journal',
     deviceArgs: ['deviceId'],
+    // `list` waits up to 60 s for the device's catalog; queueing and polling
+    // already open their own contexts (systemCleanup.ts), so only the reads
+    // below needed one (#7918). `run` queues and returns; `status` reads.
+    selfManagedDbContext: ['list'],
     definition: {
       name: 'system_cleanup',
       description: 'List, run or check OS-native cleaners (Windows Disk Cleanup/DISM, macOS snapshots/Homebrew, Linux cache/journal) beyond scanner reach. list is read-only; re-poll pending with commandId. run needs approval, returns cleanupRunId; poll status until executed/failed, do not re-run. status is read-only.',
@@ -738,7 +752,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       const aiOrigin = requireAiOrigin(auth, 'system_cleanup');
 
       // `status` reads a run row; the device need not be online for that.
-      const access = await verifyDeviceAccess(deviceId, auth, action !== 'status');
+      const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, action !== 'status'));
       if ('error' in access) return JSON.stringify({ error: access.error });
 
       const device = {
@@ -776,7 +790,8 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       // Same probe-degrade as disk_cleanup above: an `ai_agent` principal's
       // auth.user.id is the agent's id, not a users row, and requested_by is an
       // FK onto users.id.
-      const [userRow] = await db.select({ id: users.id }).from(users).where(eq(users.id, auth.user.id)).limit(1);
+      const [userRow] = await inToolDbPhase(auth, () =>
+        db.select({ id: users.id }).from(users).where(eq(users.id, auth.user.id)).limit(1));
       const requestedBy = userRow ? auth.user.id : null;
 
       if (action === 'list') {

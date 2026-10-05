@@ -296,16 +296,18 @@ describe('ruling P8b: generate_report hides a type whose read permission the cal
       { resource: 'reports', action: '*' },
       { resource: 'tickets', action: 'read' },
       { resource: 'time_entries', action: 'read' },
+      { resource: 'ai_sessions', action: 'read_all' },
     ],
   };
   beforeEach(() => {
     permissionsMock.getUserPermissions.mockResolvedValue(NO_INVOICES);
   });
 
-  it('list: excludes ar_aging only; nothing excluded for a caller holding invoices:read', async () => {
+  // ai_usage_by_client (#7608) also needs invoices:read, so it is hidden too.
+  it('list: excludes the invoices:read types only; nothing excluded for a caller holding invoices:read', async () => {
     selectReturning(null);
     await handlerFor('generate_report')({ action: 'list' }, partnerAuth());
-    expect(notInTypes(wheres[0])).toEqual(['ar_aging']);
+    expect(notInTypes(wheres[0])).toEqual(['ar_aging', 'ai_usage_by_client']);
     wheres.length = 0;
     permissionsMock.getUserPermissions.mockResolvedValue({ permissions: [{ resource: '*', action: '*' }] });
     await handlerFor('generate_report')({ action: 'list' }, partnerAuth());

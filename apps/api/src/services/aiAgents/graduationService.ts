@@ -407,8 +407,6 @@ function emptyPolicyContext(): GraduationPolicyContext {
  * `resolveEffectiveAgentInner` uses — and `promoteThreshold` comes from
  * `mergeAgentPolicies`, so the MAX merge (`MAX_MERGED_LIMIT_KEYS`) applies:
  * a partner asking for 50 is never undercut by an org asking for 5.
- * `allowedModels: null` is correct and inert here — it only ever affects the
- * merged `model`, which this module does not read.
  *
  * `orgGrantedKeys` is the C3-CANONICAL effective set
  * (`merged.effective.actAssets.supervisedActionKeys`), never the raw org row:
@@ -452,7 +450,7 @@ async function loadPolicyContext(orgId: string, agentId: string): Promise<Gradua
 
   const partnerPolicy = normalizeAgentPolicy(partnerRow);
   const orgPolicy = orgRow ? normalizeAgentPolicy(orgRow) : null;
-  const merged = mergeAgentPolicies(partnerPolicy, orgPolicy, { allowedModels: null });
+  const merged = mergeAgentPolicies(partnerPolicy, orgPolicy);
 
   return {
     partnerCeilingKeys: partnerPolicy.actAssets.supervisedActionKeys ?? [],

@@ -73,6 +73,29 @@ Click **Publish Configuration** to make it active, or **Save as Draft** to finis
 
 ---
 
+## How Backup Data Is Stored
+
+File backups are written to the target as one object per file, under a `snapshots/<snapshot-id>/files/` prefix. Every file object's name ends in `.gz`, but whether the bytes are compressed depends on the provider:
+
+| Provider | Object name | Stored bytes |
+|----------|-------------|--------------|
+| **Amazon S3 and S3-compatible** (MinIO, Wasabi, Backblaze B2) | ends in `.gz` | **Not compressed.** The object is the original file, byte for byte. |
+| **Local / NAS** | ends in `.gz` | gzip-compressed, decompressed again on restore |
+
+On S3 storage the `.gz` suffix is only part of the object name. Expect an S3 target to use roughly as much space as the files you protect, and size buckets and quotas on that basis. If you download a file object directly from the bucket, it is the original file. Rename it to drop the `.gz` instead of running `gunzip` on it, which fails with `not in gzip format`.
+
+Breeze relies on this layout: restores, bare-metal recovery media, integrity verification and older agents all read S3 objects as raw bytes. Don't rename, compress or recompress objects in the bucket.
+
+### How destination credentials are stored
+
+From v0.121.0, the credentials in a storage configuration (access keys, secret keys, session tokens, and the equivalent Azure, Google Cloud Storage and Backblaze B2 fields) are stored encrypted with your instance's application encryption key. Bucket, region, endpoint and prefix stay readable. Existing configurations are encrypted by a background sweep on the first start after the upgrade, which logs one `[startup] Backup destination credentials sealed: …` line.
+
+<Aside type="caution" title="Roll forward only">
+  Once that sweep has run, do not roll back to a release older than v0.121.0. Older releases would hand the encrypted values to agents as storage credentials and S3 backups would fail. If you rotate `APP_ENCRYPTION_KEY`, follow [Secret Rotation](/security/secrets/#rotating-app-encryption-key); the re-encryption script covers these credentials.
+</Aside>
+
+---
+
 ## Testing Connectivity
 
 After creating a configuration, test that Breeze can reach the storage target:
@@ -98,6 +121,10 @@ Click the **Edit** action on any configuration to reopen the wizard. Changes are
 ## Deleting a Configuration
 
 Click **Delete** on a configuration to remove it. Configurations that are actively referenced by a backup policy should have the policy reassigned first.
+
+<Aside type="caution" title="Destinations with job history">
+  A configuration that has any backup job history can't be deleted: Breeze returns `409` and names what blocks it (v0.120.0 returned a server error instead). Disable it — reassign its policies, then set `"enabled": false` with `PATCH /backup/configs/:id`.
+</Aside>
 
 <Aside type="caution">
   Deleting a storage configuration does not delete the backup data already stored at that target. The data remains in S3 or your local path until you remove it manually.

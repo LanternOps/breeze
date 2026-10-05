@@ -21,5 +21,6 @@
   "RE_ENROLLMENT_REQUIRED": "This device needs to be re-enrolled",
   "SOFTWARE_INVENTORY_LOCK_TIMEOUT": "Software inventory update is busy right now — try again shortly",
   "tool_source_unavailable": "La source de cet outil est actuellement indisponible",
-  "ai_not_configured": "L'IA n'est pas configurée sur ce serveur. Un administrateur doit ajouter une clé de fournisseur de modèles."
+  "ai_not_configured": "L'IA n'est pas configurée sur ce serveur. Un administrateur doit ajouter une clé de fournisseur de modèles.",
+  "ACCESS_REVIEW_SELF_DECISION": "Vous ne pouvez pas statuer sur votre propre accès : un autre administrateur doit examiner cet élément"
 }

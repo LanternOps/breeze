@@ -1,5 +1,7 @@
+import { createInstance } from 'i18next';
+import { I18nextProvider } from 'react-i18next';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import {
   EMAIL_TEMPLATE_IDS,
   emailTemplateLabel,
@@ -43,6 +45,18 @@ beforeEach(() => {
 });
 
 describe('EmailTemplatesTab', () => {
+  it('mounts all enrollment templates under Billing & payments and opens their existing editor', async () => {
+    routeFetch();
+    render(<EmailTemplatesTab />);
+    const group = await screen.findByTestId('autopay-email-template-group');
+    expect(group.textContent).toContain('Billing & payments');
+    for (const id of ['autopay_request', 'autopay_enrolled', 'autopay_stopped','autopay_paused','autopay_resumed', 'card_expiring']) {
+      expect(within(group).getByTestId(`autopay-email-template-${id}`)).toBeTruthy();
+    }
+    fireEvent.click(within(group).getByTestId('autopay-email-template-autopay_request'));
+    expect(await screen.findByTestId('email-template-editor')).toBeTruthy();
+  });
+
   it('lists all catalog template ids with catalog labels', async () => {
     routeFetch();
     render(<EmailTemplatesTab />);
@@ -54,10 +68,19 @@ describe('EmailTemplatesTab', () => {
       'ticket_resolved',
       'quote_send',
       'invoice_send',
+      'invoice_autopay',
       'portal_invite',
+      'autopay_request',
+      'autopay_enrolled',
+      'autopay_stopped','autopay_paused','autopay_resumed',
+      'card_expiring',
+      'payment_reminder', 'payment_overdue',
+      'payment_receipt', 'payment_failed',
     ]);
+    expect(screen.getByTestId('autopay-email-template-group').contains(screen.getByTestId('email-template-row-invoice_autopay'))).toBe(true);
+    const newIds = new Set(['autopay_request', 'autopay_enrolled', 'autopay_stopped','autopay_paused','autopay_resumed', 'card_expiring']);
     for (const id of EMAIL_TEMPLATE_IDS) {
-      const row = screen.getByTestId(`email-template-row-${id}`);
+      const row = screen.getByTestId(newIds.has(id) ? `autopay-email-template-${id}` : id === 'payment_reminder' || id === 'payment_overdue' ? `autopay-template-${id}` : `email-template-row-${id}`);
       expect(row.textContent).toContain(emailTemplateLabel(id));
       expect(screen.getByTestId(`email-template-status-${id}`).textContent).toContain('Using default');
     }
@@ -101,4 +124,72 @@ describe('EmailTemplatesTab', () => {
     expect(await screen.findByTestId('email-template-editor')).toBeTruthy();
     expect(window.location.hash).toBe('#email-templates');
   });
+});
+
+it.each(['payment_reminder', 'payment_overdue'])('opens the %s editor from Billing & payments', async id => {
+  routeFetch(); render(<EmailTemplatesTab />);
+  const row = await screen.findByTestId(`autopay-template-${id}`);
+  expect(screen.getByTestId('autopay-email-template-group')).toContainElement(row);
+  fireEvent.click(row);
+  expect(await screen.findByTestId('email-template-editor')).toBeTruthy();
+});
+
+it('retains translated enrollment and group labels alongside reminder rows', async () => {
+  const translated = createInstance();
+  const labels = {
+    autopay_request: 'Demande de paiement automatique',
+    autopay_enrolled: 'Paiements automatiques confirmés',
+    autopay_stopped: 'Paiements automatiques arrêtés',
+    autopay_paused: 'Paiements automatiques suspendus',
+    autopay_resumed: 'Paiements automatiques repris',
+    card_expiring: 'Expiration de la carte enregistrée',
+  };
+  await translated.init({ lng: 'fr', fallbackLng: false, defaultNS: 'settings',
+    resources: { fr: { settings: { emailTemplates: {
+      billingPayments: 'Facturation et paiements', supportPortal: 'Assistance et portail', labels,
+    } } } }, interpolation: { escapeValue: false } });
+  routeFetch();
+  render(<I18nextProvider i18n={translated}><EmailTemplatesTab /></I18nextProvider>);
+  const group = await screen.findByTestId('autopay-email-template-group');
+  expect(group.textContent).toContain('Facturation et paiements');
+  expect(screen.getByTestId('email-template-other-group').textContent).toContain('Assistance et portail');
+  for (const [id, label] of Object.entries(labels)) {
+    expect(within(group).getByTestId(`autopay-email-template-${id}`).textContent).toContain(label);
+  }
+  for (const id of ['payment_reminder', 'payment_overdue']) {
+    expect(within(group).getByTestId(`autopay-template-${id}`)).toBeTruthy();
+  }
+});
+
+it.each([
+  ['payment_reminder', 'Rappel de paiement'],
+  ['payment_overdue', 'Rappel de paiement en retard'],
+])('translates the %s row and opened editor heading', async (id, label) => {
+  const translated = createInstance();
+  await translated.init({ lng: 'fr', fallbackLng: false, defaultNS: 'settings',
+    resources: { fr: { billing: { reminders: { templates: {
+      paymentReminder: 'Rappel de paiement', paymentOverdue: 'Rappel de paiement en retard',
+    } } } } }, interpolation: { escapeValue: false } });
+  routeFetch();
+  render(<I18nextProvider i18n={translated}><EmailTemplatesTab /></I18nextProvider>);
+  const row = await screen.findByTestId(`autopay-template-${id}`);
+  expect(row).toHaveTextContent(label);
+  fireEvent.click(row);
+  expect(within(await screen.findByTestId('email-template-editor')).getByRole('heading', { name: label })).toBeInTheDocument();
+});
+
+it.each([
+  ['payment_receipt', 'Reçu de paiement'],
+  ['payment_failed', 'Le paiement n’a pas pu être effectué'],
+])('translates the %s row and editor heading', async (id, label) => {
+  const translated = createInstance();
+  await translated.init({ lng: 'fr', fallbackLng: false, defaultNS: 'settings',
+    resources: { fr: { settings: { emailTemplates: { labels: { [id]: label } } } } },
+    interpolation: { escapeValue: false } });
+  routeFetch();
+  render(<I18nextProvider i18n={translated}><EmailTemplatesTab /></I18nextProvider>);
+  const row = await screen.findByTestId(`email-template-row-${id}`);
+  expect(row).toHaveTextContent(label);
+  fireEvent.click(row);
+  expect(within(await screen.findByTestId('email-template-editor')).getByRole('heading', { name: label })).toBeInTheDocument();
 });

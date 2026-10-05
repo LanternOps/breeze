@@ -201,7 +201,7 @@ describe('AddDeviceModal', () => {
   it('downloads installer on button click', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === '/enrollment-keys') {
+      if (url === '/enrollment-keys/add-device-parent') {
         return makeJsonResponse({ id: 'key-123', key: 'raw-key-abc' }, true, 201);
       }
       if (url.startsWith('/enrollment-keys/key-123/installer/')) {
@@ -219,7 +219,7 @@ describe('AddDeviceModal', () => {
     });
 
     const createCall = fetchWithAuthMock.mock.calls[0];
-    expect(String(createCall[0])).toBe('/enrollment-keys');
+    expect(String(createCall[0])).toBe('/enrollment-keys/add-device-parent');
     const createBody = JSON.parse((createCall[1] as RequestInit).body as string);
     expect(createBody.siteId).toBe('site-aaa-111');
     // ttlMinutes drives the *child* key now, not the transient parent —
@@ -241,7 +241,7 @@ describe('AddDeviceModal', () => {
   it('does NOT write the device count into the parent key budget', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === '/enrollment-keys') {
+      if (url === '/enrollment-keys/add-device-parent') {
         return makeJsonResponse({ id: 'key-123', key: 'raw-key-abc' }, true, 201);
       }
       if (url.startsWith('/enrollment-keys/key-123/installer/')) {
@@ -274,7 +274,7 @@ describe('AddDeviceModal', () => {
   it('rounds a fractional device count before it reaches the mint route', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === '/enrollment-keys') {
+      if (url === '/enrollment-keys/add-device-parent') {
         return makeJsonResponse({ id: 'key-123', key: 'raw-key-abc' }, true, 201);
       }
       if (url.startsWith('/enrollment-keys/key-123/installer/')) {
@@ -298,7 +298,7 @@ describe('AddDeviceModal', () => {
   it('sends the selected expiry to the installer download URL', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === '/enrollment-keys') {
+      if (url === '/enrollment-keys/add-device-parent') {
         return makeJsonResponse({ id: 'key-123', key: 'raw-key-abc' }, true, 201);
       }
       if (url.startsWith('/enrollment-keys/key-123/installer/')) {
@@ -323,7 +323,7 @@ describe('AddDeviceModal', () => {
   it('generates a public link on button click', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === '/enrollment-keys') {
+      if (url === '/enrollment-keys/add-device-parent') {
         return makeJsonResponse({ id: 'key-456', key: 'raw-key-def' }, true, 201);
       }
       if (url === '/enrollment-keys/key-456/installer-link?discardKeyOnFailure=1') {
@@ -365,7 +365,7 @@ describe('AddDeviceModal', () => {
   it('copies generated link to clipboard', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === '/enrollment-keys') {
+      if (url === '/enrollment-keys/add-device-parent') {
         return makeJsonResponse({ id: 'key-456' }, true, 201);
       }
       if (url.includes('/installer-link')) {
@@ -399,7 +399,7 @@ describe('AddDeviceModal', () => {
   it('clears the copy-link reset timer on unmount (#7422)', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === '/enrollment-keys') {
+      if (url === '/enrollment-keys/add-device-parent') {
         return makeJsonResponse({ id: 'key-456' }, true, 201);
       }
       if (url.includes('/installer-link')) {
@@ -446,7 +446,7 @@ describe('AddDeviceModal', () => {
   it('shows error when download fails', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === '/enrollment-keys') {
+      if (url === '/enrollment-keys/add-device-parent') {
         return makeJsonResponse({ id: 'key-err' }, true, 201);
       }
       if (url.includes('/installer/')) {
@@ -551,7 +551,7 @@ describe('AddDeviceModal', () => {
   it('shows error when link generation fails', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === '/enrollment-keys') {
+      if (url === '/enrollment-keys/add-device-parent') {
         return makeJsonResponse({ id: 'key-link-err' }, true, 201);
       }
       if (url.includes('/installer-link')) {
@@ -863,7 +863,7 @@ describe('AddDeviceModal — resolved enrollment defaults (#2776)', () => {
 
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === '/enrollment-keys') {
+      if (url === '/enrollment-keys/add-device-parent') {
         return makeJsonResponse({ id: 'key-cap', key: 'raw' }, true, 201);
       }
       return makeJsonResponse(null, true);
@@ -926,7 +926,7 @@ describe('AddDeviceModal — resolved enrollment defaults (#2776)', () => {
 
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === '/enrollment-keys') {
+      if (url === '/enrollment-keys/add-device-parent') {
         return makeJsonResponse({ id: 'key-nc', key: 'raw' }, true, 201);
       }
       return makeJsonResponse(null, true);
@@ -983,7 +983,7 @@ describe('AddDeviceModal — failed attempts leave no live key (#7217)', () => {
   it('asks the installer route to discard the key on failure', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === '/enrollment-keys') return makeJsonResponse({ id: 'key-d1' }, true, 201);
+      if (url === '/enrollment-keys/add-device-parent') return makeJsonResponse({ id: 'key-d1' }, true, 201);
       if (url.startsWith('/enrollment-keys/key-d1/installer/')) {
         return makeJsonResponse({ error: 'MSI not available' }, false, 503);
       }
@@ -1003,7 +1003,7 @@ describe('AddDeviceModal — failed attempts leave no live key (#7217)', () => {
   it('asks the link route to discard the key on failure', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === '/enrollment-keys') return makeJsonResponse({ id: 'key-d2' }, true, 201);
+      if (url === '/enrollment-keys/add-device-parent') return makeJsonResponse({ id: 'key-d2' }, true, 201);
       if (url.startsWith('/enrollment-keys/key-d2/installer-link')) {
         return makeJsonResponse({ error: 'macOS PKG not reachable' }, false, 503);
       }
@@ -1023,7 +1023,7 @@ describe('AddDeviceModal — failed attempts leave no live key (#7217)', () => {
   it('deletes the key itself when the installer request never gets an answer', async () => {
     fetchWithAuthMock.mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url === '/enrollment-keys') return makeJsonResponse({ id: 'key-d3' }, true, 201);
+      if (url === '/enrollment-keys/add-device-parent') return makeJsonResponse({ id: 'key-d3' }, true, 201);
       if (url.startsWith('/enrollment-keys/key-d3/installer/')) {
         throw new TypeError('Failed to fetch');
       }
@@ -1044,7 +1044,7 @@ describe('AddDeviceModal — failed attempts leave no live key (#7217)', () => {
   it('deletes the key itself when the link request never gets an answer', async () => {
     fetchWithAuthMock.mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url === '/enrollment-keys') return makeJsonResponse({ id: 'key-d4' }, true, 201);
+      if (url === '/enrollment-keys/add-device-parent') return makeJsonResponse({ id: 'key-d4' }, true, 201);
       if (url.startsWith('/enrollment-keys/key-d4/installer-link')) {
         throw new TypeError('Failed to fetch');
       }
@@ -1065,7 +1065,7 @@ describe('AddDeviceModal — failed attempts leave no live key (#7217)', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchWithAuthMock.mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url === '/enrollment-keys') return makeJsonResponse({ id: 'key-d5' }, true, 201);
+      if (url === '/enrollment-keys/add-device-parent') return makeJsonResponse({ id: 'key-d5' }, true, 201);
       if (url.startsWith('/enrollment-keys/key-d5/installer/')) {
         throw new TypeError('Failed to fetch');
       }
@@ -1083,5 +1083,108 @@ describe('AddDeviceModal — failed attempts leave no live key (#7217)', () => {
       ),
     );
     errSpy.mockRestore();
+  });
+});
+
+// #7345 — Download / Generate Link no longer mint a parent per click. The
+// server hands back the caller's existing parent for the site when it is
+// still good (`reused: true`) and mints one only when it is not. A reused
+// parent already backs earlier installers, so a failed attempt must never
+// ask for it to be discarded.
+describe('AddDeviceModal — reuses the site parent key (#7345)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setOrgStore();
+    authState.user = { hasPassword: true };
+  });
+
+  function deleteCalls() {
+    return fetchWithAuthMock.mock.calls.filter(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'DELETE',
+    );
+  }
+
+  it('asks the server for the site parent instead of minting a key per click', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/enrollment-keys/add-device-parent') {
+        return makeJsonResponse({ id: 'key-r1', reused: true }, true, 200);
+      }
+      if (url.startsWith('/enrollment-keys/key-r1/installer/')) return makeJsonResponse(null, true);
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(getDownloadButton());
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+    const [url, init] = fetchWithAuthMock.mock.calls[0];
+    expect(String(url)).toBe('/enrollment-keys/add-device-parent');
+    expect((init as RequestInit).method).toBe('POST');
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      siteId: 'site-aaa-111',
+      orgId: 'org-111',
+    });
+    expect(fetchWithAuthMock.mock.calls.some(([u]) => String(u) === '/enrollment-keys')).toBe(false);
+  });
+
+  it('never asks the installer route to discard a reused parent', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/enrollment-keys/add-device-parent') {
+        return makeJsonResponse({ id: 'key-r2', reused: true }, true, 200);
+      }
+      if (url.startsWith('/enrollment-keys/key-r2/installer/')) {
+        return makeJsonResponse({ error: 'MSI not available' }, false, 503);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(getDownloadButton());
+
+    await waitFor(() => expect(screen.getByText(/MSI not available/)).toBeDefined());
+    expect(String(fetchWithAuthMock.mock.calls[1][0])).not.toContain('discardKeyOnFailure');
+  });
+
+  it('never asks the link route to discard a reused parent', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/enrollment-keys/add-device-parent') {
+        return makeJsonResponse({ id: 'key-r3', reused: true }, true, 200);
+      }
+      if (url.startsWith('/enrollment-keys/key-r3/installer-link')) {
+        return makeJsonResponse({ shortUrl: 'https://x/s/abc' }, true);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(screen.getByText('Generate Link'));
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+    expect(String(fetchWithAuthMock.mock.calls[1][0])).toBe(
+      '/enrollment-keys/key-r3/installer-link',
+    );
+  });
+
+  it('does not delete a reused parent when the request never gets an answer', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/enrollment-keys/add-device-parent') {
+        return makeJsonResponse({ id: 'key-r4', reused: true }, true, 200);
+      }
+      if (url.startsWith('/enrollment-keys/key-r4/')) throw new TypeError('Failed to fetch');
+      return makeJsonResponse({ success: true });
+    });
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(getDownloadButton());
+    await waitFor(() => expect(screen.getByText(/Failed to download installer/)).toBeDefined());
+
+    fireEvent.click(screen.getByText('Generate Link'));
+    await waitFor(() => expect(screen.getByText(/Failed to generate link/)).toBeDefined());
+
+    expect(deleteCalls()).toHaveLength(0);
   });
 });

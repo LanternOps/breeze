@@ -8,6 +8,7 @@ import { accountingProviderDisplayName, getAccountingProvider, providerSupports 
 import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
 import type { AccountingCapability, AccountingProviderId } from './types';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
+import { abandonAccountingFees } from './accountingFeeAbandonment';
 import { captureException } from '../sentry';
 
 export type AccountingEnvironment = 'sandbox' | 'production';
@@ -45,6 +46,8 @@ export interface AccountingConnection {
   /** Nullable = unknown (never captured, or the capture failed). Multi-currency §11. */
   multiCurrencyEnabled: boolean | null;
   defaultIncomeAccountRef: string | null;
+  feeIncomeItemRef?: string | null;
+  feeIncomeAccountRef?: string | null;
   defaultTaxCodeRef: string | null;
   defaultExemptTaxCodeRef: string | null;
   defaultPaymentAccountRef: string | null;
@@ -76,6 +79,8 @@ export interface UpsertConnectionFields {
   environment?: AccountingEnvironment;
   homeCurrency?: string | null;
   defaultIncomeAccountRef?: string | null;
+  feeIncomeItemRef?: string | null;
+  feeIncomeAccountRef?: string | null;
   defaultTaxCodeRef?: string | null;
   defaultExemptTaxCodeRef?: string | null;
   defaultPaymentAccountRef?: string | null;
@@ -160,6 +165,8 @@ export function mapConnection(row: AccountingConnectionRow): AccountingConnectio
     homeCurrency: row.homeCurrency ?? null,
     multiCurrencyEnabled: row.multiCurrencyEnabled ?? null,
     defaultIncomeAccountRef: row.defaultIncomeAccountRef ?? null,
+    feeIncomeItemRef: row.feeIncomeItemRef ?? null,
+    feeIncomeAccountRef: row.feeIncomeAccountRef ?? null,
     defaultTaxCodeRef: row.defaultTaxCodeRef ?? null,
     defaultExemptTaxCodeRef: row.defaultExemptTaxCodeRef ?? null,
     defaultPaymentAccountRef: row.defaultPaymentAccountRef ?? null,
@@ -442,6 +449,8 @@ export async function upsertConnection(
     environment: fields.environment ?? 'production',
     homeCurrency: fields.homeCurrency,
     defaultIncomeAccountRef: fields.defaultIncomeAccountRef,
+    feeIncomeItemRef: fields.feeIncomeItemRef,
+    feeIncomeAccountRef: fields.feeIncomeAccountRef,
     defaultTaxCodeRef: fields.defaultTaxCodeRef,
     defaultExemptTaxCodeRef: fields.defaultExemptTaxCodeRef,
     defaultPaymentAccountRef: fields.defaultPaymentAccountRef,
@@ -489,6 +498,8 @@ export async function upsertConnection(
     environment: fields.environment,
     homeCurrency: fields.homeCurrency,
     defaultIncomeAccountRef: fields.defaultIncomeAccountRef,
+    feeIncomeItemRef: fields.feeIncomeItemRef,
+    feeIncomeAccountRef: fields.feeIncomeAccountRef,
     defaultTaxCodeRef: fields.defaultTaxCodeRef,
     defaultExemptTaxCodeRef: fields.defaultExemptTaxCodeRef,
     defaultPaymentAccountRef: fields.defaultPaymentAccountRef,
@@ -931,6 +942,8 @@ export async function resetConnectionForRealmChange(
       cdcCursor: null,
       lastReconcileAt: null,
       defaultIncomeAccountRef: null,
+      feeIncomeItemRef: null,
+      feeIncomeAccountRef: null,
       defaultTaxCodeRef: null,
       defaultExemptTaxCodeRef: null,
       defaultPaymentAccountRef: null,
@@ -1322,6 +1335,7 @@ export async function deleteConnection(
       eq(accountingConnections.provider, provider)
     ))
     .returning({ id: accountingConnections.id });
+  for(const connection of deleted)await abandonAccountingFees(db,partnerId,connection.id);
   // The id is returned so the caller can identify the connection in an audit
   // entry AFTER the row is gone — the disconnect's owed-delete record has to
   // name the same subject as its realm-change twin (review wave 3, finding D3).

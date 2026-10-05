@@ -60,6 +60,7 @@
     "unknownTool": "Unknown tool",
     "toolResult": "Tool result",
     "unattendedRelease": "Reviewed by the AI script reviewer and released without an approval card.",
+    "openScriptProposal": "Open the proposal to see its runs or save it to the library",
     "pauseAi": "Pause AI",
     "quickActions": {
       "serverHealth": {
@@ -256,8 +257,7 @@
       "allowAuto": "Allow auto-apply (end user may opt into auto)"
     },
     "autoApplyHint": "Auto-apply is off by default and only possible when allowed here.",
-    "allowedModels": "Allowed models",
-    "allModelsHint": "No selection = all available models.",
+    "aiModel": "AI model",
     "whoCanUse": "Who can use the assistant",
     "userAccessOptions": {
       "all": "All users in the mapped tenant",
@@ -507,5 +507,48 @@
       "expired": "expired",
       "skipped": "skipped"
     }
+  },
+  "aiModelPicker": {
+    "chooseModel": "Choose a model",
+    "default": "(default)",
+    "suggested": "Suggested",
+    "context": "{{size}} context",
+    "price": "{{input}} in / {{output}} out per M tokens",
+    "requiresRole": "Requires {{roles}}",
+    "requiresPermission": "Requires the premium AI models permission",
+    "effort": "Effort",
+    "effortDefault": "Default",
+    "effortLevels": {
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "xhigh": "Extra high",
+      "max": "Max"
+    },
+    "fast": "Fast ({{input}} in / {{output}} out per M)",
+    "thinking": "Thinking"
+  },
+  "aiThinking": {
+    "label": "Thinking… {{seconds}}s"
+  },
+  "aiTurnModel": {
+    "answeredBy": "Answered by {{model}}",
+    "fast": "Fast",
+    "fellBack": "{{requested}} declined; another model answered",
+    "fastDowngraded": "Fast was unavailable; ran at standard speed"
+  },
+  "aiContinuation": {
+    "reason": {
+      "cross_connection": "{{model}} runs on a different AI connection, so this chat can't switch to it.",
+      "connection_changed": "The AI connection changed since the last reply, so this chat can't switch models.",
+      "transcript_too_large": "This conversation is too long for {{model}}.",
+      "fit_unverifiable": "Breeze couldn't confirm this conversation fits {{model}}."
+    },
+    "messageKept": "Your message is kept. Continue in a new chat that starts from a summary of this one, or keep the current model.",
+    "continue": "Continue with {{model}} in a new chat",
+    "keep": "Keep the current model",
+    "created": "New chat on {{model}} started from a summary.",
+    "failed": "Couldn't start the new chat. Try again.",
+    "openFailed": "The new chat was created but couldn't be opened. Find it in your chat history; your message was not sent."
   }
 }

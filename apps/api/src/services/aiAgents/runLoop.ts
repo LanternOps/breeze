@@ -38,7 +38,6 @@
  * DB touch here self-contexts, and the SDK loop itself runs under
  * `runOutsideDbContext` so the SDK's tool handlers never inherit one.
  */
-import { agentSdkWireOptions } from '../aiModels/modelWireOptions';
 import { and, eq } from 'drizzle-orm';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
@@ -51,6 +50,7 @@ import type {
   FleetDesignOutcomeRefs,
 } from '@breeze/shared';
 import { AI_SWEEP_KINDS } from '@breeze/shared';
+import { agentRunModelRole } from './agentModelRole';
 import { envFlag } from '../../config/env';
 import {
   db,
@@ -69,15 +69,13 @@ import { loadTaskFence, type TaskFence } from '../aiOperator/taskService';
 import { buildTaskOperationKey } from '../aiOperator/operationKey';
 import { TOOL_TIERS, createBreezeMcpServer, listChatSurfaceToolNames } from '../aiAgentSdkTools';
 import type { PostToolUseCallback, PreToolUseCallback } from '../aiAgentSdkTools';
-import { calculateCostCents, recordSessionlessSdkUsage } from '../aiCostTracker';
-import type { AiBillingSource } from '../aiCostTracker';
+import { checkBudgetDetailed, type AiBillingSource } from '../aiCostTracker';
 import {
   markAiBudgetReservationIndeterminate,
+  releaseUnusedAiBudgetReservation,
   reserveAiBudget,
 } from '../aiBudgetReservations';
 import {
-  AGENT_HUMAN_ONLY_TOOLS,
-  BLOCKED_TOOLS,
   checkAgentGuardrails,
   isNeverAgentTool,
   checkGuardrails,
@@ -85,12 +83,46 @@ import {
   TOOL_ACTION_INPUT_KEYS,
   type AgentGuardrailPolicy,
 } from '../aiGuardrails';
-import { isSecretBearingTool } from '../actionIntents/secretBearingTools';
 import { loadProposalGuardrailContext } from '../scriptProposals';
 import { publishEvent } from '../eventBus';
-import { resolveLlmConfigForOrg } from '../llm/llmConfigResolver';
-import type { UsableLlmConfig } from '../llm/llmConfigResolver';
-import { buildClaudeSdkChildEnv } from '../streamingSessionManager';
+import { prepareSdkChild, sdkModelOptions, type SdkChildDispatch } from '../aiModels/connectionFactory';
+import {
+  newSdkTurnObservation,
+  observeSdkMessage,
+  sdkTurnUsage,
+  type BilledUsage,
+  type SdkResultLike,
+  type SdkUsageSnapshot,
+  type TurnOutcome,
+} from '../aiModels/invocationUsage';
+import { promptProvenanceFor, renderSystemPrompt } from '../aiModels/promptProfiles';
+import { refusalHeadline } from '../aiModels/refusals';
+import { reportIfPlatformKeyMissing } from '../aiModels/oneShotUnavailable';
+import { resolveModel, type FailoverOrigin, type ResolvedModel } from '../aiModels/resolveModel';
+import {
+  FAILOVER_CAUSES,
+  hopIdempotencyKey,
+  MAX_FAILOVER_HOP,
+  nextTerminalProviderCause,
+  shouldFailOverNow,
+  type FailoverCause,
+  type ProviderFailureCause,
+} from '../aiModels/failover';
+import { failoverOriginOf } from '../aiModels/failoverDispatch';
+import { noteProviderFailure } from '../aiModels/offeringHealth';
+import { priceUsage, settleInvocation, sumCostCents } from '../aiModels/settleInvocation';
+import { safeErrorMessage } from '../aiModels/safeDbError';
+import { turnBindingFrom, type TurnBinding } from '../aiModels/turnBinding';
+import {
+  agentRunReservationBaseKey,
+  markStaleHopReservations,
+  nextAgentHop,
+  probeAgentHop,
+  recordServedHop,
+  startHopFor,
+  type NextAgentHop,
+} from './agentRunFailover';
+import { AgentRunBlockedError, blockedOutcome, notifyModelBlocked } from './modelBlocked';
 import type { ToolExecutionContext } from '../toolExecutionContext';
 import { EXPORT_DEFAULT_MAX_BYTES } from '../aiToolsExport';
 import type { AuthContext } from '../../middleware/auth';
@@ -148,13 +180,16 @@ import {
   type PatchPlanToolRefs,
 } from './outcomeTools';
 import { isVerdictProfile, verdictLimits, verdictToolAllowlist } from './verdictProfile';
-import { legacyAgentModel } from '../aiModels/legacySurfaceModels';
 import { isSweepProfile, sweepLimits, sweepToolAllowlist } from './sweepProfile';
 import { isNarrativeProfile, narrativeLimits, narrativeToolAllowlist } from './narrativeProfile';
 import { isTriageProfile, triageLimits, triageToolAllowlist } from './triageProfile';
 import { isDesignProfile, designLimits, designToolAllowlist } from './designProfile';
 import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import { isPatchProfile, patchLimits, patchToolAllowlist } from './patchProfile';
+import { isResearchProfile, researchDepthOf, researchLimits, researchToolAllowlist } from './researchProfile';
+import { loadResearchContext, ResearchContextUnavailableError } from './researchContext';
+import { loadProvenFixesForRun, profileConsultsFixMemory } from '../fixMemory/runMemory';
+import type { ResearchToolRefs } from './researchSubmission';
 import { analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './analysisProfile';
 import { isToolAllowlisted } from './toolAllowlist';
 import { aiTools } from '../aiToolNames';
@@ -164,12 +199,12 @@ import { WorkspaceService } from '../workspace/workspaceService';
 import { WORKSPACE_MEMORY_GB } from '../workspace/workspacePaths';
 import { registerWorkspace, unregisterWorkspace } from '../workspace/workspaceRegistry';
 import { calculateComputeCents, settleComputeCents } from '../aiCostTracker';
-import { getLlmBillingSourceForOrg } from '../llm/llmConfigResolver';
 import type { AiAgentRunStagedInputs } from '../../db/schema/aiAgents';
 import { PatchEvidenceUnavailableError, loadPatchEvidence, patchEvidenceRefs } from './patchEvidence';
 import {
   finalizeFleetDesign,
   finalizePatchPlan,
+  finalizeResearch,
   finalizeNarrative,
   finalizeSweep,
   finalizeTicketTriage,
@@ -236,6 +271,30 @@ function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
 }
 
+/** `ai_agent_runs.served_failover_cause` is text: read it defensively. */
+function asFailoverCause(value: string | null | undefined): FailoverCause | null {
+  return value && (FAILOVER_CAUSES as readonly string[]).includes(value) ? (value as FailoverCause) : null;
+}
+
+function isProviderFailureCause(cause: FailoverCause | null): cause is ProviderFailureCause {
+  return cause !== null && cause !== 'ineligible' && cause !== 'cooldown';
+}
+
+/**
+ * AI model registry W09 (#7607): the binding of an agent-run hop. Hop 0 is
+ * W03's binding unchanged. Hop n > 0 carries the RUN's provenance (its hop
+ * index and cause, as recorded on the run row), so the binding a re-driven
+ * run rebuilds matches the one its hop reserved, and the ledger row keeps
+ * `failover_hop` / `failover_cause` (Codex review 5).
+ */
+function agentHopBinding(resolved: ResolvedModel, hop: number, cause: FailoverCause | null): TurnBinding {
+  const binding = turnBindingFrom(resolved);
+  if (hop === 0) return binding;
+  const recordedCause = cause ?? binding.failover?.cause ?? null;
+  if (!recordedCause) return binding;
+  return { ...binding, failover: { fromOfferingId: binding.failover?.fromOfferingId ?? null, hop, cause: recordedCause } };
+}
+
 /** Observability must never turn a finished run into a failed one. */
 async function safePublish(
   type: Parameters<typeof publishEvent>[0],
@@ -278,6 +337,14 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         // Execution plane W04 — the frozen inputs and the compute reservation.
         stagedInputs: aiAgentRuns.stagedInputs,
         computeReservedCents: aiAgentRuns.computeReservedCents,
+        // AI model registry W03 — admission's model decision (finding 6).
+        fundingSource: aiAgentRuns.fundingSource,
+        admittedOfferingId: aiAgentRuns.admittedOfferingId,
+        // AI model registry W09 — the failover hop a re-driven run resumes on.
+        servedOfferingId: aiAgentRuns.servedOfferingId,
+        servedFundingSource: aiAgentRuns.servedFundingSource,
+        servedFailoverHop: aiAgentRuns.servedFailoverHop,
+        servedFailoverCause: aiAgentRuns.servedFailoverCause,
       })
       .from(aiAgentRuns)
       .where(eq(aiAgentRuns.id, runId))
@@ -430,6 +497,25 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       }
     }
 
+    // AI Suggested Fixes W3. Verdict and full runs only, and only when the
+    // ORG-PINNED alert or group read above resolved: the signature loader
+    // reads by id, so an alert or group that left this org must not be
+    // signatured for this run. Runs inside this same system context and opens
+    // none of its own; lookupFixes filters by run org + partner and re-checks
+    // script ownership itself (W1 Task 16). Never throws: null when memory is
+    // off, empty or unavailable.
+    let provenFixes: RunContext['provenFixes'] = null;
+    const memoryAlertId = alert ? run.alertId : null;
+    const memoryGroupId = correlationGroup ? run.correlationGroupId : null;
+    if (profileConsultsFixMemory(run.profile) && (memoryAlertId || memoryGroupId)) {
+      provenFixes = await loadProvenFixesForRun({
+        orgId: run.orgId,
+        partnerId: org.partnerId,
+        alertId: memoryAlertId,
+        correlationGroupId: memoryGroupId,
+      });
+    }
+
     // Phase 2 wave P2-2 (scheduled sweeps). Runs INSIDE this same system
     // context (`loadSweepEvidence`'s own header states it manages none of its
     // own) — the `org_id = run.orgId` predicate every one of its statements
@@ -541,6 +627,27 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       };
     }
 
+    // AI Suggested Fixes W2. Runs INSIDE this same system context like the
+    // other evidence loaders; its catalog queries carry W1's explicit
+    // visibility condition. A device that left the org or has no supported OS
+    // fails the run with a typed code rather than researching the wrong box.
+    let research: RunContext['research'] = null;
+    if (isResearchProfile(run as RunRow)) {
+      // A device-less run must fail typed, not hand '' to a uuid column (22P02).
+      if (!run.deviceId) throw new AgentRunError('research_device_unavailable', 'remediation_research run has no device');
+      try {
+        research = await loadResearchContext({
+          orgId: run.orgId,
+          partnerId: org.partnerId,
+          deviceId: run.deviceId,
+          triggerRef: (run.triggerRef ?? {}) as Record<string, unknown>,
+        });
+      } catch (error) {
+        if (error instanceof ResearchContextUnavailableError) throw new AgentRunError(error.code, error.message);
+        throw error;
+      }
+    }
+
     return {
       run: run as RunRow,
       agent: agent as AgentRow,
@@ -554,6 +661,8 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       narrative,
       design,
       patch,
+      research,
+      provenFixes,
       sessionId: null,
       workspace: null,
     };
@@ -642,10 +751,12 @@ export function createAgentRunPreToolUse(args: {
    * on every non-patch run.
    */
   patch?: PatchPlanToolRefs;
+  /** AI Suggested Fixes W2 — the SAME refs the SDK handler and post-hook receive. */
+  research?: ResearchToolRefs;
 }): PreToolUseCallback {
   const {
     run, agentName, agentAuth, agentKind, guardrailPolicy, outcome, intentIds, allowedPending,
-    sessionId, executionIdPending, actPinPending, actReservation, deadlineMs, design, patch,
+    sessionId, executionIdPending, actPinPending, actReservation, deadlineMs, design, patch, research,
     runTargets, stagedBytesRemaining,
   } = args;
 
@@ -894,12 +1005,31 @@ export function createAgentRunPreToolUse(args: {
         });
         return { allowed: false, error: 'not available on this run' };
       }
+      // AI Suggested Fixes W2 — first submission wins. A second call would
+      // otherwise replace an already-validated outcome with whatever the model
+      // sends next; tell it so it stops instead of retrying.
+      if (toolName === 'submit_suggestions' && outcome.research !== undefined) {
+        const reason = 'submit_suggestions was already submitted for this run; the first submission is final';
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: reason };
+      }
       try {
-        validateOutcomeToolInput(toolName, input, toolName === 'submit_patch_plan' ? patch : design);
+        validateOutcomeToolInput(toolName, input, toolName === 'submit_patch_plan' ? patch : toolName === 'submit_suggestions' ? research : design);
       } catch (e) {
         return { allowed: false, error: `invalid ${toolName} input: ${(e as Error).message}` };
       }
       return { allowed: true, context: runFrame };
+    }
+
+    // AI Suggested Fixes W2 — a research run may call ONLY its floor. The
+    // guardrail alone would let a read-classified tool outside the floor
+    // (e.g. `propose_script`, tier 1) through, and research must never draft
+    // or propose anything: the hand-off to the script builder is a human step.
+    // Exposure (`onlyTools`) already hides these; this is the authority backstop.
+    if (isResearchProfile(run) && !researchToolAllowlist([]).includes(toolName)) {
+      const reason = `${toolName} is not available to remediation_research runs`;
+      outcome.deniedActions.push({ tool: toolName, reason });
+      return { allowed: false, error: reason };
     }
 
     const guardrailContext = await loadProposalGuardrailContext(input, run.orgId);
@@ -959,7 +1089,7 @@ export function createAgentRunPreToolUse(args: {
     // output channel is `submit_fleet_design`, handled above this branch.
     if (
       (isVerdictProfile(run) || isSweepProfile(run) || isNarrativeProfile(run) || isTriageProfile(run)
-        || isDesignProfile(run) || isPatchProfile(run))
+        || isDesignProfile(run) || isPatchProfile(run) || isResearchProfile(run))
       && check.disposition !== 'allow'
     ) {
       const reason = `${run.profile} runs are read-only`;
@@ -1141,8 +1271,10 @@ export function createAgentRunPostToolUse(args: {
   design?: FleetDesignOutcomeRefs;
   /** AI patch agent W01 — see the pre-hook's `patch` param. */
   patch?: PatchPlanToolRefs;
+  /** AI Suggested Fixes W2 — see the pre-hook's `research` param. */
+  research?: ResearchToolRefs;
 }): PostToolUseCallback {
-  const { outcome, allowedPending, executionIdPending, actPinPending, run, agentUserId, design, patch } = args;
+  const { outcome, allowedPending, executionIdPending, actPinPending, run, agentUserId, design, patch, research } = args;
 
   return async (toolName, input, output, isError, durationMs) => {
     // Outcome tools (Phase 2 wave P2-1): never went through
@@ -1211,6 +1343,13 @@ export function createAgentRunPostToolUse(args: {
           // maxActionsPerRun pinned to 0).
           case 'submit_analysis':
             outcome.analysis = validateOutcomeToolInput(toolName, input);
+            break;
+          case 'submit_suggestions':
+            // AI Suggested Fixes W2 — the SERVER-BUILT outcome: accepted items plus
+            // recorded rejections (kept for the run trace, never persisted).
+            // finalizeResearch persists; nothing here executes.
+            if (!research) throw new Error('[aiAgentRunLoop] submit_suggestions captured with no research refs');
+            outcome.research = validateOutcomeToolInput(toolName, input, research);
             break;
           default: {
             const exhaustive: never = toolName;
@@ -1327,13 +1466,6 @@ export function computeRunVerdict(
   return outcome.proposedActions.length > 0 ? 'partial' : 'remediated';
 }
 
-interface SdkUsage {
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_input_tokens?: number;
-  cache_creation_input_tokens?: number;
-}
-
 /**
  * How a terminal SDK result maps onto this run's outcome.
  *
@@ -1401,26 +1533,6 @@ export function classifyIntentAwaitingApproval(
   if (intentIds.length === 0) return false;
   const decided = new Set(decidedIntentIds ?? []);
   return intentIds.some((id) => !decided.has(id));
-}
-
-/**
- * Same precedence as `recordUsageFromSdkResult`: trust the SDK's self-reported
- * cost, and price the tokens ourselves only when it reports zero against a
- * non-zero token count (issue #1326 — the SDK cannot price a model id newer
- * than its bundled table).
- */
-function resultCostCents(
-  totalCostUsd: number,
-  usage: SdkUsage,
-  model: string | undefined,
-): number {
-  const reported = Math.round(totalCostUsd * 100 * 100) / 100;
-  if (reported > 0) return reported;
-  const cacheRead = usage.cache_read_input_tokens ?? 0;
-  const cacheWrite = usage.cache_creation_input_tokens ?? 0;
-  const anyTokens = usage.input_tokens > 0 || usage.output_tokens > 0 || cacheRead > 0 || cacheWrite > 0;
-  if (!anyTokens || !model) return 0;
-  return calculateCostCents(model, usage.input_tokens, usage.output_tokens, cacheRead, cacheWrite);
 }
 
 function extractAssistantText(message: unknown): string {
@@ -1547,6 +1659,11 @@ function patchOutcomeRefs(ctx: RunContext): PatchPlanToolRefs | undefined {
   };
 }
 
+/** AI Suggested Fixes W2 — computed once by loadResearchContext; shared by pre-hook, SDK tool and post-hook. */
+function researchOutcomeRefs(ctx: RunContext): ResearchToolRefs | undefined {
+  return ctx.research?.refs;
+}
+
 function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromptContext {
   return {
     analysis: ctx.run.profile === 'analysis'
@@ -1575,6 +1692,8 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
           focusDeviceId: ctx.patch.focusDeviceId ?? null,
         }
       : null,
+    research: ctx.research ?? null,
+    provenFixes: ctx.provenFixes ?? null,
   };
 }
 
@@ -1616,8 +1735,9 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
  * (`aiToolActions.ts`) — the same three modules `agentToolCatalog.ts` itself
  * derives its per-operation tier/readOnly answers from, just without going
  * through the `TOOL_TIERS`-keyed reachability filter. The human-only/blocked/
- * secret-bearing exclusions are reproduced directly (`AGENT_HUMAN_ONLY_TOOLS`,
- * `BLOCKED_TOOLS`, `isSecretBearingTool`); the session-only (M365/Google)
+ * secret-bearing/agent-denied-read exclusions come from the guardrail's own
+ * `isNeverAgentTool` predicate (#7447 — never a hand copy, which had drifted
+ * and offered 7 `AGENT_DENIED_READ_TOOLS` the guardrail always refuses); the session-only (M365/Google)
  * exclusion is NOT needed — `aiToolNames.ts`'s own header states those tools
  * are session-aware and are never added to the `aiTools` map in the first
  * place, so iterating `aiTools.keys()` already excludes them structurally.
@@ -1639,7 +1759,9 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
 export function fullRunToolExposure(agentAllowlist: readonly string[]): string[] {
   const names = new Set<string>();
   for (const name of aiTools.keys()) {
-    if (AGENT_HUMAN_ONLY_TOOLS.has(name) || BLOCKED_TOOLS.has(name) || isSecretBearingTool(name)) continue;
+    // #7447 — the guardrail's own by-name predicate (blocked / secret-bearing /
+    // human-only / agent-denied-read), not a hand copy of part of it.
+    if (isNeverAgentTool(name)) continue;
     const actions = toolActionEnum(name);
     const operations: Array<string | null> = actions ?? [null];
     const admitted = operations.some((action) => {
@@ -1671,7 +1793,8 @@ export function declaredFullRunToolExposure(agentAllowlist: readonly string[]): 
   return fullRunToolExposure(agentAllowlist).filter((name) => declared.has(name));
 }
 
-type RunProfileRef = { profile: AiAgentRunProfile };
+/** `triggerRef` is read only by `remediation_research` (its depth); optional so every other call site stays valid. */
+type RunProfileRef = { profile: AiAgentRunProfile; triggerRef?: Record<string, unknown> | null };
 
 /**
  * The run's effective limits: each narrow profile pins its own turn, budget
@@ -1686,6 +1809,7 @@ export function resolveRunProfileLimits(run: RunProfileRef, limits: AiAgentLimit
   if (isTriageProfile(run)) return triageLimits(limits);
   if (isDesignProfile(run)) return designLimits(limits);
   if (isPatchProfile(run)) return patchLimits(limits);
+  if (isResearchProfile(run)) return researchLimits(limits, researchDepthOf(run.triggerRef));
   if (isAnalysisProfile(run)) return analysisLimits(limits);
   return limits;
 }
@@ -1702,6 +1826,7 @@ export function resolveRunProfileToolAllowlist(run: RunProfileRef, agentAllowlis
   if (isTriageProfile(run)) return triageToolAllowlist(agentAllowlist);
   if (isDesignProfile(run)) return designToolAllowlist(agentAllowlist);
   if (isPatchProfile(run)) return patchToolAllowlist(agentAllowlist);
+  if (isResearchProfile(run)) return researchToolAllowlist(agentAllowlist);
   if (isAnalysisProfile(run)) return analysisToolAllowlist(agentAllowlist);
   return null;
 }
@@ -1857,13 +1982,89 @@ async function driveSdkLoop(
   const wallClockMs = Math.max(1, Math.round(runLimits.wallClockSeconds * 1000));
   const deadlineMs = Date.now() + wallClockMs;
 
-  const llm = await resolveLlmConfigForOrg(run.orgId);
-  if (llm.source === 'unavailable') {
-    throw new AgentRunError('llm_unavailable', `AI is unavailable for org ${run.orgId}`);
+  // AI model registry W03 (Task 12, review finding 6): dispatch the offering
+  // ADMISSION resolved and checked credits for — re-resolved here because the
+  // permitted set, the offering or its connection can change while the run
+  // is queued. The bounded fallback can only keep its connection and funding.
+  // A run admitted before W03 carries no admitted offering and resolves the
+  // policy's bound offering (or the `ai_agents` assignment default).
+  //
+  // W09 (#7607): a re-driven run resumes on the hop it last recorded
+  // (agentRunFailover.ts): that hop's offering, reservation key and provenance.
+  const start = startHopFor(run);
+  const requestedOfferingId = start.requestedOfferingId ?? effective.offeringId ?? null;
+  const modelRole = agentRunModelRole(run);
+  // The run's failover origin: its ADMITTED offering and funding. Every hop's
+  // F1 (cross-funding) is judged against it, never against the hop that failed.
+  // Agents never set `sameConnectionOnly`, so the connection is not needed.
+  const runOrigin: FailoverOrigin | null = run.admittedOfferingId && run.fundingSource
+    ? { offeringId: run.admittedOfferingId, funding: run.fundingSource, connectionId: null }
+    : null;
+  const resumedCause = start.hop > 0 ? asFailoverCause(run.servedFailoverCause) : null;
+  // Codex review 5: the run row named this hop before the previous hop was
+  // settled. A still-active earlier reservation is an unknown outcome: mark it
+  // indeterminate, never re-reserve or debit it.
+  if (start.hop > 0) await markStaleHopReservations({ runId: run.id, orgId: run.orgId, uptoHop: start.hop });
+  const agentModel = await resolveModel({
+    partnerId: ctx.orgPartnerId,
+    orgId: run.orgId,
+    surface: 'ai_agents',
+    role: modelRole,
+    ...(requestedOfferingId ? { requested: { offeringId: requestedOfferingId, origin: 'policy' as const } } : {}),
+    // A resumed hop is still judged against the run's origin, and keeps its cause.
+    ...(start.hop > 0 && runOrigin ? { failoverOrigin: runOrigin } : {}),
+    ...(isProviderFailureCause(resumedCause) ? { failoverCause: resumedCause } : {}),
+  });
+  if (!agentModel.ok) {
+    // A keyless deployment raises the hourly platform-key alert (as the one-shot surfaces do).
+    reportIfPlatformKeyMissing(agentModel);
+    throw new AgentRunBlockedError(
+      'model_unavailable',
+      blockedOutcome('model_unavailable', { message: agentModel.message, offeringId: requestedOfferingId }),
+      agentModel.message,
+      // The partner's one-time registry cutover is not done (transient): the
+      // admin's model is not gone, so there is nothing to tell them.
+      { notify: agentModel.reason !== 'registry_unavailable' },
+    );
   }
-  const usableLlm: UsableLlmConfig = llm;
-  const billingSource: AiBillingSource = llm.source === 'partner' ? 'partner_key' : 'platform';
-  const model = legacyAgentModel(effective.model, llm.model);
+  // Funding guard (W03, widened by W09 F1/F3). Never dispatch on a funding
+  // source nobody admitted (credits, caps). A queued run's token funding may
+  // move only through a CONFIGURED cross-funding failover the resolver walked
+  // to, and only once the new funding is admitted; that hop is recorded on
+  // the run BEFORE its reservation exists. Anything else is W03's blocked run.
+  // A same-funding move (W03's bounded fallback, or a same-funding walk) stays
+  // on this hop's key, with the resolver's provenance on its binding.
+  const runFunding = run.servedFundingSource ?? run.fundingSource ?? null;
+  let hopIndex = start.hop;
+  let hopCause: FailoverCause | null = resumedCause;
+  if (runFunding && agentModel.funding !== runFunding) {
+    const crossing = agentModel.failover && agentModel.offering.id && hopIndex + 1 <= MAX_FAILOVER_HOP
+      ? { offeringId: agentModel.offering.id, cause: agentModel.failover.cause }
+      : null;
+    const denial = crossing ? await checkBudgetDetailed(run.orgId, agentModel.funding) : null;
+    if (!crossing || denial) {
+      const message = denial?.message
+        ?? 'The agent\'s AI model changed funding source after the run was admitted. Run it again.';
+      throw new AgentRunBlockedError(
+        'model_unavailable',
+        blockedOutcome('model_unavailable', { message, offeringId: agentModel.offering.id }),
+        message,
+      );
+    }
+    hopIndex += 1;
+    hopCause = crossing.cause;
+    await recordServedHop(run.id, { offeringId: crossing.offeringId, funding: agentModel.funding, hop: hopIndex, cause: crossing.cause });
+    // The hop this run was on (if it ever reserved) is now an earlier hop.
+    await markStaleHopReservations({ runId: run.id, orgId: run.orgId, uptoHop: hopIndex });
+  }
+  let hopModel: ResolvedModel = agentModel;
+  // Codex review 5: a hop > 0 carries the RUN's provenance (hop index and
+  // cause from the run row), so a re-driven hop rebuilds the binding it
+  // reserved and its ledger row keeps its failover provenance.
+  let binding = agentHopBinding(hopModel, hopIndex, hopCause);
+  // Provenance only (resolved_model, the execution-ledger session): the wire
+  // id the SDK is sent comes from sdkModelOptions below.
+  const model = agentModel.logicalModel;
 
   // #5870 — the only log line between admission and termination. Without it
   // a run that is legitimately still thinking (a design run may now run up
@@ -1880,11 +2081,12 @@ async function driveSdkLoop(
   });
 
   // #5205 W06, spec §6.2: "Record the prompt template version and the resolved
-  // model on every task-linked run." Admission stamped the CONFIGURED model
-  // (`policySnapshot.effective.model`), which is null whenever the agent
-  // inherits the org's LLM default — the fallback on the line above. This is
-  // the first and only moment the value actually used is known, so it is
-  // stamped here rather than guessed at admission.
+  // model on every task-linked run." Admission snapshots no model string (the
+  // agent policy model string was retired in W08 #7606): at most the bound
+  // offering id, and nothing when the agent follows the `ai_agents`
+  // assignment default resolved above. This is the first and only moment the
+  // model actually used is known, so it is stamped here rather than guessed
+  // at admission.
   //
   // Best-effort and non-fatal: a failed metadata write must never turn a
   // healthy run into a failed one. `resolved_model` is not in
@@ -2019,10 +2221,11 @@ async function driveSdkLoop(
   // timestamps for the same run.
   const designRefs = designOutcomeRefs(ctx);
   const patchRefs = patchOutcomeRefs(ctx);
+  const researchRefs = researchOutcomeRefs(ctx);
   const preToolUse = createAgentRunPreToolUse({
     run, agentName: ctx.agent.name, agentAuth, agentKind: ctx.agent.kind, guardrailPolicy, outcome,
     intentIds, allowedPending, sessionId: ctx.sessionId, executionIdPending, actPinPending,
-    actReservation, deadlineMs, design: designRefs, patch: patchRefs,
+    actReservation, deadlineMs, design: designRefs, patch: patchRefs, research: researchRefs,
     revalidateResourceScope: (toolName) => isRunResourceScopeCurrent(ctx, readCurrentPolicy, toolName),
     // W03 seeds the run frame from the single-device runs that exist today.
     // W04's `analysis` profile replaces both values with the admission-frozen
@@ -2044,6 +2247,7 @@ async function driveSdkLoop(
     agentUserId: agentAuth.user.id,
     design: designRefs,
     patch: patchRefs,
+    research: researchRefs,
   });
 
   // Exposure (`allowedTools`) and registration (`onlyTools`) — see
@@ -2061,7 +2265,7 @@ async function driveSdkLoop(
   const mcpServer = createBreezeMcpServer(() => agentAuth, preToolUse, postToolUse, undefined,
     buildOutcomeSdkTools(
       outcomeToolsForRun(run),
-      designRefs || patchRefs ? { design: designRefs, patch: patchRefs } : undefined,
+      designRefs || patchRefs || researchRefs ? { design: designRefs, patch: patchRefs, research: researchRefs } : undefined,
     ),
     onlyTools ? { onlyTools } : undefined);
 
@@ -2069,30 +2273,23 @@ async function driveSdkLoop(
   // S8: the ONE surface with a genuinely stable request identity — the agent
   // run's own id. Re-driving a run therefore rejoins its existing reservation
   // instead of taking a second hold on the org's cap.
-  const reservation = await reserveAiBudget({
-    orgId: run.orgId,
-    idempotencyKey: `ai-agent-run:${run.id}`,
-    billingSource,
-    // JD L-2: bound the hold to this run's own ceiling instead of the whole
-    // remaining cap, so one agent run does not serialize technician chat,
-    // ticket drafts and every other AI surface in a capped org — and so an
-    // indeterminate outcome only holds this ceiling for the extended TTL
-    // below, not the org's entire remaining budget.
-    maxHoldCents: runLimits.maxBudgetCentsPerRun,
-  });
-  if (reservation.kind === 'denied') {
-    throw new AgentRunError('org_budget_exceeded', reservation.message);
-  }
-  const reservationId = reservation.reservationId;
-  const maxBudgetCents = reservation.kind === 'reserved'
-    ? Math.min(runLimits.maxBudgetCentsPerRun, reservation.reservedCostCents)
-    : runLimits.maxBudgetCentsPerRun;
-  const abortController = new AbortController();
+  //
+  // W09 (#7607): one reservation per hop, under hopIdempotencyKey(base, hop).
+  // Hop 0 keeps W03's key, so a run with nothing configured to fail over to
+  // behaves exactly as W03 (one hop, one reservation, the CLI's own retries).
+  const baseReservationKey = agentRunReservationBaseKey(run.id);
+  const tried: string[] = [...new Set([run.admittedOfferingId, run.servedOfferingId, hopModel.offering.id]
+    .filter((id): id is string => typeof id === 'string'))];
+  const failoverOrigin = runOrigin ?? failoverOriginOf(agentModel);
+
+  // The timer aborts whichever hop's controller is current (Codex review 7);
+  // a hop transition re-checks the deadline before anything is reserved.
+  let currentAbort = new AbortController();
   let wallClockExceeded = false;
   let budgetExceeded = false;
   const wallClockTimer = setTimeout(() => {
     wallClockExceeded = true;
-    abortController.abort();
+    currentAbort.abort();
   }, wallClockMs);
   // The run's own status row is the durable record; never hold the event loop.
   wallClockTimer.unref?.();
@@ -2103,119 +2300,400 @@ async function driveSdkLoop(
   let costCents = 0;
   let turnCount = 0;
   let receivedResult = false;
-  const usage: SdkUsage = {
-    input_tokens: 0,
-    output_tokens: 0,
-    cache_read_input_tokens: 0,
-    cache_creation_input_tokens: 0,
-  };
+  // W03 billing (W05 spike rules): every result is billed by the registry from
+  // its per-model `modelUsage`. A hop is ONE fresh, non-persisted query, so
+  // the snapshot the deltas are taken against lives only for this hop: the
+  // first result bills its own `result.usage` (capped by modelUsage), any
+  // later one the per-key delta. Never `total_cost_usd`.
+  let observation = newSdkTurnObservation();
+  let usageSnapshot: SdkUsageSnapshot | null = null;
+  let billed: BilledUsage[] = [];
+  let lastResult: SdkResultLike | null = null;
+  let turnOutcome: TurnOutcome | null = null;
+  let usageConfirmed = true;
+  // The CURRENT hop's reservation ('' once a failed-over last hop is settled).
+  let reservationId = '';
+  // W11: one prompt per run; the canary is sticky per run id. Recomputed per
+  // hop (a backup model may have another prompt profile) and recorded on that
+  // hop's settlement.
+  let promptProvenance = promptProvenanceFor({ surface: 'ai_agents', profile: hopModel.promptProfile, subjectId: run.id });
+  // What earlier (failed-over) hops already settled; the run's cost is this plus the last hop.
+  let priorHopsCostCents = 0;
+  let hopTurnsAtStart = 0;
 
   try {
-    await runOutsideDbContext(async () => {
-      const sdkQuery = query({
-        prompt: buildAgentRunTaskPrompt(prompt),
-        options: {
-          systemPrompt: buildAgentRunSystemPrompt(prompt),
-          model,
-          maxTurns: Math.max(1, runLimits.maxTurnsPerRun),
-          // Belt to the mid-stream braces below: the SDK stops itself, and the
-          // loop stops the SDK if a result lands over budget anyway.
-          maxBudgetUsd: maxBudgetCents / 100,
-          tools: [],
-          allowedTools: [...new Set(exposedNames)],
-          mcpServers: { breeze: mcpServer },
-          abortController,
-          env: buildClaudeSdkChildEnv(usableLlm),
-          // No transcript persistence in wave 3 — `run.session_id` stays NULL
-          // and `summary`/`outcome` carry what a reviewer needs (wave 6).
-          persistSession: false,
-          settingSources: [],
-          // #7587, #7599: per-model thinking/effort from the model registry — see agentSdkWireOptions.
-          ...agentSdkWireOptions(model),
-        },
+    for (;;) {
+      // Per-hop state. `turnCount` accumulates across hops; everything billed is this hop's.
+      // A fresh array per hop: a settled hop's usage is never mutated afterwards.
+      billed = [];
+      observation = newSdkTurnObservation();
+      // Typed resets: these are assigned inside the SDK callback below, which
+      // control-flow narrowing cannot see.
+      usageSnapshot = null as SdkUsageSnapshot | null;
+      lastResult = null as SdkResultLike | null;
+      turnOutcome = null as TurnOutcome | null;
+      receivedResult = false as boolean;
+      usageConfirmed = true as boolean;
+      failure = undefined as LoopResult['failure'];
+      summary = '';
+      currentAbort = new AbortController();
+      const abortController = currentAbort;
+      const toolsAtHopStart = outcome.toolExecutionCount;
+      hopTurnsAtStart = turnCount;
+      // What this hop could still fail over to: never an offering this run already tried.
+      const failoverRemaining = hopIndex < MAX_FAILOVER_HOP
+        ? hopModel.failoverRemaining.filter((id) => !tried.includes(id))
+        : [];
+      let failoverCause = null as ProviderFailureCause | null;
+      // PR #7775 review (D8): the classified provider status this hop ENDED on —
+      // the CLI's own final api-error message, or a result's classified
+      // `api_error_status`. A later retry clears it (that error was not final);
+      // the exception/catch path never sets it. Only this may fail a hop over
+      // after the fact: a hop ending on a timeout, reset or exception has an
+      // unknown outcome and takes W03's no-result path (held indeterminate).
+      let terminalProviderCause = null as ProviderFailureCause | null;
+      let failedOnResult = false as boolean;
+      // PR #7775 review: the CLI's retries are aborted only for a backup that can
+      // serve. Probed (no side effects) at most once per hop.
+      let hopProbe: Promise<boolean> | null = null;
+      const hopIndexNow = hopIndex;
+      const backupAvailable = (cause: ProviderFailureCause): Promise<boolean> => {
+        hopProbe ??= probeAgentHop({
+          orgId: run.orgId, partnerId: ctx.orgPartnerId, role: modelRole, requestedOfferingId,
+          tried: [...tried], cause, hop: hopIndexNow + 1, origin: failoverOrigin,
+        }).then((probe) => probe.ok, (error: unknown) => {
+          const message = safeErrorMessage(error);
+          console.error('[aiAgentRunLoop] backup model probe failed; keeping the CLI\'s own retries', { runId: run.id, error: message });
+          captureException(new Error(`agent run backup model probe failed: ${message}`), undefined, {
+            org_id: run.orgId, ai_agent_run_id: run.id,
+          });
+          return false;
+        });
+        return hopProbe;
+      };
+      const hopModelNow = hopModel;
+      promptProvenance = promptProvenanceFor({ surface: 'ai_agents', profile: hopModelNow.promptProfile, subjectId: run.id });
+      const hopPromptProvenance = promptProvenance;
+      const hopBinding = binding;
+
+      const reservation = await reserveAiBudget({
+        orgId: run.orgId,
+        idempotencyKey: hopIdempotencyKey(baseReservationKey, hopIndex),
+        billingSource: hopModelNow.funding,
+        // JD L-2: bound the hold to this run's own ceiling instead of the whole
+        // remaining cap, so one agent run does not serialize technician chat,
+        // ticket drafts and every other AI surface in a capped org — and so an
+        // indeterminate outcome only holds this ceiling for the extended TTL
+        // below, not the org's entire remaining budget.
+        maxHoldCents: runLimits.maxBudgetCentsPerRun,
+        // W03: the turn's rate snapshot + options, written in the reservation
+        // transaction. A re-driven run re-binds its unsettled reservation.
+        binding: hopBinding,
       });
+      if (reservation.kind === 'denied') {
+        throw new AgentRunError('org_budget_exceeded', reservation.message);
+      }
+      reservationId = reservation.reservationId;
+      const hopReservationId = reservationId;
+      // This hop's SDK child env and grants, for THIS hop's model (a failover
+      // may cross to or from a gateway connection), from the one seam shared
+      // with chat (connectionFactory.prepareSdkChild): a catalog connection
+      // gets an audited CONNECT grant to exactly one destination; a gateway
+      // connection a gateway grant plus a deny-all proxy grant; platform /
+      // direct Anthropic nothing. Nothing is dispatched yet, so a failure here
+      // releases the reservation it never used (prepareSdkChild holds nothing
+      // when it throws). Each hop has its own grant key, so a late revoke of
+      // one hop can never revoke the next hop's grants.
+      let child: SdkChildDispatch;
+      try {
+        child = await prepareSdkChild(hopModelNow, {
+          key: hopIndex === 0 ? `agent-run:${run.id}` : `agent-run:${run.id}:${hopIndex}`,
+          orgId: run.orgId,
+          aiSessionId: ctx.sessionId ?? null,
+        });
+      } catch (error) {
+        await releaseUnusedAiBudgetReservation({ orgId: run.orgId, reservationId: hopReservationId })
+          .catch((releaseError: unknown) => console.error('[aiAgentRunLoop] failed to release an unused AI reservation', {
+            runId: run.id, error: safeErrorMessage(releaseError),
+          }));
+        throw new AgentRunError('llm_unavailable', `AI egress for the agent's model connection is unavailable: ${safeErrorMessage(error)}`);
+      }
+      // The per-run ceiling spans every hop: a later hop gets what is left of it.
+      const runBudgetLeftCents = Math.max(0, runLimits.maxBudgetCentsPerRun - priorHopsCostCents);
+      const maxBudgetCents = reservation.kind === 'reserved'
+        ? Math.min(runBudgetLeftCents, reservation.reservedCostCents)
+        : runBudgetLeftCents;
 
       try {
-        for await (const message of sdkQuery) {
-          if (message.type === 'assistant') {
-            const text = extractAssistantText(message);
-            if (text) summary = text;
-            continue;
-          }
-          if (message.type !== 'result') continue;
-          receivedResult = true;
+        await runOutsideDbContext(async () => {
+          const sdkQuery = query({
+            prompt: buildAgentRunTaskPrompt(prompt),
+            options: {
+              // model (the resolver's wire id — a catalog endpoint's own id),
+              // fallbackModel (the refusal fallback) and thinking/effort.
+              ...sdkModelOptions(hopModelNow),
+              systemPrompt: renderSystemPrompt(buildAgentRunSystemPrompt(prompt), hopPromptProvenance),
+              maxTurns: Math.max(1, runLimits.maxTurnsPerRun),
+              // Belt to the mid-stream braces below: the SDK stops itself, and the
+              // loop stops the SDK if a result lands over budget anyway.
+              maxBudgetUsd: maxBudgetCents / 100,
+              tools: [],
+              allowedTools: [...new Set(exposedNames)],
+              mcpServers: { breeze: mcpServer },
+              abortController,
+              env: child.env,
+              // Gateway connections only: an empty temp working directory, so
+              // the environment context sent upstream names no host path.
+              ...(child.cwd !== undefined ? { cwd: child.cwd } : {}),
+              // Gateway connections only, after maxBudgetUsd: the registry price
+              // of the bound models, so the SDK's budget cap is not a guess (or
+              // no SDK cap at all when a price cannot be expressed to the CLI).
+              ...(child.queryOptions ?? {}),
+              // No transcript persistence in wave 3 — `run.session_id` stays NULL
+              // and `summary`/`outcome` carry what a reviewer needs (wave 6).
+              persistSession: false,
+              settingSources: [],
+            },
+          });
 
-          turnCount += message.num_turns;
-          const messageUsage = message.usage as unknown as SdkUsage;
-          usage.input_tokens += messageUsage.input_tokens ?? 0;
-          usage.output_tokens += messageUsage.output_tokens ?? 0;
-          usage.cache_read_input_tokens =
-            (usage.cache_read_input_tokens ?? 0) + (messageUsage.cache_read_input_tokens ?? 0);
-          usage.cache_creation_input_tokens =
-            (usage.cache_creation_input_tokens ?? 0) + (messageUsage.cache_creation_input_tokens ?? 0);
-          costCents += resultCostCents(message.total_cost_usd, messageUsage, model);
+          try {
+            for await (const message of sdkQuery) {
+              observeSdkMessage(observation, message);
+              terminalProviderCause = nextTerminalProviderCause(terminalProviderCause, message);
+              // W09: a NON-result message may fail over once the CLI's own
+              // retries are spent and nothing was produced (no output, no tool
+              // executed in this hop) — and only when a backup can actually
+              // serve (else W03: the CLI keeps retrying). A result is never
+              // short-circuited: the handling below bills its usage first
+              // (Codex review 1), and the post-hop check decides.
+              if (message.type !== 'result' && failoverRemaining.length > 0
+                && outcome.toolExecutionCount === toolsAtHopStart) {
+                const cause = shouldFailOverNow(observation, failoverRemaining);
+                if (cause && await backupAvailable(cause)) {
+                  failoverCause = cause;
+                  abortController.abort();
+                  break;
+                }
+              }
+              if (message.type === 'assistant') {
+                const text = extractAssistantText(message);
+                if (text) summary = text;
+                continue;
+              }
+              if (message.type !== 'result') continue;
+              receivedResult = true;
 
-          if (message.subtype === 'success' && typeof message.result === 'string' && message.result.trim()) {
-            summary = message.result.trim();
-          }
+              turnCount += message.num_turns;
+              lastResult = message as unknown as SdkResultLike;
+              const turn = sdkTurnUsage({
+                binding: hopBinding, observation, result: lastResult, previousSnapshot: usageSnapshot,
+              });
+              usageSnapshot = turn.nextSnapshot ?? usageSnapshot;
+              billed.push(...turn.usage);
+              turnOutcome = turn.outcome;
+              if (!turn.usageConfirmed) usageConfirmed = false;
+              // The mid-stream budget guard below runs on the REGISTRY price.
+              const hopCostCents = sumCostCents(priceUsage(hopBinding, billed));
+              costCents = priorHopsCostCents + hopCostCents;
 
-          // Exhaustive on purpose — see RESULT_DISPOSITIONS. `is_error` on a
-          // 'success' subtype is treated as a failure too: the SDK's own
-          // is_error flag is the broader signal of the two.
-          const disposition = dispositionForResultSubtype(message.subtype);
-          if (disposition.kind === 'ceiling') {
-            if (disposition.flag === 'budgetExceeded') budgetExceeded = true;
-            else maxTurnsExceeded = true;
-            abortController.abort();
-            break;
-          }
-          if (disposition.kind === 'failure' || message.is_error === true) {
-            const errors = (message as unknown as { errors?: unknown }).errors;
-            const detail = Array.isArray(errors) && errors.length > 0
-              ? errors.map((e) => String(e)).join('; ')
-              : `SDK returned ${message.subtype}`;
-            failure = {
-              errorCode: disposition.kind === 'failure' ? disposition.errorCode : 'sdk_error',
-              message: detail,
-            };
-            console.error('[aiAgentRunLoop] SDK returned a terminal error result', {
-              runId: run.id, subtype: message.subtype, detail,
-            });
-            abortController.abort();
-            break;
-          }
+              if (message.subtype === 'success' && typeof message.result === 'string' && message.result.trim()) {
+                summary = message.result.trim();
+              }
 
-          if (costCents > maxBudgetCents) {
-            budgetExceeded = true;
-            abortController.abort();
-            break;
+              // Exhaustive on purpose — see RESULT_DISPOSITIONS. `is_error` on a
+              // 'success' subtype is treated as a failure too: the SDK's own
+              // is_error flag is the broader signal of the two.
+              const disposition = dispositionForResultSubtype(message.subtype);
+              if (disposition.kind === 'ceiling') {
+                if (disposition.flag === 'budgetExceeded') budgetExceeded = true;
+                else maxTurnsExceeded = true;
+                abortController.abort();
+                break;
+              }
+              if (disposition.kind === 'failure' || message.is_error === true) {
+                const errors = (message as unknown as { errors?: unknown }).errors;
+                const detail = Array.isArray(errors) && errors.length > 0
+                  ? errors.map((e) => String(e)).join('; ')
+                  : `SDK returned ${message.subtype}`;
+                failure = {
+                  errorCode: disposition.kind === 'failure' ? disposition.errorCode : 'sdk_error',
+                  message: detail,
+                };
+                failedOnResult = true;
+                console.error('[aiAgentRunLoop] SDK returned a terminal error result', {
+                  runId: run.id, subtype: message.subtype, detail,
+                });
+                abortController.abort();
+                break;
+              }
+
+              if (hopCostCents > maxBudgetCents) {
+                budgetExceeded = true;
+                abortController.abort();
+                break;
+              }
+            }
+          } finally {
+            // Order matters: abort (if any) has already happened, and killing the
+            // subprocess before aborting crashes the process.
+            try {
+              sdkQuery.close();
+            } catch (error) {
+              console.warn('[aiAgentRunLoop] SDK query close failed (non-fatal)', { runId: run.id, error });
+            }
           }
+        });
+      } catch (error) {
+        // An abort we asked for is a controlled stop, not a crash — including the
+        // abort issued for an SDK error result, whose `failure` is already set and
+        // must not be overwritten by the AbortError it provokes, and a failover abort.
+        if (wallClockExceeded || budgetExceeded || maxTurnsExceeded || failure || failoverCause) {
+          console.warn('[aiAgentRunLoop] SDK loop aborted', {
+            runId: run.id, wallClockExceeded, budgetExceeded, maxTurnsExceeded,
+            errorCode: failure?.errorCode ?? null, failoverCause,
+          });
+        } else {
+          console.error('[aiAgentRunLoop] SDK loop failed', { runId: run.id, error });
+          failure = {
+            errorCode: 'sdk_error',
+            message: error instanceof Error ? error.message : String(error),
+          };
         }
       } finally {
-        // Order matters: abort (if any) has already happened, and killing the
-        // subprocess before aborting crashes the process.
-        try {
-          sdkQuery.close();
-        } catch (error) {
-          console.warn('[aiAgentRunLoop] SDK query close failed (non-fatal)', { runId: run.id, error });
+        // The SDK child is gone (query closed above): this hop's grants go too —
+        // on every exit (result, ceiling abort, wall clock, SDK error, a
+        // failover to the next hop, a query() throw).
+        try { child.revoke(); } catch (error) {
+          console.warn('[aiAgentRunLoop] egress grant revoke failed (non-fatal)', { runId: run.id, error });
         }
       }
-    });
-  } catch (error) {
-    // An abort we asked for is a controlled stop, not a crash — including the
-    // abort issued for an SDK error result, whose `failure` is already set and
-    // must not be overwritten by the AbortError it provokes.
-    if (wallClockExceeded || budgetExceeded || maxTurnsExceeded || failure) {
-      console.warn('[aiAgentRunLoop] SDK loop aborted', {
-        runId: run.id, wallClockExceeded, budgetExceeded, maxTurnsExceeded,
-        errorCode: failure?.errorCode ?? null,
+
+      // A terminal SDK failure is failover-eligible too when the CLI gave up
+      // before shouldFailOverNow's threshold (a 401 result, say) — but only
+      // when the hop ENDED on a classified provider status (PR #7775 review,
+      // D8): failed on a result (never the exception/catch path), no output,
+      // no tool executed in this hop, and a backup that can serve.
+      if (!failoverCause && failure && failedOnResult && terminalProviderCause && failoverRemaining.length > 0
+        && !observation.sawOutput && outcome.toolExecutionCount === toolsAtHopStart
+        && !wallClockExceeded && !budgetExceeded && !maxTurnsExceeded
+        && await backupAvailable(terminalProviderCause)) {
+        failoverCause = terminalProviderCause;
+      }
+      if (!failoverCause || wallClockExceeded || budgetExceeded || maxTurnsExceeded) break;
+
+      // Cool the failed offering, then (Codex review 5) resolve, admit and
+      // RECORD the next hop BEFORE settling this one: a crash in between
+      // leaves this hop's reservation active under a run row that already
+      // names the next hop, which a re-drive marks indeterminate.
+      try {
+        await noteProviderFailure(hopModelNow, failoverCause);
+      } catch (error) {
+        console.warn('[aiAgentRunLoop] offering cooldown failed (non-fatal)', { runId: run.id, error: safeErrorMessage(error) });
+      }
+      // PR #7775 review: the deadline (Codex review 7) and the run's remaining
+      // budget are checked BEFORE the next hop is recorded, so the run row
+      // never names a hop that was not dispatched. This hop's spend is its
+      // registry price (what its settlement below charges).
+      let next: NextAgentHop | null = null;
+      if (wallClockExceeded || Date.now() >= deadlineMs) {
+        wallClockExceeded = true;
+      } else if (priorHopsCostCents + sumCostCents(priceUsage(hopBinding, billed)) >= runLimits.maxBudgetCentsPerRun) {
+        budgetExceeded = true;
+      } else {
+        try {
+          next = await nextAgentHop({
+            runId: run.id, orgId: run.orgId, partnerId: ctx.orgPartnerId, role: modelRole,
+            requestedOfferingId, tried: [...tried], cause: failoverCause, hop: hopIndex + 1, origin: failoverOrigin,
+          });
+        } catch (error) {
+          // A DB / resolver error, distinguishable from "no backup configured".
+          const message = safeErrorMessage(error);
+          console.error('[aiAgentRunLoop] backup model lookup failed', { runId: run.id, error: message });
+          captureException(new Error(`agent run backup model lookup failed: ${message}`), undefined, {
+            org_id: run.orgId, ai_agent_run_id: run.id,
+          });
+          next = { ok: false, reason: 'no_next_hop', message: 'The backup AI model lookup failed.' };
+        }
+      }
+
+      // F4: settle THIS hop on its own binding and reservation, with its own
+      // billed usage (zero unless the provider reported some).
+      const hopTurns = turnCount - hopTurnsAtStart;
+      try {
+        const settledHop = await settleInvocation({
+          binding: hopBinding,
+          orgId: run.orgId,
+          userId: null,
+          sessionId: null,
+          agentRunId: run.id,
+          sourceRef: null,
+          usage: billed,
+          outcome: turnOutcome ?? {
+            stopReason: 'error', refused: false, refusalCategory: null, fallbackUsed: false,
+            servedModel: hopBinding.wireModel, providerModel: null, sdkReportedCostUsd: null, fastDowngraded: false,
+          },
+          reservationId: hopReservationId,
+          messageCount: hopTurns,
+          toolExecutionCount: 0,
+          prompt: hopPromptProvenance,
+        });
+        priorHopsCostCents += settledHop.costCents;
+        // Review S1: deferred but NOT persisted — keep the reservation held.
+        if (settledHop.unrecorded) await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId: hopReservationId });
+      } catch (error) {
+        // Settlement errors are DB errors: scrubbed before any log or report (S2).
+        // Retain the hold FIRST, so nothing below can skip it.
+        const hopIds = { org_id: run.orgId, ai_agent_run_id: run.id, ai_reservation_id: hopReservationId };
+        await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId: hopReservationId })
+          .catch((markError: unknown) => {
+            const markMessage = safeErrorMessage(markError);
+            console.error('[aiAgentRunLoop] failed to retain indeterminate AI reservation', { runId: run.id, error: markMessage });
+            captureException(new Error(`agent run hop reservation not retained as indeterminate: ${markMessage}`), undefined, hopIds);
+          });
+        const message = safeErrorMessage(error);
+        console.error('[aiAgentRunLoop] failed to settle a failed-over hop', { runId: run.id, error: message });
+        captureException(new Error(`agent run hop settlement failed: ${message}`), undefined, hopIds);
+        try {
+          priorHopsCostCents += sumCostCents(priceUsage(hopBinding, billed));
+        } catch (priceError) {
+          console.error('[aiAgentRunLoop] failed to price a failed-over hop', { runId: run.id, error: safeErrorMessage(priceError) });
+        }
+      }
+      // This hop is settled: nothing of it is left for the post-loop settlement.
+      costCents = priorHopsCostCents;
+      reservationId = '';
+      receivedResult = false;
+      turnOutcome = null;
+
+      // The deadline or the run budget stopped the transition before any next hop was recorded.
+      if (!next) break;
+      if (!next.ok) {
+        failure = {
+          errorCode: next.reason === 'admission_denied' ? 'org_budget_exceeded' : 'llm_unavailable',
+          message: failure ? `${next.message} (${failure.message})` : next.message,
+        };
+        break;
+      }
+      // Belt (Codex review 7): never dispatch a hop after the run's deadline —
+      // the timer may have fired during the lookup/settlement above, aborting
+      // a spent controller; the recorded hop is then never reserved.
+      if (wallClockExceeded || Date.now() >= deadlineMs) {
+        wallClockExceeded = true;
+        break;
+      }
+      if (priorHopsCostCents >= runLimits.maxBudgetCentsPerRun) {
+        budgetExceeded = true;
+        break;
+      }
+      console.warn('[aiAgentRunLoop] failing over to the next AI model', {
+        runId: run.id, fromOfferingId: hopModelNow.offering.id, toOfferingId: next.resolved.offering.id,
+        fromFunding: hopModelNow.funding, toFunding: next.resolved.funding, cause: failoverCause, hop: hopIndex + 1,
       });
-    } else {
-      console.error('[aiAgentRunLoop] SDK loop failed', { runId: run.id, error });
-      failure = {
-        errorCode: 'sdk_error',
-        message: error instanceof Error ? error.message : String(error),
-      };
+      hopIndex += 1;
+      hopCause = failoverCause;
+      tried.push(next.resolved.offering.id!);
+      hopModel = next.resolved;
+      binding = agentHopBinding(hopModel, hopIndex, hopCause);
     }
   } finally {
     clearTimeout(wallClockTimer);
@@ -2233,31 +2711,78 @@ async function driveSdkLoop(
   // credits — so a platform-billed run was effectively free and `checkBudget`
   // kept admitting runs after the credits were gone. Best-effort: an accounting
   // failure never redefines the run's outcome.
-  try {
-    if (receivedResult) {
-      await recordSessionlessSdkUsage(
-        run.orgId,
-        {
-          costCents,
-          usage,
-          numTurns: turnCount,
+  //
+  // W09: this settles the LAST hop on its own binding and reservation. A run
+  // whose last hop failed over (and was settled in the loop) has nothing left.
+  if (reservationId) {
+    try {
+      if (receivedResult && turnOutcome) {
+        if (!usageConfirmed) {
+          console.warn('[aiAgentRunLoop] ai_usage_unconfirmed: the run\'s SDK usage is billed short', {
+            runId: run.id, orgId: run.orgId,
+          });
+        }
+        // THE billing path (single cost function): ledger rows + derived
+        // rollups + the platform debit, once, under the reservation.
+        const settled = await settleInvocation({
+          binding,
+          orgId: run.orgId,
+          userId: null,
+          sessionId: null,
+          agentRunId: run.id,
+          sourceRef: null,
+          usage: billed,
+          outcome: turnOutcome,
+          reservationId,
+          messageCount: Math.max(1, turnCount - hopTurnsAtStart),
           toolExecutionCount: outcome.toolExecutionCount,
-          model,
-        },
-        billingSource,
-        reservationId,
-        { surface: 'ai_agents', agentRunId: run.id },
-      );
-    } else {
-      await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId });
+          prompt: promptProvenance,
+        });
+        // The run row carries the billed number (which also prices any model
+        // the CLI switched to on its own at its platform rate), plus what the
+        // run's failed-over hops already settled.
+        costCents = priorHopsCostCents + settled.costCents;
+        // Review S1: deferred but NOT persisted — recorded nowhere (already
+        // reported by settleInvocation). Keep the reservation held.
+        if (settled.unrecorded) await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId });
+      } else {
+        await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId });
+      }
+    } catch (error) {
+      // Settlement errors are DB errors: scrubbed before any log or report (S2).
+      const message = safeErrorMessage(error);
+      console.error('[aiAgentRunLoop] failed to record org AI usage', { runId: run.id, error: message });
+      captureException(new Error(`agent run settlement failed: ${message}`), undefined, {
+        org_id: run.orgId, ai_agent_run_id: run.id, ai_reservation_id: reservationId,
+      });
+      await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId })
+        .catch((markError) => {
+          const markMessage = safeErrorMessage(markError);
+          console.error('[aiAgentRunLoop] failed to retain indeterminate AI reservation', { runId: run.id, error: markMessage });
+          captureException(new Error(`agent run reservation not retained as indeterminate: ${markMessage}`), undefined, {
+            org_id: run.orgId, ai_agent_run_id: run.id, ai_reservation_id: reservationId,
+          });
+        });
     }
-  } catch (error) {
-    console.error('[aiAgentRunLoop] failed to record org AI usage', { runId: run.id, error });
-    await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId })
-      .catch((markError) => console.error('[aiAgentRunLoop] failed to retain indeterminate AI reservation', {
-        runId: run.id,
-        error: markError,
-      }));
+  }
+
+  // §9.1a: the FINAL answer was a refusal (no fallback, or the fallback
+  // refused too). Not an agent fault — the run ends `blocked` with the
+  // category in its outcome, after its spend was settled above.
+  const finalOutcome = turnOutcome as TurnOutcome | null;
+  if (finalOutcome?.refused && !failure) {
+    const message = refusalHeadline(finalOutcome.refusalCategory);
+    throw new AgentRunBlockedError(
+      'model_refused',
+      blockedOutcome('model_refused', {
+        message,
+        refusalCategory: finalOutcome.refusalCategory,
+        offeringId: binding.offeringId,
+        requestedModel: binding.wireModel,
+      }),
+      message,
+      { spent: { costCents: Math.round(costCents), turnCount } },
+    );
   }
 
   return {
@@ -2269,6 +2794,51 @@ async function driveSdkLoop(
     agentAuth,
     ...(failure ? { failure } : {}),
   };
+}
+
+/**
+ * AI model registry W03 (spec §9.1, §9.1a): the run's model was unavailable at
+ * dispatch, or the model refused. `running → blocked` (circuit-neutral), with
+ * what the run spent when the model was called, then the once-per-agent-per-day
+ * notice. Automations waiting on the run are told it ended through
+ * `ai.agent.run.failed` (the remediation did not happen), with the reason.
+ * Never throws: like every terminalization in this file, a failure here is
+ * logged and reported, and the stalled-run reaper is the backstop.
+ */
+async function terminalizeBlockedRun(ctx: RunContext, err: AgentRunBlockedError): Promise<void> {
+  const { run, agent } = ctx;
+  console.warn('[aiAgentRunLoop] agent run blocked by its AI model', {
+    runId: run.id, orgId: run.orgId, errorCode: err.errorCode,
+  });
+  let moved = false;
+  try {
+    moved = await transitionRunStatus(run.id, 'running', 'blocked', {
+      errorCode: err.errorCode,
+      outcome: err.outcome,
+      finishedAt: new Date(),
+      ...(err.spent ? { costCents: err.spent.costCents, turnCount: err.spent.turnCount } : {}),
+    });
+  } catch (terminalError) {
+    console.error('[aiAgentRunLoop] could not terminalize a blocked run', {
+      runId: run.id, orgId: run.orgId, errorCode: err.errorCode, terminalError,
+    });
+    captureException(terminalError instanceof Error ? terminalError : new Error(String(terminalError)));
+  }
+  if (!moved) return;
+  await safePublish('ai.agent.run.failed', run.orgId, {
+    runId: run.id, agentId: run.agentId, errorCode: err.errorCode, status: 'blocked',
+  });
+  if (!err.notify) return;
+  await notifyModelBlocked({
+    orgId: run.orgId,
+    agentId: run.agentId,
+    agentName: agent.name,
+    agent: { orgId: agent.orgId, partnerId: agent.partnerId, recipients: agent.recipients },
+    reason: err.errorCode,
+    message: err.message,
+  }).catch((notifyError: unknown) => {
+    console.error('[aiAgentRunLoop] model-blocked notify failed (non-fatal)', { runId: run.id, error: notifyError });
+  });
 }
 
 /**
@@ -2420,6 +2990,8 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // `finishRun` serializes the outcome. At most one of the six codes below
     // is ever non-null.
     const patchPlanErrorCode = await finalizePatchPlan(ctx, result);
+    // AI Suggested Fixes W2 — seventh: persist the accepted research items.
+    const researchErrorCode = await finalizeResearch(ctx, result);
 
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
@@ -2481,6 +3053,8 @@ export async function executeAgentRun(runId: string): Promise<void> {
       // that called `submit_analysis` and only then hit `error_max_turns` has
       // produced exactly what it was admitted to produce.
       || outcome.analysis !== undefined
+      // AI Suggested Fixes W2 — same rule for a research run's ONE job.
+      || outcome.research !== undefined
       || result.summary.trim().length > 0;
 
     const ceiling = outcome.wallClockExceeded
@@ -2512,10 +3086,14 @@ export async function executeAgentRun(runId: string): Promise<void> {
       ctx,
       classifyIntentAwaitingApproval(intentIds, result.decidedIntentIds) ? 'awaiting_approval' : 'completed',
       verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode ?? ticketTriageErrorCode ?? fleetDesignErrorCode
-        ?? patchPlanErrorCode,
+        ?? patchPlanErrorCode ?? researchErrorCode,
       result,
     );
   } catch (error) {
+    if (error instanceof AgentRunBlockedError) {
+      await terminalizeBlockedRun(ctx, error);
+      return;
+    }
     const errorCode = error instanceof AgentRunError
       ? error.errorCode
       : error instanceof AgentRunOwnershipError
@@ -2627,10 +3205,11 @@ async function finalizeWorkspaceForRun(
   try {
     // EVERY billing source (spec §5.6): a BYOK partner pays Anthropic for
     // tokens, but the microVM is ours. `settleComputeCents` performs the
-    // credit deduction itself, and only for `platform`. The source is
-    // re-resolved here rather than threaded from `driveSdkLoop`, because this
-    // runs on the throw path too — where that value may never have existed.
-    const billingSource: AiBillingSource = await getLlmBillingSourceForOrg(ctx.run.orgId);
+    // credit deduction itself, and only for `platform`. The source is the
+    // one ADMISSION resolved and checked credits for (W03, quorum #4) — read
+    // off the run row, so it exists on the throw path too. NULL = a run
+    // admitted before W03: the previous fail-safe.
+    const billingSource: AiBillingSource = ctx.run.fundingSource ?? 'platform';
     await settleComputeCents(ctx.run.orgId, ctx.run.id, cents, billingSource);
     // Stamp the measured provider numbers beside the cents the settle wrote.
     await inSystemDbContext(() => db
@@ -2825,7 +3404,10 @@ async function finishRun(
   // (`TRIAGE_TOOL_ALLOWLIST`), so — exactly like sweep and narrative — it
   // executes nothing, and there is no fix whose regression `scheduleFixWatch`
   // could watch for.
-  const notifies = !isVerdictProfile(ctx.run);
+  // AI Suggested Fixes W2: a research run has no recipients (its agent is
+  // system-provisioned) and its result is the suggestion rows, so it neither
+  // notifies nor watches.
+  const notifies = !isVerdictProfile(ctx.run) && !isResearchProfile(ctx.run);
   // Fleet Designer W01 (#5651): `watches` gains the design exclusion, same
   // reasoning as sweep/narrative/triage — a design run executes nothing (its
   // tool floor is read-only and `designLimits` pins `maxActionsPerRun: 0`),
@@ -2836,7 +3418,8 @@ async function finishRun(
     && !isTriageProfile(ctx.run) && !isDesignProfile(ctx.run)
     // AI patch agent W01: a patch run executes nothing, so there is no fix
     // whose regression a fix-watch could watch for.
-    && !isPatchProfile(ctx.run);
+    && !isPatchProfile(ctx.run)
+    && !isResearchProfile(ctx.run);
 
   if (notifies) {
     try {
@@ -2929,6 +3512,9 @@ let resourceScopeRecheckClock: () => number = () => Date.now();
 export function __setResourceScopeRecheckClockForTests(clock: (() => number) | null): void {
   resourceScopeRecheckClock = clock ?? (() => Date.now());
 }
+
+/** TEST ONLY — real-Postgres suites drive the context load directly (fixMemoryTxSafety). */
+export const __loadRunContextForTests = (runId: string) => loadRunContext(runId);
 
 type CurrentPolicyReader = () => Promise<ResolvedAgent | null>;
 

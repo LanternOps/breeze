@@ -17,6 +17,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AGENT_CHANGES_MAX_ROWS_PER_DEVICE_PER_DAY: 'agent ingest quota knob',
   AGENT_CHANGES_MAX_ROWS_PER_ORG_PER_DAY: 'agent ingest quota knob',
   AGENT_EDITION_AUTO_MIGRATE_ENABLED: 'agent edition migration toggle',
+  AGENT_ENROLL_RATE_LIMIT: 'rate limit knob',
+  AGENT_ENROLL_RATE_WINDOW_SECONDS: 'rate limit knob',
   AGENT_EVENTLOG_MAX_BYTES_PER_DEVICE_PER_DAY: 'agent ingest quota knob',
   AGENT_EVENTLOG_MAX_BYTES_PER_ORG_PER_DAY: 'agent ingest quota knob',
   AGENT_EVENTLOG_MAX_ROWS_PER_ORG_PER_DAY: 'agent ingest quota knob',
@@ -395,6 +397,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   REMOTE_WS_REDIS_TOPOLOGY: 'remote access topology assertion',
   // REMOVED_*
   REMOVED_DEVICE_PURGE_MAX_PER_ORG_PER_RUN: 'worker throughput knob',
+  // RESEARCH_*
+  RESEARCH_EVAL_ALLOW_REMOTE_DB: 'dev script safety override (services/llm/__scripts__)',
+  RESEARCH_EVAL_ALLOW_WRITES: 'dev script safety gate (services/llm/__scripts__)',
   // REQUIRE_*
   REQUIRE_DB_ON_STARTUP: 'boot strictness flag',
   REQUIRE_REDIS_ON_STARTUP: 'boot strictness flag',
@@ -460,6 +465,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   TD_SYNNEX_DIGITAL_BRIDGE_TIMEOUT_MS: 'timing knob',
   // TENANT_*
   TENANT_TOOL_MAX_IN_FLIGHT_PER_ORG: 'tenant tool in-flight cap',
+  // TERMINAL_*
+  TERMINAL_INPUT_MAX_BYTES_PER_MIN: 'rate limit knob',
+  TERMINAL_INPUT_MAX_MESSAGES_PER_MIN: 'rate limit knob',
   // TICKET_*
   TICKET_OUTBOX_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   TICKET_OUTBOX_RETENTION_DAYS: 'data retention window',
@@ -489,13 +497,13 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   USER_RISK_WORKER_CONCURRENCY: 'worker throughput knob',
   // VIEWER_*
   VIEWER_BINARY_DIR: 'filesystem path',
+  // VITEST
+  VITEST: 'test-runner hook (skips server bootstrap on import)',
   // WINGET_*
   WINGET_BOOTSTRAP_ARTIFACT_DIR: 'filesystem path',
   // WIN_*
   WIN_TEST_VM_SSH_KEY: 'AI patch-test lab VM',
   WIN_TEST_VM_TARGET: 'AI patch-test lab VM',
-  // WORKSPACE_*
-  WORKSPACE_CONTENT_LLM_MODEL: 'model override',
   // WS_*
   WS_TICKETS_REQUIRE_REDIS: 'remote access strictness flag',
   WS_TICKET_BIND_IP: 'remote access ticket binding flag',

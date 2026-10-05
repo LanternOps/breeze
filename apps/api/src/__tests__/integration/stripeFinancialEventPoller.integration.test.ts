@@ -153,3 +153,14 @@ describe('direct-account Stripe financial event cursor (real PostgreSQL)', () =>
     });
   });
 });
+it('quarantines a poison autopay event without blocking the later refund',async()=>{
+ const f=await seedConnection();
+ eventsList.mockResolvedValue({has_more:false,data:[
+  {id:'evt_good',type:'charge.refunded',livemode:false,created:151,data:{object:{id:'ch_good',payment_intent:'pi_good',amount:10000,amount_refunded:500,currency:'usd'}}},
+  {id:'evt_poison',type:'setup_intent.succeeded',account:'acct_foreign',livemode:false,created:150,data:{object:{id:'seti_foreign'}}},
+ ]});
+ await pollPartnerStripeFinancialEvents(f.partnerId,new Date(200_000));
+ const rows=await withSystemDbAccessContext(()=>db.select().from(stripeFinancialEvents));
+ expect(rows.find(r=>r.stripeEventId==='evt_good')).toMatchObject({status:'pending'});
+ expect(rows.find(r=>r.stripeEventId==='evt_poison')).toMatchObject({status:'blocked'});
+});

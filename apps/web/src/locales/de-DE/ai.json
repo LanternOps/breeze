@@ -86,7 +86,8 @@
         "prompt": "Zeige die neuesten Einträge im Audit-Protokoll an – welche Aktionen wurden in den letzten Stunden ausgeführt?"
       }
     },
-    "unattendedRelease": "Vom KI-Skriptprüfer geprüft und ohne Genehmigungskarte freigegeben."
+    "unattendedRelease": "Vom KI-Skriptprüfer geprüft und ohne Genehmigungskarte freigegeben.",
+    "openScriptProposal": "Vorschlag öffnen, um die Ausführungen zu sehen oder ihn in der Bibliothek zu speichern"
   },
   "aiChatSidebar": {
     "history": "Verlauf",
@@ -256,8 +257,7 @@
       "allowAuto": "Automatische Anwendung zulassen (Endbenutzer kann sie aktivieren)"
     },
     "autoApplyHint": "Die automatische Anwendung ist standardmäßig deaktiviert und nur möglich, wenn sie hier zugelassen wird.",
-    "allowedModels": "Zulässige Modelle",
-    "allModelsHint": "Keine Auswahl = alle verfügbaren Modelle.",
+    "aiModel": "KI-Modell",
     "whoCanUse": "Zugriffsberechtigte Benutzer",
     "userAccessOptions": {
       "all": "Alle Benutzer im zugeordneten Mandanten",
@@ -507,5 +507,48 @@
       "expired": "abgelaufen",
       "skipped": "übersprungen"
     }
+  },
+  "aiModelPicker": {
+    "chooseModel": "Modell auswählen",
+    "default": "(Standard)",
+    "suggested": "Empfohlen",
+    "context": "{{size}} Kontext",
+    "price": "{{input}} Eingabe / {{output}} Ausgabe pro Mio. Tokens",
+    "requiresRole": "Erfordert {{roles}}",
+    "requiresPermission": "Erfordert die Berechtigung für Premium-KI-Modelle",
+    "effort": "Aufwand",
+    "effortDefault": "Standard",
+    "effortLevels": {
+      "low": "Niedrig",
+      "medium": "Mittel",
+      "high": "Hoch",
+      "xhigh": "Sehr hoch",
+      "max": "Maximal"
+    },
+    "fast": "Schnell ({{input}} Eingabe / {{output}} Ausgabe pro Mio.)",
+    "thinking": "Denken"
+  },
+  "aiThinking": {
+    "label": "Denkt nach… {{seconds}} s"
+  },
+  "aiTurnModel": {
+    "answeredBy": "Beantwortet von {{model}}",
+    "fast": "Schnell",
+    "fellBack": "{{requested}} hat abgelehnt; ein anderes Modell hat geantwortet",
+    "fastDowngraded": "Schnell war nicht verfügbar; mit Standardgeschwindigkeit ausgeführt"
+  },
+  "aiContinuation": {
+    "reason": {
+      "cross_connection": "{{model}} läuft über eine andere KI-Verbindung, daher kann dieser Chat nicht dorthin wechseln.",
+      "connection_changed": "Die KI-Verbindung hat sich seit der letzten Antwort geändert, daher kann dieser Chat das Modell nicht wechseln.",
+      "transcript_too_large": "Diese Unterhaltung ist zu lang für {{model}}.",
+      "fit_unverifiable": "Breeze konnte nicht bestätigen, dass diese Unterhaltung in {{model}} passt."
+    },
+    "messageKept": "Ihre Nachricht bleibt erhalten. Setzen Sie in einem neuen Chat fort, der mit einer Zusammenfassung dieses Chats beginnt, oder behalten Sie das aktuelle Modell.",
+    "continue": "Mit {{model}} in einem neuen Chat fortfahren",
+    "keep": "Aktuelles Modell beibehalten",
+    "created": "Neuer Chat mit {{model}} aus einer Zusammenfassung gestartet.",
+    "failed": "Der neue Chat konnte nicht gestartet werden. Bitte erneut versuchen.",
+    "openFailed": "Der neue Chat wurde erstellt, konnte aber nicht geöffnet werden. Sie finden ihn im Chatverlauf; Ihre Nachricht wurde nicht gesendet."
   }
 }

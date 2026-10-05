@@ -126,6 +126,8 @@ export type TerminalClassification = 'increment' | 'reset' | 'neutral';
  */
 const STREAK_NEUTRAL_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set([
   'verdict', 'sweep', 'narrative', 'triage', 'design',
+  // W2: a research run returns suggestions a human must accept; it executes nothing.
+  'remediation_research',
   // AI patch agent (W01): a patch run returns a plan — advice a human must
   // accept — built from a system-assembled evidence bundle, and executes
   // nothing. Its clean completion says nothing about whether the org's
@@ -220,6 +222,9 @@ export function classifyTerminal(
   runVerdict: AgentRunVerdict | null,
   profile: AiAgentRunProfile = 'full',
 ): TerminalClassification {
+  // AI model registry W03: an admin's model choice / a provider refusal is not
+  // an agent fault, so a `blocked` run never moves the streak either way.
+  if (to === 'blocked') return 'neutral';
   if (to === 'completed') {
     if (STREAK_NEUTRAL_PROFILES.has(profile)) return 'neutral';
     return runVerdict === 'needs_attention' ? 'increment' : 'reset';

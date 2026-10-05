@@ -133,6 +133,13 @@ const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
   'services/webhookDeliveryRecord.ts':
     'updates only successCount/failureCount/lastDeliveryAt after a delivery attempt, invoked from the delivery worker in system context (runWithSystemDbAccess) — no caller-scoped auth object reaches this path',
 
+  // Security-scan dispatch flips a grandfathered legacy link to 'revoked' when
+  // its policy creator no longer holds devices:execute. Runs in the scan
+  // worker's system context; it only ever narrows (stops auto-quarantine), and
+  // writes nothing but execution_authority_legacy.
+  'services/securityScanQuarantineAuthority.ts':
+    'sets only execution_authority_legacy grandfathered -> revoked from the security-scan dispatch worker (system context) — fail-safe narrowing, no caller-scoped auth object reaches this path',
+
   // configureDefaults creates a default notification channel as part of
   // MCP-invite PARTNER BOOTSTRAP — the caller is a freshly-minted partner
   // API key with no org-scoped `allowedSiteIds` at all (site ceilings only
@@ -142,8 +149,9 @@ const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
   // The M365 control-plane connection lifecycle (consent / upgrade-consent /
   // retest / sync / disconnect, for BOTH the customer-graph-read and
   // customer-graph-actions profiles). Every caller-facing entry point is
-  // gated by its ROUTE: routes/m365CustomerGraphRead.ts (5 POST handlers) and
-  // routes/m365CustomerGraphActions.ts (3) each call
+  // gated by its ROUTE: routes/m365CustomerGraphRead.ts (7 POST handlers, incl.
+  // the W03 confirm-tenant continue/cancel) and routes/m365CustomerGraphActions.ts
+  // (5) each call
   // canMutateOrgWideGovernance before they resolve the org. The only other
   // caller, routes/m365ConsentCallback.ts, is the Microsoft admin-consent
   // redirect landing — it runs no authMiddleware and never reads `auth` at

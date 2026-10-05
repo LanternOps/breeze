@@ -1161,6 +1161,7 @@
     "clearCategory": "Seçimi temizle",
     "columnPath": "Yol",
     "columnSize": "Boyut",
+    "selectionLimit": "Tek bir temizlik çalıştırması en fazla {{max}} öğe silebilir. Tümünü seç, seçimi bu sınıra kadar en büyükten başlayarak doldurur. Bunları silin, ardından kalanlar için temizlik önizlemesini yeniden çalıştırın.",
     "selectionSummary": "{{count}} seçildi · {{size}}",
     "executeSelected": "Seçilenleri sil ({{count}})",
     "confirmTitle": "Temizleme hedeflerini kalıcı olarak sil",
@@ -1921,6 +1922,10 @@
       "noReason": "Ajan bir neden bildirmedi",
       "failedAt": "Son kurulum denemesi başarısız oldu: {{when}}"
     },
+    "awaitingRestart": {
+      "badge": "Yüklendi, yeniden başlatma gerekli",
+      "installedAt": "{{when}} tarihinde yüklendi. Cihaz yeniden başlatılana kadar bekleyen olarak listelenir."
+    },
     "approval": {
       "approved": "Onaylandı",
       "approvedTitle": "El ile onaylandı.",
@@ -2434,6 +2439,7 @@
       "bulkWakeSomeFailed": "Toplu Uyandırma Bazıları Başarısız Oldu",
       "commandQueued": "{{action}} sıraya alındı — {{hostname}} yeniden bağlandığında çalışacak",
       "commandSent": "{{action}}, {{hostname}} adlı kişiye gönderildi",
+      "commandCancelled": "{{action}}, {{hostname}} cihazına gönderilmedi: komut iptal edildi ({{reason}})",
       "compareNeedsTwo": "Karşılaştırma en az 2 aracı cihaza ihtiyaç duyar.",
       "decommissionCancelled": "Çıkarma İptal Edildi",
       "decommissionFailed": "Çıkarma Başarısız",

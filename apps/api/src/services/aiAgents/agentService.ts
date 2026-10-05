@@ -25,7 +25,10 @@ import {
   syncManagedAutomation,
 } from './managedAutomation';
 import { hasResolvableAgentRecipient, validateAgentRecipients } from './recipients';
+import type { AgentModelBinding } from './agentModelBinding';
+import { AgentModelNotAllowedError } from './agentModelErrors';
 import { assertScriptIdsAuthorizable } from './scriptAuthorization';
+import { assertResearchAgentEdit, pinResearchCreateInput, ResearchAgentEditError } from './researchAgentEdit';
 import { ensureDefaultPatchSchedule } from './scheduleService';
 
 export class UnsupportedAgentModeError extends Error {
@@ -228,7 +231,11 @@ async function assertActPrerequisites(
     recipients: Partial<AiAgentRecipients>;
   },
 ): Promise<void> {
-  if (resolved.mode !== 'act') return;
+  // AI Suggested Fixes W2: a research agent is suggestion-only (profile
+  // maxActionsPerRun 0, output = suggestion rows, no delivery), so neither the
+  // recipient nor the act-eligible-surface prerequisite applies. Without this,
+  // every research PATCH — even { enabled: false } — 422s.
+  if (resolved.mode !== 'act' || resolved.kind === 'research') return;
 
   const missing: Array<'recipient' | 'act_eligible_tool'> = [];
   const hasRecipient = await hasResolvableAgentRecipient(owner, resolved.recipients);
@@ -253,7 +260,6 @@ type ScalarPolicyInput = Partial<Pick<
   CreateAiAgentInput,
   | 'enabled'
   | 'mode'
-  | 'model'
   | 'toolAllowlist'
   | 'instructions'
   | 'cooldownSeconds'
@@ -268,11 +274,39 @@ function scalarPolicyColumns(input: ScalarPolicyInput): Partial<typeof aiAgents.
     }
     out.mode = input.mode;
   }
-  if (input.model !== undefined) out.model = input.model;
   if (input.toolAllowlist !== undefined) out.toolAllowlist = input.toolAllowlist;
   if (input.instructions !== undefined) out.instructions = input.instructions;
   if (input.cooldownSeconds !== undefined) out.cooldownSeconds = input.cooldownSeconds;
   return out;
+}
+
+/**
+ * AI model registry W03 / W05 (#7603): a policy binds to a registry OFFERING
+ * (`offeringId`; null = clear → the `ai_agents` assignment default), judged
+ * for the WRITER: an agent run skips `required_permission`, so the write is
+ * where a premium offering is gated. The policy `model` string was retired in
+ * W08 (#7606): the validator rejects it before this module runs.
+ * Loaded lazily: the binding's module graph (registry resolver adapters, the
+ * schema barrel) is only needed when a policy model is actually written.
+ */
+async function bindPolicyOffering(owner: AgentOwner, offeringId: string | null, auth: AuthContext): Promise<AgentModelBinding> {
+  const { bindAgentOffering } = await import('./agentOfferingBinding');
+  return bindAgentOffering(owner, offeringId, { userId: auth.user.id });
+}
+
+/**
+ * A PATCH re-binds only when it changes the offering. Re-saving an
+ * already-bound offering is a no-op, so an unrelated edit never fails on a
+ * permitted set that narrowed since (the run path re-checks the binding on
+ * every run anyway) — and grants nothing new, so it needs no permission check
+ * either.
+ */
+function offeringNeedsBinding(existing: Pick<AiAgentRow, 'offeringId'>, offeringId: string | null): boolean {
+  return offeringId !== (existing.offeringId ?? null);
+}
+
+function bindingColumns(binding: AgentModelBinding): Partial<typeof aiAgents.$inferInsert> {
+  return { offeringId: binding.offeringId, offeringPartnerId: binding.offeringPartnerId };
 }
 
 function createPolicyColumns(input: CreateAiAgentInput): Partial<typeof aiAgents.$inferInsert> {
@@ -631,9 +665,21 @@ async function ensureDefaultPatchScheduleSafely(row: AiAgentRow): Promise<void> 
 export async function createAgent(
   auth: AuthContext,
   owner: AgentOwner,
-  input: CreateAiAgentInput,
+  rawInput: CreateAiAgentInput,
 ): Promise<AiAgentRow> {
+  // W2: research rows are pinned to the provisioned shape (see
+  // pinResearchCreateInput) before any validation or persistence sees them.
+  const input = rawInput.kind === 'research' ? pinResearchCreateInput(rawInput) : rawInput;
   assertAgentWriteAllowed(auth, owner);
+
+  // AI Suggested Fixes W2: the partner baseline research agent is provisioned
+  // by the system (researchProvisioning.ts); a user may not create one by any
+  // path (explicit or omitted ownerScope). An org-level research row is an
+  // override of that baseline.
+  // NOT assertResearchAgentEdit(input): create input is the createAiAgentSchema
+  // output with every default materialised (limits, mode, triggers...), so a
+  // PATCH-shaped field check would refuse every legitimate create.
+  if (input.kind === 'research' && !owner.orgId) throw new ResearchAgentEditError(['ownerScope']);
 
   // Recipients are membership-validated BEFORE anything is written: a typo'd
   // or cross-tenant id must never be persisted, because notification-time
@@ -673,6 +719,12 @@ export async function createAgent(
     recipients: input.recipients,
   });
 
+  // AI model registry W03 (Step 7A) / W05: bind the chosen offering, judged
+  // for the writer — or refuse (400 not_permitted / model_unavailable, 403
+  // permission_required) — before anything is written. No choice at all = an
+  // unbound policy.
+  const modelBinding = await bindPolicyOffering(owner, input.offeringId ?? null, auth);
+
   // Pre-check the partial unique indexes on (partner_id, kind) and (org_id,
   // kind) WHERE disabled_at IS NULL. Letting the insert trip 23505 is not an
   // option here: the whole request runs inside one withDbAccessContext
@@ -701,6 +753,7 @@ export async function createAgent(
       kind: input.kind,
       name: input.name,
       ...createPolicyColumns(input),
+      ...bindingColumns(modelBinding),
       createdBy: auth.user.id,
       lastUpdatedBy: auth.user.id,
       updatedAt: new Date(),
@@ -729,11 +782,50 @@ export async function updateAgent(
   // checks move inside the callback so they read the LOCKED row, not a
   // separate unlocked `getAgent` — `withAgentRowLocked` itself only reports
   // "not found" for a predicate miss; everything else is this callback's job.
+  //
+  // AI model registry W03 (Step 7A) / W05: a changed offering is bound BEFORE
+  // the row lock. The binding reads the registry on
+  // its own pooled connection and may run the partner's one-time registry
+  // cutover, which rebinds `ai_agents` rows — under this row's FOR UPDATE that
+  // would wait on our own lock. The locked row is then checked to still be
+  // the one that was bound. Judged for the WRITER (`required_permission`),
+  // strictly, outside the lock.
+  const offeringChoice = input.offeringId;
+  let modelBinding: { owner: AgentOwner; binding: AgentModelBinding } | null = null;
+  if (offeringChoice !== undefined) {
+    const current = await getAgent(auth, id);
+    if (current && !current.disabledAt && offeringNeedsBinding(current, offeringChoice)) {
+      assertAgentWriteAllowed(auth, current);
+      const owner: AgentOwner = { orgId: current.orgId, partnerId: current.partnerId };
+      modelBinding = { owner, binding: await bindPolicyOffering(owner, offeringChoice, auth) };
+    }
+  }
+
   return withAgentRowLocked(auth, id, async (existing) => {
     if (existing.disabledAt) {
       throw new AgentAccessDeniedError('Agent not found');
     }
     assertAgentWriteAllowed(auth, existing);
+    // W2: the built-in research agent (baseline or org override) takes only
+    // enable/disable and research budget/cap edits.
+    if (existing.kind === 'research') assertResearchAgentEdit(input as Record<string, unknown>);
+
+    let modelColumns: Partial<typeof aiAgents.$inferInsert> = {};
+    if (offeringChoice !== undefined && offeringNeedsBinding(existing, offeringChoice)) {
+      // The binding above was computed from this same `offeringChoice`; what can
+      // move between it and the lock is the ROW (a concurrent policy write or
+      // an org merge), so the owner it was judged for is re-checked here.
+      if (!modelBinding
+        || modelBinding.owner.orgId !== existing.orgId
+        || modelBinding.owner.partnerId !== existing.partnerId) {
+        // The row changed between the binding and the lock (a concurrent
+        // policy write or an org merge). Nothing is written; retry.
+        throw new AgentModelNotAllowedError(
+          'The agent changed while its AI model was being saved. Try again.', 'registry_unavailable',
+        );
+      }
+      modelColumns = bindingColumns(modelBinding.binding);
+    }
 
     // Fleet Designer (W01): `kind` is immutable on PATCH, so this is the
     // only place a mode-vs-kind mismatch can be caught for an update — the
@@ -804,6 +896,7 @@ export async function updateAgent(
       .set({
         ...(input.name === undefined ? {} : { name: input.name }),
         ...updatePolicyColumns(existing, input),
+        ...modelColumns,
         lastUpdatedBy: auth.user.id,
         updatedAt: new Date(),
       })

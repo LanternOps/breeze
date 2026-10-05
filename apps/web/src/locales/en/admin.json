@@ -400,6 +400,7 @@
       "addEntry": "Add provider",
       "loading": "Loading catalog…",
       "empty": "No catalog entries yet.",
+      "noRevisions": "No revisions yet.",
       "dismiss": "Dismiss",
       "platformAdmin": {
         "title": "Platform-admin access required",
@@ -663,7 +664,15 @@
       },
       "drawer": {
         "title": "Edit {{name}}",
-        "prices": "Prices (US cents per million tokens)",
+        "prices": "Prices (US dollars per million tokens)",
+        "storedPrice": "Stored: {{value}}",
+        "priceChangeTitle": "Confirm large price change",
+        "priceChangeIntro": "These prices differ from the stored values by more than 10×. Check the unit: you are entering dollars per million tokens.",
+        "priceChangeRow": "{{group}} · {{field}}: {{stored}} → {{next}}",
+        "priceChangeConfirm": "Confirm and save",
+        "priceChangeBack": "Go back",
+        "priceGroupStandard": "Standard",
+        "priceGroupFast": "Fast mode",
         "fastPrices": "Fast mode prices (optional)",
         "fastPricesHint": "Fast mode can't be selected until all four fast prices are set.",
         "inputCentsPerM": "Input",
@@ -695,6 +704,33 @@
         "save": "Couldn't save the model.",
         "refresh": "Couldn't queue a model refresh.",
         "invalidRates": "Enter all four prices as non-negative numbers, or leave all four blank."
+      },
+      "variants": {
+        "title": "Prompt variants",
+        "subtitle": "Guidance appended to a feature's system prompt for one model family, compared with the base prompt across every partner. Variants change by release.",
+        "range": "{{from}} to {{to}}.",
+        "base": "Base prompt",
+        "columns": {
+          "variant": "Variant",
+          "state": "State",
+          "conversations": "Conversations",
+          "flagRate": "Flag rate",
+          "refusalRate": "Refusal rate",
+          "leftRate": "Left for another model",
+          "turns": "Turns to resolve",
+          "costPerConversation": "Cost / conversation"
+        },
+        "states": {
+          "staged": "Staged",
+          "candidate": "Candidate",
+          "active": "Active",
+          "retired": "Retired"
+        },
+        "lowSample": "Fewer than {{min}} conversations — too few to compare",
+        "incumbent": "Incumbent",
+        "loading": "Loading prompt variants…",
+        "empty": "No prompt variants are registered.",
+        "error": "Couldn't load the prompt variant report."
       }
     }
   },

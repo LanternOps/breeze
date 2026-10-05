@@ -194,7 +194,7 @@ export const tickets = pgTable('tickets', {
   // rather than NULL. jsonb -> excludedOpen in the export policy regardless
   // of contents (CLAUDE.md: any json/jsonb/bytea column is excludedOpen).
   fieldProvenance: jsonb('field_provenance')
-    .$type<Record<string, 'user' | 'ai_agent' | 'system'>>()
+    .$type<Record<string, 'user' | 'ai_agent' | 'system' | 'service_principal'>>()
     .notNull()
     .default({})
 });
@@ -230,6 +230,14 @@ export const ticketComments = pgTable('ticket_comments', {
   // (ticketHelpdeskSubscriber, Task 3) treats anything NOT 'user' as suspect
   // and skips admission — see the migration header for the full rationale.
   originPrincipalKind: text('origin_principal_kind').notNull().default('user'),
+  // The principal behind a machine-authored row when `origin_principal_kind`
+  // alone cannot answer "did MY integration write this?": the partner
+  // service principal id for 'service_principal' (Partner API tickets
+  // surface, 2026-12-04-101100), the AGENT id for 'ai_agent' rows (same
+  // convention as action_intents.origin_principal_id — the RUN is
+  // `agent_run_id` below), null for humans and system notes. No FK: it
+  // points at different tables by kind.
+  originPrincipalId: uuid('origin_principal_id'),
   // Loop-guard link to the agent run that authored this comment. Written by
   // addAiTriageNote() (services/ticketService.ts, P2-4a #4300) — every
   // AI-agent `comment` tool call that carries an agentRunId inserts a row

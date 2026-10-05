@@ -52,12 +52,14 @@ import {
   buildClientSystemPrompt,
   checkClientRateLimits,
   generateClientSessionTitle,
-  resolveClientLlmConfig,
 } from '../../services/clientAiSessions';
-import {
-  LlmUnavailableError,
-  type UsableLlmConfig,
-} from '../../services/llm/llmConfigResolver';
+import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
+import type { AiBillingSource } from '../../services/aiCostTracker';
+import type { ResolvedModel } from '../../services/aiModels/resolveModel';
+import { chooseSessionModel, resolveSessionTurn, type SessionModelChoice } from '../../services/aiModels/sessionModel';
+import { readOrgPartnerId } from '../../services/aiModels/candidateLoader';
+import { LlmNotConfiguredError } from '../../services/llm/llmAvailability';
+import { turnBindingFrom } from '../../services/aiModels/turnBinding';
 import {
   CLIENT_HOSTS,
   CLIENT_SESSION_TYPES,
@@ -81,7 +83,6 @@ import {
   type ClientAiAuthContext,
 } from './schemas';
 import { CLIENT_AI_SSE_PING_INTERVAL_MS, toClientSseEvent } from './sse';
-import { legacyOfficeChatModel } from '../../services/aiModels/legacySurfaceModels';
 
 export const clientAiSessionRoutes = new Hono();
 
@@ -150,20 +151,20 @@ function auditClient(
   });
 }
 
-/** Shared post-resolution preflight: org budget → partner credits. */
+/**
+ * Shared post-resolution preflight: org budget → partner credits. `funding`
+ * is the resolved offering's (W03: decided before admission).
+ */
 async function runClientPreflight(
   c: Context,
   auth: ClientAiAuthContext,
   policy: ClientAiOrgPolicy,
-  resolved: UsableLlmConfig,
+  funding: AiBillingSource,
 ): Promise<Response | null> {
   const budgetError = await checkClientBudget(policy);
   if (budgetError) return c.json({ error: budgetError }, 402);
 
-  const creditError = await checkBillingCredits(
-    auth.orgId,
-    resolved.source === 'partner' ? 'partner_key' : 'platform',
-  );
+  const creditError = await checkBillingCredits(auth.orgId, funding);
   if (creditError) return c.json({ error: creditError }, 402);
 
   return null;
@@ -181,7 +182,8 @@ async function ensureActiveClientSession(
   sessionRow: ClientSessionRow,
   auth: ClientAiAuthContext,
   policy: ClientAiOrgPolicy,
-  resolvedConfig?: UsableLlmConfig,
+  /** The turn's resolved model; absent on the /events reattach path, which resolves its own. */
+  turnModel?: ResolvedModel,
   /**
    * #5557: this turn's atomic budget hold. Absent on the /events reattach
    * path, which only materialises the session and dispatches nothing.
@@ -197,8 +199,12 @@ async function ensureActiveClientSession(
   const maxBudgetUsd = turnBudget
     ? turnBudget.maxBudgetUsd
     : await getRemainingClientBudgetUsd(policy);
-  const resolved = resolvedConfig ?? await resolveClientLlmConfig(sessionRow.orgId);
-  if (resolved.source === 'unavailable') throw new LlmUnavailableError();
+  const resolved = turnModel ?? await (async () => {
+    // Portal-user initiated: no Breeze users.id, so no permission gate.
+    const turn = await resolveSessionTurn({ sessionId: sessionRow.id, surface: 'office_chat', userId: null });
+    if (!turn.ok) throw new LlmUnavailableError(turn.message);
+    return turn;
+  })();
 
   // The session's host is encoded in its stored `type` (e.g. 'excel_client').
   const host = clientHostFromType(sessionRow.type);
@@ -214,7 +220,6 @@ async function ensureActiveClientSession(
     {
       orgId: sessionRow.orgId,
       sdkSessionId: sessionRow.sdkSessionId,
-      model: sessionRow.model,
       maxTurns: sessionRow.maxTurns,
       turnCount: sessionRow.turnCount,
       systemPrompt: sessionRow.systemPrompt,
@@ -239,7 +244,11 @@ async function ensureActiveClientSession(
     }),
     // The reservation is NOT handed to getOrCreate: it is attached atomically
     // with the turn-slot claim in tryTransitionToProcessing (see #5557 there).
-    { injectApprovalModeInstructions: false },
+    // Office is the one surface that KEEPS its live query across turns: the
+    // manager reuses it only while the resolved live-query key is unchanged
+    // (an idle session on a bumped config_version is recreated; a processing
+    // one is left for the 409 path). Portal users are not Breeze users.
+    { injectApprovalModeInstructions: false, ledgerUserId: null },
   );
 
   // Refresh per-message client state read by the tool handlers and the result hook.
@@ -294,13 +303,25 @@ clientAiSessionRoutes.post('/', async (c) => {
     return c.json({ error: 'unsupported_host', host }, 400);
   }
 
-  const resolved = await resolveClientLlmConfig(auth.orgId);
-  if (resolved.source === 'unavailable') {
-    return c.json({ error: 'ai_unavailable' }, 503);
+  // W03 (#7601): the session is created on the registry's `office_chat`
+  // offering for the org's partner. Portal users are not Breeze users, so no
+  // permission gate applies. `policy.allowedModels` is no longer read here:
+  // W02 backfilled it into the office_chat assignment, and W04 replaces its
+  // editor (an edit before then has no routing effect).
+  const partnerId = await readOrgPartnerId(auth.orgId);
+  if (!partnerId) return c.json({ error: 'ai_unavailable' }, 503);
+  let choice: SessionModelChoice;
+  try {
+    choice = await chooseSessionModel({ partnerId, orgId: auth.orgId, userId: null, surface: 'office_chat' });
+  } catch (err) {
+    if (err instanceof LlmUnavailableError || err instanceof LlmNotConfiguredError) {
+      return c.json({ error: 'ai_unavailable' }, 503);
+    }
+    throw err;
   }
-  const rejection = await runClientPreflight(c, auth, policy, resolved);
+  const rejection = await runClientPreflight(c, auth, policy, choice.billingSource);
   if (rejection) return rejection;
-  const model = legacyOfficeChatModel(policy.allowedModels, resolved.model);
+  const model = choice.model;
   const systemPrompt = buildClientSystemPrompt(host, policy.writeMode);
 
   // #6473 — mirrors createSession in services/aiAgent.ts: without this, every
@@ -319,7 +340,10 @@ clientAiSessionRoutes.post('/', async (c) => {
       clientUserId: auth.clientUserId,
       type: clientSessionType(host),
       model,
-      billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
+      offeringId: choice.offeringId,
+      offeringPartnerId: choice.offeringPartnerId,
+      options: choice.options,
+      billingSource: choice.billingSource,
       maxTurns: budget.maxTurnsPerSession,
       systemPrompt,
       workbookName: workbookName ?? null,
@@ -583,7 +607,7 @@ clientAiSessionRoutes.post(
       | {
           kind: 'ready';
           session: ClientSessionRow;
-          resolved: UsableLlmConfig;
+          model: ResolvedModel;
           redactions: DlpRedactionEvent[];
           contextCells: unknown[][] | undefined;
           contextText: string | undefined;
@@ -602,11 +626,21 @@ clientAiSessionRoutes.post(
       const rateError = await checkClientRateLimits(auth.clientUserId, auth.orgId, policy);
       if (rateError) return respond(c.json({ error: rateError }, 429));
 
-      const resolved = await resolveClientLlmConfig(auth.orgId);
-      if (resolved.source === 'unavailable') {
-        return respond(c.json({ error: 'ai_unavailable' }, 503));
+      // W03 Task 7: the office_chat turn, re-resolved from the session's
+      // stored offering; an ineligible one is a recoverable 409 and takes no
+      // reservation. Funding is the resolved offering's.
+      let model: ResolvedModel;
+      try {
+        const turn = await resolveSessionTurn({ sessionId, surface: 'office_chat', userId: null });
+        if (!turn.ok) {
+          return respond(c.json({ error: turn.message, code: turn.reason, recoverable: true }, turn.reason === 'registry_unavailable' ? 503 : 409));
+        }
+        model = turn;
+      } catch (err) {
+        captureException(err);
+        return respond(c.json({ error: 'AI configuration could not be loaded. Try again.' }, 503));
       }
-      const rejection = await runClientPreflight(c, auth, policy, resolved);
+      const rejection = await runClientPreflight(c, auth, policy, model.funding);
       if (rejection) return respond(rejection);
 
       // ── DLP chokepoint (a): the user prompt (templates ride inside it in v1) ──
@@ -666,7 +700,7 @@ clientAiSessionRoutes.post(
       return {
         kind: 'ready',
         session,
-        resolved,
+        model,
         redactions,
         contextCells,
         contextText,
@@ -677,7 +711,7 @@ clientAiSessionRoutes.post(
     if (prepared.kind === 'response') return prepared.response;
     const {
       session,
-      resolved,
+      model,
       redactions,
       contextCells,
       contextText,
@@ -703,8 +737,10 @@ clientAiSessionRoutes.post(
       reservation = await reserveAiBudget({
         orgId: auth.orgId,
         idempotencyKey: `client-ai:${sessionId}:${crypto.randomUUID()}`,
-        billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
+        billingSource: model.funding,
         sessionId,
+        // Spec §9.2: the turn binding lands in the reservation transaction.
+        binding: turnBindingFrom(model),
         namespace: 'client',
         clientBudget: {
           dailyBudgetCents: policy.dailyBudgetCents,
@@ -750,7 +786,7 @@ clientAiSessionRoutes.post(
       try {
         return {
           kind: 'ok',
-          activeSession: await ensureActiveClientSession(c, session, auth, policy, resolved, turnBudget),
+          activeSession: await ensureActiveClientSession(c, session, auth, policy, model, turnBudget),
         };
       } catch (err) {
         return { kind: 'failed', error: err };
@@ -773,10 +809,11 @@ clientAiSessionRoutes.post(
     // the turn is blocked only on pending approval waits, settle them so the
     // assistant can conclude and answer this message (#3089 — shared helper).
     // #3127: the settle wait runs between the two contexts, with none held.
-    if (!streamingSessionManager.tryTransitionToProcessing(activeSession, turnBudget.reservationId)) {
+    const turn = { turnBinding: turnBindingFrom(model) };
+    if (!streamingSessionManager.tryTransitionToProcessing(activeSession, turnBudget.reservationId, turn)) {
       const settle = await settleBlockedTurnForNewMessage(activeSession);
       if (settle !== 'concluded'
-        || !streamingSessionManager.tryTransitionToProcessing(activeSession, turnBudget.reservationId)) {
+        || !streamingSessionManager.tryTransitionToProcessing(activeSession, turnBudget.reservationId, turn)) {
         // A turn is already in flight and owns the session's reservation slot;
         // ours was never attached, so release it.
         await releaseTurnBudget();

@@ -21,7 +21,7 @@
 // code, because `budget_exceeded` and `ai_unavailable` each cover both a
 // condition that clears on its own and one that never does. A PERMANENT error
 // (no provider configured, AI switched off for the org, partner plan without
-// AI, an unpriced model id) degrades to a drained phase; anything else throws
+// AI, an unavailable extension model) degrades to a drained phase; anything else throws
 // a TransientIngestError and backs the job off. See the `run()` invoke-loop.
 //
 // DLP invariant (W2): this pass never re-runs DLP. It reads
@@ -41,9 +41,9 @@ import { TransientIngestError } from './ingestErrors';
 /**
  * The host's metered `context.ai.invoke` capability, narrowed to exactly what
  * enrichment needs. This is intentionally NOT the full `ExtensionAiInvokeInput`
- * shape — `model` selection (default + WORKSPACE_CONTENT_LLM_MODEL override) is
- * the host's job, not this call site's; see `run()`'s local `model` constant,
- * which mirrors that same resolution purely for the recorded DB column.
+ * shape — `model` selection (the partner's `extension_content` assignment) is
+ * the host's job, not this call site's. The host reports the model it actually
+ * served, and that is what the enrichment row records.
  */
 export type EnrichmentInvoke = (input: {
   orgId: string;
@@ -52,13 +52,12 @@ export type EnrichmentInvoke = (input: {
   system: string;
   messages: Array<{ role: 'user'; content: string }>;
   maxTokens: number;
-}) => Promise<{ text: string }>;
+}) => Promise<{ text: string; model: string }>;
 
 export interface EnrichmentDeps {
   invoke: EnrichmentInvoke;
 }
 
-const DEFAULT_MODEL = 'claude-haiku-4-5';
 const MAX_TEXT_CHARS = 12_000;
 const MAX_PEOPLE = 12;
 
@@ -131,17 +130,13 @@ interface PendingEnrichmentRow {
 
 export function createEnrichmentService(db: WorkspaceDatabase, deps: EnrichmentDeps) {
   const d = db;
-  // Recorded (not authoritative) model label: mirrors the same env-var/default
-  // resolution the host's invoke() applies, purely for the DB column — the
-  // host is the single source of truth for which model actually ran.
-  const model = process.env.WORKSPACE_CONTENT_LLM_MODEL ?? DEFAULT_MODEL;
 
   async function classifyOne(
     orgId: string,
     relPath: string,
     text: string,
     projects: Array<{ key: string; label: string }>,
-  ): Promise<EnrichmentResult | null> {
+  ): Promise<(EnrichmentResult & { model: string }) | null> {
     try {
       const result = await deps.invoke({
         orgId,
@@ -151,7 +146,8 @@ export function createEnrichmentService(db: WorkspaceDatabase, deps: EnrichmentD
         messages: [{ role: 'user', content: buildEnrichmentPrompt({ relPath, text, projects }) }],
         maxTokens: 1024,
       });
-      return resultSchema.parse(extractJson(result.text, 'workspace-enrich'));
+      // `model` is the model the host actually served (not an env-derived label).
+      return { ...resultSchema.parse(extractJson(result.text, 'workspace-enrich')), model: result.model };
     } catch (err) {
       // Provider/billing problems (broken BYOK key, exhausted budget, rate cap)
       // must abort the run, not burn a null-model row into every pending file —
@@ -207,7 +203,7 @@ export function createEnrichmentService(db: WorkspaceDatabase, deps: EnrichmentD
         const declaredLabel = declared
           ? (declared.label ?? projectByKey.get(declared.key) ?? null)
           : null;
-        let result: EnrichmentResult | null;
+        let result: (EnrichmentResult & { model: string }) | null;
         try {
           result = await classifyOne(orgId, file.rel_path, file.extracted_text, projects);
         } catch (err) {
@@ -259,7 +255,7 @@ export function createEnrichmentService(db: WorkspaceDatabase, deps: EnrichmentD
               (${orgId}, ${file.id}, ${inferredKey}, ${inferredLabel},
                ${result?.docType ?? null}, ${result?.docDate ?? null},
                ${declared?.key ?? null}, ${declaredLabel},
-               ${result?.confidence ?? null}, ${result ? model : null}, now())
+               ${result?.confidence ?? null}, ${result ? result.model : null}, now())
             ON CONFLICT (file_index_id) DO UPDATE SET
               inferred_project_key = EXCLUDED.inferred_project_key,
               inferred_project_label = EXCLUDED.inferred_project_label,

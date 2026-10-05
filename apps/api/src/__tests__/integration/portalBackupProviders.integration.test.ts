@@ -207,8 +207,10 @@ describe('portal backup read model over third-party rows (#6012)', () => {
     // Non-ephemeral devices: a-laptop, a-both, a-inactive-cfg. First-party
     // configured (active config): a-both. Third-party only: a-laptop and
     // a-inactive-cfg (its job is under an INACTIVE config). a-both is not
-    // counted twice; the ephemeral device is not counted at all.
-    expect(tile).toMatchObject({ total: 3, configured: 3 });
+    // counted twice; the ephemeral device is not counted at all. The seeded
+    // vendor-only row (A-VENDOR-ONLY) is a Backups-table row too, so it counts
+    // once in both numbers (#7505): 3 managed + 1 unlinked.
+    expect(tile).toMatchObject({ total: 4, configured: 4 });
     expect(tile.configured).toBeLessThanOrEqual(tile.total);
   });
 
@@ -221,7 +223,8 @@ describe('portal backup read model over third-party rows (#6012)', () => {
     await withSystemDbAccessContext(() =>
       db.update(portalBranding).set({ enableBackups: true }).where(eq(portalBranding.orgId, a.org.id)));
     const on = await withDbAccessContext(a.portalContext, () => backupTile(a.org.id, NOW));
-    // Configured, but never a claimed verification.
-    expect(on).toMatchObject({ status: 'no_data', configured: 1, total: 1, completedAt: null });
+    // Configured, but never a claimed verification. a-laptop (linked) plus the
+    // vendor-only row — the same two rows the Backups table lists (#7505).
+    expect(on).toMatchObject({ status: 'no_data', configured: 2, total: 2, completedAt: null });
   });
 });

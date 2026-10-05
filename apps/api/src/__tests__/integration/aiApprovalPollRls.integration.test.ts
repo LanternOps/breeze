@@ -55,7 +55,7 @@ beforeEach(async () => {
   userId = u!.id;
   const [s] = await tdb
     .insert(aiSessions)
-    .values({ orgId, userId, type: 'general' })
+    .values({ orgId, userId, type: 'general', model: 'claude-sonnet-5-5' })
     .returning({ id: aiSessions.id });
   sessionId = s!.id;
 });

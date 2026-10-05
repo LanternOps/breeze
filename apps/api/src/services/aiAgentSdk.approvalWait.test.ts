@@ -25,6 +25,8 @@ import type { ActionIntentSnapshot } from './actionIntents/intentService';
 // Mocks (mirrors aiAgentSdk.test.ts)
 // ============================================
 
+// W03: preflight resolves through the registry; these suites never reach it.
+vi.mock('./aiModels/sessionModel', () => ({ resolveSessionTurn: vi.fn() }));
 vi.mock('../db', () => ({
   assertOutsideHeldDbContext: vi.fn(),
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -884,6 +886,24 @@ describe('handoff terminal read-back (#6022)', () => {
     };
 
     expect(result.handoff).toBe('approved_completed');
+  });
+
+  it('hands an approved event_logs_query result to the model on a lost CAS (#7828)', async () => {
+    casLostAfterApproval('intent-readback-evq');
+    mockWaitForIntentTerminalOutcome.mockResolvedValue({
+      status: 'completed',
+      errorCode: null,
+      result: { stdout: '[{"eventId":4625}]' },
+    });
+    const session = makeActiveSession();
+
+    const result = (await createSessionPreToolUse(session)('execute_command', {
+      deviceId: 'd-1',
+      commandType: 'event_logs_query',
+    })) as { error: string; handoff?: string };
+
+    expect(result.handoff).toBe('approved_completed');
+    expect(result.error).toContain('[{"eventId":4625}]');
   });
 
   it('reads back on the DURABLE_RELEASE_ONLY exit too — without ever attempting the CAS', async () => {

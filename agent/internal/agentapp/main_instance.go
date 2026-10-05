@@ -11,6 +11,10 @@ const (
 	mainAgentLockFile      = "agent.lock"
 	exitAlreadyRunning     = 17
 	exitInstanceGuardError = 18
+	// exitConfigDirUntrusted: the config folder is a link, or another
+	// account's ownership of it or of a config file in it could not be taken
+	// back (config.ReclaimConfigDir).
+	exitConfigDirUntrusted = 19
 )
 
 var ErrMainAgentAlreadyRunning = errors.New("main agent already running")

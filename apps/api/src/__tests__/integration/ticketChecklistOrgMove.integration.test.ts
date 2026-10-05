@@ -151,7 +151,7 @@ describe('ticket_checklist_items.org_id follows its ticket on BOTH org-move axes
     const second = await seedChecklistItem({ orgId: f.orgA.id, ticketId: f.ticketA.id, position: 1 });
 
     await withSystemDbAccessContext(() =>
-      moveTicketOrg(f.ticketA.id, f.orgB.id, { userId: f.actor.id }),
+      moveTicketOrg(f.ticketA.id, f.orgB.id, { kind: 'user' as const, userId: f.actor.id }),
     );
 
     // The assertion that matters: NOT that the call succeeded, but that EVERY

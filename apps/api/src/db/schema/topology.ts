@@ -26,7 +26,7 @@ export interface TopologyPhysicalRelationshipAttributes {
   association?: 'wired' | 'wireless' | 'vpn' | 'teleport' | 'unknown' | 'uplink'; endpointKey?: string; uplinkEndpointKey?: string;
   fdbSelection?: 'selected' | 'competing' | 'excluded' | 'none'; alternativeRelationshipIds?: string[]; alternativeRelationshipsOmitted?: number;
 }
-export interface TopologyRelationshipAttributes { label?: string; notes?: string; method?: 'manual' | 'legacy' | 'os_network_context' | 'lldp' | 'cdp' | 'fdb' | 'unifi'; createdBy?: string; physical?: TopologyPhysicalRelationshipAttributes; }
+export interface TopologyRelationshipAttributes { label?: string; notes?: string; method?: 'manual' | 'legacy' | 'os_network_context' | 'lldp' | 'cdp' | 'fdb' | 'unifi'; createdBy?: string; physical?: TopologyPhysicalRelationshipAttributes; halfDefault?: true; }
 export interface TopologyBindingProvenance { method?: 'inventory' | 'accepted_link' | 'manual' | 'legacy'; sourceId?: string; createdBy?: string; }
 
 // SQL owns DEFERRABLE INITIALLY IMMEDIATE; Drizzle does not expose that option.
@@ -119,6 +119,7 @@ export const topologyNodeBindings = pgTable('topology_node_bindings', {
   uniqueIndex('topology_binding_device_id_uniq').on(table.deviceId).where(sql`device_id IS NOT NULL`),
   uniqueIndex('topology_binding_discovered_asset_id_uniq').on(table.discoveredAssetId).where(sql`discovered_asset_id IS NOT NULL`),
   uniqueIndex('topology_binding_manual_node_id_uniq').on(table.manualNodeId).where(sql`manual_node_id IS NOT NULL`),
+  index('topology_binding_node_idx').on(table.orgId, table.siteId, table.nodeId),
   foreignKey({ name: 'topology_node_bindings_site_scope_fk', columns: [table.siteId, table.orgId], foreignColumns: [sites.id, sites.orgId] }).onDelete('cascade'),
   foreignKey({ name: 'topology_binding_node_scope_fk', columns: [table.nodeId, table.orgId, table.siteId], foreignColumns: [topologyNodes.id, topologyNodes.orgId, topologyNodes.siteId] }).onDelete('cascade'),
   foreignKey({ name: 'topology_binding_device_scope_fk', columns: [table.deviceId, table.orgId, table.siteId], foreignColumns: [devices.id, devices.orgId, devices.siteId] }).onDelete('no action'),

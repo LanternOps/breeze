@@ -54,6 +54,21 @@ export type Baseline = {
   level: string;
   benchmarkVersion: string;
   scanSchedule?: { enabled?: boolean; intervalHours?: number } | null;
+  // Stored approval of the recurring scan. 'reapproval_required' = the
+  // scheduler skips this baseline until a user with devices:execute saves it.
+  scheduleApproval?: {
+    // 'legacy_grandfathered' = saved before approvals existed; keeps running
+    // while its creator holds devices:execute (no badge).
+    status: 'approved' | 'legacy_grandfathered' | 'reapproval_required' | 'not_scheduled';
+    // 'approver_invalid' = the approver (or legacy creator) is inactive or no
+    // longer has devices:execute; scheduled scans stopped.
+    reason?: 'approver_invalid' | 'not_approved' | 'invalid_approval' | null;
+    approvedBy: string | null;
+    approverName?: string | null;
+    approvedAt: string | null;
+    checkStatus?: 'ok' | 'approver_invalid' | 'lookup_failed' | null;
+    checkStatusSince?: string | null;
+  };
   isActive: boolean;
   createdAt: string;
   updatedAt: string;

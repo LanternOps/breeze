@@ -1,5 +1,7 @@
 import type { TopologyAiExplanation } from './topologyAi';
 import type { AiToolHandoffStatus } from '../utils/aiToolHandoff';
+import type { OfferingOptions } from '../validators/aiModelOptions';
+import type { AiTurnModel } from './aiModelChoices';
 
 // ============================================
 // AI Approval Modes
@@ -212,6 +214,25 @@ export type AiTopologyProgressPhase = 'gathering_evidence' | 'analyzing' | 'vali
 export type AiStreamEvent =
   | { type: 'message_start'; messageId: string }
   /**
+   * §9.1a (#7598): the turn's final answer was a model refusal. The same text
+   * also streams as ordinary content so every client renders it; this event
+   * carries the structure W05's picker uses to offer a switch.
+   */
+  | { type: 'model_refusal'; category: string | null; alternatives: Array<{ offeringId: string; displayName: string }>; docsUrl: string }
+  /**
+   * W05 (#7603): the model is reasoning. Clients show "Thinking…" between
+   * `started` and `stopped` and never a silent pause. Progress NOTES
+   * (`thinkingDisplay: 'updates'`) are not carried by Agent SDK 0.3.286
+   * (W01 spike D1); the pin test in agentSdkVersionPin.contract.test.ts
+   * forces that check to be re-run on an SDK bump.
+   */
+  | { type: 'thinking_state'; state: 'started' | 'stopped' }
+  /**
+   * W05: what actually ran this turn — the served model and the applied
+   * options — published once per turn, just before `done`.
+   */
+  | { type: 'turn_model'; turnModel: AiTurnModel }
+  /**
    * Topology M4 (#6000): a topology investigation turn never publishes
    * `content_delta`, tool events or raw assistant text. Clients see only these
    * fixed phases and ONE server-validated, cited `topology_explanation`.
@@ -331,6 +352,11 @@ export type AiStreamEvent =
 
 export interface CreateAiSessionRequest {
   pageContext?: AiPageContext;
+  /** Registry offering to run the session on (#7598 W03). */
+  offeringId?: string;
+  /** Per-call options the user chose; absent keys follow the assignment. */
+  options?: Partial<OfferingOptions>;
+  /** @deprecated W03: a model id is mapped to the partner's offering for it; W05 removes it. */
   model?: string;
   title?: string;
 }

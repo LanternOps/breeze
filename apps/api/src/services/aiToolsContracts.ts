@@ -92,7 +92,8 @@ function serviceErrorToJson(err: unknown): string | null {
 // and died as an opaque DB NOT NULL/constraint 500 instead of a structured
 // VALIDATION_ERROR the model could act on.
 const createPayload = z.object({ input: createContractSchema });
-const patchPayload = z.object({ patch: updateContractSchema });
+// Autopay policy changes remain human-only even though HTTP shares the base schema.
+const patchPayload = z.object({ patch: updateContractSchema.extend({ autopayExcluded: z.never().optional() }) });
 const linePayload = z.object({ line: contractLineInputSchema });
 const lineUpdatePayload = z.object({ patch: updateContractLineSchema });
 

@@ -1,0 +1,85 @@
+// @vitest-environment jsdom
+import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
+import { apiGet, apiPost } from '@/lib/api';
+vi.mock('@/lib/api', () => ({apiGet:vi.fn(),apiPost:vi.fn()}));
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+import AutopayActionPage from './AutopayActionPage';
+afterEach(() => { cleanup(); vi.clearAllMocks(); });
+it('loads a scanner-safe GET and changes state only after an explicit click', async () => {
+ vi.mocked(apiGet).mockResolvedValue({data:{state:'scheduled'}});
+ render(<AutopayActionPage token="opaque-token" action="skip" />);
+ await screen.findByTestId('autopay-skip-submit');expect(apiPost).not.toHaveBeenCalled();
+ vi.mocked(apiPost).mockResolvedValue({data:{status:'skipped'}});
+ fireEvent.click(screen.getByTestId('autopay-skip-submit'));
+ await waitFor(() => expect(apiPost).toHaveBeenCalledWith('/autopay/public/opaque-token/skip', {}, {redirectOnUnauthorized:false}));
+ expect((await screen.findByTestId('autopay-action-result')).textContent).toContain('skipped');
+});
+it('surfaces a rejected skip and retains the action', async () => {
+ vi.mocked(apiGet).mockResolvedValue({data:{state:'scheduled'}});
+ vi.mocked(apiPost).mockResolvedValue({error:'Another payment control is pending',statusCode:409,code:'INVALID_STATE'});
+ render(<AutopayActionPage token="opaque-token" action="skip" />);
+ fireEvent.click(await screen.findByTestId('autopay-skip-submit'));
+ await waitFor(() => expect(screen.getByTestId('autopay-action-result').textContent).toContain('Another payment control is pending'));
+ expect((screen.getByTestId('autopay-skip-submit') as HTMLButtonElement).disabled).toBe(false);
+});
+const processingText="A payment for this invoice is already processing and can't be stopped. You'll get a receipt when it completes.";
+it('says a processing payment cannot be stopped before the client clicks, and offers no skip',async()=>{
+ vi.mocked(apiGet).mockResolvedValue({data:{state:'collecting',processing:true}});
+ render(<AutopayActionPage token="token" action="skip"/>);
+ expect((await screen.findByTestId('autopay-action-result')).textContent).toBe(processingText);
+ expect(screen.queryByTestId('autopay-skip-submit')).toBeNull();expect(apiPost).not.toHaveBeenCalled();
+ expect(document.body.textContent).not.toContain('being stopped');
+});
+it('lands a skip refused because the payment started processing after the page loaded',async()=>{
+ vi.mocked(apiGet).mockResolvedValue({data:{state:'scheduled',processing:false}});
+ vi.mocked(apiPost).mockResolvedValue({error:processingText,statusCode:409,code:'COLLECTION_IN_PROGRESS',errorDetails:{reason:'payment_processing'}});
+ render(<AutopayActionPage token="token" action="skip"/>);
+ fireEvent.click(await screen.findByTestId('autopay-skip-submit'));
+ await waitFor(()=>expect(screen.getByTestId('autopay-action-result').textContent).toBe(processingText));
+ expect(screen.queryByTestId('autopay-skip-submit')).toBeNull();
+});
+// The same code refuses a skip while another change is pending (e.g. the MSP excluded an
+// invoice whose payment waits on the bank): nothing is processing and no receipt follows.
+it('says the payment is already being changed when another control is pending, without promising a receipt',async()=>{
+ vi.mocked(apiGet).mockResolvedValue({data:{state:'action_required',control:'exclude',processing:false,partnerName:'Example MSP'}});
+ vi.mocked(apiPost).mockResolvedValue({error:'Another payment control is pending',statusCode:409,code:'COLLECTION_IN_PROGRESS'});
+ render(<AutopayActionPage token="token" action="skip"/>);
+ fireEvent.click(await screen.findByTestId('autopay-skip-submit'));
+ await waitFor(()=>expect(screen.getByTestId('autopay-action-result').textContent)
+  .toBe('This payment is already being changed. Check your email for an update, or contact Example MSP.'));
+ expect(document.body.textContent).not.toContain('receipt');
+ expect(document.body.textContent).not.toContain('already processing');
+ expect(screen.queryByTestId('autopay-skip-submit')).toBeNull();
+});
+it('reports pending cancellation without claiming a completed skip',async()=>{
+ vi.mocked(apiGet).mockResolvedValue({data:{state:'scheduled'}});vi.mocked(apiPost).mockResolvedValue({data:{status:'pending',control:'skip'}});
+ render(<AutopayActionPage token="token" action="skip"/>);fireEvent.click(await screen.findByTestId('autopay-skip-submit'));
+ await waitFor(()=>expect(screen.getByTestId('autopay-action-result').textContent).toContain('Skip requested'));
+ expect(screen.queryByTestId('autopay-skip-submit')).toBeNull();
+});
+it('does not offer a mutation for unavailable links',async()=>{vi.mocked(apiGet).mockResolvedValue({error:'Unavailable',statusCode:404});render(<AutopayActionPage token="token" action="skip"/>);await screen.findByTestId('autopay-action-result');expect(screen.queryByTestId('autopay-skip-submit')).toBeNull();expect(apiPost).not.toHaveBeenCalled();});
+
+it('Confirm requires a click and reports processing without another payment',async()=>{
+ vi.mocked(apiGet).mockResolvedValue({data:{state:'requires_action',amount:'100.00',currency:'USD'}});
+ vi.mocked(apiPost).mockResolvedValue({data:{processing:true}});
+ render(<AutopayActionPage token="token" action="confirm"/>);
+ const button=await screen.findByTestId('autopay-confirm-submit');expect(apiPost).not.toHaveBeenCalled();fireEvent.click(button);
+ await waitFor(()=>expect(screen.getByTestId('autopay-action-result').textContent).toContain('Payment is processing'));
+ expect(screen.queryByTestId('autopay-confirm-submit')).toBeNull();
+});
+
+it('lands a cancelled confirmation without offering a payment action',async()=>{
+ vi.mocked(apiGet).mockResolvedValue({data:{state:'not_needed'}});
+ render(<AutopayActionPage token="token" action="confirm"/>);
+ expect((await screen.findByTestId('autopay-action-result')).textContent).toContain('no longer needed');
+ expect(screen.queryByTestId('autopay-confirm-submit')).toBeNull();expect(apiPost).not.toHaveBeenCalled();
+});
+it('lands a cancellation between GET and POST without navigating to pay',async()=>{
+ vi.mocked(apiGet).mockResolvedValue({data:{state:'requires_action'}});
+ vi.mocked(apiPost).mockResolvedValue({data:{notNeeded:true}});
+ render(<AutopayActionPage token="token" action="confirm"/>);
+ fireEvent.click(await screen.findByTestId('autopay-confirm-submit'));
+ await waitFor(()=>expect(screen.getByTestId('autopay-action-result').textContent).toContain('no longer needed'));
+ expect(screen.queryByTestId('autopay-confirm-submit')).toBeNull();
+});

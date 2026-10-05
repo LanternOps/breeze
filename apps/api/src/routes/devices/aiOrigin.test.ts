@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+// services/aiAgent.ts (reached transitively) resolves session models through
+// the registry (W03 #7601); stub its DB adapters under this partial schema mock.
+vi.mock('../../services/aiModels/sessionModel', () => ({ chooseSessionModel: vi.fn() }));
+vi.mock('../../services/aiModels/candidateLoader', () => ({ readOrgPartnerId: vi.fn() }));
+
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),

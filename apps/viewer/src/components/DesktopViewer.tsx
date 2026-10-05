@@ -17,11 +17,20 @@ import { capabilitiesFor, type TransportCapabilities } from '../lib/transports/t
 import type { VncSessionWrapper } from '../lib/transports/vnc';
 import { createVncTunnel, closeTunnel, retryVncTunnel, type VncTunnelInfo } from '../lib/tunnel';
 import { pollDesktopAccess } from '../lib/desktopAccess';
-import { mapKey, getModifiers, isModifierOnly, isCapsLock, getCapsLockState } from '../lib/keymap';
+import {
+  mapKey,
+  getModifiers,
+  isModifierOnly,
+  isCapsLock,
+  getCapsLockState,
+  keyNameModeFor,
+  resolveKeyUpName,
+} from '../lib/keymap';
 import { sendPasteText, pasteFailureMessage } from '../lib/pasteText';
 import { createInputCapabilitiesGate } from '../lib/inputCapabilities';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
 import { handleCtrlVPaste } from '../lib/clipboardPaste';
+import { isServiceModeRefusal, serviceModeRefusalMessage } from '../lib/serviceModeRefusal';
 import { shouldAutoHandoffToVnc, shouldAutoHandoffToWebRTC } from '../lib/autoHandoff';
 import { startFrameCounter } from '../lib/frameCounter';
 import { createStatsReporter } from '../lib/statsReporter';
@@ -146,6 +155,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const cancelledRef = useRef(false);
   const webrtcFallbackAttemptedRef = useRef(false);
   const pressedKeysRef = useRef<Set<string>>(new Set());
+  // Physical key (KeyboardEvent.code) → name sent on its key_down, so key_up
+  // releases the same name even if e.key changed while held (#7809).
+  const heldKeyNameByCodeRef = useRef<Map<string, string>>(new Map());
   const wheelAccRef = useRef(DEFAULT_WHEEL_ACCUMULATOR);
   const pasteCancelRef = useRef(false);
   // What the connected agent said it can do with injected text. An agent that
@@ -192,6 +204,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [bitrate, setBitrate] = useState(2500);
   const [hostname, setHostname] = useState('');
   const [remoteOs, setRemoteOs] = useState<string | null>(null);
+  // Letter keys go by produced char or physical position depending on how the
+  // remote agent injects them (#7809 — see KeyNameMode).
+  const keyNameMode = keyNameModeFor(remoteOs);
   const [connectedAt, setConnectedAt] = useState<Date | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   // #6818: the consent notice belongs to one connect attempt. Any status
@@ -685,8 +700,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           setStatus('disconnected');
         }
       },
-      onError: (message) => {
+      onError: (rawMessage) => {
         if (isStale()) return;
+        // A service-mode agent always refuses the WebSocket relay (#7415) —
+        // replace the agent's terse refusal with what to do about it.
+        const message = isServiceModeRefusal(rawMessage)
+          ? serviceModeRefusalMessage(webrtcUsableRef.current)
+          : rawMessage;
         setStatus('error');
         setConnectedAt(null);
         setErrorMessage(message);
@@ -1549,6 +1569,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       sendInputFn({ type: 'key_up', key });
     }
     pressedKeysRef.current.clear();
+    heldKeyNameByCodeRef.current.clear();
   }, [sendInputFn]);
   releaseAllKeysRef.current = releaseAllKeys;
 
@@ -1776,7 +1797,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // the previous contents.
     if (ne.code === 'KeyV' && !ne.shiftKey && (ne.ctrlKey || ne.metaKey)) {
       const dc = clipboardDCRef.current;
-      const pasteKey = mapKey(ne);
+      // Positional on purpose: this branch is detected by physical KeyV, so
+      // the remote must get V whatever letter the local layout puts there.
+      const pasteKey = mapKey(ne, 'positional');
       let pasteModifiers = getModifiers(ne);
       if (remapCmdCtrl && pasteModifiers.length > 0) {
         pasteModifiers = pasteModifiers.map(m =>
@@ -1811,7 +1834,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       return;
     }
 
-    const key = mapKey(ne);
+    const key = mapKey(ne, keyNameMode);
     if (!key) return;
 
     let modifiers = getModifiers(ne);
@@ -1832,8 +1855,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (e.repeat) return;
     if (pressedKeysRef.current.has(key)) return;
     pressedKeysRef.current.add(key);
+    if (ne.code) heldKeyNameByCodeRef.current.set(ne.code, key);
     sendInputFn({ type: 'key_down', key, capsLock });
-  }, [sendInputFn, handlePasteAsKeystrokes, remapCmdCtrl]);
+  }, [sendInputFn, handlePasteAsKeystrokes, remapCmdCtrl, keyNameMode]);
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
@@ -1849,7 +1873,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       return;
     }
 
-    let key = mapKey(ne);
+    let key = resolveKeyUpName(ne, heldKeyNameByCodeRef.current, keyNameMode);
     if (!key) return;
 
     // Apply the same ctrl↔meta remap used on key_down so the agent sees
@@ -1862,7 +1886,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (!pressedKeysRef.current.has(key)) return;
     pressedKeysRef.current.delete(key);
     sendInputFn({ type: 'key_up', key, capsLock });
-  }, [sendInputFn, remapCmdCtrl]);
+  }, [sendInputFn, remapCmdCtrl, keyNameMode]);
 
   // ── Toolbar: config changes ────────────────────────────────────────
 

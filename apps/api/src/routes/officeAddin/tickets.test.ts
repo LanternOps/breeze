@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -31,16 +31,13 @@ const { authRef, mockDb, hoisted } = vi.hoisted(() => ({
     applyDlp: vi.fn(),
     draftTicketFromEmail: vi.fn(),
     checkBudgetDetailed: vi.fn(),
-    deductBillingCredits: vi.fn(),
-    calculateCostCents: vi.fn(() => 12.5),
-    calculateCatalogCostCents: vi.fn(() => 7.25),
-    recordUsage: vi.fn(),
+    resolveModel: vi.fn(),
+    anthropicClientFor: vi.fn(),
+    settleInvocation: vi.fn(),
     reserveAiBudget: vi.fn(),
     markAiBudgetReservationIndeterminate: vi.fn(),
     releaseUnusedAiBudgetReservation: vi.fn(),
     captureException: vi.fn(),
-    getAnthropicClientForPartner: vi.fn(),
-    resolveWireModel: vi.fn<(resolved: unknown, model: string) => { model: string; catalogPricing?: unknown }>((_resolved: unknown, model: string) => ({ model })),
     anthropicClient: { messages: { create: vi.fn() } },
   },
 }));
@@ -99,10 +96,25 @@ vi.mock('../../db/schema', () => ({
 
 vi.mock('../../services/aiCostTracker', () => ({
   checkBudgetDetailed: hoisted.checkBudgetDetailed,
-  deductBillingCredits: hoisted.deductBillingCredits,
-  calculateCostCents: hoisted.calculateCostCents,
-  calculateCatalogCostCents: hoisted.calculateCatalogCostCents,
-  recordUsage: hoisted.recordUsage,
+}));
+
+vi.mock('../../services/aiModels/resolveModel', () => ({
+  resolveModel: hoisted.resolveModel,
+}));
+
+vi.mock('../../services/aiModels/connectionFactory', async (importOriginal) => ({
+  // Real MessageDispatchError: failoverDispatch's pre-output check reads it.
+  MessageDispatchError: (await importOriginal<typeof import('../../services/aiModels/connectionFactory')>()).MessageDispatchError,
+  anthropicClientFor: hoisted.anthropicClientFor,
+}));
+
+// W09 failover cools a failed offering down in Redis: never touched here.
+vi.mock('../../services/aiModels/offeringHealth', () => ({
+  noteProviderFailure: vi.fn(async () => undefined),
+}));
+
+vi.mock('../../services/aiModels/settleInvocation', () => ({
+  settleInvocation: hoisted.settleInvocation,
 }));
 
 vi.mock('../../services/aiBudgetReservations', () => ({
@@ -113,6 +125,7 @@ vi.mock('../../services/aiBudgetReservations', () => ({
 
 vi.mock('../../services/sentry', () => ({
   captureException: hoisted.captureException,
+  captureMessage: vi.fn(),
 }));
 
 vi.mock('../../services/ticketService', async (importOriginal) => ({
@@ -176,20 +189,19 @@ vi.mock('../../services/aiAgent', () => ({
   resolveDefaultModel: () => 'claude-x',
 }));
 
-vi.mock('../../services/llm/llmConfigResolver', () => ({
-  LlmUnavailableError: class LlmUnavailableError extends Error {
-    constructor() {
-      super('AI is unavailable for this partner.');
-      this.name = 'LlmUnavailableError';
-    }
-  },
-  getAnthropicClientForPartner: hoisted.getAnthropicClientForPartner,
-  resolveWireModel: hoisted.resolveWireModel,
-}));
-
 import { officeAddinTicketRoutes } from './tickets';
 import { EmailDraftFailedError } from '../../services/officeAddin/aiEmailDraft';
-import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
+import { LlmUnavailableError } from '../../services/llm/llmUnavailableError';
+import { turnBindingFrom } from '../../services/aiModels/turnBinding';
+import { makeResolvedModel } from '../../services/aiModels/__fixtures__/resolvedModel';
+
+const msgFixture = {
+  id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-sonnet-5-5', stop_reason: 'end_turn', stop_sequence: null,
+  content: [{ type: 'text', text: '{}' }],
+  usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+} as never;
+const attemptsFixture = [{ wireModel: 'claude-sonnet-5-5', message: msgFixture }];
+const RESERVATION_ID = '12121212-1212-4121-8121-121212121212';
 
 // --- db chain mock -----------------------------------------------------------
 // `select(...).from(tickets).where(...).limit(1)` drains a queue of canned rows;
@@ -323,31 +335,18 @@ beforeEach(() => {
   hoisted.insertEmailAuthoredComment.mockResolvedValue({ commentId: 'comment-1' });
   hoisted.addTicketComment.mockResolvedValue({ comment: { id: 'comment-1' }, firstResponseStamped: false });
   process.env.ANTHROPIC_API_KEY = 'test-key';
-  hoisted.getAnthropicClientForPartner.mockImplementation(async () => {
-    if (!process.env.ANTHROPIC_API_KEY) throw new LlmUnavailableError();
-    return {
-      client: hoisted.anthropicClient,
-      resolved: {
-        source: 'platform',
-        apiKey: process.env.ANTHROPIC_API_KEY,
-        model: 'claude-x',
-      },
-    };
-  });
+  hoisted.resolveModel.mockResolvedValue(makeResolvedModel('platform'));
+  hoisted.anthropicClientFor.mockReturnValue(hoisted.anthropicClient);
+  hoisted.settleInvocation.mockResolvedValue({ costCents: 1, invocationIds: ['inv-1'], deferred: false });
   hoisted.getOrgPolicy.mockResolvedValue({ dlpConfig: {} });
   hoisted.applyDlp.mockResolvedValue({ action: 'allow', text: 'redacted body', redactions: [] });
   hoisted.draftTicketFromEmail.mockResolvedValue({
     subject: 'Fix Outlook crash',
     summary: 'The customer reports Outlook crashes on launch.',
     suggestedTimeMinutes: 15,
-    inputTokens: 100,
-    outputTokens: 50,
+    attempts: attemptsFixture,
   });
   hoisted.checkBudgetDetailed.mockResolvedValue(null);
-  hoisted.deductBillingCredits.mockResolvedValue(undefined);
-  hoisted.calculateCostCents.mockReturnValue(12.5);
-  hoisted.calculateCatalogCostCents.mockReturnValue(7.25);
-  hoisted.recordUsage.mockResolvedValue(undefined);
 });
 
 describe('POST /tickets/from-email', () => {
@@ -892,6 +891,10 @@ const draftBody = {
   bodyText: 'My Outlook crashes every time I open it.',
 };
 
+function failed(attempts: unknown[], providerOutcomeUnknown = false) {
+  return new EmailDraftFailedError('Failed to draft ticket from email: nope', attempts as never, providerOutcomeUnknown);
+}
+
 describe('POST /tickets/draft', () => {
   it.each([
     ['ai_disabled', true],
@@ -914,8 +917,7 @@ describe('POST /tickets/draft', () => {
     expect(hoisted.applyDlp).not.toHaveBeenCalled();
     expect(hoisted.reserveAiBudget).not.toHaveBeenCalled();
     expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
-    expect(hoisted.recordUsage).not.toHaveBeenCalled();
-    expect(hoisted.deductBillingCredits).not.toHaveBeenCalled();
+    expect(hoisted.settleInvocation).not.toHaveBeenCalled();
   });
 
   it('fails closed when the budget lookup errors, before DLP or provider work', async () => {
@@ -928,8 +930,7 @@ describe('POST /tickets/draft', () => {
     expect(hoisted.applyDlp).not.toHaveBeenCalled();
     expect(hoisted.reserveAiBudget).not.toHaveBeenCalled();
     expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
-    expect(hoisted.recordUsage).not.toHaveBeenCalled();
-    expect(hoisted.deductBillingCredits).not.toHaveBeenCalled();
+    expect(hoisted.settleInvocation).not.toHaveBeenCalled();
   });
 
   it('does not call the provider after durable budget admission denies', async () => {
@@ -941,11 +942,35 @@ describe('POST /tickets/draft', () => {
 
     expect(res.status).toBe(429);
     expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
-    expect(hoisted.recordUsage).not.toHaveBeenCalled();
-    expect(hoisted.deductBillingCredits).not.toHaveBeenCalled();
+    expect(hoisted.settleInvocation).not.toHaveBeenCalled();
   });
 
-  it('returns a draft on the happy path, sending the DLP-redacted text to the model', async () => {
+  it('resolves office_ticket for the technician, admits and reserves with the resolved funding + binding, and settles through settleInvocation', async () => {
+    const resolved = makeResolvedModel('anthropic_byok');
+    hoisted.resolveModel.mockResolvedValue(resolved);
+
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(200);
+    expect(hoisted.resolveModel).toHaveBeenCalledWith({
+      partnerId: PARTNER_ID, orgId: ORG_A, userId: USER_ID, surface: 'office_ticket', maxTokens: 1024,
+    });
+    expect(hoisted.anthropicClientFor).toHaveBeenCalledWith(resolved, { surface: 'one_shot_email_draft', orgId: ORG_A });
+    expect(hoisted.checkBudgetDetailed).toHaveBeenCalledWith(ORG_A, 'partner_key');
+    expect(hoisted.reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_A, billingSource: 'partner_key', binding: turnBindingFrom(resolved),
+    }));
+    expect(hoisted.settleInvocation).toHaveBeenCalledTimes(1);
+    expect(hoisted.settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      binding: turnBindingFrom(resolved), orgId: ORG_A, userId: USER_ID, sessionId: null, agentRunId: null,
+      sourceRef: 'office_email_draft', reservationId: RESERVATION_ID,
+      usage: [expect.objectContaining({ model: 'claude-sonnet-5-5', tokens: expect.objectContaining({ input: 100, output: 50 }) })],
+    }));
+  });
+
+  it('returns the prefill only (never the raw provider attempts), sending the DLP-redacted text to the model', async () => {
+    const resolved = makeResolvedModel('platform');
+    hoisted.resolveModel.mockResolvedValue(resolved);
     const res = await postDraft(draftBody);
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -953,107 +978,51 @@ describe('POST /tickets/draft', () => {
       subject: 'Fix Outlook crash',
       summary: 'The customer reports Outlook crashes on launch.',
       suggestedTimeMinutes: 15,
-      inputTokens: 100,
-      outputTokens: 50,
     });
     expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(
       expect.objectContaining({
         subject: draftBody.subject,
         bodyText: 'redacted body',
-        model: 'claude-x',
-        partnerId: PARTNER_ID,
+        resolved,
         client: hoisted.anthropicClient,
       })
     );
-    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledTimes(1);
     expect(hoisted.checkBudgetDetailed).toHaveBeenCalledWith(ORG_A, 'platform');
-    // Usage accounting: sessionless (null session id), org-scoped, real token counts.
-    expect(hoisted.recordUsage).toHaveBeenCalledWith(
-      null,
-      ORG_A,
-      'claude-x',
-      100,
-      50,
-      false,
-      'platform',
-      undefined,
-      '12121212-1212-4121-8121-121212121212',
-      0, { surface: 'office_ticket', userId: USER_ID },
-    );
-    expect(hoisted.calculateCostCents).toHaveBeenCalledWith('claude-x', 100, 50);
-    expect(hoisted.deductBillingCredits).toHaveBeenCalledWith(ORG_A, 12.5);
   });
 
-  it('sends the WIRE model to the drafter and meters catalog traffic at revision rates', async () => {
-    const CATALOG_PRICING = {
-      catalogEntryId: 'entry-1',
-      revisionId: 'rev-1',
-      inputCentsPerM: 300,
-      outputCentsPerM: 1500,
-      cacheReadCentsPerM: 30,
-      cacheWriteCentsPerM: 375,
-    };
-    // A catalog endpoint speaks its own model ids; the platform-logical id
-    // 404s at the provider and the SDK's list pricing must be ignored.
-    hoisted.resolveWireModel.mockReturnValueOnce({
-      model: 'anthropic/claude-x',
-      catalogPricing: CATALOG_PRICING,
-    });
-
-    const res = await postDraft(draftBody);
-
-    expect(res.status).toBe(200);
-    expect(hoisted.resolveWireModel).toHaveBeenCalledWith(expect.anything(), 'claude-x');
-    expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'anthropic/claude-x' }),
-    );
-    expect(hoisted.recordUsage).toHaveBeenCalledWith(
-      null, ORG_A, 'claude-x', 100, 50, false, 'platform', CATALOG_PRICING,
-      '12121212-1212-4121-8121-121212121212',
-      0, { surface: 'office_ticket', userId: USER_ID },
-    );
-    expect(hoisted.calculateCatalogCostCents).toHaveBeenCalledWith(CATALOG_PRICING, 100, 50);
-    expect(hoisted.deductBillingCredits).toHaveBeenCalledWith(ORG_A, 7.25);
-  });
-
-  /**
-   * The SECOND fail-closed gate on this route (#3922 W3 review round 2). The
-   * client resolving fine says nothing about the MODEL: a pinned revision that
-   * dropped (or never verified) the partner's default model makes
-   * `resolveWireModel` throw, and without this branch the request would 500 —
-   * or, worse in an earlier shape, reach the provider with an untranslated id.
-   */
-  it('503s when the pinned revision has no verified mapping for the model', async () => {
-    hoisted.resolveWireModel.mockImplementationOnce(() => {
-      throw new LlmUnavailableError();
-    });
-
-    const res = await postDraft(draftBody);
-
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
-    // Fail CLOSED: nothing is sent to the provider and nothing is metered.
-    expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
-    expect(hoisted.recordUsage).not.toHaveBeenCalled();
-  });
-
-  it('403s when the partner has no AI-for-Office entitlement, before the key/DLP/model', async () => {
+  it('403s when the partner has no AI-for-Office entitlement, before the model resolves/DLP', async () => {
     partnerAiEnabled = false;
     const res = await postDraft(draftBody);
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'ai_not_enabled' });
+    expect(hoisted.resolveModel).not.toHaveBeenCalled();
     expect(hoisted.applyDlp).not.toHaveBeenCalled();
     expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
-    expect(hoisted.recordUsage).not.toHaveBeenCalled();
+    expect(hoisted.settleInvocation).not.toHaveBeenCalled();
   });
 
-  it('still returns the draft when usage accounting throws', async () => {
-    hoisted.recordUsage.mockRejectedValue(new Error('meter down'));
+  it('still returns the draft when settlement throws, keeps the reservation indeterminate, and reports it scrubbed (review S3)', async () => {
+    hoisted.settleInvocation.mockRejectedValue(Object.assign(new Error('Failed query: insert … params: sk-ant-secret'), { params: ['sk-ant-secret'] }));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const res = await postDraft(draftBody);
     expect(res.status).toBe(200);
-    expect(errSpy).toHaveBeenCalledWith('[office-addin] draft usage accounting failed', expect.any(Error));
+    expect(errSpy).toHaveBeenCalledWith('[office-addin] draft usage accounting failed', expect.objectContaining({
+      reservationId: RESERVATION_ID, error: expect.any(String),
+    }));
+    expect(JSON.stringify(errSpy.mock.calls)).not.toContain('sk-ant-secret');
+    expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_A, reservationId: RESERVATION_ID });
+    const report = hoisted.captureException.mock.calls.find(([e]) => /office draft usage settlement failed/.test(String((e as Error).message)));
+    expect(report).toBeDefined();
+    expect(String((report![0] as Error).message)).not.toContain('sk-ant-secret');
+    expect(report![2]).toEqual(expect.objectContaining({ org_id: ORG_A, ai_reservation_id: RESERVATION_ID }));
     errSpy.mockRestore();
+  });
+
+  it('an UNRECORDED settlement (deferred, not persisted) keeps the reservation indeterminate (review S1)', async () => {
+    hoisted.settleInvocation.mockResolvedValue({ costCents: 1, invocationIds: [], deferred: true, unrecorded: true });
+    const res = await postDraft(draftBody);
+    expect(res.status).toBe(200);
+    expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_A, reservationId: RESERVATION_ID });
   });
 
   it('404s when the technician cannot access the org', async () => {
@@ -1063,45 +1032,34 @@ describe('POST /tickets/draft', () => {
     expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
   });
 
-  it('503s when the platform config has no API key, without calling DLP or the model', async () => {
+  it('a keyless deployment answers 503 ai_unavailable (legacy contract) without DLP or the model', async () => {
     delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    hoisted.resolveModel.mockResolvedValue({
+      ok: false, reason: 'connection_unavailable', recoverable: true, offeringId: 'off-1', message: 'conn',
+    });
     const res = await postDraft(draftBody);
     expect(res.status).toBe(503);
-    const body = await res.json();
-    expect(body).toEqual({ error: 'ai_unavailable' });
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
     expect(hoisted.applyDlp).not.toHaveBeenCalled();
     expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
   });
 
-  it('proceeds with a partner BYOK config when no platform API key exists', async () => {
-    delete process.env.ANTHROPIC_API_KEY;
-    hoisted.getAnthropicClientForPartner.mockResolvedValueOnce({
-      client: hoisted.anthropicClient,
-      resolved: {
-        source: 'partner',
-        partnerId: PARTNER_ID,
-        apiKey: 'partner-key',
-        model: 'claude-partner-model',
-        configId: 'config-1',
-        configVersion: 1,
-      },
+  it('a recoverable resolver failure answers 409 with the code, before budget, DLP or provider work', async () => {
+    hoisted.resolveModel.mockResolvedValue({
+      ok: false, reason: 'model_unavailable', recoverable: true, offeringId: 'off-1', message: 'Model gone.',
     });
-
     const res = await postDraft(draftBody);
-
-    expect(res.status).toBe(200);
-    expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(expect.objectContaining({
-      partnerId: PARTNER_ID,
-      model: 'claude-partner-model',
-      client: hoisted.anthropicClient,
-    }));
-    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledTimes(1);
-    expect(hoisted.checkBudgetDetailed).toHaveBeenCalledWith(ORG_A, 'partner_key');
-    expect(hoisted.deductBillingCredits).not.toHaveBeenCalled();
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Model gone.', code: 'model_unavailable', recoverable: true });
+    expect(hoisted.checkBudgetDetailed).not.toHaveBeenCalled();
+    expect(hoisted.applyDlp).not.toHaveBeenCalled();
+    expect(hoisted.reserveAiBudget).not.toHaveBeenCalled();
   });
 
-  it('503s before DLP when the partner LLM config is unavailable', async () => {
-    hoisted.getAnthropicClientForPartner.mockRejectedValueOnce(new LlmUnavailableError());
+  it('503s before budget/DLP when the connection key is unusable at client construction', async () => {
+    hoisted.anthropicClientFor.mockImplementationOnce(() => { throw new LlmUnavailableError('no key'); });
 
     const res = await postDraft(draftBody);
 
@@ -1109,23 +1067,6 @@ describe('POST /tickets/draft', () => {
     expect(await res.json()).toEqual({ error: 'ai_unavailable' });
     expect(hoisted.applyDlp).not.toHaveBeenCalled();
     expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
-  });
-
-  it('keeps the platform-key draft path unchanged when the platform key is configured', async () => {
-    const res = await postDraft(draftBody);
-
-    expect(res.status).toBe(200);
-    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledTimes(1);
-    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledWith(PARTNER_ID, {
-      surface: 'one_shot_email_draft',
-      orgId: ORG_A,
-    });
-    expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(expect.objectContaining({
-      partnerId: PARTNER_ID,
-      orgId: ORG_A,
-      model: 'claude-x',
-      client: hoisted.anthropicClient,
-    }));
   });
 
   it('422s when DLP blocks the body, and never calls the model', async () => {
@@ -1144,124 +1085,79 @@ describe('POST /tickets/draft', () => {
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body).toEqual({ error: 'ai_unavailable' });
-    expect(errSpy).toHaveBeenCalledWith('[office-addin] draft failed', expect.any(Error));
-    // A plain Error carries no token counts — nothing to meter.
-    expect(hoisted.recordUsage).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalledWith('[office-addin] draft failed', 'model exploded');
+    // A plain Error carries no attempts — nothing to bill; the outcome is unknown.
+    expect(hoisted.settleInvocation).not.toHaveBeenCalled();
+    expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledTimes(1);
     errSpy.mockRestore();
   });
 
-  it('meters the burned tokens when the draft fails with accumulated attempt spend', async () => {
-    hoisted.draftTicketFromEmail.mockRejectedValue(
-      new EmailDraftFailedError('Failed to draft ticket from email: attempt 1: nope; attempt 2: nope', 180, 90)
-    );
+  it('bills the burned tokens when the draft fails after the provider answered', async () => {
+    hoisted.draftTicketFromEmail.mockRejectedValue(failed([...attemptsFixture, ...attemptsFixture]));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const res = await postDraft(draftBody);
     expect(res.status).toBe(503);
-    expect(hoisted.recordUsage).toHaveBeenCalledWith(
-      null,
-      ORG_A,
-      'claude-x',
-      180,
-      90,
-      false,
-      'platform',
-      undefined,
-      '12121212-1212-4121-8121-121212121212',
-      0, { surface: 'office_ticket', userId: USER_ID },
-    );
-    expect(hoisted.deductBillingCredits).toHaveBeenCalledWith(ORG_A, 12.5);
+    expect(hoisted.settleInvocation).toHaveBeenCalledTimes(1);
+    const arg = hoisted.settleInvocation.mock.calls[0]![0] as { usage: unknown[]; reservationId: string };
+    expect(arg.usage).toHaveLength(2);
+    expect(arg.reservationId).toBe(RESERVATION_ID);
+    expect(hoisted.releaseUnusedAiBudgetReservation).not.toHaveBeenCalled();
     errSpy.mockRestore();
   });
 
-  it('meters failed BYOK draft spend against the exact client source', async () => {
-    hoisted.getAnthropicClientForPartner.mockResolvedValueOnce({
-      client: hoisted.anthropicClient,
-      resolved: {
-        source: 'partner',
-        partnerId: PARTNER_ID,
-        apiKey: 'partner-key',
-        model: 'claude-partner-model',
-        configId: 'config-1',
-        configVersion: 1,
-      },
-    });
-    hoisted.draftTicketFromEmail.mockRejectedValue(
-      new EmailDraftFailedError('Failed to draft ticket from email: attempt 1: nope', 18, 9),
-    );
+  it('a refused attempt whose fallback then threw (outcome unknown) is settled with an error outcome, not left indeterminate', async () => {
+    const refused = { ...(msgFixture as object), stop_reason: 'refusal', stop_details: { category: 'cyber' } };
+    hoisted.draftTicketFromEmail.mockRejectedValue(failed([{ wireModel: 'claude-sonnet-5-5', message: refused }], true));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
     const res = await postDraft(draftBody);
-
     expect(res.status).toBe(503);
-    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledTimes(1);
-    expect(hoisted.recordUsage).toHaveBeenCalledWith(
-      null,
-      ORG_A,
-      'claude-partner-model',
-      18,
-      9,
-      false,
-      'partner_key',
-      undefined,
-      '12121212-1212-4121-8121-121212121212',
-      0, { surface: 'office_ticket', userId: USER_ID },
-    );
-    expect(hoisted.deductBillingCredits).not.toHaveBeenCalled();
+    expect(hoisted.markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    expect(hoisted.settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      sourceRef: 'office_email_draft', reservationId: RESERVATION_ID,
+      usage: [expect.objectContaining({ model: 'claude-sonnet-5-5', tokens: expect.objectContaining({ input: 100, output: 50 }) })],
+      outcome: expect.objectContaining({ stopReason: 'error' }),
+    }));
     errSpy.mockRestore();
   });
 
-  it('failure-path metering stays best-effort: a metering throw still returns the 503', async () => {
-    hoisted.draftTicketFromEmail.mockRejectedValue(
-      new EmailDraftFailedError('Failed to draft ticket from email: attempt 1: nope', 10, 5)
-    );
-    hoisted.recordUsage.mockRejectedValue(new Error('meter down'));
+  it('failure-path settlement stays best-effort: a settlement throw still returns the 503', async () => {
+    hoisted.draftTicketFromEmail.mockRejectedValue(failed(attemptsFixture));
+    hoisted.settleInvocation.mockRejectedValue(new Error('meter down'));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const res = await postDraft(draftBody);
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'ai_unavailable' });
-    expect(errSpy).toHaveBeenCalledWith('[office-addin] draft usage accounting failed', expect.any(Error));
+    expect(errSpy).toHaveBeenCalledWith('[office-addin] draft usage accounting failed', expect.objectContaining({ error: 'meter down' }));
     errSpy.mockRestore();
   });
 
-  it('releases the reservation, unmetered, when a known failure burned zero tokens', async () => {
-    hoisted.draftTicketFromEmail.mockRejectedValue(
-      new EmailDraftFailedError('Failed to draft ticket from email: attempt 1: api down', 0, 0)
-    );
+  it('releases the reservation, unbilled, when a known failure made no provider call', async () => {
+    hoisted.draftTicketFromEmail.mockRejectedValue(failed([]));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const res = await postDraft(draftBody);
     expect(res.status).toBe(503);
-    expect(hoisted.recordUsage).not.toHaveBeenCalled();
-    // The provider answered and nothing was spent: the ONE case where reserved
-    // capacity may be handed back.
-    expect(hoisted.releaseUnusedAiBudgetReservation).toHaveBeenCalledWith({
-      orgId: ORG_A,
-      reservationId: '12121212-1212-4121-8121-121212121212',
-    });
+    expect(hoisted.settleInvocation).not.toHaveBeenCalled();
+    expect(hoisted.releaseUnusedAiBudgetReservation).toHaveBeenCalledWith({ orgId: ORG_A, reservationId: RESERVATION_ID });
     expect(hoisted.markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
     errSpy.mockRestore();
   });
 
   it('keeps an ambiguous transport failure indeterminate instead of releasing it', async () => {
-    hoisted.draftTicketFromEmail.mockRejectedValue(
-      new EmailDraftFailedError('Failed to draft ticket from email: attempt 1: socket hang up', 0, 0, true)
-    );
+    hoisted.draftTicketFromEmail.mockRejectedValue(failed([], true));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const res = await postDraft(draftBody);
     expect(res.status).toBe(503);
-    expect(hoisted.recordUsage).not.toHaveBeenCalled();
+    expect(hoisted.settleInvocation).not.toHaveBeenCalled();
     expect(hoisted.releaseUnusedAiBudgetReservation).not.toHaveBeenCalled();
-    expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({
-      orgId: ORG_A,
-      reservationId: '12121212-1212-4121-8121-121212121212',
-    });
+    expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_A, reservationId: RESERVATION_ID });
     errSpy.mockRestore();
   });
 
-  it('passes the reserved remainder to the drafter as a provider token ceiling', async () => {
+  it('passes the reserved remainder to the drafter as the budget (the drafter prices it from the registry rate)', async () => {
     hoisted.reserveAiBudget.mockResolvedValueOnce({
       kind: 'reserved',
       reservedCostCents: 42.5,
-      reservationId: '12121212-1212-4121-8121-121212121212',
+      reservationId: RESERVATION_ID,
       dailyPeriodKey: '2026-09-06',
       monthlyPeriodKey: '2026-09-01',
       status: 'active',
@@ -1270,47 +1166,39 @@ describe('POST /tickets/draft', () => {
     const res = await postDraft(draftBody);
 
     expect(res.status).toBe(200);
-    expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(expect.objectContaining({
-      budgetCents: 42.5,
-      calculateCostCents: expect.any(Function),
-    }));
+    const arg = hoisted.draftTicketFromEmail.mock.calls[0]![0] as Record<string, unknown>;
+    expect(arg.budgetCents).toBe(42.5);
+    expect(arg).not.toHaveProperty('calculateCostCents');
   });
 
-  it('503s when the model call exceeds the timeout', async () => {
+  it('503s when the model call exceeds the timeout, retaining capacity, then bills the late result', async () => {
     vi.useFakeTimers();
     hoisted.draftTicketFromEmail.mockImplementation(
-      () => new Promise((resolve) => setTimeout(() => resolve({ subject: 's', summary: 'x', suggestedTimeMinutes: 5, inputTokens: 0, outputTokens: 0 }), 30_000))
+      () => new Promise((resolve) => setTimeout(() => resolve({ subject: 's', summary: 'x', suggestedTimeMinutes: 5, attempts: attemptsFixture }), 30_000))
     );
     const resPromise = postDraft(draftBody);
     await vi.advanceTimersByTimeAsync(20_001);
     const res = await resPromise;
     expect(res.status).toBe(503);
-    const body = await res.json();
-    expect(body).toEqual({ error: 'ai_unavailable' });
-    expect(hoisted.recordUsage).not.toHaveBeenCalled();
-    expect(hoisted.deductBillingCredits).not.toHaveBeenCalled();
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(hoisted.settleInvocation).not.toHaveBeenCalled();
     // Unknown outcome: capacity is RETAINED (indeterminate), never released.
-    expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({
-      orgId: ORG_A,
-      reservationId: '12121212-1212-4121-8121-121212121212',
-    });
+    expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_A, reservationId: RESERVATION_ID });
     expect(hoisted.releaseUnusedAiBudgetReservation).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(10_000);
     await vi.runAllTicks();
-    expect(hoisted.recordUsage).toHaveBeenCalledWith(
-      null, ORG_A, 'claude-x', 0, 0, false, 'platform', undefined,
-      '12121212-1212-4121-8121-121212121212',
-      0, { surface: 'office_ticket', userId: USER_ID },
-    );
-    expect(hoisted.deductBillingCredits).not.toHaveBeenCalled();
+    expect(hoisted.settleInvocation).toHaveBeenCalledTimes(1);
+    expect(hoisted.settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      sourceRef: 'office_email_draft', reservationId: RESERVATION_ID, userId: USER_ID,
+    }));
     vi.useRealTimers();
   });
 
-  it('meters a late token-bearing failure after the response timeout', async () => {
+  it('bills a late token-bearing failure after the response timeout', async () => {
     vi.useFakeTimers();
     hoisted.draftTicketFromEmail.mockImplementation(
       () => new Promise((_resolve, reject) => setTimeout(
-        () => reject(new EmailDraftFailedError('late provider result', 80, 20)),
+        () => reject(failed(attemptsFixture)),
         30_000,
       )),
     );
@@ -1318,20 +1206,191 @@ describe('POST /tickets/draft', () => {
     const resPromise = postDraft(draftBody);
     await vi.advanceTimersByTimeAsync(20_001);
     expect((await resPromise).status).toBe(503);
-    expect(hoisted.recordUsage).not.toHaveBeenCalled();
+    expect(hoisted.settleInvocation).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(10_000);
     await vi.runAllTicks();
-    expect(hoisted.recordUsage).toHaveBeenCalledWith(
-      null, ORG_A, 'claude-x', 80, 20, false, 'platform', undefined,
-      '12121212-1212-4121-8121-121212121212',
-      0, { surface: 'office_ticket', userId: USER_ID },
-    );
-    expect(hoisted.deductBillingCredits).toHaveBeenCalledWith(ORG_A, 12.5);
+    expect(hoisted.settleInvocation).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
 
   it('400s on an invalid body', async () => {
     const res = await postDraft({ ...draftBody, orgId: 'not-a-uuid' });
     expect(res.status).toBe(400);
+  });
+
+  describe('W09 failover (#7607)', () => {
+    const HOP0_RESERVATION = '13131313-1313-4131-8131-131313131313';
+    const HOP1_RESERVATION = '14141414-1414-4141-8141-141414141414';
+    const reserved = (reservationId: string, reservedCostCents: number) => ({
+      kind: 'reserved', reservationId, reservedCostCents,
+      dailyPeriodKey: '2026-09-06', monthlyPeriodKey: '2026-09-01', status: 'active',
+    });
+    const overloaded = () => Object.assign(new Error('Overloaded'), {
+      status: 529, error: { type: 'error', error: { type: 'overloaded_error' } },
+    });
+    // What draftTicketFromEmail throws when createMessage rejects: the provider
+    // error as `cause`, every completed attempt carried.
+    const providerFailure = (attempts: unknown[]) => new EmailDraftFailedError(
+      'Failed to draft ticket from email: attempt 1: Overloaded', attempts as never, true, { cause: overloaded() },
+    );
+    const primary = () => makeResolvedModel('platform', {
+      surface: 'office_ticket', offering: { id: 'p', displayName: 'P' }, failoverRemaining: ['k'],
+    });
+    const backup = () => makeResolvedModel('anthropic_byok', {
+      surface: 'office_ticket', offering: { id: 'k', displayName: 'K' }, wireModel: 'claude-haiku-4-5',
+      failover: { fromOfferingId: 'p', hop: 1, cause: 'overloaded' }, failoverRemaining: [],
+    });
+    const draftOutcome = (wireModel: string) => ({
+      subject: 'Fix Outlook crash', summary: 'Crashes on launch.', suggestedTimeMinutes: 15,
+      attempts: [{ wireModel, message: msgFixture }],
+    });
+    const settledRows = () => hoisted.settleInvocation.mock.calls.map((c) => {
+      const arg = c[0] as { binding: { offeringId: string }; usage: unknown[]; reservationId: string };
+      return [arg.binding.offeringId, arg.reservationId, arg.usage.length];
+    });
+
+    beforeEach(() => {
+      // clearAllMocks keeps queued *Once values: reset what these cases script.
+      hoisted.resolveModel.mockReset();
+      hoisted.reserveAiBudget.mockReset();
+      hoisted.draftTicketFromEmail.mockReset();
+      hoisted.checkBudgetDetailed.mockReset();
+      hoisted.checkBudgetDetailed.mockResolvedValue(null);
+      hoisted.resolveModel.mockResolvedValueOnce(primary()).mockResolvedValueOnce(backup());
+      hoisted.reserveAiBudget
+        .mockResolvedValueOnce(reserved(HOP0_RESERVATION, 80))
+        .mockResolvedValueOnce(reserved(HOP1_RESERVATION, 20));
+      consoleSpies = [
+        vi.spyOn(console, 'error').mockImplementation(() => {}),
+        vi.spyOn(console, 'warn').mockImplementation(() => {}),
+      ];
+    });
+    let consoleSpies: Array<{ mockRestore: () => void }> = [];
+
+    afterEach(() => {
+      vi.useRealTimers();
+      for (const spy of consoleSpies) spy.mockRestore();
+    });
+
+    it('a 529 before any attempt fails over; each hop is reserved and settled on its own', async () => {
+      hoisted.draftTicketFromEmail
+        .mockRejectedValueOnce(providerFailure([]))
+        .mockResolvedValueOnce(draftOutcome('claude-haiku-4-5'));
+
+      const res = await postDraft(draftBody);
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).draft).toEqual({ subject: 'Fix Outlook crash', summary: 'Crashes on launch.', suggestedTimeMinutes: 15 });
+      expect(hoisted.resolveModel).toHaveBeenLastCalledWith(expect.objectContaining({
+        partnerId: PARTNER_ID, orgId: ORG_A, userId: USER_ID, surface: 'office_ticket', maxTokens: 1024,
+        excludeOfferingIds: ['p'], failoverCause: 'overloaded',
+        failoverOrigin: { offeringId: 'p', funding: 'platform', connectionId: null },
+      }));
+      // The backup hop is admitted for ITS funding before it is reserved.
+      expect(hoisted.checkBudgetDetailed).toHaveBeenLastCalledWith(ORG_A, 'partner_key');
+      const keys = hoisted.reserveAiBudget.mock.calls.map((c) => (c[0] as { idempotencyKey: string }).idempotencyKey);
+      expect(keys).toHaveLength(2);
+      expect(keys[0]).toMatch(/^office-email-draft:/);
+      expect(keys[1]).toBe(`${keys[0]}:hop:1`);
+      expect(hoisted.reserveAiBudget.mock.calls[1]![0]).toMatchObject({ billingSource: 'partner_key', binding: turnBindingFrom(backup()) });
+      expect(hoisted.anthropicClientFor).toHaveBeenLastCalledWith(
+        expect.objectContaining({ offering: { id: 'k', displayName: 'K' } }), { surface: 'one_shot_email_draft', orgId: ORG_A },
+      );
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0], ['k', HOP1_RESERVATION, 1]]);
+      expect(hoisted.settleInvocation.mock.calls.every(([arg]) =>
+        (arg as { sourceRef: string }).sourceRef === 'office_email_draft' && (arg as { sessionId: unknown }).sessionId === null,
+      )).toBe(true);
+      expect(hoisted.markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+      expect(hoisted.releaseUnusedAiBudgetReservation).not.toHaveBeenCalled();
+    });
+
+    it("the backup hop drafts within ITS OWN reservation, never hop 0's", async () => {
+      hoisted.draftTicketFromEmail
+        .mockRejectedValueOnce(providerFailure([]))
+        .mockResolvedValueOnce(draftOutcome('claude-haiku-4-5'));
+
+      const res = await postDraft(draftBody);
+
+      expect(res.status).toBe(200);
+      const calls = hoisted.draftTicketFromEmail.mock.calls.map((c) => c[0] as { budgetCents?: number; resolved: { offering: { id: string } } });
+      expect(calls.map((c) => [c.resolved.offering.id, c.budgetCents])).toEqual([['p', 80], ['k', 20]]);
+    });
+
+    it('attempt 2 failing after attempt 1 returned a message never fails over (burned tokens bill on hop 0)', async () => {
+      // Attempt 1 answered (no usable text), attempt 2 then hit a 529.
+      hoisted.draftTicketFromEmail.mockRejectedValueOnce(providerFailure([{ wireModel: 'claude-sonnet-5-5', message: msgFixture }]));
+
+      const res = await postDraft(draftBody);
+
+      expect(res.status).toBe(503);
+      expect(hoisted.resolveModel).toHaveBeenCalledTimes(1);
+      expect(hoisted.reserveAiBudget).toHaveBeenCalledTimes(1);
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 1]]);
+    });
+
+    it('with no fallback list configured, a 529 keeps the W03 single-reservation behaviour', async () => {
+      hoisted.resolveModel.mockReset();
+      hoisted.resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'office_ticket', offering: { id: 'p', displayName: 'P' } }));
+      hoisted.draftTicketFromEmail.mockRejectedValueOnce(providerFailure([]));
+
+      const res = await postDraft(draftBody);
+
+      expect(res.status).toBe(503);
+      expect(hoisted.resolveModel).toHaveBeenCalledTimes(1);
+      expect(hoisted.reserveAiBudget).toHaveBeenCalledTimes(1);
+      expect(hoisted.draftTicketFromEmail).toHaveBeenCalledTimes(1);
+      expect(hoisted.settleInvocation).not.toHaveBeenCalled();
+      expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_A, reservationId: HOP0_RESERVATION });
+    });
+
+    it('a backup refused at admission answers 503 with hop 0 already settled and nothing else touched', async () => {
+      hoisted.draftTicketFromEmail.mockRejectedValueOnce(providerFailure([]));
+      hoisted.checkBudgetDetailed
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ reason: 'daily_budget', permanent: false, message: 'Daily AI budget exhausted' });
+
+      const res = await postDraft(draftBody);
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+      expect(hoisted.reserveAiBudget).toHaveBeenCalledTimes(1);
+      expect(hoisted.draftTicketFromEmail).toHaveBeenCalledTimes(1);
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0]]);
+      expect(hoisted.markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+      expect(hoisted.releaseUnusedAiBudgetReservation).not.toHaveBeenCalled();
+    });
+
+    it('a timeout marks the IN-FLIGHT hop indeterminate and late-settles on the hop that served', async () => {
+      vi.useFakeTimers();
+      hoisted.draftTicketFromEmail
+        .mockRejectedValueOnce(providerFailure([]))
+        .mockImplementationOnce(() => new Promise((resolve) => setTimeout(() => resolve(draftOutcome('claude-haiku-4-5')), 30_000)));
+
+      const resPromise = postDraft(draftBody);
+      await vi.advanceTimersByTimeAsync(20_001);
+      expect((await resPromise).status).toBe(503);
+      expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledTimes(1);
+      expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_A, reservationId: HOP1_RESERVATION });
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.runAllTicks();
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0], ['k', HOP1_RESERVATION, 1]]);
+    });
+
+    it('a hop that fails after the response timed out never fails over to a further hop', async () => {
+      vi.useFakeTimers();
+      hoisted.draftTicketFromEmail.mockImplementationOnce(
+        () => new Promise((_resolve, reject) => setTimeout(() => reject(providerFailure([])), 30_000)),
+      );
+
+      const resPromise = postDraft(draftBody);
+      await vi.advanceTimersByTimeAsync(20_001);
+      expect((await resPromise).status).toBe(503);
+      expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_A, reservationId: HOP0_RESERVATION });
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.runAllTicks();
+      // Nobody is waiting for the draft any more: no backup is reserved or dispatched.
+      expect(hoisted.reserveAiBudget).toHaveBeenCalledTimes(1);
+      expect(hoisted.draftTicketFromEmail).toHaveBeenCalledTimes(1);
+    });
   });
 });

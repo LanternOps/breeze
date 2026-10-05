@@ -12,6 +12,8 @@ export * from './scriptAdmission';
 export * from './softwareInventoryObservation';
 export * from './scriptProposals';
 export * from './backupHealth';
+export * from './aiModelRegistry';
+export * from './aiModelQuality';
 
 // ============================================
 // Multi-Tenancy Types
@@ -828,6 +830,10 @@ export interface PartnerSettings {
     html?: string | null;
   }>>;
   ml?: MlFeatureSettings;
+  /** AI model registry (#7598). Residency fails closed in resolveModel. */
+  ai?: {
+    residencyRequired?: boolean;
+  };
 }
 
 /** ML feature switches (`settings.ml`), same shape on partners and organizations. */
@@ -876,6 +882,7 @@ export * from './orgNarrativeReport';
 export * from './fleetDesign';
 export * from './fleetDesignApply';
 export * from './aiPatchPlan';
+export * from './remediationResearch';
 export * from './devicePatchApproval';
 export * from './deviceFunction';
 export * from './sendingDomains';
@@ -993,3 +1000,5 @@ export * from './businessReports';
 // ============================================
 
 export * from './backupStatusReport';
+export * from './aiModelChoices';
+export * from './autopay';

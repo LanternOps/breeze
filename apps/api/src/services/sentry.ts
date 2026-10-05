@@ -60,6 +60,14 @@ const ALLOWED_TAG_NAMES = new Set([
   'org_id',
   'partner_id',
   'stripe_reconcile_stage',
+  // Autopay failures: local row UUIDs and bounded enum/phase labels only.
+  'billing_notice_id',
+  'billing_notice_kind',
+  'autopay_method_id',
+  'autopay_phase',
+  'attempt_id',
+  'schedule_id',
+  'return_identity',
   // SEC-150: which phase of Checkout-session revocation produced the alert —
   // 'request' (intent/sibling request), 'expire' (the sweep's provider call),
   // 'blocked' (terminal-unrepaired) or 'charged_repair' (the session was paid
@@ -450,6 +458,25 @@ const ALLOWED_TAG_NAMES = new Set([
   // tenant; neither new tag carries a vault ref, credential, or tenant secret.
   'm365_sync_domain',
   'm365_sync_failure_code',
+  // W03 AI model registry (#7601, PR #7700 review S1/S2/S4): a billing-path
+  // failure (unrecorded settlement, failed agent-run settlement, an
+  // unreserved credit debit that did not land) is only recoverable if the
+  // operator can find the row. `scrubEvent` deletes message/extra, so the ids
+  // must ride as tags. Record-scoped opaque UUIDs, the same precedent as
+  // `invoice_id` / `accounting_mapping_id` above — never free text:
+  // `ai_reservation_id` = ai_budget_reservations.id, `ai_invocation_id` = the
+  // first ai_invocations.id of the call (the debit's idempotency key suffix),
+  // `ai_agent_run_id` = ai_agent_runs.id.
+  'ai_reservation_id',
+  'ai_invocation_id',
+  'ai_agent_run_id',
+  // AI chargeback W10 (#7608): the UTC billing month ('YYYY-MM-01') of a
+  // monthly close that failed or found expired usage — with `org_id`, the key
+  // an operator needs to find the ai_usage_charge_runs slot. A date, one value
+  // per month, written only by jobs/aiChargebackWorker.ts. Named specifically
+  // rather than `period_start` for the same reason as the mobile pair above:
+  // the allowlist is keyed by NAME.
+  'ai_charge_period_start',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;

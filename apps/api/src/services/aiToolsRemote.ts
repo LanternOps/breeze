@@ -26,6 +26,7 @@ import { aiExecuteCommand } from './aiDispatch';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { checkScreenAccessConsentGate, type ScreenAccessSurface } from '../routes/remote/screenAccessConsentGate';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+import { inToolDbPhase } from './aiToolDbContext';
 
 /**
  * #6911: `create_remote_session` is user-owned on release
@@ -81,8 +82,30 @@ async function screenAccessRefusal(
     hostname: device.hostname,
     surface,
     actor: auth,
+    isEphemeral: device.isEphemeral === true,
   });
   return gate.ok ? null : JSON.stringify(gate.body);
+}
+
+/**
+ * The screen tools' checks before they dispatch: device access (online) and
+ * the consent gate, in ONE short caller-scoped context that has committed
+ * before the capture is awaited (#7918). The three screen tools are
+ * self-managed — the capture waits up to `getToolTimeout(<tool>)` (120 s),
+ * which under a per-call transaction outlived the production idle-in-
+ * transaction timeout.
+ */
+function screenToolPrecheck(
+  surface: ScreenAccessSurface,
+  deviceId: string,
+  auth: AuthContext,
+): Promise<{ refusal: string } | { device: typeof devices.$inferSelect }> {
+  return inToolDbPhase(auth, async () => {
+    const access = await verifyDeviceAccess(deviceId, auth, true);
+    if ('error' in access) return { refusal: JSON.stringify({ error: access.error }) };
+    const refusal = await screenAccessRefusal(surface, access.device, auth);
+    return refusal ? { refusal } : { device: access.device };
+  });
 }
 
 export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
@@ -99,6 +122,8 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
     domain: 'devices',
     searchHint: 'device screen capture, screenshot of the current display',
     deviceArgs: ['deviceId'],
+    // The capture waits up to 120 s; see `screenToolPrecheck` (#7918).
+    selfManagedDbContext: true,
     definition: {
       name: 'take_screenshot',
       description: 'Capture a screenshot of the device screen. Returns the image for visual analysis. Use this when you need to see what is displayed on the device screen. Refused on devices whose remote access policy requires user consent.',
@@ -114,11 +139,8 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
     handler: async (input, auth) => {
       const deviceId = input.deviceId as string;
 
-      const access = await verifyDeviceAccess(deviceId, auth, true);
-      if ('error' in access) return JSON.stringify({ error: access.error });
-
-      const refusal = await screenAccessRefusal('take_screenshot', access.device, auth);
-      if (refusal) return refusal;
+      const access = await screenToolPrecheck('take_screenshot', deviceId, auth);
+      if ('refusal' in access) return access.refusal;
 
       const result = await aiExecuteCommand(auth, 'take_screenshot', deviceId, 'take_screenshot', {
         monitor: input.monitor ?? 0
@@ -160,6 +182,8 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
     domain: 'devices',
     searchHint: 'device screen analysis, visual troubleshooting of what the user sees',
     deviceArgs: ['deviceId'],
+    // The capture waits up to 120 s; see `screenToolPrecheck` (#7918).
+    selfManagedDbContext: true,
     definition: {
       name: 'analyze_screen',
       description: 'Take a screenshot and analyze what is visible on the device screen. Combines screenshot capture with device context for AI visual analysis. Use this for troubleshooting what the user sees. Refused on devices whose remote access policy requires user consent.',
@@ -176,11 +200,8 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
     handler: async (input, auth) => {
       const deviceId = input.deviceId as string;
 
-      const access = await verifyDeviceAccess(deviceId, auth, true);
-      if ('error' in access) return JSON.stringify({ error: access.error });
-
-      const refusal = await screenAccessRefusal('analyze_screen', access.device, auth);
-      if (refusal) return refusal;
+      const access = await screenToolPrecheck('analyze_screen', deviceId, auth);
+      if ('refusal' in access) return access.refusal;
 
       const result = await aiExecuteCommand(auth, 'analyze_screen', deviceId, 'take_screenshot', {
         monitor: input.monitor ?? 0
@@ -229,6 +250,8 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
     domain: 'devices',
     searchHint: 'mouse and keyboard: screenshot, click, double-click, move, scroll, press key, type',
     deviceArgs: ['deviceId'],
+    // The capture waits up to 120 s; see `screenToolPrecheck` (#7918).
+    selfManagedDbContext: true,
     definition: {
       name: 'computer_control',
       description: 'Control a device with mouse/keyboard input. Returns a screenshot after each action unless captureAfter is false. Actions: screenshot, left_click, right_click, middle_click, double_click, mouse_move, scroll, key, type. Refused on devices whose remote access policy requires user consent.',
@@ -257,11 +280,8 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
     handler: async (input, auth) => {
       const deviceId = input.deviceId as string;
 
-      const access = await verifyDeviceAccess(deviceId, auth, true);
-      if ('error' in access) return JSON.stringify({ error: access.error });
-
-      const refusal = await screenAccessRefusal('computer_control', access.device, auth);
-      if (refusal) return refusal;
+      const access = await screenToolPrecheck('computer_control', deviceId, auth);
+      if ('refusal' in access) return access.refusal;
 
       const result = await aiExecuteCommand(auth, 'computer_control', deviceId, 'computer_action', {
         action: input.action,

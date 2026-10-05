@@ -218,53 +218,450 @@
   "aiBudgetThresholds": {
     "invalid": "Enter up to five whole numbers between 1 and 99, separated by commas."
   },
-  "partnerAiProvider": {
-    "title": "AI Provider",
-    "subtitle": "Run Breeze AI on your own Anthropic API key instead of the platform key.",
-    "platformKey": "Platform key",
-    "platformKeyDescription": "AI features run on Breeze's Anthropic key and are billed as Breeze AI credits.",
-    "yourKey": "Your key •••• {{last4}}",
-    "verifiedAt": "Verified {{date}}",
-    "notVerifiedYet": "Not verified yet",
-    "defaultModelValue": "Default model: {{model}}",
-    "platformDefault": "Platform default",
-    "keyErrorTitle": "Your Anthropic key is not working",
-    "reconnectHint": "AI features are unavailable for your organizations until you save a working key below.",
-    "connectKeyTitle": "Connect your Anthropic key",
-    "replaceKeyTitle": "Replace your Anthropic key",
-    "keyLabel": "Anthropic API key",
-    "writeOnlyHint": "The key is verified when you save it and is never shown again.",
-    "saveKey": "Save key",
-    "keySaved": "Anthropic key saved and verified.",
-    "keySaveFailed": "Could not save the Anthropic key.",
-    "defaultModelLabel": "Default model",
-    "defaultModelHint": "Used for new AI sessions across all your organizations.",
-    "modelUpdated": "Default model updated.",
-    "modelUpdateFailed": "Could not update the default model.",
-    "disconnectTitle": "Switch back to the platform key",
-    "disconnectDescription": "Removes your Anthropic key. AI usage is billed as Breeze AI credits again.",
-    "disconnect": "Disconnect",
-    "disconnectConfirm": "Disconnect your Anthropic key? AI features will switch back to the platform key and Breeze AI credits.",
-    "disconnected": "Anthropic key removed. AI features now use the platform key.",
-    "disconnectFailed": "Could not disconnect the Anthropic key.",
-    "permissionDenied": "Managing the AI provider requires billing permissions and access to all organizations.",
-    "loadFailed": "Could not load the AI provider configuration.",
-    "workspaceDisclosure": "Workspace content enrichment uses your configured AI provider and appears in your AI usage.",
-    "endpointCardTitle": "Endpoint",
-    "endpointCardSubtitle": "Choose where your AI traffic is sent. Breeze vets every option before it appears here.",
-    "directOptionLabel": "Anthropic (direct)",
-    "verifiedModelsLabel": "Verified models: {{models}}",
-    "noVerifiedModels": "No verified models yet",
-    "viewDataNote": "View data-handling note",
-    "hideDataNote": "Hide data-handling note",
-    "confirmDialogTitle": "Switch to {{name}}?",
-    "confirmDialogMessageWithNote": "Before your AI traffic routes through {{name}}, review how it handles your data:",
-    "confirmDialogMessageNoNote": "Switch your AI traffic to {{name}}?",
-    "consentCheckboxLabel": "I understand my AI traffic and content will be processed by {{name}}",
-    "endpointUpdated": "AI endpoint updated.",
-    "endpointUpdateFailed": "Could not update the AI endpoint.",
-    "endpointDelistedBanner": "This endpoint was delisted by Breeze — AI is paused until you choose another",
-    "endpointModelUnverifiedBanner": "The model {{model}} isn't verified on this endpoint. Choose a different model or endpoint to resume AI."
+  "aiModels": {
+    "title": "AI Providers & Models",
+    "subtitle": "Connect providers, choose which models are available, and set the default model for each AI feature.",
+    "forbidden": "You don't have permission to manage AI providers and models.",
+    "loadFailed": "Couldn't load AI providers and models.",
+    "workspaceNote": "Workspace content enrichment uses your configured AI provider and appears in your AI usage.",
+    "connections": {
+      "title": "Connections",
+      "subtitle": "Where your AI requests are sent and who pays for them.",
+      "add": "Add connection",
+      "edit": "Edit",
+      "created": "Connection added",
+      "saved": "Connection saved",
+      "saveFailed": "Couldn't save the connection.",
+      "keyFailed": "Couldn't replace the API key.",
+      "endpointFailed": "Couldn't change the endpoint.",
+      "credentialSavedSettingsFailed": "The key or endpoint was saved, but the name and region were not. Try saving them again.",
+      "disconnected": "Connection removed",
+      "disconnectFailed": "Couldn't remove the connection.",
+      "columns": {
+        "name": "Name",
+        "status": "Status",
+        "key": "Key",
+        "geo": "Inference region",
+        "funding": "Billed to"
+      },
+      "kind": {
+        "platform": "Breeze platform",
+        "anthropic_byok": "Anthropic (your key)",
+        "catalog": "Catalog endpoint",
+        "openai_compatible": "OpenAI-compatible"
+      },
+      "status": {
+        "active": "Active",
+        "error": "Error",
+        "platform": "Included"
+      },
+      "funding": {
+        "platform": "Breeze credits",
+        "partner_key": "Your API key"
+      },
+      "geoSource": {
+        "connection": "own setting",
+        "platform": "platform setting",
+        "provider_default": "provider default"
+      },
+      "geoProviderDefault": "Provider default",
+      "supportedGeos": "Supports: {{geos}}",
+      "refreshQueued": "Model refresh queued",
+      "refreshFailed": "Couldn't queue a model refresh.",
+      "alreadyConnected": "Already connected",
+      "addKind": {
+        "anthropic_byok": "Anthropic API key",
+        "openai_compatible": "OpenAI-compatible endpoint"
+      },
+      "openai": {
+        "name": "Name",
+        "baseUrl": "Base URL",
+        "baseUrlHelp": "The URL that ends before /chat/completions, e.g. https://llm.example.com/v1. Hosted Breeze connects to public https endpoints only.",
+        "apiKey": "API key (optional)",
+        "apiKeyHelp": "Stored encrypted and never shown again. Local servers such as Ollama or vLLM usually need none.",
+        "optional": "Optional",
+        "keepKey": "Leave blank to keep the current key",
+        "removeKey": "Remove the stored key",
+        "keyTooShort": "A key must be at least {{min}} characters.",
+        "keyRequiredForNewUrl": "Enter the key for the new URL, or remove the key. The stored key is never sent to a new URL.",
+        "envManaged": "This connection is managed by the instance environment (MCP_LLM_* settings). Change it there; it cannot be edited here.",
+        "envReleased": "This connection was set up from the instance environment (MCP_LLM_* settings), which no longer manages it. It cannot be edited here; you can disconnect it.",
+        "envManagedBadge": "Managed by environment",
+        "noKey": "No key",
+        "discovered_one": "Found {{count}} model · {{when}}",
+        "discovered_other": "Found {{count}} models · {{when}}",
+        "partialSaved": "The endpoint or key was saved, but the name was not. Reopen the connection to rename it."
+      }
+    },
+    "drawer": {
+      "titleCreate": "Add connection",
+      "titleEdit": "Edit {{name}}",
+      "errorTitle": "This connection's key stopped working",
+      "reconnectHint": "Replace the key below to reconnect.",
+      "name": "Name",
+      "geo": "Inference region",
+      "geoProviderDefault": "Provider default",
+      "geoHint": "Where the provider processes requests. Leave on provider default unless you need a specific region.",
+      "keyLabel": "Anthropic API key",
+      "replaceKey": "Replace API key",
+      "writeOnlyHint": "Write-only: the key is never shown again after saving.",
+      "endpoint": "Endpoint",
+      "endpointDirect": "Anthropic (direct)",
+      "endpointDelisted": "The endpoint this connection uses is no longer listed. Switch back to Anthropic (direct) to recover.",
+      "verifiedModels": "Verified models: {{models}}",
+      "noVerifiedModels": "No verified models listed.",
+      "consent": "I understand that {{name}} handles my requests under the data note above.",
+      "oneCredentialChange": "Save the new key first, then change the endpoint (each is verified separately).",
+      "disconnect": "Disconnect",
+      "disconnectTitle": "Disconnect this connection?",
+      "disconnectMessage": "AI features stop using this key. You can reconnect with a new key at any time.",
+      "refresh": "Refresh models"
+    },
+    "residency": {
+      "label": "Require data residency",
+      "savedOn": "Data residency is now required",
+      "savedOff": "Data residency is no longer required",
+      "saveFailed": "Couldn't update the residency setting.",
+      "previewFailed": "Couldn't check what residency would affect.",
+      "confirmTitle": "Require data residency?",
+      "confirmBody": "These features will stop working until a model that can keep data in the required region is set as their default.",
+      "confirmSubmit": "Require residency",
+      "orgOverride": "{{org}}: {{surface}}"
+    },
+    "surfaces": {
+      "chat": "Chat",
+      "helper": "Helper",
+      "script_builder": "Script builder",
+      "script_reviewer": "Script reviewer",
+      "office_chat": "Office add-in chat",
+      "office_ticket": "Office ticket assistant",
+      "ai_agents": "AI agents",
+      "catalog_enrichment": "Catalog enrichment",
+      "extension_content": "Extension content",
+      "patch_test": "Patch testing"
+    },
+    "blockers": {
+      "model_unavailable": "This model is no longer available.",
+      "unpriced": "No price is set for this model.",
+      "plan_required": "Your plan doesn't include this model.",
+      "connection_unavailable": "Its connection isn't working.",
+      "residency_unavailable": "It can't keep data in the required region."
+    },
+    "errors": {
+      "not_found": "That item no longer exists. Reload and try again.",
+      "unpriced": "This model has no price yet, so it cannot be enabled.",
+      "not_eligible": "This model cannot be used that way right now.",
+      "offering_in_use": "A feature still uses this model as its default. Choose another default first.",
+      "stale_write": "Someone else changed this while you were editing. Reload and try again.",
+      "conflict": "This conflicts with an existing setting.",
+      "invalid": "That change is not valid.",
+      "tools_unsupported": "This model can't call tools, which this feature needs.",
+      "widens_partner": "An organization can only narrow what its partner allows.",
+      "write_failed": "Couldn't save that change. Try again.",
+      "registry_unavailable": "AI configuration is being upgraded. Try again in a moment.",
+      "approvals_decide_required": "Changing the script reviewer’s model needs the approvals:decide permission.",
+      "queue_unavailable": "The request queue is unavailable. Try again in a moment.",
+      "registry_busy": "Another AI configuration change is in progress. Try again in a moment.",
+      "crossesFunding": "That backup model is paid from a different source. Allow failover between Breeze credits and your own API key first.",
+      "egress_blocked": "That address is not allowed.",
+      "invalid_url": "That URL is not valid.",
+      "managed_by_env": "This connection is managed by the instance environment and cannot be changed here.",
+      "connection_in_use": "A feature still uses a model on this connection. Choose another default first.",
+      "duplicate_model": "That model id is already on this connection.",
+      "geo_not_supported": "This kind of connection cannot set an inference region.",
+      "key_required_for_new_endpoint": "Enter the key for the new URL (or remove the key).",
+      "too_many_models": "This connection already has the maximum number of hand-entered models."
+    },
+    "org": {
+      "title": "Model defaults",
+      "subtitle": "Override the partner's model defaults for this organization. An organization can only narrow what its partner allows; leave a field on Inherit to follow the partner.",
+      "partnerLink": "View partner defaults",
+      "inherit": "Inherit",
+      "inheritModel": "Inherit — {{model}} (partner default)",
+      "inheritNone": "Inherit — no default",
+      "inheritValue": "Inherit — {{value}}",
+      "inheritModelDefault": "Inherit — model default",
+      "inheritedFrom": "Inherits {{model}} (partner default)",
+      "inheritedNone": "No partner default for this feature",
+      "effective": "Effective: {{model}} ({{source}})",
+      "effectiveNone": "Effective: no default",
+      "lockChoice": "Don't let users choose",
+      "lockedByPartner": "Locked by the partner",
+      "readonly": "You can view these defaults. Changing them needs the organization-write permission.",
+      "pickDefault": "Choose a default model for this feature: the partner default ({{model}}) is not among the allowed models.",
+      "widensField": "The partner does not allow this value for this feature.",
+      "loadFailed": "Couldn't load the model defaults.",
+      "saved": "Model defaults saved.",
+      "saveFailed": "Couldn't save the model defaults. Try again.",
+      "source": {
+        "org": "Organization override",
+        "partner": "Partner default",
+        "none": "No default"
+      },
+      "noCrossFunding": "Don’t fail over between Breeze credits and the partner’s own key",
+      "crossFundingLocked": "Not allowed by the partner",
+      "fallbackInherit_one": "Inherit — {{count}} backup model (partner)",
+      "fallbackInherit_other": "Inherit — {{count}} backup models (partner)",
+      "fallbackOnlyThese": "Only these backup models",
+      "noBackups": "No backup models"
+    },
+    "models": {
+      "title": "Models",
+      "subtitle": "Choose which models your technicians and features can use. Prices are per 1M tokens.",
+      "empty": "No models are available yet.",
+      "otherGroup": "Other",
+      "ratePair": "{{input}} in / {{output}} out per 1M tokens",
+      "fastRate": "Fast: {{rate}}",
+      "noPrice": "No price",
+      "context": "{{tokens}} token context",
+      "unverified": "Capabilities unverified",
+      "lifecycle": {
+        "missing": "Missing from provider",
+        "retired": "Retired"
+      },
+      "defaultFor": "Default for {{count}} feature(s)",
+      "enabledAt": "Enabled {{name}} at {{rate}}",
+      "enabled": "Enabled {{name}}",
+      "disabled": "Disabled {{name}}",
+      "toggleFailed": "Couldn’t change that model. Try again.",
+      "inUseFriendly": "This model is still a default. Confirm to disable it anyway.",
+      "enableFirst": "Enable the model first, then edit its details.",
+      "details": "Details",
+      "enableLabel": "Enable {{name}}",
+      "disableTitle": "Disable {{name}}?",
+      "disableMessage": "These features use this model as their default. They will have no model until you choose another:",
+      "disableAnyway": "Disable anyway",
+      "orgOverrides": "Organization overrides affected: {{count}}",
+      "verification": {
+        "verified": "Verified",
+        "unverified": "Not verified",
+        "failed": "Verification failed",
+        "failedWithSummary": "Verification failed: {{summary}}",
+        "stale": "Re-verify: endpoint changed"
+      },
+      "setPriceToEnable": "Set a price to enable",
+      "manual": {
+        "add": "Add model",
+        "empty": "No models yet. Add one by hand or refresh the connection to discover them.",
+        "title": "Add a model",
+        "modelId": "Model id",
+        "modelIdHelp": "Exactly as the endpoint expects it, e.g. qwen2.5-coder:7b.",
+        "modelIdInvalid": "Use letters, digits and . _ : / @ + - only, with no spaces.",
+        "displayName": "Display name (optional)",
+        "pricesHint": "Optional. Cents per 1M tokens. Fill in all four, or leave all blank and set a price before enabling.",
+        "added": "Model added",
+        "failed": "Couldn't add the model."
+      }
+    },
+    "offering": {
+      "displayName": "Display name",
+      "displayNameHint": "Leave blank to use the provider’s name. Model id: {{modelId}}",
+      "pricesTitle": "Price",
+      "pricesHint": "Cents per 1M tokens. Fill in all four, or leave all blank for no price (the model then cannot be enabled).",
+      "prices": {
+        "input": "Input",
+        "output": "Output",
+        "cacheRead": "Cache read",
+        "cacheWrite": "Cache write"
+      },
+      "priceSource": {
+        "platform": "Price from the Breeze platform",
+        "catalog": "Price from the catalog",
+        "linked_platform": "Price from the linked platform model",
+        "offering": "Price set on this model",
+        "none": "No price set"
+      },
+      "allowedEffort": "Allowed effort levels",
+      "effort": {
+        "low": "Low",
+        "medium": "Medium",
+        "high": "High",
+        "xhigh": "Extra high",
+        "max": "Maximum"
+      },
+      "display": {
+        "omitted": "Hidden",
+        "summarized": "Summarized",
+        "updates": "Live updates"
+      },
+      "providerDefault": "Provider default",
+      "defaultEffort": "Default effort",
+      "defaultDisplay": "Default thinking display",
+      "defaultSpeed": "Default speed",
+      "speed": {
+        "standard": "Standard",
+        "fastWithRate": "Fast ({{rate}})"
+      },
+      "allowFast": "Allow Fast mode",
+      "allowFastHint": "Fast mode is billed at the higher Fast rate.",
+      "premium": "Require the premium-model permission",
+      "premiumHint": "Only roles with the ai_models:premium permission can use this model.",
+      "premiumForced": "Required while Fast mode is allowed on a Breeze-funded model.",
+      "refusalFallback": "Refusal fallback",
+      "refusalNone": "None",
+      "refusalHint": "Another enabled model on the same connection to try when this one refuses a request.",
+      "invalidPrices": "Enter all four prices as non-negative numbers, or leave all four blank.",
+      "saved": "Model saved",
+      "saveFailed": "Couldn’t save the model. Try again.",
+      "verify": "Verify",
+      "verifyQueued": "Model check queued",
+      "verifyFailed": "Couldn't queue the model check.",
+      "verifyGatewayHint": "Runs a short tool-calling test against your endpoint (uses a few thousand tokens)."
+    },
+    "defaults": {
+      "title": "Defaults by feature",
+      "subtitle": "Choose the default model for each feature, which models it may use, and its thinking options. Changes apply to every organization unless it overrides them.",
+      "needsTools": "needs tools",
+      "reviewerHelp": "Changing this needs the approvals permission.",
+      "default": "Default model",
+      "chooseDefault": "Choose a model",
+      "permitted": "Allowed models",
+      "permittedAll": "All enabled models",
+      "permittedList": "Only these",
+      "userChoice": "Users may choose",
+      "effort": "Effort",
+      "display": "Thinking display",
+      "speed": "Speed",
+      "modelDefault": "Model default",
+      "orgOverrides_one": "{{count}} organization override",
+      "orgOverrides_other": "{{count}} organization overrides",
+      "changedElsewhere": "Changed elsewhere; saving overwrites it",
+      "unsaved": "Unsaved changes",
+      "discard": "Discard",
+      "saved": "Defaults saved.",
+      "saveFailed": "Couldn't save the defaults. Try again.",
+      "needsDefault": "Choose a default model for every changed feature.",
+      "needsPermitted": "Tick at least one model for \"Only these\".",
+      "effortValues": {
+        "low": "Low",
+        "medium": "Medium",
+        "high": "High",
+        "xhigh": "Extra high",
+        "max": "Max"
+      },
+      "displayValues": {
+        "omitted": "Hidden",
+        "summarized": "Summarized",
+        "updates": "Live updates"
+      },
+      "speedValues": {
+        "standard": "Standard",
+        "fast": "Fast"
+      },
+      "unavailableModel": "{{model}} (unavailable)",
+      "unavailableUnknown": "Unavailable model",
+      "roleInherit": "Same as AI agents default",
+      "fallbacks": "Backup models, in order",
+      "addFallback": "Add a backup model…",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "removeFallback": "Remove",
+      "fallbackUnavailable": "A model that is no longer available",
+      "crossFunding": "Allow failover between Breeze credits and your own API key",
+      "crossFundingHelp": "When on, a backup paid from the other source may serve a request. It is billed to whichever source actually served it.",
+      "fundingPlatform": "Breeze credits",
+      "fundingOwnKey": "Your API key"
+    },
+    "usage": {
+      "title": "AI usage by model",
+      "subtitleAll": "Spend and refusals across all organizations, from the model call ledger.",
+      "subtitleOrg": "Spend and refusals for the selected organization, from the model call ledger.",
+      "from": "From",
+      "to": "To",
+      "groupByLabel": "Group usage by",
+      "groupBy": {
+        "model": "Model",
+        "surface": "Feature",
+        "user": "Technician",
+        "org": "Organization"
+      },
+      "calls": "Calls",
+      "cost": "Cost",
+      "inputTokens": "Input tokens",
+      "outputTokens": "Output tokens",
+      "refusals": "Refusals",
+      "fallbacks": "Fallbacks",
+      "total": "Total",
+      "system": "System / agents",
+      "loading": "Loading usage…",
+      "empty": "No model calls in this period.",
+      "error": "Couldn't load the usage breakdown.",
+      "disconnected": "Disconnected",
+      "disconnectedHint": "The connection that served these calls has since been disconnected.",
+      "footnote": "Refusal rate is per model call. Counts start when the model registry went live; earlier usage is in the totals above.",
+      "view": {
+        "label": "Show",
+        "spend": "Spend",
+        "quality": "Quality"
+      },
+      "failovers": "Failovers",
+      "failoversHelp": "Calls served by a backup model because the configured one failed or was unavailable"
+    },
+    "link": {
+      "summary": "Model: {{model}} — set under AI Providers & Models → Defaults by feature",
+      "setPerFeature": "Set per feature",
+      "noDefault": "no default set",
+      "partner": "Partner defaults",
+      "org": "This organization's override"
+    },
+    "quality": {
+      "title": "Model quality",
+      "subtitleAll": "How conversations go on each model across all organizations: refusals, flags, moves to another model and turns to resolve.",
+      "subtitleOrg": "How conversations go on each model for the selected organization.",
+      "groupBy": {
+        "model": "Model",
+        "surface": "Feature",
+        "prompt_profile": "Model family"
+      },
+      "columns": {
+        "conversations": "Conversations",
+        "costPerConversation": "Cost / conversation",
+        "refusalRate": "Refusal rate",
+        "failoverRate": "Failover rate",
+        "flagRate": "Flag rate",
+        "leftRate": "Left for another model",
+        "turnsToResolution": "Turns to resolve",
+        "agentCompletion": "Agent runs completed"
+      },
+      "help": {
+        "conversations": "Chat sessions and agent runs whose last model call in this period was on this row.",
+        "costPerConversation": "Average spend on this row for each conversation that used it.",
+        "refusalRate": "Model calls the model declined, per call.",
+        "failoverRate": "Calls that moved to a backup model because this one failed or was unavailable.",
+        "flagRate": "Sessions a person flagged. Automatic flags after a tool error are counted separately.",
+        "leftRate": "Conversations that switched to another model, or continued in a new session on another model.",
+        "turnsToResolution": "Median messages a technician sent in sessions that finished without a person's flag or a move to a new session. Includes the session it continued from.",
+        "agentCompletion": "Agent runs that completed, out of runs that finished."
+      },
+      "profiles": {
+        "claude-frontier": "Frontier Claude",
+        "claude-standard": "Standard Claude",
+        "claude-small": "Small Claude",
+        "generic": "Other models"
+      },
+      "unrecorded": "Not recorded",
+      "unattributed": "Not attributed to a model",
+      "removedModel": "Removed model",
+      "platformConnection": "Breeze platform",
+      "notRecorded": "Not recorded on this server yet",
+      "switchesOnly": "Switches only",
+      "few": "Few conversations",
+      "autoFlagged_one": "{{count}} flagged automatically",
+      "autoFlagged_other": "{{count}} flagged automatically",
+      "leftBreakdown": "{{switched}} switched, {{continued}} continued",
+      "resolvedCount_one": "{{count}} resolved",
+      "resolvedCount_other": "{{count}} resolved",
+      "loading": "Loading quality…",
+      "empty": "No model calls in this period.",
+      "error": "Couldn't load the quality view.",
+      "timeout": "This range is too large to summarize quickly. Choose a shorter range.",
+      "footnote": "A conversation counts toward the model it last used, and a switch toward the model it left. Calls served by a fallback or a backup model count toward the model that was chosen. Counts start when quality tracking went live. Read small numbers with care."
+    },
+    "roles": {
+      "triage": "Triage (first look)",
+      "analysis": "Analysis (investigate and plan)",
+      "remediation": "Remediation (act on devices)"
+    }
   },
   "partnerDefaults": {
     "notSet": "Not set — orgs configure individually",
@@ -591,8 +988,8 @@
         "description": "AI spending limits"
       },
       "aiProvider": {
-        "label": "AI Provider",
-        "description": "Bring your own Anthropic key"
+        "label": "AI Providers & Models",
+        "description": "Connections, models and defaults for every AI feature"
       },
       "aiFeatures": {
         "label": "AI Features",
@@ -934,7 +1331,44 @@
       "invoice_number": "Invoice number",
       "due_date": "Due date",
       "invite_url": "Invite URL",
-      "cta_button": "Button"
+      "cta_button": "Button",
+      "client_name": "Client name",
+      "setup_link": "Automatic payments setup link",
+      "ach_mode_text": "Available payment methods",
+      "payment_method": "Saved payment method",
+      "schedule_text": "Payment schedule",
+      "fee_text": "Processing fee terms",
+      "stopped_by": "Who stopped automatic payments",
+      "open_invoices_text": "Open invoice summary",
+      "expires_on": "Card expiry date",
+      "update_link": "Payment method update link",
+      "amount_due": "Amount due",
+      "charge_date": "Charge date",
+      "fee_amount": "Processing fee",
+      "invoice_link": "Invoice link",
+      "amount_paid": "Amount paid",
+      "total_charged": "Total charged",
+      "paid_on": "Payment date",
+      "balance_remaining": "Remaining balance",
+      "failure_text": "Failure details",
+      "action_link": "Action link",
+      "action_label": "Action label",
+      "days_overdue": "Days overdue",
+      "pay_link": "Payment link",
+      "charge_total": "Total charge",
+      "attempted_amount": "Attempted payment amount"
+    },
+    "billingPayments": "Billing & payments",
+    "supportPortal": "Support & portal",
+    "labels": {
+      "autopay_request": "Automatic payments request",
+      "autopay_enrolled": "Automatic payments confirmed",
+      "autopay_stopped": "Automatic payments stopped",
+      "autopay_paused": "Automatic payments paused",
+      "autopay_resumed": "Automatic payments resumed",
+      "card_expiring": "Saved card expiring",
+      "payment_receipt": "Online payment receipt",
+      "payment_failed": "Payment could not be completed"
     }
   },
   "inboundEmail": {
@@ -1714,6 +2148,13 @@
     "failedToFetchReviewDetails": "Failed to fetch review details",
     "noReviewerEmailsAvailableForNotifications": "No reviewer emails available for notifications",
     "unableToLaunchEmailNotification": "Unable to launch email notification",
+    "reviewersEmailed": "Assigned reviewer notified by email",
+    "assignedReviewerEmailedOnly": "Assigned reviewer notified by email. Other selected reviewers were not emailed — a review stores one assigned reviewer.",
+    "fallbackToMailClient": "{{reason}} Opening your mail client instead.",
+    "fallbackEmailNotConfigured": "Email delivery isn't configured on this server.",
+    "fallbackNoReviewerEmail": "The assigned reviewer has no email address on file.",
+    "fallbackSendFailed": "The server couldn't send the email.",
+    "fallbackRequestFailed": "The notification request failed.",
     "failedToCreateAccessReview": "Failed to create access review",
     "failedToUpdateDecision": "Failed to update decision",
     "failedToFetchReviewForReport": "Failed to fetch review for report",
@@ -1728,7 +2169,12 @@
     "sending": "Sending...",
     "notifyReviewers": "Notify Reviewers",
     "completing": "Completing...",
-    "completeReview": "Complete Review"
+    "completeReview": "Complete Review",
+    "selfDecided": "Self-decided",
+    "selfDecidedHint": "Decided by the user it is about, because no other administrator could review it (single-admin exception).",
+    "ownItemBlocked": "You can't decide on your own access. Another administrator with user management rights must review this item.",
+    "ownItemBlockedShort": "Needs another reviewer",
+    "ownItemSelfDecisionWarning": "You are the only administrator who can review this, so you may decide your own access. It will be recorded as a self-decision."
   },
   "aiUsagePage": {
     "aIUsageBudget": "AI Usage",
@@ -1890,7 +2336,8 @@
       "triage": "Investigates new alerts and proposes what to do about them.",
       "patch": "Reviews missing patches and proposes what to install.",
       "helpdesk": "Picks up tickets and proposes replies and next steps.",
-      "designer": "Reads the whole fleet and writes a justified monitoring design for a technician to approve."
+      "designer": "Reads the whole fleet and writes a justified monitoring design for a technician to approve.",
+      "research": "Built in. Researches one problem on one device when a technician asks, and suggests safe fixes. It never runs anything."
     },
     "emptyState": {
       "title": "No agents yet",
@@ -2036,7 +2483,8 @@
       "triage": "Alert triage",
       "patch": "Patching",
       "helpdesk": "Help desk",
-      "designer": "Fleet designer"
+      "designer": "Fleet designer",
+      "research": "Fix research"
     },
     "modes": {
       "off": "Off",
@@ -2084,6 +2532,14 @@
       "recipientRolesEmpty": "No roles available.",
       "instructionsHint": "Guidance only — tone, what to check first, house conventions. It never grants permissions.",
       "charactersLeft": "{{count}} characters left",
+      "model": "Model",
+      "modelDefault": "Use the default ({{model}})",
+      "modelDefaultUnknown": "the AI agents default",
+      "modelRequiresRole": "requires {{roles}}",
+      "modelRequiresPermission": "requires the premium AI models permission",
+      "modelUnavailable": "The saved model is unavailable. Choose another.",
+      "modelLoadFailed": "Couldn't load the models. The agent keeps its current model.",
+      "modelHint": "Set the default and the allowed models under AI Providers & Models.",
       "recipientRolesFailed": "Couldn't load roles, so notification recipients can't be changed right now.",
       "supervisedActionKeysHint": "Operations this agent may execute WITHOUT a human clicking approve, when a matching policy exists and the org's exposure cap has room. Each one still passes live guardrails, the kill switch, and per-org caps at execution time.",
       "supervisedActionKeysEmpty": "No policy-decidable actions are registered.",
@@ -2155,7 +2611,8 @@
         "failed": "Failed",
         "cancelled": "Cancelled",
         "expired": "Expired",
-        "skipped": "Skipped"
+        "skipped": "Skipped",
+        "blocked": "Blocked"
       },
       "verdicts": {
         "remediated": "Remediated",
@@ -3331,6 +3788,11 @@
           "blurb": "Reads the whole fleet and writes a justified monitoring design for a technician to approve.",
           "runsWhen": "you start a Fleet Design for an organization, or on a quarterly schedule",
           "recommended": "a clean-slate migration, or a quarterly configuration audit"
+        },
+        "research": {
+          "blurb": "Built in. Researches one problem on one device when a technician asks, and suggests safe fixes. It never runs anything.",
+          "runsWhen": "a technician asks for fix suggestions on a device problem",
+          "recommended": "automatic, read-only research on one problem at a time"
         }
       },
       "kindCard": {
@@ -3358,6 +3820,36 @@
       "title": "This agent only reads and writes reports",
       "body": "A Fleet Designer never executes anything on a device. On means it may run and deliver its designs to the recipients you choose.",
       "ack": "I understand this agent runs unattended and delivers Fleet Designs."
+    },
+    "research": {
+      "capsTitle": "Research limits",
+      "builtInNote": "Built in and suggestion-only: it never runs anything. You can switch it off and set its spending caps.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Concurrent research runs",
+          "hint": "How many research runs may be in flight at once."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Research runs per hour",
+          "hint": "Upper bound on all research runs started in an hour."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Automatic research runs per hour",
+          "hint": "Upper bound on research started automatically from high and critical alerts. 0 turns automatic research off."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Quick research budget (cents)",
+          "hint": "Spending cap for one quick research run."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Deep research budget (cents)",
+          "hint": "Spending cap for one deep research run."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Daily research spend (cents)",
+          "hint": "Total spending cap per day across all of this agent's runs."
+        }
+      }
     }
   },
   "apiKeyForm": {
@@ -3757,6 +4249,8 @@
     "lastUsed": "Last used",
     "actions": "Actions",
     "requestFailed": "Request failed ({{status}})",
+    "notEnabledTitle": "Connected apps are not enabled on this server",
+    "notEnabledBody": "MCP OAuth is disabled on this server. Set MCP_OAUTH_ENABLED=true and restart the API to allow connected apps.",
     "revokeConfirm": "Revoke access for {{name}}? Their access token will stop working within 10 minutes.",
     "revokeFailed": "Revoke failed ({{status}})",
     "networkError": "Network error",
@@ -5891,7 +6385,6 @@
       "allowedClasses": "What an unattended script may touch",
       "perHour": "Maximum unattended runs per hour",
       "reviewerModel": "Reviewer model",
-      "reviewerModelHint": "Leave empty to use the platform default.",
       "protectedResources": "Never touch these",
       "protectedServices": "Services",
       "protectedPaths": "Paths",

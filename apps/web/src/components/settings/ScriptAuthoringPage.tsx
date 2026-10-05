@@ -18,6 +18,7 @@ import { mintStepUpGrant, StepUpMintError, type StepUpReauth } from '../../lib/m
 import StepUpPrompt, { pickReauthTier, type ReauthTier } from './StepUpPrompt';
 import { listField, numberField } from './aiAgents/agentFields';
 import { useStableT } from '@/lib/i18n/useStableT';
+import ModelDefaultsLink from './aiModels/ModelDefaultsLink';
 
 /**
  * Classes the unattended lane only executes on Windows (a restore checkpoint
@@ -68,7 +69,6 @@ interface OrgDraft {
   maxUnattendedRiskTier: 'low' | 'medium';
   unattendedAllowedClasses: TouchClass[];
   maxUnattendedPerHour: number;
-  reviewerModel: string;
   protectedResources: ProtectedResourcesDraft;
 }
 
@@ -78,7 +78,6 @@ interface PartnerDraft {
   maxUnattendedRiskTier: 'low' | 'medium';
   unattendedAllowedClasses: TouchClass[];
   maxUnattendedPerHour: number;
-  reviewerModel: string;
   protectedResources: ProtectedResourcesDraft;
 }
 
@@ -113,7 +112,6 @@ function orgDraftFromPolicy(policy: ScriptPolicyDto | null, effective: Effective
     maxUnattendedRiskTier: normalizedTier(policy?.maxUnattendedRiskTier),
     unattendedAllowedClasses: policy?.unattendedAllowedClasses ?? [],
     maxUnattendedPerHour: policy?.maxUnattendedPerHour ?? Math.min(10, effective.maxUnattendedPerHour),
-    reviewerModel: policy?.reviewerModel ?? '',
     protectedResources: resourcesToDraft(policy?.protectedResources),
   };
 }
@@ -125,7 +123,6 @@ function partnerDraftFromPolicy(policy: ScriptPolicyDto | null): PartnerDraft {
     maxUnattendedRiskTier: normalizedTier(policy?.maxUnattendedRiskTier),
     unattendedAllowedClasses: policy?.unattendedAllowedClasses ?? [],
     maxUnattendedPerHour: policy?.maxUnattendedPerHour ?? 10,
-    reviewerModel: policy?.reviewerModel ?? '',
     protectedResources: resourcesToDraft(policy?.protectedResources),
   };
 }
@@ -299,7 +296,6 @@ export default function ScriptAuthoringPage() {
         maxUnattendedRiskTier: orgDraft.maxUnattendedRiskTier,
         unattendedAllowedClasses: orgDraft.unattendedAllowedClasses,
         maxUnattendedPerHour: orgDraft.maxUnattendedPerHour,
-        reviewerModel: orgDraft.reviewerModel.trim() ? orgDraft.reviewerModel.trim() : null,
         protectedResources: {
           services: fromLines(orgDraft.protectedResources.services),
           paths: fromLines(orgDraft.protectedResources.paths),
@@ -336,7 +332,6 @@ export default function ScriptAuthoringPage() {
         maxUnattendedRiskTier: partnerDraft.maxUnattendedRiskTier,
         unattendedAllowedClasses: partnerDraft.unattendedAllowedClasses,
         maxUnattendedPerHour: partnerDraft.maxUnattendedPerHour,
-        reviewerModel: partnerDraft.reviewerModel.trim() ? partnerDraft.reviewerModel.trim() : null,
         protectedResources: {
           services: fromLines(partnerDraft.protectedResources.services),
           paths: fromLines(partnerDraft.protectedResources.paths),
@@ -627,17 +622,10 @@ export default function ScriptAuthoringPage() {
               (next) => setOrgDraft({ ...orgDraft, maxUnattendedPerHour: next }),
             )}
 
-            <label className="block text-sm">
+            <div className="block text-sm">
               <span className="font-medium">{t('scriptAuthoringPage.fields.reviewerModel')}</span>
-              <input
-                type="text"
-                data-testid="script-reviewer-model"
-                value={orgDraft.reviewerModel}
-                onChange={(e) => setOrgDraft({ ...orgDraft, reviewerModel: e.target.value })}
-                className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
-              />
-              <span className="mt-1 block text-xs text-muted-foreground">{t('scriptAuthoringPage.fields.reviewerModelHint')}</span>
-            </label>
+              <div className="mt-1"><ModelDefaultsLink surface="script_reviewer" orgId={orgId} level="org" /></div>
+            </div>
 
             <fieldset className="space-y-2 rounded-md border p-3">
               <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
@@ -673,7 +661,7 @@ export default function ScriptAuthoringPage() {
 /** Read-only summary rendered on the org card's neighbour when the partner
  *  row itself is unreadable (403 for an org-scoped token) — all we have then
  *  is the effective/ceiling projection off the org GET, not the partner's own
- *  protectedResources or reviewerModel. */
+ *  protectedResources. */
 function PartnerCeilingSummary({ effective, t }: { effective: EffectiveScriptPolicyDto; t: (key: string, opts?: Record<string, unknown>) => string }) {
   return (
     <div className="space-y-2 text-sm" data-testid="script-partner-ceiling-summary">
@@ -765,16 +753,10 @@ function PartnerForm({
         </div>
       </fieldset>
       {numberField('script-partner-max-per-hour', t('scriptAuthoringPage.fields.perHour'), draft.maxUnattendedPerHour, 0, 100, (next) => onChange({ ...draft, maxUnattendedPerHour: next }))}
-      <label className="block text-sm">
+      <div className="block text-sm">
         <span className="font-medium">{t('scriptAuthoringPage.fields.reviewerModel')}</span>
-        <input
-          type="text"
-          value={draft.reviewerModel}
-          disabled={disabled}
-          onChange={(e) => onChange({ ...draft, reviewerModel: e.target.value })}
-          className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
-        />
-      </label>
+        <div className="mt-1"><ModelDefaultsLink surface="script_reviewer" level="partner" /></div>
+      </div>
       <fieldset className="space-y-2 rounded-md border p-3">
         <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
           {t('scriptAuthoringPage.fields.protectedResources')}

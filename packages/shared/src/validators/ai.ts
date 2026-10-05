@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { scriptParameterDefinitionsSchema } from './scriptParameterDefinitions';
+import { offeringOptionsSchema } from './aiModelOptions';
+import { aiModelChoiceSchema } from './aiModelChoice';
 
 // ============================================
 // Page Context Validators
@@ -59,13 +61,22 @@ export const aiPageContextSchema = z.discriminatedUnion('type', [
 
 export const createAiSessionSchema = z.object({
   pageContext: aiPageContextSchema.optional(),
-  model: z.string().max(100).optional(),
+  /** Registry offering to run this session on (#7598 W03). */
+  offeringId: z.string().uuid().optional(),
+  /** Per-call options the user chose; absent keys follow the assignment. */
+  options: offeringOptionsSchema.partial().optional(),
   title: z.string().max(255).optional()
 });
 
 export const sendAiMessageSchema = z.object({
   content: z.string().min(1).max(10000),
-  pageContext: aiPageContextSchema.optional()
+  pageContext: aiPageContextSchema.optional(),
+  /**
+   * W05 (#7603): the composer's model choice for THIS turn. Resolved as a
+   * strict user choice; stamped on the session only by the turn claim.
+   * Absent = keep the session's stored offering.
+   */
+  model: aiModelChoiceSchema.optional(),
 });
 
 export const approveToolSchema = z.object({

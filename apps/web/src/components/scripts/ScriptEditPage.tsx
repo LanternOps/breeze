@@ -12,6 +12,8 @@ import { navigateTo } from '@/lib/navigation';
 import { getJwtClaims } from '@/lib/authScope';
 import { runAction, handleActionError } from '@/lib/runAction';
 import { cloneScript } from '@/lib/api/scripts';
+import { draftPrompt, takeScriptDraft } from '@/lib/scriptDraftHandoff';
+import { useScriptAiStore } from '@/stores/scriptAiStore';
 import Breadcrumbs from '../layout/Breadcrumbs';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -41,6 +43,13 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
   const [duplicating, setDuplicating] = useState(false);
 
   const isNew = !scriptId;
+  // Read-once hand-off from a research draft request; new scripts only.
+  const [draft] = useState(() => (!scriptId ? takeScriptDraft() : null));
+  useEffect(() => {
+    if (!draft) return;
+    useScriptAiStore.getState().openPanel();
+    useScriptAiStore.getState().setDraftInput(draftPrompt(draft));
+  }, [draft]);
   const { organizations } = useOrgStore();
   const { scope: jwtScope } = getJwtClaims();
 
@@ -296,7 +305,11 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
       <ScriptForm
         onSubmit={handleSubmit}
         onCancel={handleCancel}
-        defaultValues={script || undefined}
+        defaultValues={script || (draft ? {
+          name: draft.title,
+          language: draft.language,
+          osTypes: draft.language === 'bash' ? ['linux', 'macos'] : draft.language === 'python' ? ['windows', 'linux', 'macos'] : ['windows'],
+        } : undefined)}
         submitLabel={isNew ? t('scriptEditPage.actions.create') : t('scriptEditPage.actions.saveChanges')}
         loading={submitting}
         isNew={isNew}

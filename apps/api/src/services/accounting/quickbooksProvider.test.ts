@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { createHmac } from 'crypto';
 
 const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
@@ -977,6 +977,20 @@ describe('fetchRealmSettings', () => {
 
 // --- reconcileChanges (CDC) fixture helpers --------------------------------
 
+/**
+ * The CDC fixtures are dated 2026-09-02, but the provider computes QBO's 30-day
+ * lookback floor from the real clock, so they aged out on 2026-10-02 and every
+ * cursor started tripping the "older than the lookback floor" path. Pin only
+ * `Date` to the fixture day; real timers keep the async fetch mocks working.
+ */
+function pinClockToCdcFixtures() {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-02T20:10:00.000Z'));
+  });
+  afterEach(() => vi.useRealTimers());
+}
+
 function cdcResponse(entityBlocks: Record<string, unknown>[], time = '2026-09-02T20:10:00.000Z') {
   return { CDCResponse: [{ QueryResponse: entityBlocks }], time };
 }
@@ -995,6 +1009,7 @@ function qboPayment(overrides: Record<string, unknown> = {}) {
 }
 
 describe('reconcileChanges (CDC)', () => {
+  pinClockToCdcFixtures();
   it('requests entities=Payment,Invoice with changedSince 5 minutes behind the cursor', async () => {
     const spy = mockFetchJsonOnce(cdcResponse([{ Payment: [qboPayment()], startPosition: 1, maxResults: 1, totalCount: 1 }]));
     const since = new Date('2026-09-02T20:00:00.000Z');
@@ -1724,6 +1739,7 @@ describe('rate limiting (Xero W01)', () => {
 });
 
 describe('rate limiting — slot coverage, refusal pass-through and catch audit (Xero W01, Task 13)', () => {
+  pinClockToCdcFixtures();
   const refusal = () => new AccountingProviderError({
     kind: 'rate_limited', provider: 'quickbooks', operation: 'accounting call slot (concurrency)',
     message: 'Accounting provider rate limit reached (concurrency); retrying automatically', retryAfterMs: 2_000,
@@ -1855,4 +1871,48 @@ describe('rate limiting — slot coverage, refusal pass-through and catch audit 
     expect(up).toMatchObject({ kind: 'rate_limited', status: 429 });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
+});
+
+
+describe('QuickBooks processing fee entries',()=>{
+it.each(['receipt','refund'] as const)('posts a non-taxable fee %s using one stable operation',async direction=>{
+  const entry={operationId:'75c63cda-0d5c-41dc-978b-97efdd340abf',remoteCustomerId:'customer-1',amount:'1.50',
+    currencyCode:'USD',txnDate:'2026-10-01',direction,incomeRef:'fee-item',bankAccountRef:'bank-1',exemptTaxCodeRef:null,
+    firstSubmittedAt:new Date().toISOString()};
+  const entity=direction==='receipt'?'SalesReceipt':'RefundReceipt';
+  const fetcher=vi.spyOn(globalThis,'fetch').mockResolvedValueOnce(jsonResponse({QueryResponse:{}}))
+    .mockResolvedValueOnce(jsonResponse({[entity]:{Id:'fee-1',SyncToken:'0'}}));
+  expect(await quickbooksProvider.postFeeEntry(conn({homeCurrency:'USD'}),entry)).toEqual({id:'fee-1',remoteVersion:'0'});
+  const [url,init]=fetcher.mock.calls[1]!;
+  expect(String(url)).toContain(`requestid=${entry.operationId}`);
+  const body=JSON.parse(init!.body as string);
+  expect(body.CustomerRef).toEqual({value:'customer-1'});
+  expect(body.DepositToAccountRef).toEqual({value:'bank-1'});
+  expect(body.Line).toEqual([{Amount:1.5,DetailType:'SalesItemLineDetail',Description:'Payment processing fee',
+    SalesItemLineDetail:{ItemRef:{value:'fee-item'},Qty:1,UnitPrice:1.5,TaxCodeRef:{value:'NON'}}}]);
+  expect(body).not.toHaveProperty('LinkedTxn');
+});
+it('adopts a fee after remote success without another create',async()=>{
+  const entry={operationId:'75c63cda-0d5c-41dc-978b-97efdd340abf',remoteCustomerId:'customer-1',amount:'1.50',currencyCode:'USD',
+    txnDate:'2026-10-01',direction:'receipt' as const,incomeRef:'fee-item',bankAccountRef:null,exemptTaxCodeRef:null,
+    firstSubmittedAt:'2020-01-01T00:00:00Z'};
+  const fetcher=vi.spyOn(globalThis,'fetch').mockResolvedValueOnce(jsonResponse({QueryResponse:{SalesReceipt:[{
+    Id:'fee-1',SyncToken:'0',PrivateNote:`Breeze fee ${entry.operationId}`,TotalAmt:1.5,CustomerRef:{value:'customer-1'},CurrencyRef:{value:'USD'},
+  }]}}));
+  expect((await quickbooksProvider.postFeeEntry(conn({homeCurrency:'USD'}),entry)).id).toBe('fee-1');
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});
+
+it.each(['receipt','refund'] as const)('refuses a fee %s submission without a frozen payment account',async direction=>{
+  const entry={operationId:'75c63cda-0d5c-41dc-978b-97efdd340abf',remoteCustomerId:'customer-1',amount:'1.50',
+    currencyCode:'USD',txnDate:'2026-10-01',direction,incomeRef:'fee-item',bankAccountRef:null,exemptTaxCodeRef:null,
+    firstSubmittedAt:new Date().toISOString()};
+  const fetcher=vi.spyOn(globalThis,'fetch').mockResolvedValueOnce(jsonResponse({QueryResponse:{}}));
+  await expect(quickbooksProvider.postFeeEntry(conn({homeCurrency:'USD'}),entry)).rejects.toMatchObject({
+    kind:'validation',message:expect.stringContaining('payment account'),
+  });
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(fetcher.mock.calls[0]![1]?.method ?? 'GET').toBe('GET');
+});
+
 });

@@ -18,9 +18,12 @@ const shared = vi.hoisted(() => ({
   insertValues: [] as Record<string, unknown>[],
   transitionProposalMock: vi.fn(),
   reserveAiBudgetMock: vi.fn(),
-  recordUsageMock: vi.fn(async () => undefined),
-  getLlmBillingSourceForOrgMock: vi.fn(async () => 'platform' as const),
-  getAnthropicClientForPartnerMock: vi.fn(),
+  releaseMock: vi.fn(async () => undefined),
+  checkBudgetDetailedMock: vi.fn(async () => null as unknown),
+  resolveModelMock: vi.fn(),
+  readOrgPartnerIdMock: vi.fn(),
+  anthropicClientForMock: vi.fn(),
+  settleInvocationMock: vi.fn(async () => ({ costCents: 1, invocationIds: [], deferred: false })),
   messagesCreateMock: vi.fn(),
   createAuditLogAsyncMock: vi.fn(async () => undefined),
   captureExceptionMock: vi.fn(),
@@ -99,32 +102,67 @@ vi.mock('../../db', () => {
 
 vi.mock('../aiBudgetReservations', () => ({
   reserveAiBudget: shared.reserveAiBudgetMock,
+  releaseUnusedAiBudgetReservation: shared.releaseMock,
 }));
-vi.mock('../aiCostTracker', () => ({ recordUsage: shared.recordUsageMock }));
-vi.mock('../llm/llmConfigResolver', () => ({
-  getLlmBillingSourceForOrg: shared.getLlmBillingSourceForOrgMock,
-  getAnthropicClientForPartner: shared.getAnthropicClientForPartnerMock,
-  resolveWireModel: vi.fn((_resolved: unknown, model: string) => ({ model })),
+vi.mock('../aiCostTracker', () => ({ checkBudgetDetailed: shared.checkBudgetDetailedMock }));
+vi.mock('../aiModels/resolveModel', () => ({ resolveModel: shared.resolveModelMock }));
+vi.mock('../aiModels/candidateLoader', () => ({ readOrgPartnerId: shared.readOrgPartnerIdMock }));
+// The real createMessage (dispatch shape) over a fake client; only the client
+// factory is replaced.
+vi.mock('../aiModels/connectionFactory', async (importActual) => ({
+  ...(await importActual<typeof import('../aiModels/connectionFactory')>()),
+  anthropicClientFor: shared.anthropicClientForMock,
 }));
+vi.mock('../aiModels/settleInvocation', () => ({ settleInvocation: shared.settleInvocationMock }));
+// W09: the cooldown write a provider failure makes (Redis; fails open).
+vi.mock('../aiModels/offeringHealth', () => ({ noteProviderFailure: vi.fn(async () => undefined) }));
 vi.mock('../auditService', () => ({ createAuditLogAsync: shared.createAuditLogAsyncMock }));
 vi.mock('../sentry', () => ({ captureException: shared.captureExceptionMock }));
 vi.mock('./proposals', () => ({ transitionProposal: shared.transitionProposalMock }));
 // W04 (#5612): the effective lane policy is read by its own module (its two
 // SELECTs would otherwise consume this file's queued select rows). The
-// reviewer only reads `reviewerModel` (null ⇒ platform default) and the
-// advisory `maxUnattendedRiskTier` ceiling from it.
+// reviewer only reads the advisory `maxUnattendedRiskTier` ceiling from it
+// (its model is the `script_reviewer` assignment).
 vi.mock('./policy', () => ({
   resolveEffectiveScriptPolicy: vi.fn(async () => ({
     proposingEnabled: true, unattendedEnabled: false, maxUnattendedRiskTier: 'low',
     unattendedAllowedClasses: [], maxUnattendedPerHour: 10,
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
-    reviewerModel: null, source: { partnerRowId: null, orgRowId: null },
+    source: { partnerRowId: null, orgRowId: null },
   })),
 }));
-vi.mock('../../config/env', () => ({ AI_SCRIPT_REVIEWER_MODEL: 'claude-sonnet-4-6' }));
 
 import { APIUserAbortError } from '@anthropic-ai/sdk';
+import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
+import { turnBindingFrom } from '../aiModels/turnBinding';
 import { ProposalNotReviewableError, runScriptReview, REVIEWER_PROMPT_VERSION } from './reviewer';
+
+const MODEL = 'claude-sonnet-5-5';
+const resolvedOk = () => makeResolvedModel('platform', { surface: 'script_reviewer', partnerId: PARTNER_ID, orgId: ORG_ID });
+
+/** Defaults every test starts from: a platform-funded script_reviewer model. */
+function primeResolver(): void {
+  shared.readOrgPartnerIdMock.mockResolvedValue(PARTNER_ID);
+  shared.resolveModelMock.mockResolvedValue(resolvedOk());
+  shared.checkBudgetDetailedMock.mockResolvedValue(null);
+  shared.anthropicClientForMock.mockImplementation(() => ({ messages: { create: shared.messagesCreateMock } }));
+}
+
+/** The one settlement a review makes, against the reservation. */
+function expectSettledOnce(inputTokens: number, outputTokens: number): void {
+  expect(shared.settleInvocationMock).toHaveBeenCalledTimes(1);
+  expect(shared.settleInvocationMock).toHaveBeenCalledWith(expect.objectContaining({
+    orgId: ORG_ID, userId: null, sessionId: null, agentRunId: null,
+    sourceRef: `script-review:${PROPOSAL_ID}`, reservationId: RESERVATION_ID,
+    usage: [expect.objectContaining({ model: MODEL, tokens: expect.objectContaining({ input: inputTokens, output: outputTokens }) })],
+  }));
+}
+
+/** A reservation settled with no usage (provider outcome unknown / nothing returned). */
+function expectSettledAtZero(): void {
+  expect(shared.settleInvocationMock).toHaveBeenCalledTimes(1);
+  expect(shared.settleInvocationMock).toHaveBeenCalledWith(expect.objectContaining({ reservationId: RESERVATION_ID, usage: [] }));
+}
 
 const PROPOSAL_ROW = {
   id: PROPOSAL_ID,
@@ -169,11 +207,10 @@ const RESERVED = {
 };
 
 /** Queue the reads a review makes up to the model call: proposal, existing
- *  static-scan row (none), org partner id, device facts. */
+ *  static-scan row (none), device facts (the partner id is a mocked loader read). */
 function queueReadsThroughModelCall(proposal: Record<string, unknown> = PROPOSAL_ROW, deviceRows: unknown[] = []) {
   shared.selectQueue.push([proposal]);
   shared.selectQueue.push([]); // no existing static_scan row
-  shared.selectQueue.push([{ partnerId: PARTNER_ID }]);
   shared.selectQueue.push(deviceRows);
 }
 
@@ -183,10 +220,7 @@ describe('runScriptReview — happy path', () => {
     vi.clearAllMocks();
     shared.reserveAiBudgetMock.mockResolvedValue(RESERVED);
     shared.transitionProposalMock.mockResolvedValue(true);
-    shared.getAnthropicClientForPartnerMock.mockImplementation(async () => ({
-      client: { messages: { create: shared.messagesCreateMock } },
-      resolved: { source: 'platform' },
-    }));
+    primeResolver();
     shared.messagesCreateMock.mockImplementation(async () => {
       shared.modelCallSystemContextDepth = shared.systemContextDepth;
       return {
@@ -215,26 +249,27 @@ describe('runScriptReview — happy path', () => {
 
     // Budget reserved under the spec's idempotency key, BEFORE the model call.
     expect(shared.reserveAiBudgetMock).toHaveBeenCalledWith(
-      expect.objectContaining({ orgId: ORG_ID, idempotencyKey: `script-review:${PROPOSAL_ID}:1`, billingSource: 'platform' }),
+      expect.objectContaining({
+        orgId: ORG_ID, idempotencyKey: `script-review:${PROPOSAL_ID}:1`, billingSource: 'platform',
+        binding: turnBindingFrom(resolvedOk()),
+      }),
     );
     expect(shared.reserveAiBudgetMock.mock.invocationCallOrder[0]!).toBeLessThan(
       shared.messagesCreateMock.mock.invocationCallOrder[0]!,
     );
 
-    // BYOK + egress-audit parity: through the partner client, under the new surface.
-    expect(shared.getAnthropicClientForPartnerMock).toHaveBeenCalledWith(
-      PARTNER_ID, { surface: 'script_review_verdict', orgId: ORG_ID },
+    // BYOK + egress-audit parity: through the factory, under the new surface.
+    expect(shared.anthropicClientForMock).toHaveBeenCalledWith(
+      expect.objectContaining({ ok: true, surface: 'script_reviewer' }), { surface: 'script_review_verdict', orgId: ORG_ID },
     );
 
     // The model call: capped output, no tools, a system + single user turn,
     // content delimited, device facts present, nothing session-shaped.
     expect(shared.messagesCreateMock).toHaveBeenCalledTimes(1);
     const [createArgs, createOpts] = shared.messagesCreateMock.mock.calls[0]! as [Record<string, unknown>, Record<string, unknown>];
-    expect(createArgs).toMatchObject({ model: 'claude-sonnet-4-6', max_tokens: 2_000 });
-    // #7587: Sonnet 4.6 does not think by default on the Messages API, so the
-    // one-shot keeps sending no thinking params (5.x gets a capped effort).
-    expect(createArgs).not.toHaveProperty('thinking');
-    expect(createArgs).not.toHaveProperty('output_config');
+    expect(createArgs).toMatchObject({ model: MODEL, max_tokens: 2_000 });
+    // Thinking/effort come from the resolved wire params, never per-model-id literals.
+    expect(createArgs).toMatchObject({ thinking: { type: 'adaptive' }, output_config: { effort: 'medium' } });
     expect(createArgs).not.toHaveProperty('tools');
     expect(createArgs.messages).toHaveLength(1);
     const userText = (createArgs.messages as Array<{ role: string; content: string }>)[0]!.content;
@@ -252,7 +287,7 @@ describe('runScriptReview — happy path', () => {
     // Model row persisted with the floored verdict + prompt version + reservation.
     expect(shared.insertValues[1]).toMatchObject({
       orgId: ORG_ID, proposalId: PROPOSAL_ID, reviewerKind: 'model', status: 'completed',
-      model: 'claude-sonnet-4-6', reviewerPromptVersion: REVIEWER_PROMPT_VERSION,
+      model: MODEL, reviewerPromptVersion: REVIEWER_PROMPT_VERSION,
       riskTier: 'low', goalMatch: 'yes', recommendedAction: 'approve',
       inputTokens: 500, outputTokens: 80, budgetReservationId: RESERVATION_ID,
     });
@@ -261,10 +296,7 @@ describe('runScriptReview — happy path', () => {
       expect.anything(), PROPOSAL_ID, ['proposed'], 'reviewed', expect.objectContaining({ riskTier: 'low' }),
     );
     // Settled exactly once, at the real token counts, against the reservation.
-    expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(
-      null, ORG_ID, 'claude-sonnet-4-6', 500, 80, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' },
-    );
+    expectSettledOnce(500, 80);
     expect(shared.createAuditLogAsyncMock).toHaveBeenCalledWith(
       expect.objectContaining({
         orgId: ORG_ID, action: 'script.proposal.reviewed', resourceType: 'script_proposal',
@@ -299,9 +331,7 @@ describe('runScriptReview — happy path', () => {
 
     await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
 
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(
-      null, ORG_ID, 'claude-sonnet-4-6', 500, 80, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' },
-    );
+    expectSettledOnce(500, 80);
   });
 
   it('tolerates a JSON verdict wrapped in a markdown code fence', async () => {
@@ -323,7 +353,6 @@ describe('runScriptReview — happy path', () => {
   it('does not insert a second static-scan row when a prior attempt already wrote one', async () => {
     shared.selectQueue.push([PROPOSAL_ROW]);
     shared.selectQueue.push([{ id: 'existing-static-scan' }]); // already present
-    shared.selectQueue.push([{ partnerId: PARTNER_ID }]);
     shared.selectQueue.push([]);
     shared.insertReturningQueue.push([{ id: REVIEW_ROW_ID, reviewerKind: 'model', status: 'completed' }]);
 
@@ -341,10 +370,7 @@ describe('runScriptReview — failure paths (D7: fail closed)', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     shared.transitionProposalMock.mockResolvedValue(true);
-    shared.getAnthropicClientForPartnerMock.mockImplementation(async () => ({
-      client: { messages: { create: shared.messagesCreateMock } },
-      resolved: { source: 'platform' },
-    }));
+    primeResolver();
   });
 
   function expectFailedClosed(status: 'failed' | 'timeout') {
@@ -371,17 +397,18 @@ describe('runScriptReview — failure paths (D7: fail closed)', () => {
     const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
 
     expect(result).toMatchObject({ status: 'failed' });
-    expect(shared.getAnthropicClientForPartnerMock).not.toHaveBeenCalled();
+    expect(shared.anthropicClientForMock).not.toHaveBeenCalled();
     expect(shared.messagesCreateMock).not.toHaveBeenCalled();
-    expect(shared.recordUsageMock).not.toHaveBeenCalled();
+    expect(shared.settleInvocationMock).not.toHaveBeenCalled();
+    expect(shared.releaseMock).not.toHaveBeenCalled();
     expect(shared.insertValues.at(-1)).toMatchObject({ budgetReservationId: null, model: null, summary: expect.stringContaining('daily_budget') });
     expectFailedClosed('failed');
   });
 
-  it('provider client unavailable ⇒ review_failed, reservation settled at zero', async () => {
+  it('provider client unavailable ⇒ review_failed, nothing dispatched so the reservation is released', async () => {
     queueReadsThroughModelCall();
     shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
-    shared.getAnthropicClientForPartnerMock.mockRejectedValueOnce(new Error('egress blocked'));
+    shared.anthropicClientForMock.mockImplementationOnce(() => { throw new Error('egress blocked'); });
     shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
     shared.insertReturningQueue.push([{ id: 'fail-row-2', reviewerKind: 'model', status: 'failed' }]);
 
@@ -389,8 +416,8 @@ describe('runScriptReview — failure paths (D7: fail closed)', () => {
 
     expect(result).toMatchObject({ status: 'failed' });
     expect(shared.messagesCreateMock).not.toHaveBeenCalled();
-    expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' });
+    expect(shared.settleInvocationMock).not.toHaveBeenCalled();
+    expect(shared.releaseMock).toHaveBeenCalledWith({ orgId: ORG_ID, reservationId: RESERVATION_ID });
     expectFailedClosed('failed');
   });
 
@@ -404,9 +431,8 @@ describe('runScriptReview — failure paths (D7: fail closed)', () => {
     const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
 
     expect(result).toMatchObject({ status: 'failed' });
-    expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' });
-    expect(shared.insertValues.at(-1)).toMatchObject({ budgetReservationId: RESERVATION_ID, model: 'claude-sonnet-4-6' });
+    expectSettledAtZero();
+    expect(shared.insertValues.at(-1)).toMatchObject({ budgetReservationId: RESERVATION_ID, model: MODEL });
     expectFailedClosed('failed');
   });
 
@@ -422,7 +448,7 @@ describe('runScriptReview — failure paths (D7: fail closed)', () => {
     const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
 
     expect(result).toMatchObject({ status: 'timeout' });
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' });
+    expectSettledAtZero();
     expectFailedClosed('timeout');
   });
 
@@ -436,8 +462,7 @@ describe('runScriptReview — failure paths (D7: fail closed)', () => {
     const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
 
     expect(result).toMatchObject({ status: 'failed' });
-    expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 300, 40, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' });
+    expectSettledOnce(300, 40);
     expect(shared.insertValues.at(-1)).toMatchObject({ inputTokens: 300, outputTokens: 40 });
     expectFailedClosed('failed');
   });
@@ -467,7 +492,7 @@ describe('runScriptReview — failure paths (D7: fail closed)', () => {
     const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
 
     expect(result).toMatchObject({ status: 'failed' });
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 300, 2000, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' });
+    expectSettledOnce(300, 2000);
     expectFailedClosed('failed');
   });
 
@@ -480,7 +505,7 @@ describe('runScriptReview — failure paths (D7: fail closed)', () => {
     expect(result).toMatchObject({ id: REVIEW_ROW_ID });
     expect(shared.reserveAiBudgetMock).not.toHaveBeenCalled();
     expect(shared.messagesCreateMock).not.toHaveBeenCalled();
-    expect(shared.recordUsageMock).not.toHaveBeenCalled();
+    expect(shared.settleInvocationMock).not.toHaveBeenCalled();
     expect(shared.insertValues).toHaveLength(0);
   });
 
@@ -511,8 +536,7 @@ describe('runScriptReview — failure paths (D7: fail closed)', () => {
     const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
 
     expect(result).toMatchObject({ id: 'winner-row' });
-    expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 500, 80, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' });
+    expectSettledOnce(500, 80);
     // Not fail-closed: the winner's completed review stands.
     expect(shared.transitionProposalMock).not.toHaveBeenCalledWith(expect.anything(), PROPOSAL_ID, expect.anything(), 'review_failed', expect.anything());
   });
@@ -525,10 +549,7 @@ describe('runScriptReview — review-round fixes (#5636)', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     shared.transitionProposalMock.mockResolvedValue(true);
-    shared.getAnthropicClientForPartnerMock.mockImplementation(async () => ({
-      client: { messages: { create: shared.messagesCreateMock } },
-      resolved: { source: 'platform' },
-    }));
+    primeResolver();
   });
 
   it('a lost CAS while recording a FAILURE rolls the failure row back and returns the winner (no spurious failed row, no review_failed audit)', async () => {
@@ -544,35 +565,30 @@ describe('runScriptReview — review-round fixes (#5636)', () => {
 
     expect(result).toMatchObject({ id: 'winner-row', status: 'completed' });
     // The reservation was still settled (at zero) exactly once.
-    expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
+    expectSettledAtZero();
     expect(shared.createAuditLogAsyncMock).not.toHaveBeenCalledWith(
       expect.objectContaining({ action: 'script.proposal.review_failed' }),
     );
   });
 
-  it('an org that vanished after the reservation (partner-id read throws) fails closed and settles at zero', async () => {
+  it('an org that vanished (no partner) fails closed before any reservation', async () => {
     shared.selectQueue.push([PROPOSAL_ROW]);
     shared.selectQueue.push([]); // no static_scan row
-    // readOrgPartnerId: no org row ⇒ throws inside the system context.
-    shared.selectQueue.push([]);
-    shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
+    shared.readOrgPartnerIdMock.mockResolvedValueOnce(null);
     shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
     shared.insertReturningQueue.push([{ id: 'fail-row-org', reviewerKind: 'model', status: 'failed' }]);
 
     const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
 
     expect(result).toMatchObject({ status: 'failed' });
-    expect(shared.getAnthropicClientForPartnerMock).not.toHaveBeenCalled();
-    expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' });
+    expect(shared.resolveModelMock).not.toHaveBeenCalled();
+    expect(shared.reserveAiBudgetMock).not.toHaveBeenCalled();
     expect(shared.transitionProposalMock).toHaveBeenCalledWith(expect.anything(), PROPOSAL_ID, ['proposed'], 'review_failed', expect.anything());
-    expect(shared.insertValues.at(-1)).toMatchObject({ summary: expect.stringContaining('Review inputs unavailable') });
   });
 
   it('a device-facts query error after the reservation fails closed and settles at zero', async () => {
     shared.selectQueue.push([PROPOSAL_ROW]);
     shared.selectQueue.push([]);
-    shared.selectQueue.push([{ partnerId: PARTNER_ID }]);
     // loadDeviceFacts: nothing queued ⇒ the mock throws "no queued select rows".
     shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
     shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
@@ -582,7 +598,8 @@ describe('runScriptReview — review-round fixes (#5636)', () => {
 
     expect(result).toMatchObject({ status: 'failed' });
     expect(shared.messagesCreateMock).not.toHaveBeenCalled();
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' });
+    expect(shared.settleInvocationMock).not.toHaveBeenCalled();
+    expect(shared.releaseMock).toHaveBeenCalledWith({ orgId: ORG_ID, reservationId: RESERVATION_ID });
   });
 
   it("the SDK's own abort/timeout error classes are classified as timeout (not just the DOM TimeoutError name)", async () => {
@@ -604,7 +621,7 @@ describe('runScriptReview — review-round fixes (#5636)', () => {
     shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
     shared.insertReturningQueue.push([{ id: REVIEW_ROW_ID, reviewerKind: 'model', status: 'completed' }]);
     shared.messagesCreateMock.mockResolvedValueOnce({ usage: { input_tokens: 500, output_tokens: 80 }, content: [{ type: 'text', text: JSON.stringify(VALID_VERDICT) }] });
-    shared.recordUsageMock.mockRejectedValueOnce(new Error('ledger write failed'));
+    shared.settleInvocationMock.mockRejectedValueOnce(new Error('ledger write failed'));
 
     const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
 
@@ -624,5 +641,244 @@ describe('runScriptReview — review-round fixes (#5636)', () => {
 
     expect(shared.insertValues.at(-1)).toMatchObject({ verdict: { rawText: 'Sure! Here is my review in prose…' } });
     expect(shared.captureExceptionMock).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ service: 'scriptReview', reviewStatus: 'failed' }));
+  });
+});
+
+describe('runScriptReview — registry resolution (W03 Task 11)', () => {
+  const JOB = { proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 };
+
+  beforeEach(() => {
+    resetDbState();
+    vi.clearAllMocks();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    primeResolver();
+    shared.reserveAiBudgetMock.mockResolvedValue(RESERVED);
+    shared.transitionProposalMock.mockResolvedValue(true);
+    shared.messagesCreateMock.mockImplementation(async () => ({
+      usage: { input_tokens: 500, output_tokens: 80 },
+      content: [{ type: 'text', text: JSON.stringify(VALID_VERDICT) }],
+    }));
+  });
+
+  function queueHappy(): void {
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: REVIEW_ROW_ID, reviewerKind: 'model', status: 'completed' }]);
+  }
+
+  function queueFailedBeforeDispatch(): void {
+    shared.selectQueue.push([PROPOSAL_ROW], []);
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row', reviewerKind: 'model', status: 'failed' }]);
+  }
+
+  it('resolves the script_reviewer assignment BEFORE reserving, and reserves with its funding + binding', async () => {
+    const model = makeResolvedModel('anthropic_byok', { surface: 'script_reviewer' });
+    shared.resolveModelMock.mockResolvedValue(model);
+    queueHappy();
+    await runScriptReview(JOB);
+    expect(shared.resolveModelMock).toHaveBeenCalledWith({
+      partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'script_reviewer', maxTokens: 2000,
+    });
+    // A system call: no userId, so no per-user permission gate.
+    expect(shared.resolveModelMock.mock.calls[0]![0]).not.toHaveProperty('userId');
+    expect(shared.resolveModelMock.mock.invocationCallOrder[0]!).toBeLessThan(shared.reserveAiBudgetMock.mock.invocationCallOrder[0]!);
+    expect(shared.checkBudgetDetailedMock).toHaveBeenCalledWith(ORG_ID, 'partner_key');
+    expect(shared.reserveAiBudgetMock).toHaveBeenCalledWith(expect.objectContaining({
+      billingSource: 'partner_key', binding: turnBindingFrom(model),
+      // Stable key: a retry of the same attempt re-binds its unsettled reservation.
+      idempotencyKey: `script-review:${PROPOSAL_ID}:1`,
+    }));
+    expect(shared.settleInvocationMock).toHaveBeenCalledWith(expect.objectContaining({
+      binding: turnBindingFrom(model), sourceRef: `script-review:${PROPOSAL_ID}`, userId: null,
+    }));
+  });
+
+  it('an ineligible reviewer model fails the review with the resolver message and takes no reservation', async () => {
+    shared.resolveModelMock.mockResolvedValue({
+      ok: false, reason: 'unpriced', recoverable: true, offeringId: 'o', message: 'This AI model has no price set and cannot be used yet.',
+    });
+    queueFailedBeforeDispatch();
+    await runScriptReview(JOB);
+    expect(shared.reserveAiBudgetMock).not.toHaveBeenCalled();
+    expect(shared.checkBudgetDetailedMock).not.toHaveBeenCalled();
+    expect(shared.messagesCreateMock).not.toHaveBeenCalled();
+    expect(shared.insertValues.at(-1)).toMatchObject({
+      status: 'failed', budgetReservationId: null, summary: expect.stringContaining('no price set'),
+    });
+  });
+
+  it('exhausted platform credits fail the review before any reservation or provider call', async () => {
+    shared.checkBudgetDetailedMock.mockResolvedValue({ message: 'You are out of AI credits.', reason: 'credits_exhausted', permanent: false });
+    queueFailedBeforeDispatch();
+    await runScriptReview(JOB);
+    expect(shared.reserveAiBudgetMock).not.toHaveBeenCalled();
+    expect(shared.messagesCreateMock).not.toHaveBeenCalled();
+    expect(shared.insertValues.at(-1)).toMatchObject({ status: 'failed', summary: 'You are out of AI credits.' });
+  });
+
+  it('a stored reviewer_model is ignored at runtime (the assignment is authoritative)', async () => {
+    const { resolveEffectiveScriptPolicy } = await import('./policy');
+    vi.mocked(resolveEffectiveScriptPolicy).mockResolvedValueOnce({ reviewerModel: 'claude-opus-4-8', maxUnattendedRiskTier: 'low' } as never);
+    queueHappy();
+    await runScriptReview(JOB);
+    expect(shared.messagesCreateMock.mock.calls[0]![0]).toMatchObject({ model: MODEL });
+    expect(shared.resolveModelMock.mock.calls[0]![0]).not.toHaveProperty('requested');
+  });
+
+  it('the dispatch keeps its hard wall clock and never retries inside the SDK', async () => {
+    queueHappy();
+    await runScriptReview(JOB);
+    const [, opts] = shared.messagesCreateMock.mock.calls[0]! as [unknown, Record<string, unknown>];
+    expect(opts).toMatchObject({ maxRetries: 0 });
+    expect(opts.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('a refusal fails the review with the category, and the spend is still settled', async () => {
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row-refusal', reviewerKind: 'model', status: 'failed' }]);
+    shared.messagesCreateMock.mockResolvedValueOnce({
+      usage: { input_tokens: 300, output_tokens: 5 }, content: [],
+      stop_reason: 'refusal', stop_details: { type: 'refusal', category: 'cyber' },
+    });
+    await runScriptReview(JOB);
+    expectSettledOnce(300, 5);
+    expect(shared.insertValues.at(-1)).toMatchObject({
+      status: 'failed', summary: expect.stringContaining('The model declined this request (category: cyber).'),
+    });
+    expect(shared.transitionProposalMock).toHaveBeenCalledWith(expect.anything(), PROPOSAL_ID, ['proposed'], 'review_failed', expect.anything());
+  });
+
+  it('settles through the single billing path only, exactly once', async () => {
+    queueHappy();
+    await runScriptReview(JOB);
+    expect(shared.settleInvocationMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('runScriptReview — W09 failover (#7607)', () => {
+  const JOB = { proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 };
+  const HOP1_RESERVATION = '00000000-0000-4000-8000-0000000000d1';
+  const overloaded = () => Object.assign(new Error('Overloaded'), {
+    status: 529, error: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } },
+  });
+  const primary = () => makeResolvedModel('platform', {
+    surface: 'script_reviewer', partnerId: PARTNER_ID, orgId: ORG_ID, offering: { id: 'p', displayName: 'P' }, failoverRemaining: ['k'],
+  });
+  const backup = () => makeResolvedModel('anthropic_byok', {
+    surface: 'script_reviewer', partnerId: PARTNER_ID, orgId: ORG_ID, offering: { id: 'k', displayName: 'K' },
+    wireModel: 'claude-backup-wire', failover: { fromOfferingId: 'p', hop: 1, cause: 'overloaded' }, failoverRemaining: [],
+  });
+  const settles = () => shared.settleInvocationMock.mock.calls.map((c) => (c as unknown as [{
+    binding: { offeringId: string }; usage: unknown[]; reservationId: string;
+  }])[0]);
+
+  beforeEach(() => {
+    resetDbState();
+    vi.clearAllMocks();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    primeResolver();
+    shared.transitionProposalMock.mockResolvedValue(true);
+    // mockClear keeps queued *Once values: reset so one case's script never leaks into the next.
+    shared.messagesCreateMock.mockReset();
+    shared.checkBudgetDetailedMock.mockReset();
+    shared.checkBudgetDetailedMock.mockResolvedValue(null);
+    shared.reserveAiBudgetMock.mockReset();
+    shared.reserveAiBudgetMock
+      .mockResolvedValueOnce(RESERVED)
+      .mockResolvedValueOnce({ ...RESERVED, reservationId: HOP1_RESERVATION, reservedCostCents: 40 });
+  });
+
+  it('a 529 on the reviewer model fails over to the assignment fallback; each hop is admitted, reserved and settled on its own', async () => {
+    shared.resolveModelMock.mockReset();
+    shared.resolveModelMock.mockResolvedValueOnce(primary()).mockResolvedValueOnce(backup());
+    shared.messagesCreateMock
+      .mockRejectedValueOnce(overloaded())
+      .mockResolvedValueOnce({ usage: { input_tokens: 500, output_tokens: 80 }, content: [{ type: 'text', text: JSON.stringify(VALID_VERDICT) }] });
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: REVIEW_ROW_ID, reviewerKind: 'model', status: 'completed' }]);
+
+    const result = await runScriptReview(JOB);
+
+    expect(result).toMatchObject({ id: REVIEW_ROW_ID, status: 'completed' });
+    expect(shared.resolveModelMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      surface: 'script_reviewer', excludeOfferingIds: ['p'], failoverCause: 'overloaded',
+      failoverOrigin: { offeringId: 'p', funding: 'platform', connectionId: null },
+    }));
+    expect(shared.checkBudgetDetailedMock).toHaveBeenLastCalledWith(ORG_ID, 'partner_key');
+    expect(shared.reserveAiBudgetMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      idempotencyKey: `script-review:${PROPOSAL_ID}:1:hop:1`, billingSource: 'partner_key',
+      binding: turnBindingFrom(backup()),
+    }));
+    expect(settles().map((s) => [s.binding.offeringId, s.usage.length, s.reservationId])).toEqual([
+      ['p', 0, RESERVATION_ID],
+      ['k', 1, HOP1_RESERVATION],
+    ]);
+    // The backup's own client, and the review row names what SERVED.
+    expect(shared.anthropicClientForMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ offering: { id: 'k', displayName: 'K' } }), { surface: 'script_review_verdict', orgId: ORG_ID },
+    );
+    expect(shared.messagesCreateMock.mock.calls[1]![0]).toMatchObject({ model: 'claude-backup-wire' });
+    expect(shared.insertValues.at(-1)).toMatchObject({
+      reviewerKind: 'model', status: 'completed', model: 'claude-backup-wire', budgetReservationId: HOP1_RESERVATION,
+    });
+  });
+
+  it('no fallback configured: a 529 keeps W03 behaviour (one reservation, settled at zero, review failed)', async () => {
+    shared.resolveModelMock.mockReset();
+    shared.resolveModelMock.mockResolvedValue({ ...primary(), failoverRemaining: [] });
+    shared.messagesCreateMock.mockRejectedValueOnce(overloaded());
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row', reviewerKind: 'model', status: 'failed' }]);
+
+    const result = await runScriptReview(JOB);
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(shared.resolveModelMock).toHaveBeenCalledTimes(1);
+    expect(shared.reserveAiBudgetMock).toHaveBeenCalledTimes(1);
+    expect(settles().map((s) => [s.reservationId, s.usage.length])).toEqual([[RESERVATION_ID, 0]]);
+  });
+
+  it('every configured model fails: the review fails, each hop settled exactly once, nothing settled twice', async () => {
+    shared.resolveModelMock.mockReset();
+    shared.resolveModelMock.mockResolvedValueOnce(primary()).mockResolvedValueOnce(backup());
+    shared.messagesCreateMock.mockRejectedValueOnce(overloaded()).mockRejectedValueOnce(overloaded());
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row', reviewerKind: 'model', status: 'failed' }]);
+
+    const result = await runScriptReview(JOB);
+
+    expect(result).toMatchObject({ status: 'failed' });
+    // hop 1 has no failoverRemaining: the original error comes back unsettled and the reviewer settles it once.
+    expect(settles().map((s) => [s.binding.offeringId, s.reservationId])).toEqual([
+      ['p', RESERVATION_ID],
+      ['k', HOP1_RESERVATION],
+    ]);
+    expect(shared.insertValues.at(-1)).toMatchObject({ status: 'failed', budgetReservationId: HOP1_RESERVATION });
+  });
+
+  it('the backup hop is not admitted (out of credits): the review fails, nothing more is reserved', async () => {
+    shared.resolveModelMock.mockReset();
+    shared.resolveModelMock.mockResolvedValueOnce(primary()).mockResolvedValueOnce(
+      makeResolvedModel('platform', { surface: 'script_reviewer', offering: { id: 'p2', displayName: 'P2' }, failover: { fromOfferingId: 'p', hop: 1, cause: 'overloaded' }, failoverRemaining: [] }),
+    );
+    shared.checkBudgetDetailedMock.mockResolvedValueOnce(null).mockResolvedValueOnce({ message: 'You are out of AI credits.', reason: 'credits_exhausted', permanent: false });
+    shared.messagesCreateMock.mockRejectedValueOnce(overloaded());
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row', reviewerKind: 'model', status: 'failed' }]);
+
+    const result = await runScriptReview(JOB);
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(shared.reserveAiBudgetMock).toHaveBeenCalledTimes(1);
+    expect(settles().map((s) => s.reservationId)).toEqual([RESERVATION_ID]);
+    expect(shared.insertValues.at(-1)).toMatchObject({ summary: expect.stringContaining('out of AI credits') });
   });
 });

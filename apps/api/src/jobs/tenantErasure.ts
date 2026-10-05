@@ -27,7 +27,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
-import { cascadeDeleteOrg, hasActiveLegalHoldSnapshots, TenantCascadeRefusalError } from '../services/tenantCascade';
+import { cascadeDeleteOrg, hasActiveBackupLegalHold, TenantCascadeRefusalError } from '../services/tenantCascade';
 import { createAuditLog } from '../services/auditService';
 import { attachWorkerObservability } from './workerObservability';
 import { enqueueOrReplaceStale } from '../services/bullmqUtils';
@@ -148,17 +148,17 @@ export async function eraseOrgWithFixMemory(
   orgId: string,
   performedBy: string,
   performedByEmail?: string,
-  hooks: { rebuild?: typeof rebuildFixMemory } = {},
+  hooks: { rebuild?: typeof rebuildFixMemory; erasureJobId?: string | null } = {},
 ) {
   const rebuild = hooks.rebuild ?? rebuildFixMemory;
   // Cheap pre-check (the same one cascadeDeleteOrg runs first): a held org is
   // refused before anything is deleted, so marking it would only need undoing.
-  const heldAtEntry = await hasActiveLegalHoldSnapshots(orgId);
+  const heldAtEntry = await hasActiveBackupLegalHold(orgId);
   const fixMemoryPartnerId = heldAtEntry ? null : await runOutsideDbContext(() =>
     withSystemDbAccessContext(() => markFixMemoryStaleForOrgErasure(orgId), 'tenantErasure.fixMemoryStale'));
   let stats: Awaited<ReturnType<typeof cascadeDeleteOrg>>;
   try {
-    stats = await cascadeDeleteOrg(orgId, performedBy, performedByEmail);
+    stats = await cascadeDeleteOrg(orgId, performedBy, performedByEmail, { erasureJobId: hooks.erasureJobId ?? null });
   } catch (err) {
     if (err instanceof TenantCascadeRefusalError && fixMemoryPartnerId) {
       try {
@@ -282,7 +282,7 @@ export function createTenantErasureWorker(): Worker {
       }
 
       try {
-        const stats = await eraseOrgWithFixMemory(orgId, performedBy, performedByEmail);
+        const stats = await eraseOrgWithFixMemory(orgId, performedBy, performedByEmail, { erasureJobId: job.id ?? null });
         return { ...stats, jobId: job.id };
       } catch (err) {
         // A precondition refusal (e.g. an active legal hold): cascadeDeleteOrg

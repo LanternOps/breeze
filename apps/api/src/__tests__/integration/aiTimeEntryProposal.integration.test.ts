@@ -312,7 +312,7 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
     const draftId = await seedDraft(s, 'reply');
 
     await withDbAccessContext(s.orgContext, () =>
-      sendTicketDraft(s.ticketId, draftId, undefined, { userId: s.tech.id, name: 'Tess Tech' }),
+      sendTicketDraft(s.ticketId, draftId, undefined, { kind: 'user' as const, userId: s.tech.id, name: 'Tess Tech' }),
     );
     // Nothing is minted by the send itself — the outbox hop is the mint.
     expect(await intentsForTicket(s.ticketId)).toHaveLength(0);
@@ -354,7 +354,7 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
     const s = await seedScenario();
     const draftId = await seedDraft(s, 'reply');
     await withDbAccessContext(s.orgContext, () =>
-      sendTicketDraft(s.ticketId, draftId, undefined, { userId: s.tech.id, name: 'Tess Tech' }),
+      sendTicketDraft(s.ticketId, draftId, undefined, { kind: 'user' as const, userId: s.tech.id, name: 'Tess Tech' }),
     );
     await publishLatestOutbox(s, 'ticket.commented');
     const [intent] = await intentsForTicket(s.ticketId);
@@ -393,7 +393,7 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
     const draftId = await seedDraft(s, 'resolution_note');
 
     await withDbAccessContext(s.orgContext, () =>
-      changeTicketStatus(s.ticketId, { status: 'resolved' }, { aiDraftId: draftId }, { userId: s.tech.id, name: 'Tess Tech' }),
+      changeTicketStatus(s.ticketId, { status: 'resolved' }, { aiDraftId: draftId }, { kind: 'user' as const, userId: s.tech.id, name: 'Tess Tech' }),
     );
     const payload = await publishLatestOutbox(s, 'ticket.status_changed');
     expect(payload.aiDraft).toEqual({ draftId, runId: s.runId, trigger: 'resolved_with_ai_note' });
@@ -424,7 +424,7 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
 
     const draftId = await seedDraft(s, 'reply');
     await withDbAccessContext(s.orgContext, () =>
-      sendTicketDraft(s.ticketId, draftId, undefined, { userId: s.tech.id, name: 'Tess Tech' }),
+      sendTicketDraft(s.ticketId, draftId, undefined, { kind: 'user' as const, userId: s.tech.id, name: 'Tess Tech' }),
     );
     await publishLatestOutbox(s, 'ticket.commented');
     const [intent] = await intentsForTicket(s.ticketId);
@@ -454,7 +454,7 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
     const draftId = await seedDraft(s, 'reply', null);
 
     const result = await withDbAccessContext(s.orgContext, () =>
-      sendTicketDraft(s.ticketId, draftId, undefined, { userId: s.tech.id, name: 'Tess Tech' }),
+      sendTicketDraft(s.ticketId, draftId, undefined, { kind: 'user' as const, userId: s.tech.id, name: 'Tess Tech' }),
     );
     expect(result.comment.id).toBeTruthy();
     const payload = await publishLatestOutbox(s, 'ticket.commented');

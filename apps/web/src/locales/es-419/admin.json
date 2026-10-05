@@ -400,6 +400,7 @@
       "addEntry": "Agregar proveedor",
       "loading": "Cargando catálogo…",
       "empty": "Aún no hay entradas en el catálogo.",
+      "noRevisions": "Todavía no hay revisiones.",
       "dismiss": "Descartar",
       "platformAdmin": {
         "title": "Se requiere acceso de administrador de plataforma",
@@ -663,7 +664,15 @@
       },
       "drawer": {
         "title": "Editar {{name}}",
-        "prices": "Precios (centavos de dólar por millón de tokens)",
+        "prices": "Precios (dólares por millón de tokens)",
+        "storedPrice": "Guardado: {{value}}",
+        "priceChangeTitle": "Confirmar cambio grande de precio",
+        "priceChangeIntro": "Estos precios difieren de los guardados en más de 10×. Revisa la unidad: estás ingresando dólares por millón de tokens.",
+        "priceChangeRow": "{{field}} ({{group}}): {{stored}} → {{next}}",
+        "priceChangeConfirm": "Confirmar y guardar",
+        "priceChangeBack": "Volver",
+        "priceGroupStandard": "Estándar",
+        "priceGroupFast": "Modo rápido",
         "fastPrices": "Precios del modo rápido (opcional)",
         "fastPricesHint": "El modo rápido no se puede seleccionar hasta que se definan los cuatro precios rápidos.",
         "inputCentsPerM": "Entrada",
@@ -695,6 +704,33 @@
         "save": "No se pudo guardar el modelo.",
         "refresh": "No se pudo poner en cola la actualización de modelos.",
         "invalidRates": "Ingresa los cuatro precios como números no negativos, o deja los cuatro en blanco."
+      },
+      "variants": {
+        "title": "Variantes de prompt",
+        "subtitle": "Indicaciones añadidas al prompt de sistema de una función para una familia de modelos, comparadas con el prompt base en todos los socios. Las variantes cambian con cada versión.",
+        "range": "{{from}} a {{to}}.",
+        "base": "Prompt base",
+        "columns": {
+          "variant": "Variante",
+          "state": "Estado",
+          "conversations": "Conversaciones",
+          "flagRate": "Tasa de marcado",
+          "refusalRate": "Tasa de rechazo",
+          "leftRate": "Pasó a otro modelo",
+          "turns": "Turnos hasta resolver",
+          "costPerConversation": "Costo / conversación"
+        },
+        "states": {
+          "staged": "Preparada",
+          "candidate": "Candidata",
+          "active": "Activa",
+          "retired": "Retirada"
+        },
+        "lowSample": "Menos de {{min}} conversaciones: muy pocas para comparar",
+        "incumbent": "Vigente",
+        "loading": "Cargando variantes de prompt…",
+        "empty": "No hay variantes de prompt registradas.",
+        "error": "No se pudo cargar el informe de variantes de prompt."
       }
     }
   },

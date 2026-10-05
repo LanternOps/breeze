@@ -56,6 +56,7 @@ const resp = (payload: unknown, ok = true, status = ok ? 200 : 400): Response =>
   ({ ok, status, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
 const contract = {
+  autopayExcluded: false,
   id: 'ct-1', partnerId: 'p1', orgId: 'org-1', name: 'Acme MSA', status: 'draft', billingTiming: 'advance',
   intervalMonths: 1, startDate: '2026-06-01', endDate: null, nextBillingAt: null, autoIssue: false, autoRenew: false,
   renewalTermMonths: null, renewalNoticeDays: null, currencyCode: 'USD', notes: null, terms: null,
@@ -87,6 +88,7 @@ describe('ContractEditor — inline line edit (#3205 W03)', () => {
   });
 
   const detailFor = (lines: ContractLine[] = [baseLine], status: ContractStatus = 'draft') => ({
+    autopayEnabled: false,
     contract: { ...contract, status }, lines, periods: [],
   });
 

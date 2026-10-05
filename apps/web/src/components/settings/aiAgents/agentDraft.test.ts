@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
+import { AI_AGENT_LIMIT_DEFAULTS, RESEARCH_EDITABLE_LIMIT_KEYS, type AiAgentDto } from '@breeze/shared';
 import {
   ALERT_SEVERITY_KINDS,
   allowsRunScript,
   authorizedScriptCountFor,
   buildAgentSaveBody,
+  creatableKinds,
   draftFrom,
   firstFreeKind,
   freeKinds,
@@ -42,6 +43,8 @@ function baseDraft(overrides: Partial<Draft> = {}): Draft {
     scriptIds: [],
     ticketAutonomousWrites: false,
     alertCategories: [],
+    offeringId: null,
+    offeringIdTouched: false,
     ...overrides,
   };
 }
@@ -280,5 +283,63 @@ describe('buildAgentSaveBody scriptIds (#5089 review)', () => {
     expect(partner.actAssets.scriptIds).toEqual([]);
     const org = buildAgentSaveBody({ ...base, ownerScope: 'organization', scriptIds: [] }, { isCreate: false, orgId: 'org-1' }) as { actAssets: { scriptIds: string[] } };
     expect(org.actAssets.scriptIds).toEqual([]);
+  });
+});
+
+describe('offeringId in the save body (W05)', () => {
+  const opts = (isCreate: boolean) => ({ isCreate, orgId: 'org-1' });
+  it('create sends a chosen offering, and nothing for "use the default"', () => {
+    expect(buildAgentSaveBody(baseDraft({ offeringId: 'opus', offeringIdTouched: true }), opts(true))).toMatchObject({ offeringId: 'opus' });
+    expect(buildAgentSaveBody(baseDraft({ offeringId: null }), opts(true))).not.toHaveProperty('offeringId');
+  });
+  it('update sends offeringId only when the user changed it (an unrelated edit never re-binds the model)', () => {
+    expect(buildAgentSaveBody(baseDraft({ offeringId: 'opus', offeringIdTouched: false }), opts(false))).not.toHaveProperty('offeringId');
+    expect(buildAgentSaveBody(baseDraft({ offeringId: null, offeringIdTouched: true }), opts(false))).toMatchObject({ offeringId: null });
+  });
+  it("draftFrom reads the agent's offering", () => {
+    const agent = { offeringId: 'opus' } as unknown as Parameters<typeof draftFrom>[0];
+    expect(draftFrom(agent, { ownerScope: 'partner', kind: 'patch' })).toMatchObject({ offeringId: 'opus', offeringIdTouched: false });
+  });
+});
+
+const row = (kind: string, ownerScope: 'partner' | 'organization', orgId: string | null = null) =>
+  ({ id: `${kind}-${ownerScope}`, kind, ownerScope, orgId }) as unknown as AiAgentDto;
+const ORDINARY = ['triage', 'patch', 'helpdesk', 'designer'].map((k) => row(k, 'partner'));
+
+describe('creatableKinds / freeKinds and the provisioned research kind (W2, Codex finding 4)', () => {
+  it('research is never creatable partner-wide, even when every ordinary kind is taken', () => {
+    expect(creatableKinds([], 'partner')).not.toContain('research');
+    expect(freeKinds(ORDINARY, 'partner', null)).toEqual([]);
+    expect(firstFreeKind(ORDINARY, 'partner', null)).toBeUndefined();
+  });
+
+  it('an org may add a research override only on top of a partner research baseline', () => {
+    expect(freeKinds([], 'organization', 'o-1')).not.toContain('research');
+    expect(freeKinds([row('research', 'partner')], 'organization', 'o-1')).toContain('research');
+    expect(freeKinds([row('research', 'partner'), row('research', 'organization', 'o-1')], 'organization', 'o-1')).not.toContain('research');
+  });
+});
+
+describe('research save-body projection (W2)', () => {
+  const research = (over: Partial<Draft> = {}) => baseDraft({
+    kind: 'research', ownerScope: 'partner', mode: 'act', name: 'Fix research (built-in)', enabled: true,
+    limits: { ...AI_AGENT_LIMIT_DEFAULTS, researchDeepBudgetCentsPerRun: 40 }, ...over,
+  });
+
+  it('a research PATCH carries only name, enabled and the research caps', () => {
+    const body = buildAgentSaveBody(research(), { isCreate: false, orgId: null });
+    expect(Object.keys(body).sort()).toEqual(['enabled', 'limits', 'name']);
+    expect(Object.keys(body.limits as object).sort()).toEqual([...RESEARCH_EDITABLE_LIMIT_KEYS].sort());
+    expect((body.limits as Record<string, number>).researchDeepBudgetCentsPerRun).toBe(40);
+  });
+
+  it('a research org-override create adds only the create-only identity fields and mode act', () => {
+    const body = buildAgentSaveBody(research({ ownerScope: 'organization' }), { isCreate: true, orgId: 'o-1' });
+    expect(Object.keys(body).sort()).toEqual(['enabled', 'kind', 'limits', 'mode', 'name', 'orgId', 'ownerScope']);
+    expect(body).toMatchObject({ kind: 'research', ownerScope: 'organization', orgId: 'o-1', mode: 'act' });
+  });
+
+  it('every other kind is unchanged (negative control)', () => {
+    expect(buildAgentSaveBody(baseDraft(), { isCreate: false, orgId: 'o-1' })).toHaveProperty('toolAllowlist');
   });
 });

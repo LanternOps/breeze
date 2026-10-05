@@ -40,6 +40,10 @@ function detectUserOS(): "windows" | "macos" | "linux" {
  * Without the last case, validation failures against those collapse to a
  * bare status code — see PR #739 review.
  */
+// Asks an artifact route to delete a freshly minted parent key when it does
+// not produce the artifact (#7217). Never sent for a reused parent (#7345).
+const DISCARD_ON_FAILURE = "discardKeyOnFailure=1";
+
 function extractApiError(body: unknown): string {
   if (!body || typeof body !== "object") return "";
   const b = body as { message?: unknown; error?: unknown };
@@ -435,12 +439,41 @@ export default function AddDeviceModal({
     [initializeCli],
   );
 
-  // #7217: Download and Generate Link each mint a parent key, then ask for the
-  // artifact. On an HTTP failure the server discards that key itself (the
-  // request carries ?discardKeyOnFailure=1). When the request never got an
-  // answer — network drop, timeout — the server may never have seen it, so
-  // the modal deletes the key here. Best effort: a key it cannot delete is
-  // logged, and stays listed in Settings → Enrollment Keys until it expires.
+  // #7345: Download and Generate Link build from ONE parent key per site
+  // (and per user), not one per click. The server returns the existing parent
+  // when it is still good (`reused: true`) and mints one only when it is not;
+  // the raw key never leaves the server, since neither artifact needs it.
+  async function getAddDeviceParent(): Promise<
+    { id: string; reused: boolean } | { error: string }
+  > {
+    const keyRes = await fetchWithAuth("/enrollment-keys/add-device-parent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ siteId: selectedSiteId, orgId: currentOrgId }),
+    });
+    if (!keyRes.ok) {
+      const body = await keyRes
+        .json()
+        .catch(() => ({ error: t("addDeviceModal.failedToCreateEnrollmentKey") }));
+      const rawMessage = extractApiError(body);
+      if (keyRes.status === 403 && rawMessage.toLowerCase().includes("mfa required")) {
+        return { error: "MFA_REQUIRED" };
+      }
+      return {
+        error: rawMessage || `Failed to create enrollment key (${keyRes.status})`,
+      };
+    }
+    const data = (await keyRes.json()) as { id: string; reused?: boolean };
+    return { id: data.id, reused: data.reused === true };
+  }
+
+  // #7217: a parent minted for THIS attempt must not outlive a failed one. On
+  // an HTTP failure the server discards it itself (the request carries
+  // ?discardKeyOnFailure=1). When the request never got an answer — network
+  // drop, timeout — the server may never have seen it, so the modal deletes
+  // the key here. Best effort: a key it cannot delete is logged, and the next
+  // attempt reuses it (#7345). A REUSED parent is never discarded either way:
+  // it already backs installers delivered earlier.
   async function discardMintedKey(keyId: string) {
     try {
       const res = await fetchWithAuth(`/enrollment-keys/${keyId}`, {
@@ -554,62 +587,25 @@ export default function AddDeviceModal({
     setDownloadError(undefined);
     setDownloadSuccess(false);
 
-    let parentKeyId: string | undefined;
+    // Only a parent minted for this attempt may be discarded when it fails.
+    let freshParentKeyId: string | undefined;
     // Set once the installer response is in hand: from then on the server
     // produced the artifact and the key is in use, whatever happens next.
     let downloadProduced = false;
 
     try {
-      // Step 1: Create the parent enrollment key. The installer downloaded in
-      // step 2 carries a *bootstrap token* issued from this parent — whose own
+      // Step 1: The site's parent key. The installer downloaded in step 2
+      // carries a *bootstrap token* issued from this parent — whose own
       // max_usage IS the device count, redeemable once per device — not the
       // parent key itself (only the legacy macOS zip embeds a real child
-      // enrollment key).
-      //
-      // maxUsage is deliberately NOT set from deviceCount (#2992). It is
-      // tempting — the Enrollment Keys page renders usage_count / max_usage,
-      // so an unset maxUsage takes the API's `?? 1` default and the row reads
-      // "0 / 1" for an installer minted for X devices. But max_usage is an
-      // enforced enrollment budget, not a label: /agents/enroll matches any key
-      // with usage_count < max_usage, and the short-link and MCP-invite paths
-      // atomically claim usage_count against it. Widening it here would hand
-      // this key N direct-enrollment slots to fix a display bug, and would make
-      // the same column mean different things depending on which flow minted
-      // the key. The real device-count cap lives on the installer_bootstrap_
-      // tokens row; the Enrollment Keys list now reads it (see
-      // EnrollmentKeyManager's usage cell).
-      const keyRes = await fetchWithAuth("/enrollment-keys", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: `Add device installer (${new Date().toISOString().slice(0, 10)})`,
-          siteId: selectedSiteId,
-          orgId: currentOrgId,
-        }),
-      });
-
-      if (!keyRes.ok) {
-        const body = await keyRes
-          .json()
-          .catch(() => ({
-            error: t("addDeviceModal.failedToCreateEnrollmentKey"),
-          }));
-        const rawMessage = extractApiError(body);
-        if (
-          keyRes.status === 403 &&
-          rawMessage.toLowerCase().includes("mfa required")
-        ) {
-          setDownloadError("MFA_REQUIRED");
-        } else {
-          setDownloadError(
-            rawMessage || `Failed to create enrollment key (${keyRes.status})`,
-          );
-        }
+      // enrollment key). The parent's own max_usage stays 1 (#2992): it is an
+      // enforced enrollment budget, not a label.
+      const parent = await getAddDeviceParent();
+      if ("error" in parent) {
+        setDownloadError(parent.error);
         return;
       }
-
-      const keyData = await keyRes.json();
-      parentKeyId = keyData.id;
+      if (!parent.reused) freshParentKeyId = parent.id;
 
       // Step 2: Download installer (use longer timeout — binary can be large)
       const dlController = new AbortController();
@@ -617,7 +613,7 @@ export default function AddDeviceModal({
       let dlRes: Response;
       try {
         dlRes = await fetchWithAuth(
-          `/enrollment-keys/${parentKeyId}/installer/${selectedPlatform}?count=${deviceCount}&ttlMinutes=${ttlMinutes}&discardKeyOnFailure=1`,
+          `/enrollment-keys/${parent.id}/installer/${selectedPlatform}?count=${deviceCount}&ttlMinutes=${ttlMinutes}${parent.reused ? "" : `&${DISCARD_ON_FAILURE}`}`,
           { signal: dlController.signal },
         );
       } finally {
@@ -651,7 +647,7 @@ export default function AddDeviceModal({
 
       setDownloadSuccess(true);
     } catch (err) {
-      if (parentKeyId && !downloadProduced) void discardMintedKey(parentKeyId);
+      if (freshParentKeyId && !downloadProduced) void discardMintedKey(freshParentKeyId);
       if (err instanceof DOMException && err.name === "AbortError") {
         setDownloadError(
           "Download timed out. Please check your connection and try again.",
@@ -673,46 +669,21 @@ export default function AddDeviceModal({
     setLinkError(undefined);
     setGeneratedLink("");
 
-    let parentKeyId: string | undefined;
+    let freshParentKeyId: string | undefined;
     let linkAnswered = false;
     try {
-      // Step 1: Create parent enrollment key
-      const keyRes = await fetchWithAuth("/enrollment-keys", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: `Add device link (${new Date().toISOString().slice(0, 10)})`,
-          siteId: selectedSiteId,
-          orgId: currentOrgId,
-        }),
-      });
-
-      if (!keyRes.ok) {
-        const body = await keyRes
-          .json()
-          .catch(() => ({
-            error: t("addDeviceModal.failedToCreateEnrollmentKey"),
-          }));
-        const rawMessage = extractApiError(body);
-        if (
-          keyRes.status === 403 &&
-          rawMessage.toLowerCase().includes("mfa required")
-        ) {
-          setLinkError("MFA_REQUIRED");
-        } else {
-          setLinkError(
-            rawMessage || `Failed to create enrollment key (${keyRes.status})`,
-          );
-        }
+      // Step 1: The site's parent key. The link itself is its own short-coded
+      // child row; the parent is shared with Download (#7345).
+      const parent = await getAddDeviceParent();
+      if ("error" in parent) {
+        setLinkError(parent.error);
         return;
       }
-
-      const keyData = await keyRes.json();
-      parentKeyId = keyData.id;
+      if (!parent.reused) freshParentKeyId = parent.id;
 
       // Step 2: Generate public link
       const linkRes = await fetchWithAuth(
-        `/enrollment-keys/${keyData.id}/installer-link?discardKeyOnFailure=1`,
+        `/enrollment-keys/${parent.id}/installer-link${parent.reused ? "" : `?${DISCARD_ON_FAILURE}`}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -739,7 +710,7 @@ export default function AddDeviceModal({
       const linkData = await linkRes.json();
       setGeneratedLink(linkData.shortUrl ?? linkData.url);
     } catch (err) {
-      if (parentKeyId && !linkAnswered) void discardMintedKey(parentKeyId);
+      if (freshParentKeyId && !linkAnswered) void discardMintedKey(freshParentKeyId);
       const message =
         err instanceof Error ? err.message : t("addDeviceModal.unknownError");
       setLinkError(`Failed to generate link: ${message}`);

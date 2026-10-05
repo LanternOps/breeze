@@ -14,11 +14,12 @@
  *  3. a session pinned to a catalog revision rotates when that revision moves,
  *     exactly as it already rotates on key rotation.
  */
+import { existsSync, readdirSync } from 'node:fs';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 
 const {
   queryMock,
-  recordUsageMock,
+  settleInvocationMock,
   capturedQueryArgs,
   grantMock,
   revokeMock,
@@ -29,7 +30,7 @@ const {
   dbState,
 } = vi.hoisted(() => ({
   queryMock: vi.fn(),
-  recordUsageMock: vi.fn(() => Promise.resolve()),
+  settleInvocationMock: vi.fn(async (_input: unknown) => ({ costCents: 0, invocationIds: ['i1'], deferred: false })),
   capturedQueryArgs: [] as Array<{ prompt: unknown; options: Record<string, unknown> }>,
   grantMock: vi.fn(
     (
@@ -98,22 +99,20 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
-vi.mock('./aiCostTracker', () => ({
-  recordUsageFromSdkResult: recordUsageMock,
-  sumInputTokens: (u: Record<string, number | null | undefined> | null | undefined) =>
-    (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0),
-  calculateCostCents: () => 0,
-  // Real arithmetic (cents per million): the catalog cost path is the reason
-  // this snapshot exists, so a stub returning 0 would hide it.
-  calculateCatalogCostCents: (
-    pricing: { inputCentsPerM: number; outputCentsPerM: number },
-    inputTokens: number,
-    outputTokens: number,
-  ) =>
-    Math.round(
-      ((inputTokens / 1_000_000) * pricing.inputCentsPerM +
-        (outputTokens / 1_000_000) * pricing.outputCentsPerM) * 100,
-    ) / 100,
+// W03 Task 7: every turn settles through settleInvocation at the rate bound
+// to the turn (here: the catalog revision snapshot). priceUsage / the quote
+// stay real so the `done` cost is the actual registry arithmetic.
+vi.mock('./aiModels/settleInvocation', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/settleInvocation')>()),
+  settleInvocation: settleInvocationMock,
+}));
+vi.mock('./aiBudgetReservations', () => ({
+  markAiBudgetReservationIndeterminate: vi.fn(async () => undefined),
+  readSdkUsageSnapshot: vi.fn(async () => null),
+}));
+vi.mock('./aiModels/platformModels', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/platformModels')>()),
+  getPlatformModelByModelId: vi.fn(async () => null),
 }));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
@@ -137,7 +136,13 @@ vi.mock('./llm/llmEgressRecorder', () => ({ recordLlmEgressEvent: recordLlmEgres
 import { StreamingSessionManager, buildClaudeSdkChildEnv } from './streamingSessionManager';
 import type { AuthContext } from '../middleware/auth';
 import type { UsableLlmConfig } from './llm/llmConfigResolver';
+import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
+import { sdkModelOptions } from './aiModels/connectionFactory';
+import type { ResolvedModel } from './aiModels/resolveModel';
+import { liveQueryKey, turnBindingFrom } from './aiModels/turnBinding';
+import type { SettleInvocationInput } from './aiModels/settleInvocation';
 import { captureException, captureMessage } from './sentry';
+import { closeModelGateway } from './aiModels/gateway';
 import * as dbModule from '../db';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
@@ -149,8 +154,7 @@ const PROXY_URL = 'http://breeze:tok@127.0.0.1:45677';
 
 const DB_SESSION = {
   orgId: ORG,
-  sdkSessionId: null,
-  model: 'claude-sonnet-4-6',
+  sdkSessionId: null as string | null,
   maxTurns: 50,
   turnCount: 0,
   systemPrompt: null,
@@ -234,6 +238,38 @@ function catalogConfig(overrides: Partial<{
       },
     },
   };
+}
+
+/**
+ * The ResolvedModel the registry would hand the manager for `config`: the
+ * connection half IS the legacy UsableLlmConfig; a catalog connection's wire
+ * id and rate come from the pinned revision (W03 Task 7).
+ */
+function resolvedFor(config: UsableLlmConfig, over: Partial<ResolvedModel> = {}): ResolvedModel {
+  const catalog = config.source === 'partner' && config.endpoint.kind === 'catalog' ? config.endpoint : null;
+  const kind = config.source === 'platform' ? 'platform' : catalog ? 'catalog' : 'anthropic_byok';
+  return makeResolvedModel(kind, {
+    partnerId: config.source === 'partner' ? config.partnerId : null,
+    connection: { id: config.source === 'partner' ? config.configId : null, kind, config },
+    logicalModel: config.model,
+    wireModel: catalog ? catalog.providerModel : config.model,
+    ...(config.source === 'partner' ? { configVersion: config.configVersion } : {}),
+    ...(catalog
+      ? {
+          catalogRevisionId: catalog.revisionId,
+          rateSnapshot: {
+            source: 'catalog' as const,
+            standard: {
+              inputCentsPerM: catalog.pricing.inputCentsPerM,
+              outputCentsPerM: catalog.pricing.outputCentsPerM,
+              cacheReadCentsPerM: catalog.pricing.cacheReadCentsPerM,
+              cacheWriteCentsPerM: catalog.pricing.cacheWriteCentsPerM,
+            },
+          },
+        }
+      : {}),
+    ...over,
+  });
 }
 
 const HOSTILE_PARENT_ENV = {
@@ -413,7 +449,7 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     mockSdkQuery([], gate.promise);
 
     const session = await manager.getOrCreate(
-      'sess-catalog', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-catalog', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
     );
 
     expect(grantMock).toHaveBeenCalledWith(
@@ -429,15 +465,12 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
     }));
-    // The wire model id from the revision's map, not the platform-logical id.
+    // The wire model id from the revision's map, not the platform-logical id;
+    // thinking/effort are the resolver's wire params (W03), nothing derived here.
     expect(capturedQueryArgs[0]!.options.model).toBe('anthropic/claude-sonnet-4-6');
-    // INTERIM (#7587) — delete with the model registry. Thinking is keyed on
-    // the WIRE id: the logical claude-sonnet-4-6 would be adaptive, but the
-    // gateway sees 'anthropic/claude-sonnet-4-6', which keeps today's disabled.
-    expect(capturedQueryArgs[0]!.options.thinking).toEqual({ type: 'disabled' });
-    expect(capturedQueryArgs[0]!.options.effort).toBeUndefined();
-    // …while the session keeps the logical id for provenance/pricing fallback.
-    expect(session.model).toBe('claude-sonnet-4-6');
+    expect(capturedQueryArgs[0]!.options).toMatchObject(sdkModelOptions(resolvedFor(catalogConfig())));
+    // …while the binding keeps the logical id and the revision's rate.
+    expect(session.turnBinding).toMatchObject({ logicalModel: 'claude-sonnet-4-6', rateSnapshot: { source: 'catalog' } });
 
     gate.resolve();
     await session.processorPromise;
@@ -449,7 +482,7 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     mockSdkQuery([], gate.promise);
 
     const session = await manager.getOrCreate(
-      'sess-catalog-event', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-catalog-event', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
     );
     await session.processorPromise;
 
@@ -471,7 +504,7 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     mockSdkQuery([], gate.promise);
 
     const session = await manager.getOrCreate(
-      'sess-catalog-connect', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-catalog-connect', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
     );
 
     const recorder = grantMock.mock.calls[0]![2];
@@ -498,12 +531,37 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     await session.processorPromise;
   });
 
+  it('SDK stderr: a grant token split across two stderr chunks is never logged, and the tail is flushed on remove', async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const token = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcde';
+
+    const session = await manager.getOrCreate(
+      'sess-catalog-stderr', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
+    );
+    const stderr = capturedQueryArgs[0]!.options.stderr as (data: string) => void;
+    stderr(`API Error: connect ECONNREFUSED http://127.0.0.1:41234/g/${token.slice(0, 21)}`);
+    stderr(`${token.slice(21)}/v1/messages Error\n`);
+    stderr(`FATAL retry /g/${token.slice(0, 10)}`);
+    stderr(`${token.slice(10)} (no newline before exit)`);
+    manager.remove('sess-catalog-stderr');
+
+    const logged = errors.mock.calls.filter((c) => c[0] === '[SDK-stderr]').map((c) => String(c[2]));
+    expect(logged.join('')).not.toContain(token);
+    expect(logged.join('\n')).toContain('/g/[redacted]/v1/messages');
+    expect(logged.join('\n')).toContain('FATAL retry /g/[redacted]');
+
+    gate.resolve();
+    await session.processorPromise;
+  });
+
   it('revokes the grant when the session is removed', async () => {
     const gate = deferred();
     mockSdkQuery([], gate.promise);
 
     const session = await manager.getOrCreate(
-      'sess-catalog-remove', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-catalog-remove', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
     );
     manager.remove('sess-catalog-remove');
 
@@ -514,36 +572,32 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
   });
 
   /**
-   * The regression guard for the wire-model translation itself: on a
-   * direct-Anthropic partner (and the platform) `resolveWireModel` must be a
-   * pass-through. A translation that leaked onto the non-catalog paths would
-   * send an `anthropic/…`-shaped id to api.anthropic.com — a 404 on every turn
-   * for the partners who are NOT using the new feature at all.
+   * The regression guard for wire-model pass-through: on a direct-Anthropic
+   * partner (and the platform) the resolved wire id is the model id itself.
+   * An `anthropic/…`-shaped id leaking onto the non-catalog paths would 404
+   * on every turn for the partners who are NOT using a catalog at all.
    */
   it.each([
     ['a direct-Anthropic partner', () => DIRECT_PARTNER_CONFIG],
     ['the platform', () => PLATFORM_CONFIG],
-  ])('sends %s session model unchanged and meters it at list rates', async (_label, config) => {
+  ])('sends %s resolved model unchanged and binds a non-catalog rate', async (_label, config) => {
     const gate = deferred();
     mockSdkQuery([], gate.promise);
 
-    // A model that no catalog revision maps — the point being that nothing on
-    // this path consults a model map at all.
     const session = await manager.getOrCreate(
       `sess-passthrough-${_label.replace(/\W+/g, '-')}`,
-      { ...DB_SESSION, model: 'claude-opus-4-8' },
-      AUTH, undefined, 'BASE PROMPT', undefined, config(),
+      DB_SESSION,
+      AUTH, undefined, 'BASE PROMPT', undefined,
+      resolvedFor(config(), { logicalModel: 'claude-opus-4-8', wireModel: 'claude-opus-4-8' }),
     );
 
     expect(capturedQueryArgs[0]!.options.model).toBe('claude-opus-4-8');
-    // INTERIM (#7587) — delete with the model registry. Chat never hard-codes
-    // `disabled`: a current model gets adaptive thinking + effort medium.
+    // The resolver's wire params: adaptive thinking + effort medium, never a hard-coded `disabled`.
     expect(capturedQueryArgs[0]!.options.thinking).toEqual({ type: 'adaptive' });
     expect(capturedQueryArgs[0]!.options.effort).toBe('medium');
-    expect(session.model).toBe('claude-opus-4-8');
-    // No pricing snapshot => `recordUsage` falls back to the Anthropic list
-    // rates, which is exactly right for traffic that went to Anthropic.
-    expect(session.catalogPricing).toBeUndefined();
+    expect(session.turnBinding.logicalModel).toBe('claude-opus-4-8');
+    // Traffic that went to Anthropic is never priced from a catalog revision.
+    expect(session.turnBinding.rateSnapshot.source).not.toBe('catalog');
     // And no provenance claim on a session that has no third party in it.
     expect(sessionUpdates).toContainEqual({ catalogEntryId: null, catalogRevisionId: null });
 
@@ -557,13 +611,15 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     mockSdkQuery([], gate.promise);
 
     const session = await manager.getOrCreate(
-      'sess-platform', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, PLATFORM_CONFIG,
+      'sess-platform', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(PLATFORM_CONFIG),
     );
     await session.processorPromise;
 
     expect(getLlmEgressProxyMock).not.toHaveBeenCalled();
     expect(grantMock).not.toHaveBeenCalled();
     expect(recordLlmEgressEventMock).not.toHaveBeenCalled();
+    // No working-directory override outside gateway connections.
+    expect(capturedQueryArgs[0]!.options).not.toHaveProperty('cwd');
   });
 
   it('fails the session create loudly when the egress proxy cannot start', async () => {
@@ -573,7 +629,7 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     getLlmEgressProxyMock.mockRejectedValueOnce(new Error('EADDRINUSE'));
 
     await expect(manager.getOrCreate(
-      'sess-catalog-proxy-down', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-catalog-proxy-down', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
     )).rejects.toThrow();
 
     // Fail-closed: no subprocess was ever started, so nothing could have
@@ -582,44 +638,34 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     expect(manager.get('sess-catalog-proxy-down')).toBeUndefined();
   });
 
-  it("sends the SESSION's own model on the wire, not the partner default's", async () => {
+  it("sends the RESOLVED model's wire id on the connection, and binds that model's revision rate", async () => {
     const gate = deferred();
     mockSdkQuery([], gate.promise);
 
-    // `ai_sessions.model` is a free-form client-supplied string and can also be
-    // stale; the resolver's model_unverified gate only ever checked the partner
-    // DEFAULT, so this model reached the provider untranslated.
+    // A non-default verified model on the same catalog connection: the
+    // resolver chose it (the session's offering), so the wire id and the rate
+    // are HAIKU's, never the connection default's. (An unverified model is
+    // refused by the resolver before dispatch; the manager no longer maps.)
     const session = await manager.getOrCreate(
       'sess-catalog-haiku',
-      { ...DB_SESSION, model: 'claude-haiku-4-5' },
-      AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      DB_SESSION,
+      AUTH, undefined, 'BASE PROMPT', undefined,
+      resolvedFor(catalogConfig(), {
+        logicalModel: 'claude-haiku-4-5',
+        wireModel: 'anthropic/claude-haiku-4-5',
+        rateSnapshot: {
+          source: 'catalog',
+          standard: { inputCentsPerM: 100, outputCentsPerM: 500, cacheReadCentsPerM: 10, cacheWriteCentsPerM: 125 },
+        },
+      }),
     );
 
     expect(capturedQueryArgs[0]!.options.model).toBe('anthropic/claude-haiku-4-5');
-    expect(session.model).toBe('claude-haiku-4-5');
-    // …and the ledger prices haiku at HAIKU's rates, not sonnet's.
-    expect(session.catalogPricing).toEqual(expect.objectContaining({ inputCentsPerM: 100 }));
+    expect(session.turnBinding.logicalModel).toBe('claude-haiku-4-5');
+    expect(session.turnBinding.rateSnapshot.standard.inputCentsPerM).toBe(100);
 
     gate.resolve();
     await session.processorPromise;
-  });
-
-  it('fails the session closed when the pinned revision has not verified the session model', async () => {
-    const gate = deferred();
-    gate.resolve();
-    mockSdkQuery([], gate.promise);
-
-    await expect(manager.getOrCreate(
-      'sess-catalog-unmapped',
-      { ...DB_SESSION, model: 'claude-opus-4-8' },
-      AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
-    )).rejects.toThrow(/claude-opus-4-8/);
-
-    // Never silently re-pointed at the default model's wire id, and no
-    // subprocess started.
-    expect(queryMock).not.toHaveBeenCalled();
-    expect(grantMock).not.toHaveBeenCalled();
-    expect(manager.get('sess-catalog-unmapped')).toBeUndefined();
   });
 
   it('stamps the catalog entry and revision onto the ai_sessions row', async () => {
@@ -627,7 +673,7 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     mockSdkQuery([], gate.promise);
 
     const session = await manager.getOrCreate(
-      'sess-catalog-provenance', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-catalog-provenance', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
     );
 
     // billing_source stays 'partner_key' for direct AND catalog BYOK, so these
@@ -653,7 +699,7 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     mockSdkQuery([], gate.promise);
 
     const session = await manager.getOrCreate(
-      'sess-catalog-provenance-ctx', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-catalog-provenance-ctx', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
     );
 
     // #2190/#1375: on the ambient context the write can be denied by forced RLS
@@ -676,7 +722,7 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     dbState.nextReturningRows.push([]);
 
     const session = await manager.getOrCreate(
-      'sess-catalog-provenance-miss', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-catalog-provenance-miss', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
     );
 
     // A silent 0-row stamp is the asymmetric-clear hazard: on the CLEARING side
@@ -704,7 +750,7 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     vi.mocked(dbModule.withSystemDbAccessContext).mockRejectedValueOnce(boom);
 
     const session = await manager.getOrCreate(
-      'sess-catalog-provenance-throw', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-catalog-provenance-throw', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
     );
 
     // Untagged, this capture lands in the same Sentry bucket as every other
@@ -730,7 +776,7 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     mockSdkQuery([], gate.promise);
 
     const session = await manager.getOrCreate(
-      'sess-direct-provenance', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, DIRECT_PARTNER_CONFIG,
+      'sess-direct-provenance', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(DIRECT_PARTNER_CONFIG),
     );
 
     // A partner who unpins rotates their sessions; the row must not keep
@@ -752,7 +798,7 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     mockSdkQuery([], gate.promise);
 
     await expect(manager.getOrCreate(
-      'sess-catalog-mcp-boom', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-catalog-mcp-boom', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
       undefined,
       () => { throw new Error('script-builder factory exploded'); },
     )).rejects.toThrow('script-builder factory exploded');
@@ -768,7 +814,7 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     queryMock.mockImplementation(() => { throw new Error('spawn EACCES'); });
 
     await expect(manager.getOrCreate(
-      'sess-catalog-query-boom', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-catalog-query-boom', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
     )).rejects.toThrow('spawn EACCES');
 
     expect(grantMock).toHaveBeenCalledOnce();
@@ -776,30 +822,71 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     expect(manager.get('sess-catalog-query-boom')).toBeUndefined();
   });
 
-  it('prices the turn from the revision snapshot instead of Anthropic list rates', async () => {
+  it('settles the turn at the revision snapshot rate, whatever the SDK reports (registry price only)', async () => {
     const gate = deferred();
+    const resolved = resolvedFor(catalogConfig());
     mockSdkQuery([{
       type: 'result',
       subtype: 'success',
       total_cost_usd: 3.5,
       usage: { input_tokens: 1_000_000, output_tokens: 0 },
+      // modelUsage keys are the REQUESTED (wire) ids.
+      modelUsage: { 'anthropic/claude-sonnet-4-6': { inputTokens: 1_000_000, outputTokens: 0, costUSD: 3.5 } },
       num_turns: 1,
     }], gate.promise);
 
     const session = await manager.getOrCreate(
-      'sess-catalog-cost', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-catalog-cost', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolved,
     );
     gate.resolve();
     await session.processorPromise;
 
-    expect(recordUsageMock).toHaveBeenCalledWith(
-      'sess-catalog-cost',
-      ORG,
-      expect.objectContaining({ total_cost_usd: 3.5 }),
-      'partner_key',
-      expect.objectContaining({ catalogEntryId: ENTRY_ID, revisionId: REVISION_ID, inputCentsPerM: 300 }),
-      undefined,
+    const input = settleInvocationMock.mock.calls[0]![0] as SettleInvocationInput;
+    expect(input.binding).toEqual(turnBindingFrom(resolved));
+    expect(input.binding.rateSnapshot).toMatchObject({ source: 'catalog', standard: { inputCentsPerM: 300 } });
+    expect(input.binding.funding).toBe('partner_key');
+    expect(input.usage).toEqual([
+      expect.objectContaining({ model: 'anthropic/claude-sonnet-4-6', tokens: expect.objectContaining({ input: 1_000_000 }) }),
+    ]);
+    const done = session.eventBus.getReplayEvents().find((e: any) => e.type === 'done' && e.usage) as any;
+    // 1M input × 300 cents/M — the revision price, not the SDK's $3.50.
+    expect(done.usage.costCents).toBeCloseTo(300, 6);
+  });
+
+  it('prices every catalog turn of one query from its own modelUsage delta, never the SDK running total (#7667)', async () => {
+    const gate = deferred();
+    const turn = (total: number, cumulative: number) => ({
+      type: 'result',
+      subtype: 'success',
+      total_cost_usd: total,
+      usage: { input_tokens: 1_000_000, output_tokens: 0 },
+      modelUsage: { 'anthropic/claude-sonnet-4-6': { inputTokens: cumulative, outputTokens: 0 } },
+      num_turns: 1,
+    });
+    mockSdkQuery([turn(1, 1_000_000), turn(3, 2_000_000), turn(6, 3_000_000)], gate.promise);
+    // Settlement advances the session snapshot (here: in memory).
+    let stored: unknown = null;
+    const reservations = await import('./aiBudgetReservations');
+    vi.mocked(reservations.readSdkUsageSnapshot).mockImplementation(async () => stored as never);
+    settleInvocationMock.mockImplementation(async (input: unknown) => {
+      const next = (input as SettleInvocationInput).sdkUsage?.nextSnapshot;
+      if (next) stored = next;
+      return { costCents: 0, invocationIds: ['i1'], deferred: false };
+    });
+
+    const session = await manager.getOrCreate(
+      'sess-catalog-multiturn', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined,
+      resolvedFor(catalogConfig()),
     );
+    gate.resolve();
+    await session.processorPromise;
+
+    const inputs = settleInvocationMock.mock.calls.map((c: any[]) => (c[0] as SettleInvocationInput).usage[0]!.tokens.input);
+    expect(inputs).toEqual([1_000_000, 1_000_000, 1_000_000]);
+    const doneCosts = session.eventBus.getReplayEvents()
+      .filter((e: any) => e.type === 'done')
+      .map((e: any) => e.usage?.costCents);
+    expect(doneCosts).toEqual([300, 300, 300].map((c) => expect.closeTo(c, 6)));
   });
 });
 
@@ -831,21 +918,17 @@ describe('getOrCreate — catalog revision rotation', () => {
     manager.shutdown();
   });
 
-  it('snapshots the revision and wire model of a catalog session', async () => {
+  it('keys the live query on the connection, config version, revision and wire model of a catalog session', async () => {
     const gate = deferred();
     mockSdkQuery([], gate.promise);
 
+    const resolved = resolvedFor(catalogConfig());
     const session = await manager.getOrCreate(
-      'sess-rev-snapshot', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-rev-snapshot', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolved,
     );
 
-    expect(session.llmConfigSnapshot).toEqual({
-      source: 'partner',
-      configId: CONFIG_ID,
-      configVersion: 1,
-      revisionId: REVISION_ID,
-      providerModel: 'anthropic/claude-sonnet-4-6',
-    });
+    expect(session.liveKey).toBe(liveQueryKey(turnBindingFrom(resolved)));
+    expect(session.liveKey.split('|').slice(0, 4)).toEqual([CONFIG_ID, '1', REVISION_ID, 'anthropic/claude-sonnet-4-6']);
 
     gate.resolve();
     await session.processorPromise;
@@ -866,27 +949,21 @@ describe('getOrCreate — catalog revision rotation', () => {
     });
 
     const first = await manager.getOrCreate(
-      'sess-rev-rotate', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-rev-rotate', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
     );
     first.state = 'idle';
 
     const NEXT_REVISION = '5e5e5e5e-5555-4555-8555-555555555555';
     const second = await manager.getOrCreate(
       'sess-rev-rotate', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined,
-      catalogConfig({ revisionId: NEXT_REVISION, providerModel: 'anthropic/claude-sonnet-4-7' }),
+      resolvedFor(catalogConfig({ revisionId: NEXT_REVISION, providerModel: 'anthropic/claude-sonnet-4-7' })),
     );
 
     expect(second).not.toBe(first);
     expect(first.query.close).toHaveBeenCalledOnce();
     expect(revokeMock).toHaveBeenCalledWith('sess-rev-rotate');
     expect(grantMock).toHaveBeenCalledTimes(2);
-    expect(second.llmConfigSnapshot).toEqual({
-      source: 'partner',
-      configId: CONFIG_ID,
-      configVersion: 1,
-      revisionId: NEXT_REVISION,
-      providerModel: 'anthropic/claude-sonnet-4-7',
-    });
+    expect(second.liveKey.split('|').slice(0, 4)).toEqual([CONFIG_ID, '1', NEXT_REVISION, 'anthropic/claude-sonnet-4-7']);
     expect(capturedQueryArgs[1]!.options.model).toBe('anthropic/claude-sonnet-4-7');
 
     oldGate.resolve();
@@ -901,20 +978,20 @@ describe('getOrCreate — catalog revision rotation', () => {
     mockSdkQuery([], gate.promise);
 
     const first = await manager.getOrCreate(
-      'sess-rev-processing', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-rev-processing', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
     );
     first.state = 'processing';
 
     const second = await manager.getOrCreate(
       'sess-rev-processing', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined,
-      catalogConfig({ revisionId: '5e5e5e5e-5555-4555-8555-555555555555' }),
+      resolvedFor(catalogConfig({ revisionId: '5e5e5e5e-5555-4555-8555-555555555555' })),
     );
 
     expect(second).toBe(first);
     expect(manager.tryTransitionToProcessing(second)).toBe(false);
     expect(queryMock).toHaveBeenCalledTimes(1);
     expect(revokeMock).not.toHaveBeenCalled();
-    expect(first.llmConfigSnapshot.revisionId).toBe(REVISION_ID);
+    expect(first.liveKey).toBe(liveQueryKey(turnBindingFrom(resolvedFor(catalogConfig()))));
 
     gate.resolve();
     await first.processorPromise;
@@ -925,10 +1002,10 @@ describe('getOrCreate — catalog revision rotation', () => {
     mockSdkQuery([], gate.promise);
 
     const first = await manager.getOrCreate(
-      'sess-rev-stable', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-rev-stable', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
     );
     const second = await manager.getOrCreate(
-      'sess-rev-stable', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+      'sess-rev-stable', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
     );
 
     expect(second).toBe(first);
@@ -937,5 +1014,148 @@ describe('getOrCreate — catalog revision rotation', () => {
 
     gate.resolve();
     await first.processorPromise;
+  });
+});
+
+// ============================================
+// Gateway (W06 openai_compatible) sessions
+// ============================================
+
+describe('getOrCreate — gateway (openai_compatible) sessions (W06 Task 9)', () => {
+  let manager: StreamingSessionManager;
+  const gatewayResolved = () => makeResolvedModel('openai_compatible', { orgId: ORG });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedQueryArgs.length = 0;
+    sessionUpdates.length = 0;
+    sessionUpdateContexts.length = 0;
+    dbState.systemDepth = 0;
+    dbState.nextReturningRows.length = 0;
+    grantMock.mockReturnValue({ proxyUrl: PROXY_URL });
+    getLlmEgressProxyMock.mockResolvedValue({
+      grant: grantMock,
+      revoke: revokeMock,
+      port: () => 45677,
+      close: () => Promise.resolve(),
+    });
+    manager = new StreamingSessionManager();
+  });
+
+  afterEach(async () => {
+    manager.shutdown();
+    await closeModelGateway();
+  });
+
+  it('spawns on the loopback gateway with a placeholder key and a deny-all proxy grant; no credential in the env', async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+
+    const session = await manager.getOrCreate(
+      'sess-gw', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, gatewayResolved(),
+    );
+
+    // Deny-all: a null destination, under a per-dispatch key.
+    expect(grantMock).toHaveBeenCalledWith(expect.stringMatching(/^sess-gw:gateway:/), null, expect.any(Function));
+    const env = capturedQueryArgs[0]!.options.env as Record<string, string>;
+    expect(env).toEqual(expect.objectContaining({
+      ANTHROPIC_API_KEY: 'breeze-gateway',
+      HTTPS_PROXY: PROXY_URL,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'qwen2.5-coder:7b',
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+      ENABLE_TOOL_SEARCH: 'false',
+    }));
+    expect(env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/g\/[A-Za-z0-9_-]{43}$/);
+    expect(env.NO_PROXY).toBe(`127.0.0.1:${new URL(env.ANTHROPIC_BASE_URL!).port}`);
+    // The child runs in its own empty temp directory, not the API's cwd.
+    const cwd = capturedQueryArgs[0]!.options.cwd as string;
+    expect(typeof cwd).toBe('string');
+    expect(existsSync(cwd)).toBe(true);
+    expect(cwd.startsWith(process.cwd())).toBe(false);
+    expect(JSON.stringify(env)).not.toContain('sk-fixture-upstream');
+    expect(capturedQueryArgs[0]!.options.model).toBe('qwen2.5-coder:7b');
+    expect(recordLlmEgressEventMock).toHaveBeenCalledWith(expect.objectContaining({
+      surface: 'sdk_session_create', host: 'llm.example.com', connectionId: 'conn-oai', orgId: ORG, aiSessionId: 'sess-gw',
+    }));
+    // No catalog provenance: the stamp clears both columns.
+    expect(sessionUpdates).toContainEqual(expect.objectContaining({ catalogEntryId: null, catalogRevisionId: null }));
+
+    gate.resolve();
+    await session.processorPromise;
+  });
+
+  it('revokes the gateway grant and the proxy grant when the session is removed', async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+
+    const session = await manager.getOrCreate(
+      'sess-gw-remove', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, gatewayResolved(),
+    );
+    const env = capturedQueryArgs[0]!.options.env as Record<string, string>;
+    const proxyKey = grantMock.mock.calls[0]![0] as string;
+    expect((await fetch(`${env.ANTHROPIC_BASE_URL}/v1/models`)).status).toBe(200);
+
+    const cwd = capturedQueryArgs[0]!.options.cwd as string;
+    expect(existsSync(cwd)).toBe(true);
+
+    manager.remove('sess-gw-remove');
+
+    expect(revokeMock).toHaveBeenCalledWith(proxyKey);
+    expect((await fetch(`${env.ANTHROPIC_BASE_URL}/v1/models`)).status).toBe(401);
+    // The shared private working directory outlives one session (resumes and
+    // other sessions use it); it stays empty.
+    expect(existsSync(cwd)).toBe(true);
+    expect(readdirSync(cwd)).toEqual([]);
+
+    gate.resolve();
+    await session.processorPromise;
+  });
+
+  it('revokes both grants when the SDK query itself throws', async () => {
+    queryMock.mockImplementation((args: { prompt: unknown; options: Record<string, unknown> }) => {
+      capturedQueryArgs.push(args);
+      throw new Error('spawn EACCES');
+    });
+
+    await expect(manager.getOrCreate(
+      'sess-gw-boom', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, gatewayResolved(),
+    )).rejects.toThrow('spawn EACCES');
+
+    const env = capturedQueryArgs[0]!.options.env as Record<string, string>;
+    expect(revokeMock).toHaveBeenCalledWith(grantMock.mock.calls[0]![0]);
+    expect((await fetch(`${env.ANTHROPIC_BASE_URL}/v1/models`)).status).toBe(401);
+    expect(manager.get('sess-gw-boom')).toBeUndefined();
+  });
+
+  it('a rotated idle session releases the old grants and takes fresh ones', async () => {
+    const oldGate = deferred();
+    const newGate = deferred();
+    const gates = [oldGate.promise, newGate.promise];
+    queryMock.mockImplementation((args: { prompt: unknown; options: Record<string, unknown> }) => {
+      const gate = gates[capturedQueryArgs.length]!;
+      capturedQueryArgs.push(args);
+      return { async *[Symbol.asyncIterator]() { await gate; }, interrupt: vi.fn(), close: vi.fn() };
+    });
+
+    const first = await manager.getOrCreate(
+      'sess-gw-rotate', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, gatewayResolved(),
+    );
+    first.state = 'idle';
+    const second = await manager.getOrCreate(
+      'sess-gw-rotate', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined,
+      makeResolvedModel('openai_compatible', { orgId: ORG, configVersion: 4 }),
+    );
+
+    expect(second).not.toBe(first);
+    const [oldEnv, newEnv] = capturedQueryArgs.map((a) => a.options.env as Record<string, string>);
+    expect(revokeMock).toHaveBeenCalledWith(grantMock.mock.calls[0]![0]);
+    expect(revokeMock).not.toHaveBeenCalledWith(grantMock.mock.calls[1]![0]);
+    expect((await fetch(`${oldEnv!.ANTHROPIC_BASE_URL}/v1/models`)).status).toBe(401);
+    expect((await fetch(`${newEnv!.ANTHROPIC_BASE_URL}/v1/models`)).status).toBe(200);
+
+    oldGate.resolve();
+    await first.processorPromise;
+    newGate.resolve();
+    await second.processorPromise;
   });
 });

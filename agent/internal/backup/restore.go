@@ -38,6 +38,14 @@ type RestoreConfig struct {
 	// environment that recognises none of them). Never set from a command
 	// payload.
 	SecurityDescriptorsAsCaptured bool
+
+	// JunctionTargetsAsCaptured recreates every junction (#7325) pointing
+	// at its target exactly as recorded, never rewritten under TargetPath.
+	// Only for a whole-machine rebuild: the restore writes through a
+	// recovery-time drive letter or volume GUID path, but the junction must
+	// resolve on the machine the rebuilt volume becomes. Never set from a
+	// command payload — see junctionRestoreTarget.
+	JunctionTargetsAsCaptured bool
 }
 
 // RestoreResult tracks the outcome of a restore.
@@ -163,7 +171,10 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 	}
 	files = contentFiles
-	total := int64(len(contentFiles) + len(links) + len(dirs))
+	// Junctions (#7325) live in their own manifest array and get their own
+	// pass, after every other entry is in place.
+	junctions := filterJunctions(snapshot.Junctions, cfg.SelectedPaths)
+	total := int64(len(contentFiles) + len(links) + len(dirs) + len(junctions))
 	if total == 0 {
 		result.Status = "completed"
 		if len(cfg.SelectedPaths) > 0 {
@@ -467,6 +478,16 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		result.FilesRestored++
 	}
 
+	// Junctions last among the entries (#7325): every file, symlink and
+	// directory is already written, so nothing is ever routed through a
+	// junction this pass creates. Before the directory attribute and
+	// security post-passes, so a restrictive parent DACL or ReadOnly cannot
+	// stand between the restore and the junction it still has to create.
+	if checkCancelled() {
+		return result, nil
+	}
+	junctionsSkipped := restoreJunctions(targetBase, junctions, cfg.JunctionTargetsAsCaptured, blockedBeneath, result)
+
 	result.Warnings = append(result.Warnings, applyDirWinAttrs(targetBase, dirAttrs)...)
 
 	// Directory security descriptors, now that every file, symlink and
@@ -503,7 +524,10 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 
 	// 6. Determine status
 	switch {
-	case result.FilesFailed == 0 && result.FilesRestored > 0:
+	// A junction deliberately not recreated (refused target, a host with
+	// no junctions) is neither restored nor failed; a restore whose only
+	// entries were such skips completed, with the warnings saying why.
+	case result.FilesFailed == 0 && (result.FilesRestored > 0 || junctionsSkipped > 0):
 		result.Status = "completed"
 	case result.FilesRestored == 0:
 		result.Status = "failed"

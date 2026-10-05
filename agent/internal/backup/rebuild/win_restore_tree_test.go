@@ -337,3 +337,26 @@ func TestWinRestoreTree_AppliesSecurityDescriptorsAsCaptured(t *testing.T) {
 		t.Fatalf("called=%v asCaptured=%v, want the Windows rebuild to apply descriptors as captured", called, asCaptured)
 	}
 }
+
+// #7325: a rebuild recreates junctions pointing where they pointed on the
+// source machine. The restore writes through a recovery-time volume path, so
+// rewriting the target under it would leave every profile junction pointing
+// at a drive letter the rebuilt machine does not have.
+func TestWinRestoreTree_KeepsJunctionTargetsAsCaptured(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, _ := winFakeOptions(t, dir)
+	var asCaptured, called bool
+	orig := restoreSnapshotFiles
+	restoreSnapshotFiles = func(ctx context.Context, p providers.BackupProvider, cfg backup.RestoreConfig, fn backup.ProgressFunc) (*backup.RestoreResult, error) {
+		called, asCaptured = true, cfg.JunctionTargetsAsCaptured
+		return orig(ctx, p, cfg, fn)
+	}
+	t.Cleanup(func() { restoreSnapshotFiles = orig })
+	if _, err := Run(context.Background(), opts); err != nil && !called {
+		t.Fatal(err)
+	}
+	if !called || !asCaptured {
+		t.Fatalf("called=%v asCaptured=%v, want the Windows rebuild to keep junction targets as captured", called, asCaptured)
+	}
+}

@@ -1,8 +1,9 @@
-import { messagesApiWireOptions } from '../aiModels/modelWireOptions';
 import type Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
-import { getAnthropicClientForPartner, resolveWireModel } from '../llm/llmConfigResolver';
 import { maxOutputTokensForAiBudget } from '../aiBudgetReservations';
+import { appendCall, attemptsOf, createMessage, type MessageAttempt } from '../aiModels/connectionFactory';
+import type { ResolvedModel } from '../aiModels/resolveModel';
+import { costEstimator } from '../aiModels/settleInvocation';
 
 /**
  * AI email -> ticket draft (spec Task 19, Outlook tech add-in).
@@ -21,25 +22,18 @@ export interface EmailDraftInput {
   subject: string;
   bodyText: string;
   threadContext?: string | null;
-  model: string;
-  partnerId: string | null;
-  /**
-   * Tenant axis for the LLM egress audit when this function has to resolve its
-   * own client (#3922). Callers that pass `client` have already attributed the
-   * call themselves.
-   */
-  orgId?: string | null;
-  client?: Anthropic;
+  /** The registry resolution this draft dispatches on (wire model, params, rates). */
+  resolved: ResolvedModel;
+  client: Anthropic;
   budgetCents?: number;
-  calculateCostCents?: (inputTokens: number, outputTokens: number) => number;
 }
 
 export interface EmailDraftResult {
   subject: string;
   summary: string;
   suggestedTimeMinutes: number;
-  inputTokens: number;
-  outputTokens: number;
+  /** Every provider attempt made (tagged by `call`), for the route to bill via messagesUsage. */
+  attempts: MessageAttempt[];
 }
 
 const MIN_SUGGESTED_MINUTES = 5;
@@ -77,8 +71,8 @@ function clamp(value: number): number {
 }
 
 /**
- * Thrown when every attempt fails. Carries the token spend ACCUMULATED across
- * all attempts so the caller can still meter the burned tokens — a failed
+ * Thrown when every attempt fails. Carries every provider attempt made so the
+ * caller can still bill the burned tokens — a failed
  * draft is not a free one. The message concatenates every per-attempt error
  * (parse failure, "no text block", API error) so attempt 2 never erases
  * attempt 1's diagnosis.
@@ -86,8 +80,7 @@ function clamp(value: number): number {
 export class EmailDraftFailedError extends Error {
   constructor(
     message: string,
-    public readonly inputTokens: number,
-    public readonly outputTokens: number,
+    public readonly attempts: MessageAttempt[],
     public readonly providerOutcomeUnknown = false,
     options?: { cause?: unknown }
   ) {
@@ -97,19 +90,6 @@ export class EmailDraftFailedError extends Error {
 }
 
 export async function draftTicketFromEmail(input: EmailDraftInput): Promise<EmailDraftResult> {
-  // `input.model` is the WIRE model when the caller supplies its own client
-  // (the caller already translated it via `resolveWireModel`). On the fallback
-  // path we resolve the client here, so we must translate it here too.
-  let client = input.client;
-  let wireModel = input.model;
-  if (!client) {
-    const llm = await getAnthropicClientForPartner(input.partnerId, {
-      surface: 'one_shot_email_draft',
-      orgId: input.orgId ?? null,
-    });
-    client = llm.client;
-    wireModel = resolveWireModel(llm.resolved, input.model).model;
-  }
   const userContent = buildUserContent(input);
   const maxTokens = input.budgetCents === undefined
     ? 1024
@@ -117,21 +97,17 @@ export async function draftTicketFromEmail(input: EmailDraftInput): Promise<Emai
       prompt: `${SYSTEM_PROMPT}\n${userContent}`,
       requestedMaxOutputTokens: 1024,
       budgetCents: input.budgetCents / 2,
-      calculateCostCents: input.calculateCostCents
-        ?? (() => { throw new Error('Budgeted email draft requires pricing'); }),
+      calculateCostCents: costEstimator(input.resolved), // registry rate, never a model-id table
     });
   const attemptErrors: string[] = [];
-  // Accumulated across attempts: a successful retry still reports (and the
-  // route still meters) attempt 1's burned tokens, and the failure error below
-  // carries the full spend.
-  let inTok = 0;
-  let outTok = 0;
+  // Every provider call made: a successful retry still reports (and the route
+  // still bills) attempt 1's burned tokens, and the failure error carries all.
+  const attempts: MessageAttempt[] = [];
 
   const fail = (cause?: unknown, providerOutcomeUnknown = false): never => {
     throw new EmailDraftFailedError(
       `Failed to draft ticket from email: ${attemptErrors.join('; ')}`,
-      inTok,
-      outTok,
+      attempts,
       providerOutcomeUnknown,
       cause === undefined ? undefined : { cause }
     );
@@ -142,24 +118,23 @@ export async function draftTicketFromEmail(input: EmailDraftInput): Promise<Emai
   }
 
   for (let attempt = 0; attempt < 2; attempt++) {
-    let resp;
+    let outcome;
     try {
-      resp = await client.messages.create({
-        model: wireModel,
+      outcome = await createMessage(input.client, input.resolved, {
         max_tokens: maxTokens,
-        ...messagesApiWireOptions(wireModel, maxTokens), // #7587, #7599
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: userContent }],
       });
     } catch (err) {
       // API/network error: same no-retry behavior as before (the pane has a
-      // deterministic fallback), but wrapped so prior attempts' tokens meter.
+      // deterministic fallback), but wrapped so prior attempts' spend bills.
       attemptErrors.push(`attempt ${attempt + 1}: ${String(err)}`);
+      // A refused attempt completed before its fallback threw: billed, keep it.
+      appendCall(attempts, attemptsOf(err));
       return fail(err, true);
     }
-    inTok += resp.usage?.input_tokens ?? 0;
-    outTok += resp.usage?.output_tokens ?? 0;
-    const text = lastTextBlock(resp.content);
+    appendCall(attempts, outcome.attempts);
+    const text = lastTextBlock(outcome.message.content);
     if (!text) {
       attemptErrors.push(`attempt ${attempt + 1}: no text block in model response`);
       continue;
@@ -170,8 +145,7 @@ export async function draftTicketFromEmail(input: EmailDraftInput): Promise<Emai
         subject: parsed.subject,
         summary: parsed.summary,
         suggestedTimeMinutes: clamp(parsed.suggestedTimeMinutes),
-        inputTokens: inTok,
-        outputTokens: outTok,
+        attempts,
       };
     } catch (err) {
       attemptErrors.push(`attempt ${attempt + 1}: ${String(err)}`);

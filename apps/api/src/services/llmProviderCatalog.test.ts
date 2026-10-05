@@ -80,7 +80,8 @@ vi.mock('../db', () => ({
   },
 }));
 
-vi.mock('./urlSafety', () => ({
+vi.mock('./urlSafety', async (orig) => ({
+  ...(await orig<typeof import('./urlSafety')>()),
   assertSafeUrl: assertSafeUrlMock,
   SsrfBlockedError: class SsrfBlockedError extends Error {},
 }));

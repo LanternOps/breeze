@@ -1323,6 +1323,39 @@ describe('org routes', () => {
         expect(getCaptured().settings.security.ipAllowlist).toEqual([]);
         expect(clearPartnerAllowlistCache).toHaveBeenCalledWith('partner-1');
       });
+
+      // settings.ai has one home: /ai/models/residency (W04 #7602). The system
+      // wholesale write can neither erase nor set it.
+      it('keeps the stored settings.ai when the incoming settings omit it', async () => {
+        mockCurrentPartnerSelect({ ai: { residencyRequired: true } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { branding: { primaryColor: '#ff0000' } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.ai).toEqual({ residencyRequired: true });
+        expect(getCaptured().settings.branding).toEqual({ primaryColor: '#ff0000' });
+      });
+
+      it('ignores an incoming settings.ai', async () => {
+        mockCurrentPartnerSelect({ ai: { residencyRequired: true } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { ai: { residencyRequired: false } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.ai).toEqual({ residencyRequired: true });
+      });
+
+      it('cannot create settings.ai when none is stored', async () => {
+        mockCurrentPartnerSelect({});
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { ai: { residencyRequired: true } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings).not.toHaveProperty('ai');
+      });
     });
 
     // SR2-05: the system-scoped wholesale settings write is a THIRD write path
@@ -1696,6 +1729,17 @@ describe('org routes', () => {
       expect(getCaptured().settings.ticketing.inbound.enabled).toBe(true);
     });
 
+    it('cannot write settings.ai — residency has one home (/ai/models/residency)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ ai: { residencyRequired: true } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { ai: { residencyRequired: false } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.ai).toEqual({ residencyRequired: true });
+    });
+
     // defaultTriageOrgId write-time validation: the PATCH must reject (400) an id
     // that does not reference an org in the caller's partner, and accept one that
     // does. The first select() returns the current partner; the second is the org
@@ -1846,6 +1890,20 @@ describe('org routes', () => {
   });
 
   describe('PATCH /orgs/partners/me — emailTemplates', () => {
+
+    it.each(['payment_reminder', 'payment_overdue'])('accepts %s', async (id) => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const captured = mockUpdateCapture();
+      const fields = {
+        subject: 'Invoice {{invoice_number}}', heading: 'Payment reminder',
+        buttonLabel: 'Pay invoice', html: '<p>{{amount_due}} by {{due_date}}</p>',
+      };
+      const response = await patchMe({ settings: { emailTemplates: { [id]: fields } } });
+      expect(response.status).toBe(200);
+      expect(captured().settings.emailTemplates[id]).toEqual(fields);
+    });
+
     function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
@@ -1909,6 +1967,15 @@ describe('org routes', () => {
 
       expect(res.status).toBe(200);
       expect(getCaptured().settings.emailTemplates.quote_send).toEqual(fourFields);
+    });
+
+    it.each(['autopay_request', 'autopay_enrolled', 'autopay_stopped', 'card_expiring'])('accepts %s as a template id', async (id) => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+      const res = await patchMe({ settings: { emailTemplates: { [id]: fourFields } } });
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.emailTemplates[id]).toEqual(fourFields);
     });
 
     it('rejects an unknown template id with 400 and never writes', async () => {
@@ -2420,6 +2487,63 @@ describe('org routes', () => {
       const written = getCaptured().settings.remoteAccessProviders;
       expect(written.defaultProviderId).toBe('mesh');
       expect(written.providers.map((p: any) => p.id)).toEqual(['rustdesk', 'mesh']);
+    });
+
+    // A kept (masked) launcher password must not follow the launcher to a new
+    // URL host: the same origin binding the log-forwarding credentials have.
+    describe('launcher password bound to the urlTemplate host', () => {
+      const storedTemplate = 'https://acme.screenconnect.com/Host#Access///{id}/Join';
+      function mockStoredPartner() {
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+              limit: vi.fn().mockResolvedValue([{
+                id: 'partner-123',
+                name: 'P',
+                settings: { remoteAccessProviders: { providers: [provider('sc', { urlTemplate: storedTemplate, password: 'stored-pw' })] } },
+              }]),
+            }),
+          }),
+        } as any);
+      }
+
+      it('rejects a masked password submitted with a changed launcher host', async () => {
+        mockStoredPartner();
+        const setSpy = vi.fn();
+        vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+        const res = await patchMe({ settings: { remoteAccessProviders: {
+          providers: [provider('sc', { urlTemplate: 'https://other.example.com/Host#Access///{id}/Join', password: '********' })],
+        } } });
+
+        expect(res.status).toBe(400);
+        expect(JSON.stringify(await res.json())).toContain('re-enter');
+        expect(setSpy).not.toHaveBeenCalled();
+      });
+
+      it('keeps the stored password when the launcher host is unchanged', async () => {
+        mockStoredPartner();
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchMe({ settings: { remoteAccessProviders: {
+          providers: [provider('sc', { urlTemplate: `${storedTemplate}?v=2`, password: '********' })],
+        } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.remoteAccessProviders.providers[0].password).not.toBe('********');
+      });
+
+      it('accepts a changed launcher host when the password is re-entered', async () => {
+        mockStoredPartner();
+        mockUpdateCapture();
+
+        const res = await patchMe({ settings: { remoteAccessProviders: {
+          providers: [provider('sc', { urlTemplate: 'https://other.example.com/Host#Access///{id}/Join', password: 'new-pw' })],
+        } } });
+
+        expect(res.status).toBe(200);
+      });
     });
   });
 
@@ -5350,6 +5474,12 @@ describe('org routes', () => {
   };
 
   describe('GET /orgs/sites', () => {
+    // The list also runs a 4th grouped query for removedDeviceCount (#7471);
+    // default it to "no removed devices" so count/page mocks stay focused.
+    beforeEach(() => {
+      vi.mocked(db.select).mockReturnValue(mockSiteDeviceCounts([]));
+    });
+
     // #5315 — the per-site deviceCount filtered only `isEphemeral`, so a
     // decommissioned device still inflated the Sites table while the record's
     // Devices tab (GET /devices) excluded it. Assert on the COMPILED predicate:
@@ -5397,6 +5527,27 @@ describe('org routes', () => {
       expect(compiled.sql).toContain('<>');
       expect(compiled.params).toContain('decommissioned');
       expect(compiled.params).toContainEqual({ __column: 'devices.status' });
+    });
+
+    it('reports removedDeviceCount separately from deviceCount (#7471)', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 1 }]) }) } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({ offset: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue([{ id: 'site-1' }]) }) })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce(mockSiteDeviceCounts([]))
+        .mockReturnValueOnce(mockSiteDeviceCounts([{ siteId: 'site-1', count: 2 }]));
+
+      const res = await app.request('/orgs/sites?orgId=11111111-1111-1111-1111-111111111111');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0]).toMatchObject({ id: 'site-1', deviceCount: 0, removedDeviceCount: 2 });
     });
 
     it('should return sites with pagination', async () => {
@@ -5920,6 +6071,70 @@ describe('org routes', () => {
       expect(lockSiteForDelete).toHaveBeenCalledWith(expect.anything(), 'site-1');
       expect(deleteSiteOwnedTopologyAlerts).toHaveBeenCalledWith(expect.anything(), '11111111-1111-1111-1111-111111111111', 'site-1');
     });
+
+    // #7471 — devices.site_id is NO ACTION; removed (decommissioned) rows keep
+    // their site, so the delete used to 500 on 23503 while the list showed 0.
+    describe.each([
+      { name: 'only removed devices', row: { removed: 2, other: 0 }, msg: /2 removed devices.*permanently deleted/ },
+      { name: 'only active devices', row: { removed: 0, other: 1 }, msg: /1 device still assigned/ },
+      { name: 'removed and active devices', row: { removed: 3, other: 2 }, msg: /2 devices still assigned.* and 3 removed devices/ },
+    ])('site still referenced by devices ($name)', ({ row, msg }) => {
+      it('returns 409 SITE_HAS_DEVICES and never deletes the site', async () => {
+        setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'site-1', orgId: '11111111-1111-1111-1111-111111111111' }])
+            })
+          })
+        } as any);
+        const txDelete = vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }));
+        const txSelect = vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([row])) })) }));
+        vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({
+          ...siteDeleteTxOver(db),
+          select: txSelect,
+          delete: txDelete,
+        }));
+
+        const res = await app.request('/orgs/sites/site-1', { method: 'DELETE' });
+
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        expect(body.code).toBe('SITE_HAS_DEVICES');
+        expect(body.error).toMatch(msg);
+        expect(body.removedDeviceCount).toBe(row.removed);
+        expect(txDelete).not.toHaveBeenCalled();
+        // The removed/other split must hinge on status = 'decommissioned' (the
+        // mocked schema renders columns blank, so assert on operator + params).
+        const projection = (txSelect.mock.calls[0] as unknown as [Record<string, SQL>])[0];
+        const removedSql = new PgDialect().sqlToQuery(projection.removed!);
+        const otherSql = new PgDialect().sqlToQuery(projection.other!);
+        expect(removedSql.sql).toMatch(/filter \(where .* = 'decommissioned'\)/);
+        expect(otherSql.sql).toMatch(/filter \(where .* <> 'decommissioned'\)/);
+        expect(removedSql.params).toContainEqual({ __column: 'devices.status' });
+        expect(otherSql.params).toContainEqual({ __column: 'devices.status' });
+      });
+    });
+
+    it('deletes when the guard reports zero devices (explicit zero row)', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1', orgId: '11111111-1111-1111-1111-111111111111' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({
+        ...siteDeleteTxOver(db),
+        select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([{ removed: 0, other: 0 }])) })) })),
+        delete: vi.fn(() => ({ where: vi.fn(() => Object.assign(Promise.resolve(), { returning: vi.fn(() => Promise.resolve([])) })) })),
+      }));
+
+      const res = await app.request('/orgs/sites/site-1', { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+    });
   });
 
   // Per-user site confinement (allowedSiteIds). A site-confined org user must
@@ -6075,6 +6290,12 @@ describe('org routes', () => {
     });
 
     describe('GET /orgs/sites (list)', () => {
+      // The list also runs a 4th grouped query for removedDeviceCount (#7471);
+      // default it to "no removed devices" so count/page mocks stay focused.
+      beforeEach(() => {
+        vi.mocked(db.select).mockReturnValue(mockSiteDeviceCounts([]));
+      });
+
       it('returns an empty page without querying when allowedSiteIds is empty', async () => {
         setAuthContext({ scope: 'organization', orgId: ORG, allowedSiteIds: [] });
 
@@ -6115,7 +6336,7 @@ describe('org routes', () => {
 
         expect(res.status).toBe(200);
         const body = await res.json();
-        expect(body.data).toEqual([{ id: 'site-x', deviceCount: 3 }]);
+        expect(body.data).toEqual([{ id: 'site-x', deviceCount: 3, removedDeviceCount: 0 }]);
         expect(body.data.map((s: { id: string }) => s.id)).not.toContain('site-y');
         // Meaningful assertion: the handler must have intersected the query with
         // inArray(sites.id, allowedSiteIds). This fails if the intersection in

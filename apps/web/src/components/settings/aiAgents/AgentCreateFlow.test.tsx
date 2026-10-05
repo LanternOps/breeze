@@ -50,7 +50,7 @@ const CATALOG: AgentToolCatalogDto = {
       operations: [{ key: 'run_script', action: null, tier: 3, readOnly: false, policyDecidable: false, actEligible: true, actRequiresAuthorizedScripts: true }],
     },
   ],
-  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [] },
+  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [], research: [] },
   unreachableTools: [],
 };
 
@@ -64,7 +64,6 @@ function makeAgents(): AiAgentDto[] {
       name: 'Org patcher',
       enabled: true,
       mode: 'shadow',
-      model: null,
       orgId: 'org-1',
       partnerId: null,
       ownerScope: 'organization',
@@ -265,6 +264,16 @@ describe('AgentCreateFlow — default owner scope (#5048 QA)', () => {
     renderFlow({ defaultOwnerScope: 'organization', partnerBaselineKinds: new Set(['triage']) });
 
     expect(screen.getByTestId('ai-agent-owner-org')).toBeChecked();
+  });
+});
+
+describe('AgentCreateFlow — provisioned research kind (W2)', () => {
+  it('with all four ordinary kinds taken partner-wide, the flow does not auto-select research and shows the exhausted state', async () => {
+    mockEndpoints();
+    const taken = ['triage', 'patch', 'helpdesk', 'designer'].map((kind) => ({ ...makeAgents()[0]!, id: `p-${kind}`, kind, ownerScope: 'partner', orgId: null }) as unknown as AiAgentDto);
+    renderFlow({ agents: taken, defaultOwnerScope: 'partner' });
+    expect(screen.queryByTestId('ai-agent-kind-card-research')).toBeNull();
+    expect(await screen.findByTestId('ai-agent-kinds-exhausted')).toBeTruthy();
   });
 });
 
@@ -661,5 +670,25 @@ describe('AgentCreateFlow — review step preview and onCreated', () => {
     fireEvent.click(screen.getByTestId('agent-create-flow-create'));
 
     await waitFor(() => expect(postBody().enabled).toBe(true));
+  });
+});
+
+describe('AgentCreateFlow — research override (W2)', () => {
+  it('collapses to name + caps, then review, and posts only the projected body', async () => {
+    mockEndpoints();
+    orgState.current = { ...orgState.current, currentOrgId: 'org-1', allOrgs: false };
+    const baseline = { ...makeAgents()[0]!, id: 'rb', kind: 'research', ownerScope: 'partner', orgId: null, partnerId: 'p-1' } as unknown as AiAgentDto;
+    renderFlow({ agents: [baseline], defaultOwnerScope: 'organization', showOwnerScope: false, partnerBaselineKinds: new Set(['research']) });
+
+    fireEvent.click(await screen.findByTestId('ai-agent-kind-card-research'));
+    expect(screen.getByTestId('ai-agent-research-caps')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-instructions')).toBeNull();
+    fireEvent.change(screen.getByTestId('ai-agent-name'), { target: { value: 'Acme research' } });
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    fireEvent.click(await screen.findByTestId('agent-create-flow-create'));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => url === '/ai/agents' && (init as RequestInit | undefined)?.method === 'POST')).toBe(true));
+    expect(Object.keys(postBody()).sort()).toEqual(['enabled', 'kind', 'limits', 'mode', 'name', 'orgId', 'ownerScope']);
+    expect(postBody()).toMatchObject({ kind: 'research', ownerScope: 'organization', mode: 'act' });
   });
 });

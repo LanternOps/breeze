@@ -35,6 +35,7 @@ import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
 import { isAllowedForSession, stripMcpPrefix } from './mcpToolNames';
+import { claimToolUseId } from './aiToolUseCorrelation';
 import {
   resolveScriptRunContextForApproval,
   describeScriptRunContext,
@@ -78,8 +79,11 @@ import {
 import { TEMP_PASSWORD_ENC_KEY } from './actionIntents/resultSecrets';
 import { captureException } from './sentry';
 import { recordActionIntentMetric } from './actionIntents/metrics';
-import { resolveLlmConfigForOrg, type UsableLlmConfig } from './llm/llmConfigResolver';
-import { llmUnusableCode } from './llm/llmAvailability';
+import { isPlatformLlmConfigured } from './llm/llmAvailability';
+import type { AiModelChoice, AiSurface } from '@breeze/shared';
+import type { ResolveFailureReason } from './aiModels/eligibility';
+import type { ModelUnavailable, ResolvedModel } from './aiModels/resolveModel';
+import { resolveSessionTurn } from './aiModels/sessionModel';
 import { resolveLiveSessionToolAuthority } from './aiSessionLiveAuthority';
 
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS } from './aiAgentSessionLimits';
@@ -371,12 +375,36 @@ export type PreFlightResult = {
   sanitizedContent: string;
   systemPrompt: string;
   maxBudgetUsd: number | undefined;
-  resolved: UsableLlmConfig;
+  /**
+   * The turn's model from the registry (W03 Task 7): dispatch, admission and
+   * settlement all take it unchanged. Always resolved — W06 removed the env
+   * OpenAI-compatible chat runtime; an env deployment's chat resolves to its
+   * env-managed offering like any other.
+   */
+  model: ResolvedModel;
 } | {
   ok: false;
   error: string;
   status?: number;
+  /** A recoverable model-resolution failure (the route answers 409 with it). */
+  code?: ResolveFailureReason;
 };
+
+/**
+ * A turn whose model cannot be resolved. `connection_unavailable` while the
+ * deployment has no platform credential keeps the pre-registry
+ * `ai_not_configured` contract (the web client localizes it); the cutover gate
+ * is transient (503); anything else is the recoverable 409 "choose another".
+ */
+function unresolvedTurn(turn: ModelUnavailable): Extract<PreFlightResult, { ok: false }> {
+  if (turn.reason === 'connection_unavailable' && !isPlatformLlmConfigured(process.env.ANTHROPIC_API_KEY, 'agent_sdk')) {
+    return { ok: false, error: 'ai_not_configured', status: 503 };
+  }
+  if (turn.reason === 'registry_unavailable') {
+    return { ok: false, error: turn.message, status: 503, code: turn.reason };
+  }
+  return { ok: false, error: turn.message, status: 409, code: turn.reason };
+}
 
 /**
  * Validates rate limits, budget, session status, expiration, and sanitizes input.
@@ -388,6 +416,8 @@ export async function runPreFlightChecks(
   auth: AuthContext,
   pageContext?: AiPageContext,
   requestContext?: RequestLike,
+  /** W05: the composer's model choice on this message (chat only; strict user resolution). */
+  choice?: AiModelChoice,
 ): Promise<PreFlightResult> {
   const session = await getSession(sessionId, auth);
   if (!session) {
@@ -395,25 +425,20 @@ export async function runPreFlightChecks(
   }
   const orgId = session.orgId;
 
-  let resolved;
+  // Spec §9: every turn re-resolves the session's stored offering + options
+  // (bounded fallback, recoverable refusal) — funding included, decided here,
+  // before any admission check. One runtime (W06): chat and the script builder
+  // both run the Agent SDK on the resolved model.
+  const surface: AiSurface = session.type === 'script_builder' ? 'script_builder' : 'chat';
+  let turn;
   try {
-    resolved = await resolveLlmConfigForOrg(orgId);
+    turn = await resolveSessionTurn({ sessionId, surface, userId: auth.user.id, ...(choice ? { choice } : {}) });
   } catch (error) {
     captureException(error, undefined, { service: 'aiAgentSdk', orgId });
-    return {
-      ok: false,
-      error: 'AI configuration could not be loaded. Try again.',
-      status: 503,
-    };
+    return { ok: false, error: 'AI configuration could not be loaded. Try again.', status: 503 };
   }
-  // The script builder always runs the Agent SDK; chat can also run on the
-  // platform's OpenAI-compatible provider.
-  if (llmUnusableCode(resolved, session.type === 'script_builder' ? 'agent_sdk' : 'chat') === 'ai_not_configured') {
-    return { ok: false, error: 'ai_not_configured', status: 503 };
-  }
-  if (resolved.source === 'unavailable') {
-    return { ok: false, error: 'ai_unavailable', status: 503 };
-  }
+  if (!turn.ok) return unresolvedTurn(turn);
+  const model: ResolvedModel = turn;
 
   // Rate limits
   try {
@@ -426,10 +451,8 @@ export async function runPreFlightChecks(
 
   // Budget
   try {
-    const budgetError = await checkBudget(
-      orgId,
-      resolved.source === 'partner' ? 'partner_key' : 'platform',
-    );
+    // Funding from the RESOLVED offering (quorum #4).
+    const budgetError = await checkBudget(orgId, model.funding);
     if (budgetError) return { ok: false, error: budgetError };
   } catch (err) {
     console.error('[AI-SDK] Budget check failed:', err);
@@ -438,10 +461,11 @@ export async function runPreFlightChecks(
 
   if (session.status !== 'active') {
     // 'expired' must read as expired to the caller: routes map on the word to
-    // return 410, and a session retired eagerly by openaiSessionManager's
-    // eviction reaches this branch BEFORE the age checks below would have
-    // produced that wording lazily. Without this, the same terminal state
-    // surfaced as 410 or 400 depending purely on which path got there first.
+    // return 410, and a session retired eagerly (streamingSessionManager's
+    // eviction stamps 'expired') reaches this branch BEFORE the age checks
+    // below would have produced that wording lazily. Without this, the same
+    // terminal state surfaced as 410 or 400 depending purely on which path
+    // got there first.
     return {
       ok: false,
       error:
@@ -525,7 +549,7 @@ export async function runPreFlightChecks(
   // A durable reservation is acquired immediately before provider dispatch by
   // the route. Returning an advisory remaining-budget snapshot here would
   // recreate the check-then-spend race this preflight must not authorize.
-  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd: undefined, resolved };
+  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd: undefined, model };
 }
 
 /**
@@ -710,6 +734,31 @@ function reportLostTerminalCas(opts: {
  * makeHandler() in aiAgentSdkTools.ts and IS invoked for in-process MCP
  * server tools.
  */
+/**
+ * The model-facing text for an action intent that could not be created.
+ *
+ * Generic for every failure the model cannot act on — but a `run_script`
+ * whose proposal is no longer runnable is the model's to fix (#7918).
+ * `createActionIntent` CAS-claims a proposal for exactly one intent, so a
+ * second run of a proposal that already ran is refused with
+ * `ActionIntentError('proposal_not_runnable')`. Reported as "Failed to create
+ * approval record", the model told the user nothing had run, when the first
+ * run had in fact completed on the device. Matched on the error's `code`
+ * (the class lives in intentService, whose module this file's tests mock).
+ */
+export function intentCreationRefusal(toolName: string, input: unknown, err: unknown): string {
+  const code = err instanceof Error ? (err as Error & { code?: unknown }).code : undefined;
+  const proposalId = (input as { proposalId?: unknown } | null)?.proposalId;
+  if (toolName === 'run_script' && code === 'proposal_not_runnable' && typeof proposalId === 'string') {
+    return `proposal_not_runnable: proposal ${proposalId} cannot start another run. A proposal runs once, `
+      + 'and this one is already claimed by an earlier run_script (one that ran, or one still awaiting approval), '
+      + 'has expired, or is no longer reviewed. '
+      + 'Call get_script_proposal: its executions list each run\'s executionId, and get_script_execution reads '
+      + 'that run\'s output. To run the script again, submit it as a new proposal with propose_script.';
+  }
+  return 'Failed to create approval record';
+}
+
 export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallback {
   return async (toolName, input, mcpToolName) => {
     // Set only by the tier-3 branch below when it creates a durable intent;
@@ -1124,6 +1173,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               Math.min(readBack.timeoutMs, TERMINAL_READBACK_BUDGET_MS),
               readBack.signal,
             ),
+            { toolName, input },
           );
         } catch (err) {
           // An unreadable outcome is NOT evidence the action failed — say
@@ -1427,7 +1477,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             });
           } catch (err) {
             console.error('[AI-SDK] Failed to create action intent:', toolName, err);
-            return await failMatchedPlanStep({ allowed: false, error: 'Failed to create approval record' });
+            return await failMatchedPlanStep({ allowed: false, error: intentCreationRefusal(toolName, input, err) });
           }
 
           // Stamp the intent link onto the ledger row so handleApproval (web
@@ -2346,10 +2396,11 @@ function approvedTopologyRun(toolName: string, output: string, isError: boolean)
   return { runId, state };
 }
 
-async function topologyPostToolUse(session: ActiveSession, toolName: string, input: Record<string, unknown>, output: string, isError: boolean, durationMs: number): Promise<void> {
+async function topologyPostToolUse(session: ActiveSession, toolName: string, input: Record<string, unknown>, output: string, isError: boolean, durationMs: number, sdkToolUseId: string | undefined): Promise<void> {
   session.pendingTurnToolExecutionCount += 1;
-  const toolUseId = session.toolUseIdQueue.shift();
-  if (toolUseId) session.toolUseNames?.delete(toolUseId);
+  // No tool row is written here, but the call must stop being pending or the
+  // dropped-call fallback would misreport it (#7931).
+  claimToolUseId(session, toolName, sdkToolUseId);
   session.eventBus.publish({ type: 'topology_progress', phase: 'analyzing' });
   const run = approvedTopologyRun(toolName, output, isError);
   if (run) session.eventBus.publish({ type: 'topology_diagnostic_run', ...run });
@@ -2372,13 +2423,18 @@ async function topologyPostToolUse(session: ActiveSession, toolName: string, inp
 }
 
 export function createSessionPostToolUse(session: ActiveSession): PostToolUseCallback {
-  return async (toolName, input, output, isError, durationMs, sealed, handoff) => {
+  return async (toolName, input, output, isError, durationMs, sealed, handoff, sdkToolUseId) => {
     // A timed-out topology turn (C1): its gate is gone, so a tool that was
     // still in flight must not fall through to the generic path and persist
-    // its raw output.
-    if (session.topologyTurnSealed) return;
+    // its raw output. It did run, though, so it must stop being pending —
+    // otherwise a late SDK echo of its result would reach the dropped-call
+    // fallback, which persists that text (#7931).
+    if (session.topologyTurnSealed) {
+      claimToolUseId(session, toolName, sdkToolUseId);
+      return;
+    }
     if (session.topologyInvestigation) {
-      await topologyPostToolUse(session, toolName, input, output, isError, durationMs);
+      await topologyPostToolUse(session, toolName, input, output, isError, durationMs, sdkToolUseId);
       return;
     }
     // Count this tool call toward the turn's tool_execution_count rollup
@@ -2386,14 +2442,13 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // whether the DB writes below succeed — postToolUse only fires for a tool
     // that actually ran, which is the event the counter tracks.
     session.pendingTurnToolExecutionCount += 1;
-    const toolUseId = session.toolUseIdQueue.shift();
+    // Pair this result with its own tool_use by the id the SDK sent with the
+    // call, never by queue position (#7931). Claiming also tells the
+    // dropped-call fallback (#3094) this call ran, whichever of this and its
+    // content_block_start the processor sees first.
+    const toolUseId = claimToolUseId(session, toolName, sdkToolUseId);
     if (!toolUseId) {
-      console.warn(`[AI-SDK] postToolUse: toolUseIdQueue empty for ${toolName} — tool_result will have no toolUseId`);
-    } else {
-      // Drop the paired name entry recorded at content_block_start — it exists
-      // for the dropped-call fallback (#3094), which must not fire for a call
-      // this postToolUse is handling.
-      session.toolUseNames?.delete(toolUseId);
+      console.warn(`[AI-SDK] postToolUse: no tool_use id for ${toolName} (none from the SDK, no pending call of that name) — tool_result will have no toolUseId`);
     }
     const safeOutput = compactToolResultForChat(toolName, output);
     const parsedOutput = safeParseJson(safeOutput);

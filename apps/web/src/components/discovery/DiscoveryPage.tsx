@@ -297,7 +297,7 @@ function getTabFromHash(): DiscoveryTab {
 export default function DiscoveryPage() {
   const { t } = useTranslation('discovery');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
-  const { currentOrgId, sites, fetchSites, allOrgs } = useOrgStore();
+  const { currentOrgId, sites, fetchSites, allOrgs, selectOrganization } = useOrgStore();
   // "All orgs" mode: a partner/multi-org user who has *explicitly* chosen the
   // All-orgs scope via the switcher. Network discovery is inherently
   // org/site/agent-scoped — the API deliberately refuses an unscoped list
@@ -770,7 +770,7 @@ export default function DiscoveryPage() {
 
       {activeTab === 'topology' && (
         <>
-          <TopologyEntry sites={sites} legacy={<NetworkTopologyMap onNodeClick={(nodeId) => setTopologyAssetId(nodeId)} />} />
+          <TopologyEntry sites={sites} organization={{ currentOrgId, selectOrganization }} legacy={<NetworkTopologyMap onNodeClick={(nodeId) => setTopologyAssetId(nodeId)} />} />
           {topologyAssetId && (
             <AssetDetailModal
               open={!!topologyAssetId}

@@ -6,6 +6,7 @@ import {
   type AiAgentKind,
   type AiAgentMode,
   ALERT_SEVERITIES,
+  RESEARCH_EDITABLE_LIMIT_KEYS,
 } from '@breeze/shared';
 import type { OwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { isWithinCeiling } from './capabilityModel';
@@ -84,6 +85,18 @@ export function toggle<T>(list: T[], value: T): T[] {
 }
 
 /**
+ * Kinds a user may create for this owner (AI Suggested Fixes W2). `research`
+ * is provisioned once per partner by the system (researchProvisioning.ts), so
+ * it is never creatable partner-wide. An org may add a research OVERRIDE
+ * (enable/disable + research caps only) on top of a visible partner baseline —
+ * the partner-baseline + override model the spec keeps for this kind.
+ */
+export function creatableKinds(agents: AiAgentDto[], ownerScope: OwnerScope): AiAgentKind[] {
+  const hasResearchBaseline = agents.some((row) => row.kind === 'research' && row.ownerScope === 'partner');
+  return AI_AGENT_KINDS.filter((kind) => kind !== 'research' || (ownerScope === 'organization' && hasResearchBaseline));
+}
+
+/**
  * Kinds still creatable for one ownership axis. The DB enforces
  * `(partner_id, kind) WHERE org_id IS NULL` and `(org_id, kind)` as two
  * independent partial uniques, both `WHERE disabled_at IS NULL`, so a kind is
@@ -103,7 +116,7 @@ export function freeKinds(
       )
       .map((row) => row.kind),
   );
-  return AI_AGENT_KINDS.filter((kind) => !taken.has(kind));
+  return creatableKinds(agents, ownerScope).filter((kind) => !taken.has(kind));
 }
 
 export function firstFreeKind(
@@ -147,6 +160,11 @@ export interface Draft {
    *  merge semantics as `anomalyEnabled` (never itself surfaced on this
    *  form). See `AiAgentTriggers.ticketAutonomousWrites`'s docstring. */
   ticketAutonomousWrites: boolean;
+  /** W05: the policy model, by registry offering. null = follow the
+   *  `ai_agents` default. */
+  offeringId: string | null;
+  /** Update sends offeringId only when the user changed it. */
+  offeringIdTouched: boolean;
 }
 
 export function draftFrom(
@@ -191,6 +209,8 @@ export function draftFrom(
     supervisedActionKeys: agent?.actAssets?.supervisedActionKeys ?? [],
     scriptIds: agent?.actAssets?.scriptIds ?? [],
     ticketAutonomousWrites: agent?.triggers?.ticketAutonomousWrites ?? false,
+    offeringId: agent?.offeringId ?? null,
+    offeringIdTouched: false,
   };
 }
 
@@ -229,6 +249,26 @@ export function authorizedScriptCountFor(
 }
 
 /**
+ * AI Suggested Fixes W2 — a research agent accepts only name, enabled and the
+ * research caps (server: assertResearchAgentEdit). Every other field
+ * buildAgentSaveBody sends would be refused with a 400. On create (an org
+ * override) it adds the create-only identity fields and mode 'act'.
+ */
+export function buildResearchSaveBody(
+  draft: Draft,
+  opts: { isCreate: boolean; orgId: string | null },
+): Record<string, unknown> {
+  const limits: Record<string, number> = {};
+  for (const key of RESEARCH_EDITABLE_LIMIT_KEYS) {
+    const value = draft.limits[key];
+    if (typeof value === 'number') limits[key] = value;
+  }
+  const body: Record<string, unknown> = { name: draft.name.trim(), enabled: draft.enabled, limits };
+  if (opts.isCreate) Object.assign(body, { kind: 'research', ownerScope: 'organization', orgId: opts.orgId, mode: 'act' });
+  return body;
+}
+
+/**
  * Builds exactly the JSON body `AiAgentForm.tsx`'s `save()` used to construct
  * inline — the one-level-PATCH-merge reasoning (severities/actAssets
  * omission rules) lives here now, unchanged, so a caller never has to
@@ -239,6 +279,7 @@ export function buildAgentSaveBody(
   draft: Draft,
   opts: { isCreate: boolean; orgId: string | null },
 ): Record<string, unknown> {
+  if (draft.kind === 'research') return buildResearchSaveBody(draft, opts);
   // On PATCH the server merges each nested object one level onto the stored
   // jsonb (updatePolicyColumns), so the narrowing fields this form does not
   // expose — triggers.siteIds / deviceGroupIds / deviceTags,
@@ -319,6 +360,15 @@ export function buildAgentSaveBody(
       scriptIds: draft.scriptIds,
     },
   };
+
+  // W05: the policy model, by offering. Create: only a real choice (null =
+  // follow the ai_agents default, the server's default). Update: only when
+  // the user changed it - an unrelated edit must never re-bind (and
+  // re-permission-check) the model.
+  const modelPart = opts.isCreate
+    ? (draft.offeringId ? { offeringId: draft.offeringId } : {})
+    : (draft.offeringIdTouched ? { offeringId: draft.offeringId } : {});
+  Object.assign(policy, modelPart);
 
   if (!opts.isCreate) return policy;
 

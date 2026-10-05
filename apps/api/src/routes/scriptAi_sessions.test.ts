@@ -3,13 +3,6 @@ import { Hono } from 'hono';
 
 // ── Mocks ──────────────────────────────────────────────────────────
 
-// Which platform AI provider the server is configured for (default: Anthropic).
-const providerRef = vi.hoisted(() => ({ provider: 'anthropic' as string }));
-vi.mock('../config/validate', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../config/validate')>(),
-  getConfig: () => ({ MCP_LLM_PROVIDER: providerRef.provider }),
-}));
-
 vi.mock('../db', () => ({
   db: {
     insert: vi.fn(),
@@ -92,8 +85,12 @@ vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
-vi.mock('../services/llm/llmConfigResolver', () => ({
-  resolveLlmConfigForOrg: vi.fn(),
+vi.mock('../services/aiModels/sessionModel', () => ({
+  chooseSessionModel: vi.fn(),
+}));
+
+vi.mock('../services/aiModels/candidateLoader', () => ({
+  readOrgPartnerId: vi.fn(),
 }));
 
 import { authMiddleware } from '../middleware/auth';
@@ -105,13 +102,25 @@ import {
   closeScriptBuilderSession,
 } from '../services/scriptBuilderService';
 import { streamingSessionManager } from '../services/streamingSessionManager';
-import { resolveLlmConfigForOrg } from '../services/llm/llmConfigResolver';
+import { chooseSessionModel } from '../services/aiModels/sessionModel';
+import { readOrgPartnerId } from '../services/aiModels/candidateLoader';
+import { makeResolvedModel } from '../services/aiModels/__fixtures__/resolvedModel';
+import { LlmUnavailableError } from '../services/llm/llmUnavailableError';
+import { LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import { captureException } from '../services/sentry';
 
 // ── Constants ──────────────────────────────────────────────────────
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const SESSION_ID = '22222222-2222-2222-2222-222222222222';
+const CHOICE = {
+  resolved: makeResolvedModel(),
+  offeringId: 'off-1',
+  offeringPartnerId: 'partner-1',
+  options: null,
+  model: 'claude-sonnet-5-5',
+  billingSource: 'platform' as const,
+};
 
 function setAuth(overrides: Record<string, unknown> = {}) {
   vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
@@ -143,23 +152,15 @@ describe('scriptAi routes — session CRUD', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setAuth();
-    vi.mocked(resolveLlmConfigForOrg).mockResolvedValue({
-      source: 'platform',
-      apiKey: 'platform-key',
-      model: 'claude-sonnet-4-6',
-    });
+    vi.mocked(readOrgPartnerId).mockResolvedValue('partner-1');
+    vi.mocked(chooseSessionModel).mockResolvedValue(CHOICE);
     app = makeApp();
   });
 
   // ────────────────────── POST /sessions ──────────────────────
   describe('POST /sessions (create session)', () => {
-    it('creates a new session', async () => {
-      const session = {
-        id: SESSION_ID,
-        orgId: ORG_ID,
-        type: 'script_builder',
-        model: 'claude-sonnet-4-20250514',
-      };
+    it('creates a new session on the script_builder offering chooseSessionModel resolved', async () => {
+      const session = { id: SESSION_ID, orgId: ORG_ID, type: 'script_builder', model: 'claude-sonnet-5-5' };
       vi.mocked(createScriptBuilderSession).mockResolvedValue(session as any);
 
       const res = await app.request('/ai/script-builder/sessions', {
@@ -171,20 +172,19 @@ describe('scriptAi routes — session CRUD', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.id).toBe(SESSION_ID);
-      expect(resolveLlmConfigForOrg).toHaveBeenCalledWith(ORG_ID);
+      expect(readOrgPartnerId).toHaveBeenCalledWith(ORG_ID);
+      expect(chooseSessionModel).toHaveBeenCalledWith({
+        partnerId: 'partner-1', orgId: ORG_ID, userId: 'user-1', surface: 'script_builder',
+      });
       expect(createScriptBuilderSession).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ title: 'Build a backup script' }),
-        'claude-sonnet-4-6',
+        CHOICE,
       );
     });
 
     it('returns ai_unavailable as 503 before creating the database session', async () => {
-      vi.mocked(resolveLlmConfigForOrg).mockResolvedValue({
-        source: 'unavailable',
-        partnerId: 'partner-1',
-        reason: 'key_error',
-      });
+      vi.mocked(chooseSessionModel).mockRejectedValue(new LlmUnavailableError());
 
       const res = await app.request('/ai/script-builder/sessions', {
         method: 'POST',
@@ -197,51 +197,38 @@ describe('scriptAi routes — session CRUD', () => {
       expect(createScriptBuilderSession).not.toHaveBeenCalled();
     });
 
-    it('returns ai_not_configured as 503 before creating the session when no model key is configured', async () => {
-      vi.stubEnv('ANTHROPIC_AUTH_TOKEN', '');
-      vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', '');
-      try {
-        vi.mocked(resolveLlmConfigForOrg).mockResolvedValue({ source: 'platform', apiKey: undefined, model: 'claude-sonnet-4-6' });
+    it('returns ai_unavailable when the org has no partner (no registry to resolve)', async () => {
+      vi.mocked(readOrgPartnerId).mockResolvedValue(null);
 
-        const res = await app.request('/ai/script-builder/sessions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: 'Test' }),
-        });
+      const res = await app.request('/ai/script-builder/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Test' }),
+      });
 
-        expect(res.status).toBe(503);
-        expect(await res.json()).toEqual({ error: expect.stringMatching(/not configured/i), code: 'ai_not_configured' });
-        expect(createScriptBuilderSession).not.toHaveBeenCalled();
-      } finally {
-        vi.unstubAllEnvs();
-      }
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+      expect(chooseSessionModel).not.toHaveBeenCalled();
+      expect(createScriptBuilderSession).not.toHaveBeenCalled();
     });
 
-    it('returns ai_not_configured on an OpenAI-compatible-only server: the builder always runs the Agent SDK', async () => {
-      vi.stubEnv('ANTHROPIC_AUTH_TOKEN', '');
-      vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', '');
-      providerRef.provider = 'openai-compatible';
-      try {
-        vi.mocked(resolveLlmConfigForOrg).mockResolvedValue({ source: 'platform', apiKey: undefined, model: 'claude-sonnet-4-6' });
+    it('returns ai_not_configured as 503 before creating the session when no model key is configured', async () => {
+      vi.mocked(chooseSessionModel).mockRejectedValue(new LlmNotConfiguredError());
 
-        const res = await app.request('/ai/script-builder/sessions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: 'Test' }),
-        });
+      const res = await app.request('/ai/script-builder/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Test' }),
+      });
 
-        expect(res.status).toBe(503);
-        expect(await res.json()).toMatchObject({ code: 'ai_not_configured' });
-        expect(createScriptBuilderSession).not.toHaveBeenCalled();
-      } finally {
-        providerRef.provider = 'anthropic';
-        vi.unstubAllEnvs();
-      }
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: expect.stringMatching(/not configured/i), code: 'ai_not_configured' });
+      expect(createScriptBuilderSession).not.toHaveBeenCalled();
     });
 
     it('captures resolver throws and returns a generic retryable 503', async () => {
       const error = new Error('raw organization lookup failure');
-      vi.mocked(resolveLlmConfigForOrg).mockRejectedValueOnce(error);
+      vi.mocked(chooseSessionModel).mockRejectedValueOnce(error);
 
       const res = await app.request('/ai/script-builder/sessions', {
         method: 'POST',

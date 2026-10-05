@@ -52,7 +52,16 @@ type PatchItem = {
   scope?: 'machine' | 'user' | null;
   // #4223 deployment axis: the latest install attempt on this device failed.
   installFailure?: PatchInstallFailure | null;
+  // #7680: the latest install attempt succeeded but needs a restart to finish;
+  // the OS keeps offering the update until then, so it is still in `pending`.
+  awaitingRestart?: { installedAt: string } | null;
 };
+
+function readAwaitingRestart(value: unknown): { installedAt: string } | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const installedAt = (value as Record<string, unknown>).installedAt;
+  return typeof installedAt === 'string' ? { installedAt } : undefined;
+}
 
 type PatchPayload = {
   compliancePercent?: number;
@@ -292,6 +301,8 @@ function readPatchIds(patches: PatchItem[]): string[] {
 // policy-excluded patch is not waiting on anyone.
 function isAwaitingApproval(patch: PatchItem): boolean {
   if (readInstallFailure(patch.installFailure)) return false;
+  // #7680: already installed, only the restart is outstanding.
+  if (readAwaitingRestart(patch.awaitingRestart)) return false;
   if (patch.effectiveApproval) return patch.effectiveApproval.state === 'needs_approval';
   return !isPatchApprovedForInstall(patch);
 }
@@ -420,12 +431,29 @@ function PatchApprovalCell({ patch, timezone, ringName }: { patch: PatchItem; ti
       {approvalBadge.label}
     </span>
   );
-  const failure = readInstallFailure(patch.installFailure);
-  if (!failure) return approvalEl;
-
   const isPendingApproval = patch.effectiveApproval
     ? patch.effectiveApproval.state === 'needs_approval'
     : (patch.approvalStatus ?? 'approved').toLowerCase() === 'pending';
+  const failure = readInstallFailure(patch.installFailure);
+  const awaitingRestart = failure ? undefined : readAwaitingRestart(patch.awaitingRestart);
+  // #7680: installed, but the OS keeps offering it until the device restarts.
+  if (awaitingRestart) {
+    return (
+      <div className="flex max-w-xs flex-col gap-1">
+        <span
+          data-testid={`device-patch-${patch.id}-awaiting-restart`}
+          title={t('devicePatchStatusTab.awaitingRestart.installedAt', { when: formatDateTime(awaitingRestart.installedAt, timezone) })}
+          className="inline-flex w-fit items-center gap-1 whitespace-nowrap rounded-full border border-success/30 bg-success/15 px-2.5 py-1 text-xs font-medium text-success"
+        >
+          <RefreshCw className="h-3.5 w-3.5" />
+          {t('devicePatchStatusTab.awaitingRestart.badge')}
+        </span>
+        {!isPendingApproval && approvalEl}
+      </div>
+    );
+  }
+  if (!failure) return approvalEl;
+
   const reason = failure.error?.trim() || t('devicePatchStatusTab.installFailure.noReason');
   return (
     <div className="flex max-w-xs flex-col gap-1">

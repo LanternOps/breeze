@@ -4,11 +4,7 @@ import { beforeEach, describe, expect, it, vi, beforeAll, afterAll } from 'vites
 import { and, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-// Provider governance is mocked (tests never reach a model); the rest is real.
-vi.mock('../../services/llm/llmConfigResolver', async (original) => ({
-  ...await original<object>(),
-  resolveLlmConfigForOrg: vi.fn(async () => ({ source: 'platform', apiKey: 'test-key', model: 'claude-sonnet-4-6' })),
-}));
+// Tests never reach a model; the rest is real.
 // Topology AI readiness requires a usable model provider (no key = not
 // configured). These suites exercise the gate itself, so give the platform
 // path a key for their duration.
@@ -211,12 +207,12 @@ describe('topology AI read scope (M4-D1/M4-D2, real DB)', () => {
       .rejects.toMatchObject({ cause: expect.objectContaining({ code: '23514' }) });
     const other = await setupTestEnvironment({ rolePermissions: READ });
     // A site from ANOTHER org can never be pinned (composite FK).
-    await expect(db.execute(sql`INSERT INTO ai_sessions (org_id, user_id, type, topology_site_id) VALUES (${env.organization.id}::uuid, ${env.user.id}::uuid, 'topology', ${other.site.id}::uuid)`))
+    await expect(db.execute(sql`INSERT INTO ai_sessions (org_id, user_id, model, type, topology_site_id) VALUES (${env.organization.id}::uuid, ${env.user.id}::uuid, 'claude-sonnet-5-5', 'topology', ${other.site.id}::uuid)`))
       .rejects.toMatchObject({ cause: expect.objectContaining({ code: '23503' }) });
     // A topology session without a pin, and a pin on a general session, are both refused.
-    await expect(db.execute(sql`INSERT INTO ai_sessions (org_id, user_id, type) VALUES (${env.organization.id}::uuid, ${env.user.id}::uuid, 'topology')`))
+    await expect(db.execute(sql`INSERT INTO ai_sessions (org_id, user_id, model, type) VALUES (${env.organization.id}::uuid, ${env.user.id}::uuid, 'claude-sonnet-5-5', 'topology')`))
       .rejects.toMatchObject({ cause: expect.objectContaining({ code: '23514' }) });
-    await expect(db.execute(sql`INSERT INTO ai_sessions (org_id, user_id, type, topology_site_id) VALUES (${env.organization.id}::uuid, ${env.user.id}::uuid, 'general', ${env.site.id}::uuid)`))
+    await expect(db.execute(sql`INSERT INTO ai_sessions (org_id, user_id, model, type, topology_site_id) VALUES (${env.organization.id}::uuid, ${env.user.id}::uuid, 'claude-sonnet-5-5', 'general', ${env.site.id}::uuid)`))
       .rejects.toMatchObject({ cause: expect.objectContaining({ code: '23514' }) });
     // Deleting the site never clears the pin.
     await expect(db.execute(sql`DELETE FROM sites WHERE id = ${env.site.id}::uuid`)).rejects.toBeTruthy();

@@ -14,6 +14,7 @@ import {
   editCommentSchema
 } from '@breeze/shared';
 import {
+  type TicketActor,
   createTicket, changeTicketStatus, assignTicket, addTicketComment,
   linkAlertToTicket, unlinkAlertFromTicket, updateTicketFields,
   editTicketComment, deleteTicketComment, listRequestersForOrg,
@@ -87,9 +88,10 @@ const SLA_AT_RISK = sql`(
   )
 )`;
 
-export function actorFrom(c: { get: (k: 'auth') => AuthContext }) {
+/** The human session behind a staff ticket route — always a `'user'` actor. */
+export function actorFrom(c: { get: (k: 'auth') => AuthContext }): Extract<TicketActor, { kind: 'user' }> {
   const auth = c.get('auth');
-  return { userId: auth.user.id, name: auth.user.name, email: auth.user.email };
+  return { kind: 'user', userId: auth.user.id, name: auth.user.name, email: auth.user.email };
 }
 
 export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
@@ -97,7 +99,12 @@ export function handleServiceError(c: { json: (b: unknown, s: number) => Respons
     // `code` is optional on the error; include it when present so callers can
     // branch on a stable token instead of the message (W08 #3902 relies on
     // ATTACHMENT_NOT_CLAIMABLE reaching the client).
-    return c.json(err.code ? { error: err.message, code: err.code } : { error: err.message }, err.status);
+    return c.json({
+      error: err.message,
+      ...(err.code ? { code: err.code } : {}),
+      // e.g. EXTERNAL_ID_CONFLICT names the ticket already holding the id.
+      ...(err.details ? { details: err.details } : {}),
+    }, err.status);
   }
   throw err;
 }

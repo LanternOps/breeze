@@ -83,6 +83,13 @@ vi.mock('./email', async (importOriginal) => {
   };
 });
 
+// #7507: send re-resolves a draft's tax rate; these suites are not about tax, so
+// the sync is a no-op (no extra db read queued into the mocked chain).
+vi.mock('./quoteService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./quoteService')>();
+  return { ...actual, syncDraftQuoteTaxRate: vi.fn(async () => false) };
+});
+
 import { sendQuote } from './quoteLifecycle';
 
 const dialect = new PgDialect();

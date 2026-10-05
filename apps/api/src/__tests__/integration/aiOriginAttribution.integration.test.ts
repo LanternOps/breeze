@@ -83,7 +83,14 @@ async function seed(): Promise<Fixture> {
   // (=> actor_invalid) for a user with no org membership, so the intent case
   // below needs a real role assignment, not just a users row.
   const role = await createRole({ scope: 'organization', orgId: org.id });
-  await grantRolePermissions(role!.id, [{ resource: 'devices', action: 'read' }]);
+  // `scripts:execute` too: the delivery-time script revalidation
+  // (scriptCommandRevalidation.ts) rehydrates the requester's live RBAC on
+  // BOTH delivery legs and cancels a script whose requester cannot run
+  // scripts — the same precondition the AI run_script tool enforces upstream.
+  await grantRolePermissions(role!.id, [
+    { resource: 'devices', action: 'read' },
+    { resource: 'scripts', action: 'execute' },
+  ]);
   await assignUserToOrganization(user.id, org.id, role!.id);
 
   const unique = randomUUID().slice(0, 8);
@@ -120,7 +127,7 @@ async function seed(): Promise<Fixture> {
 
     const [session] = await db
       .insert(aiSessions)
-      .values({ orgId: org.id, userId: user.id, deviceId: device!.id, type: 'general' })
+      .values({ orgId: org.id, userId: user.id, deviceId: device!.id, type: 'general', model: 'claude-sonnet-5-5' })
       .returning();
 
     const [agent] = await db

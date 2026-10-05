@@ -19,25 +19,24 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { decryptForColumn } from './secretCrypto';
-import { redactUrlForLogs } from './notificationSenders/webhookSender';
+import { describeEndpointUrl, type EndpointUrlView } from '../utils/endpointDisplay';
 import { getWebhookWorker } from '../workers/webhookDelivery';
 
-// webhooks.url is encrypted at rest and may embed credentials. Decrypt for
-// display then strip userinfo/query/hash so the AI tool never sees a token.
-// Plaintext legacy rows pass through decryptForColumn unchanged.
-function maskWebhookUrl(stored: string): string {
+// webhooks.url is encrypted at rest, and for chat-provider endpoints the PATH
+// is what authorizes a post, so AI tools show only the origin plus a short
+// fingerprint (see utils/endpointDisplay). Plaintext legacy rows pass through
+// decryptForColumn unchanged.
+function describeWebhookEndpoint(stored: string): EndpointUrlView {
   let decrypted: string;
   try {
     // Legacy plaintext rows pass through decryptForColumn unchanged (no throw).
     decrypted = decryptForColumn('webhooks', 'url', stored) ?? stored;
   } catch {
-    // An encrypted value we cannot decrypt (key/AAD mismatch, corruption). Do NOT
-    // fall back to the raw ciphertext: redactUrlForLogs treats `enc:...` as an
-    // opaque URL and would surface the ciphertext blob to the model. Emit a fixed
-    // placeholder instead.
-    return '[encrypted]';
+    // An encrypted value we cannot decrypt (key/AAD mismatch, corruption). Never
+    // fall back to the raw ciphertext; emit a fixed placeholder instead.
+    return { url: '[encrypted]', fingerprint: null };
   }
-  return redactUrlForLogs(decrypted);
+  return describeEndpointUrl(decrypted);
 }
 
 type IntegrationHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
@@ -129,7 +128,10 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
         .orderBy(desc(webhooks.createdAt))
         .limit(limit);
 
-      const maskedRows = rows.map((row) => ({ ...row, url: maskWebhookUrl(row.url) }));
+      const maskedRows = rows.map((row) => {
+        const endpoint = describeWebhookEndpoint(row.url);
+        return { ...row, url: endpoint.url, urlFingerprint: endpoint.fingerprint };
+      });
 
       if (!includeDeliveries) {
         return JSON.stringify({ webhooks: maskedRows, count: maskedRows.length });
@@ -360,12 +362,14 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
         });
       }
 
+      const endpoint = describeWebhookEndpoint(webhook.url);
       return JSON.stringify({
         success: true,
         message: `Test delivery queued for webhook "${webhook.name}"`,
         deliveryId: delivery.id,
         webhookId: webhook.id,
-        webhookUrl: maskWebhookUrl(webhook.url),
+        webhookUrl: endpoint.url,
+        webhookUrlFingerprint: endpoint.fingerprint,
         createdAt: delivery.createdAt,
       });
     }),

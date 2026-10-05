@@ -18,7 +18,9 @@ vi.mock('../../db/schema', () => ({
   },
 }));
 
-const { getUserPermissionsMock, writeRouteAuditMock, queueCommandMock, decryptForColumnMock, encryptFieldsMock } = vi.hoisted(() => ({
+const { getUserPermissionsMock, writeRouteAuditMock, queueCommandMock, decryptForColumnMock, encryptFieldsMock, rateLimiterMock, getRedisMock } = vi.hoisted(() => ({
+  rateLimiterMock: vi.fn(),
+  getRedisMock: vi.fn(),
   getUserPermissionsMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
   queueCommandMock: vi.fn(async () => ({ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' })),
@@ -39,11 +41,13 @@ vi.mock('../../services/commandQueue', () => ({
   CommandTypes: { ENCRYPTION_ROTATE_KEY: 'encryption_rotate_key', ENCRYPTION_COLLECT_KEYS: 'encryption_collect_keys' },
   queueCommand: queueCommandMock,
 }));
+vi.mock('../../services/rate-limit', () => ({ rateLimiter: rateLimiterMock }));
+vi.mock('../../services/redis', () => ({ getRedis: getRedisMock }));
 vi.mock('../../services/secretCrypto', () => ({ decryptForColumn: decryptForColumnMock }));
 vi.mock('../../services/sensitiveCommandPayload', () => ({ encryptSensitivePayloadFields: encryptFieldsMock }));
 
 import { db } from '../../db';
-import { recoveryKeysRoutes } from './recoveryKeys';
+import { recoveryKeysRoutes, RECOVERY_KEY_REVEAL_LIMIT, RECOVERY_KEY_REVEAL_WINDOW_SECONDS } from './recoveryKeys';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const DEVICE_ID = '22222222-2222-2222-2222-222222222222';
@@ -148,6 +152,8 @@ describe('recoveryKeysRoutes', () => {
       permissions: [{ resource: 'devices', action: 'read' }, { resource: 'devices', action: 'execute' }],
       allowedSiteIds: undefined,
     });
+    getRedisMock.mockReturnValue({ fake: 'redis' });
+    rateLimiterMock.mockResolvedValue({ allowed: true, remaining: 9, resetAt: new Date(Date.now() + 60_000) });
   });
 
   it('list returns key metadata + access history without encryptedKey or plaintext', async () => {
@@ -192,6 +198,58 @@ describe('recoveryKeysRoutes', () => {
     const auditArg = writeRouteAuditMock.mock.calls[0]![1] as any;
     expect(auditArg.action).toBe('device.recovery_key.reveal');
     expect(JSON.stringify(auditArg.details)).not.toContain(PLAINTEXT_KEY);
+  });
+
+  it('reveal is rate limited per user and checks the limit before decrypting', async () => {
+    mockDeviceSelect();
+    mockKeyLookupSelect(SAMPLE_KEY_ROW);
+    mockInsert();
+    const app = buildApp();
+
+    const res = await app.request(`/security/encryption/devices/${DEVICE_ID}/recovery-keys/${KEY_ID}/reveal`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(rateLimiterMock).toHaveBeenCalledTimes(1);
+    const [redisArg, key, limit, windowSeconds] = rateLimiterMock.mock.calls[0]!;
+    expect(redisArg).toEqual({ fake: 'redis' });
+    expect(key).toBe('recovery-key-reveal:user:user-1');
+    expect(limit).toBe(RECOVERY_KEY_REVEAL_LIMIT);
+    expect(windowSeconds).toBe(RECOVERY_KEY_REVEAL_WINDOW_SECONDS);
+    expect(rateLimiterMock.mock.invocationCallOrder[0]!).toBeLessThan(decryptForColumnMock.mock.invocationCallOrder[0]!);
+  });
+
+  it('reveal over the limit returns 429 with Retry-After, never decrypts, and writes a denied audit event', async () => {
+    rateLimiterMock.mockResolvedValue({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 120_000) });
+    mockDeviceSelect();
+    const app = buildApp();
+
+    const res = await app.request(`/security/encryption/devices/${DEVICE_ID}/recovery-keys/${KEY_ID}/reveal`, { method: 'POST' });
+    expect(res.status).toBe(429);
+    expect(Number(res.headers.get('Retry-After'))).toBeGreaterThan(0);
+    expect(JSON.stringify(await res.json())).not.toContain(PLAINTEXT_KEY);
+    expect(decryptForColumnMock).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+
+    expect(writeRouteAuditMock).toHaveBeenCalledTimes(1);
+    const auditArg = writeRouteAuditMock.mock.calls[0]![1] as any;
+    expect(auditArg).toMatchObject({
+      orgId: ORG_ID,
+      action: 'device.recovery_key.reveal',
+      resourceType: 'device',
+      resourceId: DEVICE_ID,
+      result: 'denied',
+    });
+    expect(auditArg.details).toMatchObject({ keyId: KEY_ID, reason: 'rate_limited' });
+  });
+
+  it('reveal returns 503 and never decrypts when the rate limiter backend is unavailable', async () => {
+    getRedisMock.mockReturnValue(null);
+    mockDeviceSelect();
+    const app = buildApp();
+
+    const res = await app.request(`/security/encryption/devices/${DEVICE_ID}/recovery-keys/${KEY_ID}/reveal`, { method: 'POST' });
+    expect(res.status).toBe(503);
+    expect(decryptForColumnMock).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   it('reveal refuses without a fresh MFA-satisfied session', async () => {

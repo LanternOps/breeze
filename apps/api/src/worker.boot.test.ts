@@ -20,6 +20,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Worker } from 'bullmq';
 import { Gauge } from 'prom-client';
 
@@ -65,7 +67,6 @@ const mocks = vi.hoisted(() => {
     loadBuiltinExtensions: vi.fn(async () => {}),
     createExtensionStateStore: vi.fn(() => ({})),
     registerAiAgentEnqueuer: vi.fn(),
-    registerInvocationLedgerShadow: vi.fn(),
     registerAllEventSubscribers: vi.fn(),
     buildWebhookFanoutDeps: vi.fn(() => ({})),
     partnerTrustMode: vi.fn(() => 'off'),
@@ -164,7 +165,6 @@ vi.mock('./extensions/builtinExtensions', () => ({ loadBuiltinExtensions: mocks.
 vi.mock('./extensions/contributionRegistry', () => ({ extensionContributionRegistry: {} }));
 vi.mock('./extensions/stateStore', () => ({ createExtensionStateStore: mocks.createExtensionStateStore }));
 vi.mock('./jobs/aiAgentEnqueuer', () => ({ registerAiAgentEnqueuer: mocks.registerAiAgentEnqueuer }));
-vi.mock('./services/aiModels/invocationLedger', () => ({ registerInvocationLedgerShadow: mocks.registerInvocationLedgerShadow }));
 vi.mock('./services/eventSubscribers', () => ({ registerAllEventSubscribers: mocks.registerAllEventSubscribers }));
 vi.mock('./services/webhookFanoutDeps', () => ({ buildWebhookFanoutDeps: mocks.buildWebhookFanoutDeps }));
 vi.mock('./services/workerRegistry', () => ({
@@ -400,7 +400,12 @@ describe('worker.ts boot (#4086 Task 6)', () => {
       'startRegisteredWorkers',
       'initializeEventDispatchWorker',
     ]);
-    expect(mocks.registerInvocationLedgerShadow).toHaveBeenCalledTimes(1);
+  });
+
+  it('no AI model registry cutover sweep at worker boot (W08 #7606: partners are bootstrapped on demand by ensurePartnerCutover)', () => {
+    const source = readFileSync(join(__dirname, 'worker.ts'), 'utf8');
+    expect(source).not.toMatch(/runRegistryCutoverSweep/);
+    expect(source).not.toMatch(/services\/aiModels\/registryCutover'/);
   });
 
   it('exits non-zero when production DB-role verification fails, before Redis is probed or workers start', async () => {

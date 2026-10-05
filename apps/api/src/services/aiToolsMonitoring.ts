@@ -23,6 +23,7 @@ import {
   runFrozenDeviceIds,
   SITE_SCOPE_EMPTY_NOTE,
 } from './aiToolsSiteScope';
+import { presentEndpointTarget, scrubUrlsInText, scrubUrlsInValue } from '../utils/endpointDisplay';
 
 type MonitoringHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -32,6 +33,26 @@ type MonitoringHandler = (input: Record<string, unknown>, auth: AuthContext) => 
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+}
+
+// Monitor targets and agent error text can carry endpoint credentials (URL
+// userinfo, `?token=` queries, authorizing path segments). Tool results show
+// a URL as scheme + host plus a fingerprint, and every URL inside free text
+// as its origin. Applied on output too because rows stored before ingest-time
+// scrubbing still hold the full URL.
+function presentMonitorTarget<T extends { target?: unknown }>(row: T): T & { targetFingerprint?: string | null } {
+  if (typeof row.target !== 'string') return row;
+  const view = presentEndpointTarget(row.target);
+  return { ...row, target: view.target, targetFingerprint: view.fingerprint };
+}
+
+function presentMonitorRow<T extends { target?: unknown; config?: unknown; lastError?: unknown }>(row: T) {
+  const presented = presentMonitorTarget(row);
+  return {
+    ...presented,
+    ...('config' in row ? { config: scrubUrlsInValue(row.config) } : {}),
+    ...('lastError' in row ? { lastError: typeof row.lastError === 'string' ? scrubUrlsInText(row.lastError) : row.lastError } : {}),
+  };
 }
 
 function orgWhere(auth: AuthContext, orgIdCol: ReturnType<typeof sql.raw> | any): SQL | undefined {
@@ -100,7 +121,9 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
       if (typeof input.search === 'string' && input.search.trim()) {
         const term = input.search.trim().replace(/[\\%_]/g, '\\$&');
         conditions.push(
-          sql`(${networkMonitors.name} ILIKE ${'%' + term + '%'} OR ${networkMonitors.target} ILIKE ${'%' + term + '%'})`
+          // Target is matched on its host part only, so the search cannot be
+          // used to probe a stored URL's path, query or userinfo.
+          sql`(${networkMonitors.name} ILIKE ${'%' + term + '%'} OR substring(${networkMonitors.target} from '^(?:[A-Za-z][A-Za-z0-9+.-]*://)?(?:[^/?#]*@)?([^/?#]*)') ILIKE ${'%' + term + '%'})`
         );
       }
 
@@ -184,7 +207,7 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         monitors: rows.map((row) => {
           const r = row.assetId ? reachabilityByAsset.get(row.assetId) : undefined;
           return {
-            ...row,
+            ...presentMonitorTarget(row),
             assetReachability: r ? { state: r.state, source: r.source, observedAt: r.observedAt } : null,
           };
         }),
@@ -337,7 +360,15 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         }).from(networkMonitorAlertRules)
           .where(eq(networkMonitorAlertRules.monitorId, monitor.id));
 
-        return JSON.stringify({ monitor, recentResults: results, alertRules: rules });
+        return JSON.stringify({
+          monitor: presentMonitorRow(monitor),
+          recentResults: results.map((r) => ({
+            ...r,
+            error: scrubUrlsInText(r.error),
+            details: scrubUrlsInValue(r.details),
+          })),
+          alertRules: rules,
+        });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });

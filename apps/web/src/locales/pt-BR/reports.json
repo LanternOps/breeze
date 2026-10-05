@@ -329,6 +329,7 @@
         "ticket_sla_attainment": "Cumprimento de SLA de chamados",
         "technician_time_billability": "Tempo e faturabilidade do técnico",
         "ar_aging": "Envelhecimento de contas a receber",
+        "ai_usage_by_client": "Uso de IA por cliente",
         "backup_status": "Status do backup"
       },
       "threatDetection": {
@@ -431,6 +432,7 @@
         "ticket_sla_attainment": "Cumprimento de SLA de chamados",
         "technician_time_billability": "Tempo e faturabilidade do técnico",
         "ar_aging": "Envelhecimento de contas a receber",
+        "ai_usage_by_client": "Uso de IA por cliente",
         "backup_status": "Status do backup"
       },
       "runsTable": {
@@ -979,6 +981,7 @@
         "ticket_sla_attainment": "Cumprimento de SLA de chamados",
         "technician_time_billability": "Tempo e faturabilidade do técnico",
         "ar_aging": "Envelhecimento de contas a receber",
+        "ai_usage_by_client": "Uso de IA por cliente",
         "backup_status": "Status do backup"
       },
       "schedules": {
@@ -1047,6 +1050,10 @@
         "ar_aging": {
           "name": "Envelhecimento de contas a receber",
           "description": "Saldos de faturas em aberto agrupados em corrente / 1–30 / 31–60 / 61–90 / mais de 90 dias vencidos, um conjunto de totais por moeda sem conversão. Faturas sem data de vencimento recebem seu próprio grupo, nunca \"corrente\"."
+        },
+        "ai_usage_by_client": {
+          "name": "Uso de IA por cliente",
+          "description": "Uso de IA da plataforma por cliente no período: solicitações, tokens, custo da Breeze, valor a cobrar conforme o perfil de faturamento do cliente e o que já foi faturado. O uso incluído e os modelos sem preço aparecem separados, nunca misturados."
         },
         "backup_status": {
           "name": "Relatório de status de backup",
@@ -1151,6 +1158,18 @@
       "currencyNote": "Cada moeda tem seus próprios totais. Os valores não são convertidos entre moedas.",
       "includePaidInPeriod": "Listar faturas pagas no mês até a data",
       "includePaidInPeriodHelp": "Adiciona uma nota com as faturas pagas integralmente do primeiro dia do mês de referência até a data de referência. Nunca altera as faixas de idade.",
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório"
+    },
+    "aiUsageByClientOptions": {
+      "groupBy": "Agrupar por",
+      "groupByAutomatic": "Automático: por organização para todas as organizações, por modelo para uma única organização",
+      "groupByValues": {
+        "organization": "Organização",
+        "model": "Modelo"
+      },
+      "periodNote": "As cobranças são faturadas por mês-calendário UTC. Um período definido em outro fuso horário pode diferir da fatura para o uso próximo aos limites do mês.",
+      "unpricedNote": "O uso de um modelo sem tarifa no perfil de faturamento do cliente é contado como sem preço. Nunca é tratado como gratuito.",
       "cancel": "Cancelar",
       "createReport": "Criar relatório"
     },

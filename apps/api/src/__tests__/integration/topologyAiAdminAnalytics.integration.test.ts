@@ -4,10 +4,6 @@ import { and, eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-vi.mock('../../services/llm/llmConfigResolver', async (original) => ({
-  ...await original<object>(),
-  resolveLlmConfigForOrg: vi.fn(async () => ({ source: 'platform', apiKey: 'test-key', model: 'claude-sonnet-4-6' })),
-}));
 // The SDK transport must never run here: a real model call is a test bug.
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: () => { throw new Error('SDK transport must not run in this suite'); }, tool: () => ({}), createSdkMcpServer: () => ({}) }));
 
@@ -38,7 +34,7 @@ async function mfaToken(env: TestEnvironment) {
 async function insertSessionWithExecution(env: TestEnvironment, siteId: string | null, toolName: string) {
   const db = getTestDb();
   const [session] = await db.insert(aiSessions).values({
-    orgId: env.organization.id, userId: env.user.id, title: `s-${toolName}`, type: siteId ? 'topology' : 'general', topologySiteId: siteId,
+    orgId: env.organization.id, userId: env.user.id, model: 'claude-sonnet-5-5', title: `s-${toolName}`, type: siteId ? 'topology' : 'general', topologySiteId: siteId,
   }).returning();
   await db.insert(aiToolExecutions).values({
     sessionId: session!.id, toolName, toolInput: { site_id: siteId, node_id: `node-of-${toolName}` }, status: 'completed',

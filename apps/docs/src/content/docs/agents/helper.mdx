@@ -165,7 +165,7 @@ Each session is stored in the `ai_sessions` table with a `contextSnapshot` that 
 | Rate limit | 30 messages per 60 seconds per device |
 | Maximum message length | 10,000 characters |
 | Turn limit | Configured per session (default from `ai_sessions.maxTurns`) |
-| Model | `claude-sonnet-4-5-20250929` |
+| Model | The partner's or platform's default AI model, resolved when the session is created (Claude Sonnet 5.5 by default from v0.120.0); an existing session keeps its model |
 | Budget | Org-level AI budget applies; sessions are rejected when budget is exhausted |
 
 ### Tool Permission Levels
@@ -418,6 +418,19 @@ The Helper communicates with the agent service over a local IPC connection (Unix
 - **API authentication**: Chat requests to the API use a dedicated helper-scoped `brz_` bearer token -- issued at enrollment alongside, but distinct from, the agent's own token -- validated by SHA-256 hash lookup against the `devices.helperTokenHash` column (not `agentTokenHash`).
 - **Org isolation**: All API queries include an organization condition derived from the device's `orgId`, ensuring the Helper cannot access data from other organizations.
 
+### How the Helper receives its token
+
+The agent hands the helper-scoped token to the Helper over the authenticated local IPC channel, and the Helper prefers that copy (v0.119.0+). On disk the token is kept only in the agent's protected secrets file (`secrets.yaml`, readable by SYSTEM/Administrators on Windows and by root on Linux and macOS). It is no longer written to `agent.yaml` on any platform (v0.120.0+).
+
+- **Windows:** the IPC channel is the only way the Helper gets its token. When an upgraded agent first starts, it moves any token an older agent left in `agent.yaml` into `secrets.yaml` and then rotates the token once, on its next successful heartbeat. The Helper keeps working through the rotation: the agent keeps delivering the old token until the server confirms the new one, then pushes the new one.
+- **macOS and Linux:** unchanged. The Helper also receives the token over IPC, with the `breeze`-group `helper_token.yaml` file as its on-disk fallback.
+
+<Aside type="caution" title="Windows: Breeze Assist works only in the console session">
+  On Windows the agent delivers the token only to the Helper running in the **active console session**. A Helper running in an RDP or other non-console session does not receive it and shows a message that it has not received its credentials. This is a known limitation in v0.120.0.
+
+  A Helper older than v0.119.0 that starts after the agent upgrade reports that it is still setting up until the Helper update installs; one that was already running keeps working.
+</Aside>
+
 ---
 
 ## API Reference
@@ -511,6 +524,9 @@ Expected on some desktops. Hiding an appindicator sets it to `Passive`; hosts th
 
 **"Invalid agent credentials" when Helper tries to chat.**
 The Helper authenticates to the API using its own helper-scoped `brz_` token, separate from the agent's own token. If the device was re-enrolled or the token was rotated, the Helper's cached token may be stale. Restart the agent service to pick up the new token. Also verify the device is not in `decommissioned` or `quarantined` status.
+
+**Breeze Assist says it has not received its credentials (Windows).**
+On Windows the Helper gets its token only over IPC from the agent, and only in the active console session. If the user is connected over RDP or another non-console session, Assist cannot get a token there (a known limitation). In a console session, confirm the agent service is running and the Helper is v0.119.0 or later; an older Helper reports that it is still setting up until its update installs.
 
 **AI chat returns "Rate limit exceeded."**
 The Helper enforces a rate limit of 30 messages per 60 seconds per device. Wait for the window to reset before sending another message. If multiple users share a device, they share the same rate limit.

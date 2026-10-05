@@ -7,6 +7,10 @@ import { ActionError, runAction, handleActionError } from '../../lib/runAction';
 import { currencyLabel, currencyOptions } from '@/lib/currencies';
 import { useOrgBillingProfile } from './OrgBillingProfile';
 import { pctFromFraction } from './invoiceTypes';
+import { usePaymentSettings } from './PaymentsSettingsTab';
+import OrgPaymentsSettingsSection from './OrgPaymentsSettingsSection';
+import OrgAutopayCard from './OrgAutopayCard';
+import { usePermissions } from '../../lib/permissions';
 import InheritedField from '../shared/InheritedField';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -84,6 +88,9 @@ interface Props {
 }
 
 export default function OrgBillingSettings({ orgId }: Props) {
+  const paymentSettings = usePaymentSettings(orgId);
+  const { can } = usePermissions();
+  const canManageAutopay = can('billing', 'manage');
   const { t, i18n } = useTranslation('billing');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -244,10 +251,13 @@ export default function OrgBillingSettings({ orgId }: Props) {
   const termsDaysInvalid = termsTrimmed !== ''
     && !(/^\d+$/.test(termsTrimmed) && Number(termsTrimmed) <= 365);
 
+  const paymentSettingsBlockSave = canManageAutopay && !!paymentSettings.view &&
+    (paymentSettings.invalid || paymentSettings.saving);
   const save = useCallback(async () => {
-    if (saving || termsDaysInvalid) return;
+    if (saving || termsDaysInvalid || paymentSettingsBlockSave) return;
     setSaving(true);
     try {
+      if (canManageAutopay && paymentSettings.view && paymentSettings.reminders) await paymentSettings.save();
       const pct = taxPercent.trim();
       await runAction({
         request: () => fetchWithAuth(`/orgs/${orgId}/billing-settings`, {
@@ -282,7 +292,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
     } finally {
       setSaving(false);
     }
-  }, [saving, termsDaysInvalid, termsDays, taxId, taxExempt, taxPercent, line1, line2, city, region, postal, country, orgId, load, billingProfile.billingProfileId, billingProfile.markSaved, t]);
+  }, [paymentSettings, paymentSettingsBlockSave, canManageAutopay, saving, termsDaysInvalid, termsDays, taxId, taxExempt, taxPercent, line1, line2, city, region, postal, country, orgId, load, billingProfile.billingProfileId, billingProfile.markSaved, t]);
 
   if (loading) return <p className="text-sm text-muted-foreground">{t('orgBillingSettings.loading')}</p>;
   if (loadError) {
@@ -577,9 +587,16 @@ export default function OrgBillingSettings({ orgId }: Props) {
         </div>
       </section>
 
+      {paymentSettings.view && paymentSettings.reminders && <div data-testid="autopay-org-fee-settings-page">
+        <OrgPaymentsSettingsSection view={paymentSettings.view} setValues={paymentSettings.setValues}
+          reminders={paymentSettings.reminders} setReminders={paymentSettings.setReminders}
+          disabled={saving || paymentSettings.saving || !canManageAutopay} />
+        {paymentSettings.view.autopayEnabled && canManageAutopay && <OrgAutopayCard orgId={orgId} />}
+      </div>}
+
       <div className="flex justify-end">
         <button
-          type="button" onClick={() => void save()} disabled={saving || termsDaysInvalid}
+          type="button" onClick={() => void save()} disabled={saving || termsDaysInvalid || paymentSettingsBlockSave}
           data-testid="org-billing-save"
           className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >

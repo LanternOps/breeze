@@ -19,7 +19,6 @@ const {
   checkBillingCreditsMock, rateLimiterMock,
   resolveToolResultMock, failPendingMock,
   applyDlpMock,
-  resolveClientLlmConfigMock,
 } = vi.hoisted(() => ({
   CLIENT_USER_ID: 'beefbeef-1111-4222-8333-444455556666',
   ORG_ID: '0c0c0c0c-1111-4222-8333-444455556666',
@@ -44,7 +43,6 @@ const {
   resolveToolResultMock: vi.fn(() => true),
   failPendingMock: vi.fn(() => 0),
   applyDlpMock: vi.fn(),
-  resolveClientLlmConfigMock: vi.fn(),
 }));
 
 vi.mock('../../services/aiAgentSdk', () => ({
@@ -106,12 +104,25 @@ vi.mock('../../services/clientAiToolBridge', () => ({
   failPendingForSession: failPendingMock,
 }));
 vi.mock('../../services/clientAiDlp', () => ({ applyDlp: applyDlpMock }));
-vi.mock('../../services/clientAiSessions', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../services/clientAiSessions')>()),
-  resolveClientLlmConfig: (...args: unknown[]) => resolveClientLlmConfigMock(...args),
+const { resolveSessionTurnMock, chooseSessionModelMock, readOrgPartnerIdMock } = vi.hoisted(() => ({
+  resolveSessionTurnMock: vi.fn(),
+  chooseSessionModelMock: vi.fn(),
+  readOrgPartnerIdMock: vi.fn(),
+}));
+// W03: office_chat turns + the /events reattach (Task 7) and session create
+// (Task 9) resolve through the registry.
+vi.mock('../../services/aiModels/sessionModel', async (importOriginal) => ({
+  InvalidSessionModelError: (await importOriginal<typeof import('../../services/aiModels/sessionModel')>()).InvalidSessionModelError,
+  resolveSessionTurn: (...args: unknown[]) => resolveSessionTurnMock(...args),
+  chooseSessionModel: (...args: unknown[]) => chooseSessionModelMock(...args),
+}));
+vi.mock('../../services/aiModels/candidateLoader', () => ({
+  readOrgPartnerId: (...args: unknown[]) => readOrgPartnerIdMock(...args),
 }));
 
 import { clientAiSessionRoutes } from './sessions';
+import { LlmUnavailableError } from '../../services/llm/llmUnavailableError';
+import { makeResolvedModel } from '../../services/aiModels/__fixtures__/resolvedModel';
 import { defaultClientAiPolicy } from '../../services/clientAiPolicy';
 import {
   WORD_CLIENT_SYSTEM_PROMPT,
@@ -144,18 +155,20 @@ const AUTHED = { Authorization: 'Bearer tok', 'Content-Type': 'application/json'
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resolveSessionTurnMock.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'office_chat' }));
   managerMock.tryTransitionToProcessing.mockReturnValue(true);
   managerMock.get.mockReturnValue(undefined);
   checkClientBudgetMock.mockResolvedValue(null);
   checkBillingCreditsMock.mockResolvedValue(null);
   rateLimiterMock.mockResolvedValue({ allowed: true, remaining: 9, resetAt: new Date() });
-  resolveClientLlmConfigMock.mockResolvedValue({
-    source: 'partner',
-    partnerId: 'partner-from-org',
-    apiKey: 'partner-key',
-    model: 'claude-opus-4-6',
-    configId: 'config-1',
-    configVersion: 1,
+  readOrgPartnerIdMock.mockResolvedValue('partner-from-org');
+  chooseSessionModelMock.mockResolvedValue({
+    resolved: makeResolvedModel('anthropic_byok', { surface: 'office_chat', partnerId: 'partner-from-org' }),
+    offeringId: 'off-1',
+    offeringPartnerId: 'partner-from-org',
+    options: null,
+    model: 'claude-sonnet-5-5',
+    billingSource: 'partner_key',
   });
   policyState.policy = { ...defaultClientAiPolicy(ORG_ID), enabled: true };
   dbSelectMock.mockImplementation(() => selectChain([EXCEL_SESSION_ROW]));
@@ -176,12 +189,19 @@ describe('POST /client-ai/sessions (create) — host routing', () => {
       method: 'POST', body: JSON.stringify({}), headers: AUTHED,
     });
     expect(res.status).toBe(201);
+    // W03 Task 9: created on the registry's office_chat offering for the org's partner.
     expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({
       type: 'excel_client',
-      model: 'claude-opus-4-6',
+      offeringId: 'off-1',
+      offeringPartnerId: 'partner-from-org',
+      options: null,
+      model: 'claude-sonnet-5-5',
       billingSource: 'partner_key',
     }));
-    expect(resolveClientLlmConfigMock).toHaveBeenCalledWith(ORG_ID);
+    expect(readOrgPartnerIdMock).toHaveBeenCalledWith(ORG_ID);
+    expect(chooseSessionModelMock).toHaveBeenCalledWith({
+      partnerId: 'partner-from-org', orgId: ORG_ID, userId: null, surface: 'office_chat',
+    });
     expect(checkBillingCreditsMock).toHaveBeenCalledWith(ORG_ID, 'partner_key');
     // The create audit records the resolved host.
     expect(writeAuditEventMock).toHaveBeenCalledWith(
@@ -201,7 +221,7 @@ describe('POST /client-ai/sessions (create) — host routing', () => {
     });
 
     expect(res.status).toBe(429);
-    expect(resolveClientLlmConfigMock).not.toHaveBeenCalled();
+    expect(chooseSessionModelMock).not.toHaveBeenCalled();
     expect(dbInsertMock).not.toHaveBeenCalled();
   });
 
@@ -211,16 +231,12 @@ describe('POST /client-ai/sessions (create) — host routing', () => {
     });
 
     expect(res.status).toBe(400);
-    expect(resolveClientLlmConfigMock).not.toHaveBeenCalled();
+    expect(chooseSessionModelMock).not.toHaveBeenCalled();
     expect(dbInsertMock).not.toHaveBeenCalled();
   });
 
   it('returns ai_unavailable as 503 before inserting a session', async () => {
-    resolveClientLlmConfigMock.mockResolvedValue({
-      source: 'unavailable',
-      partnerId: 'partner-from-org',
-      reason: 'key_error',
-    });
+    chooseSessionModelMock.mockRejectedValue(new LlmUnavailableError());
 
     const res = await buildApp().request('/client-ai/sessions', {
       method: 'POST', body: JSON.stringify({}), headers: AUTHED,
@@ -228,6 +244,46 @@ describe('POST /client-ai/sessions (create) — host routing', () => {
 
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(dbInsertMock).not.toHaveBeenCalled();
+  });
+
+  it('no longer reads policy.allowedModels: the stored model is the offering\'s, not allowedModels[0]', async () => {
+    policyState.policy = { ...defaultClientAiPolicy(ORG_ID), enabled: true, allowedModels: ['claude-opus-4-6'] };
+    const valuesSpy = vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: SESSION_ID }])) }));
+    dbInsertMock.mockImplementation(() => ({ values: valuesSpy }));
+
+    const res = await buildApp().request('/client-ai/sessions', {
+      method: 'POST', body: JSON.stringify({}), headers: AUTHED,
+    });
+
+    expect(res.status).toBe(201);
+    const inserted = (valuesSpy.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
+    expect(inserted.model).toBe('claude-sonnet-5-5');
+    expect(inserted.model).not.toBe('claude-opus-4-6');
+  });
+
+  it('an org with no partner is ai_unavailable before any resolution or insert', async () => {
+    readOrgPartnerIdMock.mockResolvedValue(null);
+
+    const res = await buildApp().request('/client-ai/sessions', {
+      method: 'POST', body: JSON.stringify({}), headers: AUTHED,
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(chooseSessionModelMock).not.toHaveBeenCalled();
+    expect(dbInsertMock).not.toHaveBeenCalled();
+  });
+
+  it('runs the credit preflight on the resolved offering\'s funding before inserting', async () => {
+    checkBillingCreditsMock.mockResolvedValueOnce('Insufficient credits');
+
+    const res = await buildApp().request('/client-ai/sessions', {
+      method: 'POST', body: JSON.stringify({}), headers: AUTHED,
+    });
+
+    expect(res.status).toBe(402);
+    expect(checkBillingCreditsMock).toHaveBeenCalledWith(ORG_ID, 'partner_key');
     expect(dbInsertMock).not.toHaveBeenCalled();
   });
 
@@ -335,7 +391,7 @@ describe('use-path host guard (ensureActiveClientSession)', () => {
     });
 
     expect(res.status).toBe(429);
-    expect(resolveClientLlmConfigMock).not.toHaveBeenCalled();
+    expect(chooseSessionModelMock).not.toHaveBeenCalled();
     expect(managerMock.getOrCreate).not.toHaveBeenCalled();
   });
 

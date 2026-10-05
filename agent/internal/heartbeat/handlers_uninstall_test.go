@@ -423,7 +423,7 @@ func TestDarwinUninstallScriptExecutable(t *testing.T) {
 	for _, removeConfig := range []bool{false, true} {
 		root := t.TempDir()
 		calls := filepath.Join(root, "calls")
-		for _, name := range []string{"launchctl", "pkill", "pkgutil", "rm", "ps", "sleep"} {
+		for _, name := range []string{"launchctl", "pkill", "pkgutil", "rm", "rmdir", "ps", "sleep"} {
 			body := "#!/bin/sh\nprintf '%s %s\\n' \"${0##*/}\" \"$*\" >> \"$FIXTURE_CALLS\"\n"
 			switch name {
 			case "ps":
@@ -452,6 +452,16 @@ func TestDarwinUninstallScriptExecutable(t *testing.T) {
 				t.Errorf("missing %s", artifact)
 			}
 		}
+		// #7831: the live binary is BinaryPath, but a pre-relocation copy in the
+		// other directory must go too, then the empty /Library/Breeze tree, and
+		// the launchd disable phase 1 set must be cleared once the plist is gone
+		// or the next install's bootstrap fails with EIO 5.
+		for _, artifact := range []string{"/usr/local/bin/breeze-agent", "/Library/Breeze/bin/breeze-agent", "/Library/Breeze/bin/breeze-watchdog", "rmdir /Library/Breeze/pkg-staging /Library/Breeze/bin /Library/Breeze"} {
+			if !strings.Contains(s, artifact) {
+				t.Errorf("missing %s", artifact)
+			}
+		}
+		assertOrder(t, s, "rm -f /Library/LaunchDaemons/com.breeze.agent.plist", "launchctl enable system/com.breeze.agent")
 		if strings.Contains(s, "rm -rf /Library/Application Support/Breeze") != removeConfig {
 			t.Errorf("changed optional config policy: %s", s)
 		}
@@ -491,5 +501,24 @@ func TestResolveTrustedOrLegacyBinaryPath(t *testing.T) {
 				t.Errorf("resolveTrustedOrLegacyBinaryPath() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestSelfUninstallRefusedInASupportSession: a support session is not the
+// installed agent and must never uninstall it. self_uninstall arrives over the
+// same command channel as everything else, so a mis-routed or forged one in a
+// support session is refused before anything is touched (#7629).
+func TestSelfUninstallRefusedInASupportSession(t *testing.T) {
+	origPrepare, origSchedule := prepareSelfUninstallFn, scheduleSelfUninstallShutdownFn
+	t.Cleanup(func() { prepareSelfUninstallFn, scheduleSelfUninstallShutdownFn = origPrepare, origSchedule })
+	prepareSelfUninstallFn = func(bool) error {
+		t.Error("self-uninstall preparation ran in a support session")
+		return nil
+	}
+	scheduleSelfUninstallShutdownFn = func(*Heartbeat) { t.Error("self-uninstall shutdown scheduled in a support session") }
+
+	result := handleSelfUninstall(&Heartbeat{supportMode: true}, Command{ID: "cmd-1", Type: "self_uninstall"})
+	if result.Status != "failed" {
+		t.Fatalf("status = %q, want failed", result.Status)
 	}
 }

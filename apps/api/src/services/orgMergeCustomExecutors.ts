@@ -32,7 +32,8 @@
  * Contract, deliberately narrow so the engine stays uniform:
  *   - every executor runs inside the engine's ONE Phase-B transaction
  *     (`db` here is the ambient transaction proxy — never opens its own);
- *   - every executor leaves ZERO rows behind under the loser org;
+ *   - authority-only and enrollment-only rows are explicitly retained by their
+ *     policy; moved history severs all authority references;
  *   - `dropped` counts rows actually DELETEd, `moved` counts rows repointed,
  *     and `notes` carries anything an operator must see in the merge
  *     summary's `warnings` (demotions, deactivations, neutralizations and
@@ -55,6 +56,7 @@
  * children are re-homed onto the surviving definition (after recipient
  * collisions are deduplicated).
  */
+import { autopayMergeExecutors } from './autopay/merge';
 import { sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
@@ -896,7 +898,7 @@ const mergeContacts: CustomMergeExecutor = async (loser, survivor) => {
 // backup_configs — `backup_configs_org_default_uq ON backup_configs(org_id)
 // WHERE is_default`. Clear the loser's default flag when the survivor
 // already has one, then repoint. NEVER delete: the row carries org-owned
-// storage credentials (provider_config / encryption_key) and backup_chains,
+// storage credentials (provider_config) and backup_chains,
 // backup_snapshots and restore_jobs all reference it.
 // ---------------------------------------------------------------------------
 const mergeBackupConfigs: CustomMergeExecutor = async (loser, survivor) => {
@@ -1378,6 +1380,28 @@ const mergeOrganizationUsers: CustomMergeExecutor = async (loser, survivor) => {
 // of the partial index it mirrors. The portal and fleet-design passes need an
 // explicit predicate on both aliases because their keys (`type`) are always
 // non-NULL.
+//
+// Two more references to the doomed definition must move with its runs (#7443),
+// or the merge either aborts or silently loses service-delivery history:
+//  - `service_deliverable_evidence.report_id`: a run cited as deliverable
+//    evidence carries its definition id too, enforced by
+//    sd_evidence_report_run_fk (report_run_id, report_id) -> report_runs(id,
+//    report_id). Re-homing the run and re-pointing the evidence are separate
+//    statements, so the pair is mismatched in between — legal only because
+//    that FK is DEFERRABLE (2026-12-03-120200) and the merge runs under
+//    SET CONSTRAINTS ALL DEFERRED. Left un-pointed, the evidence would be
+//    CASCADE-deleted with the definition via sd_evidence_report_org_fk.
+//  - `service_deliverables.auto_evidence_report_id`: the managed-evidence
+//    binding (a portal self-service definition). Its FK is ON DELETE SET NULL
+//    (referential actions fire immediately even when deferred), so a binding
+//    left on the doomed definition would silently stop the deliverable
+//    producing evidence.
+// The re-pointed rows' org_id still names the loser here (parents-first:
+// reports runs before the service_deliverable* repoints), so
+// sd_evidence_report_org_fk (report_id, org_id) and
+// service_deliverables_auto_report_org_fk (auto_evidence_report_id, org_id)
+// are mismatched too until those repoints land; both are DEFERRABLE and pass
+// at commit.
 // ---------------------------------------------------------------------------
 const REPORTS_KEY = ['source_ai_agent_schedule_id'] as const;
 // Mirrors reports_portal_self_service_org_type_uniq (org_id, type)
@@ -1389,6 +1413,22 @@ const PORTAL_REPORT_WHERE_BOTH = sql`s.portal_self_service = true AND t.portal_s
 const FLEET_DESIGN_REPORT_KEY = ['type'] as const;
 const FLEET_DESIGN_REPORT_WHERE_BOTH = sql`s.type = 'ai_fleet_design' AND t.type = 'ai_fleet_design'`;
 
+/**
+ * Every collision pass `mergeReports` runs. `mergeReports` iterates this list
+ * and `CUSTOM_WOULD_DROP_COUNTS.reports` ORs over it, so the preview cannot
+ * drift from what the executor deletes (#7615: Fleet Design was missing from
+ * the preview). A new dedupe pass belongs here and nowhere else.
+ */
+const REPORT_DEDUPE_PASSES: ReadonlyArray<{
+  name: 'narrative' | 'portal' | 'fleetDesign';
+  key: readonly string[];
+  whereBoth?: SQL;
+}> = [
+  { name: 'narrative', key: REPORTS_KEY },
+  { name: 'portal', key: PORTAL_REPORT_KEY, whereBoth: PORTAL_REPORT_WHERE_BOTH },
+  { name: 'fleetDesign', key: FLEET_DESIGN_REPORT_KEY, whereBoth: FLEET_DESIGN_REPORT_WHERE_BOTH },
+];
+
 async function rehomeReportChildrenThenDelete(
   loser: string,
   survivor: string,
@@ -1397,6 +1437,8 @@ async function rehomeReportChildrenThenDelete(
 ): Promise<{
   dropped: number;
   reportRunsRehomed: number;
+  evidenceRehomed: number;
+  autoEvidenceRebound: number;
   recipientsDeduplicated: number;
   recipientsRehomed: number;
 }> {
@@ -1409,6 +1451,26 @@ async function rehomeReportChildrenThenDelete(
        AND ${keyMatch(key)}${whereBoth ? sql` AND ${whereBoth}` : sql``}
      WHERE t.org_id = ${uuid(loser)}
        AND c.report_id = t.id`);
+
+  const evidenceRehomed = await run(sql`
+    UPDATE service_deliverable_evidence AS c
+       SET report_id = s.id
+      FROM reports t
+      JOIN reports s
+        ON s.org_id = ${uuid(survivor)}
+       AND ${keyMatch(key)}${whereBoth ? sql` AND ${whereBoth}` : sql``}
+     WHERE t.org_id = ${uuid(loser)}
+       AND c.report_id = t.id`);
+
+  const autoEvidenceRebound = await run(sql`
+    UPDATE service_deliverables AS c
+       SET auto_evidence_report_id = s.id
+      FROM reports t
+      JOIN reports s
+        ON s.org_id = ${uuid(survivor)}
+       AND ${keyMatch(key)}${whereBoth ? sql` AND ${whereBoth}` : sql``}
+     WHERE t.org_id = ${uuid(loser)}
+       AND c.auto_evidence_report_id = t.id`);
 
   const recipientsDeduplicated = await run(sql`
     DELETE FROM report_schedule_recipients AS c
@@ -1448,9 +1510,17 @@ async function rehomeReportChildrenThenDelete(
   return {
     dropped,
     reportRunsRehomed,
+    evidenceRehomed,
+    autoEvidenceRebound,
     recipientsDeduplicated,
     recipientsRehomed,
   };
+}
+
+function rehomedChildrenSummary(pass: Awaited<ReturnType<typeof rehomeReportChildrenThenDelete>>): string {
+  return `report_runs: ${pass.reportRunsRehomed}; service_deliverable_evidence: ${pass.evidenceRehomed} re-pointed;`
+    + ` service_deliverables auto-evidence: ${pass.autoEvidenceRebound} re-bound;`
+    + ` report_schedule_recipients: ${pass.recipientsDeduplicated} deduplicated, ${pass.recipientsRehomed} re-homed`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1458,11 +1528,14 @@ async function rehomeReportChildrenThenDelete(
 // series_id) WHERE series_id IS NOT NULL AND archived_at IS NULL collides when
 // both orgs hold an active child of the same series. The survivor keeps its
 // child. The loser's child is ARCHIVED in place — never deleted, and its runs
-// are never re-homed: a run may be deliverable evidence, and
-// sd_evidence_report_run_fk (report_run_id, report_id) -> report_runs(id,
-// report_id) is NOT deferrable with no ON UPDATE action, so moving a run
-// would abort the merge with 23503. The archived child then repoints into the
-// survivor org with its history intact (the generic repoint below). Its
+// are never re-homed. W02 chose this because a run may be deliverable
+// evidence and sd_evidence_report_run_fk (report_run_id, report_id) ->
+// report_runs(id, report_id) was then NOT deferrable, so moving a run aborted
+// the merge with 23503. That FK is DEFERRABLE since 2026-12-03-120200 (#7443)
+// and the dedupe passes below now re-home evidence-linked runs, but this pass
+// keeps archive-in-place: this pass itself touches no run or evidence row.
+// The archived child then repoints into the survivor org with its history
+// intact (the generic repoint below). Its
 // recipient overrides are unioned onto the survivor's child; a 'remove' on
 // either side wins over an 'add'.
 // ---------------------------------------------------------------------------
@@ -1523,39 +1596,30 @@ async function archiveCollidingSeriesChildren(
 
 const mergeReports: CustomMergeExecutor = async (loser, survivor) => {
   const series = await archiveCollidingSeriesChildren(loser, survivor);
-  const narrative = await rehomeReportChildrenThenDelete(
-    loser,
-    survivor,
-    REPORTS_KEY,
-  );
-  const portal = await rehomeReportChildrenThenDelete(
-    loser,
-    survivor,
-    PORTAL_REPORT_KEY,
-    PORTAL_REPORT_WHERE_BOTH,
-  );
-  const fleetDesign = await rehomeReportChildrenThenDelete(
-    loser,
-    survivor,
-    FLEET_DESIGN_REPORT_KEY,
-    FLEET_DESIGN_REPORT_WHERE_BOTH,
-  );
+  const passes = {} as Record<
+    (typeof REPORT_DEDUPE_PASSES)[number]['name'],
+    Awaited<ReturnType<typeof rehomeReportChildrenThenDelete>>
+  >;
+  for (const pass of REPORT_DEDUPE_PASSES) {
+    passes[pass.name] = await rehomeReportChildrenThenDelete(loser, survivor, pass.key, pass.whereBoth);
+  }
+  const { narrative, portal, fleetDesign } = passes;
   const moved = await run(buildRepoint('reports', loser, survivor));
   const notes: string[] = [];
   if (narrative.dropped > 0) {
     notes.push(
       `reports: dropped ${narrative.dropped} duplicate AI narrative report definition from the merged-away org (the survivor already had one for the same schedule; the merged-away definition's own name/config/execution-scope fields were discarded — re-check the surviving definition)`
-      + ` and re-homed its children onto the survivor's definition (report_runs: ${narrative.reportRunsRehomed}; report_schedule_recipients: ${narrative.recipientsDeduplicated} deduplicated, ${narrative.recipientsRehomed} re-homed)`,
+      + ` and re-homed its children onto the survivor's definition (${rehomedChildrenSummary(narrative)})`,
     );
   }
   if (portal.dropped > 0) {
     notes.push(
-      `reports: dropped ${portal.dropped} duplicate portal self-service report definition from the merged-away org and re-homed its children onto the survivor's canonical definition (report_runs: ${portal.reportRunsRehomed}; report_schedule_recipients: ${portal.recipientsDeduplicated} deduplicated, ${portal.recipientsRehomed} re-homed)`,
+      `reports: dropped ${portal.dropped} duplicate portal self-service report definition from the merged-away org and re-homed its children onto the survivor's canonical definition (${rehomedChildrenSummary(portal)})`,
     );
   }
   if (fleetDesign.dropped > 0) {
     notes.push(
-      `reports: dropped ${fleetDesign.dropped} duplicate Fleet Design report definition from the merged-away org and re-homed its children onto the survivor's definition (report_runs: ${fleetDesign.reportRunsRehomed}; report_schedule_recipients: ${fleetDesign.recipientsDeduplicated} deduplicated, ${fleetDesign.recipientsRehomed} re-homed)`,
+      `reports: dropped ${fleetDesign.dropped} duplicate Fleet Design report definition from the merged-away org and re-homed its children onto the survivor's definition (${rehomedChildrenSummary(fleetDesign)})`,
     );
   }
   if (series.archived > 0) {
@@ -1667,6 +1731,7 @@ const mergeToolSourceTools: CustomMergeExecutor = async (loser, survivor) => ({
  * them, is the whole executor).
  */
 export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
+  ...autopayMergeExecutors,
   caller_verification_subject_bindings: moveBindings,
   automation_resource_bindings: mergeAutomationResourceBindings,
   tool_sources: mergeToolSources,
@@ -1803,12 +1868,9 @@ export const CUSTOM_WOULD_DROP_COUNTS: Readonly<Record<string, (loser: string, s
     SELECT count(*)::int AS n FROM reports t
      WHERE t.org_id = ${uuid(loser)}
        AND (
-         ${collidesWithSurvivor('reports', REPORTS_KEY, survivor)}
-         OR ${collidesWithSurvivor(
-           'reports',
-           PORTAL_REPORT_KEY,
-           survivor,
-           PORTAL_REPORT_WHERE_BOTH,
+         ${sql.join(
+           REPORT_DEDUPE_PASSES.map((p) => collidesWithSurvivor('reports', p.key, survivor, p.whereBoth)),
+           sql` OR `,
          )}
        )`,
   pax8_orders: (loser, survivor) => sql`

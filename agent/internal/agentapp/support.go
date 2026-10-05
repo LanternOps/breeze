@@ -194,9 +194,24 @@ func supportWorkDir() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("breeze-support-%d", os.Getpid()))
 }
 
-// configDirForSupportGuard exposes the real agent config dir to the guard
-// test that pins supportWorkDir away from it.
-func configDirForSupportGuard() string { return config.ConfigDir() }
+// prepareSupportWorkDir creates supportWorkDir private to the user running
+// the client (owner = that user, protected DACL with no BUILTIN\Users; 0700
+// off Windows) and registers it with config, so every config write inside it
+// keeps that policy instead of the machine-wide ProgramData one, which a
+// standard user may not assign (#7620). A planted junction, symlink or file
+// at the path is refused, not followed.
+func prepareSupportWorkDir() (string, error) {
+	workDir := supportWorkDir()
+	if err := config.SecureUserWorkspace(workDir); err != nil {
+		return "", err
+	}
+	return workDir, nil
+}
+
+// configDirForSupportGuard exposes the machine-wide agent config dir to the
+// guard test that pins supportWorkDir away from it. MachineConfigDir, not
+// ConfigDir: once the support folder is registered, ConfigDir is that folder.
+func configDirForSupportGuard() string { return config.MachineConfigDir() }
 
 const (
 	// supportDisconnectGrace is how long the WebSocket may report
@@ -331,8 +346,8 @@ func runSupportSession() {
 	fmt.Println("Breeze Quick Support")
 	fmt.Println("Connecting…")
 
-	workDir := supportWorkDir()
-	if err := os.MkdirAll(workDir, 0o700); err != nil {
+	workDir, err := prepareSupportWorkDir()
+	if err != nil {
 		supportFail("Could not create a temporary working folder for this session.", err)
 		return
 	}
@@ -383,14 +398,14 @@ func runSupportSession() {
 	}
 
 	if err := gateSupportServer(server); err != nil {
-		_ = os.RemoveAll(workDir)
+		discardSupportWorkDir(workDir)
 		supportFail("This build can only contact its configured Breeze server. Ask your technician for a new code.", err)
 		return
 	}
 
 	resp, err := api.RedeemSupportCode(server, code, hostname, osType)
 	if err != nil {
-		_ = os.RemoveAll(workDir)
+		discardSupportWorkDir(workDir)
 		if errors.Is(err, api.ErrSupportCodeInvalid) {
 			// The person reading this is not technical and did not choose the
 			// code — name the remedy, not the status.
@@ -408,7 +423,7 @@ func runSupportSession() {
 	// non-allowlisted host any more than it may redeem against one.
 	if strings.TrimSpace(resp.ServerURL) != "" {
 		if err := gateSupportServer(resp.ServerURL); err != nil {
-			_ = os.RemoveAll(workDir)
+			discardSupportWorkDir(workDir)
 			supportFail("This build can only contact its configured Breeze server. Ask your technician for a new code.", err)
 			return
 		}
@@ -428,8 +443,8 @@ func runSupportSession() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := enrollWithConfig(cfg, supportCfgFile, resp.EnrollmentKey, resp.EnrollmentSecret); err != nil {
-		_ = os.RemoveAll(workDir)
+	if err := enrollSupportSession(cfg, supportCfgFile, resp.EnrollmentKey, resp.EnrollmentSecret); err != nil {
+		discardSupportWorkDir(workDir)
 		supportFail("Could not start the support session. Ask your technician for a new code.", err)
 		return
 	}
@@ -437,26 +452,26 @@ func runSupportSession() {
 	if ctx.Err() != nil {
 		// Interrupted during enrollment — stop at the first point where doing
 		// so is clean, rather than bringing an agent up just to tear it down.
-		_ = os.RemoveAll(workDir)
+		discardSupportWorkDir(workDir)
 		fmt.Println("Cancelled. Nothing was left installed.")
 		return
 	}
 
 	comps, err := startAgentFn(cfg)
 	if err != nil {
-		_ = os.RemoveAll(workDir)
+		discardSupportWorkDir(workDir)
 		supportFail("Could not start the support session on this computer.", err)
 		return
 	}
 	defer logging.StopShipper()
+	// supportCleanup closes the session log before removing the folder.
+	comps.hb.SetSupportFileReleaser(releaseLogFiles)
 
-	// Console status lines on session start/stop. Chained (not replaced) onto
-	// the heartbeat's own desktop callbacks so the server still receives the
-	// peer-disconnect notification.
-	comps.hb.SetSupportSessionNotifier(
-		func(string) { fmt.Println("Technician connected.") },
-		func(string, string) { fmt.Println("Technician disconnected.") },
-	)
+	// "A technician is viewing your screen" (#7684): an always-on-top pill
+	// plus a console line for as long as any capture runs, hidden on every
+	// stop path. Chained onto (never replacing) the heartbeat's own desktop
+	// callbacks, so the server still receives the peer-disconnect report.
+	stopIndicator := startSupportIndicator(comps.hb)
 
 	fmt.Print(supportBanner)
 
@@ -470,12 +485,47 @@ func runSupportSession() {
 		fmt.Println("Ending the support session…")
 	}
 
-	// Teardown order: stop sharing and drop the connection first, then remove
-	// the workspace. RunSupportCleanup also schedules the self-delete of this
-	// executable on Windows.
+	// Teardown order:
+	//  1. Start the post-exit cleanup (delete this executable, remove the
+	//     folder) first. Closing the console window allows about five seconds
+	//     before Windows ends the process, and shutdownAgent can take longer;
+	//     the cleanup runs after exit either way.
+	//  2. Stop sharing and drop the connection.
+	//  3. Release the log and remove the folder now (RunSupportCleanup);
+	//     anything still held is removed by step 1 after exit.
+	comps.hb.ScheduleSupportSelfCleanup()
 	shutdownAgent(comps)
 	comps.hb.RunSupportCleanup()
+	stopIndicator()
 	fmt.Println("Support session ended. Nothing was left installed.")
+}
+
+// enrollWithConfigFn is enrollWithConfig, swappable so a test can stand in for
+// the enroll round-trip.
+var enrollWithConfigFn = enrollWithConfig
+
+// enrollSupportSession enrolls the ephemeral device into supportCfgFile, then
+// binds that file as the process's active config (#7629).
+//
+// The bind is what keeps the session's own later writes in its workspace.
+// The heartbeat persists config mid-session: a token rotation stages and
+// promotes credentials in the active config's secrets.yaml, an mTLS renewal
+// calls SaveTo(cfg, config.ActiveConfigFile()), and pinning a manifest key or
+// applying a config update rewrites agent.yaml. Every one of those resolves
+// an unbound active config to the machine-wide config dir. For a standard
+// user that write is refused, so the rotation breaks the session. For an
+// elevated administrator on a machine that also has the installed agent, it
+// overwrites that agent's identity and credentials. Unbound is also refused
+// now, because the workspace prepareSupportWorkDir registered confines every
+// config write to itself; the bind is what makes the writes succeed there.
+func enrollSupportSession(cfg *config.Config, supportCfgFile, enrollmentKey, secret string) error {
+	if err := enrollWithConfigFn(cfg, supportCfgFile, enrollmentKey, secret); err != nil {
+		return err
+	}
+	if err := config.BindConfigFile(supportCfgFile); err != nil {
+		return fmt.Errorf("use the support session config %s: %w", supportCfgFile, err)
+	}
+	return nil
 }
 
 // parseSupportHardExpiry parses the server's RFC3339 hard expiry. An absent or

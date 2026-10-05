@@ -10,7 +10,7 @@ import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 import { fleetTimeFiltersSchema } from './timeSync/fleetFilters';
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema } from '@breeze/shared';
+import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema } from '@breeze/shared';
 import {
   backupProfileSelectionsSchema,
   proposeScriptInputSchema,
@@ -35,6 +35,7 @@ import {
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { aiPathRefusal } from './aiPathRestriction';
 import { CONTACT_ROLES } from './contacts/types';
+import { fixProblemSchema } from './fixMemory/problemSignature';
 
 // Reusable validators
 const uuid = z.string().guid();
@@ -120,7 +121,7 @@ export const executeCommandShape = {
     'list_services', 'start_service', 'stop_service', 'restart_service',
     'file_list', 'file_read',
     'event_logs_list', 'event_logs_query',
-  ]),
+  ]).describe('The type of command to execute. Before kill_process, restate the evidence tying that PID to the problem, each claim labelled verified or inferred.'),
   payload: executeCommandPayloadSchema
     .describe('Command-specific parameters — see level/logName for event_logs_query, name for service control, pid (required) for kill_process, path for file ops.')
     .optional(),
@@ -482,6 +483,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   find_proven_fixes: z.object({
     alertId: z.string().guid().optional(),
     anomalyEpisodeId: z.string().guid().optional(),
+    deviceId: z.string().guid().optional(),
+    problem: fixProblemSchema.optional(),
     limit: z.number().int().min(1).max(20).optional(),
   }),
 
@@ -536,7 +539,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // know is STRIPPED silently rather than rejected (#2814).
   manage_ai_agents: z.object({
     action: z.enum(['authorize_supervised_key']),
-    kind: z.enum(AI_AGENT_KINDS),
+    kind: z.enum(AI_AGENT_ACTING_KINDS),
     opKey: z.string().min(3).max(120),
     orgId: uuid,
   }),
@@ -1661,7 +1664,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // already taken by the unrelated network-monitor CRUD tool below
   // (query_monitors / manage_monitors, aiToolsMonitoring.ts).
   manage_monitor_definitions: z.object({
-    action: z.enum(['create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach']),
+    action: z.enum(['describe', 'create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach']),
+    kind: monitorKindSchema.optional(),
     monitorId: uuid.optional(),
     definition: z.record(z.string(), z.unknown()).optional(),
     configPolicyId: uuid.optional(),

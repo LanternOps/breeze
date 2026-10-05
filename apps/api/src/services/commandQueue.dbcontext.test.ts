@@ -147,7 +147,7 @@ vi.mock('./backupMetrics', () => ({
   recordRestoreTimeout: vi.fn(),
 }));
 
-import { executeCommand, executeCommandWithSystemPrecheck } from './commandQueue';
+import { executeCommand, executeCommandWithCallerPrecheck, executeCommandWithSystemPrecheck } from './commandQueue';
 import { TrustDeniedError } from './partnerTrust.commands';
 
 const ONLINE_DEVICE = {
@@ -174,7 +174,7 @@ beforeEach(() => {
   dbState.commandRows = [{ id: 'cmd-1', status: 'completed', type: 'list_services', result: { status: 'completed', stdout: '{}' } }];
   agentWsMocks.sendCommandToAgent.mockReturnValue(true);
   agentWsMocks.isAgentConnected.mockReturnValue(true);
-  commandDispatchMocks.claimPendingCommandForDelivery.mockResolvedValue({ executedAt: new Date() });
+  commandDispatchMocks.claimPendingCommandForDelivery.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });
 });
 
 describe('executeCommandWithSystemPrecheck (#4150/#1105)', () => {
@@ -327,6 +327,52 @@ describe('executeCommandWithSystemPrecheck (#4150/#1105)', () => {
       'trustCheck@depth1',
       'ctx:exit',
     ]);
+  });
+});
+
+describe('executeCommandWithCallerPrecheck (#7918)', () => {
+  const CALLER_CTX = { scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'] } as never;
+
+  it('prechecks in a SHORT context of the CALLER’s scope, then dispatches and waits holding nothing', async () => {
+    const { withDbAccessContext } = await import('../db');
+
+    const result = await executeCommandWithCallerPrecheck('device-1', 'list_services', {}, CALLER_CTX, { timeoutMs: 5_000 });
+
+    expect(result.status).toBe('completed');
+    // The precheck ran under the caller's tenant context, never system scope.
+    expect(withDbAccessContext).toHaveBeenCalledWith(CALLER_CTX, expect.any(Function));
+    expect(ctxState.events).toEqual([
+      'ctx:enter',
+      'select:devices@depth1',
+      'trustCheck@depth1',
+      'ctx:exit',
+      'ctx:enter',
+      'insert:device_commands@depth1',
+      'ctx:exit',
+      'claim@depth0',
+      'wsSend@depth0',
+      'select:device_commands@depth0',
+    ]);
+    expect(ctxState.depth).toBe(0);
+  });
+
+  it('reads a device outside the caller’s tenant as not found and dispatches nothing', async () => {
+    dbState.deviceRows = []; // what RLS returns for another tenant's device
+
+    const result = await executeCommandWithCallerPrecheck('device-1', 'list_services', {}, CALLER_CTX, { timeoutMs: 5_000 });
+
+    expect(result).toEqual({ status: 'failed', error: 'Device not found' });
+    expect(ctxState.events).toEqual(['ctx:enter', 'select:devices@depth1', 'ctx:exit']);
+  });
+
+  it('joins an ambient context instead of nesting one (plain executeCommand behaviour)', async () => {
+    ctxState.ambient = { scope: 'organization' };
+    const { withDbAccessContext } = await import('../db');
+
+    await executeCommandWithCallerPrecheck('device-1', 'list_services', {}, CALLER_CTX, { timeoutMs: 5_000 });
+
+    expect(withDbAccessContext).not.toHaveBeenCalled();
+    expect(ctxState.events.slice(0, 2)).toEqual(['select:devices@depth0', 'trustCheck@depth0']);
   });
 });
 

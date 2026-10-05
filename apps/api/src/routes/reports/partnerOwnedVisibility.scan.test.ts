@@ -305,7 +305,7 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
     ['clearSql', pinned(2, 'org erasure pre-clear in system context: DELETE FROM report_runs WHERE report_id IN (SELECT id FROM reports WHERE org_id = <erased org>) — a partner-owned definition has org_id NULL and never matches; its runs go with the partner sweep via ON DELETE CASCADE', AUD_SYSTEM)],
   ])],
   ['src/services/orgMergeCustomExecutors.ts', new Map([
-    ['rehomeReportChildrenThenDelete', pinned(8, 'org merge (platform admin, system context): every statement keys on t.org_id = <loser> and s.org_id = <survivor>; a partner-owned definition has org_id NULL and is never re-homed, deduplicated or deleted', AUD_SYSTEM)],
+    ['rehomeReportChildrenThenDelete', pinned(12, 'org merge (platform admin, system context): every statement keys on t.org_id = <loser> and s.org_id = <survivor>; a partner-owned definition has org_id NULL and is never re-homed, deduplicated or deleted', AUD_SYSTEM)],
     ['archiveCollidingSeriesChildren', pinned(8, 'org merge (platform admin, system context): every statement keys on t.org_id = <loser> and s.org_id = <survivor> with series_id IS NOT NULL; series children are org-owned (reports_series_child_shape_chk), so a partner-owned definition is never archived or joined', AUD_SYSTEM)],
     ['reports', pinned(1, 'org merge preview counter: SELECT count(*) FROM reports t WHERE t.org_id = <loser> — a NULL-org partner-owned row never matches, and only a count is returned to the admin', AUD_SYSTEM)],
   ])],

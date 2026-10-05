@@ -39,6 +39,7 @@ const visibleLine: InvoiceDetail['lines'][number] = {
 // Draft with a customer-visible line so issue/send buttons are *otherwise*
 // enabled — only the permission gate keeps them hidden.
 const draft: InvoiceDetail = {
+  autopay: null,
   invoice: {
     id: 'inv-1', invoiceNumber: null, orgId: 'org-1', siteId: null, status: 'draft',
     currencyCode: 'USD', issueDate: null, dueDate: null, sentAt: null, subtotal: '100.00', taxRate: null,

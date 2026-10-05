@@ -46,6 +46,7 @@ const lines: InvoiceDetailData['lines'] = [
 // canRecordPayment and the pay-link branch are all *otherwise* satisfied — the
 // only thing keeping the controls hidden is the permission gate under test.
 const issued: InvoiceDetailData = {
+  autopay: null,
   invoice: {
     id: 'inv-1', invoiceNumber: 'INV-0007', orgId: 'org-1', siteId: null, status: 'sent',
     currencyCode: 'USD', issueDate: '2026-06-01', dueDate: '2026-06-30', sentAt: null, subtotal: '120.00',

@@ -111,6 +111,9 @@ function seedSearchTerm(name: string): string {
 /** Long enough that per-keystroke typing doesn't hammer a real QuickBooks API
  *  (every candidate search is an outbound QBO call), short enough to feel live. */
 const SEARCH_DEBOUNCE_MS = 300;
+/** Settle poll after a decision lost the sync lock to the worker (#7386). */
+const SETTLE_POLL_INTERVAL_MS = 1000;
+const SETTLE_POLL_ATTEMPTS = 15;
 /** A one-character query matches most of a company file — not worth a round trip. */
 const MIN_SEARCH_LENGTH = 2;
 
@@ -166,6 +169,24 @@ export default function AccountingMappingWorkbench({
 
   const [proposals, setProposals] = useState<MappingProposal[] | null>(null);
   const [loading, setLoading] = useState(false);
+  // Per-row settle-poll generation: a new action on the row (or leaving the
+  // tab) bumps it, and any older poll for that row stops on its next tick.
+  const settleEpochRef = useRef<Record<string, number>>({});
+  const supersedeSettlePolls = (id?: string) => {
+    const epochs = settleEpochRef.current;
+    if (id) {
+      epochs[id] = (epochs[id] ?? 0) + 1;
+      return;
+    }
+    for (const key of Object.keys(epochs)) epochs[key] += 1;
+  };
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const [remoteSelection, setRemoteSelection] = useState<Record<string, string>>({});
   const [rowBusy, setRowBusy] = useState<Record<string, boolean>>({});
@@ -192,6 +213,7 @@ export default function AccountingMappingWorkbench({
   function switchTab(next: WorkbenchTab) {
     window.location.hash = next;
     setTab(next);
+    supersedeSettlePolls();
     setProposals(null);
     setRowError({});
   }
@@ -349,7 +371,7 @@ export default function AccountingMappingWorkbench({
 
   /** The sync request itself, without row-busy/error bookkeeping, so the
    *  auto-sync that follows a decision reuses exactly the "Sync now" call. */
-  async function requestSync(p: MappingProposal) {
+  async function requestSync(p: MappingProposal, opts: { joinInFlight?: boolean } = {}) {
     const res = await runAction<{ data: CuratedMapping }>({
       request: () =>
         fetchWithAuth(accountingPath(provider, "/mappings/sync"), {
@@ -361,13 +383,67 @@ export default function AccountingMappingWorkbench({
         }),
       errorFallback: t("accountingMapping.failedToSyncEntity", { provider: providerName }),
       successMessage: t("accountingMapping.entitySynced", { provider: providerName }),
+      // #7386: the PUT enqueues its own worker sync, so right after a decision
+      // a sync_in_progress 409 means "already running", not "failed".
+      ...(opts.joinInFlight
+        ? { suppressErrorToast: (_status: number, code: string | undefined) => code === "sync_in_progress" }
+        : {}),
       onUnauthorized,
     });
     applyMapping(res.data);
   }
 
+  /**
+   * The worker (enqueued by the PUT) holds the row's sync lock. Poll the row
+   * until it leaves `pending` so it flips to Synced (or shows the worker's
+   * error) without a manual reload. Bounded: a row still pending afterwards
+   * stays pending and "Sync now" remains the retry.
+   */
+  async function settleRowAfterInFlightSync(p: MappingProposal) {
+    supersedeSettlePolls(p.breezeEntityId);
+    const epoch = settleEpochRef.current[p.breezeEntityId];
+    const superseded = () => !mountedRef.current || settleEpochRef.current[p.breezeEntityId] !== epoch;
+    for (let attempt = 0; attempt < SETTLE_POLL_ATTEMPTS; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, SETTLE_POLL_INTERVAL_MS));
+      if (superseded()) return;
+      let res: { data: MappingProposal[] };
+      try {
+        res = await runAction<{ data: MappingProposal[] }>({
+          request: () => fetchWithAuth(accountingPath(provider, `/mappings?entityType=${p.breezeEntityType}`)),
+          errorFallback: t("accountingMapping.failedToLoadMappings", { provider: providerName }),
+          // A transient poll failure must not paint an error on a row whose
+          // sync is fine; the row stays as saved and the next poll retries.
+          suppressErrorToast: () => true,
+          onUnauthorized,
+        });
+      } catch (err) {
+        if (err instanceof ActionError && err.status === 401) throw err;
+        continue;
+      }
+      if (superseded()) return;
+      const fresh =res.data.find((row) => row.breezeEntityId === p.breezeEntityId);
+      if (!fresh || fresh.syncStatus === "pending") continue;
+      setProposals((prev) => prev?.map((row) => (row.breezeEntityId === fresh.breezeEntityId ? { ...row, ...fresh } : row)) ?? prev);
+      setRowError((prev) => ({
+        ...prev,
+        [fresh.breezeEntityId]:
+          fresh.lastError ??
+          (fresh.syncStatus === "error" ? t("accountingMapping.failedToSyncEntity", { provider: providerName }) : null),
+      }));
+      if (fresh.syncStatus !== "error") {
+        showToast({ message: t("accountingMapping.entitySynced", { provider: providerName }), type: "success" });
+      }
+      return;
+    }
+    // Still pending after the poll window: don't leave the click without an
+    // outcome. The row is saved; the worker (or "Sync now") finishes it.
+    if (superseded()) return;
+    showToast({ message: t("accountingMapping.mappingSaved", { provider: providerName }), type: "success" });
+  }
+
   async function decide(p: MappingProposal, decision: MappingDecision, remoteEntityId?: string) {
     const id = p.breezeEntityId;
+    supersedeSettlePolls(id);
     setRowBusy((prev) => ({ ...prev, [id]: true }));
     setRowError((prev) => ({ ...prev, [id]: null }));
     setSearchSeed((prev) => {
@@ -408,9 +484,17 @@ export default function AccountingMappingWorkbench({
           showToast({ message: t("accountingMapping.mappingSaved", { provider: providerName }), type: "success" });
         } else {
           try {
-            await requestSync(p);
+            await requestSync(p, { joinInFlight: true });
           } catch (err) {
-            handleSyncFailure(id, err);
+            if (err instanceof ActionError && err.code === "sync_in_progress") {
+              try {
+                await settleRowAfterInFlightSync(p);
+              } catch (pollErr) {
+                handleSyncFailure(id, pollErr);
+              }
+            } else {
+              handleSyncFailure(id, err);
+            }
           }
         }
       }
@@ -427,6 +511,7 @@ export default function AccountingMappingWorkbench({
 
   async function sync(p: MappingProposal) {
     const id = p.breezeEntityId;
+    supersedeSettlePolls(id);
     setRowBusy((prev) => ({ ...prev, [id]: true }));
     setRowError((prev) => ({ ...prev, [id]: null }));
     setSearchSeed((prev) => {

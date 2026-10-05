@@ -236,6 +236,9 @@ describe('runContractBillingSweep auto-issue delegates to issueInvoice (#6229)',
     await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
     expect(issueInvoiceMock).toHaveBeenCalledTimes(1);
     expect(issueInvoiceMock).toHaveBeenCalledWith('inv1', ACTOR);
+    expect(sendInvoiceEmailMock).toHaveBeenCalledTimes(1);
+    expect(sendInvoiceEmailMock).toHaveBeenCalledWith('inv1', ACTOR);
+    expect(issueInvoiceMock.mock.invocationCallOrder[0]).toBeLessThan(sendInvoiceEmailMock.mock.invocationCallOrder[0]!);
   });
 
   it('does not issue when the contract is not auto-issue', async () => {

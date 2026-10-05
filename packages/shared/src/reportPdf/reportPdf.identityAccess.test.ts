@@ -23,7 +23,7 @@ function extractText(doc: ReturnType<typeof buildReportPdf>): string {
 
 const SUMMARY: IdentityAccessSummary = {
   orgId: 'o1',
-  orgName: 'Liggett & Goodman P.C.',
+  orgName: 'Harlow & Pierce P.C.',
   generatedAt: '2026-09-30T05:18:00.000Z',
   coverage: {
     periodStart: '2026-09-01',

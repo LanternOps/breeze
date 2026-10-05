@@ -39,6 +39,13 @@ export type McpExemptReason =
    */
   | 'human_only_arming'
   /**
+   * Autopay payment policy administration. The autopay design's v1 non-goals
+   * exclude AI/MCP write tools for money movement; optional read-only status
+   * belongs on get_invoice, not this settings editor.
+   * See docs/superpowers/specs/billing/2026-10-01-autopay-design.md §3.
+   */
+  | 'human_only_autopay'
+  /**
    * Partner-level administration of an EXTERNAL VENDOR CONSOLE connection and
    * the tenant bookkeeping it requires: storing/rotating the vendor login,
    * mapping a discovered vendor customer onto a Breeze organization, and
@@ -171,7 +178,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'admin/abuse.ts': { exempt: 'platform_admin' },
   'admin/aiModels.ts': { exempt: 'platform_admin' },
   'admin/aiKillState.ts': { exempt: 'platform_admin' },
+  'admin/aiPromptVariants.ts': { exempt: 'platform_admin' },
   'admin/aiToolUsage.ts': { exempt: 'platform_admin' },
+  'admin/autopayRollout.ts': { exempt: 'platform_admin' },
   'admin/deprecations.ts': { exempt: 'platform_admin' },
   'admin/desktopFinalization.ts': { exempt: 'platform_admin' },
   'admin/exchangeRates.ts': { exempt: 'platform_admin' },
@@ -222,8 +231,16 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'aiAgentSchedules.ts': { gap: '#6780' },
   'aiAgents.ts': { tools: ['list_ai_agents', 'list_ai_agent_runs', 'get_ai_agent_run', 'manage_ai_agents'] },
   'aiArtifacts.ts': { tools: ['read_artifact'] },
+  'aiModels/assignments.ts': { exempt: 'human_only_ai_governance', note: 'Per-feature model defaults and permitted sets -- the AI must not choose its own model policy.' },
+  'aiModels/choices.ts': { exempt: 'ai_transport', note: 'Chat-composer and agent-policy model pickers (W05): a UI read of the caller\'s own permitted offerings; agents choose a model through policy, not this list.' },
+  'aiModels/connections.ts': { exempt: 'human_only_ai_governance', note: 'BYO model connections and keys -- a credential, and the AI must not manage its own model provider.' },
+  'aiModels/index.ts': { exempt: 'human_only_ai_governance', note: 'Partner AI model registry snapshot -- what models and keys the AI may use; the AI must not manage its own model provider.' },
+  'aiModels/offerings.ts': { exempt: 'human_only_ai_governance', note: 'Enabling, pricing and gating AI models -- the AI must not widen its own model access or spend.' },
+  'aiModels/orgAssignments.ts': { exempt: 'human_only_ai_governance', note: 'Org narrowing of AI model defaults -- the AI must not choose its own model policy.' },
+  'aiModels/residency.ts':{ exempt: 'human_only_ai_governance', note: 'Data-residency requirement for AI calls -- a compliance control the AI must not change.' },
+  'aiModels/shared.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
+  'aiModels/usage.ts': { exempt: 'human_only_ai_governance', note: 'AI spend and refusal reporting by model / feature / tech -- admin showback, not an agent workflow.' },
   'aiOperatorTasks.ts': { gap: '#6780' },
-  'aiProvider.ts': { exempt: 'human_only_ai_governance', note: 'BYO LLM key and endpoint -- a credential, and the AI must not manage its own model provider.' },
   'alertTemplates/correlations.ts': { gap: '#6777' },
   'alertTemplates/rules.ts': { tools: ['manage_alert_rules'] },
   'alertTemplates/templates.ts': { tools: ['manage_alert_rules'] },
@@ -288,6 +305,10 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'backup/verification.ts': { gap: '#6788' },
   'backup/vmrestore.ts': { tools: ['get_vm_restore_estimate', 'restore_as_vm', 'instant_boot_vm'] },
   'backup/vss.ts': { gap: '#6788' },
+  'autopay/index.ts': { exempt: 'human_only_autopay', note: 'MSP enrollment administration; AI/MCP money-movement writes are excluded by the autopay v1 design (§3).' },
+  'autopay/public.ts': { exempt: 'portal', note: 'Customer token-authorized enrollment and stop flow; not an MCP surface.' },
+  'portal/paymentMethods.ts': { exempt: 'portal', note: 'Customer portal payment-method and autopay controls; not an MCP surface.' },
+  'billingPaymentSettings.ts': { exempt: 'human_only_autopay', note: 'Partner/org autopay policy settings; AI/MCP writes are excluded by the autopay v1 design (§3).' },
   'billingProfiles.ts': { gap: '#6784' },
   'browserSecurity.ts': { tools: ['get_browser_security', 'manage_browser_policy'] },
   'c2c/configs.ts': { gap: '#6788' },
@@ -396,6 +417,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'extensionsWeb.ts': { exempt: 'internal_plumbing', note: 'Extension frontend registry and signed static asset delivery.' },
   'externalServices.ts': { exempt: 'breeze_account', note: 'The partner\'s Breeze billing portal and support forward.' },
   'filters.ts': { tools: ['manage_saved_filters'] },
+  'fixMemory.ts': { tools: ['find_proven_fixes'] },
   'fleetDesign.ts': { gap: '#6780' },
   'fleetFindings.ts': { tools: ['get_fleet_findings'] },
   'google.ts': { exempt: 'vendor_console_admin' },
@@ -408,6 +430,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'integrations.ts': { exempt: 'vendor_console_admin' },
   'internal/synthetic.ts': { exempt: 'internal_plumbing', note: 'Internal synthetic monitoring and canary cleanup endpoints.' },
   'invoices/assembly.ts': { tools: ['manage_invoices'] },
+  'invoices/autopay.ts': { exempt: 'human_only_autopay', note: 'Invoice collection controls are human-only under autopay v1 (§3).' },
   'invoices/bulk.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk delete/issue/void; the single-item equivalents already have tools.' },
   'invoices/evidence.ts': { gap: '#6784' },
   'invoices/invoices.ts': { tools: ['list_invoices', 'get_invoice', 'manage_invoices'] },
@@ -420,6 +443,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'lifecycle.ts': { exempt: 'identity' },
   'logs.ts': { tools: ['search_logs', 'get_log_trends', 'detect_log_correlations'] },
   'm365.ts': { exempt: 'vendor_console_admin' },
+  'm365ConsentCallback.ts': { exempt: 'identity', note: 'Browser OAuth consent callback from Microsoft; not a tool surface.' },
   'm365CustomerGraphActions.ts': { exempt: 'vendor_console_admin' },
   'm365CustomerGraphRead.ts': { tools: ['m365_query_users', 'm365_query_signins', 'm365_query_intune_devices', 'm365_query_groups', 'm365_query_org', 'm365_query_sites'] },
   'maintenance.ts': { tools: ['manage_maintenance_windows'] },
@@ -518,6 +542,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'quotesPublic.ts': { exempt: 'portal' },
   'reliability.ts': { gap: '#6777' },
   'remediationSuggestions.ts': { tools: ['list_remediation_suggestions', 'find_proven_fixes'] },
+  'remote/deviceActiveSessions.ts': { tools: ['list_remote_sessions'] },
   'remote/index.ts': { exempt: 'internal_plumbing' },
   'remote/sessions.ts': { tools: ['create_remote_session', 'list_remote_sessions'] },
   'remote/supportSessions.ts': { gap: '#6783' },

@@ -21,6 +21,10 @@ const { hoisted } = vi.hoisted(() => ({
     queueGetRepeatables: vi.fn(async () => []),
     withSystemDbAccessContext: vi.fn(),
     expireStaleAiBudgetReservations: vi.fn(),
+    replayPendingAiSettlements: vi.fn(async (): Promise<unknown[]> => []),
+    listUndebitedPlatformSettlements: vi.fn(async (): Promise<unknown[]> => []),
+    debitSettledCredits: vi.fn(async (_input: unknown) => undefined),
+    isBillingServiceConfigured: vi.fn(() => true),
     captureMessage: vi.fn(),
     captureException: vi.fn(),
     getBullMQConnection: vi.fn(() => ({})),
@@ -55,10 +59,15 @@ vi.mock('./workerObservability', () => ({
 vi.mock('../services/aiBudgetReservations', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/aiBudgetReservations')>()),
   expireStaleAiBudgetReservations: hoisted.expireStaleAiBudgetReservations,
+  replayPendingAiSettlements: hoisted.replayPendingAiSettlements,
+  listUndebitedPlatformSettlements: hoisted.listUndebitedPlatformSettlements,
 }));
+vi.mock('../services/aiModels/settleInvocation', () => ({ debitSettledCredits: hoisted.debitSettledCredits }));
+vi.mock('../services/aiCostTracker', () => ({ isBillingServiceConfigured: hoisted.isBillingServiceConfigured }));
 
 import {
   initializeAiBudgetReservationSweep,
+  settleAndDebitAiReservations,
   shutdownAiBudgetReservationSweep,
   sweepExpiredAiBudgetReservations,
 } from './aiBudgetReservationSweep';
@@ -165,6 +174,57 @@ describe('sweepExpiredAiBudgetReservations', () => {
   });
 });
 
+describe('settleAndDebitAiReservations (W03 #7601 Step 8a)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    hoisted.replayPendingAiSettlements.mockResolvedValue([]);
+    hoisted.listUndebitedPlatformSettlements.mockResolvedValue([]);
+    hoisted.isBillingServiceConfigured.mockReturnValue(true);
+  });
+
+  it('replays deferred settlements and debits only the ones THIS run moved to settled', async () => {
+    hoisted.replayPendingAiSettlements.mockResolvedValue([
+      { reservationId: 'r1', orgId: ORG_A, kind: 'settled', actualCostCents: 12.5, creditsDebitDue: true },
+      { reservationId: 'r2', orgId: ORG_A, kind: 'already_settled', actualCostCents: 3, creditsDebitDue: false },
+      { reservationId: 'r3', orgId: ORG_A, kind: 'settled', actualCostCents: 4, creditsDebitDue: false },
+    ]);
+
+    await expect(settleAndDebitAiReservations()).resolves.toEqual({ replayed: 3, debitsAttempted: 1 });
+
+    expect(hoisted.debitSettledCredits).toHaveBeenCalledTimes(1);
+    expect(hoisted.debitSettledCredits).toHaveBeenCalledWith({ orgId: ORG_A, reservationId: 'r1', costCents: 12.5 });
+  });
+
+  it('retries missed debits with the stored amount (same key), once per reservation per run', async () => {
+    hoisted.replayPendingAiSettlements.mockResolvedValue([
+      { reservationId: 'r1', orgId: ORG_A, kind: 'settled', actualCostCents: 12.5, creditsDebitDue: true },
+    ]);
+    hoisted.listUndebitedPlatformSettlements.mockResolvedValue([
+      { reservationId: 'r1', orgId: ORG_A, costCents: 12.5, attempts: 0 },
+      { reservationId: 'r9', orgId: ORG_A, costCents: 7.25, attempts: 3 },
+    ]);
+
+    await settleAndDebitAiReservations();
+
+    expect(hoisted.debitSettledCredits.mock.calls.map((c) => c[0])).toEqual([
+      { orgId: ORG_A, reservationId: 'r1', costCents: 12.5 },
+      { orgId: ORG_A, reservationId: 'r9', costCents: 7.25 },
+    ]);
+  });
+
+  it('does not look for missed debits when no billing service is configured (self-hosted)', async () => {
+    hoisted.isBillingServiceConfigured.mockReturnValue(false);
+    await settleAndDebitAiReservations();
+    expect(hoisted.listUndebitedPlatformSettlements).not.toHaveBeenCalled();
+  });
+
+  it('runs OUTSIDE the expiry pass\'s system transaction (no pooled connection held across the billing HTTP call)', async () => {
+    hoisted.listUndebitedPlatformSettlements.mockResolvedValue([{ reservationId: 'r9', orgId: ORG_A, costCents: 1, attempts: 0 }]);
+    await settleAndDebitAiReservations();
+    expect(hoisted.withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+});
+
 describe('the sweep worker', () => {
   beforeEach(async () => {
     await shutdownAiBudgetReservationSweep();
@@ -181,7 +241,7 @@ describe('the sweep worker', () => {
 
     hoisted.expireStaleAiBudgetReservations.mockResolvedValue([expiredRow()]);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    await expect(processor!({})).resolves.toEqual({ expired: 1 });
+    await expect(processor!({})).resolves.toMatchObject({ expired: 1 });
 
     // Forced RLS: contextless, the UPDATE matches zero rows and the job would
     // report success forever while every cap stayed held.
@@ -206,6 +266,19 @@ describe('the sweep worker', () => {
         repeat: { every: 5 * 60 * 1000 },
       }),
     );
+  });
+
+  it('a failed replay/debit step is reported and the expiry pass still runs', async () => {
+    await initializeAiBudgetReservationSweep();
+    const processor = hoisted.processors[0]!;
+    hoisted.replayPendingAiSettlements.mockRejectedValueOnce(Object.assign(new Error('Failed query: SELECT ... params: x'), { params: ['x'] }));
+    hoisted.expireStaleAiBudgetReservations.mockResolvedValue([expiredRow()]);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(processor({})).resolves.toMatchObject({ expired: 1 });
+    expect(hoisted.captureException).toHaveBeenCalled();
+    expect(JSON.stringify(error.mock.calls)).not.toContain('params: x');
   });
 
   it('captures and rethrows a failed pass rather than reporting a silent zero', async () => {

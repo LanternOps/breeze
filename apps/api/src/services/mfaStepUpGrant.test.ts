@@ -22,7 +22,8 @@ const { redisMock, redisStore, ttls, getRedisMock } = vi.hoisted(() => {
 
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, scriptLanePolicyResourceDigest, stepUpGrantTtlSeconds, type StepUpOperation } from './mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, stepUpGrantTtlSeconds, type StepUpOperation, type ScriptLaneWideningDelta } from './mfaStepUpGrant';
+import { scriptLaneStepUpResource, partnerScriptCeilingStepUpResource } from '../routes/auth/schemas';
 
 const bind = (operation: StepUpOperation) => ({
   userId: 'user-1',
@@ -178,6 +179,56 @@ describe('scriptLanePolicyResourceDigest (#5612 W04)', () => {
     expect(a).not.toBe(scriptLanePolicyResourceDigest({ orgId: 'org-1', unattendedEnabled: false }));
     expect(a).not.toBe(scriptLanePolicyResourceDigest({ orgId: 'org-2', unattendedEnabled: true }));
     expect(a).not.toBe(scriptLanePolicyResourceDigest({ orgId: 'org-1', unattendedEnabled: true, reset: true }));
+  });
+});
+
+describe('script-lane widening digest no longer binds reviewerModel (W08, #7606)', () => {
+  const ORG = '11111111-1111-4111-8111-111111111111';
+  const PARTNER = '22222222-2222-4222-8222-222222222222';
+  // What the routes build server-side on the REDEEM side (effectiveGrantValues / computeWidening).
+  const widening: ScriptLaneWideningDelta = {
+    maxUnattendedRiskTier: 'low',
+    unattendedAllowedClasses: ['services', 'dns_cache'],
+    maxUnattendedPerHour: 1,
+    protectedResourcesEmptied: false,
+    proposingEnabled: true,
+  };
+  // What a cached pre-W08 client still sends on the MINT side (POST /auth/mfa/step-up).
+  const staleClientWidening = { ...widening, unattendedAllowedClasses: ['dns_cache', 'services'], reviewerModel: 'claude-x' };
+
+  it('an extra reviewerModel key on the delta cannot change the digest', () => {
+    const withKey = { ...widening, reviewerModel: null } as unknown as ScriptLaneWideningDelta;
+    expect(scriptLanePolicyResourceDigest({ orgId: ORG, unattendedEnabled: true, widening: withKey }))
+      .toBe(scriptLanePolicyResourceDigest({ orgId: ORG, unattendedEnabled: true, widening }));
+    expect(partnerScriptCeilingResourceDigest({ partnerId: PARTNER, unattendedAllowed: true, widening: withKey }))
+      .toBe(partnerScriptCeilingResourceDigest({ partnerId: PARTNER, unattendedAllowed: true, widening }));
+  });
+
+  it('org lane: the minted digest (client resource parsed by the step-up schema) equals the redeemed one (server-built delta)', () => {
+    const minted = scriptLaneStepUpResource.parse({ orgId: ORG, unattendedEnabled: true, widening: staleClientWidening });
+    expect(minted.widening).not.toHaveProperty('reviewerModel');
+    expect(scriptLanePolicyResourceDigest(minted))
+      .toBe(scriptLanePolicyResourceDigest({ orgId: ORG, unattendedEnabled: true, widening }));
+  });
+
+  it('partner ceiling: the minted digest equals the redeemed one', () => {
+    const minted = partnerScriptCeilingStepUpResource.parse({ partnerId: PARTNER, unattendedAllowed: true, widening: staleClientWidening });
+    expect(minted.widening).not.toHaveProperty('reviewerModel');
+    expect(partnerScriptCeilingResourceDigest(minted))
+      .toBe(partnerScriptCeilingResourceDigest({ partnerId: PARTNER, unattendedAllowed: true, widening }));
+  });
+
+  it('every bound widening value still changes the digest', () => {
+    const base = scriptLanePolicyResourceDigest({ orgId: ORG, unattendedEnabled: true, widening });
+    for (const changed of [
+      { maxUnattendedRiskTier: 'medium' },
+      { unattendedAllowedClasses: ['services'] },
+      { maxUnattendedPerHour: 2 },
+      { protectedResourcesEmptied: true },
+      { proposingEnabled: false },
+    ]) {
+      expect(scriptLanePolicyResourceDigest({ orgId: ORG, unattendedEnabled: true, widening: { ...widening, ...changed } })).not.toBe(base);
+    }
   });
 });
 

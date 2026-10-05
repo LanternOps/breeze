@@ -1005,7 +1005,7 @@ describe('serviceDeliverableService', () => {
         orgId: 'org1', source: 'api', workKind: 'deliverable',
         subject: 'Sign-in log review — Oct 2026', description: 'Review sign-in logs',
         dueDate: new Date('2026-10-31T00:00:00.000Z'), assigneeId: 'u1', categoryId: 'c1',
-      }), expect.objectContaining({ userId: expect.any(String) }));
+      }), expect.objectContaining({ kind: 'system', source: 'planned_work' }));
       // The claim UPDATE is CAS'd on 'scheduled' ...
       const claimSet = chain.set.mock.calls[0]?.[0] as Record<string, unknown>;
       expect(claimSet).toMatchObject({ status: 'open' });

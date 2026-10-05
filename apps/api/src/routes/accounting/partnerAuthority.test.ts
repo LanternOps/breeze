@@ -73,6 +73,10 @@ vi.mock('../../middleware/auth', () => ({
   withAuthDbAccessContext: async (_auth: unknown, fn: () => unknown) => fn(),
 }));
 
+vi.mock('../../services/autopay/autopayGate', () => ({
+  isAutopayEnabledForPartner: vi.fn(async () => true),
+}));
+
 vi.mock('../../db', () => ({
   db: {
     select: effects.dbSelect,
@@ -261,7 +265,10 @@ beforeEach(() => {
   effects.enqueueInvoice.mockResolvedValue(true);
   effects.enqueueReconcile.mockResolvedValue(true);
   effects.dbSelect.mockReturnValue({
-    from: () => ({ where: () => Promise.resolve([{ id: ENTITY_ID }]) }),
+    from: () => ({
+      where: () => Promise.resolve([{ id: ENTITY_ID }]),
+      innerJoin: () => ({ where: () => Promise.resolve([{ n: 0 }]) }),
+    }),
   });
   effects.dbUpdateReturning.mockResolvedValue([{
     status: 'connected', environment: 'production', pushMode: 'auto',

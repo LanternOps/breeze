@@ -200,6 +200,10 @@ export const PERMISSION_GRANTS = {
   // by the partner who granted it. Same reasoning as AI_SESSIONS_READ_ALL.
   AI_AGENTS_READ: { resource: 'ai_agents', action: 'read' },
   AI_AGENTS_WRITE: { resource: 'ai_agents', action: 'write' },
+  // AI model registry (#7598 W03, spec §5.3 / §15 #7): a partner grants this
+  // deliberately to the techs who may use premium/fast offerings whose
+  // `required_permission` names it. Seeded on NO role.
+  AI_MODELS_PREMIUM: { resource: 'ai_models', action: 'premium' },
 
   // Tool sources (BYO MCP/OpenAPI, spec 2026-09-07 §5): manage registrations…
   TOOL_SOURCES_READ: { resource: 'tool_sources', action: 'read' },

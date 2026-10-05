@@ -1,4 +1,5 @@
 import { SOFTWARE_INSTALL_SERVER_TIMEOUT_MS } from '@breeze/shared';
+import { REMOTE_SESSION_ACTIVE_MAX_AGE_MS } from '../services/remoteSessionStaleness';
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, lt, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import * as dbModule from '../db';
@@ -100,7 +101,7 @@ export const SOFTWARE_INSTALL_TIMEOUT_MS = SOFTWARE_INSTALL_SERVER_TIMEOUT_MS;
 // against an offline device) is gone. `device_commands.deliver_by` is the one
 // delivery deadline now, and `reapStaleDeviceCommands` is its only owner.
 const REMOTE_SESSION_PENDING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-const REMOTE_SESSION_ACTIVE_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours (zombie safety net)
+const REMOTE_SESSION_ACTIVE_TIMEOUT_MS = REMOTE_SESSION_ACTIVE_MAX_AGE_MS; // 24 hours (zombie safety net)
 
 // Backup job orphan/stall reconciliation thresholds.
 const BACKUP_STALL_TIMEOUT_MS = 15 * 60 * 1000;      // progress-capable agent went silent

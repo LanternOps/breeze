@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { and, eq, isNull } from 'drizzle-orm';
-import { TOUCH_CLASSES } from '@breeze/shared';
+import { TOUCH_CLASSES, retiredAiModelField } from '@breeze/shared';
 import { db } from '../db';
 import { aiScriptPolicies, type AiScriptPolicyRow } from '../db/schema/aiScriptPolicies';
 import { zValidator } from '../lib/validation';
@@ -30,7 +30,7 @@ import { toScriptPolicyDto } from './ai/scriptPolicy';
  * `ai_agents:write` (`requirePermission`), and on `requireMfa()` — a
  * read-only or non-MFA partner user must not be able to raise this ceiling.
  * Setting `unattendedAllowed` true, and any WIDENING save while it is
- * already true (tier/classes/rate/emptied protectedResources/reviewerModel),
+ * already true (tier/classes/rate/emptied protectedResources/proposingEnabled),
  * is the same privileged transition as the org-scope grant
  * (`routes/ai/scriptPolicy.ts`'s `requireLaneGrant`) and needs
  * `approvals:decide` plus a fresh, resource-bound step-up grant.
@@ -52,7 +52,9 @@ const partnerUpdateSchema = z
     unattendedAllowedClasses: z.array(z.enum(TOUCH_CLASSES)).max(TOUCH_CLASSES.length).optional(),
     maxUnattendedPerHour: z.number().int().min(0).max(100).optional(),
     protectedResources: protectedResourcesSchema.optional(),
-    reviewerModel: z.string().trim().min(1).max(200).nullable().optional(),
+    /** Retired (W08, #7606): rejected with 400 naming its replacement, the script_reviewer
+     * assignment under /ai/models. Declared so the strict schema names the field, not "unrecognized key". */
+    reviewerModel: retiredAiModelField('reviewerModel'),
     stepUpGrant: z.string().min(1).max(200).optional(),
   })
   .strict();
@@ -69,7 +71,6 @@ const CEILING_SCHEMA_DEFAULTS = {
   unattendedAllowedClasses: [] as string[],
   maxUnattendedPerHour: 0,
   protectedResources: { services: [] as string[], paths: [] as string[], registryKeys: [] as string[], deviceTags: [] as string[] },
-  reviewerModel: null as string | null,
   proposingEnabled: true,
 };
 
@@ -77,7 +78,7 @@ const CEILING_SCHEMA_DEFAULTS = {
  * The full effective ceiling values this request will persist, regardless
  * of whether they count as a "widening" relative to `existing` — used to
  * bind an ENABLING save's step-up grant to the exact tier/classes/rate/
- * reviewerModel/proposingEnabled it is arming, not just the boolean. Falls
+ * protectedResources/proposingEnabled it is arming, not just the boolean. Falls
  * back to the row's real column defaults when there is no existing row
  * (first-ever save for this partner).
  */
@@ -91,7 +92,6 @@ function effectiveCeilingValues(
     unattendedAllowedClasses: body.unattendedAllowedClasses ?? base.unattendedAllowedClasses,
     maxUnattendedPerHour: body.maxUnattendedPerHour ?? base.maxUnattendedPerHour,
     protectedResourcesEmptied: protectedResourcesEmpty(body.protectedResources ?? base.protectedResources),
-    reviewerModel: body.reviewerModel !== undefined ? body.reviewerModel : base.reviewerModel,
     proposingEnabled: body.proposingEnabled ?? base.proposingEnabled,
   };
 }
@@ -100,7 +100,7 @@ function effectiveCeilingValues(
  * True when `body`, applied on top of `existing`, WIDENS the partner ceiling
  * while it is (or remains) allowed: raises the tier/classes/rate above the
  * ceiling's own prior value, empties a previously non-empty
- * protectedResources, changes reviewerModel, or turns proposingEnabled on.
+ * protectedResources, or turns proposingEnabled on.
  * Mirrors `routes/ai/scriptPolicy.ts`'s org-scope widening check exactly.
  */
 function computeWidening(
@@ -115,10 +115,9 @@ function computeWidening(
   const protectedResourcesEmptied = body.protectedResources !== undefined
     && !protectedResourcesEmpty(existing.protectedResources)
     && protectedResourcesEmpty(body.protectedResources);
-  const reviewerModelChanged = body.reviewerModel !== undefined && body.reviewerModel !== existing.reviewerModel;
   const proposingWidened = body.proposingEnabled === true && existing.proposingEnabled !== true;
 
-  if (!tierWidened && !classesWidened && !rateWidened && !protectedResourcesEmptied && !reviewerModelChanged && !proposingWidened) {
+  if (!tierWidened && !classesWidened && !rateWidened && !protectedResourcesEmptied && !proposingWidened) {
     return null;
   }
   return {
@@ -126,7 +125,6 @@ function computeWidening(
     unattendedAllowedClasses: body.unattendedAllowedClasses ?? existing.unattendedAllowedClasses,
     maxUnattendedPerHour: body.maxUnattendedPerHour ?? existing.maxUnattendedPerHour,
     protectedResourcesEmptied,
-    reviewerModel: body.reviewerModel !== undefined ? body.reviewerModel : existing.reviewerModel,
     proposingEnabled: body.proposingEnabled ?? existing.proposingEnabled,
   };
 }

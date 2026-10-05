@@ -8,13 +8,14 @@ import { AI_AGENT_RUN_STATUSES, TOPOLOGY_INTERFACE_METRIC_SERIES } from '@breeze
  */
 
 import { z } from 'zod';
+import { fixProblemSchema } from './fixMemory/problemSignature';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
 import { dbAccessContextFromAuth } from '../middleware/auth';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
-import { executeTool, aiTools, getAllRegisteredToolNames, getToolAlwaysLoad, getToolSearchHint, type ExecuteToolOptions } from './aiTools';
+import { executeTool, aiTools, toolManagesDbContext, getAllRegisteredToolNames, getToolAlwaysLoad, getToolSearchHint, type ExecuteToolOptions } from './aiTools';
 import { isTopologyAiToolName, loadTopologyAiPreconditions, withTopologyAiPreconditions, type TopologyToolBinding } from './topology/aiToolGate';
 import { WORKSPACE_MCP_SHAPES } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
@@ -33,7 +34,7 @@ import {
 } from '../db/schema';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { CONTACT_ROLES } from './contacts/types';
-import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
+import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema } from '@breeze/shared';
 import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
@@ -41,6 +42,7 @@ import { deliveryToolShape, executeCommandShape, setDeviceContextShape, toolInpu
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { captureMessage } from './sentry';
+import { postToolUseForCall } from './aiToolUseCorrelation';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
   m365DisableUserHandler, m365ResetPasswordHandler,
@@ -158,6 +160,12 @@ export type PostToolUseCallback = (
    * failure as an approved, in-flight action.
    */
   handoff?: ToolHandoffStatus,
+  /**
+   * The model's tool_use id for this call, as the SDK sent it to our MCP
+   * handler (`extra._meta['claudecode/toolUseId']`). The result is paired with
+   * its tool_use by this id (#7931); absent only when the SDK sent none.
+   */
+  toolUseId?: string,
 ) => Promise<void>;
 
 // ============================================
@@ -646,7 +654,8 @@ function makeToolHandler(
 ) {
   const toolTimeout = getToolTimeout(toolName);
 
-  return async (args: Record<string, unknown>) => {
+  return async (args: Record<string, unknown>, extra?: unknown) => {
+    const postToolUse = postToolUseForCall(onPostToolUse, extra);
     // CRITICAL: Escape any inherited AsyncLocalStorage DB context from the SDK's
     // MCP callback chain. Without this, dbContextStorage.getStore() may return a
     // stale/committed transaction from a prior withDbAccessContext call,
@@ -697,7 +706,7 @@ function makeToolHandler(
       }
       if (!check.allowed) {
         const denial = preToolUseDenialResult(toolName, check);
-        await safePostToolUse(onPostToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
+        await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
         return {
           content: [{ type: 'text' as const, text: denial.text }],
           isError: denial.isError,
@@ -758,7 +767,7 @@ function makeToolHandler(
       // This whole handler already runs under `runOutsideDbContext`, so there
       // is no ambient context for the tool to join by accident.
       const runInToolContext = () =>
-        aiTools.get(toolName)?.selfManagedDbContext
+        toolManagesDbContext(aiTools.get(toolName), args)
           ? runTool()
           : withDbAccessContext(dbContext, runTool);
       // Review R1 (#6671 shape): a topology tool's gate needs the org's
@@ -790,7 +799,7 @@ function makeToolHandler(
           } else if (parsed.imageBase64) {
             const imageBase64 = parsed.imageBase64;
             const durationMs = Date.now() - startTime;
-            await safePostToolUse(onPostToolUse, toolName, args, JSON.stringify({ actionExecuted: parsed.actionExecuted, width: parsed.width, height: parsed.height, format: parsed.format, sizeBytes: parsed.sizeBytes, capturedAt: parsed.capturedAt }), false, durationMs);
+            await safePostToolUse(postToolUse, toolName, args, JSON.stringify({ actionExecuted: parsed.actionExecuted, width: parsed.width, height: parsed.height, format: parsed.format, sizeBytes: parsed.sizeBytes, capturedAt: parsed.capturedAt }), false, durationMs);
             // MCP ImageContent format: { type: 'image', data: base64, mimeType: string }
             const contentBlocks: SdkToolResult['content'] = [
               {
@@ -842,7 +851,7 @@ function makeToolHandler(
       } catch { /* not JSON, treat as success */ }
 
       const durationMs = Date.now() - startTime;
-      await safePostToolUse(onPostToolUse, toolName, args, compactResult, isToolError, durationMs);
+      await safePostToolUse(postToolUse, toolName, args, compactResult, isToolError, durationMs);
       return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
     } catch (err) {
       const durationMs = Date.now() - startTime;
@@ -852,7 +861,7 @@ function makeToolHandler(
       // string for the stream (#2603).
       const message = sanitizeThrownToolError(toolName, err, { durationMs });
       const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
-      await safePostToolUse(onPostToolUse, toolName, args, safeError, true, durationMs);
+      await safePostToolUse(postToolUse, toolName, args, safeError, true, durationMs);
       return {
         content: [{ type: 'text' as const, text: safeError }],
         isError: true,
@@ -892,7 +901,8 @@ function makeSessionAwareHandler(
 ) {
   const toolTimeout = getToolTimeout(toolName);
 
-  return async (args: Record<string, unknown>) => {
+  return async (args: Record<string, unknown>, extra?: unknown) => {
+    const postToolUse = postToolUseForCall(onPostToolUse, extra);
     // See makeHandler: escape any inherited AsyncLocalStorage DB context so all
     // DB ops (preToolUse approval writes, the tool call, postToolUse persistence)
     // start with a clean transaction context.
@@ -926,7 +936,7 @@ function makeSessionAwareHandler(
       }
       if (!check.allowed) {
         const denial = preToolUseDenialResult(toolName, check);
-        await safePostToolUse(onPostToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
+        await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
         return {
           content: [{ type: 'text' as const, text: denial.text }],
           isError: denial.isError,
@@ -951,7 +961,7 @@ function makeSessionAwareHandler(
         toolName,
         JSON.stringify({ error: 'no_action_intent', message: SECRET_ACTION_REFUSED_TEXT }),
       );
-      await safePostToolUse(onPostToolUse, toolName, args, refusalText, true, 0);
+      await safePostToolUse(postToolUse, toolName, args, refusalText, true, 0);
       return {
         content: [{ type: 'text' as const, text: refusalText }],
         isError: true,
@@ -1017,7 +1027,7 @@ function makeSessionAwareHandler(
       } catch { /* not JSON, treat as success */ }
 
       const durationMs = Date.now() - startTime;
-      await safePostToolUse(onPostToolUse, toolName, args, compactResult, isToolError, durationMs, sealed);
+      await safePostToolUse(postToolUse, toolName, args, compactResult, isToolError, durationMs, sealed);
       return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
     } catch (err) {
       const durationMs = Date.now() - startTime;
@@ -1027,7 +1037,7 @@ function makeSessionAwareHandler(
       // string for the stream (#2603).
       const message = sanitizeThrownToolError(toolName, err, { durationMs });
       const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
-      await safePostToolUse(onPostToolUse, toolName, args, safeError, true, durationMs);
+      await safePostToolUse(postToolUse, toolName, args, safeError, true, durationMs);
       return {
         content: [{ type: 'text' as const, text: safeError }],
         isError: true,
@@ -1403,6 +1413,7 @@ export function wrapExtraToolWithHooks(
   return {
     ...extraTool,
     handler: async (args: Record<string, unknown>, extra: unknown): Promise<SdkToolResult> => {
+      const postToolUse = postToolUseForCall(onPostToolUse, extra);
       // See makeHandler: escape any inherited AsyncLocalStorage DB context so
       // preToolUse/handler/postToolUse all start with a clean context rather
       // than a stale/committed one from the SDK's MCP callback chain.
@@ -1420,20 +1431,20 @@ export function wrapExtraToolWithHooks(
         }
         if (!check.allowed) {
           const denial = preToolUseDenialResult(name, check);
-          await safePostToolUse(onPostToolUse, name, args, denial.text, denial.isError, 0, undefined, check.handoff);
+          await safePostToolUse(postToolUse, name, args, denial.text, denial.isError, 0, undefined, check.handoff);
           return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
         }
       }
       try {
         const result = await withToolTimeout(handler(args, extra), toolTimeout, name);
         const durationMs = Date.now() - startTime;
-        await safePostToolUse(onPostToolUse, name, args, extraToolResultText(result), result.isError === true, durationMs);
+        await safePostToolUse(postToolUse, name, args, extraToolResultText(result), result.isError === true, durationMs);
         return result;
       } catch (err) {
         const durationMs = Date.now() - startTime;
         const message = sanitizeThrownToolError(name, err, { durationMs });
         const safeError = compactToolResultForChat(name, JSON.stringify({ error: message }));
-        await safePostToolUse(onPostToolUse, name, args, safeError, true, durationMs);
+        await safePostToolUse(postToolUse, name, args, safeError, true, durationMs);
         return { content: [{ type: 'text' as const, text: safeError }], isError: true };
       }
       }); // end runOutsideDbContext
@@ -3162,7 +3173,8 @@ export function buildBreezeSdkTools(
       'manage_monitor_definitions',
       registryDescription('manage_monitor_definitions'),
       {
-        action: z.enum(['create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach']),
+        action: z.enum(['describe', 'create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach']),
+        kind: monitorKindSchema.optional(),
         monitorId: uuid.optional(),
         definition: z.record(z.string(), z.unknown()).optional(),
         configPolicyId: uuid.optional(),
@@ -3211,6 +3223,8 @@ export function buildBreezeSdkTools(
       {
         alertId: z.string().guid().optional(),
         anomalyEpisodeId: z.string().guid().optional(),
+        deviceId: z.string().guid().optional(),
+        problem: fixProblemSchema.optional(),
         limit: z.number().int().min(1).max(20).optional(),
       },
       makeHandler('find_proven_fixes', getAuth, onPreToolUse, onPostToolUse)
@@ -3457,7 +3471,7 @@ export function buildBreezeSdkTools(
       registryDescription('manage_ai_agents'),
       {
         action: z.enum(['authorize_supervised_key']),
-        kind: z.enum(AI_AGENT_KINDS),
+        kind: z.enum(AI_AGENT_ACTING_KINDS),
         opKey: z.string().min(3).max(120),
         // Required, and re-checked against the intent's own org at creation and
         // again at execution. It is here so the approval can PIN this org's

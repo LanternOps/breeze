@@ -591,7 +591,7 @@ export default function LlmProviderCatalog() {
                         <td colSpan={6} className="px-4 py-3 bg-gray-50 border-b">
                           <div data-testid={`llm-catalog-revisions-${entry.entryId}`} className="space-y-3">
                             {entry.revisions.length === 0 ? (
-                              <div className="text-xs text-gray-500">{t('admin.llmProviderCatalog.empty')}</div>
+                              <div className="text-xs text-gray-500">{t('admin.llmProviderCatalog.noRevisions')}</div>
                             ) : (
                               entry.revisions.map((revision) => {
                                 const modelIds = Object.keys(revision.modelMap);

@@ -965,6 +965,7 @@
       "description": "Esegui \"{{name}}\" su {{count}} dispositivo/i come {{runAs}}. Gli script vengono accodati e iniziano l'esecuzione immediatamente."
     },
     "selectedCount": "{{count}} dispositivo/i selezionato/i",
+    "executeBlocked": "L’esecuzione non è disponibile: un dispositivo selezionato non può eseguire questo script qui (potrebbe appartenere a un’organizzazione diversa da quella mostrata o non essere più accessibile).",
     "languages": {
       "powershell": "PowerShell",
       "bash": "Bash",

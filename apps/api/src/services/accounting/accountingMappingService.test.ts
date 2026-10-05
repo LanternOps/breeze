@@ -1732,13 +1732,65 @@ describe('provider refusals the user resolves (Xero W03)', () => {
     });
   });
 
-  it('a QuickBooks validation fault (e.g. 6240 duplicate name) is still the sanitized 502 — QuickBooks unchanged', async () => {
+  // #7292: a provider 400 validation verdict with no neutral refusal code was a
+  // retryable 502 — five attempts, five Sentry events, none of which could succeed.
+  it('a QuickBooks validation fault (e.g. 6240 duplicate name) is a terminal 409 provider_rejected, reported once (#7292)', async () => {
     getConnectionMock.mockResolvedValue(connectedConn({ provider: 'quickbooks' }));
-    upsertCustomerMock.mockRejectedValueOnce(new AccountingProviderError({ kind: 'validation', provider: 'quickbooks', operation: 'QuickBooks customer upsert', httpStatus: 400, providerCode: '6240' }));
-    await expect(syncMappedEntity(syncOrg(), runCtx)).rejects.toMatchObject({
-      code: 'provider_error', status: 502, message: 'QuickBooks rejected the customer sync (HTTP 400)',
+    const qboErr = new AccountingProviderError({
+      kind: 'validation', provider: 'quickbooks', operation: 'QuickBooks customer upsert', httpStatus: 400,
+      providerCode: '6240', providerMessage: 'Duplicate Name Exists Error',
     });
-    expect(captureExceptionMock).toHaveBeenCalled();
+    upsertCustomerMock.mockRejectedValueOnce(qboErr);
+    const err: unknown = await syncMappedEntity(syncOrg(), runCtx).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AccountingMappingError);
+    expect(err).toMatchObject({
+      code: 'provider_rejected', status: 409,
+      message: 'QuickBooks rejected the customer sync (HTTP 400: Duplicate Name Exists Error) — check this organization\'s details in Breeze, then sync again',
+    });
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock).toHaveBeenCalledWith(qboErr, undefined, expect.objectContaining({ service: 'accountingMappingService' }));
+    expect(currentMappingRows.find((r) => r.id === 'm1')).toMatchObject({ syncStatus: 'error', lastError: (err as Error).message });
+  });
+
+  it('a code-less Xero 400 validation error (e.g. a name of only "<>") is a terminal 409 provider_rejected (#7292)', async () => {
+    upsertCustomerMock.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'validation', provider: 'xero', operation: 'Xero contact update', httpStatus: 400,
+      providerMessage: 'The Name field is mandatory.',
+    }));
+    const err: unknown = await syncMappedEntity(syncOrg({ provider: 'xero' }), runCtx).catch((e: unknown) => e);
+    expect(err).toMatchObject({
+      code: 'provider_rejected', status: 409,
+      message: 'Xero rejected the customer sync (HTTP 400: The Name field is mandatory.) — check this organization\'s details in Breeze, then sync again',
+    });
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(currentMappingRows.find((r) => r.id === 'm1')).toMatchObject({ syncStatus: 'error', lastError: (err as Error).message });
+  });
+
+  it('a code-less catalog-item validation error names the catalog item (#7292)', async () => {
+    getConnectionMock.mockResolvedValue(connectedConn({ provider: 'quickbooks' }));
+    stubReads({
+      items: [{ id: ITEM_A, name: 'Managed Service', sku: 'MS-1' }],
+      mappings: [itemMappingRow({ linkStatus: 'confirmed', remoteEntityId: 'qb-item-1', remoteSyncToken: '2' })],
+      itemPrices: [{ itemId: ITEM_A, currencyCode: 'USD', unitPrice: '125.50' }],
+    });
+    upsertItemMock.mockRejectedValueOnce(new AccountingProviderError({
+      kind: 'validation', provider: 'quickbooks', operation: 'QuickBooks item upsert', httpStatus: 400,
+    }));
+    await expect(syncMappedEntity(syncCatalogItem(), runCtx)).rejects.toMatchObject({
+      code: 'provider_rejected', status: 409,
+      message: 'QuickBooks rejected the item sync (HTTP 400) — check this catalog item\'s details in Breeze, then sync again',
+    });
+  });
+
+  it.each([
+    ['a 5xx', new AccountingProviderError({ kind: 'transient', provider: 'xero', operation: 'Xero contact update', httpStatus: 503 })],
+    ['a timeout (no status)', new AccountingProviderError({ kind: 'transient', provider: 'xero', operation: 'Xero contact update' })],
+    ['a validation error with no HTTP status (a local guard, not a provider verdict)', new AccountingProviderError({ kind: 'validation', provider: 'xero', operation: 'call context' })],
+    ['a raw 400 that is not a typed provider error', Object.assign(new Error('upstream body'), { status: 400 })],
+  ])('%s stays the retryable 502 provider_error (#7292)', async (_label, providerErr) => {
+    upsertCustomerMock.mockRejectedValueOnce(providerErr);
+    await expect(syncMappedEntity(syncOrg({ provider: 'xero' }), runCtx)).rejects.toMatchObject({ code: 'provider_error', status: 502 });
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
   });
 
   it('a listing refused for scope → 409 provider_permission, not a 502', async () => {
