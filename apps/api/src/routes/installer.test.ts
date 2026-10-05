@@ -39,6 +39,8 @@ vi.mock("../services/enrollmentDefaults", () => ({
 import { Hono } from "hono";
 import { installerRoutes, childEnrollmentKeyTtlMinutes } from "./installer";
 import { db } from "../db";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { hashBootstrapToken } from "../services/installerBootstrapToken";
 
 function makeApp() {
   const app = new Hono();
@@ -207,6 +209,34 @@ describe("POST /api/v1/installer/bootstrap", () => {
   it("omits/empty backupServerUrl when env unset", async () => {
     const body = await redeemBootstrapOk();
     expect(body.backupServerUrl ?? "").toBe("");
+  });
+
+  it("looks the token up by its keyed hash, with a plaintext fallback only for unhashed legacy rows", async () => {
+    let capturedWhere: unknown;
+    vi.mocked(db.select).mockReturnValue({
+      from: () => ({
+        where: (w: unknown) => {
+          capturedWhere = w;
+          return { limit: () => Promise.resolve([]) };
+        },
+      }),
+    } as any);
+
+    const RAW = "KKKKKKKKKK";
+    const res = await makeApp().request("/api/v1/installer/bootstrap", {
+      method: "POST",
+      headers: { "X-Breeze-Bootstrap-Token": RAW },
+    });
+    expect(res.status).toBe(404);
+
+    const { sql, params } = new PgDialect().sqlToQuery(capturedWhere as any);
+    // Primary match: token_hash = HMAC(raw).
+    expect(sql).toMatch(/"installer_bootstrap_tokens"\."token_hash" = \$\d+/);
+    expect(params).toContain(hashBootstrapToken(RAW));
+    // Legacy fallback is confined to rows that have no hash at all.
+    expect(sql).toMatch(/"installer_bootstrap_tokens"\."token_hash" is null/);
+    expect(sql).toMatch(/"installer_bootstrap_tokens"\."token" = \$\d+/);
+    expect(sql.indexOf("is null")).toBeLessThan(sql.lastIndexOf('"token" ='));
   });
 
   it("returns 400 for malformed token", async () => {

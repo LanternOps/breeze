@@ -449,7 +449,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // which mint path issued the token ('capacity' / 'per_download' /
   // 'legacy_unknown'), the same kind of non-secret classifier as
   // installer_platform.
-  "installer_bootstrap_tokens": tablePolicy("org_id", {"included":["id","org_id","parent_enrollment_key_id","site_id","max_usage","consumed_count","created_by","created_at","expires_at","consumed_at","consumed_from_ip","installer_platform","usage_kind"],"reviewedIncluded":[],"excludedSensitive":["token"],"excludedOpen":[],"specific":{"parent_credential_generation":{"decision":"include","rationale":"Positive integer snapshot of the parent rotation epoch; redemption still requires the excluded bearer token, so this counter conveys no capability.","reviewedSensitiveName":true}}}),
+  "installer_bootstrap_tokens": tablePolicy("org_id", {"included":["id","org_id","parent_enrollment_key_id","site_id","max_usage","consumed_count","created_by","created_at","expires_at","consumed_at","consumed_from_ip","installer_platform","usage_kind"],"reviewedIncluded":[],"excludedSensitive":["token","token_hash"],"excludedOpen":[],"specific":{"parent_credential_generation":{"decision":"include","rationale":"Positive integer snapshot of the parent rotation epoch; redemption still requires the excluded bearer token, so this counter conveys no capability.","reviewedSensitiveName":true}}}),
   "invoice_documents": tablePolicy("org_id", {"included":["id","invoice_id","org_id","sha256","generated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["pdf"]}),
   // hostname is ordinary customer inventory data — the same value
   // devices.hostname already exports — and stays `included`. It is also what

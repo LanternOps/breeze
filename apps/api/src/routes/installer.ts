@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import type { HttpBindings } from "@hono/node-server";
-import { and, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { db, withSystemDbAccessContext } from "../db";
 import { installerBootstrapTokens } from "../db/schema/installerBootstrapTokens";
@@ -9,7 +9,10 @@ import {
   hashEnrollmentKey,
   hashEnrollmentKeyCandidates,
 } from "../services/enrollmentKeySecurity";
-import { BOOTSTRAP_TOKEN_PATTERN } from "../services/installerBootstrapToken";
+import {
+  BOOTSTRAP_TOKEN_PATTERN,
+  hashBootstrapToken,
+} from "../services/installerBootstrapToken";
 import { getTrustedClientIp } from "../services/clientIp";
 import { clampTtlToCap } from "../services/enrollmentDefaults";
 import { envInt } from "../utils/envInt";
@@ -134,10 +137,22 @@ async function redeemBootstrapToken(c: Context, token: string) {
 
   const result = await withSystemDbAccessContext(async () => {
     // ── 1. Look up token ──────────────────────────────────────────────
+    // Rows store a keyed hash of the token. Rows issued before hashing have
+    // token_hash NULL and keep their plaintext until they expire (the expiry
+    // check below refuses them after that); the plaintext branch is confined
+    // to exactly those rows so a hashed row can never match on `token`.
     const [row] = await db
       .select()
       .from(installerBootstrapTokens)
-      .where(eq(installerBootstrapTokens.token, token))
+      .where(
+        or(
+          eq(installerBootstrapTokens.tokenHash, hashBootstrapToken(token)),
+          and(
+            isNull(installerBootstrapTokens.tokenHash),
+            eq(installerBootstrapTokens.token, token),
+          ),
+        ),
+      )
       .limit(1);
 
     if (!row) {
