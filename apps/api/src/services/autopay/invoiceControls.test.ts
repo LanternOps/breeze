@@ -268,6 +268,9 @@ it.each([['confirming', true], ['processing', true], ['created', false], ['requi
     const f = fixture({ state: 'collecting' }, [{ id: 'attempt', state }]);
     expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ state: 'collecting', processing });
   });
+it('names the provider on the skip page so a refused skip can say who to contact', async () => {
+  expect(await getSkipInvoiceView(fixture().tx, 'token')).toMatchObject({ partnerName: 'Partner' });
+});
 it('finalizes once, enqueues seq zero confirmation and one staff event, replay has no writes', async () => {
   const f = fixture();
   expect(await skipInvoice(f.tx, 'token')).toMatchObject({ status: 'skipped' });

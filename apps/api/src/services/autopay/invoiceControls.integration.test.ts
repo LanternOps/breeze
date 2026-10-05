@@ -174,7 +174,7 @@ it.each([['processing',true],['confirming',true],['created',false]] as const)('s
     await db.update(invoiceAutopaySchedules).set({state:'collecting',attemptCount:1}).where(eq(invoiceAutopaySchedules.id,f.schedule.id));
     await db.insert(invoiceCollectionAttempts).values({...f.attempt,state});
   });
-  expect(await withSystemDbAccessContext(()=>getSkipInvoiceView(db,f.token))).toMatchObject({state:'collecting',processing:refused});
+  expect(await withSystemDbAccessContext(()=>getSkipInvoiceView(db,f.token))).toMatchObject({state:'collecting',processing:refused,partnerName:'Control fixture'});
   const skip=withSystemDbAccessContext(()=>db.transaction(tx=>skipInvoice(tx,f.token)));
   if(refused)await expect(skip).rejects.toMatchObject({status:409,code:'COLLECTION_IN_PROGRESS'});
   else expect(await skip).toEqual({status:'pending',control:'skip'});
