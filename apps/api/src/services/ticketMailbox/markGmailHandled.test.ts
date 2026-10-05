@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { gmail_v1 } from '@googleapis/gmail';
-import { markGmailHandled, resetHandledLabelCache, assertUsableHandledLabelName } from './googleMailboxClient';
+import { markGmailHandled, resetHandledLabelCache, assertUsableHandledLabelName, handledLabelCacheSize } from './googleMailboxClient';
 import { HandledLabelError, isUsableHandledLabelName } from './handledLabel';
 import { handledErrorCode } from './markIngestedGmailHandled';
 
@@ -106,6 +106,39 @@ describe('markGmailHandled', () => {
     await markGmailHandled(f.gmail, MB, 'c', opts({ labelCacheTtlMs: 0 }));
     await markGmailHandled(f.gmail, MB, 'd', opts({ labelCacheTtlMs: 0 }));
     expect(f.list).toHaveBeenCalledTimes(3);
+  });
+
+  it('bounds the label cache: past its size limit the oldest entry is evicted and re-resolved', async () => {
+    const CAP = 1_000;
+    const labels = Array.from({ length: CAP + 1 }, (_, i) => ({ id: `id-${i}`, name: `L${i}`, type: 'user' }));
+    const g = fakeGmail({ labels });
+    for (let i = 0; i <= CAP; i++) await markGmailHandled(g.gmail, MB, `m${i}`, opts({ labelName: `L${i}` }));
+    expect(g.list).toHaveBeenCalledTimes(CAP + 1);
+    // L0 was the oldest and was evicted when L1000 went in; L1000 is still cached.
+    await markGmailHandled(g.gmail, MB, 'again-0', opts({ labelName: 'L0' }));
+    expect(g.list).toHaveBeenCalledTimes(CAP + 2);
+    await markGmailHandled(g.gmail, MB, 'again-1000', opts({ labelName: `L${CAP}` }));
+    expect(g.list).toHaveBeenCalledTimes(CAP + 2);
+  });
+
+  it('drops expired label cache entries instead of keeping them', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      const labels = Array.from({ length: 1_000 }, (_, i) => ({ id: `id-${i}`, name: `L${i}`, type: 'user' }));
+      const g = fakeGmail({ labels: [...labels, { id: 'id-new', name: 'New', type: 'user' }] });
+      for (let i = 0; i < 1_000; i++) await markGmailHandled(g.gmail, MB, `m${i}`, opts({ labelName: `L${i}`, labelCacheTtlMs: 60_000 }));
+      expect(handledLabelCacheSize()).toBe(1_000);
+      // A lookup of an expired entry removes it.
+      vi.setSystemTime(new Date('2026-01-01T00:02:00Z'));
+      await markGmailHandled(g.gmail, MB, 'x', opts({ labelName: 'L5', labelCacheTtlMs: 60_000 }));
+      expect(handledLabelCacheSize()).toBe(1_000);
+      // At the bound, inserting sweeps every expired entry first.
+      await markGmailHandled(g.gmail, MB, 'y', opts({ labelName: 'New', labelCacheTtlMs: 60_000 }));
+      expect(handledLabelCacheSize()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('refuses a reserved system label name and a same-named system label', async () => {

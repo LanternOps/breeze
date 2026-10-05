@@ -383,12 +383,38 @@ export async function resolveReferencedTextBodies(
  *  TTL; a deleted/recreated label self-heals via the 400/404 retry in
  *  markGmailHandled. */
 const handledLabelIdCache = new Map<string, { id: string; at: number }>();
+/** Hard bound on cached label ids per process. Entries are kept in insertion
+ *  order (a refresh re-inserts), so the oldest is evicted first. */
+export const HANDLED_LABEL_CACHE_MAX_ENTRIES = 1_000;
 const handledCacheKey = (accountSub: string, mailbox: string, labelName: string) =>
   `${accountSub}::${mailbox.toLowerCase()}::${labelName}`;
 
 /** Test hook. */
 export function resetHandledLabelCache(): void {
   handledLabelIdCache.clear();
+}
+
+/** Test hook: the number of cached label ids. */
+export function handledLabelCacheSize(): number {
+  return handledLabelIdCache.size;
+}
+
+/** Cache a resolved id. Expired entries are dropped first, then the oldest
+ *  entries while the cache is at its bound, so it never grows past it. */
+function cacheHandledLabelId(cacheKey: string, id: string, ttlMs: number): void {
+  const now = Date.now();
+  handledLabelIdCache.delete(cacheKey);
+  if (handledLabelIdCache.size >= HANDLED_LABEL_CACHE_MAX_ENTRIES) {
+    for (const [key, entry] of handledLabelIdCache) {
+      if (now - entry.at >= ttlMs) handledLabelIdCache.delete(key);
+    }
+  }
+  while (handledLabelIdCache.size >= HANDLED_LABEL_CACHE_MAX_ENTRIES) {
+    const oldest = handledLabelIdCache.keys().next().value;
+    if (oldest === undefined) break;
+    handledLabelIdCache.delete(oldest);
+  }
+  handledLabelIdCache.set(cacheKey, { id, at: now });
 }
 
 async function resolveHandledLabelId(
@@ -400,7 +426,10 @@ async function resolveHandledLabelId(
   assertUsableHandledLabelName(labelName);
   const cacheKey = handledCacheKey(o.accountSub, mailbox, labelName);
   const cached = handledLabelIdCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < ttlMs) return cached.id;
+  if (cached) {
+    if (Date.now() - cached.at < ttlMs) return cached.id;
+    handledLabelIdCache.delete(cacheKey);
+  }
 
   const list = await gmail.users.labels.list({ userId: 'me' });
   const labels = list.data.labels ?? [];
@@ -424,7 +453,7 @@ async function resolveHandledLabelId(
     }
   }
   if (!id) throw new Error(`Gmail label "${labelName}" could not be resolved or created`);
-  handledLabelIdCache.set(cacheKey, { id, at: Date.now() });
+  cacheHandledLabelId(cacheKey, id, ttlMs);
   return id;
 }
 
