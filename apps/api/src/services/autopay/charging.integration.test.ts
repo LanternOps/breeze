@@ -1957,3 +1957,22 @@ it('offers neither bank pay nor card pay-and-save while an unapplied attempt hol
  // Without an invoice (e.g. the portal payment methods page) the org-level offer is unchanged.
  expect(await getInvoiceAutopayOffer(f.org.id)).toMatchObject({eligible:true});
 });
+
+// P-20 / W04 O4: a PaymentIntent verified as canceled can never capture, so its mapping
+// must not stay 'pending' (it reads as an open payment).
+it.each(['hard_decline','released_3ds'] as const)('marks the mapping failed once its PaymentIntent is canceled (%s)',async path=>{
+ const f=await fixture();
+ provider.confirm.mockImplementationOnce(async()=>{
+  currentPi=path==='hard_decline'
+   ?{...currentPi,status:'requires_payment_method',last_payment_error:{type:'card_error',code:'card_declined',decline_code:'stolen_card'}}
+   :{...currentPi,status:'requires_payment_method',last_payment_error:{type:'card_error',code:'authentication_required',decline_code:'authentication_required'}};
+  throw Object.assign(new Error('declined'),{type:'StripeCardError',statusCode:402,code:currentPi.last_payment_error.code,
+   decline_code:currentPi.last_payment_error.decline_code,payment_intent:currentPi});
+ });
+ await attemptCollection(inputFor(f));
+ if(path==='released_3ds')expect(await releaseInvoiceConfirmation({invoiceId:f.invoice.id,orgId:f.org.id})).toEqual({outcome:'released'});
+ const [attempt]=await attempts(f.invoice.id);
+ expect(attempt!.state).toBe(path==='hard_decline'?'failed':'canceled');
+ const [mapping]=await withSystemDbAccessContext(()=>db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.id,attempt!.invoiceStripePaymentId!)));
+ expect(mapping).toMatchObject({status:'failed',invoicePaymentId:null});
+});

@@ -912,6 +912,12 @@ async function applyObservedOutcome(data: AttemptHistory, stripe: Stripe, observ
       if (!applied) await enqueueOutcomeAttention('payment.unapplied', locked.invoice, attemptId);
       return applied ? null : {event:'payment.unapplied' as const,orgId:locked.invoice.orgId};
     }
+    // A PaymentIntent verified as canceled can never capture. Close its mapping so it
+    // does not read as an open payment (P-20); a PI mapping stays capturable by settlement.
+    if (pi.status === 'canceled' && mapping?.status === 'pending' && !mapping.invoicePaymentId) {
+      await db.update(invoiceStripePayments).set({ status: 'failed', lastEventAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(invoiceStripePayments.id, mapping.id), eq(invoiceStripePayments.status, 'pending')));
+    }
     // W1 clears authority on merged terminal history. Never restore processing/action/retry
     // states (their CHECK constraints require authority), nor mutate a survivor's method.
     if (!method || !enrollment) {
