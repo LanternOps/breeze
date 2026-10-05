@@ -59,11 +59,10 @@ function stripNul<T>(value: T): T {
     return value.map((item) => stripNul(item)) as T;
   }
   if (value !== null && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[stripNul(k)] = stripNul(v);
-    }
-    return out as T;
+    // fromEntries defines own properties, so a literal "__proto__" key survives.
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [stripNul(k), stripNul(v)]),
+    ) as T;
   }
   return value;
 }

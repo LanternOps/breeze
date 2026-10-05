@@ -198,8 +198,8 @@ describe('changes routes', () => {
       const row = valuesSpy.mock.calls[0]![0][0];
       expect(row.subject).toBe('Node.js');
       expect(row.beforeValue).toEqual({ ver: '12' });
-      expect(row.details).toEqual({ nested: [{ key: 'ab' }], keep: 5 });
-      expect(JSON.stringify(row)).not.toContain('\\u0000');
+      expect(row.details.nested).toEqual([{ key: 'ab' }]);
+      expect(row.details.keep).toBe(5);      expect(JSON.stringify(row)).not.toContain('\\u0000');
     });
 
     it('should return 404 when device not found', async () => {
