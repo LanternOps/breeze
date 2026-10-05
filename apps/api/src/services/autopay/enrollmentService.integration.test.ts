@@ -98,7 +98,9 @@ describe('real enrollment authority fence',()=>{
   expect(saved.attempts[0]).toMatchObject({outcome});
   const rendered=saved.notices[0]!.rendered as {subject:string;html:string;text:string};
   expect(rendered.subject).toContain(partner.name);expect(rendered.html).toContain(partner.name);expect(rendered.text).toContain(partner.name);
-  await vi.waitFor(()=>expect(notifyAutopayStaff).toHaveBeenCalledTimes(1));
+  // FP-11: staff hear "enabled" only when the method can be charged.
+  if(outcome==='activated')await vi.waitFor(()=>expect(notifyAutopayStaff).toHaveBeenCalledTimes(1));
+  else{await new Promise(resolve=>setImmediate(resolve));expect(notifyAutopayStaff).not.toHaveBeenCalled();}
  });
 
 });
@@ -209,7 +211,8 @@ it.each(['public','portal'])('allows %s stop when the partner is disabled, revok
 it('failed microdeposit verification retires the pending method and alerts once',async()=>{
  const f=await verificationFixture(),bank={id:'pm_verify',type:'us_bank_account',customer:null} as Stripe.PaymentMethod;
  await persistCapturedAutopayMethod(f.attempt.id,bank,'pending_verification','seti_verify',null);
- await vi.waitFor(()=>expect(notifyAutopayStaff).toHaveBeenCalledTimes(1));vi.mocked(notifyAutopayStaff).mockClear();
+ // FP-11: no staff "enabled" while the bank waits for verification.
+ await new Promise(resolve=>setImmediate(resolve));expect(notifyAutopayStaff).not.toHaveBeenCalled();
  for(let i=0;i<2;i++)expect((await persistCapturedAutopayMethod(f.attempt.id,bank,'failed','seti_verify',null)).outcome).toBe('failed');
  const [method]=await withSystemDbAccessContext(()=>db.select().from(orgPaymentMethods));expect(method?.status).toBe('unusable');
  const [enrollment]=await withSystemDbAccessContext(()=>db.select().from(orgAutopayEnrollments));expect(enrollment?.needsAttentionReason).toBe('verification_failed');
@@ -231,7 +234,8 @@ it('late bank verification cannot replace a newer activated card',async()=>{
 it('queues the persisted bank for detach when failed verification has no provider payment_method',async()=>{
  const f=await verificationFixture(),bank={id:'pm_verify',type:'us_bank_account',customer:null} as Stripe.PaymentMethod;
  await persistCapturedAutopayMethod(f.attempt.id,bank,'pending_verification','seti_verify',null);
- await vi.waitFor(()=>expect(notifyAutopayStaff).toHaveBeenCalledTimes(1));vi.mocked(notifyAutopayStaff).mockClear();
+ // FP-11: no staff "enabled" while the bank waits for verification.
+ await new Promise(resolve=>setImmediate(resolve));expect(notifyAutopayStaff).not.toHaveBeenCalled();
  const detach=vi.fn(async()=>({}));
  vi.mocked(getPartnerStripeClient).mockResolvedValue({stripeAccountId:'acct_verify',defaultCurrency:'USD',stripe:{
   setupIntents:{retrieve:vi.fn(async()=>({id:'seti_verify',status:'requires_payment_method',last_setup_error:{code:'verification_failed'},
@@ -351,4 +355,83 @@ it('reads the replacement method\'s own consent, not a newer one recorded for th
  expect(forOld).toMatchObject({paymentMethodId:f.dead.id,feeTerms:expect.objectContaining({cardFeeBps:300})});
  // Another generation's consent for the current method is not this authority either.
  expect(await withSystemDbAccessContext(()=>latestAutopayConsent(db,{...key,generation:2,methodId:current.id}))).toBeUndefined();
+});
+
+// F-1: an active client switching to a bank that needs microdeposits keeps the WORKING
+// method until the bank verifies. One autopay-method row per org holds throughout: the
+// pending bank waits beside it unflagged, and is swapped in only on activation.
+async function activeCardChangeFixture(){
+ const f=await verificationFixture();
+ const card=await withSystemDbAccessContext(async()=>{
+  await db.update(orgAutopayEnrollments).set({status:'active',effectiveFrom:new Date('2026-09-01')}).where(eq(orgAutopayEnrollments.id,f.enrollment.id));
+  const [row]=await db.insert(orgPaymentMethods).values({orgId:f.org.id,enrollmentId:f.enrollment.id,stripePaymentMethodId:'pm_card_working',
+   type:'card',cardBrand:'visa',cardFunding:'credit',cardLast4:'4242',status:'active',isAutopayMethod:true}).returning();
+  return row!;
+ });
+ vi.mocked(getPartnerStripeClient).mockResolvedValue({stripeAccountId:'acct_verify',defaultCurrency:'USD',stripe:{paymentMethods:{
+  retrieve:vi.fn(async()=>({customer:'cus_verify'})),detach:vi.fn(async()=>({}))}}} as any);
+ return {...f,card};
+}
+const manualBank={id:'pm_bank_manual',type:'us_bank_account',customer:null,us_bank_account:{last4:'6789',bank_name:'STRIPE TEST BANK',account_holder_type:'individual'}} as unknown as Stripe.PaymentMethod;
+const methodsOf=(orgId:string)=>withSystemDbAccessContext(()=>db.select().from(orgPaymentMethods).where(eq(orgPaymentMethods.orgId,orgId)));
+it('a pending bank waits beside the working card, which stays the autopay method (F-1)',async()=>{
+ const f=await activeCardChangeFixture();
+ expect((await persistCapturedAutopayMethod(f.attempt.id,manualBank,'pending_verification','seti_change',null)).outcome).toBe('pending_verification');
+ const methods=await methodsOf(f.org.id);
+ expect(methods.find(m=>m.id===f.card.id)).toMatchObject({status:'active',isAutopayMethod:true,removedAt:null});
+ expect(methods.find(m=>m.stripePaymentMethodId==='pm_bank_manual')).toMatchObject({status:'pending_verification',isAutopayMethod:false});
+ const notices=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId,f.org.id)));
+ const text=(notices.find(n=>n.kind==='autopay_enrolled')!.rendered as {text:string}).text;
+ expect(text).toContain('Until it\'s verified, we\'ll keep using your Visa credit card ending in 4242');
+ expect(text).not.toMatch(/no automatic payments are made/i);
+ // FP-11: staff hear about it once it is verified (or fails), not "enabled" while it waits.
+ await new Promise(resolve=>setImmediate(resolve));
+ expect(notifyAutopayStaff).not.toHaveBeenCalled();
+});
+it('verification swaps the bank in and retires the card, keeping one autopay-method row (F-1)',async()=>{
+ const f=await activeCardChangeFixture();
+ await persistCapturedAutopayMethod(f.attempt.id,manualBank,'pending_verification','seti_change',null);
+ expect((await persistCapturedAutopayMethod(f.attempt.id,{...manualBank,customer:'cus_verify'} as Stripe.PaymentMethod,'activated','seti_change','mandate_change')).outcome).toBe('activated');
+ const methods=await methodsOf(f.org.id);
+ expect(methods.filter(m=>m.isAutopayMethod).map(m=>[m.stripePaymentMethodId,m.status])).toEqual([['pm_bank_manual','active']]);
+ expect(methods.find(m=>m.id===f.card.id)).toMatchObject({status:'removed',isAutopayMethod:false,removedAt:expect.any(Date)});
+ const notices=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId,f.org.id)));
+ const verified=notices.find(n=>n.dedupeKey===`${f.attempt.id}:autopay_enrolled:verified`)!;
+ expect((verified.rendered as {subject:string}).subject).toBe('Your bank account is verified: your payment method has changed with Example MSP');
+ await vi.waitFor(()=>expect(notifyAutopayStaff).toHaveBeenCalledWith(expect.objectContaining({event:'autopay.method_updated',
+  message:'Payment method updated: the bank account is verified.'})));
+});
+it('a failed verification keeps the card, tells the client, and staff hear the same (F-1)',async()=>{
+ const f=await activeCardChangeFixture();
+ await persistCapturedAutopayMethod(f.attempt.id,manualBank,'pending_verification','seti_change',null);
+ for(let i=0;i<2;i++)expect((await persistCapturedAutopayMethod(f.attempt.id,manualBank,'failed','seti_change',null)).outcome).toBe('failed');
+ const methods=await methodsOf(f.org.id);
+ expect(methods.find(m=>m.id===f.card.id)).toMatchObject({status:'active',isAutopayMethod:true});
+ expect(methods.find(m=>m.stripePaymentMethodId==='pm_bank_manual')).toMatchObject({status:'unusable',isAutopayMethod:false});
+ const [enrollment]=await withSystemDbAccessContext(()=>db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.id,f.enrollment.id)));
+ expect(enrollment).toMatchObject({status:'active',needsAttentionReason:null});
+ const notices=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId,f.org.id)));
+ const failed=notices.filter(n=>n.dedupeKey===`${f.attempt.id}:autopay_enrolled:verification_failed`);
+ expect(failed).toHaveLength(1);
+ const rendered=failed[0]!.rendered as {subject:string;text:string};
+ expect(rendered.subject).toBe("We couldn't verify your bank account for Example MSP");
+ expect(rendered.text).toContain('Your automatic payments continue with your Visa credit card ending in 4242.');
+ await vi.waitFor(()=>expect(notifyAutopayStaff).toHaveBeenCalledWith(expect.objectContaining({event:'autopay.needs_attention',
+  message:'Bank verification failed. Automatic payments continue with the previous payment method.'})));
+});
+it('a first-time bank that fails verification tells the client to set up again (F-1)',async()=>{
+ const f=await verificationFixture();
+ await persistCapturedAutopayMethod(f.attempt.id,manualBank,'pending_verification','seti_first',null);
+ await persistCapturedAutopayMethod(f.attempt.id,manualBank,'failed','seti_first',null);
+ const notices=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId,f.org.id)));
+ const rendered=notices.find(n=>n.dedupeKey===`${f.attempt.id}:autopay_enrolled:verification_failed`)!.rendered as {text:string};
+ expect(rendered.text).toContain("Automatic payments aren't set up yet.");
+ expect(rendered.text).toMatch(/Set up automatic payments: https?:\/\/\S+\/autopay\/\S+/);
+});
+it('a stop also retires a bank still waiting for verification beside the working method (F-1)',async()=>{
+ const f=await activeCardChangeFixture();
+ await persistCapturedAutopayMethod(f.attempt.id,manualBank,'pending_verification','seti_change',null);
+ await withSystemDbAccessContext(()=>stopAutopayByClient(db,{orgId:f.org.id,source:'portal'}));
+ const methods=await methodsOf(f.org.id);
+ expect(methods.every(m=>m.status==='removed'&&!m.isAutopayMethod)).toBe(true);
 });

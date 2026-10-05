@@ -27,6 +27,10 @@ export interface AutopayNoticeContext {
   openInvoices?: { number: string; amount: string; currency?: string; url: string }[];
   notes?: string[];
   terms?: { title: string; paragraphs: string[] };
+  /** Use the product's copy for this variant even when the partner customized the template:
+   * their generic "you're set up" wording would be untrue here (paused, a failed
+   * verification, a method change). */
+  locked?: boolean;
 }
 const safeUrl = (value: string | undefined): string | null => {
   if (!value) return null;
@@ -40,7 +44,7 @@ export async function renderAutopayNotice(kind: EnrollmentNoticeKind, ctx: Autop
   const stop = safeUrl(ctx.stopUrl);
   const links: BillingEmailLink[] = [...(ctx.links ?? []), ...(stop ? [{ label: 'Stop automatic payments', url: stop }] : [])];
   const rendered = renderBillingEmail({ id: kind, variant: ctx.variant,
-    custom: partnerEmailCustomFromSettings(partner.settings, kind), vars: ctx.vars, brandName: ctx.vars.partner_name ?? '',
+    custom: ctx.locked ? null : partnerEmailCustomFromSettings(partner.settings, kind), vars: ctx.vars, brandName: ctx.vars.partner_name ?? '',
     ctaUrl: ctx.ctaUrl, preheader: ctx.preheader,
     lockedParagraphs: ctx.processingText?.split('\n').map(line => line.trim()).filter(Boolean),
     summary: ctx.summary, links,

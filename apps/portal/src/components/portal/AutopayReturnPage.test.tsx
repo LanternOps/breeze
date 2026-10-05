@@ -215,3 +215,21 @@ it('a return refused because automatic payments are switched off explains itself
   expect(screen.getByTestId('autopay-identity')).toHaveTextContent('Example MSP');
   expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
 });
+
+// F-1: a working method stays in use while a new bank waits for verification.
+it('a bank change waiting for verification says the current method stays in use', async () => {
+  at('target=portal&session_id=cs_change');
+  vi.mocked(apiPost).mockResolvedValue(outcome({ outcome: 'pending_verification', methodLabel: 'Bank account ending in 6789',
+    current: { status: 'active', methodLabel: 'Visa credit card ending in 4242' } }));
+  render(<AutopayReturnPage />);
+  expect(await screen.findByRole('heading', { name: 'Verify your bank account' })).toBeInTheDocument();
+  expect(screen.getByText(/Until it's verified, we'll keep using your Visa credit card ending in 4242 for automatic payments\./)).toBeInTheDocument();
+  expect(document.body.textContent).not.toMatch(/No automatic payments are made until/);
+});
+it('a failed bank change says automatic payments continue with the current method', async () => {
+  at('target=public&session_id=cs_failed'); sessionStorage.setItem('autopay-return-token', 'test-token');
+  vi.mocked(apiPost).mockResolvedValue(outcome({ outcome: 'failed', methodLabel: null, current: { status: 'active', methodLabel: 'Visa credit card ending in 4242' } }));
+  render(<AutopayReturnPage />);
+  expect(await screen.findByRole('heading', { name: "Your setup didn't finish" })).toBeInTheDocument();
+  expect(screen.getByText(/Your automatic payments continue with your Visa credit card ending in 4242\./)).toBeInTheDocument();
+});

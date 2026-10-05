@@ -163,6 +163,8 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
     case 'outcome': {
       const r = phase.result;
       const method = paymentMethodInSentence(r.methodLabel ?? 'payment method');
+      // The method still in use when this setup didn't (yet) replace it.
+      const keeps = r.current?.status === 'active' && r.current.methodLabel && r.current.methodLabel !== r.methodLabel ? r.current.methodLabel : null;
       const body = (() => {
         switch (r.outcome) {
           case 'activated':
@@ -181,12 +183,16 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
           case 'pending_verification':
             return <StatePanel mark={{ tone: 'warning', label: 'One more step' }} title="Verify your bank account" primary={back}>
               <p>{`Your ${method} is saved. Stripe will email you instructions to verify it, usually within 1–2 business days.`}</p>
-              <p>No automatic payments are made until it's verified, and we'll email you when it's done.</p>
+              {/* F-1: a working method stays in use until the new bank verifies. */}
+              <p>{keeps
+                ? `Until it's verified, we'll keep using your ${paymentMethodInSentence(keeps)} for automatic payments. We'll email you when it's done.`
+                : "No automatic payments are made until it's verified, and we'll email you when it's done."}</p>
             </StatePanel>;
           case 'failed':
             return <StatePanel mark={{ tone: 'destructive', label: 'Not set up' }} title="Your setup didn't finish" tone="alert"
               primary={restart('Try again')}>
               <p>Stripe couldn't save your payment method, so nothing was set up and nothing was charged.</p>
+              {keeps && <p>{`Your automatic payments continue with your ${paymentMethodInSentence(keeps)}.`}</p>}
               {!restartHref && noLinkHint}
             </StatePanel>;
           case 'abandoned':

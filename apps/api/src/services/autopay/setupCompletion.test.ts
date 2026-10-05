@@ -90,7 +90,7 @@ describe('completion fences',()=>{
   const value=attempt({methodType:'us_bank_account'});
   m.intent.mockResolvedValue({...await m.intent(),status:'requires_action',next_action:{type:'verify_with_microdeposits'}});
   m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one'});
-  queueAuthority(value);m.rows.push([],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
+  queueAuthority(value);m.rows.push([],[],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
   expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('pending_verification');
   expect(m.writes).toContainEqual(expect.objectContaining({status:'active',effectiveFrom:expect.any(Date)}));
   expect(m.writes).toContainEqual(expect.objectContaining({status:'pending_verification',isAutopayMethod:true}));
@@ -151,7 +151,7 @@ describe('completion fences',()=>{
   expect(m.writes).toEqual([]);expect(m.method).not.toHaveBeenCalled();
  });
  it('normalizes unknown bank account-holder values without persisting unsupported enums',async()=>{
-  queueAuthority(attempt({methodType:'us_bank_account'}));m.rows.push([],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
+  queueAuthority(attempt({methodType:'us_bank_account'}));m.rows.push([],[],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
   m.intent.mockResolvedValue({...await m.intent(),status:'requires_action',next_action:{type:'verify_with_microdeposits'}});
   m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one',us_bank_account:{account_holder_type:'new_provider_value'}});
   await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'});
@@ -166,7 +166,7 @@ it.each(['processing','requires_confirmation','requires_payment_method'])('keeps
  expect(m.writes).toEqual([]);expect(m.mint).not.toHaveBeenCalled();
 });
 it('allows an unverified bank without a PaymentMethod customer',async()=>{
- queueAuthority(attempt({methodType:'us_bank_account'}));m.rows.push([],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
+ queueAuthority(attempt({methodType:'us_bank_account'}));m.rows.push([],[],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
  m.intent.mockResolvedValue({...await m.intent(),status:'requires_action',next_action:{type:'verify_with_microdeposits'}});
  m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:null});
  expect((await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'})).outcome).toBe('pending_verification');
@@ -204,7 +204,8 @@ it('queues a late provider capture after the attempt was terminally failed',asyn
 it('queues stored pending methods when a failed SetupIntent omits payment_method',async()=>{
  const {runAfterDbContextExit}=await import('../../db');
  queueAuthority(attempt({methodType:'us_bank_account',outcome:'pending_verification'}));
- m.rows.push([{id:'stored_bank'}],[]);
+ // The failed bank, no working method left, the two updates, then the partner for the client's email (F-1).
+ m.rows.push([{id:'stored_bank'}],[],[],[],[{settings:{}}]);
  m.intent.mockResolvedValue({...await m.intent(),status:'requires_payment_method',last_setup_error:{code:'verification_failed'},payment_method:null});
  expect((await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'})).outcome).toBe('failed');
  expect(m.writes).toContainEqual(expect.objectContaining({status:'unusable',unusableReason:'verification_failed',isAutopayMethod:false,
@@ -369,7 +370,7 @@ it('a bank account awaiting verification gets the one-more-step email, with its 
   m.rows.push([value],[{id:value.orgId,name:'Example client',status:'active',deletedAt:null,billingContact:{email:'billing@example.test',name:'Pat Lee'}}],
     [{id:value.enrollmentId,status:'requested',generation:3,stripeAccountId:'acct_one',stripeCustomerId:'cus_one',effectiveFrom:null}],
     [value],[{id:value.id}],[{id:value.stripeConnectionId,stripeAccountId:'acct_one',status:'connected'}],
-    [],[],[{id:'method_one'}],[],[],[],[{settings:{}}]);
+    [],[],[],[{id:'method_one'}],[],[],[],[{settings:{}}]);
   m.mint.mockResolvedValue({id:'stop',token:'stop-token'});
   const method={id:'pm_one',type:'us_bank_account',customer:'cus_one',us_bank_account:{last4:'6789',bank_name:'STRIPE TEST BANK',account_holder_type:'individual'}} as Parameters<typeof persistCapturedAutopayMethod>[1];
   expect(await persistCapturedAutopayMethod(value.id,method,'pending_verification','seti_one',null)).toEqual({outcome:'pending_verification',orgId:value.orgId});

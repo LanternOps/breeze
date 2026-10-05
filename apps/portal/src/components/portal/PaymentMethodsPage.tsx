@@ -95,7 +95,11 @@ function summarize(data: AutopayPortalPage, msp: string): Summary {
       update: canUpdate ? { label: 'Use a different method', primary: false } : null };
   }
   const soon = !!method && expiringSoon(method);
-  return { tone: 'success', label: 'On', lines: [...methodLines,
+  // F-1: a new bank waits for verification beside the method still in use.
+  const pending = 'pendingMethod' in data && data.pendingMethod && method
+    ? [<p key="pending" className="text-sm" data-testid="autopay-pending-method">{`Your ${paymentMethodInSentence(savedMethodLabel(data.pendingMethod))} is waiting for verification. Until it's verified, we'll keep using your ${paymentMethodInSentence(savedMethodLabel(method))}.`}</p>]
+    : [];
+  return { tone: 'success', label: 'On', lines: [...methodLines, ...pending,
     ...(enrollment.effectiveFrom ? [<p key="since" className="text-sm text-muted-foreground">{`On since ${longDate(enrollment.effectiveFrom)}`}</p>] : []),
     <p key="notice">We email you the amount and date before each payment.</p>,
     ...(data.stopOnly ? [<p key="off" className="text-muted-foreground">Changing your payment method isn't available right now.</p>] : [])],
@@ -114,12 +118,16 @@ export default function PaymentMethodsPage() {
   const [view, setView] = useState<View>('summary');
   const [refresh, setRefresh] = useState(0);
   const [stopped, setStopped] = useState(false);
+  const [notEnabled, setNotEnabled] = useState(false);
   const [stoppedBank, setStoppedBank] = useState(false);
   useEffect(() => {
     let current = true;
     void apiGet<AutopayPortalPage>('/portal/payment-methods').then(result => {
       if (!current) return;
-      if (result.data) { setData(result.data); setError(false); } else if (!stopped) setError(true);
+      if (result.data) { setData(result.data); setError(false); }
+      // FP-9: never enrolled while the MSP has automatic payments switched off.
+      else if (result.statusCode === 404 && result.code === 'autopay_not_enabled' && !stopped) setNotEnabled(true);
+      else if (!stopped) setError(true);
     }).catch(() => { if (current && !stopped) setError(true); });
     return () => { current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -133,6 +141,17 @@ export default function PaymentMethodsPage() {
         action={<button type="button" className={BTN_SECONDARY} onClick={() => window.location.reload()}>Refresh</button>}>
         <p>Please refresh in a moment. Nothing about your payments has changed.</p>
       </Notice>
+    </div>;
+  }
+  if (notEnabled && !data) {
+    return <div className="space-y-6" data-testid="autopay-payment-methods">{header}
+      <section aria-labelledby="autopay-section" className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 pb-2.5">
+          <h2 id="autopay-section" className={cn(TH, 'p-0')}>Automatic payments</h2>
+          <StatusMark tone="neutral" data-testid="autopay-status">Not set up</StatusMark>
+        </div>
+        <p className="text-sm leading-relaxed text-foreground/85">Automatic payments aren't available for your account right now. You can pay each invoice from its email or from <a className={LINK} href={withBase('/invoices')}>Invoices</a>.</p>
+      </section>
     </div>;
   }
   if (!data) return <div>{header}<p className="text-sm text-muted-foreground" aria-busy="true">Loading your payment details…</p></div>;

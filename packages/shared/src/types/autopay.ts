@@ -85,6 +85,8 @@ export interface AutopayCustomerPage {
  disclosures:Record<AutopayPaymentMethodType,AutopayDisclosure>;
  fees:Record<AutopayPaymentMethodType|'debit',{text:string;feeAmount:string;kind:'none'|'card_percent'|'ach_flat';appliedBps:number|null;reason:string}>;
  enrollment:AutopayEnrollmentView|null;method:AutopayMethodView|null;processingWarning:string;
+ /** F-1: a new bank account waiting for microdeposit verification while `method` stays in use. */
+ pendingMethod?:AutopayMethodView|null;
 }
 /** Minimal portal read model when enrollment setup is disabled. */
 export type AutopayStopOnlyPage = Pick<AutopayCustomerPage,

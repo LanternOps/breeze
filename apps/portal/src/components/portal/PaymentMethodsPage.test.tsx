@@ -220,3 +220,20 @@ it.each([['STRIPE TEST BANK', 'Stripe Test Bank'], ['BANK OF AMERICA, N.A.', 'Ba
   const { bankDisplayName } = await import('./PaymentMethodsPage');
   expect(bankDisplayName(raw)).toBe(shown);
 });
+
+// F-1: a new bank waiting for verification beside the working method is shown, with what is used meanwhile.
+it('a bank waiting for verification beside the working card says the card stays in use', async () => {
+  page({ status: 'active', needsAttentionReason: null }, card, { pendingMethod: { ...bank, status: 'pending_verification' } });
+  expect(await status()).toHaveTextContent('On');
+  expect(screen.getByTestId('autopay-saved-method')).toHaveTextContent('Visa credit card ending in 4242');
+  expect(screen.getByTestId('autopay-pending-method')).toHaveTextContent(
+    "Your bank account ending in 6789 is waiting for verification. Until it's verified, we'll keep using your Visa credit card ending in 4242.");
+});
+// FP-9: never enrolled while switched off: a styled explanation, not a bare "Not Found".
+it('a page refused because automatic payments are not enabled says so in the page', async () => {
+  vi.mocked(apiGet).mockResolvedValue({ statusCode: 404, code: 'autopay_not_enabled', error: 'Automatic payments are not enabled' } as never);
+  render(<PaymentMethodsPage />);
+  expect(await status()).toHaveTextContent('Not set up');
+  expect(screen.getByText(/Automatic payments aren't available for your account right now/)).toBeInTheDocument();
+  expect(screen.queryByTestId('autopay-payment-methods-error')).toBeNull();
+});

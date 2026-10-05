@@ -4,7 +4,7 @@ import { HTTPException } from 'hono/http-exception';
 import { formatPaymentMethod, type AutopayCustomerPage,type AutopayEnrollmentView,type AutopayLinkFailure,type AutopayMethodView,type AutopayPortalPage,type AutopaySetupResult,type AutopayStopView,type BillingLinkPurpose } from '@breeze/shared';
 import { formatStripePaymentMethod } from './methodLabel';
 import { db,runOutsideDbContext,withSystemDbAccessContext } from '../../db';
-import { invoices,organizations,partners,portalBranding,orgAutopayEnrollments,billingLinkTokens } from '../../db/schema';
+import { invoices,organizations,partners,portalBranding,orgAutopayEnrollments,billingLinkTokens,orgPaymentMethods } from '../../db/schema';
 import { autopaySetupAttempts } from '../../db/schema/autopaySetupAttempts';
 import { inspectBillingLinkToken, resolveBillingLinkToken } from './linkTokens';
 import { loadAutopayBranding } from './customerBranding';
@@ -138,8 +138,11 @@ export async function getAutopayCustomerPage(orgId:string,options?:{allowStopOnl
       res:Response.json({error:'Automatic payments are not enabled',code:'autopay_not_enabled'},{status:404}),
     });
     const method=await getAutopayMethod(db,orgId);
+    // F-1: a bank waiting for verification beside the working method (unflagged until it verifies).
+    const [pending]=enrollment&&method?.status==='active'?await db.select().from(orgPaymentMethods).where(and(eq(orgPaymentMethods.orgId,orgId),
+      eq(orgPaymentMethods.enrollmentId,enrollment.id),eq(orgPaymentMethods.isAutopayMethod,false),eq(orgPaymentMethods.status,'pending_verification'))).limit(1):[];
     const summary={orgId,orgName:org.name,partnerName:partner?.name??'',supportEmail:partner?.billingEmail??null,
-      enrollment:enrollmentView(enrollment),method:methodView(method),
+      enrollment:enrollmentView(enrollment),method:methodView(method),pendingMethod:pending?methodView(pending):null,
       processingWarning:'A payment already processing may still complete after you stop automatic payments.'};
     if(stopOnly)return {...summary,stopOnly:true};
     const card=await buildAutopayDisclosure(db,orgId,'card');

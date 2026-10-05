@@ -349,6 +349,20 @@ const VARIANT_DEFAULTS: Record<string, Partial<EmailTemplateFieldDefaults>> = {
     heading: 'Your bank account is verified', html: `<p>Hi {{client_name}},</p>
 <p>Stripe has verified your bank account, so automatic payments with {{partner_name}} are now on.</p>
 <p>Any invoice we've already emailed you about with a payment date will be charged as that email described. For new invoices, we'll email you the amount and date before each payment.</p>` },
+  // F-1: an active client's new bank account needs verifying; the working method stays in use.
+  'autopay_enrolled:pending_change': { subject: 'One more step: verify your bank account for {{partner_name}}',
+    heading: 'Verify your bank account', html: `<p>Hi {{client_name}},</p>
+<p>Your {{payment_method}} is saved, but it needs to be verified before {{partner_name}} can use it.</p>
+<p>Stripe, our payment processor, will email you instructions, usually within 1–2 business days. Follow them to finish verifying your account.</p>` },
+  'autopay_enrolled:verified_change': { subject: 'Your bank account is verified: your payment method has changed with {{partner_name}}',
+    heading: 'Your bank account is verified', html: `<p>Hi {{client_name}},</p>
+<p>Stripe has verified your {{payment_method}}. From now on, automatic payments with {{partner_name}} use it.</p>` },
+  'autopay_enrolled:method_changed': { subject: 'Your payment method has changed with {{partner_name}}',
+    heading: 'Your payment method has changed', html: `<p>Hi {{client_name}},</p>
+<p>From now on, automatic payments with {{partner_name}} use your {{payment_method}}.</p>` },
+  'autopay_enrolled:verification_failed': { subject: "We couldn't verify your bank account for {{partner_name}}",
+    heading: "We couldn't verify your bank account", html: `<p>Hi {{client_name}},</p>
+<p>Stripe couldn't verify your {{payment_method}}, so it wasn't saved and nothing was charged from it.</p>` },
   // R1: a method saved (or a bank account verified) while the MSP has automatic payments paused.
   'autopay_enrolled:paused': { subject: 'Your payment method is saved for {{partner_name}}',
     heading: 'Your payment method is saved', html: `<p>Hi {{client_name}},</p>

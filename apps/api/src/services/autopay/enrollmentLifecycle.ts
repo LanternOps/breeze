@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import {and,eq,gt,inArray,isNull,sql} from 'drizzle-orm';
+import {and,eq,gt,inArray,isNull,or,sql} from 'drizzle-orm';
 import {db as database,runAfterDbContextExit,withSystemDbAccessContext} from '../../db';
 import {organizations,partners,orgAutopayEnrollments,orgPaymentMethods,invoiceAutopaySchedules,invoiceCollectionAttempts,invoices,stripeConnectAccounts,billingNoticeOutbox,billingLinkTokens} from '../../db/schema';
 import {InvoiceServiceError,type InvoiceActor} from '../invoiceTypes';
@@ -258,8 +258,10 @@ async function stop(db:Tx,orgId:string,source:'client'|'msp',actor?:InvoiceActor
  // Read before cancelling: these schedules' charges were already announced to the client.
  const announced=await announcedCharges(db,{enrollmentId:enrollment.id,states:NON_TERMINAL_SCHEDULE_STATES});
  const pendingInvoices=await stopEnrollmentSchedules(db,enrollment.id);
+ // F-1: a bank still waiting for verification beside the working method goes too.
  const removed=await db.update(orgPaymentMethods).set({status:'removed',isAutopayMethod:false,removedAt:new Date()})
-  .where(and(eq(orgPaymentMethods.orgId,orgId),eq(orgPaymentMethods.isAutopayMethod,true),inArray(orgPaymentMethods.status,['active','pending_verification','unusable']))).returning();
+  .where(and(eq(orgPaymentMethods.orgId,orgId),or(and(eq(orgPaymentMethods.isAutopayMethod,true),inArray(orgPaymentMethods.status,['active','pending_verification','unusable'])),
+   eq(orgPaymentMethods.status,'pending_verification')))).returning();
  await revokeBillingLinkTokens(db,{orgId,enrollmentId:enrollment.id});
  const links=await openInvoiceLinks(db,orgId);
  const recipient=enrollment.requestRecipientEmail??contact(org.billingContact);
