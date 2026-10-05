@@ -18,6 +18,7 @@ import {lockInvoicesForEnrollmentStop,stopEnrollmentSchedules} from './collectio
 import {getAutopayMethod,detachPaymentMethodPostCommit} from './paymentMethods';
 import {enqueueAutopayStaffNotifications,sendAutopayStaffEmail,type AutopayStaffNotice} from './staffNotifications';
 import {buildAutopayDisclosure} from './consentText';
+import {lifecycleTransitionAt} from './lifecycleNoticeValidation';
 import type {AutopayNoticeContext} from './enrollmentNotices';
 import type { Tx } from './types';
 export const NON_TERMINAL_SCHEDULE_STATES=['awaiting_notice','scheduled','collecting','retry_scheduled','action_required'] as const;
@@ -72,6 +73,8 @@ async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect
  }
  const rendered=await renderBillingNotice(kind,{autopay:{partnerId:partner.id,orgId:org.id,
   vars:{partner_name:partner.name,org_name:org.name,client_name:org.name,...vars},ctaUrl:url,scheduleText,feeText,stopUrl,openInvoices,processingText}},db);
+ // Pause/resume/stop emails are revalidated at dispatch against this transition.
+ if(kind!=='autopay_request')rendered.frozen={...rendered.frozen,transitionAt:lifecycleTransitionAt(kind,enrollment)};
  await enqueueBillingNotice(db,{orgId:org.id,partnerId:partner.id,enrollmentId:enrollment.id,kind,
   seq:enrollment.generation,dedupeKey:dedupeKey??`${enrollment.id}:${kind}:${enrollment.generation}:${enrollment.cancelledAt?.toISOString()??enrollment.pausedAt?.toISOString()??(kind==='autopay_resumed'?enrollment.effectiveFrom?.toISOString():'request')}`,
   toEmail:recipient,rendered});

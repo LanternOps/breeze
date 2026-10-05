@@ -1,5 +1,6 @@
 import { validatePaymentActionNotice, validateReceiptNotice } from './paymentNoticeValidation';
 import { validateReminder } from './reminderValidation';
+import { LIFECYCLE_NOTICE_KINDS, validateLifecycleNotice } from './lifecycleNoticeValidation';
 import { and, asc, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import type { BillingNoticeKind } from '@breeze/shared';
 import { db, assertOutsideHeldDbContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -44,6 +45,7 @@ registerNoticePreSendValidator('payment_failed', validatePaymentActionNotice);
 registerNoticePreSendValidator('payment_receipt', validateReceiptNotice);
 registerNoticePreSendValidator('payment_reminder', validateReminder);
 registerNoticePreSendValidator('payment_overdue', validateReminder);
+for (const kind of LIFECYCLE_NOTICE_KINDS) registerNoticePreSendValidator(kind, validateLifecycleNotice);
 
 const scope = <T>(fn: () => Promise<T>) => withSystemDbAccessContext(fn);
 const owns = (row: Row) => and(eq(billingNoticeOutbox.id, row.id),
