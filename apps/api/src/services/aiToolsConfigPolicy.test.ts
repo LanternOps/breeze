@@ -1451,6 +1451,73 @@ describe('manage_policy_feature_link maintenance inlineSettings validation (#631
   });
 });
 
+// The tool cannot capture an execution authority (no MFA, no devices:execute
+// check), so a security write clears the stored auto-quarantine approval. The
+// edit is allowed, but the model must be told quarantine is now paused.
+describe('manage_policy_feature_link security auto-quarantine warning', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(getConfigPolicy).mockReset();
+    vi.mocked(addFeatureLink).mockReset();
+    vi.mocked(updateFeatureLink).mockReset();
+    canManagePartnerWidePoliciesMock.mockReset().mockReturnValue(true);
+    policyAccessConditionMock.mockReset().mockReturnValue(undefined);
+    enable2faState.value = true;
+  });
+
+  function toolsWithPolicy() {
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy' } as any);
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+    return tools;
+  }
+
+  it('warns that auto-quarantine needs re-approval when the added security link has it on', async () => {
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'security' } as any);
+
+    const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType: 'security',
+      inlineSettings: { autoQuarantine: true },
+    }, makeAuth());
+
+    const parsed = JSON.parse(output);
+    expect(parsed.success).toBe(true);
+    expect(parsed.warning).toMatch(/auto-quarantine/i);
+    expect(parsed.warning).toMatch(/devices:execute/);
+  });
+
+  it('warns on an update whose settings leave auto-quarantine at its default (on)', async () => {
+    const tools = toolsWithPolicy();
+    mockSelectRows([{ featureType: 'security' }]);
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'security' } as any);
+
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'update',
+      configPolicyId: POLICY_ID,
+      featureLinkId: 'link-1',
+      inlineSettings: { scanType: 'full' },
+    }, makeAuth());
+
+    expect(JSON.parse(output).warning).toMatch(/auto-quarantine/i);
+  });
+
+  it('does not warn when auto-quarantine is off', async () => {
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'security' } as any);
+
+    const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType: 'security',
+      inlineSettings: { autoQuarantine: false },
+    }, makeAuth());
+
+    expect(JSON.parse(output)).not.toHaveProperty('warning');
+  });
+});
+
 describe('manage_policy_feature_link compliance validation + rejection hints (#6669)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -1739,7 +1739,11 @@
     },
     "schedule": {
       "everyHours": "Her {{hours}}h",
-      "manual": "Kılavuz"
+      "manual": "Kılavuz",
+      "reapprovalRequired": "Yeniden onay gerekli",
+      "reapprovalTitle": "Zamanlanmış taramalar, devices:execute iznine sahip bir kullanıcı bu temel yapılandırmayı yeniden kaydedene kadar duraklatıldı.",
+      "approverInvalidTitle": "Zamanlanmış taramalar durduruldu: onaylayan {{name}} artık devices:execute erişimine sahip değil. Bu izne sahip bir kullanıcının bu temel yapılandırmayı yeniden kaydetmesi gerekir.",
+      "unknownApprover": "(bilinmeyen kullanıcı)"
     },
     "status": {
       "active": "Aktif",
