@@ -90,6 +90,8 @@ it.each([
     expect(body).not.toContain(date);
     expect(body).not.toContain('One retry may follow');
   }
+  // V2-5: the date it states is frozen, so a later "will not happen" cites the retry, not the first notice.
+  expect(h.enqueue.mock.calls.at(-1)![1].rendered.frozen).toMatchObject({ retryOn: `${date}T14:00:00.000Z` });
 });
 it.each([
   ['an NSF retry that already failed', { failureClass: 'nsf', attemptNo: 2 }, { state: 'failed', attemptCount: 2, nextAttemptAt: null }],

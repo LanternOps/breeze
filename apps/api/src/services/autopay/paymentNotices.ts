@@ -174,8 +174,9 @@ export async function enqueueAttemptNotice(tx: Tx, attemptId: string,
   // after the last soft/NSF retry, for hard failures and for unscheduled attempts).
   const [schedule] = variant === 'pay' && attempt.scheduleId ? await tx.select().from(invoiceAutopaySchedules)
     .where(eq(invoiceAutopaySchedules.id, attempt.scheduleId)).limit(1) : [];
-  const retryOn = schedule && schedule.id === attempt.scheduleId && schedule.state === 'retry_scheduled'
-    && schedule.attemptCount === attempt.attemptNo && schedule.nextAttemptAt ? emailDate(schedule.nextAttemptAt) : null;
+  const retryAt = schedule && schedule.id === attempt.scheduleId && schedule.state === 'retry_scheduled'
+    && schedule.attemptCount === attempt.attemptNo && schedule.nextAttemptAt ? schedule.nextAttemptAt : null;
+  const retryOn = retryAt ? emailDate(retryAt) : null;
   const noRetry = NO_AUTOMATIC_RETRY;
   const methodLabel = method ? formatPaymentMethod(method) : null;
   const money = (amount: string) => emailMoney(amount, attempt.currency);
@@ -205,7 +206,9 @@ export async function enqueueAttemptNotice(tx: Tx, attemptId: string,
   const rendered = await renderBillingNotice('payment_failed', { payment: { id: 'payment_failed', vars, secondaryAction, variant: copyVariant,
     custom: partnerEmailCustomFromSettings(partner!.settings, 'payment_failed'), frozen: { attemptId, variant, tokenId, returnIdentity: returnIdentity ?? null,
       invoiceNumber: invoice!.invoiceNumber ?? null, partnerName: partner!.name, methodLabel,
-      currency: attempt.currency, attemptedAmount: attempted, attemptFee: attempt.feeAmount, payNowAmount: invoice!.balance } } });
+      currency: attempt.currency, attemptedAmount: attempted, attemptFee: attempt.feeAmount, payNowAmount: invoice!.balance,
+      // V2-5: the retry date this email gives, so a later "will not happen" cites it.
+      ...(retryAt ? { retryOn: retryAt.toISOString() } : {}) } } });
   await enqueueBillingNotice(tx, { orgId: attempt.orgId, partnerId: invoice!.partnerId, invoiceId: invoice!.id,
     kind: 'payment_failed', seq: 1, dedupeKey, toEmail: email, rendered });
 }

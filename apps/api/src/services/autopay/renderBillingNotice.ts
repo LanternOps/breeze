@@ -180,6 +180,8 @@ const reminderRenderData = z.object({
   notChargedReason: z.string().optional(),
   /** not_charged: the date the cancelled charge was announced for (YYYY-MM-DD), if known. */
   announcedFor: z.string().nullable().optional(),
+  /** not_charged (V2-5): the retry date the client was last given, which wins over announcedFor. */
+  retryOn: z.string().nullable().optional(),
 });
 const LOCKED_REMINDER_COPY = {
   skipped: { subject: 'Automatic payment skipped for invoice {{invoice_number}}', heading: 'This payment is skipped', buttonLabel: 'Pay invoice',
@@ -198,7 +200,8 @@ async function renderReminder(
   }
   const lockedCopy = r.variant ? LOCKED_REMINDER_COPY[r.variant] : null;
   // The announced date is ours (not a partner var): written into the locked copy, escaped.
-  const announcedOn = r.announcedFor ? ` to take on or around ${escapeHtml(emailDate(r.announcedFor))}` : '';
+  const announcedOn = r.retryOn ? ` to try again on or after ${escapeHtml(emailDate(r.retryOn))}`
+    : r.announcedFor ? ` to take on or around ${escapeHtml(emailDate(r.announcedFor))}` : '';
   // The reason is ours too (a fixed sentence per reason, carrying the MSP's name): escaped.
   // Function replacers: an MSP name with $& or $' is inserted literally (R11).
   const reason = escapeHtml(r.notChargedReason ?? `${r.partnerName} will not charge this invoice automatically.`);

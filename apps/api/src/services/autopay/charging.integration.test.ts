@@ -2383,6 +2383,10 @@ it.each([['within',1],['past',3]] as const)('a deferred retry %s the grace (G2)'
    failureClass:'soft',failureCode:'card_declined',initiatedBy:'scheduler',createdAt:firstAt,updatedAt:firstAt});
   await db.update(invoiceAutopaySchedules).set({state:'retry_scheduled',stateReason:'soft',attemptCount:1,
    collectOn:firstAt.toISOString().slice(0,10),nextAttemptAt:new Date(now.getTime()-3_600_000)}).where(eq(invoiceAutopaySchedules.id,f.schedule.id));
+  // The failure email told the client the retry date (V2-5).
+  await db.insert(billingNoticeOutbox).values({orgId:f.org.id,invoiceId:f.invoice.id,enrollmentId:f.enrollment.id,kind:'payment_failed',seq:1,
+   dedupeKey:`${f.invoice.id}:payment_failed:retry`,toEmail:'billing@example.test',status:'sent',sentAt:firstAt,
+   rendered:{subject:'Payment failed',html:'<p>x</p>',text:'x',frozen:{variant:'pay',retryOn:new Date(firstAt.getTime()+3*86_400_000).toISOString()}}});
  });
  await deferFor(f,'charging_disabled');
  await runAutopayCollection(now);
@@ -2391,8 +2395,11 @@ it.each([['within',1],['past',3]] as const)('a deferred retry %s the grace (G2)'
   expect((await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder')).toEqual([]);
  }else{
   expect(await scheduleFor(f)).toMatchObject({state:'cancelled',stateReason:'charging_on_hold',nextAttemptAt:null});
-  expect((await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder')).toEqual([
-   expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`})]);
+  const told=(await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder');
+  expect(told).toEqual([expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`})]);
+  // V2-5: the date the client was last given is the retry, not the first notice's date.
+  const retryDay=new Intl.DateTimeFormat('en-US',{month:'long',day:'numeric',year:'numeric',timeZone:'UTC'}).format(new Date(firstAt.getTime()+3*86_400_000));
+  expect((told[0]!.rendered as {text:string}).text).toContain(`The automatic payment we planned to try again on or after ${retryDay} will not happen.`);
  }
  expect(provider.create).not.toHaveBeenCalled();
 });

@@ -99,7 +99,7 @@ export async function noticeChargeNotMade(tx: Tx, input: { invoiceId: string; re
           dueDate: invoice.dueDate, daysOverdue: 0, payLink: buildPublicInvoiceUrl(link.token),
           partnerName: partner.name, orgName: org.name, clientName: clientNameFor(org.billingContact, org.name),
           partnerSettings: partner.settings, variant: 'not_charged', notChargedReason: clientReason(input.reason, partner.name),
-          announcedFor: announced.chargeDate } }, tx);
+          announcedFor: announced.chargeDate, retryOn: announced.retryOn ?? null } }, tx);
       // One notice per announcement: a re-noticed charge that is stopped again is told again.
       await enqueueBillingNotice(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
         kind: 'payment_reminder', seq: 0, dedupeKey: `invoice:${invoice.id}:not_charged:${announced.noticeSeq}`, toEmail: recipient, rendered });
