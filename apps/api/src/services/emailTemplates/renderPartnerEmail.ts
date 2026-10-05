@@ -8,6 +8,7 @@ import {
 } from '@breeze/shared';
 import { escapeHtml, renderButton, renderLayout } from '../emailLayout';
 import { sanitizeRichTextHtml } from '../richTextSanitize';
+import { htmlToText } from '../inboundEmail/htmlToText';
 import {
   defaultButtonLabel,
   defaultFooter,
@@ -38,6 +39,9 @@ export interface RenderPartnerEmailArgs {
   bodyBeforeCta?: string;
   /** Already-escaped HTML inserted after the CTA. */
   bodyAfterCta?: string;
+  /** A notice variant (e.g. payment_failed 'confirm'): picks that variant's default
+   * subject, heading, button and body. A partner's saved override still wins. */
+  variant?: string;
   /** Ticket number / subject used only to build default subject lines. */
   internalNumber?: string | null;
   ticketSubject?: string;
@@ -143,6 +147,14 @@ function applyCta(
   return inner.replaceAll(sentinel, '');
 }
 
+/** The text-part twin of applyCta: the button is a "label: url" line where it sits. */
+function ctaAsText(inner: string, id: EmailTemplateId, ctaUrl: string | undefined, label: string, sentinel: string): string {
+  const safeUrl = ctaUrl && isSafeHttpUrl(ctaUrl) ? ctaUrl : null;
+  const line = emailTemplateHasCta(id) && safeUrl ? `<p>${escapeHtml(label)}: ${escapeHtml(safeUrl)}</p>` : '';
+  if (inner.includes(sentinel)) return inner.replaceAll(sentinel, line);
+  return `${inner}${line}`;
+}
+
 function spliceBeforeCta(inner: string, beforeCta: string | undefined, sentinel: string): string {
   if (!beforeCta) return inner;
   if (inner.includes(sentinel)) {
@@ -151,7 +163,17 @@ function spliceBeforeCta(inner: string, beforeCta: string | undefined, sentinel:
   return `${inner}${beforeCta}`;
 }
 
-export function renderPartnerEmail(args: RenderPartnerEmailArgs): { subject: string; html: string } {
+export interface RenderedPartnerEmail {
+  subject: string; html: string;
+  /** The heading and preheader as rendered. */
+  heading: string; preheader: string;
+  /** The (partner-editable) body as plain text, the button written as "label: url".
+   * Excludes the layout chrome, the preheader and bodyAfterCta: a caller composing a
+   * text part adds its own locked blocks once. */
+  bodyText: string;
+}
+
+export function renderPartnerEmail(args: RenderPartnerEmailArgs): RenderedPartnerEmail {
   const vars = catalogVars(args.id, args.vars);
   const escaped = htmlEscaped(vars);
   const customSubject = args.custom?.subject?.trim() ? args.custom.subject : null;
@@ -174,15 +196,15 @@ export function renderPartnerEmail(args: RenderPartnerEmailArgs): { subject: str
   } else if (inboundSubject) {
     subject = substitute(inboundSubject, vars).replace(/[\r\n]+/g, ' ').trim();
   } else {
-    subject = defaultSubject(args.id, { internalNumber: args.internalNumber, ticketSubject, vars });
+    subject = defaultSubject(args.id, { internalNumber: args.internalNumber, ticketSubject, vars, variant: args.variant });
   }
 
   const heading = customHeading
     ? substitute(customHeading, vars)
-    : substitute(defaultHeading(args.id, vars), vars);
+    : substitute(defaultHeading(args.id, vars, args.variant), vars);
   const buttonLabel = customButtonLabel
     ? substitute(customButtonLabel, vars)
-    : (args.ctaLabel ?? defaultButtonLabel(args.id));
+    : (args.ctaLabel ?? defaultButtonLabel(args.id, args.variant));
 
   const sentinel = makeCtaSentinel();
   let inner: string;
@@ -191,19 +213,24 @@ export function renderPartnerEmail(args: RenderPartnerEmailArgs): { subject: str
   } else if (inboundBody) {
     inner = `<p>${substitute(escapeHtml(inboundBody), escaped).replace(/\r?\n/g, '<br>')}</p>`;
   } else {
-    inner = renderRichInner(defaultHtml(args.id, { ...args.vars, ...vars }), escaped, sentinel);
+    inner = renderRichInner(defaultHtml(args.id, { ...args.vars, ...vars }, args.variant), escaped, sentinel);
   }
 
   inner = stripSentinelFromAttributes(inner, sentinel);
   inner = spliceBeforeCta(inner, args.bodyBeforeCta, sentinel);
+  const textInner = ctaAsText(inner, args.id, args.ctaUrl, buttonLabel, sentinel);
   inner = applyCta(inner, args.id, args.ctaUrl, buttonLabel, sentinel);
   if (args.bodyAfterCta) inner = `${inner}${args.bodyAfterCta}`;
+  const preheader = args.preheader ?? defaultPreheader(args.id);
 
   return {
     subject,
+    heading,
+    preheader,
+    bodyText: htmlToText(textInner),
     html: renderLayout({
       title: subject,
-      preheader: args.preheader ?? defaultPreheader(args.id),
+      preheader,
       heading,
       body: inner,
       footer: args.footer ?? defaultFooter(args.id),

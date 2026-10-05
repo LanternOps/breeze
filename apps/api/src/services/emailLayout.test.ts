@@ -30,3 +30,29 @@ describe('email layout inline styles', () => {
     expect(styleValues(html).find(value => value.startsWith('margin: 0; padding: 0; background:'))).toContain('color: #1f2937');
   });
 });
+
+import { renderLinkRow, renderSummaryTable, renderTermsBlock } from './emailLayout';
+describe('billing email blocks', () => {
+  it('a summary table is a presentational two-column table with escaped values', () => {
+    const html = renderSummaryTable([{ label: 'Amount', value: '$50.00' }, { label: 'Method', value: '<Visa> & co' }]);
+    expect(html).toMatch(/^<table role="presentation"/);
+    expect(html).toContain('>Amount</td>');
+    expect(html).toContain('&lt;Visa&gt; &amp; co');
+    expect(styleValues(html).every(value => !value.includes('"'))).toBe(true);
+    expect(renderSummaryTable([])).toBe('');
+  });
+  it('a link row joins real links with a separator and escapes the URLs', () => {
+    const html = renderLinkRow([{ label: 'Skip this payment', url: 'https://x.test/a?b=1&c=2' }, { label: 'Stop', url: 'https://x.test/s' }]);
+    expect(html).toContain('href="https://x.test/a?b=1&amp;c=2"');
+    expect(html).toContain('&nbsp;·&nbsp;');
+    expect(renderLinkRow([])).toBe('');
+  });
+  it('a terms block titles its muted paragraphs', () => {
+    const html = renderTermsBlock('Your authorization', ['You accepted these terms on October 5, 2026.', 'I authorize <MSP>.']);
+    expect(html).toContain('Your authorization');
+    expect(html).toContain('I authorize &lt;MSP&gt;.');
+  });
+  it('the layout carries a head style so partner paragraphs get the rhythm', () => {
+    expect(renderLayout({ title: 't', preheader: 'p', body: '<p>x</p>' })).toMatch(/<style>[^<]*p\s*\{[^}]*margin/);
+  });
+});

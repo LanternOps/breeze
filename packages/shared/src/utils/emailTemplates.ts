@@ -104,20 +104,20 @@ const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {
   quote_send: QUOTE_SEND_VARS,
   invoice_send: INVOICE_SEND_VARS,
   invoice_autopay: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date',
-    'charge_date', 'payment_method', 'fee_amount', 'charge_total', 'invoice_link'],
+    'charge_date', 'payment_method', 'fee_amount', 'charge_total', 'invoice_link', 'client_name'],
   portal_invite: PORTAL_INVITE_VARS,
   autopay_request: ['partner_name','org_name','cta_button','client_name','setup_link','ach_mode_text'],
   autopay_enrolled: ['partner_name','org_name','client_name','payment_method','schedule_text','fee_text'],
   autopay_stopped: ['partner_name','org_name','client_name','stopped_by','open_invoices_text'],
   autopay_paused: ['partner_name','org_name','client_name'],
-  autopay_resumed: ['partner_name','org_name','client_name'],
+  autopay_resumed: ['partner_name','org_name','client_name','payment_method'],
   card_expiring: ['partner_name','org_name','cta_button','client_name','payment_method','expires_on','update_link'],
-  payment_reminder: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date', 'pay_link', 'cta_button'],
-  payment_overdue: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date', 'days_overdue', 'pay_link', 'cta_button'],
+  payment_reminder: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date', 'pay_link', 'cta_button', 'client_name'],
+  payment_overdue: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date', 'days_overdue', 'pay_link', 'cta_button', 'client_name'],
   payment_receipt: ['org_name','partner_name','invoice_number','amount_paid','fee_amount',
-    'total_charged','payment_method','paid_on','balance_remaining'],
+    'total_charged','payment_method','paid_on','balance_remaining','client_name'],
   payment_failed: ['org_name','partner_name','invoice_number','amount_due','failure_text','action_link','action_label',
-    'payment_method','attempted_amount'],
+    'payment_method','attempted_amount','client_name'],
 };
 
 const LABEL_BY_ID: Record<EmailTemplateId, string> = {
@@ -226,9 +226,10 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
 <p>If you have any questions or would like to adjust anything, we're happy to help. We look forward to working with you.</p>`,
   },
   invoice_autopay: {
-    subject: 'Invoice {{invoice_number}} — automatic payment notice',
-    heading: 'Your invoice is ready', buttonLabel: 'View invoice',
-    html: '<p>{{partner_name}} has sent you invoice {{invoice_number}} for {{amount_due}}, due on {{due_date}}.</p><p>It will be paid automatically: we will initiate the payment on or around {{charge_date}} using {{payment_method}}.</p>',
+    subject: 'Invoice {{invoice_number}} from {{partner_name}}: automatic payment on {{charge_date}}',
+    heading: 'Invoice {{invoice_number}}', buttonLabel: 'View invoice',
+    html: `<p>Hi {{client_name}},</p>
+<p>{{partner_name}} has sent you invoice {{invoice_number}}. You don't need to do anything: it will be paid automatically on or around {{charge_date}} with your {{payment_method}}.</p>`,
   },
   invoice_send: {
     subject: 'Invoice {{invoice_number}} from {{partner_name}}',
@@ -252,64 +253,114 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
   },
   autopay_request: {
     subject: 'Set up automatic payments with {{partner_name}}',
-    heading: 'One less thing to remember', buttonLabel: 'Set up automatic payments',
+    heading: 'Pay future invoices automatically', buttonLabel: 'Set up automatic payments',
     html: `<p>Hi {{client_name}},</p>
-<p>{{partner_name}} invites you to set up automatic payments for future invoices. Save a payment method securely with Stripe, and we will send you an invoice before each payment.</p>
-<p>{{ach_mode_text}}</p><p>{{cta_button}}</p>
-<p>The schedule is shown below. You can stop automatic payments at any time. Existing open invoices still need to be paid separately.</p>`,
+<p>{{partner_name}} has invited you to pay future invoices automatically. You save a payment method once with Stripe, our secure payment processor, and we email you the amount and date before every payment.</p>
+<p>{{ach_mode_text}}</p>
+<p>{{cta_button}}</p>
+<p>Invoices you've already received aren't included. Please pay those as usual.</p>`,
   },
   autopay_enrolled: {
-    subject: 'Automatic payments are set up with {{partner_name}}',
-    heading: 'Your payment method is saved', buttonLabel: '',
-    html: `<p>Hi {{client_name}},</p><p>Thank you for setting up automatic payments with {{partner_name}}.</p>
-<p>Payment method: {{payment_method}}.</p><p>{{schedule_text}}</p><p>{{fee_text}}</p>
-<p>We will send you an invoice before each payment. You can stop automatic payments at any time using the link below.</p>`,
+    subject: 'Automatic payments are on with {{partner_name}}',
+    heading: 'Automatic payments are on', buttonLabel: '',
+    html: `<p>Hi {{client_name}},</p>
+<p>Thanks for setting up automatic payments with {{partner_name}}.</p>
+<p>Before each payment, we'll email you the invoice with the amount and the date it will be charged. You can skip a payment from that email, or stop automatic payments at any time.</p>`,
   },
   autopay_stopped: {
-    subject: 'Automatic payments stopped with {{partner_name}}',
-    heading: 'Automatic payments have stopped', buttonLabel: '',
-    html: `<p>Hi {{client_name}},</p><p>{{stopped_by}} stopped automatic payments with {{partner_name}}.</p>
-<p>We will not start any new automatic payments. A payment already processing may still complete.</p>
-<p>{{open_invoices_text}}</p><p>Please use the invoice payment links below for any amount still due.</p>`,
+    subject: 'Automatic payments are off with {{partner_name}}',
+    heading: 'Automatic payments are off', buttonLabel: '',
+    html: `<p>Hi {{client_name}},</p>
+<p>You stopped automatic payments with {{partner_name}}. Your saved payment method has been removed, and no new automatic payments will start.</p>`,
   },
   autopay_paused: {
-    subject: 'Automatic payments paused with {{partner_name}}',
+    subject: 'Automatic payments are paused with {{partner_name}}',
     heading: 'Automatic payments are paused', buttonLabel: '',
-    html: `<p>Hi {{client_name}},</p><p>{{partner_name}} paused your automatic payments. No new automatic payments will run until your service provider resumes them. We will notify you when they resume.</p><p>A payment already processing may still complete. Existing invoices remain payable using their payment links.</p>`,
+    html: `<p>Hi {{client_name}},</p>
+<p>{{partner_name}} has paused automatic payments for your account. While they're paused, nothing is charged automatically, including invoices that were already scheduled.</p>
+<p>Please pay open invoices from their emails or the links below. We'll email you if {{partner_name}} turns automatic payments back on.</p>`,
   },
   autopay_resumed: {
-    subject: 'Automatic payments resumed with {{partner_name}}',
-    heading: 'Automatic payments have resumed', buttonLabel: '',
-    html: `<p>Hi {{client_name}},</p><p>{{partner_name}} resumed automatic payments for future eligible invoices issued after resumption. Previously cancelled payments will not restart.</p><p>We will email the amount and date before each payment. You can stop automatic payments using the link below.</p>`,
+    subject: 'Automatic payments are back on with {{partner_name}}',
+    heading: 'Automatic payments are back on', buttonLabel: '',
+    html: `<p>Hi {{client_name}},</p>
+<p>{{partner_name}} has turned automatic payments back on. Invoices issued from today will be paid automatically with your {{payment_method}}. Invoices issued while payments were paused aren't included, so please pay those from their emails.</p>
+<p>We'll email you the amount and date before each payment.</p>`,
   },
   card_expiring: {
-    subject: 'Please update your saved card for {{partner_name}}',
+    subject: 'Your saved card for {{partner_name}} expires soon',
     heading: 'Your saved card expires soon', buttonLabel: 'Update payment method',
-    html: `<p>Hi {{client_name}},</p><p>Your {{payment_method}} expires on {{expires_on}}.</p>
-<p>Please update your payment method to keep future automatic payments running.</p><p>{{cta_button}}</p>
-<p>Updating your method keeps your existing automatic-payment enrollment.</p>`,
+    html: `<p>Hi {{client_name}},</p>
+<p>The {{payment_method}} you saved for automatic payments with {{partner_name}} expires at the end of {{expires_on}}.</p>
+<p>Add a new card or a bank account before then so future invoices keep being paid automatically.</p>
+<p>{{cta_button}}</p>
+<p>Your automatic payment settings stay the same. Only the payment method changes.</p>`,
   },
   payment_reminder: {
-    subject: 'Payment reminder: invoice {{invoice_number}}',
-    heading: 'Payment reminder', buttonLabel: 'View & pay invoice',
-    html: `<p>This is a reminder about invoice <strong>{{invoice_number}}</strong> with a total payable of <strong>{{amount_due}}</strong>. Payment is due by <strong>{{due_date}}</strong>.</p>
-<p>{{cta_button}}</p>`,
+    subject: 'Reminder: invoice {{invoice_number}} is due {{due_date}}',
+    heading: 'Payment reminder', buttonLabel: 'View and pay invoice',
+    html: `<p>Hi {{client_name}},</p>
+<p>This is a reminder that invoice <strong>{{invoice_number}}</strong> from {{partner_name}} for <strong>{{amount_due}}</strong> is due on <strong>{{due_date}}</strong>.</p>
+<p>{{cta_button}}</p>
+<p>If you've already paid, thank you. You can ignore this email.</p>`,
   },
   payment_overdue: {
-    subject: 'OVERDUE payment reminder: invoice {{invoice_number}}',
-    heading: 'Overdue payment reminder', buttonLabel: 'View & pay invoice',
-    html: `<p>This is an OVERDUE reminder about invoice <strong>{{invoice_number}}</strong> with a total payable of <strong>{{amount_due}}</strong>. Payment was due by <strong>{{due_date}}</strong>.</p>
-<p>This invoice is {{days_overdue}} days overdue.</p>
-<p>{{cta_button}}</p>`,
+    subject: 'Invoice {{invoice_number}} is overdue',
+    heading: 'Invoice {{invoice_number}} is overdue', buttonLabel: 'View and pay invoice',
+    html: `<p>Hi {{client_name}},</p>
+<p>Invoice <strong>{{invoice_number}}</strong> from {{partner_name}} for <strong>{{amount_due}}</strong> was due on <strong>{{due_date}}</strong> and is now overdue.</p>
+<p>{{cta_button}}</p>
+<p>If you've already paid, thank you. Please ignore this email.</p>`,
   },
-  payment_receipt: { subject: 'Payment receipt for {{invoice_number}}', heading: 'Payment received',
-    buttonLabel: '', html: '<p>Thank you. {{partner_name}} received your payment for invoice {{invoice_number}}.</p><p>Paid on {{paid_on}}. Remaining balance: {{balance_remaining}}.</p>' },
-  payment_failed: { subject: 'Action needed for invoice {{invoice_number}}', heading: 'Payment needs attention',
-    buttonLabel: 'Review payment', html: '<p>{{failure_text}}</p><p>Amount due: {{amount_due}}.</p>' },
+  payment_receipt: { subject: 'Receipt for invoice {{invoice_number}} from {{partner_name}}', heading: 'Payment received',
+    buttonLabel: '', html: `<p>Hi {{client_name}},</p>
+<p>Thank you. {{partner_name}} received your payment for invoice {{invoice_number}}.</p>` },
+  payment_failed: { subject: "Payment for invoice {{invoice_number}} didn't go through", heading: "We couldn't complete your payment",
+    buttonLabel: 'Pay invoice', html: `<p>Hi {{client_name}},</p>
+<p>{{failure_text}}</p>` },
 };
 
-export function emailTemplateFieldDefaults(id: EmailTemplateId): EmailTemplateFieldDefaults {
-  return FIELD_DEFAULTS_BY_ID[id];
+/** Variants of one notice kind: a different default subject, heading and body for
+ * the same partner-editable template. A partner's saved override applies to every
+ * variant; the locked blocks around the body still state each variant's facts. */
+export const EMAIL_TEMPLATE_VARIANTS = {
+  payment_failed: ['confirm', 'update', 'nsf', 'returned', 'expired'],
+  autopay_enrolled: ['pending_verification', 'verified'],
+  autopay_stopped: ['msp', 'request_withdrawn'],
+} as const satisfies Partial<Record<EmailTemplateId, readonly string[]>>;
+
+const VARIANT_DEFAULTS: Record<string, Partial<EmailTemplateFieldDefaults>> = {
+  'payment_failed:confirm': { subject: 'Confirm your payment for invoice {{invoice_number}}',
+    heading: 'Your bank needs you to confirm this payment', buttonLabel: 'Confirm payment' },
+  'payment_failed:update': { subject: 'Action needed for invoice {{invoice_number}}: update your payment method',
+    heading: 'Your payment method needs updating' },
+  'payment_failed:nsf': { subject: "Payment for invoice {{invoice_number}} didn't go through",
+    heading: 'Your bank reported insufficient funds' },
+  'payment_failed:returned': { subject: 'Your bank returned a payment for invoice {{invoice_number}}',
+    heading: 'Your bank returned a payment' },
+  'payment_failed:expired': { subject: 'Invoice {{invoice_number}} still needs to be paid',
+    heading: 'The confirmation link expired' },
+  'autopay_enrolled:pending_verification': { subject: 'One more step: verify your bank account for {{partner_name}}',
+    heading: 'Verify your bank account', html: `<p>Hi {{client_name}},</p>
+<p>Your bank account is saved, but it needs to be verified before {{partner_name}} can use it.</p>
+<p>Stripe, our payment processor, will email you instructions, usually within 1–2 business days. Follow them to finish verifying your account.</p>
+<p>Until it's verified, no automatic payments are made. Please pay any invoice that's due from its email.</p>` },
+  'autopay_enrolled:verified': { subject: 'Your bank account is verified: automatic payments are on with {{partner_name}}',
+    heading: 'Your bank account is verified', html: `<p>Hi {{client_name}},</p>
+<p>Stripe has verified your bank account, so automatic payments with {{partner_name}} are now on.</p>
+<p>Any invoice we've already emailed you about with a payment date will be charged as that email described. For new invoices, we'll email you the amount and date before each payment.</p>` },
+  'autopay_stopped:msp': { subject: 'Automatic payments are off with {{partner_name}}', heading: 'Automatic payments are off',
+    html: `<p>Hi {{client_name}},</p>
+<p>{{partner_name}} turned off automatic payments for your account. Your saved payment method has been removed, and no new automatic payments will start.</p>` },
+  'autopay_stopped:request_withdrawn': { subject: '{{partner_name}} withdrew its automatic payment request',
+    heading: 'Automatic payment request withdrawn', html: `<p>Hi {{client_name}},</p>
+<p>{{partner_name}} withdrew its request to set up automatic payments. You don't need to do anything.</p>` },
+};
+
+export function emailTemplateFieldDefaults(id: EmailTemplateId, variant?: string): EmailTemplateFieldDefaults {
+  const base = FIELD_DEFAULTS_BY_ID[id];
+  const override = variant ? VARIANT_DEFAULTS[`${id}:${variant}`] : undefined;
+  return override ? { ...base, ...override } : base;
 }
 
 /** Empty TipTap / sanitize-html bodies that must send as catalog default, not a blank letter. */

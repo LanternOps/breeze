@@ -253,3 +253,28 @@ describe('renderPartnerEmail', () => {
     expect(href).toBeLessThan(sig);
   });
 });
+
+describe('renderPartnerEmail text body and variants', () => {
+  it('returns the body as plain text, without the preheader, with the button as "label: url"', () => {
+    const out = renderPartnerEmail({ id: 'autopay_request', vars: { partner_name: 'Example MSP', client_name: 'Acme', ach_mode_text: 'You can use a US bank account or a card.' },
+      ctaUrl: 'https://portal.example.test/autopay/tok', bodyAfterCta: '<p>LOCKED BLOCK</p>' });
+    expect(out.bodyText).toContain('Hi Acme,');
+    expect(out.bodyText).toContain('Set up automatic payments: https://portal.example.test/autopay/tok');
+    expect(out.bodyText).not.toContain('LOCKED BLOCK');
+    expect(out.bodyText).not.toContain(out.preheader);
+    expect(out.heading).toBe('Pay future invoices automatically');
+    expect(out.html).toContain('LOCKED BLOCK');
+  });
+  it('a variant picks its own default subject, heading and body', () => {
+    const vars = { partner_name: 'Example MSP', client_name: 'Acme', invoice_number: 'INV-7' };
+    const base = renderPartnerEmail({ id: 'payment_failed', vars });
+    const confirm = renderPartnerEmail({ id: 'payment_failed', variant: 'confirm', vars });
+    expect(confirm.subject).toBe('Confirm your payment for invoice INV-7');
+    expect(confirm.heading).toBe('Your bank needs you to confirm this payment');
+    expect(base.subject).not.toBe(confirm.subject);
+  });
+  it("a partner's saved override still wins over every variant", () => {
+    const custom = { subject: 'Custom {{invoice_number}}', heading: null, buttonLabel: null, html: null };
+    expect(renderPartnerEmail({ id: 'payment_failed', variant: 'confirm', custom, vars: { invoice_number: 'INV-7' } }).subject).toBe('Custom INV-7');
+  });
+});
