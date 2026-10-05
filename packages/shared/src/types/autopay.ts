@@ -247,9 +247,10 @@ export interface AutopayConfirmView extends AutopayBranding {
 
 /** The invoice pages' view of this invoice's automatic payment (client wording is the page's job). */
 /** 'paid_by_bank': the client paid it themselves by bank (FP-6); 'reversed': the automatic
- * payment was refunded or returned and the invoice is due again. */
+ * payment was refunded or returned and the invoice is due again; 'unapplied': money was
+ * captured but is not yet applied to the invoice (F-9: never offer to pay again). */
 export const CUSTOMER_INVOICE_AUTOPAY_STATES=['awaiting_notice','scheduled','delayed','processing','action_required','retry_scheduled',
- 'failed','skipped','not_included','paid_automatically','paid_by_bank','reversed'] as const;
+ 'failed','skipped','not_included','paid_automatically','paid_by_bank','reversed','unapplied'] as const;
 export type CustomerInvoiceAutopayState=(typeof CUSTOMER_INVOICE_AUTOPAY_STATES)[number];
 export interface CustomerInvoiceAutopayStatus {
  state:CustomerInvoiceAutopayState;

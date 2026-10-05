@@ -250,3 +250,13 @@ describe('FP-4: bank confirmation on the invoice page', () => {
     expect(screen.getByTestId('autopay-confirmation-released')).toHaveTextContent('The automatic payment was canceled.');
   });
 });
+
+// F-9
+it('captured money not yet applied says it was received, with no Pay', () => {
+  panel({ balance: '50.00', charge: { amount: '50.00', isDeposit: false }, bankOffer, saveOffer,
+    autopayStatus: { ...scheduled, state: 'unapplied', amount: '81.00', canPayNow: false } as never });
+  expect(screen.getByText("We received a payment of $81.00 for this invoice. Example MSP is applying it, so you don't need to pay again.")).toBeInTheDocument();
+  expect(screen.queryByTestId('public-invoice-pay')).toBeNull();
+  expect(screen.queryByRole('radio')).toBeNull();
+  expect(document.body.textContent).not.toMatch(/didn't go through/);
+});

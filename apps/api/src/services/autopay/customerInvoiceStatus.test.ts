@@ -168,3 +168,10 @@ describe('Final-A paper cuts', () => {
     expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state: 'failed', enrollmentActive: true });
   });
 });
+
+// F-9: money captured but not yet applied: the page says it was received, offers no Pay.
+it('captured money not yet applied reads "payment received", and the client cannot pay again', async () => {
+  seed({ state: 'failed', stateReason: 'payment_unapplied' }, { status: 'sent', balance: '50.00' });
+  h.rows.set(invoiceCollectionAttempts, [{ principalAmount: '80.00', feeAmount: '1.00' }]);
+  expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state: 'unapplied', amount: '81.00', canPayNow: false });
+});

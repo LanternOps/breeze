@@ -72,3 +72,17 @@ it.each([['succeeded', '0', 'paid_automatically'], ['refunded', '5000', null], [
     const result = await asPortal(f.org.id, f.partner.id, () => getCustomerInvoiceAutopay(db, { invoiceId: f.invoice.id, orgId: f.org.id }));
     expect(result.status?.state ?? null).toBe(expected);
   });
+
+// F-9 on real Postgres, through portal RLS: captured but unapplied money is "received", with no pay offer.
+it('a portal user sees captured-but-unapplied money as received, and cannot pay again', async () => {
+  const f = await fixture();
+  await withSystemDbAccessContext(async () => {
+    await db.update(invoices).set({ balance: '50.00', amountPaid: '0.00' }).where(eq(invoices.id, f.invoice.id));
+    await db.update(invoiceAutopaySchedules).set({ state: 'failed', stateReason: 'payment_unapplied', attemptCount: 1 }).where(eq(invoiceAutopaySchedules.id, f.schedule.id));
+    await db.insert(invoiceCollectionAttempts).values({ orgId: f.org.id, invoiceId: f.invoice.id, scheduleId: f.schedule.id, paymentMethodId: f.method.id,
+      attemptNo: 1, idempotencyKey: `status-unapplied-${f.invoice.id}`, principalAmount: '80.00', feeAmount: '1.00', currency: 'USD',
+      initiatedBy: 'msp_charge_now', state: 'unapplied' });
+  });
+  const result = await asPortal(f.org.id, f.partner.id, () => getCustomerInvoiceAutopay(db, { invoiceId: f.invoice.id, orgId: f.org.id }));
+  expect(result.status).toMatchObject({ state: 'unapplied', amount: '81.00', canPayNow: false });
+});

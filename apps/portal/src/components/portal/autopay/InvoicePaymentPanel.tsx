@@ -105,6 +105,10 @@ function statusCopy(s: CustomerInvoiceAutopayStatus, msp: string, portal: boolea
     case 'not_included':
       return { pay: 'pay', text: s.reason?.startsWith('excluded') ? `${msp} asked for this invoice to be paid directly.`
         : NOT_INCLUDED[s.reason ?? ''] ?? 'This invoice is not paid automatically, so please pay it here.' };
+    case 'unapplied':
+      // F-9: the client was charged; the MSP applies it. No Pay.
+      return { mark: { tone: 'primary', label: 'Payment received' }, pay: 'none',
+        text: `We received a payment of ${money(s.amount ?? '0', s.currency)} for this invoice. ${msp} is applying it, so you don't need to pay again.` };
     case 'paid_by_bank':
       return { mark: { tone: 'success', label: 'Paid' }, pay: 'none',
         text: `Paid by bank${s.paidAt ? ` on ${longDate(s.paidAt)}` : ''}${s.methodLabel ? ` from your ${paymentMethodInSentence(s.methodLabel)}` : ''}. Thank you.` };

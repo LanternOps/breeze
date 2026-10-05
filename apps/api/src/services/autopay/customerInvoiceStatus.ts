@@ -4,6 +4,7 @@ import { invoices, invoiceAutopaySchedules, invoiceCollectionAttempts, invoiceSt
 import { readInFlightCollection } from './reservation';
 import { getAutopayMethod } from './paymentMethods';
 import { isAutopayEnabledForPartner } from './autopayGate';
+import { fromMinorUnits, toMinorUnits } from '../stripeMoney';
 import type { Tx } from './types';
 
 const OPEN = new Set(['sent', 'partially_paid', 'overdue']);
@@ -55,6 +56,18 @@ export async function getCustomerInvoiceAutopay(db: Tx, ids: { invoiceId: string
       eq(orgPaymentMethods.id, inFlight.paymentMethodId), eq(orgPaymentMethods.orgId, invoice.orgId))).limit(1) : [];
     return status(inFlight.actionRequired ? 'action_required' : 'processing', null, { amount: inFlight.amount, fee: inFlight.fee,
       ...(moving && moving.orgId === invoice.orgId ? { methodLabel: formatPaymentMethod(moving), methodType: moving.type } : {}) });
+  }
+  // F-9: money captured but not yet applied (the other half of holdsClientMoney): the client
+  // was charged; never tell them it "didn't go through" or offer to pay again.
+  if (OPEN.has(invoice.status)) {
+    const [held] = await db.select({ principalAmount: invoiceCollectionAttempts.principalAmount, feeAmount: invoiceCollectionAttempts.feeAmount })
+      .from(invoiceCollectionAttempts).where(and(eq(invoiceCollectionAttempts.invoiceId, invoice.id),
+        eq(invoiceCollectionAttempts.orgId, invoice.orgId), eq(invoiceCollectionAttempts.state, 'unapplied')))
+      .orderBy(desc(invoiceCollectionAttempts.createdAt)).limit(1);
+    if (held) {
+      const total = fromMinorUnits(toMinorUnits(held.principalAmount, invoice.currencyCode) + toMinorUnits(held.feeAmount ?? '0', invoice.currencyCode), invoice.currencyCode);
+      return { enrolled, status: { ...base, state: 'unapplied', reason: null, amount: total, fee: null, chargeDate: null, canPayNow: false } };
+    }
   }
   if (invoice.status === 'paid') {
     // R3: "Paid automatically" only while the automatic payment still stands. A returned debit
