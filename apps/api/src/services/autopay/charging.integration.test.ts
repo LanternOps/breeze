@@ -1528,8 +1528,10 @@ it.each(['none', 'not_needed', 'scheduled'] as const)(
     // The cut lands after reservation: the attempt is canceled before any confirm.
     expect(await collect(a.session.id!)).toMatchObject({ outcome: 'canceled' });
     expect(provider.confirm).not.toHaveBeenCalled();
-    // The spent authority A can never be replayed into a provider confirm.
-    await expect(collect(a.session.id!)).rejects.toMatchObject({ status: 409 });
+    // The spent authority A can never be replayed into a provider confirm. Since 2a item E
+    // a consumed authority is a structured refusal the page can act on, not a bare 409.
+    expect(await collect(a.session.id!)).toEqual({ attemptId: null, outcome: 'refused', reason: 'bank_authorization_used' });
+    expect(provider.confirm).not.toHaveBeenCalled();
     await withSystemDbAccessContext(() => db.update(billingLinkTokens).set({ consumedAt: null }).where(eq(billingLinkTokens.id, a.token.id)));
     expect(await collect(a.session.id!)).toMatchObject({ outcome: 'refused', reason: 'client_authorization_used' });
     // A client attempt has no notice to redo: a terminal schedule keeps its history and is not
