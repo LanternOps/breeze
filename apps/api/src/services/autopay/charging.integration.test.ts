@@ -1911,3 +1911,38 @@ it('an MSP exclusion before the charging notice went out sends nothing new', asy
   const rows = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId, f.org.id)));
   expect(rows.filter(row => row.kind === 'payment_reminder')).toHaveLength(0);
 });
+
+// Batch 3b (2b-1 / review R1): the client replaces nothing and autopay is stopped while the
+// sibling's method-unusable email waits. The failure is still true, so it is re-issued as
+// the pay variant (no update link) and delivered on the next run, never silently dropped.
+it('re-issues a waiting method-unusable email as the pay variant after autopay is stopped, and delivers it', async () => {
+  const f = await fixture();
+  provider.confirm.mockImplementationOnce(async () => {
+    currentPi = {...currentPi, status: 'requires_payment_method', last_payment_error: {type: 'card_error', code: 'card_declined', decline_code: 'stolen_card'}};
+    throw Object.assign(new Error('Your card was declined.'), {type: 'StripeCardError', statusCode: 402, code: 'card_declined', decline_code: 'stolen_card', payment_intent: currentPi});
+  });
+  const b = await siblingSchedule(f);
+  expect(await attemptCollection(inputFor(f))).toMatchObject({outcome: 'failed', failureClass: 'hard'});
+  await runAutopayCollection(new Date());
+  await withSystemDbAccessContext(() => turnOffAutopay(db, f.actor, f.org.id));
+  const sendEmail = vi.fn(async (_message: {to: string; subject: string; text: string; html: string}) => undefined);
+  const mail = vi.spyOn(emailModule, 'getEmailService').mockReturnValue({sendEmail} as unknown as NonNullable<ReturnType<typeof emailModule.getEmailService>>);
+  try {
+    await dispatchPendingBillingNotices();
+    const failures = async () => (await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox)
+      .where(eq(billingNoticeOutbox.invoiceId, b.invoice.id)))).filter(n => n.kind === 'payment_failed');
+    let rows = await failures();
+    const update = rows.find(n => (n.rendered as {frozen: {variant: string}}).frozen.variant === 'update')!;
+    expect(update).toMatchObject({status: 'cancelled', lastError: 'Re-issued without the update-method link'});
+    const pay = rows.find(n => (n.rendered as {frozen: {variant: string}}).frozen.variant === 'pay')!;
+    expect(pay).toMatchObject({dedupeKey: `${b.invoice.id}:payment_failed:method_not_usable:pay:1`, status: 'pending'});
+    await dispatchPendingBillingNotices(new Date(Date.now() + 1000));
+    rows = await failures();
+    expect(rows.find(n => n.id === pay.id)).toMatchObject({status: 'sent'});
+    const toB = sendEmail.mock.calls.map(([message]) => message).filter(message => message.subject.includes(b.invoice.invoiceNumber!));
+    expect(toB).toHaveLength(1);
+    expect(toB[0]!.text).toContain('was not charged automatically');
+    expect(toB[0]!.text).toMatch(/Pay invoice: https?:\/\/\S+\/invoice\/\S+/);
+    expect(toB[0]!.text).not.toContain('Update payment method');
+  } finally { mail.mockRestore(); }
+});
