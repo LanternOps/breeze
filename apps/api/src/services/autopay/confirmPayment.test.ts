@@ -74,3 +74,30 @@ it('does not mint a pay link when a control wins during cancellation',async()=>{
  expect(await confirmInvoicePayment('token')).toEqual({notNeeded:true});
  expect(h.mint).not.toHaveBeenCalled();expect(h.writes).toEqual([]);
 });
+
+// Invoice pages (public link + portal) offer the same way out as the emailed confirm link.
+import { releaseInvoiceConfirmation } from './confirmPayment';
+it('invoice pages cancel the off-session PI outside a DB context and release the reservation',async()=>{
+ expect(await releaseInvoiceConfirmation({invoiceId:invoice.id,orgId:invoice.orgId})).toEqual({outcome:'released'});
+ expect(h.resume).toHaveBeenCalledWith('attempt',true);
+ // The page's own authority is the invoice link or portal session: no confirm token is consumed or minted.
+ expect(h.writes).toEqual([]);expect(h.mint).not.toHaveBeenCalled();
+});
+it.each([['processing','processing'],['succeeded','paid']] as const)('invoice pages report a raced %s instead of releasing',async(state,outcome)=>{
+ h.history.mockResolvedValue({attempt:{...attempt,state},mapping:{invoicePaymentId:state==='succeeded'?'payment':null}});
+ expect(await releaseInvoiceConfirmation({invoiceId:invoice.id,orgId:invoice.orgId})).toEqual({outcome});
+});
+it.each(['processing','failed','canceled','succeeded'])('invoice pages never cancel when the latest attempt is %s',async state=>{
+ h.rows.set(invoiceCollectionAttempts,[{...attempt,state}]);
+ expect(await releaseInvoiceConfirmation({invoiceId:invoice.id,orgId:invoice.orgId})).toEqual({outcome:'not_needed'});
+ expect(h.resume).not.toHaveBeenCalled();
+});
+it('invoice pages refuse another organization\'s invoice before provider work',async()=>{
+ await expect(releaseInvoiceConfirmation({invoiceId:invoice.id,orgId:'other'})).rejects.toMatchObject({status:404});
+ expect(h.resume).not.toHaveBeenCalled();
+});
+it('invoice pages surface a cancellation that did not land',async()=>{
+ h.resume.mockResolvedValue(undefined);
+ h.history.mockResolvedValue({attempt:{...attempt,state:'requires_action'},mapping:{invoicePaymentId:null}});
+ await expect(releaseInvoiceConfirmation({invoiceId:invoice.id,orgId:invoice.orgId})).rejects.toMatchObject({status:409});
+});

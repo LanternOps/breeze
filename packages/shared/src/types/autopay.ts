@@ -165,3 +165,6 @@ export interface BankAutopayOffer {
  methodStatus:Extract<OrgPaymentMethodStatus,'active'|'pending_verification'>|null;
 }
 export type InvoicePayResult={url:string;outcome?:never;attemptId?:never;reason?:never}|(CollectionResult&{url?:never});
+/** Invoice-page exit from an off-session payment awaiting bank confirmation:
+ * the original PaymentIntent is canceled so the client can pay on-session. */
+export type AutopayConfirmationRelease={outcome:'released'|'processing'|'paid'|'not_needed'};

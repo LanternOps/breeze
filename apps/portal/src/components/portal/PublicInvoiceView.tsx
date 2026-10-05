@@ -1,4 +1,5 @@
 import BankAutopayPayment from './BankAutopayPayment';
+import { AutopayConfirmationNotice } from './AutopayConfirmationNotice';
 import { InvoiceAutopayConsent } from './InvoiceDetailView';
 import { runAction } from '@/lib/runAction';
 import { invoiceAutopayInput } from '@/lib/api';
@@ -94,6 +95,16 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
 
   const { invoice, lines, chargeNow, payable, branding } = detail;
   const collectionInProgress = detail.collectionInProgress ?? null; // #7824
+  // Off-session 3DS: the reserved payment is waiting on the customer's bank.
+  const awaitingBank = collectionInProgress?.actionRequired === true;
+  const releaseConfirmation = async () => {
+    const response = await portalApi.releasePublicAutopayConfirmation(token);
+    return { ...response, data: response.data?.data };
+  };
+  const reloadAfterRelease = async () => {
+    const res = await portalApi.getPublicInvoice(token, { redirectOnUnauthorized: false });
+    if (res.data?.data) setDetail(res.data.data);
+  };
   const returnFlag = typeof window !== 'undefined'
     ? new URLSearchParams(window.location.search)
     : new URLSearchParams();
@@ -225,7 +236,11 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
             : 'Payment received — thank you! It may take a moment to appear on the invoice.'}
         </div>
       )}
-      {canPay && collectionInProgress && (
+      {canPay && collectionInProgress && awaitingBank && (
+        <AutopayConfirmationNotice amount={collectionInProgress.amount} currency={currency}
+          release={releaseConfirmation} onReleased={reloadAfterRelease} />
+      )}
+      {canPay && collectionInProgress && !awaitingBank && (
         <div className="rounded-md bg-warning/10 p-3 text-sm text-warning" data-testid="public-invoice-collection-processing">
           Payment processing via autopay — {money(collectionInProgress.amount, currency)} is being collected automatically. No action needed.
         </div>

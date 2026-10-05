@@ -40,15 +40,20 @@ export async function lockInvoiceForCollection(tx: Tx, invoiceId: string): Promi
  * (`assertNoActiveCollection`), so the UI state and the server refusal cannot
  * diverge. Advisory only: it takes no lock, the pay routes still enforce.
  */
-export async function readInFlightCollection(tx: Tx, invoiceId: string): Promise<{ inProgress: boolean; amount: string }> {
+export async function readInFlightCollection(tx: Tx, invoiceId: string)
+  : Promise<{ inProgress: boolean; amount: string; actionRequired: boolean }> {
   const [row] = await tx.select({
     reservedAmount: sql<string>`coalesce(sum(${invoiceCollectionAttempts.principalAmount}), 0)::numeric(12,2)::text`,
+    // Every reserving attempt is waiting on the customer's bank (off-session 3DS):
+    // nothing will complete without them, so the page must not say "no action needed".
+    actionRequired: sql<boolean>`coalesce(bool_and(${invoiceCollectionAttempts.state} = 'requires_action'), false)`,
   }).from(invoiceCollectionAttempts)
     .where(sql`${invoiceCollectionAttempts.invoiceId} = ${invoiceId}
       and ${inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES])}`)
     .limit(1);
   const amount = row?.reservedAmount ?? '0.00';
-  return { inProgress: hundredths(amount) > 0n, amount };
+  const inProgress = hundredths(amount) > 0n;
+  return { inProgress, amount, actionRequired: inProgress && row?.actionRequired === true };
 }
 export async function assertNoActiveCollection(tx: Tx, invoiceId: string): Promise<void> {
   const locked = await lockInvoiceForCollection(tx, invoiceId);

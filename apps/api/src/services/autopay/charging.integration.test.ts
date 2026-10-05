@@ -1639,3 +1639,23 @@ it.each(['26.00','2.001','02.00','NaN'])('scheduled ACH rejects invalid accepted
 });
 
 import {planAutopayForInvoice} from './scheduler';
+
+import { releaseInvoiceConfirmation } from './confirmPayment';
+it('invoice page releases an off-session 3DS hold so card pay opens Checkout',async()=>{
+ const f=await fixture();
+ provider.confirm.mockImplementationOnce(async()=>{
+  currentPi={...currentPi,status:'requires_payment_method',last_payment_error:{type:'card_error',code:'authentication_required',decline_code:'authentication_required'}};
+  throw Object.assign(new Error('This payment requires authentication.'),{type:'StripeCardError',statusCode:402,code:'authentication_required',payment_intent:currentPi});
+ });
+ expect(await attemptCollection(inputFor(f))).toMatchObject({outcome:'requires_action'});
+ await expect(createInvoicePayLink(f.invoice.id,f.actor)).rejects.toMatchObject({status:409});
+ expect(await releaseInvoiceConfirmation({invoiceId:f.invoice.id,orgId:f.org.id})).toEqual({outcome:'released'});
+ expect(provider.cancel).toHaveBeenCalledOnce();
+ expect((await attempts(f.invoice.id))[0]!.state).toBe('canceled');
+ expect(await scheduleFor(f)).toMatchObject({state:'cancelled',stateReason:'provider_canceled'});
+ provider.sessionCreate.mockResolvedValue({id:'cs_after_release',url:'https://checkout.stripe.com/c/pay/after-release',payment_intent:null});
+ await expect(createInvoicePayLink(f.invoice.id,f.actor)).resolves.toMatchObject({url:'https://checkout.stripe.com/c/pay/after-release'});
+ // A second press is a no-op, never a second provider call.
+ expect(await releaseInvoiceConfirmation({invoiceId:f.invoice.id,orgId:f.org.id})).toEqual({outcome:'not_needed'});
+ expect(provider.cancel).toHaveBeenCalledOnce();
+});
