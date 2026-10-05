@@ -71,10 +71,10 @@ export function renderChargingNotice(ctx: ChargingNoticeContext): RenderedNotice
   const append = `<p>${escapeHtml(ctx.feeText)}</p><p>${escapeHtml(ctx.authorizationText)}</p>`
     + `<p><a href="${escapeHtml(ctx.skipUrl)}">Skip this invoice</a> · `
     + `<a href="${escapeHtml(ctx.stopUrl)}">Stop automatic payments</a></p>`;
-  const rendered = renderPartnerEmail({ id: 'invoice_autopay', custom: ctx.custom,
+  const rendered = renderPartnerEmail({ id: 'invoice_autopay', custom: ctx.custom, brandName: ctx.vars.partner_name || undefined,
     vars: ctx.vars, ctaUrl: ctx.vars.invoice_link, bodyAfterCta: append });
   return { ...rendered, frozen: ctx.frozen,
-    text: `Invoice ${ctx.vars.invoice_number}\nAmount: ${ctx.vars.amount_due}\n`
+    text: `Invoice ${ctx.vars.invoice_number}${ctx.vars.partner_name ? ` from ${ctx.vars.partner_name}` : ''}\nAmount: ${ctx.vars.amount_due}\n`
       + `Charge on or around ${ctx.vars.charge_date} using ${ctx.vars.payment_method}\n`
       + `${ctx.feeText}\n${ctx.authorizationText}\nInvoice: ${ctx.vars.invoice_link}\n`
       + `Skip: ${ctx.skipUrl}\nStop: ${ctx.stopUrl}` };
@@ -84,13 +84,18 @@ export async function renderBillingNotice(kind: BillingNoticeKind, ctx: BillingN
   if ('payment' in ctx) {
     if ((kind !== 'payment_receipt' && kind !== 'payment_failed') || ctx.payment.id !== kind) throw new Error('Missing payment notice context');
     const p = ctx.payment;
+    // The receipt summary is locked outside the editable body, once. A fee-free payment
+    // prints no fee or total line.
+    const feeFree = typeof p.frozen.fee === 'string' && /^0+(?:\.0+)?$/.test(p.frozen.fee);
     const lines = kind === 'payment_receipt' ? [
-      `Principal: ${p.vars.amount_paid}`, `Processing fee: ${p.vars.fee_amount}`, `Total charged: ${p.vars.total_charged}`,
-    ] : [];
+      p.vars.invoice_number && `Invoice: ${p.vars.invoice_number}`, `Amount paid: ${p.vars.amount_paid}`,
+      !feeFree && `Processing fee: ${p.vars.fee_amount}`, !feeFree && `Total charged: ${p.vars.total_charged}`,
+      p.vars.payment_method && `Paid with: ${p.vars.payment_method}`,
+    ].filter((line): line is string => !!line) : [];
     const second = p.secondaryAction ? { ...p.secondaryAction, url: checkedUrl(p.secondaryAction.url) } : null;
     const after = [...lines.map(line => `<p>${escapeHtml(line)}</p>`),
       ...(second ? [`<p>${escapeHtml(second.note)} <a href="${escapeHtml(second.url)}">${escapeHtml(second.label)}</a></p>`] : [])];
-    const rendered = renderPartnerEmail({ id: kind, custom: p.custom, vars: p.vars,
+    const rendered = renderPartnerEmail({ id: kind, custom: p.custom, vars: p.vars, brandName: p.vars.partner_name || undefined,
       ctaUrl: p.vars.action_link, ctaLabel: p.vars.action_label, bodyAfterCta: after.length ? after.join('') : undefined });
     // Plain text names every action next to its URL; the HTML button text alone is not a link.
     const links = kind === 'payment_failed'

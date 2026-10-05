@@ -1,5 +1,6 @@
 import { reportCollectionError } from './collectionErrors';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
+import { formatPaymentMethod, paymentMethodInSentence } from '@breeze/shared';
 import { invoiceCollectionAttempts, invoiceStripePayments, invoices, organizations, partners, orgPaymentMethods, orgAutopayEnrollments, billingNoticeOutbox, invoiceAutopaySchedules } from '../../db/schema';
 import { toMinorUnits, fromMinorUnits } from '../stripeMoney';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../invoiceLinkToken';
@@ -27,15 +28,29 @@ export async function enqueueOnlineReceipt(tx: Tx, mappingId: string): Promise<v
   if (!email) return;
   const total = fromMinorUnits(toMinorUnits(mapping.amount, mapping.currency)
     + toMinorUnits(mapping.feeAmount, mapping.currency), mapping.currency);
+  const methodLabel = await receiptMethodLabel(tx, mapping);
   const vars = { org_name: org!.name, partner_name: partner!.name, invoice_number: invoice!.invoiceNumber!,
     amount_paid: `${mapping.currency} ${mapping.amount}`, fee_amount: `${mapping.currency} ${mapping.feeAmount}`,
-    total_charged: `${mapping.currency} ${total}`, payment_method: mapping.paymentMethodType === 'us_bank_account' ? 'Bank debit' : 'Card',
+    total_charged: `${mapping.currency} ${total}`, payment_method: methodLabel,
     paid_on: mapping.paymentReceivedAt!, balance_remaining: `${invoice!.currencyCode} ${invoice!.balance}` };
   const rendered = await renderBillingNotice('payment_receipt', { payment: { id: 'payment_receipt', vars,
     custom: partnerEmailCustomFromSettings(partner!.settings, 'payment_receipt'),
-    frozen: { mappingId: mapping.id, amount: mapping.amount, fee: mapping.feeAmount, total } } });
+    frozen: { mappingId: mapping.id, amount: mapping.amount, fee: mapping.feeAmount, total,
+      invoiceNumber: invoice!.invoiceNumber ?? null, partnerName: partner!.name, methodLabel } } });
   await enqueueBillingNotice(tx, { orgId: mapping.orgId, partnerId: invoice!.partnerId, invoiceId: invoice!.id,
     kind: 'payment_receipt', seq: 1, dedupeKey: noticeDedupeKey(mapping.id, 'payment_receipt'), toEmail: email, rendered });
+}
+/** "Paid with" on a receipt. Never "Card" for a payment Breeze cannot see: a pay-link
+ * Checkout may complete by card, Link, a bank account or Klarna, and its mapping
+ * records no method type, so it reads "Online payment". */
+async function receiptMethodLabel(tx: Tx, mapping: typeof invoiceStripePayments.$inferSelect): Promise<string> {
+  if (mapping.paymentMethodType !== 'card' && mapping.paymentMethodType !== 'us_bank_account') return 'Online payment';
+  const [attempt] = mapping.source === 'autopay' ? await tx.select({ paymentMethodId: invoiceCollectionAttempts.paymentMethodId })
+    .from(invoiceCollectionAttempts).where(eq(invoiceCollectionAttempts.invoiceStripePaymentId, mapping.id)).limit(1) : [];
+  const [method] = attempt?.paymentMethodId ? await tx.select().from(orgPaymentMethods).where(and(
+    eq(orgPaymentMethods.id, attempt.paymentMethodId), eq(orgPaymentMethods.orgId, mapping.orgId))).limit(1) : [];
+  if (method && method.type === mapping.paymentMethodType) return formatPaymentMethod(method);
+  return mapping.paymentMethodType === 'us_bank_account' ? 'Bank account' : 'Card';
 }
 const NO_AUTOMATIC_RETRY = 'There will be no automatic retry. You can pay this invoice now.';
 /** Secondary action of every update-method email. True today: a failed schedule is never
@@ -106,17 +121,29 @@ export async function enqueueAttemptNotice(tx: Tx, attemptId: string,
   const retryOn = schedule && schedule.id === attempt.scheduleId && schedule.state === 'retry_scheduled'
     && schedule.attemptCount === attempt.attemptNo && schedule.nextAttemptAt ? schedule.nextAttemptAt.toISOString().slice(0, 10) : null;
   const noRetry = NO_AUTOMATIC_RETRY;
+  const methodLabel = method ? formatPaymentMethod(method) : null;
+  const money = (amount: string) => `${attempt.currency} ${amount}`;
+  const feeMinor = toMinorUnits(attempt.feeAmount, attempt.currency);
+  const attempted = fromMinorUnits(toMinorUnits(attempt.principalAmount, attempt.currency) + feeMinor, attempt.currency);
+  // The confirm link leads to the invoice page, which collects the invoice balance with
+  // no autopay fee, so the email states both amounts instead of contradicting itself (D-23).
+  const confirmText = `We tried to charge ${money(attempted)}${feeMinor > 0
+    ? ` (${money(attempt.principalAmount)} plus a ${money(attempt.feeAmount)} processing fee)` : ''} to your ${
+    methodLabel ? paymentMethodInSentence(methodLabel) : 'saved payment method'} for invoice ${invoice!.invoiceNumber} as an automatic payment, and your bank asked you to confirm it first. Nothing has been charged. Confirming takes you to the invoice, where the amount due is ${invoice!.currencyCode} ${invoice!.balance}.`;
   const retryText = retryOn ? `Automatic payment will try again on or after ${retryOn} unless this invoice is paid or its automatic payment is stopped first. You can pay now instead.` : noRetry;
   const failureText = variant === 'expired' ? 'Your payment confirmation link expired. The pending payment was canceled. Please pay this invoice using the invoice link.'
     : variant === 'returned' ? 'Your bank returned a previously completed payment. The invoice balance has reopened. Please review the invoice and arrange payment.'
-    : variant === 'confirm' ? 'Your bank requires confirmation before this payment can complete.'
+    : variant === 'confirm' ? confirmText
     : variant === 'update' ? `This payment method cannot be used for automatic payments, so this payment did not go through. ${noRetry}`
     : `${attempt.failureClass === 'nsf' ? 'The bank reported insufficient available funds.' : 'Payment could not be completed.'} ${retryText}`;
   const vars = { org_name: org!.name, partner_name: partner!.name, invoice_number: invoice!.invoiceNumber!,
     amount_due: `${invoice!.currencyCode} ${invoice!.balance}`, failure_text: failureText,
-    action_link: actionLink, action_label: variant === 'confirm' ? 'Confirm payment' : 'Pay invoice' };
+    action_link: actionLink, action_label: variant === 'confirm' ? 'Confirm payment' : 'Pay invoice',
+    payment_method: methodLabel ?? 'Saved payment method', attempted_amount: money(attempted) };
   const rendered = await renderBillingNotice('payment_failed', { payment: { id: 'payment_failed', vars, secondaryAction,
-    custom: partnerEmailCustomFromSettings(partner!.settings, 'payment_failed'), frozen: { attemptId, variant, tokenId, returnIdentity: returnIdentity ?? null } } });
+    custom: partnerEmailCustomFromSettings(partner!.settings, 'payment_failed'), frozen: { attemptId, variant, tokenId, returnIdentity: returnIdentity ?? null,
+      invoiceNumber: invoice!.invoiceNumber ?? null, partnerName: partner!.name, methodLabel,
+      currency: attempt.currency, attemptedAmount: attempted, attemptFee: attempt.feeAmount, payNowAmount: invoice!.balance } } });
   await enqueueBillingNotice(tx, { orgId: attempt.orgId, partnerId: invoice!.partnerId, invoiceId: invoice!.id,
     kind: 'payment_failed', seq: 1, dedupeKey, toEmail: email, rendered });
 }
@@ -182,7 +209,8 @@ export async function enqueueMethodUnusableNotice(tx: Tx, scheduleId: string): P
   const rendered = await renderBillingNotice('payment_failed', { payment: { id: 'payment_failed', vars,
     secondaryAction: updateMethodAction(buildBillingLinkUrl('enroll', token.token)),
     custom: partnerEmailCustomFromSettings(partner.settings, 'payment_failed'),
-    frozen: { attemptId: null, scheduleId: schedule.id, variant: 'update', tokenId: token.id, returnIdentity: null } } });
+    frozen: { attemptId: null, scheduleId: schedule.id, variant: 'update', tokenId: token.id, returnIdentity: null,
+      invoiceNumber: invoice.invoiceNumber ?? null, partnerName: partner.name } } });
   await enqueueBillingNotice(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
     kind: 'payment_failed', seq: 1, dedupeKey, toEmail: email, rendered });
 }

@@ -37,7 +37,8 @@ const tx = { select: () => {
 } } as unknown as Tx;
 beforeEach(() => {
   vi.clearAllMocks(); rows.clear();
-  rows.set(invoiceCollectionAttempts, [{ id: 'a', invoiceId: 'invoice', orgId: 'org', paymentMethodId: 'method', invoiceStripePaymentId: 'mapping', failureClass: 'nsf' }]);
+  rows.set(invoiceCollectionAttempts, [{ id: 'a', invoiceId: 'invoice', orgId: 'org', paymentMethodId: 'method', invoiceStripePaymentId: 'mapping', failureClass: 'nsf',
+    principalAmount: '100.00', feeAmount: '3.00', currency: 'USD' }]);
   rows.set(invoices, [{ id: 'invoice', orgId: 'org', partnerId: 'partner', currencyCode: 'USD', balance: '100.00', invoiceNumber: 'INV-1' }]);
   rows.set(organizations, [{ id: 'org', partnerId: 'partner', name: 'Customer', billingContact: { email: 'billing@example.test' } }]);
   rows.set(partners, [{ id: 'partner', name: 'Provider', settings: {} }]);
@@ -49,7 +50,7 @@ beforeEach(() => {
 it.each(['confirm', 'update'] as const)('binds %s tokens to enrollment generation and exact attempt', async variant => {
   await enqueueAttemptNotice(tx, 'a', variant);
   expect(h.mint).toHaveBeenCalledWith(tx, expect.objectContaining({ generation: 7, enrollmentId: 'enrollment', purpose: variant === 'confirm' ? 'confirm_payment' : 'enroll', ttlDays: 14 }));
-  expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ dedupeKey: 'a:payment_failed:1', rendered: expect.objectContaining({ frozen: { attemptId: 'a', variant, tokenId: 'token-row', returnIdentity: null } }) }));
+  expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ dedupeKey: 'a:payment_failed:1', rendered: expect.objectContaining({ frozen: expect.objectContaining({ attemptId: 'a', variant, tokenId: 'token-row', returnIdentity: null }) }) }));
 });
 it('checks dedupe before minting tokens on replay', async () => {
   rows.set(billingNoticeOutbox, [{ id: 'already-enqueued' }]);
@@ -130,11 +131,11 @@ it('requires an actually applied return mapping and permits cleared method autho
   rows.get(invoiceCollectionAttempts)![0]!.paymentMethodId = null;
   await enqueueAttemptNotice(tx, 'a', 'returned', 'mapping:dp_1');
   expect(h.mint).not.toHaveBeenCalled();
-  expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ dedupeKey: 'a:payment_failed:returned:mapping:dp_1', rendered: expect.objectContaining({ frozen: { attemptId: 'a', variant: 'returned', tokenId: null, returnIdentity: 'mapping:dp_1' } }) }));
+  expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ dedupeKey: 'a:payment_failed:returned:mapping:dp_1', rendered: expect.objectContaining({ frozen: expect.objectContaining({ attemptId: 'a', variant: 'returned', tokenId: null, returnIdentity: 'mapping:dp_1' }) }) }));
 });
 it('freezes exact receipt principal, fee and total, and skips unapplied mappings', async () => {
   await enqueueOnlineReceipt(tx, 'mapping');
-  expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ dedupeKey: 'mapping:payment_receipt:1', rendered: expect.objectContaining({ frozen: { mappingId: 'mapping', amount: '100.00', fee: '3.00', total: '103.00' } }) }));
+  expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ dedupeKey: 'mapping:payment_receipt:1', rendered: expect.objectContaining({ frozen: expect.objectContaining({ mappingId: 'mapping', amount: '100.00', fee: '3.00', total: '103.00' }) }) }));
   h.enqueue.mockClear(); rows.get(invoiceStripePayments)![0]!.invoicePaymentId = null;
   await enqueueOnlineReceipt(tx, 'mapping'); expect(h.enqueue).not.toHaveBeenCalled();
 });
@@ -164,7 +165,7 @@ describe('method-unusable notice for a due schedule with no attempt of its own',
     expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ kind: 'payment_failed', invoiceId: 'invoice',
       dedupeKey: 'invoice:payment_failed:method_not_usable:1', toEmail: 'billing@example.test',
       rendered: expect.objectContaining({
-        frozen: { attemptId: null, scheduleId: 'schedule', variant: 'update', tokenId: 'token-row', returnIdentity: null } }) }));
+        frozen: expect.objectContaining({ attemptId: null, scheduleId: 'schedule', variant: 'update', tokenId: 'token-row', returnIdentity: null }) }) }));
   });
   it('leads with paying this invoice and adds an update link that says it does not pay this invoice', async () => {
     await enqueueMethodUnusableNotice(tx, 'schedule');
@@ -193,5 +194,66 @@ describe('method-unusable notice for a due schedule with no attempt of its own',
     if (kind === 'foreign') rows.get(orgAutopayEnrollments)![0]!.orgId = 'another-org';
     await enqueueMethodUnusableNotice(tx, 'schedule');
     expect(h.mint).not.toHaveBeenCalled(); expect(h.enqueue).not.toHaveBeenCalled();
+  });
+});
+
+const footerBrand = (html: string) => html.match(/<p style="margin: 16px 0 0;[^>]*>([^<]*)<\/p>/)?.[1];
+const lastQueued = () => (h.enqueue.mock.calls.at(-1)![1] as { rendered: { text: string; html: string; frozen: Record<string, unknown> } }).rendered;
+describe('client payment notices name the invoice, the provider and the method (D-8, D-23, D-26)', () => {
+  beforeEach(() => {
+    Object.assign(rows.get(orgPaymentMethods)![0]!, { type: 'card', cardBrand: 'visa', cardFunding: 'credit', cardLast4: '4242' });
+    Object.assign(rows.get(invoiceStripePayments)![0]!, { source: 'autopay' });
+  });
+  it('an autopay card receipt names the invoice, the provider and the card, with the provider as the email brand', async () => {
+    await enqueueOnlineReceipt(tx, 'mapping');
+    const { html, text, frozen } = lastQueued();
+    expect(footerBrand(html)).toBe('Provider');
+    expect(html).not.toContain('Breeze RMM');
+    expect(frozen).toMatchObject({ invoiceNumber: 'INV-1', partnerName: 'Provider', methodLabel: 'Visa credit card ending in 4242' });
+    for (const body of [html, text]) {
+      expect(body).toContain('INV-1'); expect(body).toContain('Provider');
+      expect(body).toContain('Visa credit card ending in 4242');
+      expect(body).not.toContain('Principal');
+      expect(body).not.toMatch(/Card on 2026/);
+    }
+  });
+  it.each([
+    ['a pay-link payment (method unknown to Breeze)', { paymentMethodType: null, source: 'checkout' }, [], 'Online payment'],
+    ['an autopay bank debit', { paymentMethodType: 'us_bank_account' }, null, 'Bank account ending in 6789'],
+  ] as const)('labels %s truthfully, never "Card"', async (_label, mapping, attempts, label) => {
+    Object.assign(rows.get(invoiceStripePayments)![0]!, mapping);
+    Object.assign(rows.get(orgPaymentMethods)![0]!, { type: 'us_bank_account', cardBrand: null, cardFunding: null, cardLast4: null, bankLast4: '6789' });
+    if (attempts) rows.set(invoiceCollectionAttempts, [...attempts]);
+    await enqueueOnlineReceipt(tx, 'mapping');
+    const { html, text, frozen } = lastQueued();
+    expect(frozen.methodLabel).toBe(label);
+    for (const body of [html, text]) { expect(body).toContain(label); expect(body).not.toMatch(/\bCard\b/); }
+  });
+  it('omits the fee and total lines from a fee-free receipt', async () => {
+    Object.assign(rows.get(invoiceStripePayments)![0]!, { feeAmount: '0.00' });
+    await enqueueOnlineReceipt(tx, 'mapping');
+    const { html, text } = lastQueued();
+    for (const body of [html, text]) { expect(body).not.toContain('Processing fee'); expect(body).not.toContain('Total charged'); }
+  });
+  it.each(['confirm', 'update', 'pay', 'expired'] as const)('a %s failure notice uses the provider as the email brand and freezes the facts', async variant => {
+    Object.assign(rows.get(invoiceCollectionAttempts)![0]!, { failureClass: variant === 'update' ? 'hard' : 'soft' });
+    await enqueueAttemptNotice(tx, 'a', variant);
+    const { html, frozen } = lastQueued();
+    expect(footerBrand(html)).toBe('Provider');
+    expect(frozen).toMatchObject({ invoiceNumber: 'INV-1', partnerName: 'Provider', methodLabel: 'Visa credit card ending in 4242' });
+  });
+  it('the confirm notice freezes the attempted autopay total and the pay-now amount, and explains the difference', async () => {
+    Object.assign(rows.get(invoiceCollectionAttempts)![0]!, { principalAmount: '90.00', feeAmount: '2.70', currency: 'USD', failureClass: 'auth_required' });
+    rows.get(invoices)![0]!.balance = '90.00';
+    await enqueueAttemptNotice(tx, 'a', 'confirm');
+    const { html, text, frozen } = lastQueued();
+    expect(frozen).toMatchObject({ attemptedAmount: '92.70', attemptFee: '2.70', payNowAmount: '90.00', currency: 'USD' });
+    for (const body of [html, text]) {
+      expect(body).toContain('INV-1');
+      expect(body).toContain('USD 92.70');
+      expect(body).toContain('USD 2.70');
+      expect(body).toContain('USD 90.00');
+      expect(body).toContain('Nothing has been charged');
+    }
   });
 });

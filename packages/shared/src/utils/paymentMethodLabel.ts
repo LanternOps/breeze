@@ -46,3 +46,10 @@ export function formatPaymentMethod(method: PaymentMethodLabelInput, style: 'lon
   if (!SHOWN_FUNDING.has(funding)) return `${known ? `${brand} card` : 'Card'}${ending(method.cardLast4)}`;
   return `${known ? `${brand} ${funding}` : funding[0]!.toUpperCase() + funding.slice(1)} card${ending(method.cardLast4)}`;
 }
+
+const GENERIC_LABEL = /^(Bank account|Card|Credit card|Debit card|Prepaid card|Payment method|Online payment)\b/;
+/** A label placed mid-sentence ("charge your bank account ending in 6789"):
+ * generic words are lowercased, brand names keep their capital. */
+export function paymentMethodInSentence(label: string): string {
+  return GENERIC_LABEL.test(label) ? label[0]!.toLowerCase() + label.slice(1) : label;
+}

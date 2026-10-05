@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cardBrandLabel, formatPaymentMethod } from './paymentMethodLabel';
+import { cardBrandLabel, formatPaymentMethod, paymentMethodInSentence } from './paymentMethodLabel';
 
 describe('cardBrandLabel', () => {
   it.each([
@@ -49,4 +49,12 @@ describe('formatPaymentMethod', () => {
   it('falls back to a generic label for an unknown method type', () => {
     expect(formatPaymentMethod({ type: 'klarna' })).toBe('Payment method');
   });
+});
+
+describe('paymentMethodInSentence', () => {
+  it.each([
+    ['Bank account ending in 6789', 'bank account ending in 6789'], ['Card ending in 4242', 'card ending in 4242'],
+    ['Credit card ending in 4242', 'credit card ending in 4242'], ['Online payment', 'online payment'],
+    ['Visa credit card ending in 4242', 'Visa credit card ending in 4242'], ['Link ending in 0000', 'Link ending in 0000'],
+  ])('%s reads as %s mid-sentence', (label, expected) => expect(paymentMethodInSentence(label)).toBe(expected));
 });
