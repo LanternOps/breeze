@@ -29,6 +29,10 @@ describe('setup page', () => {
     expect(screen.queryByText(/This applies to new invoices after enrollment/)).toBeNull();
     expect(screen.getByRole('link', { name: 'billing@msp.example' })).toBeInTheDocument();
     expect(document.querySelector('main')).toBeNull();
+    // V-38: plain labels.
+    expect(screen.getByText('Notice')).toBeInTheDocument();
+    expect(screen.getByText('Control')).toBeInTheDocument();
+    expect(screen.queryByText('Your say')).toBeNull();
   });
 
   it('names each method with its fee and only recommends bank when it is not the dearer option', async () => {
@@ -59,6 +63,16 @@ describe('setup page', () => {
     expect(screen.getByText('The authorization changed. Please read it and agree again.')).toBeInTheDocument();
   });
 
+  it('stores who is asking for the return page (V-19)', async () => {
+    vi.mocked(apiPost).mockResolvedValue({ data: { url: 'https://checkout.stripe.com/c/pay/x' } } as never);
+    const assign = vi.fn();
+    vi.spyOn(window, 'location', 'get').mockReturnValue({ ...window.location, assign } as never);
+    render(<AutopaySetupPage token="test-token" />);
+    fireEvent.click(await screen.findByTestId('autopay-consent'));
+    fireEvent.click(screen.getByTestId('autopay-setup-submit'));
+    await waitFor(() => expect(assign).toHaveBeenCalled());
+    expect(JSON.parse(sessionStorage.getItem('autopay-return-branding')!)).toEqual({ partnerName: 'Example MSP', logoUrl: null, supportEmail: 'billing@msp.example' });
+  });
   it('sends the displayed terms once, stores the return token and opens Stripe', async () => {
     const assign = vi.fn();
     vi.spyOn(window, 'location', 'get').mockReturnValue({ ...window.location, assign } as never);
@@ -132,6 +146,10 @@ describe('changing an existing method (card-expiring link or portal)', () => {
     expect(await screen.findByRole('heading', { name: 'Change your payment method' })).toBeInTheDocument();
     expect(screen.getByText(/replaces your Visa credit card ending in 4242/)).toBeInTheDocument();
     expect(screen.getByTestId('autopay-method-card')).toBeChecked();
+    // V-38: a change applies to payments not yet started, and the tab says so.
+    expect(screen.getByText('Payments not yet started')).toBeInTheDocument();
+    expect(screen.queryByText(/Issued after you set this up/)).toBeNull();
+    expect(document.title).toBe('Change payment method');
   });
   it('in the portal: an inline form with a Cancel, posting to the portal route', async () => {
     vi.mocked(apiGet).mockResolvedValue(active);

@@ -28,8 +28,7 @@ export function linkFailureCopy(failure: LinkFailureView, purpose: BillingLinkPu
       if (purpose === 'enroll' && failure.enrollmentStatus === 'active') {
         return { title: "You're already set up", mark: { tone: 'success' as const, label: 'On' },
           body: [`Automatic payments to ${msp} are on. To change your payment method, sign in to your customer portal or use the link in your latest email from ${msp}.`],
-          primary: { label: 'Sign in to your portal', href: withBase('/login'), variant: 'secondary' as const, testId: 'autopay-link-sign-in' } as PanelAction,
-          secondary: contact };
+          primary: { label: 'Sign in to your portal', href: withBase('/login'), variant: 'secondary' as const, testId: 'autopay-link-sign-in' } as PanelAction };
       }
       return { title: 'This link was already used', body: ['Open the invoice from your email to see its current status.'], primary: contact };
     // The skip route has no rollout gate (Q4), so a skip link never lands here; the
@@ -43,11 +42,15 @@ export function linkFailureCopy(failure: LinkFailureView, purpose: BillingLinkPu
   }
 }
 
+/** V-20: when the panel's next step is emailing the MSP, the page footer doesn't repeat the address. */
+export function linkFailureContactInCard(failure: LinkFailureView, purpose: BillingLinkPurpose): boolean {
+  return linkFailureCopy(failure, purpose).primary?.testId === 'autopay-link-contact';
+}
+
 export function LinkStatePanel({ failure, purpose }: { failure: LinkFailureView; purpose: BillingLinkPurpose }) {
   const copy = linkFailureCopy(failure, purpose);
-  const secondary = 'secondary' in copy ? copy.secondary : null;
   return (
-    <StatePanel title={copy.title} mark={'mark' in copy ? copy.mark : undefined} primary={copy.primary} secondary={secondary}
+    <StatePanel title={copy.title} mark={'mark' in copy ? copy.mark : undefined} primary={copy.primary}
       testId={`autopay-link-${failure.code}`}>
       {copy.body.map(line => <p key={line}>{line}</p>)}
     </StatePanel>

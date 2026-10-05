@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { Notice } from '../ui';
+import { BTN_DANGER, BTN_PRIMARY, BTN_SECONDARY, Notice } from '../ui';
 import { AutopayShell } from './AutopayShell';
 import { AuthorizationBox } from './AuthorizationBox';
 import { MethodChoice } from './MethodChoice';
@@ -123,5 +123,27 @@ describe('LinkStatePanel', () => {
   it('an unknown link names no MSP', () => {
     render(<LinkStatePanel failure={{ code: 'link_invalid' }} purpose="enroll" />);
     expect(document.body.textContent).not.toContain('Example MSP');
+  });
+});
+
+// V-23: on a phone (or the 320px invoice rail) the label sits over the value, so
+// "Visa credit card ending in 4242" never wraps beside a 40% label column.
+describe('SummaryList layout', () => {
+  it('stacks label over value until its own container is 24rem wide', () => {
+    const { container } = render(<SummaryList rows={[{ label: 'Payment method', value: 'Visa credit card ending in 4242' }]} />);
+    const list = container.querySelector('dl')!;
+    expect(list).toHaveClass('@container');
+    const row = list.firstElementChild!;
+    expect(row).toHaveClass('grid-cols-1', '@sm:grid-cols-[9rem_1fr]');
+    expect(row.className).not.toMatch(/min-\[360px\]/);
+  });
+});
+
+// V-24: every button is the same height side by side, and a 44px target on phones.
+describe('buttons', () => {
+  it.each([['primary', BTN_PRIMARY], ['secondary', BTN_SECONDARY], ['danger', BTN_DANGER]])('%s', (_name, cls) => {
+    expect(cls).toContain('border');
+    expect(cls).toContain('min-h-11');
+    expect(cls).toContain('sm:min-h-9');
   });
 });

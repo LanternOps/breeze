@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils';
 import { BTN_BLOCK, BTN_PRIMARY, LINK, Notice } from './ui';
 import { AutopayShell } from './autopay/AutopayShell';
 import { Nowrap, StatePanel, type PanelAction } from './autopay/StatePanel';
-import { LinkStatePanel, type LinkFailureView } from './autopay/LinkStatePanel';
+import { LinkStatePanel, linkFailureContactInCard, type LinkFailureView } from './autopay/LinkStatePanel';
 
 type Result = { url?: string; processing?: boolean; paid?: boolean; notNeeded?: boolean };
 type Landed = 'processing' | 'paid' | 'not_needed' | 'review' | null;
@@ -55,9 +55,10 @@ export default function AutopayConfirmPage({ token }: { token: string }) {
     else setError(true);
   }
 
-  const shell = (panel: ReactElement, branding: { partnerName?: string | null; logoUrl?: string | null; supportEmail?: string | null } = {}) =>
-    <AutopayShell partnerName={branding.partnerName} logoUrl={branding.logoUrl} supportEmail={branding.supportEmail} testId="autopay-confirm-page">{panel}</AutopayShell>;
-  if (failure) return shell(<LinkStatePanel failure={failure} purpose="confirm_payment" />, failure);
+  // V-20: the MSP's address appears once: in the card when emailing them is the next step.
+  const shell = (panel: ReactElement, branding: { partnerName?: string | null; logoUrl?: string | null; supportEmail?: string | null } = {}, contactInCard = false) =>
+    <AutopayShell partnerName={branding.partnerName} logoUrl={branding.logoUrl} supportEmail={branding.supportEmail} testId="autopay-confirm-page" contactInCard={contactInCard}>{panel}</AutopayShell>;
+  if (failure) return shell(<LinkStatePanel failure={failure} purpose="confirm_payment" />, failure, linkFailureContactInCard(failure, 'confirm_payment'));
   if (loadError) {
     return shell(<StatePanel title="We couldn't load this page" primary={{ label: 'Refresh', onClick: () => window.location.reload() }}>
       <p>Please refresh in a moment. Nothing has been charged by opening this page.</p>
@@ -118,5 +119,5 @@ export default function AutopayConfirmPage({ token }: { token: string }) {
       </div>
     </div>;
   }
-  return shell(panel, view);
+  return shell(panel, view, state === 'review' && !!view.supportEmail);
 }

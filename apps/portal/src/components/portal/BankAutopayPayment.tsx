@@ -2,10 +2,10 @@ import {useEffect,useState,type ReactElement} from 'react';
 import {cn} from '@/lib/utils';
 import {money} from '@/lib/format';
 import {withBase} from '@/lib/basePath';
-import {BTN_PRIMARY,BTN_SECONDARY,Notice} from './ui';
+import {BTN_PRIMARY,BTN_SECONDARY,LINK,Notice} from './ui';
 import {AutopayShell} from './autopay/AutopayShell';
 import {AuthorizationBox} from './autopay/AuthorizationBox';
-import {StatePanel} from './autopay/StatePanel';
+import {Nowrap,StatePanel} from './autopay/StatePanel';
 import {SummaryList} from './autopay/SummaryList';
 import {apiGet,apiPost,type ApiResponse,type BankAutopayOffer} from '@/lib/api';
 import {runAction} from '@/lib/runAction';
@@ -14,6 +14,8 @@ type Target={invoiceId:string;publicToken?:string};
 /** The exact one-time terms the client authorized before Stripe bank setup. */
 type Terms=Pick<BankAutopayOffer,'principal'|'fee'|'currency'|'disclosureHash'>;
 type View={target:Target;offer:BankAutopayOffer;setupSessionId?:string;accepted?:Terms};
+/** Who is asking and for which invoice, read with the invoice on return (V-8). */
+type Identity={partnerName:string|null;supportEmail:string|null;logoUrl:string|null;invoiceNumber:string|null};
 /** notCharged: the server answered this collection with an outcome that never debits. */
 type Changed={from:Terms;to:BankAutopayOffer;notCharged:boolean};
 import type { InvoicePayResult as Result } from '@breeze/shared';
@@ -46,7 +48,8 @@ function unwrap<T>(response:ApiResponse<T|{data:T}>,publicRequest:boolean):ApiRe
   return {...response,data:publicRequest?(response.data as {data?:T}|undefined)?.data:response.data as T|undefined};
 }
 async function read(target:Target){
-  type Data={invoice:{id:string};bankAutopay?:BankAutopayOffer|null};
+  type Data={invoice:{id:string;invoiceNumber?:string|null};bankAutopay?:BankAutopayOffer|null;
+    branding?:{partnerName?:string|null;contactEmail?:string|null;logoUrl?:string|null}|null};
   return unwrap(await apiGet<Data|{data:Data}>(path(target),{redirectOnUnauthorized:!target.publicToken}),!!target.publicToken);
 }
 export default function BankAutopayPayment({target,offer,returning=false}:{target?:Target;offer?:BankAutopayOffer|null;returning?:boolean}){
@@ -56,6 +59,7 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
   const [recovery,setRecovery]=useState<'in_progress'|'abandoned'|'reauthorize'|null>(null);
   const [changed,setChanged]=useState<Changed|null>(null);
   const [cancelled,setCancelled]=useState(false),[invoiceHref,setInvoiceHref]=useState<string|null>(null);
+  const [identity,setIdentity]=useState<Identity|null>(null);
   const outcome=(text:string,error:boolean)=>{setMessage(text);setFailed(error);};
   /** Shows a freshly read offer against the terms this setup authorized. The same terms
    * stay accepted (#7897); different terms need a new authorization and bank setup,
@@ -85,6 +89,9 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
       void read(next).then(response=>{
         if(canceled)return;
         if(response.data?.invoice.id!==stored.invoiceId||!response.data.bankAutopay)throw new Error();
+        const b=response.data.branding;
+        setIdentity({partnerName:b?.partnerName??null,supportEmail:b?.contactEmail??null,logoUrl:b?.logoUrl??null,
+          invoiceNumber:response.data.invoice.invoiceNumber??null});
         show({target:next,offer:response.data.bankAutopay,setupSessionId:session,accepted:storedTerms(stored.accepted)});
       }).catch(()=>{if(!canceled)outcome('Could not reload the invoice. Refresh to try again.',true);});
     }catch{outcome('This return is incomplete. Open the invoice and try again.',true);}
@@ -165,10 +172,15 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
     setBusy(false);
     if(!conflict)outcome('Payment has not started. Refresh the invoice to check its status.',true);
   }
-  const summary=(offer:BankAutopayOffer)=>[{label:'Invoice payment',value:money(offer.principal,offer.currency)},
+  const summary=(offer:BankAutopayOffer)=>[
+    // V-8: the account this payment comes from, once it is connected.
+    ...(returning&&view?.setupSessionId&&offer.methodLabel?[{label:'From',value:offer.methodLabel}]:[]),
+    {label:'Invoice payment',value:money(offer.principal,offer.currency)},
     {label:'Processing fee',value:Number(offer.fee)>0?money(offer.fee,offer.currency):'None'},
     {label:'Total',value:total(offer),figure:true}];
-  const frame=(children:ReactElement)=>returning?<AutopayShell testId="autopay-bank-return">{children}</AutopayShell>:children;
+  const frame=(children:ReactElement)=>returning?<AutopayShell testId="autopay-bank-return" reserveIdentity
+    partnerName={identity?.partnerName} logoUrl={identity?.logoUrl} supportEmail={identity?.supportEmail}>{children}</AutopayShell>:children;
+  const backToInvoice=returning&&invoiceHref?<a href={invoiceHref} className={cn(LINK,'text-sm')} data-testid="autopay-bank-view-invoice">View invoice</a>:null;
   if(!view){
     if(!returning)return null;
     if(cancelled)return frame(<StatePanel title="Your bank connection wasn't finished" mark={{tone:'neutral',label:'Not paid'}}
@@ -184,20 +196,25 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
   if(!view.offer.available&&!pending)return frame(<p className="text-sm text-muted-foreground" data-testid="autopay-bank-unavailable">Bank payment isn't available for this invoice right now. You can pay it by card.</p>);
   const tone:'destructive'|'primary'=failed?'destructive':'primary';
   const body=<section data-testid="autopay-bank-module" className="space-y-4">
-    {returning&&<h1 className="font-display text-[1.75rem] font-semibold leading-tight tracking-tight text-foreground">Pay by bank</h1>}
+    {returning&&<h1 className="font-display text-[1.75rem] font-semibold leading-tight tracking-tight text-foreground">
+      {identity?.invoiceNumber?<>Pay invoice <Nowrap>{identity.invoiceNumber}</Nowrap> by bank</>:'Pay by bank'}</h1>}
     <SummaryList rows={summary(view.offer)}/>
     {changed&&!finished&&<Notice tone="warning" title="The total changed, so no payment was made." data-testid="autopay-bank-terms-changed">
       <p>{changeText(changed)}{changed.notCharged?' Your bank account was not charged.':''}</p>
       <p>Please read the new authorization and agree to it. You'll connect your bank account with Stripe again.</p>
     </Notice>}
     {message&&<Notice tone={finished?'primary':tone} data-testid="autopay-bank-result">{finished?<><p className="font-semibold">Bank payment started</p>
-      <p>{`Your bank payment of ${total(view.offer)} has started. Bank payments usually take a few business days to clear, and we'll email you a receipt when it does. Automatic payments are now on for future invoices.`}</p></>
+      <p>{`Your bank payment of ${total(view.offer)} has started. Bank payments usually take a few business days to clear, and we'll email you a receipt when it does. Automatic payments are now on for future invoices.`}</p>
+      {returning&&<p>You can close this page.</p>}
+      {backToInvoice}</>
       :<p>{message}</p>}</Notice>}
     {recovery==='abandoned'||recovery==='reauthorize'?<button type="button" className={cn(BTN_PRIMARY,'w-full')} data-testid="autopay-bank-restart" disabled={busy} onClick={()=>void restart()}>Connect your bank again</button>
       :recovery==='in_progress'?<button type="button" className={cn(BTN_SECONDARY,'w-full')} data-testid="autopay-bank-refresh" disabled={busy} onClick={()=>void refresh()}>Check again</button>
       :pending&&!finished?<Notice tone="warning" title="Your bank account needs verifying first." data-testid="autopay-bank-pending"
         action={<button type="button" className={BTN_SECONDARY} data-testid="autopay-bank-refresh" disabled={busy} onClick={()=>void refresh()}>Check again</button>}>
-        <p>Stripe will email you instructions, usually within 1–2 business days. No payment has started.</p></Notice>
+        <p>Stripe will email you instructions, usually within 1–2 business days. No payment has started.</p>
+        <p>Once it's verified, we'll email you. Then open this invoice from its email and pay it by bank.</p>
+        {backToInvoice}</Notice>
       :!finished&&<div className="space-y-4">
         <AuthorizationBox id="autopay-bank-authorization" text={view.offer.consentText} checked={accepted} disabled={busy}
           onChange={setAccepted} testIds={{text:'autopay-bank-consent-text',checkbox:'autopay-bank-consent'}}/>

@@ -87,3 +87,38 @@ it('a failed stop keeps the question and offers a retry', async () => {
   expect(await screen.findByRole('alert')).toHaveTextContent("We couldn't stop automatic payments");
   await waitFor(() => expect(screen.getByTestId('autopay-stop-submit')).toBeEnabled());
 });
+
+// V-30: paused is neutral, not the success tone.
+it('"Keep them paused" marks Paused in the neutral tone', async () => {
+  vi.mocked(apiGet).mockResolvedValue(view({ enrollment: { status: 'paused' } }));
+  render(<AutopayStopPage token="stop-token" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Keep them paused' }));
+  await screen.findByRole('heading', { name: 'Nothing changed' });
+  expect(screen.getByText('Paused').closest('[data-tone]')).toHaveAttribute('data-tone', 'neutral');
+});
+// V-31: the started-bank-payment caveat is for bank accounts only.
+it.each([[card, false], [bank, true]] as const)('after stopping, the bank caveat follows the method (%j)', async (method, shown) => {
+  vi.mocked(apiGet).mockResolvedValue(view({ method }));
+  vi.mocked(apiPost).mockResolvedValue({ data: { success: true } } as never);
+  render(<AutopayStopPage token="stop-token" />);
+  fireEvent.click(await screen.findByTestId('autopay-stop-submit'));
+  await screen.findByTestId('autopay-stop-done');
+  expect(!!screen.queryByText(/If a bank payment had already started, it may still complete/)).toBe(shown);
+});
+// A network failure (the POST rejects) is the same retryable failure, never a silent no-op.
+it('a stop that never reaches the server keeps the question and says so', async () => {
+  vi.mocked(apiPost).mockRejectedValue(new TypeError('Failed to fetch'));
+  render(<AutopayStopPage token="stop-token" />);
+  fireEvent.click(await screen.findByTestId('autopay-stop-submit'));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Please try again. If it keeps happening, email Example MSP');
+  expect(screen.getByTestId('autopay-stop-submit')).toBeEnabled();
+});
+// V-20: an expired link's next step is emailing the MSP: offered once, in the card.
+it('an expired stop link offers to email the MSP once', async () => {
+  vi.mocked(apiGet).mockResolvedValue({ error: 'x', code: 'link_expired', statusCode: 404,
+    errorData: { partnerName: 'Example MSP', supportEmail: 'billing@msp.example' } } as never);
+  render(<AutopayStopPage token="stop-token" />);
+  await screen.findByRole('heading', { name: 'This link has expired' });
+  expect(screen.getAllByRole('link', { name: /Email Example MSP|billing@msp\.example/ })).toHaveLength(1);
+  expect(screen.getByRole('link', { name: 'Email Example MSP' })).toHaveAttribute('href', 'mailto:billing@msp.example');
+});

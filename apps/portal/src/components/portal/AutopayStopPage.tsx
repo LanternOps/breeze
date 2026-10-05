@@ -4,7 +4,7 @@ import { apiGet, apiPost } from '@/lib/api';
 import { linkFailureOf } from '@/lib/autopay';
 import { AutopayShell } from './autopay/AutopayShell';
 import { StatePanel } from './autopay/StatePanel';
-import { LinkStatePanel, type LinkFailureView } from './autopay/LinkStatePanel';
+import { LinkStatePanel, linkFailureContactInCard, type LinkFailureView } from './autopay/LinkStatePanel';
 import { StopAutopayConfirm } from './autopay/StopAutopayConfirm';
 
 type Phase = 'loading' | 'error' | 'ready' | 'stopped' | 'kept';
@@ -46,10 +46,10 @@ export default function AutopayStopPage({ token }: { token: string }) {
     const method = view.method?.type === 'us_bank_account' ? 'bank account' : view.method ? 'card' : null;
     panel = <StatePanel mark={{ tone: 'neutral', label: 'Off' }} title="Automatic payments are off" testId="autopay-stop-done">
       <p>{`${msp} won't charge you automatically${method ? `, and your saved ${method} has been removed` : ''}.`}</p>
-      <p>{`We're emailing you a confirmation${view.openInvoiceCount > 0 ? ', with links to your open invoices' : ''}. If a bank payment had already started, it may still complete.`}</p>
+      <p>{`We're emailing you a confirmation${view.openInvoiceCount > 0 ? ', with links to your open invoices' : ''}.${view.method?.type === 'us_bank_account' ? ' If a bank payment had already started, it may still complete.' : ''}`}</p>
     </StatePanel>;
   } else if (phase === 'kept') {
-    panel = <StatePanel mark={{ tone: 'success', label: view.enrollment?.status === 'paused' ? 'Paused' : 'On' }} title="Nothing changed">
+    panel = <StatePanel mark={view.enrollment?.status === 'paused' ? { tone: 'neutral', label: 'Paused' } : { tone: 'success', label: 'On' }} title="Nothing changed">
       <p>{view.enrollment?.status === 'paused'
         ? `Your automatic payments to ${view.partnerName || 'your service provider'} stay paused. You can close this page.`
         : `Automatic payments to ${view.partnerName || 'your service provider'} are still on. You can close this page.`}</p>
@@ -67,7 +67,8 @@ export default function AutopayStopPage({ token }: { token: string }) {
       onStop={stop} onKeep={() => setPhase('kept')} />;
   }
   return (
-    <AutopayShell partnerName={branding.partnerName} logoUrl={branding.logoUrl} supportEmail={branding.supportEmail} testId="autopay-stop-page">
+    <AutopayShell partnerName={branding.partnerName} logoUrl={branding.logoUrl} supportEmail={branding.supportEmail} testId="autopay-stop-page"
+      contactInCard={!!failure && linkFailureContactInCard(failure, 'stop_autopay')}>
       {panel}
     </AutopayShell>
   );

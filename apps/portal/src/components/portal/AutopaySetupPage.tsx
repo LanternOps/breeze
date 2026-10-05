@@ -12,7 +12,7 @@ import { AuthorizationBox } from './autopay/AuthorizationBox';
 import { MethodChoice, type MethodOption } from './autopay/MethodChoice';
 import { SummaryList } from './autopay/SummaryList';
 import { StatePanel } from './autopay/StatePanel';
-import { LinkStatePanel, type LinkFailureView } from './autopay/LinkStatePanel';
+import { LinkStatePanel, linkFailureContactInCard, type LinkFailureView } from './autopay/LinkStatePanel';
 
 type Feedback = { tone: 'warning' | 'destructive'; title: string; body?: string } | null;
 const STORAGE_HELP = 'This page needs your browser to allow site data so it can finish your setup when you come back from Stripe. Open the link in a regular (not private) window, then try again.';
@@ -68,6 +68,10 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
     return () => window.removeEventListener('pageshow', onShow);
   }, []);
 
+  // V-38: the browser tab names a change as a change, not "Set up automatic payments".
+  const changing = !!data && !data.stopOnly && data.enrollment?.status === 'active' && !!data.method;
+  useEffect(() => { if (!portal && changing) document.title = 'Change payment method'; }, [portal, changing]);
+
   const choose = useCallback((next: MethodType) => {
     setMethod(next);
     setChanged(accepted);
@@ -87,7 +91,11 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
     } catch { url = null; }
     if (url) {
       if (!portal && token) {
-        try { sessionStorage.setItem('autopay-return-token', token); }
+        try {
+          sessionStorage.setItem('autopay-return-token', token);
+          // The return page names the MSP before Stripe's outcome arrives (V-19).
+          sessionStorage.setItem('autopay-return-branding', JSON.stringify({ partnerName: data.partnerName, logoUrl: data.logoUrl ?? null, supportEmail: data.supportEmail ?? null }));
+        }
         catch { setFeedback({ tone: 'destructive', title: "We couldn't open Stripe's secure page.", body: STORAGE_HELP }); inFlight.current = false; setBusy(false); return; }
       }
       window.location.assign(url);
@@ -104,11 +112,12 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
       body: `Please try again. If it keeps happening, email ${data.partnerName || 'your service provider'}.` });
   }
 
-  const wrap = (children: ReactNode, branding?: Partial<{ partnerName: string; logoUrl: string | null; supportEmail: string | null }>) =>
+  const wrap = (children: ReactNode, branding?: Partial<{ partnerName: string; logoUrl: string | null; supportEmail: string | null }>, contactInCard = false) =>
     portal ? <section className="space-y-6" data-testid="autopay-setup-page">{children}</section>
-      : <AutopayShell partnerName={branding?.partnerName} logoUrl={branding?.logoUrl} supportEmail={branding?.supportEmail} testId="autopay-setup-page">{children}</AutopayShell>;
+      : <AutopayShell partnerName={branding?.partnerName} logoUrl={branding?.logoUrl} supportEmail={branding?.supportEmail} testId="autopay-setup-page"
+        contactInCard={contactInCard}>{children}</AutopayShell>;
 
-  if (failure) return wrap(<LinkStatePanel failure={failure} purpose="enroll" />, failure);
+  if (failure) return wrap(<LinkStatePanel failure={failure} purpose="enroll" />, failure, linkFailureContactInCard(failure, 'enroll'));
   if (loadError) {
     return wrap(<StatePanel title="We couldn't load this page" headingLevel={portal ? 2 : 1}
       primary={{ label: 'Refresh', onClick: () => window.location.reload() }}>
@@ -152,9 +161,10 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
       <h2 className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">At a glance</h2>
       <SummaryList rows={[
         { label: 'When', value: scheduleTerms ? autopayScheduleSummary(scheduleTerms) : data.scheduleText },
-        { label: 'Before', value: 'An email with the amount and date' },
-        { label: 'Invoices', value: `Issued after you set this up${cap}` },
-        { label: 'Your say', value: 'Skip any payment from its email, or stop at any time' },
+        { label: 'Notice', value: 'An email with the amount and date before each payment' },
+        // V-38: a change applies to what hasn't been charged yet, not to "invoices issued after".
+        update ? { label: 'Applies to', value: 'Payments not yet started' } : { label: 'Invoices', value: `Issued after you set this up${cap}` },
+        { label: 'Control', value: 'Skip any payment from its email, or stop at any time' },
       ]} />
     </div>
     <div className="mt-6 space-y-6">

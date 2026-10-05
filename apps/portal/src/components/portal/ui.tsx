@@ -21,11 +21,13 @@ export const CELL = 'block sm:table-cell sm:px-4 sm:py-3.5';
 export const TH =
   'px-4 pb-2.5 pt-1 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground';
 
+/** Every button is the same height side by side (the border keeps primary level with
+ *  secondary) and a 44px tap target on phones (V-24). */
 export const BTN_PRIMARY =
-  'inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50';
+  'inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-transparent bg-primary px-4 py-2 sm:min-h-9 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50';
 
 export const BTN_SECONDARY =
-  'inline-flex items-center justify-center gap-2 rounded-md border border-border bg-card px-4 py-2 text-sm font-semibold text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50';
+  'inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-border bg-card px-4 py-2 sm:min-h-9 text-sm font-semibold text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50';
 
 /** Hand-styled checkbox and radio: contrasty border (a faint hairline once hid the
  *  signature checkbox from real customers), the one green ink, a visible ring. */
@@ -112,6 +114,7 @@ export function StatusMark({
   const t = MARK_TONES[tone];
   return (
     <span
+      data-tone={tone}
       {...rest}
       className={cn('inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold uppercase tracking-[0.08em]', t.text, className)}
     >

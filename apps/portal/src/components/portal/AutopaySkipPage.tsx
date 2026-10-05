@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils';
 import { BTN_BLOCK, BTN_PRIMARY, LINK, Notice } from './ui';
 import { AutopayShell } from './autopay/AutopayShell';
 import { Nowrap, StatePanel, type PanelAction } from './autopay/StatePanel';
-import { LinkStatePanel, type LinkFailureView } from './autopay/LinkStatePanel';
+import { LinkStatePanel, linkFailureContactInCard, type LinkFailureView } from './autopay/LinkStatePanel';
 import type { SummaryRow } from './autopay/SummaryList';
 
 type Outcome = 'skipped' | 'pending' | 'processing' | 'changing' | null;
@@ -56,9 +56,10 @@ export default function AutopaySkipPage({ token }: { token: string }) {
     inFlight.current = false; setBusy(false);
   }
 
-  const shell = (panel: ReactElement, branding: { partnerName?: string | null; logoUrl?: string | null; supportEmail?: string | null } = {}) =>
-    <AutopayShell partnerName={branding.partnerName} logoUrl={branding.logoUrl} supportEmail={branding.supportEmail} testId="autopay-skip-page">{panel}</AutopayShell>;
-  if (failure) return shell(<LinkStatePanel failure={failure} purpose="skip_invoice" />, failure);
+  // V-20: the MSP's address appears once: in the card when emailing them is the next step.
+  const shell = (panel: ReactElement, branding: { partnerName?: string | null; logoUrl?: string | null; supportEmail?: string | null } = {}, contactInCard = false) =>
+    <AutopayShell partnerName={branding.partnerName} logoUrl={branding.logoUrl} supportEmail={branding.supportEmail} testId="autopay-skip-page" contactInCard={contactInCard}>{panel}</AutopayShell>;
+  if (failure) return shell(<LinkStatePanel failure={failure} purpose="skip_invoice" />, failure, linkFailureContactInCard(failure, 'skip_invoice'));
   if (loadError) {
     return shell(<StatePanel title="We couldn't load this page" primary={{ label: 'Refresh', onClick: () => window.location.reload() }}>
       <p>Please refresh in a moment. Nothing about your payments has changed.</p>
@@ -105,7 +106,7 @@ export default function AutopaySkipPage({ token }: { token: string }) {
       <p>{`${MSP} won't charge ${invoice} automatically.${due ? ` Please pay it by ${due}.` : ' Please pay it from the invoice.'}`}</p>
     </StatePanel>;
   } else if (state === 'processing') {
-    panel = <StatePanel mark={{ tone: 'primary', label: 'Processing' }} title="This payment has already started" primary={viewInvoice ? { ...viewInvoice, variant: 'secondary' } : null} secondary={contact}>
+    panel = <StatePanel mark={{ tone: 'primary', label: 'Processing' }} title="This payment has already started" primary={viewInvoice ? { ...viewInvoice, variant: 'secondary' } : null}>
       <p>{`The payment for ${invoice} has already been sent to Stripe and can't be skipped now.${bank ? ' Bank payments usually take a few business days to finish.' : ''} You'll get a receipt when it completes. If you think it's wrong, email ${msp}.`}</p>
     </StatePanel>;
   } else if (state === 'pending') {
@@ -113,7 +114,7 @@ export default function AutopaySkipPage({ token }: { token: string }) {
       <p>{`A payment for ${invoice} had already started, so we've asked Stripe to cancel it. Check the invoice for the latest status.`}</p>
     </StatePanel>;
   } else if (state === 'changing') {
-    panel = <StatePanel mark={{ tone: 'primary', label: 'In progress' }} title="This payment is already being changed" primary={viewInvoice ? { ...viewInvoice, variant: 'secondary' } : null} secondary={contact}>
+    panel = <StatePanel mark={{ tone: 'primary', label: 'In progress' }} title="This payment is already being changed" primary={viewInvoice ? { ...viewInvoice, variant: 'secondary' } : null}>
       <p>{`${MSP} is already changing how ${invoice} is paid. Check your email for an update, or contact ${msp}.`}</p>
     </StatePanel>;
   } else if (view.status === 'reversed') {
@@ -148,7 +149,7 @@ export default function AutopaySkipPage({ token }: { token: string }) {
       </div>
     </div>;
   }
-  return shell(panel, view);
+  return shell(panel, view, view.reason === 'void' && view.status === 'not_needed' && !!contact && !paid);
 }
 
 /** V-11: why there is nothing to skip, in the client's words, with what is owed. */

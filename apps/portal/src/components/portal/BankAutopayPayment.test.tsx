@@ -237,3 +237,40 @@ it('restarts an abandoned setup against the current offer, not the stale one',as
  await waitFor(()=>expect(apiPost).toHaveBeenLastCalledWith('/portal/invoices/invoice-1/pay',
   expect.objectContaining({phase:'setup',fee:'2.00',disclosureHash:'d'.repeat(64)}),{redirectOnUnauthorized:true}));
 });
+
+// Visual QA 2026-10-05: the bank return page names the MSP, the invoice and the account
+// before the debit (V-8), ends with a way back (V-9), and says how to finish later (V-10).
+const publicReturn=(bankAutopay:Record<string,unknown>)=>({data:{data:{invoice:{id:'invoice-1',invoiceNumber:'INV-2026-0034'},
+  bankAutopay:{...offer,principal:'140.00',fee:'1.00',...bankAutopay},
+  branding:{partnerName:'Default Partner',contactEmail:'lab-staff@example.test',logoUrl:null}}}});
+it('names the MSP, the invoice and the bank account before the debit',async()=>{
+ sessionStorage.setItem('autopay-bank-return',JSON.stringify({invoiceId:'invoice-1',publicToken:'token-1'}));
+ window.history.replaceState({},'','/autopay/return?bank=1&session_id=cs_bank_one');
+ vi.mocked(apiGet).mockResolvedValue(publicReturn({methodStatus:'active',methodLabel:'Bank account ending in 6789'}));
+ render(<BankAutopayPayment returning/>);
+ expect(await screen.findByRole('heading',{level:1,name:'Pay invoice INV-2026-0034 by bank'})).toBeInTheDocument();
+ expect(screen.getByTestId('autopay-identity')).toHaveTextContent('Default Partner');
+ expect(screen.getByText('Bank account ending in 6789')).toBeInTheDocument();
+ expect(screen.getByText('From')).toBeInTheDocument();
+ expect(screen.getByRole('link',{name:'lab-staff@example.test'})).toHaveAttribute('href','mailto:lab-staff@example.test');
+});
+it('after the debit starts, offers the way back to the invoice and says the page can close',async()=>{
+ sessionStorage.setItem('autopay-bank-return',JSON.stringify({invoiceId:'invoice-1',publicToken:'token-1'}));
+ window.history.replaceState({},'','/autopay/return?bank=1&session_id=cs_bank_one');
+ vi.mocked(apiGet).mockResolvedValue(publicReturn({methodStatus:'active',methodLabel:'Bank account ending in 6789'}));
+ vi.mocked(apiPost).mockResolvedValue({data:{data:{outcome:'created',attemptId:'attempt-1'}}});
+ render(<BankAutopayPayment returning/>);
+ fireEvent.click(await screen.findByTestId('autopay-bank-consent'));fireEvent.click(screen.getByTestId('autopay-bank-confirm-pay'));
+ expect(await screen.findByText('Bank payment started')).toBeInTheDocument();
+ expect(screen.getByRole('link',{name:'View invoice'})).toHaveAttribute('href',expect.stringContaining('/invoice/token-1'));
+ expect(screen.getByText(/You can close this page\./)).toBeInTheDocument();
+});
+it('pending verification says what happens next and how to finish later',async()=>{
+ sessionStorage.setItem('autopay-bank-return',JSON.stringify({invoiceId:'invoice-1',publicToken:'token-1',setupSessionId:'cs_pending'}));
+ vi.mocked(apiGet).mockResolvedValue(publicReturn({methodStatus:'pending_verification',methodLabel:'Bank account ending in 6789'}));
+ render(<BankAutopayPayment returning/>);
+ const pending=await screen.findByTestId('autopay-bank-pending');
+ expect(pending).toHaveTextContent('No payment has started.');
+ expect(pending).toHaveTextContent("Once it's verified, we'll email you. Then open this invoice from its email and pay it by bank.");
+ expect(screen.getByRole('link',{name:'View invoice'})).toBeInTheDocument();
+});

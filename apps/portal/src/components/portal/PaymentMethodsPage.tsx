@@ -14,6 +14,15 @@ type View = 'summary' | 'setup' | 'stop';
 type Summary = { tone: MarkTone; label: string; lines: ReactNode[]; attention?: string;
   update?: { label: string; primary: boolean } | null };
 
+/** V-35: Stripe reports some bank names in capitals ("STRIPE TEST BANK"); show them as names. */
+export function bankDisplayName(name: string): string {
+  if (/[a-z]/.test(name)) return name;
+  const small = new Set(['of', 'and', 'the', 'for']);
+  return name.toLowerCase().replace(/[a-z][a-z'.]*/g, (word, index: number) =>
+    word.includes('.') || (word.length <= 2 && !small.has(word)) ? word.toUpperCase() // "N.A.", "NA"
+      : index > 0 && small.has(word) ? word : word[0]!.toUpperCase() + word.slice(1));
+}
+
 function expiringSoon(method: AutopayMethodView): boolean {
   if (method.type !== 'card' || !method.cardExpMonth || !method.cardExpYear) return false;
   const end = Date.UTC(method.cardExpYear, method.cardExpMonth, 1);
@@ -32,7 +41,7 @@ function summarize(data: AutopayPortalPage, msp: string): Summary {
     methodLines.push(<p key="method" className="text-base font-semibold text-foreground" data-testid="autopay-saved-method">{savedMethodLabel(method)}</p>);
     // The bank's own name as Stripe reports it, shown as a quiet second line.
     const bankName = method.type === 'us_bank_account' ? method.bankName : null;
-    if (bankName) methodLines.push(<p key="bank" className="text-sm text-muted-foreground">{bankName}</p>);
+    if (bankName) methodLines.push(<p key="bank" className="text-sm text-muted-foreground">{bankDisplayName(bankName)}</p>);
     const expiry = formatMonthYear(method.cardExpMonth, method.cardExpYear);
     if (expiry) {
       methodLines.push(expiringSoon(method)
@@ -60,7 +69,8 @@ function summarize(data: AutopayPortalPage, msp: string): Summary {
     const what = reason === 'verification_failed'
       ? `We couldn't verify your ${method ? paymentMethodInSentence(savedMethodLabel(method)) : 'bank account'}. Add it again, or choose a card.`
       : 'This payment method can\'t be charged any more. Add a new card or bank account so future invoices can be paid automatically. Invoices due meanwhile need to be paid from their emails.';
-    return { tone: 'warning', label: 'Needs attention', lines: method?.status === 'unusable' || reason === 'verification_failed' ? methodLines : [],
+    // V-33: name the method that is failing, whatever its row status says.
+    return { tone: 'warning', label: 'Needs attention', lines: methodLines,
       attention: canUpdate ? what : `${what.split('. ')[0]}. Contact ${msp} to update it.`,
       update: canUpdate ? { label: 'Update payment method', primary: true } : null };
   }
@@ -68,6 +78,11 @@ function summarize(data: AutopayPortalPage, msp: string): Summary {
     const when = enrollment.pausedAt ? ` on ${longDate(enrollment.pausedAt)}` : '';
     return { tone: 'neutral', label: 'Paused', update: null, lines: [...methodLines,
       <p key="p">{`${msp} paused automatic payments${when}. Nothing is charged automatically while they're paused. Please pay invoices from their emails or from Invoices.`}</p>] };
+  }
+  if (status === 'requested' && !method && data.stopOnly) {
+    // V-36: switched off before the client set up: say so instead of "Waiting for you" with no button.
+    return { tone: 'neutral', label: 'Not available', update: null, lines: [
+      <p key="a">{`${msp} asked you to set up automatic payments, but setup isn't available right now. Please pay invoices from their emails or from `}<a className={LINK} href={withBase('/invoices')}>Invoices</a> meanwhile.</p>] };
   }
   if (status === 'requested' && !method) {
     return { tone: 'warning', label: 'Waiting for you', lines: [
@@ -79,11 +94,13 @@ function summarize(data: AutopayPortalPage, msp: string): Summary {
       <p key="v">Stripe will email you instructions to verify this account, usually within 1–2 business days. No automatic payments are made until it's verified. You can still pay any invoice from its email.</p>],
       update: canUpdate ? { label: 'Use a different method', primary: false } : null };
   }
+  const soon = !!method && expiringSoon(method);
   return { tone: 'success', label: 'On', lines: [...methodLines,
     ...(enrollment.effectiveFrom ? [<p key="since" className="text-sm text-muted-foreground">{`On since ${longDate(enrollment.effectiveFrom)}`}</p>] : []),
     <p key="notice">We email you the amount and date before each payment.</p>,
     ...(data.stopOnly ? [<p key="off" className="text-muted-foreground">Changing your payment method isn't available right now.</p>] : [])],
-    update: canUpdate ? { label: 'Change payment method', primary: false } : null };
+    // V-34: an expiring card makes updating it the primary action.
+    update: canUpdate ? (soon ? { label: 'Update card', primary: true } : { label: 'Change payment method', primary: false }) : null };
 }
 
 /**
@@ -97,6 +114,7 @@ export default function PaymentMethodsPage() {
   const [view, setView] = useState<View>('summary');
   const [refresh, setRefresh] = useState(0);
   const [stopped, setStopped] = useState(false);
+  const [stoppedBank, setStoppedBank] = useState(false);
   useEffect(() => {
     let current = true;
     void apiGet<AutopayPortalPage>('/portal/payment-methods').then(result => {
@@ -125,7 +143,7 @@ export default function PaymentMethodsPage() {
   const stop = async () => {
     const result = await apiPost('/portal/autopay/stop', {}, { redirectOnUnauthorized: true });
     if (!result.data || result.error || (result.statusCode ?? 200) >= 400) return false;
-    setStopped(true); setView('summary');
+    setStopped(true); setStoppedBank(data.method?.type === 'us_bank_account'); setView('summary');
     setData(prev => prev && { ...prev, enrollment: prev.enrollment && { ...prev.enrollment, status: 'cancelled', cancelSource: 'client', cancelledAt: new Date().toISOString() }, method: null });
     if (!data.stopOnly) setRefresh(value => value + 1);
     return true;
@@ -134,14 +152,10 @@ export default function PaymentMethodsPage() {
   return (
     <div className="space-y-6" data-testid="autopay-payment-methods">
       {header}
-      {stopped && (
-        <Notice tone="neutral" title="Automatic payments are off." data-testid="autopay-stop-feedback">
-          <p>We're emailing you a confirmation. If a bank payment had already started, it may still complete.</p>
-        </Notice>
-      )}
-      {view === 'setup' && !data.stopOnly ? <AutopaySetupPage portal onCancel={() => setView('summary')} />
-        : view === 'stop' ? <StopAutopayConfirm partnerName={data.partnerName} enrollment={data.enrollment} method={data.method}
-          onStop={stop} onKeep={() => setView('summary')} headingLevel={2} />
+      {/* V-12: inline forms keep a readable measure inside the wide portal sheet. */}
+      {view === 'setup' && !data.stopOnly ? <div className="max-w-xl"><AutopaySetupPage portal onCancel={() => setView('summary')} /></div>
+        : view === 'stop' ? <div className="max-w-xl"><StopAutopayConfirm partnerName={data.partnerName} enrollment={data.enrollment} method={data.method}
+          onStop={stop} onKeep={() => setView('summary')} headingLevel={2} /></div>
         : <section aria-labelledby="autopay-section" className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 pb-2.5">
             <h2 id="autopay-section" className={cn(TH, 'p-0')}>Automatic payments</h2>
@@ -150,10 +164,22 @@ export default function PaymentMethodsPage() {
           <div className="space-y-4 sm:flex sm:items-start sm:justify-between sm:gap-8 sm:space-y-0">
             <div className="min-w-0 space-y-1.5 text-sm leading-relaxed text-foreground/85">
               {summary.lines}
-              {summary.attention && (
-                <p role="status" data-testid="autopay-needs-attention"
-                  className={cn('pt-1 font-medium', summary.tone === 'warning' ? 'text-warning-on-tint' : 'text-foreground')}>{summary.attention}</p>
+              {/* V-32: after a stop, the Off summary carries the confirmation instead of a second "off" notice. */}
+              {stopped && status === 'cancelled' && (
+                <p role="status" data-testid="autopay-stop-feedback">
+                  {`We're emailing you a confirmation.${stoppedBank ? ' If a bank payment had already started, it may still complete.' : ''}`}
+                </p>
               )}
+              {summary.attention && (() => {
+                // V-33: amber carries the lead sentence only.
+                const cut = summary.attention.indexOf('. ');
+                const lead = cut < 0 ? summary.attention : summary.attention.slice(0, cut + 1);
+                const rest = cut < 0 ? '' : summary.attention.slice(cut + 2);
+                return <div role="status" data-testid="autopay-needs-attention" className="space-y-1 pt-1">
+                  <p data-testid="autopay-needs-attention-lead" className={cn('font-medium', summary.tone === 'warning' ? 'text-warning-on-tint' : 'text-foreground')}>{lead}</p>
+                  {rest && <p>{rest}</p>}
+                </div>;
+              })()}
             </div>
             {summary.update && (
               <button type="button" data-testid="autopay-update-method" onClick={() => setView('setup')}
@@ -164,7 +190,7 @@ export default function PaymentMethodsPage() {
           </div>
           {canStop && (
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-border/70 pt-3 text-sm">
-              <button type="button" className={LINK} data-testid="autopay-portal-stop" onClick={() => setView('stop')}>Stop automatic payments</button>
+              <button type="button" className={cn(LINK, 'inline-flex min-h-11 items-center sm:min-h-0')} data-testid="autopay-portal-stop" onClick={() => setView('stop')}>Stop automatic payments</button>
               <span className="text-muted-foreground">Future invoices won't be charged automatically.</span>
             </div>
           )}

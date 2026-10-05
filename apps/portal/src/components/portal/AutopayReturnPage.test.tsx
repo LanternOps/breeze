@@ -60,7 +60,8 @@ it.each([
   expect(screen.getByTestId('autopay-restart')).toHaveAttribute('href', withBase('/autopay/test-token'));
   expect(screen.getByTestId('autopay-restart')).toHaveTextContent(action);
   expect(screen.queryByTestId('autopay-return-fee')).toBeNull();
-  if (result === 'unsupported_method') expect(screen.getByTestId('autopay-unsupported-method')).toHaveTextContent('Please enter your card details directly, or choose a bank account');
+  // V-17: name the control on Stripe's page instead of "enter your card details directly".
+  if (result === 'unsupported_method') expect(screen.getByTestId('autopay-unsupported-method')).toHaveTextContent('choose "Pay without Link"');
 });
 
 it('portal unsupported method starts again from Payment methods', async () => {
@@ -132,4 +133,54 @@ it('a confirmation failure promises only what happens: a later email', async () 
   render(<AutopayReturnPage />);
   expect(await screen.findByRole('heading', { name: "We couldn't confirm your setup yet" })).toBeInTheDocument();
   await waitFor(() => expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled());
+});
+
+// V-18: "Check again" shows it is working and when it last checked.
+it('check again says it is checking, then when it last checked', async () => {
+  at('target=public&session_id=cs_slow'); sessionStorage.setItem('autopay-return-token', 'test-token');
+  vi.mocked(apiPost).mockResolvedValue(outcome({ outcome: 'in_progress', methodLabel: null }));
+  render(<AutopayReturnPage retryDelaysMs={[]} />);
+  const check = await screen.findByRole('button', { name: 'Check again' });
+  let finish: (value: unknown) => void = () => {};
+  vi.mocked(apiPost).mockImplementation(() => new Promise(resolve => { finish = resolve; }) as never);
+  fireEvent.click(check);
+  expect(await screen.findByRole('button', { name: 'Checking…' })).toBeDisabled();
+  finish(outcome({ outcome: 'in_progress', methodLabel: null }));
+  expect(await screen.findByRole('button', { name: 'Check again' })).toBeEnabled();
+  expect(screen.getByTestId('autopay-return-last-checked')).toHaveTextContent(/^Last checked at /);
+});
+
+// V-19: the MSP is named while confirming (stored at setup), so the card never jumps.
+it('names the MSP from the stored setup while confirming', async () => {
+  at('target=public&session_id=cs_test_1'); sessionStorage.setItem('autopay-return-token', 'test-token');
+  sessionStorage.setItem('autopay-return-branding', JSON.stringify(branding));
+  vi.mocked(apiPost).mockImplementation(() => new Promise(() => {}) as never);
+  render(<AutopayReturnPage />);
+  expect(await screen.findByRole('heading', { name: 'Finishing your setup…' })).toBeInTheDocument();
+  expect(screen.getByTestId('autopay-identity')).toHaveTextContent('Example MSP');
+});
+it('without stored branding, the identity row is reserved while confirming', async () => {
+  at('target=public&session_id=cs_test_1'); sessionStorage.setItem('autopay-return-token', 'test-token');
+  vi.mocked(apiPost).mockImplementation(() => new Promise(() => {}) as never);
+  render(<AutopayReturnPage />);
+  await screen.findByRole('heading', { name: 'Finishing your setup…' });
+  expect(screen.getByTestId('autopay-return').firstElementChild).toHaveClass('min-h-10');
+});
+
+// V-20: the MSP's address appears once: in the card when emailing them is the next step,
+// otherwise in the footer.
+it('a replaced setup link offers to email the MSP once', async () => {
+  at('target=public&session_id=cs_old'); sessionStorage.setItem('autopay-return-token', 'test-token');
+  vi.mocked(apiPost).mockResolvedValue(outcome({ outcome: 'stale_generation', methodLabel: null, current: { status: 'requested', methodLabel: null } }));
+  render(<AutopayReturnPage />);
+  await screen.findByRole('heading', { name: 'This setup link was replaced' });
+  expect(screen.getAllByRole('link', { name: /Email Example MSP|billing@msp\.example/ })).toHaveLength(1);
+});
+it('a failed setup keeps the footer address and no second contact in the card', async () => {
+  at('target=public&session_id=cs_test'); sessionStorage.setItem('autopay-return-token', 'test-token');
+  vi.mocked(apiPost).mockResolvedValue(outcome({ outcome: 'failed', methodLabel: null }));
+  render(<AutopayReturnPage />);
+  await screen.findByRole('heading', { name: "Your setup didn't finish" });
+  expect(screen.getAllByRole('link', { name: /Email Example MSP|billing@msp\.example/ })).toHaveLength(1);
+  expect(screen.getByRole('link', { name: 'billing@msp.example' })).toBeInTheDocument();
 });

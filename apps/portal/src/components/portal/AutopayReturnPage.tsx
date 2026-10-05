@@ -16,6 +16,16 @@ type Phase =
   | { kind: 'error' };
 
 const TOKEN_KEY = 'autopay-return-token';
+/** Who sent the setup link, stored by the setup page so this page is branded before the outcome arrives (V-19). */
+export const BRANDING_KEY = 'autopay-return-branding';
+function storedBranding(): AutopayBranding | null {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(BRANDING_KEY) ?? 'null') as Partial<AutopayBranding> | null;
+    return value && typeof value.partnerName === 'string'
+      ? { partnerName: value.partnerName, logoUrl: typeof value.logoUrl === 'string' ? value.logoUrl : null,
+        supportEmail: typeof value.supportEmail === 'string' ? value.supportEmail : null } : null;
+  } catch { return null; }
+}
 const outcomeKey = (session: string) => `autopay-return-outcome:${session}`;
 const STORAGE_HELP = 'This page needs your browser to allow site data so it can finish your setup. Open the setup link in a regular (not private) window, then try again.';
 // Per page load: StrictMode and re-renders must never confirm the same session twice.
@@ -23,6 +33,7 @@ const started = new Set<string>();
 export function resetReturnGuardForTests() { started.clear(); }
 
 function readStorage(key: string): string | null { return sessionStorage.getItem(key); }
+const portalTarget = () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('target') === 'portal';
 
 /**
  * Where Stripe sends the client after saving a method. Confirms by itself once
@@ -32,7 +43,9 @@ function readStorage(key: string): string | null { return sessionStorage.getItem
  */
 export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 24000] }: { retryDelaysMs?: number[] }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'confirming' });
-  const [branding, setBranding] = useState<AutopayBranding | null>(null);
+  const [branding, setBranding] = useState<AutopayBranding | null>(() => (portalTarget() ? null : storedBranding()));
+  const [checking, setChecking] = useState(false);
+  const [lastChecked, setLastChecked] = useState<Date | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const params = typeof window === 'undefined' ? new URLSearchParams() : new URLSearchParams(window.location.search);
   const session = params.get('session_id');
@@ -102,9 +115,13 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
       panel = <StatePanel title="Finishing your setup…"><p>This takes a few seconds. Please keep this page open.</p></StatePanel>;
       break;
     case 'slow':
+      // V-18: a click that seems to change nothing looks broken; say it's checking, then when.
       panel = <StatePanel mark={{ tone: 'neutral', label: 'Still confirming' }} title="This is taking longer than usual"
-        primary={{ label: 'Check again', onClick: () => void confirm(retryDelaysMs.length), variant: 'secondary' }}>
+        primary={{ label: checking ? 'Checking…' : 'Check again', disabled: checking, variant: 'secondary',
+          onClick: () => { setChecking(true); void confirm(retryDelaysMs.length).finally(() => { setChecking(false); setLastChecked(new Date()); }); } }}>
         <p>You can close this page. We'll email you as soon as your setup is confirmed.</p>
+        {lastChecked && <p className="text-muted-foreground" data-testid="autopay-return-last-checked">
+          {`Last checked at ${lastChecked.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`}</p>}
       </StatePanel>;
       break;
     case 'cancelled':
@@ -125,7 +142,7 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
       </StatePanel>;
       break;
     case 'error':
-      panel = <StatePanel title="We couldn't confirm your setup yet" primary={{ label: 'Try again', onClick: () => void confirm(0) }} secondary={contact}>
+      panel = <StatePanel title="We couldn't confirm your setup yet" primary={{ label: 'Try again', onClick: () => void confirm(0) }}>
         <p>Please try again in a moment. If you finished on Stripe's page, we'll email you a confirmation once it's done.</p>
       </StatePanel>;
       break;
@@ -147,7 +164,7 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
             </StatePanel>;
           case 'failed':
             return <StatePanel mark={{ tone: 'destructive', label: 'Not set up' }} title="Your setup didn't finish" tone="alert"
-              primary={restart('Try again')} secondary={contact}>
+              primary={restart('Try again')}>
               <p>Stripe couldn't save your payment method, so nothing was set up and nothing was charged.</p>
               {!restartHref && noLinkHint}
             </StatePanel>;
@@ -158,7 +175,7 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
             </StatePanel>;
           case 'unsupported_method':
             return <StatePanel mark={{ tone: 'warning', label: 'Not set up' }} title="That payment method can't be used for automatic payments" primary={restart('Start again')}>
-              <p data-testid="autopay-unsupported-method">Stripe Link can't be saved for automatic payments, so nothing was saved or charged. Please enter your card details directly, or choose a bank account.</p>
+              <p data-testid="autopay-unsupported-method">Stripe Link can't be saved for automatic payments, so nothing was saved or charged. On Stripe's page, choose "Pay without Link" and type your card number, or choose a bank account.</p>
               {!restartHref && noLinkHint}
             </StatePanel>;
           case 'stale_generation':
@@ -177,8 +194,10 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
       break;
     }
   }
+  const contactInCard = phase.kind === 'outcome' && phase.result.outcome === 'stale_generation' && phase.result.current?.status !== 'active' && !!contact;
   return (
-    <AutopayShell partnerName={branding?.partnerName} logoUrl={branding?.logoUrl} supportEmail={branding?.supportEmail} testId="autopay-return">
+    <AutopayShell partnerName={branding?.partnerName} logoUrl={branding?.logoUrl} supportEmail={branding?.supportEmail} testId="autopay-return"
+      reserveIdentity={!portal} contactInCard={contactInCard}>
       {panel}
     </AutopayShell>
   );
