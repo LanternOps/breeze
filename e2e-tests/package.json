@@ -13,7 +13,7 @@
     "ui-audit": "tsx ui-audit/run.ts"
   },
   "dependencies": {
-    "dotenv": "^18.0.3"
+    "dotenv": "^18.0.5"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
