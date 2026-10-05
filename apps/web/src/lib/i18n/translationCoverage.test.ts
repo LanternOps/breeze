@@ -98,10 +98,10 @@ const namespaceDuplicateBaselines = {
     // +3 (W03 #6011): integrationsPage.backup ("Backup" is spelled identically
     // in pt-BR), backupProviders.cove and backupProviders.namePlaceholder are
     // protected proper nouns pinned byte-identical by localeParity.
-    // +1: huntress/sentinelone vendor names were wrongly translated
-    // ("Huntress" -> "Caçadora", "SentinelOne" -> "SentinelaOne") and are now
-    // pinned literal, matching English exactly as vendor names should.
-    'integrations.json': 27,
+    // +3 (#7728): vendor names that were wrongly translated in pt-BR
+    // (Huntress, SentinelOne, Slack, Discord) are now pinned literal, so they
+    // match English exactly, as vendor names should.
+    'integrations.json': 29,
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name", "Monitor" (list/policy-tab column + label), "Hardware",
     // "System" (event-log categories), "CPU" (resource select) are identical
