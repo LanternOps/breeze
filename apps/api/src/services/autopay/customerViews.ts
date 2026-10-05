@@ -10,6 +10,7 @@ import { buildAutopayDisclosure } from './consentText';
 import { getAutopayMethod } from './paymentMethods';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { quoteProcessingFee } from './processingFee';
+import { resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { completeAutopaySetup } from './enrollmentService';
 import { verifiedFeeText } from './feeDisclosure';
 import { autopayConsentSnapshotSchema } from './types';
@@ -91,12 +92,19 @@ export async function getAutopayCustomerPage(orgId:string,options?:{allowStopOnl
     const card=await buildAutopayDisclosure(db,orgId,'card');
     const bank=await buildAutopayDisclosure(db,orgId,'us_bank_account');
     const readiness=await getAutopayStripeReadiness(db,org.partnerId);
-    const quote=(type:'card'|'us_bank_account',funding:'credit'|'debit'|null)=>quoteProcessingFee({
-      methodType:type,cardFunding:funding,principal:'100.00',currency:org.currencyCode,
-      stripeAccountCountry:readiness.accountCountry,orgBillingCountry:org.billingAddressCountry,
-      orgBillingRegion:org.billingAddressRegion,cardFeeBps:card.feeTerms.cardFeeBps,
-      achFeeAmount:bank.feeTerms.achFeeAmount,feeAttested:card.feeTerms.feeAttested,
-    });
+    const settings=await resolveBillingPaymentSettings(db,{partnerId:org.partnerId,orgId});
+    // Amounts are the disclosed terms the client accepts. The disclosed bps are already
+    // applied (0 when unattested, banned or non-US; capped in CO), so re-quoting them masks
+    // why. The reason comes from the configured policy collection quotes against (#7895).
+    const quote=(type:'card'|'us_bank_account',funding:'credit'|'debit'|null)=>{
+      const input={methodType:type,cardFunding:funding,principal:'100.00',currency:org.currencyCode,
+        stripeAccountCountry:readiness.accountCountry,orgBillingCountry:org.billingAddressCountry,orgBillingRegion:org.billingAddressRegion};
+      const disclosed=quoteProcessingFee({...input,cardFeeBps:card.feeTerms.cardFeeBps,
+        achFeeAmount:bank.feeTerms.achFeeAmount,feeAttested:card.feeTerms.feeAttested});
+      const configured=quoteProcessingFee({...input,cardFeeBps:settings.cardFeeBps.value,
+        achFeeAmount:settings.achFeeAmount.value,feeAttested:settings.feeAttested});
+      return {...disclosed,reason:configured.reason};
+    };
     const contact=org.billingContact as {email?:string}|null;
     return {...summary,partnerName:partner?.name??card.partnerName,
       logoUrl:brand?.logoUrl??null,primaryColor:brand?.primaryColor??null,
