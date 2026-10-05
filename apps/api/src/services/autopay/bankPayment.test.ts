@@ -176,3 +176,19 @@ it.each([
  expect(await collect()).toEqual({attemptId:null,outcome:'refused',reason});
  expect(attemptCollection).not.toHaveBeenCalled();
 });
+
+// V-8: the bank-return page says which account will be debited.
+it('names the saved bank account the payment will come from',async()=>{
+ vi.mocked(getAutopayMethod).mockResolvedValueOnce({type:'us_bank_account',status:'active',bankLast4:'6789'} as any);
+ bank.rows=[[{id:'invoice',orgId:'org',partnerId:'partner',currencyCode:'USD',status:'sent',balance:'140.00'}],
+ [{status:'active',stripeAccountId:'acct_test'}],[{id:'org',status:'active',deletedAt:null}],[]];
+ bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64),text:'Accepted bank terms'});bank.quote.mockReturnValue({feeAmount:'1.00'});
+ expect(await getBankAutopayOffer('invoice','org')).toMatchObject({available:true,methodStatus:'active',methodLabel:'Bank account ending in 6789'});
+});
+it('names no account when the saved method is a card',async()=>{
+ vi.mocked(getAutopayMethod).mockResolvedValueOnce({type:'card',status:'active',cardLast4:'4242'} as any);
+ bank.rows=[[{id:'invoice',orgId:'org',partnerId:'partner',currencyCode:'USD',status:'sent',balance:'140.00'}],
+ [{status:'active',stripeAccountId:'acct_test'}],[{id:'org',status:'active',deletedAt:null}],[]];
+ bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64),text:'Accepted bank terms'});bank.quote.mockReturnValue({feeAmount:'1.00'});
+ expect(await getBankAutopayOffer('invoice','org')).toMatchObject({methodStatus:null,methodLabel:null});
+});

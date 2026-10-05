@@ -619,7 +619,11 @@ it('tells the client once the reconciler finalizes a pending exclusion of an ann
 // D-22: a stale skip link on a paid, closed or unscheduled invoice must not offer "Skip".
 it.each([
   ['a paid invoice', { status: 'paid', balance: '0.00' }, {}, [], 'paid'],
-  ['an invoice paid by autopay', {}, { state: 'succeeded' }, [], 'paid'],
+  ['an invoice paid by autopay', { status: 'paid', balance: '0.00' }, { state: 'succeeded' }, [], 'paid'],
+  // V-1: a skipped invoice the client then paid is paid, not "skipped, please pay".
+  ['a skipped invoice paid later', { status: 'paid', balance: '0.00' }, { state: 'skipped_by_client' }, [], 'paid'],
+  // V-2: an automatic payment refunded or reversed after it succeeded leaves the invoice open.
+  ['an invoice whose automatic payment was reversed', { status: 'sent' }, { state: 'succeeded' }, [], 'reversed'],
   ['a void invoice', { status: 'void' }, {}, [], 'not_needed'],
   ['an invoice with nothing left to pay', { balance: '0.00' }, {}, [], 'not_needed'],
   ['an MSP-excluded invoice', { autopayExcluded: true }, { state: 'excluded_by_msp' }, [], 'not_needed'],
@@ -644,4 +648,29 @@ it.each([
 it.each(['exclude', 'stop'] as const)('reports a processing payment as processing even with a pending %s', async control => {
   const f = fixture({ state: 'collecting', stateReason: `control_pending:${control}` }, [{ id: 'attempt', state: 'processing' }]);
   expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ status: 'processing', processing: true, partnerName: 'Partner' });
+});
+
+// V-11: a link with nothing to skip says why, so the page never shows a schedule that won't happen.
+it.each([
+  ['void', (f: ReturnType<typeof fixture>) => { f.inv.status = 'void'; }],
+  ['nothing_due', (f: ReturnType<typeof fixture>) => { f.inv.balance = '0.00'; }],
+  ['excluded', (f: ReturnType<typeof fixture>) => { f.inv.autopayExcluded = true; f.sched.state = 'excluded_by_msp'; }],
+  ['excluded', (f: ReturnType<typeof fixture>) => { f.sched.state = 'collecting'; f.sched.stateReason = 'control_pending:exclude'; f.data.set(invoiceCollectionAttempts, [{ id: 'a', state: 'created' }]); }],
+  ['failed', (f: ReturnType<typeof fixture>) => { f.sched.state = 'failed'; }],
+  ['stopped', (f: ReturnType<typeof fixture>) => { f.sched.state = 'cancelled'; }],
+  ['stopped', (f: ReturnType<typeof fixture>) => { f.data.get(orgAutopayEnrollments)![0].status = 'cancelled'; }],
+  ['paused', (f: ReturnType<typeof fixture>) => { f.data.get(orgAutopayEnrollments)![0].status = 'paused'; }],
+  ['replaced', (f: ReturnType<typeof fixture>) => { f.sched.enrollmentGeneration = 2; }],
+  ['not_included', (f: ReturnType<typeof fixture>) => { f.sched.state = 'not_needed'; f.sched.eligible = false; }],
+] as const)('names why there is nothing to skip: %s', async (reason, mutate) => {
+  const f = fixture();
+  mutate(f);
+  expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ status: 'not_needed', reason, balance: f.inv.balance });
+});
+it('a skippable invoice carries no reason, and reports whether the MSP put automatic payments on hold (V-37)', async () => {
+  const on = fixture();
+  expect(await getSkipInvoiceView(on.tx, 'token')).toMatchObject({ status: 'ready', reason: null, onHold: false, balance: '10.00' });
+  const off = fixture();
+  off.data.set(partners, [{ enabled: false, name: 'Partner' }]);
+  expect(await getSkipInvoiceView(off.tx, 'token')).toMatchObject({ status: 'ready', onHold: true });
 });

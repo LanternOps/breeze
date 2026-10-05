@@ -3,7 +3,7 @@ const h = vi.hoisted(() => ({ rows: new Map<unknown, any[]>(), inFlight: vi.fn()
 vi.mock('./reservation', () => ({ readInFlightCollection: h.inFlight }));
 vi.mock('./paymentMethods', () => ({ getAutopayMethod: h.method }));
 import { getCustomerInvoiceAutopay } from './customerInvoiceStatus';
-import { invoices, invoiceAutopaySchedules, orgAutopayEnrollments } from '../../db/schema';
+import { invoices, invoiceAutopaySchedules, orgAutopayEnrollments, orgPaymentMethods } from '../../db/schema';
 
 function fakeDb() {
   const query = () => {
@@ -70,6 +70,23 @@ describe('getCustomerInvoiceAutopay', () => {
     h.inFlight.mockResolvedValue({ inProgress: true, amount: '50.00', actionRequired: false });
     seed({ state: 'collecting' });
     expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state: 'processing', amount: '50.00', canPayNow: false });
+  });
+  // V-5, V-29: the processing line describes the money actually moving (its method, amount
+  // and fee), not the schedule's noticed terms or "your saved payment method".
+  const bank = { id: 'pm-bank', orgId: 'org', type: 'us_bank_account', bankName: 'STRIPE TEST BANK', bankLast4: '0009', status: 'active' };
+  it('processing names the in-flight attempt\'s method and fee', async () => {
+    h.inFlight.mockResolvedValue({ inProgress: true, amount: '100.00', fee: '1.00', paymentMethodId: 'pm-bank', actionRequired: false });
+    h.rows.set(orgPaymentMethods, [bank]);
+    seed({ state: 'cancelled' });
+    expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state: 'processing', amount: '100.00', fee: '1.00',
+      methodLabel: 'Bank account ending in 0009', methodType: 'us_bank_account', canPayNow: false });
+  });
+  it('a client bank payment on an invoice with no schedule still reports processing', async () => {
+    h.inFlight.mockResolvedValue({ inProgress: true, amount: '140.00', fee: '1.00', paymentMethodId: 'pm-bank', actionRequired: false });
+    h.rows.set(orgPaymentMethods, [bank]);
+    seed(null);
+    expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state: 'processing', amount: '140.00', fee: '1.00',
+      methodLabel: 'Bank account ending in 0009', methodType: 'us_bank_account', chargeDate: null });
   });
   it('an attempt waiting on the bank is action_required', async () => {
     h.inFlight.mockResolvedValue({ inProgress: true, amount: '50.00', actionRequired: true });

@@ -8,7 +8,7 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 import AutopayConfirmPage from './AutopayConfirmPage';
 afterEach(() => { cleanup(); });
 function view(over: Record<string, unknown> = {}) {
-  return { data: { state: 'requires_action', amount: '100.00', currency: 'USD', invoiceNumber: 'INV-7', methodLabel: 'Visa credit card ending in 3184',
+  return { data: { state: 'requires_action', amount: '100.00', currency: 'USD', invoiceNumber: 'INV-7', invoiceStatus: 'sent', balance: '100.00', methodLabel: 'Visa credit card ending in 3184',
     invoiceUrl: 'https://portal.example.test/portal/invoice/tok', partnerName: 'Example MSP', logoUrl: null, supportEmail: 'billing@msp.example', ...over } } as never;
 }
 beforeEach(() => { vi.clearAllMocks(); vi.mocked(apiGet).mockResolvedValue(view()); });
@@ -28,7 +28,6 @@ it('explains what confirming means, then continues to pay on the invoice page on
 it.each([
   [{ data: { processing: true } }, 'Your payment is processing'],
   [{ data: { paid: true } }, 'Payment received'],
-  [{ data: { notNeeded: true } }, 'No action needed'],
   [{ error: 'Payment received but needs billing review', statusCode: 409, code: 'INVALID_STATE' }, 'We received your payment'],
   [{ error: 'Payment is still processing', statusCode: 409, code: 'INVALID_STATE' }, 'Your payment is processing'],
 ])('lands %j', async (response, title) => {
@@ -39,7 +38,7 @@ it.each([
   expect(screen.queryByTestId('autopay-confirm-submit')).toBeNull();
 });
 
-it.each([['processing', 'Your payment is processing'], ['succeeded', 'Payment received'], ['not_needed', 'No action needed']])(
+it.each([['processing', 'Your payment is processing'], ['succeeded', 'Payment received'], ['not_needed', 'The automatic payment was canceled']])(
   'a %s attempt needs no click', async (state, title) => {
     vi.mocked(apiGet).mockResolvedValue(view({ state }));
     render(<AutopayConfirmPage token="token" />);
@@ -59,4 +58,35 @@ it('an unusable link explains itself', async () => {
   vi.mocked(apiGet).mockResolvedValue({ error: 'x', code: 'link_used', statusCode: 404, errorData: { partnerName: 'Example MSP', enrollmentStatus: 'active' } } as never);
   render(<AutopayConfirmPage token="token" />);
   expect(await screen.findByRole('heading', { name: 'This link was already used' })).toBeInTheDocument();
+});
+
+// V-3: a confirmation canceled on the invoice page leaves money due; the link says so and
+// leads with paying, instead of implying the invoice was settled.
+it('a canceled confirmation on an open invoice says what is still due and offers to pay', async () => {
+  vi.mocked(apiGet).mockResolvedValue(view({ state: 'not_needed', balance: '90.00', invoiceStatus: 'sent' }));
+  render(<AutopayConfirmPage token="token" />);
+  expect(await screen.findByRole('heading', { name: 'The automatic payment was canceled' })).toBeInTheDocument();
+  expect(screen.getByText(/\$90\.00 is still due on invoice INV-7/)).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Pay invoice' })).toHaveAttribute('href', 'https://portal.example.test/portal/invoice/tok');
+  expect(document.body.textContent).not.toMatch(/settled another way|No action needed/);
+});
+it('a canceled confirmation on a paid invoice says it is paid', async () => {
+  vi.mocked(apiGet).mockResolvedValue(view({ state: 'not_needed', balance: '0.00', invoiceStatus: 'paid' }));
+  render(<AutopayConfirmPage token="token" />);
+  expect(await screen.findByRole('heading', { name: 'No action needed' })).toBeInTheDocument();
+  expect(screen.getByText(/Invoice INV-7 is paid/)).toBeInTheDocument();
+});
+it('a POST that finds nothing to confirm on an open invoice also says what is due', async () => {
+  vi.mocked(apiPost).mockResolvedValue({ data: { notNeeded: true } } as never);
+  render(<AutopayConfirmPage token="token" />);
+  fireEvent.click(await screen.findByTestId('autopay-confirm-submit'));
+  expect(await screen.findByRole('heading', { name: 'The automatic payment was canceled' })).toBeInTheDocument();
+  expect(screen.getByText(/\$100\.00 is still due on invoice INV-7/)).toBeInTheDocument();
+});
+// V-22: the invoice number in the title never splits at its hyphen.
+it('keeps the invoice number in the title on one line', async () => {
+  vi.mocked(apiGet).mockResolvedValue(view({ invoiceNumber: 'INV-2026-0033' }));
+  render(<AutopayConfirmPage token="token" />);
+  const heading = await screen.findByRole('heading', { level: 1, name: 'Confirm your payment for invoice INV-2026-0033' });
+  expect(heading.querySelector('.whitespace-nowrap')).toHaveTextContent('INV-2026-0033');
 });

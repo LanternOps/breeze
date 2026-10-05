@@ -8,7 +8,7 @@ import { linkFailureOf} from '@/lib/autopay';
 import { cn } from '@/lib/utils';
 import { BTN_BLOCK, BTN_PRIMARY, LINK, Notice } from './ui';
 import { AutopayShell } from './autopay/AutopayShell';
-import { StatePanel, type PanelAction } from './autopay/StatePanel';
+import { Nowrap, StatePanel, type PanelAction } from './autopay/StatePanel';
 import { LinkStatePanel, type LinkFailureView } from './autopay/LinkStatePanel';
 
 type Result = { url?: string; processing?: boolean; paid?: boolean; notNeeded?: boolean };
@@ -68,6 +68,7 @@ export default function AutopayConfirmPage({ token }: { token: string }) {
   const invoice = view.invoiceNumber ? `invoice ${view.invoiceNumber}` : 'this invoice';
   const msp = view.partnerName || 'your service provider';
   const viewInvoice: PanelAction | null = view.invoiceUrl ? { label: 'View invoice', href: view.invoiceUrl, variant: 'secondary' } : null;
+  const stillDue = ['sent', 'partially_paid', 'overdue'].includes(view.invoiceStatus) && Number(view.balance) > 0;
   const state: Landed = landed ?? (view.state === 'processing' ? 'processing' : view.state === 'succeeded' ? 'paid'
     : view.state === 'not_needed' || view.state === 'canceled' ? 'not_needed' : view.state === 'unapplied' ? 'review' : null);
   let panel: ReactElement;
@@ -79,9 +80,19 @@ export default function AutopayConfirmPage({ token }: { token: string }) {
     panel = <StatePanel mark={{ tone: 'success', label: 'Paid' }} title="Payment received" primary={viewInvoice}>
       <p>{`Thank you. ${view.invoiceNumber ? `Invoice ${view.invoiceNumber}` : 'The invoice'} is paid, and a receipt is on its way to your email.`}</p>
     </StatePanel>;
+  } else if (state === 'not_needed' && stillDue) {
+    // V-3: canceled (often by the client on the invoice page) with money still due.
+    panel = <StatePanel mark={{ tone: 'warning', label: 'Not paid' }} title="The automatic payment was canceled"
+      primary={view.invoiceUrl ? { label: 'Pay invoice', href: view.invoiceUrl, testId: 'autopay-confirm-pay-invoice' } : null}
+      summary={[...(view.invoiceNumber ? [{ label: 'Invoice', value: view.invoiceNumber }] : []),
+        { label: 'Amount due', value: money(view.balance, view.currency), figure: true }]}>
+      <p>{`There's nothing to confirm here any more. ${money(view.balance, view.currency)} is still due on ${invoice}. Pay it from the invoice; your bank may ask you to confirm the payment there.`}</p>
+    </StatePanel>;
   } else if (state === 'not_needed') {
     panel = <StatePanel title="No action needed" primary={viewInvoice}>
-      <p>This payment doesn't need confirming any more. It was canceled, or the invoice was settled another way.</p>
+      <p>{view.invoiceStatus === 'paid'
+        ? `${view.invoiceNumber ? `Invoice ${view.invoiceNumber}` : 'The invoice'} is paid, so there's nothing to confirm.`
+        : "This payment doesn't need confirming any more, and nothing is due on the invoice."}</p>
     </StatePanel>;
   } else if (state === 'review') {
     panel = <StatePanel mark={{ tone: 'primary', label: 'Received' }} title="We received your payment"
@@ -91,7 +102,8 @@ export default function AutopayConfirmPage({ token }: { token: string }) {
   } else {
     const method = view.methodLabel ? ` with your ${paymentMethodInSentence(view.methodLabel)}` : '';
     panel = <div className="space-y-5">
-      <StatePanel mark={{ tone: 'warning', label: 'Confirmation needed' }} title={`Confirm your payment for ${invoice}`}
+      <StatePanel mark={{ tone: 'warning', label: 'Confirmation needed' }} titleText={`Confirm your payment for ${invoice}`}
+        title={view.invoiceNumber ? <>Confirm your payment for invoice <Nowrap>{view.invoiceNumber}</Nowrap></> : 'Confirm your payment for this invoice'}
         summary={[...(view.invoiceNumber ? [{ label: 'Invoice', value: view.invoiceNumber }] : []),
           { label: 'Amount', value: money(view.amount, view.currency), figure: true },
           ...(view.methodLabel ? [{ label: 'Payment method', value: view.methodLabel }] : [])]}>

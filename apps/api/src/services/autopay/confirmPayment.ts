@@ -73,7 +73,7 @@ export async function getConfirmPaymentView(token: string): Promise<AutopayConfi
       eq(orgPaymentMethods.id, attempt.paymentMethodId), eq(orgPaymentMethods.orgId, invoice.orgId))).limit(1) : [];
     const live = peekInvoiceLink(invoice);
     return { state: attempt.state === 'canceled' || fenced ? 'not_needed' : attempt.state, amount: attempt.principalAmount, currency: attempt.currency,
-      invoiceNumber: invoice.invoiceNumber ?? null, methodLabel: method && method.orgId === invoice.orgId ? formatPaymentMethod(method) : null,
+      invoiceNumber: invoice.invoiceNumber ?? null, invoiceStatus: invoice.status, balance: invoice.balance, methodLabel: method && method.orgId === invoice.orgId ? formatPaymentMethod(method) : null,
       ...await loadAutopayBranding(db, { orgId: invoice.orgId, partnerId: invoice.partnerId }),
       invoiceUrl: live ? buildPublicInvoiceUrl(live.token) : null };
   });

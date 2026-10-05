@@ -1,4 +1,4 @@
-import { formatMoney } from '@breeze/shared';
+import { formatMoney, formatPaymentMethod } from '@breeze/shared';
 import {payAndSaveSchema} from './payAndSave';
 import {z} from 'zod';
 import {organizations} from '../../db/schema';
@@ -69,7 +69,8 @@ export async function getBankAutopayOffer(invoiceId:string,orgId:string):Promise
     if(!available&&method?.status!=='pending_verification')return null;
     return {available,principal:invoice.balance,fee:quote.feeAmount,currency:'USD' as const,disclosureHash:disclosure.hash,
       consentText:bankPaymentAuthorization(invoice.balance,quote.feeAmount,invoice.invoiceNumber)+` ${disclosure.text}`,
-      methodStatus:method?.type==='us_bank_account'&&(method.status==='active'||method.status==='pending_verification')?method.status:null};
+      ...(method?.type==='us_bank_account'&&(method.status==='active'||method.status==='pending_verification')
+        ?{methodStatus:method.status,methodLabel:formatPaymentMethod(method)}:{methodStatus:null,methodLabel:null})};
   });
 }
 /** Invoice-bound bank-pay authority. Stripe microdeposits take 1-2 business days to

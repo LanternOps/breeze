@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import { autopayTermsSnapshotSchema, formatPaymentMethod, type CustomerInvoiceAutopayStatus } from '@breeze/shared';
-import { invoices, invoiceAutopaySchedules, orgAutopayEnrollments } from '../../db/schema';
+import { invoices, invoiceAutopaySchedules, orgAutopayEnrollments, orgPaymentMethods } from '../../db/schema';
 import { readInFlightCollection } from './reservation';
 import { getAutopayMethod } from './paymentMethods';
 import type { Tx } from './types';
@@ -29,13 +29,14 @@ export async function getCustomerInvoiceAutopay(db: Tx, ids: { invoiceId: string
     && !!method && (method.status === 'active' || method.status === 'pending_verification');
   const [schedule] = await db.select().from(invoiceAutopaySchedules).where(and(
     eq(invoiceAutopaySchedules.invoiceId, invoice.id), eq(invoiceAutopaySchedules.orgId, invoice.orgId))).limit(1);
-  if (!schedule) return { enrolled, status: null };
-
-  const parsed = autopayTermsSnapshotSchema.safeParse(schedule.termsSnapshot);
-  const terms = parsed.success && parsed.data.kind === 'terms' ? parsed.data : null;
   const inFlight = await readInFlightCollection(db, invoice.id);
+  // A client-started bank payment can be in flight on an invoice with no schedule (V-29).
+  if (!schedule && !inFlight.inProgress) return { enrolled, status: null };
+
+  const parsed = schedule ? autopayTermsSnapshotSchema.safeParse(schedule.termsSnapshot) : null;
+  const terms = parsed?.success && parsed.data.kind === 'terms' ? parsed.data : null;
   const base: Omit<CustomerInvoiceAutopayStatus, 'state' | 'reason'> = {
-    chargeDate: schedule.collectOn ?? null,
+    chargeDate: schedule?.collectOn ?? null,
     amount: terms?.principal ?? null, fee: terms?.feeAmount ?? null, currency: invoice.currencyCode,
     methodLabel: terms ? (method && method.id === terms.methodId ? formatPaymentMethod(method)
       : formatPaymentMethod({ type: terms.methodType, cardLast4: terms.last4, bankLast4: terms.last4 })) : null,
@@ -47,8 +48,13 @@ export async function getCustomerInvoiceAutopay(db: Tx, ids: { invoiceId: string
     ({ enrolled, status: { ...base, state, reason, ...over } });
 
   if (inFlight.inProgress) {
-    return status(inFlight.actionRequired ? 'action_required' : 'processing', null, { amount: inFlight.amount });
+    // Describe the money actually moving, not the schedule's noticed terms (V-5).
+    const [moving] = inFlight.paymentMethodId ? await db.select().from(orgPaymentMethods).where(and(
+      eq(orgPaymentMethods.id, inFlight.paymentMethodId), eq(orgPaymentMethods.orgId, invoice.orgId))).limit(1) : [];
+    return status(inFlight.actionRequired ? 'action_required' : 'processing', null, { amount: inFlight.amount, fee: inFlight.fee,
+      ...(moving && moving.orgId === invoice.orgId ? { methodLabel: formatPaymentMethod(moving), methodType: moving.type } : {}) });
   }
+  if (!schedule) return { enrolled, status: null };
   if (schedule.state === 'succeeded' && invoice.status === 'paid') return status('paid_automatically');
   if (!OPEN.has(invoice.status)) return { enrolled, status: null };
   switch (schedule.state) {

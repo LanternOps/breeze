@@ -177,8 +177,12 @@ export interface InvoiceAutopayView {
 /** What the public skip page may offer. Only 'ready' offers "Skip this payment";
  * 'paid' and 'not_needed' mean a stale link (paid, closed, void, or not scheduled for
  * automatic payment) that must not offer a skip (D-22). */
-export const AUTOPAY_SKIP_VIEW_STATUSES=['ready','skipped','pending','processing','action_required','paid','not_needed'] as const;
+/** 'reversed': the automatic payment succeeded, then was refunded or returned, so the invoice is open again. */
+export const AUTOPAY_SKIP_VIEW_STATUSES=['ready','skipped','pending','processing','action_required','paid','reversed','not_needed'] as const;
 export type AutopaySkipViewStatus=(typeof AUTOPAY_SKIP_VIEW_STATUSES)[number];
+/** Why a skip link has nothing to skip (status 'not_needed'), so the page can say so plainly. */
+export const AUTOPAY_SKIP_NOT_NEEDED_REASONS=['void','nothing_due','excluded','failed','stopped','paused','replaced','not_included','not_scheduled'] as const;
+export type AutopaySkipNotNeededReason=(typeof AUTOPAY_SKIP_NOT_NEEDED_REASONS)[number];
 export const bankPaySchema=bankPaymentConsentSchema.omit({invoiceId:true,orgId:true}).extend({
  methodType:z.literal('us_bank_account'),phase:z.enum(['setup','collect']),consentAccepted:z.literal(true),
  setupSessionId:z.string().regex(/^cs_[A-Za-z0-9_]+$/).max(255).optional(),
@@ -189,6 +193,8 @@ export type BankPayInput=z.infer<typeof bankPaySchema>;
 export interface BankAutopayOffer {
  available:boolean;principal:string;fee:string;currency:'USD';consentText:string;disclosureHash:string;
  methodStatus:Extract<OrgPaymentMethodStatus,'active'|'pending_verification'>|null;
+ /** The saved bank account ("Bank account ending in 6789") when methodStatus is set. */
+ methodLabel:string|null;
 }
 export type InvoicePayResult={url:string;outcome?:never;attemptId?:never;reason?:never}|(CollectionResult&{url?:never});
 /** Invoice-page exit from an off-session payment awaiting bank confirmation:
@@ -210,14 +216,20 @@ export interface AutopayStopView extends AutopayBranding {
 export interface AutopaySkipView extends AutopayBranding {
  /** What the page may offer; only 'ready' offers "Skip this payment" (see AUTOPAY_SKIP_VIEW_STATUSES). */
  status:AutopaySkipViewStatus;
+ /** Set only with status 'not_needed'. */
+ reason:AutopaySkipNotNeededReason|null;
+ /** The MSP has switched automatic payments off for now; a skip still works (Q4). */
+ onHold:boolean;
  state:AutopayScheduleState|'not_needed';collectOn:string|null;control:ControlMarker|null;processing:boolean;
- invoiceNumber:string|null;invoiceStatus:string;dueDate:string|null;amount:string|null;fee:string|null;currency:string;
+ /** amount: the noticed principal; balance: what the invoice still owes now. */
+ invoiceNumber:string|null;invoiceStatus:string;dueDate:string|null;amount:string|null;balance:string;fee:string|null;currency:string;
  methodLabel:string|null;methodType:AutopayPaymentMethodType|null;invoiceUrl:string|null;
 }
 /** GET /autopay/public/:token/confirm */
 export interface AutopayConfirmView extends AutopayBranding {
  state:CollectionAttemptState|'not_needed';amount:string;currency:string;
- invoiceNumber:string|null;methodLabel:string|null;invoiceUrl:string|null;
+ /** The invoice now: a canceled confirmation can leave it open with money still due (V-3). */
+ invoiceNumber:string|null;invoiceStatus:string;balance:string;methodLabel:string|null;invoiceUrl:string|null;
 }
 
 /** The invoice pages' view of this invoice's automatic payment (client wording is the page's job). */

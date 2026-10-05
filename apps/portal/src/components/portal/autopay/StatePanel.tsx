@@ -22,14 +22,22 @@ function Action({ action, fallback }: { action: PanelAction; fallback: 'primary'
  * at most two actions. The heading takes focus when the state appears so a screen
  * reader announces it (no icon-in-a-circle: DESIGN.md).
  */
-export function StatePanel({ mark, title, children, summary, primary, secondary, headingLevel = 1, testId, tone }: {
-  mark?: { tone: MarkTone; label: string }; title: string; children?: ReactNode; summary?: SummaryRow[];
+/** An identifier (invoice number) that must not break at its hyphens inside a title (V-22). */
+export function Nowrap({ children }: { children: ReactNode }) {
+  return <span className="whitespace-nowrap">{children}</span>;
+}
+
+export function StatePanel({ mark, title, titleText, children, summary, primary, secondary, headingLevel = 1, testId, tone }: {
+  mark?: { tone: MarkTone; label: string };
+  /** A string, or a node (e.g. with <Nowrap>) plus its plain `titleText`, which keys the focus move. */
+  title: ReactNode; titleText?: string; children?: ReactNode; summary?: SummaryRow[];
   primary?: PanelAction | null; secondary?: PanelAction | null; headingLevel?: 1 | 2; testId?: string;
   /** Announce as an alert (destructive outcomes). */
   tone?: 'alert';
 }) {
   const heading = useRef<HTMLHeadingElement>(null);
-  useEffect(() => { heading.current?.focus({ preventScroll: true }); }, [title]);
+  const focusKey = titleText ?? (typeof title === 'string' ? title : '');
+  useEffect(() => { heading.current?.focus({ preventScroll: true }); }, [focusKey]);
   const H = headingLevel === 1 ? 'h1' : 'h2';
   return (
     <div className="space-y-4" role={tone === 'alert' ? 'alert' : 'status'} data-testid={testId}>

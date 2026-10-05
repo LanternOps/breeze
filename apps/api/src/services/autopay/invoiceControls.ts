@@ -1,4 +1,4 @@
-import { autopayTermsSnapshotSchema, formatPaymentMethod, parseAutopayTerms, type AutopaySkipView, type AutopaySkipViewStatus } from '@breeze/shared';
+import { autopayTermsSnapshotSchema, formatPaymentMethod, parseAutopayTerms, type AutopaySkipNotNeededReason, type AutopaySkipView, type AutopaySkipViewStatus } from '@breeze/shared';
 import { getAutopayMethod } from './paymentMethods';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { toMinorUnits, fromMinorUnits } from '../stripeMoney';
@@ -77,12 +77,16 @@ export async function getSkipInvoiceView(tx: Tx, token: string): Promise<Autopay
   // processing: a payment is already with Stripe and the skip would be refused.
   const processing = await hasUnstoppableCollection(tx, invoice.id);
   const live = invoice.status === 'void' ? null : peekInvoiceLink(invoice);
+  const status = skipViewStatus(invoice, schedule ?? null, control, processing, authority);
+  const [enrollment] = link.enrollmentId ? await tx.select().from(orgAutopayEnrollments)
+    .where(eq(orgAutopayEnrollments.id, link.enrollmentId)).limit(1) : [];
   return {
     ...await loadAutopayBranding(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId }),
-    status: skipViewStatus(invoice, schedule ?? null, control, processing, authority),
+    status, reason: status === 'not_needed' ? notNeededReason(invoice, schedule ?? null, control, enrollment ?? null, link.generation) : null,
+    onHold: !await isAutopayEnabledForPartner(tx, invoice.partnerId),
     state: schedule?.state ?? 'not_needed', collectOn: schedule?.collectOn ?? null, control, processing,
     invoiceNumber: invoice.invoiceNumber, invoiceStatus: invoice.status, dueDate: invoice.dueDate,
-    amount: terms?.principal ?? invoice.balance, fee: terms?.feeAmount ?? null, currency: invoice.currencyCode,
+    amount: terms?.principal ?? invoice.balance, balance: invoice.balance, fee: terms?.feeAmount ?? null, currency: invoice.currencyCode,
     methodLabel, methodType: terms?.methodType ?? null, invoiceUrl: live ? buildPublicInvoiceUrl(live.token) : null,
   };
 }
@@ -93,15 +97,37 @@ export async function getSkipInvoiceView(tx: Tx, token: string): Promise<Autopay
  * over a pending control: that money moves regardless. */
 function skipViewStatus(invoice: typeof invoices.$inferSelect, schedule: typeof invoiceAutopaySchedules.$inferSelect | null,
   control: ReturnType<typeof pendingInvoiceControl>, processing: boolean, authority: boolean): AutopaySkipViewStatus {
-  if (invoice.status === 'paid' || schedule?.state === 'succeeded') return 'paid';
+  // Paid means the invoice is paid (V-1, V-2): a succeeded schedule on an invoice that is
+  // open again was refunded or returned, and the client needs to know it is owed.
+  if (invoice.status === 'paid') return 'paid';
   if (processing) return 'processing';
+  if (schedule?.state === 'succeeded') {
+    return OPEN_INVOICE.includes(invoice.status) && toMinorUnits(invoice.balance, invoice.currencyCode) > 0 ? 'reversed' : 'not_needed';
+  }
   if (schedule?.state === 'skipped_by_client') return 'skipped';
-  if (!schedule || !authority || !['sent', 'partially_paid', 'overdue'].includes(invoice.status)
+  if (!schedule || !authority || !OPEN_INVOICE.includes(invoice.status)
     || toMinorUnits(invoice.balance, invoice.currencyCode) <= 0
     || invoice.autopayExcluded || !schedule.eligible || !isControllableSchedule(schedule.state)
     || control === 'exclude' || control === 'stop') return 'not_needed';
   if (control === 'skip') return 'pending';
   return schedule.state === 'action_required' ? 'action_required' : 'ready';
+}
+
+const OPEN_INVOICE = ['sent', 'partially_paid', 'overdue'];
+/** V-11: why a skip link has nothing to skip, most specific first. */
+function notNeededReason(invoice: typeof invoices.$inferSelect, schedule: typeof invoiceAutopaySchedules.$inferSelect | null,
+  control: ReturnType<typeof pendingInvoiceControl>, enrollment: typeof orgAutopayEnrollments.$inferSelect | null,
+  generation: number | null): AutopaySkipNotNeededReason {
+  if (invoice.status === 'void') return 'void';
+  if (!OPEN_INVOICE.includes(invoice.status) || toMinorUnits(invoice.balance, invoice.currencyCode) <= 0) return 'nothing_due';
+  if (invoice.autopayExcluded || control === 'exclude' || schedule?.state === 'excluded_by_msp') return 'excluded';
+  if (schedule?.state === 'failed') return 'failed';
+  if (enrollment?.status === 'paused') return 'paused';
+  if (control === 'stop' || schedule?.state === 'cancelled' || !enrollment || enrollment.status !== 'active') return 'stopped';
+  if (enrollment.generation !== generation || (schedule && (schedule.enrollmentId !== enrollment.id
+    || schedule.enrollmentGeneration !== generation))) return 'replaced';
+  if (schedule && !schedule.eligible) return 'not_included';
+  return 'not_scheduled';
 }
 
 export async function skipInvoice(tx: Tx, token: string): Promise<InvoiceControlResult> {

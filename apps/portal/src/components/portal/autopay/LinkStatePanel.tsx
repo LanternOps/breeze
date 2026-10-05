@@ -32,11 +32,10 @@ export function linkFailureCopy(failure: LinkFailureView, purpose: BillingLinkPu
           secondary: contact };
       }
       return { title: 'This link was already used', body: ['Open the invoice from your email to see its current status.'], primary: contact };
+    // The skip route has no rollout gate (Q4), so a skip link never lands here; the
+    // skip page says "on hold" itself from the view (V-37).
     case 'autopay_not_enabled':
-      return purpose === 'skip_invoice'
-        ? { title: 'Automatic payments are on hold', mark: { tone: 'neutral' as const, label: 'On hold' },
-          body: [`${msp} has put automatic payments on hold, so this link can't skip the payment right now. To be sure the invoice is paid the way you want, pay it yourself or email ${msp}.`], primary: contact }
-        : { title: "Automatic payment setup isn't available right now",
+      return { title: "Automatic payment setup isn't available right now",
           body: [`${msp} isn't taking new automatic payment setups at the moment. Your invoices can still be paid from the links in their emails.`], primary: contact };
     case 'link_invalid':
     default:
