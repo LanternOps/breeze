@@ -5,6 +5,7 @@ import { readInFlightCollection } from './reservation';
 import { getAutopayMethod } from './paymentMethods';
 import { isAutopayEnabledForPartner } from './autopayGate';
 import { fromMinorUnits, toMinorUnits } from '../stripeMoney';
+import { coveredByAcceptedCap } from './authorizedCap';
 import type { Tx } from './types';
 
 const OPEN = new Set(['sent', 'partially_paid', 'overdue']);
@@ -115,10 +116,15 @@ export async function getCustomerInvoiceAutopay(db: Tx, ids: { invoiceId: string
     case 'excluded_by_msp': return status('not_included', 'excluded_invoice');
     // FP-6: the automatic payment succeeded, then was refunded or returned: due again.
     case 'succeeded': return status('reversed', null, { amount: invoice.balance });
-    case 'not_needed':
+    case 'not_needed': {
       // Only an enrolled client is told why this invoice is outside automatic payments.
-      return enrollment?.status === 'active' && schedule.ineligibleReason
-        ? status('not_included', schedule.ineligibleReason) : { enrolled, status: null };
+      if (enrollment?.status !== 'active' || !schedule.ineligibleReason) return { enrolled, status: null };
+      // F-8: kept manual, but no longer "over the limit you authorized" once a newer authorization covers it.
+      const updated = schedule.ineligibleReason === 'above_authorized_cap' && !!method
+        && await coveredByAcceptedCap(db, { orgId: invoice.orgId, enrollmentId: enrollment.id, generation: enrollment.generation, methodId: method.id },
+          invoice.total, invoice.currencyCode);
+      return status('not_included', updated ? 'issued_before_authorization' : schedule.ineligibleReason);
+    }
     default: return { enrolled, status: null };
   }
 }

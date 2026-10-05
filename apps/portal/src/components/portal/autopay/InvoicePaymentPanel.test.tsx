@@ -260,3 +260,11 @@ it('captured money not yet applied says it was received, with no Pay', () => {
   expect(screen.queryByRole('radio')).toBeNull();
   expect(document.body.textContent).not.toMatch(/didn't go through/);
 });
+
+// F-8
+it('an invoice issued before the updated authorization says so, and offers Pay', () => {
+  panel({ autopayStatus: { ...scheduled, state: 'not_included', reason: 'issued_before_authorization' } as never, autopayEnrolled: true });
+  expect(screen.getByText("This invoice was issued before your updated authorization, so it isn't paid automatically. Please pay it here.")).toBeInTheDocument();
+  expect(document.body.textContent).not.toMatch(/over the limit/);
+  expect(screen.getByTestId('public-invoice-pay')).toHaveTextContent('Pay $200.00');
+});

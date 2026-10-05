@@ -705,3 +705,30 @@ it.each([
   Object.assign(f.inv, inv);
   expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ status: 'not_needed', reason });
 });
+
+// F-8: staff see "issued before the client's updated authorization" once a newer authorization covers it.
+it.each([[{ enabled: true, amount: '200.00', currency: 'USD' }, 'issued_before_authorization'], [{ enabled: true, amount: '100.00', currency: 'USD' }, 'above_authorized_cap']] as const)(
+  'a schedule frozen above the authorized cap, with accepted cap %j, reads %s', async (cap, reason) => {
+    const f = fixture({ state: 'not_needed', eligible: false, ineligibleReason: 'above_authorized_cap', stateReason: null,
+      termsSnapshot: { issuedAt: '2026-10-01T00:00:00Z', noticeSeq: 0 } });
+    Object.assign(f.inv, { total: '150.00', balance: '150.00' });
+    f.data.set(orgAutopayConsents, [{ feeTerms: { methodType: 'card', currency: 'USD', feeAttested: false, cardFeeBps: 0, achFeeAmount: '0.00' },
+      scheduleTerms: { offsetDays: 0, rule: 'later', cap } }]);
+    expect(await getInvoiceAutopayView(f.tx, f.inv as any)).toMatchObject({ state: 'not_needed', reason, collectOn: null });
+  });
+
+// FP-17 (P-15): a disabled Charge now says why.
+it.each([
+  ['notice_lead', { noticeSentAt: new Date() }, []],
+  ['retry_not_due', { state: 'retry_scheduled', nextAttemptAt: new Date('2099-01-01') }, []],
+  ['collection_in_progress', {}, [{ state: 'processing' }]],
+  ['no_eligible_notice', { noticeSentAt: null, noticeOutboxId: null }, []],
+  ['schedule_inactive', { state: 'skipped_by_client' }, []],
+] as const)('Charge now is withheld with reason %s', async (reason, over, attempts) => {
+  const f = fixture({ noticeSentAt: new Date('2020-01-01'), termsSnapshot: schedule.termsSnapshot, ...over } as Record<string, unknown>, [...attempts]);
+  expect(await getInvoiceAutopayView(f.tx, f.inv as any)).toMatchObject({ canChargeNow: false, chargeBlockedReason: reason });
+});
+it('a chargeable invoice carries no blocked reason', async () => {
+  const f = fixture({ noticeSentAt: new Date('2020-01-01'), termsSnapshot: schedule.termsSnapshot });
+  expect(await getInvoiceAutopayView(f.tx, f.inv as any)).toMatchObject({ canChargeNow: true, chargeBlockedReason: null });
+});

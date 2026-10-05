@@ -3,7 +3,7 @@ const h = vi.hoisted(() => ({ rows: new Map<unknown, any[]>(), inFlight: vi.fn()
 vi.mock('./reservation', () => ({ readInFlightCollection: h.inFlight }));
 vi.mock('./paymentMethods', () => ({ getAutopayMethod: h.method }));
 import { getCustomerInvoiceAutopay } from './customerInvoiceStatus';
-import { invoices, invoiceAutopaySchedules, invoiceCollectionAttempts, orgAutopayEnrollments, orgPaymentMethods, partners } from '../../db/schema';
+import { invoices, invoiceAutopaySchedules, invoiceCollectionAttempts, orgAutopayConsents, orgAutopayEnrollments, orgPaymentMethods, partners } from '../../db/schema';
 
 function fakeDb() {
   const query = () => {
@@ -174,4 +174,20 @@ it('captured money not yet applied reads "payment received", and the client cann
   seed({ state: 'failed', stateReason: 'payment_unapplied' }, { status: 'sent', balance: '50.00' });
   h.rows.set(invoiceCollectionAttempts, [{ principalAmount: '80.00', feeAmount: '1.00' }]);
   expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state: 'unapplied', amount: '81.00', canPayNow: false });
+});
+
+// F-8: kept manual (conservative), but once the client's newer authorization covers the amount,
+// the invoice no longer claims to be "over the limit you authorized".
+describe('an invoice frozen above the authorized cap', () => {
+  const capped = (amount: string) => [{ scheduleTerms: { offsetDays: 0, rule: 'later', cap: { enabled: true, amount, currency: 'USD' } } }];
+  it('reads "issued before your updated authorization" once a newer authorization covers it', async () => {
+    seed({ state: 'not_needed', ineligibleReason: 'above_authorized_cap' }, { total: '150.00', balance: '150.00' }, { generation: 2 });
+    h.rows.set(orgAutopayConsents, capped('200.00'));
+    expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state: 'not_included', reason: 'issued_before_authorization' });
+  });
+  it('still reads "above the limit you authorized" while the accepted limit is lower', async () => {
+    seed({ state: 'not_needed', ineligibleReason: 'above_authorized_cap' }, { total: '150.00', balance: '150.00' }, { generation: 2 });
+    h.rows.set(orgAutopayConsents, capped('100.00'));
+    expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state: 'not_included', reason: 'above_authorized_cap' });
+  });
 });

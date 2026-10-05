@@ -180,6 +180,8 @@ export interface InvoiceAutopayView {
  chargePreview?: { amount: string; currency: string; methodLabel: string } | null;
  state:AutopayScheduleState|'processing'|'unapplied';reason:string|null;collectOn:string|null;
  noticeSentAt:string|null;excluded:boolean;canExclude:boolean;canChargeNow:boolean;processing:boolean;unapplied:boolean;
+ /** Why Charge now is unavailable (a Charge now refusal code), or null (FP-17). */
+ chargeBlockedReason?:string|null;
 }
 /** What the public skip page may offer. Only 'ready' offers "Skip this payment";
  * 'paid' and 'not_needed' mean a stale link (paid, closed, void, or not scheduled for

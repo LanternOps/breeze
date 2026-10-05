@@ -2523,6 +2523,7 @@
       "method_not_usable": "Moyen de paiement indisponible",
       "over_cap": "Plafond de paiement automatique dépassé",
       "above_authorized_cap": "Au-dessus de la limite autorisée par le client",
+      "issued_before_authorization": "Émise avant l'autorisation mise à jour du client : à encaisser manuellement",
       "cap_currency_mismatch": "La devise du plafond ne correspond pas",
       "ach_currency_unsupported": "Devise non prise en charge pour les paiements bancaires",
       "excluded_contract": "Contrat exclu",
@@ -2627,7 +2628,8 @@
       "nothing_to_pay": "Il ne reste rien à payer sur cette facture.",
       "enrollment_inactive": "Les paiements automatiques ne sont pas actifs pour ce client.",
       "schedule_inactive": "Cette facture n’est plus planifiée pour un paiement automatique.",
-      "generic": "Le paiement automatique n’a pas pu démarrer. Actualisez la facture pour voir son état actuel."
+      "generic": "Le paiement automatique n’a pas pu démarrer. Actualisez la facture pour voir son état actuel.",
+      "excluded_contract": "Le contrat de cette facture est exclu des paiements automatiques, donc rien n'a été prélevé. Si le client avait été prévenu de ce paiement, il a reçu un e-mail indiquant qu'il n'aura pas lieu."
     }
   },
   "reminders": {

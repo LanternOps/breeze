@@ -17,6 +17,7 @@ import { enqueueAutopayNotice, type AutopayTerms } from './chargingNotice';
 import { isAutopayEnabledForPartner } from './autopayGate';
 import { collectionFenced, hasUnstoppableCollection, isControllableSchedule, pendingInvoiceControl, requestInvoiceControl, type InvoiceControlResult } from './collectionControl';
 import type { Tx } from './types';
+import { coveredByAcceptedCap } from './authorizedCap';
 
 export async function assertControllable(tx: Tx, invoiceId: string): Promise<void> {
   await assertNoActiveCollection(tx, invoiceId);
@@ -208,6 +209,21 @@ export async function getInvoiceAutopayView(tx: Tx, invoice: typeof invoices.$in
         && Date.now() >= schedule.noticeSentAt.getTime() + terms.noticeLeadDays * 86_400_000;
     }
   }
+  // FP-17 (P-15): why a disabled Charge now is disabled, in the refusal vocabulary staff already read.
+  let chargeBlockedReason: string | null = null;
+  if (!canChargeNow) {
+    // A not_needed schedule holds the issuance placeholder: read terms without throwing (2a-4).
+    const snapshot = schedule ? autopayTermsSnapshotSchema.safeParse(schedule.termsSnapshot) : null;
+    const lead = snapshot?.success && snapshot.data.kind === 'terms' ? snapshot.data.noticeLeadDays : null;
+    chargeBlockedReason = processing || actionRequired || unapplied ? 'collection_in_progress'
+      : !['sent', 'partially_paid', 'overdue'].includes(invoice.status) ? 'not_payable'
+      : toMinorUnits(invoice.balance, invoice.currencyCode) <= 0 ? 'nothing_to_pay'
+      : !schedule || !schedule.eligible || !['scheduled', 'retry_scheduled'].includes(schedule.state) || pending ? 'schedule_inactive'
+      : !schedule.noticeOutboxId || !schedule.noticeSentAt ? 'no_eligible_notice'
+      : schedule.state === 'retry_scheduled' && schedule.nextAttemptAt && schedule.nextAttemptAt > new Date() ? 'retry_not_due'
+      : lead !== null && Date.now() < schedule.noticeSentAt.getTime() + lead * 86_400_000 ? 'notice_lead'
+      : !enabled ? 'charging_disabled' : null;
+  }
   // Only a chargeable schedule carries collection terms; a not_needed one holds the
   // issuance placeholder, which parseAutopayTerms refuses (2a-4).
   const terms = canChargeNow && schedule ? parseAutopayTerms(schedule.termsSnapshot) : null;
@@ -216,10 +232,21 @@ export async function getInvoiceAutopayView(tx: Tx, invoice: typeof invoices.$in
       toMinorUnits(terms.principal, invoice.currencyCode)) + toMinorUnits(terms.feeAmount, invoice.currencyCode), invoice.currencyCode),
     currency: invoice.currencyCode, methodLabel: terms.methodLabel,
   } : null;
+  // F-8: kept manual, but no longer "above the limit the client authorized" once a newer
+  // authorization covers the amount.
+  let reason = pending ? `control_pending:${pending}` : schedule?.stateReason ?? schedule?.ineligibleReason ?? null;
+  if (reason === 'above_authorized_cap' && schedule?.state === 'not_needed' && schedule.enrollmentId) {
+    const [enrollment] = await tx.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.id, schedule.enrollmentId)).limit(1);
+    const method = enrollment && enrollment.orgId === invoice.orgId ? await getAutopayMethod(tx, invoice.orgId) : null;
+    if (enrollment && method && await coveredByAcceptedCap(tx, { orgId: invoice.orgId, enrollmentId: enrollment.id,
+      generation: enrollment.generation, methodId: method.id }, invoice.total, invoice.currencyCode)) reason = 'issued_before_authorization';
+  }
+  // FP-18 (P-16): only a payment still planned has a "charge on or around" date.
+  const planned = !!schedule && ['awaiting_notice', 'scheduled', 'collecting', 'retry_scheduled', 'action_required'].includes(schedule.state);
   return { state: unapplied ? 'unapplied' : processing ? 'processing' : actionRequired ? 'action_required' : schedule?.state ?? 'not_needed',
-    reason: pending ? `control_pending:${pending}` : schedule?.stateReason ?? schedule?.ineligibleReason ?? null, collectOn: schedule?.collectOn ?? null,
+    reason, collectOn: planned ? schedule!.collectOn ?? null : null,
     noticeSentAt: schedule?.noticeSentAt?.toISOString() ?? null, excluded: invoice.autopayExcluded,
     canExclude: enabled && ['draft', 'sent', 'partially_paid', 'overdue'].includes(invoice.status)
       && !processing && !unapplied && !pending,
-    canChargeNow, processing, unapplied, chargePreview };
+    canChargeNow, chargeBlockedReason, processing, unapplied, chargePreview };
 }

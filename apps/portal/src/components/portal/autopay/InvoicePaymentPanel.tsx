@@ -50,6 +50,8 @@ const NOT_INCLUDED: Record<string, string> = {
   enrolled_after_issue: 'This invoice was issued before you set up automatic payments, so please pay it here.',
   over_cap: 'This invoice is over your automatic payment limit, so please pay it here.',
   above_authorized_cap: 'This invoice is over the limit you authorized for automatic payments, so please pay it here.',
+  // F-8: the newer authorization covers it, but it was issued before; it stays manual.
+  issued_before_authorization: "This invoice was issued before your updated authorization, so it isn't paid automatically. Please pay it here.",
   cap_currency_mismatch: "This invoice's currency can't be paid automatically, so please pay it here.",
   ach_currency_unsupported: "This invoice's currency can't be paid automatically from a bank account, so please pay it here.",
 };

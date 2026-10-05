@@ -2523,6 +2523,7 @@
       "method_not_usable": "Payment method unavailable",
       "over_cap": "Above automatic payment limit",
       "above_authorized_cap": "Above the limit the client authorized",
+      "issued_before_authorization": "Issued before the client's updated authorization: collect manually",
       "cap_currency_mismatch": "Limit currency does not match",
       "ach_currency_unsupported": "Bank payment currency unsupported",
       "excluded_contract": "Contract excluded",
@@ -2627,7 +2628,8 @@
       "nothing_to_pay": "Nothing is left to pay on this invoice.",
       "enrollment_inactive": "Automatic payments are not active for this client.",
       "schedule_inactive": "This invoice is no longer scheduled for automatic payment.",
-      "generic": "Automatic payment could not be started. Refresh the invoice to see its current status."
+      "generic": "Automatic payment could not be started. Refresh the invoice to see its current status.",
+      "excluded_contract": "This invoice's contract is excluded from automatic payments, so it was not charged. If the client had been told about this payment, they were emailed that it won't happen."
     }
   },
   "reminders": {

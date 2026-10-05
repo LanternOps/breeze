@@ -2523,6 +2523,7 @@
       "method_not_usable": "Forma de pagamento indisponível",
       "over_cap": "Acima do limite de pagamento automático",
       "above_authorized_cap": "Acima do limite autorizado pelo cliente",
+      "issued_before_authorization": "Emitida antes da autorização atualizada do cliente: cobre manualmente",
       "cap_currency_mismatch": "A moeda do limite não corresponde",
       "ach_currency_unsupported": "Moeda incompatível com pagamentos bancários",
       "excluded_contract": "Contrato excluído",
@@ -2627,7 +2628,8 @@
       "nothing_to_pay": "Não resta nada a pagar nesta fatura.",
       "enrollment_inactive": "Os pagamentos automáticos não estão ativos para este cliente.",
       "schedule_inactive": "Esta fatura não está mais agendada para pagamento automático.",
-      "generic": "Não foi possível iniciar o pagamento automático. Atualize a fatura para ver o status atual."
+      "generic": "Não foi possível iniciar o pagamento automático. Atualize a fatura para ver o status atual.",
+      "excluded_contract": "O contrato desta fatura está excluído dos pagamentos automáticos, então nada foi cobrado. Se o cliente tinha sido avisado deste pagamento, recebeu um e-mail informando que ele não acontecerá."
     }
   },
   "reminders": {
