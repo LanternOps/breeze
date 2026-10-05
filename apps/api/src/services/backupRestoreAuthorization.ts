@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto';
 import { eq, or } from 'drizzle-orm';
 import { db, hasDbAccessContext, withDbTransaction } from '../db';
 import { auditLogs } from '../db/schema/audit';
+import { markRequestAuditWritten } from './auditService';
 import { backupRestoreAuthorizations } from '../db/schema/backupRestoreAuthorizations';
 import type { RestoreAuthorizationReason } from './backupRestoreGate';
 import { unattestedRestoreResourceDigest } from './mfaStepUpGrant';
@@ -60,6 +61,7 @@ const drizzleWriter: RestoreAuthorizationWriter = {
   },
   insertAudit: async (row) => {
     await db.insert(auditLogs).values(row);
+    markRequestAuditWritten();
   },
   atomically: (fn) => (hasDbAccessContext() ? withDbTransaction(fn) : db.transaction(() => fn())),
 };

@@ -298,6 +298,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'backup/storageCredentials.ts': { exempt: 'human_only_revocation_evidence', note: 'lists storage keys used before brokered backup writes, checks a replaced key, records a user confirmation' },
   'backup/reconcile.ts': { gap: '#6794' },
   'backup/resilienceAuthorization.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
+  'backup/restoreIntegrityGate.ts': { exempt: 'internal_plumbing', note: 'Restore integrity check shared by the restore routes; no endpoint of its own.' },
   'backup/restore.ts': { tools: ['restore_snapshot'] },
   'backup/sla.ts': { tools: ['query_backup_sla', 'get_sla_breaches', 'get_sla_compliance_report', 'configure_backup_sla'] },
   'backup/snapshots.ts': { tools: ['browse_snapshots', 'query_backups'] },
