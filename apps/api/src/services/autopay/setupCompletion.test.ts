@@ -10,11 +10,12 @@ vi.mock('../../db',()=>{
   runAfterDbContextExit:vi.fn(),hasDbAccessContext:()=>false};
 });
 vi.mock('../partnerStripe',()=>({getPartnerStripeClient:m.client}));
-vi.mock('./paymentMethods',()=>({enqueueRejectedAutopayMethod:vi.fn(),detachPaymentMethodPostCommit:vi.fn()}));
+vi.mock('./paymentMethods',()=>({enqueueRejectedAutopayMethod:vi.fn(),detachPaymentMethodPostCommit:vi.fn(),getAutopayMethod:vi.fn(async()=>null)}));
 vi.mock('./noticeOutbox',()=>({enqueueBillingNotice:m.enqueue}));
 vi.mock('./linkTokens',()=>({mintBillingLinkToken:m.mint,buildBillingLinkUrl:()=> 'https://portal.example.test/portal/autopay/token/stop'}));
 vi.mock('./enrollmentService',()=>import('./setupCompletion'));
 vi.mock('./staffNotifications',()=>({notifyAutopayStaff:vi.fn()}));
+vi.mock('../invoiceLinkToken',()=>({getOrMintInvoiceLink:vi.fn(async()=>({token:'inv-token'})),buildPublicInvoiceUrl:(t:string)=>`https://portal.example.test/invoice/${t}`}));
 import {persistCapturedAutopayMethod,completeAutopaySetup,setupAuthorityOutcome,setupIntentOutcome} from './setupCompletion';
 const snapshot={partnerName:'Example MSP',version:'2026-10-01.v1',text:'I authorize Example MSP.',textHash:'b'.repeat(64),hash:'a'.repeat(64),
  achMode:'ach_preferred',invoiceId:null,checkoutKey:null,scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'},
@@ -63,8 +64,12 @@ describe('completion fences',()=>{
   expect(rendered.subject).toContain('Example MSP');
   for(const body of [rendered.html,rendered.text]){
    expect(body).toContain('Example client');expect(body).toContain('Visa debit card ending in 1234');expect(body).not.toContain('visa debit');
-   expect(body).toContain(snapshot.scheduleText);expect(body).toContain('No processing fee applies to this card.');
+   // The client's copy of the accepted authorization, its version as a labelled reference (not a bare line), and the facts table.
+   expect(body).toContain(snapshot.text);expect(body).toContain(`(terms version ${snapshot.version})`);
+   expect(body).toContain('No fee for this card');expect(body).not.toContain('billing@example.test,');
   }
+  expect(rendered.text).toContain("When you're charged: On each invoice's due date");
+  expect(rendered.text.split(snapshot.text).length-1).toBe(1);
   m.writes.length=0;queueAuthority(attempt({outcome:'activated',completedAt:new Date()}));
   await completeAutopaySetup(attempt().partnerId,{checkoutSessionId:'cs_one'});
   expect(m.writes).toEqual([]);expect(m.enqueue).toHaveBeenCalledTimes(1);
@@ -86,7 +91,7 @@ describe('completion fences',()=>{
   const value=attempt({methodType:'us_bank_account'});
   m.intent.mockResolvedValue({...await m.intent(),status:'requires_action',next_action:{type:'verify_with_microdeposits'}});
   m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one'});
-  queueAuthority(value);m.rows.push([],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
+  queueAuthority(value);m.rows.push([],[],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
   expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('pending_verification');
   expect(m.writes).toContainEqual(expect.objectContaining({status:'active',effectiveFrom:expect.any(Date)}));
   expect(m.writes).toContainEqual(expect.objectContaining({status:'pending_verification',isAutopayMethod:true}));
@@ -147,7 +152,7 @@ describe('completion fences',()=>{
   expect(m.writes).toEqual([]);expect(m.method).not.toHaveBeenCalled();
  });
  it('normalizes unknown bank account-holder values without persisting unsupported enums',async()=>{
-  queueAuthority(attempt({methodType:'us_bank_account'}));m.rows.push([],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
+  queueAuthority(attempt({methodType:'us_bank_account'}));m.rows.push([],[],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
   m.intent.mockResolvedValue({...await m.intent(),status:'requires_action',next_action:{type:'verify_with_microdeposits'}});
   m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one',us_bank_account:{account_holder_type:'new_provider_value'}});
   await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'});
@@ -162,7 +167,7 @@ it.each(['processing','requires_confirmation','requires_payment_method'])('keeps
  expect(m.writes).toEqual([]);expect(m.mint).not.toHaveBeenCalled();
 });
 it('allows an unverified bank without a PaymentMethod customer',async()=>{
- queueAuthority(attempt({methodType:'us_bank_account'}));m.rows.push([],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
+ queueAuthority(attempt({methodType:'us_bank_account'}));m.rows.push([],[],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
  m.intent.mockResolvedValue({...await m.intent(),status:'requires_action',next_action:{type:'verify_with_microdeposits'}});
  m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:null});
  expect((await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'})).outcome).toBe('pending_verification');
@@ -200,7 +205,8 @@ it('queues a late provider capture after the attempt was terminally failed',asyn
 it('queues stored pending methods when a failed SetupIntent omits payment_method',async()=>{
  const {runAfterDbContextExit}=await import('../../db');
  queueAuthority(attempt({methodType:'us_bank_account',outcome:'pending_verification'}));
- m.rows.push([{id:'stored_bank'}],[]);
+ // The failed bank, no working method left, the two updates, then the partner for the client's email (F-1).
+ m.rows.push([{id:'stored_bank'}],[],[],[],[{settings:{}}]);
  m.intent.mockResolvedValue({...await m.intent(),status:'requires_payment_method',last_setup_error:{code:'verification_failed'},payment_method:null});
  expect((await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'})).outcome).toBe('failed');
  expect(m.writes).toContainEqual(expect.objectContaining({status:'unusable',unusableReason:'verification_failed',isAutopayMethod:false,
@@ -246,14 +252,26 @@ it('fences a setup started before the current pause even with same-generation to
 it('does not append consent again when the same bank setup finishes verification',async()=>{
  const value=attempt({methodType:'us_bank_account',outcome:'pending_verification'});
  queueAuthority(value);
- m.rows.push([{id:'bank_method',status:'pending_verification',isAutopayMethod:true}],[],[{id:'bank_method'}],[],[]);
+ // The empty row is V2-2's read of invoices already announced (none here).
+ m.rows.push([{id:'bank_method',status:'pending_verification',isAutopayMethod:true}],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
  m.intent.mockResolvedValue({...await m.intent(),mandate:'mandate'});
- m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one'});
+ m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one',us_bank_account:{last4:'6789',bank_name:'STRIPE TEST BANK',account_holder_type:'individual'}});
  m.mandate.mockResolvedValue({status:'active',payment_method:'pm_one'});
+ m.mint.mockResolvedValue({id:'stop',token:'stop-token'});
  expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
  expect(m.writes.filter(row=>'consentTextVersion'in row)).toEqual([]);
  expect(m.writes).toContainEqual(expect.objectContaining({outcome:'activated',completedAt:expect.any(Date)}));
- expect(m.mint).not.toHaveBeenCalled();expect(m.enqueue).not.toHaveBeenCalled();
+ // D-12: verification no longer completes silently. The client hears automatic payments are on.
+ expect(m.mint).toHaveBeenCalledExactlyOnceWith(expect.anything(),expect.objectContaining({purpose:'stop_autopay'}));
+ expect(m.enqueue).toHaveBeenCalledExactlyOnceWith(expect.anything(),expect.objectContaining({kind:'autopay_enrolled',
+  dedupeKey:`${value.id}:autopay_enrolled:verified`}));
+ const rendered=m.enqueue.mock.calls[0]![1].rendered;
+ expect(rendered.subject).toBe('Your bank account is verified: automatic payments are on with Example MSP');
+ expect(rendered.text).toContain('Payment method: Bank account ending in 6789');
+ expect(rendered.text).toContain('Stop automatic payments: https://portal.example.test/portal/autopay/token/stop');
+ // The full authorization copy went out at setup; this email references it once.
+ expect(rendered.text).not.toContain(snapshot.text);
+ expect(rendered.frozen).toMatchObject({variant:'verified'});
 });
 
 it('uses the verified debit fee in enrollment mail without rewriting accepted consent',async()=>{
@@ -269,7 +287,7 @@ it('uses the verified debit fee in enrollment mail without rewriting accepted co
   expect(await persistCapturedAutopayMethod(value.id,method,'activated','seti_one',null))
     .toEqual({outcome:'activated',orgId:value.orgId});
   for (const body of [m.enqueue.mock.calls[0]![1].rendered.html, m.enqueue.mock.calls[0]![1].rendered.text]) {
-    expect(body).toContain('No processing fee applies to this card.');
+    expect(body).toContain('No fee for this card');
     expect(body).toContain('Edited enrollment');
     expect(body).not.toContain(accepted.feeText);
   }
@@ -294,7 +312,7 @@ it('uses live credit evidence for enrollment and owned return under nonzero fees
  const {completeOwnedAutopaySetup}=await import('./customerViews');
  const result=await completeOwnedAutopaySetup({orgId:value.orgId,partnerId:value.partnerId},'cs_one');
  expect(result).toMatchObject({outcome:'activated',methodLabel:'Visa credit card ending in 1234',feeText:accepted.feeText});
- for(const body of [m.enqueue.mock.calls[0]![1].rendered.html,m.enqueue.mock.calls[0]![1].rendered.text])expect(body).toContain(accepted.feeText);
+ for(const body of [m.enqueue.mock.calls[0]![1].rendered.html,m.enqueue.mock.calls[0]![1].rendered.text])expect(body).toContain('Up to 3% per payment');
  expect(m.writes).toContainEqual(expect.objectContaining({cardFunding:'credit'}));
  const stored=m.writes.find(row=>'cardFunding' in row)!;
  const quote=quoteProcessingFee({methodType:'card',cardFunding:stored.cardFunding as 'credit',principal:'100.00',
@@ -319,7 +337,8 @@ it.each(['link','missing-networks','missing-wallet','unknown-network','unknown-w
  const {completeOwnedAutopaySetup}=await import('./customerViews');
  const result=await completeOwnedAutopaySetup({orgId:value.orgId,partnerId:value.partnerId},'cs_one');
  // Nothing about the refused card is exposed on the return page.
- expect(result).toEqual({outcome:'unsupported_method',orgId:value.orgId,methodLabel:null,feeText:'No usable payment method confirmed.'});
+ expect(result).toEqual({outcome:'unsupported_method',orgId:value.orgId,methodLabel:null,feeText:'No usable payment method confirmed.',
+  branding:{partnerName:'',logoUrl:null,supportEmail:null},current:null});
  // The only write terminally records the outcome: no replacement of the working
  // method, no saved method, consent, enrollment change or token consumption.
  expect(m.writes).toEqual([{outcome:'unsupported_method',completedAt:expect.any(Date)}]);
@@ -347,3 +366,98 @@ it('refuses a Link card saved by pay-and-save while the invoice payment stands',
 
 import {quoteProcessingFee} from './processingFee';
 import {paymentFeeLine} from './feeDisclosure';
+
+it('a bank account awaiting verification gets the one-more-step email, with its authorization copy and no start date',async()=>{
+  const value=attempt({methodType:'us_bank_account'});
+  m.rows.push([value],[{id:value.orgId,name:'Example client',status:'active',deletedAt:null,billingContact:{email:'billing@example.test',name:'Pat Lee'}}],
+    [{id:value.enrollmentId,status:'requested',generation:3,stripeAccountId:'acct_one',stripeCustomerId:'cus_one',effectiveFrom:null}],
+    [value],[{id:value.id}],[{id:value.stripeConnectionId,stripeAccountId:'acct_one',status:'connected'}],
+    [],[],[],[{id:'method_one'}],[],[],[],[{settings:{}}]);
+  m.mint.mockResolvedValue({id:'stop',token:'stop-token'});
+  const method={id:'pm_one',type:'us_bank_account',customer:'cus_one',us_bank_account:{last4:'6789',bank_name:'STRIPE TEST BANK',account_holder_type:'individual'}} as Parameters<typeof persistCapturedAutopayMethod>[1];
+  expect(await persistCapturedAutopayMethod(value.id,method,'pending_verification','seti_one',null)).toEqual({outcome:'pending_verification',orgId:value.orgId});
+  const queued=m.enqueue.mock.calls[0]![1];
+  expect(queued.dedupeKey).toBe(`${value.id}:autopay_enrolled:pending_verification`);
+  expect(queued.rendered.subject).toBe('One more step: verify your bank account for Example MSP');
+  expect(queued.rendered.text).toContain('Hi Pat Lee,');
+  expect(queued.rendered.text).toContain('Bank account: Bank account ending in 6789 (waiting for verification)');
+  expect(queued.rendered.text).not.toContain('Starts with');
+  expect(queued.rendered.text).toContain(snapshot.text);
+});
+
+// R1: the enrollment stays paused when a paused client saves a method (an MSP re-authorization,
+// or bank verification finishing after a pause). The email must not say "automatic payments are on".
+it('a paused client who saves a method is told it is saved and payments are paused, not on',async()=>{
+ const value=attempt({tokenId:'token',source:'setup_page',createdAt:new Date('2026-10-02')});
+ m.intent.mockResolvedValue({...await m.intent(),metadata:{...(await m.intent()).metadata,token_id:'token'}});
+ queueAuthority(value);
+ Object.assign(m.rows[3]![0]!,{status:'paused',effectiveFrom:new Date('2026-09-01'),pausedAt:new Date('2026-10-01')});
+ m.rows.push([{id:'method_one',status:'active',isAutopayMethod:true}],[],[{id:'method_one'}],[],[],[],[],[{settings:{}}]);
+ m.mint.mockResolvedValue({id:'stop',token:'stop-token'});
+ expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
+ const queued=m.enqueue.mock.calls.find(([,row])=>row.kind==='autopay_enrolled')![1];
+ expect(queued.rendered.subject).toBe('Your payment method is saved for Example MSP');
+ expect(queued.rendered.text).toContain('Example MSP has paused automatic payments');
+ expect(queued.rendered.text).not.toMatch(/automatic payments are (now )?on/i);
+ expect(queued.rendered.text).not.toContain('Starts with');
+ expect(queued.rendered.frozen).toMatchObject({variant:'paused'});
+ // FP-13: staff never get "Automatic payments enabled" for a method saved while paused.
+ const {runAfterDbContextExit}=await import('../../db');
+ const {notifyAutopayStaff}=await import('./staffNotifications');
+ const enrolled=vi.mocked(runAfterDbContextExit).mock.calls.find(([name])=>name==='autopay.enrolled')!;
+ m.rows.push([{outcome:'activated'}]);await (enrolled[1] as ()=>Promise<void>)();
+ expect(notifyAutopayStaff).toHaveBeenCalledWith(expect.objectContaining({event:'autopay.method_updated',
+  message:'Payment method saved while automatic payments are paused.'}));
+});
+it('bank verification that finishes after a pause says the account is verified and payments are paused',async()=>{
+ const value=attempt({methodType:'us_bank_account',outcome:'pending_verification'});
+ queueAuthority(value);Object.assign(m.rows[3]![0]!,{status:'paused',pausedAt:new Date('2026-10-02')});
+ m.rows.push([{id:'bank_method',status:'pending_verification',isAutopayMethod:true}],[],[{id:'bank_method'}],[],[],[{settings:{}}]);
+ m.intent.mockResolvedValue({...await m.intent(),mandate:'mandate'});
+ m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one',us_bank_account:{last4:'6789',bank_name:'STRIPE TEST BANK',account_holder_type:'individual'}});
+ m.mandate.mockResolvedValue({status:'active',payment_method:'pm_one'});
+ m.mint.mockResolvedValue({id:'stop',token:'stop-token'});
+ expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
+ const queued=m.enqueue.mock.calls[0]![1];
+ expect(queued.dedupeKey).toBe(`${value.id}:autopay_enrolled:verified`);
+ expect(queued.rendered.subject).toBe('Your payment method is saved for Example MSP');
+ expect(queued.rendered.text).toContain('Example MSP has paused automatic payments');
+ expect(queued.rendered.text).not.toMatch(/automatic payments are (now )?on/i);
+ expect(queued.rendered.text).not.toContain('Starts with');
+});
+
+// FP-7: the bank-pay page said "we'll email you once verified; then pay the invoice by bank".
+// The verified email links that invoice while it is still unpaid.
+it('a bank verified for a bank payment links the invoice still to pay',async()=>{
+ const bankPayment={invoiceId:'10000000-0000-4000-8000-000000000001',orgId:attempt().orgId,principal:'120.00',fee:'1.00',currency:'USD',disclosureHash:'a'.repeat(64)};
+ const value=attempt({methodType:'us_bank_account',outcome:'pending_verification',consentSnapshot:{...snapshot,bankPayment}});
+ queueAuthority(value);
+ m.rows.push([{id:'bank_method',status:'pending_verification',isAutopayMethod:true}],[],[{id:'bank_method'}],[],[],
+  [{id:bankPayment.invoiceId,orgId:value.orgId,invoiceNumber:'INV-2026-0019',status:'sent',balance:'120.00',currencyCode:'USD'}],[],[{settings:{}}]);
+ m.intent.mockResolvedValue({...await m.intent(),mandate:'mandate'});
+ m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one',us_bank_account:{last4:'6789',bank_name:'STRIPE TEST BANK',account_holder_type:'individual'}});
+ m.mandate.mockResolvedValue({status:'active',payment_method:'pm_one'});
+ expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
+ const rendered=m.enqueue.mock.calls[0]![1].rendered;
+ // V2-4: the invoice page offers its normal Pay to an enrolled client (G3), so the email says "Pay it here".
+ expect(rendered.text).toContain('Invoice INV-2026-0019 is still unpaid ($120.00). Pay it here: https://portal.example.test/invoice/inv-token');
+ expect(rendered.text).not.toMatch(/by bank/);
+});
+// FP-12: replacing a card that stopped working (it kept the autopay flag as 'unusable', D-17)
+// is a change for the client too: never the first-time "Thanks for setting up".
+it('replacing a method that stopped working sends the method-changed email, not the first-time one',async()=>{
+ const value=attempt({tokenId:'token',source:'setup_page',createdAt:new Date('2026-10-02')});
+ m.intent.mockResolvedValue({...await m.intent(),metadata:{...(await m.intent()).metadata,token_id:'token'}});
+ queueAuthority(value);
+ Object.assign(m.rows[3]![0]!,{status:'active',effectiveFrom:new Date('2026-09-01'),needsAttentionReason:'method_unusable'});
+ m.rows.push([],[{id:'dead_card',type:'card',cardBrand:'visa',cardFunding:'credit',cardLast4:'0341',status:'unusable',isAutopayMethod:true}],
+  [{id:'new_method'}],[],[],[],[],[{settings:{}}]);
+ m.mint.mockResolvedValue({id:'stop',token:'stop-token'});
+ expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
+ const queued=m.enqueue.mock.calls.find(([,row])=>row.kind==='autopay_enrolled')![1];
+ expect(queued.rendered.frozen).toMatchObject({variant:'method_changed'});
+ expect(queued.rendered.subject).toBe('Your payment method has changed with Example MSP');
+ expect(queued.rendered.text).toContain('It replaces your Visa credit card ending in 0341.');
+ expect(queued.rendered.text).not.toMatch(/thanks for setting up/i);
+ expect(queued.rendered.text).not.toContain('Starts with');
+});

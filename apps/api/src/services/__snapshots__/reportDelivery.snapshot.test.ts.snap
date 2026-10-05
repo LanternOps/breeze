@@ -17,10 +17,11 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
     <title>Scheduled report</title>
+    <style>p { margin: 0 0 12px; } a { color: #155e75; }</style>
   </head>
-  <body style="margin: 0; padding: 0; background: #eef2f7; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif; color: #1f2937;">
+  <body style="margin: 0; padding: 0; background: #eef2f7; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1f2937;">
     <div style="display: none; max-height: 0; overflow: hidden; mso-hide: all; font-size: 1px; line-height: 1px; color: #eef2f7;">Your scheduled report &quot;Nightly inventory&quot; has been generated with 2 records.</div>
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: #eef2f7; padding: 24px 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: #eef2f7; padding: 24px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">
       <tr>
         <td align="center">
           <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width: 600px; width: 100%; background: #ffffff; border-radius: 12px; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06); overflow: hidden;">
@@ -28,18 +29,18 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
               <td style="height: 3px; background: #155e75; line-height: 3px; font-size: 0;">&nbsp;</td>
             </tr>
             <tr>
-              <td style="padding: 28px 32px 4px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">
-                <h1 style="margin: 0; font-size: 20px; line-height: 1.3; color: #0f172a; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Scheduled report ready</h1>
+              <td style="padding: 28px 32px 4px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">
+                <h1 style="margin: 0; font-size: 20px; line-height: 1.3; color: #0f172a; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Scheduled report ready</h1>
               </td>
             </tr>
             <tr>
-              <td style="padding: 8px 32px 24px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif; color: #1f2937; font-size: 15px; line-height: 1.55;">
-                <p style="margin: 0px 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Your scheduled report &quot;Nightly inventory&quot; has been generated with 2 records.</p><p style="margin: 0px 0 12px; font-size: 13px; line-height: 1.55; color: #6b7280; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">The data is attached as CSV; open Breeze for the fully formatted report.</p><a href="http://localhost:4321/reports" style="display: inline-block; padding: 12px 22px; border-radius: 8px; background: #155e75; color: #ffffff; font-size: 14px; font-weight: 500; text-decoration: none; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">View in Breeze</a>
+              <td style="padding: 8px 32px 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1f2937; font-size: 15px; line-height: 1.55;">
+                <p style="margin: 0px 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Your scheduled report &quot;Nightly inventory&quot; has been generated with 2 records.</p><p style="margin: 0px 0 12px; font-size: 13px; line-height: 1.55; color: #6b7280; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">The data is attached as CSV; open Breeze for the fully formatted report.</p><a href="http://localhost:4321/reports" style="display: inline-block; padding: 12px 22px; border-radius: 8px; background: #155e75; color: #ffffff; font-size: 14px; font-weight: 500; text-decoration: none; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">View in Breeze</a>
               </td>
             </tr>
             
           </table>
-          <p style="margin: 16px 0 0; font-size: 12px; color: #94a3b8; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Breeze RMM</p>
+          <p style="margin: 16px 0 0; font-size: 12px; color: #94a3b8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Breeze RMM</p>
         </td>
       </tr>
     </table>
@@ -74,10 +75,11 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
     <title>Scheduled report</title>
+    <style>p { margin: 0 0 12px; } a { color: #155e75; }</style>
   </head>
-  <body style="margin: 0; padding: 0; background: #eef2f7; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif; color: #1f2937;">
+  <body style="margin: 0; padding: 0; background: #eef2f7; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1f2937;">
     <div style="display: none; max-height: 0; overflow: hidden; mso-hide: all; font-size: 1px; line-height: 1px; color: #eef2f7;">Posture score 79.</div>
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: #eef2f7; padding: 24px 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: #eef2f7; padding: 24px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">
       <tr>
         <td align="center">
           <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width: 600px; width: 100%; background: #ffffff; border-radius: 12px; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06); overflow: hidden;">
@@ -85,18 +87,18 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
               <td style="height: 3px; background: #155e75; line-height: 3px; font-size: 0;">&nbsp;</td>
             </tr>
             <tr>
-              <td style="padding: 28px 32px 4px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">
-                <h1 style="margin: 0; font-size: 20px; line-height: 1.3; color: #0f172a; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Scheduled report ready</h1>
+              <td style="padding: 28px 32px 4px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">
+                <h1 style="margin: 0; font-size: 20px; line-height: 1.3; color: #0f172a; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Scheduled report ready</h1>
               </td>
             </tr>
             <tr>
-              <td style="padding: 8px 32px 24px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif; color: #1f2937; font-size: 15px; line-height: 1.55;">
-                <p style="margin: 0px 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Your scheduled report &quot;Nightly inventory&quot; has been generated with 2 records.</p><p style="margin: 0px 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Posture score 79.</p><p style="margin: 0px 0 12px; font-size: 13px; line-height: 1.55; color: #6b7280; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">The data is attached as CSV; open Breeze for the fully formatted report.</p><a href="http://localhost:4321/reports" style="display: inline-block; padding: 12px 22px; border-radius: 8px; background: #155e75; color: #ffffff; font-size: 14px; font-weight: 500; text-decoration: none; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">View in Breeze</a>
+              <td style="padding: 8px 32px 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1f2937; font-size: 15px; line-height: 1.55;">
+                <p style="margin: 0px 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Your scheduled report &quot;Nightly inventory&quot; has been generated with 2 records.</p><p style="margin: 0px 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Posture score 79.</p><p style="margin: 0px 0 12px; font-size: 13px; line-height: 1.55; color: #6b7280; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">The data is attached as CSV; open Breeze for the fully formatted report.</p><a href="http://localhost:4321/reports" style="display: inline-block; padding: 12px 22px; border-radius: 8px; background: #155e75; color: #ffffff; font-size: 14px; font-weight: 500; text-decoration: none; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">View in Breeze</a>
               </td>
             </tr>
             
           </table>
-          <p style="margin: 16px 0 0; font-size: 12px; color: #94a3b8; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Breeze RMM</p>
+          <p style="margin: 16px 0 0; font-size: 12px; color: #94a3b8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Breeze RMM</p>
         </td>
       </tr>
     </table>
@@ -125,10 +127,11 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
     <title>Scheduled report failed</title>
+    <style>p { margin: 0 0 12px; } a { color: #155e75; }</style>
   </head>
-  <body style="margin: 0; padding: 0; background: #eef2f7; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif; color: #1f2937;">
+  <body style="margin: 0; padding: 0; background: #eef2f7; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1f2937;">
     <div style="display: none; max-height: 0; overflow: hidden; mso-hide: all; font-size: 1px; line-height: 1px; color: #eef2f7;">Nightly inventory could not be generated</div>
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: #eef2f7; padding: 24px 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: #eef2f7; padding: 24px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">
       <tr>
         <td align="center">
           <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width: 600px; width: 100%; background: #ffffff; border-radius: 12px; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06); overflow: hidden;">
@@ -136,18 +139,18 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
               <td style="height: 3px; background: #155e75; line-height: 3px; font-size: 0;">&nbsp;</td>
             </tr>
             <tr>
-              <td style="padding: 28px 32px 4px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">
-                <h1 style="margin: 0; font-size: 20px; line-height: 1.3; color: #0f172a; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Scheduled report failed</h1>
+              <td style="padding: 28px 32px 4px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">
+                <h1 style="margin: 0; font-size: 20px; line-height: 1.3; color: #0f172a; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Scheduled report failed</h1>
               </td>
             </tr>
             <tr>
-              <td style="padding: 8px 32px 24px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif; color: #1f2937; font-size: 15px; line-height: 1.55;">
-                <p style="margin: 0px 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">We couldn't generate <strong>Nightly inventory</strong> for its scheduled run. No report was produced.</p><p style="margin: 0px 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Your team can run it manually, or wait for the next scheduled occurrence.</p><a href="http://localhost:4321/reports" style="display: inline-block; padding: 12px 22px; border-radius: 8px; background: #155e75; color: #ffffff; font-size: 14px; font-weight: 500; text-decoration: none; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">View reports</a>
+              <td style="padding: 8px 32px 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1f2937; font-size: 15px; line-height: 1.55;">
+                <p style="margin: 0px 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">We couldn't generate <strong>Nightly inventory</strong> for its scheduled run. No report was produced.</p><p style="margin: 0px 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Your team can run it manually, or wait for the next scheduled occurrence.</p><a href="http://localhost:4321/reports" style="display: inline-block; padding: 12px 22px; border-radius: 8px; background: #155e75; color: #ffffff; font-size: 14px; font-weight: 500; text-decoration: none; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">View reports</a>
               </td>
             </tr>
             
           </table>
-          <p style="margin: 16px 0 0; font-size: 12px; color: #94a3b8; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Breeze RMM</p>
+          <p style="margin: 16px 0 0; font-size: 12px; color: #94a3b8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Breeze RMM</p>
         </td>
       </tr>
     </table>
@@ -171,10 +174,11 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
     <title>Scheduled report</title>
+    <style>p { margin: 0 0 12px; } a { color: #155e75; }</style>
   </head>
-  <body style="margin: 0; padding: 0; background: #eef2f7; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif; color: #1f2937;">
+  <body style="margin: 0; padding: 0; background: #eef2f7; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1f2937;">
     <div style="display: none; max-height: 0; overflow: hidden; mso-hide: all; font-size: 1px; line-height: 1px; color: #eef2f7;">Your scheduled report &quot;Nightly inventory&quot; has been generated with 60000 records.</div>
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: #eef2f7; padding: 24px 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: #eef2f7; padding: 24px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">
       <tr>
         <td align="center">
           <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width: 600px; width: 100%; background: #ffffff; border-radius: 12px; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06); overflow: hidden;">
@@ -182,18 +186,18 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
               <td style="height: 3px; background: #155e75; line-height: 3px; font-size: 0;">&nbsp;</td>
             </tr>
             <tr>
-              <td style="padding: 28px 32px 4px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">
-                <h1 style="margin: 0; font-size: 20px; line-height: 1.3; color: #0f172a; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Scheduled report ready</h1>
+              <td style="padding: 28px 32px 4px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">
+                <h1 style="margin: 0; font-size: 20px; line-height: 1.3; color: #0f172a; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Scheduled report ready</h1>
               </td>
             </tr>
             <tr>
-              <td style="padding: 8px 32px 24px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif; color: #1f2937; font-size: 15px; line-height: 1.55;">
-                <p style="margin: 0px 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Your scheduled report &quot;Nightly inventory&quot; has been generated with 60000 records.</p><p style="margin: 0px 0 12px; font-size: 13px; line-height: 1.55; color: #6b7280; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Open Breeze to view and download the formatted report.</p><a href="http://localhost:4321/reports" style="display: inline-block; padding: 12px 22px; border-radius: 8px; background: #155e75; color: #ffffff; font-size: 14px; font-weight: 500; text-decoration: none; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">View in Breeze</a>
+              <td style="padding: 8px 32px 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1f2937; font-size: 15px; line-height: 1.55;">
+                <p style="margin: 0px 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Your scheduled report &quot;Nightly inventory&quot; has been generated with 60000 records.</p><p style="margin: 0px 0 12px; font-size: 13px; line-height: 1.55; color: #6b7280; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Open Breeze to view and download the formatted report.</p><a href="http://localhost:4321/reports" style="display: inline-block; padding: 12px 22px; border-radius: 8px; background: #155e75; color: #ffffff; font-size: 14px; font-weight: 500; text-decoration: none; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">View in Breeze</a>
               </td>
             </tr>
             
           </table>
-          <p style="margin: 16px 0 0; font-size: 12px; color: #94a3b8; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Breeze RMM</p>
+          <p style="margin: 16px 0 0; font-size: 12px; color: #94a3b8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Breeze RMM</p>
         </td>
       </tr>
     </table>
@@ -221,10 +225,11 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
     <title>Scheduled report</title>
+    <style>p { margin: 0 0 12px; } a { color: #155e75; }</style>
   </head>
-  <body style="margin: 0; padding: 0; background: #eef2f7; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif; color: #1f2937;">
+  <body style="margin: 0; padding: 0; background: #eef2f7; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1f2937;">
     <div style="display: none; max-height: 0; overflow: hidden; mso-hide: all; font-size: 1px; line-height: 1px; color: #eef2f7;">Your scheduled report &quot;Nightly inventory&quot; has been generated with 2 records.</div>
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: #eef2f7; padding: 24px 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: #eef2f7; padding: 24px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">
       <tr>
         <td align="center">
           <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width: 600px; width: 100%; background: #ffffff; border-radius: 12px; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06); overflow: hidden;">
@@ -232,18 +237,18 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
               <td style="height: 3px; background: #155e75; line-height: 3px; font-size: 0;">&nbsp;</td>
             </tr>
             <tr>
-              <td style="padding: 28px 32px 4px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">
-                <h1 style="margin: 0; font-size: 20px; line-height: 1.3; color: #0f172a; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Scheduled report ready</h1>
+              <td style="padding: 28px 32px 4px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">
+                <h1 style="margin: 0; font-size: 20px; line-height: 1.3; color: #0f172a; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Scheduled report ready</h1>
               </td>
             </tr>
             <tr>
-              <td style="padding: 8px 32px 24px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif; color: #1f2937; font-size: 15px; line-height: 1.55;">
-                <p style="margin: 0px 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Your scheduled report &quot;Nightly inventory&quot; has been generated with 2 records.</p><p style="margin: 0px 0 12px; font-size: 13px; line-height: 1.55; color: #6b7280; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Open Breeze to view and download the formatted report.</p><a href="http://localhost:4321/reports" style="display: inline-block; padding: 12px 22px; border-radius: 8px; background: #155e75; color: #ffffff; font-size: 14px; font-weight: 500; text-decoration: none; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">View in Breeze</a>
+              <td style="padding: 8px 32px 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1f2937; font-size: 15px; line-height: 1.55;">
+                <p style="margin: 0px 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Your scheduled report &quot;Nightly inventory&quot; has been generated with 2 records.</p><p style="margin: 0px 0 12px; font-size: 13px; line-height: 1.55; color: #6b7280; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Open Breeze to view and download the formatted report.</p><a href="http://localhost:4321/reports" style="display: inline-block; padding: 12px 22px; border-radius: 8px; background: #155e75; color: #ffffff; font-size: 14px; font-weight: 500; text-decoration: none; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">View in Breeze</a>
               </td>
             </tr>
             
           </table>
-          <p style="margin: 16px 0 0; font-size: 12px; color: #94a3b8; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Breeze RMM</p>
+          <p style="margin: 16px 0 0; font-size: 12px; color: #94a3b8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Breeze RMM</p>
         </td>
       </tr>
     </table>
@@ -276,10 +281,11 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
     <title>Scheduled report</title>
+    <style>p { margin: 0 0 12px; } a { color: #155e75; }</style>
   </head>
-  <body style="margin: 0; padding: 0; background: #eef2f7; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif; color: #1f2937;">
+  <body style="margin: 0; padding: 0; background: #eef2f7; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1f2937;">
     <div style="display: none; max-height: 0; overflow: hidden; mso-hide: all; font-size: 1px; line-height: 1px; color: #eef2f7;">Your scheduled report &quot;Nightly inventory&quot; has been generated with 2 records.</div>
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: #eef2f7; padding: 24px 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: #eef2f7; padding: 24px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">
       <tr>
         <td align="center">
           <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width: 600px; width: 100%; background: #ffffff; border-radius: 12px; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06); overflow: hidden;">
@@ -287,18 +293,18 @@ exports[`report email rendering is pinned before the reportDelivery extraction (
               <td style="height: 3px; background: #155e75; line-height: 3px; font-size: 0;">&nbsp;</td>
             </tr>
             <tr>
-              <td style="padding: 28px 32px 4px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">
-                <h1 style="margin: 0; font-size: 20px; line-height: 1.3; color: #0f172a; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Scheduled report ready</h1>
+              <td style="padding: 28px 32px 4px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">
+                <h1 style="margin: 0; font-size: 20px; line-height: 1.3; color: #0f172a; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Scheduled report ready</h1>
               </td>
             </tr>
             <tr>
-              <td style="padding: 8px 32px 24px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif; color: #1f2937; font-size: 15px; line-height: 1.55;">
-                <p style="margin: 0px 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Your scheduled report &quot;Nightly inventory&quot; has been generated with 2 records.</p><p style="margin: 0px 0 12px; font-size: 13px; line-height: 1.55; color: #6b7280; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">The formatted report is attached as a PDF.</p><a href="http://localhost:4321/reports" style="display: inline-block; padding: 12px 22px; border-radius: 8px; background: #155e75; color: #ffffff; font-size: 14px; font-weight: 500; text-decoration: none; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">View in Breeze</a>
+              <td style="padding: 8px 32px 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1f2937; font-size: 15px; line-height: 1.55;">
+                <p style="margin: 0px 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Your scheduled report &quot;Nightly inventory&quot; has been generated with 2 records.</p><p style="margin: 0px 0 12px; font-size: 13px; line-height: 1.55; color: #6b7280; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">The formatted report is attached as a PDF.</p><a href="http://localhost:4321/reports" style="display: inline-block; padding: 12px 22px; border-radius: 8px; background: #155e75; color: #ffffff; font-size: 14px; font-weight: 500; text-decoration: none; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">View in Breeze</a>
               </td>
             </tr>
             
           </table>
-          <p style="margin: 16px 0 0; font-size: 12px; color: #94a3b8; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;">Breeze RMM</p>
+          <p style="margin: 16px 0 0; font-size: 12px; color: #94a3b8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;">Breeze RMM</p>
         </td>
       </tr>
     </table>

@@ -811,15 +811,16 @@ runDb('a refund tells the client the amount refunded, the method and the invoice
   expect(notices).toHaveLength(1);
   expect(notices[0]!.dedupeKey).toBe(`${f.mappingId}:payment_receipt:refund:4000`);
   let text = (notices[0]!.rendered as { text: string }).text;
-  expect(text).toContain('Refunded: USD 40.00');
+  // One money formatter in client emails ("$40.00", never "USD 40.00").
+  expect(text).toContain('Refunded: $40.00');
   expect(text).toContain('Refunded to: Bank account ending in 6789');
-  expect(text).toMatch(/Balance due on invoice \S+ after this refund: USD 40\.00/);
+  expect(text).toMatch(/Balance due on invoice \S+ after this refund: \$40\.00/);
   await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: `evt_refund_b_${f.invoiceId}`, refundedAmountMinor: 10000, providerCreated: 1_788_690_001 }));
   notices = await refundNotices(f.invoiceId);
   expect(notices).toHaveLength(2);
   text = (notices.find(row => row.dedupeKey.endsWith(':10000'))!.rendered as { text: string }).text;
-  expect(text).toContain('Refunded: USD 60.00');
-  expect(text).toMatch(/after this refund: USD 100\.00/);
+  expect(text).toContain('Refunded: $60.00');
+  expect(text).toMatch(/after this refund: \$100\.00/);
 });
 
 // Batch 3b (#7897): a card dispute withdrawal raises a staff notice, as an ACH return does.

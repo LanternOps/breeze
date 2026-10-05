@@ -1,16 +1,36 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { partners } from '../../db/schema';
-import { escapeHtml } from '../emailLayout';
-import { htmlToText } from '../inboundEmail/htmlToText';
-import { partnerEmailCustomFromSettings, renderPartnerEmail } from '../emailTemplates/renderPartnerEmail';
+import { partnerEmailCustomFromSettings } from '../emailTemplates/renderPartnerEmail';
+import { renderBillingEmail, type BillingEmailLink } from './billingEmail';
 import type { Tx, RenderedNotice } from './types';
 export type EnrollmentNoticeKind = 'autopay_request' | 'autopay_enrolled' | 'autopay_stopped' | 'autopay_paused' | 'autopay_resumed' | 'card_expiring';
+/**
+ * An enrollment lifecycle email. The partner-editable body comes from the template
+ * (vars); everything else is locked and composed once by renderBillingEmail. Schedule
+ * and fee terms are stated only where they apply (request, enrolled, resumed), as a
+ * facts table, never as repeated paragraphs (lab D-7, D-9).
+ */
 export interface AutopayNoticeContext {
   partnerId: string; orgId: string; vars: Record<string,string>; ctaUrl?: string;
-  scheduleText: string; feeText: string; stopUrl?: string; authorizationReference?: string;
+  /** e.g. autopay_enrolled 'pending_verification' | 'verified', autopay_stopped 'msp'. */
+  variant?: string;
+  preheader?: string;
+  /** Kept on the frozen record of what the client was told (not printed as paragraphs). */
+  scheduleText?: string; feeText?: string; authorizationReference?: string;
+  stopUrl?: string;
+  /** Locked lines right after the body (one per line), e.g. payments still processing. */
   processingText?: string;
-  openInvoices?: { number: string; amount: string; currency: string; url: string }[];
+  summary?: { label: string; value: string }[];
+  links?: BillingEmailLink[];
+  /** Pay links for invoices still open (amounts already formatted); [] says none are open. */
+  openInvoices?: { number: string; amount: string; currency?: string; url: string }[];
+  notes?: string[];
+  terms?: { title: string; paragraphs: string[] };
+  /** Use the product's copy for this variant even when the partner customized the template:
+   * their generic "you're set up" wording would be untrue here (paused, a failed
+   * verification, a method change). */
+  locked?: boolean;
 }
 const safeUrl = (value: string | undefined): string | null => {
   if (!value) return null;
@@ -21,22 +41,15 @@ export async function renderAutopayNotice(kind: EnrollmentNoticeKind, ctx: Autop
   const [partner] = await executor.select({ settings: partners.settings }).from(partners)
     .where(eq(partners.id, ctx.partnerId)).limit(1);
   if (!partner) throw new Error('Partner not found while rendering billing notice');
-  const blocks = [ctx.scheduleText, ctx.feeText, ctx.authorizationReference, ctx.processingText].filter((x): x is string => !!x);
-  let append = blocks.map((text) => `<p>${escapeHtml(text)}</p>`).join('');
-  const textBlocks = [...blocks];
   const stop = safeUrl(ctx.stopUrl);
-  if (stop) { append += `<p><a href="${escapeHtml(stop)}">Stop automatic payments</a></p>`;
-    textBlocks.push(`Stop automatic payments: ${stop}`); }
-  for (const invoice of ctx.openInvoices ?? []) {
-    const url = safeUrl(invoice.url); if (!url) continue;
-    const label = `${invoice.number}: ${invoice.amount} ${invoice.currency}`;
-    append += `<p><a href="${escapeHtml(url)}">${escapeHtml(label)}</a></p>`;
-    textBlocks.push(`${label}: ${url}`);
-  }
-  const rendered = renderPartnerEmail({ id: kind,
-    custom: partnerEmailCustomFromSettings(partner.settings, kind), vars: ctx.vars,
-    ctaUrl: ctx.ctaUrl, brandName: ctx.vars.partner_name, bodyAfterCta: append });
-  const text = [htmlToText(rendered.html), ctx.ctaUrl, ...textBlocks].filter(Boolean).join('\n\n');
-  return { ...rendered, text, frozen: { scheduleText: ctx.scheduleText, feeText: ctx.feeText,
-    authorizationReference: ctx.authorizationReference ?? null } };
+  const links: BillingEmailLink[] = [...(ctx.links ?? []), ...(stop ? [{ label: 'Stop automatic payments', url: stop }] : [])];
+  const rendered = renderBillingEmail({ id: kind, variant: ctx.variant,
+    custom: ctx.locked ? null : partnerEmailCustomFromSettings(partner.settings, kind), vars: ctx.vars, brandName: ctx.vars.partner_name ?? '',
+    ctaUrl: ctx.ctaUrl, preheader: ctx.preheader,
+    lockedParagraphs: ctx.processingText?.split('\n').map(line => line.trim()).filter(Boolean),
+    summary: ctx.summary, links,
+    openInvoices: ctx.openInvoices?.flatMap(invoice => { const url = safeUrl(invoice.url); return url ? [{ number: invoice.number, amount: invoice.amount, url }] : []; }),
+    notes: ctx.notes, terms: ctx.terms });
+  return { ...rendered, frozen: { scheduleText: ctx.scheduleText ?? null, feeText: ctx.feeText ?? null,
+    authorizationReference: ctx.authorizationReference ?? null, variant: ctx.variant ?? null } };
 }

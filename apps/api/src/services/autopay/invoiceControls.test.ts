@@ -30,6 +30,7 @@ vi.mock('./staffNotifications', () => ({ enqueueAutopayStaffNotifications: h.sta
 vi.mock('./noticeOutbox', () => ({ enqueueBillingNotice: h.confirmation }));
 vi.mock('../invoiceLinkToken', () => ({
   getOrMintInvoiceLink: vi.fn().mockResolvedValue({ token: 'secret' }),
+  peekInvoiceLink: vi.fn().mockReturnValue({ token: 'secret' }),
   buildPublicInvoiceUrl: () => 'https://portal.example.test/invoice/secret',
 }));
 vi.mock('./renderBillingNotice', () => ({
@@ -564,6 +565,35 @@ it.each(['not_needed', 'cancelled', 'excluded_by_msp'])('projects a %s schedule 
   });
 });
 
+// The skip page names the invoice, amount, charge date and method, and who is asking.
+it('describes the invoice the skip link controls, without minting a link', async () => {
+  const f = fixture();
+  f.data.set(partners, [{ name: 'Partner', billingEmail: 'billing@partner.example' }]);
+  const view = await getSkipInvoiceView(f.tx, 'token');
+  expect(view).toMatchObject({ status: 'ready', state: 'scheduled', processing: false, control: null,
+    invoiceNumber: 'INV-1', invoiceStatus: 'sent', dueDate: '2026-10-15', collectOn: '2026-10-15',
+    amount: '10.00', fee: '0.00', currency: 'USD', methodType: 'card', methodLabel: 'Credit card ending in 4242',
+    partnerName: 'Partner', supportEmail: 'billing@partner.example', invoiceUrl: 'https://portal.example.test/invoice/secret' });
+  expect(f.writes).toEqual([]);
+});
+it('labels the noticed method from the terms when the saved method changed', async () => {
+  const f = fixture({ termsSnapshot: { ...schedule.termsSnapshot, methodId: 'older', methodType: 'us_bank_account', last4: '6789' } });
+  expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ methodType: 'us_bank_account', methodLabel: 'Bank account ending in 6789' });
+});
+it.each([
+  ['the enrollment is paused', (f: ReturnType<typeof fixture>) => { f.data.get(orgAutopayEnrollments)![0].status = 'paused'; }],
+  ['the schedule was cancelled by a stop', (f: ReturnType<typeof fixture>) => { f.sched.state = 'cancelled'; }],
+  ['the schedule belongs to a newer enrollment generation', (f: ReturnType<typeof fixture>) => { f.sched.enrollmentGeneration = 2; }],
+])('still describes the invoice but cannot skip when %s', async (_label, mutate) => {
+  const f = fixture();
+  mutate(f);
+  expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ status: 'not_needed', invoiceNumber: 'INV-1' });
+});
+it('an unknown skip link reveals nothing', async () => {
+  h.resolve.mockResolvedValueOnce(null);
+  const f = fixture();
+  await expect(getSkipInvoiceView(f.tx, 'token')).rejects.toMatchObject({ status: 404 });
+});
 // D-19: the pre-charge notice told the client the invoice would be charged. An MSP
 // exclusion that lands after it went out tells them it will not be.
 const sentNotice = { id: 'notice', invoiceId: invoice.id, kind: 'invoice_autopay', seq: 1, status: 'sent',
@@ -571,17 +601,16 @@ const sentNotice = { id: 'notice', invoiceId: invoice.id, kind: 'invoice_autopay
 it('tells the client an announced invoice will not be charged after an MSP exclusion (D-19)', async () => {
   const f = fixture();
   f.data.set(billingNoticeOutbox, [{ ...sentNotice }]);
+  const { renderBillingNotice } = await import('./renderBillingNotice');
   expect(await setInvoiceAutopayExcluded(f.tx, invoice.id, true, actor)).toMatchObject({ status: 'excluded' });
+  // The locked 'not_charged' wording is rendered from these facts (renderBillingNotice.reminders.test).
+  expect(renderBillingNotice).toHaveBeenCalledWith('payment_reminder', expect.objectContaining({
+    data: expect.objectContaining({ variant: 'not_charged', notChargedReason: 'Partner will not charge this invoice automatically.',
+      announcedFor: '2026-10-15', invoiceNumber: 'INV-1', partnerName: 'Partner' }) }), f.tx);
   expect(h.confirmation).toHaveBeenCalledExactlyOnceWith(f.tx, expect.objectContaining({
     kind: 'payment_reminder', seq: 0, invoiceId: invoice.id, dedupeKey: `invoice:${invoice.id}:not_charged:1`,
-    rendered: expect.objectContaining({ subject: 'Automatic payment cancelled — INV-1' }),
+    rendered: expect.objectContaining({ subject: 'Reminder' }),
   }));
-  const { rendered } = h.confirmation.mock.calls[0]![1];
-  for (const body of [rendered.html, rendered.text]) {
-    expect(body).toContain('Partner will not charge this invoice automatically');
-    expect(body).toContain('on or around 2026-10-15 will not happen');
-    expect(body).toContain('invoice link');
-  }
 });
 it('says nothing new when the exclusion lands before any charging notice was sent', async () => {
   const f = fixture({ state: 'awaiting_notice', noticeSentAt: null });
@@ -600,7 +629,11 @@ it('tells the client once the reconciler finalizes a pending exclusion of an ann
 // D-22: a stale skip link on a paid, closed or unscheduled invoice must not offer "Skip".
 it.each([
   ['a paid invoice', { status: 'paid', balance: '0.00' }, {}, [], 'paid'],
-  ['an invoice paid by autopay', {}, { state: 'succeeded' }, [], 'paid'],
+  ['an invoice paid by autopay', { status: 'paid', balance: '0.00' }, { state: 'succeeded' }, [], 'paid'],
+  // V-1: a skipped invoice the client then paid is paid, not "skipped, please pay".
+  ['a skipped invoice paid later', { status: 'paid', balance: '0.00' }, { state: 'skipped_by_client' }, [], 'paid'],
+  // V-2: an automatic payment refunded or reversed after it succeeded leaves the invoice open.
+  ['an invoice whose automatic payment was reversed', { status: 'sent' }, { state: 'succeeded' }, [], 'reversed'],
   ['a void invoice', { status: 'void' }, {}, [], 'not_needed'],
   ['an invoice with nothing left to pay', { balance: '0.00' }, {}, [], 'not_needed'],
   ['an MSP-excluded invoice', { autopayExcluded: true }, { state: 'excluded_by_msp' }, [], 'not_needed'],
@@ -625,4 +658,84 @@ it.each([
 it.each(['exclude', 'stop'] as const)('reports a processing payment as processing even with a pending %s', async control => {
   const f = fixture({ state: 'collecting', stateReason: `control_pending:${control}` }, [{ id: 'attempt', state: 'processing' }]);
   expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ status: 'processing', processing: true, partnerName: 'Partner' });
+});
+
+// V-11: a link with nothing to skip says why, so the page never shows a schedule that won't happen.
+it.each([
+  ['void', (f: ReturnType<typeof fixture>) => { f.inv.status = 'void'; }],
+  ['nothing_due', (f: ReturnType<typeof fixture>) => { f.inv.balance = '0.00'; }],
+  ['excluded', (f: ReturnType<typeof fixture>) => { f.inv.autopayExcluded = true; f.sched.state = 'excluded_by_msp'; }],
+  ['excluded', (f: ReturnType<typeof fixture>) => { f.sched.state = 'collecting'; (f.sched as { stateReason: string | null }).stateReason = 'control_pending:exclude'; f.data.set(invoiceCollectionAttempts, [{ id: 'a', state: 'created' }]); }],
+  ['failed', (f: ReturnType<typeof fixture>) => { f.sched.state = 'failed'; }],
+  ['stopped', (f: ReturnType<typeof fixture>) => { f.sched.state = 'cancelled'; (f.sched as { stateReason: string | null }).stateReason = 'stop'; }],
+  ['stopped', (f: ReturnType<typeof fixture>) => { f.data.get(orgAutopayEnrollments)![0].status = 'cancelled'; }],
+  ['cancelled', (f: ReturnType<typeof fixture>) => { f.sched.state = 'cancelled'; }],
+  ['paused', (f: ReturnType<typeof fixture>) => { f.data.get(orgAutopayEnrollments)![0].status = 'paused'; }],
+  ['replaced', (f: ReturnType<typeof fixture>) => { f.sched.enrollmentGeneration = 2; }],
+  ['not_included', (f: ReturnType<typeof fixture>) => { f.sched.state = 'not_needed'; f.sched.eligible = false; }],
+] as const)('names why there is nothing to skip: %s', async (reason, mutate) => {
+  const f = fixture();
+  mutate(f);
+  expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ status: 'not_needed', reason, balance: f.inv.balance });
+});
+it('a skippable invoice carries no reason, and reports whether the MSP put automatic payments on hold (V-37)', async () => {
+  const on = fixture();
+  expect(await getSkipInvoiceView(on.tx, 'token')).toMatchObject({ status: 'ready', reason: null, onHold: false, balance: '10.00' });
+  const off = fixture();
+  off.data.set(partners, [{ enabled: false, name: 'Partner' }]);
+  expect(await getSkipInvoiceView(off.tx, 'token')).toMatchObject({ status: 'ready', onHold: true });
+});
+
+// R2: a schedule cancelled for another reason while automatic payments stay on is not "off".
+it.each(['provider_canceled', 'paused_by_msp', 'authority_changed'])('a %s schedule with an active enrollment is a cancelled payment, not "stopped"', async stateReason => {
+  const f = fixture({ state: 'cancelled', stateReason });
+  expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ status: 'not_needed', reason: 'cancelled' });
+});
+it('a schedule cancelled by a stop is still "stopped"', async () => {
+  const f = fixture({ state: 'cancelled', stateReason: 'stop' });
+  expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ status: 'not_needed', reason: 'stopped' });
+});
+// R4: a skipped invoice that was later voided, closed or settled never asks to be paid.
+it.each([
+  ['voided', { status: 'void' }, 'void'],
+  ['settled to zero', { balance: '0.00' }, 'nothing_due'],
+  ['closed', { status: 'draft' }, 'nothing_due'],
+] as const)('a skipped invoice later %s reports nothing to pay', async (_label, inv, reason) => {
+  const f = fixture({ state: 'skipped_by_client' });
+  Object.assign(f.inv, inv);
+  expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ status: 'not_needed', reason });
+});
+
+// F-8: staff see "issued before the client's updated authorization" once a newer authorization covers it.
+it.each([[{ enabled: true, amount: '200.00', currency: 'USD' }, 'issued_before_authorization'], [{ enabled: true, amount: '100.00', currency: 'USD' }, 'above_authorized_cap']] as const)(
+  'a schedule frozen above the authorized cap, with accepted cap %j, reads %s', async (cap, reason) => {
+    const f = fixture({ state: 'not_needed', eligible: false, ineligibleReason: 'above_authorized_cap', stateReason: null,
+      termsSnapshot: { issuedAt: '2026-10-01T00:00:00Z', noticeSeq: 0 } });
+    Object.assign(f.inv, { total: '150.00', balance: '150.00' });
+    f.data.set(orgAutopayConsents, [{ feeTerms: { methodType: 'card', currency: 'USD', feeAttested: false, cardFeeBps: 0, achFeeAmount: '0.00' },
+      scheduleTerms: { offsetDays: 0, rule: 'later', cap } }]);
+    expect(await getInvoiceAutopayView(f.tx, f.inv as any)).toMatchObject({ state: 'not_needed', reason, collectOn: null });
+  });
+
+// FP-17 (P-15): a disabled Charge now says why.
+it.each([
+  ['notice_lead', { noticeSentAt: new Date() }, []],
+  ['retry_not_due', { state: 'retry_scheduled', nextAttemptAt: new Date('2099-01-01') }, []],
+  ['collection_in_progress', {}, [{ state: 'processing' }]],
+  ['no_eligible_notice', { noticeSentAt: null, noticeOutboxId: null }, []],
+  ['schedule_inactive', { state: 'skipped_by_client' }, []],
+] as const)('Charge now is withheld with reason %s', async (reason, over, attempts) => {
+  const f = fixture({ noticeSentAt: new Date('2020-01-01'), termsSnapshot: schedule.termsSnapshot, ...over } as Record<string, unknown>, [...attempts]);
+  expect(await getInvoiceAutopayView(f.tx, f.inv as any)).toMatchObject({ canChargeNow: false, chargeBlockedReason: reason });
+});
+it('a chargeable invoice carries no blocked reason', async () => {
+  const f = fixture({ noticeSentAt: new Date('2020-01-01'), termsSnapshot: schedule.termsSnapshot });
+  expect(await getInvoiceAutopayView(f.tx, f.inv as any)).toMatchObject({ canChargeNow: true, chargeBlockedReason: null });
+});
+
+// F-6: the staff "client skipped" notice names the invoice, like every invoice-scoped staff notice.
+it('the skip staff notice names the invoice', async () => {
+  const f = fixture();
+  await skipInvoice(f.tx, 'token');
+  expect(h.staff).toHaveBeenCalledWith(f.tx, expect.objectContaining({ event: 'autopay.skipped', invoiceId: invoice.id }));
 });

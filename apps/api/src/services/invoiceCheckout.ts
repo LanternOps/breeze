@@ -1,10 +1,12 @@
-import { prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave } from './autopay/payAndSave';
+import { paymentIntentDescription } from './autopay/paymentDescription';
+import { getTableColumns } from 'drizzle-orm';
+import { prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave, withPaymentDescription } from './autopay/payAndSave';
 import { assertNoActiveCollection, holdsClientMoney, lockInvoiceForCollection } from './autopay/reservation';
 import type { Tx } from './autopay/types';
 import { and, eq } from 'drizzle-orm';
 import { computeChargeNow, buildStripeCurrencyWarning, type StripeCurrencyWarning } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { invoices, invoiceStripePayments, stripeConnectAccounts } from '../db/schema';
+import { invoices, invoiceStripePayments, partners, stripeConnectAccounts } from '../db/schema';
 import { getPartnerStripeClient, PartnerStripeError } from './partnerStripe';
 import { toMinorUnits } from './stripeMoney';
 import { mapStripeCheckoutError } from './stripeCheckoutErrors';
@@ -99,7 +101,8 @@ export async function createInvoicePayLink(
   invoiceId: string, actor: InvoiceActor, urls: InvoiceCheckoutUrls = {},
 ): Promise<{ url: string; warning?: StripeCurrencyWarning }> {
   const [inv] = await withSystemDbAccessContext(() =>
-    db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1)
+    db.select({ ...getTableColumns(invoices), partnerName: partners.name }).from(invoices)
+      .leftJoin(partners, eq(partners.id, invoices.partnerId)).where(eq(invoices.id, invoiceId)).limit(1)
   );
   if (!inv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   requireOrgAccess(actor, inv.orgId);
@@ -178,7 +181,8 @@ export async function createInvoicePayLink(
     // asynchronously. Adding a delayed method here (bank debit / transfer)
     // requires changing that mapping first. Mirror: routes/portal/invoices.ts.
     payment_method_types: ['card'],
-    ...cardSaveStripeFields(capture),
+    // FP-20: the PaymentIntent names the invoice and MSP, as autopay ones do.
+    ...withPaymentDescription(cardSaveStripeFields(capture), paymentIntentDescription(inv.invoiceNumber, inv.partnerName)),
     // SEC-150 defence in depth: an explicit provider-side death clock, so an
     // unrevoked session cannot outlive the day even if every local control fails.
     expires_at: expiresAt,
@@ -219,7 +223,9 @@ export async function createInvoicePayLink(
     // refuses an idempotent replay whose parameters moved. Folding the hour
     // quantum into the key keeps the replay identical within the hour instead of
     // erroring across one.
-    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${urls.idempotencySuffix ?? ''}${capture ? `_save_${capture.id}` : ''}_e${quantum}`,
+    // `_pd`: the request now carries a PaymentIntent description; a new key family keeps an
+    // in-hour replay of a pre-description request from failing as a parameter mismatch.
+    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${urls.idempotencySuffix ?? ''}${capture ? `_save_${capture.id}` : ''}_e${quantum}_pd`,
   }));
   } catch (err) {
     // Friendly mapping (spec §10): a currency the account cannot present becomes a

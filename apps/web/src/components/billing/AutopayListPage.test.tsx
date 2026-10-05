@@ -102,3 +102,18 @@ it('uses the styled autopay buttons', async () => {
   expect(screen.getByTestId(`autopay-resend-${id}`)).toHaveClass('border');
   expect(screen.getByTestId(`autopay-card-resend-${id}`)).toHaveClass('border');
 });
+
+// FP-19: a needs-attention row says why in the Attention column; a returned or refunded last
+// charge is not "Payment received".
+it('names why a client needs attention, and a returned last charge as returned', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async () => Response.json({ data: [
+    { orgId: id, orgName: 'Fail-Card', billingContact: null, status: 'needs_attention',
+      enrollment: { status: 'active', generation: 1, effectiveFrom: null, needsAttentionReason: 'method_unusable' }, method: null,
+      lastCharge: { state: 'returned', amount: '100.00', currency: 'USD', createdAt: '2026-10-05T00:00:00Z' } },
+  ], notRequestedCount: 0 }));
+  render(<AutopayListPage />);
+  const row = await screen.findByTestId(`autopay-row-${id}`);
+  expect(row).toHaveTextContent("The saved payment method can't be charged.");
+  expect(row).toHaveTextContent('Returned');
+  expect(row).not.toHaveTextContent('Payment received');
+});

@@ -3,12 +3,12 @@ import { autopayTermsSnapshotSchema } from '@breeze/shared';
 import { invoiceAutopaySchedules, invoices, organizations, partners } from '../../db/schema';
 import { resolveBillingEmail } from '../invoicePdf';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../invoiceLinkToken';
-import { escapeHtml } from '../emailLayout';
+import { clientNameFor } from './billingEmail';
 import { toMinorUnits } from '../stripeMoney';
 import { enqueueBillingNotice } from './noticeOutbox';
 import { renderBillingNotice } from './renderBillingNotice';
 import { enqueueAutopayStaffAttention } from './staffNotifications';
-import { announcedCharges, announcedOn } from './announcedCharges';
+import { announcedCharges } from './announcedCharges';
 import type { Tx } from './types';
 import { db as ambientDb, getCurrentDbAccessContext } from '../../db';
 import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
@@ -22,10 +22,21 @@ export type ClientControlReason = 'exclude' | 'paused' | 'stopped';
 export function isNotChargedReason(reason: string | null | undefined): reason is NotChargedReason {
   return (NOT_CHARGED_REASONS as readonly string[]).includes(reason ?? '');
 }
+/** G1/G2: a charge deferred past the grace (collectionEngine DEFERRAL_GRACE_MS) ends with one of
+ * these as the schedule's state_reason: the bank never verified, automatic payments stayed
+ * switched off, or Stripe stayed unreachable. */
+export const DEFERRAL_END_REASONS = ['bank_unverified', 'charging_on_hold', 'service_unavailable'] as const;
+export type DeferralEndReason = typeof DEFERRAL_END_REASONS[number];
+export function isDeferralEndReason(reason: string | null | undefined): reason is DeferralEndReason {
+  return (DEFERRAL_END_REASONS as readonly string[]).includes(reason ?? '');
+}
 
 /** Why the announced charge will not happen, in the client's words. */
-function clientReason(reason: NotChargedReason | ClientControlReason, partnerName: string): string {
+function clientReason(reason: NotChargedReason | ClientControlReason | DeferralEndReason, partnerName: string): string {
   switch (reason) {
+    case 'bank_unverified': return "Your bank account still isn't verified, so we couldn't take this payment from it.";
+    case 'charging_on_hold': return `Automatic payments are on hold with ${partnerName}, so this invoice can't be charged automatically.`;
+    case 'service_unavailable': return "We couldn't reach our payment service to take this payment.";
     case 'exclude': return `${partnerName} will not charge this invoice automatically.`;
     case 'paused': return 'Automatic payments were paused, and this invoice will not be charged automatically even if they resume.';
     case 'stopped': return 'Automatic payments were stopped, so this invoice will not be charged automatically.';
@@ -37,9 +48,12 @@ function clientReason(reason: NotChargedReason | ClientControlReason, partnerNam
   }
 }
 /** Staff already hear about a missing consent from the fee check, and they excluded the contract themselves. */
-function staffMessage(reason: NotChargedReason, clientTold: boolean): string | null {
+function staffMessage(reason: NotChargedReason | DeferralEndReason, clientTold: boolean): string | null {
   const told = clientTold ? ' The client was told and can pay directly.' : ' The client can pay directly.';
   switch (reason) {
+    case 'bank_unverified': return `The client's bank account was still not verified two days after this invoice was due, so it will not be charged automatically.${told}`;
+    case 'charging_on_hold': return `Automatic payments stayed switched off for two days after this invoice was due, so it will not be charged automatically.${told}`;
+    case 'service_unavailable': return `Stripe could not be reached for two days after this invoice was due, so it will not be charged automatically. Check the Stripe connection.${told}`;
     case 'above_authorized_cap': return `This invoice is above the limit the client authorized for automatic payments, so it was not charged. Request updated authorization if it should be charged automatically.${told}`;
     case 'over_cap': return `This invoice is above the automatic payment limit, so it was not charged.${told}`;
     case 'cap_currency_mismatch': return `This invoice's currency does not match the automatic payment limit, so it was not charged.${told}`;
@@ -64,7 +78,7 @@ async function partnerForNotice(tx: Tx, partnerId: string) {
  * shape; nothing when no charging notice was delivered or the invoice is no longer payable.
  * Collection reasons also tell staff. Caller holds the invoice lock and has already moved the
  * schedule out of collection. Returns whether the client notice was queued. */
-export async function noticeChargeNotMade(tx: Tx, input: { invoiceId: string; reason: NotChargedReason | ClientControlReason; scheduleId?: string }): Promise<boolean> {
+export async function noticeChargeNotMade(tx: Tx, input: { invoiceId: string; reason: NotChargedReason | ClientControlReason | DeferralEndReason; scheduleId?: string }): Promise<boolean> {
   const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1);
   if (!invoice) return false;
   const [announced] = await announcedCharges(tx, { invoiceId: invoice.id });
@@ -77,21 +91,22 @@ export async function noticeChargeNotMade(tx: Tx, input: { invoiceId: string; re
     const recipient = resolveBillingEmail(org.billingContact);
     if (recipient) {
       const link = await getOrMintInvoiceLink(invoice, tx);
+      // Locked wording (renderBillingNotice 'not_charged'): the reason, the announced date, what
+      // is due and the pay link, composed once like every client billing email.
       const rendered = await renderBillingNotice('payment_reminder', { partnerId: invoice.partnerId, orgId: invoice.orgId,
-        mandatory: {}, frozen: { amount: invoice.balance, currency: invoice.currencyCode, dueDate: invoice.dueDate },
+        mandatory: {}, frozen: { amount: invoice.balance, currency: invoice.currencyCode, dueDate: invoice.dueDate, reason: input.reason },
         data: { invoiceNumber: invoice.invoiceNumber, balance: invoice.balance, currency: invoice.currencyCode,
           dueDate: invoice.dueDate, daysOverdue: 0, payLink: buildPublicInvoiceUrl(link.token),
-          partnerName: partner.name, orgName: org.name, partnerSettings: partner.settings } }, tx);
-      const prefix = `${clientReason(input.reason, partner.name)} The automatic payment announced${announcedOn(announced)} will not happen. You can pay using the invoice link.`;
+          partnerName: partner.name, orgName: org.name, clientName: clientNameFor(org.billingContact, org.name),
+          partnerSettings: partner.settings, variant: 'not_charged', notChargedReason: clientReason(input.reason, partner.name),
+          announcedFor: announced.chargeDate, retryOn: announced.retryOn ?? null } }, tx);
       // One notice per announcement: a re-noticed charge that is stopped again is told again.
       await enqueueBillingNotice(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
-        kind: 'payment_reminder', seq: 0, dedupeKey: `invoice:${invoice.id}:not_charged:${announced.noticeSeq}`, toEmail: recipient,
-        rendered: { ...rendered, subject: `Automatic payment cancelled — ${invoice.invoiceNumber}`,
-          html: `<p>${escapeHtml(prefix)}</p>${rendered.html}`, text: `${prefix}\n\n${rendered.text}` } });
+        kind: 'payment_reminder', seq: 0, dedupeKey: `invoice:${invoice.id}:not_charged:${announced.noticeSeq}`, toEmail: recipient, rendered });
       queued = true;
     }
   }
-  const staff = isNotChargedReason(input.reason) ? staffMessage(input.reason, queued) : null;
+  const staff = isNotChargedReason(input.reason) || isDeferralEndReason(input.reason) ? staffMessage(input.reason, queued) : null;
   if (staff && input.scheduleId) {
     const [schedule] = await tx.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id, input.scheduleId)).limit(1);
     const terms = autopayTermsSnapshotSchema.safeParse(schedule?.termsSnapshot);
