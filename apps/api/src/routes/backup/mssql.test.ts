@@ -24,6 +24,16 @@ const dispatchTrackedDbRestoreMock = vi.fn();
 vi.mock('./dbRestoreJob', () => ({
   dispatchTrackedDbRestore: (...args: unknown[]) => dispatchTrackedDbRestoreMock(...(args as [])),
 }));
+
+// The integrity check itself is covered in restoreIntegrityGate.test.ts; here
+// only how the route uses its answer.
+const integrityGate = vi.hoisted(() => ({ gate: vi.fn(), check: vi.fn(), record: vi.fn() }));
+vi.mock('./restoreIntegrityGate', () => ({
+  gateRestoreCommand: (...args: unknown[]) => integrityGate.gate(...args),
+  checkRestoreIntegrityRequest: (...args: unknown[]) => integrityGate.check(...args),
+  recordRequestAuthorization: (...args: unknown[]) => integrityGate.record(...args),
+  restoreIntegrityResponse: (c: any, check: any) => c.json(check.body, check.status),
+}));
 const authorizeResilienceResourcesMock = vi.fn();
 const resolveBackupConfigForDeviceMock = vi.fn();
 const resolveAllBackupAssignedDevicesMock = vi.fn();
@@ -213,6 +223,9 @@ describe('mssql routes', () => {
     authDbContexts.committed = new Set();
     queueCommandForExecutionMock.mockReset();
     dispatchTrackedDbRestoreMock.mockReset();
+    integrityGate.gate.mockResolvedValue({ ok: true });
+    integrityGate.check.mockResolvedValue({ ok: true, authorizationReason: null });
+    integrityGate.record.mockResolvedValue('authorization-1');
     resolveBackupConfigForDeviceMock.mockReset();
     resolveAllBackupAssignedDevicesMock.mockReset();
     applyBackupCommandResultToJobMock.mockReset();
@@ -234,6 +247,49 @@ describe('mssql routes', () => {
     app = new Hono();
     app.use('*', authMiddleware);
     app.route('/backup', mssqlRoutes);
+  });
+
+  describe('restore integrity', () => {
+    const snapshotRow = () => {
+      selectMock.mockReturnValueOnce(chainMock([{
+        id: 'snapshot-db-1',
+        deviceId: 'source-device',
+        providerSnapshotId: 'provider-snapshot-1',
+        metadata: { backupKind: 'mssql_database', instance: 'MSSQLSERVER', backupFileName: 'AppDb.bak' },
+        configId: 'config-1',
+      }]));
+      queueDestinationConfigSelect();
+    };
+    const post = (body: Record<string, unknown> = {}) => app.request('/backup/mssql/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, snapshotId: SNAPSHOT_DB_ID, targetDatabase: 'AppDb_Restore', ...body }),
+    });
+
+    it('answers a step-up request and queues nothing', async () => {
+      snapshotRow();
+      integrityGate.gate.mockResolvedValueOnce({ ok: false, status: 403, body: { code: 'STEP_UP_REQUIRED', error: 'confirm' } });
+      const res = await post({ stepUpGrant: '66666666-6666-4666-8666-666666666666' });
+      expect(res.status).toBe(403);
+      expect(dispatchTrackedDbRestoreMock).not.toHaveBeenCalled();
+      expect(integrityGate.gate).toHaveBeenCalledWith(expect.anything(), {
+        orgId: ORG_ID,
+        snapshotDbId: 'snapshot-db-1',
+        targetDeviceId: DEVICE_ID,
+        commandType: 'MSSQL_RESTORE',
+        stepUpGrant: '66666666-6666-4666-8666-666666666666',
+        confirmUnattestedRestore: undefined,
+      });
+    });
+
+    it('queues a confirmed restore with the command id its authorization is bound to', async () => {
+      snapshotRow();
+      integrityGate.gate.mockResolvedValueOnce({ ok: true, commandId: 'reserved-command' });
+      dispatchTrackedDbRestoreMock.mockResolvedValueOnce({ ok: true, command: { id: 'reserved-command', status: 'pending' }, restoreJobId: 'job-1' });
+      const res = await post();
+      expect(res.status).toBe(202);
+      expect(dispatchTrackedDbRestoreMock.mock.lastCall?.[0]).toMatchObject({ commandId: 'reserved-command' });
+    });
   });
 
   it('denies a source-site MSSQL restore before metadata or command side effects', async () => {

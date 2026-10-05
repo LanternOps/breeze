@@ -13,6 +13,10 @@ import {
 } from '../../services/commandQueue';
 import { PERMISSIONS } from '../../services/permissions';
 import { dispatchTrackedDbRestore } from './dbRestoreJob';
+import { gateRestoreCommand, restoreIntegrityResponse } from './restoreIntegrityGate';
+import { isRestoreHelperUpdateRequiredError } from '../../services/backupRestoreGate';
+
+import { restoreIntegrityConfirmationFields } from './schemas';
 import { resolveScopedOrgId } from './helpers';
 import { resolveAllBackupAssignedDevices, resolveBackupConfigForDevice, effectiveBackupModes } from '../../services/featureConfigResolver';
 import { backupCommandResultSchema } from './resultSchemas';
@@ -65,6 +69,7 @@ const mssqlBackupSchema = z.object({
 });
 
 const mssqlRestoreSchema = z.object({
+  ...restoreIntegrityConfirmationFields,
   deviceId: z.string().guid(),
   snapshotId: z.string().guid(),
   instance: z.string().min(1).regex(sqlIdentifierRegex, 'Invalid instance name characters').optional(),
@@ -502,7 +507,9 @@ mssqlRoutes.get('/mssql/chains', requirePermission(PERMISSIONS.ORGS_READ.resourc
 function mapDispatchErrorStatus(error: string): number {
   // Both are states of the target device the operator can act on, not
   // dispatch failures.
-  return error.startsWith('Device is ') || isBackupHelperUpdateRequiredError(error) ? 409 : 502;
+  return error.startsWith('Device is ') || isBackupHelperUpdateRequiredError(error) || isRestoreHelperUpdateRequiredError(error)
+    ? 409
+    : 502;
 }
 
 // ── POST /mssql/restore — trigger MSSQL restore ──
@@ -602,7 +609,20 @@ mssqlRoutes.post(
       );
     // #6974: track the restore in a restore_jobs row (linked by command id) so
     // the terminal result is persisted by commandResultHandlers.mssql_restore.
+    // Integrity (routes/backup/restoreIntegrityGate.ts): decided before the
+    // restore job or command exists.
+    const integrity = await gateRestoreCommand(c, {
+      orgId,
+      snapshotDbId: snapshot.id,
+      targetDeviceId: payload.deviceId,
+      commandType: CommandTypes.MSSQL_RESTORE,
+      stepUpGrant: payload.stepUpGrant,
+      confirmUnattestedRestore: payload.confirmUnattestedRestore,
+    });
+    if (!integrity.ok) return restoreIntegrityResponse(c, integrity);
+
     const queued = await dispatchTrackedDbRestore({
+      ...(integrity.commandId ? { commandId: integrity.commandId } : {}),
       orgId,
       snapshotId: snapshot.id,
       deviceId: payload.deviceId,

@@ -133,6 +133,18 @@ vi.mock('../../services/resilienceSiteAuthorization', async (importOriginal) => 
   };
 });
 
+// The integrity check itself is covered in restoreIntegrityGate.test.ts; here
+// only how the route uses its answer.
+const integrityGate = vi.hoisted(() => ({
+  check: vi.fn(),
+  record: vi.fn(),
+}));
+vi.mock('./restoreIntegrityGate', () => ({
+  checkRestoreIntegrityRequest: (...args: unknown[]) => integrityGate.check(...args),
+  recordRequestAuthorization: (...args: unknown[]) => integrityGate.record(...args),
+  restoreIntegrityResponse: (c: any, check: any) => c.json(check.body, check.status),
+}));
+
 // Device-name enrichment is covered in deviceNames.test.ts; keep these list
 // tests focused on scoping (they assert exact select() call counts).
 const attachNamesMock = vi.hoisted(() => vi.fn(async (_orgId: string, rows: unknown[]) => rows));
@@ -144,6 +156,7 @@ vi.mock('./deviceNames', async (importOriginal) => ({
 import { restoreRoutes } from './restore';
 import { ResilienceAuthorizationError } from '../../services/resilienceSiteAuthorization';
 import { BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE } from '../../services/backupReadHelperGate';
+import { RESTORE_HELPER_UPDATE_REQUIRED_MESSAGE } from '../../services/backupRestoreGate';
 
 describe('restore routes', () => {
   let app: Hono;
@@ -162,6 +175,8 @@ describe('restore routes', () => {
     authzState.allowedPermissions.clear();
     authzState.allowedPermissions.add('*:*');
     authorizeResilienceResourcesMock.mockResolvedValue({ resources: [] });
+    integrityGate.check.mockResolvedValue({ ok: true, authorizationReason: null });
+    integrityGate.record.mockResolvedValue('authorization-1');
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('auth', {
@@ -912,6 +927,91 @@ describe('restore routes', () => {
     expect(res.status).toBe(409);
     expect((await res.json()).error).toBe(BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE);
     expect(updateMock).toHaveBeenCalled();
+  });
+
+  describe('restore integrity', () => {
+    const snapshotRows = () => {
+      selectMock
+        .mockReturnValueOnce(
+          chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' }])
+        )
+        .mockReturnValueOnce(chainMock([{ id: 'device-2', status: 'online' }]))
+        .mockReturnValueOnce(chainMock([{ provider: 's3', providerConfig: { bucket: 'breeze-backups', region: 'us-east-1' } }]));
+    };
+    const jobRow = { id: 'restore-1', snapshotId: 'snap-db-1', deviceId: 'device-2', restoreType: 'full', selectedPaths: [], status: 'pending', targetPath: null, commandId: null, createdAt: new Date(), updatedAt: new Date() };
+    const post = (body: Record<string, unknown>) => app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotId: 'snap-db-1', restoreType: 'full', deviceId: 'device-2', ...body }),
+    });
+
+    it('checks the exact restore (snapshot, resolved target device, command type) with the step-up the request carries', async () => {
+      snapshotRows();
+      insertMock.mockReturnValueOnce(chainMock([jobRow]));
+      queueCommandForExecutionMock.mockResolvedValueOnce({ command: { id: 'command-1', status: 'pending' } });
+      await post({ stepUpGrant: '66666666-6666-4666-8666-666666666666' });
+      expect(integrityGate.check).toHaveBeenCalledWith(expect.anything(), {
+        orgId: 'org-1',
+        snapshotDbId: 'snap-db-1',
+        targetDeviceId: 'device-2',
+        commandType: 'backup_restore',
+        stepUpGrant: '66666666-6666-4666-8666-666666666666',
+        confirmUnattestedRestore: undefined,
+      });
+    });
+
+    it('answers a step-up request without creating a restore job or a command', async () => {
+      snapshotRows();
+      integrityGate.check.mockResolvedValueOnce({
+        ok: false, status: 403, body: { error: 'confirm', code: 'STEP_UP_REQUIRED', stepUp: { operation: 'backup_unattested_restore' } },
+      });
+      const res = await post({});
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'STEP_UP_REQUIRED', stepUp: { operation: 'backup_unattested_restore' } });
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+      expect(integrityGate.record).not.toHaveBeenCalled();
+    });
+
+    it('answers an integrity refusal as a conflict without creating anything', async () => {
+      snapshotRows();
+      integrityGate.check.mockResolvedValueOnce({ ok: false, status: 409, body: { error: 'still checking', code: 'attestation_pending' } });
+      const res = await post({});
+      expect(res.status).toBe(409);
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    });
+
+    it('a confirmed restore records the authorization bound to the command id it then queues', async () => {
+      snapshotRows();
+      integrityGate.check.mockResolvedValueOnce({ ok: true, authorizationReason: 'unattested_legacy' });
+      insertMock.mockReturnValueOnce(chainMock([jobRow]));
+      queueCommandForExecutionMock.mockResolvedValueOnce({ command: { id: 'reserved', status: 'pending' } });
+      const res = await post({ stepUpGrant: '66666666-6666-4666-8666-666666666666' });
+      expect(res.status).toBe(201);
+      expect(integrityGate.record).toHaveBeenCalledTimes(1);
+      const [, request, reason, binding] = integrityGate.record.mock.calls[0]!;
+      expect(request).toMatchObject({ snapshotDbId: 'snap-db-1', targetDeviceId: 'device-2', commandType: 'backup_restore' });
+      expect(reason).toBe('unattested_legacy');
+      expect(binding.commandId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
+        'device-2', 'backup_restore', expect.any(Object), { userId: 'user-1', commandId: binding.commandId },
+      );
+      // Recorded before the command exists, so delivery can find it.
+      expect(integrityGate.record.mock.invocationCallOrder[0]).toBeLessThan(queueCommandForExecutionMock.mock.invocationCallOrder[0]!);
+    });
+
+    it('answers a helper that does not check attestations as a conflict with the update instruction', async () => {
+      snapshotRows();
+      insertMock.mockReturnValueOnce(chainMock([jobRow]));
+      queueCommandForExecutionMock.mockResolvedValueOnce({ error: RESTORE_HELPER_UPDATE_REQUIRED_MESSAGE });
+      updateMock.mockReturnValue({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]), returning: vi.fn().mockResolvedValue([]) }),
+      } as any);
+      const res = await post({});
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toBe(RESTORE_HELPER_UPDATE_REQUIRED_MESSAGE);
+    });
   });
 
   it('cancels a running restore job and queues backup_stop', async () => {

@@ -920,12 +920,19 @@ export async function queueCommandForExecution(
     offlinePolicy?: OfflinePolicy;
     /** #5022 W01 — who DECIDED this command, when an AI surface did. */
     aiOrigin?: AiOriginRef;
+    /**
+     * Reserve the command id up front: a restore confirmed with a step-up is
+     * authorized for exactly this id before the command exists
+     * (services/backupRestoreAuthorization.ts).
+     */
+    commandId?: string;
   } = {}
 ): Promise<QueueCommandForExecutionResult> {
   const res = await dispatchDeviceCommand({
     deviceId,
     type,
     payload,
+    ...(options.commandId !== undefined ? { commandId: options.commandId } : {}),
     ...(options.userId !== undefined ? { userId: options.userId } : {}),
     ...(options.aiOrigin !== undefined ? { aiOrigin: options.aiOrigin } : {}),
     ...(options.preferHeartbeat !== undefined ? { preferHeartbeat: options.preferHeartbeat } : {}),

@@ -22,6 +22,16 @@ const queueBareMetalRebuildMock = vi.fn();
 const authorizeResilienceResourcesMock = vi.fn();
 const runOutsideDbContextMock = vi.fn((fn: () => unknown) => fn());
 
+// The integrity check itself is covered in restoreIntegrityGate.test.ts; here
+// only how the route uses its answer.
+const integrityGate = vi.hoisted(() => ({ gate: vi.fn(), check: vi.fn(), record: vi.fn() }));
+vi.mock('./restoreIntegrityGate', () => ({
+  gateRestoreCommand: (...args: unknown[]) => integrityGate.gate(...args),
+  checkRestoreIntegrityRequest: (...args: unknown[]) => integrityGate.check(...args),
+  recordRequestAuthorization: (...args: unknown[]) => integrityGate.record(...args),
+  restoreIntegrityResponse: (c: any, check: any) => c.json(check.body, check.status),
+}));
+
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
   for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin']) {
@@ -146,6 +156,9 @@ describe('vm restore routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     authorizeResilienceResourcesMock.mockResolvedValue({ resources: [] });
+    integrityGate.gate.mockResolvedValue({ ok: true });
+    integrityGate.check.mockResolvedValue({ ok: true, authorizationReason: null });
+    integrityGate.record.mockResolvedValue('authorization-1');
     authState = {
       principal: { kind: 'user_session' },
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
@@ -161,6 +174,49 @@ describe('vm restore routes', () => {
     app = new Hono();
     app.use('*', authMiddleware);
     app.route('/backup', vmRestoreRoutes);
+  });
+
+  describe('restore integrity', () => {
+    const rows = () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: 'source-device', snapshotId: 'snap-ext-001' }]))
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, status: 'online' }]));
+    };
+
+    it.each([
+      ['/backup/restore/as-vm', 'VM_RESTORE_FROM_BACKUP', { hypervisor: 'hyperv', vmName: 'Recovered VM' }],
+      ['/backup/restore/instant-boot', 'VM_INSTANT_BOOT', { vmName: 'Instant VM' }],
+    ])('%s answers a step-up request without creating a job or a command', async (path, commandType, extra) => {
+      rows();
+      integrityGate.gate.mockResolvedValueOnce({ ok: false, status: 403, body: { code: 'STEP_UP_REQUIRED', error: 'confirm' } });
+      const res = await app.request(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ snapshotId: SNAPSHOT_ID, targetDeviceId: DEVICE_ID, ...extra }),
+      });
+      expect(res.status).toBe(403);
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+      expect(integrityGate.gate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        snapshotDbId: SNAPSHOT_ID, targetDeviceId: DEVICE_ID, commandType,
+      }));
+    });
+
+    it('queues a confirmed instant boot with the command id its authorization is bound to', async () => {
+      rows();
+      integrityGate.gate.mockResolvedValueOnce({ ok: true, commandId: 'reserved-command' });
+      const createdAt = new Date('2026-10-01T00:00:00.000Z');
+      insertMock.mockReturnValueOnce(chainMock([{ id: RESTORE_JOB_ID, status: 'pending', snapshotId: SNAPSHOT_ID, deviceId: DEVICE_ID, createdAt }]));
+      updateMock.mockReturnValue(chainMock([{ id: RESTORE_JOB_ID, status: 'pending', commandId: 'reserved-command', createdAt }]));
+      queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'reserved-command', status: 'pending' } });
+      const res = await app.request('/backup/restore/instant-boot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ snapshotId: SNAPSHOT_ID, targetDeviceId: DEVICE_ID, vmName: 'Instant VM' }),
+      });
+      expect(res.status).toBe(201);
+      expect(queueCommandForExecutionMock.mock.lastCall?.[3]).toEqual({ userId: 'user-123', commandId: 'reserved-command' });
+    });
   });
 
   it('denies cross-site VM restore before loading snapshot metadata or creating a job', async () => {
