@@ -137,3 +137,29 @@ it.each([
  receipt(mapping);
  expect(await dispatchPendingBillingNotices()).toEqual({sent:1,failed:0});expect(h.send).toHaveBeenCalledOnce();
 });
+
+// G + H: reminders are revalidated against payments in flight and the frozen amount/due date.
+import { STALE_REMINDER_REASON } from './reminderValidation';
+function reminder(frozen:Record<string,unknown>={amount:'100.00',currency:'USD',dueDate:'2026-10-08',daysOverdue:0}){
+ h.row.kind='payment_overdue';h.row.invoiceId='invoice';h.row.rendered.frozen=frozen;
+ h.rows.set(invoices,[{id:'invoice',orgId:'org',status:'overdue',balance:'100.00',currencyCode:'USD',dueDate:'2026-10-08'}]);
+ h.rows.set(invoiceCollectionAttempts,[{reservedAmount:'0.00'}]);
+}
+it('sends a reminder whose frozen amount and due date are still current',async()=>{
+ reminder({amount:'100',currency:'USD',dueDate:'2026-10-08',daysOverdue:0});
+ expect(await dispatchPendingBillingNotices()).toEqual({sent:1,failed:0});expect(h.send).toHaveBeenCalledOnce();
+});
+it('cancels a reminder while a collection attempt is reserving the invoice',async()=>{
+ reminder();h.rows.set(invoiceCollectionAttempts,[{reservedAmount:'100.00'}]);
+ await dispatchPendingBillingNotices();
+ expect(h.row).toMatchObject({status:'cancelled',lastError:'Payment in progress'});expect(h.send).not.toHaveBeenCalled();
+});
+it.each([
+ ['a partial payment lowered the balance',()=>{h.rows.get(invoices)![0].balance='60.00';}],
+ ['the due date moved',()=>{h.rows.get(invoices)![0].dueDate='2026-10-15';}],
+ ['the frozen amount is missing',()=>{h.row.rendered.frozen={currency:'USD',dueDate:'2026-10-08'};}],
+] as [string,()=>void][])('cancels a stale reminder when %s',async(_label,change)=>{
+ reminder();change();
+ await dispatchPendingBillingNotices();
+ expect(h.row).toMatchObject({status:'cancelled',lastError:STALE_REMINDER_REASON});expect(h.send).not.toHaveBeenCalled();
+});

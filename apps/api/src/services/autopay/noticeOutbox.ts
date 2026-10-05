@@ -1,10 +1,9 @@
 import { validatePaymentActionNotice, validateReceiptNotice } from './paymentNoticeValidation';
-import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { validateReminder } from './reminderValidation';
+import { and, asc, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import type { BillingNoticeKind } from '@breeze/shared';
 import { db, assertOutsideHeldDbContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { billingNoticeOutbox, invoices, organizations, partners } from '../../db/schema';
-import { sqlOpenAr } from '../../db/schema/invoices';
-import { buildPublicLinkLiveOrgPredicate } from '../publicLinkOrgGate';
+import { billingNoticeOutbox, organizations, partners } from '../../db/schema';
 import { captureException } from '../sentry';
 import { getEmailService } from '../email';
 import type { Tx, RenderedNotice } from './types';
@@ -41,14 +40,6 @@ export function registerNoticePreSendValidator(kind: BillingNoticeKind, validato
   if (validators.has(kind)) throw new Error(`Billing pre-send validator already registered: ${kind}`);
   validators.set(kind, validator);
 }
-const validateReminder: NoticePreSendValidator = async (tx, row) => {
-  if (!row.invoiceId) return 'Reminder invoice missing';
-  const [invoice] = await tx.select({ id: invoices.id }).from(invoices).where(and(
-    eq(invoices.id, row.invoiceId), eq(invoices.orgId, row.orgId),
-    sqlOpenAr(invoices), gt(invoices.balance, '0'), buildPublicLinkLiveOrgPredicate(invoices.orgId),
-  )).limit(1);
-  return invoice ? null : 'Reminder invoice or tenant no longer eligible';
-};
 registerNoticePreSendValidator('payment_failed', validatePaymentActionNotice);
 registerNoticePreSendValidator('payment_receipt', validateReceiptNotice);
 registerNoticePreSendValidator('payment_reminder', validateReminder);

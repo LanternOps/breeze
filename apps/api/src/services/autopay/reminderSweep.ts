@@ -1,7 +1,8 @@
 import { and, eq, gt, inArray, isNotNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { invoices, organizations, partners, invoiceAutopaySchedules, billingNoticeOutbox } from '../../db/schema';
+import { invoices, organizations, partners, invoiceAutopaySchedules, invoiceCollectionAttempts, billingNoticeOutbox } from '../../db/schema';
 import { sqlOpenAr } from '../../db/schema/invoices';
 import { buildPublicLinkLiveOrgPredicate } from '../publicLinkOrgGate';
 import { captureException } from '../sentry';
@@ -10,6 +11,7 @@ import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../invoiceLinkToken
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { renderBillingNotice } from './renderBillingNotice';
 import { enqueueBillingNotice } from './noticeOutbox';
+import { STALE_REMINDER_REASON } from './reminderValidation';
 
 const DAY_MS = 86_400_000;
 
@@ -22,36 +24,38 @@ function utcDay(value: string): number {
   return ms / DAY_MS;
 }
 
-export function reminderDueToday(input: {
-  dueDate: string; today: string; beforeDueDays: number; repeatDays: number | null;
-  overdueEveryDays: number; lastSentSeq: number;
-}): { kind: 'payment_reminder' | 'payment_overdue'; seq: number } | null {
+type ReminderCadence = {
+  dueDate: string; today: string; beforeDueDays: number; repeatDays: number | null; overdueEveryDays: number;
+};
+type ReminderKind = 'payment_reminder' | 'payment_overdue';
+
+/** The latest cadence step on or before today, and whether today is its own day.
+ * Only a step that falls today is sent; an earlier one is re-sent only to replace
+ * a notice cancelled as stale. Nothing is due on the due date itself. */
+export function reminderStep(input: ReminderCadence): { kind: ReminderKind; seq: number; onDay: boolean } | null {
   for (const interval of [input.beforeDueDays, input.repeatDays, input.overdueEveryDays]) {
     if (interval !== null && (!Number.isInteger(interval) || interval < 1 || interval > 31)) {
       throw new RangeError('Reminder intervals must be integers in 1–31');
     }
   }
-  if (!Number.isSafeInteger(input.lastSentSeq) || input.lastSentSeq < 0) {
-    throw new RangeError('Invalid lastSentSeq');
-  }
   const delta = utcDay(input.today) - utcDay(input.dueDate);
-  let kind: 'payment_reminder' | 'payment_overdue';
-  let seq: number;
   if (delta < 0) {
     const elapsed = delta + input.beforeDueDays;
     if (elapsed < 0) return null;
-    if (elapsed === 0) seq = 1;
-    else {
-      if (input.repeatDays === null || elapsed % input.repeatDays !== 0) return null;
-      seq = 1 + elapsed / input.repeatDays;
-    }
-    kind = 'payment_reminder';
-  } else {
-    if (delta === 0 || delta % input.overdueEveryDays !== 0) return null;
-    kind = 'payment_overdue';
-    seq = delta / input.overdueEveryDays;
+    if (input.repeatDays === null) return { kind: 'payment_reminder', seq: 1, onDay: elapsed === 0 };
+    return { kind: 'payment_reminder', seq: 1 + Math.floor(elapsed / input.repeatDays), onDay: elapsed % input.repeatDays === 0 };
   }
-  return seq > input.lastSentSeq ? { kind, seq } : null;
+  const seq = Math.floor(delta / input.overdueEveryDays);
+  if (delta === 0 || seq === 0) return null;
+  return { kind: 'payment_overdue', seq, onDay: delta % input.overdueEveryDays === 0 };
+}
+
+export function reminderDueToday(input: ReminderCadence & { lastSentSeq: number }): { kind: ReminderKind; seq: number } | null {
+  if (!Number.isSafeInteger(input.lastSentSeq) || input.lastSentSeq < 0) {
+    throw new RangeError('Invalid lastSentSeq');
+  }
+  const step = reminderStep(input);
+  return step?.onDay && step.seq > input.lastSentSeq ? { kind: step.kind, seq: step.seq } : null;
 }
 
 const ACTIVE_SCHEDULES = ['awaiting_notice', 'scheduled', 'collecting', 'retry_scheduled'] as const;
@@ -70,6 +74,13 @@ function invoiceCandidate() {
       WHERE ${invoiceAutopaySchedules.invoiceId} = ${invoices.id}
         AND ${invoiceAutopaySchedules.orgId} = ${invoices.orgId}
         AND ${inArray(invoiceAutopaySchedules.state, [...ACTIVE_SCHEDULES])}
+    )`,
+    // A payment already in flight (incl. unscheduled "pay by bank" attempts and a
+    // processing debit whose schedule a pause cancelled): "View & pay" would 409.
+    sql`NOT EXISTS (
+      SELECT 1 FROM ${invoiceCollectionAttempts}
+      WHERE ${invoiceCollectionAttempts.invoiceId} = ${invoices.id}
+        AND ${inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES])}
     )`,
   );
 }
@@ -132,21 +143,32 @@ export async function runInvoiceReminderSweep(now = new Date()): Promise<{ enque
                   eq(invoices.partnerId, org.partnerId), invoiceCandidate(),
                 )).limit(1).for('update');
                 if (!invoice?.dueDate || !invoice.invoiceNumber) return false;
-                const cadence = {
+                const due = reminderStep({
                   dueDate: invoice.dueDate, today,
                   beforeDueDays: settings.reminderBeforeDueDays.value,
                   repeatDays: settings.reminderRepeatDays.value,
                   overdueEveryDays: settings.overdueReminderEveryDays.value,
-                  lastSentSeq: 0,
-                };
-                const due = reminderDueToday(cadence);
+                });
                 if (!due) return false;
-                const [history] = await db.select({ seq: sql<number>`coalesce(max(${billingNoticeOutbox.seq}), 0)::int` })
-                  .from(billingNoticeOutbox).where(and(
+                const stepKey = `invoice:${id}:${due.kind}:${due.seq}`;
+                if (!due.onDay) {
+                  // Off its day, a step is only re-sent to replace a stale cancellation (unique-index lookup).
+                  const [prior] = await db.select({ status: billingNoticeOutbox.status, lastError: billingNoticeOutbox.lastError })
+                    .from(billingNoticeOutbox).where(eq(billingNoticeOutbox.dedupeKey, stepKey)).limit(1);
+                  if (prior?.status !== 'cancelled' || prior.lastError !== STALE_REMINDER_REASON) return false;
+                }
+                // A step cancelled as stale was never delivered: it does not advance the
+                // cadence, and its replacement takes the next revision of the step's key.
+                const stale = sql`${billingNoticeOutbox.status} = 'cancelled' AND ${billingNoticeOutbox.lastError} IS NOT DISTINCT FROM ${STALE_REMINDER_REASON}`;
+                const [history] = await db.select({
+                  seq: sql<number>`coalesce(max(${billingNoticeOutbox.seq}) FILTER (WHERE NOT (${stale})), 0)::int`,
+                  atStep: sql<number>`(count(*) FILTER (WHERE ${billingNoticeOutbox.seq} = ${due.seq}))::int`,
+                }).from(billingNoticeOutbox).where(and(
                     eq(billingNoticeOutbox.invoiceId, id), eq(billingNoticeOutbox.orgId, org.id),
                     eq(billingNoticeOutbox.kind, due.kind),
                   )).limit(1);
-                if (!reminderDueToday({ ...cadence, lastSentSeq: history?.seq ?? 0 })) return false;
+                if (due.seq <= (history?.seq ?? 0)) return false;
+                const revision = history?.atStep ?? 0;
                 const link = await getOrMintInvoiceLink(invoice);
                 const rendered = await renderBillingNotice(due.kind, {
                   partnerId: org.partnerId, orgId: org.id, mandatory: {},
@@ -162,7 +184,7 @@ export async function runInvoiceReminderSweep(now = new Date()): Promise<{ enque
                 });
                 const result = await enqueueBillingNotice(db, {
                   orgId: org.id, partnerId: org.partnerId, invoiceId: id,
-                  kind: due.kind, seq: due.seq, dedupeKey: `invoice:${id}:${due.kind}:${due.seq}`,
+                  kind: due.kind, seq: due.seq, dedupeKey: revision > 0 ? `${stepKey}:r${revision}` : stepKey,
                   toEmail: recipient, rendered,
                 });
                 return result.created;
