@@ -200,6 +200,15 @@ it('a method saved while automatic payments are paused says saved and paused, no
   expect(screen.getByText(/Example MSP has paused automatic payments, so nothing is charged automatically for now/)).toBeInTheDocument();
   expect(document.body.textContent).not.toMatch(/Automatic payments are on/);
 });
+// FP-12: a change (automatic payments were already on) never says "for invoices issued from today".
+it('a method change says the new method is used from now on, not "invoices issued from today"', async () => {
+  at('target=public&session_id=cs_change'); sessionStorage.setItem('autopay-return-token', 'test-token');
+  vi.mocked(apiPost).mockResolvedValue(outcome({ outcome: 'activated', current: { status: 'active', methodLabel: 'Visa debit card ending in 1234', changed: true } }));
+  render(<AutopayReturnPage />);
+  expect(await screen.findByRole('heading', { name: 'Automatic payments are on' })).toBeInTheDocument();
+  expect(screen.getByText(/Example MSP will use your Visa debit card ending in 1234 for automatic payments from now on, including payments scheduled that haven't started/)).toBeInTheDocument();
+  expect(document.body.textContent).not.toMatch(/invoices issued from today/);
+});
 it.each([
   ['paused', 'Automatic payments are paused', /Example MSP paused automatic payments while you were setting up, so nothing was saved or charged/],
   ['cancelled', 'Automatic payments are off', /Automatic payments were turned off while you were setting up, so nothing was saved or charged/],

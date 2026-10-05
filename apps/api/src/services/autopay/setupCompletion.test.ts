@@ -440,3 +440,21 @@ it('a bank verified for a bank payment links the invoice still to pay',async()=>
  const rendered=m.enqueue.mock.calls[0]![1].rendered;
  expect(rendered.text).toContain('Invoice INV-2026-0019 is still unpaid ($120.00). Pay it by bank: https://portal.example.test/invoice/inv-token');
 });
+// FP-12: replacing a card that stopped working (it kept the autopay flag as 'unusable', D-17)
+// is a change for the client too: never the first-time "Thanks for setting up".
+it('replacing a method that stopped working sends the method-changed email, not the first-time one',async()=>{
+ const value=attempt({tokenId:'token',source:'setup_page',createdAt:new Date('2026-10-02')});
+ m.intent.mockResolvedValue({...await m.intent(),metadata:{...(await m.intent()).metadata,token_id:'token'}});
+ queueAuthority(value);
+ Object.assign(m.rows[3]![0]!,{status:'active',effectiveFrom:new Date('2026-09-01'),needsAttentionReason:'method_unusable'});
+ m.rows.push([],[{id:'dead_card',type:'card',cardBrand:'visa',cardFunding:'credit',cardLast4:'0341',status:'unusable',isAutopayMethod:true}],
+  [{id:'new_method'}],[],[],[],[],[{settings:{}}]);
+ m.mint.mockResolvedValue({id:'stop',token:'stop-token'});
+ expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
+ const queued=m.enqueue.mock.calls.find(([,row])=>row.kind==='autopay_enrolled')![1];
+ expect(queued.rendered.frozen).toMatchObject({variant:'method_changed'});
+ expect(queued.rendered.subject).toBe('Your payment method has changed with Example MSP');
+ expect(queued.rendered.text).toContain('It replaces your Visa credit card ending in 0341.');
+ expect(queued.rendered.text).not.toMatch(/thanks for setting up/i);
+ expect(queued.rendered.text).not.toContain('Starts with');
+});

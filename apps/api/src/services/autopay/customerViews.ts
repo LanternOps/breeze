@@ -201,7 +201,9 @@ export async function completeOwnedAutopaySetup(identity:AutopayIdentity,checkou
     const [enrollment]=await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId,identity.orgId)).limit(1);
     const saved=await getAutopayMethod(db,identity.orgId);
     return {branding:await loadAutopayBranding(db,{orgId:identity.orgId,partnerId:identity.partnerId}),
-      current:enrollment?{status:enrollment.status,methodLabel:saved?formatPaymentMethod(saved):null}:null};
+      // FP-12: automatic payments already took effect before this setup began, so it changed the method.
+      current:enrollment?{status:enrollment.status,methodLabel:saved?formatPaymentMethod(saved):null,
+        changed:!!enrollment.effectiveFrom&&!!owned.createdAt&&enrollment.effectiveFrom<owned.createdAt}:null};
   });
   return {...result,methodLabel,feeText,branding,current};
 }

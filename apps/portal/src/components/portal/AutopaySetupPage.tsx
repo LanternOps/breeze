@@ -73,7 +73,9 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
   }, []);
 
   // V-38: the browser tab names a change as a change, not "Set up automatic payments".
-  const changing = !!data && !data.stopOnly && data.enrollment?.status === 'active' && !!data.method;
+  // FP-12: so is replacing a method that stopped working (it no longer counts as the method).
+  const replacingDead = !!data && data.enrollment?.status === 'active' && !data.method && data.enrollment.needsAttentionReason === 'method_unusable';
+  const changing = !!data && !data.stopOnly && data.enrollment?.status === 'active' && (!!data.method || replacingDead);
   const reviewing = changing && !!data && !data.stopOnly && data.termsChanged === true;
   useEffect(() => { if (!portal && changing) document.title = reviewing ? 'Review updated terms' : 'Change payment method'; }, [portal, changing, reviewing]);
 
@@ -148,7 +150,7 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
       action={onCancel && <button type="button" className={BTN_SECONDARY} onClick={onCancel}>Back</button>} />);
   }
 
-  const update = data.enrollment?.status === 'active' && !!data.method;
+  const update = data.enrollment?.status === 'active' && (!!data.method || replacingDead);
   const msp = data.partnerName || 'Your service provider';
   const H = portal ? 'h2' : 'h1';
   const scheduleTerms = data.disclosures.card?.scheduleTerms ?? data.disclosures.us_bank_account?.scheduleTerms;
@@ -174,7 +176,7 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
         {update && data.termsChanged
           ? `${msp} has updated the terms of your automatic payments. Review them below and agree to keep automatic payments on. You can keep your ${paymentMethodInSentence(savedMethodLabel(data.method))} or choose another.`
           : update
-          ? `Your new method replaces your ${paymentMethodInSentence(savedMethodLabel(data.method))} for future automatic payments. Your schedule stays the same.`
+          ? `Your new method replaces ${data.method ? `your ${paymentMethodInSentence(savedMethodLabel(data.method))}` : 'the one that stopped working'} for future automatic payments. Your schedule stays the same.`
           : `${msp} will charge each new invoice to the payment method you choose, and email you before every payment.`}
       </p>
     </div>

@@ -179,7 +179,10 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
               </StatePanel>;
             }
             return <StatePanel mark={{ tone: 'success', label: 'On' }} title="Automatic payments are on" primary={back}>
-              <p>{`${branding?.partnerName || 'Your service provider'} will charge your ${method} for invoices issued from today. We'll email you the amount and date before each payment.`}</p>
+              {/* FP-12: automatic payments were already on, so this setup changed the method, not the start. */}
+              <p>{r.current?.changed
+                ? `${branding?.partnerName || 'Your service provider'} will use your ${method} for automatic payments from now on, including payments scheduled that haven't started. We'll email you the amount and date before each payment.`
+                : `${branding?.partnerName || 'Your service provider'} will charge your ${method} for invoices issued from today. We'll email you the amount and date before each payment.`}</p>
               <p data-testid="autopay-return-fee">{r.feeText}</p>
               <p>{portal ? "We're emailing you a confirmation." : "We're emailing you a confirmation. You can close this page."}</p>
             </StatePanel>;

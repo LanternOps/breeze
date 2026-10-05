@@ -51,8 +51,9 @@ export interface AutopaySetupResult extends AutopaySetupCompletion {
  methodLabel: string | null; feeText: string;
  /** Present on the client return: who the client is dealing with. */
  branding?: AutopayBranding;
- /** The enrollment as it stands now, so a superseded return can say whether the client is set up. */
- current?: { status: AutopayEnrollmentStatus; methodLabel: string | null } | null;
+ /** The enrollment as it stands now, so a superseded return can say whether the client is set up.
+  * `changed`: automatic payments were already on before this setup started (a method change). */
+ current?: { status: AutopayEnrollmentStatus; methodLabel: string | null; changed?: boolean } | null;
 }
 export interface InvoiceAutopayOffer { eligible: boolean; consentText: string; consentVersion: string; disclosureHash: string }
 export type AutopayScheduleTerms=z.infer<typeof autopayScheduleTermsSchema>;

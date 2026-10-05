@@ -109,6 +109,23 @@ describe('customer token and return ownership against PostgreSQL', () => {
     });
     expect(completeAutopaySetup).toHaveBeenCalledWith(f.identity.partnerId, { checkoutSessionId: f.attempt.checkoutSessionId }, expect.any(Function));
   });
+
+  // FP-12: the return page says "for invoices issued from today" only for a first setup.
+  it.each([['a first setup', false], ['a change while automatic payments were already on', true]] as const)(
+    'reports whether %s changed the method', async (_label, alreadyOn) => {
+      const f = await fixture();
+      if (alreadyOn) await system(() => db.update(orgAutopayEnrollments).set({ status: 'active', effectiveFrom: new Date('2026-09-01T00:00:00Z') })
+        .where(eq(orgAutopayEnrollments.id, f.identity.enrollmentId)));
+      vi.mocked(completeAutopaySetup).mockImplementationOnce(async () => {
+        // Completion keeps an earlier effective date and sets it only on a first setup.
+        await system(() => db.update(orgAutopayEnrollments).set({ status: 'active',
+          ...(alreadyOn ? {} : { effectiveFrom: new Date() }) }).where(eq(orgAutopayEnrollments.id, f.identity.enrollmentId)));
+        return { outcome: 'activated', orgId: f.identity.orgId };
+      });
+      const result = await completeOwnedAutopaySetup(f.identity, f.attempt.checkoutSessionId!);
+      expect(result.current).toMatchObject({ status: 'active', changed: alreadyOn });
+    },
+  );
 });
 
 describe('client pages are told why a link is unusable (real PostgreSQL)', () => {

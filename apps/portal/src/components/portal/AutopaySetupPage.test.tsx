@@ -154,6 +154,17 @@ describe('changing an existing method (card-expiring link or portal)', () => {
     expect(screen.queryByText(/Issued after you set this up/)).toBeNull();
     expect(document.title).toBe('Change payment method');
   });
+  // FP-12: the card stopped working (no usable method, needs attention): this is still a change.
+  it('replacing a method that stopped working reads as a change, not a first-time setup', async () => {
+    vi.mocked(apiGet).mockResolvedValue(page({ enrollment: { status: 'active', needsAttentionReason: 'method_unusable' }, method: null }));
+    render(<AutopaySetupPage token="test-token" />);
+    expect(await screen.findByRole('heading', { name: 'Change your payment method' })).toBeInTheDocument();
+    expect(screen.getByText(/replaces the one that stopped working/)).toBeInTheDocument();
+    expect(screen.getByText('Payments not yet started, on the same invoices as now')).toBeInTheDocument();
+    expect(screen.queryByText(/Issued after you set this up/)).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Pay future invoices automatically' })).toBeNull();
+    expect(document.title).toBe('Change payment method');
+  });
   // FP-1: opened from a re-authorization email, the page says the terms changed.
   it('when the accepted terms differ from today\'s, asks the client to review the updated terms', async () => {
     vi.mocked(apiGet).mockResolvedValue(page({ enrollment: { status: 'active' }, termsChanged: true,
