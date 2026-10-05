@@ -4,13 +4,24 @@
  * `src/db/accessContextGucs.test.ts` proves the statement the app SENDS (one
  * `select set_config(...), ...` carrying all seven GUCs). This file proves what
  * Postgres DOES with it: inside a live context every `breeze.*` GUC reads back
- * the expected value, and a following context leaves none of the earlier values
- * behind.
+ * the expected value, and a narrowing prologue re-applied onto an open
+ * system-scope transaction (`withResolvedDbAccessContext`) replaces all seven.
+ *
+ * Not covered here: `is_local = true` itself (a session-level write would only
+ * show on a later contextless use of the same pooled connection, which this
+ * suite cannot pin deterministically). The unit test
+ * `src/db/accessContextGucs.test.ts` asserts `true` on every set_config.
  */
 
 import { describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import {
+  db,
+  withDbAccessContext,
+  withResolvedDbAccessContext,
+  withSystemDbAccessContext,
+  type DbAccessContext,
+} from '../../db';
 
 const hasDatabase = Boolean(process.env.DATABASE_URL || process.env.DATABASE_URL_APP);
 const describeIf = hasDatabase ? describe : describe.skip;
@@ -97,23 +108,34 @@ describeIf('#8052 single-statement prologue (live database)', () => {
     });
   });
 
-  it('a later context overwrites all seven GUCs, so none of the earlier values carry over', async () => {
-    await withDbAccessContext(
-      {
-        scope: 'partner',
-        orgId: null,
-        accessibleOrgIds: [ORG_A],
-        accessiblePartnerIds: [PARTNER],
-        userId: USER,
-        currentPartnerId: PARTNER,
-        reportHistoryOrgIds: [HIST],
+  it('withResolvedDbAccessContext: the narrowing prologue overwrites all seven system GUCs in the SAME transaction', async () => {
+    // The stale-GUC case that matters: a second prologue re-applied onto an
+    // ambient transaction that already holds the system values ('*'
+    // allowlists). Any GUC the single statement failed to write would read
+    // back the system value here instead of the narrowed one.
+    const result = await withResolvedDbAccessContext(
+      async () => {
+        // System scope leaves these three '', so seed stale values: the
+        // narrowing prologue must overwrite them too, not just the '*' ones.
+        await db.execute(sql`select
+          set_config('breeze.user_id', ${USER}, true),
+          set_config('breeze.current_partner_id', ${PARTNER}, true),
+          set_config('breeze.report_history_org_ids', ${HIST}, true)`);
+        const before = await readGucs();
+        return {
+          context: { scope: 'organization' as const, orgId: ORG_B, accessibleOrgIds: [ORG_B] },
+          value: before,
+        };
       },
-      readGucs,
+      async (before) => ({ before, after: await readGucs() }),
     );
-    const after = await withDbAccessContext(
-      { scope: 'organization', orgId: ORG_B, accessibleOrgIds: [ORG_B] },
-      readGucs,
-    );
+    expect(result.before.scope).toBe('system');
+    expect(result.before.accessible_org_ids).toBe('*');
+    expect(result.before.accessible_partner_ids).toBe('*');
+    expect(result.before.user_id).toBe(USER);
+    expect(result.before.current_partner_id).toBe(PARTNER);
+    expect(result.before.report_history_org_ids).toBe(HIST);
+    const after = result.after;
     expect(after).toEqual({
       scope: 'organization',
       org_id: ORG_B,

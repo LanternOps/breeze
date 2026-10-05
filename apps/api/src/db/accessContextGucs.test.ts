@@ -21,6 +21,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
+import { WEDGED_BACKEND_PROLOGUE_QUERY_PREFIX } from './wedgedBackends';
 
 const { drizzleFactory, transactionImpl } = vi.hoisted(() => {
   const transactionImpl = vi.fn();
@@ -108,7 +109,10 @@ function expectSinglePrologue(statements: Rendered[], expected: Record<(typeof G
   expect(statements).toHaveLength(1);
   const [only] = statements;
   expect([...parseGucs(only!).keys()].sort()).toEqual([...GUC_NAMES].sort());
+  // The wedged-backend reclaimer finds a stuck prologue by this prefix. Pin
+  // both the literal and the production constant so neither can drift alone.
   expect(only!.sql.startsWith("select set_config('breeze.")).toBe(true);
+  expect(only!.sql.startsWith(WEDGED_BACKEND_PROLOGUE_QUERY_PREFIX)).toBe(true);
 }
 
 async function loadDb() {

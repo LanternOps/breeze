@@ -124,11 +124,11 @@ describe('withPrologueDeadline', () => {
     await assertion;
   });
 
-  it('aborts the deadline so no further set_config statements are issued', async () => {
-    // `Promise.race` does NOT cancel its loser. Without an abort flag checked at
-    // every statement boundary, a statement that finally resolved late would
-    // queue the remaining five onto a connection being torn down — or already
-    // recycled to a different tenant's request.
+  it('aborts the deadline so a late-resolving prologue cannot proceed', async () => {
+    // `Promise.race` does NOT cancel its loser. Without an abort flag checked
+    // around the prologue statement, a statement that finally resolved late
+    // would let the opener proceed onto a connection being torn down — or
+    // already recycled to a different tenant's request.
     let deadline: PrologueDeadline | null = null;
     const result = withPrologueDeadline(
       'withDbAccessContext(scope=system)',

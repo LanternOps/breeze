@@ -502,11 +502,10 @@ async function applyAccessContextGucs(
       ? context.reportHistoryOrgIds.join(',')
       : '';
 
-  // ONE statement for all seven GUCs (#8052). This used to be six sequential
-  // round trips per transaction — about 65% of every statement a busy API
-  // issued. All seven `set_config` calls sit in one target list, so either all
-  // seven land or the statement errors and the transaction aborts; there is no
-  // partially-applied context to observe.
+  // ONE statement for all seven GUCs (#8052); this used to be six sequential
+  // round trips per transaction. All seven `set_config` calls sit in one target
+  // list, so either all seven land or the statement errors and the transaction
+  // aborts; there is no partially-applied context to observe.
   //
   // The text MUST keep starting with `select set_config('breeze.` — that is the
   // prefix the #6048/#6348 wedged-backend reclaimer matches on
@@ -767,9 +766,9 @@ export async function withDbAccessContext<T>(
   // before the transaction callback — so the caller's frame is genuinely live
   // on the synchronous stack.
   //
-  // This used to be allocated inside the transaction callback, after six
-  // `await tx.execute(...)` hops. That only ever worked via V8's async-stack
-  // reconstruction, which links a frame ONLY at a real `await`: a caller doing
+  // This used to be allocated inside the transaction callback, after the
+  // prologue's `await tx.execute(...)` hops (six at the time). That only ever
+  // worked via V8's async-stack reconstruction, which links a frame ONLY at a real `await`: a caller doing
   // `return withSystemDbAccessContext(...)` (a bare return, no await — 66 call
   // sites in this repo, including most BullMQ job workers) was dropped from the
   // trace entirely. Those degraded to an unattributed warning, or worse, named

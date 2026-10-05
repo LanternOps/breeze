@@ -6,10 +6,11 @@
  * is not the same as proving `db/index.ts` uses it correctly: the bug this PR
  * fixes lives at the seam — is the deadline actually armed around
  * `applyAccessContextGucs`, is it DISARMED before the caller's `fn` runs, and
- * does the post-statement abort check really stop a late-resolving prologue
- * from handing the caller's work an abandoned connection? None of that is observable from the helper's own tests, and every
- * consumer test in this repo stubs `withDbAccessContext` out with a passthrough,
- * so without this file the wiring has no coverage at all.
+ * do the abort checks on either side of the (single, #8052) prologue statement
+ * really stop a late-resolving statement from handing the opener an abandoned
+ * connection? None of that is observable from the helper's own tests, and every
+ * consumer test in this repo stubs `withDbAccessContext` out with a
+ * passthrough, so without this file the wiring has no coverage at all.
  *
  * `drizzle` is faked (rather than the postgres.js driver) so the transaction
  * handle is fully controllable: a statement can be made to hang forever, which
@@ -82,9 +83,10 @@ describe('#6048 prologue deadline wiring', () => {
     process.env = { ...originalEnv };
   });
 
-  it('rejects withDbAccessContext with the typed error when the first set_config wedges', async () => {
-    // The production incident exactly: backend_start == xact_start, stuck on
-    // `select set_config('breeze.scope', $1, true)`.
+  it('rejects withDbAccessContext with the typed error when the prologue statement wedges', async () => {
+    // The production incident: backend_start == xact_start, stuck on the
+    // prologue (then `select set_config('breeze.scope', $1, true)`; since #8052
+    // one statement carrying all seven set_config calls).
     const { tx, issued } = makeTx(1);
     transactionImpl.mockImplementation((fn: (t: unknown) => Promise<unknown>) => fn(tx));
 
@@ -161,6 +163,33 @@ describe('#6048 prologue deadline wiring', () => {
 
     release!('late but fine');
     await expect(result).resolves.toBe('late but fine');
+  });
+
+  it('never issues the prologue when SET TRANSACTION READ ONLY resolves AFTER the deadline', async () => {
+    // The pre-statement abort check in applyAccessContextGucs. Only this opener
+    // runs a statement between arming the deadline and the prologue, so it is
+    // the one place a late resolution can reach that check.
+    const issued: string[] = [];
+    const tx = {
+      execute: vi.fn((query: unknown) => {
+        issued.push(JSON.stringify(query ?? null).slice(0, 80));
+        return new Promise((resolve) => setTimeout(() => resolve([]), 20_000));
+      }),
+    };
+    transactionImpl.mockImplementation((fn: (t: unknown) => Promise<unknown>) => fn(tx));
+
+    const { withArchivedOrgReadContext, DbAccessContextPrologueTimeoutError } = await loadDb();
+    const fn = vi.fn(async () => 'rows');
+    const result = withArchivedOrgReadContext(['7f1b0a4e-0c2d-4c8a-9a0e-2f9c1b3d4e5f'], fn);
+    const assertion = expect(result).rejects.toBeInstanceOf(DbAccessContextPrologueTimeoutError);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    await assertion;
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    // Only SET TRANSACTION was issued; the set_config prologue never went out.
+    expect(issued).toHaveLength(1);
+    expect(fn).not.toHaveBeenCalled();
   });
 
   it('bounds the archived-org opener, whose first statement is SET TRANSACTION READ ONLY', async () => {
