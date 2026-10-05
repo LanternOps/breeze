@@ -29,5 +29,6 @@
   "ASSIGNEE_PARTNER_MISMATCH": "O responsável deve pertencer ao mesmo parceiro do chamado",
   "tool_source_unavailable": "A fonte desta ferramenta está indisponível no momento",
   "ai_not_configured": "A IA não está configurada neste servidor. Um administrador precisa adicionar uma chave de provedor de modelos.",
-  "ACCESS_REVIEW_SELF_DECISION": "Você não pode decidir sobre o seu próprio acesso — outro administrador precisa revisar este item"
+  "ACCESS_REVIEW_SELF_DECISION": "Você não pode decidir sobre o seu próprio acesso — outro administrador precisa revisar este item",
+  "NO_UPDATES_PROVIDED": "Nenhuma alteração foi informada"
 }
