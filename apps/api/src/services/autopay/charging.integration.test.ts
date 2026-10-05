@@ -1533,7 +1533,10 @@ it.each(['none', 'not_needed', 'scheduled'] as const)(
     expect(await collect(a.session.id!)).toEqual({ attemptId: null, outcome: 'refused', reason: 'bank_authorization_used' });
     expect(provider.confirm).not.toHaveBeenCalled();
     await withSystemDbAccessContext(() => db.update(billingLinkTokens).set({ consumedAt: null }).where(eq(billingLinkTokens.id, a.token.id)));
-    expect(await collect(a.session.id!)).toMatchObject({ outcome: 'refused', reason: 'client_authorization_used' });
+    // Its accepted fee (2.50) no longer matches the current one (2.00), so it is refused for
+    // the changed terms before the used-authority check; either way nothing is confirmed (B1-1).
+    expect(await collect(a.session.id!)).toMatchObject({ outcome: 'refused', reason: 'client_authorization_required' });
+    expect(provider.confirm).not.toHaveBeenCalled();
     // A client attempt has no notice to redo: a terminal schedule keeps its history and is not
     // left with a pending re-notice marker that would cancel every later confirm on the invoice.
     const [schedule] = await withSystemDbAccessContext(() => db.select().from(invoiceAutopaySchedules)
@@ -1915,4 +1918,26 @@ it('after a hard-declined card is replaced, the next charging notice is sent, no
  expect(notice).toMatchObject({kind:'invoice_autopay',status:'sent',lastError:null});
  const [schedule]=await withSystemDbAccessContext(()=>db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id,next!.id)));
  expect(schedule).toMatchObject({state:'scheduled',noticeOutboxId:notice!.id});
+});
+
+// B1-1: a one-time bank authorization is for an exact principal and fee. Any difference,
+// lower included (a partial payment or a fee cut before collection), needs a new
+// acceptance; nothing is reserved and the page offers the new total.
+it('bank pay refuses a lower principal than the client authorized and offers the new total (B1-1)',async()=>{
+ const f=await fixture(); const a=await bankSetup(f,'lower_principal'); serveBank([a]);
+ const ctx={scope:'partner' as const,orgId:null,accessibleOrgIds:[f.org.id],accessiblePartnerIds:[f.partner.id]};
+ await withDbAccessContext(ctx,()=>recordPayment(f.invoice.id,{amount:20,method:'cash',receivedAt:new Date().toISOString().slice(0,10)},f.actor));
+ expect(await collectAfterBankSetup({invoiceId:f.invoice.id,orgId:f.org.id,setupSessionId:a.session.id!}))
+  .toEqual({attemptId:null,outcome:'refused',reason:'client_authorization_required'});
+ expect(provider.create).not.toHaveBeenCalled(); expect(await attempts(f.invoice.id)).toEqual([]);
+ const [token]=await withSystemDbAccessContext(()=>db.select().from(billingLinkTokens).where(eq(billingLinkTokens.id,a.token.id)));
+ expect(token!.consumedAt).toBeNull();
+ expect(await getBankAutopayOffer(f.invoice.id,f.org.id)).toMatchObject({available:true,principal:'80.00',fee:'0.00'});
+});
+it('bank pay refuses a lower fee than the client authorized (B1-1)',async()=>{
+ const f=await fixture(undefined,{cardFeeBps:0}); const a=await bankSetup(f,'lower_fee',undefined,'2.50'); serveBank([a]);
+ await withSystemDbAccessContext(()=>db.update(billingPaymentSettings).set({achFeeAmount:'2.00'}).where(eq(billingPaymentSettings.partnerId,f.partner.id)));
+ expect(await collectAfterBankSetup({invoiceId:f.invoice.id,orgId:f.org.id,setupSessionId:a.session.id!}))
+  .toEqual({attemptId:null,outcome:'refused',reason:'client_authorization_required'});
+ expect(provider.create).not.toHaveBeenCalled(); expect(await attempts(f.invoice.id)).toEqual([]);
 });

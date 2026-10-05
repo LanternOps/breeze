@@ -241,8 +241,10 @@ export async function reserveCollection(input: CollectionInput)
         || method.stripeSetupIntentId !== authority.capture.setupIntentId
         || enrollment.stripeAccountId !== authority.capture.stripeAccountId
         || enrollment.stripeCustomerId !== authority.capture.stripeCustomerId
-        || principalMinor > toMinorUnits(authority.principal, invoice.currencyCode)
-        || feeMinor > toMinorUnits(authority.fee, invoice.currencyCode)) return refuse('client_authorization_required');
+        // Exactly the accepted amount: a lower principal (a partial payment) or fee is a
+        // changed term too, and the page offers the new total for a fresh acceptance (B1-1).
+        || principalMinor !== toMinorUnits(authority.principal, invoice.currencyCode)
+        || feeMinor !== toMinorUnits(authority.fee, invoice.currencyCode)) return refuse('client_authorization_required');
       [clientSetup] = await db.select().from(autopaySetupAttempts)
         .where(eq(autopaySetupAttempts.id, authority.capture.setupAttemptId)).limit(1).for('update');
       const accepted = autopayConsentSnapshotSchema.safeParse(clientSetup?.consentSnapshot);
@@ -509,8 +511,8 @@ async function loadClientCapture(attempt: typeof invoiceCollectionAttempts.$infe
     || method.orgId !== attempt.orgId || method.enrollmentId !== setup.enrollmentId
     || method.type !== 'us_bank_account' || !method.accountHolderType
     || !setup.setupIntentId || bank.currency !== attempt.currency
-    || toMinorUnits(attempt.principalAmount, attempt.currency) > toMinorUnits(bank.principal, bank.currency)
-    || toMinorUnits(attempt.feeAmount, attempt.currency) > toMinorUnits(bank.fee, bank.currency)
+    || toMinorUnits(attempt.principalAmount, attempt.currency) !== toMinorUnits(bank.principal, bank.currency)
+    || toMinorUnits(attempt.feeAmount, attempt.currency) !== toMinorUnits(bank.fee, bank.currency)
     || !setup.stripeCustomerId || setup.outcome !== 'activated') return null;
   return { setup, bank, collection: { methodId: method.id, stripePaymentMethodId: method.stripePaymentMethodId,
     setupIntentId: setup.setupIntentId, accountHolderType: method.accountHolderType }, snapshot: parsed.data! };
