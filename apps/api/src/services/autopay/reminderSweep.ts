@@ -154,7 +154,7 @@ export async function runInvoiceReminderSweep(now = new Date()): Promise<{ enque
                 if (!due.onDay) {
                   // Off its day, a step is only re-sent to replace a stale cancellation (unique-index lookup).
                   const [prior] = await db.select({ status: billingNoticeOutbox.status, lastError: billingNoticeOutbox.lastError })
-                    .from(billingNoticeOutbox).where(eq(billingNoticeOutbox.dedupeKey, stepKey)).limit(1);
+                    .from(billingNoticeOutbox).where(and(eq(billingNoticeOutbox.dedupeKey, stepKey), eq(billingNoticeOutbox.orgId, org.id))).limit(1);
                   if (prior?.status !== 'cancelled' || prior.lastError !== STALE_REMINDER_REASON) return false;
                 }
                 // A step cancelled as stale was never delivered: it does not advance the

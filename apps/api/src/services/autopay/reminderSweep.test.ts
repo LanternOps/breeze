@@ -332,7 +332,7 @@ describe('runInvoiceReminderSweep', () => {
         if (q.table === invoices) return q.locked ? [overdue] : pageReads++ === 0 ? [{ id: overdue.id }] : [];
         if (q.table === billingNoticeOutbox) {
           const params = new PgDialect().sqlToQuery(q.predicate as Parameters<PgDialect['sqlToQuery']>[0]).params;
-          if (params.length === 1) return today.prior ? [today.prior] : [];
+          if (String(params[0]).startsWith('invoice:')) return today.prior ? [today.prior] : [];
           return [today.history];
         }
         return [];
@@ -353,7 +353,7 @@ describe('runInvoiceReminderSweep', () => {
         frozen: expect.objectContaining({ daysOverdue: 8 }) }));
       const lookup = mock.queries.find(q => q.table === billingNoticeOutbox)!;
       expect(new PgDialect().sqlToQuery(lookup.predicate as Parameters<PgDialect['sqlToQuery']>[0]).params)
-        .toEqual([`invoice:${overdue.id}:payment_overdue:1`]);
+        .toEqual([`invoice:${overdue.id}:payment_overdue:1`, org.id]);
     });
     it.each([
       ['no notice was allocated (missed tick)', null],
