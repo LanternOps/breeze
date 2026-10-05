@@ -15,8 +15,11 @@ const FAINT_COLOR = '#94a3b8';
 const PAGE_BG = '#eef2f7';
 const CARD_BG = '#ffffff';
 
+// Single quotes only: this value is interpolated into double-quoted style=""
+// attributes, where a double quote would end the attribute and drop every
+// later declaration (the body then rendered in the client's default serif).
 const FONT_STACK =
-  '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif';
+  "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif";
 
 export interface RenderLayoutOptions {
   title: string;
