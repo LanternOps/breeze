@@ -30,6 +30,7 @@ vi.mock('./staffNotifications', () => ({ enqueueAutopayStaffNotifications: h.sta
 vi.mock('./noticeOutbox', () => ({ enqueueBillingNotice: h.confirmation }));
 vi.mock('../invoiceLinkToken', () => ({
   getOrMintInvoiceLink: vi.fn().mockResolvedValue({ token: 'secret' }),
+  peekInvoiceLink: vi.fn().mockReturnValue({ token: 'secret' }),
   buildPublicInvoiceUrl: () => 'https://portal.example.test/invoice/secret',
 }));
 vi.mock('./renderBillingNotice', () => ({
@@ -550,4 +551,34 @@ it('allows MSP exclusion of an action-required reservation', async () => {
 it('provides a money-safe confirmation preview capped to the noticed principal plus fee',async()=>{
  const f=fixture({noticeSentAt:new Date('2020-01-01'),termsSnapshot:{...schedule.termsSnapshot,principal:'20.00',feeAmount:'1.00',methodLabel:'Visa ••4242'}});
  expect((await getInvoiceAutopayView(f.tx,f.inv as any))?.chargePreview).toEqual({amount:'11.00',currency:'USD',methodLabel:'Visa ••4242'});
+});
+
+// The skip page names the invoice, amount, charge date and method, and who is asking.
+it('describes the invoice the skip link controls, without minting a link', async () => {
+  const f = fixture();
+  f.data.set(partners, [{ name: 'Partner', billingEmail: 'billing@partner.example' }]);
+  const view = await getSkipInvoiceView(f.tx, 'token');
+  expect(view).toMatchObject({ state: 'scheduled', skippable: true, processing: false, control: null,
+    invoiceNumber: 'INV-1', invoiceStatus: 'sent', dueDate: '2026-10-15', collectOn: '2026-10-15',
+    amount: '10.00', fee: '0.00', currency: 'USD', methodType: 'card', methodLabel: 'Credit card ending in 4242',
+    partnerName: 'Partner', supportEmail: 'billing@partner.example', invoiceUrl: 'https://portal.example.test/invoice/secret' });
+  expect(f.writes).toEqual([]);
+});
+it('labels the noticed method from the terms when the saved method changed', async () => {
+  const f = fixture({ termsSnapshot: { ...schedule.termsSnapshot, methodId: 'older', methodType: 'us_bank_account', last4: '6789' } });
+  expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ methodType: 'us_bank_account', methodLabel: 'Bank account ending in 6789' });
+});
+it.each([
+  ['the enrollment is paused', (f: ReturnType<typeof fixture>) => { f.data.get(orgAutopayEnrollments)![0].status = 'paused'; }],
+  ['the schedule was cancelled by a stop', (f: ReturnType<typeof fixture>) => { f.sched.state = 'cancelled'; }],
+  ['the schedule belongs to a newer enrollment generation', (f: ReturnType<typeof fixture>) => { f.sched.enrollmentGeneration = 2; }],
+])('still describes the invoice but cannot skip when %s', async (_label, mutate) => {
+  const f = fixture();
+  mutate(f);
+  expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ skippable: false, invoiceNumber: 'INV-1' });
+});
+it('an unknown skip link reveals nothing', async () => {
+  h.resolve.mockResolvedValueOnce(null);
+  const f = fixture();
+  await expect(getSkipInvoiceView(f.tx, 'token')).rejects.toMatchObject({ status: 404 });
 });

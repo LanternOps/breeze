@@ -1,4 +1,4 @@
-import { parseAutopayTerms } from '@breeze/shared';
+import { autopayTermsSnapshotSchema, formatPaymentMethod, parseAutopayTerms, type AutopaySkipView } from '@breeze/shared';
 import { getAutopayMethod } from './paymentMethods';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { toMinorUnits, fromMinorUnits } from '../stripeMoney';
@@ -10,6 +10,8 @@ import { InvoiceServiceError, type InvoiceActor } from '../invoiceTypes';
 import { requireInvoiceAccess } from '../invoiceService';
 import { assertNoActiveCollection } from './reservation';
 import { resolveBillingLinkToken } from './linkTokens';
+import { buildPublicInvoiceUrl, peekInvoiceLink } from '../invoiceLinkToken';
+import { loadAutopayBranding } from './customerBranding';
 import { planAutopayForInvoice, noticeLeadDays } from './scheduler';
 import { enqueueAutopayNotice, type AutopayTerms } from './chargingNotice';
 import { isAutopayEnabledForPartner } from './autopayGate';
@@ -50,11 +52,40 @@ async function skipAuthority(tx: Tx, token: string, lock: boolean) {
   return { invoice, schedule };
 }
 
-export async function getSkipInvoiceView(tx: Tx, token: string) {
-  const { invoice, schedule } = await skipAuthority(tx, token, false);
+/**
+ * The skip page's view: it names the invoice, amount, charge date and method, and
+ * says whether this link can still skip it. A link that no longer controls the
+ * schedule (stopped, paused, re-enrolled) still describes the invoice so the client
+ * is never left at "unavailable"; only an unknown link is refused. Read-only.
+ */
+export async function getSkipInvoiceView(tx: Tx, token: string): Promise<AutopaySkipView> {
+  const link = await resolveBillingLinkToken(tx, token, 'skip_invoice');
+  if (!link?.invoiceId) throw new InvoiceServiceError('Link unavailable', 404, 'INVOICE_NOT_FOUND');
+  const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, link.invoiceId), eq(invoices.orgId, link.orgId))).limit(1);
+  if (!invoice || invoice.orgId !== link.orgId) throw new InvoiceServiceError('Link unavailable', 404, 'INVOICE_NOT_FOUND');
+  const authority = await skipAuthority(tx, token, false).then(() => true, () => false);
+  const [schedule] = await tx.select().from(invoiceAutopaySchedules).where(and(
+    eq(invoiceAutopaySchedules.invoiceId, invoice.id), eq(invoiceAutopaySchedules.orgId, invoice.orgId))).limit(1);
+  const parsed = schedule ? autopayTermsSnapshotSchema.safeParse(schedule.termsSnapshot) : null;
+  const terms = parsed?.success && parsed.data.kind === 'terms' ? parsed.data : null;
+  const method = terms ? await getAutopayMethod(tx, invoice.orgId) : null;
+  const methodLabel = !terms ? null : method && method.id === terms.methodId
+    ? formatPaymentMethod(method)
+    : formatPaymentMethod({ type: terms.methodType, cardLast4: terms.last4, bankLast4: terms.last4 });
+  const control = pendingInvoiceControl(schedule?.stateReason ?? null);
   // processing: a payment is already with Stripe and the skip would be refused.
-  return { state: schedule.state, collectOn: schedule.collectOn,
-    control: pendingInvoiceControl(schedule.stateReason), processing: await hasUnstoppableCollection(tx, invoice.id) };
+  const processing = await hasUnstoppableCollection(tx, invoice.id);
+  const state = schedule?.state ?? 'not_needed';
+  const open = ['sent', 'partially_paid', 'overdue'].includes(invoice.status);
+  const live = invoice.status === 'void' ? null : peekInvoiceLink(invoice);
+  return {
+    ...await loadAutopayBranding(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId }),
+    state, collectOn: schedule?.collectOn ?? null, control, processing,
+    skippable: authority && open && !processing && !control && ['awaiting_notice', 'scheduled', 'retry_scheduled', 'collecting', 'action_required'].includes(state),
+    invoiceNumber: invoice.invoiceNumber, invoiceStatus: invoice.status, dueDate: invoice.dueDate,
+    amount: terms?.principal ?? invoice.balance, fee: terms?.feeAmount ?? null, currency: invoice.currencyCode,
+    methodLabel, methodType: terms?.methodType ?? null, invoiceUrl: live ? buildPublicInvoiceUrl(live.token) : null,
+  };
 }
 
 export async function skipInvoice(tx: Tx, token: string): Promise<InvoiceControlResult> {

@@ -45,7 +45,15 @@ export const AUTOPAY_SETUP_OUTCOMES = ['activated','pending_verification','stale
 export type AutopaySetupSource = (typeof AUTOPAY_SETUP_SOURCES)[number];
 export type AutopaySetupOutcome = (typeof AUTOPAY_SETUP_OUTCOMES)[number];
 export interface AutopaySetupCompletion { outcome: AutopaySetupOutcome; orgId: string }
-export interface AutopaySetupResult extends AutopaySetupCompletion { methodLabel: string | null; feeText: string }
+/** Branding a client-facing autopay page shows: the MSP's name, logo and billing email. */
+export interface AutopayBranding { partnerName: string; logoUrl: string | null; supportEmail: string | null }
+export interface AutopaySetupResult extends AutopaySetupCompletion {
+ methodLabel: string | null; feeText: string;
+ /** Present on the client return: who the client is dealing with. */
+ branding?: AutopayBranding;
+ /** The enrollment as it stands now, so a superseded return can say whether the client is set up. */
+ current?: { status: AutopayEnrollmentStatus; methodLabel: string | null } | null;
+}
 export interface InvoiceAutopayOffer { eligible: boolean; consentText: string; consentVersion: string; disclosureHash: string }
 export type AutopayScheduleTerms=z.infer<typeof autopayScheduleTermsSchema>;
 export type AutopayFeeTerms=z.infer<typeof autopayFeeTermsSchema>;
@@ -57,7 +65,11 @@ export interface AutopayMethodView {
  type:AutopayPaymentMethodType;cardBrand:string|null;cardFunding:CardFundingType|null;cardLast4:string|null;
  cardExpMonth:number|null;cardExpYear:number|null;bankName:string|null;bankLast4:string|null;status:OrgPaymentMethodStatus;
 }
-export interface AutopayEnrollmentView { status:AutopayEnrollmentStatus;generation:number;effectiveFrom:string|null;needsAttentionReason:AutopayNeedsAttentionReason|null }
+export interface AutopayEnrollmentView {
+ status:AutopayEnrollmentStatus;generation:number;effectiveFrom:string|null;needsAttentionReason:AutopayNeedsAttentionReason|null;
+ /** Customer pages: who stopped it and when, and when the MSP paused it. */
+ cancelSource?:AutopayCancelSource|null;cancelledAt?:string|null;pausedAt?:string|null;
+}
 export interface AutopayListRow {
  orgId:string;orgName:string;billingContact:{email?:string|null}|null;
  stripeReadiness:{ready:boolean;missing:string[]};status:AutopayEnrollmentStatus|'not_requested'|'needs_attention';
@@ -67,6 +79,8 @@ export interface AutopayListRow {
 export interface AutopayCustomerPage {
  stopOnly?:false;
  orgId:string;orgName:string;partnerName:string;logoUrl:string|null;primaryColor:string|null;contactEmail:string;
+ /** The MSP's billing email (the reply-to of every billing notice). */
+ supportEmail:string|null;
  scheduleText:string;achMode:AchMode|'card_only';consentVersion:string;consentText:Record<AutopayPaymentMethodType,string>;
  disclosures:Record<AutopayPaymentMethodType,AutopayDisclosure>;
  fees:Record<AutopayPaymentMethodType|'debit',{text:string;feeAmount:string;kind:'none'|'card_percent'|'ach_flat';appliedBps:number|null;reason:string}>;
@@ -74,7 +88,7 @@ export interface AutopayCustomerPage {
 }
 /** Minimal portal read model when enrollment setup is disabled. */
 export type AutopayStopOnlyPage = Pick<AutopayCustomerPage,
- 'orgId'|'orgName'|'partnerName'|'enrollment'|'method'|'processingWarning'> & {stopOnly:true};
+ 'orgId'|'orgName'|'partnerName'|'supportEmail'|'enrollment'|'method'|'processingWarning'> & {stopOnly:true};
 export type AutopayPortalPage = AutopayCustomerPage | AutopayStopOnlyPage;
 export interface PaymentValues {
  autopayOffsetDays:number|null;autopayOffsetRule:AutopayOffsetRule|null;autopayCapEnabled:boolean|null;
@@ -168,3 +182,28 @@ export type InvoicePayResult={url:string;outcome?:never;attemptId?:never;reason?
 /** Invoice-page exit from an off-session payment awaiting bank confirmation:
  * the original PaymentIntent is canceled so the client can pay on-session. */
 export type AutopayConfirmationRelease={outcome:'released'|'processing'|'paid'|'not_needed'};
+
+/** Why a public autopay link cannot be used. Partner fields only when the token
+ * matched a real link (its holder received it by email); never for an unknown token. */
+export const AUTOPAY_LINK_FAILURE_CODES=['link_invalid','link_expired','link_replaced','link_used','autopay_not_enabled'] as const;
+export type AutopayLinkFailureCode=(typeof AUTOPAY_LINK_FAILURE_CODES)[number];
+export interface AutopayLinkFailure extends Partial<AutopayBranding> {
+ error:string;code:AutopayLinkFailureCode;enrollmentStatus?:AutopayEnrollmentStatus|null;
+}
+/** GET /autopay/public/:token/stop */
+export interface AutopayStopView extends AutopayBranding {
+ orgName:string;processingWarning:string;enrollment:AutopayEnrollmentView|null;method:AutopayMethodView|null;openInvoiceCount:number;
+}
+/** GET /autopay/public/:token/skip: names the invoice, amount and charge date. */
+export interface AutopaySkipView extends AutopayBranding {
+ state:AutopayScheduleState;collectOn:string|null;control:ControlMarker|null;processing:boolean;
+ /** False when the schedule is no longer this link's to skip (stopped, paused, re-enrolled). */
+ skippable:boolean;
+ invoiceNumber:string|null;invoiceStatus:string;dueDate:string|null;amount:string|null;fee:string|null;currency:string;
+ methodLabel:string|null;methodType:AutopayPaymentMethodType|null;invoiceUrl:string|null;
+}
+/** GET /autopay/public/:token/confirm */
+export interface AutopayConfirmView extends AutopayBranding {
+ state:CollectionAttemptState|'not_needed';amount:string;currency:string;
+ invoiceNumber:string|null;methodLabel:string|null;invoiceUrl:string|null;
+}

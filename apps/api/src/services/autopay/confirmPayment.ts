@@ -3,13 +3,14 @@ import { toMinorUnits } from '../stripeMoney';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { billingNoticeOutbox, billingLinkTokens, invoiceCollectionAttempts, invoiceAutopaySchedules,
-  orgAutopayEnrollments, invoices } from '../../db/schema';
+  orgAutopayEnrollments, orgPaymentMethods, invoices } from '../../db/schema';
 import { resolveBillingLinkToken } from './linkTokens';
 import { loadAttemptForReconciliation, resumeCollectionAttempt } from './collectionEngine';
-import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../invoiceLinkToken';
+import { getOrMintInvoiceLink, buildPublicInvoiceUrl, peekInvoiceLink } from '../invoiceLinkToken';
+import { loadAutopayBranding } from './customerBranding';
 import { assertNoHeldDbContextForStripe } from '../stripeSettle';
 import { InvoiceServiceError } from '../invoiceTypes';
-import type { AutopayConfirmationRelease } from '@breeze/shared';
+import { formatPaymentMethod, type AutopayConfirmationRelease, type AutopayConfirmView } from '@breeze/shared';
 
 const unavailable = () => new InvoiceServiceError('Link unavailable', 404, 'INVALID_STATE');
 
@@ -63,10 +64,18 @@ async function resolveConfirmation(token: string, lock = false) {
   return { link, invoice, attempt, fenced };
 }
 
-export async function getConfirmPaymentView(token: string) {
+/** The confirm page's view: the attempt's state and amount, the invoice and method it
+ * belongs to, and the MSP asking. Read-only: never mints a link or touches Stripe. */
+export async function getConfirmPaymentView(token: string): Promise<AutopayConfirmView> {
   return withSystemDbAccessContext(async () => {
-    const { attempt, fenced } = await resolveConfirmation(token);
-    return { state: attempt.state === 'canceled' || fenced ? 'not_needed' : attempt.state, amount: attempt.principalAmount, currency: attempt.currency };
+    const { invoice, attempt, fenced } = await resolveConfirmation(token);
+    const [method] = attempt.paymentMethodId ? await db.select().from(orgPaymentMethods).where(and(
+      eq(orgPaymentMethods.id, attempt.paymentMethodId), eq(orgPaymentMethods.orgId, invoice.orgId))).limit(1) : [];
+    const live = peekInvoiceLink(invoice);
+    return { state: attempt.state === 'canceled' || fenced ? 'not_needed' : attempt.state, amount: attempt.principalAmount, currency: attempt.currency,
+      invoiceNumber: invoice.invoiceNumber ?? null, methodLabel: method && method.orgId === invoice.orgId ? formatPaymentMethod(method) : null,
+      ...await loadAutopayBranding(db, { orgId: invoice.orgId, partnerId: invoice.partnerId }),
+      invoiceUrl: live ? buildPublicInvoiceUrl(live.token) : null };
   });
 }
 

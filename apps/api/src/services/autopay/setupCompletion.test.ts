@@ -10,7 +10,7 @@ vi.mock('../../db',()=>{
   runAfterDbContextExit:vi.fn(),hasDbAccessContext:()=>false};
 });
 vi.mock('../partnerStripe',()=>({getPartnerStripeClient:m.client}));
-vi.mock('./paymentMethods',()=>({enqueueRejectedAutopayMethod:vi.fn(),detachPaymentMethodPostCommit:vi.fn()}));
+vi.mock('./paymentMethods',()=>({enqueueRejectedAutopayMethod:vi.fn(),detachPaymentMethodPostCommit:vi.fn(),getAutopayMethod:vi.fn(async()=>null)}));
 vi.mock('./noticeOutbox',()=>({enqueueBillingNotice:m.enqueue}));
 vi.mock('./linkTokens',()=>({mintBillingLinkToken:m.mint,buildBillingLinkUrl:()=> 'https://portal.example.test/portal/autopay/token/stop'}));
 vi.mock('./enrollmentService',()=>import('./setupCompletion'));
@@ -293,7 +293,7 @@ it('uses live credit evidence for enrollment and owned return under nonzero fees
  m.rows.push([],[],[{id:'method_one'}],[],[],[],[{settings:{}}]);
  const {completeOwnedAutopaySetup}=await import('./customerViews');
  const result=await completeOwnedAutopaySetup({orgId:value.orgId,partnerId:value.partnerId},'cs_one');
- expect(result).toMatchObject({outcome:'activated',methodLabel:'visa credit ••1234',feeText:accepted.feeText});
+ expect(result).toMatchObject({outcome:'activated',methodLabel:'Visa credit card ending in 1234',feeText:accepted.feeText});
  for(const body of [m.enqueue.mock.calls[0]![1].rendered.html,m.enqueue.mock.calls[0]![1].rendered.text])expect(body).toContain(accepted.feeText);
  expect(m.writes).toContainEqual(expect.objectContaining({cardFunding:'credit'}));
  const stored=m.writes.find(row=>'cardFunding' in row)!;
@@ -319,7 +319,8 @@ it.each(['link','missing-networks','missing-wallet','unknown-network','unknown-w
  const {completeOwnedAutopaySetup}=await import('./customerViews');
  const result=await completeOwnedAutopaySetup({orgId:value.orgId,partnerId:value.partnerId},'cs_one');
  // Nothing about the refused card is exposed on the return page.
- expect(result).toEqual({outcome:'unsupported_method',orgId:value.orgId,methodLabel:null,feeText:'No usable payment method confirmed.'});
+ expect(result).toEqual({outcome:'unsupported_method',orgId:value.orgId,methodLabel:null,feeText:'No usable payment method confirmed.',
+  branding:{partnerName:'',logoUrl:null,supportEmail:null},current:null});
  // The only write terminally records the outcome: no replacement of the working
  // method, no saved method, consent, enrollment change or token consumption.
  expect(m.writes).toEqual([{outcome:'unsupported_method',completedAt:expect.any(Date)}]);

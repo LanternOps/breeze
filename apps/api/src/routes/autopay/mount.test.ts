@@ -21,7 +21,8 @@ vi.mock('../../services/autopay/invoiceControls', () => ({
   getSkipInvoiceView: h.view,
 }));
 vi.mock('../../services/autopay/staffNotifications', () => ({ sendAutopayStaffEmail: h.email }));
-vi.mock('../../services/autopay/customerViews', () => ({ resolveAutopayLinkIdentity: h.identity }));
+vi.mock('../../services/autopay/customerViews', () => ({ resolveAutopayLinkIdentity: h.identity,
+  describeAutopayLinkFailure: async () => ({ error: 'This link is not valid.', code: 'link_invalid' }) }));
 vi.mock('../../services/autopay/enrollmentService', () => ({}));
 vi.mock('../../services/autopay/enrollmentLifecycle', () => ({}));
 vi.mock('../../services/autopay/consentText', () => ({}));
