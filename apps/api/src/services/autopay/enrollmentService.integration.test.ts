@@ -324,3 +324,28 @@ it('the database refuses a second autopay-method row for an org whatever its sta
  expect(await pgCode(withSystemDbAccessContext(()=>db.insert(orgPaymentMethods).values({orgId:f.org.id,enrollmentId:f.enrollment.id,
   stripePaymentMethodId:'pm_second',type:'card',status:'active',isAutopayMethod:true})))).toBe('23505');
 });
+
+// R5: latestAutopayConsent must pick the consent for the CURRENT method. The unit harness
+// ignores where clauses, so only a real database proves the method filter.
+import {latestAutopayConsent} from './collectionFee';
+it('reads the replacement method\'s own consent, not a newer one recorded for the old method (R5)',async()=>{
+ const f=await deadCardFixture();
+ vi.mocked(getPartnerStripeClient).mockResolvedValue({stripeAccountId:'acct_verify',defaultCurrency:'USD',stripe:{paymentMethods:{retrieve:vi.fn(async()=>({customer:'cus_verify'})),detach:vi.fn(async()=>({}))}}} as any);
+ expect((await persistCapturedAutopayMethod(f.attempt.id,{id:'pm_current',type:'card',customer:'cus_verify',card:liveCard} as Stripe.PaymentMethod,'activated','seti_current',null)).outcome).toBe('activated');
+ const current=await withSystemDbAccessContext(async()=>{
+  const [row]=await db.select().from(orgPaymentMethods).where(eq(orgPaymentMethods.stripePaymentMethodId,'pm_current'));
+  // A later consent row for the retired method (newest overall) must not stand in for the current one.
+  await db.insert(orgAutopayConsents).values({orgId:f.org.id,enrollmentId:f.enrollment.id,generation:1,paymentMethodId:f.dead.id,
+   consentTextVersion:'2026-10-01.v1',consentTextHash:'f'.repeat(64),source:'setup_page',contactEmail:'billing@example.test',
+   scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},createdAt:new Date(Date.now()+3_600_000),
+   feeTerms:{methodType:'card',cardFeeBps:300,achFeeAmount:'0.00',feeAttested:true,currency:'USD'}});
+  return row!;
+ });
+ const key={orgId:f.org.id,enrollmentId:f.enrollment.id,generation:1};
+ const [forCurrent,forOld]=await withSystemDbAccessContext(async()=>[await latestAutopayConsent(db,{...key,methodId:current.id}),
+  await latestAutopayConsent(db,{...key,methodId:f.dead.id})]);
+ expect(forCurrent).toMatchObject({paymentMethodId:current.id,feeTerms:expect.objectContaining({cardFeeBps:0})});
+ expect(forOld).toMatchObject({paymentMethodId:f.dead.id,feeTerms:expect.objectContaining({cardFeeBps:300})});
+ // Another generation's consent for the current method is not this authority either.
+ expect(await withSystemDbAccessContext(()=>latestAutopayConsent(db,{...key,generation:2,methodId:current.id}))).toBeUndefined();
+});
