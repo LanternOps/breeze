@@ -85,3 +85,31 @@ it('keeps an unrecognized conflict as a failure without setup recovery',async()=
  expect(screen.queryByTestId('autopay-bank-refresh')).toBeNull();
  expect(navigateTo).not.toHaveBeenCalled();
 });
+
+// The authority can be unavailable after microdeposit verification (expired, changed
+// terms, replaced method, already used). The page must offer a working restart that
+// uses the invoice's CURRENT terms, never a dead end or a stale-terms 409 loop.
+it.each([
+ ['bank_authorization_expired','expired'],
+ ['bank_authorization_changed','no longer matches'],
+ ['client_authorization_required','no longer matches'],
+ ['bank_authorization_used','already used'],
+] as const)('offers a working restart when collection reports %s',async(reason,text)=>{
+ sessionStorage.setItem('autopay-bank-return',JSON.stringify({invoiceId:'invoice-1',setupSessionId:'cs_bank_one'}));
+ vi.mocked(apiGet).mockResolvedValueOnce({data:{invoice:{id:'invoice-1'},bankAutopay:{...offer,methodStatus:'active'}}});
+ vi.mocked(apiPost).mockResolvedValueOnce({statusCode:409,error:'Payment has not started. Review the invoice payment status.',errorData:{outcome:'refused',reason}});
+ render(<BankAutopayPayment returning/>);await screen.findByTestId('autopay-bank-confirm-pay');
+ fireEvent.click(screen.getByTestId('autopay-bank-consent'));fireEvent.click(screen.getByTestId('autopay-bank-confirm-pay'));
+ await waitFor(()=>expect(screen.getByTestId('autopay-bank-result')).toHaveTextContent(text));
+ expect(screen.queryByTestId('autopay-bank-confirm-pay')).toBeNull();
+ const fresh={...offer,principal:'90.00',disclosureHash:'b'.repeat(64),methodStatus:'active' as const};
+ vi.mocked(apiGet).mockResolvedValueOnce({data:{invoice:{id:'invoice-1'},bankAutopay:fresh}});
+ fireEvent.click(screen.getByTestId('autopay-bank-restart'));
+ const pay=await screen.findByTestId('autopay-bank-pay');expect(pay).toBeDisabled();
+ expect(screen.getByText(/Invoice payment: USD 90.00/)).toBeTruthy();
+ vi.mocked(apiPost).mockResolvedValueOnce({data:{url:'https://checkout.stripe.com/c/setup/restart'}});
+ fireEvent.click(screen.getByTestId('autopay-bank-consent'));fireEvent.click(pay);
+ await waitFor(()=>expect(apiPost).toHaveBeenLastCalledWith('/portal/invoices/invoice-1/pay',
+  expect.objectContaining({phase:'setup',principal:'90.00',disclosureHash:'b'.repeat(64)}),{redirectOnUnauthorized:true}));
+ expect(apiPost.mock.lastCall![1]).not.toHaveProperty('setupSessionId');
+});

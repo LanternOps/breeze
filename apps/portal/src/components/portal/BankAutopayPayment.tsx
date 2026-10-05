@@ -6,6 +6,14 @@ type Target={invoiceId:string;publicToken?:string};
 type View={target:Target;offer:BankAutopayOffer;setupSessionId?:string};
 import type { InvoicePayResult as Result } from '@breeze/shared';
 const key='autopay-bank-return';
+// The bank authority stopped being usable (e.g. after microdeposit verification).
+// Each offers a restart against the invoice's current terms; the server re-checks.
+const REAUTHORIZE:Record<string,string>={
+  bank_authorization_expired:'Your bank authorization for this payment expired before it was used. Restart bank setup to pay this invoice.',
+  bank_authorization_changed:"Your bank authorization no longer matches this invoice's payment details. Restart bank setup to review and pay.",
+  client_authorization_required:"Your bank authorization no longer matches this invoice's payment details. Restart bank setup to review and pay.",
+  bank_authorization_used:"This bank authorization was already used. Refresh the invoice to check whether the payment started; if it didn't, restart bank setup.",
+};
 const path=(target:Target)=>target.publicToken?`/invoices/public/${encodeURIComponent(target.publicToken)}`:`/portal/invoices/${encodeURIComponent(target.invoiceId)}`;
 function unwrap<T>(response:ApiResponse<T|{data:T}>,publicRequest:boolean):ApiResponse<T>{
   return {...response,data:publicRequest?(response.data as {data?:T}|undefined)?.data:response.data as T|undefined};
@@ -18,7 +26,7 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
   const [view,setView]=useState<View|null>(target&&offer?{target,offer}:null);
   const [accepted,setAccepted]=useState(false),[busy,setBusy]=useState(false),[finished,setFinished]=useState(false);
   const [message,setMessage]=useState(''),[failed,setFailed]=useState(false);
-  const [recovery,setRecovery]=useState<'in_progress'|'abandoned'|null>(null);
+  const [recovery,setRecovery]=useState<'in_progress'|'abandoned'|'reauthorize'|null>(null);
   const outcome=(text:string,error:boolean)=>{setMessage(text);setFailed(error);};
   useEffect(()=>{if(!returning){setView(target&&offer?{target,offer}:null);setAccepted(false);}},
     [target?.invoiceId,target?.publicToken,offer,returning]);
@@ -43,12 +51,21 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
       setView({...view,offer:result.data.bankAutopay});setAccepted(false);setRecovery(null);
     }catch{outcome('Could not check verification.',true);}finally{setBusy(false);}
   }
+  async function reauthorize(){
+    if(!view||busy)return;setBusy(true);
+    try{const result=await read(view.target);if(result.data?.invoice.id!==view.target.invoiceId)throw new Error();
+      try{sessionStorage.removeItem(key);}catch{}
+      // A fresh offer carries current terms; none means bank payment is not available now.
+      setView({target:view.target,offer:result.data.bankAutopay??{...view.offer,available:false,methodStatus:null}});
+      setAccepted(false);setRecovery(null);setMessage('');setFailed(false);
+    }catch{outcome('Could not reload the invoice. Refresh to try again.',true);}finally{setBusy(false);}
+  }
   async function submit(){
     if(!view||!accepted||busy||finished)return;setBusy(true);
     const collecting=!!view.setupSessionId;
     if(!collecting){try{sessionStorage.setItem(key,JSON.stringify(view.target));}
       catch{outcome('Enable session storage to return securely.',true);setBusy(false);return;}}
-    let conflictReason: 'pending_verification'|'in_progress'|'abandoned'|undefined;
+    let conflictReason: string|undefined;
     const result=await runAction<Result>({request:async()=>{
       const response=await apiPost<Result|{data:Result}>(`${path(view.target)}/pay`,{
       methodType:'us_bank_account',phase:collecting?'collect':'setup',consentAccepted:true,disclosureHash:view.offer.disclosureHash,
@@ -58,7 +75,8 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
       const detail=response.errorData;
       if(collecting&&response.statusCode===409&&detail&&typeof detail==='object'&&
         'outcome' in detail&&(detail.outcome==='deferred'||detail.outcome==='refused')&&'reason' in detail&&
-        (detail.reason==='pending_verification'||detail.reason==='in_progress'||detail.reason==='abandoned')){
+        (detail.reason==='pending_verification'||detail.reason==='in_progress'||detail.reason==='abandoned'
+          ||(typeof detail.reason==='string'&&detail.reason in REAUTHORIZE))){
         conflictReason=detail.reason;
       }
       return unwrap(response,!!view.target.publicToken);
@@ -73,6 +91,7 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
       outcome('Bank payment started. Processing may take several days.',false);return;}
     if(reason==='pending_verification'){setView({...view,offer:{...view.offer,methodStatus:'pending_verification'}});
       setAccepted(false);outcome('Bank verification is pending. No payment has started.',!!conflictReason);return;}
+    if(reason&&reason in REAUTHORIZE){setRecovery('reauthorize');setAccepted(false);outcome(REAUTHORIZE[reason]!,!!conflictReason);return;}
     if(reason==='in_progress'||reason==='abandoned'){setRecovery(reason);setAccepted(false);
       outcome(reason==='in_progress'?'Your bank setup is still being confirmed. Refresh verification before trying again.':'Bank setup was not completed. Restart bank setup to continue.',!!conflictReason);return;}
     outcome('Payment has not started. Refresh the invoice to check its status.',true);
@@ -84,7 +103,8 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
     <h2>Pay by bank and set up autopay</h2>
     <p>Invoice payment: {view.offer.currency} {view.offer.principal}. Processing fee: {view.offer.currency} {view.offer.fee}.</p>
     {message&&<p role={failed?'alert':'status'} data-testid="autopay-bank-result">{message}</p>}
-    {recovery==='abandoned'?<button type="button" data-testid="autopay-bank-restart" disabled={busy} onClick={()=>{setRecovery(null);setAccepted(false);setView({...view,setupSessionId:undefined});setMessage('');}}>Restart bank setup</button>
+    {recovery==='reauthorize'?<button type="button" data-testid="autopay-bank-restart" disabled={busy} onClick={()=>void reauthorize()}>Restart bank setup</button>
+      :recovery==='abandoned'?<button type="button" data-testid="autopay-bank-restart" disabled={busy} onClick={()=>{setRecovery(null);setAccepted(false);setView({...view,setupSessionId:undefined});setMessage('');}}>Restart bank setup</button>
       :recovery==='in_progress'?<button type="button" data-testid="autopay-bank-refresh" disabled={busy} onClick={()=>void refresh()}>Refresh verification</button>
       :pending&&!finished?<div data-testid="autopay-bank-pending"><p>Bank verification is pending. No payment has started.</p>
       <button type="button" data-testid="autopay-bank-refresh" disabled={busy} onClick={()=>void refresh()}>Refresh verification</button></div>

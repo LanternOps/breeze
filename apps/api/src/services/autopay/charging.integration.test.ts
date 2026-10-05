@@ -627,8 +627,10 @@ it('old bank A cannot be collected after replacement B, including replay of comp
   const a = await bankSetup(f, 'A');
   const b = await bankSetup(f, 'B');
   serveBank([a, b]);
-  await expect(collectAfterBankSetup({invoiceId: f.invoice.id, orgId: f.org.id, setupSessionId: a.session.id!}))
-    .rejects.toMatchObject({code: 'INVALID_STATE'});
+  // A replaced method is a normal way for this authority to stop being usable: the
+  // page is told so it can restart setup, and nothing is reserved or collected.
+  expect(await collectAfterBankSetup({invoiceId: f.invoice.id, orgId: f.org.id, setupSessionId: a.session.id!}))
+    .toEqual({attemptId: null, outcome: 'refused', reason: 'bank_authorization_changed'});
   expect(provider.create).not.toHaveBeenCalled();
   expect(provider.confirm).not.toHaveBeenCalled();
   expect(await attempts(f.invoice.id)).toHaveLength(0);
@@ -1725,4 +1727,13 @@ it('confirm refuses an already-scheduled invoice once the accepted cap no longer
  expect(provider.confirm).not.toHaveBeenCalled();expect(provider.cancel).toHaveBeenCalledOnce();
  expect((await attempts(f.invoice.id))[0]!.state).toBe('canceled');
  expect(await scheduleFor(f)).toMatchObject({state:'cancelled',stateReason:'above_authorized_cap'});
+});
+
+it.each(['expired','revoked'] as const)('a %s bank authority is a structured, restartable outcome with nothing reserved',async mode=>{
+ const f=await fixture(); const a=await bankSetup(f,`authority_${mode}`); serveBank([a]);
+ await withSystemDbAccessContext(()=>db.update(billingLinkTokens).set(mode==='expired'?{expiresAt:new Date(Date.now()-1000)}:{revokedAt:new Date()})
+  .where(eq(billingLinkTokens.id,a.token.id)));
+ expect(await collectAfterBankSetup({invoiceId:f.invoice.id,orgId:f.org.id,setupSessionId:a.session.id!}))
+  .toEqual({attemptId:null,outcome:'refused',reason:'bank_authorization_expired'});
+ expect(await attempts(f.invoice.id)).toEqual([]);expect(provider.create).not.toHaveBeenCalled();
 });
