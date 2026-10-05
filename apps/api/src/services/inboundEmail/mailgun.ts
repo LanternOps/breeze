@@ -78,7 +78,14 @@ export class MailgunInboundProvider implements InboundEmailProvider {
       // envelope sender when Mailgun supplies one, so scan only when it is also
       // the visible From address: the staff check then applies to the address
       // the message shows, as it does for Gmail and Microsoft 365.
-      forwardScanText: envelopeMatchesFrom ? (b['body-plain'] || undefined) : undefined,
+      // Mailgun synthesizes body-plain from the HTML when a message has no
+      // text/plain part, so also require the top-level Content-Type to be
+      // text/plain or multipart (an absent or unparseable one fails closed). A
+      // multipart message whose only text part is HTML cannot be told apart from
+      // Mailgun's fields and is scanned from Mailgun's text rendering.
+      forwardScanText: envelopeMatchesFrom && mayCarryPlainPart(parseHeader(b['message-headers'], 'Content-Type'))
+        ? (b['body-plain'] || undefined)
+        : undefined,
       html: b['body-html'] || undefined,
       messageId: b['Message-Id'] || undefined,
       inReplyTo: b['In-Reply-To'] || undefined,
@@ -225,6 +232,14 @@ function normalizeVerdict(raw: string | undefined): SenderAuthVerdict {
 // RFC 5322 mailbox; an unparseable value falls back to itself, lower-cased.
 function extractEmail(s: string): string {
   return parseMailboxes(s)[0]?.address ?? s.trim().toLowerCase();
+}
+
+// Whether a message with this top-level Content-Type can hold a provider-supplied
+// text/plain part: text/plain itself, or any multipart. text/html, other types
+// and an unknown Content-Type cannot (see the forwardScanText note in parse()).
+function mayCarryPlainPart(contentType: string | undefined): boolean {
+  const type = (contentType ?? '').split(';')[0]!.trim().toLowerCase();
+  return type === 'text/plain' || type.startsWith('multipart/');
 }
 
 function parseHeader(headersJson: string | undefined, name: string): string | undefined {

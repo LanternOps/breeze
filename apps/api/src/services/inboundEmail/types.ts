@@ -54,7 +54,10 @@ export interface NormalizedInboundEmail {
   /** The message's provider-supplied text/plain body, unstripped, for staff-forward
    *  detection only. Absent when the message had no text/plain part (its `text`
    *  was derived from HTML or a preview) or when the producer predates this
-   *  field; detection then does not run (fail closed). */
+   *  field; detection then does not run (fail closed). Mailgun is the one
+   *  approximation: it synthesizes body-plain from HTML, so its normalizer
+   *  withholds this for a top-level text/html (or unknown) message but cannot
+   *  tell a multipart message whose only text part is HTML. */
   forwardScanText?: string;
   html?: string;         // retained raw, not rendered in v1
   messageId?: string;

@@ -86,7 +86,7 @@ describe('MailgunInboundProvider.parse', () => {
     'Message-Id': '<msg-2@customer.com>',
     'In-Reply-To': '<msg-1@tickets.example.com>',
     'References': '<msg-0@x> <msg-1@tickets.example.com>',
-    'message-headers': '[["Auto-Submitted","no"]]'
+    'message-headers': '[["Auto-Submitted","no"],["Content-Type","text/plain; charset=UTF-8"]]'
   };
   it('maps recipient/sender/subject and prefers stripped-text', async () => {
     const n = await provider.parse({ parseBody: async () => fields } as any);
@@ -145,6 +145,34 @@ describe('MailgunInboundProvider.parse', () => {
     const n = await provider.parse({ parseBody: async () => ({ ...fields, sender: 'tech@msp.example', from }) } as any);
     expect(n.from).toBe('tech@msp.example');
     expect(n.fromName).toBe(name);
+    expect(n.forwardScanText).toBe(fields['body-plain']);
+  });
+
+  // Mailgun synthesizes body-plain from the HTML when a message has no text/plain
+  // part, so its body-plain alone does not prove a provider-supplied plain body.
+  it('exposes no forwardScanText for an HTML-only message (top-level text/html)', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields, 'message-headers': '[["Content-Type","text/html; charset=UTF-8"]]',
+    }) } as any);
+    expect(n.text).toBe('It is still broken.');
+    expect(n.forwardScanText).toBeUndefined();
+  });
+
+  it('exposes no forwardScanText when the top-level Content-Type is unknown', async () => {
+    for (const headers of [undefined, '[]', 'not json']) {
+      const n = await provider.parse({ parseBody: async () => ({ ...fields, 'message-headers': headers }) } as any);
+      expect(n.forwardScanText).toBeUndefined();
+    }
+  });
+
+  it.each([
+    'text/plain; charset=UTF-8',
+    'multipart/alternative; boundary="b1"',
+    'multipart/mixed; boundary="b2"',
+  ])('exposes forwardScanText for a %s message', async (contentType) => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields, 'message-headers': JSON.stringify([['Content-Type', contentType]]),
+    }) } as any);
     expect(n.forwardScanText).toBe(fields['body-plain']);
   });
 

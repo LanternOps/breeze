@@ -2102,7 +2102,8 @@ describe('staff-forward intake', () => {
       addr.endsWith('@client.example') ? { orgId: 'o-client', autoCreateContact: false } : { orgId: 'o-msp', autoCreateContact: false });
     const html = forwardBody.split('\n').map((l) => `<div>${l.replace(/</g, '&lt;').replace(/>/g, '&gt;') || '<br>'}</div>`).join('');
 
-    // Mailgun shape: no text part at all.
+    // A normalized message with no text and no forwardScanText (the provider
+    // normalizers' HTML-only shapes are covered in their own suites).
     await processInboundEmail(email({ from: 'tech@msp.example', text: '', html }));
     // Gmail/Graph shape, or an older producer: text present, no forwardScanText.
     await processInboundEmail(email({ from: 'tech@msp.example', text: forwardBody, html, providerMessageId: 'pm-2', messageId: '<pm-2@msp.example>' }));
