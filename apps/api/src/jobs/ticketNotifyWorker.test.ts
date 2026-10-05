@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { renderButton } from '../services/emailLayout';
 
 const { insertValuesMock, selectMock, updateSetMock, sendEmailMock, getEmailServiceMock, withSystemDbAccessContextMock } = vi.hoisted(() => {
   const insertValuesMock = vi.fn().mockResolvedValue([]);
@@ -1158,6 +1159,34 @@ describe('assignee notification: rich email', () => {
 
     const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
     expect(html).toMatch(/>Status<\/td><td[^>]*>Waiting on vendor</);
+  });
+
+  it('renders inside the shared email layout (renderLayout + renderButton)', async () => {
+    selectMock.mockResolvedValueOnce([ticketRow]);
+
+    await handleTicketEvent(event as never);
+
+    const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
+    expect(html.startsWith('<!doctype html>')).toBe(true);
+    expect(html).toContain(renderButton('Open ticket', 'https://rmm.example.com/tickets/t-1'));
+    expect(html).toContain('Assigned to you: Printer &lt;down&gt;</h1>');
+  });
+
+  it('a failing name lookup throws BEFORE the dedupe anchor, so the retry can still send', async () => {
+    selectMock.mockResolvedValueOnce([{ ...ticketRow, deviceId: 'd-1' }]);
+    selectMock.mockResolvedValueOnce([{ name: 'Client Co' }]); // org name
+    selectMock.mockRejectedValueOnce(new Error('connection reset')); // device name
+
+    await expect(handleTicketEvent(event as never)).rejects.toThrow('connection reset');
+    expect(push.createNotification).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+
+    // BullMQ retry of the same event: no dedupe row was written, so it sends.
+    selectMock.mockResolvedValueOnce([{ ...ticketRow, deviceId: 'd-1' }]);
+    await handleTicketEvent(event as never);
+    expect(push.createNotification).toHaveBeenCalledTimes(1);
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    expect((sendEmailMock.mock.calls[0]![0] as { html: string }).html).toContain('FRONT-DESK-01');
   });
 
   it('a replayed event (dedupe anchor already written) sends no email', async () => {
