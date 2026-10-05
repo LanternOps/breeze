@@ -20,7 +20,7 @@
  * account in between is caught by reading the account sub through the same
  * token that modifies.
  */
-import { and, eq, inArray, isNotNull, lt, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, lt, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { tightenLockTimeout, tightenStatementTimeout } from '../../db/lockTimeout';
 import { googleWorkspaceConnections, ticketEmailInbound, ticketMailboxConnections } from '../../db/schema';
@@ -120,6 +120,7 @@ type MarkContext =
     labelName: string;
     archive: boolean;
     priorError: string | null;
+    priorErrorAt: Date | null;
     saKey: string;
   };
 
@@ -169,6 +170,7 @@ export async function markIngestedGmailHandled(
         labelName: ticketMailboxConnections.gmailHandledLabel,
         archive: ticketMailboxConnections.gmailArchiveOnHandle,
         priorError: ticketMailboxConnections.gmailHandledError,
+        priorErrorAt: ticketMailboxConnections.gmailHandledErrorAt,
       })
         .from(ticketMailboxConnections)
         .where(sameGeneration)
@@ -194,11 +196,13 @@ export async function markIngestedGmailHandled(
         labelName: live.labelName,
         archive: live.archive,
         priorError: live.priorError,
+        priorErrorAt: live.priorErrorAt,
         saKey: decryptConnectionKey(cred),
       };
     }, 'gmailHandled.load'));
 
   const recordFailure = async (code: GmailHandledErrorCode, priorError: string | null, err: unknown) => {
+    let transitioned = false;
     console.warn('[gmailHandled] mark-handled failed; message stays in the inbox', {
       connectionId: generation.connectionId, code, err: err instanceof Error ? err.message : String(err),
     });
@@ -206,12 +210,26 @@ export async function markIngestedGmailHandled(
       await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
         await boundDbWaits(Math.max(remainingMs(), 2_000));
         const at = new Date();
-        await db.update(ticketMailboxConnections)
+        // A change of code: only the caller whose UPDATE actually changed the
+        // stored code reports it, so concurrent identical failures report once.
+        const changed = await db.update(ticketMailboxConnections)
           .set({ gmailHandledError: code, gmailHandledErrorAt: at })
           .where(and(
             sameRowAndGeneration,
+            sql`${ticketMailboxConnections.gmailHandledError} IS DISTINCT FROM ${code}`,
+          ))
+          .returning({ id: ticketMailboxConnections.id });
+        if (changed.length > 0) {
+          transitioned = true;
+          return;
+        }
+        // Same code again: refresh the timestamp at most once per window.
+        await db.update(ticketMailboxConnections)
+          .set({ gmailHandledErrorAt: at })
+          .where(and(
+            sameRowAndGeneration,
+            eq(ticketMailboxConnections.gmailHandledError, code),
             or(
-              sql`${ticketMailboxConnections.gmailHandledError} IS DISTINCT FROM ${code}`,
               sql`${ticketMailboxConnections.gmailHandledErrorAt} IS NULL`,
               lt(ticketMailboxConnections.gmailHandledErrorAt, new Date(at.getTime() - ERROR_REFRESH_MS)),
             ),
@@ -221,18 +239,27 @@ export async function markIngestedGmailHandled(
       console.warn('[gmailHandled] could not record the failure on the connection', {
         connectionId: generation.connectionId, err: dbErr instanceof Error ? dbErr.message : String(dbErr),
       });
+      // Could not tell whether this was a change; fall back to the snapshot.
+      transitioned = priorError !== code;
     }
-    // Sentry once per change of failure code, not once per message.
-    if (priorError !== code) safeCapture(err, code);
+    if (transitioned) safeCapture(err, code);
   };
 
-  const clearFailure = async () => {
+  // Clears only the exact failure this attempt observed (code and timestamp), so
+  // a newer failure recorded by a concurrent attempt is never erased.
+  const clearFailure = async (observed: string, observedAt: Date | null) => {
     try {
       await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
         await boundDbWaits(Math.max(remainingMs(), 2_000));
         await db.update(ticketMailboxConnections)
           .set({ gmailHandledError: null, gmailHandledErrorAt: null })
-          .where(and(sameRowAndGeneration, isNotNull(ticketMailboxConnections.gmailHandledError)));
+          .where(and(
+            sameRowAndGeneration,
+            eq(ticketMailboxConnections.gmailHandledError, observed),
+            observedAt
+              ? eq(ticketMailboxConnections.gmailHandledErrorAt, observedAt)
+              : sql`${ticketMailboxConnections.gmailHandledErrorAt} IS NULL`,
+          ));
       }, 'gmailHandled.clearFailure'));
     } catch (dbErr) {
       console.warn('[gmailHandled] could not clear the recorded failure', {
@@ -292,7 +319,7 @@ export async function markIngestedGmailHandled(
         archive: ctx.archive,
         labelCacheTtlMs: HANDLED_LABEL_CACHE_TTL_MS,
       });
-      if (priorError) await clearFailure();
+      if (ctx.priorError) await clearFailure(ctx.priorError, ctx.priorErrorAt);
       return 'marked';
     } catch (err) {
       const code = handledErrorCode(err);

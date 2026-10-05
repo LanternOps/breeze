@@ -280,6 +280,30 @@ describe('markIngestedGmailHandled (post-ticket, real DB)', () => {
     expect(cleared.gmailHandledErrorAt).toBeNull();
   });
 
+  it('a success never erases a newer failure recorded by a concurrent attempt', async () => {
+    const { email, generation, connId } = await seed('created');
+    await withSystemDbAccessContext(() => db.update(ticketMailboxConnections)
+      .set({ gmailHandledError: 'access_denied', gmailHandledErrorAt: new Date(Date.now() - 60_000) })
+      .where(eq(ticketMailboxConnections.id, connId)));
+    gm.markGmailHandled.mockImplementationOnce(async () => {
+      // Another message's attempt fails and records a newer code meanwhile.
+      await withSystemDbAccessContext(() => db.update(ticketMailboxConnections)
+        .set({ gmailHandledError: 'rate_limited', gmailHandledErrorAt: new Date() })
+        .where(eq(ticketMailboxConnections.id, connId)));
+    });
+    expect(await markIngestedGmailHandled(email, generation, deps)).toBe('marked');
+    expect((await readConn(connId)).gmailHandledError).toBe('rate_limited');
+  });
+
+  it('concurrent identical failures are reported to Sentry once', async () => {
+    const { email, generation, connId } = await seed('created');
+    gm.markGmailHandled.mockRejectedValue(Object.assign(new Error('insufficient scope'), { status: 403 }));
+    const results = await Promise.all(Array.from({ length: 5 }, () => markIngestedGmailHandled(email, generation, deps)));
+    expect(results).toEqual(Array(5).fill('failed'));
+    expect((await readConn(connId)).gmailHandledError).toBe('access_denied');
+    expect(sentry.captureException).toHaveBeenCalledTimes(1);
+  });
+
   it('never records a failure onto a connection that was reconnected during the call', async () => {
     const { email, generation, connId } = await seed('created');
     gm.markGmailHandled.mockImplementationOnce(async () => {
