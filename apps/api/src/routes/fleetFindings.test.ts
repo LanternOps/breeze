@@ -159,6 +159,7 @@ vi.mock('drizzle-orm', () => ({
   eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
   inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
   desc: (column: unknown) => ({ op: 'desc', column }),
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', strings, values }),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -357,6 +358,7 @@ beforeEach(() => {
 describe('GET /fleet/findings — org scoping', () => {
   it('org-scope token with no ?orgId scopes to its own org via auth.orgCondition', async () => {
     h.selectQueue.push([findingRow()]);
+    h.selectQueue.push([{ findingId: FINDING_1, deviceId: DEVICE_1 }]); // current members
 
     const res = await get(makeAuth({ scope: 'organization', orgId: ORG_1 }), '/');
     expect(res.status).toBe(200);
@@ -377,6 +379,10 @@ describe('GET /fleet/findings — org scoping', () => {
 
   it('partner token with no ?orgId sees all accessibleOrgIds', async () => {
     h.selectQueue.push([findingRow({ orgId: ORG_1 }), findingRow({ id: 'f2', orgId: ORG_2 })]);
+    h.selectQueue.push([
+      { findingId: FINDING_1, deviceId: DEVICE_1 },
+      { findingId: 'f2', deviceId: DEVICE_2 },
+    ]);
 
     const res = await get(makeAuth({ scope: 'partner', orgId: null, accessibleOrgIds: [ORG_1, ORG_2] }), '/');
     expect(res.status).toBe(200);
@@ -477,6 +483,7 @@ describe('GET /fleet/findings — pagination', () => {
 
   it('defaults to a page size of 50', async () => {
     h.selectQueue.push(manyRows(60));
+    h.selectQueue.push(manyRows(60).map((row) => ({ findingId: row.id, deviceId: DEVICE_1 })));
     const res = await get(makeAuth(), '/');
     const body = await res.json();
     expect(body.total).toBe(60);
@@ -485,6 +492,7 @@ describe('GET /fleet/findings — pagination', () => {
 
   it('honors an explicit limit', async () => {
     h.selectQueue.push(manyRows(60));
+    h.selectQueue.push(manyRows(60).map((row) => ({ findingId: row.id, deviceId: DEVICE_1 })));
     const res = await get(makeAuth(), '/?limit=10');
     const body = await res.json();
     expect(body.total).toBe(60);
@@ -493,6 +501,7 @@ describe('GET /fleet/findings — pagination', () => {
 
   it('honors offset', async () => {
     h.selectQueue.push(manyRows(60));
+    h.selectQueue.push(manyRows(60).map((row) => ({ findingId: row.id, deviceId: DEVICE_1 })));
     const res = await get(makeAuth(), '/?limit=10&offset=55');
     const body = await res.json();
     expect(body.findings).toHaveLength(5);
@@ -524,6 +533,7 @@ describe('GET /fleet/findings — resolved-history fetch is bounded', () => {
 
   it('reports a total spanning the whole window, not the page size', async () => {
     h.selectQueue.push(manyRows(30));
+    h.selectQueue.push(manyRows(30).map((row) => ({ findingId: row.id, deviceId: DEVICE_1 })));
     const res = await get(makeAuth(), '/?status=resolved&limit=10&offset=0');
     expect(res.status).toBe(200);
 
@@ -562,6 +572,11 @@ describe('GET /fleet/findings/counts', () => {
       { id: 'finding-2', orgId: ORG_1 },
       { id: 'finding-3', orgId: ORG_2 },
     ]);
+    h.selectQueue.push([
+      { findingId: FINDING_1, deviceId: DEVICE_1 },
+      { findingId: 'finding-2', deviceId: DEVICE_1 },
+      { findingId: 'finding-3', deviceId: DEVICE_2 },
+    ]);
 
     const res = await get(
       makeAuth({ scope: 'partner', orgId: null, accessibleOrgIds: [ORG_1, ORG_2] }),
@@ -582,6 +597,7 @@ describe('GET /fleet/findings/counts', () => {
     // finding sitting in the same org can never be counted even if a future
     // refactor loosens the WHERE clause upstream.
     h.selectQueue.push([{ id: FINDING_1, orgId: ORG_1 }]);
+    h.selectQueue.push([{ findingId: FINDING_1, deviceId: DEVICE_1 }]);
     const res = await get(makeAuth({ scope: 'organization', orgId: ORG_1 }), '/counts');
     const body = await res.json();
     expect(body).toEqual({ total: 1, byOrg: { [ORG_1]: 1 } });
@@ -621,6 +637,80 @@ describe('GET /fleet/findings/counts', () => {
 });
 
 describe('GET /fleet/findings/:id', () => {
+  // The producer caches an org-wide title/summary/evidence on the finding row:
+  // totals and per-device samples (ids + hostnames) for EVERY member. A caller
+  // who sees only some members gets metadata rebuilt from what they can see.
+  it.each([
+    ['metric_anomaly_pattern', 'Metric anomaly pattern'],
+    ['log_correlation', 'Log pattern'],
+    ['reliability_offenders', 'Low reliability'],
+  ])('projects cached %s metadata to the visible members for a site-restricted caller', async (kind, label) => {
+    h.selectQueue.push([findingRow({
+      kind,
+      title: 'Cached org-wide title on 42 devices',
+      summary: 'Cached org-wide summary',
+      evidence: { totalDevices: 42, maxScore: 99, samples: [{ deviceId: DEVICE_2, hostname: 'HIDDEN-HOST' }] },
+    })]);
+    h.selectQueue.push([{
+      deviceId: DEVICE_1, hostname: 'CURRENT-HOST', siteId: SITE_1, displayName: null, osType: 'windows',
+      sourceKind: 'k', sourceRowId: null,
+      memberEvidence: { hostname: 'OLD-HOST', count: 2 },
+      firstSeenAt: new Date('2026-07-01T00:00:00.000Z'),
+      lastSeenAt: new Date('2026-07-02T00:00:00.000Z'),
+    }]);
+    h.selectQueue.push([]);
+
+    const response = await get(makeAuth({ allowedSiteIds: [SITE_1] }), `/${FINDING_1}`);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual(expect.objectContaining({
+      title: `${label}: 1 device`, summary: null, deviceCount: 1, evidence: { totalDevices: 1 },
+    }));
+    // A per-member hostname captured at detection time is replaced by the
+    // device's current one (the device may since have moved sites).
+    expect(body.members[0].memberEvidence).toEqual({ hostname: 'CURRENT-HOST', count: 2 });
+    expect(JSON.stringify(body)).not.toContain(DEVICE_2);
+    expect(JSON.stringify(body)).not.toContain('HIDDEN-HOST');
+    expect(JSON.stringify(body)).not.toContain('OLD-HOST');
+  });
+
+  it('keeps rich cached metadata for an unrestricted caller, but drops samples naming a non-member', async () => {
+    for (const stale of [false, true]) {
+      const evidence = { totalDevices: 1, samples: [{ deviceId: stale ? DEVICE_2 : DEVICE_1, score: 3 }] };
+      h.selectQueue.push([findingRow({ deviceCount: 1, evidence })]);
+      h.selectQueue.push([{
+        deviceId: DEVICE_1, hostname: 'CURRENT-HOST', siteId: SITE_1, displayName: null, osType: 'windows',
+        sourceKind: 'k', sourceRowId: null, memberEvidence: {},
+        firstSeenAt: new Date('2026-07-01T00:00:00.000Z'),
+        lastSeenAt: new Date('2026-07-02T00:00:00.000Z'),
+      }]);
+      h.selectQueue.push([]);
+      const response = await get(makeAuth(), `/${FINDING_1}`);
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.evidence).toEqual(stale ? { totalDevices: 1 } : evidence);
+      expect(body.title).toBe(stale ? 'Metric anomaly pattern: 1 device' : findingRow().title);
+      expect(body.summary).toBe(stale ? null : findingRow().summary);
+      expect(JSON.stringify(body)).not.toContain(DEVICE_2);
+    }
+  });
+
+  it('list: projects cached metadata for a site-restricted caller', async () => {
+    h.selectQueue.push([findingRow({
+      title: 'Cached org-wide title on 42 devices',
+      evidence: { totalDevices: 42, samples: [{ deviceId: DEVICE_2, hostname: 'HIDDEN-HOST' }] },
+    })]);
+    h.selectQueue.push([{ findingId: FINDING_1, deviceId: DEVICE_1 }]);
+
+    const res = await get(makeAuth({ allowedSiteIds: [SITE_1] }), '/');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.findings[0]).toEqual(expect.objectContaining({
+      title: 'Metric anomaly pattern: 1 device', summary: null, deviceCount: 1, evidence: { totalDevices: 1 },
+    }));
+    expect(JSON.stringify(body)).not.toContain('HIDDEN-HOST');
+  });
+
   // Sentry BREEZE-2M: a non-UUID id reached `eq(fleetFindings.id, id)`
   // unvalidated and Postgres rejected it with 22P02 (invalid_text_representation),
   // surfacing as a 500. The param must be validated before it ever reaches the
@@ -1136,7 +1226,12 @@ describe('GET /fleet/findings/:id/runs', () => {
 
   it("returns the finding's runs (delegates to getFleetFinding)", async () => {
     h.selectQueue.push([findingRow()]);
-    h.selectQueue.push([]); // members
+    h.selectQueue.push([{
+      deviceId: DEVICE_1, hostname: 'WS-01', siteId: SITE_1, displayName: null, osType: 'windows',
+      sourceKind: 'k', sourceRowId: null, memberEvidence: {},
+      firstSeenAt: new Date('2026-07-01T00:00:00.000Z'),
+      lastSeenAt: new Date('2026-07-02T00:00:00.000Z'),
+    }]); // a current member keeps the finding visible
     h.selectQueue.push([runRow({ id: 'run-9' })]); // runs
 
     const res = await get(makeAuth(), `/${FINDING_1}/runs`);
