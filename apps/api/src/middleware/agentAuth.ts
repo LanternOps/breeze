@@ -20,6 +20,7 @@ import { DRAIN_CLAIM_TYPE_ALLOWLIST } from '../services/drainClaimAllowlist';
 import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
 import { CORE_AGENT_ACTION_INDEX, isCoreAgentPath } from './agentCorePath';
 import { isParkedAllowedAgentPath, PARKED_DEVICE_REFUSAL } from './agentAuthParked';
+import { agentAuthNegativeCache, type AgentAuthTerminalRejection } from './agentAuthNegativeCache';
 import {
   AGENT_ORG_RATE_WINDOW_SECONDS,
   computeReservedIngestLimit,
@@ -548,6 +549,38 @@ function isDrainAllowedAgentPath(
 }
 
 /**
+ * #8050 — the single source of each TERMINAL rejection's agent-visible
+ * response. Used both when the rejection is first decided and when the
+ * negative cache replays it, so a replay is byte-for-byte the original: same
+ * status, same message, same structured body. Build a fresh exception per call
+ * (a Response body can only be read once).
+ */
+function terminalAgentAuthRejection(kind: AgentAuthTerminalRejection): HTTPException {
+  switch (kind) {
+    case 're_enrollment_required':
+      // A device row exists but neither token hash is populated — the
+      // pre-hashed-token migration state. A distinct error so the agent can
+      // prompt for re-enrollment instead of silently retrying forever.
+      return new HTTPException(401, {
+        message: 'Re-enrollment required: device predates token-hash migration',
+        res: new Response(
+          JSON.stringify({ error: 'Re-enrollment required', code: 're_enrollment_required' }),
+          { status: 401, headers: { 'content-type': 'application/json' } },
+        ),
+      });
+    case 'decommissioned':
+      return new HTTPException(403, { message: 'Device has been decommissioned' });
+    case 'device_not_found':
+    case 'token_suspended':
+    case 'token_mismatch':
+    case 'tenant_denied':
+      // Deliberately indistinguishable: a suspended token, a suspended tenant
+      // and a stale token all read as the same opaque 401.
+      return new HTTPException(401, { message: 'Invalid agent credentials' });
+  }
+}
+
+/**
  * Middleware to authenticate agent requests via Bearer token.
  * Hashes the token and compares against the stored agentTokenHash.
  * Enforces per-agent rate limiting via Redis.
@@ -571,6 +604,21 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   }
 
   const tokenHash = createHash('sha256').update(token).digest('hex');
+
+  // #8050 — a credential that was TERMINALLY rejected within the last TTL is
+  // refused again here, before any DB/Redis work, with the identical response.
+  // Keyed on (agentId, tokenHash): a forged token only ever caches the
+  // forger's own key, so this can never lock a legitimate agent out. Only the
+  // rejections passed to `rejectTerminally` below are ever stored — rate
+  // limits, drain/parked refusals, quarantine, cert binding and errors are not.
+  const cachedRejection = agentAuthNegativeCache.lookup('rest', agentId, tokenHash);
+  if (cachedRejection) {
+    throw terminalAgentAuthRejection(cachedRejection);
+  }
+  const rejectTerminally = (kind: AgentAuthTerminalRejection): HTTPException => {
+    agentAuthNegativeCache.remember('rest', agentId, tokenHash, kind);
+    return terminalAgentAuthRejection(kind);
+  };
 
   // Authentication must work even when tenant RLS is deny-by-default.
   // Use system DB context for lookup, then scope all downstream queries to the device org.
@@ -613,27 +661,21 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   });
 
   if (!device) {
-    throw new HTTPException(401, { message: 'Invalid agent credentials' });
+    throw rejectTerminally('device_not_found');
   }
 
   // Task 18: suspended tokens fail closed. We do NOT leak the suspension
   // reason in the response — a compromised agent should see the same 401
   // as a stale token.
   if (checkDeviceTokenSuspension(device)) {
-    throw new HTTPException(401, { message: 'Invalid agent credentials' });
+    throw rejectTerminally('token_suspended');
   }
 
   // A device row exists but neither token hash is populated — this is the
   // pre-hashed-token migration state. Surface a distinct error so the agent
   // can prompt for re-enrollment instead of silently retrying forever.
   if (!device.agentTokenHash && !device.watchdogTokenHash) {
-    throw new HTTPException(401, {
-      message: 'Re-enrollment required: device predates token-hash migration',
-      res: new Response(
-        JSON.stringify({ error: 'Re-enrollment required', code: 're_enrollment_required' }),
-        { status: 401, headers: { 'content-type': 'application/json' } },
-      ),
-    });
+    throw rejectTerminally('re_enrollment_required');
   }
 
   const match = matchRoleScopedAgentTokenHash({
@@ -649,7 +691,7 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     tokenHash,
   });
   if (!match) {
-    throw new HTTPException(401, { message: 'Invalid agent credentials' });
+    throw rejectTerminally('token_mismatch');
   }
 
   // #3986 Layer 1 — a removed device is STILL denied by default. The single
@@ -696,12 +738,13 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // shapes below stay this ingress's own.
   const statusDenial = checkDeviceStatus(device, { allowDecommissioned: deviceUninstallDraining });
   if (statusDenial) {
-    throw new HTTPException(403, {
-      message:
-        statusDenial.reason === 'decommissioned'
-          ? 'Device has been decommissioned'
-          : 'Device is quarantined pending admin approval',
-    });
+    // #8050 — only `decommissioned` is terminal (and reaching it here already
+    // means NOT draining: a draining device is allowed through above).
+    // Quarantine is NOT cached: an admin approval must take effect at once.
+    if (statusDenial.reason === 'decommissioned') {
+      throw rejectTerminally('decommissioned');
+    }
+    throw new HTTPException(403, { message: 'Device is quarantined pending admin approval' });
   }
 
   const redis = getRedis();
@@ -913,9 +956,11 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // not keep authenticating its agent fleet. The device-level checks above
   // (token suspension, decommission, quarantine) don't cover the org/partner
   // lifecycle; mirror the API-key path (apiKeyAuth → getActiveOrgTenant) and
-  // fail closed. Runs after the rate limiters so a flood from an inactive
-  // tenant can't drive uncached lookups, and returns the same opaque 401 as a
-  // stale token so the agent cannot distinguish suspension from a bad token.
+  // fail closed. Runs after the rate limiters, and returns the same opaque 401
+  // as a stale token so the agent cannot distinguish suspension from a bad
+  // token. A denial here is negative-cached (#8050), so a repeat from the same
+  // credential within the TTL is refused at the top of this middleware without
+  // reaching the device lookup, the limiters or this gate again.
   //
   // #2774 — an `offboarding` tenant resolves to 'draining': still
   // authenticated (that's the whole point — self_uninstall must be
@@ -925,7 +970,10 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // failure and back off its heartbeat).
   const tenantVerdict = await checkDeviceTenantState(device.orgId, { allowDraining: true });
   if (tenantVerdict.denied) {
-    throw new HTTPException(401, { message: 'Invalid agent credentials' });
+    // #8050 — cached: a suspended/churned/deleted tenant is durable state, and
+    // reinstatement takes effect within the cache TTL. (A draining tenant is
+    // NOT denied here — it resolves to the narrowed surface below, uncached.)
+    throw rejectTerminally('tenant_denied');
   }
   const tenantState = tenantVerdict.tenantState;
 
