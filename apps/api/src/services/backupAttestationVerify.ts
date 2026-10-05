@@ -30,6 +30,7 @@ import {
 } from './backupSnapshotStorage';
 import { expectedControlKey, type AttestationObjectRole } from './backupAttestation';
 import { recordBackupAttestation } from './backupMetrics';
+import { settleVerificationsForFailedAttestation } from './backupAttestationFailureSettlement';
 import { asRecord, resolveSnapshotProviderConfig } from './recoveryBootstrap';
 
 /** Largest layout / system-state manifest the verifier will fetch. */
@@ -387,6 +388,9 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
             fileIndexError: "attestation_failed: the snapshot's attestation does not match its stored objects",
           })
           .where(and(eq(backupSnapshots.id, snapshotDbId), eq(backupSnapshots.fileIndexStatus, 'complete')));
+        // Verifications waiting on the snapshot end now, with the integrity
+        // reason, instead of at their timeout.
+        await settleVerificationsForFailedAttestation(snapshotDbId);
       }
       return written;
     }),

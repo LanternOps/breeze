@@ -49,6 +49,10 @@ vi.mock('../db', () => ({
 
 vi.mock('./auditService', () => ({ createAuditLogAsync: vi.fn() }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+const settleMock = vi.hoisted(() => vi.fn(async (_snapshotDbId: string) => 0));
+vi.mock('./backupAttestationFailureSettlement', () => ({
+  settleVerificationsForFailedAttestation: settleMock,
+}));
 
 const { attestAgentResultSnapshot, evaluateSnapshotAttestation } = await import('./backupAttestation');
 
@@ -104,5 +108,25 @@ describe('attestation step: helper integrity capability not reported', () => {
     const outcome = await attestAgentResultSnapshot(PARAMS, deps);
     expect(outcome).toBe('missing_from_capable');
     expect(state.updates).toContainEqual({ integrityStatus: 'unattested' });
+  });
+});
+
+describe('attestation step: a refused attestation', () => {
+  beforeEach(() => {
+    state.updates.length = 0;
+    state.integrityVersion = 1;
+    settleMock.mockClear();
+  });
+
+  it('settles the waiting verifications of the snapshot when it is marked attestation_failed', async () => {
+    const outcome = await attestAgentResultSnapshot({ ...PARAMS, result: { attestation: { statement: 42 } } }, deps);
+    expect(outcome).toBe('invalid');
+    expect(state.updates).toContainEqual({ integrityStatus: 'attestation_failed' });
+    expect(settleMock).toHaveBeenCalledWith('snap-row-1');
+  });
+
+  it('settles nothing when the attestation is only missing', async () => {
+    await attestAgentResultSnapshot(PARAMS, deps);
+    expect(settleMock).not.toHaveBeenCalled();
   });
 });

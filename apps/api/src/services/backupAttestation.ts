@@ -35,6 +35,7 @@ import { BACKUP_SNAPSHOT_ID_MAX_LENGTH } from '../db/schema/backupConstants';
 import { db, hasDbAccessContext, runAfterDbContextExit, withDbTransaction } from '../db';
 import { backupJobs, backupSnapshots } from '../db/schema/backup';
 import { devices } from '../db/schema/devices';
+import { settleVerificationsForFailedAttestation } from './backupAttestationFailureSettlement';
 import {
   backupSnapshotAttestations,
   type BackupSnapshotIntegrityStatus,
@@ -377,6 +378,9 @@ async function projectIntegrityStatus(snapshotDbId: string, status: BackupSnapsh
     .update(backupSnapshots)
     .set({ integrityStatus: status })
     .where(and(eq(backupSnapshots.id, snapshotDbId), ne(backupSnapshots.integrityStatus, 'attestation_failed')));
+  // Nothing can read the snapshot any more: verifications waiting on it end
+  // now, with the integrity reason, rather than at their timeout.
+  if (status === 'attestation_failed') await settleVerificationsForFailedAttestation(snapshotDbId);
 }
 
 /**
