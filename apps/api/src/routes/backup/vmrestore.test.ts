@@ -121,6 +121,7 @@ vi.mock('../../services/commandQueue', () => ({
   CommandTypes: {
     VM_RESTORE_FROM_BACKUP: 'VM_RESTORE_FROM_BACKUP',
     VM_INSTANT_BOOT: 'VM_INSTANT_BOOT',
+    BARE_METAL_REBUILD: 'bare_metal_rebuild',
   },
 }));
 
@@ -528,6 +529,8 @@ describe('vm restore routes — rebuild engine', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     authorizeResilienceResourcesMock.mockResolvedValue({ resources: [] });
+    integrityGate.check.mockResolvedValue({ ok: true, authorizationReason: null });
+    integrityGate.record.mockResolvedValue('authorization-1');
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', authState);
       return next();
@@ -535,6 +538,50 @@ describe('vm restore routes — rebuild engine', () => {
     app = new Hono();
     app.use('*', authMiddleware);
     app.route('/backup', vmRestoreRoutes);
+  });
+
+  describe('restore integrity', () => {
+    it('checks the rebuild of the snapshot\'s own device and answers a step-up request without creating anything', async () => {
+      mockHappyPath();
+      integrityGate.check.mockResolvedValueOnce({
+        ok: false, status: 403, body: { code: 'STEP_UP_REQUIRED', error: 'confirm', stepUp: { operation: 'backup_unattested_restore' } },
+      });
+      const res = await app.request('/backup/restore/as-vm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ ...rebuildBody, stepUpGrant: '66666666-6666-4666-8666-666666666666' }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ code: 'STEP_UP_REQUIRED', error: 'confirm', stepUp: { operation: 'backup_unattested_restore' } });
+      expect(integrityGate.check).toHaveBeenCalledWith(expect.anything(), {
+        orgId: ORG_ID,
+        snapshotDbId: SNAPSHOT_ID,
+        targetDeviceId: DEVICE_ID,
+        commandType: 'bare_metal_rebuild',
+        stepUpGrant: '66666666-6666-4666-8666-666666666666',
+        confirmUnattestedRestore: undefined,
+      });
+      expect(createBareMetalRecoveryMock).not.toHaveBeenCalled();
+      expect(queueBareMetalRebuildMock).not.toHaveBeenCalled();
+    });
+
+    it('records a confirmed rebuild\'s authorization bound to the recovery, in the same transaction', async () => {
+      mockHappyPath();
+      integrityGate.check.mockResolvedValueOnce({ ok: true, authorizationReason: 'unattested_legacy' });
+      const res = await app.request('/backup/restore/as-vm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify(rebuildBody),
+      });
+      expect(res.status).toBe(202);
+      expect(integrityGate.record).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ snapshotDbId: SNAPSHOT_ID, targetDeviceId: DEVICE_ID, commandType: 'bare_metal_rebuild' }),
+        'unattested_legacy',
+        { recoveryId: RECOVERY_ID },
+        { inCurrentTransaction: true },
+      );
+    });
   });
 
   it('rejects an identity field on the rebuild variant (server forces identity: new)', async () => {

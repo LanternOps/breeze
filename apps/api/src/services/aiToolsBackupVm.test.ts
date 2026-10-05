@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const actorGate = vi.hoisted(() => ({ refusal: vi.fn(async (): Promise<unknown> => null) }));
+vi.mock('./backupRestoreActorGate', () => ({
+  restoreIntegrityRefusalForActor: (...args: unknown[]) => actorGate.refusal(...(args as [])),
+}));
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -16,6 +20,7 @@ vi.mock('./commandQueue', () => ({
   CommandTypes: {
     VM_RESTORE_FROM_BACKUP: 'vm_restore_from_backup',
     VM_INSTANT_BOOT: 'vm_instant_boot',
+    BARE_METAL_REBUILD: 'bare_metal_rebuild',
   },
 }));
 
@@ -310,6 +315,27 @@ describe('restore_as_vm — rebuild engine (W05a)', () => {
       rebuildHostDeviceId: HOST_ID,
     });
     expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('hands the rebuild service an integrity decision that refuses an unattested snapshot for an AI agent', async () => {
+    prepareHandlerMocks('restore_as_vm');
+    vi.mocked(startRebuildEngineVmRestore).mockImplementation(async (input: any) => {
+      const decision = await input.integrity({ id: SNAPSHOT_ID, deviceId: DEVICE_ID });
+      return decision.ok
+        ? { ok: true, jobId: RESTORE_JOB_ID, recoveryId: RECOVERY_ID, commandId: COMMAND_ID, status: 'queued' }
+        : { ok: false, status: decision.status, error: decision.body.code, body: decision.body };
+    });
+    actorGate.refusal.mockResolvedValueOnce({ code: 'snapshot_integrity_unavailable', message: 'no attestation' });
+
+    const result = JSON.parse(await toolMap.get('restore_as_vm')!.handler(rebuildInput as Record<string, unknown>, makeAuth()));
+
+    expect(result).toEqual({ error: 'no attestation', code: 'snapshot_integrity_unavailable' });
+    expect(actorGate.refusal).toHaveBeenCalledWith({
+      snapshotDbId: SNAPSHOT_ID,
+      targetDeviceId: DEVICE_ID,
+      commandType: 'bare_metal_rebuild',
+      actor: 'ai_agent',
+    });
   });
 
   it('returns the service error verbatim when the snapshot is not rebuildable', async () => {

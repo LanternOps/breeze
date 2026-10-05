@@ -14,7 +14,12 @@ import { queueCommandForExecution, CommandTypes } from '../../services/commandQu
 import { PERMISSIONS } from '../../services/permissions';
 import { startRebuildEngineVmRestore } from '../../services/vmRestoreRebuildEngine';
 import { isRestoreHelperUpdateRequiredError } from '../../services/backupRestoreGate';
-import { gateRestoreCommand, restoreIntegrityResponse } from './restoreIntegrityGate';
+import {
+  checkRestoreIntegrityRequest,
+  gateRestoreCommand,
+  recordRequestAuthorization,
+  restoreIntegrityResponse,
+} from './restoreIntegrityGate';
 import { resolveScopedOrgId } from './helpers';
 import {
   bmrVmRestoreSchema,
@@ -156,10 +161,33 @@ vmRestoreRoutes.post(
           ...(payload.hyperv ? { hyperv: payload.hyperv } : {}),
           userId: auth.user?.id ?? null,
           requestUrl: c.req.url,
+          // Integrity: the rebuild recovers the snapshot's own device. A
+          // confirmed restore of a snapshot without a usable attestation is
+          // authorized for the recovery, in this same transaction.
+          integrity: async (snapshot) => {
+            const request = {
+              orgId,
+              snapshotDbId: snapshot.id,
+              targetDeviceId: snapshot.deviceId,
+              commandType: CommandTypes.BARE_METAL_REBUILD,
+              stepUpGrant: payload.stepUpGrant,
+              confirmUnattestedRestore: payload.confirmUnattestedRestore,
+            };
+            const check = await checkRestoreIntegrityRequest(c, request);
+            if (!check.ok) return check;
+            const reason = check.authorizationReason;
+            if (!reason) return { ok: true };
+            return {
+              ok: true,
+              bindRecovery: (recoveryId: string) =>
+                recordRequestAuthorization(c, request, reason, { recoveryId }, { inCurrentTransaction: true }),
+            };
+          },
         })
       );
 
       if (!result.ok) {
+        if (result.body) return c.json(result.body, result.status);
         return c.json({
           error: result.error,
           ...(result.message ? { message: result.message } : {}),
