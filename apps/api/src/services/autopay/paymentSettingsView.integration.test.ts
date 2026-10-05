@@ -171,3 +171,15 @@ it('reports a current method with no consent on file as null authorization (#789
   expect(await system(() => feeAuthorizationGaps(db, f.partner.id))).toEqual([expect.objectContaining({
     orgId: f.org.id, authorizedCardFeeBps: null, authorizedAchFeeAmount: null, cardFeeBps: 300 })]);
 });
+
+it('lists a client with no authorization on file when the configured fee is zero', async () => {
+  const f = await fixture();
+  await system(async () => {
+    await db.update(billingPaymentSettings).set({ cardFeeBps: 0, achFeeAmount: '0.00' }).where(eq(billingPaymentSettings.partnerId, f.partner.id));
+    // The fixture's consent authorizes 0 bps: equal to the configured fee, so not listed.
+    expect(await feeAuthorizationGaps(db, f.partner.id)).toEqual([]);
+    await db.update(orgAutopayEnrollments).set({ generation: 2 }).where(eq(orgAutopayEnrollments.id, f.enrollment.id));
+    expect(await feeAuthorizationGaps(db, f.partner.id)).toEqual([expect.objectContaining({
+      orgId: f.org.id, authorizedCardFeeBps: null, authorizedAchFeeAmount: null, cardFeeBps: 0 })]);
+  });
+});

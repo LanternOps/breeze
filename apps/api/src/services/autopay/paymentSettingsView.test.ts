@@ -131,3 +131,19 @@ it('reports a method with no consent on file as null, not as a zero authorizatio
     { orgId: 'zero', orgName: 'Real zero', methodType: 'card', authorizedCardFeeBps: 0, authorizedAchFeeAmount: '0.00', cardFeeBps: 300, achFeeAmount: '2.50' },
   ]);
 });
+
+it('lists a client with no authorization on file even when the configured fee is zero (collection refuses it)', async () => {
+  mocks.resolve.mockResolvedValue({ ...inherited, cardFeeBps: { value: 0 }, achFeeAmount: { value: '0.00' } });
+  const zeroTerms = { methodType: 'card', cardFeeBps: 0, achFeeAmount: '0.00', feeAttested: true, currency: 'USD' };
+  const rows = [
+    { orgId: 'none-card', orgName: 'No consent card', methodType: 'card', feeTerms: null, cardFeeBps: null, achFeeAmount: null },
+    { orgId: 'none-bank', orgName: 'No consent bank', methodType: 'us_bank_account', feeTerms: null, cardFeeBps: null, achFeeAmount: null },
+    { orgId: 'other-method', orgName: 'Card consent, bank method', methodType: 'us_bank_account', feeTerms: zeroTerms, cardFeeBps: null, achFeeAmount: null },
+    { orgId: 'real-zero', orgName: 'Real zero', methodType: 'card', feeTerms: zeroTerms, cardFeeBps: null, achFeeAmount: null },
+  ];
+  const chain: any = { from: () => chain, innerJoin: () => chain, leftJoin: () => chain, where: () => chain, orderBy: async () => rows };
+  expect((await feeAuthorizationGaps({ selectDistinctOn: () => chain } as unknown as typeof db, partnerId)).map(gap =>
+    [gap.orgId, gap.authorizedCardFeeBps, gap.authorizedAchFeeAmount])).toEqual([
+    ['none-card', null, null], ['none-bank', null, null], ['other-method', null, null],
+  ]);
+});

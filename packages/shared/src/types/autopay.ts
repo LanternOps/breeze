@@ -93,7 +93,8 @@ export interface ResolvedPaymentSettings {
 }
 export interface FeeAuthorizationGap {
  orgId:string;orgName:string;methodType:AutopayPaymentMethodType;
- /** Null when no authorization for the current method is on file (distinct from an authorized 0). */
+ /** Null when no authorization for the current method is on file (distinct from an authorized 0);
+  * such a client is listed whatever the configured fee, because collection refuses it. */
  authorizedCardFeeBps:number|null;authorizedAchFeeAmount:string|null;cardFeeBps:number;achFeeAmount:string;
 }
 /** The partner's processing-fee attestation on file. attestedByName is null when the user is no longer readable. */

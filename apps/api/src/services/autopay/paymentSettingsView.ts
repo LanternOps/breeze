@@ -48,6 +48,8 @@ async function attesterName(connection: typeof db, userId: string): Promise<stri
 }
 
 /** Compare the latest consent for the current enrollment generation and payment method.
+ * Lists clients whose authorization is below the configured fee, and clients with no
+ * authorization on file for that method (authorized fields null) whatever the fee.
  * This is a settings comparison, not permission to charge; collection applies eligibility too. */
 export async function feeAuthorizationGaps(connection: typeof db, partnerId: string, orgId?: string): Promise<FeeAuthorizationGap[]> {
   const settings = await resolveBillingPaymentSettings(connection, { partnerId });
@@ -83,8 +85,9 @@ export async function feeAuthorizationGaps(connection: typeof db, partnerId: str
       ? accepted.achFeeAmount : '0.00';
     const cardFeeBps = row.cardFeeBps ?? settings.cardFeeBps.value;
     const achFeeAmount = row.achFeeAmount ?? settings.achFeeAmount.value;
-    const lower = row.methodType === 'card' ? (authorizedCardFeeBps ?? 0) < cardFeeBps
-      : BigInt((authorizedAchFeeAmount ?? '0.00').replace('.', '')) < BigInt(achFeeAmount.replace('.', ''));
+    // No authorization at all is listed whatever the configured fee: collection refuses it (consent_required).
+    const lower = !onFile || (row.methodType === 'card' ? authorizedCardFeeBps! < cardFeeBps
+      : BigInt(authorizedAchFeeAmount!.replace('.', '')) < BigInt(achFeeAmount.replace('.', '')));
     return lower ? [{ orgId: row.orgId, orgName: row.orgName, methodType: row.methodType,
       authorizedCardFeeBps, authorizedAchFeeAmount, cardFeeBps, achFeeAmount }] : [];
   });
