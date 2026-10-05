@@ -1,4 +1,5 @@
 import BankAutopayPayment from './BankAutopayPayment';
+import { AutopayConfirmationNotice } from './AutopayConfirmationNotice';
 import { runAction } from '@/lib/runAction';
 import { invoiceAutopayInput } from '@/lib/api';
 import { withBase } from '@/lib/basePath';
@@ -72,6 +73,8 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
   useEffect(() => { setSaveForAutopay(false); }, [detail?.autopay?.disclosureHash]);
   const [payError, setPayError] = useState<string | null>(null);
   const [payTerminal, setPayTerminal] = useState(false);
+  // Set once the customer cancels an autopay payment that was waiting on their bank.
+  const [confirmationReleased, setConfirmationReleased] = useState(false);
   // Verify-on-return settle state. 'idle' until we detect the post-Checkout return.
   const [settleState, setSettleState] = useState<'idle' | 'settling' | 'pending' | 'failed'>('idle');
 
@@ -150,7 +153,10 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
     amountPaid: invoice.amountPaid,
     balance: invoice.balance,
   }, invoice.currencyCode);
-  const collectionInProgress = detail.collectionInProgress ?? null; // #7824
+  // #7824. Once the customer has released a payment waiting on their bank, the
+  // server reservation is gone and the Pay button is the way to pay.
+  const collectionInProgress = confirmationReleased ? null : detail.collectionInProgress ?? null;
+  const awaitingBank = collectionInProgress?.actionRequired === true;
   const payLabel = chargeNow.isDeposit
     ? `Pay deposit ${money(chargeNow.amount, currency)}`
     : `Pay ${money(chargeNow.amount, currency)}`;
@@ -246,7 +252,16 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
         </div>
       </div>
 
-      {canPay && collectionInProgress && (
+      {canPay && collectionInProgress && awaitingBank && (
+        <AutopayConfirmationNotice amount={collectionInProgress.amount} currency={currency}
+          release={() => portalApi.releaseAutopayConfirmation(invoice.id)} onReleased={() => setConfirmationReleased(true)} />
+      )}
+      {canPay && confirmationReleased && (
+        <div role="status" className="rounded-md bg-warning/10 p-3 text-sm font-medium text-warning-on-tint" data-testid="autopay-confirmation-released">
+          The automatic payment was canceled. Use Pay above to pay securely — your bank will ask you to confirm.
+        </div>
+      )}
+      {canPay && collectionInProgress && !awaitingBank && (
         <div role="status" className="rounded-md bg-warning/10 p-3 text-sm font-medium text-warning-on-tint" data-testid="invoice-collection-processing">
           Payment processing via autopay — {money(collectionInProgress.amount, currency)} is being collected automatically. No action needed.
         </div>

@@ -45,6 +45,13 @@ describe('Stripe setup boundary',()=>{
    metadata:expect.objectContaining({org_id:'org',enrollment_id:'enroll',generation:'7',token_id:'token',setup_attempt_id:'attempt'})}),
    {idempotencyKey:'autopay_setup_attempt'});
  });
+ it.each(['card','us_bank_account'] as const)('never offers the Link wallet on %s setup Checkout',async methodType=>{
+  mock.create.mockResolvedValue({id:'cs_setup',url:'https://checkout.stripe.com/test'});
+  mock.client.mockResolvedValue({stripeAccountId:'acct_one',stripe:{checkout:{sessions:{create:mock.create}}}});
+  await createHostedAutopaySession({consentSnapshot,partnerId:'p',stripeAccountId:'acct_one',stripeCustomerId:'cus_one',
+   id:'attempt',orgId:'org',enrollmentId:'enroll',generation:7,tokenId:'token',methodType},'portal');
+  expect(mock.create.mock.calls[0]![0]).toMatchObject({payment_method_types:[methodType],wallet_options:{link:{display:'never'}}});
+ });
  it('refuses the wrong account before a provider mutation',async()=>{
   mock.create.mockClear();mock.client.mockResolvedValue({stripeAccountId:'acct_other',stripe:{checkout:{sessions:{create:mock.create}}}});
   await expect(createHostedAutopaySession({consentSnapshot,partnerId:'p',stripeAccountId:'acct_one',stripeCustomerId:'cus_one',

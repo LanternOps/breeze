@@ -27,6 +27,13 @@ describe('RemindersSettingsSection', () => {
     expect(reminderPatch({ ...value, remindersEnabled: '' }).remindersEnabled).toBeNull();
     expect(screen.getByTestId('autopay-reminders-repeat-help')).toHaveTextContent('cannot disable');
   });
+  it('names the built-in default the same way as the automatic payment fields (lab P-2)', () => {
+    render(<I18nextProvider i18n={i18n}><RemindersSettingsSection scope="partner"
+      value={reminderDraft(inherited, 'partner')} inherited={inherited} onChange={vi.fn()} /></I18nextProvider>);
+    const section = screen.getByTestId('autopay-reminders-section');
+    expect(section).toHaveTextContent('Inherits from Breeze default');
+    expect(section).not.toHaveTextContent(/system default/i);
+  });
   it('disables controlled fields and exposes no second Save', () => {
     render(<I18nextProvider i18n={i18n}><RemindersSettingsSection scope="partner"
       value={reminderDraft(inherited, 'partner')} inherited={inherited} onChange={vi.fn()} disabled /></I18nextProvider>);

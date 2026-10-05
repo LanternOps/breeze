@@ -9,7 +9,7 @@ export const CARD_FUNDING_TYPES = ['credit', 'debit', 'prepaid', 'unknown'] as c
 export const ACCOUNT_HOLDER_TYPES = ['individual', 'company'] as const;
 export const ORG_PAYMENT_METHOD_STATUSES = ['pending_verification', 'active', 'unusable', 'removed'] as const;
 export const AUTOPAY_SCHEDULE_STATES = ['awaiting_notice', 'scheduled', 'collecting', 'retry_scheduled', 'action_required', 'succeeded', 'failed', 'skipped_by_client', 'excluded_by_msp', 'cancelled', 'not_needed'] as const;
-export const AUTOPAY_INELIGIBLE_REASONS = ['not_enrolled', 'enrolled_after_issue', 'consent_required', 'method_not_usable', 'over_cap', 'cap_currency_mismatch', 'ach_currency_unsupported', 'excluded_contract', 'excluded_invoice', 'charging_disabled', 'stripe_unavailable'] as const;
+export const AUTOPAY_INELIGIBLE_REASONS = ['not_enrolled', 'enrolled_after_issue', 'consent_required', 'method_not_usable', 'over_cap', 'cap_currency_mismatch', 'ach_currency_unsupported', 'excluded_contract', 'excluded_invoice', 'charging_disabled', 'stripe_unavailable', 'above_authorized_cap'] as const;
 export const COLLECTION_ATTEMPT_STATES = ['reserved', 'created', 'confirming', 'processing', 'succeeded', 'failed', 'requires_action', 'canceled', 'unapplied'] as const;
 export const ACTIVE_COLLECTION_ATTEMPT_STATES = ['reserved', 'created', 'confirming', 'processing'] as const;
 export const RESERVING_COLLECTION_ATTEMPT_STATES = ['reserved', 'created', 'confirming', 'processing', 'requires_action'] as const;
@@ -41,7 +41,7 @@ export type BillingLinkPurpose = (typeof BILLING_LINK_PURPOSES)[number];
 export type ConsentSource = (typeof CONSENT_SOURCES)[number];
 
 export const AUTOPAY_SETUP_SOURCES = CONSENT_SOURCES;
-export const AUTOPAY_SETUP_OUTCOMES = ['activated','pending_verification','stale_generation','failed','in_progress','abandoned'] as const;
+export const AUTOPAY_SETUP_OUTCOMES = ['activated','pending_verification','stale_generation','failed','in_progress','abandoned','unsupported_method'] as const;
 export type AutopaySetupSource = (typeof AUTOPAY_SETUP_SOURCES)[number];
 export type AutopaySetupOutcome = (typeof AUTOPAY_SETUP_OUTCOMES)[number];
 export interface AutopaySetupCompletion { outcome: AutopaySetupOutcome; orgId: string }
@@ -93,9 +93,16 @@ export interface ResolvedPaymentSettings {
 }
 export interface FeeAuthorizationGap {
  orgId:string;orgName:string;methodType:AutopayPaymentMethodType;
- authorizedCardFeeBps:number;authorizedAchFeeAmount:string;cardFeeBps:number;achFeeAmount:string;
+ /** Null when no authorization for the current method is on file (distinct from an authorized 0);
+  * such a client is listed whatever the configured fee, because collection refuses it. */
+ authorizedCardFeeBps:number|null;authorizedAchFeeAmount:string|null;cardFeeBps:number;achFeeAmount:string;
 }
-export interface PaymentSettingsView { feeAuthorizationGaps?:FeeAuthorizationGap[]; autopayEnabled:boolean;values:PaymentValues;inherited:ResolvedPaymentSettings;effective:ResolvedPaymentSettings }
+/** The partner's processing-fee attestation on file. attestedByName is null when the user is no longer readable. */
+export interface FeeAttestationRecord { attestedAt:string;attestedByName:string|null }
+export interface PaymentSettingsView { feeAuthorizationGaps?:FeeAuthorizationGap[];
+ /** Partner view only: null when no attestation is on file. */
+ feeAttestation?:FeeAttestationRecord|null;
+ autopayEnabled:boolean;values:PaymentValues;inherited:ResolvedPaymentSettings;effective:ResolvedPaymentSettings }
 
 export const autopayScheduleTermsSchema=z.object({offsetDays:z.number().int().min(0).max(60),rule:z.enum(AUTOPAY_OFFSET_RULES),
  cap:z.discriminatedUnion('enabled',[z.object({enabled:z.literal(false)}),z.object({enabled:z.literal(true),amount:z.string(),currency:z.string()})])});
@@ -165,3 +172,6 @@ export interface BankAutopayOffer {
  methodStatus:Extract<OrgPaymentMethodStatus,'active'|'pending_verification'>|null;
 }
 export type InvoicePayResult={url:string;outcome?:never;attemptId?:never;reason?:never}|(CollectionResult&{url?:never});
+/** Invoice-page exit from an off-session payment awaiting bank confirmation:
+ * the original PaymentIntent is canceled so the client can pay on-session. */
+export type AutopayConfirmationRelease={outcome:'released'|'processing'|'paid'|'not_needed'};

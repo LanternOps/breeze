@@ -170,6 +170,9 @@ export interface ApiResponse<T> {
    *  branding so a replaced proposal can show a branded notice instead of a bare
    *  failure. */
   errorData?: unknown;
+  /** The `details` object of an error body: a refusal's structured reason when the
+   *  `code` alone is shared by several refusals (e.g. COLLECTION_IN_PROGRESS). */
+  errorDetails?: Record<string, unknown>;
   statusCode?: number;
   headers?: Headers;
 }
@@ -242,6 +245,7 @@ export async function apiRequest<T>(
         error: body?.error || 'That didn\'t go through. Nothing was lost — try again in a moment.',
         code: typeof body?.code === 'string' ? body.code : undefined,
         errorData: body?.data,
+        errorDetails: body?.details && typeof body.details === 'object' && !Array.isArray(body.details) ? body.details : undefined,
         statusCode: response.status,
         headers: response.headers
       };
@@ -521,8 +525,8 @@ export function invoiceAutopayInput(saveForAutopay: boolean, disclosure?: Invoic
     : { saveForAutopay: false };
 }
 
-import type { BankAutopayOffer, BankPayInput, InvoicePayResult } from '@breeze/shared';
-export type { BankAutopayOffer, BankPayInput, InvoicePayResult } from '@breeze/shared';
+import type { AutopayConfirmationRelease, BankAutopayOffer, BankPayInput, InvoicePayResult } from '@breeze/shared';
+export type { AutopayConfirmationRelease, BankAutopayOffer, BankPayInput, InvoicePayResult } from '@breeze/shared';
 
 export interface InvoiceDetail {
   bankAutopay?: BankAutopayOffer | null;
@@ -549,7 +553,7 @@ export interface InvoiceDetail {
   onlinePaymentAvailable?: boolean;
   /** #7824: server-side autopay collection in flight (same reservation the pay
    *  route's 409 uses). Non-null disables the Pay button; null/absent = none. */
-  collectionInProgress?: { amount: string } | null;
+  collectionInProgress?: { amount: string; actionRequired?: boolean } | null;
 }
 
 export type QuoteStatus =
@@ -756,8 +760,9 @@ export interface PublicInvoiceDetail {
   lines: InvoiceLine[];
   chargeNow: { amount: string; isDeposit: boolean } | null;
   payable: boolean;
-  /** #7824: an autopay collection is in flight (server reservation). */
-  collectionInProgress?: { amount: string } | null;
+  /** #7824: an autopay collection is in flight (server reservation).
+   *  actionRequired: it is waiting on the customer's bank (off-session 3DS). */
+  collectionInProgress?: { amount: string; actionRequired?: boolean } | null;
   branding: {
     partnerName: string;
     contactEmail: string | null;
@@ -994,6 +999,11 @@ export const portalApi = {
   payInvoice: async (id: string, config: ApiRequestConfig = {}, autopay?: SaveForAutopayInput | BankPayInput): Promise<ApiResponse<InvoicePayResult>> =>
     apiPost<InvoicePayResult>(`/portal/invoices/${id}/pay`, autopay, config),
 
+  // Cancel an autopay payment that is waiting on bank authentication so the
+  // customer can pay on-session (same effect as the emailed confirm link).
+  releaseAutopayConfirmation: async (id: string): Promise<ApiResponse<AutopayConfirmationRelease>> =>
+    apiPost<AutopayConfirmationRelease>(`/portal/invoices/${encodeURIComponent(id)}/autopay-confirmation`, {}),
+
   // Verify-on-return: settle the Checkout session server-side after the customer
   // lands back on the invoice (success_url carries the session id). Idempotent — the
   // reconcile sweep is the eventual backstop if this is skipped/fails.
@@ -1200,6 +1210,9 @@ export const portalApi = {
 
   payPublicInvoice: async (token: string, autopay?: SaveForAutopayInput | BankPayInput): Promise<ApiResponse<{ data: InvoicePayResult }>> =>
     apiPost<{ data: InvoicePayResult }>(`/invoices/public/${encodeURIComponent(token)}/pay`, autopay ?? {}, { redirectOnUnauthorized: false }),
+
+  releasePublicAutopayConfirmation: async (token: string): Promise<ApiResponse<{ data: AutopayConfirmationRelease }>> =>
+    apiPost<{ data: AutopayConfirmationRelease }>(`/invoices/public/${encodeURIComponent(token)}/autopay-confirmation`, {}, { redirectOnUnauthorized: false }),
 
   // Checkout verify-on-return WITHOUT the invoice token: exchanges the Stripe
   // session id for settlement + the canonical public page url (the return urls

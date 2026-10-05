@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { fireEvent, render, screen, cleanup } from '@testing-library/react';
+import { fireEvent, render, screen, cleanup, waitFor } from '@testing-library/react';
 import type { InvoiceDetail, InvoiceLine } from '@/lib/api';
 
 // Same stub the other portal component suites use: the real module reaches
@@ -242,4 +242,31 @@ it('mounts bank pay only when the server offers it', () => {
  const view=render(<InvoiceDetailView detail={{...data,bankAutopay:{available:true,principal:'100.00',fee:'0.00',currency:'USD',consentText:'Authorize bank payment.',disclosureHash:'a'.repeat(64),methodStatus:null}}}/>);
  expect(screen.getByTestId('autopay-bank-pay')).toBeTruthy();view.unmount();
  render(<InvoiceDetailView detail={data}/>);expect(screen.queryByTestId('autopay-bank-pay')).toBeNull();
+});
+
+describe('InvoiceDetailView — autopay payment waiting on the bank (off-session 3DS)', () => {
+  const waiting = () => ({ ...detail([line()]), collectionInProgress: { amount: '100.00', actionRequired: true } });
+
+  it('tells the truth instead of "no action needed" and offers the way out', () => {
+    render(<InvoiceDetailView detail={waiting()} />);
+    expect(screen.getByTestId('autopay-confirmation-notice').textContent).toContain('Your bank needs you to confirm this payment');
+    expect(screen.queryByTestId('invoice-collection-processing')).toBeNull();
+    expect(document.body.textContent).not.toContain('No action needed');
+    expect((screen.getByTestId('invoice-pay-button') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('releases the off-session payment so the card Pay button works', async () => {
+    const { portalApi } = await import('@/lib/api');
+    const release = vi.spyOn(portalApi, 'releaseAutopayConfirmation').mockResolvedValue({ data: { outcome: 'released' }, statusCode: 200 });
+    const pay = vi.spyOn(portalApi, 'payInvoice').mockResolvedValue({ error: 'stop here', statusCode: 409 });
+    pay.mockClear();
+    render(<InvoiceDetailView detail={waiting()} />);
+    fireEvent.click(screen.getByTestId('autopay-confirmation-continue'));
+    await waitFor(() => expect(release).toHaveBeenCalledWith('inv-1'));
+    await waitFor(() => expect((screen.getByTestId('invoice-pay-button') as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByTestId('autopay-confirmation-notice')).toBeNull();
+    expect(screen.getByTestId('autopay-confirmation-released')).toHaveTextContent('Pay');
+    fireEvent.click(screen.getByTestId('invoice-pay-button'));
+    await waitFor(() => expect(pay).toHaveBeenCalled());
+  });
 });

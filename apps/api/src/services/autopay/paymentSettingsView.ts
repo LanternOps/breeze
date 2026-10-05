@@ -1,6 +1,6 @@
 import {autopayFeeTermsSchema,type FeeAuthorizationGap,type PaymentSettingsView,type ResolvedPaymentSettings} from '@breeze/shared';
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
-import { billingPaymentSettings, organizations, orgAutopayEnrollments, orgAutopayConsents, orgPaymentMethods } from '../../db/schema';
+import { billingPaymentSettings, organizations, orgAutopayEnrollments, orgAutopayConsents, orgPaymentMethods, users } from '../../db/schema';
 import { BILLING_PAYMENT_SETTINGS_DEFAULTS as defaults, resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { isAutopayEnabledForPartner } from './autopayGate';
 import type { db } from '../../db';
@@ -22,6 +22,11 @@ export async function paymentSettingsView(connection: typeof db, partnerId: stri
   const autopayEnabled = await isAutopayEnabledForPartner(connection, partnerId);
   return {
     autopayEnabled, effective, inherited,
+    // The attestation is partner-only (CHECK), so only the partner view reports it.
+    ...(orgId ? {} : { feeAttestation: row?.feeAttestedAt ? {
+      attestedAt: row.feeAttestedAt.toISOString(),
+      attestedByName: row.feeAttestedBy ? await attesterName(connection, row.feeAttestedBy) : null,
+    } : null }),
     ...(autopayEnabled ? { feeAuthorizationGaps: await feeAuthorizationGaps(connection, partnerId, orgId) } : {}),
     values: {
       autopayOffsetDays: row?.autopayOffsetDays ?? null,
@@ -36,7 +41,15 @@ export async function paymentSettingsView(connection: typeof db, partnerId: stri
   };
 }
 
+/** Null when the user is no longer readable; the attestation itself stays on file. */
+async function attesterName(connection: typeof db, userId: string): Promise<string | null> {
+  const [user] = await connection.select({ name: users.name }).from(users).where(eq(users.id, userId)).limit(1);
+  return user?.name ?? null;
+}
+
 /** Compare the latest consent for the current enrollment generation and payment method.
+ * Lists clients whose authorization is below the configured fee, and clients with no
+ * authorization on file for that method (authorized fields null) whatever the fee.
  * This is a settings comparison, not permission to charge; collection applies eligibility too. */
 export async function feeAuthorizationGaps(connection: typeof db, partnerId: string, orgId?: string): Promise<FeeAuthorizationGap[]> {
   const settings = await resolveBillingPaymentSettings(connection, { partnerId });
@@ -60,15 +73,21 @@ export async function feeAuthorizationGaps(connection: typeof db, partnerId: str
       inArray(orgAutopayEnrollments.status, ['active', 'paused']), orgId ? eq(organizations.id, orgId) : undefined))
     .orderBy(organizations.id, desc(orgAutopayConsents.createdAt), desc(orgAutopayConsents.id));
   return rows.flatMap(row => {
-    const terms = autopayFeeTermsSchema.safeParse(row.feeTerms);
-    const accepted = terms.success && terms.data.methodType === row.methodType ? terms.data : null;
-    const authorizedCardFeeBps = accepted?.cardFeeBps ?? 0;
-    const authorizedAchFeeAmount = accepted && /^(0|[1-9]\d?)\.\d{2}$/.test(accepted.achFeeAmount)
+    // fee_terms is NOT NULL, so null here means the left join found no consent.
+    const terms = row.feeTerms == null ? null : autopayFeeTermsSchema.safeParse(row.feeTerms);
+    // No consent, or one given for another method type, authorizes nothing (collection
+    // refuses it): report null, never a zero that reads like a real 0-fee consent.
+    // Unreadable terms stay a zero fee, which is what collection charges under them.
+    const onFile = terms !== null && (!terms.success || terms.data.methodType === row.methodType);
+    const accepted = terms?.success && terms.data.methodType === row.methodType ? terms.data : null;
+    const authorizedCardFeeBps = onFile ? accepted?.cardFeeBps ?? 0 : null;
+    const authorizedAchFeeAmount = !onFile ? null : accepted && /^(0|[1-9]\d?)\.\d{2}$/.test(accepted.achFeeAmount)
       ? accepted.achFeeAmount : '0.00';
     const cardFeeBps = row.cardFeeBps ?? settings.cardFeeBps.value;
     const achFeeAmount = row.achFeeAmount ?? settings.achFeeAmount.value;
-    const lower = row.methodType === 'card' ? authorizedCardFeeBps < cardFeeBps
-      : BigInt(authorizedAchFeeAmount.replace('.', '')) < BigInt(achFeeAmount.replace('.', ''));
+    // No authorization at all is listed whatever the configured fee: collection refuses it (consent_required).
+    const lower = !onFile || (row.methodType === 'card' ? authorizedCardFeeBps! < cardFeeBps
+      : BigInt(authorizedAchFeeAmount!.replace('.', '')) < BigInt(achFeeAmount.replace('.', '')));
     return lower ? [{ orgId: row.orgId, orgName: row.orgName, methodType: row.methodType,
       authorizedCardFeeBps, authorizedAchFeeAmount, cardFeeBps, achFeeAmount }] : [];
   });

@@ -84,6 +84,14 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   }
   if(!method)throw new Error('Completed setup has no payment method');
   if((method.type!=='card'&&method.type!=='us_bank_account')||method.type!==attempt.methodType)throw new Error('Stripe returned the wrong method type');
+  // Fail closed before any replacement (#7894): collection admission never charges a card
+  // without supported evidence (Link or an unknown wallet/network), so activating one would
+  // leave the client believing autopay is on. The working method, consent and tokens stay.
+  if(method.type==='card'&&!hasSupportedCardEvidence(method.card??undefined)){
+   await db.update(autopaySetupAttempts).set({outcome:'unsupported_method',completedAt:new Date()}).where(eq(autopaySetupAttempts.id,attempt.id));
+   await enqueueRejectedAutopayMethod(db,attempt,method);
+   return {outcome:'unsupported_method',orgId:attempt.orgId};
+  }
   const snapshot=autopayConsentSnapshotSchema.parse(attempt.consentSnapshot);
   const [existing]=await db.select().from(orgPaymentMethods).where(and(eq(orgPaymentMethods.orgId,attempt.orgId),
    eq(orgPaymentMethods.stripePaymentMethodId,method.id))).limit(1);

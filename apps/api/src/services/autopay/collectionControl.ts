@@ -21,6 +21,20 @@ export function isControllableSchedule(state: (typeof invoiceAutopaySchedules.$i
   return CONTROL_SCHEDULE_STATES.includes(state);
 }
 
+/** Spec 6.6: once an attempt has been sent to Stripe for confirmation it cannot be
+ * recalled (a processing ACH debit always completes or returns), so a client skip
+ * or an MSP exclusion is refused rather than promised. Reserved/created attempts are fenced before
+ * confirmation and requires_action PaymentIntents can still be cancelled. */
+const UNSTOPPABLE_ATTEMPT_STATES = ['confirming', 'processing'] as const;
+export const SKIP_PROCESSING_MESSAGE = "A payment for this invoice is already processing and can't be stopped. You'll get a receipt when it completes.";
+const EXCLUDE_PROCESSING_MESSAGE = "A payment for this invoice is already processing and can't be stopped. Exclude the invoice after the payment completes or fails.";
+export async function hasUnstoppableCollection(tx: Tx, invoiceId: string): Promise<boolean> {
+  const rows = await tx.select({ state: invoiceCollectionAttempts.state }).from(invoiceCollectionAttempts)
+    .where(and(eq(invoiceCollectionAttempts.invoiceId, invoiceId),
+      inArray(invoiceCollectionAttempts.state, [...UNSTOPPABLE_ATTEMPT_STATES])));
+  return rows.some(row => (UNSTOPPABLE_ATTEMPT_STATES as readonly string[]).includes(row.state));
+}
+
 export type InvoiceControl = 'skip' | 'exclude';
 export type InvoiceControlResult = { status: 'pending'; control: InvoiceControl }
   | { status: 'skipped' | 'excluded'; staffNotice?: AutopayStaffNotice };
@@ -34,8 +48,10 @@ export async function lockInvoicesForEnrollmentStop(tx: Tx, orgId: string): Prom
     .orderBy(invoices.id).for('update');
 }
 
-/** Caller holds invoice and enrollment locks; never release an unresolved reservation. */
-export async function stopEnrollmentSchedules(tx: Tx, enrollmentId: string): Promise<string[]> {
+/** Caller holds invoice and enrollment locks; never release an unresolved reservation.
+ * Returns the invoices a payment still holds: `processing` ones complete (spec 6.6),
+ * `cancelling` ones can still be stopped. An invoice is listed under each that applies. */
+export async function stopEnrollmentSchedules(tx: Tx, enrollmentId: string): Promise<{ processing: string[]; cancelling: string[] }> {
   const schedules = await tx.select().from(invoiceAutopaySchedules)
     .where(and(eq(invoiceAutopaySchedules.enrollmentId, enrollmentId),
       inArray(invoiceAutopaySchedules.state, CONTROL_SCHEDULE_STATES))).for('update');
@@ -53,12 +69,15 @@ export async function stopEnrollmentSchedules(tx: Tx, enrollmentId: string): Pro
     ));
   }
   // Invoice-bound bank collections can reserve without ever having a schedule.
-  const pending = await tx.select({ id: invoices.id, number: invoices.invoiceNumber }).from(invoiceCollectionAttempts)
+  const pending = await tx.select({ id: invoices.id, number: invoices.invoiceNumber, state: invoiceCollectionAttempts.state }).from(invoiceCollectionAttempts)
     .innerJoin(orgPaymentMethods, eq(orgPaymentMethods.id, invoiceCollectionAttempts.paymentMethodId))
     .innerJoin(invoices, eq(invoices.id, invoiceCollectionAttempts.invoiceId))
     .where(and(eq(orgPaymentMethods.enrollmentId, enrollmentId),
       inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES])));
-  return [...new Set(pending.map(invoice => invoice.number ?? invoice.id))];
+  const numbers = (unstoppable: boolean) => [...new Set(pending
+    .filter(row => (UNSTOPPABLE_ATTEMPT_STATES as readonly string[]).includes(row.state) === unstoppable)
+    .map(invoice => invoice.number ?? invoice.id))];
+  return { processing: numbers(true), cancelling: numbers(false) };
 }
 
 /** Shared by all collection producers, including confirmation of an existing PI. */
@@ -100,6 +119,11 @@ export async function requestInvoiceControl(tx: Tx, input: {
   if (!alreadyExcluded && ['void', 'paid'].includes(invoice.status)) throw new InvoiceServiceError('Invoice is closed', 409, 'INVALID_STATE');
   if (input.kind === 'skip' && (!schedule?.enrollmentId || !['awaiting_notice', 'scheduled', 'retry_scheduled', 'collecting', 'action_required'].includes(schedule.state))) {
     throw new InvoiceServiceError('Invoice cannot be skipped', 409, 'INVALID_STATE');
+  }
+  // Neither control may promise to stop money it cannot stop. Refuse before any fence is written.
+  if (await hasUnstoppableCollection(tx, invoice.id)) {
+    throw new InvoiceServiceError(input.kind === 'skip' ? SKIP_PROCESSING_MESSAGE : EXCLUDE_PROCESSING_MESSAGE,
+      409, 'COLLECTION_IN_PROGRESS', { reason: 'payment_processing' });
   }
   const now = new Date();
   if (input.kind === 'exclude' && !invoice.autopayExcluded) {

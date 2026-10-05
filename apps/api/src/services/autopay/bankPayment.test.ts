@@ -23,7 +23,7 @@ it('requires consent, an unchanged disclosure, decimal amounts, and a session fo
 });
 
 const bank=vi.hoisted(()=>({rows:[] as unknown[][],disclosure:vi.fn(),quote:vi.fn(),session:vi.fn(),intent:vi.fn()}));
-vi.mock('../../db',()=>({db:{select:()=>({from:()=>({where:()=>({limit:async()=>bank.rows.shift()})})})},
+vi.mock('../../db',()=>({db:{select:()=>({from:()=>({where:()=>({limit:()=>{const rows=Promise.resolve(bank.rows.shift());return Object.assign(rows,{for:()=>rows});}})})})},
   withSystemDbAccessContext:async(fn:()=>Promise<unknown>)=>fn(),runOutsideDbContext:async(fn:()=>Promise<unknown>)=>fn()}));
 vi.mock('./autopayGate',()=>({isAutopayEnabledForPartner:vi.fn(async()=>true)}));
 vi.mock('./stripeCapabilities',()=>({getAutopayStripeReadiness:vi.fn(async()=>({ready:true,accountCountry:'US',stripeAccountId:'acct_test'}))}));
@@ -91,7 +91,7 @@ it.each(['pending_verification','in_progress','abandoned'] as const)('never coll
  completionFixture();vi.mocked(completeAutopaySetup).mockResolvedValue({outcome,orgId:invoice.orgId});
  expect(await collect()).toMatchObject({outcome:'deferred',reason:outcome});expect(attemptCollection).not.toHaveBeenCalled();
 });
-it.each(['invoice','org','account','generation','method','setupIntent','principal','fee','currency','consumed','revoked','purpose','expired'])(
+it.each(['invoice','org','setupIntent','principal','fee','currency','purpose'])(
  'refuses mismatched %s before reserving',async mismatch=>{
  completionFixture();
  if(mismatch==='invoice'||mismatch==='org')bank.session.mockResolvedValue({...session,metadata:{...session.metadata,[mismatch+'_id']:'other'}});
@@ -114,7 +114,7 @@ it('never lets invalid bank consent fall through the ordinary card branch',()=>{
 it('does not offer bank payment while money is reserved',async()=>{
  completionFixture();bank.rows=[[invoice],[enrollment],[{id:invoice.orgId,status:'active'}]];
  bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64)});
- vi.mocked(readInFlightCollection).mockResolvedValueOnce({inProgress:true,amount:'100.00'});
+ vi.mocked(readInFlightCollection).mockResolvedValueOnce({inProgress:true,amount:'100.00',actionRequired:false});
  expect(await getBankAutopayOffer(invoice.id,invoice.orgId)).toBeNull();expect(attemptCollection).not.toHaveBeenCalled();
 });
 it('requires fresh displayed terms when the balance changed before setup',async()=>{
@@ -139,4 +139,30 @@ it('retains pending bank verification after another payment closes the invoice',
  [{status:'active',stripeAccountId:'acct_test'}],[{id:'org',status:'active',deletedAt:null}],[]];
  bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64),text:'Accepted bank terms'});bank.quote.mockReturnValue({feeAmount:'0.00'});
  expect(await getBankAutopayOffer('invoice','org')).toMatchObject({available:false,methodStatus:'pending_verification'});
+});
+
+// Microdeposits take 1-2 business days to arrive and Stripe allows 10 days to verify
+// them, so the invoice-bound authority must outlive that window.
+import {mintBillingLinkToken} from './linkTokens';
+import {resolveBillingEmail} from '../invoicePdf';
+it('mints the invoice-bound bank authority to outlive microdeposit verification',async()=>{
+ completionFixture();bank.rows=[[invoice],[enrollment],[{id:invoice.orgId,status:'active',deletedAt:null}],[],[enrollment],[{id:invoice.orgId,billingContact:{email:'billing@example.test'}}]];
+ bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64),text:'Accepted bank terms'});bank.quote.mockReturnValue({feeAmount:'0.00'});
+ vi.mocked(resolveBillingEmail).mockReturnValue('billing@example.test');
+ vi.mocked(mintBillingLinkToken).mockResolvedValue({id:'token',token:'secret'});
+ await startInvoiceBankSetup({invoiceId:invoice.id,orgId:invoice.orgId,terms:{...accepted,methodType:'us_bank_account',phase:'setup',consentAccepted:true,currency:'USD'},returnTo:'public',ip:null,userAgent:null});
+ expect(mintBillingLinkToken).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({purpose:'enroll',invoiceId:invoice.id,ttlDays:14}));
+});
+// An unavailable authority is a structured outcome the page can act on, not a dead end.
+it.each([
+ ['expired',()=>{bank.rows[1]=[{...token,expiresAt:new Date(0)}];},'bank_authorization_expired'],
+ ['revoked',()=>{bank.rows[1]=[{...token,revokedAt:new Date()}];},'bank_authorization_expired'],
+ ['consumed',()=>{bank.rows[1]=[{...token,consumedAt:new Date()}];},'bank_authorization_used'],
+ ['generation',()=>{bank.rows[2]=[{...enrollment,generation:2}];},'bank_authorization_changed'],
+ ['account',()=>{bank.rows[2]=[{...enrollment,stripeAccountId:'acct_other'}];},'bank_authorization_changed'],
+ ['method',()=>{vi.mocked(getAutopayMethod).mockResolvedValue({...method,id:'replacement',stripePaymentMethodId:'pm_B',stripeSetupIntentId:'seti_B'} as never);},'bank_authorization_changed'],
+] as const)('returns a structured %s authority without reserving',async(_case,change,reason)=>{
+ completionFixture();change();
+ expect(await collect()).toEqual({attemptId:null,outcome:'refused',reason});
+ expect(attemptCollection).not.toHaveBeenCalled();
 });

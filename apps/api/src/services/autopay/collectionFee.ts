@@ -17,6 +17,16 @@ export function clampNoticedFee(quote:FeeQuote,currency:string,noticedFee?:strin
   return fromMinorUnits(noticedFee===undefined?current:Math.min(current,valid(noticedFee)),currency);
 }
 
+export type AutopayConsentKey = { orgId: string; enrollmentId: string; generation: number; methodId: string };
+/** The latest consent accepted for this exact authority (enrollment generation + method). */
+export async function latestAutopayConsent(tx: Tx, key: AutopayConsentKey) {
+  const [consent] = await tx.select().from(orgAutopayConsents).where(and(
+    eq(orgAutopayConsents.orgId, key.orgId), eq(orgAutopayConsents.enrollmentId, key.enrollmentId),
+    eq(orgAutopayConsents.generation, key.generation), eq(orgAutopayConsents.paymentMethodId, key.methodId),
+  )).orderBy(desc(orgAutopayConsents.createdAt), desc(orgAutopayConsents.id)).limit(1);
+  return consent;
+}
+
 /** Only the latest acceptance for this exact authority can limit recurring fees.
  * The accepted percentage/flat amount is the maximum; evaluate it on this payment's
  * principal, then apply today's legal quote. Missing authority never permits a charge.
@@ -25,10 +35,7 @@ export async function acceptedCollectionFee(tx: Tx, input: {
   orgId: string; partnerId: string; enrollmentId: string; generation: number; methodId: string;
   methodType: 'card' | 'us_bank_account'; principal: string; currency: string; quote: FeeQuote;
 }): Promise<FeeQuote | null> {
-  const [consent] = await tx.select().from(orgAutopayConsents).where(and(
-    eq(orgAutopayConsents.orgId, input.orgId), eq(orgAutopayConsents.enrollmentId, input.enrollmentId),
-    eq(orgAutopayConsents.generation, input.generation), eq(orgAutopayConsents.paymentMethodId, input.methodId),
-  )).orderBy(desc(orgAutopayConsents.createdAt), desc(orgAutopayConsents.id)).limit(1);
+  const consent = await latestAutopayConsent(tx, input);
   const missingConsent=async()=>{
     await enqueueAutopayStaffNotifications(tx,{orgId:input.orgId,partnerId:input.partnerId,partnerOnly:true,
       event:'autopay.needs_attention',dedupeKey:`autopay:consent_required:${input.enrollmentId}:${input.generation}:${input.methodId}`,

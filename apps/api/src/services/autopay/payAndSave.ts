@@ -15,6 +15,7 @@ import { prepareAutopayCapture } from './setupSession';
 import { persistCapturedAutopayMethod } from './setupCompletion';
 import { withAcceptedAutopayDisclosure, buildAutopayDisclosure } from './consentText';
 import { isAutopayEnabledForPartner } from './autopayGate';
+import { AUTOPAY_CHECKOUT_WALLET_OPTIONS } from './feeDisclosure';
 
 export const payAndSaveSchema = z.object({
   saveForAutopay: z.boolean().default(false),
@@ -37,7 +38,7 @@ export type CardSaveInput = {
 
 export function cardSaveStripeFields(
   attempt: { id: string; stripeCustomerId: string | null } | null,
-): Pick<Stripe.Checkout.SessionCreateParams, 'customer' | 'payment_intent_data'> {
+): Pick<Stripe.Checkout.SessionCreateParams, 'customer' | 'payment_intent_data' | 'wallet_options'> {
   if (!attempt) return {};
   if (!attempt.stripeCustomerId) throw new Error('Autopay Customer missing');
   return {
@@ -46,6 +47,7 @@ export function cardSaveStripeFields(
       setup_future_usage: 'off_session',
       metadata: { autopay_setup_attempt_id: attempt.id },
     },
+    wallet_options: AUTOPAY_CHECKOUT_WALLET_OPTIONS,
   };
 }
 

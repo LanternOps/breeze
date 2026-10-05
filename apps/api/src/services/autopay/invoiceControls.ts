@@ -5,7 +5,7 @@ import { toMinorUnits, fromMinorUnits } from '../stripeMoney';
 import { and, eq, inArray } from 'drizzle-orm';
 import { ACTIVE_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
 import { invoices, invoiceAutopaySchedules, invoiceCollectionAttempts, billingNoticeOutbox,
-  orgAutopayEnrollments, invoiceLines, contracts } from '../../db/schema';
+  orgAutopayEnrollments, invoiceLines, contracts, partners } from '../../db/schema';
 import { InvoiceServiceError, type InvoiceActor } from '../invoiceTypes';
 import { requireInvoiceAccess } from '../invoiceService';
 import { assertNoActiveCollection } from './reservation';
@@ -13,7 +13,7 @@ import { resolveBillingLinkToken } from './linkTokens';
 import { planAutopayForInvoice, noticeLeadDays } from './scheduler';
 import { enqueueAutopayNotice, type AutopayTerms } from './chargingNotice';
 import { isAutopayEnabledForPartner } from './autopayGate';
-import { collectionFenced, pendingInvoiceControl, requestInvoiceControl, type InvoiceControlResult } from './collectionControl';
+import { collectionFenced, hasUnstoppableCollection, pendingInvoiceControl, requestInvoiceControl, type InvoiceControlResult } from './collectionControl';
 import type { Tx } from './types';
 
 export async function assertControllable(tx: Tx, invoiceId: string): Promise<void> {
@@ -51,9 +51,12 @@ async function skipAuthority(tx: Tx, token: string, lock: boolean) {
 }
 
 export async function getSkipInvoiceView(tx: Tx, token: string) {
-  const { schedule } = await skipAuthority(tx, token, false);
-  return { state: schedule.state, collectOn: schedule.collectOn,
-    control: pendingInvoiceControl(schedule.stateReason) };
+  const { invoice, schedule } = await skipAuthority(tx, token, false);
+  // partnerName: who the client contacts if the skip is refused.
+  const [partner] = await tx.select({ name: partners.name }).from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
+  // processing: a payment is already with Stripe and the skip would be refused.
+  return { state: schedule.state, collectOn: schedule.collectOn, partnerName: partner?.name ?? null,
+    control: pendingInvoiceControl(schedule.stateReason), processing: await hasUnstoppableCollection(tx, invoice.id) };
 }
 
 export async function skipInvoice(tx: Tx, token: string): Promise<InvoiceControlResult> {

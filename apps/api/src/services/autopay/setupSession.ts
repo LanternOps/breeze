@@ -17,6 +17,7 @@ import {mapStripeCheckoutError} from '../stripeCheckoutErrors';
 import {isAutopayEnabledForPartner} from './autopayGate';
 import {getAutopayStripeReadiness} from './stripeCapabilities';
 import {buildAutopayDisclosure,requireAcceptedAutopayDisclosure} from './consentText';
+import {AUTOPAY_CHECKOUT_WALLET_OPTIONS} from './feeDisclosure';
 export type SetupInput={orgId:string;methodType:AutopayPaymentMethodType;consentAccepted:true;
  returnTo:'public'|'portal';tokenId?:string;contactEmail:string;ip:string|null;userAgent:string|null};
 export async function prepareAutopayCapture(input:SetupInput,source:AutopaySetupSource,invoiceId?:string,checkoutKey?:string){
@@ -103,7 +104,7 @@ export async function createHostedAutopaySession(attempt:{id:string;partnerId:st
  const paymentMetadata:Record<string,string>=bank?{invoice_id:bank.invoiceId,principal_minor:String(toMinorUnits(bank.principal,bank.currency)),
   fee_minor:String(toMinorUnits(bank.fee,bank.currency)),currency:bank.currency}:{};
  try{return await runOutsideDbContext(()=>stripe.checkout.sessions.create({mode:'setup',customer:attempt.stripeCustomerId,
-  payment_method_types:[attempt.methodType],
+  payment_method_types:[attempt.methodType],wallet_options:AUTOPAY_CHECKOUT_WALLET_OPTIONS,
   ...(attempt.methodType==='us_bank_account'?{currency:'usd',payment_method_options:{us_bank_account:{verification_method:'automatic' as const}}}:{}),
   metadata:{...metadata,...paymentMetadata},setup_intent_data:{metadata:{...metadata,...paymentMetadata}},
   success_url:`${portalBase()}/autopay/return?session_id={CHECKOUT_SESSION_ID}&target=${returnTo}${bank?'&bank=1':''}`,

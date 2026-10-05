@@ -2494,6 +2494,7 @@
     "requestedCount_other": "{{count}} müşteriye istek gönderildi.",
     "chargeDate": "{{date}} tarihinde veya yakınında tahsil edilir",
     "excludeInvoice": "Bu faturayı otomatik ödemelerden hariç tut",
+    "excludeRefusedProcessing": "Bu faturanın ödemesi zaten işleniyor ve durdurulamaz. Ödeme tamamlandığında veya başarısız olduğunda faturayı hariç tutabilirsiniz.",
     "excludeContract": "Bu sözleşmeyi içeren faturaları hariç tut",
     "failed": "Otomatik ödeme güncellenemedi. Lütfen tekrar deneyin.",
     "states": {
@@ -2521,6 +2522,7 @@
       "enrolled_after_issue": "Fatura düzenlendikten sonra kaydoldu",
       "method_not_usable": "Ödeme yöntemi kullanılamıyor",
       "over_cap": "Otomatik ödeme limiti aşıldı",
+      "above_authorized_cap": "Müşterinin onayladığı limitin üzerinde",
       "cap_currency_mismatch": "Limit para birimi eşleşmiyor",
       "ach_currency_unsupported": "Banka ödemesi para birimi desteklenmiyor",
       "excluded_contract": "Sözleşme hariç tutuldu",
@@ -2566,14 +2568,63 @@
       "inactive": "İş ortağı yöneticiniz aşağıdaki iki beyanı da onaylayana kadar kart ücretleri uygulanmaz.",
       "notified": "Üye işyeri hizmet sağlayıcımı (Stripe) ve kart ağlarını en az 30 gün önce bilgilendirdim",
       "cost": "Bu ücret, kart kabul maliyetimi aşmıyor",
-      "rules": "Yalnızca kredi kartları. CA, CT, ME veya MA’da kart ücreti uygulanmaz; Colorado’da üst sınır %2’dir. Ücretler yalnızca USD cinsinden uygun ABD otomatik ödemelerine uygulanır. Boş alan üst düzeydeki değeri devralır; sıfır bu müşteriyi muaf tutar. Tek seferlik ödeme bağlantılarında ücret yoktur.",
+      "rules": "Yalnızca kredi kartları. CA, CT, ME veya MA’da kart ücreti uygulanmaz; Colorado’da üst sınır %2’dir. Ücretler yalnızca USD cinsinden uygun ABD otomatik ödemelerine uygulanır. Tek seferlik ödeme bağlantılarında ücret yoktur.",
       "legal": "Breeze hukuki danışmanlık sağlamaz. Ek ücret uygunluğu, bildirimler ve vergi uygulamalarından siz sorumlusunuz.",
       "lowerAuthorization": "Daha düşük ücretlere yetki veren müşteriler: {{count}}. Yeni koşulları kabul edene kadar mevcut yetkilendirmeleri geçerli kalır.",
       "authorizedCard": "Yetkilendirilen: {{accepted}} baz puan; yapılandırılan: {{configured}}",
       "authorizedAch": "Yetkilendirilen: USD {{accepted}}; yapılandırılan: USD {{configured}}",
       "requestAuthorization": "Güncel yetkilendirme iste",
       "requestFailed": "Güncel yetkilendirme istenemedi. Faturalandırma kişisini ve Stripe hazırlığını kontrol edin.",
-      "requested": "Güncel yetkilendirme istendi. Mevcut yetkilendirme geçerliliğini korur."
+      "requested": "Güncel yetkilendirme istendi. Mevcut yetkilendirme geçerliliğini korur.",
+      "attestationOnFile": "Kayıtlı beyan: {{name}}, {{date}} tarihinde iki beyanı da onayladı.",
+      "attestationOnFileUnknown": "Kayıtlı beyan: İki beyan da {{date}} tarihinde onaylandı.",
+      "reattestHelp": "Yeniden beyan etmek için iki beyanı da işaretleyip kaydedin. Bu, adınıza ve güncel tarihe yeni bir beyan kaydeder ve kayıtlı olanın yerini alır. Hiçbir müşterinin yetkilendirdiği ücret değişmez.",
+      "authorizedCardNone": "Kayıtlı yetkilendirme yok; yapılandırılan: {{configured}} baz puan",
+      "authorizedAchNone": "Kayıtlı yetkilendirme yok; yapılandırılan: USD {{configured}}",
+      "lowerAuthorizationOrg": "Bu müşteri yapılandırılan ücrete yetki vermedi. Mevcut yetkilendirmesi, yeni koşulları kabul edene kadar geçerli kalır.",
+      "blankPartner": "Boş bırakılırsa Breeze varsayılanı kullanılır (ücret yok). Tek bir müşteriyi muaf tutmak için o müşterinin Faturalandırma sayfasında ücretini 0 yapın.",
+      "blankOrg": "Boş bırakılırsa iş ortağı varsayılanı kullanılır. Bu müşteriyi muaf tutmak için 0 girin.",
+      "inactiveOrg": "Bir iş ortağı yöneticisi, iş ortağı Faturalandırma ayarlarının Payments sekmesinde iki ücret beyanını da onaylayana kadar kart ücretleri uygulanmaz.",
+      "missingAuthorization": "Kayıtlı yetkilendirme yok: {{count}}. Bu müşteriler kayıtlı ödeme yöntemlerini yetkilendirene kadar otomatik ödemeyle tahsilat yapılamaz.",
+      "missingAuthorizationOrg": "Bu müşterinin kayıtlı ödeme yöntemi için kayıtlı bir yetkilendirmesi yok. Müşteri yetkilendirene kadar otomatik ödemeyle tahsilat yapılamaz.",
+      "requestMissingAuthorization": "Yetkilendirme iste"
+    },
+    "enrollmentTitle": "Otomatik ödeme kaydı",
+    "requestSentTo": "İstek {{email}} adresine gönderildi.",
+    "result": {
+      "paused": "Otomatik ödemeler duraklatıldı.",
+      "resumed": "Otomatik ödemeler sürdürüldü.",
+      "turnedOff": "Otomatik ödemeler kapatıldı."
+    },
+    "needsAttention": {
+      "method_unusable": "Kayıtlı ödeme yönteminden tahsilat yapılamıyor.",
+      "stripe_account_changed": "Bu müşteri kaydolduktan sonra bağlı Stripe hesabı değişti.",
+      "key_missing_permissions": "Stripe anahtarında otomatik ödemelerin ihtiyaç duyduğu izinler eksik.",
+      "verification_failed": "Banka hesabı doğrulaması başarısız oldu."
+    },
+    "chargeOutcome": {
+      "succeeded": "Ödeme alındı.",
+      "processing": "Ödeme gönderildi. İşleniyor; ödeme tamamlandığında fatura güncellenir.",
+      "requiresAction": "Müşterinin bankası bu ödemeyi onaylamasını istiyor. Kayıtlı bir fatura irtibat kişisi varsa onaylaması için e-postayla bir bağlantı gönderilir.",
+      "declined": "Ödeme gerçekleşmedi.",
+      "cardDeclined": "Kart reddedildi.",
+      "expiredCard": "Kartın süresi dolmuş. Müşteriden ödeme yöntemini güncellemesini isteyin.",
+      "insufficientFunds": "Ödeme yetersiz bakiye nedeniyle reddedildi.",
+      "canceled": "Ödeme tamamlanmadan iptal edildi.",
+      "unapplied": "Ödeme tahsil edildi ancak mutabakat gerekiyor. Yeniden tahsil etmeden önce inceleyin."
+    },
+    "chargeRefused": {
+      "notice_lead": "Müşterinin bildirim süresi henüz dolmadı. Süre dolduğunda fatura tahsil edilebilir.",
+      "no_eligible_notice": "Bu faturanın otomatik ödeme bildirimi yok, bu nedenle otomatik olarak tahsil edilemez.",
+      "renotice_required": "Bu fatura tahsil edilmeden önce ödeme bildiriminin yeniden gönderilmesi gerekir.",
+      "collection_in_progress": "Bu fatura için zaten devam eden bir ödeme var.",
+      "checkout_session_unrevoked": "Müşteri şu anda bu faturayı çevrimiçi ödüyor olabilir. Birkaç dakika sonra yeniden deneyin.",
+      "retry_not_due": "Sonraki yeniden denemenin zamanı henüz gelmedi.",
+      "not_payable": "Bu fatura ödemeye açık değil.",
+      "nothing_to_pay": "Bu faturada ödenecek tutar kalmadı.",
+      "enrollment_inactive": "Bu müşteri için otomatik ödemeler etkin değil.",
+      "schedule_inactive": "Bu fatura artık otomatik ödeme için planlanmış değil.",
+      "generic": "Otomatik ödeme başlatılamadı. Güncel durumunu görmek için faturayı yenileyin."
     }
   },
   "reminders": {
@@ -2594,7 +2645,7 @@
     "sources": {
       "org": "kuruluş",
       "partner": "iş ortağı varsayılanı",
-      "default": "sistem varsayılanı"
+      "default": "Breeze varsayılanı"
     },
     "save": "Ödeme ayarlarını kaydet",
     "saving": "Kaydediliyor…",

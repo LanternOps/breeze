@@ -134,7 +134,8 @@ it('checked card payments retain card-only Checkout and a stable save-enabled re
   for (const [params, options] of sessionsCreateMock.mock.calls) {
     expect(params).toMatchObject({ mode: 'payment', payment_method_types: ['card'], customer: 'cus_saved',
       metadata: { autopay_setup_attempt_id: captureId },
-      payment_intent_data: { setup_future_usage: 'off_session', metadata: { autopay_setup_attempt_id: captureId } } });
+      payment_intent_data: { setup_future_usage: 'off_session', metadata: { autopay_setup_attempt_id: captureId } },
+      wallet_options: { link: { display: 'never' } } });
     expect(options.idempotencyKey).toBe(expectedIdempotencyKey(`inv_${INV_ID}_10000_bal_save_${captureId}`));
   }
   expect(prepareSaveMock.mock.calls[0]?.[3]).toBe(prepareSaveMock.mock.calls[1]?.[3]);
@@ -187,6 +188,8 @@ it('refuses a reserved invoice before calling Stripe', async () => {
 
     const result = await createInvoicePayLink(INV_ID, actor);
     expect(result).toEqual({ url: 'https://checkout.stripe.com/c/cs_1' });
+    // An ordinary pay link saves nothing, so its wallet choices are left to Stripe.
+    expect(sessionsCreateMock.mock.calls[0]![0]).not.toHaveProperty('wallet_options');
 
     expect(sessionsCreateMock).toHaveBeenCalledWith(
       expect.objectContaining({

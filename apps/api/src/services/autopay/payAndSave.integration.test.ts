@@ -76,7 +76,8 @@ it('keeps an open Checkout recoverable through repeated sweeps and saves after l
  const session=vi.fn(async()=>({id:'cs_wait',mode:'payment',status:'open',payment_status:'unpaid',customer:'cus_wait',payment_intent:'pi_wait'}));
  vi.mocked(getPartnerStripeClient).mockResolvedValue({stripeAccountId:'acct_wait',defaultCurrency:'USD',stripe:{checkout:{sessions:{retrieve:session}},
   paymentIntents:{retrieve:vi.fn(async()=>({status:'succeeded',customer:'cus_wait',payment_method:'pm_wait',setup_future_usage:'off_session',metadata:{autopay_setup_attempt_id:f.attempt.id}}))},
-  paymentMethods:{retrieve:vi.fn(async()=>({id:'pm_wait',type:'card',customer:'cus_wait'}))}
+  paymentMethods:{retrieve:vi.fn(async()=>({id:'pm_wait',type:'card',customer:'cus_wait',
+   card:{brand:'visa',funding:'credit',last4:'4242',exp_month:12,exp_year:2030,country:'US',wallet:null,networks:{available:['visa'],preferred:null}}}))}
  }} as any);
  for(let i=0;i<12;i++){
   await withSystemDbAccessContext(()=>db.update(autopaySetupAttempts).set({captureNextAttemptAt:new Date(0)}));

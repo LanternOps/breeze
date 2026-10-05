@@ -133,3 +133,20 @@ it('keeps principal plus card fee outside edited invoice notice text',async()=>{
   expect(out.html).toContain(feeText);expect(out.text).toContain(feeText);
   expect(out.frozen).toEqual({amount:'100.00',fee:'3.00',chargeDate:'2026-10-11'});
 });
+
+it('appends a protected second action to a failure notice in HTML and plain text', async () => {
+  const out = await renderBillingNotice('payment_failed', { payment: { id: 'payment_failed',
+    vars: { action_link: 'https://example.test/pay', action_label: 'Pay invoice', failure_text: 'Declined.' },
+    custom: { subject: null, heading: null, buttonLabel: null, html: '<p>Partner body without links</p>' }, frozen: {},
+    secondaryAction: { url: 'https://example.test/update', label: 'Update payment method',
+      note: 'Updating keeps future invoices working. It does not pay this invoice.' } } });
+  expect(renderedArgs).toHaveBeenLastCalledWith(expect.objectContaining({ ctaUrl: 'https://example.test/pay', ctaLabel: 'Pay invoice' }));
+  expect(out.html).toContain('href="https://example.test/update"');
+  expect(out.html).toContain('It does not pay this invoice.');
+  expect(out.text).toContain('Pay invoice: https://example.test/pay');
+  expect(out.text).toContain('Update payment method: https://example.test/update');
+  expect(out.text).toContain('It does not pay this invoice.');
+  await expect(renderBillingNotice('payment_failed', { payment: { id: 'payment_failed',
+    vars: { action_link: 'https://example.test/pay', action_label: 'Pay invoice' }, custom: null, frozen: {},
+    secondaryAction: { url: 'javascript:alert(1)', label: 'Update payment method', note: '' } } })).rejects.toThrow('Unsafe billing URL');
+});

@@ -14,6 +14,9 @@ export function prospectiveFeeText(quote: FeeQuote, currency: string): string {
 // brand alone cannot distinguish Link (which can be bank-funded) from a card.
 const CARD_NETWORKS = new Set(['visa', 'mastercard', 'amex', 'discover', 'diners', 'jcb', 'unionpay', 'cartes_bancaires']);
 const CARD_WALLETS = new Set(['apple_pay', 'google_pay', 'samsung_pay', 'amex_express_checkout', 'masterpass', 'visa_checkout']);
+/** Every Checkout that saves a method for autopay hides Link: a Link wallet card
+ * fails hasSupportedCardEvidence, so collection could never charge it (#7894). */
+export const AUTOPAY_CHECKOUT_WALLET_OPTIONS: Stripe.Checkout.SessionCreateParams.WalletOptions = { link: { display: 'never' } };
 /** Shared live evidence gate for disclosure and collection admission. */
 export function hasSupportedCardEvidence(card?: Stripe.PaymentMethod.Card): boolean {
   return !!card && (card.wallet === null || !!card.wallet && CARD_WALLETS.has(card.wallet.type))

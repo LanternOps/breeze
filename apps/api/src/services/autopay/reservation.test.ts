@@ -53,14 +53,21 @@ describe('invoice collection reservation', () => {
   describe('readInFlightCollection (lock-free read for customer views, #7824)', () => {
     it('reports in-flight with the reserved principal, counting only reserving states', async () => {
       const { tx, calls } = executor([[{ reservedAmount: '50.00' }]]);
-      await expect(readInFlightCollection(tx, invoice.id)).resolves.toEqual({ inProgress: true, amount: '50.00' });
+      await expect(readInFlightCollection(tx, invoice.id)).resolves.toEqual({ inProgress: true, amount: '50.00', actionRequired: false });
       expect(calls.some(c => c.op === 'for')).toBe(false); // never locks
       const q = new PgDialect().sqlToQuery(calls.find(c => c.op === 'where')!.value as SQL);
       expect(q.params).toEqual(expect.arrayContaining([invoice.id, 'reserved', 'created', 'confirming', 'processing', 'requires_action']));
     });
     it.each([[[{ reservedAmount: '0.00' }]], [[]]])('reports not in-flight for %j', async (rows) => {
       const { tx } = executor([rows as unknown[]]);
-      await expect(readInFlightCollection(tx, invoice.id)).resolves.toEqual({ inProgress: false, amount: '0.00' });
+      await expect(readInFlightCollection(tx, invoice.id)).resolves.toEqual({ inProgress: false, amount: '0.00', actionRequired: false });
+    });
+    it('flags a reservation that only waits on the customer\'s bank (off-session 3DS)', async () => {
+      const { tx, calls } = executor([[{ reservedAmount: '50.00', actionRequired: true }]]);
+      await expect(readInFlightCollection(tx, invoice.id)).resolves.toEqual({ inProgress: true, amount: '50.00', actionRequired: true });
+      const projection = calls.find(c => c.op === 'select')!.value as Record<string, SQL>;
+      const q = new PgDialect().sqlToQuery(projection.actionRequired!);
+      expect(q.sql).toContain(`bool_and("invoice_collection_attempts"."state" = 'requires_action')`);
     });
   });
 });

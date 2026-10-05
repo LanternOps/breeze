@@ -2,6 +2,7 @@ import {invoicePaySchema,getBankAutopayOffer,startInvoiceBankSetup,collectAfterB
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { getInvoiceAutopayOffer, prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave } from '../../services/autopay/payAndSave';
 import { assertNoActiveCollection, readInFlightCollection } from '../../services/autopay/reservation';
+import { releaseInvoiceConfirmation } from '../../services/autopay/confirmPayment';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
@@ -169,10 +170,10 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
   // replaced by a "payment processing" state. Same reserving-state set the pay
   // route's 409 uses; advisory only (the pay route still refuses). A failed read
   // degrades to "nothing in flight" — the server refusal is the backstop.
-  let collectionInProgress: { amount: string } | null = null;
+  let collectionInProgress: { amount: string; actionRequired: boolean } | null = null;
   try {
     const inFlight = await readInFlightCollection(db, id);
-    if (inFlight.inProgress) collectionInProgress = { amount: inFlight.amount };
+    if (inFlight.inProgress) collectionInProgress = { amount: inFlight.amount, actionRequired: inFlight.actionRequired === true };
   } catch (err) {
     console.error('[portal/invoices] in-flight collection lookup failed', { invoiceId: id, err });
   }
@@ -190,6 +191,22 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
       primaryColor: brand?.primaryColor ?? null,
     },
   });
+});
+
+// POST /portal/invoices/:id/autopay-confirmation — the invoice page's way out of
+// an off-session payment waiting on bank authentication (3DS): cancels that
+// PaymentIntent and releases the reservation so the Pay button works. Self-managed
+// DB context (selfManagedDbContextRoutes.ts): the Stripe cancel runs outside any
+// transaction, and the service scopes every read to the portal user's org.
+invoiceRoutes.post('/invoices/:id/autopay-confirmation', zValidator('param', ticketParamSchema), async (c) => {
+  const auth = c.get('portalAuth');
+  const { id } = c.req.valid('param');
+  try {
+    return c.json(await releaseInvoiceConfirmation({ invoiceId: id, orgId: auth.user.orgId }));
+  } catch (err) {
+    if (err instanceof InvoiceServiceError && err.status < 500) return c.json({ error: err.message, code: err.code }, err.status);
+    throw err;
+  }
 });
 
 // GET /portal/invoices/:id/pdf — stream the stored PDF (render on demand if absent).

@@ -702,3 +702,69 @@ runDb.each([
 });
 
 import {upsertConnection} from '../../services/accounting/accountingConnectionService';
+
+// Batch 2b (F): the returned-payment email reports a money fact. Stopping or
+// pausing autopay before the return arrives must not cancel it at dispatch.
+const returnMail = vi.hoisted(() => ({ send: vi.fn(async () => undefined) }));
+vi.mock('../../services/email', () => ({ getEmailService: () => ({ sendEmail: returnMail.send }) }));
+import { dispatchPendingBillingNotices } from '../../services/autopay/noticeOutbox';
+import { pauseAutopay, turnOffAutopay } from '../../services/autopay/enrollmentLifecycle';
+async function returnedFailures(invoiceId: string) {
+  const rows = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(and(
+    eq(billingNoticeOutbox.invoiceId, invoiceId), eq(billingNoticeOutbox.kind, 'payment_failed'))));
+  return rows.filter(row => (row.rendered as { frozen: { variant?: string } }).frozen.variant === 'returned');
+}
+runDb.each(['stop', 'pause'] as const)('dispatches the returned-payment email after autopay %s', async action => {
+  returnMail.send.mockClear();
+  const f = await seedAutopayBank();
+  await withSystemDbAccessContext(() => action === 'stop'
+    ? turnOffAutopay(db, f.actor, f.orgId) : pauseAutopay(db, f.actor, f.orgId));
+  const [enrollment] = await withSystemDbAccessContext(() => db.select().from(orgAutopayEnrollments)
+    .where(eq(orgAutopayEnrollments.orgId, f.orgId)));
+  expect(enrollment!.status).toBe(action === 'stop' ? 'cancelled' : 'paused');
+  await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: `evt_after_${action}_${f.invoiceId}`,
+    eventType: 'charge.dispute.funds_withdrawn', providerCreated: 300, refundedAmountMinor: null,
+    disputeId: `dp_${f.invoiceId}`, disputeAmountMinor: 10000, disputeFundsWithdrawn: true }));
+  expect(await returnedFailures(f.invoiceId)).toHaveLength(1);
+  await dispatchPendingBillingNotices(new Date(Date.now() + 1000));
+  const [returned] = await returnedFailures(f.invoiceId);
+  expect(returned).toMatchObject({ status: 'sent', lastError: null });
+  expect(returnMail.send).toHaveBeenCalledWith(expect.objectContaining({
+    to: 'billing@example.test', text: expect.stringContaining('returned a previously completed payment'),
+  }));
+});
+
+// Batch 2b (K): a receipt enqueued at capture is cancelled when the bank payment
+// is returned before dispatch; the returned email still goes out. A refund keeps it.
+import { enqueueOnlineReceipt } from '../../services/autopay/paymentNotices';
+async function receiptRows(invoiceId: string) {
+  return withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(and(
+    eq(billingNoticeOutbox.invoiceId, invoiceId), eq(billingNoticeOutbox.kind, 'payment_receipt'))));
+}
+runDb('cancels the receipt of a bank payment returned before dispatch and still sends the returned email', async () => {
+  returnMail.send.mockClear();
+  const f = await seedAutopayBank();
+  await withSystemDbAccessContext(() => enqueueOnlineReceipt(db, f.mappingId));
+  expect(await receiptRows(f.invoiceId)).toHaveLength(1);
+  await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: `evt_receipt_return_${f.invoiceId}`,
+    eventType: 'charge.dispute.funds_withdrawn', providerCreated: 300, refundedAmountMinor: null,
+    disputeId: `dp_${f.invoiceId}`, disputeAmountMinor: 10000, disputeFundsWithdrawn: true }));
+  await dispatchPendingBillingNotices(new Date(Date.now() + 1000));
+  const [receipt] = await receiptRows(f.invoiceId);
+  expect(receipt).toMatchObject({ status: 'cancelled', sentAt: null });
+  const [returned] = await returnedFailures(f.invoiceId);
+  expect(returned).toMatchObject({ status: 'sent' });
+  expect(returnMail.send).toHaveBeenCalledTimes(1);
+  expect(returnMail.send).toHaveBeenCalledWith(expect.objectContaining({
+    text: expect.stringContaining('returned a previously completed payment') }));
+});
+runDb('still sends the receipt of a payment refunded before dispatch', async () => {
+  returnMail.send.mockClear();
+  const f = await seedAutopayBank();
+  await withSystemDbAccessContext(() => enqueueOnlineReceipt(db, f.mappingId));
+  await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: `evt_receipt_refund_${f.invoiceId}`, refundedAmountMinor: 10000 }));
+  await dispatchPendingBillingNotices(new Date(Date.now() + 1000));
+  const [receipt] = await receiptRows(f.invoiceId);
+  expect(receipt).toMatchObject({ status: 'sent' });
+  expect(returnMail.send).toHaveBeenCalledTimes(1);
+});

@@ -1,4 +1,4 @@
-import { autopayReasonKey } from './autopayReason';
+import { autopayReasonKey, chargeNowAttempted, chargeNowFailureKey, chargeNowSuccessKey } from './autopayReason';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
@@ -103,11 +103,22 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   async function startAutopayCharge() {
     if (chargePending || !detail.autopay?.canChargeNow || !detail.autopay.chargePreview) return;
     setChargePending(true);
+    // The charge already happened (or was attempted): a failed refetch must not read as a failed charge.
+    const reloadAfterCharge = () => Promise.allSettled([Promise.resolve(onChanged()), loadPayments()]);
     try {
       await runAction({ request: () => fetchWithAuth(`/invoices/${invoice.id}/autopay/charge-now`, { method: 'POST' }),
-        errorFallback: t('autopay.chargeFailed'), successMessage: t('autopay.chargeStarted'), onUnauthorized: UNAUTHORIZED });
-      await onChanged();
-    } catch (error) { handleActionError(error, t('autopay.chargeFailed')); }
+        errorFallback: t('autopay.chargeFailed'),
+        successMessage: data => t(/* i18n-dynamic */ chargeNowSuccessKey(data)),
+        friendly: (_code, _message, body) => {
+          const key = chargeNowFailureKey(body);
+          return key ? t(/* i18n-dynamic */ key) : undefined;
+        },
+        onUnauthorized: UNAUTHORIZED });
+      await reloadAfterCharge();
+    } catch (error) {
+      if (error instanceof ActionError && chargeNowAttempted(error.body)) await reloadAfterCharge();
+      handleActionError(error, t('autopay.chargeFailed'));
+    }
     finally { setChargePending(false); setChargeConfirmOpen(false); }
   }
   const [autopaySaving, setAutopaySaving] = useState(false);
@@ -118,7 +129,11 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
       await runAction<{status?:string}>({ request: () => fetchWithAuth(`/invoices/${invoice.id}/autopay`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ excluded }),
       }), errorFallback: t('autopay.failed'), successMessage: result => result.status === 'pending'
-        ? t(/* i18n-dynamic */ autopayReasonKey('control_pending:exclude'),{nsSeparator:false}) : t('autopay.saved') });
+        ? t(/* i18n-dynamic */ autopayReasonKey('control_pending:exclude'),{nsSeparator:false}) : t('autopay.saved'),
+        // A payment already with Stripe cannot be recalled, so the exclusion was refused, not queued.
+        friendly: (code, _message, body) => code === 'COLLECTION_IN_PROGRESS'
+          && (body as { details?: { reason?: string } } | null)?.details?.reason === 'payment_processing'
+          ? t('autopay.excludeRefusedProcessing') : undefined });
       await onChanged();
     } catch (error) { handleActionError(error, t('autopay.failed')); }
     finally { setAutopaySaving(false); }
@@ -225,6 +240,8 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const canRecordPayment =
     invoice.status !== 'draft' && invoice.status !== 'void' && invoice.status !== 'paid' && Number(invoice.balance) > 0;
   const canVoid = invoice.status !== 'void' && invoice.status !== 'draft';
+  // Same statuses the collection service accepts; a paid or void invoice has nothing to charge.
+  const autopayChargeable = ['sent', 'partially_paid', 'overdue'].includes(invoice.status) && Number(invoice.balance) > 0;
 
   // Deposit-aware charge amount — matches what the server's pay route charges
   // (computeChargeNow, the single source of truth), so the deposit strip never
@@ -538,9 +555,9 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" data-testid="autopay-invoice-excluded"
               checked={detail.autopay.excluded} disabled={autopaySaving || !can('invoices', 'write') || !detail.autopay.canExclude}
               onChange={event => void setAutopayExcluded(event.target.checked)} />{t('autopay.excludeInvoice')}</label>
-            <button type="button" data-testid="autopay-charge-now" className="rounded-md border px-3 py-2 text-sm disabled:opacity-50"
+            {autopayChargeable && <button type="button" data-testid="autopay-charge-now" className="rounded-md border px-3 py-2 text-sm disabled:opacity-50"
               disabled={chargePending || !can('invoices', 'write') || !detail.autopay.canChargeNow || !detail.autopay.chargePreview}
-              onClick={() => setChargeConfirmOpen(true)}>{t('autopay.chargeNow')}</button>
+              onClick={() => setChargeConfirmOpen(true)}>{t('autopay.chargeNow')}</button>}
           </section>}
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-detail-summary">
             <div className="mb-3 flex items-center justify-between">

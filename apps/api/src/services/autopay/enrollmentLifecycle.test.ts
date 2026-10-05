@@ -59,7 +59,7 @@ const org={id:orgId,partnerId,status:'active',type:'customer',name:'Example clie
 const enrollment={id:'33333333-3333-4333-8333-333333333333',orgId,partnerId,status:'active',generation:9,requestRecipientEmail:null};
 const invoice={id:'44444444-4444-4444-8444-444444444444',invoiceNumber:'INV-1',balance:'12.00',currencyCode:'USD'};
 function noticeRows(kind:string){h.rows.push([org],[{id:partnerId,name:'Example MSP'}],[{settings:{emailTemplates:{[kind]:{html:'<p>Replacement body only</p>'}}}}]);}
-beforeEach(()=>{vi.clearAllMocks();h.achMode='ach_preferred';h.rows=[];h.calls=[];h.stopSchedules.mockResolvedValue([]);h.gate.mockResolvedValue(true);h.readiness.mockResolvedValue({ready:true});h.mint.mockResolvedValue({id:'66666666-6666-4666-8666-666666666666',token:'server-token'});});
+beforeEach(()=>{vi.clearAllMocks();h.achMode='ach_preferred';h.rows=[];h.calls=[];h.stopSchedules.mockResolvedValue({processing:[],cancelling:[]});h.gate.mockResolvedValue(true);h.readiness.mockResolvedValue({ready:true});h.mint.mockResolvedValue({id:'66666666-6666-4666-8666-666666666666',token:'server-token'});});
 describe('lifecycle behavior',()=>{
  it.each(['pause','stop'] as const)('%s cancels future schedules without changing processing collection attempts and protects invoice links',async action=>{
   h.rows.push([org],[enrollment],[{...enrollment,status:action==='pause'?'paused':'cancelled'}]);
@@ -198,12 +198,15 @@ it.each(['pause','resume'] as const)('renders an accurate %s notice through the 
 });
 
 it('protects the pending Stop disclosure outside a custom notice body',async()=>{
- h.stopSchedules.mockResolvedValue(['INV-1','INV-2']);
+ h.stopSchedules.mockResolvedValue({processing:['INV-3'],cancelling:['INV-1','INV-2']});
  h.rows.push([org],[enrollment],[{...enrollment,status:'cancelled'}],[],[invoice]);noticeRows('autopay_stopped');
  await turnOffAutopay(db,actor,orgId);
  for(const body of [h.enqueue.mock.calls[0]![1].rendered.html,h.enqueue.mock.calls[0]![1].rendered.text]){
   expect(body).toContain('Replacement body only');expect(body).toContain('invoice INV-1 is being cancelled');
   expect(body).toContain('invoice INV-2 is being cancelled');expect(body).toContain('receipt will follow');
+  // Spec 6.6: a processing payment cannot be recalled, so it is never "being cancelled".
+  expect(body).toContain('A payment for invoice INV-3 is already processing and will complete');
+  expect(body).not.toContain('invoice INV-3 is being cancelled');
  }
 });
 
@@ -227,4 +230,21 @@ it.each(['active','paused'])('reauthorizes %s once without changing enrollment o
  await requestAutopay(db,actor,{orgIds:[orgId],mode:'reauthorize'});
  expect(h.enqueue).toHaveBeenCalledTimes(1);
  expect(h.mint.mock.calls.filter(([,v])=>v.purpose==='enroll')).toHaveLength(1);
+});
+
+it.each([
+ ['pause','autopay_paused',{status:'paused',pausedAt:new Date('2026-10-04T10:00:00.000Z')},'2026-10-04T10:00:00.000Z'],
+ ['resume','autopay_resumed',{status:'active',effectiveFrom:new Date('2026-10-04T11:00:00.000Z')},'2026-10-04T11:00:00.000Z'],
+ ['stop','autopay_stopped',{status:'cancelled',cancelledAt:new Date('2026-10-04T12:00:00.000Z')},'2026-10-04T12:00:00.000Z'],
+] as const)('freezes the %s transition so a late lifecycle email can be revalidated',async(action,kind,updated,transitionAt)=>{
+ h.rows.push([org],[{...enrollment,status:action==='resume'?'paused':'active'}]);
+ if(action==='stop')h.rows.push([{...enrollment,...updated}],[],[]);
+ else h.rows.push([{...enrollment,...updated}]);
+ if(action==='pause')h.rows.push([],[],[]);
+ h.rows.push([org],[{id:partnerId,name:'Example MSP'}],[{settings:{}}]);
+ h.method.mockResolvedValue({status:'active'});
+ await (action==='pause'?pauseAutopay(db,actor,orgId):action==='resume'?resumeAutopay(db,actor,orgId):turnOffAutopay(db,actor,orgId));
+ const notice=h.enqueue.mock.calls[0]![1];
+ expect(notice).toMatchObject({kind,seq:enrollment.generation,enrollmentId:enrollment.id});
+ expect(notice.rendered.frozen).toMatchObject({transitionAt});
 });

@@ -8,7 +8,7 @@ import {autopaySetupAttempts} from '../../db/schema/autopaySetupAttempts';
 import { captureException } from '../sentry';
 import { classifyCollectionFailure } from './failureClassifier';
 import { retryAt } from './retryDates';
-import { enqueueAttemptNotice, notifyPaymentAttention } from './paymentNotices';
+import { enqueueAttemptNotice, enqueueMethodUnusableNotice, notifyPaymentAttention } from './paymentNotices';
 import { resolveMergedOrgIds } from '../orgMergeProvenance';
 import { requestInvoiceSessionRevocation } from '../stripeSessionRevocation';
 import { collectionFenced, finalizeInvoiceControl, isControllableSchedule, pendingInvoiceControl } from './collectionControl';
@@ -30,6 +30,7 @@ import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { quoteProcessingFee } from './processingFee';
 import { acceptedCollectionFee, clampNoticedFee, collectionFeePolicyChanged } from './collectionFee';
+import { acceptedAutopayCap, autopayCapReason } from './authorizedCap';
 import { noticeLeadDays, computeCollectOn, closeSettledAutopaySchedules } from './scheduler';
 import { enqueueAutopayNotice, type AutopayTerms } from './chargingNotice';
 export type CollectionInput = { invoiceId: string; initiatedBy: CollectionAttemptInitiator; scheduleId?: string };
@@ -529,7 +530,11 @@ async function confirmationDecision(attemptId: string, pi: Stripe.PaymentIntent)
     const [schedule] = await db.select().from(invoiceAutopaySchedules)
       .where(eq(invoiceAutopaySchedules.invoiceId, locked.invoice.id)).limit(1).for('update');
     const cancel = async (reason: string) => {
-      if (reason === 'renotice_required' && schedule && schedule.stateReason !== RENOTICE_PENDING) {
+      // Only a live schedule has a notice to redo; finalizeCanceledSchedule ignores the rest. A
+      // marker left on a terminal schedule (an on-session bank payment's invoice) would cancel
+      // every later confirm on that invoice, including the client's re-authorized one (#7896).
+      if (reason === 'renotice_required' && schedule && isControllableSchedule(schedule.state)
+        && schedule.stateReason !== RENOTICE_PENDING) {
         await db.update(invoiceAutopaySchedules).set({ stateReason: RENOTICE_PENDING })
           .where(eq(invoiceAutopaySchedules.id, schedule.id));
       }
@@ -579,6 +584,16 @@ async function confirmationDecision(attemptId: string, pi: Stripe.PaymentIntent)
       methodId:method.id,methodType:method.type,principal:attempt.principalAmount,currency:attempt.currency,quote:lawfulQuote,
     });
     if (!quote) return cancel('authority_changed');
+    if (attempt.scheduleId) {
+      // Defense in depth for planning: never charge an invoice above the cap the client
+      // accepted, nor above a lower current MSP cap. Unscheduled (on-session) payments
+      // carry their own per-invoice authorization and are not autopay.
+      const acceptedCap = await acceptedAutopayCap(db, { orgId: locked.invoice.orgId, enrollmentId: enrollment.id,
+        generation: enrollment.generation, methodId: method.id });
+      const capReason = acceptedCap ? autopayCapReason({ current: settings.autopayCap.value, accepted: acceptedCap,
+        total: locked.invoice.total, currency: locked.invoice.currencyCode }) : 'consent_required';
+      if (capReason) return cancel(capReason);
+    }
     const changed = !terms ? (pi.metadata.authority_generation !== String(enrollment.generation)
       || pi.metadata.authority_customer !== enrollment.stripeCustomerId
       || pi.metadata.authority_method !== method.stripePaymentMethodId
@@ -818,6 +833,9 @@ export async function applyAttemptOutcome(partnerId: string, attemptId: string):
   await applyObservedOutcome(data, stripe, pi);
 }
 
+/** Matches the confirm_payment link TTL minted with the 'confirm' notice. */
+const ACTION_REQUIRED_TTL_MS = 14 * 86_400_000;
+const ACTION_EXPIRY_PI_STATUSES: readonly string[] = ['requires_action', 'requires_payment_method'];
 async function applyObservedOutcome(data: AttemptHistory, stripe: Stripe, observed: Stripe.PaymentIntent,
   cancellationReason: string | null = null): Promise<void> {
   if (data.attempt.failureCode === 'unapplied_refunded') return;
@@ -825,8 +843,11 @@ async function applyObservedOutcome(data: AttemptHistory, stripe: Stripe, observ
   const attemptId = data.attempt.id;
   let pi = observed;
   await validateIntent(data, pi);
-  if (data.attempt.state === 'requires_action' && pi.status === 'requires_action'
-    && Date.now() - data.attempt.updatedAt.getTime() >= 14 * 86_400_000) {
+  // Off-session 3DS arrives as requires_payment_method + authentication_required,
+  // never requires_action. updatedAt is the moment the 402 was observed: same-class
+  // reconcile passes below write it back unchanged, so the 14-day clock never restarts.
+  if (data.attempt.state === 'requires_action' && ACTION_EXPIRY_PI_STATUSES.includes(pi.status)
+    && Date.now() - data.attempt.updatedAt.getTime() >= ACTION_REQUIRED_TTL_MS) {
     pi = await cancelOrRetrieve(stripe, pi);
     await validateIntent(data, pi);
     if (pi.status !== 'canceled' && pi.status !== 'succeeded') return;
@@ -1019,6 +1040,18 @@ export async function runAutopayCollection(now = new Date()): Promise<{ attempte
           console.info('[autopay] Collection not started',{orgId:row.orgId,invoiceId:row.invoiceId,scheduleId:row.id,...result});
           await withSystemDbAccessContext(async()=>{
             const { invoice } = await lockInvoiceForCollection(db,row.invoiceId);
+            // A hard decline, detach or failed verification left the org with no usable
+            // method (getAutopayMethod also returns pending_verification, which keeps
+            // deferring). Deferring forever would leave this due invoice uncharged, the
+            // client unaware and reminders suppressed: fail it and tell the client once.
+            // A replacement method made before this run is admitted above and re-noticed.
+            if (result.outcome==='deferred' && result.reason==='method_not_usable' && !await getAutopayMethod(db,invoice.orgId)) {
+              const [failed]=await db.update(invoiceAutopaySchedules).set({state:'failed',stateReason:'method_not_usable',nextAttemptAt:null})
+                .where(and(eq(invoiceAutopaySchedules.id,row.id),inArray(invoiceAutopaySchedules.state,['scheduled','retry_scheduled'])))
+                .returning({id:invoiceAutopaySchedules.id});
+              if (failed) await enqueueMethodUnusableNotice(db,row.id);
+              return;
+            }
             await db.update(invoiceAutopaySchedules).set(result.outcome==='refused'
               ? {state:'failed',stateReason:result.reason,nextAttemptAt:null}
               : {stateReason:result.reason,nextAttemptAt:new Date(now.getTime()+(['charging_disabled','stripe_unavailable','method_not_usable'].includes(result.reason ?? '') ? 86_400_000 : 3_600_000))})

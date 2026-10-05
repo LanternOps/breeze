@@ -2494,6 +2494,7 @@
     "requestedCount_other": "Anfragen an {{count}} Kunden gesendet.",
     "chargeDate": "Abbuchung am oder um den {{date}}",
     "excludeInvoice": "Diese Rechnung von automatischen Zahlungen ausschließen",
+    "excludeRefusedProcessing": "Die Zahlung für diese Rechnung wird bereits verarbeitet und kann nicht gestoppt werden. Sie können die Rechnung ausschließen, sobald die Zahlung abgeschlossen oder fehlgeschlagen ist.",
     "excludeContract": "Rechnungen mit diesem Vertrag ausschließen",
     "failed": "Automatische Zahlung konnte nicht aktualisiert werden. Bitte erneut versuchen.",
     "states": {
@@ -2521,6 +2522,7 @@
       "enrolled_after_issue": "Nach Rechnungsstellung angemeldet",
       "method_not_usable": "Zahlungsmethode nicht verfügbar",
       "over_cap": "Über dem Limit für automatische Zahlungen",
+      "above_authorized_cap": "Über dem vom Kunden autorisierten Limit",
       "cap_currency_mismatch": "Währung des Limits stimmt nicht überein",
       "ach_currency_unsupported": "Währung für Bankzahlungen nicht unterstützt",
       "excluded_contract": "Vertrag ausgeschlossen",
@@ -2566,14 +2568,63 @@
       "inactive": "Kartengebühren sind erst aktiv, wenn Ihr Partneradministrator beide folgenden Erklärungen bestätigt.",
       "notified": "Ich habe meinen Acquirer (Stripe) und die Kartennetzwerke vor mindestens 30 Tagen benachrichtigt",
       "cost": "Diese Gebühr übersteigt nicht meine Kosten für die Kartenakzeptanz",
-      "rules": "Nur Kreditkarten. Keine Kartengebühr in CA, CT, ME oder MA; in Colorado gilt eine Obergrenze von 2 %. Gebühren gelten nur für berechtigte automatische US-Zahlungen in USD. Leer übernimmt den übergeordneten Wert; null befreit diesen Kunden. Einmalige Zahlungslinks sind gebührenfrei.",
+      "rules": "Nur Kreditkarten. Keine Kartengebühr in CA, CT, ME oder MA; in Colorado gilt eine Obergrenze von 2 %. Gebühren gelten nur für berechtigte automatische US-Zahlungen in USD. Einmalige Zahlungslinks sind gebührenfrei.",
       "legal": "Breeze bietet keine Rechtsberatung. Sie sind für die Zulässigkeit von Zuschlägen, Hinweise und die steuerliche Behandlung verantwortlich.",
       "lowerAuthorization": "Kunden mit niedrigeren autorisierten Gebühren: {{count}}. Ihre bisherige Autorisierung gilt, bis sie aktualisierte Bedingungen akzeptieren.",
       "authorizedCard": "Autorisiert: {{accepted}} Basispunkte; eingestellt: {{configured}}",
       "authorizedAch": "Autorisiert: USD {{accepted}}; eingestellt: USD {{configured}}",
       "requestAuthorization": "Aktualisierte Autorisierung anfordern",
       "requestFailed": "Aktualisierte Autorisierung konnte nicht angefordert werden. Prüfen Sie den Rechnungskontakt und die Stripe-Verfügbarkeit.",
-      "requested": "Aktualisierte Autorisierung angefordert. Die bisherige Autorisierung bleibt gültig."
+      "requested": "Aktualisierte Autorisierung angefordert. Die bisherige Autorisierung bleibt gültig.",
+      "attestationOnFile": "Bestätigung hinterlegt: {{name}} hat am {{date}} beide Erklärungen bestätigt.",
+      "attestationOnFileUnknown": "Bestätigung hinterlegt: Beide Erklärungen wurden am {{date}} bestätigt.",
+      "reattestHelp": "Für eine erneute Bestätigung aktivieren Sie beide Erklärungen und speichern. Dadurch wird eine neue Bestätigung mit Ihrem Namen und dem aktuellen Datum erfasst, die die hinterlegte ersetzt. Die autorisierten Gebühren Ihrer Kunden ändern sich dadurch nicht.",
+      "authorizedCardNone": "Keine Autorisierung hinterlegt; eingestellt: {{configured}} Basispunkte",
+      "authorizedAchNone": "Keine Autorisierung hinterlegt; eingestellt: USD {{configured}}",
+      "lowerAuthorizationOrg": "Dieser Kunde hat die eingestellte Gebühr nicht autorisiert. Eine bestehende Autorisierung gilt weiter, bis er aktualisierte Bedingungen akzeptiert.",
+      "blankPartner": "Leer verwendet den Breeze-Standard (keine Gebühr). Um einen einzelnen Kunden auszunehmen, setzen Sie seine Gebühr auf dessen Abrechnungsseite auf 0.",
+      "blankOrg": "Leer übernimmt den Partnerstandard. Geben Sie 0 ein, um diesen Kunden auszunehmen.",
+      "inactiveOrg": "Kartengebühren sind erst aktiv, wenn ein Partneradministrator beide Gebührenerklärungen auf der Registerkarte „Payments“ der Partner-Abrechnungseinstellungen bestätigt.",
+      "missingAuthorization": "Keine Autorisierung hinterlegt: {{count}}. Automatische Zahlungen können diese Kunden erst belasten, wenn sie ihre gespeicherte Zahlungsmethode autorisieren.",
+      "missingAuthorizationOrg": "Für die gespeicherte Zahlungsmethode dieses Kunden ist keine Autorisierung hinterlegt. Automatische Zahlungen können ihn erst belasten, wenn er sie autorisiert.",
+      "requestMissingAuthorization": "Autorisierung anfordern"
+    },
+    "enrollmentTitle": "Anmeldung zur automatischen Zahlung",
+    "requestSentTo": "Anfrage an {{email}} gesendet.",
+    "result": {
+      "paused": "Automatische Zahlungen pausiert.",
+      "resumed": "Automatische Zahlungen fortgesetzt.",
+      "turnedOff": "Automatische Zahlungen deaktiviert."
+    },
+    "needsAttention": {
+      "method_unusable": "Die gespeicherte Zahlungsmethode kann nicht belastet werden.",
+      "stripe_account_changed": "Das verbundene Stripe-Konto hat sich nach der Anmeldung dieses Kunden geändert.",
+      "key_missing_permissions": "Dem Stripe-Schlüssel fehlen Berechtigungen, die automatische Zahlungen benötigen.",
+      "verification_failed": "Die Verifizierung des Bankkontos ist fehlgeschlagen."
+    },
+    "chargeOutcome": {
+      "succeeded": "Zahlung eingegangen.",
+      "processing": "Zahlung übermittelt. Sie wird verarbeitet; die Rechnung wird aktualisiert, sobald sie abgeschlossen ist.",
+      "requiresAction": "Die Bank des Kunden verlangt, dass er diese Zahlung bestätigt. Ist ein Rechnungskontakt hinterlegt, erhält er per E-Mail einen Link zur Bestätigung.",
+      "declined": "Die Zahlung wurde nicht ausgeführt.",
+      "cardDeclined": "Die Karte wurde abgelehnt.",
+      "expiredCard": "Die Karte ist abgelaufen. Bitten Sie den Kunden, seine Zahlungsmethode zu aktualisieren.",
+      "insufficientFunds": "Die Zahlung wurde wegen unzureichender Deckung abgelehnt.",
+      "canceled": "Die Zahlung wurde vor dem Abschluss storniert.",
+      "unapplied": "Die Zahlung wurde eingezogen, muss aber abgeglichen werden. Prüfen Sie sie, bevor Sie erneut abbuchen."
+    },
+    "chargeRefused": {
+      "notice_lead": "Die Ankündigungsfrist für den Kunden ist noch nicht abgelaufen. Danach kann die Rechnung abgebucht werden.",
+      "no_eligible_notice": "Für diese Rechnung gibt es keine Ankündigung einer automatischen Zahlung, daher kann sie nicht automatisch abgebucht werden.",
+      "renotice_required": "Die Zahlungsankündigung muss erneut gesendet werden, bevor diese Rechnung abgebucht werden kann.",
+      "collection_in_progress": "Für diese Rechnung läuft bereits eine Zahlung.",
+      "checkout_session_unrevoked": "Der Kunde bezahlt diese Rechnung möglicherweise gerade online. Versuchen Sie es in einigen Minuten erneut.",
+      "retry_not_due": "Der nächste Wiederholungsversuch ist noch nicht fällig.",
+      "not_payable": "Diese Rechnung ist nicht zur Zahlung offen.",
+      "nothing_to_pay": "Auf dieser Rechnung ist nichts mehr zu zahlen.",
+      "enrollment_inactive": "Automatische Zahlungen sind für diesen Kunden nicht aktiv.",
+      "schedule_inactive": "Diese Rechnung ist nicht mehr für eine automatische Zahlung geplant.",
+      "generic": "Die automatische Zahlung konnte nicht gestartet werden. Aktualisieren Sie die Rechnung, um ihren aktuellen Status zu sehen."
     }
   },
   "reminders": {
@@ -2594,7 +2645,7 @@
     "sources": {
       "org": "Organisation",
       "partner": "Partnerstandard",
-      "default": "Systemstandard"
+      "default": "Breeze-Standard"
     },
     "save": "Zahlungseinstellungen speichern",
     "saving": "Wird gespeichert…",

@@ -18,6 +18,7 @@ import {lockInvoicesForEnrollmentStop,stopEnrollmentSchedules} from './collectio
 import {getAutopayMethod,detachPaymentMethodPostCommit} from './paymentMethods';
 import {enqueueAutopayStaffNotifications,sendAutopayStaffEmail,type AutopayStaffNotice} from './staffNotifications';
 import {buildAutopayDisclosure} from './consentText';
+import {lifecycleTransitionAt} from './lifecycleNoticeValidation';
 import type {AutopayNoticeContext} from './enrollmentNotices';
 import type { Tx } from './types';
 export const NON_TERMINAL_SCHEDULE_STATES=['awaiting_notice','scheduled','collecting','retry_scheduled','action_required'] as const;
@@ -72,6 +73,8 @@ async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect
  }
  const rendered=await renderBillingNotice(kind,{autopay:{partnerId:partner.id,orgId:org.id,
   vars:{partner_name:partner.name,org_name:org.name,client_name:org.name,...vars},ctaUrl:url,scheduleText,feeText,stopUrl,openInvoices,processingText}},db);
+ // Pause/resume/stop emails are revalidated at dispatch against this transition.
+ if(kind!=='autopay_request')rendered.frozen={...rendered.frozen,transitionAt:lifecycleTransitionAt(kind,enrollment)};
  await enqueueBillingNotice(db,{orgId:org.id,partnerId:partner.id,enrollmentId:enrollment.id,kind,
   seq:enrollment.generation,dedupeKey:dedupeKey??`${enrollment.id}:${kind}:${enrollment.generation}:${enrollment.cancelledAt?.toISOString()??enrollment.pausedAt?.toISOString()??(kind==='autopay_resumed'?enrollment.effectiveFrom?.toISOString():'request')}`,
   toEmail:recipient,rendered});
@@ -185,7 +188,8 @@ async function stop(db:Tx,orgId:string,source:'client'|'msp',actor?:InvoiceActor
  const lines=links.map(link=>`${link.number}: ${link.currency} ${link.amount} — ${link.url}`);
  const recipient=enrollment.requestRecipientEmail??contact(org.billingContact);
  if(recipient)await notice(db,updated!,'autopay_stopped',recipient,{stopped_by:source==='client'?'You':'Your service provider',open_invoices_text:lines.join('\n')||'There are no open invoices.'},undefined,links,
-  pendingInvoices.map(number=>`A payment already in progress for invoice ${number} is being cancelled. A receipt will follow if it had already completed.`).join('\n'));
+  [...pendingInvoices.processing.map(number=>`A payment for invoice ${number} is already processing and will complete; you'll get a receipt.`),
+   ...pendingInvoices.cancelling.map(number=>`A payment already in progress for invoice ${number} is being cancelled. A receipt will follow if it had already completed.`)].join('\n'));
  const staffNotice:AutopayStaffNotice={orgId,partnerId:enrollment.partnerId,event:'autopay.stopped',
   dedupeKey:`${enrollment.id}:stopped:${enrollment.generation}`,message:`Automatic payments stopped for ${org.name}.`};
  await enqueueAutopayStaffNotifications(db,staffNotice);
