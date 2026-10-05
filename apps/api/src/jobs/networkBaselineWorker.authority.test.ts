@@ -70,7 +70,7 @@ vi.mock('../services/networkBaseline', () => ({
   compareBaselineScan: vi.fn(),
   normalizeBaselineScanSchedule: vi.fn((s: unknown) => (s ?? { enabled: true, intervalHours: 4 })),
 }));
-vi.mock('./discoveryWorker', () => ({ enqueueDiscoveryScan: enqueueDiscoveryScanMock }));
+vi.mock('./discoveryWorker', () => ({ enqueueDiscoveryScanAfterCommit: enqueueDiscoveryScanMock }));
 vi.mock('../services/discoveryJobCreation', () => ({ createDiscoveryJobIfIdle: createDiscoveryJobMock }));
 vi.mock('../services/networkBaselineAuthority', async () => {
   const actual = await vi.importActual<typeof import('../services/networkBaselineAuthority')>(
@@ -120,7 +120,7 @@ describe('processExecuteScan authority gate', () => {
     selectQueue.push([BASELINE], [{ id: 'profile-1', subnets: ['10.0.0.0/24'] }]);
     resolveAuthorityMock.mockResolvedValue({ allowed: true });
     createDiscoveryJobMock.mockResolvedValue({ job: { id: 'discovery-1' }, created: true });
-    enqueueDiscoveryScanMock.mockResolvedValue(undefined);
+    enqueueDiscoveryScanMock.mockReturnValue(undefined);
 
     const result = await processExecuteScan(JOB);
 
@@ -196,7 +196,7 @@ describe('processExecuteScan authority gate', () => {
   ])('an interactive (manual) dispatch runs for %s and never stamps a blocked reason', async (_label, row) => {
     selectQueue.push([row], [{ id: 'profile-1', subnets: ['10.0.0.0/24'] }]);
     createDiscoveryJobMock.mockResolvedValue({ job: { id: 'discovery-2' }, created: true });
-    enqueueDiscoveryScanMock.mockResolvedValue(undefined);
+    enqueueDiscoveryScanMock.mockReturnValue(undefined);
 
     const result = await processExecuteScan({ ...JOB, trigger: 'manual', authorityGeneration: undefined } as never);
 

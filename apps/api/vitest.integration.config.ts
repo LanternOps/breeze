@@ -49,6 +49,8 @@ export default defineConfig({
       // Belong to vitest.integration.config.ts (excluded from the unit runner).
       'src/services/discovery/agentReportedBmcLink.integration.test.ts',
       'src/jobs/discoveryWorker.bmc.integration.test.ts',
+      // Scheduled discovery dispatch is enqueued only after the job row commits (#7187 hazard).
+      'src/jobs/discoveryWorker.dispatchAfterCommit.integration.test.ts',
       'src/services/topology/bmc.integration.test.ts',
       // #5861 Customer Portal Network Visibility: real-Postgres proof of
       // org isolation and partner-wide monitor result scoping.

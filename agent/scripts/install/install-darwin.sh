@@ -25,9 +25,14 @@ echo "Installing Breeze Agent..."
 # shellcheck source=../../internal/sessionbroker/ensure_ipc_group.sh
 . "$(dirname "$0")/../../internal/sessionbroker/ensure_ipc_group.sh"
 
-# breeze_group_has_member reports whether $1 is in the breeze group.
+# breeze_group_has_member reports whether $1 is in the breeze group. The
+# member list is captured before matching: piping it into `grep -q` lets grep
+# exit at the first match, and under this script's pipefail a SIGPIPE on the
+# rest of a long list reads as "not a member".
 breeze_group_has_member() {
-    dscl . -read /Groups/breeze GroupMembership 2>/dev/null | tr ' ' '\n' | grep -qx "$1"
+    local members
+    members=$(dscl . -read /Groups/breeze GroupMembership 2>/dev/null | tr ' ' '\n') || return 1
+    grep -qx -- "$1" <<< "$members"
 }
 
 # Add every logged-in GUI user to the breeze group so their desktop helper can

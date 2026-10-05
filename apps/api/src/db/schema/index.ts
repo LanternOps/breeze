@@ -189,6 +189,7 @@ export * from './backupProviders';
 export * from './callerVerification';
 export * from './hardwareAlertRetirementOutbox';
 export * from './backupSnapshotIdReservations';
+export * from './backupErasureFences';
 export * from './backupStorageSessions';
 export * from './backupStorageCredentialHistory';
 export * from './backupSnapshotAttestations';
