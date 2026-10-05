@@ -206,8 +206,10 @@ export async function getInvoiceAutopayView(tx: Tx, invoice: typeof invoices.$in
         && Date.now() >= schedule.noticeSentAt.getTime() + terms.noticeLeadDays * 86_400_000;
     }
   }
-  const terms = schedule ? parseAutopayTerms(schedule.termsSnapshot) : null;
-  const chargePreview = canChargeNow && terms ? {
+  // Only a chargeable schedule carries collection terms; a not_needed one holds the
+  // issuance placeholder, which parseAutopayTerms refuses (2a-4).
+  const terms = canChargeNow && schedule ? parseAutopayTerms(schedule.termsSnapshot) : null;
+  const chargePreview = terms ? {
     amount: fromMinorUnits(Math.min(toMinorUnits(invoice.balance, invoice.currencyCode),
       toMinorUnits(terms.principal, invoice.currencyCode)) + toMinorUnits(terms.feeAmount, invoice.currencyCode), invoice.currencyCode),
     currency: invoice.currencyCode, methodLabel: terms.methodLabel,

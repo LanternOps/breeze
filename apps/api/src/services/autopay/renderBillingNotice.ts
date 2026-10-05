@@ -166,17 +166,20 @@ const reminderRenderData = z.object({
   daysOverdue: z.number().int().nonnegative(), payLink: z.string(),
   partnerName: z.string(), orgName: z.string(), partnerSettings: z.unknown(),
   clientName: z.string().optional(),
-  /** A reminder-kind confirmation with locked wording: the client skipped, or the MSP
-   * excluded an announced charge (D-19). Partner reminder copy would be untrue here. */
-  variant: z.enum(['skipped', 'excluded']).optional(),
-  /** excluded: the date the cancelled charge was announced for (YYYY-MM-DD), if known. */
+  /** A reminder-kind confirmation with locked wording: the client skipped, or an announced
+   * charge will not happen (D-19: exclusion, cap, consent, excluded contract, a superseded
+   * pause or stop). Partner reminder copy would be untrue here. */
+  variant: z.enum(['skipped', 'not_charged']).optional(),
+  /** not_charged: why, in the client's words (notChargedNotice.clientReason). */
+  notChargedReason: z.string().optional(),
+  /** not_charged: the date the cancelled charge was announced for (YYYY-MM-DD), if known. */
   announcedFor: z.string().nullable().optional(),
 });
 const LOCKED_REMINDER_COPY = {
   skipped: { subject: 'Automatic payment skipped for invoice {{invoice_number}}', heading: 'This payment is skipped', buttonLabel: 'Pay invoice',
     html: '<p>Hi {{client_name}},</p><p>You skipped the automatic payment for invoice {{invoice_number}}, so {{partner_name}} won\'t charge it automatically. Please pay {{amount_due}} by {{due_date}}.</p>' },
-  excluded: { subject: 'Automatic payment cancelled for invoice {{invoice_number}}', heading: 'This invoice won\'t be charged automatically', buttonLabel: 'Pay invoice',
-    html: '<p>Hi {{client_name}},</p><p>{{partner_name}} will not charge invoice {{invoice_number}} automatically. The automatic payment announced{{announced_on}} will not happen. Please pay {{amount_due}} using the invoice link.</p>' },
+  not_charged: { subject: 'Automatic payment cancelled for invoice {{invoice_number}}', heading: 'This invoice won\'t be charged automatically', buttonLabel: 'Pay invoice',
+    html: '<p>Hi {{client_name}},</p><p>{{not_charged_reason}} The automatic payment announced{{announced_on}} will not happen. Please pay {{amount_due}} using the invoice link.</p>' },
 } as const;
 async function renderReminder(
   kind: 'payment_reminder' | 'payment_overdue', ctx: Parameters<BillingNoticeRenderer>[0],
@@ -190,7 +193,9 @@ async function renderReminder(
   const lockedCopy = r.variant ? LOCKED_REMINDER_COPY[r.variant] : null;
   // The announced date is ours (not a partner var): written into the locked copy, escaped.
   const announcedOn = r.announcedFor ? ` for on or around ${escapeHtml(emailDate(r.announcedFor))}` : '';
-  const locked = lockedCopy ? { ...lockedCopy, html: lockedCopy.html.replace('{{announced_on}}', announcedOn) } : null;
+  // The reason is ours too (a fixed sentence per reason, carrying the MSP's name): escaped.
+  const locked = lockedCopy ? { ...lockedCopy, html: lockedCopy.html.replace('{{announced_on}}', announcedOn)
+    .replace('{{not_charged_reason}}', escapeHtml(r.notChargedReason ?? `${r.partnerName} will not charge this invoice automatically.`)) } : null;
   return {
     id: kind, brandName: r.partnerName, ctaUrl: r.payLink,
     custom: locked ? { ...locked } : partnerEmailCustomFromSettings(r.partnerSettings, kind),

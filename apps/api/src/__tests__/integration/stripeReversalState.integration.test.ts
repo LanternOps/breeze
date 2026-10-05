@@ -483,6 +483,8 @@ async function expectDurableReturnNotice(f: Awaited<ReturnType<typeof seedAutopa
     link: `/billing/invoices/${f.invoiceId}`, metadata: { event: 'payment.ach_returned' },
     dedupeKey: `autopay:${f.attemptId}:payment.ach_returned:${f.mappingId}:dp_${f.invoiceId}:${f.userId}`,
   });
+  // P-17: the message names the invoice by number, never by its raw id.
+  expect(notices[0]!.message).not.toContain(f.invoiceId); expect(notices[0]!.message).not.toContain(f.attemptId);
 }
 runDb('returns and restores bank principal once, preserving ach_debit',async()=>{
   returnedStaff.mockClear();

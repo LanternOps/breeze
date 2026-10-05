@@ -1739,7 +1739,11 @@
     },
     "schedule": {
       "everyHours": "Cada {{hours}}h",
-      "manual": "Manual"
+      "manual": "Manual",
+      "reapprovalRequired": "Requiere nueva aprobación",
+      "reapprovalTitle": "Los análisis programados están en pausa hasta que un usuario con el permiso devices:execute vuelva a guardar esta línea base.",
+      "approverInvalidTitle": "Los análisis programados se detuvieron: el aprobador {{name}} ya no tiene acceso devices:execute. Un usuario con ese permiso debe volver a guardar esta línea base.",
+      "unknownApprover": "(usuario desconocido)"
     },
     "status": {
       "active": "Activo",

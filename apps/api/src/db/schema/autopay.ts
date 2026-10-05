@@ -117,7 +117,9 @@ export const orgPaymentMethods = pgTable('org_payment_methods', {
   check('org_payment_methods_account_holder_type_check', sql`${t.accountHolderType} IN ('individual','company')`),
   unique().on(t.id,t.orgId),
   foreignKey({name:'org_payment_methods_enrollment_org_fk',columns:[t.enrollmentId,t.orgId],foreignColumns:[orgAutopayEnrollments.id,orgAutopayEnrollments.orgId]}),
-  uniqueIndex('org_payment_methods_autopay_uq').on(t.orgId).where(sql`${t.isAutopayMethod} AND ${t.status} IN ('active','pending_verification')`),
+  // One autopay-method row per org whatever its status: a retained unusable row must
+  // never sit beside its replacement (D-17, 2026-12-11-130000).
+  uniqueIndex('org_payment_methods_one_autopay_uq').on(t.orgId).where(sql`${t.isAutopayMethod}`),
 ]);
 
 export const orgAutopayConsents = pgTable('org_autopay_consents', {

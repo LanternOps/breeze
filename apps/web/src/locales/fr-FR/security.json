@@ -1739,7 +1739,11 @@
     },
     "schedule": {
       "everyHours": "Chaque {{hours}}h",
-      "manual": "Manuel"
+      "manual": "Manuel",
+      "reapprovalRequired": "Nouvelle approbation requise",
+      "reapprovalTitle": "Les analyses planifiées sont suspendues jusqu'à ce qu'un utilisateur disposant de l'autorisation devices:execute enregistre à nouveau cette référence.",
+      "approverInvalidTitle": "Les analyses planifiées sont arrêtées : l'approbateur {{name}} n'a plus l'accès devices:execute. Un utilisateur disposant de cette autorisation doit enregistrer à nouveau cette référence.",
+      "unknownApprover": "(utilisateur inconnu)"
     },
     "status": {
       "active": "Active",

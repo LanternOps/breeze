@@ -51,16 +51,28 @@ describe('reminder rendering', () => {
 
 it.each([
   ['skipped', 'Automatic payment skipped for invoice INV-1', 'You skipped the automatic payment for invoice INV-1'],
-  ['excluded', 'Automatic payment cancelled for invoice INV-1', 'Example MSP will not charge invoice INV-1 automatically'],
+  ['not_charged', 'Automatic payment cancelled for invoice INV-1', 'This invoice is above the automatic payment limit you authorized.'],
 ] as const)('the %s confirmation has locked wording a partner reminder override cannot replace', async (variant, subject, line) => {
   const rendered = await renderBillingNotice('payment_reminder', { ...ctx, data: { ...ctx.data, variant, announcedFor: '2026-11-04', clientName: 'Pat Lee',
+    notChargedReason: 'This invoice is above the automatic payment limit you authorized.',
     partnerSettings: { emailTemplates: { payment_reminder: { subject: 'Friendly reminder', heading: null, buttonLabel: null, html: '<p>Please pay soon.</p>' } } } } });
   expect(rendered.subject).toBe(subject);
   expect(rendered.text).toContain(line);
   expect(rendered.text).toContain('Hi Pat Lee,');
   expect(rendered.text).not.toContain('Please pay soon.');
   expect(rendered.html).not.toMatch(/<p>[^<]*<!doctype/i);
-  if (variant === 'excluded') expect(rendered.text).toContain('The automatic payment announced for on or around November 4, 2026 will not happen.');
+  if (variant === 'not_charged') {
+    expect(rendered.text).toContain('This invoice is above the automatic payment limit you authorized. The automatic payment announced for on or around November 4, 2026 will not happen. Please pay €25.05 using the invoice link.');
+  }
+});
+// One shape for every reason (3a): the reason is ours, escaped, and defaults to the MSP's exclusion.
+it('the not-charged reason is escaped, and an exclusion is the default', async () => {
+  const base = { ...ctx, data: { ...ctx.data, variant: 'not_charged' as const, announcedFor: null, partnerName: 'A&B <MSP>' } };
+  const excluded = await renderBillingNotice('payment_reminder', base);
+  expect(excluded.html).toContain('A&amp;B &lt;MSP&gt; will not charge this invoice automatically.');
+  expect(excluded.text).toContain('The automatic payment announced will not happen.');
+  const forged = await renderBillingNotice('payment_reminder', { ...base, data: { ...base.data, notChargedReason: '<b>x</b>' } });
+  expect(forged.html).toContain('&lt;b&gt;x&lt;/b&gt;');
 });
 
 it.each(['payment_receipt','payment_failed'] as const)('renders readable %s text from the actual template',async kind=>{

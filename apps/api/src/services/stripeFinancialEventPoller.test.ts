@@ -113,7 +113,7 @@ describe('polling retained accounts after disconnect', () => {
   const now = new Date('2026-10-20T00:00:00Z');
   beforeEach(() => {
     vi.resetAllMocks(); vi.useFakeTimers(); vi.setSystemTime(now); m.depth = 0;
-    m.replay.mockResolvedValue(1);
+    m.replay.mockResolvedValue(1); m.setupReplay.mockResolvedValue(0);
   });
   afterEach(() => vi.useRealTimers());
 
@@ -173,6 +173,8 @@ describe('polling retained accounts after disconnect', () => {
       return { returning: async () => [{ id: 'connection' }] };
     } }) }));
 
+    // #7897: the event applies while it is ingested (nothing left to replay) and still counts.
+    m.ingest.mockResolvedValue({ state: 'applied' }); m.replay.mockResolvedValue(0);
     await expect(pollStripeFinancialEvents()).resolves.toEqual({ accounts: 1, events: 1, applied: 1 });
     expect(predicates).toHaveLength(2);
     expect(m.client).toHaveBeenCalledOnce();

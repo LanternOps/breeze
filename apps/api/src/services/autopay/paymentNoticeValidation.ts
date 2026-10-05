@@ -82,12 +82,7 @@ export const validatePaymentActionNotice: NoticePreSendValidator = async (tx, ro
     || SCHEDULE_CONTROL_MARKERS.some(marker => schedule.stateReason === `control_pending:${marker}`)))
     && !!enrollment && enrollment.orgId === row.orgId && enrollment.status === 'active'
     && !(schedule && (schedule.enrollmentId !== enrollment.id || schedule.enrollmentGeneration !== enrollment.generation));
-  if (authority && frozen.variant === 'update') {
-    const [method] = await tx.select().from(orgPaymentMethods).where(and(
-      eq(orgPaymentMethods.orgId, row.orgId), eq(orgPaymentMethods.isAutopayMethod, true),
-    )).limit(1);
-    authority = method?.status !== 'active';
-  }
+  if (authority && frozen.variant === 'update') authority = !await hasActiveReplacement(tx, row.orgId);
   if (authority) return null;
   // A confirm link is the only thing a confirm notice offers; without its authority
   // there is nothing left to say (the cancelled schedule's own notices speak).
@@ -108,11 +103,7 @@ async function updateLinkStillTrue(tx: Parameters<NoticePreSendValidator>[0], or
     .where(eq(orgAutopayEnrollments.orgId, orgId)).limit(1);
   if (!enrollment || enrollment.id !== token.enrollmentId || enrollment.status !== 'active'
     || enrollment.generation !== token.generation) return false;
-  // Every autopay-flagged row, not LIMIT 1: a stale unusable row can sit beside the
-  // active replacement (D-17), and any active one means the update already happened.
-  const methods = await tx.select({ status: orgPaymentMethods.status }).from(orgPaymentMethods).where(and(
-    eq(orgPaymentMethods.orgId, orgId), eq(orgPaymentMethods.isAutopayMethod, true)));
-  return !methods.some(method => method.status === 'active');
+  return !await hasActiveReplacement(tx, orgId);
 }
 
 /** A receipt stays a true record after a refund (or a card chargeback), so this
@@ -158,8 +149,15 @@ async function validateMethodUnusableNotice(tx: Parameters<NoticePreSendValidato
     .where(eq(orgAutopayEnrollments.orgId, row.orgId)).limit(1);
   if (!enrollment || enrollment.orgId !== row.orgId || enrollment.status !== 'active'
     || schedule.enrollmentId !== enrollment.id || schedule.enrollmentGeneration !== enrollment.generation) return 'authority_changed';
-  const [method] = await tx.select().from(orgPaymentMethods).where(and(
-    eq(orgPaymentMethods.orgId, row.orgId), eq(orgPaymentMethods.isAutopayMethod, true),
-  )).limit(1);
-  return method?.status === 'active' ? 'authority_changed' : null;
+  return await hasActiveReplacement(tx, row.orgId) ? 'authority_changed' : null;
+}
+
+/** An active autopay method means the client already replaced the unusable one. Filtered by
+ * status (D-17): one flagged row per org is a database invariant, but readers never rely on
+ * picking the right row from an unordered LIMIT 1. */
+async function hasActiveReplacement(tx: Parameters<NoticePreSendValidator>[0], orgId: string): Promise<boolean> {
+  const methods = await tx.select({ status: orgPaymentMethods.status }).from(orgPaymentMethods).where(and(
+    eq(orgPaymentMethods.orgId, orgId), eq(orgPaymentMethods.isAutopayMethod, true), eq(orgPaymentMethods.status, 'active'),
+  ));
+  return methods.some(method => method.status === 'active');
 }

@@ -556,6 +556,15 @@ it('provides a money-safe confirmation preview capped to the noticed principal p
  expect((await getInvoiceAutopayView(f.tx,f.inv as any))?.chargePreview).toEqual({amount:'11.00',currency:'USD',methodLabel:'Visa ••4242'});
 });
 
+// 2a-4: a not_needed schedule carries the issuance placeholder, never collection terms.
+it.each(['not_needed', 'cancelled', 'excluded_by_msp'])('projects a %s schedule with a placeholder snapshot without throwing', async state => {
+  const f = fixture({ state, eligible: false, ineligibleReason: 'method_not_usable', stateReason: 'method_not_usable',
+    noticeOutboxId: null, noticeSentAt: null, termsSnapshot: { issuedAt: '2026-10-01T00:00:00Z', noticeSeq: 0 } });
+  expect(await getInvoiceAutopayView(f.tx, f.inv as any)).toMatchObject({
+    state, reason: 'method_not_usable', canChargeNow: false, chargePreview: null,
+  });
+});
+
 // The skip page names the invoice, amount, charge date and method, and who is asking.
 it('describes the invoice the skip link controls, without minting a link', async () => {
   const f = fixture();
@@ -594,11 +603,12 @@ it('tells the client an announced invoice will not be charged after an MSP exclu
   f.data.set(billingNoticeOutbox, [{ ...sentNotice }]);
   const { renderBillingNotice } = await import('./renderBillingNotice');
   expect(await setInvoiceAutopayExcluded(f.tx, invoice.id, true, actor)).toMatchObject({ status: 'excluded' });
-  // The locked 'excluded' wording is rendered from these facts (renderBillingNotice.reminders.test).
+  // The locked 'not_charged' wording is rendered from these facts (renderBillingNotice.reminders.test).
   expect(renderBillingNotice).toHaveBeenCalledWith('payment_reminder', expect.objectContaining({
-    data: expect.objectContaining({ variant: 'excluded', announcedFor: '2026-10-15', invoiceNumber: 'INV-1', partnerName: 'Partner' }) }), f.tx);
+    data: expect.objectContaining({ variant: 'not_charged', notChargedReason: 'Partner will not charge this invoice automatically.',
+      announcedFor: '2026-10-15', invoiceNumber: 'INV-1', partnerName: 'Partner' }) }), f.tx);
   expect(h.confirmation).toHaveBeenCalledExactlyOnceWith(f.tx, expect.objectContaining({
-    kind: 'payment_reminder', seq: 0, invoiceId: invoice.id, dedupeKey: `invoice:${invoice.id}:exclude:1`,
+    kind: 'payment_reminder', seq: 0, invoiceId: invoice.id, dedupeKey: `invoice:${invoice.id}:not_charged:1`,
     rendered: expect.objectContaining({ subject: 'Reminder' }),
   }));
 });
@@ -613,7 +623,7 @@ it('tells the client once the reconciler finalizes a pending exclusion of an ann
   f.inv.autopayExcluded = true;
   f.data.set(billingNoticeOutbox, [{ ...sentNotice }]);
   expect(await finalizeInvoiceControl(f.tx, f.inv as any, f.sched as any, 'exclude')).toEqual({ status: 'excluded' });
-  expect(h.confirmation).toHaveBeenCalledExactlyOnceWith(f.tx, expect.objectContaining({ dedupeKey: `invoice:${invoice.id}:exclude:1` }));
+  expect(h.confirmation).toHaveBeenCalledExactlyOnceWith(f.tx, expect.objectContaining({ dedupeKey: `invoice:${invoice.id}:not_charged:1` }));
 });
 
 // D-22: a stale skip link on a paid, closed or unscheduled invoice must not offer "Skip".

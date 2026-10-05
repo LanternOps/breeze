@@ -59,6 +59,15 @@ export async function readInFlightCollection(tx: Tx, invoiceId: string)
   return { inProgress, amount, fee: row?.reservedFee ?? '0.00', paymentMethodId: inProgress ? row?.paymentMethodId ?? null : null,
     actionRequired: inProgress && row?.actionRequired === true };
 }
+/** True while an attempt reserves money for the invoice or holds captured money that
+ * could not be applied ('unapplied', until staff refund or apply it). Client offers that
+ * start a new payment (bank pay, card pay-and-save) are withheld then (B1-2). */
+export async function holdsClientMoney(tx: Tx, invoiceId: string): Promise<boolean> {
+  const [row] = await tx.select({ id: invoiceCollectionAttempts.id }).from(invoiceCollectionAttempts)
+    .where(sql`${invoiceCollectionAttempts.invoiceId} = ${invoiceId}
+      and ${inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES, 'unapplied'])}`).limit(1);
+  return !!row;
+}
 export async function assertNoActiveCollection(tx: Tx, invoiceId: string): Promise<void> {
   const locked = await lockInvoiceForCollection(tx, invoiceId);
   if (hundredths(locked.reservedAmount) > 0n) {

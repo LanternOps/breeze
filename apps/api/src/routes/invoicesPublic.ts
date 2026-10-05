@@ -188,7 +188,7 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       // #7509: no Pay CTA unless the partner can actually take online payment.
       payable: PAYABLE.has(inv.status) && Number(inv.balance) > 0
         && await isPartnerOnlinePaymentAvailable(inv.partnerId),
-      autopay: customerAutopay.enrolled ? null : await getInvoiceAutopayOffer(inv.orgId),
+      autopay: customerAutopay.enrolled ? null : await getInvoiceAutopayOffer(inv.orgId, inv.id),
       bankAutopay: await getBankAutopayOffer(inv.id,inv.orgId),
       branding: brandingBlock(inv, partner, brand),
     };

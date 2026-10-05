@@ -184,3 +184,50 @@ it('lists a client with no authorization on file when the configured fee is zero
       orgId: f.org.id, authorizedCardFeeBps: null, authorizedAchFeeAmount: null, cardFeeBps: 0 })]);
   });
 });
+
+// 2a-1: the effective cap is the lower of the accepted and the configured one, so an MSP who
+// raises or removes the cap needs the client to accept the new terms through the same flow.
+it('a cap change issues one new reauthorization with generic payment-terms copy (2a-1)', async () => {
+  const f = await fixture();
+  const actor = { userId: null, partnerId: f.partner.id, accessibleOrgIds: [f.org.id] };
+  const request = () => system(() => requestAutopay(db, actor, { orgIds: [f.org.id], mode: 'reauthorize' }));
+  const notices = () => system(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId, f.org.id)));
+  await request(); await request();
+  expect(await notices()).toHaveLength(1);
+  await system(() => db.update(billingPaymentSettings).set({ autopayCapEnabled: true, autopayCapAmount: '500.00', autopayCapCurrency: 'USD' })
+    .where(eq(billingPaymentSettings.partnerId, f.partner.id)));
+  await request(); await request();
+  const all = await notices();
+  expect(all).toHaveLength(2);
+  for (const notice of all) {
+    const text = (notice.rendered as { text: string }).text;
+    expect(text).toContain('updated its payment terms'); expect(text).not.toContain('processing fee terms');
+  }
+});
+it('lists a client whose accepted cap is narrower than the configured one, and only then (2a-1)', async () => {
+  const f = await fixture();
+  await system(async () => {
+    // Equal fees: only the cap can make the client appear.
+    await db.update(billingPaymentSettings).set({ cardFeeBps: 0, achFeeAmount: '0.00' }).where(eq(billingPaymentSettings.partnerId, f.partner.id));
+    await db.insert(orgAutopayConsents).values({ ...f.consent, consentTextHash: 'capped', createdAt: new Date('2026-10-04'),
+      scheduleTerms: { offsetDays: 0, rule: 'later', cap: { enabled: true, amount: '100.00', currency: 'USD' } } });
+    // The cap the client accepted is still the configured one: nothing to re-authorize.
+    await db.update(billingPaymentSettings).set({ autopayCapEnabled: true, autopayCapAmount: '100.00', autopayCapCurrency: 'USD' })
+      .where(eq(billingPaymentSettings.partnerId, f.partner.id));
+    expect(await feeAuthorizationGaps(db, f.partner.id)).toEqual([]);
+    const cases: Array<[Record<string, unknown>, unknown]> = [
+      [{ autopayCapEnabled: true, autopayCapAmount: '500.00', autopayCapCurrency: 'USD' }, { enabled: true, amount: '500.00', currency: 'USD' }],
+      [{ autopayCapEnabled: false, autopayCapAmount: null, autopayCapCurrency: null }, { enabled: false }],
+    ];
+    for (const [settings, configured] of cases) {
+      await db.update(billingPaymentSettings).set(settings).where(eq(billingPaymentSettings.partnerId, f.partner.id));
+      expect(await feeAuthorizationGaps(db, f.partner.id)).toEqual([expect.objectContaining({ orgId: f.org.id,
+        authorizedCardFeeBps: 0, cardFeeBps: 0,
+        capGap: { authorized: { enabled: true, amount: '100.00', currency: 'USD' }, configured } })]);
+    }
+    // A configured cap below the accepted one is not a gap: re-authorizing would not widen anything.
+    await db.update(billingPaymentSettings).set({ autopayCapEnabled: true, autopayCapAmount: '50.00', autopayCapCurrency: 'USD' })
+      .where(eq(billingPaymentSettings.partnerId, f.partner.id));
+    expect(await feeAuthorizationGaps(db, f.partner.id)).toEqual([]);
+  });
+});

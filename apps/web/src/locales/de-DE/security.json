@@ -1739,7 +1739,11 @@
     },
     "schedule": {
       "everyHours": "Alle {{hours}}h",
-      "manual": "Manuell"
+      "manual": "Manuell",
+      "reapprovalRequired": "Erneute Freigabe erforderlich",
+      "reapprovalTitle": "Geplante Scans sind pausiert, bis ein Benutzer mit der Berechtigung devices:execute diese Baseline erneut speichert.",
+      "approverInvalidTitle": "Geplante Scans wurden gestoppt: Der Freigebende {{name}} hat keinen devices:execute-Zugriff mehr. Ein Benutzer mit dieser Berechtigung muss diese Baseline erneut speichern.",
+      "unknownApprover": "(unbekannter Benutzer)"
     },
     "status": {
       "active": "Aktiv",

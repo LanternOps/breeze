@@ -7,7 +7,8 @@ vi.mock('./autopay/payAndSave', async importOriginal => {
 });
 
 const reservation = vi.hoisted(() => ({ assert: vi.fn(), lock: vi.fn(), invoice: null as Record<string, unknown> | null }));
-vi.mock('./autopay/reservation', () => ({ assertNoActiveCollection: reservation.assert, lockInvoiceForCollection: reservation.lock }));
+// holdsClientMoney (unapplied money, B1-2) is proven on real Postgres in charging.integration.test.ts.
+vi.mock('./autopay/reservation', () => ({ assertNoActiveCollection: reservation.assert, holdsClientMoney: async () => false, lockInvoiceForCollection: reservation.lock }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { isSelfManagedDbContextRoute } from '../middleware/selfManagedDbContextRoutes';
 

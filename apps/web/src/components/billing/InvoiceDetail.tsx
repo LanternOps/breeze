@@ -1,4 +1,4 @@
-import { autopayReasonKey, chargeNowAttempted, chargeNowFailureKey, chargeNowSuccessKey } from './autopayReason';
+import { autopayReasonKey, chargeNowAttempted, chargeNowFailureKey, chargeNowResultUnknown, chargeNowSuccessKey } from './autopayReason';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
@@ -106,16 +106,25 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     // The charge already happened (or was attempted): a failed refetch must not read as a failed charge.
     const reloadAfterCharge = () => Promise.allSettled([Promise.resolve(onChanged()), loadPayments()]);
     try {
+      // The route confirms with Stripe synchronously: a lost or unreadable response can follow
+      // money moving, so it is reported as an unknown result, never "try again" (R4).
       await runAction({ request: () => fetchWithAuth(`/invoices/${invoice.id}/autopay/charge-now`, { method: 'POST' }),
-        errorFallback: t('autopay.chargeFailed'),
+        errorFallback: t('autopay.chargeResultUnknown'),
         successMessage: data => t(/* i18n-dynamic */ chargeNowSuccessKey(data)),
         friendly: (_code, _message, body) => {
           const key = chargeNowFailureKey(body);
           return key ? t(/* i18n-dynamic */ key) : undefined;
         },
+        suppressErrorToast: status => status >= 500,
         onUnauthorized: UNAUTHORIZED });
       await reloadAfterCharge();
     } catch (error) {
+      if (error instanceof ActionError && chargeNowResultUnknown(error)) {
+        // Network failures and unreadable bodies were already toasted with the fallback.
+        if (error.status >= 500) showToast({ message: t('autopay.chargeResultUnknown'), type: 'warning' });
+        await reloadAfterCharge();
+        return;
+      }
       if (error instanceof ActionError && chargeNowAttempted(error.body)) await reloadAfterCharge();
       handleActionError(error, t('autopay.chargeFailed'));
     }

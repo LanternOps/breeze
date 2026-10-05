@@ -2,7 +2,7 @@ import { enqueueAutopayStaffNotifications } from './staffNotifications';
 import { parseAutopayTerms, paymentMethodInSentence } from '@breeze/shared';
 import { clientNameFor, emailDate, emailMoney } from './billingEmail';
 import { collectionFenced } from './collectionControl';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../../db';
 import { billingNoticeOutbox, invoiceAutopaySchedules, invoices,
   orgAutopayEnrollments, orgPaymentMethods, organizations, partners, stripeConnectAccounts } from '../../db/schema';
@@ -34,7 +34,7 @@ export async function enqueueAutopayNotice(tx: Tx, scheduleId: string): Promise<
     await tx.update(invoiceAutopaySchedules).set({ stateReason: 'no_billing_contact' })
       .where(eq(invoiceAutopaySchedules.id, schedule.id));
     await enqueueAutopayStaffNotifications(tx, {orgId:schedule.orgId,partnerId:invoice!.partnerId,invoiceId:invoice!.id,
-      event:'autopay.needs_attention',dedupeKey:`autopay:${schedule.id}:no_billing_contact`,message:`Invoice ${invoice!.id}: notice blocked: no billing contact. Delivery will be retried when a contact is added.`});
+      event:'autopay.needs_attention',dedupeKey:`autopay:${schedule.id}:no_billing_contact`,message:'The automatic payment notice is blocked: the client has no billing contact. Delivery will be retried when a contact is added.'});
     return;
   }
   const terms = parseAutopayTerms(schedule.termsSnapshot);
@@ -132,6 +132,7 @@ const validateAutopayNotice: NoticePreSendValidator = async (tx, row) => {
     || frozen.enrollmentGeneration !== schedule.enrollmentGeneration) return obsolete;
   const [method] = await tx.select().from(orgPaymentMethods).where(and(
     eq(orgPaymentMethods.orgId, row.orgId), eq(orgPaymentMethods.isAutopayMethod, true),
+    inArray(orgPaymentMethods.status, ['active', 'pending_verification']),
   )).limit(1);
   if (!method || method.orgId !== row.orgId || method.enrollmentId !== enrollment.id || !method.isAutopayMethod
     || !['active', 'pending_verification'].includes(method.status)

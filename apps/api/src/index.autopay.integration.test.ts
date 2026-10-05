@@ -221,3 +221,38 @@ describe('autopay mounted in the production Hono application',()=>{
     expect(res.status).toBe(401);expect(await res.json()).toMatchObject({error:expect.stringContaining('authorization')});
   });
 });
+
+// F6: an org-scoped user may exclude an invoice (the route has no partner scope guard and the
+// rollout gate admits org tokens). Telling the client reads the MSP's name and settings, which
+// org RLS hides; that read must not fail the exclusion.
+import { invoices,invoiceAutopaySchedules } from './db/schema';
+describe('org-scoped MSP exclusion of an announced invoice (F6)',()=>{
+  beforeEach(()=>{vi.clearAllMocks();h.stripe.mockRejectedValue(new Error('Unexpected Stripe request'));});
+  it('excludes and queues the client notice under an org-scoped token',async()=>{
+    const f=await fixture('organization');
+    await withSystemDbAccessContext(async()=>{
+      const [role]=await db.execute<{role_id:string}>(sql`SELECT role_id FROM organization_users WHERE user_id=${f.user.id}::uuid AND org_id=${f.org.id}::uuid`);
+      await grantRolePermissions(role!.role_id,[{resource:'invoices',action:'write'}]);
+    });
+    const ids=await withSystemDbAccessContext(async()=>{
+      const [enrollment]=await db.insert(orgAutopayEnrollments).values({orgId:f.org.id,partnerId:f.partner.id,status:'active',generation:1,
+        stripeConnectionId:f.connection.id,stripeAccountId:f.connection.stripeAccountId,stripeCustomerId:'cus_f6',effectiveFrom:new Date('2026-01-01')}).returning();
+      const [invoice]=await db.insert(invoices).values({orgId:f.org.id,partnerId:f.partner.id,invoiceNumber:`F6-${randomUUID()}`,currencyCode:'USD',
+        status:'sent',issueDate:'2026-10-01',dueDate:'2026-10-31',total:'100.00',subtotal:'100.00',balance:'100.00'}).returning();
+      const [schedule]=await db.insert(invoiceAutopaySchedules).values({orgId:f.org.id,invoiceId:invoice!.id,enrollmentId:enrollment!.id,
+        enrollmentGeneration:1,eligible:true,state:'scheduled',collectOn:'2026-10-31',noticeSentAt:new Date(),termsSnapshot:{}}).returning();
+      const [notice]=await db.insert(billingNoticeOutbox).values({orgId:f.org.id,invoiceId:invoice!.id,enrollmentId:enrollment!.id,kind:'invoice_autopay',
+        seq:1,dedupeKey:`${invoice!.id}:invoice_autopay:1`,toEmail:'billing@example.test',status:'sent',sentAt:new Date(),
+        rendered:{subject:'Notice',html:'<p>Notice</p>',text:'Notice',frozen:{chargeDate:'2026-10-31'}}}).returning();
+      await db.update(invoiceAutopaySchedules).set({noticeOutboxId:notice!.id}).where(eq(invoiceAutopaySchedules.id,schedule!.id));
+      return {invoiceId:invoice!.id};
+    });
+    const response=await app.request(`/api/v1/invoices/${ids.invoiceId}/autopay`,{method:'PATCH',headers:f.headers,body:'{"excluded":true}'});
+    expect(response.status,await response.clone().text()).toBe(200);
+    const told=(await getTestDb().select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId,ids.invoiceId)))
+      .filter(row=>row.kind==='payment_reminder');
+    expect(told).toEqual([expect.objectContaining({dedupeKey:`invoice:${ids.invoiceId}:not_charged:1`,status:'pending'})]);
+    expect((told[0]!.rendered as {text:string}).text).toContain(`${f.partner.name} will not charge this invoice automatically`);
+    expect(h.stripe).not.toHaveBeenCalled();
+  });
+});

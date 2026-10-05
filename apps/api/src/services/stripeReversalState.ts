@@ -365,6 +365,8 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
           .where(eq(invoiceCollectionAttempts.id,attempt.id));
         await db.update(invoiceStripePayments).set({status:'refunded',refundedAmountMinor:String(originalMinor),feeReversedAmount:mapping.feeAmount,updatedAt:new Date()})
           .where(eq(invoiceStripePayments.id,mapping.id));
+        // The client was charged and is now refunded, with no receipt ever sent: tell them (F5).
+        await enqueueRefundNotice(db,mapping.id,{priorRefundedMinor:Number(mapping.refundedAmountMinor ?? 0),refundedMinor:originalMinor,unapplied:true});
         await db.update(stripeFinancialEvents).set({status:'applied',processedAt:new Date(),lastError:null,updatedAt:new Date()})
           .where(eq(stripeFinancialEvents.id,event.id));
         return {state:'applied',invoiceId:invoice.id,orgId:invoice.orgId,partnerId:invoice.partnerId,change:'unchanged'};
@@ -509,6 +511,14 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
     }
 
     await recomputeInvoiceStatus(mapping.invoiceId);
+    // A won dispute (or reinstated funds) leaves nothing reversed: the schedule must stop
+    // reporting payment_reversed for this payment (#7897).
+    if (mapping.source === 'autopay' && nextStatus === 'succeeded' && mapping.status !== 'succeeded') {
+      const [attempt] = await db.select({ scheduleId: invoiceCollectionAttempts.scheduleId }).from(invoiceCollectionAttempts)
+        .where(eq(invoiceCollectionAttempts.invoiceStripePaymentId, mapping.id)).limit(1);
+      if (attempt?.scheduleId) await db.update(invoiceAutopaySchedules).set({ stateReason: null })
+        .where(and(eq(invoiceAutopaySchedules.id, attempt.scheduleId), eq(invoiceAutopaySchedules.stateReason, 'payment_reversed')));
+    }
     // D-20: tell the client about money sent back to them, with the balance this left.
     if (refunded > priorRefunded) await enqueueRefundNotice(db, mapping.id, { priorRefundedMinor: priorRefunded, refundedMinor: refunded });
     let returnAttention: Extract<ApplyResult,{state:'applied'}>['returnAttention'];
@@ -533,13 +543,14 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
       returnAttention = {partnerId:invoice.partnerId,orgId:invoice.orgId,invoiceId:invoice.id,
         attemptId:attempt.id,returnIdentity,event:'payment.ach_returned'};
       await enqueueAutopayStaffNotifications(db,{...returnAttention,dedupeKey:`autopay:${attempt.id}:payment.ach_returned:${returnIdentity}`,
-        message:`A bank payment was returned. Invoice ${invoice.id}, attempt ${attempt.id}: the invoice balance has reopened.`});
+        message:'A bank payment was returned. The invoice balance has reopened.'});
     } else if (event.disputeFundsWithdrawn === true && targetMinor < previousMinor) {
       // #7897: a card (or pay-link) dispute withdrew funds and reopened the invoice. Staff hear
       // it, as they do an ACH return. The client opened the dispute with their bank, so no client email.
       disputeAttention = { partnerId: invoice.partnerId, orgId: invoice.orgId, invoiceId: invoice.id, event: 'payment.disputed',
         dedupeKey: `payment:${mapping.id}:disputed:${event.disputeId ?? event.stripeEventId}`,
-        message: `A payment for invoice ${invoice.invoiceNumber ?? invoice.id} was disputed. Stripe withdrew ${mapping.currency} ${fromMinorUnits(disputeAmount, mapping.currency)} and the invoice balance has reopened. Respond to the dispute in Stripe.` };
+        // The staff renderer names the invoice by number (P-17); no ids in the message.
+        message: `A payment was disputed. Stripe withdrew ${mapping.currency} ${fromMinorUnits(disputeAmount, mapping.currency)} and the invoice balance has reopened. Respond to the dispute in Stripe.` };
       await enqueueAutopayStaffNotifications(db, disputeAttention);
     }
     await db.update(stripeFinancialEvents).set({

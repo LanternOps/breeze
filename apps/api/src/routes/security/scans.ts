@@ -5,7 +5,7 @@ import { and, desc, eq } from 'drizzle-orm';
 
 import { db } from '../../db';
 import { devices, securityScans } from '../../db/schema';
-import { requirePermission, requireScope } from '../../middleware/auth';
+import { hasSatisfiedMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { CommandTypes, queueCommand } from '../../services/commandQueue';
 import { canAccessSite, getUserPermissions, type UserPermissions } from '../../services/permissions';
 import type { AuthContext } from '../../middleware/auth';
@@ -75,6 +75,22 @@ scansRoutes.post(
 
     const scanId = randomUUID();
 
+    // #6263 W01: the effective security policy — resolved in the CALLER'S OWN
+    // RLS context, self-tenanted by the device's hierarchy. `null` means no
+    // policy governs this device, and the agent then uses its own defaults.
+    let settings = await resolveSecurityScanSettingsForDevice(device.id);
+
+    // A manual scan runs under the CALLER's authority (devices:execute is
+    // enforced above), not the policy's stored approval. Auto-quarantine moves
+    // files, so it additionally needs a satisfied MFA session — the same bar
+    // as enabling it on a policy. Without one the scan runs detect-only and the
+    // row records why.
+    let autoQuarantineSuppressedReason: string | null = null;
+    if (settings?.autoQuarantine && !hasSatisfiedMfa(auth)) {
+      settings = { ...settings, autoQuarantine: false };
+      autoQuarantineSuppressedReason = 'manual_no_mfa';
+    }
+
     await db.insert(securityScans).values({
       id: scanId,
       deviceId: device.id,
@@ -82,13 +98,9 @@ scansRoutes.post(
       scanType: payload.scanType,
       status: 'queued',
       startedAt: new Date(),
-      initiatedBy: auth.user.id
+      initiatedBy: auth.user.id,
+      autoQuarantineSuppressedReason,
     });
-
-    // #6263 W01: the effective security policy — resolved in the CALLER'S OWN
-    // RLS context, self-tenanted by the device's hierarchy. `null` means no
-    // policy governs this device, and the agent then uses its own defaults.
-    const settings = await resolveSecurityScanSettingsForDevice(device.id);
 
     await queueCommand(
       device.id,

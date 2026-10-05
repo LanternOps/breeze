@@ -212,7 +212,9 @@ it('org settings enforce scope, permission and MFA before writing', async () => 
 
 it('returns lower authorized client fees from both fee Save responses', async () => {
   m.enabled = true;
-  m.read.mockResolvedValue({ cardFeeBps: { value: 300, source: 'partner' }, achFeeAmount: { value: '2.50', source: 'partner' } });
+  // The real resolver always returns every setting; the gap read model also compares caps (2a-1).
+  m.read.mockResolvedValue({ cardFeeBps: { value: 300, source: 'partner' }, achFeeAmount: { value: '2.50', source: 'partner' },
+    autopayCap: { value: { enabled: false }, source: 'default' } });
   m.feeGapRows = [{ orgId, orgName: 'Example client', methodType: 'card', feeTerms: {
     methodType: 'card', cardFeeBps: 100, achFeeAmount: '0.00', feeAttested: true, currency: 'USD',
   }, cardFeeBps: null, achFeeAmount: null }];
