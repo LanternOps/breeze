@@ -21,10 +21,11 @@
 -- CASCADE in every case, because every child row is meaningless without its
 -- parent: a script/tag link with either end gone, a mobile registration,
 -- refresh session or push record for a user who no longer exists, a partner
--- membership for a deleted identity. Users who hold a partner membership are
--- not deleted by org erasure at all -- they are detached to partner-level
--- staff first (see tenantCascade.ts) -- so the partner_users CASCADE only ever
--- fires for a user that is genuinely being removed.
+-- membership for a deleted identity. Users whose partner membership still
+-- grants access without the erased org are not deleted by org erasure at all
+-- -- they are detached to partner-level staff first
+-- (detachSharedIdentitiesFromOrg in tenantCascade.ts) -- so the partner_users
+-- CASCADE only fires for an identity that is really being removed.
 --
 -- push_notifications.mobile_device_id and mobile_sessions.mobile_device_id
 -- move to CASCADE as well: once mobile_devices rows can be removed by a
@@ -37,7 +38,16 @@
 --
 -- device_software.device_id -> devices gets the same treatment in the next
 -- migration, which runs outside a transaction because device_software is a
--- large, hot table.
+-- large, hot table; the remaining child edges are in 2026-12-12-140200.
+--
+-- Locking. These child tables are small, so each FK is re-added validating,
+-- inside autoMigrate's per-file transaction. That holds SHARE ROW EXCLUSIVE on
+-- users, scripts and script_tags (and ACCESS EXCLUSIVE on each child) until
+-- the file commits, and a lock request queued behind a long-running
+-- transaction blocks every later writer on that table, so wait at most a few
+-- seconds for each lock rather than stall logins and heartbeats; the file is
+-- idempotent and safe to retry. SET LOCAL covers every statement below.
+SET LOCAL lock_timeout = '5s';
 
 DO $$
 BEGIN

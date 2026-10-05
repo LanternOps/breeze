@@ -125,7 +125,7 @@ export const permissions = pgTable('permissions', {
 });
 
 export const rolePermissions = pgTable('role_permissions', {
-  roleId: uuid('role_id').notNull().references(() => roles.id),
+  roleId: uuid('role_id').notNull().references(() => roles.id, { onDelete: 'cascade' }),
   permissionId: uuid('permission_id').notNull().references(() => permissions.id),
   constraints: jsonb('constraints')
 }, (t) => ({
@@ -156,7 +156,7 @@ export const organizationUsers = pgTable('organization_users', {
 
 export const sessions = pgTable('sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull().references(() => users.id),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   tokenHash: text('token_hash').notNull(),
   ipAddress: varchar('ip_address', { length: 45 }),
   userAgent: text('user_agent'),

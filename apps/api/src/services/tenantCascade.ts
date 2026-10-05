@@ -53,6 +53,7 @@ import { deleteObjects } from './s3Storage';
 import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
 import { deleteOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
 import { captureMessage } from './sentry';
+import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from './authLifecycle';
 import {
   captureBackupErasureFence,
   setBackupErasureContext,
@@ -1397,9 +1398,10 @@ export interface CascadeStats {
    */
   foreignTopologyAlertsDeleted: number;
   /**
-   * Users whose home org was this org but who hold a partner membership, and
-   * were therefore detached to partner-level staff (org_id -> NULL) instead of
-   * being deleted (step 1a-ter). Not counted in `totalRowsDeleted`.
+   * Users whose home org was this org but who hold a partner membership that
+   * still grants access without it, and were therefore detached to
+   * partner-level staff (org_id -> NULL) instead of being deleted (step
+   * 1a-ter, detachSharedIdentitiesFromOrg). Not counted in `totalRowsDeleted`.
    */
   usersDetached: number;
 }
@@ -1411,47 +1413,82 @@ export interface CascadeStats {
  * `users` is dual-axis (CLAUDE.md shape 4): `partner_id` is always set and
  * `org_id` names a home org for customer users and for the MSP's own
  * internal-org staff. The walk erases users by `org_id`, which is right for a
- * customer user and wrong for a user who ALSO holds a `partner_users`
- * membership -- that identity is the partner's (it signs in to manage every
- * org the membership grants), not the erased org's data. Deleting it would
- * take an MSP technician's account, and through `partner_users ON DELETE
- * CASCADE` their partner access, down with one customer's erasure. So such a
- * user is detached instead: `org_id` becomes NULL, which is exactly the shape
- * of partner-level staff (see routes/users.ts invite tenancy). The org-bound
- * rows around them still go -- the `organization_users` row for this org and
- * everything else keyed on `org_id` is erased by the walk as usual -- while
- * the partner identity, its membership, and its own mobile registrations
- * survive. `auth_epoch` advances so any token minted while the erased org was
- * the home org stops being accepted.
+ * customer user and wrong for a user who is ALSO the partner's staff -- that
+ * identity belongs to the partner (it signs in to manage the orgs its
+ * membership grants), not to the erased org. Deleting it would take an MSP
+ * technician's account, and through `partner_users ON DELETE CASCADE` their
+ * partner access, down with one customer's erasure.
  *
- * Users WITHOUT a partner membership are left for the walk to delete, and
- * their FK-only children (mobile_devices, push_notifications,
- * mobile_sessions, partner_users) go with them by ON DELETE CASCADE.
+ * A user is detached (kept, with `org_id` -> NULL, the shape of partner-level
+ * staff -- see routes/users.ts invite tenancy) only when it holds a
+ * membership in its OWN partner that still grants something once this org is
+ * gone: `org_access` 'all' or 'none' (partner-level access), or 'selected'
+ * naming at least one OTHER org. A membership whose only selected org is the
+ * erased one (e.g. a co-managed customer contact) grants nothing afterwards,
+ * so keeping the identity would only retain personal data with zero access;
+ * such users, and users with no membership at all, are left for the walk to
+ * delete, and their FK-only children (partner_users, mobile_devices,
+ * push_notifications, mobile_sessions, sessions, ...) go with them by
+ * ON DELETE CASCADE.
  *
- * The same step drops this org from every `partner_users.org_ids` selection
- * (`org_access = 'selected'`), so no membership keeps naming a tenant that no
- * longer exists. Rows that do not list this org are not touched.
+ * For a detached user the org-bound rows still go -- the `organization_users`
+ * row for this org and everything else keyed on `org_id` is erased by the
+ * walk -- while the identity, its partner membership and its own mobile
+ * registrations survive. Its home org changed, so it goes through the same
+ * session cutoff as a membership removal (routes/users.ts
+ * removeMembershipForScope): `auth_epoch` advances and every refresh family
+ * is revoked in the detach transaction, then `runPostCommitCleanup` (Redis
+ * token cutoff, permission-cache clear, MCP OAuth grant sweep) runs after the
+ * commit, best-effort, exactly as that path does.
  *
- * Both statements are idempotent, so a re-run after a partial erasure is a
- * no-op here.
+ * The same transaction then drops this org from every `partner_users.org_ids`
+ * selection that lists it, so no membership keeps naming a tenant that no
+ * longer exists. Rows that do not list this org are not touched. The strip
+ * runs AFTER the detach decision, which reads the selection.
+ *
+ * This step COMMITS before the walk starts (erasure is fail-fast and
+ * re-runnable, not atomic -- see the step-2 catch in cascadeDeleteOrg). If
+ * the walk later aborts, detached users stay detached and the stripped
+ * selections stay stripped while the org still partly exists, until the
+ * erasure is re-run. Both statements are idempotent, so a re-run is a no-op
+ * here.
  */
-async function detachSharedIdentitiesFromOrg(orgId: string): Promise<number> {
-  return dbModule.withSystemDbAccessContext(async () => {
-    const detached = await dbModule.db.execute(sql`
-      UPDATE users u
-      SET org_id = NULL,
-          auth_epoch = u.auth_epoch + 1,
-          updated_at = now()
-      WHERE u.org_id = ${orgId}::uuid
-        AND EXISTS (SELECT 1 FROM partner_users pu WHERE pu.user_id = u.id)
-    `);
-    await dbModule.db.execute(sql`
-      UPDATE partner_users
-      SET org_ids = array_remove(org_ids, ${orgId}::uuid)
-      WHERE ${orgId}::uuid = ANY(org_ids)
-    `);
-    return extractRowCount(detached);
-  });
+async function detachSharedIdentitiesFromOrg(orgId: string): Promise<string[]> {
+  const detachedIds = await dbModule.withSystemDbAccessContext(() =>
+    dbModule.db.transaction(async (tx) => {
+      const detached = rowsFromExecute<{ id: string }>(await tx.execute(sql`
+        UPDATE users u
+        SET org_id = NULL,
+            updated_at = now()
+        WHERE u.org_id = ${orgId}::uuid
+          AND EXISTS (
+            SELECT 1 FROM partner_users pu
+            WHERE pu.user_id = u.id
+              AND pu.partner_id = u.partner_id
+              AND NOT (
+                pu.org_access = 'selected'
+                AND COALESCE(pu.org_ids, '{}'::uuid[]) <@ ARRAY[${orgId}::uuid]
+              )
+          )
+        RETURNING u.id
+      `));
+      const ids = detached.map((row) => row.id).sort();
+      for (const userId of ids) {
+        await advanceUserEpochs(tx, userId, { auth: true });
+        await revokeAllRefreshFamilies(tx, userId, 'home-org-erased');
+      }
+      await tx.execute(sql`
+        UPDATE partner_users
+        SET org_ids = array_remove(org_ids, ${orgId}::uuid)
+        WHERE ${orgId}::uuid = ANY(org_ids)
+      `);
+      return ids;
+    }),
+  );
+  for (const userId of detachedIds) {
+    await runPostCommitCleanup(userId);
+  }
+  return detachedIds;
 }
 
 export type TenantCascadeRefusalCode = 'LEGAL_HOLD_ACTIVE';
@@ -1793,7 +1830,7 @@ export async function cascadeDeleteOrg(
   //    keys off `users.org_id` and would otherwise strip a detached user's
   //    partner-level SSO links. See detachSharedIdentitiesFromOrg.
   try {
-    stats.usersDetached = await detachSharedIdentitiesFromOrg(orgId);
+    stats.usersDetached = (await detachSharedIdentitiesFromOrg(orgId)).length;
     if (stats.usersDetached > 0) {
       console.warn(
         `[tenantCascade] org=${orgId}: detached ${stats.usersDetached} user(s) holding a partner `

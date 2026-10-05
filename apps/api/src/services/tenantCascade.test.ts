@@ -112,8 +112,21 @@ vi.mock('../db', () => ({
     insert: vi.fn(() => ({
       values: vi.fn(() => Promise.resolve(undefined)),
     })),
+    // The shared-identity detach runs in one transaction; hand the callback
+    // this same mock so its statements go through `execute` above.
+    transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+      const mod = await import('../db');
+      return fn(mod.db);
+    }),
   },
 }));
+
+const authLifecycleMocks = vi.hoisted(() => ({
+  advanceUserEpochs: vi.fn(async () => ({})),
+  revokeAllRefreshFamilies: vi.fn(async () => undefined),
+  runPostCommitCleanup: vi.fn(async () => ({ redisOk: true, permissionCacheOk: true, oauthOk: true })),
+}));
+vi.mock('./authLifecycle', () => authLifecycleMocks);
 
 const { deleteObjectKeysMock } = vi.hoisted(() => ({ deleteObjectKeysMock: vi.fn() }));
 vi.mock('./ticketAttachmentStorage', () => ({
@@ -371,7 +384,7 @@ describe('cascadeDeleteOrg', () => {
       // Shared-identity detach runs before the pre-clears: the users UPDATE
       // and the partner_users.org_ids cleanup. Neither is a deletion, so
       // neither is summed into totalRowsDeleted.
-      { rowCount: 2 }, // users detached
+      [{ id: 'user-b' }, { id: 'user-a' }], // users detached (RETURNING id)
       { rowCount: 1 }, // partner_users.org_ids
       { rowCount: 5 }, // device_commands
       // One extra: the accounting_entity_mappings entry also runs a
@@ -387,6 +400,11 @@ describe('cascadeDeleteOrg', () => {
     // 5 from device_commands + 3 per cascade table.
     expect(stats.totalRowsDeleted).toBe(5 + 3 * cascadeOrder.length);
     expect(stats.usersDetached).toBe(2);
+    // Detached users go through the same session cutoff as a membership
+    // removal: epoch + refresh families in the transaction, cleanup after.
+    expect(authLifecycleMocks.advanceUserEpochs.mock.calls.map((c) => (c as unknown[])[1])).toEqual(['user-a', 'user-b']);
+    expect(authLifecycleMocks.revokeAllRefreshFamilies).toHaveBeenCalledTimes(2);
+    expect(authLifecycleMocks.runPostCommitCleanup.mock.calls.map((c) => (c as unknown[])[0])).toEqual(['user-a', 'user-b']);
   });
 
   it('tolerates a missing associated system-scoped table (42P01, FLAT shape)', async () => {

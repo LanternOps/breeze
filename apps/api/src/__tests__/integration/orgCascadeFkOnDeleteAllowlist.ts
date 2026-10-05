@@ -139,14 +139,6 @@ export interface OrgCascadeFkRef {
  * contract test enforces the order so diffs stay reviewable.
  */
 export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.freeze([
-  { childTable: 'ai_messages', constraint: 'ai_messages_session_id_ai_sessions_id_fk', parentTable: 'ai_sessions', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'ai_tool_executions', constraint: 'ai_tool_executions_session_id_ai_sessions_id_fk', parentTable: 'ai_sessions', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'alert_correlations', constraint: 'alert_correlations_child_alert_id_alerts_id_fk', parentTable: 'alerts', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'alert_correlations', constraint: 'alert_correlations_parent_alert_id_alerts_id_fk', parentTable: 'alerts', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'alert_notifications', constraint: 'alert_notifications_alert_id_alerts_id_fk', parentTable: 'alerts', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'dashboard_widgets', constraint: 'dashboard_widgets_dashboard_id_analytics_dashboards_id_fk', parentTable: 'analytics_dashboards', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'automation_policy_compliance', constraint: 'automation_policy_compliance_policy_id_automation_policies_id_f', parentTable: 'automation_policies', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'automation_runs', constraint: 'automation_runs_automation_id_automations_id_fk', parentTable: 'automations', reason: 'child-not-deleted', allColumnsNullable: true },
   {
     childTable: 'configuration_policies',
     constraint: 'configuration_policies_parent_policy_id_fkey',
@@ -177,15 +169,6 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
       + 'SYSTEM scope and then runs the real cascadeDeleteOrg() and cascadeDeletePartner() over a '
       + 'parent+child family. (#5123)',
   },
-  { childTable: 'deployment_devices', constraint: 'deployment_devices_deployment_id_deployments_id_fk', parentTable: 'deployments', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'automation_policy_compliance', constraint: 'automation_policy_compliance_device_id_devices_id_fk', parentTable: 'devices', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'deployment_devices', constraint: 'deployment_devices_device_id_devices_id_fk', parentTable: 'devices', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'patch_job_results', constraint: 'patch_job_results_device_id_devices_id_fk', parentTable: 'devices', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'patch_rollbacks', constraint: 'patch_rollbacks_device_id_devices_id_fk', parentTable: 'devices', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'software_compliance_status', constraint: 'software_compliance_status_device_id_devices_id_fk', parentTable: 'devices', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'maintenance_occurrences', constraint: 'maintenance_occurrences_window_id_maintenance_windows_id_fk', parentTable: 'maintenance_windows', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'alert_notifications', constraint: 'alert_notifications_channel_id_notification_channels_id_fk', parentTable: 'notification_channels', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'approval_requests', constraint: 'approval_requests_requesting_session_id_fkey', parentTable: 'oauth_sessions', reason: 'child-not-deleted', allColumnsNullable: true },
   {
     childTable: 'partner_export_device_material_state',
     constraint: 'partner_export_device_material_state_org_id_fkey',
@@ -209,33 +192,63 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
       'Reviewed, not plain debt. Same shape as partner_export_device_material_state above, reached '
       + 'through its ON DELETE CASCADE site_id edge instead.',
   },
-  { childTable: 'patch_job_results', constraint: 'patch_job_results_job_id_patch_jobs_id_fk', parentTable: 'patch_jobs', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'patch_rollbacks', constraint: 'patch_rollbacks_original_job_id_patch_jobs_id_fk', parentTable: 'patch_jobs', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'plugin_logs', constraint: 'plugin_logs_installation_id_plugin_installations_id_fk', parentTable: 'plugin_installations', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'ticket_comments', constraint: 'ticket_comments_portal_user_id_portal_users_id_fk', parentTable: 'portal_users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'auth_browser_transitions', constraint: 'auth_browser_transitions_current_family_owner_fk', parentTable: 'refresh_token_families', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'sso_token_exchange_grants', constraint: 'sso_token_exchange_grants_family_owner_fk', parentTable: 'refresh_token_families', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'access_review_items', constraint: 'access_review_items_role_id_roles_id_fk', parentTable: 'roles', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'partner_users', constraint: 'partner_users_role_id_roles_id_fk', parentTable: 'roles', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'role_permissions', constraint: 'role_permissions_role_id_roles_id_fk', parentTable: 'roles', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'config_policy_compliance_rules', constraint: 'config_policy_compliance_rules_remediation_script_id_scripts_id', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'patch_policies', constraint: 'patch_policies_post_install_script_id_scripts_id_fk', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'patch_policies', constraint: 'patch_policies_pre_install_script_id_scripts_id_fk', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: true },
+  // Every FK-only child edge an ordinary, in-use org reaches came off this
+  // ledger in 2026-12-12-140000 / -140100 / -140200, which gave each one an ON
+  // DELETE action: CASCADE where the child is meaningless without its parent
+  // (per-device results, alert notifications, ticket comments, AI messages,
+  // login sessions, role permissions, ...), SET NULL for nullable
+  // attributions on rows that must survive. partner_users -> users is the
+  // subtle one: org erasure first detaches any user whose partner membership
+  // still grants access without the erased org (org_id -> NULL, see
+  // detachSharedIdentitiesFromOrg in tenantCascade.ts), so that cascade only
+  // removes memberships of identities that are really being deleted.
+  // Data-level proof: tenantCascadeFkChildren.integration.test.ts. The
+  // entries below are the ones those migrations deliberately left alone.
+  {
+    childTable: 'partner_users',
+    constraint: 'partner_users_role_id_roles_id_fk',
+    parentTable: 'roles',
+    reason: 'child-not-deleted',
+    allColumnsNullable: false,
+    note:
+      'Not reached by an ordinary org: a partner membership names a partner-scope role, and only '
+      + 'org-scoped roles are erased with the org. Left without an ON DELETE action on purpose -- '
+      + 'CASCADE would silently delete a partner membership because a role went away.',
+  },
+  {
+    childTable: 'config_policy_compliance_rules',
+    constraint: 'config_policy_compliance_rules_remediation_script_id_scripts_id',
+    parentTable: 'scripts',
+    reason: 'child-not-deleted',
+    allColumnsNullable: true,
+    note:
+      'SET NULL is an UPDATE of the child, and this table carries partner-export UPDATE triggers '
+      + 'that have not been reviewed for a referential-action write; needs its own change.',
+  },
+  {
+    childTable: 'patch_policies',
+    constraint: 'patch_policies_post_install_script_id_scripts_id_fk',
+    parentTable: 'scripts',
+    reason: 'child-not-deleted',
+    allColumnsNullable: true,
+    note:
+      'SET NULL would fire the config-policy feature-reference UPDATE gate triggers on '
+      + 'patch_policies, which have not been reviewed for a referential-action write; needs its own change.',
+  },
+  {
+    childTable: 'patch_policies',
+    constraint: 'patch_policies_pre_install_script_id_scripts_id_fk',
+    parentTable: 'scripts',
+    reason: 'child-not-deleted',
+    allColumnsNullable: true,
+    note: 'Same as patch_policies_post_install_script_id_scripts_id_fk above.',
+  },
   // script_versions -> scripts was `child-not-deleted` until W01a (#5612):
   // 2026-10-16-100000-script-versions-immutable.sql re-added that FK with
   // ON DELETE CASCADE, which is how a table with no org_id of its own erases
   // with its tenant. The FK to users (approved_by, added by the same
   // migration) ships ON DELETE SET NULL — a deleted approver nulls the
   // attribution rather than blocking erasure — so it needs no entry either.
-  // device_software -> devices, script_to_tags -> scripts/script_tags, and
-  // mobile_devices / mobile_sessions / push_notifications / partner_users ->
-  // users came off this ledger when 2026-12-12-140000 and -140100 gave them
-  // ON DELETE CASCADE. partner_users is the subtle one: org erasure first
-  // detaches any user holding a partner membership (org_id -> NULL, see
-  // detachSharedIdentitiesFromOrg in tenantCascade.ts), so the cascade only
-  // ever removes memberships of identities that are really being deleted.
-  // Data-level proof: tenantCascadeFkChildren.integration.test.ts.
-  { childTable: 'snmp_alert_thresholds', constraint: 'snmp_alert_thresholds_device_id_snmp_devices_id_fk', parentTable: 'snmp_devices', reason: 'child-not-deleted', allColumnsNullable: false },
   // Was `pre-cleared` until #5473: software_versions rows for a deleted org
   // used to have their own ASSOCIATED_SYSTEM_SCOPED_TABLES clearSql entry.
   // #5473 replaced it with deleteSoftwareCatalogsAndObjects (invoked in place
@@ -248,36 +261,63 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
   // into software_versions) is still a step-1b pre-clear, so it is always
   // empty before deleteSoftwareCatalogsAndObjects runs.
   { childTable: 'software_versions', constraint: 'software_versions_catalog_id_software_catalog_id_fk', parentTable: 'software_catalog', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'ticket_comments', constraint: 'ticket_comments_ticket_id_tickets_id_fk', parentTable: 'tickets', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'access_review_items', constraint: 'access_review_items_reviewed_by_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'access_review_items', constraint: 'access_review_items_user_id_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'accounting_connections', constraint: 'accounting_connections_connected_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'ai_tool_executions', constraint: 'ai_tool_executions_approved_by_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'authenticator_policies', constraint: 'authenticator_policies_updated_by_user_id_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'catalog_items', constraint: 'catalog_items_created_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'config_policy_assignments', constraint: 'config_policy_assignments_assigned_by_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'network_known_guests', constraint: 'network_known_guests_added_by_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'office_addin_user_bindings', constraint: 'office_addin_bindings_user_partner_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'office_addin_user_bindings', constraint: 'office_addin_user_bindings_revoked_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'office_addin_user_bindings', constraint: 'office_addin_user_bindings_user_id_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'partner_service_principal_keys', constraint: 'partner_service_principal_keys_created_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'partner_service_principals', constraint: 'partner_service_principals_created_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'partner_service_principals', constraint: 'partner_service_principals_updated_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'patch_approvals', constraint: 'patch_approvals_approved_by_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'patch_policies', constraint: 'patch_policies_created_by_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'patch_rollbacks', constraint: 'patch_rollbacks_initiated_by_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'pax8_integrations', constraint: 'pax8_integrations_created_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'script_versions', constraint: 'script_versions_created_by_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'sessions', constraint: 'sessions_user_id_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'stripe_connect_accounts', constraint: 'stripe_connect_accounts_connected_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'td_synnex_digital_bridge_integrations', constraint: 'td_synnex_digital_bridge_integrations_created_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'td_synnex_ec_express_integrations', constraint: 'td_synnex_ec_express_integrations_created_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'td_synnex_sftp_integrations', constraint: 'td_synnex_sftp_integrations_created_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'ticket_comments', constraint: 'ticket_comments_user_id_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'ticket_mailbox_consent_sessions', constraint: 'ticket_mailbox_consent_sessions_user_id_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'ticket_mailbox_tenant_ownerships', constraint: 'ticket_mailbox_tenant_ownerships_verified_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'ticket_response_templates', constraint: 'ticket_response_templates_created_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
-  { childTable: 'unifi_integrations', constraint: 'unifi_integrations_created_by_fkey', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
+  {
+    childTable: 'config_policy_assignments',
+    constraint: 'config_policy_assignments_assigned_by_users_id_fk',
+    parentTable: 'users',
+    reason: 'child-not-deleted',
+    allColumnsNullable: true,
+    note:
+      'SET NULL would fire the assignment-integrity and partner-export UPDATE triggers on this '
+      + 'table, which have not been reviewed for a referential-action write; needs its own change.',
+  },
+  {
+    childTable: 'partner_service_principal_keys',
+    constraint: 'partner_service_principal_keys_created_by_fkey',
+    parentTable: 'users',
+    reason: 'child-not-deleted',
+    allColumnsNullable: false,
+    note:
+      'A partner credential with a NOT NULL creator. CASCADE would delete the partner\'s key because '
+      + 'its creator left, and SET NULL needs the column made nullable first. Creating one requires '
+      + 'partner-level access, and a creator with a membership that still grants access is detached, '
+      + 'not deleted, by org erasure.',
+  },
+  {
+    childTable: 'partner_service_principals',
+    constraint: 'partner_service_principals_created_by_fkey',
+    parentTable: 'users',
+    reason: 'child-not-deleted',
+    allColumnsNullable: false,
+    note: 'Same as partner_service_principal_keys_created_by_fkey above.',
+  },
+  {
+    childTable: 'partner_service_principals',
+    constraint: 'partner_service_principals_updated_by_fkey',
+    parentTable: 'users',
+    reason: 'child-not-deleted',
+    allColumnsNullable: false,
+    note: 'Same as partner_service_principal_keys_created_by_fkey above.',
+  },
+  {
+    childTable: 'patch_policies',
+    constraint: 'patch_policies_created_by_users_id_fk',
+    parentTable: 'users',
+    reason: 'child-not-deleted',
+    allColumnsNullable: true,
+    note: 'Same trigger concern as patch_policies_post_install_script_id_scripts_id_fk.',
+  },
+  {
+    childTable: 'script_versions',
+    constraint: 'script_versions_created_by_users_id_fk',
+    parentTable: 'users',
+    reason: 'child-not-deleted',
+    allColumnsNullable: true,
+    note:
+      'script_versions rows are immutable (script_versions_immutable raises on UPDATE), so SET NULL '
+      + 'would fail. Versions of org-owned scripts go with their script by ON DELETE CASCADE; only a '
+      + 'partner-wide script authored by a deleted org user can pin this.',
+  },
 ]);
 
 /**
