@@ -36,7 +36,7 @@ function OrgAutopayCardContent({ orgId }: { orgId: string }) {
     const current = generation.current;
     try {
       if (action === 'request') {
-        const sentTo = t('autopay.requestSentTo', { email: recipient.trim() || row?.billingContact?.email || '' });
+        const sentTo = t('autopay.requestSentTo', { email: recipient.trim() || row?.billingContact?.email?.trim() || '' });
         const response = await mutateAutopay<{ requested: string[]; skipped: { orgId: string; reason: string }[] }>(
           '/billing/autopay/requests', { orgIds: [orgId], ...(recipient.trim() ? { recipientOverride: recipient.trim() } : {}) }, 'POST', sentTo);
         if (current !== generation.current) return;
