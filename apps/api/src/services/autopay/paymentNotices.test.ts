@@ -75,11 +75,11 @@ function scheduled(attempt: Record<string, unknown>, schedule: Record<string, un
   rows.set(invoiceAutopaySchedules, schedule ? [{ id: 'schedule', invoiceId: 'invoice', orgId: 'org', attemptCount: 1, ...schedule }] : []);
 }
 it.each([
-  ['an NSF bank debit', { failureClass: 'nsf' }, 'insufficient available funds', '2026-10-09'],
-  ['a soft card decline on day 1', { failureClass: 'soft' }, 'could not be completed', '2026-10-04'],
+  ['an NSF bank debit', { failureClass: 'nsf', attemptNo: 1 }, 'insufficient available funds', '2026-10-09'],
+  ['a soft card decline on day 1', { failureClass: 'soft', attemptNo: 1 }, 'could not be completed', '2026-10-04'],
   ['a soft card decline on day 3', { failureClass: 'soft', attemptNo: 2 }, 'could not be completed', '2026-10-08'],
 ] as const)('states the scheduled retry date for %s', async (_label, attempt, reason, date) => {
-  scheduled(attempt, { state: 'retry_scheduled', attemptCount: attempt.attemptNo ?? 1, nextAttemptAt: new Date(`${date}T14:00:00.000Z`) });
+  scheduled(attempt, { state: 'retry_scheduled', attemptCount: attempt.attemptNo, nextAttemptAt: new Date(`${date}T14:00:00.000Z`) });
   await enqueueAttemptNotice(tx, 'a', 'pay');
   const { text, html } = queuedText();
   for (const body of [text, html]) {
