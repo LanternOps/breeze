@@ -44,7 +44,7 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   PartnerWideWriteDeniedError,
 } from '../services/partnerWideAccess';
-import { AgentAccessDeniedError, assertAgentWriteAllowed } from '../services/aiAgents/access';
+import { AgentAccessDeniedError, AgentSiteCeilingDeniedError, assertAgentWriteAllowed } from '../services/aiAgents/access';
 import { AgentModelNotAllowedError } from '../services/aiAgents/agentModelErrors';
 import { ResearchAgentEditError } from '../services/aiAgents/researchAgentEdit';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
@@ -314,6 +314,9 @@ export function mapError(c: Context, err: unknown) {
   // Letting it propagate rolls the transaction back and puts it in front of the
   // global onError handler, which logs it and reports it to Sentry.
   if (err instanceof AgentInvariantError) throw err;
+  if (err instanceof AgentSiteCeilingDeniedError) {
+    return c.json({ error: err.message }, 403);
+  }
   if (err instanceof AgentAccessDeniedError) {
     return c.json({ error: err.message }, 404);
   }

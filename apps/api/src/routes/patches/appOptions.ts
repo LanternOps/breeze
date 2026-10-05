@@ -4,7 +4,8 @@ import { and, inArray, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db';
 import { devices, devicePatches, organizations, patches, thirdPartyPackageCatalog } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requirePermission, requireScope } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
 
 // Keep in sync with THIRD_PARTY_PATCH_SOURCES in services/patchApprovalEvaluator.ts.
 const THIRD_PARTY_SOURCES = ['third_party', 'custom'] as const;
@@ -37,6 +38,8 @@ export const appOptionsRoutes = new Hono();
 appOptionsRoutes.get(
   '/app-options',
   requireScope('organization', 'partner', 'system'),
+  // Same RBAC bar as every sibling patch read (list.ts, compliance.ts).
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', appOptionsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
