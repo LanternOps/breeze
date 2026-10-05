@@ -2105,3 +2105,25 @@ it('a cap cancellation before confirm records its reason and tells the client an
  expect((notices[0]!.rendered as {text:string}).text).toContain('limit you authorized');
  expect(mail.staff()[0]!.text).toMatch(/limit the client authorized/);
 });
+
+// B1-5 / P-18: re-authorizing a bank payment for the same invoice (a changed total, or a
+// spent authority) re-runs bank setup. It is the same enrollment, not a new one: the
+// client already got "Automatic payments are set up" and gets nothing new.
+it('a bank-pay re-authorization for the same invoice sends no second enrolled email (B1-5)',async()=>{
+ const f=await fixture();
+ const a=await bankSetup(f,'first');
+ const enrolled=async()=>(await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox)
+  .where(eq(billingNoticeOutbox.orgId,f.org.id)))).filter(n=>n.kind==='autopay_enrolled');
+ expect(await enrolled()).toHaveLength(1);
+ const stops=async()=>(await withSystemDbAccessContext(()=>db.select().from(billingLinkTokens)
+  .where(eq(billingLinkTokens.orgId,f.org.id)))).filter(t=>t.purpose==='stop_autopay');
+ const stopCount=(await stops()).length;
+ const b=await bankSetup(f,'retry');
+ expect(await enrolled()).toHaveLength(1);
+ expect(await stops()).toHaveLength(stopCount);
+ // The new authorization itself is still recorded and is the active method.
+ const consents=await withSystemDbAccessContext(()=>db.select().from(orgAutopayConsents).where(eq(orgAutopayConsents.paymentMethodId,b.method.id)));
+ expect(consents).toHaveLength(1);
+ expect(b.method).toMatchObject({status:'active',isAutopayMethod:true});
+ expect(a.method.id).not.toBe(b.method.id);
+});
