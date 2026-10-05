@@ -92,7 +92,7 @@ function termsSummary(disclosures:{type:AutopayPaymentMethodType;disclosure:Disc
  * available method; a resume restates the client's own method; pause and stop restate
  * none (P-19: they repeated bank fee terms to card clients). */
 async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect,kind:'autopay_request'|'autopay_stopped'|'autopay_paused'|'autopay_resumed',recipient:string,vars:Record<string,string>,url?:string,openInvoices?:AutopayNoticeContext['openInvoices'],processingText?:string,dedupeKey?:string,
- terms:'all'|'none'|AutopayPaymentMethodType='all',extra:Pick<AutopayNoticeContext,'variant'|'notes'>&{methodLabel?:string;announcedInvoiceIds?:string[]}={}){
+ terms:'all'|'none'|AutopayPaymentMethodType='all',extra:Pick<AutopayNoticeContext,'variant'|'notes'|'locked'>&{methodLabel?:string;announcedInvoiceIds?:string[]}={}){
  const announcedInvoiceIds=extra.announcedInvoiceIds??[];
  const [org]=await db.select().from(organizations).where(eq(organizations.id,enrollment.orgId)).limit(1);
  const [partner]=await db.select().from(partners).where(eq(partners.id,enrollment.partnerId)).limit(1);
@@ -113,7 +113,7 @@ async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect
  }
  const notes=[...(extra.notes??[]),...(kind==='autopay_request'?['This link works for 30 days.']:[]),
   ...(kind==='autopay_stopped'&&extra.variant!=='request_withdrawn'?[`To turn automatic payments back on, ask ${partner.name} to send you a new setup link.`]:[])];
- const rendered=await renderBillingNotice(kind,{autopay:{partnerId:partner.id,orgId:org.id,variant:extra.variant,
+ const rendered=await renderBillingNotice(kind,{autopay:{partnerId:partner.id,orgId:org.id,variant:extra.variant,locked:extra.locked,
   vars:{partner_name:partner.name,org_name:org.name,client_name:clientNameFor(org.billingContact,org.name),...vars},ctaUrl:url,scheduleText,feeText,stopUrl,
   openInvoices:kind==='autopay_request'||kind==='autopay_resumed'?undefined:openInvoices??[],processingText:processingText?.replaceAll('{{partner_name}}',()=>partner.name),
   summary:kind==='autopay_resumed'&&extra.methodLabel?[{label:'Payment method',value:extra.methodLabel},...termsSummary(disclosures).slice(0,-2)]
@@ -178,7 +178,8 @@ export async function requestAutopay(db:Tx,actor:InvoiceActor,input:{orgIds:stri
     const url=buildBillingLinkUrl('enroll',token.token);
     // Fee or limit (cap) terms changed (2a-1): the accepted terms stay in force until the client accepts the new ones.
     await notice(db,existing!,'autopay_request',recipient,{setup_link:url,ach_mode_text:achModeText(card.achMode)},url,undefined,
-     '{{partner_name}} has updated its payment terms. Your automatic payments continue on the terms you already accepted until you review and accept the new ones.',`${dedupeKey}:${token.id}`);
+     'Your automatic payments continue on the terms you already accepted until you review and accept the new ones.',`${dedupeKey}:${token.id}`,
+     'all',{variant:'reauthorize',locked:true});
    }
    result.requested.push(orgId);continue;
   }

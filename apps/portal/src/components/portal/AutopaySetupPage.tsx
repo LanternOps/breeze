@@ -74,7 +74,8 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
 
   // V-38: the browser tab names a change as a change, not "Set up automatic payments".
   const changing = !!data && !data.stopOnly && data.enrollment?.status === 'active' && !!data.method;
-  useEffect(() => { if (!portal && changing) document.title = 'Change payment method'; }, [portal, changing]);
+  const reviewing = changing && !!data && !data.stopOnly && data.termsChanged === true;
+  useEffect(() => { if (!portal && changing) document.title = reviewing ? 'Review updated terms' : 'Change payment method'; }, [portal, changing, reviewing]);
 
   const choose = useCallback((next: MethodType) => {
     setMethod(next);
@@ -166,10 +167,13 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
     <div className="space-y-2">
       <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Automatic payments</p>
       <H className={cn('font-display font-semibold leading-tight tracking-tight text-foreground', portal ? 'text-xl' : 'text-[1.75rem]')}>
-        {update ? 'Change your payment method' : 'Pay future invoices automatically'}
+        {update && data.termsChanged ? 'Review your updated terms' : update ? 'Change your payment method' : 'Pay future invoices automatically'}
       </H>
       <p className="text-sm leading-relaxed text-muted-foreground">
-        {update
+        {/* FP-1: opened from a re-authorization, the page says why. */}
+        {update && data.termsChanged
+          ? `${msp} has updated the terms of your automatic payments. Review them below and agree to keep automatic payments on. You can keep your ${paymentMethodInSentence(savedMethodLabel(data.method))} or choose another.`
+          : update
           ? `Your new method replaces your ${paymentMethodInSentence(savedMethodLabel(data.method))} for future automatic payments. Your schedule stays the same.`
           : `${msp} will charge each new invoice to the payment method you choose, and email you before every payment.`}
       </p>

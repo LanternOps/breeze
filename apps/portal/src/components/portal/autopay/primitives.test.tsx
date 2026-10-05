@@ -147,3 +147,10 @@ describe('buttons', () => {
     expect(cls).toContain('sm:min-h-9');
   });
 });
+
+// FP-2: "You're already set up" points to something that exists: the portal, or the MSP.
+it('an already-used setup link points to the portal or the MSP, not a change link no email carries', () => {
+  render(<LinkStatePanel failure={{ code: 'link_used', partnerName: 'Example MSP', enrollmentStatus: 'active', supportEmail: 'billing@msp.example' }} purpose="enroll" />);
+  expect(screen.getByText(/To change your payment method, sign in to your customer portal, or ask Example MSP to send you a link to change it\./)).toBeInTheDocument();
+  expect(document.body.textContent).not.toMatch(/latest email/);
+});

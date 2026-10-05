@@ -152,6 +152,14 @@ describe('changing an existing method (card-expiring link or portal)', () => {
     expect(screen.queryByText(/Issued after you set this up/)).toBeNull();
     expect(document.title).toBe('Change payment method');
   });
+  // FP-1: opened from a re-authorization email, the page says the terms changed.
+  it('when the accepted terms differ from today\'s, asks the client to review the updated terms', async () => {
+    vi.mocked(apiGet).mockResolvedValue(page({ enrollment: { status: 'active' }, termsChanged: true,
+      method: { type: 'card', cardBrand: 'visa', cardFunding: 'credit', cardLast4: '4242', status: 'active' } }));
+    render(<AutopaySetupPage token="test-token" />);
+    expect(await screen.findByRole('heading', { name: 'Review your updated terms' })).toBeInTheDocument();
+    expect(screen.getByText(/Example MSP has updated the terms of your automatic payments\. Review them below and agree to keep automatic payments on/)).toBeInTheDocument();
+  });
   it('in the portal: an inline form with a Cancel, posting to the portal route', async () => {
     vi.mocked(apiGet).mockResolvedValue(active);
     const onCancel = vi.fn();

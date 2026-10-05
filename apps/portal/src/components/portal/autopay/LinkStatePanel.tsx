@@ -27,7 +27,7 @@ export function linkFailureCopy(failure: LinkFailureView, purpose: BillingLinkPu
       }
       if (purpose === 'enroll' && failure.enrollmentStatus === 'active') {
         return { title: "You're already set up", mark: { tone: 'success' as const, label: 'On' },
-          body: [`Automatic payments to ${msp} are on. To change your payment method, sign in to your customer portal or use the link in your latest email from ${msp}.`],
+          body: [`Automatic payments to ${msp} are on. To change your payment method, sign in to your customer portal, or ask ${msp} to send you a link to change it.`],
           primary: { label: 'Sign in to your portal', href: withBase('/login'), variant: 'secondary' as const, testId: 'autopay-link-sign-in' } as PanelAction };
       }
       return { title: 'This link was already used', body: ['Open the invoice from your email to see its current status.'], primary: contact };

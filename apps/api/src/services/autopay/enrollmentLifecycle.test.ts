@@ -225,10 +225,13 @@ it.each(['active','paused'])('reauthorizes %s once without changing enrollment o
  expect(h.mint).toHaveBeenCalledWith(db,expect.objectContaining({purpose:'enroll',generation:9}));
  const queued=h.enqueue.mock.calls[0]![1];
  expect(queued.kind).toBe('autopay_request');expect(queued.dedupeKey).toContain('reauthorize');
+ // FP-1: an active client is asked to review updated terms, not invited to set up for the first time.
+ expect(queued.rendered.subject).toBe('Please review your updated automatic payment terms with Example MSP');
  for(const body of [queued.rendered.html,queued.rendered.text]){
-  expect(body).toContain('Replacement body only');
-  expect(body).toContain('Example MSP has updated its payment terms. Your automatic payments continue on the terms you already accepted until you review and accept the new ones.');
-  expect(body).toContain('credit-card processing fee');expect(body).toContain('server-token/enroll');
+  expect(body).not.toContain('Replacement body only');expect(body).not.toMatch(/invited you/);
+  expect(body).toContain('Example MSP has updated the terms of your automatic payments');
+  expect(body).toContain('Your automatic payments continue on the terms you already accepted until you review and accept the new ones.');
+  expect(body).toContain('server-token/enroll');
  }
  h.rows.push([org],[current],[{id:'connection',stripeAccountId:'acct_test'}],[{id:'notice'}]);
  await requestAutopay(db,actor,{orgIds:[orgId],mode:'reauthorize'});
@@ -311,5 +314,5 @@ it('a re-authorization names an MSP whose name contains $& literally',async()=>{
  h.rows.push([org],[current],[{id:'connection',stripeAccountId:'acct_test'}],[]);
  h.rows.push([org],[{id:partnerId,name:'Fix$&Co'}],[{settings:{}}]);
  await requestAutopay(db,actor,{orgIds:[orgId],mode:'reauthorize'});
- expect(h.enqueue.mock.calls[0]![1].rendered.text).toContain('Fix$&Co has updated its payment terms.');
+ expect(h.enqueue.mock.calls[0]![1].rendered.text).toContain('Fix$&Co has updated the terms of your automatic payments');
 });

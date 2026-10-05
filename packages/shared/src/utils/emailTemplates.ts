@@ -349,6 +349,10 @@ const VARIANT_DEFAULTS: Record<string, Partial<EmailTemplateFieldDefaults>> = {
     heading: 'Your bank account is verified', html: `<p>Hi {{client_name}},</p>
 <p>Stripe has verified your bank account, so automatic payments with {{partner_name}} are now on.</p>
 <p>Any invoice we've already emailed you about with a payment date will be charged as that email described. For new invoices, we'll email you the amount and date before each payment.</p>` },
+  // FP-1: an enrolled client is asked to accept updated terms (fee or limit), not invited anew.
+  'autopay_request:reauthorize': { subject: 'Please review your updated automatic payment terms with {{partner_name}}',
+    heading: 'Review your updated terms', buttonLabel: 'Review the terms', html: `<p>Hi {{client_name}},</p>
+<p>{{partner_name}} has updated the terms of your automatic payments, for example the processing fee or the payment limit. Please review the new terms and agree to them using the button. You can also change your payment method there.</p>` },
   // F-2: the noticed bank account still awaits microdeposit verification.
   'invoice_autopay:pending_verification': { subject: 'Invoice {{invoice_number}} from {{partner_name}}: verify your bank account to pay it automatically',
     heading: 'Invoice {{invoice_number}}', html: `<p>Hi {{client_name}},</p>

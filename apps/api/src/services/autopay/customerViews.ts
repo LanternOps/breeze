@@ -8,6 +8,7 @@ import { invoices,organizations,partners,portalBranding,orgAutopayEnrollments,bi
 import { autopaySetupAttempts } from '../../db/schema/autopaySetupAttempts';
 import { inspectBillingLinkToken, resolveBillingLinkToken } from './linkTokens';
 import { loadAutopayBranding } from './customerBranding';
+import { latestAutopayConsent } from './collectionFee';
 import { buildAutopayDisclosure } from './consentText';
 import { getAutopayMethod } from './paymentMethods';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
@@ -162,7 +163,12 @@ export async function getAutopayCustomerPage(orgId:string,options?:{allowStopOnl
       return {...disclosed,reason:configured.reason};
     };
     const contact=org.billingContact as {email?:string}|null;
-    return {...summary,partnerName:partner?.name??card.partnerName,
+    // FP-1: the accepted authorization for the method in use isn't the one on offer now (the
+    // MSP changed the fee or the limit): the Change page says the terms changed.
+    const accepted=enrollment&&method&&(enrollment.status==='active'||enrollment.status==='paused')
+      ?await latestAutopayConsent(db,{orgId,enrollmentId:enrollment.id,generation:enrollment.generation,methodId:method.id}):undefined;
+    const termsChanged=!!accepted&&accepted.consentTextHash!==(method!.type==='us_bank_account'?bank:card).textHash;
+    return {...summary,termsChanged,partnerName:partner?.name??card.partnerName,
       logoUrl:brand?.logoUrl??null,primaryColor:brand?.primaryColor??null,
       contactEmail:enrollment?.requestRecipientEmail??contact?.email??'',
       scheduleText:card.scheduleText,achMode:card.achMode,consentVersion:card.version,
