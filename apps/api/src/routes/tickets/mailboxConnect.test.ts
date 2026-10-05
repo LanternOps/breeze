@@ -139,6 +139,7 @@ vi.mock('../../services/sentry', () => ({ captureException: mocks.captureExcepti
 
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 import { mailboxRoutes } from './mailboxConnect';
+import { ERROR_CODES } from '@breeze/shared';
 
 function cookieFor(
   phase: 'admin_consent' | 'identity_verification',
@@ -353,7 +354,7 @@ describe('M365 mailbox lifecycle routes', () => {
       authRef.current = adminAuth({ partnerOrgAccess: orgAccess });
       const response = await request(app);
       expect(response.status).toBe(403);
-      await expect(response.json()).resolves.toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      await expect(response.json()).resolves.toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED });
       expectNoLifecycleEffects();
     });
 
@@ -886,7 +887,7 @@ describe('M365 mailbox lifecycle routes', () => {
     mocks.getMailboxConnection.mockResolvedValue(connection({ status, tenantId }));
     const response = await app.request(`/connections/${CONNECTION_ID}/retest`, { method: 'POST' });
     expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({ error: 'Mailbox re-consent required' });
+    await expect(response.json()).resolves.toEqual({ error: 'Mailbox re-consent required', code: ERROR_CODES.MAILBOX_RECONSENT_REQUIRED });
     expect(mocks.probeMailbox).not.toHaveBeenCalled();
     expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
   });
@@ -945,7 +946,7 @@ describe('M365 mailbox lifecycle routes', () => {
     const response = await retest;
 
     expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({ error: 'Mailbox connection changed during retest' });
+    await expect(response.json()).resolves.toEqual({ error: 'Mailbox connection changed during retest', code: ERROR_CODES.CONFLICT });
     expect(mocks.writeRouteAudit).toHaveBeenCalledTimes(1);
     expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'ticket_mailbox.retested',
@@ -1261,7 +1262,7 @@ describe('POST /connect/gmail (production Gmail connect route, #6593)', () => {
     authRef.current = adminAuth({ partnerOrgAccess: orgAccess });
     const response = await postGmail(app);
     expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+    await expect(response.json()).resolves.toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED });
     expect(mocks.createGmailConnection).not.toHaveBeenCalled();
     expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
   });
