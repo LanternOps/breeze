@@ -508,6 +508,14 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
     }
 
     await recomputeInvoiceStatus(mapping.invoiceId);
+    // A won dispute (or reinstated funds) leaves nothing reversed: the schedule must stop
+    // reporting payment_reversed for this payment (#7897).
+    if (mapping.source === 'autopay' && nextStatus === 'succeeded' && mapping.status !== 'succeeded') {
+      const [attempt] = await db.select({ scheduleId: invoiceCollectionAttempts.scheduleId }).from(invoiceCollectionAttempts)
+        .where(eq(invoiceCollectionAttempts.invoiceStripePaymentId, mapping.id)).limit(1);
+      if (attempt?.scheduleId) await db.update(invoiceAutopaySchedules).set({ stateReason: null })
+        .where(and(eq(invoiceAutopaySchedules.id, attempt.scheduleId), eq(invoiceAutopaySchedules.stateReason, 'payment_reversed')));
+    }
     let returnAttention: Extract<ApplyResult,{state:'applied'}>['returnAttention'];
     if (mapping.source === 'autopay' && mapping.paymentMethodType === 'us_bank_account'
       && event.disputeFundsWithdrawn === true && targetMinor < previousMinor) {

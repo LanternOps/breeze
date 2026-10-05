@@ -800,7 +800,8 @@ it('disconnect retains historical credentials and the real poller settles using 
   currentPi = {...currentPi, status: 'succeeded', amount_received: 10000};
   provider.eventList.mockResolvedValue({has_more: false, data: [{id: `evt_poll_${f.invoice.id}`, type: 'payment_intent.succeeded',
     account: 'acct_autopay_test', created: Math.floor(Date.now()/1000), livemode: false, data: {object: currentPi}}]});
-  expect(await pollStripeFinancialEvents()).toMatchObject({accounts: 1, events: 1});
+  // #7897: an event applied while it is ingested counts as applied, not only later replays.
+  expect(await pollStripeFinancialEvents()).toMatchObject({accounts: 1, events: 1, applied: 1});
   expect((await attempts(f.invoice.id))[0]!.state).toBe('succeeded');
   expect(vi.mocked(getPartnerStripeClient)).toHaveBeenCalledWith(f.partner.id, expect.objectContaining({
     reconciliationAccountId: 'acct_autopay_test', archivedCredentialId: mapping!.revocationCredentialId,
@@ -1985,4 +1986,24 @@ it.each(['scheduler','bank_pay'] as const)('the %s PaymentIntent names the invoi
  expect(provider.create).toHaveBeenCalledOnce();
  expect(provider.create.mock.calls[0]![0]).toMatchObject({description:`Invoice ${f.invoice.invoiceNumber} · ${f.partner.name}`,
   metadata:expect.objectContaining({invoice_id:f.invoice.id,attempt_id:expect.any(String)})});
+});
+
+// #7897: a card disputed at charge time (lab test card 0259) is applied as a reversed
+// payment, so the schedule records payment_reversed. Winning the dispute restores the
+// payment; the schedule must not keep saying the payment was reversed.
+it('clears payment_reversed once a won dispute restores the payment (#7897)',async()=>{
+ const f=await fixture();
+ const result=await attemptCollection(inputFor(f));
+ const dispute=(id:string,eventType:string,withdrawn:boolean,created:number)=>({partnerId:f.partner.id,stripeAccountId:'acct_autopay_test',
+  stripeEventId:id,eventType,livemode:false,providerCreated:created,paymentIntentId:currentPi.id,chargeId:'ch_dispute_won',
+  disputeId:'du_won',currency:'USD',disputeAmountMinor:10000,disputeFundsWithdrawn:withdrawn});
+ const now=Math.floor(Date.now()/1000);
+ expect(await ingestStripeFinancialEvent(dispute(`evt_withdrawn_${f.invoice.id}`,'charge.dispute.funds_withdrawn',true,now))).toMatchObject({state:'pending'});
+ currentPi={...currentPi,status:'succeeded',amount_received:10000,last_payment_error:null};
+ await applyAttemptOutcome(f.partner.id,result.attemptId!);
+ expect(await scheduleFor(f)).toMatchObject({state:'succeeded',stateReason:'payment_reversed'});
+ expect((await withSystemDbAccessContext(()=>db.select().from(invoices).where(eq(invoices.id,f.invoice.id))))[0]!.status).not.toBe('paid');
+ await ingestStripeFinancialEvent(dispute(`evt_won_${f.invoice.id}`,'charge.dispute.closed',false,now+60));
+ expect((await withSystemDbAccessContext(()=>db.select().from(invoices).where(eq(invoices.id,f.invoice.id))))[0]!.status).toBe('paid');
+ expect(await scheduleFor(f)).toMatchObject({state:'succeeded',stateReason:null});
 });
