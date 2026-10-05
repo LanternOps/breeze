@@ -18,9 +18,9 @@
  */
 import './setup';
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
@@ -35,8 +35,10 @@ import {
 import { metricAnomalies } from '../../db/schema/analytics';
 import { logCorrelationRules, logCorrelations } from '../../db/schema/eventLogs';
 import { deviceReliability } from '../../db/schema/reliability';
+import type { AuthContext } from '../../middleware/auth';
 import { fleetFindingsRoutes } from '../../routes/fleetFindings';
 import { dispatchRunChunk, pollRunProgress } from '../../services/fleetFindings/dispatch';
+import { applyFleetFindingLifecycle } from '../../services/fleetFindings/query';
 import {
   produceLogCorrelationFindings,
   produceMetricAnomalyPatterns,
@@ -79,6 +81,28 @@ const SYSTEM_CTX: DbAccessContext = {
 
 function orgContext(orgId: string): DbAccessContext {
   return { scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
+}
+
+/** A hand-built partner AuthContext (optionally site-restricted) for direct service calls. */
+function lifecycleAuth(f: Fixture, allowedSiteIds?: string[]): AuthContext {
+  return {
+    principal: { kind: 'unknown' },
+    token: null,
+    user: { id: f.partnerUser.userId, email: 'lifecycle@example.test', name: 'Lifecycle', isPlatformAdmin: false },
+    partnerId: f.partner.id,
+    orgId: null,
+    scope: 'partner',
+    accessibleOrgIds: [f.orgA.id, f.orgB.id],
+    allowedSiteIds,
+    orgCondition: () => undefined,
+    canAccessOrg: (id) => id === f.orgA.id || id === f.orgB.id,
+  } as AuthContext;
+}
+
+function releaseGate() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
 }
 
 interface TokenSubject {
@@ -476,6 +500,125 @@ describe('fleet findings — end-to-end (Task 11)', () => {
       .from(fleetRemediationRuns)
       .where(eq(fleetRemediationRuns.findingId, findingRow.id));
     expect(runs).toHaveLength(0);
+  });
+
+  runDb('(b4) PATCH lifecycle requires MFA and access to every member device', async () => {
+    const f = await buildFixture();
+    const app = buildApp();
+    const rows = await getTestDb().select().from(fleetFindings).where(eq(fleetFindings.orgId, f.orgA.id));
+    // devA2 (site A1, visible) + devA3 (site A2, hidden from the restricted user).
+    const mixed = rows.find((row) => row.kind === 'metric_anomaly_pattern')!;
+    // devA1 only (site A1) — fully visible to the restricted user.
+    const sole = rows.find((row) => row.kind === 'reliability_offenders')!;
+    const patchBody = JSON.stringify({ action: 'acknowledge' });
+
+    // Without an MFA-stamped token the gate refuses before any write.
+    const noMfa = await app.request(`/fleet/findings/${sole.id}`, {
+      method: 'PATCH', headers: await tokenHeaders(f.orgAUser, { mfa: false }), body: patchBody,
+    });
+    expect([401, 403]).toContain(noMfa.status);
+
+    // A transition is one shared row for every member: a caller who can see
+    // only devA2 must not acknowledge it for devA3 as well.
+    const partial = await app.request(`/fleet/findings/${mixed.id}`, {
+      method: 'PATCH', headers: await tokenHeaders(f.siteRestrictedUser, { mfa: true }), body: patchBody,
+    });
+    expect(partial.status).toBe(403);
+    expect(JSON.stringify(await partial.json())).not.toContain(f.devA3);
+
+    const [mixedAfter] = await getTestDb().select().from(fleetFindings).where(eq(fleetFindings.id, mixed.id));
+    const [soleAfterNoMfa] = await getTestDb().select().from(fleetFindings).where(eq(fleetFindings.id, sole.id));
+    expect(mixedAfter?.status).toBe('open');
+    expect(soleAfterNoMfa?.status).toBe('open');
+
+    // Every member visible: allowed.
+    const full = await app.request(`/fleet/findings/${sole.id}`, {
+      method: 'PATCH', headers: await tokenHeaders(f.siteRestrictedUser, { mfa: true }), body: patchBody,
+    });
+    expect(full.status).toBe(200);
+    expect(await full.json()).toEqual(expect.objectContaining({ status: 'acknowledged' }));
+
+    // An unrestricted org user with MFA can still act on the mixed finding.
+    const orgWide = await app.request(`/fleet/findings/${mixed.id}`, {
+      method: 'PATCH', headers: await tokenHeaders(f.orgAUser, { mfa: true }), body: patchBody,
+    });
+    expect(orgWide.status).toBe(200);
+  });
+
+  runDb('(b5) lifecycle denies a finding whose only member moved to another org the caller can also read', async () => {
+    const f = await buildFixture();
+    const [sole] = await getTestDb().select().from(fleetFindings).where(and(
+      eq(fleetFindings.orgId, f.orgA.id), eq(fleetFindings.kind, 'reliability_offenders')
+    ));
+    if (!sole) throw new Error('sole-member fixture missing');
+
+    // Same-partner destination: RLS alone still shows the membership row to
+    // this partner, so the current-org check is what has to refuse it.
+    await getTestDb().update(devices).set({ orgId: f.orgB.id, siteId: f.siteB1.id }).where(eq(devices.id, f.devA1));
+    for (const siteCeiling of [[f.siteB1.id], undefined]) {
+      const result = await withDbAccessContext(SYSTEM_CTX, () => applyFleetFindingLifecycle(
+        lifecycleAuth(f, siteCeiling), sole.id, 'acknowledge', undefined, f.partnerUser.userId
+      ));
+      expect(result).toEqual({ ok: false, status: 404, error: 'Finding not found' });
+    }
+    const [unchanged] = await getTestDb().select().from(fleetFindings).where(eq(fleetFindings.id, sole.id));
+    expect(unchanged?.status).toBe('open');
+  });
+
+  runDb.each(['move', 'lifecycle'] as const)('(b6) lifecycle vs site move ordering: %s wins the row lock', async (winner) => {
+    const f = await buildFixture();
+    const [finding] = await getTestDb().select().from(fleetFindings).where(and(
+      eq(fleetFindings.orgId, f.orgA.id), eq(fleetFindings.kind, 'reliability_offenders')
+    ));
+    if (!finding) throw new Error('sole-member fixture missing');
+    const auth = lifecycleAuth(f, [f.siteA1.id]);
+    const held = releaseGate();
+    const release = releaseGate();
+    let holderPid = 0;
+    const transition = () => applyFleetFindingLifecycle(auth, finding.id, 'acknowledge', undefined, f.partnerUser.userId);
+
+    // Each barrier holds a real PostgreSQL transaction open. Observed
+    // blocking (pg_blocking_pids), not a timing sleep, proves the contending
+    // statement reached the lock before the winner is released.
+    const first = winner === 'move'
+      ? getTestDb().transaction(async (tx) => {
+          const [backend] = await tx.execute(sql`SELECT pg_backend_pid() AS pid`);
+          holderPid = Number(backend!.pid);
+          await tx.update(devices).set({ siteId: f.siteA2.id }).where(eq(devices.id, f.devA1));
+          held.release();
+          await release.promise;
+        })
+      : withDbAccessContext(SYSTEM_CTX, async () => {
+          const [backend] = await db.execute(sql`SELECT pg_backend_pid() AS pid`);
+          holderPid = Number(backend!.pid);
+          const result = await transition();
+          held.release();
+          await release.promise;
+          return result;
+        });
+    await Promise.race([held.promise, first]);
+    const second = winner === 'move'
+      ? withDbAccessContext(SYSTEM_CTX, transition)
+      : getTestDb().update(devices).set({ siteId: f.siteA2.id }).where(eq(devices.id, f.devA1)).execute();
+    try {
+      await vi.waitFor(async () => {
+        const blocked = await getTestDb().execute(sql`
+          SELECT pid FROM pg_stat_activity WHERE ${holderPid} = ANY(pg_blocking_pids(pid))
+        `);
+        expect(blocked.length).toBeGreaterThan(0);
+      }, { timeout: 10000, interval: 20 });
+    } finally {
+      release.release();
+      await Promise.allSettled([first, second]);
+    }
+    const result = winner === 'move' ? await second : await first;
+    expect(result).toEqual(winner === 'move'
+      ? { ok: false, status: 404, error: 'Finding not found' }
+      : expect.objectContaining({ ok: true }));
+    const [stored] = await getTestDb().select().from(fleetFindings).where(eq(fleetFindings.id, finding.id));
+    expect(stored?.status).toBe(winner === 'move' ? 'open' : 'acknowledged');
+    const [device] = await getTestDb().select().from(devices).where(eq(devices.id, f.devA1));
+    expect(device?.siteId).toBe(f.siteA2.id);
   });
 
   runDb('(c) createRemediationRun + dispatchRunChunk against the real device_commands table', async () => {

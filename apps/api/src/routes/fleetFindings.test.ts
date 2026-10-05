@@ -17,6 +17,7 @@ const h = vi.hoisted(() => {
   const updateQueue: unknown[][] = [];
   const capturedWheres: unknown[] = [];
   const capturedUpdates: Record<string, unknown>[] = [];
+  const capturedLocks: Array<{ strength: string; options: unknown }> = [];
   // One entry per `db.select(...)` call, in call order — lets a test inspect
   // whether THAT SPECIFIC call chained `.limit(n)` (e.g. the resolved-history
   // fetch cap), without disturbing `capturedWheres`'s existing flat ordering.
@@ -41,6 +42,11 @@ const h = vi.hoisted(() => {
       return chain;
     };
     chain.offset = pass;
+    chain.groupBy = pass;
+    chain.for = (strength: string, options: unknown) => {
+      capturedLocks.push({ strength, options });
+      return chain;
+    };
     chain.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
       Promise.resolve(rows).then(resolve, reject);
     return chain;
@@ -62,13 +68,19 @@ const h = vi.hoisted(() => {
     },
   }));
 
-  return { selectQueue, updateQueue, capturedWheres, capturedUpdates, selectCallLimits, mockSelect, mockUpdate };
+  const mockTransaction = vi.fn(async (callback: (tx: unknown) => unknown) =>
+    callback({ select: mockSelect, update: mockUpdate }));
+
+  return {
+    selectQueue, updateQueue, capturedWheres, capturedUpdates, capturedLocks, selectCallLimits,
+    mockSelect, mockUpdate, mockTransaction,
+  };
 });
 
-vi.mock('../db', () => ({ db: { select: h.mockSelect, update: h.mockUpdate } }));
+vi.mock('../db', () => ({ db: { select: h.mockSelect, update: h.mockUpdate, transaction: h.mockTransaction } }));
 
 vi.mock('../db/schema', () => ({
-  devices: { id: 'd.id', siteId: 'd.siteId', hostname: 'd.hostname', displayName: 'd.displayName', osType: 'd.osType' },
+  devices: { id: 'd.id', orgId: 'd.orgId', siteId: 'd.siteId', hostname: 'd.hostname', displayName: 'd.displayName', osType: 'd.osType' },
   organizations: { id: 'o.id', name: 'o.name' },
 }));
 
@@ -153,7 +165,12 @@ vi.mock('../middleware/auth', () => ({
   authMiddleware: (_c: unknown, next: () => Promise<void>) => next(),
   requireScope: () => (_c: unknown, next: () => Promise<void>) => next(),
   requirePermission: () => (_c: unknown, next: () => Promise<void>) => next(),
-  requireMfa: () => (_c: unknown, next: () => Promise<void>) => next(),
+  // Stand-in for the real MFA gate: a request carrying `x-test-no-mfa` is
+  // refused, so a test can prove a route actually mounts `requireMfa()`.
+  requireMfa: () => async (c: any, next: () => Promise<void>) => {
+    if (c.req.header('x-test-no-mfa')) return c.json({ error: 'MFA required' }, 403);
+    return next();
+  },
 }));
 
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
@@ -187,6 +204,7 @@ vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock })
 import { fleetFindingsRoutes } from './fleetFindings';
 import { writeRouteAudit } from '../services/auditEvents';
 import { fleetFindings, fleetRemediationRuns } from '../db/schema/fleetFindings';
+import { devices } from '../db/schema';
 
 const ORG_1 = '11111111-1111-4111-8111-111111111111';
 const ORG_2 = '22222222-2222-4222-8222-222222222222';
@@ -205,6 +223,7 @@ interface AuthOverrides {
   partnerId?: string | null;
   accessibleOrgIds?: string[] | null;
   allowedSiteIds?: string[];
+  allowedDeviceIds?: string[];
 }
 
 function makeAuth(overrides: AuthOverrides = {}) {
@@ -229,6 +248,7 @@ function makeAuth(overrides: AuthOverrides = {}) {
     },
     canAccessOrg: (id: string) => accessibleOrgIds === null || accessibleOrgIds.includes(id),
     allowedSiteIds,
+    allowedDeviceIds: overrides.allowedDeviceIds,
     canAccessSite: (siteId: string | null | undefined) => {
       if (!allowedSiteIds) return true;
       if (!siteId) return false;
@@ -260,10 +280,15 @@ function get(auth: ReturnType<typeof makeAuth>, path: string) {
   return appWithAuth(auth).request(urlFor(path));
 }
 
-function patch(auth: ReturnType<typeof makeAuth>, path: string, body: unknown) {
+function patch(
+  auth: ReturnType<typeof makeAuth>,
+  path: string,
+  body: unknown,
+  extraHeaders: Record<string, string> = {}
+) {
   return appWithAuth(auth).request(urlFor(path), {
     method: 'PATCH',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...extraHeaders },
     body: JSON.stringify(body),
   });
 }
@@ -307,14 +332,21 @@ function findingRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** A lifecycle membership row: the member device and its CURRENT org/site. */
+function memberLink(deviceId: string, siteId: string, orgId: string = ORG_1) {
+  return { deviceId, orgId, siteId };
+}
+
 beforeEach(() => {
   h.selectQueue.length = 0;
   h.updateQueue.length = 0;
   h.capturedWheres.length = 0;
   h.capturedUpdates.length = 0;
+  h.capturedLocks.length = 0;
   h.selectCallLimits.length = 0;
   h.mockSelect.mockClear();
   h.mockUpdate.mockClear();
+  h.mockTransaction.mockClear();
   vi.mocked(writeRouteAudit).mockClear();
   createRemediationRunMock.mockReset();
   markRunDispatchFailedMock.mockReset().mockResolvedValue(undefined);
@@ -783,7 +815,7 @@ describe('PATCH /fleet/findings/:id — lifecycle transitions', () => {
   // acknowledgeable, and the 200 body hands back its evidence.
   it('site-restricted caller gets 404 when no member device is in an allowed site (no update issued)', async () => {
     h.selectQueue.push([findingRow({ status: 'open' })]);
-    h.selectQueue.push([]); // membership probe finds nothing in scope
+    h.selectQueue.push([memberLink(DEVICE_2, SITE_2)]); // the only member sits in a hidden site
 
     const res = await patch(makeAuth({ allowedSiteIds: [SITE_1] }), `/${FINDING_1}`, {
       action: 'acknowledge',
@@ -794,9 +826,9 @@ describe('PATCH /fleet/findings/:id — lifecycle transitions', () => {
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 
-  it('site-restricted caller with an in-scope member device may act', async () => {
+  it('site-restricted caller whose allowed sites hold every member device may act', async () => {
     h.selectQueue.push([findingRow({ status: 'open' })]);
-    h.selectQueue.push([{ deviceId: 'device-in-scope' }]);
+    h.selectQueue.push([memberLink(DEVICE_1, SITE_1), memberLink(DEVICE_2, SITE_1)]);
     h.updateQueue.push([findingRow({ status: 'acknowledged', acknowledgedAt: new Date(), acknowledgedBy: USER_ID })]);
 
     const res = await patch(makeAuth({ allowedSiteIds: [SITE_1] }), `/${FINDING_1}`, {
@@ -805,6 +837,72 @@ describe('PATCH /fleet/findings/:id — lifecycle transitions', () => {
 
     expect(res.status).toBe(200);
     expect(h.capturedUpdates[0]!.status).toBe('acknowledged');
+    // The finding row is locked for the transition and the member devices are
+    // held for the whole check-then-update, so a concurrent site move cannot
+    // slip a device out of scope between the check and the write.
+    expect(h.mockTransaction).toHaveBeenCalledTimes(1);
+    expect(h.capturedLocks).toEqual([
+      { strength: 'update', options: { of: fleetFindings } },
+      { strength: 'share', options: { of: devices } },
+    ]);
+  });
+
+  // A lifecycle transition changes the ONE shared finding row for every member
+  // device. A caller who can only see some of those devices must not be able
+  // to acknowledge/dismiss/reopen it on behalf of devices they cannot see.
+  it('site-restricted caller gets 403 when any member device sits outside their allowed sites (no update issued)', async () => {
+    h.selectQueue.push([findingRow({ status: 'open' })]);
+    h.selectQueue.push([memberLink(DEVICE_1, SITE_1), memberLink(DEVICE_2, SITE_2)]);
+
+    const res = await patch(makeAuth({ allowedSiteIds: [SITE_1] }), `/${FINDING_1}`, {
+      action: 'acknowledge',
+    });
+
+    expect(res.status).toBe(403);
+    expect(h.mockUpdate).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain(DEVICE_2);
+  });
+
+  it.each(['dismiss', 'reopen'] as const)('partial visibility also blocks %s', async (action) => {
+    h.selectQueue.push([findingRow({ status: action === 'reopen' ? 'acknowledged' : 'open' })]);
+    h.selectQueue.push([memberLink(DEVICE_1, SITE_1), memberLink(DEVICE_2, SITE_2)]);
+
+    const res = await patch(makeAuth({ allowedSiteIds: [SITE_1] }), `/${FINDING_1}`, { action });
+
+    expect(res.status).toBe(403);
+    expect(h.mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('exact-device caller gets 403 when the finding also covers a device outside its device list', async () => {
+    h.selectQueue.push([findingRow({ status: 'open' })]);
+    h.selectQueue.push([memberLink(DEVICE_1, SITE_1), memberLink(DEVICE_2, SITE_1)]);
+
+    const res = await patch(makeAuth({ allowedDeviceIds: [DEVICE_1] }), `/${FINDING_1}`, {
+      action: 'acknowledge',
+    });
+
+    expect(res.status).toBe(403);
+    expect(h.mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('requires MFA (the route mounts requireMfa, like the other mutating fleet action)', async () => {
+    const res = await patch(makeAuth(), `/${FINDING_1}`, { action: 'acknowledge' }, { 'x-test-no-mfa': '1' });
+
+    expect(res.status).toBe(403);
+    expect(h.mockSelect).not.toHaveBeenCalled();
+    expect(h.mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('unrestricted caller gets 404 when no member device is still in the finding org', async () => {
+    h.selectQueue.push([findingRow({ status: 'open' })]);
+    h.selectQueue.push([memberLink(DEVICE_1, SITE_1, ORG_2)]); // moved to another org
+
+    const res = await patch(makeAuth(), `/${FINDING_1}`, { action: 'acknowledge' });
+
+    expect(res.status).toBe(404);
+    expect(h.mockUpdate).not.toHaveBeenCalled();
   });
 
   it('fails closed for an empty allowedSiteIds array without issuing a membership probe', async () => {
@@ -822,6 +920,7 @@ describe('PATCH /fleet/findings/:id — lifecycle transitions', () => {
 
   it('acknowledge: open -> acknowledged stamps the actor and timestamp', async () => {
     h.selectQueue.push([findingRow({ status: 'open' })]);
+    h.selectQueue.push([memberLink(DEVICE_1, SITE_1)]);
     h.updateQueue.push([findingRow({ status: 'acknowledged', acknowledgedAt: new Date(), acknowledgedBy: USER_ID })]);
 
     const res = await patch(makeAuth(), `/${FINDING_1}`, { action: 'acknowledge' });
@@ -843,6 +942,7 @@ describe('PATCH /fleet/findings/:id — lifecycle transitions', () => {
 
   it.each([['acknowledged'], ['dismissed'], ['resolved']])('acknowledge from %s is rejected with 400', async (status) => {
     h.selectQueue.push([findingRow({ status })]);
+    h.selectQueue.push([memberLink(DEVICE_1, SITE_1)]);
     const res = await patch(makeAuth(), `/${FINDING_1}`, { action: 'acknowledge' });
     expect(res.status).toBe(400);
     expect(h.mockUpdate).not.toHaveBeenCalled();
@@ -851,6 +951,7 @@ describe('PATCH /fleet/findings/:id — lifecycle transitions', () => {
 
   it.each([['open'], ['acknowledged']])('dismiss: %s -> dismissed stores notes', async (status) => {
     h.selectQueue.push([findingRow({ status })]);
+    h.selectQueue.push([memberLink(DEVICE_1, SITE_1)]);
     h.updateQueue.push([findingRow({ status: 'dismissed', dismissedBy: USER_ID, dismissNotes: 'known false positive' })]);
 
     const res = await patch(makeAuth(), `/${FINDING_1}`, { action: 'dismiss', notes: 'known false positive' });
@@ -864,6 +965,7 @@ describe('PATCH /fleet/findings/:id — lifecycle transitions', () => {
 
   it.each([['dismissed'], ['resolved']])('dismiss from %s is rejected with 400', async (status) => {
     h.selectQueue.push([findingRow({ status })]);
+    h.selectQueue.push([memberLink(DEVICE_1, SITE_1)]);
     const res = await patch(makeAuth(), `/${FINDING_1}`, { action: 'dismiss' });
     expect(res.status).toBe(400);
     expect(h.mockUpdate).not.toHaveBeenCalled();
@@ -871,6 +973,7 @@ describe('PATCH /fleet/findings/:id — lifecycle transitions', () => {
 
   it.each([['acknowledged'], ['dismissed']])('reopen: %s -> open clears prior lifecycle stamps', async (status) => {
     h.selectQueue.push([findingRow({ status, acknowledgedBy: USER_ID, dismissedBy: USER_ID })]);
+    h.selectQueue.push([memberLink(DEVICE_1, SITE_1)]);
     h.updateQueue.push([findingRow({ status: 'open' })]);
 
     const res = await patch(makeAuth(), `/${FINDING_1}`, { action: 'reopen' });
@@ -887,6 +990,7 @@ describe('PATCH /fleet/findings/:id — lifecycle transitions', () => {
 
   it.each([['open'], ['resolved']])('reopen from %s is rejected with 400', async (status) => {
     h.selectQueue.push([findingRow({ status })]);
+    h.selectQueue.push([memberLink(DEVICE_1, SITE_1)]);
     const res = await patch(makeAuth(), `/${FINDING_1}`, { action: 'reopen' });
     expect(res.status).toBe(400);
     expect(h.mockUpdate).not.toHaveBeenCalled();

@@ -612,6 +612,7 @@ export type FleetFindingLifecycleAction = 'acknowledge' | 'dismiss' | 'reopen';
 export type FleetFindingLifecycleResult =
   | { ok: true; finding: FleetFindingRow }
   | { ok: false; status: 404; error: string }
+  | { ok: false; status: 403; error: string }
   | { ok: false; status: 400; error: string };
 
 // reopen deliberately excludes 'open' (nothing to reopen) and 'resolved'
@@ -633,7 +634,19 @@ const TARGET_STATUS: Record<FleetFindingLifecycleAction, FleetFindingStatus> = {
  * Apply an acknowledge/dismiss/reopen transition, stamping the acting user
  * and timestamp columns. Returns a discriminated result so the route can map
  * it straight to an HTTP status — no exceptions for expected outcomes
- * (not-found, invalid transition).
+ * (not-found, partial access, invalid transition).
+ *
+ * A finding is ONE row shared by all of its member devices, so a transition
+ * applies to every member at once. The caller must therefore be able to see
+ * every current member:
+ * - no visible member at all -> 404, exactly like the read paths (the finding
+ *   does not exist for this caller);
+ * - some members outside the caller's site/device scope -> 403, and nothing
+ *   is written.
+ *
+ * The finding row is locked FOR UPDATE and the member devices FOR SHARE for
+ * the whole check-then-write, so a concurrent device site/org move cannot
+ * change the visibility answer between the check and the update.
  */
 export async function applyFleetFindingLifecycle(
   auth: AuthContext,
@@ -642,90 +655,109 @@ export async function applyFleetFindingLifecycle(
   notes: string | undefined,
   actorUserId: string
 ): Promise<FleetFindingLifecycleResult> {
-  const conditions: SQL[] = [eq(fleetFindings.id, id)];
-  const orgCondition = auth.orgCondition(fleetFindings.orgId);
-  if (orgCondition) conditions.push(orgCondition);
+  return db.transaction(async (tx) => {
+    const conditions: SQL[] = [eq(fleetFindings.id, id)];
+    const orgCondition = auth.orgCondition(fleetFindings.orgId);
+    if (orgCondition) conditions.push(orgCondition);
 
-  const [existing] = (await db
-    .select({ ...FINDING_COLUMNS, orgName: organizations.name })
-    .from(fleetFindings)
-    .leftJoin(organizations, eq(fleetFindings.orgId, organizations.id))
-    .where(and(...conditions))
-    .limit(1)) as RawFindingRow[];
+    const [existing] = (await tx
+      .select({ ...FINDING_COLUMNS, orgName: organizations.name })
+      .from(fleetFindings)
+      .leftJoin(organizations, eq(fleetFindings.orgId, organizations.id))
+      .where(and(...conditions))
+      .limit(1)
+      .for('update', { of: fleetFindings })) as RawFindingRow[];
 
-  if (!existing) {
-    return { ok: false, status: 404, error: 'Finding not found' };
-  }
-
-  // Site-axis scoping. The org condition above is not sufficient: a
-  // site-restricted tech shares an org with findings whose members all sit in
-  // sites they cannot see. `getFleetFinding` and `listFleetFindings` both omit
-  // those, so the write path must fail closed identically — otherwise a
-  // finding that is invisible on read is still acknowledgeable, and the 200
-  // response body leaks its evidence.
-  const { allowedSiteIds, allowedDeviceIds } = auth;
-  if (callerIsScopeRestricted(auth)) {
-    const probeConditions: SQL[] = [eq(fleetFindingDevices.findingId, id)];
-    if (allowedSiteIds) probeConditions.push(inArray(devices.siteId, allowedSiteIds));
-    // Exact-device axis, independent of the site branch (audit §1.2).
-    if (allowedDeviceIds) probeConditions.push(inArray(fleetFindingDevices.deviceId, [...allowedDeviceIds]));
-    const [inScopeMember] = allowedSiteIds?.length === 0 || allowedDeviceIds?.length === 0
-      ? []
-      : await db
-          .select({ deviceId: fleetFindingDevices.deviceId })
-          .from(fleetFindingDevices)
-          .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
-          .where(and(...probeConditions))
-          .limit(1);
-
-    if (!inScopeMember) {
+    if (!existing) {
       return { ok: false, status: 404, error: 'Finding not found' };
     }
-  }
 
-  const allowedSources = ALLOWED_SOURCE_STATUSES[action];
-  if (!allowedSources.includes(existing.status as FleetFindingStatus)) {
-    return {
-      ok: false,
-      status: 400,
-      error: `Cannot ${action} a finding with status '${existing.status}'`,
+    const { allowedSiteIds, allowedDeviceIds } = auth;
+    // An empty allowlist on either axis can never match — fail closed with no
+    // membership query, mirroring the read paths.
+    if (allowedSiteIds?.length === 0 || allowedDeviceIds?.length === 0) {
+      return { ok: false, status: 404, error: 'Finding not found' };
+    }
+
+    const memberRows = await tx
+      .select({
+        deviceId: fleetFindingDevices.deviceId,
+        orgId: devices.orgId,
+        siteId: devices.siteId,
+      })
+      .from(fleetFindingDevices)
+      .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
+      .where(eq(fleetFindingDevices.findingId, id))
+      .orderBy(fleetFindingDevices.deviceId)
+      .for('share', { of: devices });
+
+    // A member counts only while its device is still in the finding's own
+    // org: a membership row can briefly outlive a device's move to another
+    // org that a partner-scoped caller may also be able to read.
+    const currentMembers = memberRows.filter((m) => m.orgId === existing.orgId);
+    const visibleMembers = currentMembers.filter((m) => (
+      (!allowedSiteIds || allowedSiteIds.includes(m.siteId))
+      && (!allowedDeviceIds || allowedDeviceIds.includes(m.deviceId))
+    ));
+
+    if (visibleMembers.length === 0) {
+      return { ok: false, status: 404, error: 'Finding not found' };
+    }
+    if (callerIsScopeRestricted(auth) && visibleMembers.length !== memberRows.length) {
+      return {
+        ok: false,
+        status: 403,
+        error: 'This finding includes devices outside your access; only a user who can access all of its devices can change its status',
+      };
+    }
+
+    const allowedSources = ALLOWED_SOURCE_STATUSES[action];
+    if (!allowedSources.includes(existing.status as FleetFindingStatus)) {
+      return {
+        ok: false,
+        status: 400,
+        error: `Cannot ${action} a finding with status '${existing.status}'`,
+      };
+    }
+
+    const now = new Date();
+    const updateValues: Partial<typeof fleetFindings.$inferInsert> = {
+      status: TARGET_STATUS[action],
+      updatedAt: now,
     };
-  }
 
-  const now = new Date();
-  const updateValues: Partial<typeof fleetFindings.$inferInsert> = {
-    status: TARGET_STATUS[action],
-    updatedAt: now,
-  };
+    if (action === 'acknowledge') {
+      updateValues.acknowledgedAt = now;
+      updateValues.acknowledgedBy = actorUserId;
+    } else if (action === 'dismiss') {
+      updateValues.dismissedAt = now;
+      updateValues.dismissedBy = actorUserId;
+      updateValues.dismissNotes = notes ?? null;
+    } else {
+      // reopen: clear prior lifecycle stamps so a fresh ack/dismiss cycle starts clean.
+      updateValues.acknowledgedAt = null;
+      updateValues.acknowledgedBy = null;
+      updateValues.dismissedAt = null;
+      updateValues.dismissedBy = null;
+      updateValues.dismissNotes = null;
+    }
 
-  if (action === 'acknowledge') {
-    updateValues.acknowledgedAt = now;
-    updateValues.acknowledgedBy = actorUserId;
-  } else if (action === 'dismiss') {
-    updateValues.dismissedAt = now;
-    updateValues.dismissedBy = actorUserId;
-    updateValues.dismissNotes = notes ?? null;
-  } else {
-    // reopen: clear prior lifecycle stamps so a fresh ack/dismiss cycle starts clean.
-    updateValues.acknowledgedAt = null;
-    updateValues.acknowledgedBy = null;
-    updateValues.dismissedAt = null;
-    updateValues.dismissedBy = null;
-    updateValues.dismissNotes = null;
-  }
+    // The status guard makes the write a no-op if a concurrent transition
+    // already moved the row (the FOR UPDATE above makes that unreachable in
+    // practice; this keeps the update honest on its own).
+    const [updated] = await tx
+      .update(fleetFindings)
+      .set(updateValues)
+      .where(and(...conditions, eq(fleetFindings.status, existing.status as FleetFindingStatus)))
+      .returning();
 
-  const [updated] = await db
-    .update(fleetFindings)
-    .set(updateValues)
-    .where(eq(fleetFindings.id, id))
-    .returning();
+    if (!updated) {
+      return { ok: false, status: 404, error: 'Finding not found' };
+    }
 
-  if (!updated) {
-    return { ok: false, status: 404, error: 'Finding not found' };
-  }
-
-  return {
-    ok: true,
-    finding: serializeFinding({ ...updated, orgName: existing.orgName } as RawFindingRow),
-  };
+    return {
+      ok: true,
+      finding: serializeFinding({ ...updated, orgName: existing.orgName } as RawFindingRow),
+    };
+  });
 }
