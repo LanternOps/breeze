@@ -618,6 +618,7 @@ mssqlRoutes.post(
       commandType: CommandTypes.MSSQL_RESTORE,
       stepUpGrant: payload.stepUpGrant,
       confirmUnattestedRestore: payload.confirmUnattestedRestore,
+      executingDeviceId: payload.deviceId,
     });
     if (!integrity.ok) return restoreIntegrityResponse(c, integrity);
 

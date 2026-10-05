@@ -177,6 +177,8 @@ vmRestoreRoutes.post(
               stepUpGrant: payload.stepUpGrant,
               confirmUnattestedRestore: payload.confirmUnattestedRestore,
               ...(userEpochs !== undefined ? { userEpochs } : {}),
+              // The rebuild host runs the command.
+              executingDeviceId: payload.rebuildHostDeviceId,
             };
             const check = await checkRestoreIntegrityRequest(c, request);
             if (!check.ok) return check;
@@ -271,6 +273,7 @@ vmRestoreRoutes.post(
       commandType: CommandTypes.VM_RESTORE_FROM_BACKUP,
       stepUpGrant: payload.stepUpGrant,
       confirmUnattestedRestore: payload.confirmUnattestedRestore,
+      executingDeviceId: payload.targetDeviceId,
     });
     if (!integrity.ok) return restoreIntegrityResponse(c, integrity);
 
@@ -439,6 +442,7 @@ vmRestoreRoutes.post(
       commandType: CommandTypes.VM_INSTANT_BOOT,
       stepUpGrant: payload.stepUpGrant,
       confirmUnattestedRestore: payload.confirmUnattestedRestore,
+      executingDeviceId: payload.targetDeviceId,
     });
     if (!integrity.ok) return restoreIntegrityResponse(c, integrity);
 

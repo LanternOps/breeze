@@ -957,6 +957,7 @@ describe('restore routes', () => {
         commandType: 'backup_restore',
         stepUpGrant: '66666666-6666-4666-8666-666666666666',
         confirmUnattestedRestore: undefined,
+        executingDeviceId: 'device-2',
       });
     });
 

@@ -35,6 +35,7 @@ import { recordRestoreAuthorization, type RestoreAuthorizationBinding } from '..
 import { resolveRestoreIntegrity } from '../../services/backupRestoreIntegrity';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { consumeStepUpGrant, unattestedRestoreResourceDigest } from '../../services/mfaStepUpGrant';
+import { restoreTargetRefusal } from '../../services/restoreTargetReadiness';
 import { ENABLE_2FA } from '../auth/schemas';
 
 export const UNATTESTED_RESTORE_STEP_UP_OPERATION = 'backup_unattested_restore';
@@ -54,6 +55,15 @@ export type RestoreIntegrityRequest = {
    * which cannot see a partner-level user's row.
    */
   userEpochs?: { authEpoch: number; mfaEpoch: number } | null;
+  /**
+   * The device that will run the restore command (the target, or the rebuild
+   * host). When set, a restore that needs confirmation is refused BEFORE the
+   * step-up is consumed if that device is offline or its helper does not
+   * check attestations, so a restore the enqueue path would refuse burns no
+   * grant and records no authorization. Omitted for recovery tokens and
+   * recoveries, which run no device command.
+   */
+  executingDeviceId?: string;
 };
 
 export type RestoreIntegrityCheck =
@@ -106,6 +116,11 @@ export async function checkRestoreIntegrityRequest(
       },
     },
   });
+
+  if (req.executingDeviceId) {
+    const notReady = await restoreTargetRefusal(req.executingDeviceId, req.commandType);
+    if (notReady) return { ok: false, status: 409, body: { error: notReady.message, code: notReady.code } };
+  }
 
   if (!ENABLE_2FA) {
     // The deployment runs without two-factor authentication: the operator

@@ -654,6 +654,7 @@ describe('hyperv routes', () => {
       expect(dispatchTrackedDbRestoreMock).not.toHaveBeenCalled();
       expect(integrityGate.gate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
         snapshotDbId: '55555555-5555-4555-8555-555555555555', targetDeviceId: DEVICE_ID, commandType: 'HYPERV_RESTORE',
+        executingDeviceId: DEVICE_ID,
       }));
     });
 

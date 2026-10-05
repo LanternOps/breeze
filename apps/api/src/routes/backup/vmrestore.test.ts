@@ -200,7 +200,7 @@ describe('vm restore routes', () => {
       expect(insertMock).not.toHaveBeenCalled();
       expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
       expect(integrityGate.gate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-        snapshotDbId: SNAPSHOT_ID, targetDeviceId: DEVICE_ID, commandType,
+        snapshotDbId: SNAPSHOT_ID, targetDeviceId: DEVICE_ID, commandType, executingDeviceId: DEVICE_ID,
       }));
     });
 
@@ -564,6 +564,8 @@ describe('vm restore routes — rebuild engine', () => {
         // Read in the request context: the engine's org-scoped transaction
         // cannot see a partner-level technician's user row.
         userEpochs: { authEpoch: 1, mfaEpoch: 2 },
+        // The rebuild host runs the command.
+        executingDeviceId: HOST_ID,
       });
       expect(createBareMetalRecoveryMock).not.toHaveBeenCalled();
       expect(queueBareMetalRebuildMock).not.toHaveBeenCalled();

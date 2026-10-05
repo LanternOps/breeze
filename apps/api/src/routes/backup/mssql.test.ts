@@ -279,6 +279,7 @@ describe('mssql routes', () => {
         commandType: 'MSSQL_RESTORE',
         stepUpGrant: '66666666-6666-4666-8666-666666666666',
         confirmUnattestedRestore: undefined,
+        executingDeviceId: DEVICE_ID,
       });
     });
 

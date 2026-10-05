@@ -312,6 +312,7 @@ restoreRoutes.post(
       commandType: CommandTypes.BACKUP_RESTORE,
       stepUpGrant: payload.stepUpGrant,
       confirmUnattestedRestore: payload.confirmUnattestedRestore,
+      executingDeviceId: resolvedTargetDeviceId,
     };
     const integrityCheck = await checkRestoreIntegrityRequest(c, integrityRequest);
     if (!integrityCheck.ok) {

@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   consumeStepUpGrant: vi.fn(),
   getUserEpochs: vi.fn(),
   recordRestoreAuthorization: vi.fn(),
+  targetRefusal: vi.fn(),
   enable2fa: { value: true },
 }));
 
@@ -30,6 +31,7 @@ vi.mock('../auth/schemas', () => ({
     return mocks.enable2fa.value;
   },
 }));
+vi.mock('../../services/restoreTargetReadiness', () => ({ restoreTargetRefusal: mocks.targetRefusal }));
 vi.mock('../../services/clientIp', () => ({ getTrustedClientIpOrUndefined: () => '203.0.113.7' }));
 
 import { checkRestoreIntegrityRequest, gateRestoreCommand, recordRequestAuthorization } from './restoreIntegrityGate';
@@ -70,6 +72,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.enable2fa.value = true;
   mocks.getUserEpochs.mockResolvedValue({ authEpoch: 3, mfaEpoch: 5 });
+  mocks.targetRefusal.mockResolvedValue(null);
 });
 
 describe('checkRestoreIntegrityRequest', () => {
@@ -184,6 +187,43 @@ describe('checkRestoreIntegrityRequest', () => {
     mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
     expect(await checkRestoreIntegrityRequest(ctx(), request({ confirmUnattestedRestore: true })))
       .toMatchObject({ ok: false, status: 403 });
+  });
+});
+
+describe('a restore that would be refused when queued burns no step-up and records nothing', () => {
+  it.each([
+    ['an older backup helper', { code: 'backup_helper_update_required', message: 'Update the Breeze agent on this device, then try again.' }],
+    ['an offline device', { code: 'device_offline', message: 'Device is offline, cannot execute command' }],
+  ])('%s: refused before the grant is consumed', async (_name, refusal) => {
+    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
+    mocks.consumeStepUpGrant.mockResolvedValue(true);
+    mocks.targetRefusal.mockResolvedValueOnce(refusal);
+    const out = await checkRestoreIntegrityRequest(ctx(), request({ stepUpGrant: GRANT, executingDeviceId: OTHER }));
+    expect(out).toEqual({ ok: false, status: 409, body: { error: refusal.message, code: refusal.code } });
+    expect(mocks.targetRefusal).toHaveBeenCalledWith(OTHER, 'backup_restore');
+    expect(mocks.consumeStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it('with two-factor authentication disabled, a confirmation is not accepted either', async () => {
+    mocks.enable2fa.value = false;
+    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
+    mocks.targetRefusal.mockResolvedValueOnce({ code: 'device_offline', message: 'Device is offline, cannot execute command' });
+    const out = await checkRestoreIntegrityRequest(ctx(), request({ confirmUnattestedRestore: true, executingDeviceId: SOURCE }));
+    expect(out).toMatchObject({ ok: false, status: 409 });
+  });
+
+  it('gateRestoreCommand reserves no command id and records no authorization for it', async () => {
+    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
+    mocks.consumeStepUpGrant.mockResolvedValue(true);
+    mocks.targetRefusal.mockResolvedValueOnce({ code: 'backup_helper_update_required', message: 'update' });
+    expect(await gateRestoreCommand(ctx(), request({ stepUpGrant: GRANT, executingDeviceId: SOURCE }))).toMatchObject({ ok: false, status: 409 });
+    expect(mocks.recordRestoreAuthorization).not.toHaveBeenCalled();
+  });
+
+  it('an attested restore leaves the device checks to the enqueue path as before', async () => {
+    mocks.resolveRestoreIntegrity.mockResolvedValue(attested());
+    expect(await checkRestoreIntegrityRequest(ctx(), request({ executingDeviceId: SOURCE }))).toEqual({ ok: true, authorizationReason: null });
+    expect(mocks.targetRefusal).not.toHaveBeenCalled();
   });
 });
 

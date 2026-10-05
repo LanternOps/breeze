@@ -38,8 +38,10 @@ vi.mock('./scriptSecretDelivery', () => ({
 }));
 
 import {
+  DELIVERY_PREPARATION_FAILED_MESSAGE,
   deliveryRefreshers,
   prepareClaimedCommandsForDelivery,
+  refreshClaimedPayloadForPush,
   refreshPayloadForDelivery,
   registerDeliveryRefresher,
   __resetDeliveryRefreshersForTests,
@@ -317,7 +319,25 @@ describe('late-binding delivery preparation (#5128 §D / OD-8)', () => {
     ]);
 
     expect(out).toEqual([]);
-    expect(releaseClaimedCommandDeliveryMock).toHaveBeenCalledWith('cmd-sw', claimedAt);
+    // Released with an operator-facing reason (the raw error stays in the
+    // log), so a command that never gets delivered says why.
+    expect(releaseClaimedCommandDeliveryMock).toHaveBeenCalledWith('cmd-sw', claimedAt, DELIVERY_PREPARATION_FAILED_MESSAGE);
+    expect(JSON.stringify(releaseClaimedCommandDeliveryMock.mock.calls)).not.toContain('presign down');
+  });
+
+  it('a refresher failure on a direct push releases the row with the same reason', async () => {
+    deliveryRefreshers.software_install = async () => {
+      throw new Error('presign down');
+    };
+
+    const outcome = await refreshClaimedPayloadForPush(
+      'software_install',
+      { s3Key: 'k' },
+      { commandId: 'cmd-push-fail', deviceId: CLAIM_DEVICE, type: 'software_install', claimedAt },
+    );
+
+    expect(outcome).toEqual({ ok: false, refusal: null });
+    expect(releaseClaimedCommandDeliveryMock).toHaveBeenCalledWith('cmd-push-fail', claimedAt, DELIVERY_PREPARATION_FAILED_MESSAGE);
   });
 
   it('a refresher failure never sinks its siblings in the same batch', async () => {

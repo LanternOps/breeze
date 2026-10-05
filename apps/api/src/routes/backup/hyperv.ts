@@ -594,6 +594,7 @@ hypervRoutes.post(
       commandType: CommandTypes.HYPERV_RESTORE,
       stepUpGrant: payload.stepUpGrant,
       confirmUnattestedRestore: payload.confirmUnattestedRestore,
+      executingDeviceId: payload.deviceId,
     });
     if (!integrity.ok) return restoreIntegrityResponse(c, integrity);
 
