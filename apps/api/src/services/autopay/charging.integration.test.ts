@@ -1941,3 +1941,19 @@ it('bank pay refuses a lower fee than the client authorized (B1-1)',async()=>{
   .toEqual({attemptId:null,outcome:'refused',reason:'client_authorization_required'});
  expect(provider.create).not.toHaveBeenCalled(); expect(await attempts(f.invoice.id)).toEqual([]);
 });
+
+// B1-2: money captured but not applied still belongs to this invoice. Offering another
+// debit (bank) or a card save on it is a path to charging the client twice.
+import { getInvoiceAutopayOffer } from './payAndSave';
+it('offers neither bank pay nor card pay-and-save while an unapplied attempt holds money for the invoice (B1-2)',async()=>{
+ const f=await fixture();
+ expect(await getBankAutopayOffer(f.invoice.id,f.org.id)).toMatchObject({available:true});
+ expect(await getInvoiceAutopayOffer(f.org.id,f.invoice.id)).toMatchObject({eligible:true});
+ await withSystemDbAccessContext(()=>db.insert(invoiceCollectionAttempts).values({orgId:f.org.id,invoiceId:f.invoice.id,scheduleId:f.schedule.id,
+  attemptNo:1,paymentMethodId:f.method.id,idempotencyKey:`autopay_${f.schedule.id}_1`,principalAmount:'100.00',feeAmount:'0.00',
+  currency:'USD',state:'unapplied',initiatedBy:'scheduler'}));
+ expect(await getBankAutopayOffer(f.invoice.id,f.org.id)).toBeNull();
+ expect(await getInvoiceAutopayOffer(f.org.id,f.invoice.id)).toBeNull();
+ // Without an invoice (e.g. the portal payment methods page) the org-level offer is unchanged.
+ expect(await getInvoiceAutopayOffer(f.org.id)).toMatchObject({eligible:true});
+});

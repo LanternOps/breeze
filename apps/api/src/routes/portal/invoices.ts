@@ -183,7 +183,7 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
     lines: result.lines.map(toCustomerInvoiceLine),
     onlinePaymentAvailable,
     collectionInProgress,
-    autopay: await getInvoiceAutopayOffer(auth.user.orgId),
+    autopay: await getInvoiceAutopayOffer(auth.user.orgId, id),
     bankAutopay: await runOutsideDbContext(()=>getBankAutopayOffer(id,auth.user.orgId)),
     branding: {
       partnerName: partner?.name ?? null,

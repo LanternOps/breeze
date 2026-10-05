@@ -12,7 +12,7 @@ import {mintBillingLinkToken} from './linkTokens';
 import {createAutopaySetupSession} from './enrollmentService';
 import {withBankSetupTerms} from './clientPaymentAuthority';
 import {autopayConsentSnapshotSchema} from './types';
-import {readInFlightCollection} from './reservation';
+import {holdsClientMoney} from './reservation';
 import {collectionFenced} from './collectionControl';
 import {invoiceAutopaySchedules} from '../../db/schema';
 import { and, eq } from 'drizzle-orm';
@@ -51,7 +51,7 @@ export async function getBankAutopayOffer(invoiceId:string,orgId:string):Promise
     const settings=await resolveBillingPaymentSettings(db,{partnerId:invoice.partnerId,orgId});
     const disclosure=await buildAutopayDisclosure(db,orgId,'us_bank_account');
     if(disclosure.achMode==='card_only')return null;
-    if((await readInFlightCollection(db,invoice.id)).inProgress)return null;
+    if(await holdsClientMoney(db,invoice.id))return null;
     const [schedule]=await db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.invoiceId,invoice.id)).limit(1);
     if(collectionFenced({schedule,invoice,enrollment}, {allowRequestedEnrollment:true}))return null;
     const quote=quoteProcessingFee({methodType:'us_bank_account',cardFunding:null,principal:invoice.balance,currency:'USD',

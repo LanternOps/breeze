@@ -51,14 +51,14 @@ vi.mock('../partnerStripe',()=>({getPartnerStripeClient:vi.fn()}));
 vi.mock('../stripeSettle',()=>({assertNoHeldDbContextForStripe:vi.fn()}));
 vi.mock('./linkTokens',()=>({mintBillingLinkToken:vi.fn()}));
 vi.mock('./collectionEngine',()=>({attemptCollection:vi.fn()}));
-vi.mock('./reservation',()=>({readInFlightCollection:vi.fn(async()=>({inProgress:false}))}));
+vi.mock('./reservation',()=>({holdsClientMoney:vi.fn(async()=>false)}));
 
 import {collectAfterBankSetup,invoicePaySchema,startInvoiceBankSetup} from './bankPayment';
 import {getPartnerStripeClient} from '../partnerStripe';
 import {completeAutopaySetup,createAutopaySetupSession} from './enrollmentService';
 import {getAutopayMethod} from './paymentMethods';
 import {attemptCollection} from './collectionEngine';
-import {readInFlightCollection} from './reservation';
+import {holdsClientMoney} from './reservation';
 const invoice={id:'10000000-0000-4000-8000-000000000001',orgId:'20000000-0000-4000-8000-000000000001',partnerId:'partner',currencyCode:'USD',status:'sent',balance:'100.00'};
 const accepted={invoiceId:invoice.id,orgId:invoice.orgId,principal:'100.00',fee:'0.00',currency:'USD',disclosureHash:'a'.repeat(64)};
 const token={id:'token',invoiceId:invoice.id,orgId:invoice.orgId,enrollmentId:'enrollment',generation:1,purpose:'enroll',consumedAt:null,revokedAt:null,expiresAt:new Date('2099-01-01')};
@@ -111,10 +111,10 @@ it('never lets invalid bank consent fall through the ordinary card branch',()=>{
  expect(invoicePaySchema.safeParse({methodType:'us_bank_account'}).success).toBe(false);
  expect(invoicePaySchema.safeParse({saveForAutopay:true}).success).toBe(false);
 });
-it('does not offer bank payment while money is reserved',async()=>{
+it('does not offer bank payment while money is reserved or unapplied',async()=>{
  completionFixture();bank.rows=[[invoice],[enrollment],[{id:invoice.orgId,status:'active'}]];
  bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64)});
- vi.mocked(readInFlightCollection).mockResolvedValueOnce({inProgress:true,amount:'100.00',actionRequired:false});
+ vi.mocked(holdsClientMoney).mockResolvedValueOnce(true);
  expect(await getBankAutopayOffer(invoice.id,invoice.orgId)).toBeNull();expect(attemptCollection).not.toHaveBeenCalled();
 });
 it('requires fresh displayed terms when the balance changed before setup',async()=>{
