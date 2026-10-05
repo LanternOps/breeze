@@ -164,8 +164,23 @@ describe('method-unusable notice for a due schedule with no attempt of its own',
     expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ kind: 'payment_failed', invoiceId: 'invoice',
       dedupeKey: 'invoice:payment_failed:method_not_usable:1', toEmail: 'billing@example.test',
       rendered: expect.objectContaining({
-        text: expect.stringContaining('This payment method cannot be used. Please update it or pay this invoice.'),
         frozen: { attemptId: null, scheduleId: 'schedule', variant: 'update', tokenId: 'token-row', returnIdentity: null } }) }));
+  });
+  it('leads with paying this invoice and adds an update link that says it does not pay this invoice', async () => {
+    await enqueueMethodUnusableNotice(tx, 'schedule');
+    const { text, html } = queuedText();
+    expect(h.payLink).toHaveBeenCalledWith(rows.get(invoices)![0], tx);
+    expect(html).toContain('href="https://example.test/invoice/pay"');
+    expect(html).toContain('href="https://example.test/enroll/secret"');
+    expect(text).toContain('Pay invoice: https://example.test/invoice/pay');
+    expect(text).toContain('Update payment method: https://example.test/enroll/secret');
+    for (const body of [text, html]) {
+      expect(body).toContain('was not charged automatically');
+      expect(body).toContain('future invoices');
+      expect(body).toContain('does not pay this invoice');
+      expect(body).toContain('There will be no automatic retry.');
+      expect(body).not.toContain('Please update it or pay this invoice');
+    }
   });
   it('checks dedupe before minting on replay', async () => {
     rows.set(billingNoticeOutbox, [{ id: 'already-enqueued' }]);

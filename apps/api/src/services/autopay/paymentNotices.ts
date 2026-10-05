@@ -37,6 +37,13 @@ export async function enqueueOnlineReceipt(tx: Tx, mappingId: string): Promise<v
   await enqueueBillingNotice(tx, { orgId: mapping.orgId, partnerId: invoice!.partnerId, invoiceId: invoice!.id,
     kind: 'payment_receipt', seq: 1, dedupeKey: noticeDedupeKey(mapping.id, 'payment_receipt'), toEmail: email, rendered });
 }
+const NO_AUTOMATIC_RETRY = 'There will be no automatic retry. You can pay this invoice now.';
+/** Secondary action of every update-method email. True today: a failed schedule is never
+ * re-planned, so a new method cannot collect this invoice. */
+function updateMethodAction(url: string): PaymentSecondaryAction {
+  return { url, label: 'Update payment method',
+    note: 'Updating your payment method keeps automatic payments working for future invoices. It does not pay this invoice.' };
+}
 export async function enqueueAttemptNotice(tx: Tx, attemptId: string,
   variant: 'receipt' | 'confirm' | 'update' | 'pay' | 'returned' | 'expired', returnIdentity?: string): Promise<void> {
   let [attempt] = await tx.select().from(invoiceCollectionAttempts).where(eq(invoiceCollectionAttempts.id, attemptId)).limit(1);
@@ -91,16 +98,14 @@ export async function enqueueAttemptNotice(tx: Tx, attemptId: string,
   // Confirm is the only way forward while that attempt holds the invoice (pay-now would 409).
   // Every other failure leads with paying this invoice; update adds the method link second.
   const actionLink = variant === 'confirm' ? methodLink! : buildPublicInvoiceUrl((await getOrMintInvoiceLink(invoice!, tx)).token);
-  const secondaryAction: PaymentSecondaryAction | undefined = variant === 'update' ? { url: methodLink!, label: 'Update payment method',
-    // True today: a failed schedule is never re-planned, so a new method cannot collect this invoice.
-    note: 'Updating your payment method keeps automatic payments working for future invoices. It does not pay this invoice.' } : undefined;
+  const secondaryAction: PaymentSecondaryAction | undefined = variant === 'update' ? updateMethodAction(methodLink!) : undefined;
   // Name the retry only when this attempt's schedule really holds one (retryAt is null
   // after the last soft/NSF retry, for hard failures and for unscheduled attempts).
   const [schedule] = variant === 'pay' && attempt.scheduleId ? await tx.select().from(invoiceAutopaySchedules)
     .where(eq(invoiceAutopaySchedules.id, attempt.scheduleId)).limit(1) : [];
   const retryOn = schedule && schedule.id === attempt.scheduleId && schedule.state === 'retry_scheduled'
     && schedule.attemptCount === attempt.attemptNo && schedule.nextAttemptAt ? schedule.nextAttemptAt.toISOString().slice(0, 10) : null;
-  const noRetry = 'There will be no automatic retry. You can pay this invoice now.';
+  const noRetry = NO_AUTOMATIC_RETRY;
   const retryText = retryOn ? `Automatic payment will try again on or after ${retryOn} unless this invoice is paid or its automatic payment is stopped first. You can pay now instead.` : noRetry;
   const failureText = variant === 'expired' ? 'Your payment confirmation link expired. The pending payment was canceled. Please pay this invoice using the invoice link.'
     : variant === 'returned' ? 'Your bank returned a previously completed payment. The invoice balance has reopened. Please review the invoice and arrange payment.'
@@ -165,15 +170,17 @@ export async function enqueueMethodUnusableNotice(tx: Tx, scheduleId: string): P
   // A stopped or re-requested enrollment cannot mint an update-method link.
   if (!enrollment || enrollment.orgId !== invoice.orgId || enrollment.status !== 'active'
     || enrollment.generation !== schedule.enrollmentGeneration) return;
-  // Same 'update' variant rendering as enqueueAttemptNotice, frozen to the schedule
-  // instead of an attempt (validatePaymentActionNotice has a schedule-bound branch).
+  // Same 'update' layout as enqueueAttemptNotice (pay this invoice first, update link
+  // second), frozen to the schedule instead of an attempt (validatePaymentActionNotice
+  // has a schedule-bound branch). No attempt was made for this invoice.
   const token = await mintBillingLinkToken(tx, { orgId: invoice.orgId, invoiceId: invoice.id,
     enrollmentId: enrollment.id, generation: enrollment.generation, purpose: 'enroll', ttlDays: 14 });
   const vars = { org_name: org.name, partner_name: partner.name, invoice_number: invoice.invoiceNumber!,
     amount_due: `${invoice.currencyCode} ${invoice.balance}`,
-    failure_text: 'This payment method cannot be used. Please update it or pay this invoice.',
-    action_link: buildBillingLinkUrl('enroll', token.token), action_label: 'Update payment method' };
+    failure_text: `Your saved payment method can no longer be used for automatic payments, so this invoice was not charged automatically. ${NO_AUTOMATIC_RETRY}`,
+    action_link: buildPublicInvoiceUrl((await getOrMintInvoiceLink(invoice, tx)).token), action_label: 'Pay invoice' };
   const rendered = await renderBillingNotice('payment_failed', { payment: { id: 'payment_failed', vars,
+    secondaryAction: updateMethodAction(buildBillingLinkUrl('enroll', token.token)),
     custom: partnerEmailCustomFromSettings(partner.settings, 'payment_failed'),
     frozen: { attemptId: null, scheduleId: schedule.id, variant: 'update', tokenId: token.id, returnIdentity: null } } });
   await enqueueBillingNotice(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
