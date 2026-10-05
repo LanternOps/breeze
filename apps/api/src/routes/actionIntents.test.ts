@@ -93,12 +93,12 @@ function mockIntentSelect(rows: unknown[]) {
   });
 }
 
-function buildApp(userId = 'user-1'): Hono {
+function buildApp(userId = 'user-1', scope: 'organization' | 'system' = 'organization'): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('auth', {
-      scope: 'organization',
-      orgId: ORG_ID,
+      scope,
+      orgId: scope === 'system' ? null : ORG_ID,
       partnerId: null,
       accessibleOrgIds: [ORG_ID],
       user: { id: userId, email: 'tech@example.com', name: 'Tech' },
@@ -184,6 +184,32 @@ describe('POST /action-intents/:id/reveal-secret', () => {
     const res = await reveal(buildApp('user-1'));
     expect(res.status).toBe(403);
     expect(burnMock).not.toHaveBeenCalled();
+  });
+
+  it('platform-admin requester (system scope, no membership) resolves via the live system branch and may reveal', async () => {
+    mockIntentSelect([baseIntent()]);
+    getUserPermissionsMock.mockImplementation(async (_id: string, ctx: Record<string, unknown>) =>
+      ctx.scope === 'system' && !ctx.orgId && !ctx.partnerId ? { scope: 'system' } : null);
+    const res = await reveal(buildApp('user-1', 'system'));
+    expect(res.status).toBe(200);
+    expect(getUserPermissionsMock).toHaveBeenCalledWith('user-1', { scope: 'system' });
+  });
+
+  it('demoted ex-platform-admin (system scope, live grant gone) is denied', async () => {
+    mockIntentSelect([baseIntent()]);
+    getUserPermissionsMock.mockResolvedValue(null);
+    const res = await reveal(buildApp('user-1', 'system'));
+    expect(res.status).toBe(403);
+    expect(getUserPermissionsMock).toHaveBeenCalledWith('user-1', { scope: 'system' });
+    expect(burnMock).not.toHaveBeenCalled();
+  });
+
+  it('platform admin may reveal an API-key-requested intent via the admin fallback', async () => {
+    mockIntentSelect([baseIntent({ requestedByUserId: null, requestingApiKeyId: 'key-1' })]);
+    getUserPermissionsMock.mockImplementation(async (_id: string, ctx: Record<string, unknown>) =>
+      ctx.scope === 'system' && !ctx.orgId ? { scope: 'system' } : null);
+    const res = await reveal(buildApp('admin-1', 'system'));
+    expect(res.status).toBe(200);
   });
 
   it('a different user than the requester gets 403, burn never called, denial audited', async () => {

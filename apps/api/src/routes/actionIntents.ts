@@ -73,12 +73,17 @@ actionIntentsRoutes.post(
     // Both paths re-resolve permissions live: authority checked when the
     // intent was created (or decided) may have been revoked since, and the
     // reveal window is days long.
+    // A system-scope (platform admin) token has no membership to key on:
+    // resolve it through the system branch, which re-reads is_platform_admin
+    // live, so a demoted ex-admin is denied.
     const perms = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>
-        getUserPermissions(auth.user.id, {
-          partnerId: auth.partnerId ?? undefined,
-          orgId: intent.orgId,
-        }),
+        auth.scope === 'system'
+          ? getUserPermissions(auth.user.id, { scope: 'system' })
+          : getUserPermissions(auth.user.id, {
+            partnerId: auth.partnerId ?? undefined,
+            orgId: intent.orgId,
+          }),
       ),
     );
     if (!perms || !canAccessOrg(perms, intent.orgId)) {
