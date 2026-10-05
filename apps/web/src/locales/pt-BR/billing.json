@@ -2639,7 +2639,7 @@
     "sources": {
       "org": "organização",
       "partner": "padrão do parceiro",
-      "default": "padrão do sistema"
+      "default": "padrão do Breeze"
     },
     "save": "Salvar configurações de pagamento",
     "saving": "Salvando…",

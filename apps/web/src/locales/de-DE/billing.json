@@ -2639,7 +2639,7 @@
     "sources": {
       "org": "Organisation",
       "partner": "Partnerstandard",
-      "default": "Systemstandard"
+      "default": "Breeze-Standard"
     },
     "save": "Zahlungseinstellungen speichern",
     "saving": "Wird gespeichert…",

@@ -2639,7 +2639,7 @@
     "sources": {
       "org": "organisation",
       "partner": "valeur par défaut du partenaire",
-      "default": "valeur par défaut du système"
+      "default": "valeur par défaut de Breeze"
     },
     "save": "Enregistrer les paramètres de paiement",
     "saving": "Enregistrement…",

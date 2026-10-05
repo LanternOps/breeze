@@ -2639,7 +2639,7 @@
     "sources": {
       "org": "organization",
       "partner": "partner default",
-      "default": "system default"
+      "default": "Breeze default"
     },
     "save": "Save payment settings",
     "saving": "Saving…",

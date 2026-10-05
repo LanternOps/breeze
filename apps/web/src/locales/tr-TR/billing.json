@@ -2639,7 +2639,7 @@
     "sources": {
       "org": "kuruluş",
       "partner": "iş ortağı varsayılanı",
-      "default": "sistem varsayılanı"
+      "default": "Breeze varsayılanı"
     },
     "save": "Ödeme ayarlarını kaydet",
     "saving": "Kaydediliyor…",
