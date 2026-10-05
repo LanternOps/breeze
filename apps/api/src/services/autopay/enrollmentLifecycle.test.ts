@@ -264,8 +264,8 @@ describe('announced charges cancelled by a pause or stop',()=>{
   noticeRows('autopay_paused');
   await pauseAutopay(db,actor,orgId);
   for(const body of [h.enqueue.mock.calls[0]![1].rendered.html,h.enqueue.mock.calls[0]![1].rendered.text]){
-   expect(body).toContain('Invoice INV-7: the automatic payment announced');
-   expect(body).not.toContain('Invoice INV-8: the automatic payment announced');
+   expect(body).toContain('Invoice INV-7: the automatic payment we planned');
+   expect(body).not.toContain('Invoice INV-8: the automatic payment we planned');
   }
  });
  it('the pause email names each announced invoice and says resuming will not restore it',async()=>{
@@ -273,7 +273,7 @@ describe('announced charges cancelled by a pause or stop',()=>{
   noticeRows('autopay_paused');
   await pauseAutopay(db,actor,orgId);
   for(const body of [h.enqueue.mock.calls[0]![1].rendered.html,h.enqueue.mock.calls[0]![1].rendered.text]){
-   expect(body).toContain('Invoice INV-7: the automatic payment announced for on or around November 4, 2026 will not happen, even if automatic payments resume.');
+   expect(body).toContain('Invoice INV-7: the automatic payment we planned to take on or around November 4, 2026 will not happen, even if automatic payments resume.');
    expect(body).toContain('Replacement body only');
   }
  });
@@ -284,10 +284,10 @@ describe('announced charges cancelled by a pause or stop',()=>{
   noticeRows('autopay_stopped');
   await turnOffAutopay(db,actor,orgId);
   for(const body of [h.enqueue.mock.calls[0]![1].rendered.html,h.enqueue.mock.calls[0]![1].rendered.text]){
-   expect(body).toContain('Invoice INV-7: the automatic payment announced for on or around November 4, 2026 will not happen.');
+   expect(body).toContain('Invoice INV-7: the automatic payment we planned to take on or around November 4, 2026 will not happen.');
    // A processing debit completes and a cancellable one may still have completed: neither is told "will not happen".
-   expect(body).not.toContain('Invoice INV-8: the automatic payment announced');
-   expect(body).not.toContain('Invoice INV-9: the automatic payment announced');
+   expect(body).not.toContain('Invoice INV-8: the automatic payment we planned');
+   expect(body).not.toContain('Invoice INV-9: the automatic payment we planned');
    expect(body).toContain('invoice INV-8 is already processing and will complete');
    expect(body).toContain('invoice INV-9 is being cancelled');
   }

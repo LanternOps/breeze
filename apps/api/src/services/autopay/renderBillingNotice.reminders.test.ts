@@ -64,7 +64,7 @@ it.each([
   if (variant === 'not_charged') {
     // The text part names the invoice (its heading), not only the subject.
     expect(rendered.text.startsWith("Invoice INV-1 won't be charged automatically")).toBe(true);
-    expect(rendered.text).toContain('This invoice is above the automatic payment limit you authorized. The automatic payment announced for on or around November 4, 2026 will not happen. Please pay €25.05 using the invoice link.');
+    expect(rendered.text).toContain('This invoice is above the automatic payment limit you authorized. The automatic payment we planned to take on or around November 4, 2026 will not happen. Please pay €25.05 using the invoice link.');
   }
 });
 // One shape for every reason (3a): the reason is ours, escaped, and defaults to the MSP's exclusion.
@@ -72,7 +72,7 @@ it('the not-charged reason is escaped, and an exclusion is the default', async (
   const base = { ...ctx, data: { ...ctx.data, variant: 'not_charged' as const, announcedFor: null, partnerName: 'A&B <MSP>' } };
   const excluded = await renderBillingNotice('payment_reminder', base);
   expect(excluded.html).toContain('A&amp;B &lt;MSP&gt; will not charge this invoice automatically.');
-  expect(excluded.text).toContain('The automatic payment announced will not happen.');
+  expect(excluded.text).toContain('The automatic payment we planned will not happen.');
   const forged = await renderBillingNotice('payment_reminder', { ...base, data: { ...base.data, notChargedReason: '<b>x</b>' } });
   expect(forged.html).toContain('&lt;b&gt;x&lt;/b&gt;');
 });

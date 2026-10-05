@@ -867,9 +867,9 @@ it('Stop fences all invoices, sends one protected notice, and detaches only afte
     expect(body).toContain('is already processing and will complete'); expect(body).toContain('receipt');
     expect(body).not.toContain('is being cancelled');
     // D-19: the announced charge that was simply cancelled is named; in-flight ones are not told "will not happen".
-    expect(body).toContain(`Invoice ${idle.invoice.invoiceNumber}: the automatic payment announced`);
-    expect(body).not.toContain(`Invoice ${f.invoice.invoiceNumber}: the automatic payment announced`);
-    expect(body).not.toContain(`Invoice ${second.invoice.invoiceNumber}: the automatic payment announced`);
+    expect(body).toContain(`Invoice ${idle.invoice.invoiceNumber}: the automatic payment we planned`);
+    expect(body).not.toContain(`Invoice ${f.invoice.invoiceNumber}: the automatic payment we planned`);
+    expect(body).not.toContain(`Invoice ${second.invoice.invoiceNumber}: the automatic payment we planned`);
   }
   await drainAutopayMethodDetaches(); expect(provider.methodDetach).not.toHaveBeenCalled();
   provider.retrieve.mockImplementation(async id => {
@@ -2047,7 +2047,7 @@ it('a missing authorization at charge time emails staff once and tells each noti
   expect(schedule).toMatchObject({state:'failed',stateReason:'consent_required'});
   const notices=(await outboxFor(invoice.id)).filter(n=>n.kind==='payment_reminder');
   expect(notices).toEqual([expect.objectContaining({dedupeKey:`invoice:${invoice.id}:not_charged:1`,toEmail:'billing@example.test',status:'pending'})]);
-  expect((notices[0]!.rendered as {text:string}).text).toMatch(/needs your updated authorization before charging automatically\. The automatic payment announced .*will not happen\./);
+  expect((notices[0]!.rendered as {text:string}).text).toMatch(/needs your updated authorization before charging automatically\. The automatic payment we planned .*will not happen\./);
  }
  expect(provider.create).not.toHaveBeenCalled();
 });
@@ -2115,7 +2115,7 @@ it('a cap cancellation before confirm records its reason and tells the client an
  expect(text).toContain('limit you authorized');
  // One shape with the MSP exclusion notice (D-19): it names the announced charge that will not happen.
  // One date formatter ("November 4, 2026") and the locked not-charged wording (wave 1).
- expect(text).toMatch(/The automatic payment announced for on or around [A-Z][a-z]+ \d{1,2}, \d{4} will not happen\. Please pay \$[\d,]+\.\d{2} using the invoice link\./);
+ expect(text).toMatch(/The automatic payment we planned to take on or around [A-Z][a-z]+ \d{1,2}, \d{4} will not happen\. Please pay \$[\d,]+\.\d{2} using the invoice link\./);
  expect(mail.staff()[0]!.text).toMatch(/limit the client authorized/);
  // Once per announcement, whatever the reason: a later exclusion of the same announced charge adds nothing.
  await withSystemDbAccessContext(()=>noticeChargeNotMade(db,{invoiceId:f.invoice.id,reason:'exclude'}));
@@ -2165,7 +2165,7 @@ it.each([['exclude', 'payment_reminder'], ['pause', 'autopay_paused'], ['stop', 
     const text = (told[0]!.rendered as {text: string}).text;
     expect(text).toContain(f.invoice.invoiceNumber);
     // One date formatter: "November 4, 2026", never an ISO date.
-    expect(text).toMatch(/announced for on or around [A-Z][a-z]+ \d{1,2}, \d{4} will not happen/);
+    expect(text).toMatch(/we planned to take on or around [A-Z][a-z]+ \d{1,2}, \d{4} will not happen/);
     if (kind !== 'exclude') expect(text).not.toMatch(/processing fee/i);
   });
 it('an MSP exclusion before the charging notice went out sends nothing new', async () => {
@@ -2322,6 +2322,6 @@ it.each(['pause_then_resume','stop_then_rerequest'] as const)('a superseded %s e
  expect(lifecycle).toMatchObject({status:'cancelled',lastError:'Automatic payment status changed since this notice'});
  const told=rows.filter(row=>row.kind==='payment_reminder'&&row.invoiceId===f.invoice.id);
  expect(told).toEqual([expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`,status:'sent'})]);
- expect((told[0]!.rendered as {text:string}).text).toMatch(/announced for on or around [A-Z][a-z]+ \d{1,2}, \d{4} will not happen/);
+ expect((told[0]!.rendered as {text:string}).text).toMatch(/we planned to take on or around [A-Z][a-z]+ \d{1,2}, \d{4} will not happen/);
  expect(await scheduleFor(f)).toMatchObject({state:'cancelled'});
 });

@@ -37,7 +37,8 @@ export async function announcedCharges(tx: Tx,
   return [...newest.values()].map(entry => entry.charge);
 }
 
-/** " for on or around November 4, 2026" as the notice put it, or nothing when the date is unknown. */
+/** " to take on or around November 4, 2026" (after "the automatic payment we planned"), or
+ * nothing when the date is unknown (FP-10: "announced for on or around" read badly). */
 export function announcedOn(charge: AnnouncedCharge): string {
-  return charge.chargeDate ? ` for on or around ${emailDate(charge.chargeDate)}` : '';
+  return charge.chargeDate ? ` to take on or around ${emailDate(charge.chargeDate)}` : '';
 }

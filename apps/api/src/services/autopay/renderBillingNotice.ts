@@ -182,7 +182,7 @@ const LOCKED_REMINDER_COPY = {
   skipped: { subject: 'Automatic payment skipped for invoice {{invoice_number}}', heading: 'This payment is skipped', buttonLabel: 'Pay invoice',
     html: '<p>Hi {{client_name}},</p><p>You skipped the automatic payment for invoice {{invoice_number}}, so {{partner_name}} won\'t charge it automatically. Please pay {{amount_due}} by {{due_date}}.</p>' },
   not_charged: { subject: 'Automatic payment cancelled for invoice {{invoice_number}}', heading: 'Invoice {{invoice_number}} won\'t be charged automatically', buttonLabel: 'Pay invoice',
-    html: '<p>Hi {{client_name}},</p><p>{{not_charged_reason}} The automatic payment announced{{announced_on}} will not happen. Please pay {{amount_due}} using the invoice link.</p>' },
+    html: '<p>Hi {{client_name}},</p><p>{{not_charged_reason}} The automatic payment we planned{{announced_on}} will not happen. Please pay {{amount_due}} using the invoice link.</p>' },
 } as const;
 async function renderReminder(
   kind: 'payment_reminder' | 'payment_overdue', ctx: Parameters<BillingNoticeRenderer>[0],
@@ -195,7 +195,7 @@ async function renderReminder(
   }
   const lockedCopy = r.variant ? LOCKED_REMINDER_COPY[r.variant] : null;
   // The announced date is ours (not a partner var): written into the locked copy, escaped.
-  const announcedOn = r.announcedFor ? ` for on or around ${escapeHtml(emailDate(r.announcedFor))}` : '';
+  const announcedOn = r.announcedFor ? ` to take on or around ${escapeHtml(emailDate(r.announcedFor))}` : '';
   // The reason is ours too (a fixed sentence per reason, carrying the MSP's name): escaped.
   // Function replacers: an MSP name with $& or $' is inserted literally (R11).
   const reason = escapeHtml(r.notChargedReason ?? `${r.partnerName} will not charge this invoice automatically.`);

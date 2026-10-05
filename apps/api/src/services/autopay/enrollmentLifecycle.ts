@@ -134,7 +134,7 @@ function listedCharges(announced:AnnouncedCharge[],inFlight:string[]):AnnouncedC
 }
 function announcedChargeLines(announced:AnnouncedCharge[],inFlight:string[],paused:boolean):string{
  return listedCharges(announced,inFlight)
-  .map(charge=>`Invoice ${charge.invoiceNumber}: the automatic payment announced${announcedOn(charge)} will not happen${paused?', even if automatic payments resume':''}. Please pay it using its invoice link.`)
+  .map(charge=>`Invoice ${charge.invoiceNumber}: the automatic payment we planned${announcedOn(charge)} will not happen${paused?', even if automatic payments resume':''}. Please pay it using its invoice link.`)
   .join('\n');
 }
 /** What the client will be asked to save. */
