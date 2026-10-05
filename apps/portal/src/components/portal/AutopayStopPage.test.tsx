@@ -122,3 +122,25 @@ it('an expired stop link offers to email the MSP once', async () => {
   expect(screen.getAllByRole('link', { name: /Email Example MSP|billing@msp\.example/ })).toHaveLength(1);
   expect(screen.getByRole('link', { name: 'Email Example MSP' })).toHaveAttribute('href', 'mailto:billing@msp.example');
 });
+
+// R7: a stop that already committed revokes the link, so a retry or a second tab is refused;
+// re-read and say automatic payments are off instead of "try again" forever.
+it('a stop refused because it already happened says automatic payments are off', async () => {
+  vi.mocked(apiPost).mockResolvedValue({ error: 'Automatic payments not found', statusCode: 401 } as never);
+  render(<AutopayStopPage token="stop-token" />);
+  const submit = await screen.findByTestId('autopay-stop-submit');
+  vi.mocked(apiGet).mockResolvedValue({ error: 'x', code: 'link_used', statusCode: 404,
+    errorData: { partnerName: 'Example MSP', enrollmentStatus: 'cancelled' } } as never);
+  fireEvent.click(submit);
+  expect(await screen.findByRole('heading', { name: 'Automatic payments are off' })).toBeInTheDocument();
+  expect(screen.queryByText(/couldn't stop/)).toBeNull();
+});
+it('a stop whose response was lost re-reads and shows the stop that landed', async () => {
+  vi.mocked(apiPost).mockRejectedValue(new TypeError('Failed to fetch'));
+  render(<AutopayStopPage token="stop-token" />);
+  const submit = await screen.findByTestId('autopay-stop-submit');
+  vi.mocked(apiGet).mockResolvedValue(view({ enrollment: { status: 'cancelled' }, method: null }));
+  fireEvent.click(submit);
+  expect(await screen.findByRole('heading', { name: 'Automatic payments are off' })).toBeInTheDocument();
+  expect(screen.queryByRole('alert')).toBeNull();
+});

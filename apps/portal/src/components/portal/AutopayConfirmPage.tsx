@@ -39,6 +39,14 @@ export default function AutopayConfirmPage({ token }: { token: string }) {
     }).catch(() => { if (!cancelled) setLoadError(true); });
     return () => { cancelled = true; };
   }, [endpoint]);
+  /** R5: after a failed POST, read the link again and show its state; true when it answered. */
+  const reread = async (): Promise<boolean> => {
+    const result = await apiGet<AutopayConfirmView>(endpoint, { redirectOnUnauthorized: false }).catch(() => null);
+    if (result?.data) { setView(result.data); return true; }
+    const link = result ? linkFailureOf(result) : null;
+    if (link) { setFailure(link); return true; }
+    return false;
+  };
 
   async function confirm() {
     if (inFlight.current) return;
@@ -46,13 +54,22 @@ export default function AutopayConfirmPage({ token }: { token: string }) {
     const result = await apiPost<Result>(endpoint, {}, { redirectOnUnauthorized: false }).catch(() => null);
     const data = result?.data;
     if (data?.url) { void navigateTo(data.url); return; }
+    // R5: {paid:false} means Stripe took the money but it isn't applied to the invoice yet:
+    // "received, under review", never "try again" (the client could pay twice).
+    let landing: Landed = null;
+    if (data?.processing) landing = 'processing';
+    else if (data && 'paid' in data) landing = data.paid ? 'paid' : 'review';
+    else if (data?.notNeeded) landing = 'not_needed';
+    else if (result?.statusCode === 409 && result.errorDetails?.reason === 'needs_review') landing = 'review';
+    else if (result?.statusCode === 409 && result.errorDetails?.reason === 'processing') landing = 'processing';
+    if (landing === 'not_needed') {
+      // What is still owed comes from a fresh read (the page's view predates the cancellation).
+      setLanded('not_needed'); await reread();
+    } else if (landing) setLanded(landing);
+    // Any other refusal or a dropped connection: show the server's current state, not a guess.
+    // The failure notice only appears if the payment still waits on the bank.
+    else { await reread(); setError(true); }
     inFlight.current = false; setBusy(false);
-    if (data?.processing) setLanded('processing');
-    else if (data?.paid) setLanded('paid');
-    else if (data?.notNeeded) setLanded('not_needed');
-    // 409s carry server-owned sentences: money arrived but needs review, or still processing.
-    else if (result?.statusCode === 409) setLanded(/review/i.test(result.error ?? '') ? 'review' : 'processing');
-    else setError(true);
   }
 
   // V-20: the MSP's address appears once: in the card when emailing them is the next step.
@@ -108,9 +125,11 @@ export default function AutopayConfirmPage({ token }: { token: string }) {
         summary={[...(view.invoiceNumber ? [{ label: 'Invoice', value: view.invoiceNumber }] : []),
           { label: 'Amount', value: money(view.amount, view.currency), figure: true },
           ...(view.methodLabel ? [{ label: 'Payment method', value: view.methodLabel }] : [])]}>
-        <p>{`Your bank asked you to confirm the ${money(view.amount, view.currency)} payment${method}. Nothing has been charged yet. You'll finish paying on the invoice page with Stripe.`}</p>
+        <p>{error
+          ? `Your bank asked you to confirm the ${money(view.amount, view.currency)} payment${method}. You'll finish paying on the invoice page with Stripe.`
+          : `Your bank asked you to confirm the ${money(view.amount, view.currency)} payment${method}. Nothing has been charged yet. You'll finish paying on the invoice page with Stripe.`}</p>
       </StatePanel>
-      {error && <Notice tone="destructive" title="We couldn't confirm the payment right now"><p>Please try again in a moment, or open the invoice to check its status.</p></Notice>}
+      {error && <Notice tone="destructive" title="We couldn't confirm the payment right now"><p>Open the invoice to check its status before paying, or try again in a moment.</p></Notice>}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <button type="button" className={cn(BTN_PRIMARY, BTN_BLOCK)} data-testid="autopay-confirm-submit" disabled={busy} onClick={() => void confirm()}>
           {busy ? 'Opening…' : 'Continue to payment'}

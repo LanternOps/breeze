@@ -39,6 +39,8 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [reload, setReload] = useState(0);
+  // R6: a refusal that isn't a terms change: setup can't happen now; say who to ask.
+  const [unavailable, setUnavailable] = useState(false);
   const inFlight = useRef(false);
   const config = { redirectOnUnauthorized: portal };
   const base = portal ? '/portal/payment-methods' : `/autopay/public/${encodeURIComponent(token ?? '')}`;
@@ -56,7 +58,9 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
       if (result.data.stopOnly) return;
       const allowed = methodsFor(result.data.achMode);
       const current = result.data.enrollment?.status === 'active' ? result.data.method?.type : undefined;
-      setMethod(current && allowed.includes(current) ? current : allowed[0]!);
+      // R6: a terms reload keeps the client's choice while it is still offered.
+      setMethod(previous => reload > 0 && allowed.includes(previous) ? previous
+        : current && allowed.includes(current) ? current : allowed[0]!);
     }).catch(() => { if (!cancelled) setLoadError(true); });
     return () => { cancelled = true; };
   }, [base, portal, reload]);
@@ -82,11 +86,13 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
     if (!data || data.stopOnly || !accepted || inFlight.current) return;
     inFlight.current = true; setBusy(true); setFeedback(null);
     let status: number | undefined;
+    let reason: unknown;
     let url: string | null = null;
     try {
       const result = await apiPost<{ url: string }>(`${base}/setup-session`,
         { methodType: method, consentAccepted: true, disclosureHash: data.disclosures[method].hash }, config);
       status = result.statusCode;
+      reason = result.errorDetails?.reason;
       if (result.data && typeof result.data.url === 'string' && result.data.url.startsWith('https://checkout.stripe.com/')) url = result.data.url;
     } catch { url = null; }
     if (url) {
@@ -102,12 +108,15 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
       return;
     }
     inFlight.current = false; setBusy(false);
-    if (status === 409) {
+    if (status === 409 && reason === 'terms_changed') {
       setFeedback({ tone: 'warning', title: `${data.partnerName || 'Your service provider'} updated these terms a moment ago.`,
         body: 'Please read the updated authorization and agree again.' });
       setAccepted(false); setChanged(true); setReload(value => value + 1);
       return;
     }
+    // R6: Stripe not ready, connection changed, method unavailable, setup withdrawn: retrying
+    // or reloading cannot help, so stop here and name who can.
+    if (status === 409) { setUnavailable(true); return; }
     setFeedback({ tone: 'destructive', title: "We couldn't open Stripe's secure page.",
       body: `Please try again. If it keeps happening, email ${data.partnerName || 'your service provider'}.` });
   }
@@ -125,6 +134,14 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
     </StatePanel>);
   }
   if (!data) return wrap(<p className="text-sm text-muted-foreground" aria-busy="true">Loading…</p>);
+  if (unavailable) {
+    const who = data.partnerName || 'your service provider';
+    return wrap(<StatePanel title="Automatic payments can't be set up right now" headingLevel={portal ? 2 : 1}
+      primary={data.supportEmail ? { label: `Email ${data.partnerName || 'them'}`, href: `mailto:${data.supportEmail}`, testId: 'autopay-setup-contact' }
+        : portal && onCancel ? { label: 'Back', onClick: onCancel, variant: 'secondary' } : null}>
+      <p>{`Nothing was saved or charged. Please contact ${who}; your invoices can still be paid from their emails.`}</p>
+    </StatePanel>, data, !!data.supportEmail);
+  }
   if (data.stopOnly) {
     return wrap(<Notice tone="neutral" title="Changing your payment method isn't available right now."
       action={onCancel && <button type="button" className={BTN_SECONDARY} onClick={onCancel}>Back</button>} />);

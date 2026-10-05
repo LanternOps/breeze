@@ -29,10 +29,16 @@ export default function AutopayStopPage({ token }: { token: string }) {
   const branding: { partnerName?: string | null; logoUrl?: string | null; supportEmail?: string | null } = view ?? failure ?? {};
   const msp = view?.partnerName || 'Your service provider';
   const stop = async () => {
-    const result = await apiPost<{ success?: boolean }>(endpoint, {}, { redirectOnUnauthorized: false });
-    if (!result.data || result.error || (result.statusCode ?? 200) >= 400) return false;
-    setPhase('stopped');
-    return true;
+    const result = await apiPost<{ success?: boolean }>(endpoint, {}, { redirectOnUnauthorized: false }).catch(() => null);
+    if (result?.data && !result.error && (result.statusCode ?? 200) < 400) { setPhase('stopped'); return true; }
+    // R7: a stop that already committed revokes this link, so a retry (or a second tab) is
+    // refused, and a lost response proves nothing. Re-read and show what is true now; only a
+    // still-active enrollment (or no answer) is "we couldn't stop".
+    const fresh = await apiGet<AutopayStopView>(endpoint, { redirectOnUnauthorized: false }).catch(() => null);
+    if (fresh?.data) { setView(fresh.data); return fresh.data.enrollment?.status === 'cancelled'; }
+    const link = fresh ? linkFailureOf(fresh) : null;
+    if (link) { setFailure(link); return true; }
+    return false;
   };
 
   let panel: ReactElement;

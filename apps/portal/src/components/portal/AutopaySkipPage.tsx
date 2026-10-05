@@ -36,6 +36,15 @@ export default function AutopaySkipPage({ token }: { token: string }) {
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { void load(); }, [endpoint]);
+  /** After a failed or refused skip: read the link again and show what is true now (R7). A
+   * network failure here keeps the page as it is; the caller then says the skip failed. */
+  const reread = async (): Promise<AutopaySkipView | 'link' | null> => {
+    const result = await apiGet<AutopaySkipView>(endpoint, { redirectOnUnauthorized: false }).catch(() => null);
+    if (result?.data) { setView(result.data); return result.data; }
+    const link = result ? linkFailureOf(result) : null;
+    if (link) { setFailure(link); return 'link'; }
+    return null;
+  };
 
   async function skip() {
     if (inFlight.current) return;
@@ -49,10 +58,17 @@ export default function AutopaySkipPage({ token }: { token: string }) {
       // re-read the link so an exclusion or stop that landed meanwhile is named (V-39).
       if (result.errorDetails?.reason === 'payment_processing') setOutcome('processing');
       else {
-        const fresh = await load();
-        setOutcome(!fresh || fresh.status === 'ready' ? 'changing' : null);
+        const fresh = await reread();
+        if (fresh !== 'link') setOutcome(!fresh || fresh.status === 'ready' ? 'changing' : null);
       }
-    } else setRefused(true);
+    } else {
+      // R7: a pause, stop, payment or void since the page loaded refuses the skip (404/409), and
+      // a dropped connection proves nothing: re-read and show the current state.
+      const fresh = await reread();
+      if (fresh === 'link') { /* the link explains itself */ }
+      else if (fresh && fresh.status !== 'ready') setOutcome(null);
+      else setRefused(true);
+    }
     inFlight.current = false; setBusy(false);
   }
 
@@ -93,6 +109,9 @@ export default function AutopaySkipPage({ token }: { token: string }) {
   // The server's status says what the page may offer; only 'ready' offers Skip. A paid
   // invoice is paid whatever else the link remembers (V-1).
   const paid = view.status === 'paid' || view.invoiceStatus === 'paid';
+  // R4: a voided or settled invoice asks for nothing, whatever the schedule remembers.
+  // (A 'not_needed' view already names its reason.)
+  const closed = !paid && view.status !== 'not_needed' && (view.invoiceStatus === 'void' || !(Number(view.balance) > 0));
   const state = paid ? null : outcome ?? (view.status === 'skipped' ? 'skipped' : view.status === 'processing' ? 'processing'
     : view.status === 'pending' ? 'pending' : null);
   let panel: ReactElement;
@@ -100,6 +119,8 @@ export default function AutopaySkipPage({ token }: { token: string }) {
     panel = <StatePanel mark={{ tone: 'success', label: 'Paid' }} title="This invoice is already paid" primary={viewInvoice ? { ...viewInvoice, variant: 'secondary' } : null}>
       <p>Nothing more to do. Thank you.</p>
     </StatePanel>;
+  } else if (closed && state !== 'processing' && state !== 'pending') {
+    panel = notNeededPanel(view.invoiceStatus === 'void' ? 'void' : 'nothing_due', { MSP, msp, invoice, pleasePay, payInvoice, viewInvoice, contact, summary: owedSummary });
   } else if (state === 'skipped') {
     panel = <StatePanel mark={{ tone: 'neutral', label: 'Skipped' }} title="This payment is skipped" testId="autopay-skip-done"
       primary={view.invoiceUrl ? { label: 'Pay invoice now', href: view.invoiceUrl } : null}>
@@ -149,7 +170,7 @@ export default function AutopaySkipPage({ token }: { token: string }) {
       </div>
     </div>;
   }
-  return shell(panel, view, view.reason === 'void' && view.status === 'not_needed' && !!contact && !paid);
+  return shell(panel, view, (view.reason === 'void' && view.status === 'not_needed' || closed && view.invoiceStatus === 'void') && !!contact && !paid);
 }
 
 /** V-11: why there is nothing to skip, in the client's words, with what is owed. */
@@ -176,6 +197,11 @@ function notNeededPanel(reason: AutopaySkipView['reason'], c: { MSP: string; msp
     case 'paused':
       return <StatePanel mark={{ tone: 'neutral', label: 'Paused' }} title="Automatic payments are paused" {...owed}>
         <p>{`${c.MSP} paused automatic payments, so ${c.invoice} won't be charged automatically for now. ${c.pleasePay}`}</p>
+      </StatePanel>;
+    case 'cancelled':
+      // R2: this one payment was cancelled; automatic payments stay on for other invoices.
+      return <StatePanel title="This automatic payment was cancelled" {...owed}>
+        <p>{`The automatic payment for ${c.invoice} was cancelled, so there's nothing to skip. ${c.pleasePay}`}</p>
       </StatePanel>;
     case 'replaced':
       return <StatePanel title="This link was replaced" primary={c.viewInvoice}>

@@ -2,6 +2,8 @@ import { paymentMethodInSentence } from '@breeze/shared';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import type { AutopayBranding, AutopaySetupResult } from '@breeze/shared';
 import { apiPost } from '@/lib/api';
+import { linkFailureOf } from '@/lib/autopay';
+import { LinkStatePanel, linkFailureContactInCard, type LinkFailureView } from './autopay/LinkStatePanel';
 import { withBase } from '@/lib/basePath';
 import { AutopayShell } from './autopay/AutopayShell';
 import { StatePanel, type PanelAction } from './autopay/StatePanel';
@@ -13,6 +15,7 @@ type Phase =
   | { kind: 'cancelled'; token: string | null }
   | { kind: 'no_token' }
   | { kind: 'storage' }
+  | { kind: 'link'; failure: LinkFailureView }
   | { kind: 'error' };
 
 const TOKEN_KEY = 'autopay-return-token';
@@ -71,7 +74,15 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
     const response = await apiPost<AutopaySetupResult>(portal ? '/portal/payment-methods/setup-return' : '/autopay/public/setup-return',
       { checkoutSessionId: session, ...(!portal ? { token: returnToken } : {}) }, { redirectOnUnauthorized: portal }).catch(() => null);
     const result = response?.data;
-    if (!result?.outcome) { setPhase(response?.statusCode === 401 ? { kind: 'no_token' } : { kind: 'error' }); return; }
+    if (!result?.outcome) {
+      // R8: a refusal the API explains (switched off, with the MSP's name) is shown as such, never a retry loop.
+      const link = response ? linkFailureOf(response) : null;
+      if (link) {
+        if (link.partnerName) setBranding({ partnerName: link.partnerName, logoUrl: link.logoUrl ?? null, supportEmail: link.supportEmail ?? null });
+        setPhase({ kind: 'link', failure: link }); return;
+      }
+      setPhase(response?.statusCode === 401 ? { kind: 'no_token' } : { kind: 'error' }); return;
+    }
     if (result.branding) setBranding(result.branding);
     if (result.outcome === 'in_progress') {
       if (attempt < retryDelaysMs.length) {
@@ -141,6 +152,9 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
         <p>{STORAGE_HELP}</p>
       </StatePanel>;
       break;
+    case 'link':
+      panel = <LinkStatePanel failure={phase.failure} purpose="enroll" />;
+      break;
     case 'error':
       panel = <StatePanel title="We couldn't confirm your setup yet" primary={{ label: 'Try again', onClick: () => void confirm(0) }}>
         <p>Please try again in a moment. If you finished on Stripe's page, we'll email you a confirmation once it's done.</p>
@@ -152,6 +166,13 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
       const body = (() => {
         switch (r.outcome) {
           case 'activated':
+            // R1: saved while the MSP has automatic payments paused: saved, not "on".
+            if (r.current?.status === 'paused') {
+              return <StatePanel mark={{ tone: 'neutral', label: 'Paused' }} title="Your payment method is saved" primary={back}>
+                <p>{`Your ${method} is saved. ${branding?.partnerName || 'Your service provider'} has paused automatic payments, so nothing is charged automatically for now.`}</p>
+                <p>We'll email you when automatic payments resume, and before each payment after that. Meanwhile, please pay any invoice that's due from its email.</p>
+              </StatePanel>;
+            }
             return <StatePanel mark={{ tone: 'success', label: 'On' }} title="Automatic payments are on" primary={back}>
               <p>{`${branding?.partnerName || 'Your service provider'} will charge your ${method} for invoices issued from today. We'll email you the amount and date before each payment.`}</p>
               <p data-testid="autopay-return-fee">{r.feeText}</p>
@@ -179,6 +200,17 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
               {!restartHref && noLinkHint}
             </StatePanel>;
           case 'stale_generation':
+            // R1: a setup can go stale because the MSP paused or stopped automatic payments, not only a newer link.
+            if (r.current?.status === 'paused') {
+              return <StatePanel mark={{ tone: 'neutral', label: 'Paused' }} title="Automatic payments are paused" primary={contact} secondary={back}>
+                <p>{`${branding?.partnerName || 'Your service provider'} paused automatic payments while you were setting up, so nothing was saved or charged. Please pay invoices from their emails; ${msp} will let you know when automatic payments resume.`}</p>
+              </StatePanel>;
+            }
+            if (r.current?.status === 'cancelled') {
+              return <StatePanel mark={{ tone: 'neutral', label: 'Off' }} title="Automatic payments are off" primary={contact} secondary={back}>
+                <p>{`Automatic payments were turned off while you were setting up, so nothing was saved or charged. To turn them back on, ask ${msp} to send you a new setup link.`}</p>
+              </StatePanel>;
+            }
             return r.current?.status === 'active'
               ? <StatePanel mark={{ tone: 'success', label: 'On' }} title="You're already set up" primary={back}>
                 <p>{`This setup was replaced by a newer one. Automatic payments are on with your ${paymentMethodInSentence(r.current.methodLabel ?? 'saved payment method')}.`}</p>
@@ -194,7 +226,8 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
       break;
     }
   }
-  const contactInCard = phase.kind === 'outcome' && phase.result.outcome === 'stale_generation' && phase.result.current?.status !== 'active' && !!contact;
+  const contactInCard = (phase.kind === 'outcome' && phase.result.outcome === 'stale_generation' && phase.result.current?.status !== 'active' && !!contact)
+    || (phase.kind === 'link' && linkFailureContactInCard(phase.failure, 'enroll'));
   return (
     <AutopayShell partnerName={branding?.partnerName} logoUrl={branding?.logoUrl} supportEmail={branding?.supportEmail} testId="autopay-return"
       reserveIdentity={!portal} contactInCard={contactInCard}>

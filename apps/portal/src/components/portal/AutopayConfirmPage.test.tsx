@@ -28,8 +28,11 @@ it('explains what confirming means, then continues to pay on the invoice page on
 it.each([
   [{ data: { processing: true } }, 'Your payment is processing'],
   [{ data: { paid: true } }, 'Payment received'],
-  [{ error: 'Payment received but needs billing review', statusCode: 409, code: 'INVALID_STATE' }, 'We received your payment'],
-  [{ error: 'Payment is still processing', statusCode: 409, code: 'INVALID_STATE' }, 'Your payment is processing'],
+  // R5: classified by reason, never by matching English text.
+  [{ error: 'Something else entirely', statusCode: 409, code: 'INVALID_STATE', errorDetails: { reason: 'needs_review' } }, 'We received your payment'],
+  [{ error: 'Payment received but needs billing review', statusCode: 409, code: 'INVALID_STATE', errorDetails: { reason: 'processing' } }, 'Your payment is processing'],
+  // {paid:false}: Stripe took the money but it isn't applied to the invoice yet. Never "try again".
+  [{ data: { paid: false } }, 'We received your payment'],
 ])('lands %j', async (response, title) => {
   vi.mocked(apiPost).mockResolvedValue(response as never);
   render(<AutopayConfirmPage token="token" />);
@@ -51,7 +54,7 @@ it('a server failure keeps the action and points at the invoice', async () => {
   render(<AutopayConfirmPage token="token" />);
   fireEvent.click(await screen.findByTestId('autopay-confirm-submit'));
   expect(await screen.findByRole('alert')).toHaveTextContent("We couldn't confirm the payment right now");
-  expect(screen.getByTestId('autopay-confirm-submit')).toBeEnabled();
+  await waitFor(() => expect(screen.getByTestId('autopay-confirm-submit')).toBeEnabled());
 });
 
 it('an unusable link explains itself', async () => {
@@ -89,4 +92,32 @@ it('keeps the invoice number in the title on one line', async () => {
   render(<AutopayConfirmPage token="token" />);
   const heading = await screen.findByRole('heading', { level: 1, name: 'Confirm your payment for invoice INV-2026-0033' });
   expect(heading.querySelector('.whitespace-nowrap')).toHaveTextContent('INV-2026-0033');
+});
+
+// R5: after a failed POST the page re-reads the link and never repeats "Nothing has been charged yet".
+it.each([[{ error: 'Link unavailable', statusCode: 404 }], [{ error: 'Payment could not be confirmed.', statusCode: 500 }]] as const)(
+  'a %j refusal re-reads the confirm link and shows its state', async refusal => {
+    vi.mocked(apiPost).mockResolvedValue(refusal as never);
+    render(<AutopayConfirmPage token="token" />);
+    const submit = await screen.findByTestId('autopay-confirm-submit');
+    vi.mocked(apiGet).mockResolvedValue(view({ state: 'succeeded', invoiceStatus: 'paid', balance: '0.00' }));
+    fireEvent.click(submit);
+    expect(await screen.findByRole('heading', { name: 'Payment received' })).toBeInTheDocument();
+    expect(apiGet).toHaveBeenCalledTimes(2);
+  });
+it('a failed POST whose re-read still waits on the bank drops "Nothing has been charged yet"', async () => {
+  vi.mocked(apiPost).mockResolvedValue({ error: 'Payment could not be confirmed.', statusCode: 500 } as never);
+  render(<AutopayConfirmPage token="token" />);
+  fireEvent.click(await screen.findByTestId('autopay-confirm-submit'));
+  expect(await screen.findByRole('alert')).toHaveTextContent("We couldn't confirm the payment right now");
+  expect(document.body.textContent).not.toContain('Nothing has been charged yet');
+  expect(screen.getByRole('alert')).toHaveTextContent('Open the invoice to check its status before paying');
+});
+it('a network failure re-reads the link too', async () => {
+  vi.mocked(apiPost).mockRejectedValue(new TypeError('Failed to fetch'));
+  render(<AutopayConfirmPage token="token" />);
+  const submit = await screen.findByTestId('autopay-confirm-submit');
+  vi.mocked(apiGet).mockResolvedValue(view({ state: 'processing' }));
+  fireEvent.click(submit);
+  expect(await screen.findByRole('heading', { name: 'Your payment is processing' })).toBeInTheDocument();
 });

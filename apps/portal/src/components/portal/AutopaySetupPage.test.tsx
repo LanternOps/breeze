@@ -91,7 +91,8 @@ describe('setup page', () => {
   });
 
   it('terms changed on the server: warns, reloads the terms and asks again', async () => {
-    vi.mocked(apiPost).mockResolvedValue({ error: 'The terms changed. Review them and try again.', statusCode: 409 } as never);
+    vi.mocked(apiPost).mockResolvedValue({ error: 'The terms changed. Review them and try again.', statusCode: 409, code: 'INVALID_STATE',
+      errorDetails: { reason: 'terms_changed' } } as never);
     render(<AutopaySetupPage token="test-token" />);
     fireEvent.click(await screen.findByTestId('autopay-consent'));
     fireEvent.click(screen.getByTestId('autopay-setup-submit'));
@@ -165,5 +166,32 @@ describe('changing an existing method (card-expiring link or portal)', () => {
     render(<AutopaySetupPage portal />);
     expect(await screen.findByText("Changing your payment method isn't available right now.")).toBeInTheDocument();
     expect(screen.queryByTestId('autopay-setup-submit')).toBeNull();
+  });
+});
+
+// R6: only a changed terms hash reloads and re-asks; every other refusal says setup can't happen
+// right now and who to ask, instead of looping on "updated these terms".
+describe('setup refusals other than changed terms', () => {
+  it.each(['Stripe account is not ready', 'Stripe connection changed', 'Payment method unavailable', 'Request automatic payments first', 'Automatic payment setup was cancelled'])(
+    '%s: a plain "can\'t set up right now" with the MSP to contact, and no reload', async message => {
+      vi.mocked(apiPost).mockResolvedValue({ error: message, statusCode: 409, code: 'INVALID_STATE' } as never);
+      render(<AutopaySetupPage token="test-token" />);
+      fireEvent.click(await screen.findByTestId('autopay-consent'));
+      fireEvent.click(screen.getByTestId('autopay-setup-submit'));
+      expect(await screen.findByRole('heading', { name: "Automatic payments can't be set up right now" })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Email Example MSP' })).toHaveAttribute('href', 'mailto:billing@msp.example');
+      expect(screen.queryByText(/updated these terms/)).toBeNull();
+      expect(apiGet).toHaveBeenCalledTimes(1);
+    });
+  it('a terms reload keeps the method the client chose', async () => {
+    vi.mocked(apiPost).mockResolvedValue({ error: 'The terms changed.', statusCode: 409, code: 'INVALID_STATE', errorDetails: { reason: 'terms_changed' } } as never);
+    render(<AutopaySetupPage token="test-token" />);
+    fireEvent.click(await screen.findByTestId('autopay-method-card'));
+    fireEvent.click(screen.getByTestId('autopay-consent'));
+    fireEvent.click(screen.getByTestId('autopay-setup-submit'));
+    await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(2));
+    await screen.findByText('Example MSP updated these terms a moment ago.');
+    expect(screen.getByTestId('autopay-method-card')).toBeChecked();
+    expect(screen.getByTestId('autopay-consent-text')).toHaveTextContent(cardText);
   });
 });

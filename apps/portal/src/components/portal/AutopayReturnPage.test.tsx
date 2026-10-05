@@ -184,3 +184,34 @@ it('a failed setup keeps the footer address and no second contact in the card', 
   expect(screen.getAllByRole('link', { name: /Email Example MSP|billing@msp\.example/ })).toHaveLength(1);
   expect(screen.getByRole('link', { name: 'billing@msp.example' })).toBeInTheDocument();
 });
+
+// R1: the enrollment can stay paused when the method is saved; never say "on" then.
+it('a method saved while automatic payments are paused says saved and paused, not on', async () => {
+  at('target=public&session_id=cs_paused'); sessionStorage.setItem('autopay-return-token', 'test-token');
+  vi.mocked(apiPost).mockResolvedValue(outcome({ outcome: 'activated', current: { status: 'paused', methodLabel: 'Visa debit card ending in 1234' } }));
+  render(<AutopayReturnPage />);
+  expect(await screen.findByRole('heading', { name: 'Your payment method is saved' })).toBeInTheDocument();
+  expect(screen.getByText(/Example MSP has paused automatic payments, so nothing is charged automatically for now/)).toBeInTheDocument();
+  expect(document.body.textContent).not.toMatch(/Automatic payments are on/);
+});
+it.each([
+  ['paused', 'Automatic payments are paused', /Example MSP paused automatic payments while you were setting up, so nothing was saved or charged/],
+  ['cancelled', 'Automatic payments are off', /Automatic payments were turned off while you were setting up, so nothing was saved or charged/],
+] as const)('a setup that went stale because automatic payments were %s says so, not "a newer link"', async (status, title, text) => {
+  at('target=public&session_id=cs_old'); sessionStorage.setItem('autopay-return-token', 'test-token');
+  vi.mocked(apiPost).mockResolvedValue(outcome({ outcome: 'stale_generation', methodLabel: null, current: { status, methodLabel: null } }));
+  render(<AutopayReturnPage />);
+  expect(await screen.findByRole('heading', { name: title })).toBeInTheDocument();
+  expect(screen.getByText(text)).toBeInTheDocument();
+  expect(document.body.textContent).not.toMatch(/newer setup link/);
+});
+// R8: switched off between setup and return: say so with the MSP's name, never a retry loop.
+it('a return refused because automatic payments are switched off explains itself', async () => {
+  at('target=public&session_id=cs_test'); sessionStorage.setItem('autopay-return-token', 'test-token');
+  vi.mocked(apiPost).mockResolvedValue({ error: 'Automatic payments are not enabled', code: 'autopay_not_enabled', statusCode: 404,
+    errorData: { partnerName: 'Example MSP', logoUrl: null, supportEmail: 'billing@msp.example' } } as never);
+  render(<AutopayReturnPage />);
+  expect(await screen.findByRole('heading', { name: "Automatic payment setup isn't available right now" })).toBeInTheDocument();
+  expect(screen.getByTestId('autopay-identity')).toHaveTextContent('Example MSP');
+  expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+});

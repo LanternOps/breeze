@@ -163,3 +163,50 @@ it('while automatic payments are on hold, the skip question carries a note', asy
   expect(await screen.findByTestId('autopay-skip-on-hold')).toHaveTextContent(/Example MSP has put automatic payments on hold/);
   expect(screen.getByTestId('autopay-skip-submit')).toBeEnabled();
 });
+
+// R2: a payment cancelled while automatic payments stay on is not "automatic payments are off".
+it('a cancelled payment says this payment was cancelled, not that automatic payments are off', async () => {
+  vi.mocked(apiGet).mockResolvedValue(view({ status: 'not_needed', reason: 'cancelled', state: 'cancelled', balance: '90.00' }));
+  render(<AutopaySkipPage token="t" />);
+  expect(await screen.findByRole('heading', { name: 'This automatic payment was cancelled' })).toBeInTheDocument();
+  expect(screen.getByText(/so there's nothing to skip\. Please pay \$90\.00 from the invoice\./)).toBeInTheDocument();
+  expect(document.body.textContent).not.toMatch(/Automatic payments are off/);
+});
+// R4: a skipped invoice that is now void or settled never asks to be paid, even from a stale view.
+it.each([[{ invoiceStatus: 'void', balance: '0.00' }, 'This invoice was cancelled'], [{ invoiceStatus: 'sent', balance: '0.00' }, 'Nothing is due on this invoice']] as const)(
+  'a skipped invoice now %j asks for nothing', async (over, title) => {
+    vi.mocked(apiGet).mockResolvedValue(view({ status: 'skipped', state: 'skipped_by_client', ...over }));
+    render(<AutopaySkipPage token="t" />);
+    expect(await screen.findByRole('heading', { name: title })).toBeInTheDocument();
+    expect(screen.queryByText(/Please pay/)).toBeNull();
+    expect(screen.queryByRole('link', { name: /Pay invoice/ })).toBeNull();
+  });
+// R7: a refused or failed skip re-reads the link and shows what is true now.
+it.each([
+  [{ error: 'Link unavailable', statusCode: 404 }, view({ status: 'not_needed', reason: 'paused' }), 'Automatic payments are paused'],
+  [{ error: 'Invoice is closed', statusCode: 409, code: 'INVALID_STATE' }, view({ status: 'paid', invoiceStatus: 'paid', balance: '0.00' }), 'This invoice is already paid'],
+] as const)('a skip refused with %j re-reads the page', async (refusal, fresh, title) => {
+  vi.mocked(apiPost).mockResolvedValue(refusal as never);
+  render(<AutopaySkipPage token="t" />);
+  const submit = await screen.findByTestId('autopay-skip-submit');
+  vi.mocked(apiGet).mockResolvedValue(fresh);
+  fireEvent.click(submit);
+  expect(await screen.findByRole('heading', { name: title })).toBeInTheDocument();
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+it('a skip that never reaches the server re-reads, and keeps the question with a notice if nothing changed', async () => {
+  vi.mocked(apiPost).mockRejectedValue(new TypeError('Failed to fetch'));
+  render(<AutopaySkipPage token="t" />);
+  fireEvent.click(await screen.findByTestId('autopay-skip-submit'));
+  await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent("We couldn't skip this payment"));
+  expect(apiGet).toHaveBeenCalledTimes(2);
+  expect(screen.getByTestId('autopay-skip-submit')).toBeEnabled();
+});
+it('a refused skip whose re-read finds the link revoked explains the link', async () => {
+  vi.mocked(apiPost).mockResolvedValue({ error: 'Automatic payments not found', statusCode: 404 } as never);
+  render(<AutopaySkipPage token="t" />);
+  const submit = await screen.findByTestId('autopay-skip-submit');
+  vi.mocked(apiGet).mockResolvedValue({ error: 'x', code: 'link_replaced', statusCode: 404, errorData: { partnerName: 'Example MSP' } } as never);
+  fireEvent.click(submit);
+  expect(await screen.findByRole('heading', { name: 'This link was replaced' })).toBeInTheDocument();
+});
