@@ -201,6 +201,15 @@ it.each(['pause','resume'] as const)('renders an accurate %s notice through the 
  }
 });
 
+// FP-14: an in-flight debit can't be stopped and is not listed as an invoice to pay.
+it('the stop email never lists an invoice whose payment is already processing as open',async()=>{
+ h.stopSchedules.mockResolvedValue({processing:['INV-3'],cancelling:[]});
+ h.rows.push([org],[enrollment],[{...enrollment,status:'cancelled'}],[],[],[invoice,{...invoice,id:'55555555-5555-4555-8555-555555555555',invoiceNumber:'INV-3'}]);noticeRows('autopay_stopped');
+ await turnOffAutopay(db,actor,orgId);
+ const text=h.enqueue.mock.calls[0]![1].rendered.text as string;
+ expect(text).toContain("A payment for invoice INV-3 is already processing and can't be stopped; you'll get a receipt when it completes.");
+ expect(text).toMatch(/Invoices still open\nINV-1 /);expect(text).not.toMatch(/INV-3 · /);
+});
 it('protects the pending Stop disclosure outside a custom notice body',async()=>{
  h.stopSchedules.mockResolvedValue({processing:['INV-3'],cancelling:['INV-1','INV-2']});
  h.rows.push([org],[enrollment],[{...enrollment,status:'cancelled'}],[],[],[invoice]);noticeRows('autopay_stopped');
@@ -209,7 +218,7 @@ it('protects the pending Stop disclosure outside a custom notice body',async()=>
   expect(body).toContain('Replacement body only');expect(body).toContain('invoice INV-1 is being cancelled');
   expect(body).toContain('invoice INV-2 is being cancelled');expect(body).toContain('receipt will follow');
   // Spec 6.6: a processing payment cannot be recalled, so it is never "being cancelled".
-  expect(body).toContain('A payment for invoice INV-3 is already processing and will complete');
+  expect(body).toContain('A payment for invoice INV-3 is already processing and can');
   expect(body).not.toContain('invoice INV-3 is being cancelled');
  }
 });
@@ -291,7 +300,7 @@ describe('announced charges cancelled by a pause or stop',()=>{
    // A processing debit completes and a cancellable one may still have completed: neither is told "will not happen".
    expect(body).not.toContain('Invoice INV-8: the automatic payment we planned');
    expect(body).not.toContain('Invoice INV-9: the automatic payment we planned');
-   expect(body).toContain('invoice INV-8 is already processing and will complete');
+   expect(body).toContain('invoice INV-8 is already processing and can');
    expect(body).toContain('invoice INV-9 is being cancelled');
   }
  });

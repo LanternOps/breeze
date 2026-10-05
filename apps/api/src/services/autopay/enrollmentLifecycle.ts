@@ -264,12 +264,14 @@ async function stop(db:Tx,orgId:string,source:'client'|'msp',actor?:InvoiceActor
   .where(and(eq(orgPaymentMethods.orgId,orgId),or(and(eq(orgPaymentMethods.isAutopayMethod,true),inArray(orgPaymentMethods.status,['active','pending_verification','unusable'])),
    eq(orgPaymentMethods.status,'pending_verification')))).returning();
  await revokeBillingLinkTokens(db,{orgId,enrollmentId:enrollment.id});
- const links=await openInvoiceLinks(db,orgId);
+ // FP-14: an invoice whose payment is already processing isn't one to pay: its own line covers it.
+ const links=(await openInvoiceLinks(db,orgId)).filter(link=>!pendingInvoices.processing.includes(link.number));
  const recipient=enrollment.requestRecipientEmail??contact(org.billingContact);
  // Who stopped it, and whether there was ever anything set up to stop.
  const variant=enrollment.status==='requested'&&!removed.length?'request_withdrawn':source==='msp'?'msp':undefined;
  if(recipient)await notice(db,updated!,'autopay_stopped',recipient,{stopped_by:source==='client'?'You':'Your service provider',open_invoices_text:openInvoicesText(links)},undefined,links,
-  [...pendingInvoices.processing.map(number=>`A payment for invoice ${number} is already processing and will complete; you'll get a receipt.`),
+  // FP-14: a processing debit can't be stopped; it may still be returned, so no "will complete".
+  [...pendingInvoices.processing.map(number=>`A payment for invoice ${number} is already processing and can't be stopped; you'll get a receipt when it completes.`),
    ...pendingInvoices.cancelling.map(number=>`A payment already in progress for invoice ${number} is being cancelled. A receipt will follow if it had already completed.`),
    // D-19 lines never name an invoice a payment still holds: those lines above speak for it.
    announcedChargeLines(announced,[...pendingInvoices.processing,...pendingInvoices.cancelling],false)].filter(Boolean).join('\n'),undefined,'none',
