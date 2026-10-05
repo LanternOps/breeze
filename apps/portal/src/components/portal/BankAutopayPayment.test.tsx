@@ -286,3 +286,21 @@ it('a cancelled bank connection names the MSP stored at setup', async () => {
   expect(await screen.findByRole('heading',{name:"Your bank connection wasn't finished"})).toBeInTheDocument();
   expect(screen.getByTestId('autopay-identity')).toHaveTextContent('Default Partner');
 });
+// F-4: reloading after "Bank payment started" shows the started payment and the way back, not "finish paying".
+it('a reload after the bank payment started still says it started, with the invoice link', async () => {
+  sessionStorage.setItem('autopay-bank-return',JSON.stringify({invoiceId:'invoice-1',publicToken:'token-1',setupSessionId:'cs_bank_one'}));
+  window.history.replaceState({},'','/autopay/return?bank=1&session_id=cs_bank_one');
+  vi.mocked(apiGet).mockResolvedValue(publicReturn({methodStatus:'active',methodLabel:'Bank account ending in 6789'}));
+  vi.mocked(apiPost).mockResolvedValue({data:{data:{outcome:'created',attemptId:'attempt-1'}}});
+  render(<BankAutopayPayment returning/>);
+  fireEvent.click(await screen.findByTestId('autopay-bank-consent'));fireEvent.click(screen.getByTestId('autopay-bank-confirm-pay'));
+  expect(await screen.findByText('Bank payment started')).toBeInTheDocument();
+  cleanup(); vi.mocked(apiGet).mockClear();
+  render(<BankAutopayPayment returning/>);
+  expect(await screen.findByRole('heading',{name:'Your bank payment has started'})).toBeInTheDocument();
+  expect(screen.getByText(/\$141\.00 is being collected from your bank account/)).toBeInTheDocument();
+  expect(screen.getByRole('link',{name:'View invoice'})).toHaveAttribute('href',expect.stringContaining('/invoice/token-1'));
+  expect(screen.getByTestId('autopay-identity')).toHaveTextContent('Default Partner');
+  expect(document.body.textContent).not.toMatch(/finish paying|Open the invoice to continue/);
+  expect(apiPost).toHaveBeenCalledTimes(1);
+});

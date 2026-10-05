@@ -46,7 +46,10 @@ const portalTarget = () => typeof window !== 'undefined' && new URLSearchParams(
  */
 export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 24000] }: { retryDelaysMs?: number[] }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'confirming' });
-  const [branding, setBranding] = useState<AutopayBranding | null>(() => (portalTarget() ? null : storedBranding()));
+  // FP-8: read storage after mount, so the first render matches the server's (no hydration
+  // mismatch); the reserved identity row keeps the card from moving when the name arrives.
+  const [branding, setBranding] = useState<AutopayBranding | null>(null);
+  useEffect(() => { if (!portalTarget()) { const stored = storedBranding(); if (stored) setBranding(current => current ?? stored); } }, []);
   const [checking, setChecking] = useState(false);
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
   const [token, setToken] = useState<string | null>(null);
@@ -221,8 +224,12 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
               ? <StatePanel mark={{ tone: 'success', label: 'On' }} title="You're already set up" primary={back}>
                 <p>{`This setup was replaced by a newer one. Automatic payments are on with your ${paymentMethodInSentence(r.current.methodLabel ?? 'saved payment method')}.`}</p>
               </StatePanel>
-              : <StatePanel mark={{ tone: 'neutral', label: 'Not set up' }} title="This setup link was replaced" primary={contact} secondary={back}>
-                <p>{`${branding?.partnerName || 'Your service provider'} sent you a newer setup link, so nothing was saved or charged here. Please use the link in your most recent email from ${msp}.`}</p>
+              // F-5 (D-6): this link is still valid (a link the MSP replaced is refused before
+              // here), so a newer setup from the same link, e.g. another tab, replaced this one.
+              : <StatePanel mark={{ tone: 'neutral', label: 'Not set up' }} title="This setup was replaced by a newer one"
+                primary={restart('Start again')} secondary={back}>
+                <p>You started setting up again from this link, for example in another tab or window, so nothing was saved or charged here.</p>
+                <p>If that tab is still open, finish there. Otherwise, start again.</p>
               </StatePanel>;
           default:
             return <StatePanel title="Check your email" primary={back}><p>We'll email you once your setup is confirmed.</p></StatePanel>;
@@ -232,11 +239,12 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
       break;
     }
   }
-  const contactInCard = (phase.kind === 'outcome' && phase.result.outcome === 'stale_generation' && phase.result.current?.status !== 'active' && !!contact)
+  const contactInCard = (phase.kind === 'outcome' && phase.result.outcome === 'stale_generation'
+    && (phase.result.current?.status === 'paused' || phase.result.current?.status === 'cancelled') && !!contact)
     || (phase.kind === 'link' && linkFailureContactInCard(phase.failure, 'enroll'));
   return (
     <AutopayShell partnerName={branding?.partnerName} logoUrl={branding?.logoUrl} supportEmail={branding?.supportEmail} testId="autopay-return"
-      reserveIdentity={!portal} contactInCard={contactInCard}>
+      reserveIdentity contactInCard={contactInCard}>
       {panel}
     </AutopayShell>
   );

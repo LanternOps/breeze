@@ -80,11 +80,17 @@ it('a superseded return says the client is already set up when another tab finis
   expect(screen.getByText(/Automatic payments are on with your Visa credit card ending in 4242/)).toBeInTheDocument();
 });
 
-it('a superseded return without an active enrollment says the link was replaced', async () => {
+// F-5 (D-6): the same link in two tabs. The older tab was replaced by the newer setup, not by a
+// newer link from the MSP; say so and give the next step.
+it('a setup replaced by a newer one from the same link says so, with the next step', async () => {
   at('target=public&session_id=cs_old'); sessionStorage.setItem('autopay-return-token', 'test-token');
   vi.mocked(apiPost).mockResolvedValue(outcome({ outcome: 'stale_generation', methodLabel: null, current: { status: 'requested', methodLabel: null } }));
   render(<AutopayReturnPage />);
-  expect(await screen.findByRole('heading', { name: 'This setup link was replaced' })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'This setup was replaced by a newer one' })).toBeInTheDocument();
+  expect(screen.getByText(/You started setting up again from this link, for example in another tab or window, so nothing was saved or charged here\./)).toBeInTheDocument();
+  expect(screen.getByText(/If that tab is still open, finish there\./)).toBeInTheDocument();
+  expect(screen.getByTestId('autopay-restart')).toHaveAttribute('href', withBase('/autopay/test-token'));
+  expect(document.body.textContent).not.toMatch(/sent you a newer setup link/);
 });
 
 it('keeps checking while Stripe is still confirming, then lets the client check again', async () => {
@@ -169,11 +175,11 @@ it('without stored branding, the identity row is reserved while confirming', asy
 
 // V-20: the MSP's address appears once: in the card when emailing them is the next step,
 // otherwise in the footer.
-it('a replaced setup link offers to email the MSP once', async () => {
+it('a setup stopped by a pause offers to email the MSP once', async () => {
   at('target=public&session_id=cs_old'); sessionStorage.setItem('autopay-return-token', 'test-token');
-  vi.mocked(apiPost).mockResolvedValue(outcome({ outcome: 'stale_generation', methodLabel: null, current: { status: 'requested', methodLabel: null } }));
+  vi.mocked(apiPost).mockResolvedValue(outcome({ outcome: 'stale_generation', methodLabel: null, current: { status: 'paused', methodLabel: null } }));
   render(<AutopayReturnPage />);
-  await screen.findByRole('heading', { name: 'This setup link was replaced' });
+  await screen.findByRole('heading', { name: 'Automatic payments are paused' });
   expect(screen.getAllByRole('link', { name: /Email Example MSP|billing@msp\.example/ })).toHaveLength(1);
 });
 it('a failed setup keeps the footer address and no second contact in the card', async () => {
@@ -232,4 +238,13 @@ it('a failed bank change says automatic payments continue with the current metho
   render(<AutopayReturnPage />);
   expect(await screen.findByRole('heading', { name: "Your setup didn't finish" })).toBeInTheDocument();
   expect(screen.getByText(/Your automatic payments continue with your Visa credit card ending in 4242\./)).toBeInTheDocument();
+});
+
+// FP-8: the first render must match the server's (no storage there), so branding read from
+// sessionStorage arrives after mount; the reserved identity row keeps the card from jumping.
+it('the first render does not read storage (no hydration mismatch)', async () => {
+  const { renderToString } = await import('react-dom/server');
+  at('target=public&session_id=cs_test_1'); sessionStorage.setItem('autopay-return-token', 'test-token');
+  sessionStorage.setItem('autopay-return-branding', JSON.stringify(branding));
+  expect(renderToString(<AutopayReturnPage />)).not.toContain('Example MSP');
 });

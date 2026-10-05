@@ -62,6 +62,8 @@ export default function BankAutopayPayment({target,offer,returning=false,partner
   const [changed,setChanged]=useState<Changed|null>(null);
   const [cancelled,setCancelled]=useState(false),[invoiceHref,setInvoiceHref]=useState<string|null>(null);
   const [identity,setIdentity]=useState<Identity|null>(null);
+  /** F-4: a debit that already started, remembered so a reload never asks to "finish paying". */
+  const [started,setStarted]=useState<{total:string}|null>(null);
   const outcome=(text:string,error:boolean)=>{setMessage(text);setFailed(error);};
   /** Shows a freshly read offer against the terms this setup authorized. The same terms
    * stay accepted (#7897); different terms need a new authorization and bank setup,
@@ -78,13 +80,20 @@ export default function BankAutopayPayment({target,offer,returning=false,partner
   useEffect(()=>{
     if(!returning)return;let canceled=false;
     try{
-      const stored=JSON.parse(sessionStorage.getItem(key)??'null') as (Target&{setupSessionId?:string;accepted?:unknown;partnerName?:unknown})|null;
+      const stored=JSON.parse(sessionStorage.getItem(key)??'null') as (Target&{setupSessionId?:string;accepted?:unknown;partnerName?:unknown;
+        started?:{total?:unknown;identity?:Partial<Identity>}})|null;
       if(stored&&typeof stored.partnerName==='string')setIdentity({partnerName:stored.partnerName,supportEmail:null,logoUrl:null,invoiceNumber:null});
       // The way back to the invoice the client was paying, for every return state.
       if(stored&&typeof stored.invoiceId==='string')setInvoiceHref(typeof stored.publicToken==='string'
         ?withBase(`/invoice/${encodeURIComponent(stored.publicToken)}`):withBase(`/invoices/${encodeURIComponent(stored.invoiceId)}`));
       // Stripe "Back" before connecting the bank: nothing was saved or charged.
       if(new URLSearchParams(window.location.search).get('cancelled')==='1'){setCancelled(true);return;}
+      // F-4: the debit already started: show that again (no reads, no second POST).
+      if(stored?.started&&typeof stored.started.total==='string'){
+        const was=stored.started.identity;
+        if(was?.partnerName)setIdentity({partnerName:was.partnerName,supportEmail:was.supportEmail??null,logoUrl:was.logoUrl??null,invoiceNumber:was.invoiceNumber??null});
+        setStarted({total:stored.started.total});return;
+      }
       const session=new URLSearchParams(window.location.search).get('session_id')??stored?.setupSessionId;
       if(!stored||typeof stored.invoiceId!=='string'||(stored.publicToken!==undefined&&typeof stored.publicToken!=='string')||!session||!/^cs_[A-Za-z0-9_]+$/.test(session))throw new Error();
       sessionStorage.setItem(key,JSON.stringify({...stored,setupSessionId:session}));
@@ -158,7 +167,11 @@ export default function BankAutopayPayment({target,offer,returning=false,partner
     if(!result&&!conflictReason&&!conflict){setBusy(false);return;}
     const reason=conflictReason??result?.reason;
     if(!collecting&&result?.url){setBusy(false);void navigateTo(result.url);return;}
-    if(result?.outcome==='created'){setBusy(false);try{sessionStorage.removeItem(key);}catch{}setFinished(true);
+    if(result?.outcome==='created'){setBusy(false);
+      // Keep the way back to the invoice and what started, for a reload (F-4).
+      try{const stored=JSON.parse(sessionStorage.getItem(key)??'null')??{};
+        sessionStorage.setItem(key,JSON.stringify({...stored,...view.target,started:{total:total(view.offer),identity}}));}catch{}
+      setFinished(true);
       outcome('Bank payment started. Processing may take several days.',false);return;}
     if(reason==='pending_verification'){setBusy(false);setView({...view,offer:{...view.offer,methodStatus:'pending_verification'}});
       setAccepted(false);outcome('Bank verification is pending. No payment has started.',!!conflictReason);return;}
@@ -184,6 +197,11 @@ export default function BankAutopayPayment({target,offer,returning=false,partner
   const frame=(children:ReactElement)=>returning?<AutopayShell testId="autopay-bank-return" reserveIdentity
     partnerName={identity?.partnerName} logoUrl={identity?.logoUrl} supportEmail={identity?.supportEmail}>{children}</AutopayShell>:children;
   const backToInvoice=returning&&invoiceHref?<a href={invoiceHref} className={cn(LINK,'text-sm')} data-testid="autopay-bank-view-invoice">View invoice</a>:null;
+  if(started)return frame(<StatePanel mark={{tone:'primary',label:'Processing'}} title="Your bank payment has started"
+    primary={invoiceHref?{label:'View invoice',href:invoiceHref,variant:'secondary',testId:'autopay-bank-view-invoice'}:null} testId="autopay-bank-started">
+    <p>{`${started.total} is being collected from your bank account. Bank payments usually take a few business days to clear, and we'll email you a receipt when it does.`}</p>
+    <p>You can close this page.</p>
+  </StatePanel>);
   if(!view){
     if(!returning)return null;
     if(cancelled)return frame(<StatePanel title="Your bank connection wasn't finished" mark={{tone:'neutral',label:'Not paid'}}

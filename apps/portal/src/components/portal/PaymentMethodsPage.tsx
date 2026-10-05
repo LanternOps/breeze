@@ -209,7 +209,7 @@ export default function PaymentMethodsPage() {
           </div>
           {canStop && (
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-border/70 pt-3 text-sm">
-              <button type="button" className={cn(LINK, 'inline-flex min-h-11 items-center sm:min-h-0')} data-testid="autopay-portal-stop" onClick={() => setView('stop')}>Stop automatic payments</button>
+              <button type="button" className={cn(LINK, 'inline-flex min-h-11 items-center sm:min-h-9')} data-testid="autopay-portal-stop" onClick={() => setView('stop')}>Stop automatic payments</button>
               <span className="text-muted-foreground">Future invoices won't be charged automatically.</span>
             </div>
           )}

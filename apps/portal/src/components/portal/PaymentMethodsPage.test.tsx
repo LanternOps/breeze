@@ -174,7 +174,8 @@ describe('actions', () => {
   // V-24: the stop action is a link with a real tap target on phones.
   it('the stop link is a 44px target on phones', async () => {
     page({ status: 'active', needsAttentionReason: null }, card);
-    expect(await screen.findByTestId('autopay-portal-stop')).toHaveClass('min-h-11');
+    // FP-8: a real target at every width, not a 20px text line on desktop.
+    expect(await screen.findByTestId('autopay-portal-stop')).toHaveClass('min-h-11', 'sm:min-h-9');
   });
   it('"Keep them on" returns to the summary without posting', async () => {
     page({ status: 'active', needsAttentionReason: null }, card);
