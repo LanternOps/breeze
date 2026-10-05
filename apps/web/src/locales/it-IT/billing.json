@@ -2543,6 +2543,7 @@
     },
     "noticeTemplate": "Fattura con avviso di pagamento automatico",
     "chargeFailed": "Impossibile avviare il pagamento. Riprova.",
+    "chargeResultUnknown": "Non è stato possibile confermare l’esito di questo pagamento. Aggiornamento della fattura per mostrarne lo stato attuale.",
     "chargeStarted": "Tentativo di pagamento avviato",
     "chargeNow": "Addebita ora",
     "noCharge": "Nessun addebito",

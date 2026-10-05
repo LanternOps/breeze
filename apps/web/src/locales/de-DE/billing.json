@@ -2543,6 +2543,7 @@
     },
     "noticeTemplate": "Rechnung mit Benachrichtigung zur automatischen Zahlung",
     "chargeFailed": "Die Zahlung konnte nicht gestartet werden. Bitte versuchen Sie es erneut.",
+    "chargeResultUnknown": "Wir konnten nicht bestätigen, was mit dieser Zahlung passiert ist. Die Rechnung wird aktualisiert, um ihren aktuellen Status anzuzeigen.",
     "chargeStarted": "Zahlungsversuch gestartet",
     "chargeNow": "Jetzt abbuchen",
     "noCharge": "Noch keine Abbuchungen",

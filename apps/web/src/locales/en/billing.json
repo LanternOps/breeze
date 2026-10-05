@@ -2543,6 +2543,7 @@
     },
     "noticeTemplate": "Invoice with automatic payment notice",
     "chargeFailed": "Could not start payment. Please try again.",
+    "chargeResultUnknown": "We could not confirm what happened to this payment. Refreshing the invoice to show its current status.",
     "chargeStarted": "Payment attempt started",
     "chargeNow": "Charge now",
     "noCharge": "No charges yet",

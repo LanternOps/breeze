@@ -2543,6 +2543,7 @@
     },
     "noticeTemplate": "Otomatik ödeme bildirimi içeren fatura",
     "chargeFailed": "Ödeme başlatılamadı. Lütfen tekrar deneyin.",
+    "chargeResultUnknown": "Bu ödemeye ne olduğunu doğrulayamadık. Güncel durumunu göstermek için fatura yenileniyor.",
     "chargeStarted": "Ödeme girişimi başlatıldı",
     "chargeNow": "Şimdi tahsil et",
     "noCharge": "Henüz tahsilat yok",

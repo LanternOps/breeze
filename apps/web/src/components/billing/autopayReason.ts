@@ -49,6 +49,11 @@ export function chargeNowAttempted(body: unknown): boolean {
   const { outcome } = chargeBody(body);
   return !!outcome && ATTEMPTED_OUTCOMES.has(outcome);
 }
+/** No usable answer from Charge now (network failure, 5xx, unreadable or missing body): whether
+ * the provider charged is unknown, so the caller must not suggest retrying and must refresh. */
+export function chargeNowResultUnknown(error: { status: number; body?: unknown }): boolean {
+  return error.status !== 401 && (error.status === 0 || error.status >= 500 || error.body == null);
+}
 export function chargeNowSuccessKey(body: unknown): string {
   const state = (body as { data?: { state?: unknown } } | null)?.data?.state;
   return state === 'succeeded' ? 'autopay.chargeOutcome.succeeded'
@@ -60,7 +65,8 @@ export function chargeNowFailureKey(body: unknown): string | undefined {
   // Stripe reports 3DS as requires_payment_method + authentication_required.
   if (outcome === 'requires_action' || reason === 'authentication_required') return 'autopay.chargeOutcome.requiresAction';
   if (outcome === 'failed') return declineKeys[reason] ?? 'autopay.chargeOutcome.declined';
-  if (outcome === 'canceled') return 'autopay.chargeOutcome.canceled';
+  // A cancel before confirm carries its reason (a cap or authorization check): name it (R3).
+  if (outcome === 'canceled') return refusedKeys[reason] ?? reasonKeys[reason] ?? 'autopay.chargeOutcome.canceled';
   if (outcome === 'unapplied') return 'autopay.chargeOutcome.unapplied';
   if (refusedKeys[reason]) return refusedKeys[reason];
   if (reasonKeys[reason]) return reasonKeys[reason];

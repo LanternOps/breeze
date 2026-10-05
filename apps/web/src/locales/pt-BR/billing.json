@@ -2543,6 +2543,7 @@
     },
     "noticeTemplate": "Fatura com aviso de pagamento automático",
     "chargeFailed": "Não foi possível iniciar o pagamento. Tente novamente.",
+    "chargeResultUnknown": "Não foi possível confirmar o que aconteceu com este pagamento. Atualizando a fatura para mostrar o status atual.",
     "chargeStarted": "Tentativa de pagamento iniciada",
     "chargeNow": "Cobrar agora",
     "noCharge": "Nenhuma cobrança",

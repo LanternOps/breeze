@@ -2543,6 +2543,7 @@
     },
     "noticeTemplate": "Facture avec avis de paiement automatique",
     "chargeFailed": "Impossible de lancer le paiement. Réessayez.",
+    "chargeResultUnknown": "Nous n’avons pas pu confirmer ce qu’il est advenu de ce paiement. Actualisation de la facture pour afficher son état actuel.",
     "chargeStarted": "Tentative de paiement lancée",
     "chargeNow": "Prélever maintenant",
     "noCharge": "Aucun prélèvement",
