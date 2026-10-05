@@ -275,7 +275,8 @@ it('pending verification says what happens next and how to finish later',async()
  render(<BankAutopayPayment returning/>);
  const pending=await screen.findByTestId('autopay-bank-pending');
  expect(pending).toHaveTextContent('No payment has started.');
- expect(pending).toHaveTextContent("Once it's verified, we'll email you. Then open this invoice from its email and pay it by bank.");
+ // V2-4: once enrolled, the invoice offers its normal Pay (G3), not a bank option.
+ expect(pending).toHaveTextContent("Once it's verified, we'll email you. Then open this invoice from that email to pay it.");
  expect(screen.getByRole('link',{name:'View invoice'})).toBeInTheDocument();
 });
 // V-19: Stripe "Back" from bank setup still names the MSP (stored when setup started).

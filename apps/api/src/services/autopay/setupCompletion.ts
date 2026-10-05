@@ -234,7 +234,8 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   const ended=others.filter(row=>row.schedule.state==='cancelled');
   if(variant){
    const stop=await mintBillingLinkToken(db,{orgId:attempt.orgId,purpose:'stop_autopay',enrollmentId:enrollment.id,generation:enrollment.generation,ttlDays:365});
-   const payLink=stillToPay?{label:'Pay it by bank',url:buildPublicInvoiceUrl((await getOrMintInvoiceLink(stillToPay,db)).token),
+   // V2-4: the client is enrolled now, so the invoice offers its normal Pay (G3 hides bank pay).
+   const payLink=stillToPay?{label:'Pay it here',url:buildPublicInvoiceUrl((await getOrMintInvoiceLink(stillToPay,db)).token),
     note:`Invoice ${stillToPay.invoiceNumber} is still unpaid (${emailMoney(stillToPay.balance,stillToPay.currencyCode)}).`}:null;
    const endedLinks=await Promise.all(ended.map(async row=>({label:'Pay it here',url:buildPublicInvoiceUrl((await getOrMintInvoiceLink(row.invoice,db)).token),
     note:`Invoice ${row.invoice.invoiceNumber} (${emailMoney(row.invoice.balance,row.invoice.currencyCode)}) won't be paid automatically, as we emailed you.`})));

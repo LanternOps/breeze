@@ -439,7 +439,9 @@ it('a bank verified for a bank payment links the invoice still to pay',async()=>
  m.mandate.mockResolvedValue({status:'active',payment_method:'pm_one'});
  expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
  const rendered=m.enqueue.mock.calls[0]![1].rendered;
- expect(rendered.text).toContain('Invoice INV-2026-0019 is still unpaid ($120.00). Pay it by bank: https://portal.example.test/invoice/inv-token');
+ // V2-4: the invoice page offers its normal Pay to an enrolled client (G3), so the email says "Pay it here".
+ expect(rendered.text).toContain('Invoice INV-2026-0019 is still unpaid ($120.00). Pay it here: https://portal.example.test/invoice/inv-token');
+ expect(rendered.text).not.toMatch(/by bank/);
 });
 // FP-12: replacing a card that stopped working (it kept the autopay flag as 'unusable', D-17)
 // is a change for the client too: never the first-time "Thanks for setting up".

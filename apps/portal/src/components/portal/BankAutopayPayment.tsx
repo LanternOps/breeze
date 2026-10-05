@@ -235,7 +235,7 @@ export default function BankAutopayPayment({target,offer,returning=false,partner
       :pending&&!finished?<Notice tone="warning" title="Your bank account needs verifying first." data-testid="autopay-bank-pending"
         action={<button type="button" className={BTN_SECONDARY} data-testid="autopay-bank-refresh" disabled={busy} onClick={()=>void refresh()}>Check again</button>}>
         <p>Stripe will email you instructions, usually within 1–2 business days. No payment has started.</p>
-        <p>Once it's verified, we'll email you. Then open this invoice from its email and pay it by bank.</p>
+        <p>Once it's verified, we'll email you. Then open this invoice from that email to pay it.</p>
         {backToInvoice}</Notice>
       :!finished&&<div className="space-y-4">
         <AuthorizationBox id="autopay-bank-authorization" text={view.offer.consentText} checked={accepted} disabled={busy}
