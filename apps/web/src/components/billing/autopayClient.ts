@@ -22,11 +22,25 @@ export function mutateAutopay<T>(path: string, body: unknown, method = 'POST', s
       return success ?? i18n.t('billing:autopay.done');
     } });
 }
+// Stripe card.brand values. Brand names are proper nouns, so they are not translated.
+const CARD_BRANDS: Record<string, string> = {
+  amex: 'American Express', cartes_bancaires: 'Cartes Bancaires', diners: 'Diners Club', discover: 'Discover',
+  eftpos_au: 'eftpos Australia', interac: 'Interac', jcb: 'JCB', link: 'Link', mastercard: 'Mastercard',
+  unionpay: 'UnionPay', visa: 'Visa',
+};
+/** Display name for a Stripe card brand code; a generic "Card" when Stripe does not know it. */
+export function cardBrandLabel(brand: string | null | undefined): string {
+  const code = brand?.trim().toLowerCase() ?? '';
+  if (!code || code === 'unknown') return i18n.t('billing:autopay.card');
+  // A brand Stripe adds later reads as words, never as its code.
+  return CARD_BRANDS[code] ?? code.split(/[_\s]+/).filter(Boolean).map(word => word[0]!.toUpperCase() + word.slice(1)).join(' ');
+}
 export function methodLabel(method: AutopayRow['method']): string {
   if (!method) return '—';
-  return method.type === 'card'
-    ? `${method.cardBrand ?? i18n.t('billing:autopay.card')} ••${method.cardLast4 ?? '????'} ${method.cardExpMonth ?? ''}/${method.cardExpYear ?? ''}`
-    : `${method.bankName ?? i18n.t('billing:autopay.bank')} ••${method.bankLast4 ?? '????'}`;
+  if (method.type !== 'card') return `${method.bankName ?? i18n.t('billing:autopay.bank')} ••${method.bankLast4 ?? '????'}`;
+  const expiry = method.cardExpMonth && method.cardExpYear
+    ? ` ${String(method.cardExpMonth).padStart(2, '0')}/${method.cardExpYear}` : '';
+  return `${cardBrandLabel(method.cardBrand)} ••${method.cardLast4 ?? '????'}${expiry}`;
 }
 
 const attentionKeys: Record<string, string> = {
