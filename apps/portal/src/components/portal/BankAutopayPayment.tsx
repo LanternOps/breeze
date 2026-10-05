@@ -52,7 +52,9 @@ async function read(target:Target){
     branding?:{partnerName?:string|null;contactEmail?:string|null;logoUrl?:string|null}|null};
   return unwrap(await apiGet<Data|{data:Data}>(path(target),{redirectOnUnauthorized:!target.publicToken}),!!target.publicToken);
 }
-export default function BankAutopayPayment({target,offer,returning=false}:{target?:Target;offer?:BankAutopayOffer|null;returning?:boolean}){
+export default function BankAutopayPayment({target,offer,returning=false,partnerName}:{target?:Target;offer?:BankAutopayOffer|null;returning?:boolean;
+  /** Stored with the continuation so even Stripe "Back" names the MSP (V-19). */
+  partnerName?:string|null}){
   const [view,setView]=useState<View|null>(target&&offer?{target,offer}:null);
   const [accepted,setAccepted]=useState(false),[busy,setBusy]=useState(false),[finished,setFinished]=useState(false);
   const [message,setMessage]=useState(''),[failed,setFailed]=useState(false);
@@ -76,7 +78,8 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
   useEffect(()=>{
     if(!returning)return;let canceled=false;
     try{
-      const stored=JSON.parse(sessionStorage.getItem(key)??'null') as (Target&{setupSessionId?:string;accepted?:unknown})|null;
+      const stored=JSON.parse(sessionStorage.getItem(key)??'null') as (Target&{setupSessionId?:string;accepted?:unknown;partnerName?:unknown})|null;
+      if(stored&&typeof stored.partnerName==='string')setIdentity({partnerName:stored.partnerName,supportEmail:null,logoUrl:null,invoiceNumber:null});
       // The way back to the invoice the client was paying, for every return state.
       if(stored&&typeof stored.invoiceId==='string')setInvoiceHref(typeof stored.publicToken==='string'
         ?withBase(`/invoice/${encodeURIComponent(stored.publicToken)}`):withBase(`/invoices/${encodeURIComponent(stored.invoiceId)}`));
@@ -127,7 +130,7 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
   async function submit(){
     if(!view||!accepted||busy||finished)return;setBusy(true);
     const collecting=!!view.setupSessionId;
-    if(!collecting){try{sessionStorage.setItem(key,JSON.stringify({...view.target,accepted:termsOf(view.offer)}));}
+    if(!collecting){try{sessionStorage.setItem(key,JSON.stringify({...view.target,accepted:termsOf(view.offer),...(partnerName?{partnerName}:{})}));}
       catch{outcome('Enable session storage to return securely.',true);setBusy(false);return;}}
     let conflictReason: 'pending_verification'|'in_progress'|'abandoned'|undefined;
     let conflict=false,conflictOutcome:unknown=undefined,conflictDetailReason:string|undefined;

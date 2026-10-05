@@ -217,7 +217,7 @@ export function InvoicePaymentPanel(p: InvoicePaymentPanelProps) {
               onChange={next => { setOption(next); setAccepted(false); }} disabled={p.paying} />
           )}
           {chosen === 'bank' ? (
-            <BankAutopayPayment target={p.bankTarget} offer={p.bankOffer} />
+            <BankAutopayPayment target={p.bankTarget} offer={p.bankOffer} partnerName={p.partnerName} />
           ) : (
             <>
               {needsConsent && p.saveOffer && (

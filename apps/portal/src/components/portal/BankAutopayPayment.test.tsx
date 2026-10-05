@@ -274,3 +274,15 @@ it('pending verification says what happens next and how to finish later',async()
  expect(pending).toHaveTextContent("Once it's verified, we'll email you. Then open this invoice from its email and pay it by bank.");
  expect(screen.getByRole('link',{name:'View invoice'})).toBeInTheDocument();
 });
+// V-19: Stripe "Back" from bank setup still names the MSP (stored when setup started).
+it('a cancelled bank connection names the MSP stored at setup', async () => {
+  vi.mocked(apiPost).mockResolvedValue({data:{data:{url:'https://checkout.stripe.com/c/setup/example'}}});
+  render(<BankAutopayPayment target={{invoiceId:'invoice-1',publicToken:'token-1'}} offer={offer} partnerName="Default Partner"/>);
+  fireEvent.click(screen.getByTestId('autopay-bank-consent'));fireEvent.click(screen.getByTestId('autopay-bank-pay'));
+  await waitFor(()=>expect(navigateTo).toHaveBeenCalled());
+  cleanup();
+  window.history.replaceState({},'','/autopay/return?bank=1&cancelled=1');
+  render(<BankAutopayPayment returning/>);
+  expect(await screen.findByRole('heading',{name:"Your bank connection wasn't finished"})).toBeInTheDocument();
+  expect(screen.getByTestId('autopay-identity')).toHaveTextContent('Default Partner');
+});
