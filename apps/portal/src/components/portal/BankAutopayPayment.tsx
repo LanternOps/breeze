@@ -184,7 +184,7 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
   if(!view.offer.available&&!pending)return frame(<p className="text-sm text-muted-foreground" data-testid="autopay-bank-unavailable">Bank payment isn't available for this invoice right now. You can pay it by card.</p>);
   const tone:'destructive'|'primary'=failed?'destructive':'primary';
   const body=<section data-testid="autopay-bank-module" className="space-y-4">
-    {returning&&<h1 className="font-display text-[1.5rem] font-semibold leading-tight tracking-tight text-foreground sm:text-[1.75rem]">Pay by bank</h1>}
+    {returning&&<h1 className="font-display text-[1.75rem] font-semibold leading-tight tracking-tight text-foreground">Pay by bank</h1>}
     <SummaryList rows={summary(view.offer)}/>
     {changed&&!finished&&<Notice tone="warning" title="The total changed, so no payment was made." data-testid="autopay-bank-terms-changed">
       <p>{changeText(changed)}{changed.notCharged?' Your bank account was not charged.':''}</p>

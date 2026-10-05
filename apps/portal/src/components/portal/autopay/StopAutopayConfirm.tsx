@@ -31,7 +31,7 @@ export function StopAutopayConfirm({ partnerName, enrollment, method, onStop, on
   return (
     <div className="space-y-5" data-testid="autopay-stop-confirm">
       {paused && <StatusMark tone="neutral">Paused</StatusMark>}
-      <H className={cn('font-display font-semibold leading-tight tracking-tight text-foreground', headingLevel === 1 ? 'text-[1.5rem] sm:text-[1.75rem]' : 'text-xl')}>
+      <H className={cn('font-display font-semibold leading-tight tracking-tight text-foreground', headingLevel === 1 ? 'text-[1.75rem]' : 'text-xl')}>
         Stop automatic payments to {msp}?
       </H>
       {paused && <p className="text-sm leading-relaxed text-foreground/85">{`${partnerName || 'Your service provider'} has already paused your automatic payments. Stopping turns them off completely.`}</p>}

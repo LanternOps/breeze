@@ -138,7 +138,7 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
   return wrap(<>
     <div className="space-y-2">
       <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Automatic payments</p>
-      <H className={cn('font-display font-semibold leading-tight tracking-tight text-foreground', portal ? 'text-xl' : 'text-[1.5rem] sm:text-[1.75rem]')}>
+      <H className={cn('font-display font-semibold leading-tight tracking-tight text-foreground', portal ? 'text-xl' : 'text-[1.75rem]')}>
         {update ? 'Change your payment method' : 'Pay future invoices automatically'}
       </H>
       <p className="text-sm leading-relaxed text-muted-foreground">

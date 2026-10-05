@@ -36,7 +36,7 @@ export function StatePanel({ mark, title, children, summary, primary, secondary,
       {mark && <StatusMark tone={mark.tone}>{mark.label}</StatusMark>}
       <H ref={heading} tabIndex={-1}
         className={cn('font-display font-semibold leading-tight tracking-tight text-foreground outline-none',
-          headingLevel === 1 ? 'text-[1.5rem] sm:text-[1.75rem]' : 'text-xl')}>
+          headingLevel === 1 ? 'text-[1.75rem]' : 'text-xl')}>
         {title}
       </H>
       {children && <div className="max-w-prose space-y-3 text-sm leading-relaxed text-foreground/85">{children}</div>}
