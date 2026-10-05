@@ -7,7 +7,7 @@ import type { Tx } from './types';
 export interface AutopayStaffNotice {
   orgId: string; partnerId: string; invoiceId?: string; partnerOnly?: boolean;
   event: 'autopay.enrolled' | 'autopay.stopped' | 'autopay.needs_attention' | 'autopay.skipped'
-    | 'payment.failed_final' | 'payment.ach_returned' | 'payment.unapplied';
+    | 'payment.failed_final' | 'payment.ach_returned' | 'payment.unapplied' | 'payment.disputed';
   dedupeKey: string; message: string;
 }
 /** Insert in the lifecycle caller's transaction so rollback/commit includes staff visibility. */
@@ -27,7 +27,8 @@ export async function enqueueAutopayStaffNotifications(db: Tx, input: AutopaySta
     priority: urgent ? 'high' as const : 'normal' as const,
     title: input.event === 'autopay.enrolled' ? 'Automatic payments enabled'
       : input.event === 'autopay.skipped' ? 'Automatic payment skipped'
-      : input.event === 'autopay.stopped' ? 'Automatic payments stopped' : 'Payment needs attention',
+      : input.event === 'autopay.stopped' ? 'Automatic payments stopped'
+      : input.event === 'payment.disputed' ? 'Payment disputed' : 'Payment needs attention',
     message: input.message, link: input.invoiceId ? `/billing/invoices/${input.invoiceId}` : '/billing/autopay', metadata: { event: input.event },
     dedupeKey: `${input.dedupeKey}:${userId}`, read: false,
   }))).onConflictDoNothing();

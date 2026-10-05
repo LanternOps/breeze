@@ -80,6 +80,27 @@ export function renderChargingNotice(ctx: ChargingNoticeContext): RenderedNotice
       + `Skip: ${ctx.skipUrl}\nStop: ${ctx.stopUrl}` };
 }
 
+/** D-20: a refund is reported as a payment_receipt variant (no new notice kind, enum
+ * migration or editor template). Its wording is locked: a partner's receipt override
+ * describes a payment received, which would be untrue for money sent back. */
+export interface RefundNoticeContext {
+  partnerName: string; invoiceNumber: string; refunded: string; refundedTo: string; originalPayment: string; full: boolean;
+  balanceLine: string; invoiceUrl: string; frozen: RenderedNotice['frozen'];
+}
+export function renderRefundNotice(ctx: RefundNoticeContext): RenderedNotice {
+  const url = checkedUrl(ctx.invoiceUrl);
+  const lines = [`Refunded: ${ctx.refunded}`, `Refunded to: ${ctx.refundedTo}`, `Original payment: ${ctx.originalPayment}`, ctx.balanceLine];
+  const note = 'Depending on your bank or card issuer, it can take several business days for the refund to appear.';
+  const rendered = renderPartnerEmail({ id: 'payment_receipt', brandName: ctx.partnerName,
+    vars: { partner_name: ctx.partnerName, invoice_number: ctx.invoiceNumber },
+    custom: { subject: 'Refund for invoice {{invoice_number}} from {{partner_name}}', heading: 'Refund issued', buttonLabel: null,
+      html: `<p>{{partner_name}} has refunded ${ctx.full ? 'your' : 'part of your'} payment for invoice {{invoice_number}}.</p>` },
+    preheader: `${ctx.partnerName} sent you a refund of ${ctx.refunded}.`,
+    bodyAfterCta: [...lines, note].map(line => `<p>${escapeHtml(line)}</p>`).join('')
+      + `<p><a href="${escapeHtml(url)}">View invoice</a></p>` });
+  return { ...rendered, frozen: ctx.frozen, text: [htmlToText(rendered.html), `View invoice: ${url}`].join('\n\n') };
+}
+
 export async function renderBillingNotice(kind: BillingNoticeKind, ctx: BillingNoticeContext, executor?: Tx): Promise<RenderedNotice> {
   if ('payment' in ctx) {
     if ((kind !== 'payment_receipt' && kind !== 'payment_failed') || ctx.payment.id !== kind) throw new Error('Missing payment notice context');

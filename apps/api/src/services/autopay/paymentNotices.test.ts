@@ -328,3 +328,57 @@ describe('re-issuing an update-method email as the pay variant (2b-1)', () => {
     }
   });
 });
+
+import { enqueueRefundNotice } from './paymentNotices';
+describe('client refund notice (D-20)', () => {
+  beforeEach(() => {
+    Object.assign(rows.get(invoiceStripePayments)![0]!, { source: 'autopay', status: 'partially_refunded', refundedAmountMinor: '5150', paymentReceivedAt: '2026-10-05' });
+    Object.assign(rows.get(orgPaymentMethods)![0]!, { type: 'card', cardBrand: 'visa', cardFunding: 'credit', cardLast4: '4242' });
+    rows.get(invoices)![0]!.balance = '50.00';
+  });
+  it('states the amount refunded, where it goes and the invoice balance afterwards', async () => {
+    await enqueueRefundNotice(tx, 'mapping', { priorRefundedMinor: 0, refundedMinor: 5150 });
+    expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ kind: 'payment_receipt', invoiceId: 'invoice',
+      dedupeKey: 'mapping:payment_receipt:refund:5150', toEmail: 'billing@example.test' }));
+    const { html, text, frozen } = lastQueued();
+    expect(frozen).toMatchObject({ mappingId: 'mapping', variant: 'refund', refundedAmount: '51.50', refundedTotal: '51.50',
+      balanceAfter: '50.00', currency: 'USD', invoiceNumber: 'INV-1', partnerName: 'Provider', methodLabel: 'Visa credit card ending in 4242' });
+    expect(footerBrand(html)).toBe('Provider');
+    for (const body of [html, text]) {
+      expect(body).toContain('Refunded: USD 51.50');
+      expect(body).toContain('Refunded to: Visa credit card ending in 4242');
+      expect(body).toContain('Balance due on invoice INV-1 after this refund: USD 50.00');
+      expect(body).toContain('Provider');
+      expect(body).not.toContain('Payment received');
+    }
+    expect(text).toContain('View invoice: https://example.test/invoice/pay');
+  });
+  it('does not use a partner receipt override, which describes a payment rather than a refund', async () => {
+    rows.get(partners)![0]!.settings = { emailTemplates: { payment_receipt: { subject: 'Thanks for paying', html: '<p>Thanks for your payment</p>' } } };
+    await enqueueRefundNotice(tx, 'mapping', { priorRefundedMinor: 0, refundedMinor: 5150 });
+    const { html, text } = lastQueued();
+    for (const body of [html, text]) expect(body).not.toContain('Thanks for');
+  });
+  it('a second refund reports only its own amount and dedupes on the cumulative total', async () => {
+    rows.get(invoices)![0]!.balance = '100.00';
+    await enqueueRefundNotice(tx, 'mapping', { priorRefundedMinor: 5150, refundedMinor: 10300 });
+    expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ dedupeKey: 'mapping:payment_receipt:refund:10300' }));
+    expect(lastQueued().frozen).toMatchObject({ refundedAmount: '51.50', refundedTotal: '103.00', balanceAfter: '100.00' });
+  });
+  it('says a pay-link refund goes back to the original payment method', async () => {
+    Object.assign(rows.get(invoiceStripePayments)![0]!, { source: 'checkout', paymentMethodType: null });
+    await enqueueRefundNotice(tx, 'mapping', { priorRefundedMinor: 0, refundedMinor: 5150 });
+    expect(lastQueued().text).toContain('Refunded to: the original payment method');
+  });
+  it('says so when nothing is left to pay', async () => {
+    rows.get(invoices)![0]!.balance = '0.00';
+    await enqueueRefundNotice(tx, 'mapping', { priorRefundedMinor: 0, refundedMinor: 300 });
+    expect(lastQueued().text).toContain('Invoice INV-1 has no balance due.');
+  });
+  it('sends nothing without a billing contact or a new refund', async () => {
+    await enqueueRefundNotice(tx, 'mapping', { priorRefundedMinor: 5150, refundedMinor: 5150 });
+    rows.get(organizations)![0]!.billingContact = null;
+    await enqueueRefundNotice(tx, 'mapping', { priorRefundedMinor: 0, refundedMinor: 5150 });
+    expect(h.enqueue).not.toHaveBeenCalled();
+  });
+});

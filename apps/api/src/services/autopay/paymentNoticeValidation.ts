@@ -125,6 +125,8 @@ export const validateReceiptNotice: NoticePreSendValidator = async (tx, row) => 
     .where(eq(invoiceStripePayments.id, mappingId)).limit(1);
   if (!mapping) return null;
   if (mapping.orgId !== row.orgId || mapping.invoiceId !== row.invoiceId) return 'Receipt payment ownership mismatch';
+  // A refund notice reports money already sent back; a later return or failure does not undo it.
+  if ((row.rendered as RenderedNotice).frozen?.variant === 'refund') return null;
   const returned = mapping.paymentMethodType === 'us_bank_account' && mapping.disputeFundsWithdrawn;
   return returned || mapping.status === 'failed' ? 'Receipt payment was returned or failed' : null;
 };

@@ -260,3 +260,16 @@ it('does not log a notice that is sent', async () => {
     expect(info).not.toHaveBeenCalledWith('[billingNoticeOutbox] cancelled before send', expect.anything());
   } finally { info.mockRestore(); }
 });
+
+// D-20: a refund notice reports money returned to the client; nothing later makes it untrue.
+it.each([
+ ['the bank payment was also returned',{status:'disputed',disputeFundsWithdrawn:true}],
+ ['the payment is fully refunded',{status:'refunded'}],
+] as [string,Record<string,unknown>][])('still sends a refund notice when %s',async(_label,mapping)=>{
+ receipt(mapping);h.row.rendered.frozen={mappingId:'mapping',variant:'refund',refundedAmount:'51.50'};
+ expect(await dispatchPendingBillingNotices()).toEqual({sent:1,failed:0});expect(h.send).toHaveBeenCalledOnce();
+});
+it('cancels a refund notice bound to another org',async()=>{
+ receipt({orgId:'other'});h.row.rendered.frozen={mappingId:'mapping',variant:'refund',refundedAmount:'51.50'};
+ await dispatchPendingBillingNotices();expect(h.row.status).toBe('cancelled');expect(h.send).not.toHaveBeenCalled();
+});
