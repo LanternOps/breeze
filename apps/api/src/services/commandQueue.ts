@@ -26,6 +26,7 @@ import {
 } from './agentEditionCompat';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { backupReadHelperRefusal } from './backupReadHelperGate';
+import { restoreIntegrityHelperRefusal } from './backupRestoreGate';
 import { backupWriteHelperRefusal } from './backupWriteHelperGate';
 import {
   assertCommandDeliverable,
@@ -1207,6 +1208,7 @@ async function precheckCommandExecution(
       watchdogVersion: devices.watchdogVersion,
       backupReadProtocolVersion: devices.backupReadProtocolVersion,
       backupWriteProtocolVersion: devices.backupWriteProtocolVersion,
+      backupIntegrityProtocolVersion: devices.backupIntegrityProtocolVersion,
     })
     .from(devices)
     .where(eq(devices.id, deviceId))
@@ -1298,8 +1300,11 @@ async function precheckCommandExecution(
   // a helper that cannot use a storage session is refused before a row exists.
   // A backup to S3 storage is written only through a write-scoped storage
   // session, so a helper that cannot use one is refused the same way.
+  // A privileged restore also needs a helper that checks restored bytes
+  // against the snapshot attestation (services/backupRestoreGate.ts).
   const helperRefusal = backupReadHelperRefusal(type, payload, device.backupReadProtocolVersion)
-    ?? backupWriteHelperRefusal(type, payload, device.backupWriteProtocolVersion);
+    ?? backupWriteHelperRefusal(type, payload, device.backupWriteProtocolVersion)
+    ?? restoreIntegrityHelperRefusal(type, device.backupIntegrityProtocolVersion);
   if (helperRefusal) {
     return { ok: false, result: { status: 'failed', error: helperRefusal } };
   }

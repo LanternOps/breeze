@@ -14,6 +14,7 @@ import { queueCommand, type CommandPayload, type QueuedCommand } from './command
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { backupReadHelperRefusal } from './backupReadHelperGate';
 import { backupWriteHelperRefusal } from './backupWriteHelperGate';
+import { restoreIntegrityHelperRefusal } from './backupRestoreGate';
 import { captureException } from './sentry';
 import {
   isParkedDeliverableCommandType,
@@ -237,8 +238,12 @@ async function prepareDeviceCommand(
   // destination, which is never done. Refused here, before a row exists, so
   // the caller can say so; the delivery refreshers enforce the same rules
   // against the helper's reported capability at the moment of delivery.
+  // A privileged restore (one that installs, imports or boots snapshot
+  // bytes) additionally needs a helper that checks restored bytes against the
+  // snapshot attestation (services/backupRestoreGate.ts); delivery re-checks.
   const helperRefusal = backupReadHelperRefusal(input.type, payload, device.backupReadProtocolVersion)
-    ?? backupWriteHelperRefusal(input.type, payload, device.backupWriteProtocolVersion);
+    ?? backupWriteHelperRefusal(input.type, payload, device.backupWriteProtocolVersion)
+    ?? restoreIntegrityHelperRefusal(input.type, device.backupIntegrityProtocolVersion);
   if (helperRefusal) {
     return { ok: false, code: 'backup_helper_update_required', error: helperRefusal };
   }
