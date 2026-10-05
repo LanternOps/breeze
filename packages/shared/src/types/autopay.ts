@@ -153,6 +153,14 @@ export interface InvoiceAutopayView {
  state:AutopayScheduleState|'processing'|'unapplied';reason:string|null;collectOn:string|null;
  noticeSentAt:string|null;excluded:boolean;canExclude:boolean;canChargeNow:boolean;processing:boolean;unapplied:boolean;
 }
+/** What the public skip page may offer. Only 'ready' offers "Skip this payment";
+ * 'paid' and 'not_needed' mean a stale link (paid, closed, void, or not scheduled for
+ * automatic payment) that must not offer a skip (D-22). */
+export const AUTOPAY_SKIP_VIEW_STATUSES=['ready','skipped','pending','processing','action_required','paid','not_needed'] as const;
+export type AutopaySkipViewStatus=(typeof AUTOPAY_SKIP_VIEW_STATUSES)[number];
+export interface AutopaySkipView {
+ status:AutopaySkipViewStatus;state:AutopayScheduleState;collectOn:string|null;control:ControlMarker|null;processing:boolean;
+}
 export const bankPaySchema=bankPaymentConsentSchema.omit({invoiceId:true,orgId:true}).extend({
  methodType:z.literal('us_bank_account'),phase:z.enum(['setup','collect']),consentAccepted:z.literal(true),
  setupSessionId:z.string().regex(/^cs_[A-Za-z0-9_]+$/).max(255).optional(),
