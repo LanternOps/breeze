@@ -35,7 +35,9 @@ beforeEach(()=>{
  m.session.mockResolvedValue({mode:'setup',setup_intent:'seti_one'});
  m.intent.mockResolvedValue({id:'seti_one',status:'succeeded',next_action:null,customer:'cus_one',payment_method:'pm_one',mandate:null,
   metadata:{setup_attempt_id:value.id,org_id:value.orgId,enrollment_id:value.enrollmentId,generation:'3',token_id:''}});
- m.method.mockResolvedValue({id:'pm_one',type:'card',customer:'cus_one',card:{brand:'visa',funding:'debit',last4:'1234',exp_month:12,exp_year:2030,country:'US'}});
+ // A complete live card: Stripe always returns wallet and networks for cards.
+ m.method.mockResolvedValue({id:'pm_one',type:'card',customer:'cus_one',card:{brand:'visa',funding:'debit',last4:'1234',exp_month:12,exp_year:2030,country:'US',
+  wallet:null,networks:{available:['visa'],preferred:null}}});
  m.mint.mockResolvedValue({id:'token',token:'token'});m.enqueue.mockResolvedValue({id:'notice',created:true});
 });
 describe('completion fences',()=>{
@@ -263,7 +265,7 @@ it('uses the verified debit fee in enrollment mail without rewriting accepted co
     [value],[{id:value.id}],[{id:value.stripeConnectionId,stripeAccountId:'acct_one',status:'connected'}],
     [],[],[{id:'method_one'}],[],[],[],[{settings:{emailTemplates:{autopay_enrolled:{html:'<p>Edited enrollment</p>'}}}}]);
   const method={id:'pm_one',type:'card',customer:'cus_one',card:{brand:'visa',funding:'debit',last4:'1234',
-    exp_month:12,exp_year:2030,country:'US'}} as Parameters<typeof persistCapturedAutopayMethod>[1];
+    exp_month:12,exp_year:2030,country:'US',wallet:null,networks:{available:['visa'],preferred:null}}} as Parameters<typeof persistCapturedAutopayMethod>[1];
   expect(await persistCapturedAutopayMethod(value.id,method,'activated','seti_one',null))
     .toEqual({outcome:'activated',orgId:value.orgId});
   for (const body of [m.enqueue.mock.calls[0]![1].rendered.html, m.enqueue.mock.calls[0]![1].rendered.text]) {
@@ -279,31 +281,68 @@ it('uses the verified debit fee in enrollment mail without rewriting accepted co
   expect(m.client).not.toHaveBeenCalled();expect(m.rows).toHaveLength(0);
 });
 
-it.each(['credit','link','missing-networks','missing-wallet','unknown-network'])('uses live %s evidence for enrollment and owned return under nonzero fees',async kind=>{
+it('uses live credit evidence for enrollment and owned return under nonzero fees',async()=>{
  const accepted={...snapshot,feeText:'Credit card: up to 3.00% per automatic payment.',
   feeTerms:{...snapshot.feeTerms,cardFeeBps:300,feeAttested:true}};
  const value=attempt({consentSnapshot:accepted});
  const card={brand:'visa',funding:'credit',last4:'1234',exp_month:12,exp_year:2030,country:'US',
-  wallet:kind==='link'?{type:'link'}:kind==='missing-wallet'?undefined:null,
-  networks:kind==='missing-networks'?undefined:{available:[kind==='unknown-network'?'unknown':'visa'],preferred:null}};
+  wallet:null,networks:{available:['visa'],preferred:null}};
  m.method.mockResolvedValue({id:'pm_one',type:'card',customer:'cus_one',card});
  // The owned-return lookup precedes the normal completion authority lookups.
  m.rows.push([value]);queueAuthority(value);
  m.rows.push([],[],[{id:'method_one'}],[],[],[],[{settings:{}}]);
  const {completeOwnedAutopaySetup}=await import('./customerViews');
  const result=await completeOwnedAutopaySetup({orgId:value.orgId,partnerId:value.partnerId},'cs_one');
- const expected=kind==='credit'?accepted.feeText:'No processing fee applies to this card.';
- expect(result).toMatchObject({outcome:'activated',methodLabel:'visa credit ••1234',feeText:expected});
- for(const body of [m.enqueue.mock.calls[0]![1].rendered.html,m.enqueue.mock.calls[0]![1].rendered.text])expect(body).toContain(expected);
- expect(m.writes).toContainEqual(expect.objectContaining({cardFunding:kind==='credit'?'credit':'unknown'}));
+ expect(result).toMatchObject({outcome:'activated',methodLabel:'visa credit ••1234',feeText:accepted.feeText});
+ for(const body of [m.enqueue.mock.calls[0]![1].rendered.html,m.enqueue.mock.calls[0]![1].rendered.text])expect(body).toContain(accepted.feeText);
+ expect(m.writes).toContainEqual(expect.objectContaining({cardFunding:'credit'}));
  const stored=m.writes.find(row=>'cardFunding' in row)!;
- const quote=quoteProcessingFee({methodType:'card',cardFunding:stored.cardFunding as 'credit'|'unknown',principal:'100.00',
+ const quote=quoteProcessingFee({methodType:'card',cardFunding:stored.cardFunding as 'credit',principal:'100.00',
   currency:'USD',stripeAccountCountry:'US',orgBillingCountry:'US',orgBillingRegion:'NY',cardFeeBps:300,achFeeAmount:'0.00',feeAttested:true});
- expect(quote.feeAmount).toBe(kind==='credit'?'3.00':'0.00');
- expect(paymentFeeLine('100.00',quote.feeAmount,'USD','card')).toBe(kind==='credit'?'$100.00 + $3.00 card processing fee':'$100.00; no processing fee');
+ expect(quote.feeAmount).toBe('3.00');
+ expect(paymentFeeLine('100.00',quote.feeAmount,'USD','card')).toBe('$100.00 + $3.00 card processing fee');
  expect(m.method).toHaveBeenCalledExactlyOnceWith('pm_one');
  expect(m.writes.filter(row=>'consentTextVersion'in row)).toEqual([expect.objectContaining({feeTerms:accepted.feeTerms,consentTextHash:accepted.textHash})]);
  expect(m.rows).toHaveLength(0);
+});
+
+// #7894: collection admission refuses these cards, so setup must not activate them.
+it.each(['link','missing-networks','missing-wallet','unknown-network','unknown-wallet'])('refuses a %s card at setup without consent, mail or stop authority',async kind=>{
+ const {enqueueRejectedAutopayMethod}=await import('./paymentMethods');
+ const value=attempt();
+ const card={brand:'visa',funding:kind==='link'?'unknown':'credit',last4:'1234',exp_month:12,exp_year:2030,country:'US',
+  wallet:kind==='link'?{type:'link'}:kind==='unknown-wallet'?{type:'new_wallet'}:kind==='missing-wallet'?undefined:null,
+  networks:kind==='missing-networks'?undefined:{available:[kind==='unknown-network'?'unknown':'visa'],preferred:null}};
+ const method={id:'pm_link',type:'card',customer:'cus_one',card};
+ m.method.mockResolvedValue(method);
+ m.rows.push([value]);queueAuthority(value);
+ const {completeOwnedAutopaySetup}=await import('./customerViews');
+ const result=await completeOwnedAutopaySetup({orgId:value.orgId,partnerId:value.partnerId},'cs_one');
+ // Nothing about the refused card is exposed on the return page.
+ expect(result).toEqual({outcome:'unsupported_method',orgId:value.orgId,methodLabel:null,feeText:'No usable payment method confirmed.'});
+ // The only write terminally records the outcome: no replacement of the working
+ // method, no saved method, consent, enrollment change or token consumption.
+ expect(m.writes).toEqual([{outcome:'unsupported_method',completedAt:expect.any(Date)}]);
+ expect(enqueueRejectedAutopayMethod).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({id:value.id}),method);
+ expect(m.mint).not.toHaveBeenCalled();expect(m.enqueue).not.toHaveBeenCalled();
+ expect(m.rows).toHaveLength(0);
+});
+it('refuses a Link card saved by pay-and-save while the invoice payment stands',async()=>{
+ const {enqueueRejectedAutopayMethod}=await import('./paymentMethods');
+ const value=attempt({source:'pay_and_save',consentSnapshot:{...snapshot,source:'pay_and_save',invoiceId:'invoice'}});
+ m.rows.push([value],[{id:value.orgId,name:'Example client',status:'active',deletedAt:null}],
+  [{id:value.enrollmentId,status:'active',generation:3,stripeAccountId:'acct_one',stripeCustomerId:'cus_one',effectiveFrom:new Date('2026-09-01')}],
+  [value],[{id:value.id}],[{id:value.stripeConnectionId,stripeAccountId:'acct_one',status:'connected'}]);
+ const method={id:'pm_link',type:'card',customer:'cus_one',card:{brand:'visa',funding:'credit',last4:'4242',exp_month:1,exp_year:2031,
+  country:'US',wallet:{type:'link'},networks:{available:['visa'],preferred:null}}} as Parameters<typeof persistCapturedAutopayMethod>[1];
+ expect(await persistCapturedAutopayMethod(value.id,method,'activated',null,null)).toEqual({outcome:'unsupported_method',orgId:value.orgId});
+ expect(m.writes).toEqual([{outcome:'unsupported_method',completedAt:expect.any(Date)}]);
+ expect(enqueueRejectedAutopayMethod).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({id:value.id}),method);
+ expect(m.mint).not.toHaveBeenCalled();expect(m.enqueue).not.toHaveBeenCalled();expect(m.rows).toHaveLength(0);
+ // A replayed completion keeps the terminal refusal and re-queues only the detach.
+ m.writes.length=0;queueAuthority(attempt({...value,outcome:'unsupported_method',completedAt:new Date()}));m.rows.shift();
+ expect(await persistCapturedAutopayMethod(value.id,method,'activated',null,null)).toEqual({outcome:'unsupported_method',orgId:value.orgId});
+ expect(m.writes).toEqual([]);expect(enqueueRejectedAutopayMethod).toHaveBeenCalledTimes(2);
 });
 
 import {quoteProcessingFee} from './processingFee';

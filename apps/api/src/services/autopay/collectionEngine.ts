@@ -530,7 +530,11 @@ async function confirmationDecision(attemptId: string, pi: Stripe.PaymentIntent)
     const [schedule] = await db.select().from(invoiceAutopaySchedules)
       .where(eq(invoiceAutopaySchedules.invoiceId, locked.invoice.id)).limit(1).for('update');
     const cancel = async (reason: string) => {
-      if (reason === 'renotice_required' && schedule && schedule.stateReason !== RENOTICE_PENDING) {
+      // Only a live schedule has a notice to redo; finalizeCanceledSchedule ignores the rest. A
+      // marker left on a terminal schedule (an on-session bank payment's invoice) would cancel
+      // every later confirm on that invoice, including the client's re-authorized one (#7896).
+      if (reason === 'renotice_required' && schedule && isControllableSchedule(schedule.state)
+        && schedule.stateReason !== RENOTICE_PENDING) {
         await db.update(invoiceAutopaySchedules).set({ stateReason: RENOTICE_PENDING })
           .where(eq(invoiceAutopaySchedules.id, schedule.id));
       }
