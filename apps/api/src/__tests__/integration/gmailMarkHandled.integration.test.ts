@@ -150,19 +150,24 @@ describe('markIngestedGmailHandled (post-ticket, real DB)', () => {
     expect(sentry.captureException).toHaveBeenCalledTimes(1);
   });
 
-  it('holds no row lock and no open transaction while Gmail is called', async () => {
+  it('holds no row lock and no open transaction during the identity request or the Gmail modify', async () => {
     const { email, generation, connId, orgId } = await seed('created');
-    let lockOutcome: 'ok' | string | undefined;
-    let idleInTx: number | undefined;
-    gm.markGmailHandled.mockImplementationOnce(async () => {
-      lockOutcome = await lockBothRowsNowait(connId, orgId).then(() => 'ok', (e: unknown) => String((e as { code?: string })?.code ?? e));
+    const probe = async () => {
+      const lock = await lockBothRowsNowait(connId, orgId).then(() => 'ok', (e: unknown) => String((e as { code?: string; cause?: { code?: string } })?.cause?.code ?? (e as { code?: string })?.code ?? e));
       const rows = await db.execute(sql`SELECT count(*)::int AS n FROM pg_stat_activity
         WHERE datname = current_database() AND state LIKE 'idle in transaction%' AND pid <> pg_backend_pid()`);
-      idleInTx = (rows.rows ?? rows)[0].n;
+      return { lock, idleInTx: (rows.rows ?? rows)[0].n as number };
+    };
+    let duringIdentity: { lock: string; idleInTx: number } | undefined;
+    let duringModify: { lock: string; idleInTx: number } | undefined;
+    gm.markGmailHandled.mockImplementationOnce(async () => { duringModify = await probe(); });
+    const probingSession = () => ({
+      gmail: FAKE_GMAIL,
+      identity: async () => { duringIdentity = await probe(); return { sub: SUB, email: MAILBOX }; },
     });
-    expect(await markIngestedGmailHandled(email, generation, deps)).toBe('marked');
-    expect(lockOutcome).toBe('ok');
-    expect(idleInTx).toBe(0);
+    expect(await markIngestedGmailHandled(email, generation, { sleep: async () => {}, modifyClient: probingSession })).toBe('marked');
+    expect(duringIdentity).toEqual({ lock: 'ok', idleInTx: 0 });
+    expect(duringModify).toEqual({ lock: 'ok', idleInTx: 0 });
   });
 
   it('a reconnect issued during the Gmail call is not blocked by it, and later old-generation mail is not modified', async () => {
@@ -321,6 +326,30 @@ describe('markIngestedGmailHandled (post-ticket, real DB)', () => {
     expect(await markIngestedGmailHandled(email, generation, deps)).toBe('failed');
     expect(gm.markGmailHandled).not.toHaveBeenCalled();
     expect((await readConn(connId)).gmailHandledError).toBe('label_invalid');
+  });
+
+  it('recording the outcome waits at most its own short lock bound when the row is locked', async () => {
+    const { email, generation, connId } = await seed('created');
+    gm.markGmailHandled.mockRejectedValue(Object.assign(new Error('insufficient scope'), { status: 403 }));
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((r) => { locked = r; });
+    const holder = runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      await appDb.select({ id: ticketMailboxConnections.id }).from(ticketMailboxConnections)
+        .where(eq(ticketMailboxConnections.id, connId)).for('update');
+      locked();
+      await Promise.race([held, new Promise((r) => setTimeout(r, 8_000))]);
+    }));
+    await lockTaken;
+    const started = Date.now();
+    const result = await markIngestedGmailHandled(email, generation, deps);
+    const elapsed = Date.now() - started;
+    release();
+    await holder;
+    expect(result).toBe('failed');
+    expect(elapsed).toBeGreaterThanOrEqual(1_500);
+    expect(elapsed).toBeLessThan(4_000);
   });
 
   it('stops retrying once the overall time budget is spent, and records it', async () => {

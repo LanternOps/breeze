@@ -34,9 +34,16 @@ import { HandledLabelError, isUsableHandledLabelName } from './handledLabel';
 
 const TICKETED_STATUSES = new Set(['created', 'matched']);
 const RETRY_DELAYS_MS = [500, 2000];
-/** Hard deadline for the whole mark operation, retries included: every Gmail
- *  request of an attempt is aborted when it passes, and no attempt starts after. */
+/** Time budget for the Gmail work, retries included, counted from the first DB
+ *  read: every Gmail request of an attempt is aborted when it passes, no attempt
+ *  starts after it, and the pre-call reads' lock/statement waits are bounded by
+ *  what is left. It is not an absolute bound on the whole call: recording the
+ *  outcome afterwards gets its own BOOKKEEPING_DB_WAIT_MS lock/statement bound,
+ *  and acquiring a pooled connection is not bounded here (as for any DB use). */
 const MARK_BUDGET_MS = 15_000;
+/** Lock/statement wait bound for recording or clearing the outcome on the
+ *  connection, which runs after the Gmail work and so outside MARK_BUDGET_MS. */
+const BOOKKEEPING_DB_WAIT_MS = 2_000;
 /** How long the resolved label id is cached per account and mailbox. */
 export const HANDLED_LABEL_CACHE_TTL_MS = 10 * 60 * 1000;
 /** A repeated identical failure refreshes gmail_handled_error_at at most this often,
@@ -73,7 +80,7 @@ export function parseGmailProviderMessageId(providerMessageId: string): { sub: s
 }
 
 /** SET LOCAL lock and statement timeouts for this transaction (never widening a
- *  stricter caller), so a blocked lock or slow statement fails at the deadline. */
+ *  stricter caller), so a blocked lock or slow statement fails within `ms`. */
 async function boundDbWaits(ms: number): Promise<void> {
   const bound = Math.max(1, Math.floor(ms));
   await tightenLockTimeout(db, bound);
@@ -129,7 +136,7 @@ export async function markIngestedGmailHandled(
   generation: MailboxGenerationContext | undefined,
   deps: MarkIngestedDeps = {},
 ): Promise<MarkIngestedResult> {
-  // The deadline covers the whole operation, from the first DB read on.
+  // The Gmail-work budget is counted from the first DB read on.
   const now = deps.now ?? Date.now;
   const startedAt = now();
   const budgetMs = deps.budgetMs ?? MARK_BUDGET_MS;
@@ -161,9 +168,9 @@ export async function markIngestedGmailHandled(
   );
 
   // One short transaction, plain reads, no row locks; closed before any Gmail call.
-  const loadContext = (deadlineMs: number): Promise<MarkContext> =>
+  const loadContext = (waitMs: number): Promise<MarkContext> =>
     runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-      await boundDbWaits(deadlineMs);
+      await boundDbWaits(waitMs);
       const [live] = await db.select({
         orgId: ticketMailboxConnections.orgId,
         mailboxAddress: ticketMailboxConnections.mailboxAddress,
@@ -208,7 +215,7 @@ export async function markIngestedGmailHandled(
     });
     try {
       await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-        await boundDbWaits(Math.max(remainingMs(), 2_000));
+        await boundDbWaits(BOOKKEEPING_DB_WAIT_MS);
         const at = new Date();
         // A change of code: only the caller whose UPDATE actually changed the
         // stored code reports it, so concurrent identical failures report once.
@@ -250,7 +257,7 @@ export async function markIngestedGmailHandled(
   const clearFailure = async (observed: string, observedAt: Date | null) => {
     try {
       await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-        await boundDbWaits(Math.max(remainingMs(), 2_000));
+        await boundDbWaits(BOOKKEEPING_DB_WAIT_MS);
         await db.update(ticketMailboxConnections)
           .set({ gmailHandledError: null, gmailHandledErrorAt: null })
           .where(and(
@@ -274,7 +281,7 @@ export async function markIngestedGmailHandled(
   for (let attempt = 0; ; attempt++) {
     const remaining = remainingMs();
     if (remaining <= 0) {
-      await recordFailure('unavailable', priorError, new Error('mark-handled deadline reached'));
+      await recordFailure('unavailable', priorError, new Error('mark-handled time budget spent'));
       return 'failed';
     }
     let ctx: MarkContext;
@@ -324,7 +331,7 @@ export async function markIngestedGmailHandled(
     } catch (err) {
       const code = handledErrorCode(err);
       const delay = RETRY_DELAYS_MS[attempt];
-      // Retries stop once the deadline would pass.
+      // Retries stop once the budget would be spent.
       if ((code === 'rate_limited' || code === 'unavailable') && delay !== undefined && delay < remainingMs()) {
         await sleep(delay);
         continue;
