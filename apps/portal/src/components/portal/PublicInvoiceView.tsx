@@ -2,14 +2,14 @@ import { InvoicePaymentPanel } from './autopay/InvoicePaymentPanel';
 import { Notice } from './ui';
 import { runAction } from '@/lib/runAction';
 import { invoiceAutopayInput } from '@/lib/api';
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Download } from 'lucide-react';
 import { withBase } from '@/lib/basePath';
-import { portalApi, buildPortalApiUrl, type PublicInvoiceDetail, lineWorkedVsBilledNote } from '@/lib/api';
-import { groupInvoiceLinesByTicket } from '@/lib/invoiceLineGroups';
+import { portalApi, buildPortalApiUrl, type PublicInvoiceDetail } from '@/lib/api';
 import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
 import { DocumentPaper, DocumentHeader, DocumentTerms, DocumentTermsCollapsible, type DocSeller } from './documentShell';
-import { money } from '@/lib/money';
+import { InvoiceLineTable, InvoiceTotals } from './invoicePaper';
+import { INVOICE_GRID, RAIL } from './autopay/InvoicePaymentPanel';
 import { longDate } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { BTN_PRIMARY, BTN_SECONDARY } from './ui';
@@ -35,20 +35,7 @@ interface PublicInvoiceViewProps {
 }
 
 
-function shortDate(value: string | null | undefined): string {
-  if (!value) return '—';
-  const d = new Date(value.length === 10 ? `${value}T00:00:00` : value);
-  if (Number.isNaN(d.getTime())) return String(value);
-  return d.toLocaleDateString();
-}
 
-/** Per-line tax amount — same derivation as InvoiceDetailView.lineTax. */
-function lineTax(lineTotal: string | number, taxable: boolean, rate: number): number | null {
-  if (!taxable || !(rate > 0)) return null;
-  const cents = Math.round(Number(lineTotal) * 100);
-  if (!Number.isFinite(cents)) return null;
-  return Math.round(cents * rate) / 100;
-}
 
 export function PublicInvoiceView({ token, initial = null, error }: PublicInvoiceViewProps) {
   const [detail, setDetail] = useState<PublicInvoiceDetail | null>(initial);
@@ -156,8 +143,8 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
   const canPay = payable && chargeNow != null && !justPaid && !paymentPending;
 
   const headerDates = [
-    { label: 'Issued', value: shortDate(invoice.issueDate ?? null) },
-    { label: 'Due', value: shortDate(invoice.dueDate ?? null) },
+    { label: 'Issued', value: longDate(invoice.issueDate ?? null) || '—' },
+    { label: 'Due', value: longDate(invoice.dueDate ?? null) || '—' },
   ];
 
   const pay = async (saveForAutopay: boolean) => {
@@ -217,10 +204,10 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
   );
 
   return (
-    <div className="mx-auto grid w-full max-w-5xl gap-5 p-0 sm:p-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start">
+    <div className={cn('mx-auto grid w-full max-w-5xl gap-5 p-0 sm:p-4 xl:max-w-6xl', INVOICE_GRID)}>
       {/* The panel comes first on phones (the amount and the way to pay); at lg it sits
           beside the invoice, which stays the document (D-4). */}
-      <div className="lg:col-start-2 lg:row-start-1">
+      <div className={RAIL}>
         <InvoicePaymentPanel
           currency={currency} balance={invoice.balance ?? '0'} dueDate={invoice.dueDate ?? null} status={invoice.status}
           paidAt={invoice.paidAt ?? null} canPay={canPay} onlinePaymentUnavailable={!payable && !isPaid}
@@ -255,91 +242,12 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
           preparedForName={invoice.billToName ?? undefined}
         />
 
-        <div className="overflow-hidden rounded-lg border bg-card">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-2.5 text-left font-medium sm:px-5">Description</th>
-                  <th className="hidden px-2 py-2.5 text-right font-medium sm:table-cell">Qty</th>
-                  <th className="hidden px-2 py-2.5 text-right font-medium sm:table-cell">Price</th>
-                  {showTax && <th className="hidden px-2 py-2.5 text-right font-medium sm:table-cell">Tax</th>}
-                  <th className="px-4 py-2.5 text-right font-medium sm:px-5">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {groupInvoiceLinesByTicket(lines).map((group) => (
-                    <Fragment key={group.key}>
-                      {group.ticketNumber && (
-                        <tr className="border-b bg-muted/30">
-                          <td colSpan={showTax ? 5 : 4} className="px-4 py-2 sm:px-5">
-                            <div className="flex flex-wrap items-center gap-2 text-xs">
-                              <span className="font-semibold text-foreground">
-                                {`Ticket #${group.ticketNumber}`}
-                              </span>
-                              {group.ticketCategory && (
-                                <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground font-medium">
-                                  {group.ticketCategory}
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                      {group.lines.map((l) => {
-                        const index = lines.indexOf(l);
-                        const tax = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
-                        const title = (l.name ?? l.description ?? '').trim() || '—';
-                        const blurb = l.name ? (l.description ?? '').trim() : '';
-                        // #6467: worked-vs-billed disclosure (§3.5), sourced from
-                        // structured data — never from `description`.
-                        const note = lineWorkedVsBilledNote(l);
-                        return (
-                          <tr key={`${title}-${index}`} className="border-b align-top last:border-0">
-                            <td className="px-4 py-3 text-foreground sm:px-5">
-                              {title}
-                              {/* P-7: on phones Qty and Price fold under the description instead of clipping the table. */}
-                              <div className="mt-0.5 text-xs tabular-nums text-muted-foreground sm:hidden" data-testid={`invoice-line-qty-${index}`}>{l.quantity} × {money(l.unitPrice, currency)}</div>
-                              {blurb && <div className="mt-0.5 text-xs text-muted-foreground">{blurb}</div>}
-                              {note && <div className="mt-0.5 text-xs text-muted-foreground" data-testid={`invoice-line-worked-vs-billed-${index}`}>{note}</div>}
-                            </td>
-                            <td className="hidden whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground sm:table-cell">{l.quantity}</td>
-                            <td className="hidden whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground sm:table-cell">{money(l.unitPrice, currency)}</td>
-                            {showTax && <td className="hidden whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground sm:table-cell">{tax === null ? '—' : money(tax, currency)}</td>}
-                            <td className="whitespace-nowrap px-4 py-3 text-right font-medium tabular-nums text-foreground sm:px-5">{money(l.lineTotal, currency)}</td>
-                          </tr>
-                        );
-                      })}
-                    </Fragment>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <InvoiceLineTable lines={lines} currency={currency} taxRate={taxRate} showTax={showTax} />
 
-        <section className="flex justify-end">
-          <div className="w-full max-w-xs space-y-2.5">
-            <div className="flex justify-between text-sm"><span className="text-muted-foreground">Subtotal</span><span className="tabular-nums text-foreground">{money(invoice.subtotal ?? 0, currency)}</span></div>
-            <div className="flex justify-between text-sm"><span className="text-muted-foreground">Tax{taxPct ? ` (${taxPct}%)` : ''}</span><span className="tabular-nums text-foreground">{money(invoice.taxTotal ?? 0, currency)}</span></div>
-            <div className="flex justify-between border-t pt-2.5 text-sm"><span className="font-medium text-foreground">Total</span><span className="font-medium tabular-nums text-foreground">{money(invoice.total ?? 0, currency)}</span></div>
-            {Number(invoice.amountPaid ?? 0) > 0 && (
-              <div className="flex justify-between text-sm"><span className="text-muted-foreground">Paid</span><span className="tabular-nums text-foreground">−{money(invoice.amountPaid ?? 0, currency)}</span></div>
-            )}
-            <div className="doc-accent-border flex items-baseline justify-between border-t pt-3">
-              <span className="text-sm font-semibold text-foreground">{isPaid ? 'Balance' : 'Balance due'}</span>
-              <span className="doc-accent-text text-2xl font-semibold tabular-nums" data-testid="public-invoice-balance">{money(invoice.balance ?? 0, currency)}</span>
-            </div>
-            {hasDeposit && chargeNow && !isPaid && (
-              <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground" data-testid="public-invoice-deposit-strip">
-                {chargeNow.isDeposit ? (
-                  <>Deposit of <strong className="text-foreground">{money(invoice.depositDue!, currency)}</strong> due — {money(invoice.amountPaid ?? 0, currency)} of {money(invoice.total ?? 0, currency)} paid.</>
-                ) : (
-                  <>Deposit paid — remaining balance {money(invoice.balance ?? 0, currency)}.</>
-                )}
-              </div>
-            )}
-          </div>
-        </section>
+        <InvoiceTotals currency={currency} subtotal={invoice.subtotal ?? 0} taxTotal={invoice.taxTotal ?? 0} taxPct={taxPct}
+          total={invoice.total ?? 0} amountPaid={invoice.amountPaid ?? 0} balance={invoice.balance ?? 0} paid={isPaid}
+          deposit={hasDeposit && chargeNow ? { due: invoice.depositDue!, isDeposit: chargeNow.isDeposit } : null}
+          testIds={{ balance: 'public-invoice-balance', deposit: 'public-invoice-deposit-strip' }} />
 
         {invoice.notes && <DocumentTerms label="Notes">{invoice.notes}</DocumentTerms>}
         {invoice.termsAndConditions && (

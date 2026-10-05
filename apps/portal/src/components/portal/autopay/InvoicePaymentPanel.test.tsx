@@ -6,7 +6,7 @@ import { InvoicePaymentPanel, type InvoicePaymentPanelProps } from './InvoicePay
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 const saveOffer = { eligible: true, consentText: 'I authorize Example MSP to save this card and use it to pay future invoices automatically.', consentVersion: 'v', disclosureHash: 'c'.repeat(64) };
-const bankOffer = { available: true, principal: '200.00', fee: '1.00', currency: 'USD' as const, consentText: 'I authorize a one-time bank payment.', disclosureHash: 'a'.repeat(64), methodStatus: null };
+const bankOffer = { available: true, principal: '200.00', fee: '1.00', currency: 'USD' as const, consentText: 'I authorize a one-time bank payment.', disclosureHash: 'a'.repeat(64), methodStatus: null, methodLabel: null };
 const scheduled = { state: 'scheduled' as const, chargeDate: '2026-11-04', amount: '50.00', fee: '1.50', currency: 'USD',
   methodLabel: 'Visa credit card ending in 4242', methodType: 'card' as const, reason: null, paidAt: null, canPayNow: true };
 function panel(over: Partial<InvoicePaymentPanelProps> = {}) {
@@ -54,9 +54,21 @@ describe('not enrolled: one decision, consent only where it applies (D-4)', () =
     expect(screen.queryByRole('radio')).toBeNull();
     expect(screen.getByTestId('public-invoice-pay')).toHaveTextContent('Pay $200.00');
   });
-  it('an overdue invoice says when it was due', () => {
+  it('an overdue invoice says when it was due, in the overdue (brick) tone', () => {
     panel({ status: 'overdue', dueDate: '2026-10-01' });
-    expect(screen.getByText('Was due October 1, 2026')).toBeInTheDocument();
+    // V-25: DESIGN.md: overdue is brick, not amber.
+    expect(screen.getByText('Was due October 1, 2026')).toHaveClass('text-destructive-on-tint');
+  });
+  // V-13: the panel leads with what the button charges.
+  it('a deposit leads with the deposit, and every option says what it pays', () => {
+    panel({ balance: '30.00', charge: { amount: '10.00', isDeposit: true }, bankOffer: { ...bankOffer, principal: '30.00' } });
+    expect(screen.getByText('Deposit due')).toBeInTheDocument();
+    expect(screen.getByTestId('invoice-panel-amount')).toHaveTextContent('$10.00');
+    expect(screen.getByText('of $30.00 balance due')).toBeInTheDocument();
+    expect(screen.getByText('Pay the deposit once.')).toBeInTheDocument();
+    expect(screen.getByText(/Pays the full balance of \$30\.00/)).toBeInTheDocument();
+    expect(screen.getByTestId('public-invoice-pay')).toHaveTextContent('Pay deposit $10.00');
+    expect(document.body.textContent).not.toMatch(/Balance due\$30/);
   });
 });
 
@@ -76,8 +88,29 @@ describe('enrolled: the invoice says how it will be paid instead of offering set
     panel({ autopayStatus: { ...scheduled, state: 'awaiting_notice', chargeDate: null }, autopayEnrolled: true });
     expect(screen.getByText(/We'll email you the payment date first/)).toBeInTheDocument();
   });
+  it('scheduled with a fee states the total that will be charged, not the balance again (V-28)', () => {
+    panel({ balance: '50.00', autopayStatus: scheduled, autopayEnrolled: true });
+    expect(screen.queryByText('Amount')).toBeNull();
+    expect(screen.getByText('Total charged')).toBeInTheDocument();
+    expect(screen.getByText('up to $51.50')).toBeInTheDocument();
+  });
+  it('scheduled with no fee adds no facts under the balance', () => {
+    panel({ balance: '50.00', autopayStatus: { ...scheduled, fee: '0.00' }, autopayEnrolled: true });
+    expect(screen.queryByText('Total charged')).toBeNull();
+    expect(screen.queryByText('Amount')).toBeNull();
+  });
+  // V-5, V-29: the processing line names the money actually moving, with its fee.
+  it('processing names the in-flight method and total, with the bank timing', () => {
+    panel({ balance: '140.00', collectionInProgress: { amount: '140.00', actionRequired: false },
+      autopayStatus: { ...scheduled, state: 'processing', chargeDate: null, amount: '140.00', fee: '1.00', canPayNow: false,
+        methodType: 'us_bank_account', methodLabel: 'Bank account ending in 6789' } });
+    const line = screen.getByTestId('public-invoice-collection-processing');
+    expect(line).toHaveTextContent('$141.00 is being collected from your bank account ending in 6789 ($140.00 for this invoice plus a $1.00 fee).');
+    expect(line).toHaveTextContent('Bank payments usually take a few business days to clear.');
+    expect(line).not.toHaveTextContent('saved payment method');
+  });
   it('processing: no action, no Pay', () => {
-    panel({ autopayStatus: { ...scheduled, state: 'processing', canPayNow: false, methodType: 'us_bank_account', methodLabel: 'Bank account ending in 6789' }, autopayEnrolled: true });
+    panel({ autopayStatus: { ...scheduled, state: 'processing', fee: '0.00', canPayNow: false, methodType: 'us_bank_account', methodLabel: 'Bank account ending in 6789' }, autopayEnrolled: true });
     expect(screen.getByTestId('public-invoice-collection-processing')).toHaveTextContent('$50.00 is being collected from your bank account ending in 6789');
     expect(screen.getByTestId('public-invoice-collection-processing')).toHaveTextContent('Bank payments usually take a few business days to clear.');
     expect(screen.queryByTestId('public-invoice-pay')).toBeNull();
@@ -100,6 +133,15 @@ describe('enrolled: the invoice says how it will be paid instead of offering set
     panel({ autopayStatus: { ...scheduled, ...over } as never, autopayEnrolled: true });
     expect(screen.getByText(new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))).toBeInTheDocument();
     expect(screen.getByTestId('public-invoice-pay')).toHaveTextContent(pay);
+  });
+  // V-15: a client whose automatic payments are on (method failing) is not told the bank
+  // option "turns on" automatic payments, and the public page says how to fix the method.
+  it('with automatic payments on but the method failing, the options say they replace the method', () => {
+    panel({ autopayStatus: { ...scheduled, state: 'delayed', reason: 'method_not_usable' }, autopayEnrolled: false, bankOffer, saveOffer });
+    expect(screen.getByText('Pays this invoice and uses this bank account for your automatic payments from now on.')).toBeInTheDocument();
+    expect(screen.getByText('Pays this invoice now and uses this card for your automatic payments from now on.')).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/turns on automatic payments/);
+    expect(screen.getByText(/To keep automatic payments working, update your payment method with the link in your latest email from Example MSP\./)).toBeInTheDocument();
   });
   it('the portal adds a way to fix an unusable method', () => {
     panel({ portal: true, autopayStatus: { ...scheduled, state: 'delayed', reason: 'method_not_usable' }, autopayEnrolled: true });
@@ -132,5 +174,32 @@ describe('waiting on the bank (3DS)', () => {
     expect(screen.queryByTestId('autopay-confirmation-notice')).toBeNull();
     fireEvent.click(screen.getByTestId('public-invoice-pay'));
     expect(onPay).toHaveBeenCalledWith(false);
+  });
+});
+
+// States the lab could only reach by patching the API: the API's own payload shapes.
+describe('realistic payloads (CustomerInvoiceAutopayStatus as the API sends it)', () => {
+  const api = (over: Record<string, unknown>) => ({ state: 'scheduled', chargeDate: '2026-11-04', amount: '30.00', fee: '0.90', currency: 'USD',
+    methodLabel: 'Visa credit card ending in 4242', methodType: 'card', reason: null, paidAt: null, canPayNow: true, ...over }) as never;
+  it.each([
+    [{ state: 'awaiting_notice', chargeDate: null, amount: null, fee: null }, "We'll email you the payment date first.", 'Pay now instead'],
+    [{ state: 'delayed', reason: 'method_not_usable' }, "We couldn't charge your saved Visa credit card ending in 4242", 'Pay $30.00'],
+    [{ state: 'delayed', reason: 'pending_verification', methodType: 'us_bank_account', methodLabel: 'Bank account ending in 6789' }, 'once your bank account is verified', 'Pay now instead'],
+    [{ state: 'delayed', reason: 'on_hold' }, 'is on hold at Example MSP', 'Pay now instead'],
+    [{ state: 'retry_scheduled', chargeDate: '2026-11-07' }, "We'll try your Visa credit card ending in 4242 again on November 7, 2026", 'Pay now instead'],
+  ] as const)('%j', (over, text, pay) => {
+    panel({ balance: '30.00', charge: { amount: '30.00', isDeposit: false }, autopayStatus: api(over) });
+    expect(screen.getByText(new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))).toBeInTheDocument();
+    expect(screen.getByTestId('public-invoice-pay')).toHaveTextContent(pay);
+  });
+  it('a deposit invoice the API reports as scheduled', () => {
+    panel({ balance: '30.00', charge: { amount: '10.00', isDeposit: true }, autopayStatus: api({}) });
+    expect(screen.getByText('Deposit due')).toBeInTheDocument();
+    expect(screen.getByTestId('public-invoice-pay')).toHaveTextContent('Pay now instead');
+  });
+  it('online payment unavailable: no pay button, who to contact', () => {
+    panel({ balance: '30.00', canPay: false, onlinePaymentUnavailable: true, autopayStatus: null });
+    expect(screen.queryByTestId('public-invoice-pay')).toBeNull();
+    expect(screen.getByText("Online payment isn't available for this invoice. Please contact Example MSP to pay.")).toBeInTheDocument();
   });
 });

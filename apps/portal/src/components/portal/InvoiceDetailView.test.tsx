@@ -237,7 +237,7 @@ it('surfaces settlement request failures on checkout return', async () => {
 
 it('mounts bank pay only when the server offers it', () => {
  const data=detail([]);
- const view=render(<InvoiceDetailView detail={{...data,bankAutopay:{available:true,principal:'100.00',fee:'0.00',currency:'USD',consentText:'Authorize bank payment.',disclosureHash:'a'.repeat(64),methodStatus:null}}}/>);
+ const view=render(<InvoiceDetailView detail={{...data,bankAutopay:{available:true,principal:'100.00',fee:'0.00',currency:'USD',consentText:'Authorize bank payment.',disclosureHash:'a'.repeat(64),methodStatus:null,methodLabel:null}}}/>);
  fireEvent.click(screen.getByTestId('autopay-option-bank'));
  expect(screen.getByTestId('autopay-bank-pay')).toBeTruthy();view.unmount();
  render(<InvoiceDetailView detail={data}/>);expect(screen.queryByTestId('autopay-option-bank')).toBeNull();expect(screen.queryByTestId('autopay-bank-pay')).toBeNull();
@@ -267,5 +267,19 @@ describe('InvoiceDetailView — autopay payment waiting on the bank (off-session
     expect(screen.getByTestId('autopay-confirmation-released')).toHaveTextContent('Pay');
     fireEvent.click(screen.getByTestId('invoice-pay-button'));
     await waitFor(() => expect(pay).toHaveBeenCalled());
+  });
+});
+
+describe('InvoiceDetailView — paper and rail layout (visual QA 2026-10-05)', () => {
+  it('the payment rail sticks at lg from its grid item (V-4), and paper dates are long (V-27)', () => {
+    render(<InvoiceDetailView detail={detail([line()])} />);
+    const wrapper = screen.getByTestId('invoice-payment-panel').parentElement!;
+    expect(wrapper).toHaveClass('lg:sticky', 'lg:top-6', 'lg:self-start');
+    expect(screen.getByText('August 31, 2026')).toBeInTheDocument();
+  });
+  it('a long unbroken description wraps, and amounts never wrap (V-6)', () => {
+    const name = 'Firewall-renewal-for-https://very-long-unbroken-host-name.example.internal/path';
+    render(<InvoiceDetailView detail={detail([line({ name, lineTotal: '1234567.00', unitPrice: '1234567.00' })])} />);
+    expect(screen.getByText(name).closest('td')).toHaveClass('[overflow-wrap:anywhere]');
   });
 });

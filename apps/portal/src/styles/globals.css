@@ -117,6 +117,8 @@
     --popover-foreground: 30 12% 12%;
     --primary: 155 32% 24%;
     --primary-foreground: 42 45% 97%;
+    /* The light primary, kept for document paper in dark mode (only light blocks set it). */
+    --paper-primary: 155 32% 24%;
     --secondary: 40 24% 90%;
     --secondary-foreground: 30 12% 14%;
     --muted: 40 24% 90%;
@@ -243,42 +245,49 @@
 */
 :root[data-accent='ink'] {
   --primary: 30 12% 18%;
+  --paper-primary: 30 12% 18%;
   --primary-foreground: 42 45% 97%;
   --primary-on-tint: 30 12% 18%;
   --ring: 30 12% 26%;
 }
 :root[data-accent='oxblood'] {
   --primary: 8 55% 30%;
+  --paper-primary: 8 55% 30%;
   --primary-foreground: 42 45% 97%;
   --primary-on-tint: 8 55% 30%;
   --ring: 8 55% 36%;
 }
 :root[data-accent='navy'] {
   --primary: 222 40% 28%;
+  --paper-primary: 222 40% 28%;
   --primary-foreground: 42 45% 97%;
   --primary-on-tint: 222 40% 28%;
   --ring: 222 40% 34%;
 }
 :root[data-accent='plum'] {
   --primary: 300 30% 26%;
+  --paper-primary: 300 30% 26%;
   --primary-foreground: 42 45% 97%;
   --primary-on-tint: 300 30% 26%;
   --ring: 300 30% 32%;
 }
 :root[data-accent='bronze'] {
   --primary: 30 55% 26%;
+  --paper-primary: 30 55% 26%;
   --primary-foreground: 42 45% 97%;
   --primary-on-tint: 30 55% 26%;
   --ring: 30 55% 32%;
 }
 :root[data-accent='teal'] {
   --primary: 190 45% 24%;
+  --paper-primary: 190 45% 24%;
   --primary-foreground: 42 45% 97%;
   --primary-on-tint: 190 45% 24%;
   --ring: 190 45% 30%;
 }
 :root[data-accent='forest'] {
   --primary: 140 40% 20%;
+  --paper-primary: 140 40% 20%;
   --primary-foreground: 42 45% 97%;
   --primary-on-tint: 140 40% 20%;
   --ring: 140 40% 26%;
@@ -560,6 +569,24 @@
   --muted: 40 22% 96%;
   --muted-foreground: 32 8% 36%;
   --border: 38 14% 82%;
+  /* V-7: in dark mode the paper stays white, so everything it paints with stays light:
+     the accent rule, eyebrow, status chips and the Balance-due figure. The chrome
+     accent's light primary arrives as --paper-primary (set only by light blocks). */
+  --primary: var(--paper-primary);
+  --primary-foreground: 42 45% 97%;
+  --primary-on-tint: var(--paper-primary);
+  --ring: var(--paper-primary);
+  --secondary: 40 24% 90%;
+  --secondary-foreground: 30 12% 14%;
+  --accent: 40 26% 88%;
+  --accent-foreground: 30 12% 12%;
+  --input: 38 16% 74%;
+  --destructive: 8 62% 40%;
+  --success: 152 45% 26%;
+  --warning: 35 90% 44%;
+  --success-on-tint: 152 45% 25%;
+  --warning-on-tint: 33 85% 28%;
+  --destructive-on-tint: 8 62% 38%;
   color-scheme: light;
   background-color: hsl(var(--card));
   color: hsl(var(--foreground));

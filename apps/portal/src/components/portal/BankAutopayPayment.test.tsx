@@ -7,7 +7,7 @@ import {apiGet,apiPost} from '@/lib/api';
 import {navigateTo} from '@/lib/navigation';
 import BankAutopayPayment from './BankAutopayPayment';
 const offer={available:true,principal:'100.00',fee:'0.00',currency:'USD',consentText:'Authorize payment and future automatic payments.',
-  disclosureHash:'a'.repeat(64),methodStatus:null} as const;
+  disclosureHash:'a'.repeat(64),methodStatus:null,methodLabel:null} as const;
 beforeEach(()=>{vi.clearAllMocks();sessionStorage.clear();window.history.replaceState({},'','/');});
 afterEach(cleanup);
 it('requires consent and stores continuation before Stripe redirect',async()=>{

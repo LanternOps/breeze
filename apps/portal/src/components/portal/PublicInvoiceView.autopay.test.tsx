@@ -26,7 +26,7 @@ function detail(overrides: Partial<PublicInvoiceDetail> = {}): PublicInvoiceDeta
 
 
 it('loads the server bank offer and starts setup only after consent',async()=>{
- const offer={available:true,principal:'100.00',fee:'0.00',currency:'USD' as const,consentText:'Authorize bank payment.',disclosureHash:'a'.repeat(64),methodStatus:null};
+ const offer={available:true,principal:'100.00',fee:'0.00',currency:'USD' as const,consentText:'Authorize bank payment.',disclosureHash:'a'.repeat(64),methodStatus:null,methodLabel:null};
  vi.spyOn(portalApi,'getPublicInvoice').mockResolvedValue({data:{data:detail({bankAutopay:offer})}});
  const fetch=vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response(JSON.stringify({data:{url:'https://checkout.stripe.com/c/setup/example'}}),{status:200,headers:{'Content-Type':'application/json'}}));
  render(<PublicInvoiceView token="token-1"/>);
@@ -83,7 +83,7 @@ describe('public invoice card consent', () => {
     const scheduled = { state: 'scheduled' as const, chargeDate: '2026-08-31', amount: '100.00', fee: '0.00', currency: 'USD',
       methodLabel: 'Visa credit card ending in 4242', methodType: 'card' as const, reason: null, paidAt: null, canPayNow: true };
     render(<PublicInvoiceView token="token-1" initial={detail({ autopay: null, autopayEnrolled: true, autopayStatus: scheduled,
-      bankAutopay: { available: true, principal: '100.00', fee: '1.00', currency: 'USD', consentText: 'x', disclosureHash: 'a'.repeat(64), methodStatus: 'active' } })} />);
+      bankAutopay: { available: true, principal: '100.00', fee: '1.00', currency: 'USD', consentText: 'x', disclosureHash: 'a'.repeat(64), methodStatus: 'active', methodLabel: 'Bank account ending in 6789' } })} />);
     expect(screen.getByText('This invoice will be paid automatically on August 31, 2026 with your Visa credit card ending in 4242.')).toBeInTheDocument();
     expect(screen.queryByRole('radio')).toBeNull();
     expect(screen.getByTestId('public-invoice-pay')).toHaveTextContent('Pay now instead');

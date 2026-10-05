@@ -2,14 +2,15 @@ import { InvoicePaymentPanel } from './autopay/InvoicePaymentPanel';
 import { runAction } from '@/lib/runAction';
 import { invoiceAutopayInput } from '@/lib/api';
 import { withBase } from '@/lib/basePath';
-import { useEffect, useState, Fragment } from 'react';
+import { useEffect, useState } from 'react';
 import { ArrowLeft, AlertCircle, Download } from 'lucide-react';
-import { type BrandingConfig, type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi, lineWorkedVsBilledNote } from '@/lib/api';
-import { groupInvoiceLinesByTicket } from '@/lib/invoiceLineGroups';
-import { money, shortDate } from '@/lib/format';
+import { type BrandingConfig, type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi } from '@/lib/api';
+import { longDate } from '@/lib/format';
 import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { DocumentPaper, DocumentHeader, DocumentTerms, DocumentTermsCollapsible, type DocSeller } from './documentShell';
+import { InvoiceLineTable, InvoiceTotals } from './invoicePaper';
+import { INVOICE_GRID, RAIL } from './autopay/InvoicePaymentPanel';
 import { BTN_PRIMARY, BTN_SECONDARY, Notice } from './ui';
 import { cn } from '@/lib/utils';
 
@@ -34,12 +35,6 @@ interface DocBranding {
 /** Per-line tax amount for the Tax column: taxable lines get lineTotal × rate
  *  rounded to cents; non-taxable lines / a non-positive rate return null (shown
  *  as '—'). The header Tax stays invoice.taxTotal (authoritative). */
-function lineTax(lineTotal: string | number, taxable: boolean, rate: number): number | null {
-  if (!taxable || !(rate > 0)) return null;
-  const cents = Math.round(Number(lineTotal) * 100);
-  if (!Number.isFinite(cents)) return null;
-  return Math.round(cents * rate) / 100;
-}
 
 export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailViewProps) {
   // Partner branding for the document shell. Invoices used to render unbranded
@@ -159,8 +154,8 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
 
   const seller = (invoice.sellerSnapshot ?? null) as DocSeller | null;
   const headerDates = [
-    { label: 'Issued', value: shortDate(invoice.issueDate) },
-    { label: 'Due', value: shortDate(invoice.dueDate) },
+    { label: 'Issued', value: longDate(invoice.issueDate) || '—' },
+    { label: 'Due', value: longDate(invoice.dueDate) || '—' },
   ];
 
   const payInvoice = async (saveForAutopay: boolean) => {
@@ -245,9 +240,9 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
         <ArrowLeft className="h-4 w-4" />
         Back to invoices
       </a>
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start">
+      <div className={cn('grid gap-5', INVOICE_GRID)}>
       {/* The panel comes first on phones; at lg it sits beside the invoice (D-4). */}
-      <div className="lg:col-start-2 lg:row-start-1">
+      <div className={RAIL}>
         <InvoicePaymentPanel portal
           currency={currency} balance={invoice.balance} dueDate={invoice.dueDate} status={invoice.status}
           canPay={canPay} onlinePaymentUnavailable={detail.onlinePaymentAvailable === false && PAYABLE_STATUSES.has(invoice.status)}
@@ -279,99 +274,12 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
           preparedForName={invoice.billToName ?? undefined}
         />
 
-        <div className="overflow-hidden rounded-lg border bg-card">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-2.5 text-left font-medium sm:px-5">Description</th>
-                  <th className="hidden px-2 py-2.5 text-right font-medium sm:table-cell">Qty</th>
-                  <th className="hidden px-2 py-2.5 text-right font-medium sm:table-cell">Price</th>
-                  {showTax && <th className="hidden px-2 py-2.5 text-right font-medium sm:table-cell">Tax</th>}
-                  <th className="px-4 py-2.5 text-right font-medium sm:px-5">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {groupInvoiceLinesByTicket(lines).map((group) => (
-                    <Fragment key={group.key}>
-                      {group.ticketNumber && (
-                        <tr className="border-b bg-muted/30">
-                          <td colSpan={showTax ? 5 : 4} className="px-4 py-2 sm:px-5">
-                            <div className="flex flex-wrap items-center gap-2 text-xs">
-                              <span className="font-semibold text-foreground">
-                                {`Ticket #${group.ticketNumber}`}
-                              </span>
-                              {group.ticketCategory && (
-                                <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground font-medium">
-                                  {group.ticketCategory}
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                      {group.lines.map((l) => {
-                        const index = lines.indexOf(l);
-                        const tax = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
-                        const title = (l.name ?? l.description ?? '').trim() || '—';
-                        const blurb = l.name ? (l.description ?? '').trim() : '';
-                        // #6467: worked-vs-billed disclosure (§3.5), sourced from
-                        // structured data — never from `description`.
-                        const note = lineWorkedVsBilledNote(l);
-                        return (
-                          <tr key={`${title}-${index}`} className="border-b align-top last:border-0">
-                            <td className="px-4 py-3 text-foreground sm:px-5">
-                              {title}
-                              {/* P-7: on phones Qty and Price fold under the description instead of clipping the table. */}
-                              <div className="mt-0.5 text-xs tabular-nums text-muted-foreground sm:hidden" data-testid={`invoice-line-qty-${index}`}>{l.quantity} × {money(l.unitPrice, currency)}</div>
-                              {blurb && <div className="mt-0.5 text-xs text-muted-foreground">{blurb}</div>}
-                              {note && <div className="mt-0.5 text-xs text-muted-foreground" data-testid={`invoice-line-worked-vs-billed-${index}`}>{note}</div>}
-                              {l.ticketNumber && (
-                                <div
-                                  className="mt-0.5 text-xs text-muted-foreground"
-                                  data-testid={`invoice-line-ticket-${index}`}
-                                >
-                                  Ticket #{l.ticketNumber}
-                                </div>
-                              )}
-                            </td>
-                            <td className="hidden whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground sm:table-cell">{l.quantity}</td>
-                            <td className="hidden whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground sm:table-cell">{money(l.unitPrice, currency)}</td>
-                            {showTax && <td className="hidden whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground sm:table-cell">{tax === null ? '—' : money(tax, currency)}</td>}
-                            <td className="whitespace-nowrap px-4 py-3 text-right font-medium tabular-nums text-foreground sm:px-5">{money(l.lineTotal, currency)}</td>
-                          </tr>
-                        );
-                      })}
-                    </Fragment>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <InvoiceLineTable lines={lines} currency={currency} taxRate={taxRate} showTax={showTax} showLineTicket />
 
-        <section className="flex justify-end">
-          <div className="w-full max-w-xs space-y-2.5">
-            <div className="flex justify-between text-sm"><span className="text-muted-foreground">Subtotal</span><span className="tabular-nums text-foreground">{money(invoice.subtotal, currency)}</span></div>
-            <div className="flex justify-between text-sm"><span className="text-muted-foreground">Tax{taxPct ? ` (${taxPct}%)` : ''}</span><span className="tabular-nums text-foreground">{money(invoice.taxTotal, currency)}</span></div>
-            <div className="flex justify-between border-t pt-2.5 text-sm"><span className="font-medium text-foreground">Total</span><span className="font-medium tabular-nums text-foreground">{money(invoice.total, currency)}</span></div>
-            {Number(invoice.amountPaid) > 0 && (
-              <div className="flex justify-between text-sm"><span className="text-muted-foreground">Paid</span><span className="tabular-nums text-foreground">−{money(invoice.amountPaid, currency)}</span></div>
-            )}
-            <div className="doc-accent-border flex items-baseline justify-between border-t pt-3">
-              <span className="text-sm font-semibold text-foreground">Balance due</span>
-              <span className="doc-accent-text font-display text-2xl font-semibold tabular-nums" data-testid="invoice-balance-due">{money(invoice.balance, currency)}</span>
-            </div>
-            {hasDeposit && (
-              <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground" data-testid="invoice-deposit-strip">
-                {chargeNow.isDeposit ? (
-                  <>Deposit of <strong className="text-foreground">{money(invoice.depositDue!, currency)}</strong> due — {money(invoice.amountPaid, currency)} of {money(invoice.total, currency)} paid.</>
-                ) : (
-                  <>Deposit paid — remaining balance {money(invoice.balance, currency)}.</>
-                )}
-              </div>
-            )}
-          </div>
-        </section>
+        <InvoiceTotals currency={currency} subtotal={invoice.subtotal} taxTotal={invoice.taxTotal} taxPct={taxPct}
+          total={invoice.total} amountPaid={invoice.amountPaid} balance={invoice.balance} paid={invoice.status === 'paid'}
+          deposit={hasDeposit ? { due: invoice.depositDue!, isDeposit: chargeNow.isDeposit } : null}
+          testIds={{ balance: 'invoice-balance-due', deposit: 'invoice-deposit-strip' }} />
 
         {invoice.notes && <DocumentTerms label="Notes">{invoice.notes}</DocumentTerms>}
         {invoice.termsAndConditions && (

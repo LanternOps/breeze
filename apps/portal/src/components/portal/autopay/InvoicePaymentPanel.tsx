@@ -52,6 +52,9 @@ const NOT_INCLUDED: Record<string, string> = {
   ach_currency_unsupported: "This invoice's currency can't be paid automatically from a bank account, so please pay it here.",
 };
 
+const cents = (value: string | null | undefined) => Math.round(Number(value ?? 0) * 100);
+const sum = (a: string | null | undefined, b: string | null | undefined) => ((cents(a) + cents(b)) / 100).toFixed(2);
+
 function statusCopy(s: CustomerInvoiceAutopayStatus, msp: string, portal: boolean): StatusCopy | null {
   const method = s.methodLabel ? `your ${paymentMethodInSentence(s.methodLabel)}` : 'your saved payment method';
   const date = s.chargeDate ? longDate(s.chargeDate) : null;
@@ -73,13 +76,19 @@ function statusCopy(s: CustomerInvoiceAutopayStatus, msp: string, portal: boolea
       }
       return { mark: { tone: 'warning', label: 'Needs attention' }, pay: 'pay',
         text: `We couldn't charge ${method.replace(/^your /, 'your saved ')}, so this invoice is waiting. Please pay it now so it doesn't become overdue.`,
-        extra: portal ? <a className={cn(LINK, 'text-sm')} href={withBase('/payment-methods')}>Update your payment method</a> : undefined };
+        extra: portal ? <a className={cn(LINK, 'text-sm')} href={withBase('/payment-methods')}>Update your payment method</a>
+          : <p className="text-sm text-muted-foreground">{`To keep automatic payments working, update your payment method with the link in your latest email from ${msp}.`}</p> };
     case 'retry_scheduled':
       return { mark: { tone: 'warning', label: "Payment didn't go through" }, pay: 'pay_now_primary',
         text: `The last attempt didn't go through. We'll try ${method} again${date ? ` on ${date}` : ''}, or you can pay now.` };
-    case 'processing':
+    case 'processing': {
+      // V-5: the money actually moving (the API describes the in-flight attempt), fee included.
+      const fee = cents(s.fee) > 0 ? s.fee : null;
+      const moving = fee ? `${money(sum(s.amount, fee), s.currency)} is being collected from ${method} (${money(s.amount ?? '0', s.currency)} for this invoice plus a ${money(fee, s.currency)} fee).`
+        : `${money(s.amount ?? '0', s.currency)} is being collected from ${method}.`;
       return { mark: { tone: 'primary', label: 'Processing' }, pay: 'none', testId: 'processing',
-        text: `${money(s.amount ?? '0', s.currency)} is being collected from ${method}.${s.methodType === 'us_bank_account' ? ' Bank payments usually take a few business days to clear.' : ''} No action needed.` };
+        text: `${moving}${s.methodType === 'us_bank_account' ? ' Bank payments usually take a few business days to clear.' : ''} No action needed.` };
+    }
     case 'failed':
       return { mark: { tone: 'destructive', label: "Payment didn't go through" }, pay: 'pay', text: "Automatic payment didn't go through. Please pay this invoice below." };
     case 'skipped':
@@ -94,6 +103,14 @@ function statusCopy(s: CustomerInvoiceAutopayStatus, msp: string, portal: boolea
       return null;
   }
 }
+
+/** The invoice pages' two-column grid: the paper, and the payment rail beside it at lg,
+ *  wider at xl so a bank authorization isn't a 30-line column (V-14). */
+export const INVOICE_GRID = 'lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start xl:grid-cols-[minmax(0,1fr)_24rem]';
+/** The rail's grid item is what sticks (V-4): the aside inside it is only as tall as
+ *  itself, so sticky on the aside never engaged. A rail taller than the viewport
+ *  scrolls on its own, so Pay is always reachable. */
+export const RAIL = 'lg:sticky lg:top-6 lg:col-start-2 lg:row-start-1 lg:self-start lg:max-h-[calc(100dvh-3rem)] lg:overflow-y-auto';
 
 /**
  * The invoice pages' payment panel: the balance first, then how this invoice gets
@@ -126,13 +143,20 @@ export function InvoicePaymentPanel(p: InvoicePaymentPanelProps) {
   const amount = money(p.charge.amount, p.currency);
   const paid = p.status === 'paid';
   const overdue = p.status === 'overdue';
+  const deposit = p.charge.isDeposit && !paid;
+  // V-15: automatic payments are already on (this invoice has a live schedule), so saving
+  // a method replaces it rather than turning automatic payments on.
+  const autopayOn = !!s && ['scheduled', 'awaiting_notice', 'delayed', 'retry_scheduled', 'skipped', 'not_included'].includes(s.state);
+  const what = deposit ? 'the deposit' : 'this invoice';
+  const bankPays = p.bankOffer && cents(p.bankOffer.principal) !== cents(p.charge.amount)
+    ? `Pays the full balance of ${money(p.bankOffer.principal, p.bankOffer.currency)}` : 'Pays this invoice';
   const options: MethodOption<Option>[] = [
-    { value: 'card', name: 'Card', detail: 'Pay this invoice once.', testId: 'autopay-option-card' },
+    { value: 'card', name: 'Card', detail: `Pay ${what} once.`, testId: 'autopay-option-card' },
     ...(saveAvailable ? [{ value: 'card_save' as const, name: 'Card, and save it for future invoices', testId: 'autopay-option-card_save',
-      detail: 'Pays this invoice now and saves the card for automatic payments.' }] : []),
+      detail: `Pays ${what} now and ${autopayOn ? 'uses this card for your automatic payments from now on' : 'saves the card for automatic payments'}.` }] : []),
     ...(bankAvailable ? [{ value: 'bank' as const, name: 'Bank account', testId: 'autopay-option-bank',
       fee: Number(p.bankOffer!.fee) > 0 ? `${money(p.bankOffer!.fee, p.bankOffer!.currency)} fee` : 'No fee',
-      detail: 'Pays this invoice and turns on automatic payments for future invoices.' }] : []),
+      detail: `${bankPays} and ${autopayOn ? 'uses this bank account for your automatic payments from now on' : 'turns on automatic payments for future invoices'}.` }] : []),
   ];
   const payLabel = pay === 'pay_now_instead' || pay === 'pay_now_primary' ? 'Pay now instead'
     : chosen === 'card_save' ? `Pay ${amount} and save card`
@@ -146,12 +170,16 @@ export function InvoicePaymentPanel(p: InvoicePaymentPanelProps) {
   };
 
   return (
-    <aside aria-label="Payment" className="space-y-5 rounded-xl border border-border bg-card p-5 sm:p-6 lg:sticky lg:top-6" data-testid="invoice-payment-panel">
+    <aside aria-label="Payment" className="space-y-5 rounded-xl border border-border bg-card p-5 sm:p-6" data-testid="invoice-payment-panel">
       <div>
-        <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">{paid ? 'Balance' : 'Balance due'}</p>
-        <p className="mt-1 font-display text-[1.75rem] font-semibold leading-tight text-figures text-foreground">{money(p.balance, p.currency)}</p>
+        <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">{paid ? 'Balance' : deposit ? 'Deposit due' : 'Balance due'}</p>
+        <p className="mt-1 font-display text-[1.75rem] font-semibold leading-tight text-figures text-foreground" data-testid="invoice-panel-amount">
+          {money(deposit ? p.charge.amount : p.balance, p.currency)}
+        </p>
+        {/* V-13: the headline is what the button charges; the balance stays in view. */}
+        {deposit && <p className="mt-1 text-sm text-muted-foreground">{`of ${money(p.balance, p.currency)} balance due`}</p>}
         {!paid && p.dueDate && (
-          <p className={cn('mt-1 text-sm', overdue ? 'font-medium text-warning-on-tint' : 'text-muted-foreground')}>
+          <p className={cn('mt-1 text-sm', overdue ? 'font-medium text-destructive-on-tint' : 'text-muted-foreground')}>
             {overdue ? `Was due ${longDate(p.dueDate)}` : `Due ${longDate(p.dueDate)}`}
           </p>
         )}
@@ -171,9 +199,10 @@ export function InvoicePaymentPanel(p: InvoicePaymentPanelProps) {
         <div className="space-y-3" role="status" data-testid={copy.testId === 'processing' ? p.processingTestId : 'invoice-autopay-status'}>
           {copy.mark && <StatusMark tone={copy.mark.tone}>{copy.mark.label}</StatusMark>}
           <p className="text-sm leading-relaxed text-foreground">{copy.text}</p>
-          {copy.summary && s && (s.amount || s.fee) && (
-            <SummaryList rows={[...(s.amount ? [{ label: 'Amount', value: money(s.amount, s.currency), figure: true }] : []),
-              ...(s.fee && Number(s.fee) > 0 ? [{ label: 'Fee', value: `up to ${money(s.fee, s.currency)}` }] : [])]} />
+          {/* V-28: the balance is already above; state the fee and what will actually be charged. */}
+          {copy.summary && s && cents(s.fee) > 0 && (
+            <SummaryList rows={[{ label: 'Processing fee', value: `up to ${money(s.fee!, s.currency)}` },
+              { label: 'Total charged', value: `up to ${money(sum(s.amount ?? p.balance, s.fee), s.currency)}`, figure: true }]} />
           )}
           {copy.extra}
         </div>

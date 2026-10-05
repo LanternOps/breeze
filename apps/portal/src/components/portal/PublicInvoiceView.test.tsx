@@ -100,3 +100,28 @@ describe('PublicInvoiceView — autopay payment waiting on the bank (off-session
     expect(reload).not.toHaveBeenCalled();
   });
 });
+
+// Visual QA 2026-10-05: one paper, identical on the public and portal pages.
+describe('PublicInvoiceView — paper and rail layout', () => {
+  const long = { name: 'Managed services for the whole office including https://very-long-unbroken-host-name.example.internal/path/segment', description: '',
+    quantity: '1.00', unitPrice: '1234567.00', lineTotal: '1234567.00', taxable: false, ticketNumber: null };
+  it('the payment rail sticks at lg from its grid item, not from inside it (V-4)', () => {
+    render(<PublicInvoiceView token="t" initial={detail()} />);
+    const wrapper = screen.getByTestId('invoice-payment-panel').parentElement!;
+    expect(wrapper).toHaveClass('lg:sticky', 'lg:top-6', 'lg:self-start');
+    expect(screen.getByTestId('invoice-payment-panel')).not.toHaveClass('lg:sticky');
+  });
+  it('a long unbroken description wraps, and amounts never wrap (V-6)', () => {
+    render(<PublicInvoiceView token="t" initial={detail({ lines: [long] as never })} />);
+    const cell = screen.getByText(long.name).closest('td')!;
+    expect(cell).toHaveClass('[overflow-wrap:anywhere]');
+    const amount = screen.getAllByText('$1,234,567.00').find(el => el.tagName === 'TD')!;
+    expect(amount).toHaveClass('whitespace-nowrap');
+  });
+  it('the balance-due figure speaks the serif, and the paper dates are long (V-26, V-27)', () => {
+    render(<PublicInvoiceView token="t" initial={detail()} />);
+    expect(screen.getByTestId('public-invoice-balance')).toHaveClass('font-display');
+    expect(screen.getByText('August 31, 2026')).toBeInTheDocument();
+    expect(screen.getByText('August 1, 2026')).toBeInTheDocument();
+  });
+});
