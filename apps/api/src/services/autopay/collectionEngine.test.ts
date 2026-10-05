@@ -12,7 +12,7 @@ const { client, h } = vi.hoisted(() => ({ client: vi.fn(), h: {
   balance: '100.00', reserved: '0.00', ordinal: 0,
   method: vi.fn(), gate: vi.fn(), readiness: vi.fn(), settings: vi.fn(),
   retrieve: vi.fn(), create: vi.fn(), notice: vi.fn(), staff: vi.fn(),
-  piRetrieve: vi.fn(), confirm: vi.fn(), cancel: vi.fn(), settle: vi.fn(), attemptNotice: vi.fn(), attention: vi.fn(),
+  piRetrieve: vi.fn(), confirm: vi.fn(), cancel: vi.fn(), settle: vi.fn(), attemptNotice: vi.fn(), attention: vi.fn(), methodNotice: vi.fn(),
   capture: vi.fn(), unusable: vi.fn(), provenance: vi.fn(), accountProvenance:vi.fn(), revocation: vi.fn(), persist: false, mappingError: false,
 } }));
 vi.mock('../sentry', () => ({ captureException: h.capture }));
@@ -22,7 +22,7 @@ vi.mock('../stripeSettle', () => ({ assertNoHeldDbContextForStripe: () => {
 }, settlePaymentIntent: h.settle }));
 vi.mock('../orgMergeProvenance', () => ({ resolveMergedOrgIds: h.provenance }));
 vi.mock('../stripeSessionRevocation', () => ({ requestInvoiceSessionRevocation: h.revocation }));
-vi.mock('./paymentNotices', () => ({ enqueueAttemptNotice: h.attemptNotice, notifyPaymentAttention: h.attention }));
+vi.mock('./paymentNotices', () => ({ enqueueAttemptNotice: h.attemptNotice, notifyPaymentAttention: h.attention, enqueueMethodUnusableNotice: h.methodNotice }));
 vi.mock('./paymentMethods', () => ({ getAutopayMethod: h.method, markPaymentMethodUnusable: h.unusable }));
 vi.mock('./autopayGate', () => ({ isAutopayEnabledForPartner: h.gate }));
 vi.mock('./stripeCapabilities', () => ({ getAutopayStripeReadiness: h.readiness }));
@@ -1071,4 +1071,36 @@ it('reports collection_in_progress for a fully reserved invoice', async () => {
   h.reserved='100.00';h.balance='0.00';
   expect(await reserveCollection({...input,initiatedBy:'msp_charge_now'})).toMatchObject({outcome:'deferred',reason:'collection_in_progress'});
   expect(attempts()).toEqual([]);
+});
+
+// A sibling's hard decline/detach (or failed microdeposits) leaves no usable method.
+// A due schedule must not defer method_not_usable forever: it fails, the client gets
+// ONE pay + update-method notice, and the invoice joins the reminder flow.
+it.each(['scheduled','retry_scheduled'] as const)('fails a due %s schedule once the shared method is unusable and notices the client once', async state => {
+  const now = new Date();
+  update(invoiceAutopaySchedules, { state, nextAttemptAt: null });
+  h.persist = true;
+  h.method.mockResolvedValue(null);
+  mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], now);
+  expect(await runAutopayCollection(now)).toEqual({ attempted: 0, deferred: 1 });
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'failed', stateReason: 'method_not_usable', nextAttemptAt: null });
+  expect(h.methodNotice).toHaveBeenCalledOnce();
+  expect(h.methodNotice).toHaveBeenCalledWith(expect.anything(), schedule.id);
+  vi.restoreAllMocks();
+  mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], new Date(now.getTime() + 86_400_000));
+  expect(await runAutopayCollection(new Date(now.getTime() + 86_400_000))).toEqual({ attempted: 0, deferred: 0 });
+  expect(h.methodNotice).toHaveBeenCalledOnce();
+  expect(attempts()).toEqual([]); expect(h.create).not.toHaveBeenCalled();
+});
+it.each([
+  ['a pending microdeposit verification', () => h.method.mockResolvedValue({ ...method, status: 'pending_verification' })],
+  ['an active method the live check did not admit', () => h.retrieve.mockResolvedValue({ ...card, card: { ...card.card, wallet: { type: 'link' } } })],
+] as const)('keeps deferring daily while %s still exists', async (_case, change) => {
+  const now = new Date();
+  h.persist = true; change();
+  mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], now);
+  expect(await runAutopayCollection(now)).toEqual({ attempted: 0, deferred: 1 });
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'scheduled', stateReason: 'method_not_usable',
+    nextAttemptAt: new Date(now.getTime() + 86_400_000) });
+  expect(h.methodNotice).not.toHaveBeenCalled();
 });

@@ -82,3 +82,25 @@ it('cancels update-method when enrollment was stopped',async()=>{
  payment('update');h.rows.get(orgAutopayEnrollments)![0].status='stopped';
  await dispatchPendingBillingNotices();expect(h.row.status).toBe('cancelled');expect(h.send).not.toHaveBeenCalled();
 });
+
+// Method-unusable notice for a due schedule with no attempt of its own.
+function methodUnusable() {
+ payment('update');
+ h.row.rendered.frozen={attemptId:null,scheduleId:'schedule',variant:'update',tokenId:'token',returnIdentity:null};
+ h.rows.set(invoiceCollectionAttempts,[]);
+ h.rows.set(invoiceAutopaySchedules,[{id:'schedule',invoiceId:'invoice',orgId:'org',enrollmentId:'enrollment',enrollmentGeneration:1,attemptCount:0,state:'failed',stateReason:'method_not_usable'}]);
+ h.rows.set(orgPaymentMethods,[]);
+}
+it('sends the method-unusable notice while the schedule is still failed for that reason',async()=>{
+ methodUnusable();expect(await dispatchPendingBillingNotices()).toEqual({sent:1,failed:0});expect(h.send).toHaveBeenCalledOnce();
+});
+it.each([
+ ['the invoice is paid',()=>{h.invoiceEligible=false;}],
+ ['a replacement method is active',()=>{h.rows.set(orgPaymentMethods,[{id:'replacement',orgId:'org',enrollmentId:'enrollment',status:'active',isAutopayMethod:true}]);}],
+ ['the schedule moved on',()=>{h.rows.get(invoiceAutopaySchedules)![0].state='scheduled';}],
+ ['the enrollment was stopped',()=>{h.rows.get(orgAutopayEnrollments)![0].status='cancelled';}],
+ ['the schedule belongs to another invoice',()=>{h.rows.get(invoiceAutopaySchedules)![0].id='other-schedule';}],
+])('cancels the method-unusable notice when %s',async(_case,change)=>{
+ methodUnusable();change();
+ await dispatchPendingBillingNotices();expect(h.row.status).toBe('cancelled');expect(h.send).not.toHaveBeenCalled();
+});

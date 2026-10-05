@@ -1,6 +1,6 @@
 import { reportCollectionError } from './collectionErrors';
 import { eq } from 'drizzle-orm';
-import { invoiceCollectionAttempts, invoiceStripePayments, invoices, organizations, partners, orgPaymentMethods, orgAutopayEnrollments, billingNoticeOutbox } from '../../db/schema';
+import { invoiceCollectionAttempts, invoiceStripePayments, invoices, organizations, partners, orgPaymentMethods, orgAutopayEnrollments, billingNoticeOutbox, invoiceAutopaySchedules } from '../../db/schema';
 import { toMinorUnits, fromMinorUnits } from '../stripeMoney';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../invoiceLinkToken';
 import { resolveBillingEmail } from '../invoicePdf';
@@ -80,12 +80,26 @@ export async function enqueueAttemptNotice(tx: Tx, attemptId: string,
     && enrollment.orgId === invoice!.orgId && enrollment.status === 'active';
   // A merged history row may receive money notices but cannot mint collection controls.
   if ((variant === 'confirm' || variant === 'update') && !hasAuthority) return;
+  await enqueuePaymentFailedNotice(tx, { invoice: invoice!, org: org!, partner: partner!, email, variant,
+    enrollment: enrollment ?? null, failureClass: attempt.failureClass, dedupeKey,
+    frozen: { attemptId, returnIdentity: returnIdentity ?? null } });
+}
+
+type PaymentFailedVariant = 'confirm' | 'update' | 'pay' | 'returned' | 'expired';
+/** One renderer for every payment_failed variant, with or without an attempt. */
+async function enqueuePaymentFailedNotice(tx: Tx, input: {
+  invoice: typeof invoices.$inferSelect; org: typeof organizations.$inferSelect; partner: typeof partners.$inferSelect;
+  email: string; variant: PaymentFailedVariant; enrollment: { id: string; generation: number } | null;
+  failureClass: string | null; dedupeKey: string; frozen: Record<string, string | null>;
+}): Promise<void> {
+  const { invoice, org, partner, variant } = input;
   let tokenId: string | null = null;
   let actionLink: string;
-  if (variant === 'pay' || variant === 'returned' || variant === 'expired') actionLink = buildPublicInvoiceUrl((await getOrMintInvoiceLink(invoice!, tx)).token);
+  if (variant === 'pay' || variant === 'returned' || variant === 'expired') actionLink = buildPublicInvoiceUrl((await getOrMintInvoiceLink(invoice, tx)).token);
   else {
-    const token = await mintBillingLinkToken(tx, { orgId: attempt.orgId, invoiceId: invoice!.id,
-      enrollmentId: method!.enrollmentId, generation: enrollment!.generation, purpose: variant === 'confirm' ? 'confirm_payment' : 'enroll', ttlDays: 14 });
+    if (!input.enrollment) throw new Error('Payment notice collection authority missing');
+    const token = await mintBillingLinkToken(tx, { orgId: invoice.orgId, invoiceId: invoice.id,
+      enrollmentId: input.enrollment.id, generation: input.enrollment.generation, purpose: variant === 'confirm' ? 'confirm_payment' : 'enroll', ttlDays: 14 });
     tokenId = token.id;
     actionLink = buildBillingLinkUrl(variant === 'confirm' ? 'confirm_payment' : 'enroll', token.token);
   }
@@ -93,15 +107,46 @@ export async function enqueueAttemptNotice(tx: Tx, attemptId: string,
     : variant === 'returned' ? 'Your bank returned a previously completed payment. The invoice balance has reopened. Please review the invoice and arrange payment.'
     : variant === 'confirm' ? 'Your bank requires confirmation before this payment can complete.'
     : variant === 'update' ? 'This payment method cannot be used. Please update it or pay this invoice.'
-    : attempt.failureClass === 'nsf' ? 'The bank reported insufficient available funds. One retry may follow.'
+    : input.failureClass === 'nsf' ? 'The bank reported insufficient available funds. One retry may follow.'
     : 'Payment could not be completed. You can pay this invoice now.';
-  const vars = { org_name: org!.name, partner_name: partner!.name, invoice_number: invoice!.invoiceNumber!,
-    amount_due: `${invoice!.currencyCode} ${invoice!.balance}`, failure_text: failureText,
+  const vars = { org_name: org.name, partner_name: partner.name, invoice_number: invoice.invoiceNumber!,
+    amount_due: `${invoice.currencyCode} ${invoice.balance}`, failure_text: failureText,
     action_link: actionLink, action_label: variant === 'confirm' ? 'Confirm payment' : variant === 'update' ? 'Update payment method' : 'Pay invoice' };
   const rendered = await renderBillingNotice('payment_failed', { payment: { id: 'payment_failed', vars,
-    custom: partnerEmailCustomFromSettings(partner!.settings, 'payment_failed'), frozen: { attemptId, variant, tokenId, returnIdentity: returnIdentity ?? null } } });
-  await enqueueBillingNotice(tx, { orgId: attempt.orgId, partnerId: invoice!.partnerId, invoiceId: invoice!.id,
-    kind: 'payment_failed', seq: 1, dedupeKey, toEmail: email, rendered });
+    custom: partnerEmailCustomFromSettings(partner.settings, 'payment_failed'), frozen: { ...input.frozen, variant, tokenId } } });
+  await enqueueBillingNotice(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
+    kind: 'payment_failed', seq: 1, dedupeKey: input.dedupeKey, toEmail: input.email, rendered });
+}
+
+/** A due schedule failed because the org's shared autopay method became unusable
+ * (a sibling invoice's hard decline or detach, or failed bank verification). It has
+ * no attempt of its own, so this is the client's one notice for the invoice: the
+ * update-method variant, which also leads to paying the invoice directly.
+ * Caller holds the invoice lock in the transaction that failed the schedule.
+ */
+export async function enqueueMethodUnusableNotice(tx: Tx, scheduleId: string): Promise<void> {
+  const [schedule] = await tx.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id, scheduleId)).limit(1);
+  if (!schedule?.enrollmentId) throw new Error('Schedule not found for notice');
+  const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, schedule.invoiceId)).limit(1).for('update');
+  const [org] = await tx.select().from(organizations).where(eq(organizations.id, schedule.orgId)).limit(1);
+  if (!invoice) throw new Error('Invoice not found for notice');
+  const [partner] = await tx.select().from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
+  if (!org || !partner || invoice.orgId !== schedule.orgId || org.id !== invoice.orgId || org.partnerId !== invoice.partnerId) {
+    throw new Error('Payment notice ownership mismatch');
+  }
+  const email = resolveBillingEmail(org.billingContact);
+  if (!email) return;
+  const dedupeKey = noticeDedupeKey(invoice.id, 'payment_failed:method_not_usable');
+  const [existingNotice] = await tx.select({id:billingNoticeOutbox.id}).from(billingNoticeOutbox)
+    .where(eq(billingNoticeOutbox.dedupeKey,dedupeKey)).limit(1);
+  if (existingNotice) return;
+  const [enrollment] = await tx.select().from(orgAutopayEnrollments)
+    .where(eq(orgAutopayEnrollments.id, schedule.enrollmentId)).limit(1);
+  // A stopped or re-requested enrollment cannot mint an update-method link.
+  if (!enrollment || enrollment.orgId !== invoice.orgId || enrollment.status !== 'active'
+    || enrollment.generation !== schedule.enrollmentGeneration) return;
+  await enqueuePaymentFailedNotice(tx, { invoice, org, partner, email, variant: 'update', enrollment,
+    failureClass: null, dedupeKey, frozen: { attemptId: null, scheduleId: schedule.id, returnIdentity: null } });
 }
 
 export function attentionDedupeKey(attemptId: string,event: string,returnIdentity?: string): string {

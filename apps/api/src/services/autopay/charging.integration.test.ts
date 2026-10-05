@@ -1659,3 +1659,36 @@ it('invoice page releases an off-session 3DS hold so card pay opens Checkout',as
  expect(await releaseInvoiceConfirmation({invoiceId:f.invoice.id,orgId:f.org.id})).toEqual({outcome:'not_needed'});
  expect(provider.cancel).toHaveBeenCalledOnce();
 });
+
+async function siblingSchedule(f: Awaited<ReturnType<typeof fixture>>) {
+ return withSystemDbAccessContext(async()=>{
+  const [invoice]=await db.insert(invoices).values({...f.invoice,id:randomUUID(),invoiceNumber:`T-${randomUUID()}`}).returning();
+  const [schedule]=await db.insert(invoiceAutopaySchedules).values({...f.schedule,id:randomUUID(),invoiceId:invoice!.id,noticeOutboxId:null}).returning();
+  const [notice]=await db.insert(billingNoticeOutbox).values({...f.notice,id:randomUUID(),invoiceId:invoice!.id,dedupeKey:`${invoice!.id}:invoice_autopay:1`}).returning();
+  await db.update(invoiceAutopaySchedules).set({noticeOutboxId:notice!.id}).where(eq(invoiceAutopaySchedules.id,schedule!.id));
+  return {invoice:invoice!,schedule:schedule!};
+ });
+}
+it('a sibling due after a hard decline fails once with one update-method notice, then reminders apply',async()=>{
+ const f=await fixture();
+ provider.confirm.mockImplementationOnce(async()=>{
+  currentPi={...currentPi,status:'requires_payment_method',last_payment_error:{type:'card_error',code:'card_declined',decline_code:'stolen_card'}};
+  throw Object.assign(new Error('Your card was declined.'),{type:'StripeCardError',statusCode:402,code:'card_declined',decline_code:'stolen_card',payment_intent:currentPi});
+ });
+ const b=await siblingSchedule(f);
+ expect(await attemptCollection(inputFor(f))).toMatchObject({outcome:'failed',failureClass:'hard'});
+ const [method]=await withSystemDbAccessContext(()=>db.select().from(orgPaymentMethods).where(eq(orgPaymentMethods.id,f.method.id)));
+ expect(method!.status).toBe('unusable');
+ const now=new Date();
+ for(const day of [0,1]) await runAutopayCollection(new Date(now.getTime()+day*86_400_000));
+ const [scheduleB]=await withSystemDbAccessContext(()=>db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id,b.schedule.id)));
+ expect(scheduleB).toMatchObject({state:'failed',stateReason:'method_not_usable',nextAttemptAt:null});
+ const notices=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId,b.invoice.id)));
+ const failed=notices.filter(n=>n.kind==='payment_failed');
+ expect(failed).toHaveLength(1);
+ expect(failed[0]).toMatchObject({dedupeKey:`${b.invoice.id}:payment_failed:method_not_usable:1`,toEmail:'billing@example.test',
+  rendered:expect.objectContaining({frozen:expect.objectContaining({attemptId:null,scheduleId:b.schedule.id,variant:'update'})})});
+ expect(await attempts(b.invoice.id)).toEqual([]);expect(provider.create).toHaveBeenCalledOnce();
+ const {validatePaymentActionNotice}=await import('./paymentNoticeValidation');
+ expect(await withSystemDbAccessContext(()=>validatePaymentActionNotice(db,failed[0]!))).toBeNull();
+});

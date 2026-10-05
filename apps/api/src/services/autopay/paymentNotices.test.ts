@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { noticeDedupeKey, returnedNoticeDedupeKey } from './paymentNotices';
 it('shares a receipt identity between return, sweep, and event replay', () => {
   expect(noticeDedupeKey('mapping-1', 'payment_receipt')).toBe('mapping-1:payment_receipt:1');
@@ -95,4 +95,35 @@ it('requires return identity for staff and preserves the invoice destination', a
   await expect(notifyPaymentAttention(input)).rejects.toThrow('identity');
   await notifyPaymentAttention({ ...input, returnIdentity: 'mapping:dp_1' });
   expect(h.staff).toHaveBeenCalledWith(expect.objectContaining({ invoiceId: 'invoice', dedupeKey: 'autopay:a:payment.ach_returned:mapping:dp_1' }));
+});
+
+import { enqueueMethodUnusableNotice } from './paymentNotices';
+import { invoiceAutopaySchedules } from '../../db/schema';
+describe('method-unusable notice for a due schedule with no attempt of its own', () => {
+  beforeEach(() => {
+    rows.set(invoiceAutopaySchedules, [{ id: 'schedule', invoiceId: 'invoice', orgId: 'org', enrollmentId: 'enrollment',
+      enrollmentGeneration: 7, state: 'failed', stateReason: 'method_not_usable' }]);
+  });
+  it('enqueues the update variant once per invoice, bound to the enrollment generation', async () => {
+    await enqueueMethodUnusableNotice(tx, 'schedule');
+    expect(h.mint).toHaveBeenCalledWith(tx, expect.objectContaining({ orgId: 'org', invoiceId: 'invoice', enrollmentId: 'enrollment',
+      generation: 7, purpose: 'enroll', ttlDays: 14 }));
+    expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ kind: 'payment_failed', invoiceId: 'invoice',
+      dedupeKey: 'invoice:payment_failed:method_not_usable:1', toEmail: 'billing@example.test',
+      rendered: expect.objectContaining({
+        text: expect.stringContaining('This payment method cannot be used. Please update it or pay this invoice.'),
+        frozen: { attemptId: null, scheduleId: 'schedule', variant: 'update', tokenId: 'token-row', returnIdentity: null } }) }));
+  });
+  it('checks dedupe before minting on replay', async () => {
+    rows.set(billingNoticeOutbox, [{ id: 'already-enqueued' }]);
+    await enqueueMethodUnusableNotice(tx, 'schedule');
+    expect(h.mint).not.toHaveBeenCalled(); expect(h.enqueue).not.toHaveBeenCalled();
+  });
+  it.each(['inactive', 'generation', 'foreign'] as const)('mints no collection control for a %s enrollment', async kind => {
+    if (kind === 'inactive') rows.get(orgAutopayEnrollments)![0]!.status = 'cancelled';
+    if (kind === 'generation') rows.get(orgAutopayEnrollments)![0]!.generation = 8;
+    if (kind === 'foreign') rows.get(orgAutopayEnrollments)![0]!.orgId = 'another-org';
+    await enqueueMethodUnusableNotice(tx, 'schedule');
+    expect(h.mint).not.toHaveBeenCalled(); expect(h.enqueue).not.toHaveBeenCalled();
+  });
 });

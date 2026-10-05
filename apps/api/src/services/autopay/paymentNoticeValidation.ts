@@ -10,6 +10,9 @@ import type { RenderedNotice } from './types';
 export const validatePaymentActionNotice: NoticePreSendValidator = async (tx, row) => {
   const obsolete = 'Payment action no longer needed';
   const frozen = (row.rendered as RenderedNotice).frozen;
+  if (row.invoiceId && frozen?.attemptId === null && typeof frozen.scheduleId === 'string' && frozen.variant === 'update') {
+    return validateMethodUnusableNotice(tx, row, frozen.scheduleId);
+  }
   if (!row.invoiceId || typeof frozen?.attemptId !== 'string') return obsolete;
   const [invoice] = await tx.select().from(invoices).where(and(
     eq(invoices.id, row.invoiceId), eq(invoices.orgId, row.orgId), buildPublicLinkLiveOrgPredicate(invoices.orgId),
@@ -51,3 +54,33 @@ export const validatePaymentActionNotice: NoticePreSendValidator = async (tx, ro
   if (frozen.variant === 'expired') return attempt.state === 'canceled' ? null : obsolete;
   return frozen.variant === 'pay' && ['failed', 'canceled'].includes(attempt.state) ? null : obsolete;
 };
+
+/** enqueueMethodUnusableNotice: a due schedule failed because the shared method
+ * became unusable. Still needed while the invoice is payable, the schedule is
+ * still failed for that reason under the same enrollment, and no replacement
+ * method is active (mirrors the attempt-bound update variant). */
+async function validateMethodUnusableNotice(tx: Parameters<NoticePreSendValidator>[0],
+  row: Parameters<NoticePreSendValidator>[1], scheduleId: string): Promise<string | null> {
+  const obsolete = 'Payment action no longer needed';
+  const [invoice] = await tx.select().from(invoices).where(and(
+    eq(invoices.id, row.invoiceId!), eq(invoices.orgId, row.orgId), buildPublicLinkLiveOrgPredicate(invoices.orgId),
+  )).limit(1);
+  if (!invoice || invoice.orgId !== row.orgId || invoice.id !== row.invoiceId
+    || !['sent', 'partially_paid', 'overdue'].includes(invoice.status)
+    || toMinorUnits(invoice.balance, invoice.currencyCode) <= 0 || invoice.autopayExcluded) return obsolete;
+  const [schedule] = await tx.select().from(invoiceAutopaySchedules).where(and(
+    eq(invoiceAutopaySchedules.id, scheduleId), eq(invoiceAutopaySchedules.invoiceId, invoice.id),
+    eq(invoiceAutopaySchedules.orgId, row.orgId),
+  )).limit(1);
+  if (!schedule || schedule.id !== scheduleId || schedule.invoiceId !== invoice.id || schedule.orgId !== row.orgId
+    || schedule.state !== 'failed' || schedule.stateReason !== 'method_not_usable'
+    || schedule.clientSkippedAt || schedule.mspExcludedAt) return obsolete;
+  const [enrollment] = await tx.select().from(orgAutopayEnrollments)
+    .where(eq(orgAutopayEnrollments.orgId, row.orgId)).limit(1);
+  if (!enrollment || enrollment.orgId !== row.orgId || enrollment.status !== 'active'
+    || schedule.enrollmentId !== enrollment.id || schedule.enrollmentGeneration !== enrollment.generation) return obsolete;
+  const [method] = await tx.select().from(orgPaymentMethods).where(and(
+    eq(orgPaymentMethods.orgId, row.orgId), eq(orgPaymentMethods.isAutopayMethod, true),
+  )).limit(1);
+  return method?.status === 'active' ? obsolete : null;
+}

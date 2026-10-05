@@ -8,7 +8,7 @@ import {autopaySetupAttempts} from '../../db/schema/autopaySetupAttempts';
 import { captureException } from '../sentry';
 import { classifyCollectionFailure } from './failureClassifier';
 import { retryAt } from './retryDates';
-import { enqueueAttemptNotice, notifyPaymentAttention } from './paymentNotices';
+import { enqueueAttemptNotice, enqueueMethodUnusableNotice, notifyPaymentAttention } from './paymentNotices';
 import { resolveMergedOrgIds } from '../orgMergeProvenance';
 import { requestInvoiceSessionRevocation } from '../stripeSessionRevocation';
 import { collectionFenced, finalizeInvoiceControl, isControllableSchedule, pendingInvoiceControl } from './collectionControl';
@@ -1025,6 +1025,18 @@ export async function runAutopayCollection(now = new Date()): Promise<{ attempte
           console.info('[autopay] Collection not started',{orgId:row.orgId,invoiceId:row.invoiceId,scheduleId:row.id,...result});
           await withSystemDbAccessContext(async()=>{
             const { invoice } = await lockInvoiceForCollection(db,row.invoiceId);
+            // A hard decline, detach or failed verification left the org with no usable
+            // method (getAutopayMethod also returns pending_verification, which keeps
+            // deferring). Deferring forever would leave this due invoice uncharged, the
+            // client unaware and reminders suppressed: fail it and tell the client once.
+            // A replacement method made before this run is admitted above and re-noticed.
+            if (result.outcome==='deferred' && result.reason==='method_not_usable' && !await getAutopayMethod(db,invoice.orgId)) {
+              const [failed]=await db.update(invoiceAutopaySchedules).set({state:'failed',stateReason:'method_not_usable',nextAttemptAt:null})
+                .where(and(eq(invoiceAutopaySchedules.id,row.id),inArray(invoiceAutopaySchedules.state,['scheduled','retry_scheduled'])))
+                .returning({id:invoiceAutopaySchedules.id});
+              if (failed) await enqueueMethodUnusableNotice(db,row.id);
+              return;
+            }
             await db.update(invoiceAutopaySchedules).set(result.outcome==='refused'
               ? {state:'failed',stateReason:result.reason,nextAttemptAt:null}
               : {stateReason:result.reason,nextAttemptAt:new Date(now.getTime()+(['charging_disabled','stripe_unavailable','method_not_usable'].includes(result.reason ?? '') ? 86_400_000 : 3_600_000))})
