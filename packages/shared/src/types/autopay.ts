@@ -93,9 +93,15 @@ export interface ResolvedPaymentSettings {
 }
 export interface FeeAuthorizationGap {
  orgId:string;orgName:string;methodType:AutopayPaymentMethodType;
- authorizedCardFeeBps:number;authorizedAchFeeAmount:string;cardFeeBps:number;achFeeAmount:string;
+ /** Null when no authorization for the current method is on file (distinct from an authorized 0). */
+ authorizedCardFeeBps:number|null;authorizedAchFeeAmount:string|null;cardFeeBps:number;achFeeAmount:string;
 }
-export interface PaymentSettingsView { feeAuthorizationGaps?:FeeAuthorizationGap[]; autopayEnabled:boolean;values:PaymentValues;inherited:ResolvedPaymentSettings;effective:ResolvedPaymentSettings }
+/** The partner's processing-fee attestation on file. attestedByName is null when the user is no longer readable. */
+export interface FeeAttestationRecord { attestedAt:string;attestedByName:string|null }
+export interface PaymentSettingsView { feeAuthorizationGaps?:FeeAuthorizationGap[];
+ /** Partner view only: null when no attestation is on file. */
+ feeAttestation?:FeeAttestationRecord|null;
+ autopayEnabled:boolean;values:PaymentValues;inherited:ResolvedPaymentSettings;effective:ResolvedPaymentSettings }
 
 export const autopayScheduleTermsSchema=z.object({offsetDays:z.number().int().min(0).max(60),rule:z.enum(AUTOPAY_OFFSET_RULES),
  cap:z.discriminatedUnion('enabled',[z.object({enabled:z.literal(false)}),z.object({enabled:z.literal(true),amount:z.string(),currency:z.string()})])});
