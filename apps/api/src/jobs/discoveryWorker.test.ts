@@ -585,10 +585,18 @@ describe('processResults — type_source', () => {
     expect(roleUpdate).toBeDefined();
     const where = renderSqlQuery(roleUpdate!.where);
     expect(where.params).toContain('devices.deviceRoleSource');
-    expect(where.params).toContain('devices.deviceRole');
-    expect(where.sql).toContain(`= 'discovery'`);
-    expect(where.sql).toContain(`= 'auto'`);
-    expect(where.sql).toContain(`= 'unknown'`);
+    // Pin the whole clause, not loose substrings: dropping the role conjunct or
+    // turning the inner `and` into `or` must fail here, and each placeholder
+    // must bind the right column.
+    const normalized = where.sql.replace(/\s+/g, ' ');
+    const clause = normalized.match(
+      /\(coalesce\(\$(\d+), 'auto'\) = 'discovery' or \(coalesce\(\$(\d+), 'auto'\) = 'auto' and coalesce\(\$(\d+), 'unknown'\) = 'unknown'\)\)/,
+    );
+    expect(clause).not.toBeNull();
+    const [, srcA, srcB, role] = clause!;
+    expect(where.params[Number(srcA) - 1]).toBe('devices.deviceRoleSource');
+    expect(where.params[Number(srcB) - 1]).toBe('devices.deviceRoleSource');
+    expect(where.params[Number(role) - 1]).toBe('devices.deviceRole');
     // The old deny-list let an 'auto' role through; it must be gone.
     expect(where.sql).not.toContain(`not in ('manual', 'ai')`);
   });
