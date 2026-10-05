@@ -94,13 +94,32 @@ export async function prepareAutopayCapture(input:SetupInput,source:AutopaySetup
   return saved!;
  });
 }
+/**
+ * FP-15: Stripe's setup Checkout leaves Email blank and required when the Customer has none
+ * (Checkout then saves what the client types onto the Customer). Fill a blank one with the
+ * contact this setup was offered to. An email already on the Customer is never overwritten:
+ * Checkout shows it read-only and the client may have typed it. Best effort: if Stripe refuses,
+ * the client can still type it on Stripe's page.
+ */
+async function prefillCustomerEmail(stripe:Stripe,customerId:string,email:string|null|undefined){
+ if(!email||!/^[^\s@]+@[^\s@]+$/.test(email))return;
+ try{
+  const customer=await runOutsideDbContext(()=>stripe.customers.retrieve(customerId));
+  if(customer.deleted||customer.email)return;
+  await runOutsideDbContext(()=>stripe.customers.update(customerId,{email}));
+ }catch(error){
+  console.warn('[autopay] could not prefill the Stripe Customer email for setup',{customerId,error:error instanceof Error?error.message:String(error)});
+ }
+}
 export async function createHostedAutopaySession(attempt:{id:string;partnerId:string;orgId:string;enrollmentId:string;generation:number;tokenId:string|null;
  stripeCustomerId:string;stripeAccountId:string;methodType:AutopayPaymentMethodType;consentSnapshot:unknown},returnTo:'public'|'portal'){
  assertNoHeldDbContextForStripe('createHostedAutopaySession');
  const {stripe,stripeAccountId}=await withSystemDbAccessContext(()=>getPartnerStripeClient(attempt.partnerId));
  if(stripeAccountId!==attempt.stripeAccountId)throw new Error('Stripe account changed');
  const metadata={org_id:attempt.orgId,enrollment_id:attempt.enrollmentId,generation:String(attempt.generation),token_id:attempt.tokenId??'',setup_attempt_id:attempt.id};
- const bank=autopayConsentSnapshotSchema.parse(attempt.consentSnapshot).bankPayment;
+ const snapshot=autopayConsentSnapshotSchema.parse(attempt.consentSnapshot);
+ const bank=snapshot.bankPayment;
+ await prefillCustomerEmail(stripe,attempt.stripeCustomerId,snapshot.contactEmail);
  const paymentMetadata:Record<string,string>=bank?{invoice_id:bank.invoiceId,principal_minor:String(toMinorUnits(bank.principal,bank.currency)),
   fee_minor:String(toMinorUnits(bank.fee,bank.currency)),currency:bank.currency}:{};
  try{return await runOutsideDbContext(()=>stripe.checkout.sessions.create({mode:'setup',customer:attempt.stripeCustomerId,
