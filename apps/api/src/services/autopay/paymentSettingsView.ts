@@ -1,4 +1,4 @@
-import { SURCHARGE_STATE_RULES } from './processingFee';
+import { allowedCardFeeBps } from './processingFee';
 import {autopayFeeTermsSchema,autopayScheduleTermsSchema,type FeeAuthorizationGap,type PaymentSettingsView,type ResolvedPaymentSettings} from '@breeze/shared';
 import { toMinorUnits } from '../stripeMoney';
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
@@ -89,7 +89,7 @@ export async function feeAuthorizationGaps(connection: typeof db, partnerId: str
       ? accepted.achFeeAmount : '0.00';
     // F-7: the card fee the client's state allows (CO capped, CA and others banned), as the
     // fee engine applies it. A client authorized at that maximum is not below the terms.
-    const cardFeeBps = stateAllowedBps(row.cardFeeBps ?? settings.cardFeeBps.value, row.billingAddressCountry, row.billingAddressRegion);
+    const cardFeeBps = allowedCardFeeBps(row.cardFeeBps ?? settings.cardFeeBps.value, row.billingAddressCountry, row.billingAddressRegion);
     const achFeeAmount = row.achFeeAmount ?? settings.achFeeAmount.value;
     // No authorization at all is listed whatever the configured fee: collection refuses it (consent_required).
     const lower = !onFile || (row.methodType === 'card' ? authorizedCardFeeBps! < cardFeeBps
@@ -101,12 +101,6 @@ export async function feeAuthorizationGaps(connection: typeof db, partnerId: str
   });
 }
 
-function stateAllowedBps(configured: number, country: string | null | undefined, region: string | null | undefined): number {
-  if ((country ?? '').trim().toUpperCase() !== 'US') return configured;
-  const rule = SURCHARGE_STATE_RULES[(region ?? '').trim().toUpperCase()];
-  if (!rule) return configured;
-  return 'banned' in rule ? 0 : Math.min(configured, rule.maxBps);
-}
 type Cap = NonNullable<FeeAuthorizationGap['capGap']>['configured'];
 /** The accepted cap is narrower than the configured one when the MSP raised it, removed it or
  * changed its currency: the effective cap stays the accepted one until the client re-accepts (2a-1). */

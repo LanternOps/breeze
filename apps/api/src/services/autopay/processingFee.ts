@@ -25,6 +25,16 @@ function minor(value: string): bigint {
   if (!Number.isSafeInteger(cents) || cents > 999999999999) throw new Error('Invalid money range');
   return BigInt(cents);
 }
+/** The card fee (bps) the engine below applies to a credit card for a client, given the configured
+ * fee: 0 outside the US or without a US state, the state's ban or cap, never above 300. Settings
+ * comparisons use it so they agree with what collection would charge (F-7, G4). */
+export function allowedCardFeeBps(configured: number, orgBillingCountry: string | null | undefined, orgBillingRegion: string | null | undefined): number {
+  const state = upper(orgBillingRegion ?? null);
+  if (upper(orgBillingCountry ?? null) !== 'US' || !US_REGIONS.has(state)) return 0;
+  const rule = SURCHARGE_STATE_RULES[state];
+  if (rule && 'banned' in rule) return 0;
+  return Math.min(configured, 300, rule && 'maxBps' in rule ? rule.maxBps : 300);
+}
 export function quoteProcessingFee(input: FeeQuoteInput): FeeQuote {
   const principal = minor(input.principal);
   const flat = minor(input.achFeeAmount);
