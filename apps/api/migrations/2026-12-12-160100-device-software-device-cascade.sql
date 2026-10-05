@@ -7,7 +7,7 @@
 -- therefore made org erasure abort with 23503 at `DELETE FROM devices`,
 -- leaving the tenant half-erased. Inventory rows are meaningless without their
 -- device, so CASCADE is the correct action. Same change as
--- 2026-12-12-140000-org-erasure-fk-child-cascade.sql, split out because of the
+-- 2026-12-12-160000-org-erasure-fk-child-cascade.sql, split out because of the
 -- table's size.
 --
 -- device_software is a large, agent-written table and devices takes a write on
