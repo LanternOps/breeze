@@ -84,3 +84,64 @@ func TestGetStatusProtectedService(t *testing.T) {
 		t.Fatalf("GetStatus(WinDefend).Status = %q, want running or stopped", info.Status)
 	}
 }
+
+// An access-denied open must request query-only access, must not be reported
+// as not found, and must not fall back to the display-name scan (which would
+// open every service on the host). CI runners are elevated, so the denial is
+// simulated through the winOpenService seam.
+func TestGetStatusAccessDeniedIsNotNotFound(t *testing.T) {
+	orig := winOpenService
+	t.Cleanup(func() { winOpenService = orig })
+
+	var calls int
+	var gotAccess uint32
+	winOpenService = func(_ windows.Handle, _ *uint16, access uint32) (windows.Handle, error) {
+		calls++
+		gotAccess = access
+		return 0, windows.ERROR_ACCESS_DENIED
+	}
+
+	_, err := GetStatus("WinDefend")
+	if err == nil {
+		t.Fatal("expected an error when the open is denied")
+	}
+	if errors.Is(err, ErrServiceNotFound) {
+		t.Fatalf("GetStatus error = %v; access denied must not wrap ErrServiceNotFound", err)
+	}
+	if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		t.Fatalf("GetStatus error = %v; want it to wrap ERROR_ACCESS_DENIED", err)
+	}
+	if gotAccess != queryServiceAccess {
+		t.Fatalf("OpenService access = %#x, want %#x (query-only)", gotAccess, uint32(queryServiceAccess))
+	}
+	if calls != 1 {
+		t.Fatalf("OpenService called %d times; access denied must not trigger the display-name scan", calls)
+	}
+}
+
+// When the key-name lookup proves absence but some service could not be
+// opened during the display-name scan, the result must not be not_found: the
+// uninspectable service might be the one requested.
+func TestGetStatusDisplayNameScanWithUninspectableServiceIsNotNotFound(t *testing.T) {
+	orig := winOpenService
+	t.Cleanup(func() { winOpenService = orig })
+
+	const requested = "Breeze Display Name 7967"
+	winOpenService = func(_ windows.Handle, name *uint16, _ uint32) (windows.Handle, error) {
+		if windows.UTF16PtrToString(name) == requested {
+			return 0, windows.ERROR_SERVICE_DOES_NOT_EXIST
+		}
+		return 0, windows.ERROR_ACCESS_DENIED
+	}
+
+	_, err := GetStatus(requested)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if errors.Is(err, ErrServiceNotFound) {
+		t.Fatalf("GetStatus error = %v; an uninspectable service during the display-name scan must not yield not_found", err)
+	}
+	if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		t.Fatalf("GetStatus error = %v; want it to wrap the ERROR_ACCESS_DENIED that blocked the scan", err)
+	}
+}

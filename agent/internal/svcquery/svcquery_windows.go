@@ -115,19 +115,31 @@ func resolveDisplayName(m *mgr.Mgr, displayName string) (string, error) {
 		return "", err
 	}
 	lower := strings.ToLower(displayName)
+	// A service we could not inspect might be the one being asked for, so if
+	// nothing matches we must not claim the name does not exist.
+	var uninspected error
 	for _, keyName := range names {
 		s, err := openServiceForQuery(m, keyName)
 		if err != nil {
+			if uninspected == nil && !errors.Is(err, ErrServiceNotFound) {
+				uninspected = fmt.Errorf("open service %s: %w", keyName, err)
+			}
 			continue
 		}
 		cfg, err := s.Config()
 		s.Close()
 		if err != nil {
+			if uninspected == nil {
+				uninspected = fmt.Errorf("query config %s: %w", keyName, err)
+			}
 			continue
 		}
 		if strings.ToLower(cfg.DisplayName) == lower {
 			return keyName, nil
 		}
+	}
+	if uninspected != nil {
+		return "", fmt.Errorf("no inspectable service with display name %q (%w)", displayName, uninspected)
 	}
 	return "", fmt.Errorf("no service with display name %q: %w", displayName, ErrServiceNotFound)
 }
@@ -138,6 +150,10 @@ func resolveDisplayName(m *mgr.Mgr, displayName string) (string, error) {
 // restrictive DACL (e.g. WinDefend) refuse with "Access is denied" (#7967).
 const queryServiceAccess = windows.SERVICE_QUERY_STATUS | windows.SERVICE_QUERY_CONFIG
 
+// winOpenService is a seam so tests can assert the requested access mask and
+// simulate ERROR_ACCESS_DENIED without a non-elevated host.
+var winOpenService = windows.OpenService
+
 // openServiceForQuery opens a service read-only. A service that does not exist
 // is reported as an error wrapping ErrServiceNotFound.
 func openServiceForQuery(m *mgr.Mgr, name string) (*mgr.Service, error) {
@@ -145,7 +161,7 @@ func openServiceForQuery(m *mgr.Mgr, name string) (*mgr.Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid service name %q: %w", ErrServiceNotFound, name, err)
 	}
-	h, err := windows.OpenService(m.Handle, namePtr, queryServiceAccess)
+	h, err := winOpenService(m.Handle, namePtr, queryServiceAccess)
 	if err != nil {
 		return nil, classifyOpenError(err)
 	}

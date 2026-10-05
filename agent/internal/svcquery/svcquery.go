@@ -2,10 +2,11 @@ package svcquery
 
 import "errors"
 
-// ErrServiceNotFound is wrapped by GetStatus when the named service does not
-// exist (by key name or display name). Any other GetStatus error means the
-// service could not be inspected (e.g. access denied), not that it is absent;
-// callers must not report those as "not found" (#7967).
+// ErrServiceNotFound is wrapped by the Windows GetStatus when the named service
+// does not exist (by key name or display name). Any other Windows GetStatus
+// error means the service could not be inspected (e.g. access denied), not
+// that it is absent; callers must not report those as "not found" (#7967).
+// The darwin and stub implementations do not wrap it yet.
 var ErrServiceNotFound = errors.New("service not found")
 
 // ServiceStatus represents the status of a system service.
