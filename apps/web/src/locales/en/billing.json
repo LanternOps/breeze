@@ -2581,7 +2581,11 @@
       "authorizedAchNone": "No authorization on file; configured: USD {{configured}}",
       "lowerAuthorizationOrg": "This client has not authorized the configured fee. Any existing authorization stays in effect until they accept updated terms.",
       "blankPartner": "Blank uses the Breeze default (no fee). To exempt one client, set its fee to 0 on that client's Billing page.",
-      "blankOrg": "Blank uses the partner default. Enter 0 to exempt this client."
+      "blankOrg": "Blank uses the partner default. Enter 0 to exempt this client.",
+      "inactiveOrg": "Card fees are inactive until a partner administrator affirms both fee statements on the Payments tab of the partner Billing settings.",
+      "missingAuthorization": "No authorization on file: {{count}}. Automatic payments can't charge these clients until they authorize their saved payment method.",
+      "missingAuthorizationOrg": "This client has no authorization on file for its saved payment method. Automatic payments can't charge it until the client authorizes.",
+      "requestMissingAuthorization": "Request authorization"
     },
     "enrollmentTitle": "Automatic payment enrollment",
     "requestSentTo": "Request sent to {{email}}.",

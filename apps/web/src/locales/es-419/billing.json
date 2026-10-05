@@ -2581,7 +2581,11 @@
       "authorizedAchNone": "No hay autorización registrada; configurado: USD {{configured}}",
       "lowerAuthorizationOrg": "Este cliente no autorizó la comisión configurada. Cualquier autorización existente sigue vigente hasta que acepte los nuevos términos.",
       "blankPartner": "En blanco usa el valor predeterminado de Breeze (sin comisión). Para eximir a un cliente, establece su comisión en 0 en la página de facturación de ese cliente.",
-      "blankOrg": "En blanco usa el valor predeterminado del socio. Ingresa 0 para eximir a este cliente."
+      "blankOrg": "En blanco usa el valor predeterminado del socio. Ingresa 0 para eximir a este cliente.",
+      "inactiveOrg": "Las comisiones por tarjeta no se activan hasta que un administrador del socio confirme ambas declaraciones de comisiones en la pestaña Payments de la configuración de facturación del socio.",
+      "missingAuthorization": "Sin autorización registrada: {{count}}. Los pagos automáticos no pueden cobrar a estos clientes hasta que autoricen su método de pago guardado.",
+      "missingAuthorizationOrg": "Este cliente no tiene autorización registrada para su método de pago guardado. Los pagos automáticos no pueden cobrarle hasta que lo autorice.",
+      "requestMissingAuthorization": "Solicitar autorización"
     },
     "enrollmentTitle": "Inscripción en pago automático",
     "requestSentTo": "Solicitud enviada a {{email}}.",

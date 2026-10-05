@@ -2,10 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { handleActionError } from '../../lib/runAction';
 import { formatDateTime } from '../../lib/dateTimeFormat';
+import { autopayButton } from './autopayUi';
 import { readAutopay, mutateAutopay, methodLabel, needsAttentionReason, skippedAutopayReason, type AutopayRow } from './autopayClient';
 const actionResults = { pause: 'autopay.result.paused', resume: 'autopay.result.resumed', turn_off: 'autopay.result.turnedOff' } as const;
-const primaryButton = 'rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50';
-const secondaryButton = 'rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50';
+const { primary: primaryButton, secondary: secondaryButton, danger: dangerButton } = autopayButton;
 export default function OrgAutopayCard({ orgId }: { orgId: string }) {
   // A new organization gets fresh state, including confirmations and action results.
   return <OrgAutopayCardContent key={orgId} orgId={orgId} />;
@@ -84,7 +84,7 @@ function OrgAutopayCardContent({ orgId }: { orgId: string }) {
     </div>
     {off && <div data-testid="autopay-off-confirm" className="space-y-2 rounded-md border p-3"><p className="text-sm">{t('autopay.processingWarning')}</p>
       <div className="flex flex-wrap gap-2">
-        <button type="button" data-testid="autopay-off-confirm-submit" className="rounded-md bg-destructive px-3 py-2 text-sm font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50" disabled={busy} onClick={() => void act('turn_off')}>{t('autopay.turnOff')}</button>
+        <button type="button" data-testid="autopay-off-confirm-submit" className={dangerButton} disabled={busy} onClick={() => void act('turn_off')}>{t('autopay.turnOff')}</button>
         <button type="button" data-testid="autopay-off-cancel" className={secondaryButton} onClick={() => setOff(false)}>{t('autopay.cancel')}</button>
       </div></div>}
     {result && <p role={warning?'alert':'status'} className={warning?'text-sm text-amber-800 dark:text-amber-200':'text-sm'} data-testid="autopay-org-result">{result}</p>}

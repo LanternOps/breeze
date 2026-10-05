@@ -2581,7 +2581,11 @@
       "authorizedAchNone": "Kayıtlı yetkilendirme yok; yapılandırılan: USD {{configured}}",
       "lowerAuthorizationOrg": "Bu müşteri yapılandırılan ücrete yetki vermedi. Mevcut yetkilendirmesi, yeni koşulları kabul edene kadar geçerli kalır.",
       "blankPartner": "Boş bırakılırsa Breeze varsayılanı kullanılır (ücret yok). Tek bir müşteriyi muaf tutmak için o müşterinin Faturalandırma sayfasında ücretini 0 yapın.",
-      "blankOrg": "Boş bırakılırsa iş ortağı varsayılanı kullanılır. Bu müşteriyi muaf tutmak için 0 girin."
+      "blankOrg": "Boş bırakılırsa iş ortağı varsayılanı kullanılır. Bu müşteriyi muaf tutmak için 0 girin.",
+      "inactiveOrg": "Bir iş ortağı yöneticisi, iş ortağı Faturalandırma ayarlarının Payments sekmesinde iki ücret beyanını da onaylayana kadar kart ücretleri uygulanmaz.",
+      "missingAuthorization": "Kayıtlı yetkilendirme yok: {{count}}. Bu müşteriler kayıtlı ödeme yöntemlerini yetkilendirene kadar otomatik ödemeyle tahsilat yapılamaz.",
+      "missingAuthorizationOrg": "Bu müşterinin kayıtlı ödeme yöntemi için kayıtlı bir yetkilendirmesi yok. Müşteri yetkilendirene kadar otomatik ödemeyle tahsilat yapılamaz.",
+      "requestMissingAuthorization": "Yetkilendirme iste"
     },
     "enrollmentTitle": "Otomatik ödeme kaydı",
     "requestSentTo": "İstek {{email}} adresine gönderildi.",

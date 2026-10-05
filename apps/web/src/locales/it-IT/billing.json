@@ -2581,7 +2581,11 @@
       "authorizedAchNone": "Nessuna autorizzazione registrata; configurato: USD {{configured}}",
       "lowerAuthorizationOrg": "Questo cliente non ha autorizzato la commissione configurata. Qualsiasi autorizzazione esistente resta valida fino all’accettazione dei nuovi termini.",
       "blankPartner": "Se vuoto, si usa il valore predefinito di Breeze (nessuna commissione). Per esentare un cliente, imposta la sua commissione a 0 nella pagina Fatturazione del cliente.",
-      "blankOrg": "Se vuoto, si usa il valore predefinito del partner. Inserisci 0 per esentare questo cliente."
+      "blankOrg": "Se vuoto, si usa il valore predefinito del partner. Inserisci 0 per esentare questo cliente.",
+      "inactiveOrg": "Le commissioni sulle carte restano inattive finché un amministratore del partner non conferma entrambe le dichiarazioni sulle commissioni nella scheda Payments delle impostazioni di fatturazione del partner.",
+      "missingAuthorization": "Nessuna autorizzazione registrata: {{count}}. I pagamenti automatici non possono addebitare questi clienti finché non autorizzano il metodo di pagamento salvato.",
+      "missingAuthorizationOrg": "Questo cliente non ha un’autorizzazione registrata per il metodo di pagamento salvato. I pagamenti automatici non possono addebitarlo finché il cliente non lo autorizza.",
+      "requestMissingAuthorization": "Richiedi autorizzazione"
     },
     "enrollmentTitle": "Adesione al pagamento automatico",
     "requestSentTo": "Richiesta inviata a {{email}}.",

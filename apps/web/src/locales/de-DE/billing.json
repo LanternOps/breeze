@@ -2581,7 +2581,11 @@
       "authorizedAchNone": "Keine Autorisierung hinterlegt; eingestellt: USD {{configured}}",
       "lowerAuthorizationOrg": "Dieser Kunde hat die eingestellte Gebühr nicht autorisiert. Eine bestehende Autorisierung gilt weiter, bis er aktualisierte Bedingungen akzeptiert.",
       "blankPartner": "Leer verwendet den Breeze-Standard (keine Gebühr). Um einen einzelnen Kunden auszunehmen, setzen Sie seine Gebühr auf dessen Abrechnungsseite auf 0.",
-      "blankOrg": "Leer übernimmt den Partnerstandard. Geben Sie 0 ein, um diesen Kunden auszunehmen."
+      "blankOrg": "Leer übernimmt den Partnerstandard. Geben Sie 0 ein, um diesen Kunden auszunehmen.",
+      "inactiveOrg": "Kartengebühren sind erst aktiv, wenn ein Partneradministrator beide Gebührenerklärungen auf der Registerkarte „Payments“ der Partner-Abrechnungseinstellungen bestätigt.",
+      "missingAuthorization": "Keine Autorisierung hinterlegt: {{count}}. Automatische Zahlungen können diese Kunden erst belasten, wenn sie ihre gespeicherte Zahlungsmethode autorisieren.",
+      "missingAuthorizationOrg": "Für die gespeicherte Zahlungsmethode dieses Kunden ist keine Autorisierung hinterlegt. Automatische Zahlungen können ihn erst belasten, wenn er sie autorisiert.",
+      "requestMissingAuthorization": "Autorisierung anfordern"
     },
     "enrollmentTitle": "Anmeldung zur automatischen Zahlung",
     "requestSentTo": "Anfrage an {{email}} gesendet.",

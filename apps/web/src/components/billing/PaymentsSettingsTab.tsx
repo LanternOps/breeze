@@ -7,6 +7,7 @@ import { usePermissions } from '../../lib/permissions';
 import RemindersSettingsSection, { reminderDraft, reminderPatch, reminderDraftInvalid, type ReminderDraft } from './RemindersSettingsSection';
 import InheritedField from '../shared/InheritedField';
 import { formatDateTime } from '../../lib/dateTimeFormat';
+import { autopayButton } from './autopayUi';
 import type {FeeAuthorizationGap,PaymentValues,PaymentSettingsView} from '@breeze/shared';
 export type {PaymentValues,PaymentSettingsView} from '@breeze/shared';
 export type FeeAffirmations = { notified: boolean; cost: boolean };
@@ -43,7 +44,12 @@ export function FeeFields({ view, setValues, disabled, scope, affirmations, setA
   const attestation = scope === 'partner' ? view.feeAttestation ?? null : null;
   const attestedOn = attestation ? formatDateTime(attestation.attestedAt, { dateStyle: 'medium', timeStyle: 'short' }) : '';
   const gaps = view.feeAuthorizationGaps ?? [];
-  // null = no authorization on file, which must not read like an authorized 0.
+  // null = no authorization on file, which must not read like an authorized 0. Such a client
+  // cannot be charged at all (consent_required), so it is its own group, not a "lower fee".
+  const unauthorized = (client: FeeAuthorizationGap) => client.methodType === 'card'
+    ? client.authorizedCardFeeBps === null : client.authorizedAchFeeAmount === null;
+  const missing = gaps.filter(unauthorized);
+  const lower = gaps.filter(client => !unauthorized(client));
   const gapText = (client: FeeAuthorizationGap) => client.methodType === 'card'
     ? client.authorizedCardFeeBps === null
       ? t('autopay.fees.authorizedCardNone', { configured: client.cardFeeBps })
@@ -51,6 +57,11 @@ export function FeeFields({ view, setValues, disabled, scope, affirmations, setA
     : client.authorizedAchFeeAmount === null
       ? t('autopay.fees.authorizedAchNone', { configured: client.achFeeAmount })
       : t('autopay.fees.authorizedAch', { accepted: client.authorizedAchFeeAmount, configured: client.achFeeAmount });
+  const gapRow = (client: FeeAuthorizationGap, action: string) => <li key={client.orgId} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+    <span className="min-w-0 break-words">{scope === 'org' ? gapText(client) : <>{client.orgName} — {gapText(client)}</>}</span>
+    <button type="button" data-testid={`autopay-reauthorize-${client.orgId}`} disabled={disabled || requesting}
+      className={autopayButton.secondary} onClick={() => void requestAuthorization(client.orgId)}>{action}</button>
+  </li>;
   return <fieldset disabled={disabled} data-testid="autopay-fees" className="min-w-0 space-y-4 border-t pt-4">
     <legend className="pr-2 font-semibold">{t('autopay.fees.title')}</legend>
     <InheritedField id="autopay-card-fee-bps" data-testid="autopay-card-fee-bps"
@@ -64,7 +75,9 @@ export function FeeFields({ view, setValues, disabled, scope, affirmations, setA
       inheritedValue={view.inherited.achFeeAmount.value} inheritedSource={t(/* i18n-dynamic */ `autopay.source.${view.inherited.achFeeAmount.source}`)} />
     <p className="text-xs text-muted-foreground" data-testid="autopay-fee-blank-help">
       {scope === 'org' ? t('autopay.fees.blankOrg') : t('autopay.fees.blankPartner')}</p>
-    {!view.effective.feeAttested && <p data-testid="autopay-fee-inactive" className="text-sm text-amber-800 dark:text-amber-200">{t('autopay.fees.inactive')}</p>}
+    {/* The affirmations render below only on the partner page; the org page points there. */}
+    {!view.effective.feeAttested && <p data-testid="autopay-fee-inactive" className="text-sm text-amber-800 dark:text-amber-200">
+      {scope === 'org' ? t('autopay.fees.inactiveOrg') : t('autopay.fees.inactive')}</p>}
     {attestation && <div className="space-y-1 rounded-md border bg-muted/40 px-3 py-2">
       <p data-testid="autopay-fee-attestation" className="text-sm">{attestation.attestedByName
         ? t('autopay.fees.attestationOnFile', { name: attestation.attestedByName, date: attestedOn })
@@ -77,14 +90,13 @@ export function FeeFields({ view, setValues, disabled, scope, affirmations, setA
       <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-0.5 shrink-0" data-testid="autopay-attest-cost" checked={affirmations.cost}
         onChange={event => setAffirmations({ ...affirmations, cost: event.target.checked })} /><span className="min-w-0">{t('autopay.fees.cost')}</span></label>
     </div>}
-    {gaps.length > 0 && <div data-testid="autopay-fee-authorization-gaps" className="space-y-3">
-      <p className="text-sm">{scope === 'org' ? t('autopay.fees.lowerAuthorizationOrg') : t('autopay.fees.lowerAuthorization', { count: gaps.length })}</p>
-      <ul className="space-y-3">{gaps.map(client => <li key={client.orgId} className="flex flex-wrap items-center justify-between gap-2 text-sm">
-        <span className="min-w-0 break-words">{scope === 'org' ? gapText(client) : <>{client.orgName} — {gapText(client)}</>}</span>
-        <button type="button" data-testid={`autopay-reauthorize-${client.orgId}`} disabled={disabled || requesting}
-          className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-50"
-          onClick={() => void requestAuthorization(client.orgId)}>{t('autopay.fees.requestAuthorization')}</button>
-      </li>)}</ul>
+    {missing.length > 0 && <div data-testid="autopay-fee-authorization-missing" className="space-y-3">
+      <p className="text-sm">{scope === 'org' ? t('autopay.fees.missingAuthorizationOrg') : t('autopay.fees.missingAuthorization', { count: missing.length })}</p>
+      <ul className="space-y-3">{missing.map(client => gapRow(client, t('autopay.fees.requestMissingAuthorization')))}</ul>
+    </div>}
+    {lower.length > 0 && <div data-testid="autopay-fee-authorization-gaps" className="space-y-3">
+      <p className="text-sm">{scope === 'org' ? t('autopay.fees.lowerAuthorizationOrg') : t('autopay.fees.lowerAuthorization', { count: lower.length })}</p>
+      <ul className="space-y-3">{lower.map(client => gapRow(client, t('autopay.fees.requestAuthorization')))}</ul>
     </div>}
     <p className="text-xs text-muted-foreground">{t('autopay.fees.rules')}</p>
     <p className="text-xs text-muted-foreground">{t('autopay.fees.legal')}</p>

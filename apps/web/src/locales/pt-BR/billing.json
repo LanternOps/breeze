@@ -2581,7 +2581,11 @@
       "authorizedAchNone": "Nenhuma autorização registrada; configurado: USD {{configured}}",
       "lowerAuthorizationOrg": "Este cliente não autorizou a taxa configurada. Qualquer autorização existente permanece válida até que ele aceite os novos termos.",
       "blankPartner": "Em branco usa o padrão do Breeze (sem taxa). Para isentar um cliente, defina a taxa dele como 0 na página de faturamento desse cliente.",
-      "blankOrg": "Em branco usa o padrão do parceiro. Informe 0 para isentar este cliente."
+      "blankOrg": "Em branco usa o padrão do parceiro. Informe 0 para isentar este cliente.",
+      "inactiveOrg": "As taxas de cartão ficam inativas até que um administrador do parceiro confirme as duas declarações sobre taxas na aba Payments das configurações de faturamento do parceiro.",
+      "missingAuthorization": "Nenhuma autorização registrada: {{count}}. Os pagamentos automáticos não podem cobrar estes clientes até que autorizem a forma de pagamento salva.",
+      "missingAuthorizationOrg": "Este cliente não tem autorização registrada para a forma de pagamento salva. Os pagamentos automáticos não podem cobrá-lo até que o cliente autorize.",
+      "requestMissingAuthorization": "Solicitar autorização"
     },
     "enrollmentTitle": "Adesão ao pagamento automático",
     "requestSentTo": "Solicitação enviada para {{email}}.",
