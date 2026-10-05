@@ -195,7 +195,10 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
     <div className="mt-6 space-y-6">
       <MethodChoice legend="Choose how to pay" name="autopay-method" options={options} value={method} onChange={choose} disabled={busy} />
       {update && method === 'us_bank_account' && (
-        <p className="text-sm text-muted-foreground">If Stripe can't connect your bank instantly, it verifies the account with small deposits (1–2 business days). Automatic payments wait until then.</p>
+        <p className="text-sm text-muted-foreground">{`If Stripe can't connect your bank instantly, it verifies the account with small deposits (1–2 business days). ${data.method
+          // V2-6 (F-1): a working method keeps paying until the new bank is verified.
+          ? `Until then, automatic payments keep using your ${paymentMethodInSentence(savedMethodLabel(data.method))}.`
+          : 'Automatic payments wait until then.'}`}</p>
       )}
       <AuthorizationBox id="autopay-authorization" text={data.disclosures[method].text} checked={accepted} disabled={busy}
         onChange={value => { setAccepted(value); if (value) setChanged(false); }} changedNotice={changed}

@@ -154,6 +154,20 @@ describe('changing an existing method (card-expiring link or portal)', () => {
     expect(screen.queryByText(/Issued after you set this up/)).toBeNull();
     expect(document.title).toBe('Change payment method');
   });
+  // V2-6: since F-1 the working card keeps paying while a new bank is verified.
+  it('choosing a bank on the Change form says the current card keeps paying until it is verified', async () => {
+    vi.mocked(apiGet).mockResolvedValue(active);
+    render(<AutopaySetupPage token="test-token" />);
+    fireEvent.click(await screen.findByTestId('autopay-method-us_bank_account'));
+    expect(screen.getByText(/small deposits \(1–2 business days\)\. Until then, automatic payments keep using your Visa credit card ending in 4242\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Automatic payments wait until then/)).toBeNull();
+  });
+  it('replacing a method that stopped working: automatic payments wait for the bank', async () => {
+    vi.mocked(apiGet).mockResolvedValue(page({ enrollment: { status: 'active', needsAttentionReason: 'method_unusable' }, method: null }));
+    render(<AutopaySetupPage token="test-token" />);
+    fireEvent.click(await screen.findByTestId('autopay-method-us_bank_account'));
+    expect(screen.getByText(/Automatic payments wait until then\./)).toBeInTheDocument();
+  });
   // FP-12: the card stopped working (no usable method, needs attention): this is still a change.
   it('replacing a method that stopped working reads as a change, not a first-time setup', async () => {
     vi.mocked(apiGet).mockResolvedValue(page({ enrollment: { status: 'active', needsAttentionReason: 'method_unusable' }, method: null }));
