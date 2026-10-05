@@ -179,6 +179,44 @@ function mapDelivery(
   };
 }
 
+// Delivery history rows carry status/timing only. The event payload and the
+// receiver's response body stay out of the list: the web UI renders neither
+// (WebhookDeliveryHistory.normalizeDelivery reads id, createdAt, event,
+// status, responseStatus, attempt), and they are not fetched from the db.
+const deliverySummaryColumns = {
+  id: webhookDeliveries.id,
+  webhookId: webhookDeliveries.webhookId,
+  status: webhookDeliveries.status,
+  eventType: webhookDeliveries.eventType,
+  eventId: webhookDeliveries.eventId,
+  responseStatus: webhookDeliveries.responseStatus,
+  attempts: webhookDeliveries.attempts,
+  nextRetryAt: webhookDeliveries.nextRetryAt,
+  createdAt: webhookDeliveries.createdAt,
+  deliveredAt: webhookDeliveries.deliveredAt
+};
+
+type WebhookDeliverySummaryRow = Pick<
+  typeof webhookDeliveries.$inferSelect,
+  keyof typeof deliverySummaryColumns
+>;
+
+function mapDeliverySummary(delivery: WebhookDeliverySummaryRow, orgId: string) {
+  return {
+    id: delivery.id,
+    webhookId: delivery.webhookId,
+    orgId,
+    status: delivery.status as WebhookDeliveryStatus,
+    event: delivery.eventType,
+    eventId: delivery.eventId,
+    responseStatus: delivery.responseStatus,
+    attempt: delivery.attempts,
+    nextAttemptAt: delivery.nextRetryAt,
+    createdAt: delivery.createdAt,
+    deliveredAt: delivery.deliveredAt
+  };
+}
+
 async function getWebhookWithOrgCheck(webhookId: string, auth: RouteAuth) {
   const [webhook] = await db
     .select()
@@ -311,6 +349,7 @@ webhookRoutes.get(
   '/',
   authMiddleware,
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('query', listWebhooksSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
@@ -461,6 +500,7 @@ webhookRoutes.get(
   '/:id',
   authMiddleware,
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('param', webhookIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
@@ -639,6 +679,7 @@ webhookRoutes.get(
   '/:id/deliveries',
   authMiddleware,
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('param', webhookIdParamSchema),
   zValidator('query', listDeliveriesSchema),
   async (c) => {
@@ -665,7 +706,7 @@ webhookRoutes.get(
         .from(webhookDeliveries)
         .where(whereCondition),
       db
-        .select()
+        .select(deliverySummaryColumns)
         .from(webhookDeliveries)
         .where(whereCondition)
         .orderBy(desc(webhookDeliveries.createdAt), desc(webhookDeliveries.id))
@@ -674,7 +715,7 @@ webhookRoutes.get(
     ]);
 
     return c.json({
-      data: deliveryRows.map((delivery) => mapDelivery(delivery, webhook.orgId)),
+      data: deliveryRows.map((delivery) => mapDeliverySummary(delivery, webhook.orgId)),
       pagination: {
         page,
         limit,

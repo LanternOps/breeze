@@ -326,21 +326,91 @@ export function parseRichText(html: string): RichTextBlock[] {
 // PDF rendering: draws the parsed blocks with pdfkit `continued: true` runs.
 // ---------------------------------------------------------------------------
 
-const BULLET_INDENT = 14;
 const NESTED_INDENT = 14;
 const TEXT_COLOR = '#1f2937';
 const LINK_COLOR = '#2563eb';
 
 interface BlockStyle {
   fontSize: number;
+  /** Line height as a multiple of fontSize; 0 keeps the font's own metrics. */
+  lineHeight: number;
+  /** Minimum gap above the block (collapses with the previous block's spacingAfter, like CSS margins). */
+  spaceBefore: number;
   spacingAfter: number;
   forceBold: boolean;
 }
 
-function styleFor(kind: RichTextTextBlock['kind']): BlockStyle {
-  if (kind === 'h3') return { fontSize: 13, spacingAfter: 8, forceBold: true };
-  if (kind === 'h4') return { fontSize: 11.5, spacingAfter: 8, forceBold: true };
-  return { fontSize: 11, spacingAfter: 8, forceBold: false }; // 'p' | 'li'
+/** Sizes and spacing for one document look. */
+export interface RichTextTypography {
+  p: BlockStyle;
+  li: BlockStyle;
+  h3: BlockStyle;
+  h4: BlockStyle;
+  /** Gap between consecutive list items. */
+  listItemGap: number;
+  /** Minimum list gutter (bullet column) width. */
+  bulletIndent: number;
+  textColor: string;
+  /** Bullet / ordinal colour. */
+  markerColor: string;
+  /** Whether the last block's spacingAfter is added to the returned y. */
+  trailingGap: boolean;
+}
+
+/** The long-standing sizes and spacing, used by every caller that doesn't opt
+ *  in (standalone contract PDFs, the existing tests). Pagination still keeps
+ *  lead-ins (h3/h4, bold labels) with what follows and a table's header row
+ *  with its first body row, so page breaks can differ from before. */
+export const CLASSIC_TYPOGRAPHY: RichTextTypography = {
+  p: { fontSize: 11, lineHeight: 0, spaceBefore: 0, spacingAfter: 8, forceBold: false },
+  li: { fontSize: 11, lineHeight: 0, spaceBefore: 0, spacingAfter: 8, forceBold: false },
+  h3: { fontSize: 13, lineHeight: 0, spaceBefore: 0, spacingAfter: 8, forceBold: true },
+  h4: { fontSize: 11.5, lineHeight: 0, spaceBefore: 0, spacingAfter: 8, forceBold: true },
+  listItemGap: 8,
+  bulletIndent: 14,
+  textColor: '#1f2937',
+  markerColor: '#1f2937',
+  trailingGap: true,
+};
+
+/** The customer portal's rich-text styling at 0.75pt per CSS px: the block's
+ *  text-sm leading-relaxed (14px / 1.625, quoteBlocks.tsx) and the
+ *  `.quote-rich-text` rules (apps/portal globals.css) — p mb-2, h3 16px
+ *  mt-4/mb-1.5, h4 14px mt-3/mb-1, lists pl-5 with space-y-1 and mb-2, no
+ *  margin after the last block. The softer body text and muted list markers
+ *  follow the web app's prose preview (the portal inherits its foreground
+ *  colour). Quote PDFs use this so the PDF and the online proposal match. */
+export const WEB_TYPOGRAPHY: RichTextTypography = {
+  p: { fontSize: 10.5, lineHeight: 1.625, spaceBefore: 0, spacingAfter: 6, forceBold: false },
+  li: { fontSize: 10.5, lineHeight: 1.625, spaceBefore: 0, spacingAfter: 6, forceBold: false },
+  h3: { fontSize: 12, lineHeight: 1.5, spaceBefore: 12, spacingAfter: 4.5, forceBold: true },
+  h4: { fontSize: 10.5, lineHeight: 1.43, spaceBefore: 9, spacingAfter: 3, forceBold: true },
+  listItemGap: 3,
+  bulletIndent: 15,
+  textColor: '#374151',
+  markerColor: '#9ca3af',
+  trailingGap: false,
+};
+
+function styleFor(kind: RichTextTextBlock['kind'], typo: RichTextTypography): BlockStyle {
+  return typo[kind];
+}
+
+/** Gap between two consecutive blocks: list items use the list's own item
+ *  gap; otherwise margins collapse (the larger of the previous block's
+ *  spacingAfter and this block's spaceBefore), like the web CSS. */
+function gapBetween(prev: RichTextBlock | undefined, cur: RichTextBlock, typo: RichTextTypography): number {
+  if (!prev) return 0;
+  if (prev.kind === 'table') return cur.kind === 'table' ? TABLE_SPACING_AFTER : Math.max(TABLE_SPACING_AFTER, styleFor(cur.kind, typo).spaceBefore);
+  const after = styleFor(prev.kind, typo).spacingAfter;
+  if (cur.kind === 'table') return after;
+  if (prev.kind === 'li' && cur.kind === 'li') return typo.listItemGap;
+  return Math.max(after, styleFor(cur.kind, typo).spaceBefore);
+}
+
+/** Extra space per line so the block reaches its style's line height. */
+function lineGapFor(doc: PDFKit.PDFDocument, style: BlockStyle): number {
+  return style.lineHeight > 0 ? Math.max(0, style.lineHeight * style.fontSize - doc.currentLineHeight(true)) : 0;
 }
 
 /** Default Helvetica set — used when a caller doesn't opt into a theme (all
@@ -373,13 +443,117 @@ export interface RenderRichTextOpts {
    *  classic Helvetica set — pass `documentThemes.ts`'s registerThemeFonts(...)
    *  .body to draw in a document's theme instead. */
   fonts?: BodyFonts;
+  /** Colour for h3/h4 subheads (a partner's brand heading colour). Defaults to
+   *  the body text colour, unchanged for every caller that doesn't pass it. */
+  headingColor?: string;
+  /** Font for h3/h4 subheads (a theme's heading face, e.g. Barlow Condensed).
+   *  Defaults to the body bold face. */
+  headingFont?: string;
+  /** Sizes and spacing; defaults to CLASSIC_TYPOGRAPHY. */
+  typography?: RichTextTypography;
 }
 
 /** Draw sanitized rich-text HTML into `doc` starting at opts.startY, paginating
- *  via opts.ensureRoom. Returns the new y cursor (below the last block + its
- *  trailing spacing), for the caller to continue drawing from. */
+ *  via opts.ensureRoom. Returns the new y cursor: below the last block, plus its
+ *  trailing spacing when the typography has `trailingGap` (classic), for the
+ *  caller to continue drawing from. */
 export function renderRichTextIntoPdf(doc: PDFKit.PDFDocument, html: string, opts: RenderRichTextOpts): number {
   return drawBlocks(doc, parseRichText(html), opts, opts.fonts ?? DEFAULT_BODY_FONTS);
+}
+
+/** h3/h4 draw in the theme heading face when the caller provides one. */
+function subheadFont(block: RichTextTextBlock, headingFont: string | undefined): string | undefined {
+  return headingFont && (block.kind === 'h3' || block.kind === 'h4') ? headingFont : undefined;
+}
+
+/** Layout the draw loop uses for one text block: style, list gutter, text box,
+ *  and the height it reserves. Shared with keepWithNextHeight so a lead-in
+ *  reserves exactly what the block after it will ask ensureRoom for. Sets the
+ *  doc font as a side effect (the draw loop relies on that). */
+function textBlockLayout(doc: PDFKit.PDFDocument, block: RichTextTextBlock, x: number, width: number, bodyFonts: BodyFonts, typo: RichTextTypography, headingFont?: string) {
+  const style = styleFor(block.kind, typo);
+  // Ordered-list ordinals reach 2+ digits ("10.", "11.", …) which overflow the
+  // typography's bullet gutter and character-wrap, garbling clause numbering.
+  // Measure the actual prefix and widen the gutter to fit, shifting the text
+  // start so the ordinal and the item text never overlap.
+  const isLi = block.kind === 'li';
+  const prefix = isLi ? (block.ordinal != null ? `${block.ordinal}.` : '•') : '';
+  let gutter = 0;
+  if (isLi) {
+    doc.font(bodyFonts.regular).fontSize(style.fontSize);
+    gutter = Math.max(typo.bulletIndent, Math.ceil(doc.widthOfString(prefix)) + 4);
+  }
+  const indent = (isLi ? gutter : 0) + block.indent * NESTED_INDENT;
+  const textWidth = width - indent;
+  const plainText = block.runs.map((r) => r.text).join('') || ' ';
+  doc.font(subheadFont(block, headingFont) ?? fontFor(bodyFonts, style.forceBold, false)).fontSize(style.fontSize);
+  const lineGap = lineGapFor(doc, style);
+  const blockHeight = doc.heightOfString(plainText, { width: textWidth, lineGap });
+  return { style, isLi, prefix, gutter, textX: x + indent, textWidth, blockHeight, lineGap };
+}
+
+/** Longest bold-only paragraph still treated as a label rather than prose. */
+const LEAD_IN_MAX_CHARS = 120;
+
+/** A block that introduces what follows it: an h3/h4, or a short paragraph
+ *  whose only visible text is bold — the "Label:" line an editor puts above a
+ *  list, and the section titles agreement templates use. */
+function isLeadIn(block: RichTextBlock): boolean {
+  if (block.kind === 'h3' || block.kind === 'h4') return true;
+  if (block.kind !== 'p') return false;
+  const visible = block.runs.filter((r) => r.text.trim().length > 0);
+  if (visible.length === 0 || !visible.every((r) => r.bold)) return false;
+  return visible.reduce((n, r) => n + r.text.trim().length, 0) <= LEAD_IN_MAX_CHARS;
+}
+
+/** What the draw loop will reserve for blocks[i] when it gets there, counting a
+ *  lead-in's own keep-with-next (so heading → label → list holds together). A
+ *  table reserves its first row (plus the first body row under a header row). */
+function reservationHeight(doc: PDFKit.PDFDocument, blocks: RichTextBlock[], i: number, width: number, bodyFonts: BodyFonts, depth: number, typo: RichTextTypography, headingFont?: string): number {
+  const block = blocks[i]!;
+  if (block.kind === 'table') {
+    const widths = tableColumnWidths(block, width);
+    if (widths.length === 0) return 0;
+    const [first, second] = block.rows;
+    if (!first) return 0;
+    const firstHeight = measureTableRow(doc, first, widths, bodyFonts);
+    return first.header && second ? firstHeight + measureTableRow(doc, second, widths, bodyFonts) : firstHeight;
+  }
+  const own = textBlockLayout(doc, block, 0, width, bodyFonts, typo, headingFont).blockHeight;
+  // Depth cap: a run of consecutive lead-ins is a list of headings, not one unit.
+  if (depth >= 2 || !isLeadIn(block) || !blocks[i + 1]) return own;
+  return own + gapBetween(block, blocks[i + 1]!, typo) + reservationHeight(doc, blocks, i + 1, width, bodyFonts, depth + 1, typo, headingFont);
+}
+
+/** Extra room a lead-in at blocks[i] reserves for the block after it — 0 for
+ *  anything else. Also 0 when the two can't share ANY page (a follower taller
+ *  than the page body): moving the lead-in would only strand it alone on a
+ *  fresh page, so it stays put, exactly as before keep-with-next existed. */
+function keepWithNextHeight(doc: PDFKit.PDFDocument, blocks: RichTextBlock[], i: number, width: number, bodyFonts: BodyFonts, ownHeight: number, typo: RichTextTypography, headingFont?: string): number {
+  const block = blocks[i]!;
+  if (block.kind === 'table' || !isLeadIn(block) || !blocks[i + 1]) return 0;
+  const saved = saveFontState(doc);
+  try {
+    const follow = gapBetween(block, blocks[i + 1]!, typo) + reservationHeight(doc, blocks, i + 1, width, bodyFonts, 1, typo, headingFont);
+    const usable = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
+    return follow <= usable - ownHeight ? follow : 0;
+  } finally {
+    restoreFontState(doc, saved);
+  }
+}
+
+/** Room the start of this rich text needs to stay with a heading drawn just
+ *  above it: what the draw loop will reserve for its first block. Lets the
+ *  quote renderer keep a heading block with the rich_text block after it. */
+export function measureRichTextLead(doc: PDFKit.PDFDocument, html: string, width: number, fonts?: BodyFonts, typography: RichTextTypography = CLASSIC_TYPOGRAPHY, headingFont?: string): number {
+  const blocks = parseRichText(html);
+  if (blocks.length === 0) return 0;
+  const saved = saveFontState(doc);
+  try {
+    return reservationHeight(doc, blocks, 0, width, fonts ?? DEFAULT_BODY_FONTS, 0, typography, headingFont);
+  } finally {
+    restoreFontState(doc, saved);
+  }
 }
 
 /** The block draw loop, split out of renderRichTextIntoPdf so the oversized-row
@@ -391,49 +565,39 @@ function drawBlocks(doc: PDFKit.PDFDocument, blocks: RichTextBlock[], opts: Rend
   // startY is the public contract; synchronize doc.y before ensureRoom reads it.
   doc.y = opts.startY;
   let y = opts.startY;
-  // The gap BEFORE the upcoming block (0 for the first block; each subsequent
-  // block's leading gap is the PREVIOUS block's spacingAfter). Tracked explicitly
+  // The gap BEFORE the upcoming block (gapBetween: 0 for the first block, the
+  // list's item gap between list items, otherwise the larger of the previous
+  // block's spacingAfter and this block's spaceBefore). Tracked explicitly
   // rather than folded into `y` up front — ensureRoom's overflow check needs the
   // gap counted as part of `needed`, and pdfkit's own `doc.y` cursor (updated by
   // the actual draw calls) never reflects a gap that hasn't been drawn as text.
+  const typo = opts.typography ?? CLASSIC_TYPOGRAPHY;
   let gapBefore = 0;
-  for (const block of blocks) {
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i]!;
+    gapBefore = gapBetween(blocks[i - 1], block, typo);
     if (block.kind === 'table') {
       y = drawTableBlock(doc, block, opts, bodyFonts, y, gapBefore);
-      gapBefore = TABLE_SPACING_AFTER;
       continue;
     }
-    const style = styleFor(block.kind);
-    // Ordered-list ordinals reach 2+ digits ("10.", "11.", …) which overflow the
-    // fixed 14pt bullet gutter and character-wrap, garbling clause numbering.
-    // Measure the actual prefix and widen the gutter to fit, shifting the text
-    // start so the ordinal and the item text never overlap.
-    const isLi = block.kind === 'li';
-    const prefix = isLi ? (block.ordinal != null ? `${block.ordinal}.` : '•') : '';
-    let gutter = 0;
-    if (isLi) {
-      doc.font(bodyFonts.regular).fontSize(style.fontSize);
-      gutter = Math.max(BULLET_INDENT, Math.ceil(doc.widthOfString(prefix)) + 4);
-    }
-    const indent = (isLi ? gutter : 0) + block.indent * NESTED_INDENT;
-    const textX = opts.x + indent;
-    const textWidth = opts.width - indent;
+    const { style, isLi, prefix, gutter, textX, textWidth, blockHeight, lineGap } = textBlockLayout(doc, block, opts.x, opts.width, bodyFonts, typo, opts.headingFont);
 
-    const plainText = block.runs.map((r) => r.text).join('') || ' ';
-    doc.font(fontFor(bodyFonts, style.forceBold, false)).fontSize(style.fontSize);
-    const blockHeight = doc.heightOfString(plainText, { width: textWidth });
+    // A lead-in (heading or bold label) reserves room for what it introduces
+    // too, so it moves to the next page WITH its content instead of being left
+    // as the last line of this one (Q-2026-0027).
+    const keepWithNext = keepWithNextHeight(doc, blocks, i, opts.width, bodyFonts, gapBefore + blockHeight, typo, opts.headingFont);
 
     // Detect whether ensureRoom actually broke the page (vs. just confirming
     // there's room): addPage() resets pdfkit's own y cursor as a side effect, so
     // a changed doc.y means we landed on a fresh page and the leading gap
     // shouldn't be added (nothing to space away from at the top of a new page).
     const beforeDocY = doc.y;
-    const reserved = opts.ensureRoom(gapBefore + blockHeight);
+    const reserved = opts.ensureRoom(gapBefore + blockHeight + keepWithNext);
     const brokePage = doc.y !== beforeDocY;
     y = brokePage ? reserved : reserved + gapBefore;
 
     if (isLi) {
-      doc.font(bodyFonts.regular).fontSize(style.fontSize).fillColor(TEXT_COLOR);
+      doc.font(bodyFonts.regular).fontSize(style.fontSize).fillColor(typo.markerColor);
       // Draw the ordinal/bullet in its own measured gutter to the left of the
       // text. lineBreak:false guarantees the prefix stays a single line even if
       // a future font makes it marginally wider than the reserved gutter.
@@ -445,9 +609,11 @@ function drawBlocks(doc: PDFKit.PDFDocument, blocks: RichTextBlock[], opts: Rend
       const bold = style.forceBold || run.bold;
       const isFirst = i === 0;
       const isLast = i === runs.length - 1;
-      doc.font(fontFor(bodyFonts, bold, run.italic)).fontSize(style.fontSize).fillColor(run.link ? LINK_COLOR : TEXT_COLOR);
+      const ink = (block.kind === 'h3' || block.kind === 'h4') && opts.headingColor ? opts.headingColor : typo.textColor;
+      doc.font(subheadFont(block, opts.headingFont) ?? fontFor(bodyFonts, bold, run.italic)).fontSize(style.fontSize).fillColor(run.link ? LINK_COLOR : ink);
       const textOptions: PDFKit.Mixins.TextOptions = {
         continued: !isLast,
+        lineGap,
         underline: run.underline || !!run.link,
         // Always set link explicitly (null, not omitted): pdfkit inherits omitted
         // options across `continued: true` runs, so a plain run following a link
@@ -461,14 +627,16 @@ function drawBlocks(doc: PDFKit.PDFDocument, blocks: RichTextBlock[], opts: Rend
         doc.text(run.text, textOptions);
       }
     });
-    doc.fillColor(TEXT_COLOR);
+    doc.fillColor(typo.textColor);
 
     y = doc.y;
-    gapBefore = style.spacingAfter;
   }
-  // Trailing gap after the last block, matching the convention every other
-  // quotePdf block-type branch uses (e.g. `y = doc.y + 8` after a heading).
-  return y + gapBefore;
+  // Trailing gap after the last block (classic: matching the convention every
+  // other quotePdf block-type branch used, e.g. `y = doc.y + 8` after a
+  // heading). The web look has none — the caller spaces blocks itself.
+  const last = blocks[blocks.length - 1];
+  if (!last || !typo.trailingGap) return y;
+  return y + (last.kind === 'table' ? TABLE_SPACING_AFTER : styleFor(last.kind, typo).spacingAfter);
 }
 
 // ---------------------------------------------------------------------------
@@ -564,14 +732,14 @@ function maxLineHeightForRuns(doc: PDFKit.PDFDocument, runs: RichTextRun[], font
  *  and indent math as the draw loop, but via countWrappedLines instead of an
  *  actual pdfkit draw. Returns the block's own height (excluding spacingAfter —
  *  callers accumulate that separately, matching renderRichTextIntoPdf). */
-function measureBlockHeight(doc: PDFKit.PDFDocument, block: RichTextTextBlock, width: number, fonts: BodyFonts): number {
-  const style = styleFor(block.kind);
+function measureBlockHeight(doc: PDFKit.PDFDocument, block: RichTextTextBlock, width: number, fonts: BodyFonts, typo: RichTextTypography = CLASSIC_TYPOGRAPHY): number {
+  const style = styleFor(block.kind, typo);
   const isLi = block.kind === 'li';
   const prefix = isLi ? (block.ordinal != null ? `${block.ordinal}.` : '•') : '';
   let gutter = 0;
   if (isLi) {
     doc.font(fonts.regular).fontSize(style.fontSize);
-    gutter = Math.max(BULLET_INDENT, Math.ceil(doc.widthOfString(prefix)) + 4);
+    gutter = Math.max(typo.bulletIndent, Math.ceil(doc.widthOfString(prefix)) + 4);
   }
   const indent = (isLi ? gutter : 0) + block.indent * NESTED_INDENT;
   const textWidth = width - indent;
@@ -583,31 +751,30 @@ function measureBlockHeight(doc: PDFKit.PDFDocument, block: RichTextTextBlock, w
   // (the draw loop's prior single-font blockHeight approximation used
   // heightOfString), so per-run measurement stays comparable to it.
   const lineHeight = maxLineHeightForRuns(doc, runs, style.fontSize, fonts, style.forceBold);
-  return lines * lineHeight;
+  doc.font(fontFor(fonts, style.forceBold, false)).fontSize(style.fontSize);
+  return lines * (lineHeight + lineGapFor(doc, style));
 }
 
 /** Height the given sanitized inline/block HTML would occupy at `width`,
  *  measured PER-RUN at the font each run will actually draw in (bold/italic
  *  switches included) — no drawing, doc font state saved/restored. */
-export function measureRichText(doc: PDFKit.PDFDocument, html: string, width: number, fonts?: BodyFonts): number {
+export function measureRichText(doc: PDFKit.PDFDocument, html: string, width: number, fonts?: BodyFonts, typography: RichTextTypography = CLASSIC_TYPOGRAPHY): number {
   const bodyFonts = fonts ?? DEFAULT_BODY_FONTS;
   const saved = saveFontState(doc);
   try {
     const blocks = parseRichText(html);
     let total = 0;
-    let gapBefore = 0;
-    for (const block of blocks) {
-      if (block.kind === 'table') {
-        total += gapBefore + measureTableBlock(doc, block, width, bodyFonts);
-        gapBefore = TABLE_SPACING_AFTER;
-        continue;
-      }
-      const style = styleFor(block.kind);
-      total += gapBefore + measureBlockHeight(doc, block, width, bodyFonts);
-      gapBefore = style.spacingAfter;
-    }
-    // Trailing gap, matching renderRichTextIntoPdf's `return y + gapBefore`.
-    return blocks.length ? total + gapBefore : 0;
+    blocks.forEach((block, i) => {
+      const gapBefore = gapBetween(blocks[i - 1], block, typography);
+      total += gapBefore + (block.kind === 'table'
+        ? measureTableBlock(doc, block, width, bodyFonts)
+        : measureBlockHeight(doc, block, width, bodyFonts, typography));
+    });
+    // Trailing gap, matching renderRichTextIntoPdf's return.
+    const last = blocks[blocks.length - 1];
+    if (!last) return 0;
+    if (!typography.trailingGap) return total;
+    return total + (last.kind === 'table' ? TABLE_SPACING_AFTER : styleFor(last.kind, typography).spacingAfter);
   } finally {
     restoreFontState(doc, saved);
   }
@@ -620,7 +787,7 @@ export function measureRichText(doc: PDFKit.PDFDocument, html: string, width: nu
  *  reflow as one wrapped paragraph). `align` is only meaningful passed on the
  *  FIRST run's text() call — pdfkit applies width/align to the whole
  *  continued-run paragraph, not per individual continued call. Restores
- *  doc.fillColor to TEXT_COLOR before returning (matching the block draw
+ *  doc.fillColor to TEXT_COLOR before returning (matching the classic block draw
  *  loop), but does NOT save/restore font state — callers already do that
  *  around their own measure+draw pair (see tablePdf.ts's renderTableIntoPdf).
  *  `forceBold` ORs into every run's own bold state (mirrors styleFor(...).forceBold
@@ -975,13 +1142,20 @@ function drawTableBlock(
   let leadingGap = gapBefore;
   block.rows.forEach((row, index) => {
     const height = measureTableRow(doc, row, widths, fonts);
+    // A leading header row is reserved together with the first body row, so
+    // it can't be left at a page foot while the body starts on the next page
+    // (capped at a page, which ensureRoom could only answer with a blank one).
+    const nextRow = block.rows[1];
+    const keepWithBody = index === 0 && row.header && nextRow
+      ? Math.min(measureTableRow(doc, nextRow, widths, fonts), Math.max(0, usablePageHeight - height - leadingGap))
+      : 0;
     // ensureRoom decides from pdfkit's OWN cursor, which the per-cell draws
     // above leave wherever the LAST column ended — resync before every call so
     // the decision is anchored to the y this function tracks (same hazard and
     // fix as tablePdf.ts's renderTableIntoPdf).
     doc.y = y;
     const beforeDocY = doc.y;
-    const reserved = opts.ensureRoom(leadingGap + height);
+    const reserved = opts.ensureRoom(leadingGap + height + keepWithBody);
     const brokePage = doc.y !== beforeDocY;
     y = brokePage ? reserved : reserved + leadingGap;
     leadingGap = 0;

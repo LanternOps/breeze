@@ -1,16 +1,11 @@
-import { and, eq, inArray, ne } from 'drizzle-orm';
-import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { organizations, partnerAiConnections } from '../../db/schema';
+import { and, eq } from 'drizzle-orm';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { partnerAiConnections } from '../../db/schema';
 import type { LlmEgressSurface } from '../../db/schema/llmEgressEvents';
 import type { CatalogPricingSnapshot } from '../aiCostTracker';
 import { resolveDefaultModel } from '../aiModel';
 import { getListedProviderByEntryId, type ListedProvider } from '../llmProviderCatalog';
-import { decryptConnectionKey } from '../aiModels/connectionKeys';
-import { SecretKeyMaterialError } from '../secretCrypto';
-import { captureException } from '../sentry';
-import { isPlatformLlmConfigured, type LlmUnusableCode } from './llmAvailability';
 import { LlmUnavailableError } from './llmUnavailableError';
-import { captureAtMostHourly } from './platformKeyAlert';
 
 /**
  * Where a partner's traffic actually goes (#3922 phase 2).
@@ -83,50 +78,6 @@ export type UsableLlmConfig = Exclude<ResolvedLlmConfig, { source: 'unavailable'
 export { LlmUnavailableError };
 
 /**
- * #7601 W03 Task 6B: the partner's AI configuration is its compat
- * (anthropic_byok | catalog) connection — the /ai/provider facade writes only
- * the registry now, and partner_llm_configs is frozen (dropped in W08). The
- * W02 migration copied every legacy row to a same-id connection and the W02
- * mirror kept them identical until this wave dropped it, so the connection is
- * exact for every partner, cut over or not. partner_ai_connections_compat_uq
- * guarantees at most one row.
- */
-const compatConnectionOf = (partnerId: string) => and(
-  eq(partnerAiConnections.partnerId, partnerId),
-  inArray(partnerAiConnections.kind, ['anthropic_byok', 'catalog']),
-  // A disconnected connection is provenance only (#7700 finding 1).
-  ne(partnerAiConnections.status, 'disconnected'),
-);
-
-/**
- * The legacy row shape the resolver consumes, read from the compat connection.
- * Built per call (not at module load) so suites that mock the schema without
- * the registry tables can still import this module.
- */
-const compatConfigColumns = () => ({
-  id: partnerAiConnections.id,
-  partnerId: partnerAiConnections.partnerId,
-  apiKeyEncrypted: partnerAiConnections.apiKeyEncrypted,
-  defaultModel: partnerAiConnections.legacyDefaultModel,
-  catalogEntryId: partnerAiConnections.catalogEntryId,
-  status: partnerAiConnections.status,
-  configVersion: partnerAiConnections.configVersion,
-});
-
-async function readPartnerLlmConfig(partnerId: string) {
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const [row] = await db
-        .select(compatConfigColumns())
-        .from(partnerAiConnections)
-        .where(compatConnectionOf(partnerId))
-        .limit(1);
-      return row;
-    }),
-  );
-}
-
-/**
  * Gates every catalog code path (#3922 W3, Task 3.1). Read at call time rather
  * than captured at import so a restart-free flip is honoured, and read
  * strictly: anything but `true` is off, so a typo or a half-applied deploy
@@ -140,12 +91,12 @@ export function isLlmProviderCatalogEnabled(): boolean {
 }
 
 /**
- * Joins a partner's pinned catalog entry to a usable endpoint, or explains why
- * it cannot. Every failure is loud: phase 1's invariant is that AI stops rather
+ * Joins a catalog entry to a usable endpoint for one logical model, or explains
+ * why it cannot (registry readiness, aiModels/readiness.ts). Every failure is loud: phase 1's invariant is that AI stops rather
  * than quietly billing the platform key, and a delisted or unverified provider
  * is exactly that situation.
  */
-async function resolveCatalogEndpoint(
+export async function resolveCatalogEndpoint(
   catalogEntryId: string,
   model: string,
 ): Promise<
@@ -228,130 +179,9 @@ export function buildCatalogEndpointSnapshot(
   };
 }
 
-export async function resolveLlmConfig(partnerId: string | null): Promise<ResolvedLlmConfig> {
-  const platform = (): ResolvedLlmConfig => ({
-    source: 'platform',
-    apiKey: process.env.ANTHROPIC_API_KEY,
-    model: resolveDefaultModel(),
-  });
-
-  if (!partnerId) return platform();
-
-  const row = await readPartnerLlmConfig(partnerId);
-  if (!row) return platform();
-  if (row.status === 'error') {
-    return { source: 'unavailable', partnerId, reason: 'key_error' };
-  }
-
-  let apiKey: string;
-  try {
-    apiKey = decryptConnectionKey({ id: row.id, apiKeyEncrypted: row.apiKeyEncrypted });
-  } catch (error) {
-    if (error instanceof SecretKeyMaterialError) {
-      captureAtMostHourly(`key-material:${partnerId}`, () => {
-        captureException(error, undefined, { service: 'llmConfigResolver', partnerId });
-      });
-      console.error(
-        '[llmConfigResolver] partner config cannot be decrypted with this node key material',
-        { partnerId, error },
-      );
-      return { source: 'unavailable', partnerId, reason: 'key_material' };
-    }
-    captureException(error, undefined, { service: 'llmConfigResolver', partnerId });
-    try {
-      await markPartnerLlmError({
-        configId: row.id,
-        configVersion: row.configVersion,
-        reason: 'decrypt_failed',
-      });
-    } catch (markError) {
-      console.error('[llmConfigResolver] failed to mark unreadable partner config', {
-        partnerId,
-        configVersion: row.configVersion,
-        error: markError,
-      });
-      captureException(markError, undefined, { service: 'llmConfigResolver', partnerId });
-    }
-    return { source: 'unavailable', partnerId, reason: 'key_error' };
-  }
-
-  const model = row.defaultModel ?? resolveDefaultModel();
-
-  let endpoint: ResolvedLlmEndpoint = { kind: 'anthropic' };
-  if (row.catalogEntryId) {
-    const catalog = await resolveCatalogEndpoint(row.catalogEntryId, model);
-    if (!catalog.ok) return { source: 'unavailable', partnerId, reason: catalog.reason };
-    endpoint = catalog.endpoint;
-  }
-
-  return {
-    source: 'partner',
-    partnerId,
-    apiKey,
-    model,
-    configId: row.id,
-    configVersion: row.configVersion,
-    endpoint,
-  };
-}
-
-/**
- * Readiness view of `resolveLlmConfig` + `llmUnusableCode` for an org, for a
- * caller ALREADY inside a system DB context (topology AI readiness, review
- * R1): the same decisions — no partner config means the platform path, which
- * is usable with a platform credential (`isPlatformLlmConfigured`) or (W06)
- * with a live OpenAI-compatible connection of the partner's (an env
- * deployment's env-managed connection, or a BYO gateway; the deployment may
- * have no Anthropic key at all); an `error` status, an undecryptable key or
- * an unusable catalog pin means unavailable — read on the caller's own
- * connection. Returns null when a model can be
- * called. It never escapes to a second pooled connection (the resolver's
- * `runOutsideDbContext` reads would, which under a held transaction is the
- * #6671 pool-exhaustion shape) and has no side effects: it never marks a
- * config errored — only a real model call does. The authoritative resolution
- * still happens before any model call.
- */
-export async function llmUnusableCodeForOrgInSystemContext(orgId: string): Promise<LlmUnusableCode | null> {
-  if (getCurrentDbAccessContext()?.scope !== 'system') {
-    throw new Error('llmUnusableCodeForOrgInSystemContext requires a held system DB context');
-  }
-  const [organization] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .limit(1);
-  if (!organization) return 'ai_unavailable';
-  const partnerId = organization.partnerId;
-  if (!partnerId) return isPlatformLlmConfigured() ? null : 'ai_not_configured';
-  const [row] = await db
-    .select(compatConfigColumns())
-    .from(partnerAiConnections)
-    .where(compatConnectionOf(partnerId))
-    .limit(1);
-  if (!row) {
-    if (isPlatformLlmConfigured()) return null;
-    // Approximate like the rest of this view: the turn's own resolution still
-    // decides whether an eligible offering on it answers chat.
-    const [gateway] = await db
-      .select({ id: partnerAiConnections.id })
-      .from(partnerAiConnections)
-      .where(and(
-        eq(partnerAiConnections.partnerId, partnerId),
-        eq(partnerAiConnections.kind, 'openai_compatible'),
-        eq(partnerAiConnections.status, 'active'),
-      ))
-      .limit(1);
-    return gateway ? null : 'ai_not_configured';
-  }
-  if (row.status === 'error') return 'ai_unavailable';
-  try {
-    decryptConnectionKey({ id: row.id, apiKeyEncrypted: row.apiKeyEncrypted });
-  } catch {
-    return 'ai_unavailable';
-  }
-  if (!row.catalogEntryId) return null;
-  const catalog = await resolveCatalogEndpoint(row.catalogEntryId, row.defaultModel ?? resolveDefaultModel());
-  return catalog.ok ? null : 'ai_unavailable';
+/** The deployment's own key and default model (dev scripts; the connection half for the platform). */
+export function platformLlmConfig(): UsableLlmConfig {
+  return { source: 'platform', apiKey: process.env.ANTHROPIC_API_KEY, model: resolveDefaultModel() };
 }
 
 export type PartnerLlmErrorReason = 'decrypt_failed' | 'auth_rejected';
@@ -360,7 +190,7 @@ export type PartnerLlmErrorReason = 'decrypt_failed' | 'auth_rejected';
  * Marks normalized credential failures only when the exact connection id and
  * config version still match (a rotation in between wins). Callers must not
  * invoke this for Anthropic 429, 5xx, network, timeout, or other retryable
- * failures. `configId` is the compat connection id (Task 6B).
+ * failures. `configId` is the partner_ai_connections id.
  */
 export async function markPartnerLlmError(input: {
   configId: string;

@@ -61,6 +61,28 @@ const connected = {
 };
 
 describe("AccountingConnectionPanel", () => {
+it('mounts the fee form in the connected accounting card',async()=>{
+  fetchWithAuth.mockImplementation(async(url:string)=>url==='/accounting/quickbooks'
+    ?jsonResponse({...connected,autopayEnabled:true,feeIncomeItemRef:'fee-item',feeIncomeAccountRef:null,feeAccountingErrorCount:1})
+    :jsonResponse({data:[],count:0}));
+  render(<AccountingConnectionPanel provider="quickbooks"/>);
+  expect(await screen.findByTestId('autopay-accounting-fees')).toBeInTheDocument();
+  expect(screen.getByTestId('autopay-accounting-fee-ref')).toHaveValue('fee-item');
+  expect(screen.getByTestId('autopay-accounting-fee-attention')).toBeInTheDocument();
+});
+
+it('hides fee configuration with rollout off but retains ordinary settings and debt attention',async()=>{
+  fetchWithAuth.mockImplementation(async(url:string)=>url==='/accounting/quickbooks'
+    ?jsonResponse({...connected,autopayEnabled:false,feeIncomeItemRef:'fee-item',feeIncomeAccountRef:null,feeAccountingErrorCount:1})
+    :jsonResponse({data:[],count:0}));
+  render(<AccountingConnectionPanel provider="quickbooks"/>);
+  expect(await screen.findByTestId('autopay-accounting-fee-attention')).toBeInTheDocument();
+  expect(screen.queryByTestId('autopay-accounting-fees')).toBeNull();
+  expect(screen.queryByTestId('autopay-accounting-fee-ref')).toBeNull();
+  expect(screen.queryByTestId('autopay-accounting-fee-save')).toBeNull();
+  expect(screen.getByTestId('quickbooks-pushmode-manual')).toBeInTheDocument();
+});
+
   beforeEach(() => {
     vi.clearAllMocks();
     scope = "partner";

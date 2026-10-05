@@ -141,6 +141,15 @@ All three device-control tools use a 120-second timeout — the same budget as `
 
 Screen contents are the most sensitive RMM output there is — credentials, customer data, anything on the display. In production, `take_screenshot`, `analyze_screen`, and `computer_control` additionally require an explicit entry in the `MCP_EXECUTE_TOOL_ALLOWLIST` environment variable, same as any other Tier 3+ tool reached through the MCP server. See [MCP Server → Production allowlist](/features/mcp-server/#production-allowlist-for-destructive-tools).
 
+### Devices where the screen tools are refused
+
+`take_screenshot`, `analyze_screen` and `computer_control` are refused, and the refusal is audited, on:
+
+- devices whose remote access policy requires **consent**, because these tools can't ask the user first;
+- **Quick Support** devices (v0.121.0+), with `409 SCREEN_ACCESS_UNAVAILABLE_IN_QUICK_SUPPORT`, because they would act outside the session where the user sees the viewing indicator.
+
+Use a remote desktop session on these devices instead. See [Remote Access](/features/remote-access/#quick-support-ad-hoc-sessions).
+
 ---
 
 ## AI Operator (preview)

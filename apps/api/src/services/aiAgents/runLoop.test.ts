@@ -93,6 +93,14 @@ function nextRows(table: string): unknown[] {
   throw new Error(`No queued rows for table ${table}`);
 }
 
+// AI Suggested Fixes W3 — loadRunContext's proven-fix lookup. Mocked so it never
+// consumes this file's queued db rows; returns null (no memory) by default.
+const loadProvenFixesForRun = vi.hoisted(() => vi.fn(async (): Promise<unknown> => null));
+vi.mock('../fixMemory/runMemory', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../fixMemory/runMemory')>()),
+  loadProvenFixesForRun,
+}));
+
 vi.mock('../../db', () => {
   const makeSelect = () => ({
     from: vi.fn((table: unknown) => {
@@ -446,7 +454,6 @@ function policy(overrides: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
   return {
     enabled: true,
     mode: 'shadow',
-    model: 'claude-test-model',
     toolAllowlist: [],
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
     limits: { ...AI_AGENT_LIMIT_DEFAULTS },
@@ -788,6 +795,87 @@ afterAll(() => {
 // ---------------------------------------------------------------------------
 
 describe('executeAgentRun', () => {
+  describe('fix memory (AI Suggested Fixes W3)', () => {
+    const memory = {
+      broad: false,
+      proven: [{ scriptName: 'Restart spooler', builtinAction: null, fixKind: 'partner_script', scope: 'all_clients', verified: 7, attempts: 8, lastVerifiedAt: '2026-11-01T00:00:00.000Z' }],
+      similarCount: 0,
+    };
+
+    it('a full alert run gets proven fixes in its task prompt, ahead of the investigate instruction', async () => {
+      loadProvenFixesForRun.mockResolvedValueOnce(memory);
+      seedRows();
+      scriptQuery({ assistantText: 'All good.' });
+      await executeAgentRun(RUN_ID);
+      expect(loadProvenFixesForRun).toHaveBeenCalledTimes(1);
+      expect(loadProvenFixesForRun).toHaveBeenCalledWith({ orgId: ORG_ID, partnerId: PARTNER_ID, alertId: ALERT_ID, correlationGroupId: null });
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).toContain('"Restart spooler" — worked 7 of 8 times');
+      expect(prompt.indexOf('Restart spooler')).toBeLessThan(prompt.indexOf('Investigate this alert'));
+    });
+
+    it('verdict run keeps maxTurns 4 and gets memory in the prompt (Review Focus 3)', async () => {
+      loadProvenFixesForRun.mockResolvedValueOnce(memory);
+      seedRows({ profile: 'verdict' });
+      scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: { classification: 'actionable', confidence: 0.9, rationale: 'Known, fixable.' } }] });
+      await executeAgentRun(RUN_ID);
+      expect(loadProvenFixesForRun).toHaveBeenCalledTimes(1);
+      expect(lastQueryOptions?.maxTurns).toBe(4);
+      expect(String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt)).toContain('Restart spooler');
+    });
+
+    it('a full run with no memory hit renders no memory section', async () => {
+      seedRows();
+      scriptQuery({ assistantText: 'All good.' });
+      await executeAgentRun(RUN_ID);
+      expect(loadProvenFixesForRun).toHaveBeenCalledTimes(1);
+      expect(String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt)).not.toContain('Proven fixes');
+    });
+
+    it('a device-less, alert-less run never looks memory up (Review Focus 5)', async () => {
+      seedRows({ alertId: null, deviceId: null, triggerKind: 'manual' });
+      scriptQuery({ assistantText: 'All good.' });
+      await executeAgentRun(RUN_ID);
+      expect(loadProvenFixesForRun).not.toHaveBeenCalled();
+    });
+
+    const GROUP_ID = '00000000-0000-4000-8000-0000000000c9';
+    const groupRow = { id: GROUP_ID, memberCount: 3, noiseReductionPercent: 66, rootAlertId: ALERT_ID, metadata: { correlationTypes: ['device'] } };
+
+    it('a group-bound verdict run looks memory up by its correlation group', async () => {
+      seedRows({ profile: 'verdict', correlationGroupId: GROUP_ID });
+      dbMockState.rowQueues.alert_correlation_groups = [[groupRow]];
+      scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: { classification: 'actionable', confidence: 0.9, rationale: 'Known, fixable.' } }] });
+      await executeAgentRun(RUN_ID);
+      expect(loadProvenFixesForRun).toHaveBeenCalledWith({ orgId: ORG_ID, partnerId: PARTNER_ID, alertId: ALERT_ID, correlationGroupId: GROUP_ID });
+    });
+
+    it('a correlation group that left the run org is never signatured — the run falls back to its org-pinned alert', async () => {
+      seedRows({ profile: 'verdict', correlationGroupId: GROUP_ID });
+      dbMockState.rowQueues.alert_correlation_groups = [[]];
+      scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: { classification: 'actionable', confidence: 0.9, rationale: 'Known, fixable.' } }] });
+      await executeAgentRun(RUN_ID);
+      expect(loadProvenFixesForRun).toHaveBeenCalledWith({ orgId: ORG_ID, partnerId: PARTNER_ID, alertId: ALERT_ID, correlationGroupId: null });
+    });
+
+    it('neither the alert nor the group is in the run org → no lookup at all', async () => {
+      seedRows({ profile: 'verdict', correlationGroupId: GROUP_ID });
+      dbMockState.rowQueues.alerts = [[]];
+      dbMockState.rowQueues.alert_correlation_groups = [[]];
+      scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: { classification: 'actionable', confidence: 0.9, rationale: 'Known, fixable.' } }] });
+      await executeAgentRun(RUN_ID);
+      expect(loadProvenFixesForRun).not.toHaveBeenCalled();
+    });
+
+    it('an alert that is no longer in the run org is never signatured for this run', async () => {
+      seedRows();
+      dbMockState.rowQueues.alerts = [[]];
+      scriptQuery({ assistantText: 'All good.' });
+      await executeAgentRun(RUN_ID);
+      expect(loadProvenFixesForRun).not.toHaveBeenCalled();
+    });
+  });
+
   it('caps provider dispatch to the durable org reservation', async () => {
     seedRows();
     reserveAiBudget.mockResolvedValueOnce({
@@ -2147,7 +2235,7 @@ describe('executeAgentRun', () => {
 
   it('passes the per-run turn ceiling and the RESOLVED wire model to the SDK', async () => {
     seedRows({
-      effective: policy({ model: 'claude-agent-model', limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxTurnsPerRun: 7 } as AiAgentLimits }),
+      effective: policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxTurnsPerRun: 7 } as AiAgentLimits }),
     });
 
     await executeAgentRun(RUN_ID);
@@ -2781,7 +2869,7 @@ describe('executeAgentRun', () => {
 
   it('creates exactly one execution-ledger session per run, with the snapshot model + turn ceiling', async () => {
     seedRows({
-      effective: policy({ model: 'claude-agent-model', limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxTurnsPerRun: 9 } as AiAgentLimits }),
+      effective: policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxTurnsPerRun: 9 } as AiAgentLimits }),
     });
 
     await executeAgentRun(RUN_ID);
@@ -2807,7 +2895,7 @@ describe('executeAgentRun', () => {
   });
 
   it('a policy with no bound offering follows the ai_agents assignment default', async () => {
-    seedRows({ effective: policy({ model: null }) });
+    seedRows({ effective: policy() });
     resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents', logicalModel: 'claude-default-x' }));
 
     await executeAgentRun(RUN_ID);

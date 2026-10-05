@@ -24,6 +24,7 @@ const { dbMocks, contextMocks, sessionColumns } = vi.hoisted(() => ({
     profile: { name: 'profile' },
     consentAttemptId: { name: 'consent_attempt_id' },
     purpose: { name: 'purpose' },
+    flowVersion: { name: 'flow_version' },
     expiresAt: { name: 'expires_at' },
   },
 }));
@@ -91,23 +92,24 @@ import { m365ConsentSessions } from '../../db/schema';
 import {
   consumeConsentSession,
   consumeConsentSessionInTransaction,
-  createAdminConsentSession,
-  createAdminConsentSessionInTransaction,
-  createIdentityVerificationSession,
-  insertPreparedIdentityVerificationSessionInTransaction,
-  prepareIdentityVerificationSession,
+  createIdentitySessionInTransaction,
   deleteConsentSessionsForAttempt,
   deleteConsentSessionsForAttemptInTransaction,
   deleteConsentSessionsForConnection,
-  readConsentSessionPurpose,
   hashTenantHint,
+  insertVerifiedConsentSessionInTransaction,
+  readConsentSessionPurpose,
+  verifiedIdentityFromSession,
+  type VerifiedConsentIdentity,
 } from './consentSessionService';
+import * as consentSessionService from './consentSessionService';
 
 const CONNECTION_ID = '11111111-1111-4111-8111-111111111111';
 const ORG_ID = '22222222-2222-4222-8222-222222222222';
 const ATTEMPT_ID = '33333333-3333-4333-8333-333333333333';
 const USER_ID = '44444444-4444-4444-8444-444444444444';
 const TENANT_ID = '55555555-5555-4555-8555-555555555555';
+const ADMIN_ID = '77777777-7777-4777-8777-777777777777';
 const NOW = new Date('2026-07-14T16:00:00.000Z');
 
 function sessionRow(values: Record<string, unknown> = {}) {
@@ -123,6 +125,12 @@ function sessionRow(values: Record<string, unknown> = {}) {
     tenantHintHash: null,
     nonce: null,
     codeVerifier: null,
+    purpose: 'initial' as const,
+    flowVersion: 2 as const,
+    verifiedTenantId: null,
+    verifiedAdminObjectId: null,
+    verifiedAdminUsername: null,
+    identityVerifiedAt: null,
     expiresAt: new Date(NOW.getTime() + 10 * 60_000),
     createdAt: NOW,
     ...values,
@@ -136,6 +144,15 @@ const owner = {
   userId: USER_ID,
   profile: 'customer-graph-read' as const,
 };
+
+const verified: VerifiedConsentIdentity = {
+  tenantId: TENANT_ID,
+  administratorObjectId: ADMIN_ID,
+  administratorUsername: 'admin@tenant.example',
+  verifiedAt: new Date('2026-07-14T15:59:30.000Z'),
+};
+
+const FLOW_2_CONDITION = { op: 'eq', column: m365ConsentSessions.flowVersion, value: 2 };
 
 describe('M365 consent sessions', () => {
   beforeEach(() => {
@@ -151,32 +168,126 @@ describe('M365 consent sessions', () => {
     dbMocks.selectProjections.length = 0;
   });
 
-  describe('consent session purpose', () => {
-    it('defaults an admin consent session to the initial flow', async () => {
-      await createAdminConsentSession(owner);
+  describe('identity-first sessions (flow_version 2)', () => {
+    it('creates a flow-2 identity session with a null hint hash for /organizations', async () => {
+      const created = await createIdentitySessionInTransaction({ ...owner, expectedTenantId: null });
+      const values = dbMocks.insertedValues[0]!;
 
-      expect(dbMocks.insertedValues[0]).toMatchObject({ purpose: 'initial' });
-    });
-
-    it('stamps an upgrade admin consent session as an upgrade', async () => {
-      await createAdminConsentSession({ ...owner, purpose: 'upgrade' });
-
-      expect(dbMocks.insertedValues[0]).toMatchObject({ purpose: 'upgrade' });
-    });
-
-    it('carries the purpose onto the identity-verification session', async () => {
-      await insertPreparedIdentityVerificationSessionInTransaction(
-        { ...owner, purpose: 'upgrade' },
-        prepareIdentityVerificationSession({ tenantHint: TENANT_ID }),
+      expect(values).toMatchObject({
+        phase: 'identity_verification',
+        flowVersion: 2,
+        tenantHintHash: null,
+        purpose: 'initial',
+        expiresAt: new Date('2026-07-14T16:10:00.000Z'),
+      });
+      expect(values.codeVerifier).toHaveLength(43);
+      expect(Buffer.from(values.codeVerifier as string, 'base64url')).toHaveLength(32);
+      expect(Buffer.from(values.nonce as string, 'base64url')).toHaveLength(32);
+      expect(created.codeChallenge).toBe(
+        createHash('sha256').update(values.codeVerifier as string).digest('base64url'),
       );
+      expect(created.nonce).toBe(values.nonce);
+      expect(Buffer.from(created.rawState, 'base64url')).toHaveLength(32);
+      expect(values.stateHash).toBe(createHash('sha256').update(created.rawState).digest('hex'));
+      expect(JSON.stringify(values)).not.toContain(created.rawState);
+      expect(contextMocks.runOutside).not.toHaveBeenCalled();
+      expect(contextMocks.withSystem).not.toHaveBeenCalled();
+    });
+
+    it('hashes the expected tenant when one is pinned and never stores it raw', async () => {
+      await createIdentitySessionInTransaction({ ...owner, expectedTenantId: TENANT_ID, purpose: 'upgrade' });
+      const values = dbMocks.insertedValues[0]!;
+
+      expect(values.tenantHintHash).toBe(hashTenantHint(TENANT_ID));
+      expect(values.purpose).toBe('upgrade');
+      expect(JSON.stringify(values)).not.toContain(TENANT_ID);
+    });
+
+    it('stores the verified identity on a flow-2 admin_consent row and nothing PKCE-shaped', async () => {
+      await insertVerifiedConsentSessionInTransaction({ ...owner, phase: 'admin_consent', verified });
 
       expect(dbMocks.insertedValues[0]).toMatchObject({
-        purpose: 'upgrade',
-        phase: 'identity_verification',
+        phase: 'admin_consent',
+        flowVersion: 2,
+        purpose: 'initial',
+        tenantHintHash: null,
+        nonce: null,
+        codeVerifier: null,
+        verifiedTenantId: TENANT_ID,
+        verifiedAdminObjectId: ADMIN_ID,
+        verifiedAdminUsername: 'admin@tenant.example',
+        identityVerifiedAt: verified.verifiedAt,
       });
     });
 
-    it('reads a purpose without deleting the session', async () => {
+    it('rotates state: the verified row never reuses the identity state', async () => {
+      const identity = await createIdentitySessionInTransaction({ ...owner, expectedTenantId: null });
+      const consent = await insertVerifiedConsentSessionInTransaction({ ...owner, phase: 'admin_consent', verified });
+
+      expect(consent.rawState).not.toBe(identity.rawState);
+      expect(dbMocks.insertedValues[0]?.stateHash).not.toBe(dbMocks.insertedValues[1]?.stateHash);
+    });
+
+    it('regenerates raw state after a state-hash collision', async () => {
+      dbMocks.insertResults.push('collision', 'row');
+
+      const result = await insertVerifiedConsentSessionInTransaction({ ...owner, phase: 'admin_consent', verified });
+
+      expect(dbMocks.insertedValues).toHaveLength(2);
+      expect(dbMocks.insertedValues[0]?.stateHash).not.toBe(dbMocks.insertedValues[1]?.stateHash);
+      expect(dbMocks.insertedValues[1]?.stateHash).toBe(
+        createHash('sha256').update(result.rawState).digest('hex'),
+      );
+      expect(dbMocks.conflictTargets).toEqual([m365ConsentSessions.stateHash, m365ConsentSessions.stateHash]);
+    });
+
+    it('rejects a non-canonical expected tenant or verified tenant before any write', async () => {
+      await expect(createIdentitySessionInTransaction({ ...owner, expectedTenantId: 'organizations' }))
+        .rejects.toThrow('m365_consent_session_invalid');
+      await expect(createIdentitySessionInTransaction({ ...owner, expectedTenantId: TENANT_ID.toUpperCase().replace(/5/g, 'A') }))
+        .rejects.toThrow('m365_consent_session_invalid');
+      await expect(insertVerifiedConsentSessionInTransaction({
+        ...owner, phase: 'admin_consent', verified: { ...verified, tenantId: 'common' },
+      })).rejects.toThrow('m365_consent_session_invalid');
+      expect(dbMocks.insertedValues).toEqual([]);
+    });
+
+    it('reads the verified identity only from a complete flow-2 post-identity row', () => {
+      const row = sessionRow({
+        verifiedTenantId: TENANT_ID,
+        verifiedAdminObjectId: ADMIN_ID,
+        verifiedAdminUsername: null,
+        identityVerifiedAt: verified.verifiedAt,
+      });
+      expect(verifiedIdentityFromSession(row as never)).toEqual({
+        tenantId: TENANT_ID,
+        administratorObjectId: ADMIN_ID,
+        administratorUsername: null,
+        verifiedAt: verified.verifiedAt,
+      });
+      expect(verifiedIdentityFromSession({ ...row, flowVersion: 1 } as never)).toBeNull();
+      expect(verifiedIdentityFromSession({ ...row, verifiedTenantId: null } as never)).toBeNull();
+      expect(verifiedIdentityFromSession({ ...row, verifiedAdminObjectId: null } as never)).toBeNull();
+      expect(verifiedIdentityFromSession({ ...row, identityVerifiedAt: null } as never)).toBeNull();
+      expect(verifiedIdentityFromSession({ ...row, phase: 'identity_verification' } as never)).toBeNull();
+    });
+
+    it('no longer exports the admin-consent-first session helpers', () => {
+      for (const removed of [
+        'createAdminConsentSessionInTransaction',
+        'createAdminConsentSession',
+        'createIdentityVerificationSession',
+        'createIdentityVerificationSessionInTransaction',
+        'prepareIdentityVerificationSession',
+        'insertPreparedIdentityVerificationSessionInTransaction',
+      ]) {
+        expect(removed in consentSessionService, removed).toBe(false);
+      }
+    });
+  });
+
+  describe('consent session purpose', () => {
+    it('reads a purpose without deleting the session, from flow-2 rows only', async () => {
       // The callback needs the purpose BEFORE it decides which connection
       // statuses are legal; the authoritative consume happens later and
       // re-checks every binding column. This lookup is a router, never an
@@ -202,6 +313,7 @@ describe('M365 consent sessions', () => {
             value: createHash('sha256').update('raw-state').digest('hex'),
           },
           { op: 'eq', column: m365ConsentSessions.consentAttemptId, value: ATTEMPT_ID },
+          FLOW_2_CONDITION,
         ]),
       });
     });
@@ -238,105 +350,6 @@ describe('M365 consent sessions', () => {
     });
   });
 
-  it('stores only the hash of a 32-byte random state with a ten-minute expiry', async () => {
-    const result = await createAdminConsentSession(owner);
-
-    expect(Buffer.from(result.rawState, 'base64url')).toHaveLength(32);
-    expect(result.session).toMatchObject({
-      stateHash: createHash('sha256').update(result.rawState).digest('hex'),
-      phase: 'admin_consent',
-      connectionId: CONNECTION_ID,
-      orgId: ORG_ID,
-      profile: 'customer-graph-read',
-      consentAttemptId: ATTEMPT_ID,
-      userId: USER_ID,
-      tenantHintHash: null,
-      nonce: null,
-      codeVerifier: null,
-      expiresAt: new Date('2026-07-14T16:10:00.000Z'),
-    });
-    expect(dbMocks.insertedValues).toEqual([expect.objectContaining({
-      stateHash: createHash('sha256').update(result.rawState).digest('hex'),
-      expiresAt: new Date('2026-07-14T16:10:00.000Z'),
-    })]);
-    expect(dbMocks.insertedValues[0]).not.toHaveProperty('rawState');
-    expect(JSON.stringify(dbMocks.insertedValues[0])).not.toContain(result.rawState);
-    expect(dbMocks.conflictTargets).toEqual([m365ConsentSessions.stateHash]);
-    expect(contextMocks.runOutside).toHaveBeenCalledOnce();
-    expect(contextMocks.withSystem).toHaveBeenCalledOnce();
-  });
-
-  it('regenerates raw state after a state-hash collision', async () => {
-    dbMocks.insertResults.push('collision', 'row');
-
-    const result = await createAdminConsentSession(owner);
-
-    expect(dbMocks.insertedValues).toHaveLength(2);
-    expect(dbMocks.insertedValues[0]?.stateHash).not.toBe(dbMocks.insertedValues[1]?.stateHash);
-    expect(dbMocks.insertedValues[1]?.stateHash).toBe(
-      createHash('sha256').update(result.rawState).digest('hex'),
-    );
-  });
-
-  it('does not purge unrelated sessions while creating a session', async () => {
-    await createAdminConsentSession(owner);
-
-    expect(dbMocks.deleteWhere).not.toHaveBeenCalled();
-  });
-
-  it('creates an identity session with a normalized tenant hash, 32-byte nonce, and S256 PKCE', async () => {
-    const result = await createIdentityVerificationSession({
-      ...owner,
-      tenantHint: `  ${TENANT_ID.toUpperCase()}  `,
-    });
-
-    expect(Buffer.from(result.rawState, 'base64url')).toHaveLength(32);
-    expect(Buffer.from(result.session.nonce!, 'base64url')).toHaveLength(32);
-    expect(Buffer.from(result.session.codeVerifier!, 'base64url')).toHaveLength(32);
-    expect(result.codeChallenge).toBe(
-      createHash('sha256').update(result.session.codeVerifier!).digest('base64url'),
-    );
-    expect(result.session).toMatchObject({
-      phase: 'identity_verification',
-      tenantHintHash: hashTenantHint(TENANT_ID),
-      expiresAt: new Date('2026-07-14T16:10:00.000Z'),
-    });
-    expect(dbMocks.insertedValues[0]).toEqual(expect.objectContaining({
-      tenantHintHash: hashTenantHint(TENANT_ID),
-      nonce: result.session.nonce,
-      codeVerifier: result.session.codeVerifier,
-    }));
-    expect(dbMocks.insertedValues[0]).not.toHaveProperty('tenantHint');
-    expect(JSON.stringify(dbMocks.insertedValues[0])).not.toContain(TENANT_ID);
-  });
-
-  it('prepares identity artifacts without DB access and inserts those exact artifacts in the caller transaction', async () => {
-    const prepared = prepareIdentityVerificationSession({ tenantHint: TENANT_ID });
-
-    expect(dbMocks.insertedValues).toEqual([]);
-    expect(contextMocks.runOutside).not.toHaveBeenCalled();
-    expect(contextMocks.withSystem).not.toHaveBeenCalled();
-    expect(Buffer.from(prepared.rawState, 'base64url')).toHaveLength(32);
-    expect(Buffer.from(prepared.nonce, 'base64url')).toHaveLength(32);
-    expect(Buffer.from(prepared.codeVerifier, 'base64url')).toHaveLength(32);
-    expect(prepared.codeChallenge).toBe(
-      createHash('sha256').update(prepared.codeVerifier).digest('base64url'),
-    );
-
-    const inserted = await insertPreparedIdentityVerificationSessionInTransaction(owner, prepared);
-
-    expect(inserted.rawState).toBe(prepared.rawState);
-    expect(inserted.codeChallenge).toBe(prepared.codeChallenge);
-    expect(dbMocks.insertedValues).toEqual([expect.objectContaining({
-      stateHash: createHash('sha256').update(prepared.rawState).digest('hex'),
-      phase: 'identity_verification',
-      tenantHintHash: hashTenantHint(TENANT_ID),
-      nonce: prepared.nonce,
-      codeVerifier: prepared.codeVerifier,
-      expiresAt: prepared.expiresAt,
-    })]);
-  });
-
   it('hashes canonical tenant hints as a fixed-width SHA-256 value', () => {
     const expected = createHash('sha256').update(TENANT_ID).digest('hex');
 
@@ -344,7 +357,7 @@ describe('M365 consent sessions', () => {
     expect(hashTenantHint(TENANT_ID)).toHaveLength(64);
   });
 
-  it('atomically consumes once using state, phase, expiry, owner, profile, and attempt constraints', async () => {
+  it('atomically consumes once using state, phase, expiry, owner, profile, attempt and flow-2 constraints', async () => {
     const rawState = 'one-time-state';
     const stored = sessionRow({
       stateHash: createHash('sha256').update(rawState).digest('hex'),
@@ -370,6 +383,7 @@ describe('M365 consent sessions', () => {
           value: createHash('sha256').update(rawState).digest('hex'),
         },
         { op: 'eq', column: m365ConsentSessions.phase, value: 'admin_consent' },
+        FLOW_2_CONDITION,
         {
           op: 'gt', column: m365ConsentSessions.expiresAt,
           value: { op: 'sql', strings: ['now()'], params: [] },
@@ -419,18 +433,13 @@ describe('M365 consent sessions', () => {
     })).resolves.toBeNull();
   });
 
-  it('scopes admin-consent sessions by profile', async () => {
-    const base = {
-      connectionId: CONNECTION_ID,
-      orgId: ORG_ID,
-      consentAttemptId: ATTEMPT_ID,
-      userId: USER_ID,
-    };
-    const { rawState } = await createAdminConsentSession({ ...base, profile: 'customer-graph-actions' });
+  it('scopes sessions by profile', async () => {
+    const { rawState } = await insertVerifiedConsentSessionInTransaction({
+      ...owner, profile: 'customer-graph-actions', phase: 'admin_consent', verified,
+    });
 
     expect(dbMocks.insertedValues[0]).toEqual(expect.objectContaining({ profile: 'customer-graph-actions' }));
 
-    // wrong-profile consume must miss
     dbMocks.deleteResults.push([]);
     expect(await consumeConsentSession({
       connectionId: CONNECTION_ID, orgId: ORG_ID, consentAttemptId: ATTEMPT_ID, rawState, phase: 'admin_consent',
@@ -439,22 +448,6 @@ describe('M365 consent sessions', () => {
     expect(dbMocks.deleteWhere).toHaveBeenNthCalledWith(1, expect.objectContaining({
       conditions: expect.arrayContaining([
         { op: 'eq', column: m365ConsentSessions.profile, value: 'customer-graph-read' },
-      ]),
-    }));
-
-    // correct-profile consume hits
-    dbMocks.deleteResults.push([sessionRow({
-      stateHash: createHash('sha256').update(rawState).digest('hex'),
-      profile: 'customer-graph-actions',
-    })]);
-    const hit = await consumeConsentSession({
-      connectionId: CONNECTION_ID, orgId: ORG_ID, consentAttemptId: ATTEMPT_ID, rawState, phase: 'admin_consent',
-      profile: 'customer-graph-actions',
-    });
-    expect(hit?.profile).toBe('customer-graph-actions');
-    expect(dbMocks.deleteWhere).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      conditions: expect.arrayContaining([
-        { op: 'eq', column: m365ConsentSessions.profile, value: 'customer-graph-actions' },
       ]),
     }));
   });
@@ -480,8 +473,7 @@ describe('M365 consent sessions', () => {
     expect(contextMocks.withSystem).toHaveBeenCalledOnce();
   });
 
-  it('exposes insert and delete helpers that reuse an existing system transaction', async () => {
-    const created = await createAdminConsentSessionInTransaction(owner);
+  it('exposes a delete helper that reuses an existing system transaction', async () => {
     await deleteConsentSessionsForAttemptInTransaction({
       connectionId: CONNECTION_ID,
       orgId: ORG_ID,
@@ -489,7 +481,6 @@ describe('M365 consent sessions', () => {
       profile: 'customer-graph-read',
     });
 
-    expect(created.session.phase).toBe('admin_consent');
     expect(contextMocks.runOutside).not.toHaveBeenCalled();
     expect(contextMocks.withSystem).not.toHaveBeenCalled();
   });

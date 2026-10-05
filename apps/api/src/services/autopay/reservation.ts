@@ -35,6 +35,35 @@ export async function lockInvoiceForCollection(tx: Tx, invoiceId: string): Promi
   if (!amounts) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   return { invoice: { ...invoice, balance: amounts.balance }, reservedAmount: amounts.reservedAmount, unreservedBalance: amounts.unreservedBalance };
 }
+/** Lock-free read of "is an autopay/collection attempt in flight?" for customer
+ * views (#7824). Uses the same reserving-state set as the 409 gate
+ * (`assertNoActiveCollection`), so the UI state and the server refusal cannot
+ * diverge. Advisory only: it takes no lock, the pay routes still enforce.
+ */
+export async function readInFlightCollection(tx: Tx, invoiceId: string)
+  : Promise<{ inProgress: boolean; amount: string; actionRequired: boolean }> {
+  const [row] = await tx.select({
+    reservedAmount: sql<string>`coalesce(sum(${invoiceCollectionAttempts.principalAmount}), 0)::numeric(12,2)::text`,
+    // Every reserving attempt is waiting on the customer's bank (off-session 3DS):
+    // nothing will complete without them, so the page must not say "no action needed".
+    actionRequired: sql<boolean>`coalesce(bool_and(${invoiceCollectionAttempts.state} = 'requires_action'), false)`,
+  }).from(invoiceCollectionAttempts)
+    .where(sql`${invoiceCollectionAttempts.invoiceId} = ${invoiceId}
+      and ${inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES])}`)
+    .limit(1);
+  const amount = row?.reservedAmount ?? '0.00';
+  const inProgress = hundredths(amount) > 0n;
+  return { inProgress, amount, actionRequired: inProgress && row?.actionRequired === true };
+}
+/** True while an attempt reserves money for the invoice or holds captured money that
+ * could not be applied ('unapplied', until staff refund or apply it). Client offers that
+ * start a new payment (bank pay, card pay-and-save) are withheld then (B1-2). */
+export async function holdsClientMoney(tx: Tx, invoiceId: string): Promise<boolean> {
+  const [row] = await tx.select({ id: invoiceCollectionAttempts.id }).from(invoiceCollectionAttempts)
+    .where(sql`${invoiceCollectionAttempts.invoiceId} = ${invoiceId}
+      and ${inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES, 'unapplied'])}`).limit(1);
+  return !!row;
+}
 export async function assertNoActiveCollection(tx: Tx, invoiceId: string): Promise<void> {
   const locked = await lockInvoiceForCollection(tx, invoiceId);
   if (hundredths(locked.reservedAmount) > 0n) {

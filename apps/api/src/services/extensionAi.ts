@@ -130,8 +130,8 @@ async function classifyProviderFailure(
           partnerId: resolved.partnerId,
           error: markError,
         });
-        // Was silent to Sentry entirely — mirrors llmConfigResolver's own
-        // markPartnerLlmError failure path, which does report.
+        // Was silent to Sentry entirely; a failure to record a rejected
+        // credential (markPartnerLlmError) is always reported.
         captureException(markError, undefined, { partner_id: resolved.partnerId });
       }
     }

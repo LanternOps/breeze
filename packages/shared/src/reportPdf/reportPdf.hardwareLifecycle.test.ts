@@ -30,7 +30,7 @@ function row(partial: Partial<HardwareLifecycleDeviceRow> & { name: string }): H
 }
 
 const summary: HardwareLifecycleSummary = {
-  org: { id: 'o1', name: 'Liggett & Goodman P.C.' },
+  org: { id: 'o1', name: 'Harlow & Pierce P.C.' },
   generatedAt: '2026-06-10T12:00:00.000Z',
   replaceAgeYears: 4,
   computers: { total: 3, byReplacement: { replace: 1, due_soon: 1, unknown: 1 }, byOsSupport: { supported: 1, ending: 1, ended: 1 } },
@@ -55,7 +55,7 @@ describe('hardware lifecycle PDF', () => {
     const doc = buildReportPdf([], { ...opts, summary, branding: { name: 'OliveTech', logoDataUrl: null, logoAspect: null, contactEmail: 'pat@olive.example', contactName: 'Pat' } });
     const text = pdfText(doc);
     expect(text).toContain('Hardware Lifecycle Report');
-    expect(text).toContain('Liggett & Goodman P.C.');
+    expect(text).toContain('Harlow & Pierce P.C.');
     expect(text).toContain('The oldest computer due for replacement is 7 years old, and 1 no longer receives security updates.');
     expect(text).toContain('We are confirming purchase dates for 1 computer.');
     // The other-device count lives in the byline and its own section, not the glance paragraph.

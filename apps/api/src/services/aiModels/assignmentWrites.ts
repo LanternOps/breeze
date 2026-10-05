@@ -17,7 +17,7 @@
  * MFA, plus approvals:decide for script_reviewer) and runs ensurePartnerCutover
  * first. The read-validate-write sequence then runs in ONE system transaction
  * behind the partner registry lock (inPartnerRegistryWrite), so it serialises
- * with W03's compatRemap. Every statement is pinned to input.partnerId (auth).
+ * with the Anthropic connection remaps (connectionRemap.ts). Every statement is pinned to input.partnerId (auth).
  */
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { TOOL_REQUIRING_SURFACES, type AiAssignmentWriteRole, type AiSurface, type OfferingOptions, type OrgAssignmentInput, type PartnerAssignmentInput } from '@breeze/shared';

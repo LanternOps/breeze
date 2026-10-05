@@ -6,17 +6,12 @@
 import './setup';
 import { afterAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { columnAad } from '../../services/encryptedColumnRegistry';
-import { decryptSecret, encryptSecret } from '../../services/secretCrypto';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import {
   closeRegistryFixtures,
   fixtureSql as adminSql,
-  keySpec,
   orgContext,
   partnerContext,
   seedByokConnection,
@@ -27,45 +22,6 @@ import {
 
 const RUN = !!process.env.DATABASE_URL;
 afterAll(closeRegistryFixtures);
-
-const CONNECTIONS_MIGRATION = readFileSync(
-  join(__dirname, '../../../migrations', '2026-11-14-100000-ai-model-registry-connections.sql'),
-  'utf8',
-);
-// W03 Task 6B drops the W02 mirror trigger; replaying the W02 file alone would
-// re-create it in this shared database, so every replay is followed by the
-// drop, exactly as the two files apply in order on a real database.
-const DROP_MIRROR_MIGRATION = readFileSync(
-  join(__dirname, '../../../migrations', '2026-11-19-100500-drop-partner-llm-configs-mirror-trigger.sql'),
-  'utf8',
-);
-// #7700 finding 1 widened status_chk / shape_chk for soft-disconnected rows
-// (2026-11-19-100900). Replaying the W02 file's narrower definitions over a
-// shared database that already holds 'disconnected' rows would fail their
-// validation scan, which a real database never does (each file applies once,
-// in order). So the replay adds the two superseded checks NOT VALID and then
-// replays 100900, which re-adds them validated — the same end state.
-const SOFT_DISCONNECT_MIGRATION = readFileSync(
-  join(__dirname, '../../../migrations', '2026-11-19-100900-ai-connections-soft-disconnect.sql'),
-  'utf8',
-);
-function supersededChecksNotValid(sqlText: string): string {
-  const swaps: Array<[string, string]> = [
-    ["CHECK (status IN ('active', 'error'));", "CHECK (status IN ('active', 'error')) NOT VALID;"],
-    ["OR api_key_encrypted IS NOT NULL)\n);", "OR api_key_encrypted IS NOT NULL)\n) NOT VALID;"],
-  ];
-  let out = sqlText;
-  for (const [from, to] of swaps) {
-    if (!out.includes(from)) throw new Error(`W02 connections migration no longer contains: ${from}`);
-    out = out.replace(from, to);
-  }
-  return out;
-}
-async function replayConnectionsMigration(): Promise<void> {
-  await adminSql.unsafe(supersededChecksNotValid(CONNECTIONS_MIGRATION));
-  await adminSql.unsafe(DROP_MIRROR_MIGRATION);
-  await adminSql.unsafe(SOFT_DISCONNECT_MIGRATION);
-}
 
 describe.skipIf(!RUN)('partner_ai_connections (#7600 W02)', () => {
   it('partner A cannot INSERT a connection for partner B (42501)', async () => {
@@ -96,83 +52,10 @@ describe.skipIf(!RUN)('partner_ai_connections (#7600 W02)', () => {
       .rejects.toMatchObject({ cause: { code: '23514' } });
   });
 
-  it('copies a legacy config with the same id and byte-identical ciphertext that still decrypts (quorum #13)', async () => {
-    const partner = await createPartner();
-    const legacyId = randomUUID();
-    const plaintext = 'sk-ant-api03-pre-migration-key-4242';
-    const sealed = encryptSecret(plaintext, { aad: columnAad(keySpec('partner_llm_configs'), legacyId) });
-    expect(sealed).toBeTruthy();
-    await adminSql`
-      INSERT INTO partner_llm_configs (id, partner_id, api_key_encrypted, key_last4, key_fingerprint, default_model)
-      VALUES (${legacyId}, ${partner.id}, ${sealed!}, '4242', 'fp-legacy', NULL)`;
-
-    await replayConnectionsMigration();
-
-    const [row] = await adminSql`SELECT * FROM partner_ai_connections WHERE id = ${legacyId}`;
-    expect(row).toMatchObject({
-      partner_id: partner.id,
-      kind: 'anthropic_byok',
-      api_key_encrypted: sealed,
-      key_last4: '4242',
-      legacy_default_model: null,
-      status: 'active',
-    });
-    expect(decryptSecret(String(row!.api_key_encrypted), { aad: columnAad(keySpec('partner_ai_connections'), legacyId) }))
-      .toBe(plaintext);
-    expect(() => decryptSecret(String(row!.api_key_encrypted), { aad: columnAad(keySpec('partner_ai_connections'), randomUUID()) }))
-      .toThrow();
-
-    // Re-applying is a no-op.
-    await replayConnectionsMigration();
-    const [count] = await adminSql`SELECT count(*)::int AS n FROM partner_ai_connections WHERE partner_id = ${partner.id}`;
-    expect(count!.n).toBe(1);
-  });
-
   it('enforces one compat (anthropic_byok|catalog) connection per partner during W02–W03 (23505)', async () => {
     const p = await createPartner();
     await seedByokConnection(p.id);
     await expect(seedByokConnection(p.id)).rejects.toMatchObject({ code: '23505' });
-  });
-
-  // W03 Task 6B (R3): the W02 legacy-UPDATE mirror is dropped — the connection
-  // is the authority and a stray legacy write no longer reaches it.
-  it('a legacy UPDATE is no longer mirrored onto the same-id connection (mirror trigger dropped)', async () => {
-    const partner = await createPartner();
-    const legacyId = randomUUID();
-    const sealed = encryptSecret('sk-ant-api03-mirror-5151', { aad: columnAad(keySpec('partner_llm_configs'), legacyId) })!;
-    await adminSql`INSERT INTO partner_llm_configs (id, partner_id, api_key_encrypted, key_last4, key_fingerprint)
-                   VALUES (${legacyId}, ${partner.id}, ${sealed}, '5151', 'fp')`;
-    await replayConnectionsMigration();
-    await withSystemDbAccessContext(() => db.execute(sql`
-      UPDATE partner_llm_configs SET status = 'error', last_error = 'auth_rejected' WHERE id = ${legacyId} AND config_version = 1`));
-    const [row] = await adminSql`SELECT status, last_error FROM partner_ai_connections WHERE id = ${legacyId}`;
-    expect(row).toEqual({ status: 'active', last_error: null });
-    expect(await adminSql`SELECT 1 FROM pg_trigger WHERE tgname = 'partner_llm_configs_mirror_to_connection'`).toHaveLength(0);
-  });
-
-  it('the copy works for a NOSUPERUSER NOBYPASSRLS role under system scope (no role-restricted-policy blind spot)', async () => {
-    // A non-owner, non-breeze_app role is always subject to RLS, so it proves
-    // what a NOBYPASSRLS migration owner would see: only policies without a
-    // TO clause apply to it.
-    const partner = await createPartner();
-    const legacyId = randomUUID();
-    const sealed = encryptSecret('sk-ant-api03-probe-role-7777', { aad: columnAad(keySpec('partner_llm_configs'), legacyId) })!;
-    await adminSql`
-      INSERT INTO partner_llm_configs (id, partner_id, api_key_encrypted, key_last4, key_fingerprint)
-      VALUES (${legacyId}, ${partner.id}, ${sealed}, '7777', 'fp-probe')`;
-    const copyBlock = CONNECTIONS_MIGRATION.slice(CONNECTIONS_MIGRATION.indexOf('DO $copy$'));
-    await adminSql.begin(async (tx) => {
-      await tx.unsafe(`DO $$ BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'w02_rls_probe') THEN
-          CREATE ROLE w02_rls_probe NOLOGIN NOSUPERUSER NOBYPASSRLS;
-        END IF; END $$`);
-      await tx.unsafe('GRANT SELECT ON partner_llm_configs, llm_provider_catalog TO w02_rls_probe');
-      await tx.unsafe('GRANT SELECT, INSERT ON partner_ai_connections TO w02_rls_probe');
-      await tx.unsafe('SET LOCAL ROLE w02_rls_probe');
-      await tx.unsafe(copyBlock);
-    });
-    const [row] = await adminSql`SELECT api_key_encrypted FROM partner_ai_connections WHERE id = ${legacyId}`;
-    expect(row?.api_key_encrypted).toBe(sealed);
   });
 });
 
@@ -373,8 +256,8 @@ describe.skipIf(!RUN)('ai_sessions / ai_agents offering bindings (#7600 W02)', (
   it('an agent policy cannot bind another partner\'s offering (23514 partner row, 23503 org row)', async () => {
     const t = await twoPartners();
     const user = await createUser({ partnerId: t.a.id });
-    const partnerAgent = await seedAgent({ partnerId: t.a.id, createdBy: user.id, model: 'claude-sonnet-5-5' });
-    const orgAgent = await seedAgent({ orgId: t.orgA.id, createdBy: user.id, model: 'claude-haiku-4-5' });
+    const partnerAgent = await seedAgent({ partnerId: t.a.id, createdBy: user.id });
+    const orgAgent = await seedAgent({ orgId: t.orgA.id, createdBy: user.id });
     await expect(withSystemDbAccessContext(() => db.execute(sql`
       UPDATE ai_agents SET offering_id = ${t.offB}, offering_partner_id = ${t.b.id} WHERE id = ${partnerAgent}`)))
       .rejects.toMatchObject({ cause: { code: '23514' } });
@@ -384,11 +267,11 @@ describe.skipIf(!RUN)('ai_sessions / ai_agents offering bindings (#7600 W02)', (
     await expect(withSystemDbAccessContext(() => db.execute(sql`
       UPDATE ai_agents SET offering_id = ${t.offB}, offering_partner_id = ${t.a.id} WHERE id = ${orgAgent}`)))
       .rejects.toMatchObject({ cause: { code: '23503', constraint_name: 'ai_agents_offering_fk' } });
-    // The legitimate binding works and leaves the legacy model untouched.
+    // The legitimate binding works.
     await withSystemDbAccessContext(() => db.execute(sql`
       UPDATE ai_agents SET offering_id = ${t.offA}, offering_partner_id = ${t.a.id} WHERE id = ${partnerAgent}`));
-    const [row] = await adminSql`SELECT model FROM ai_agents WHERE id = ${partnerAgent}`;
-    expect(row!.model).toBe('claude-sonnet-5-5');
+    const [row] = await adminSql`SELECT offering_id, offering_partner_id FROM ai_agents WHERE id = ${partnerAgent}`;
+    expect(row).toMatchObject({ offering_id: t.offA, offering_partner_id: t.a.id });
   });
 
   it.each(['ai_sessions_offering_org_partner_fk', 'ai_agents_offering_org_partner_fk'])(

@@ -7,7 +7,7 @@ import { formatCentsPerM, formatContextTokens } from '@/components/ai/modelPicke
 /**
  * W05 (#7603): the agent policy model (spec §5.6) — the `ai_agents` permitted
  * offerings, by id. A read-only picker over GET /ai/models/choices/ai-agents;
- * the save (bindAgentModel) re-checks everything. Null = follow the
+ * the save (bindAgentOffering) re-checks everything. Null = follow the
  * `ai_agents` default.
  */
 export default function AgentModelSelect({ orgId, value, onChange, disabled }: {

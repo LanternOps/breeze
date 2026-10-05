@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Bot, Check, CheckCheck, Layers, Loader2, Search, ShieldCheck, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
-  AI_AGENT_KINDS,
+  AI_AGENT_ACTING_KINDS,
   APPROVAL_BATCH_MAX,
   type AiAgentGraduationDto,
   type AiAgentGraduationRowDto,
@@ -71,7 +71,7 @@ const SERVER_PAGE_LIMIT_MAX = 50;
  *  30s poll without re-rendering the whole list every second. */
 const EXPIRY_TICK_MS = 10_000;
 /** Caps concurrent `GET /ai/agents/graduation` fan-out: each org issues up to
- *  AI_AGENT_KINDS.length (3) requests, so a batch of 5 orgs tops out at 15
+ *  AI_AGENT_ACTING_KINDS.length (4) requests, so a batch of 5 orgs tops out at 20
  *  concurrent requests regardless of how many distinct supervised orgs are on
  *  screen at once — see the graduation-queue comment near its refs. */
 const ALWAYS_ALLOW_ORG_BATCH_SIZE = 5;
@@ -133,7 +133,8 @@ function alwaysAllowOpKey(approval: PendingApproval): string | null {
   return approval.action !== null ? `${approval.actionToolName}:${approval.action}` : null;
 }
 
-/** One org's worth of graduation state, across every `AiAgentKind` that has
+/** One org's worth of graduation state, across every ACTING `AiAgentKind` (the
+ *  read-only, system-provisioned `research` kind has no actions to graduate) that has
  *  an active agent. Never throws — a failed or malformed response for one
  *  kind is skipped, because this affordance is additive and must never take
  *  the inbox (or even just Approve) down with it. */
@@ -141,7 +142,7 @@ async function fetchOrgGraduation(orgId: string): Promise<OrgGraduationInfo> {
   const eligible = new Map<string, AiAgentKind>();
   let policyDecideEnabled = false;
   await Promise.all(
-    AI_AGENT_KINDS.map(async (kind) => {
+    AI_AGENT_ACTING_KINDS.map(async (kind) => {
       try {
         const res = await fetchWithAuth(
           `/ai/agents/graduation?orgId=${encodeURIComponent(orgId)}&kind=${encodeURIComponent(kind)}`,
@@ -320,7 +321,7 @@ export default function ApprovalsInbox() {
   // Newly-discovered orgIds queue here and a single persistent worker drains
   // them ALWAYS_ALLOW_ORG_BATCH_SIZE at a time — this is what caps client fan-out
   // (a page with many distinct supervised orgs would otherwise fire
-  // AI_AGENT_KINDS.length requests per org all at once) and, because the worker
+  // AI_AGENT_ACTING_KINDS.length requests per org all at once) and, because the worker
   // is not tied to any one effect run's cleanup, a poll/WS-nudge re-render that
   // lands mid-fetch can never discard an in-flight org's result — the queue and
   // the "already requested" ref only ever grow.

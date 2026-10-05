@@ -3,7 +3,7 @@
  * the agent-policy form's model list. USER-scoped — deliberately not W04's
  * `partnerRead` (billing:manage); a tech who may chat may see what they may
  * pick. Read-only and a convenience: the turn claim (resolveModel) and the
- * agent write (bindAgentModel) re-check everything.
+ * agent write (bindAgentOffering) re-check everything.
  *
  * Self-managed DB context (selfManagedDbContextRoutes.ts): listModelChoices
  * reads through the loader's own short system transactions, which must never
@@ -92,7 +92,7 @@ aiModelChoiceRoutes.get(
     const auth = c.get('auth') as AuthContext;
     const q = c.req.valid('query');
     // userId = the caller: an agent run skips required_permission, so the
-    // WRITER is who must hold it (bindAgentModel) — the picker shows the
+    // WRITER is who must hold it (bindAgentOffering) — the picker shows the
     // offerings this writer may bind, permission-gated ones disabled.
     if (!q.orgId) {
       // A partner-wide agent: only a partner-scope caller can own one.

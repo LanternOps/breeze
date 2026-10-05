@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   AI_CONNECTION_ROW_KINDS,
+  ANTHROPIC_API_CONNECTION_KINDS,
   BYO_MODEL_ID_PATTERN,
   GATEWAY_CONNECTION_KINDS,
+  isAnthropicApiConnectionKind,
   isGatewayConnectionKind,
 } from './aiConnectionKinds';
 
@@ -32,5 +34,22 @@ describe('aiConnectionKinds', () => {
     ['x'.repeat(201), false],
   ])('BYO_MODEL_ID_PATTERN %j → %s', (id, ok) => {
     expect(BYO_MODEL_ID_PATTERN.test(id)).toBe(ok);
+  });
+});
+
+describe('Anthropic API connection kinds (W08)', () => {
+  it('are the two kinds that carry a stored Anthropic key: direct BYOK and a catalog gateway', () => {
+    expect([...ANTHROPIC_API_CONNECTION_KINDS]).toEqual(['anthropic_byok', 'catalog']);
+    expect(isAnthropicApiConnectionKind('anthropic_byok')).toBe(true);
+    expect(isAnthropicApiConnectionKind('catalog')).toBe(true);
+    expect(isAnthropicApiConnectionKind('openai_compatible')).toBe(false);
+    expect(isAnthropicApiConnectionKind('bedrock')).toBe(false);
+  });
+
+  it('every Anthropic API kind is a row kind and never a gateway kind', () => {
+    for (const k of ANTHROPIC_API_CONNECTION_KINDS) {
+      expect(AI_CONNECTION_ROW_KINDS).toContain(k);
+      expect(isGatewayConnectionKind(k)).toBe(false);
+    }
   });
 });

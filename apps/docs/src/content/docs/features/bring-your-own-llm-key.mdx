@@ -1,17 +1,17 @@
 ---
 title: Bring Your Own LLM Key
-description: Use a partner-owned Anthropic API key for Breeze AI, optionally routed through a platform-vetted endpoint, connect your own OpenAI-compatible endpoint, or configure an instance-wide LLM backend on a self-hosted deployment.
+description: Connect a partner-owned Anthropic API key (directly or through a platform-vetted endpoint), choose which models each AI feature uses, connect your own OpenAI-compatible endpoint, or configure an instance-wide backend on a self-hosted deployment.
 ---
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-Breeze supports two ways to use your own LLM provider configuration:
+Breeze supports three ways to use your own LLM provider configuration:
 
-- **Hosted BYOK** lets a partner use its own Anthropic API key for Breeze AI.
+- **Anthropic connections** let a partner use its own Anthropic API key for Breeze AI, directly or through a platform-vetted endpoint.
 - **OpenAI-compatible connections** let a partner connect its own vLLM, Ollama, LiteLLM, or OpenRouter endpoint with full tool calling.
 - **Self-hosted instance configuration** routes platform-keyed AI usage to an Anthropic-compatible or OpenAI-compatible endpoint.
 
-If both are configured, a partner's BYOK configuration takes precedence. Instance environment variables apply only to AI usage that would otherwise use the platform key.
+A partner's connections and per-feature defaults decide where each AI request goes. Instance environment variables seed the platform connection on a self-hosted deployment; they never override a partner's connection.
 
 ## Hosted: use your own Anthropic key
 
@@ -27,21 +27,19 @@ You must be a partner admin with access to all organizations and the billing man
 
 <Steps>
 
-1. Open **Partner Settings → AI Providers & Models**.
+1. Open **Partner Settings → AI Providers & Models** and click **Add connection** in the **Connections** card.
 
-2. Paste your Anthropic API key into the write-only key field.
+2. Choose **Anthropic API key**, give the connection a name, and paste the key into the write-only field.
 
-3. Optionally select a default model from the supported model list.
-
-4. Click **Save**. Breeze verifies the key with Anthropic before storing it.
+3. Click **Save** and complete MFA. Breeze verifies the key with Anthropic before storing it.
 
 </Steps>
 
+Your first Anthropic connection takes over every AI feature that was using the Breeze platform key (patch testing stays on the platform key). Pick a different model for any feature under **Defaults by feature**.
+
 The page shows that your key is active and displays only its last four characters. Breeze never returns the full key after you save it.
 
-To rotate the key, paste the replacement and save it. Breeze verifies the replacement before changing the stored key, so a failed verification leaves the existing working key in place.
-
-To return to the Breeze platform key and Breeze AI credits, click **Disconnect** and complete MFA. Breeze does not switch back automatically.
+To rotate a key, open the connection's drawer, paste the replacement and save; Breeze verifies it before replacing the stored key, so a failed verification leaves the working key in place. **Disconnect** (with MFA) moves the features that used this connection back to the same models on the Breeze platform key and revokes the stored key. Breeze never switches back on its own.
 
 ### Usage, budgets, and failures
 
@@ -61,9 +59,9 @@ Breeze maintains this list itself. **You choose from the list — you never ente
 
 <Steps>
 
-1. Open **Partner Settings → AI Providers & Models**. Whenever at least one catalog entry is available — or you already have an endpoint selected — an **Endpoint** card appears below the key card, listing **Anthropic (direct)** plus one radio option per vetted endpoint. Selecting an endpoint requires a connected key: if you try it before connecting one, Breeze rejects the change with *"Connect an Anthropic API key before selecting an endpoint."* rather than storing a selection that could not be used.
+1. Open the connection's drawer in the **Connections** card and choose an **Endpoint**: Anthropic (direct) or one of the vetted endpoints. Breeze checks that the endpoint serves the model your **chat** feature uses before switching. Switching keeps the same connection and its feature assignments.
 
-2. Selecting **Anthropic (direct)** applies immediately — it always requires zero confirmation, since it is the safe fallback.
+2. Selecting Anthropic (direct) applies immediately — it always requires zero confirmation, since it is the safe fallback.
 
 3. Selecting a third-party endpoint opens a confirmation dialog. If the endpoint has a data-handling note, the dialog quotes it verbatim and requires you to check **"I understand my AI traffic and content will be processed by \<endpoint name\>"** before you can confirm. The note describes what that specific endpoint does with your traffic and content — read it before agreeing, since it varies per endpoint and Breeze cannot vouch for a third party's own data handling beyond the technical checks it ran.
 
@@ -159,7 +157,7 @@ The **Defaults by feature** card sets the default model, effort, and speed for e
 
 ## Self-hosted: configure an instance-wide provider
 
-Self-hosted operators can configure an LLM backend for platform-keyed usage with environment variables. These settings apply across the instance, except for partners that have their own BYOK configuration.
+Self-hosted operators can configure an LLM backend for platform-keyed usage with environment variables. These settings configure the platform connection: the default model for new partners and the backend platform-key traffic goes to. A partner's own connection is never overridden by them.
 
 If you're a hosted partner instead, see [Route your key through a platform-vetted endpoint](#route-your-key-through-a-platform-vetted-endpoint) above — hosted deployments select from Breeze's vetted catalog rather than setting these variables.
 
@@ -198,5 +196,5 @@ Both price values must be zero or greater.
 - The same network rules apply as for a partner-added connection: loopback is never reachable, and private (RFC 1918 / ULA) addresses and cleartext `http` to a private address require `IS_HOSTED=false`. Point `MCP_LLM_BASE_URL` at the model host's container service name or LAN address, not `localhost`.
 
 <Aside type="note">
-  Provider precedence is **partner BYOK configuration → instance environment**. A partner-owned Anthropic key always overrides these instance settings. The instance environment applies only when Breeze resolves the request as platform-keyed usage.
+  A partner's own connection always wins: features assigned to it never use the instance settings. The instance settings apply to features on the platform connection.
 </Aside>

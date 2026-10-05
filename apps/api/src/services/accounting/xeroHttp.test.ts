@@ -656,3 +656,15 @@ describe('payment refusals (Xero W05 refinement 16)', () => {
       .rejects.toMatchObject({ kind: 'validation', providerCode: 'amount_exceeds_due' });
   });
 });
+
+it('stamps a fee create only inside the acquired slot immediately before fetch',async()=>{
+  const order:string[]=[];
+  const stamp=vi.fn(async()=>{order.push('stamp');});
+  const fetcher=vi.spyOn(globalThis,'fetch').mockImplementation(async()=>{order.push('fetch');return json({});});
+  const ctx={accessToken:'test',tenantId:'tenant',connectionId:'connection',rate:SPEC};
+  slotMock.mockImplementationOnce(()=>{throw new AccountingProviderError({provider:'xero',kind:'rate_limited',operation:'slot'});});
+  await expect(xeroApiWrite(ctx,'PUT','BankTransactions',{},'Xero fee create',{beforeCreate:stamp})).rejects.toMatchObject({kind:'rate_limited'});
+  expect(stamp).not.toHaveBeenCalled();expect(fetcher).not.toHaveBeenCalled();
+  await xeroApiWrite(ctx,'PUT','BankTransactions',{},'Xero fee create',{beforeCreate:stamp});
+  expect(order).toEqual(['stamp','fetch']);
+});

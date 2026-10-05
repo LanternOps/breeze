@@ -1,10 +1,10 @@
+import { finishCardPayAndSave } from './autopay/payAndSave';
 import type Stripe from 'stripe';
 import { and, eq } from 'drizzle-orm';
 import { invoices, invoiceStripePayments } from '../db/schema';
 import { InvoiceServiceError } from './invoiceTypes';
-import { findLatestArchivedCredentialForAccount } from './stripeCredentialArchive';
 import { db, runOutsideDbContext, hasDbAccessContext, withSystemDbAccessContext } from '../db';
-import { getPartnerStripeClient, PartnerStripeError } from './partnerStripe';
+import { getPartnerStripeClient } from './partnerStripe';
 import { recordStripePayment } from './stripeReconcile';
 import { fromMinorUnits } from './stripeMoney';
 
@@ -96,6 +96,14 @@ export async function settleCheckoutSession(
     markChargedRepairIfRevoked: true,
   });
 
+  try {
+    await finishCardPayAndSave(partnerId, session.id);
+  } catch (err) {
+    if (err instanceof HeldDbContextForStripeError) throw err;
+    // Payment is committed. Leave the durable setup attempt unfinished so the
+    // setup reconciler can retry saving without charging the customer again.
+    console.error('[stripeSettle] booked payment card capture failed', { partnerId, sessionId: session.id, err });
+  }
   return { settled: true, invoiceId: res.invoiceId };
 }
 
@@ -108,19 +116,10 @@ export async function settlePaymentIntent(partnerId: string, paymentIntentId: st
   }).from(invoiceStripePayments).innerJoin(invoices, eq(invoices.id, invoiceStripePayments.invoiceId))
     .where(and(eq(invoices.partnerId, partnerId), eq(invoiceStripePayments.stripeObjectType, 'payment_intent'), eq(invoiceStripePayments.stripeObjectId, paymentIntentId))).limit(1));
   if (!mapping) throw new InvoiceServiceError('Payment mapping not found', 404, 'INVOICE_NOT_FOUND');
-  const archived = async (credentialId: string) => withSystemDbAccessContext(() => getPartnerStripeClient(partnerId, { archivedCredentialId: credentialId, invoiceStripePaymentId: mapping.id }));
-  let client: Awaited<ReturnType<typeof getPartnerStripeClient>> | null = null;
-  if (mapping.revocationCredentialId) client = await archived(mapping.revocationCredentialId);
-  else {
-    try { client = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId)); }
-    catch (error) { if (!(error instanceof PartnerStripeError) || error.code !== 'NO_STRIPE_KEY') throw error; }
-    if (!client || client.stripeAccountId !== mapping.stripeAccountId) {
-      const credential = await withSystemDbAccessContext(() => findLatestArchivedCredentialForAccount(partnerId, mapping.stripeAccountId));
-      if (!credential) throw new PartnerStripeError('No credential remains for the payment account', 'NO_STRIPE_KEY');
-      client = await archived(credential.id);
-    }
-  }
-  if (client.stripeAccountId !== mapping.stripeAccountId) throw new PartnerStripeError('Payment account binding changed', 'STRIPE_CONNECTION_CHANGED');
+  const client = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId, {
+    reconciliationAccountId: mapping.stripeAccountId, archivedCredentialId: mapping.revocationCredentialId,
+    invoiceStripePaymentId: mapping.id, reason: 'payment_intent_settlement',
+  }));
   const intent = await runOutsideDbContext(() => client!.stripe.paymentIntents.retrieve(paymentIntentId));
   if (intent.id !== paymentIntentId) throw new Error('Stripe returned a different PaymentIntent');
   if (intent.status !== 'succeeded') return { settled: false, status: intent.status, invoiceId: mapping.invoiceId };

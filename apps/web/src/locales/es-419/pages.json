@@ -22,6 +22,7 @@
     "adminSendingDomains": "Dominios de envío del socio",
     "adminUsersDetailDevices": "Dispositivos del usuario",
     "aiAgentsImpact": "Impacto de IA",
+    "aiAgentsFixMemory": "Memoria de correcciones",
     "aiAgentsRunsDetail": "Detalle de ejecución",
     "aiAgentsRuns": "Ejecuciones de agentes",
     "aiForOffice": "AI para Office",
@@ -172,7 +173,8 @@
     "settingsTicketing": "Configuración de tickets",
     "securityScans": "Escaneos de IOC",
     "devicesTime": "Sincronización de hora",
-    "adminAiModels": "Modelos de IA"
+    "adminAiModels": "Modelos de IA",
+    "billingAutopay": "Automatic payments"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoreo y Gestión Remota",

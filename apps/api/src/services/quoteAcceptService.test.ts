@@ -1,3 +1,6 @@
+const { plan } = vi.hoisted(() => ({ plan: vi.fn().mockResolvedValue(null) }));
+vi.mock('./autopay/scheduler', () => ({ planAutopayForInvoice: plan }));
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { stagePax8OrderFromQuoteMock, createContractMock, createExecutedDocumentsMock, callLog } = vi.hoisted(() => ({
@@ -152,6 +155,8 @@ describe('acceptQuote deposit snapshot', () => {
     // calls[0] is the invoices update (issueFields); calls[1] is the quotes
     // status->converted update. See queueAcceptHappyPath's call-order doc above.
     expect(setMock.mock.calls[0]![0]).toMatchObject({ depositDue: '300.00' });
+    expect(plan).toHaveBeenCalledWith(db, 'inv1');
+    expect(plan).toHaveBeenCalledTimes(1);
   });
 
   // #3777 review finding 1: the auto-issued invoice and the acceptance hash
@@ -594,6 +599,7 @@ describe('acceptQuote contract document snapshot', () => {
     // createExecutedDocuments receives the created contract ids (deterministic
     // first-created link) — the transaction-ordering requirement.
     expect(callLog).toEqual(['createContract', 'createExecutedDocuments']);
+    expect(plan).not.toHaveBeenCalled();
     const snapshotArgs = createExecutedDocumentsMock.mock.calls[0]!;
     expect(snapshotArgs[2]).toEqual(['contractA']); // contractIds
     expect(snapshotArgs[3]).toBe(renderData);       // renderData

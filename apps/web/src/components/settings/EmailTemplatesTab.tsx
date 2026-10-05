@@ -15,6 +15,14 @@ const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true 
 
 type TemplatesMap = Partial<Record<EmailTemplateId, EmailTemplateOverride>>;
 
+const AUTOPAY_TEMPLATE_IDS=new Set<EmailTemplateId>(['autopay_request','autopay_enrolled','autopay_stopped', 'autopay_paused', 'autopay_resumed','card_expiring']);
+const BILLING_TEMPLATE_IDS=new Set<EmailTemplateId>(['quote_send','invoice_send',...AUTOPAY_TEMPLATE_IDS]);
+BILLING_TEMPLATE_IDS.add('payment_reminder');
+BILLING_TEMPLATE_IDS.add('invoice_autopay');
+BILLING_TEMPLATE_IDS.add('payment_overdue');
+BILLING_TEMPLATE_IDS.add('payment_receipt');
+BILLING_TEMPLATE_IDS.add('payment_failed');
+
 function asOverride(row: unknown): EmailTemplateOverride | undefined {
   if (!row || typeof row !== 'object') return undefined;
   const r = row as Record<string, unknown>;
@@ -46,6 +54,7 @@ function readTemplates(settings: unknown): TemplatesMap {
 
 export default function EmailTemplatesTab() {
   const { t } = useTranslation('settings');
+  const { t: tBilling } = useTranslation('billing');
   const [templates, setTemplates] = useState<TemplatesMap>({});
   const [selectedId, setSelectedId] = useState<EmailTemplateId | null>(null);
   const [loading, setLoading] = useState(true);
@@ -113,26 +122,36 @@ export default function EmailTemplatesTab() {
         <h2 className="text-sm font-semibold">{t('emailTemplates.title')}</h2>
         <p className="mt-1 text-xs text-muted-foreground">{t('emailTemplates.description')}</p>
       </div>
-      <ul className="divide-y rounded-lg border" data-testid="email-templates-list">
-        {EMAIL_TEMPLATE_IDS.map((id) => (
-          <li key={id}>
-            <button
-              type="button"
-              onClick={() => setSelectedId(id)}
-              className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted/40"
-              data-testid={`email-template-row-${id}`}
-            >
-              <span className="text-sm font-medium">{emailTemplateLabel(id)}</span>
-              <span
-                className="text-xs text-muted-foreground"
-                data-testid={`email-template-status-${id}`}
-              >
-                {isCustom(templates[id]) ? t('emailTemplates.custom') : t('emailTemplates.usingDefault')}
-              </span>
-            </button>
-          </li>
+      <div className="space-y-4" data-testid="email-templates-list">
+        {[
+          {billing:false,ids:EMAIL_TEMPLATE_IDS.filter(id=>!BILLING_TEMPLATE_IDS.has(id))},
+          {billing:true,ids:EMAIL_TEMPLATE_IDS.filter(id=>BILLING_TEMPLATE_IDS.has(id))},
+        ].map(group=>(
+          <section key={String(group.billing)} data-testid={group.billing?'autopay-email-template-group':'email-template-other-group'}>
+            <h3 className="mb-2 text-sm font-semibold">
+              {group.billing?t('emailTemplates.billingPayments'):t('emailTemplates.supportPortal')}
+            </h3>
+            <ul className="divide-y rounded-lg border">
+              {group.ids.map(id=>(
+                <li key={id}>
+                  <button type="button" onClick={()=>setSelectedId(id)}
+                    className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted/40"
+                    data-testid={AUTOPAY_TEMPLATE_IDS.has(id)?`autopay-email-template-${id}`:id === 'payment_reminder' || id === 'payment_overdue' ? `autopay-template-${id}` : `email-template-row-${id}`}>
+                    <span className="text-sm font-medium">
+                      {AUTOPAY_TEMPLATE_IDS.has(id)?t(/* i18n-dynamic */ `emailTemplates.labels.${id}`):id === 'payment_reminder' ? tBilling('reminders.templates.paymentReminder')
+                        :id === 'payment_overdue' ? tBilling('reminders.templates.paymentOverdue')
+                        :id === 'invoice_autopay' ? tBilling('autopay.noticeTemplate') : t(/* i18n-dynamic */ `emailTemplates.labels.${id}`, { defaultValue: emailTemplateLabel(id) })}
+                    </span>
+                    <span className="text-xs text-muted-foreground" data-testid={`email-template-status-${id}`}>
+                      {isCustom(templates[id])?t('emailTemplates.custom'):t('emailTemplates.usingDefault')}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
         ))}
-      </ul>
+      </div>
     </div>
   );
 }

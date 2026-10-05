@@ -86,7 +86,8 @@
         "prompt": "Bana en son denetim günlüğü girişlerini göster — son birkaç saat içinde hangi işlemler yapıldı?"
       }
     },
-    "unattendedRelease": "Yapay zekâ betik incelemecisi tarafından incelendi ve onay kartı olmadan yayınlandı."
+    "unattendedRelease": "Yapay zekâ betik incelemecisi tarafından incelendi ve onay kartı olmadan yayınlandı.",
+    "openScriptProposal": "Çalıştırmalarını görmek veya kitaplığa kaydetmek için öneriyi açın"
   },
   "aiChatSidebar": {
     "history": "Geçmiş",

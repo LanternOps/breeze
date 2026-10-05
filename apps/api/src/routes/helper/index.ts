@@ -19,7 +19,7 @@ import {
   clientToolsSchema,
   createClientDeclaredMcpServer,
   clientDeclaredToolMcpNames,
-  requestClientDeclaredTool,
+  dispatchClientDeclaredTool,
   resolveClientDeclaredTool,
   peekClientDeclaredToolName,
   failPendingClientDeclaredForSession,
@@ -392,11 +392,8 @@ helperRoutes.post(
           _onPostToolUse: unknown,
           getSession: () => ActiveSession,
         ) => ({
-          server: createClientDeclaredMcpServer(clientTools, (toolName, input) => {
-            const session = getSession();
-            const toolUseId = session.toolUseIdQueue.shift() ?? crypto.randomUUID();
-            return requestClientDeclaredTool(session, toolUseId, toolName, input);
-          }),
+          server: createClientDeclaredMcpServer(clientTools, (toolName, input, sdkToolUseId) =>
+            dispatchClientDeclaredTool(getSession(), toolName, input, sdkToolUseId)),
           name: CLIENT_DECLARED_MCP_SERVER_NAME,
         })
       : helperMcpServerFactory(permissionLevel);
@@ -660,7 +657,9 @@ helperRoutes.get('/config', async (c) => {
   const permissionLevel = await resolveHelperPermissionLevelForDevice(device.id, DEFAULT_PERMISSION_LEVEL);
 
   return c.json({
-    enabled: true,
+    // Resolved by helperAuth (services/helperSettings — same resolver as the
+    // agent heartbeat); helperAuth refuses a disabled device before this runs.
+    enabled: c.get('helperEnabled') === true,
     permissionLevel,
     allowScreenCapture: true,
     sessionRetentionHours: 24,

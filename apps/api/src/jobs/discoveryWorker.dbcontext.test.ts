@@ -20,14 +20,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DispatchOutcome } from '../services/agentCommandRelay';
 
-const { mockDb, ctxState, agentRelayMock } = vi.hoisted(() => ({
+const { mockDb, ctxState, agentRelayMock, queueAdd } = vi.hoisted(() => ({
+  queueAdd: vi.fn(),
   mockDb: {
     select: vi.fn(),
     update: vi.fn(),
   },
   // DB-access-context depth + an ordered event log, so a test can prove which
   // work runs inside a held transaction and which runs after it closes.
-  ctxState: { depth: 0, events: [] as string[] },
+  ctxState: { depth: 0, events: [] as string[], afterExit: [] as Array<() => unknown> },
   agentRelayMock: {
     isAgentConnectedAnywhere: vi.fn(async () => true),
     dispatchCommandToAgent: vi.fn(async (): Promise<DispatchOutcome> => ({ status: 'sent', via: 'local' })),
@@ -35,7 +36,14 @@ const { mockDb, ctxState, agentRelayMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('bullmq', () => ({
-  Queue: class {},
+  Queue: class {
+    async getJob() {
+      return undefined;
+    }
+    add(...args: unknown[]) {
+      return queueAdd(...args);
+    }
+  },
   Worker: class {},
   Job: class {},
   UnrecoverableError: class extends Error {},
@@ -55,7 +63,18 @@ vi.mock('../db', () => ({
     } finally {
       ctxState.depth--;
       ctxState.events.push('ctx:exit');
+      // Mirrors db/index.ts: deferred work starts once the OUTERMOST context settles.
+      if (ctxState.depth === 0) {
+        for (const work of ctxState.afterExit.splice(0)) void work();
+      }
     }
+  },
+  runAfterDbContextExit: (_label: string, work: () => unknown) => {
+    if (ctxState.depth > 0) {
+      ctxState.afterExit.push(work);
+      return;
+    }
+    void work();
   },
 }));
 
@@ -137,7 +156,7 @@ vi.mock('./networkBaselineWorker', () => ({
   getNetworkBaselineQueue: vi.fn(),
 }));
 
-const { __testables } = await import('./discoveryWorker');
+const { __testables, enqueueDiscoveryScanAfterCommit } = await import('./discoveryWorker');
 
 /** A `.select().from().where().limit()` chain that logs the depth it ran at. */
 function selectLimitChain(rows: unknown[], label: string) {
@@ -295,5 +314,49 @@ describe('processDispatchScan DB-context scoping (final-review fix, #4084/#1105)
       'markJobFailed@depth1',
       'ctx:exit',
     ]);
+  });
+});
+
+describe('enqueueDiscoveryScanAfterCommit (#7187 enqueue-before-commit hazard)', () => {
+  const INPUT = {
+    jobId: 'job-9',
+    profileId: 'profile-9',
+    orgId: 'org-9',
+    siteId: 'site-9',
+    agentId: 'agent-9',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ctxState.depth = 0;
+    ctxState.events = [];
+    ctxState.afterExit = [];
+  });
+
+  it('holds the dispatch enqueue until the caller\'s context has exited', async () => {
+    queueAdd.mockImplementation(async () => {
+      ctxState.events.push(`queueAdd@depth${ctxState.depth}`);
+      return { id: 'q-1' };
+    });
+    const dbModule = await import('../db');
+
+    await dbModule.withSystemDbAccessContext(async () => {
+      enqueueDiscoveryScanAfterCommit(INPUT);
+      ctxState.events.push('afterRegister');
+    });
+    await vi.waitFor(() => expect(queueAdd).toHaveBeenCalledTimes(1));
+
+    expect(ctxState.events).toEqual(['ctx:enter', 'afterRegister', 'ctx:exit', 'queueAdd@depth0']);
+    expect(queueAdd.mock.calls[0]![1]).toMatchObject({ type: 'dispatch-scan', jobId: 'job-9', agentId: 'agent-9' });
+  });
+
+  it('leaves the job row untouched when the enqueue fails after commit (the sweep retries it)', async () => {
+    queueAdd.mockRejectedValue(new Error('redis down'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    enqueueDiscoveryScanAfterCommit(INPUT);
+
+    await vi.waitFor(() => expect(errorSpy).toHaveBeenCalled());
+    expect(mockDb.update).not.toHaveBeenCalled();
   });
 });

@@ -20,11 +20,12 @@ type DarwinReader struct {
 	FetchRIB       func(int, route.RIBType, int) ([]byte, error)
 	InterfacesOS   func() ([]net.Interface, error)
 	InterfaceAddrs func(net.Interface) ([]net.Addr, error)
+	InterfaceKind  func(net.Interface) string // nil = unknown
 	DNS            func(context.Context) (ResolverSection, error)
 }
 
 func NewReader(epoch string) Reader {
-	return &DarwinReader{Identities: NewInterfaceIdentities(func(evidence string) (string, error) { return StableEvidenceKey(epoch, evidence), nil }), FetchRIB: route.FetchRIB, InterfacesOS: net.Interfaces, InterfaceAddrs: func(i net.Interface) ([]net.Addr, error) { return i.Addrs() }, DNS: readNativeDNS}
+	return &DarwinReader{Identities: NewInterfaceIdentities(func(evidence string) (string, error) { return StableEvidenceKey(epoch, evidence), nil }), FetchRIB: route.FetchRIB, InterfacesOS: net.Interfaces, InterfaceAddrs: func(i net.Interface) ([]net.Addr, error) { return i.Addrs() }, InterfaceKind: func(i net.Interface) string { return darwinInterfaceKind(i.Name) }, DNS: readNativeDNS}
 }
 func (r *DarwinReader) Capabilities() []Capability {
 	return []Capability{{"interfaces", 1, true}, {"routes_ipv4", 1, true}, {"routes_ipv6", 1, true}, {"routing_rules", 1, false}, {"scoped_dns", 1, true}, {"neighbor_cache", 1, true}, {"route_lookup", 1, true}, {"interface_bound_probes", 1, true}}
@@ -36,11 +37,11 @@ func (r *DarwinReader) Contexts(ctx context.Context) (Manifest, error) {
 	return Manifest{Outcome: Complete, Contexts: []Context{{"darwin:default", []string{"ipv4", "ipv6"}}}}, nil
 }
 func (r *DarwinReader) Interfaces(ctx context.Context, _ Context) (Section[InterfaceRow], error) {
-	rows, _, e := interfaceRows(ctx, r.Identities, r.InterfacesOS, r.InterfaceAddrs)
+	rows, _, e := interfaceRows(ctx, r.Identities, r.InterfacesOS, r.InterfaceAddrs, r.InterfaceKind)
 	return Section[InterfaceRow]{Rows: rows}, e
 }
 func (r *DarwinReader) keys(ctx context.Context) (map[int]string, error) {
-	_, keys, e := interfaceRows(ctx, r.Identities, r.InterfacesOS, r.InterfaceAddrs)
+	_, keys, e := interfaceRows(ctx, r.Identities, r.InterfacesOS, r.InterfaceAddrs, r.InterfaceKind)
 	return keys, e
 }
 func (r *DarwinReader) messages(ctx context.Context) ([]route.Message, error) {

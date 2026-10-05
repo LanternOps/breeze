@@ -1,16 +1,29 @@
 import { defineConfig } from 'vitest/config';
 import { config } from 'dotenv';
+import path from 'node:path';
 
 // Load test environment variables
 config({ path: '../../.env.test', quiet: true });
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@breeze/shared': path.resolve(import.meta.dirname, '../../packages/shared/src'),
+    },
+  },
   test: {
     // explicit: vitest 5 flips the default to true; flip per package in a follow-up
     clearMocks: false,
     globals: true,
     environment: 'node',
     include: [
+      'src/services/accounting/accountingFeePush.integration.test.ts',
+      'src/index.autopay.integration.test.ts',
+      'src/db/schema/autopaySetupAttempts.integration.test.ts',
+      'src/services/autopay/enrollmentService.integration.test.ts',
+      'src/services/autopay/cardExpiryCheck.integration.test.ts',
+      // Charging locks/replay require real PostgreSQL (never the unit DB mocks).
+      'src/services/autopay/charging.integration.test.ts',
       'src/services/autopay/**/*.integration.test.ts',
       'src/jobs/scriptVerifyReconciliation.integration.test.ts',
       'src/__tests__/integration/**/*.test.ts',
@@ -36,6 +49,8 @@ export default defineConfig({
       // Belong to vitest.integration.config.ts (excluded from the unit runner).
       'src/services/discovery/agentReportedBmcLink.integration.test.ts',
       'src/jobs/discoveryWorker.bmc.integration.test.ts',
+      // Scheduled discovery dispatch is enqueued only after the job row commits (#7187 hazard).
+      'src/jobs/discoveryWorker.dispatchAfterCommit.integration.test.ts',
       'src/services/topology/bmc.integration.test.ts',
       // #5861 Customer Portal Network Visibility: real-Postgres proof of
       // org isolation and partner-wide monitor result scoping.

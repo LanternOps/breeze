@@ -671,6 +671,46 @@ describe('device commands routes', () => {
       expect(body.queuedOffline).toEqual([offlineId]);
     });
 
+    it('bulk: a command cancelled before delivery is reported under failed (CANCELLED + reason), not commands', async () => {
+      const okId = '11111111-1111-1111-1111-111111111111';
+      const cancelledId = '22222222-2222-2222-2222-222222222222';
+
+      vi.mocked(getDeviceWithOrgCheck)
+        .mockResolvedValueOnce({ id: okId, orgId: 'org-123', hostname: 'host-ok', status: 'online' } as never)
+        .mockResolvedValueOnce({ id: cancelledId, orgId: 'org-123', hostname: 'host-x', status: 'online' } as never);
+
+      dispatchDeviceCommandMock.mockImplementationOnce(
+        async ({ deviceId, type }: { deviceId: string; type: string }) => ({
+          ok: true,
+          command: { id: 'cmd-ok', deviceId, type, status: 'sent', createdAt: new Date() },
+          delivery: 'delivered',
+          deliverBy: new Date(),
+        }) as never,
+      ).mockImplementationOnce(
+        async ({ deviceId, type }: { deviceId: string; type: string }) => ({
+          ok: true,
+          command: { id: 'cmd-x', deviceId, type, status: 'cancelled', createdAt: new Date() },
+          delivery: 'cancelled',
+          cancelReason: 'requester_inactive',
+          deliverBy: new Date(),
+        }) as never,
+      );
+
+      const res = await app.request('/devices/bulk/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ deviceIds: [okId, cancelledId], type: 'reboot' }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.commands.map((c: { id: string }) => c.id)).toEqual(['cmd-ok']);
+      expect(body.failed).toEqual([
+        { deviceId: cancelledId, code: 'CANCELLED', message: expect.stringContaining('requester_inactive') },
+      ]);
+      expect(body.queuedOffline).toEqual([]);
+    });
+
     describe('bulk-wake (type=wake)', () => {
       const onlineDevice = (id: string) =>
         ({ id, orgId: 'org-123', status: 'online', hostname: `host-${id.slice(0, 4)}` } as never);

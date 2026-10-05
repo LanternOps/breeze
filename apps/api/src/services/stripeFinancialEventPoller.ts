@@ -1,5 +1,8 @@
+import { reconcilePendingControls } from './autopay/collectionControl';
+import {createHash} from 'node:crypto';
+import { AUTOPAY_STRIPE_EVENT_TYPES, isAutopayStripeEvent, ingestAutopayStripeEvent, replayAutopayStripeEvents } from './autopay/setupReconciliation';
 import type Stripe from 'stripe';
-import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm';
+import { and, asc, count, eq, isNotNull, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { stripeConnectAccounts, stripeFinancialEvents } from '../db/schema/stripePayments';
 import { getPartnerStripeClient } from './partnerStripe';
@@ -7,6 +10,11 @@ import { ingestStripeFinancialEvent, processPendingStripeFinancialEvents, type N
 import { captureException } from './sentry';
 
 export const STRIPE_FINANCIAL_EVENT_TYPES = [
+  ...AUTOPAY_STRIPE_EVENT_TYPES,
+  'payment_intent.succeeded',
+  'payment_intent.payment_failed',
+  'payment_intent.processing',
+  'payment_intent.requires_action',
   'charge.refunded',
   'charge.dispute.created',
   'charge.dispute.updated',
@@ -44,6 +52,13 @@ export async function normalizeStripeFinancialEvent(input: {
   if (event.account && event.account !== stripeAccountId) {
     throw new Error('Stripe event account does not match the credential-bound account');
   }
+
+if (event.type.startsWith('payment_intent.')) {
+  const pi = event.data.object as Stripe.PaymentIntent;
+  return { partnerId, stripeAccountId, stripeEventId: event.id, eventType: event.type,
+    livemode: event.livemode, providerCreated: event.created, paymentIntentId: pi.id,
+    currency: pi.currency, chargeAmountMinor: pi.amount };
+}
 
   if (event.type === 'charge.refunded') {
     const charge = event.data.object as Stripe.Charge;
@@ -97,6 +112,20 @@ export async function normalizeStripeFinancialEvent(input: {
   };
 }
 
+// Keep historical mappings eligible for late success and ACH returns after disconnect.
+// Credential retention remains enforced by the account-bound client factory.
+function canPollFinancialEvents() {
+  return or(and(eq(stripeConnectAccounts.status,'connected'),isNotNull(stripeConnectAccounts.apiKey)),
+    sql`EXISTS (
+      SELECT 1 FROM invoice_collection_attempts a
+      JOIN invoices i ON i.id=a.invoice_id
+      JOIN invoice_stripe_payments m ON m.id=a.invoice_stripe_payment_id
+      WHERE i.partner_id=${stripeConnectAccounts.partnerId}
+        AND m.stripe_account_id=${stripeConnectAccounts.stripeAccountId}
+        AND a.state IN ('created','confirming','processing','requires_action','unapplied','succeeded','failed')
+    )`);
+}
+
 async function readConnection(partnerId: string): Promise<PollConnection | null> {
   const [row] = await withSystemDbAccessContext(() => db.select({
     partnerId: stripeConnectAccounts.partnerId,
@@ -107,16 +136,23 @@ async function readConnection(partnerId: string): Promise<PollConnection | null>
     scanUpperCreated: stripeConnectAccounts.financialEventScanUpperCreated,
   }).from(stripeConnectAccounts).where(and(
     eq(stripeConnectAccounts.partnerId, partnerId),
-    eq(stripeConnectAccounts.status, 'connected'),
-    isNotNull(stripeConnectAccounts.apiKey),
+    canPollFinancialEvents(),
   )).limit(1));
   return row ?? null;
 }
 
 export async function pollPartnerStripeFinancialEvents(partnerId: string, now = new Date()): Promise<number> {
+  return (await pollPartner(partnerId, now)).ingested;
+}
+
+/** Ingestion applies a financial event at once when its payment is already mapped, so
+ * the sweep's applied count includes these, not only later replays (#7897). */
+async function pollPartner(partnerId: string, now: Date): Promise<{ ingested: number; applied: number }> {
   const connection = await readConnection(partnerId);
-  if (!connection) return 0;
-  const { stripe, stripeAccountId } = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId));
+  if (!connection) return { ingested: 0, applied: 0 };
+  const { stripe, stripeAccountId } = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId, {
+    reconciliationAccountId: connection.stripeAccountId, reason: 'financial_event_poll',
+  }));
   if (stripeAccountId !== connection.stripeAccountId) throw new Error('Stripe connection changed before financial event poll');
 
   const nowSeconds = Math.floor(now.getTime() / 1000);
@@ -132,18 +168,38 @@ export async function pollPartnerStripeFinancialEvents(partnerId: string, now = 
   }));
 
   let ingested = 0;
+  let applied = 0;
   // Stripe lists newest-first. Applying this page oldest-first reduces stale
   // work; persisted provider timestamps/high-water marks remain authoritative
   // across page boundaries and webhook redelivery.
   for (const event of [...page.data].reverse()) {
-    if (Boolean(event.livemode) !== connection.livemode) {
+    if (!isAutopayStripeEvent(event.type)&&Boolean(event.livemode) !== connection.livemode) {
       throw new Error(`Stripe event ${event.id} livemode does not match its credential-bound account`);
+    }
+    if (isAutopayStripeEvent(event.type)) {
+      try{
+        await ingestAutopayStripeEvent(partnerId, stripeAccountId, event);
+        ingested++;
+      }catch(error){
+        const reason=error instanceof Error?error.message:String(error);
+        // Invalid provider identity is terminal. Database failures still abort the
+        // cursor advance, preserving the page for retry after later events run.
+        if(!['Autopay event account mismatch','Autopay event identity conflict'].includes(reason))throw error;
+        await withSystemDbAccessContext(()=>db.execute(sql`
+          INSERT INTO stripe_financial_events(partner_id,stripe_connection_id,stripe_account_id,stripe_event_id,event_type,livemode,provider_created,currency,payload_digest,status,last_error,processed_at)
+          SELECT ${partnerId}::uuid,id,${stripeAccountId},${event.id},${event.type},${connection.livemode},${event.created},'XXX',
+            ${createHash('sha256').update(JSON.stringify(event)).digest('hex')},'blocked',${reason},now()
+          FROM stripe_connect_accounts WHERE partner_id=${partnerId}::uuid AND stripe_account_id=${stripeAccountId}
+          ON CONFLICT DO NOTHING`));
+        captureException(error instanceof Error?error:new Error(reason));
+      }
+      continue;
     }
     const normalized = await normalizeStripeFinancialEvent({
       event, partnerId, stripeAccountId, stripe,
     });
     if (!normalized) continue;
-    await ingestStripeFinancialEvent(normalized);
+    if ((await ingestStripeFinancialEvent(normalized))?.state === 'applied') applied += 1;
     ingested += 1;
   }
 
@@ -159,7 +215,6 @@ export async function pollPartnerStripeFinancialEvents(partnerId: string, now = 
   }).where(and(
     eq(stripeConnectAccounts.partnerId, partnerId),
     eq(stripeConnectAccounts.stripeAccountId, stripeAccountId),
-    eq(stripeConnectAccounts.status, 'connected'),
   )).returning({ id: stripeConnectAccounts.id }));
   if (updated.length !== 1) throw new Error('Stripe connection changed while advancing financial event cursor');
 
@@ -187,20 +242,27 @@ export async function pollPartnerStripeFinancialEvents(partnerId: string, now = 
       eq(stripeConnectAccounts.stripeAccountId, stripeAccountId),
     )));
   }
-  return ingested;
+  // The reconciler owns control admission; its current API sweeps all pending controls.
+  if (page.data.some(event => event.type.startsWith('payment_intent.'))) {
+    await reconcilePendingControls();
+  }
+  return { ingested, applied };
 }
 
 export async function pollStripeFinancialEvents(): Promise<{ accounts: number; events: number; applied: number }> {
   const accounts = await withSystemDbAccessContext(() => db.select({ partnerId: stripeConnectAccounts.partnerId })
     .from(stripeConnectAccounts)
-    .where(and(eq(stripeConnectAccounts.status, 'connected'), isNotNull(stripeConnectAccounts.apiKey)))
+    .where(canPollFinancialEvents())
     .orderBy(sql`${stripeConnectAccounts.financialEventLastPolledAt} ASC NULLS FIRST`, asc(stripeConnectAccounts.partnerId))
     .limit(ACCOUNTS_PER_RUN));
 
   let events = 0;
+  let applied = 0;
   for (const account of accounts) {
     try {
-      events += await pollPartnerStripeFinancialEvents(account.partnerId);
+      const polled = await pollPartner(account.partnerId, new Date());
+      events += polled.ingested;
+      applied += polled.applied;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const stripeType = (err as { type?: string } | null)?.type;
@@ -217,6 +279,7 @@ export async function pollStripeFinancialEvents(): Promise<{ accounts: number; e
       }).where(eq(stripeConnectAccounts.partnerId, account.partnerId)));
     }
   }
-  const applied = await processPendingStripeFinancialEvents(PAGE_SIZE);
+  applied += await processPendingStripeFinancialEvents(PAGE_SIZE);
+  applied += await replayAutopayStripeEvents();
   return { accounts: accounts.length, events, applied };
 }

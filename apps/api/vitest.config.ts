@@ -5,7 +5,7 @@ import path from 'path';
 export default defineConfig({
   resolve: {
     alias: {
-      '@breeze/shared': path.resolve(__dirname, '../../packages/shared/src'),
+      '@breeze/shared': path.resolve(import.meta.dirname, '../../packages/shared/src'),
     },
   },
   test: {
@@ -16,6 +16,13 @@ export default defineConfig({
     maxWorkers: Math.max(1, Math.min(4, Math.floor(availableParallelism() / 2))),
     include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
     exclude: [
+      'src/services/accounting/accountingFeePush.integration.test.ts',
+      'src/index.autopay.integration.test.ts',
+      'src/db/schema/autopaySetupAttempts.integration.test.ts',
+      'src/services/autopay/enrollmentService.integration.test.ts',
+      'src/services/autopay/cardExpiryCheck.integration.test.ts',
+      // Charging locks/replay require real PostgreSQL (never the unit DB mocks).
+      'src/services/autopay/charging.integration.test.ts',
       'src/services/autopay/**/*.integration.test.ts',
       'src/jobs/scriptVerifyReconciliation.integration.test.ts',
       'src/__tests__/integration/**',
@@ -60,6 +67,7 @@ export default defineConfig({
       // the integration setup.
       'src/services/discovery/agentReportedBmcLink.integration.test.ts',
       'src/jobs/discoveryWorker.bmc.integration.test.ts',
+      'src/jobs/discoveryWorker.dispatchAfterCommit.integration.test.ts',
       'src/services/topology/bmc.integration.test.ts',
       // Suppression-expiry reaper real-DB test: imports `__tests__/integration/setup`
       // (real postgres pool + autoMigrate in its beforeAll), so the unit runner's

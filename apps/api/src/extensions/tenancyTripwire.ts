@@ -80,6 +80,12 @@ const CORE_NON_DRIZZLE_TABLES: ReadonlySet<string> = new Set([
   's1_site_mappings',
   'td_synnex_price_availability',
   'td_synnex_sftp_integrations',
+  // AI model registry W08a (#7606): their Drizzle models were removed one
+  // release before W08b's migration archives and drops the tables. Until then
+  // they still exist in the database; without these entries the boot tripwire
+  // refuses to start the API. W08b removes both entries with the tables.
+  'ai_model_registry_state',
+  'partner_llm_configs',
 ]);
 
 /** Exported for the contract test that keeps CORE_NON_DRIZZLE_TABLES honest. */

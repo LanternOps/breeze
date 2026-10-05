@@ -37,7 +37,7 @@ import { platformRateSnapshot, priceInvocation } from '../../aiModels/pricing';
 import { buildAgentRunSystemPrompt, buildAgentRunTaskPrompt } from '../../aiAgents/runnerPrompt';
 import type { CaptureSurface } from '../toolCapture/surfaces';
 import { AGENT_GOLDEN_TASKS } from '../toolEval/agentGoldenTasks';
-import { resolveLlmConfig } from '../llmConfigResolver';
+import { platformLlmConfig } from '../llmConfigResolver';
 import { captureToolSearchPolicy, getCaptureSystemPrompt, runSurfaceCapture } from '../toolCapture/runSurface';
 import { CAPTURE_SURFACES, type CaptureSurfaceId } from '../toolCapture/surfaces';
 import { GOLDEN_CASES, type GoldenCase } from '../toolEval/goldenPrompts';
@@ -140,8 +140,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
       process.env.ANTHROPIC_API_KEY = process.env.AI_TOOL_EVAL_KEY.trim();
     }
     if (!process.env.ANTHROPIC_API_KEY?.trim()) throw new UsageError('ANTHROPIC_API_KEY (or AI_TOOL_EVAL_KEY) is required');
-    const resolved = await resolveLlmConfig(null);
-    if (resolved.source === 'unavailable') throw new UsageError(`LLM configuration unavailable: ${resolved.reason}`);
+    const resolved = platformLlmConfig();
     const env = buildClaudeSdkChildEnv(resolved);
     // The production policy (runSurface → aiToolSearchPolicy) owns
     // ENABLE_TOOL_SEARCH; --tool-search stands in for the AI_TOOL_SEARCH override.

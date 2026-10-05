@@ -43,6 +43,7 @@ import { portalBase } from './portalUrl';
 import { emitQuoteEvent } from './quoteEvents';
 import { notifyQuoteOutcome } from './quoteOutcomeNotify';
 import { captureException } from './sentry';
+import { resolveDocumentBrand } from './partnerDocumentBrand';
 
 export { portalBase };
 
@@ -954,7 +955,7 @@ async function deliverQuoteEmail(
           // the partner's live theme/pageSize columns.
           const presentationSnap = frozenQuote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
           const emailBranding = {
-            partnerName: partnerName ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+            partnerName: partnerName ?? 'Proposal', ...resolveDocumentBrand(brand, partnerRow?.settings),
             // Same chain as every other quote render (#6232). frozenQuote, not
             // the pre-freeze `quote`: on a first send only frozenQuote carries
             // the just-stamped terms; on a resend they are the same value.

@@ -9,6 +9,7 @@ import type { Permission } from '../stores/auth';
  * everything server-side.
  */
 export interface NavGate {
+  requiresAutopay?: boolean;
   /** Hidden unless the current user is a platform admin. */
   platformAdminOnly?: boolean;
   /**
@@ -37,6 +38,7 @@ export interface NavGate {
 }
 
 export interface NavGateContext {
+  autopayEnabled?: boolean;
   isPlatformAdmin: boolean;
   permissions: Permission[] | undefined;
   /** Read lazily: only consulted for `partnerScopeOnly` entries. */
@@ -51,6 +53,7 @@ export interface NavGateContext {
 }
 
 export function isNavGateVisible(gate: NavGate, ctx: NavGateContext): boolean {
+  if (gate.requiresAutopay && ctx.autopayEnabled !== true) return false;
   if (gate.requiresModule === 'service_management' && ctx.serviceManagementMode !== 'native') return false;
   if (gate.requiresAiForOffice && !ctx.aiForOfficeEnabled) return false;
   if (gate.requiresToolSources && !ctx.toolSourcesEnabled) return false;

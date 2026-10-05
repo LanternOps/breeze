@@ -1331,7 +1331,44 @@
       "invoice_number": "Numéro de facture",
       "due_date": "Date d'échéance",
       "invite_url": "URL d'invitation",
-      "cta_button": "Bouton"
+      "cta_button": "Bouton",
+      "client_name": "Client name",
+      "setup_link": "Automatic payments setup link",
+      "ach_mode_text": "Available payment methods",
+      "payment_method": "Saved payment method",
+      "schedule_text": "Payment schedule",
+      "fee_text": "Processing fee terms",
+      "stopped_by": "Who stopped automatic payments",
+      "open_invoices_text": "Open invoice summary",
+      "expires_on": "Card expiry date",
+      "update_link": "Payment method update link",
+      "amount_due": "Montant dû",
+      "charge_date": "Date de prélèvement",
+      "fee_amount": "Frais de traitement",
+      "invoice_link": "Lien de la facture",
+      "amount_paid": "Montant payé",
+      "total_charged": "Total prélevé",
+      "paid_on": "Date de paiement",
+      "balance_remaining": "Solde restant",
+      "failure_text": "Détails de l’échec",
+      "action_link": "Lien de l’action",
+      "action_label": "Libellé de l’action",
+      "days_overdue": "Jours de retard",
+      "pay_link": "Lien de paiement",
+      "charge_total": "Montant total prélevé",
+      "attempted_amount": "Montant du paiement tenté"
+    },
+    "billingPayments": "Billing & payments",
+    "supportPortal": "Support & portal",
+    "labels": {
+      "autopay_request": "Automatic payments request",
+      "autopay_enrolled": "Automatic payments confirmed",
+      "autopay_stopped": "Automatic payments stopped",
+      "autopay_paused": "Paiements automatiques suspendus",
+      "autopay_resumed": "Paiements automatiques repris",
+      "card_expiring": "Saved card expiring",
+      "payment_receipt": "Reçu de paiement en ligne",
+      "payment_failed": "Le paiement n’a pas pu être effectué"
     }
   },
   "inboundEmail": {
@@ -2111,6 +2148,13 @@
     "failedToFetchReviewDetails": "Impossible de récupérer les détails de la revue",
     "noReviewerEmailsAvailableForNotifications": "Aucune adresse courriel de réviseur n’est disponible pour les notifications",
     "unableToLaunchEmailNotification": "Impossible de lancer une notification par courriel",
+    "reviewersEmailed": "Réviseur assigné avisé par courriel",
+    "assignedReviewerEmailedOnly": "Réviseur assigné avisé par courriel. Les autres réviseurs sélectionnés n’ont pas reçu de courriel : une révision n’enregistre qu’un seul réviseur assigné.",
+    "fallbackToMailClient": "{{reason}} Ouverture de votre client de messagerie à la place.",
+    "fallbackEmailNotConfigured": "L’envoi de courriels n’est pas configuré sur ce serveur.",
+    "fallbackNoReviewerEmail": "Le réviseur assigné n’a aucune adresse courriel au dossier.",
+    "fallbackSendFailed": "Le serveur n’a pas pu envoyer le courriel.",
+    "fallbackRequestFailed": "La demande de notification a échoué.",
     "failedToCreateAccessReview": "Impossible de créer une revue d’accès",
     "failedToUpdateDecision": "Impossible de mettre à jour la décision",
     "failedToFetchReviewForReport": "Impossible de récupérer la revue pour le rapport",
@@ -2125,7 +2169,12 @@
     "sending": "Envoi…",
     "notifyReviewers": "Prévenez les évaluateurs",
     "completing": "Complété...",
-    "completeReview": "Revue complète"
+    "completeReview": "Revue complète",
+    "selfDecided": "Auto-décidé",
+    "selfDecidedHint": "Décidé par l'utilisateur concerné, car aucun autre administrateur ne pouvait l'examiner (exception d'administrateur unique).",
+    "ownItemBlocked": "Vous ne pouvez pas statuer sur votre propre accès. Un autre administrateur disposant des droits de gestion des utilisateurs doit examiner cet élément.",
+    "ownItemBlockedShort": "Nécessite un autre réviseur",
+    "ownItemSelfDecisionWarning": "Vous êtes le seul administrateur à pouvoir examiner ceci : vous pouvez donc statuer sur votre propre accès. Ce sera enregistré comme une auto-décision."
   },
   "aiUsagePage": {
     "aIUsageBudget": "Utilisation de l’IA",
@@ -2287,7 +2336,8 @@
       "triage": "Examine les nouvelles alertes et propose quoi faire.",
       "patch": "Revoit les correctifs manquants et propose quoi installer.",
       "helpdesk": "Prend les billets en charge et propose des réponses et des prochaines étapes.",
-      "designer": "Lit l’ensemble du parc et rédige une conception de surveillance justifiée qu’un technicien doit approuver."
+      "designer": "Lit l’ensemble du parc et rédige une conception de surveillance justifiée qu’un technicien doit approuver.",
+      "research": "Intégré. Étudie un problème sur un appareil à la demande d’un technicien et propose des correctifs sûrs. N’exécute jamais rien."
     },
     "emptyState": {
       "title": "Aucun agent pour l’instant",
@@ -2433,7 +2483,8 @@
       "triage": "Tri des alertes",
       "patch": "Correctifs",
       "helpdesk": "Service d’assistance",
-      "designer": "Concepteur du parc"
+      "designer": "Concepteur du parc",
+      "research": "Recherche de correctifs"
     },
     "modes": {
       "off": "Désactivé",
@@ -3737,6 +3788,11 @@
           "blurb": "Lit l'ensemble du parc et rédige une conception de surveillance justifiée qu'un technicien doit approuver.",
           "runsWhen": "vous lancez une Conception du parc pour une organisation, ou selon une planification trimestrielle",
           "recommended": "une migration à partir de zéro, ou un audit de configuration trimestriel"
+        },
+        "research": {
+          "blurb": "Intégré. Étudie un problème sur un appareil à la demande d’un technicien et propose des correctifs sûrs. N’exécute jamais rien.",
+          "runsWhen": "un technicien demande des suggestions de correctifs pour un problème d’appareil",
+          "recommended": "recherche automatique en lecture seule, un problème à la fois"
         }
       },
       "kindCard": {
@@ -3764,6 +3820,36 @@
       "title": "Cet agent ne fait que lire et rédiger des rapports",
       "body": "Un Fleet Designer n'exécute jamais rien sur un appareil. Activé signifie qu'il peut s'exécuter et remettre ses designs aux destinataires que vous choisissez.",
       "ack": "Je comprends que cet agent s'exécute sans surveillance et remet des Fleet Designs."
+    },
+    "research": {
+      "capsTitle": "Limites de recherche",
+      "builtInNote": "Intégré et limité aux suggestions : il n'exécute jamais rien. Vous pouvez le désactiver et fixer ses plafonds de dépenses.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Recherches simultanées",
+          "hint": "Nombre de recherches pouvant être en cours en même temps."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Recherches par heure",
+          "hint": "Maximum de recherches démarrées en une heure."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Recherches automatiques par heure",
+          "hint": "Maximum de recherches démarrées automatiquement par les alertes élevées et critiques. 0 désactive la recherche automatique."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Budget de recherche rapide (cents)",
+          "hint": "Plafond de dépenses pour une recherche rapide."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Budget de recherche approfondie (cents)",
+          "hint": "Plafond de dépenses pour une recherche approfondie."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Dépenses quotidiennes de recherche (cents)",
+          "hint": "Plafond total de dépenses par jour pour toutes les exécutions de cet agent."
+        }
+      }
     }
   },
   "apiKeyForm": {

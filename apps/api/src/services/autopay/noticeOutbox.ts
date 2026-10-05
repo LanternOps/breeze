@@ -1,3 +1,6 @@
+import { validatePaymentActionNotice, validateReceiptNotice } from './paymentNoticeValidation';
+import { validateReminder } from './reminderValidation';
+import { LIFECYCLE_NOTICE_KINDS, validateLifecycleNotice } from './lifecycleNoticeValidation';
 import { and, asc, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import type { BillingNoticeKind } from '@breeze/shared';
 import { db, assertOutsideHeldDbContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -31,6 +34,19 @@ export function registerNoticeSentHandler(kind: BillingNoticeKind, handler: Noti
   handlers.set(kind, handler);
 }
 type Row = typeof billingNoticeOutbox.$inferSelect;
+/** Return a safe, fixed cancellation reason, or null to allow delivery. */
+export type NoticePreSendValidator = (tx: Tx, row: Row) => Promise<string | null>;
+const validators = new Map<BillingNoticeKind, NoticePreSendValidator>();
+export function registerNoticePreSendValidator(kind: BillingNoticeKind, validator: NoticePreSendValidator): void {
+  if (validators.has(kind)) throw new Error(`Billing pre-send validator already registered: ${kind}`);
+  validators.set(kind, validator);
+}
+registerNoticePreSendValidator('payment_failed', validatePaymentActionNotice);
+registerNoticePreSendValidator('payment_receipt', validateReceiptNotice);
+registerNoticePreSendValidator('payment_reminder', validateReminder);
+registerNoticePreSendValidator('payment_overdue', validateReminder);
+for (const kind of LIFECYCLE_NOTICE_KINDS) registerNoticePreSendValidator(kind, validateLifecycleNotice);
+
 const scope = <T>(fn: () => Promise<T>) => withSystemDbAccessContext(fn);
 const owns = (row: Row) => and(eq(billingNoticeOutbox.id, row.id),
   eq(billingNoticeOutbox.status, 'sending'), eq(billingNoticeOutbox.attempts, row.attempts));
@@ -72,6 +88,21 @@ export async function dispatchPendingBillingNotices(now = new Date()): Promise<{
     for (let row of claimed) {
       try {
         if (!row.sentAt) {
+          const validate = validators.get(row.kind);
+          if (validate) {
+            const allowed = await scope(() => db.transaction(async tx => {
+              const [current] = await tx.select().from(billingNoticeOutbox).where(owns(row)).for('update');
+              if (!current) return false;
+              const reason = await validate(tx, current);
+              if (!reason) return true;
+              await tx.update(billingNoticeOutbox).set({ status: 'cancelled', lastError: reason }).where(owns(current));
+              // Validator reasons are fixed strings. Never log the recipient or the rendered body.
+              console.info('[billingNoticeOutbox] cancelled before send', { billing_notice_id: current.id,
+                billing_notice_kind: current.kind, org_id: current.orgId, reason });
+              return false;
+            }));
+            if (!allowed) continue;
+          }
           const [sender] = await scope(() => db.select({ id: partners.id, name: partners.name, billingEmail: partners.billingEmail })
             .from(organizations).innerJoin(partners, eq(partners.id, organizations.partnerId)).where(eq(organizations.id, row.orgId)).limit(1));
           if (!sender) throw new Error('Billing notice organization missing');

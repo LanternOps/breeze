@@ -57,7 +57,7 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
     // identically in pt-BR.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
-    'billing.json': 59, // +1 W03: site sub-label "Site: {{name}}" is intentionally identical in pt-BR; +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
+    'billing.json': 61, // +1 W03: site sub-label "Site: {{name}}" is intentionally identical in pt-BR; +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation; +2 (#7713): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
     // interpolation; card.title "Checklist" and source.manual "Manual" are
     // identical cognates in pt-BR.
@@ -170,7 +170,8 @@ const namespaceDuplicateBaselines = {
     'toolSources.json': 1,
     // Topology (#5997): 'Site' is the identical pt-BR cognate.
     // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
-    'topology.json': 2,
+    // +2 (grouped overview): grouped.mac 'MAC' and grouped.gateway 'Gateway' are identical pt-BR cognates/acronyms.
+    'topology.json': 4,
     // +1 (#2262 softwareGroupTable devices-affected rework): cves_one/cves_other
     // ('{{count}} CVE'/'{{count}} CVEs') keep the acronym untranslated, same as
     // the existing CVEs-namespace duplicates above.
@@ -215,7 +216,7 @@ const namespaceDuplicateBaselines = {
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
-    'billing.json': 46, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
+    'billing.json': 47, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation; +2 (#7713, net +1 after 1 pre-existing slack): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
     // interpolation; source.manual "Manual" is an identical cognate in es-419.
     'checklists.json': 2,
@@ -325,7 +326,8 @@ const namespaceDuplicateBaselines = {
     'tickets.json': 15,
     'toolSources.json': 1,
     // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
-    'topology.json': 1,
+    // +1 (grouped overview): grouped.mac 'MAC' is an identical es-419 acronym.
+    'topology.json': 2,
     // +1 (#2262): softwareGroupTable.cves_one/_other keep 'CVE'/'CVEs' untranslated.
     'vulnerabilities.json': 17,
   },
@@ -372,7 +374,7 @@ const namespaceDuplicateBaselines = {
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
-    'billing.json': 57, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    'billing.json': 58, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +2 (#7713, net +1 after 1 pre-existing slack): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     // +1 W02: templates.description — "Description" is also the French word.
     'checklists.json': 2,
@@ -511,7 +513,8 @@ const namespaceDuplicateBaselines = {
     // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
     // targetFields.port 'Port' are identical fr-FR cognates.
     // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
-    'topology.json': 5,
+    // +2 (grouped overview): grouped.mac 'MAC' and grouped.type 'Type' are identical fr-FR cognates/acronyms.
+    'topology.json': 7,
     // +2 (#2262): softwareGroupTable.cves_one/_other keep 'CVE'/'CVEs' untranslated
     // (fr-FR's old table.cves was "CVE", not a duplicate of English "CVEs", so
     // both new plural forms are net-new duplicates here).
@@ -554,7 +557,7 @@ const namespaceDuplicateBaselines = {
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
-    'billing.json': 57, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    'billing.json': 58, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +2 (#7713, net +1 after 1 pre-existing slack): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     // +1 W02: templates.description — "Description" is also the French word.
     'checklists.json': 2,
@@ -695,7 +698,8 @@ const namespaceDuplicateBaselines = {
     // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
     // targetFields.port 'Port' are identical fr-CA cognates.
     // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
-    'topology.json': 5,
+    // +2 (grouped overview): grouped.mac 'MAC' and grouped.type 'Type' are identical fr-CA cognates/acronyms.
+    'topology.json': 7,
     // +2 (#2262): softwareGroupTable.cves_one/_other keep 'CVE'/'CVEs' untranslated
     // (fr-CA's old table.cves was "CVE", not a duplicate of English "CVEs", so
     // both new plural forms are net-new duplicates here).
@@ -745,7 +749,7 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
     // identically in de-DE.
     // +1 W07: invoiceDetail.devices.hostname — "Hostname" is also the German word.
-    'billing.json': 45, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
+    'billing.json': 46, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation; +2 (#7713, net +1 after 1 pre-existing slack): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     // +1 W02: templates.name — "Name" is also the German word.
     'checklists.json': 2,
@@ -875,7 +879,8 @@ const namespaceDuplicateBaselines = {
     // Topology (#5997): 'Name', 'Revision' and targetFields.hostname/port
     // ('Hostname'/'Port') are identical de-DE cognates.
     // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
-    'topology.json': 5,
+    // +2 (grouped overview): grouped.mac 'MAC' and grouped.gateway 'Gateway' are identical de-DE cognates/acronyms.
+    'topology.json': 7,
     // +1 (#2262): softwareGroupTable.cves_one/_other keep 'CVE'/'CVEs' untranslated.
     'vulnerabilities.json': 21,
   },
@@ -913,7 +918,7 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 37, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
+    'billing.json': 38, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation; +2 (#7713, net +1 after 1 pre-existing slack): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
     // interpolation; card.title "Checklist" and source.deliverable "Deliverable"
     // are the same loanwords deliverables.json already keeps untranslated in it-IT.
@@ -1012,7 +1017,8 @@ const namespaceDuplicateBaselines = {
     'tickets.json': 8,
     'toolSources.json': 1,
     // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
-    'topology.json': 1,
+    // +2 (grouped overview): grouped.mac 'MAC' and grouped.gateway 'Gateway' are identical it-IT cognates/acronyms.
+    'topology.json': 3,
     // +1 (#2262): softwareGroupTable.cves_one keeps 'CVE' untranslated (cves_other
     // is 'CVE' too, since Italian does not inflect the acronym).
     'vulnerabilities.json': 18,
@@ -1047,7 +1053,7 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 22, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
+    'billing.json': 24, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation; +2 (#7713): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     'checklists.json': 1,
     'common.json': 49, // +1 W06: lists.separator ", " is punctuation
@@ -1126,7 +1132,8 @@ const namespaceDuplicateBaselines = {
     'toolSources.json': 1,
     // Topology (#5997): 'Site' is the identical tr-TR cognate.
     // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
-    'topology.json': 2,
+    // +1 (grouped overview): grouped.mac 'MAC' is an identical tr-TR acronym.
+    'topology.json': 3,
     // +1 (#2262): softwareGroupTable.cves_one keeps 'CVE' untranslated.
     'vulnerabilities.json': 12,
   },
@@ -1163,6 +1170,26 @@ function readLocale(locale: string): Map<string, string> {
   return result;
 }
 
+const AUTOPAY_W02_ENGLISH_FALLBACKS = new Set([
+  'billing.json:autopay.stripeNotReady', 'billing.json:autopay.stripeDisconnected',
+  'common.json:nav.autopay', 'common.json:nav.payments', 'pages.json:titles.billingAutopay',
+  'billing.json:partnerBillingSettingsTabs.payments',
+  ...['title','loading','error','saved','save','invalid','offset-days','offset-rule','cap-enabled','cap-amount','cap-currency','ach-mode',
+    'inherit','source.org','source.partner','source.default','option.earlier','option.later','option.false','option.true',
+    'option.ach_preferred','option.ach_only','achRisk','done','status.not_requested','status.requested','status.active','status.paused',
+    'status.cancelled','status.needs_attention','pending','effective','recipient','request','resend','pause','resume','turnOff','cancel',
+    'processingWarning','unasked_one','unasked_other','sendNow','dismiss','select','client','statusLabel','method','selectClient','empty',
+    'requestedCount_one','requestedCount_other','card','bank'].map(key => `billing.json:autopay.${key}`),
+]);
+
+const AUTOPAY_ENROLLMENT_TEMPLATE_FALLBACKS = new Set([
+  'settings.json:emailTemplates.billingPayments', 'settings.json:emailTemplates.supportPortal',
+  ...['autopay_request','autopay_enrolled','autopay_stopped','card_expiring']
+    .map(id => `settings.json:emailTemplates.labels.${id}`),
+  ...['client_name','setup_link','ach_mode_text','payment_method','schedule_text','fee_text','stopped_by',
+    'open_invoices_text','expires_on','update_link'].map(key => `settings.json:emailTemplates.variables.${key}`),
+]);
+
 function namespaceDuplicateRegressions(
   english: Map<string, string>,
   translated: Map<string, string>,
@@ -1170,6 +1197,8 @@ function namespaceDuplicateRegressions(
 ): string[] {
   const duplicateCounts = new Map<string, number>();
   for (const [key, value] of english) {
+    if (AUTOPAY_W02_ENGLISH_FALLBACKS.has(key)) continue;
+    if (AUTOPAY_ENROLLMENT_TEMPLATE_FALLBACKS.has(key)) continue;
     if (translated.get(key) !== value) continue;
     const namespace = key.slice(0, key.indexOf(':'));
     duplicateCounts.set(namespace, (duplicateCounts.get(namespace) ?? 0) + 1);
@@ -1237,4 +1266,18 @@ describe('translation coverage guard helpers', () => {
       }),
     ).toEqual(['settings.json: 2 exact-English duplicates exceeds baseline 1']);
   });
+});
+
+it('enrollment template fallbacks are finite existing keys', () => {
+  const english = readLocale('en');
+  for (const key of AUTOPAY_ENROLLMENT_TEMPLATE_FALLBACKS) expect(english.has(key), key).toBe(true);
+  const unrelated = new Map([['settings.json:unrelated.newCopy', 'English']]);
+  expect(namespaceDuplicateRegressions(unrelated, unrelated, { 'settings.json': 0 })).toHaveLength(1);
+});
+
+it('W02 fallbacks name existing exact keys and never allow an unrelated English leaf', () => {
+  const english = readLocale('en');
+  for (const key of AUTOPAY_W02_ENGLISH_FALLBACKS) expect(english.has(key), key).toBe(true);
+  const arbitrary = new Map([['billing.json:unrelated.newCopy', 'English']]);
+  expect(namespaceDuplicateRegressions(arbitrary, arbitrary, { 'billing.json': 0 })).toHaveLength(1);
 });

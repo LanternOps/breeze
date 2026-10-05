@@ -46,6 +46,7 @@ import {
 } from '../services/partnerWideAccess';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from '../services/aiAgents/access';
 import { AgentModelNotAllowedError } from '../services/aiAgents/agentModelErrors';
+import { ResearchAgentEditError } from '../services/aiAgents/researchAgentEdit';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { getCircuitState, resetCircuit } from '../services/aiAgents/agentCircuit';
 import { readAiKillState } from '../services/aiKillState';
@@ -165,8 +166,7 @@ function mapRow(row: AiAgentRow): AiAgentDto {
     name: row.name,
     enabled: row.enabled,
     mode: row.mode,
-    model: row.model,
-    // AI model registry W05: the offering the policy model is bound to (null = follows the assignment).
+    // AI model registry W05: the offering the policy is bound to (null = follows the assignment).
     offeringId: row.offeringId ?? null,
     orgId: row.orgId,
     partnerId: row.partnerId,
@@ -227,6 +227,9 @@ function isAgentKindConflict(err: unknown): boolean {
 }
 
 export function mapError(c: Context, err: unknown) {
+  if (err instanceof ResearchAgentEditError) {
+    return c.json({ error: err.message, code: err.code, fields: err.fields }, 400);
+  }
   if (err instanceof UnsupportedAgentModeError) {
     // err.code, not a repeated literal — the class types it as a literal, so
     // this cannot drift from the value the client branches on.

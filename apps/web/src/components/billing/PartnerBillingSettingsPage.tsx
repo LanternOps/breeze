@@ -13,10 +13,11 @@ import AccessDenied from '../shared/AccessDenied';
 import BillingDefaultsTab from './BillingDefaultsTab';
 import BillingDocumentsTab from './BillingDocumentsTab';
 import BillingConnectionsTab from './BillingConnectionsTab';
+import PaymentsSettingsTab from './PaymentsSettingsTab';
 import BillingRatesTab from './BillingRatesTab';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
-const BILLING_TABS = ['defaults', 'documents', 'rates', 'connections'] as const;
+const BILLING_TABS = ['defaults', 'documents', 'rates', 'connections', 'payments'] as const;
 type BillingTab = (typeof BILLING_TABS)[number];
 
 interface PartnerBilling {
@@ -191,11 +192,13 @@ export default function PartnerBillingSettingsPage() {
     { id: 'defaults', labelKey: 'partnerBillingSettingsTabs.defaults' },
     { id: 'documents', labelKey: 'partnerBillingSettingsTabs.documents' },
     { id: 'rates', labelKey: 'partnerBillingSettingsTabs.rates' },
+    { id: 'payments', labelKey: 'partnerBillingSettingsTabs.payments' },
     { id: 'connections', labelKey: 'partnerBillingSettingsTabs.connections' },
   ];
-  const renderedTabs = TABS.filter((tab) => !tab.reserved);
+  const renderedTabs = TABS.filter(tab => !tab.reserved);
   const overflowTabs: OverflowTab[] = renderedTabs.map((tab) => ({
     id: tab.id,
+    testId: tab.id === 'payments' ? 'autopay-payments-tab' : undefined,
     label: t(/* i18n-dynamic */ tab.labelKey),
     icon: null,
   }));
@@ -258,9 +261,10 @@ export default function PartnerBillingSettingsPage() {
       )}
       {activeTab === 'rates' && <BillingRatesTab currencyCode={currencyCode} />}
       {activeTab === 'connections' && <BillingConnectionsTab />}
+      {activeTab === 'payments' && <div data-testid="autopay-fee-settings-page"><PaymentsSettingsTab /></div>}
       </div>
 
-      {canWrite && activeTab !== 'rates' && activeTab !== 'connections' && <div className="flex justify-end">
+      {canWrite && activeTab !== 'rates' && activeTab !== 'connections' && activeTab !== 'payments' && <div className="flex justify-end">
         <button
           type="button" onClick={() => void save()} disabled={saving || websiteInvalid}
           data-testid="partner-billing-save"

@@ -25,6 +25,7 @@ import { toPublicQuoteHeader, toPublicQuotePresentation } from '../services/publ
 import { resolveQuoteLinkOrgGate, PUBLIC_LINK_ORG_UNAVAILABLE, type PublicLinkOrgGate } from '../services/publicLinkOrgGate';
 import { resolveThemeId, resolvePageSize } from '../services/documentThemes';
 import { resolvePartnerDocumentLocale } from '../services/documentLocale';
+import { resolveDocumentBrand } from '../services/partnerDocumentBrand';
 
 /**
  * Unauthenticated, token-gated quote acceptance surface for prospects without a
@@ -141,7 +142,7 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       const theme = resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme);
       const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
       return { quote: toPublicQuoteHeader(quote, totals), blocks, lines: serializedLines, branding: {
-        partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+        partnerName: partner?.name ?? 'Proposal', ...resolveDocumentBrand(brand, partner?.settings),
         supportEmail: brand?.supportEmail ?? null, supportPhone: brand?.supportPhone ?? null,
         theme, pageSize,
       }, presentation: toPublicQuotePresentation(theme, pageSize) };

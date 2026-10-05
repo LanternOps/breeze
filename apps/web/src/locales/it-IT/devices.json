@@ -2439,6 +2439,7 @@
       "bulkWakeSomeFailed": "Riattivazione in blocco parzialmente non riuscita",
       "commandQueued": "{{action}} in coda — verrà eseguito quando {{hostname}} si riconnette",
       "commandSent": "{{action}} inviato a {{hostname}}",
+      "commandCancelled": "{{action}} non è stato inviato a {{hostname}}: comando annullato ({{reason}})",
       "compareNeedsTwo": "Il confronto richiede almeno 2 dispositivi con agente.",
       "decommissionCancelled": "Rimozione annullata",
       "decommissionFailed": "Rimozione non riuscita",

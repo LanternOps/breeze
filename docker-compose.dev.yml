@@ -9,6 +9,11 @@ services:
     image: pgvector/pgvector:pg16
     container_name: breeze-postgres-dev
     restart: unless-stopped
+    # Production managed Postgres kills a session idle in transaction for 1 min.
+    # Matching it locally is what lets a test catch a connection held across a
+    # slow wait before production does (#7918: run_script lost every script
+    # that ran longer than a minute).
+    command: postgres -c idle_in_transaction_session_timeout=60s
     environment:
       POSTGRES_USER: breeze
       POSTGRES_PASSWORD: breeze

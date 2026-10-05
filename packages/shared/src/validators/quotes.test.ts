@@ -336,6 +336,16 @@ describe('callout block content', () => {
   });
 });
 
+describe('coverPageSchema — showContents (PDF contents list)', () => {
+  it('accepts an opt-in showContents flag and leaves it absent by default', () => {
+    expect(coverPageSchema.parse({ enabled: false, showContents: true }).showContents).toBe(true);
+    expect(coverPageSchema.parse({ enabled: true }).showContents).toBeUndefined();
+  });
+  it('rejects a non-boolean showContents', () => {
+    expect(coverPageSchema.safeParse({ enabled: true, showContents: 'yes' }).success).toBe(false);
+  });
+});
+
 describe('coverPageSchema', () => {
   it('accepts a minimal disabled cover page', () => {
     const parsed = coverPageSchema.parse({ enabled: false });

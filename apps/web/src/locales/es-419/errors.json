@@ -26,5 +26,6 @@
   "TICKET_TRIAGE_CATEGORY_MISMATCH": "The suggested category has changed — review it again before applying",
   "MAILBOX_RECONSENT_REQUIRED": "This mailbox needs to be reconnected to keep syncing tickets",
   "tool_source_unavailable": "La fuente de esta herramienta no está disponible en este momento",
-  "ai_not_configured": "La IA no está configurada en este servidor. Un administrador debe agregar una clave de un proveedor de modelos."
+  "ai_not_configured": "La IA no está configurada en este servidor. Un administrador debe agregar una clave de un proveedor de modelos.",
+  "ACCESS_REVIEW_SELF_DECISION": "No puedes decidir sobre tu propio acceso: otro administrador debe revisar este elemento"
 }

@@ -75,6 +75,9 @@ vi.mock('./tenantVariableResolution', () => ({
 }));
 
 vi.mock('../db', () => ({
+  // These handlers run as under the per-call transaction: `inToolDbPhase`
+  // (#7918) joins it rather than opening a context of its own.
+  hasDbAccessContext: vi.fn(() => true),
   // Real `runOutsideDbContext` is `dbContextStorage.exit(fn)` — an
   // AsyncLocalStorage exit, which stays in effect for `fn`'s ENTIRE async
   // continuation (every await inside it), not just until its first

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import WorkTypesCard from './WorkTypesCard';
+import WorkTypesCard, { type WorkTypesCardHandle } from './WorkTypesCard';
+import { createRef } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 import { resetWorkTypeCache } from '../shared/WorkTypeSelect';
@@ -105,5 +106,21 @@ describe('WorkTypesCard', () => {
     await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'A work type with this name already exists.' }));
     expect(screen.getByTestId('work-type-new-name')).toHaveValue('Remote');
     expect(resetWorkTypeCache).not.toHaveBeenCalled();
+  });
+
+  it('readOnly hides mutation controls and the imperative handle cannot mutate (#7597)', async () => {
+    const ref = createRef<WorkTypesCardHandle>();
+    render(<WorkTypesCard ref={ref} readOnly />);
+    await screen.findByTestId('work-type-row-wt-1');
+    expect(screen.queryByTestId('work-type-new-name')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('work-type-create')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('work-type-rename-wt-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('work-type-archive-wt-1')).not.toBeInTheDocument();
+    ref.current!.archive('wt-1');
+    ref.current!.rename('wt-1');
+    ref.current!.add();
+    await Promise.resolve();
+    expect(screen.queryByTestId('work-type-edit-name')).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method)).toHaveLength(0);
   });
 });

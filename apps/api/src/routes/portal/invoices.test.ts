@@ -1,5 +1,13 @@
-const reservation = vi.hoisted(() => ({ assert: vi.fn(), lock: vi.fn(), invoice: null as Record<string, unknown> | null }));
-vi.mock('../../services/autopay/reservation', () => ({ assertNoActiveCollection: reservation.assert, lockInvoiceForCollection: reservation.lock }));
+const bankRoutes=vi.hoisted(()=>({setup:vi.fn(),collect:vi.fn(),offer:vi.fn(async()=>null)}));
+vi.mock('../../services/autopay/bankPayment',async original=>({
+ ...await original<typeof import('../../services/autopay/bankPayment')>(),
+ startInvoiceBankSetup:bankRoutes.setup,collectAfterBankSetup:bankRoutes.collect,getBankAutopayOffer:bankRoutes.offer,
+}));
+import { prepareCardPayAndSave } from '../../services/autopay/payAndSave';
+const confirmation = vi.hoisted(() => ({ release: vi.fn() }));
+vi.mock('../../services/autopay/confirmPayment', () => ({ releaseInvoiceConfirmation: confirmation.release }));
+const reservation = vi.hoisted(() => ({ assert: vi.fn(), held: vi.fn(async () => false), lock: vi.fn(), inFlight: vi.fn(), invoice: null as Record<string, unknown> | null }));
+vi.mock('../../services/autopay/reservation', () => ({ assertNoActiveCollection: reservation.assert, holdsClientMoney: reservation.held, lockInvoiceForCollection: reservation.lock, readInFlightCollection: reservation.inFlight }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { db } from '../../db';
@@ -35,9 +43,10 @@ vi.mock('../../services/invoicePdf', () => ({
 // DB mock for the list query: select().from().where() resolves to either the
 // count row or the data rows depending on call order. insert().values() is a
 // thenable so the pay route's mapping INSERT awaits cleanly.
-const { dbResults, insertValuesMock, ctx } = vi.hoisted(() => ({
+const { dbResults, insertValuesMock, mappings, ctx } = vi.hoisted(() => ({
   dbResults: [] as unknown[][],
   insertValuesMock: vi.fn(),
+  mappings: new Map<string,Record<string,unknown>>(),
   ctx: { depth: 0 },
 }));
 // SEC-150: the fail-closed Checkout-session revocation phases run BEFORE this
@@ -67,7 +76,10 @@ vi.mock('../../db', () => {
       return Promise.resolve(rows).then(resolve);
     };
     (chain as { insert: unknown }).insert = vi.fn(() => ({
-      values: (v: unknown) => { insertValuesMock(v); return Promise.resolve(undefined); },
+      values: (v: any) => { insertValuesMock(v);let ignore=false;
+        const result:any={onConflictDoNothing:()=>{ignore=true;return result;},returning:()=>result,
+          then:(resolve:any,reject:any)=>{const prior=mappings.get(v.stripeObjectId);if(prior&&!ignore)return Promise.reject(new Error('invoice_stripe_payments_object_uq')).then(resolve,reject);
+            if(!prior)mappings.set(v.stripeObjectId,v);return Promise.resolve(prior?[]:[{invoiceId:v.invoiceId}]).then(resolve,reject);}};return result; },
     }));
     return chain;
   };
@@ -158,8 +170,32 @@ function boundParams(node: unknown, out: unknown[] = [], seen = new Set<unknown>
 import { checkoutSessionExpiry } from '../../services/invoiceCheckout';
 
 describe('portal invoices routes', () => {
+  it.each([
+    ['stale disclosure', 409, 'The terms changed. Review them and try again.', 'INVALID_STATE'],
+    ['unavailable enrollment', 409, 'Request automatic payments first', 'INVALID_STATE'],
+    ['disabled rollout', 404, 'Automatic payments unavailable', 'autopay_not_enabled'],
+  ] as const)('pay preserves the customer response for %s', async (_case, status, message, code) => {
+    dbResults.push([{ id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '100.00', currencyCode: 'USD', invoiceNumber: 'INV-1' }]);
+    vi.mocked(prepareCardPayAndSave).mockRejectedValueOnce(new InvoiceServiceError(message, status, 'INVALID_STATE'));
+    const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ saveForAutopay: true, consentAccepted: true, disclosureHash: 'a'.repeat(64) }) });
+    expect(res.status).toBe(status);
+    expect(await res.json()).toEqual({ error: code === 'autopay_not_enabled' ? 'Automatic payments are not enabled' : message, code });
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
+    expect(getPartnerStripeClientMock).not.toHaveBeenCalled();
+    expect(insertValuesMock).not.toHaveBeenCalled();
+  });
+
+it('portal invoice pay rejects missing authorization before Stripe', async () => {
+  const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ saveForAutopay: true }) });
+  expect(res.status).toBe(400); expect(sessionsCreateMock).not.toHaveBeenCalled();
+});
+
   beforeEach(() => {
-    reservation.invoice = null; reservation.assert.mockResolvedValue(undefined); reservation.lock.mockImplementation(async () => ({ invoice: reservation.invoice, reservedAmount: '0.00' })); vi.clearAllMocks(); dbResults.length = 0; insertValuesMock.mockReset(); onlinePayMock.mockResolvedValue(true); });
+    reservation.invoice = null; reservation.assert.mockResolvedValue(undefined); reservation.lock.mockImplementation(async () => ({ invoice: reservation.invoice, reservedAmount: '0.00' })); vi.clearAllMocks(); reservation.inFlight.mockResolvedValue({ inProgress: false, amount: '0.00' }); dbResults.length = 0; insertValuesMock.mockReset(); mappings.clear(); onlinePayMock.mockResolvedValue(true); });
 
   it.each(['pay', 'settle'])('rejects cookie-authenticated POST /invoices/:id/%s without CSRF before side effects', async (action) => {
     const res = await app(ORG_ID, 'cookie').request(`/invoices/${INV_ID}/${action}`, {
@@ -175,6 +211,14 @@ describe('portal invoices routes', () => {
     expect(settleCheckoutSessionMock).not.toHaveBeenCalled();
   });
 
+it('portal pay returns 409 while captured money for the invoice is unapplied, before contacting Stripe', async () => {
+  dbResults.push([{ id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00' }]);
+  reservation.held.mockResolvedValueOnce(true);
+  const response = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ code: 'COLLECTION_IN_PROGRESS' });
+  expect(sessionsCreateMock).not.toHaveBeenCalled();
+});
 it('portal pay returns 409 for a reservation before contacting Stripe', async () => {
   dbResults.push([{ id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00' }]);
   reservation.assert.mockRejectedValueOnce(new InvoiceServiceError('A payment is already processing', 409, 'COLLECTION_IN_PROGRESS'));
@@ -236,6 +280,59 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     const body = await (await app().request(`/invoices/${INV_ID}`, { method: 'GET' })).json();
     expect(body.onlinePaymentAvailable).toBe(available);
     expect(onlinePayMock).toHaveBeenCalledWith('p1');
+  });
+
+  it('GET /invoices/:id reports an in-flight autopay collection from the server-side reservation (#7824)', async () => {
+    reservation.inFlight.mockResolvedValue({ inProgress: true, amount: '50.00' });
+    getCustomerInvoiceMock.mockResolvedValue({ partnerId: 'p1', invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' }, lines: [] });
+    const body = await (await app().request(`/invoices/${INV_ID}`, { method: 'GET' })).json();
+    expect(body.collectionInProgress).toEqual({ amount: '50.00', actionRequired: false });
+    expect(reservation.inFlight).toHaveBeenCalledWith(expect.anything(), INV_ID);
+  });
+
+  it('GET /invoices/:id tells the customer when the autopay payment is waiting on their bank', async () => {
+    reservation.inFlight.mockResolvedValue({ inProgress: true, amount: '50.00', actionRequired: true });
+    getCustomerInvoiceMock.mockResolvedValue({ partnerId: 'p1', invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' }, lines: [] });
+    const body = await (await app().request(`/invoices/${INV_ID}`, { method: 'GET' })).json();
+    expect(body.collectionInProgress).toEqual({ amount: '50.00', actionRequired: true });
+  });
+
+  it('POST /invoices/:id/autopay-confirmation releases the off-session payment for the portal user\'s own org', async () => {
+    confirmation.release.mockResolvedValue({ outcome: 'released' });
+    const res = await app().request(`/invoices/${INV_ID}/autopay-confirmation`, { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: '{}' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ outcome: 'released' });
+    expect(confirmation.release).toHaveBeenCalledWith({ invoiceId: INV_ID, orgId: ORG_ID });
+  });
+
+  it('POST /invoices/:id/autopay-confirmation 404s another org\'s invoice', async () => {
+    confirmation.release.mockRejectedValue(new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND'));
+    const res = await app('99999999-9999-4999-8999-999999999999').request(`/invoices/${INV_ID}/autopay-confirmation`, { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: '{}' });
+    expect(res.status).toBe(404);
+    expect(confirmation.release).toHaveBeenCalledWith({ invoiceId: INV_ID, orgId: '99999999-9999-4999-8999-999999999999' });
+  });
+
+  it('POST /invoices/:id/autopay-confirmation requires a JSON body and cookie CSRF before Stripe', async () => {
+    expect((await app().request(`/invoices/${INV_ID}/autopay-confirmation`, { method: 'POST' })).status).toBe(415);
+    expect((await app(ORG_ID, 'cookie').request(`/invoices/${INV_ID}/autopay-confirmation`, { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: '{}' })).status).toBe(403);
+    expect(confirmation.release).not.toHaveBeenCalled();
+  });
+
+  it('GET /invoices/:id reports collectionInProgress=null when nothing is in flight (#7824)', async () => {
+    getCustomerInvoiceMock.mockResolvedValue({ partnerId: 'p1', invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' }, lines: [] });
+    const body = await (await app().request(`/invoices/${INV_ID}`, { method: 'GET' })).json();
+    expect(body.collectionInProgress).toBeNull();
+  });
+
+  it('GET /invoices/:id still renders (fail-safe null) when the in-flight read throws (#7824)', async () => {
+    reservation.inFlight.mockRejectedValue(new Error('db down'));
+    getCustomerInvoiceMock.mockResolvedValue({ partnerId: 'p1', invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' }, lines: [] });
+    const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).collectionInProgress).toBeNull();
   });
 
   it('GET /invoices/:id fails closed (200, unavailable) when the availability lookup throws (#7509)', async () => {
@@ -657,4 +754,69 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     const res = await settle('cs_123');
     expect(res.status).toBe(500);
   });
+});
+
+vi.mock('../../services/autopay/payAndSave', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../services/autopay/payAndSave')>();
+  return { ...actual, getInvoiceAutopayOffer: vi.fn(async () => null),
+    bindCardPayAndSave:vi.fn(async()=>{}),
+    prepareCardPayAndSave: vi.fn(async (_invoiceId: string, _orgId: string, input: { saveForAutopay?: boolean }) => {
+      if (input.saveForAutopay) throw new Error('Unexpected accepted save in ordinary-payment fixture');
+      return null;
+    }) };
+});
+
+it('reuses a portal Checkout mapping on repeated create',async()=>{
+ mappings.clear();dbResults.length=0;
+ getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));sessionsCreateMock.mockResolvedValue({id:'cs_reuse',url:'https://checkout.stripe.com/c/cs_reuse'});
+ for(let i=0;i<2;i++){
+  dbResults.push([{id:INV_ID,orgId:ORG_ID,partnerId:'p1',status:'sent',balance:'100.00',currencyCode:'USD'}],[{id:'connection'}],[]);if(i)dbResults.push([{invoiceId:INV_ID,stripeAccountId:'acct_9'}]);
+  const response=await app().request(`/invoices/${INV_ID}/pay`,{method:'POST'});
+  expect(response.status).toBe(200);expect(await response.json()).toMatchObject({url:'https://checkout.stripe.com/c/cs_reuse'});
+ }
+ expect(mappings.size).toBe(1);
+ // Ordinary portal payments save nothing; Link stays available there.
+ for(const [params] of sessionsCreateMock.mock.calls)expect(params).not.toHaveProperty('wallet_options');
+});
+it('portal pay-and-save forwards consent and binds card-only off-session Checkout',async()=>{
+ mappings.clear();dbResults.length=0;
+ const capture={id:'33333333-3333-4333-8333-333333333333',stripeCustomerId:'cus_saved'};
+ vi.mocked(prepareCardPayAndSave).mockResolvedValueOnce(capture as any);
+ dbResults.push([{id:INV_ID,orgId:ORG_ID,partnerId:'p1',status:'sent',balance:'100.00',currencyCode:'USD'}],[{id:'connection'}],[]);
+ getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));sessionsCreateMock.mockResolvedValue({id:'cs_saved',url:'https://checkout.stripe.com/c/cs_saved',payment_intent:'pi_saved'});
+ const response=await app().request(`/invoices/${INV_ID}/pay`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({saveForAutopay:true,consentAccepted:true,disclosureHash:'a'.repeat(64)})});
+ expect(response.status).toBe(200);
+ expect(prepareCardPayAndSave).toHaveBeenCalledWith(INV_ID,ORG_ID,expect.objectContaining({saveForAutopay:true,consentAccepted:true,disclosureHash:'a'.repeat(64)}),expect.any(String));
+ expect(sessionsCreateMock).toHaveBeenCalledWith(expect.objectContaining({payment_method_types:['card'],customer:'cus_saved',payment_intent_data:{setup_future_usage:'off_session',metadata:{autopay_setup_attempt_id:capture.id}},
+  wallet_options:{link:{display:'never'}}}),expect.anything());
+ const {bindCardPayAndSave}=await import('../../services/autopay/payAndSave');
+ expect(bindCardPayAndSave).toHaveBeenCalledWith(capture,expect.objectContaining({id:'cs_saved'}));
+});
+
+it('bank pay validates strict consent and preserves the setup envelope',async()=>{
+ dbResults.length=0;dbResults.push([{id:INV_ID,orgId:ORG_ID,partnerId:'p1',status:'sent',balance:'100.00',currencyCode:'USD'}]);
+ bankRoutes.setup.mockResolvedValue({url:'https://checkout.stripe.com/setup'});
+ const body={methodType:'us_bank_account',phase:'setup',consentAccepted:true,principal:'100.00',fee:'0.00',currency:'USD',disclosureHash:'a'.repeat(64)};
+ const response=await app().request(`/invoices/${INV_ID}/pay`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+ expect(response.status).toBe(200);expect(await response.json()).toEqual({url:'https://checkout.stripe.com/setup'});
+ expect(bankRoutes.setup).toHaveBeenCalledWith(expect.objectContaining({invoiceId:INV_ID,orgId:ORG_ID,returnTo:'portal'}));
+ const invalid=await app().request(`/invoices/${INV_ID}/pay`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...body,consentAccepted:false})});
+ expect(invalid.status).toBe(400);
+});
+it('bank collect requires invoice admission and never treats the session ID as authority',async()=>{
+ bankRoutes.collect.mockClear();
+ dbResults.length=0;
+ const response=await app().request(`/invoices/${INV_ID}/pay`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+  methodType:'us_bank_account',phase:'collect',consentAccepted:true,principal:'100.00',fee:'0.00',currency:'USD',disclosureHash:'a'.repeat(64),setupSessionId:'cs_test',
+ })});
+ expect(response.status).toBe(404);expect(bankRoutes.collect).not.toHaveBeenCalled();
+});
+
+it.each(['refused','deferred','failed','canceled'])('bank %s is a conflict rather than a successful payment',async outcome=>{
+ dbResults.length=0;dbResults.push([{id:INV_ID,orgId:ORG_ID,partnerId:'p1',status:'sent',balance:'100.00',currencyCode:'USD'}]);
+ bankRoutes.collect.mockResolvedValue({attemptId:null,outcome,reason:'unavailable'});
+ const response=await app().request(`/invoices/${INV_ID}/pay`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+ methodType:'us_bank_account',phase:'collect',consentAccepted:true,principal:'100.00',fee:'0.00',currency:'USD',disclosureHash:'a'.repeat(64),setupSessionId:'cs_test'
+ })});
+ expect(response.status).toBe(409);
 });

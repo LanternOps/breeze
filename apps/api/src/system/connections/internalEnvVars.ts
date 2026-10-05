@@ -397,6 +397,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   REMOTE_WS_REDIS_TOPOLOGY: 'remote access topology assertion',
   // REMOVED_*
   REMOVED_DEVICE_PURGE_MAX_PER_ORG_PER_RUN: 'worker throughput knob',
+  // RESEARCH_*
+  RESEARCH_EVAL_ALLOW_REMOTE_DB: 'dev script safety override (services/llm/__scripts__)',
+  RESEARCH_EVAL_ALLOW_WRITES: 'dev script safety gate (services/llm/__scripts__)',
   // REQUIRE_*
   REQUIRE_DB_ON_STARTUP: 'boot strictness flag',
   REQUIRE_REDIS_ON_STARTUP: 'boot strictness flag',
@@ -501,8 +504,6 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // WIN_*
   WIN_TEST_VM_SSH_KEY: 'AI patch-test lab VM',
   WIN_TEST_VM_TARGET: 'AI patch-test lab VM',
-  // WORKSPACE_*
-  WORKSPACE_CONTENT_LLM_MODEL: 'model override (deprecated: the extension_content assignment decides)',
   // WS_*
   WS_TICKETS_REQUIRE_REDIS: 'remote access strictness flag',
   WS_TICKET_BIND_IP: 'remote access ticket binding flag',

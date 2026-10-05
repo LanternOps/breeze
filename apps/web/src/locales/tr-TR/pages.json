@@ -22,6 +22,7 @@
     "adminSendingDomains": "İş ortağı gönderim alan adları",
     "adminUsersDetailDevices": "Kullanıcı cihazları",
     "aiAgentsImpact": "Yapay Zeka Etkisi",
+    "aiAgentsFixMemory": "Düzeltme belleği",
     "aiAgentsRunsDetail": "Çalıştırma Detayı",
     "aiAgentsRuns": "Aracı Çalıştırmaları",
     "aiForOffice": "Office için AI",
@@ -172,7 +173,8 @@
     "settingsTicketing": "Bilet Ayarları",
     "securityScans": "IOC Taramaları",
     "devicesTime": "Saat eşitleme",
-    "adminAiModels": "Yapay zeka modelleri"
+    "adminAiModels": "Yapay zeka modelleri",
+    "billingAutopay": "Automatic payments"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",

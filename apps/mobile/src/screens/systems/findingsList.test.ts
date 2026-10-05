@@ -191,9 +191,9 @@ describe('copy', () => {
   });
 
   it('names the org in the empty state so the tech knows what was checked', () => {
-    expect(findingsListEmptyCopy('Berthoud Vet Care')).toEqual({
+    expect(findingsListEmptyCopy('Cedar Ridge Vet Care')).toEqual({
       title: 'No open findings',
-      body: 'Berthoud Vet Care has no open or acknowledged findings right now.',
+      body: 'Cedar Ridge Vet Care has no open or acknowledged findings right now.',
     });
   });
 
@@ -209,7 +209,7 @@ describe('toFindingListItem', () => {
     const row: FleetFinding = {
       id: 'f-9',
       orgId: 'org-1',
-      orgName: 'Berthoud Vet Care',
+      orgName: 'Cedar Ridge Vet Care',
       kind: 'reliability_offenders',
       status: 'acknowledged',
       severity: 'error',

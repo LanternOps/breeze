@@ -12,7 +12,18 @@ Use this checklist only with a disposable, non-production Microsoft 365 tenant. 
 - A Breeze test operator with `organizations:read`, `organizations:write`, and current MFA. If operating at partner scope, the operator must also pass the partner-wide management guard.
 - Read-only access to sanitized API/log/audit evidence and controlled database inspection. Do not copy secret-bearing rows or provider callback URLs into the evidence package.
 
+**Non-disposable tenant.** If an acceptance run has to use a tenant that is not disposable (for example the owner's own test tenant), skip every scenario that mutates the tenant's app-role assignments or consent — scenarios 6, 7, 8, 10 and 13 — and record each as *skipped (non-disposable tenant)*, not passed. Never run the tenant-local assignment procedure below outside a disposable tenant.
+
 Record tenant/org/user identifiers as redacted aliases plus a one-way digest. Never place raw state, cookie values, authorization codes, PKCE verifiers, nonces, tokens, private keys, certificate PEM, private JWKs, provider error bodies, or raw vault references in this document, screenshots, tickets, shell history, or attachments.
+
+## Identity-first consent flow
+
+Since #7910, consent runs in this order (see [Consent flow (identity first)](../deploy/m365-customer-graph-read-executor.md#consent-flow-identity-first)):
+
+1. **Identity.** **Connect** opens Microsoft's account picker and a v2 sign-in at `/organizations` (or at the bound tenant for a reconnect of a still-bound connection, or a permission upgrade). Breeze's executor verifies the ID token (`verify-identity`), including the administrator role. An ineligible role fails here with `admin_role_required`, before any consent screen.
+2. **Confirm tenant** (`/organizations` sign-ins only). The browser returns to the card, which shows the verified tenant ID and the signed-in username and asks the operator to **Continue to Microsoft consent** or **Cancel, wrong tenant**.
+3. **Consent.** Microsoft's consent screen for exactly that tenant (v1 `/{tenantId}/oauth2/authorize?…&prompt=admin_consent`). The code it returns is discarded.
+4. **Verify.** Breeze proves an application token for that tenant, probes the organization and reconciles grants, then binds the tenant. The terminal location is `/integrations#m365/customer-graph-read/<outcome>`.
 
 ## Authoritative permission manifest
 
@@ -47,11 +58,11 @@ For every scenario capture only sanitized evidence:
 - **Metric/log** — counter delta for bounded `event`/`outcome`, correlation digest, and proof that logs contain stable codes rather than provider bodies.
 - **Entra** — service-principal existence and exact assignment names/IDs. Capture the consent screen separately as described below.
 
-Expected audit action names are `m365.customer_graph_read.consent_initiated`, `m365.customer_graph_read.admin_consent_returned`, `m365.customer_graph_read.tenant_binding_verified`, `m365.customer_graph_read.verification_failed`, `m365.customer_graph_read.grant_drift_detected`, `m365.customer_graph_read.retested`, and `m365.customer_graph_read.disconnected`. Metrics use `breeze_m365_customer_graph_read_events_total{event,outcome}`.
+Expected audit action names are `m365.customer_graph_read.consent_initiated`, `m365.customer_graph_read.upgrade_consent_initiated`, `m365.customer_graph_read.admin_identity_verified`, `m365.customer_graph_read.tenant_confirmed`, `m365.customer_graph_read.admin_consent_returned`, `m365.customer_graph_read.tenant_binding_verified`, `m365.customer_graph_read.verification_failed`, `m365.customer_graph_read.grant_drift_detected`, `m365.customer_graph_read.retested`, `m365.customer_graph_read.disconnected`, and `m365.customer_graph_read.sync_requested`. `admin_identity_verified` and `tenant_binding_verified` carry `verifiedAdministratorObjectId`, the administrator whose identity Breeze verified; it does not claim that this person clicked Accept on the consent screen. Metrics use `breeze_m365_customer_graph_read_events_total{event,outcome}`.
 
 ## Consent-screen copy capture
 
-During the first eligible consent, capture the Microsoft screen before accepting it. Record:
+During the first eligible consent, capture the Microsoft consent screen (the step after **Continue to Microsoft consent**) before accepting it. Record:
 
 - tenant alias and operator alias;
 - application display name, verified publisher text, and Microsoft timestamp;
@@ -111,25 +122,54 @@ Run the scenarios in order. For scenarios 6–8, use only the approved tenant-lo
 | 12 | Local disconnect and delayed-result rejection | Org A becomes `revoked`; tenant/client/display/grant/verification execution state is cleared; consent attempt rotates; Microsoft consent remains until separately removed | Disconnect outcome `revoked`; delayed callback `consent_state_mismatch` or delayed scoped mutation `404 Connection not found` | UI/API/DB, disconnected audit/metric, unchanged Entra consent before separate removal, delayed-result rejection |
 | 13 | Separate Microsoft consent removal and cleanup | Breeze remains `revoked`; disposable Entra service principal/consent and test artifacts are removed | No Breeze claim that local disconnect removed Microsoft consent | Entra removal confirmation, final safe DB/audit retention check, cleanup sign-off |
 
+## Identity-first acceptance (#7910)
+
+Run these after scenarios 1–13, for both profiles (the [actions runbook](./m365-customer-graph-actions-real-tenant.md) points here). Scenario A needs a tenant with a Conditional Access policy that uses a device filter; the others use the disposable tenant.
+
+| # | Scenario | Expected Breeze state | Expected stable error/outcome | Required evidence |
+|---:|---|---|---|---|
+| A | Tenant with a CA policy using a device filter (the AADSTS50097 case) | Both phases complete; the connection binds | Callback `active`. If Microsoft still returns an error redirect: `conditional_access_blocked`, attempt `pending-consent`, nothing bound | CA policy summary (no tenant ID), sanitized outcome, DB state, redirect key set (below) |
+| B | Guest administrator: an account that is a guest administrator in the customer tenant signs in | The confirm-tenant screen shows the account's **home** tenant, not the customer tenant. The operator chooses **Cancel, wrong tenant** | `consent_cancelled`; nothing bound; no consent screen reached | Confirm-screen screenshot (tenant ID redacted to a digest), DB `last_error_code`, `verification_failed`/`consent_cancelled` audit |
+| C | Ineligible role at identity | Fresh attempt stays `pending-consent` | `admin_role_required` before any consent screen | As scenario 4 |
+| D | Reconnect of a bound tenant, signing in with another tenant's administrator | Row keeps its tenant; nothing is consented | `tenant_mismatch` before consent | Sanitized outcome, unchanged tenant binding, no consent-screen evidence |
+| E | Replay of each phase and of the confirm step | Unchanged | `consent_state_mismatch` for callbacks; `404` for a repeated continue | As scenario 2 |
+| F | Cancel at Microsoft's consent screen | Initial: `pending-consent`, nothing bound. Upgrade (scenario S2 path): the live row is byte-for-byte unchanged | `consent_cancelled` | DB snapshots before/after, redirect key set (below) |
+
+### Redirect-shape capture
+
+The callback parser accepts only known query keys and fails closed on anything else (`consent_state_mismatch`). The success shape of Microsoft's v1 `prompt=admin_consent` redirect has not yet been checked against a live capture. For each profile, record the **exact set of query parameter names** (names only, sorted — never values) Microsoft sends to the callback for:
+
+1. the identity-phase success redirect (expected `code`, `state`, optionally `session_state`);
+2. the consent-phase success redirect from `/{tenantId}/oauth2/authorize?…&prompt=admin_consent` (the parser tolerates `admin_consent`, `tenant` and `client_info` alongside `code`, `state`, `session_state`; record whether they actually appear);
+3. the identity-phase cancel (account picker or sign-in cancelled);
+4. the consent-phase cancel (scenario F);
+5. any Conditional Access error redirect seen in scenario A, in either phase.
+
+Read the names from the browser's network panel for the callback request, write down names only, and close the panel; do not save HAR files, URLs or values. If a success redirect carries a key outside the accepted set, stop: that is a parser change backed by this evidence, then a re-run.
+
+Also confirm the consent-phase `code` appears in no API, executor or proxy log line for the run window (search for the value held only in memory, then discard it), and that no consent session row outlives its flow.
+
 ## Scenario procedure and assertions
 
 ### 1. Successful consent and immutable tenant binding
 
 1. Select Org A at **Integrations → Identity → Microsoft 365**. Confirm the legacy direct card remains separate and unchanged.
 2. On the Customer Graph Read card, verify all thirteen required permissions are rendered from the API manifest and no tenant/client/secret/certificate field is editable.
-3. Choose **Connect**, complete current MFA, sign in as the eligible administrator, capture consent-screen copy, and accept.
-4. Complete the administrator identity step. Confirm the terminal browser location is `/integrations#m365/customer-graph-read/active` and the card refreshes.
-5. Verify status `active`, manifest version 3, the signed tenant GUID, organization display name, exact observed assignments, `last_verified_at`, and `grants_verified_at`.
-6. Verify `tenant_binding_verified` has outcome `active`; audit details contain only the fixed profile, attempt/correlation identifiers, manifest version, bounded outcome, and verified tenant after proof.
+3. Choose **Connect**, complete current MFA, and sign in as the eligible administrator.
+4. Confirm the browser returns to the card's confirm-tenant screen, and that it shows the disposable tenant's ID and the eligible administrator's username. Choose **Continue to Microsoft consent**.
+5. Capture consent-screen copy and accept. Confirm the terminal browser location is `/integrations#m365/customer-graph-read/active` and the card refreshes.
+6. Verify status `active`, manifest version 3, the signed tenant GUID, organization display name, exact observed assignments, `last_verified_at`, and `grants_verified_at`.
+7. Verify the audit sequence `consent_initiated` → `admin_identity_verified` (`identity_verified`) → `tenant_confirmed` → `admin_consent_returned` (`application_verification_started`) → `tenant_binding_verified` (`active`). Audit details contain only the fixed profile, attempt/correlation identifiers, manifest version, bounded outcome, the verified tenant and `verifiedAdministratorObjectId`.
 
 ### 2. Replay both callback phases
 
 Use browser Back/Reload or a controlled test proxy that keeps sensitive query values only in memory. Do not save callback URLs, HAR files, request headers, or clipboard contents.
 
-1. Replay the admin-consent callback after it has transitioned to identity verification.
-2. Replay the identity callback after its terminal single-use consumption.
+1. Replay the identity callback after it has moved on to the confirm-tenant screen (its session is already consumed).
+2. Replay the consent callback after its terminal single-use consumption.
 3. Confirm each ends at the `consent_state_mismatch` hash, clears the binding cookie on the terminal path, and makes no executor request.
-4. Confirm Org A remains active with the same tenant ownership, grants, and verified timestamps.
+4. Repeat **Continue to Microsoft consent** after it has already been used (a second tab or a re-sent request). Confirm `POST …/consent/continue` answers `404` and no second consent session exists.
+5. Confirm Org A remains active with the same tenant ownership, grants, and verified timestamps.
 
 ### 3. Expired attempt
 
@@ -140,8 +180,8 @@ Use browser Back/Reload or a controlled test proxy that keeps sensitive query va
 
 ### 4. Ineligible administrator
 
-1. Start fresh consent and complete both Microsoft steps using the ineligible administrator.
-2. Confirm `admin_role_required`, `pending-consent`, and no verified tenant binding.
+1. Start fresh consent and sign in using the ineligible administrator.
+2. Confirm `admin_role_required` right after the sign-in — no confirm-tenant screen and no Microsoft consent screen — plus `pending-consent` and no verified tenant binding.
 3. Confirm neither ID-token claims nor administrator object ID appears in UI, safe API, audit, or logs.
 
 ### 5. Duplicate ownership across Breeze organizations
@@ -177,7 +217,7 @@ Use browser Back/Reload or a controlled test proxy that keeps sensitive query va
 ### 9. Re-consent recovery
 
 1. Confirm Entra is configured with exactly the thirteen manifest roles.
-2. Choose **Re-consent** and complete both Microsoft steps with the eligible administrator.
+2. Choose **Re-consent** and sign in with the eligible administrator. A still-bound connection signs in at its own tenant and goes straight to the consent screen (no confirm-tenant step); a disconnected one shows confirm-tenant first.
 3. Confirm `active`, no stable error, exact observed equality, and newer authoritative verification timestamps.
 
 ### 10. Microsoft tenant-wide consent removal detected by Retest
@@ -218,9 +258,9 @@ Run this review after scenarios 1, 9, 11, and 12. Record only pass/fail, query/r
 | Surface | Required assertion |
 |---|---|
 | Browser | After terminal redirect, the current URL, DOM, React state, local storage, and session storage contain no state, cookie, authorization code, PKCE verifier, nonce, token, private key/certificate, private JWK, or vault reference. Do not persist network captures used during the protocol. |
-| Safe API responses | `GET /m365/connections?orgId=...`, consent initiation, Retest, and Disconnect responses contain only their strict DTOs. They contain no client secret, token, certificate, private JWK, state/cookie, authorization code, verifier/nonce, provider body, administrator object ID, credential version, or vault reference. |
+| Safe API responses | `GET /m365/connections?orgId=...`, consent initiation, the confirm-tenant `pending`/`continue`/`cancel` routes, Retest, and Disconnect responses contain only their strict DTOs. `pending` returns only the verified tenant ID, the display-only username and an expiry; `continue` returns only the consent URL. They contain no client secret, token, certificate, private JWK, state/cookie, authorization code, verifier/nonce, provider body, administrator object ID, credential version, or vault reference. |
 | Database | Connection rows contain no client secret for `customer-graph-read`, token, certificate/private key, private JWK, authorization code, PKCE verifier, or nonce. Completed/disconnected attempt sessions are absent. The connection's code-designed `vault_ref` is an opaque version-pinned locator and `credential_version` is metadata; inspect them only through a redacted shape/version assertion and never copy their raw values into evidence. |
-| Audit | Details contain only profile, attempt ID, manifest version, outcome, correlation ID, and verified tenant after proof. No state/cookie, code, verifier/nonce, token, certificate/private key, private JWK, raw provider body, administrator object ID, or vault locator appears. |
+| Audit | Details contain only profile, attempt ID, manifest version, outcome, correlation ID, the verified tenant, and — on `admin_identity_verified`, `tenant_confirmed` and `tenant_binding_verified` — `verifiedAdministratorObjectId`. No state/cookie, code, verifier/nonce, token, certificate/private key, private JWK, raw provider body, administrator username, or vault locator appears. |
 | API/executor logs | Search the bounded test window for known canary markers and sensitive field names. Logs contain stable error codes/correlation IDs only, not values or provider bodies. Do not search by printing real secret values into the command or evidence. |
 | Executor/runtime | Image history/config contains no credential material. Only the executor identity can read the pinned Key Vault version; the API/web/general worker identities receive access denied. Executor responses never include Microsoft tokens or certificate material. |
 

@@ -24,7 +24,10 @@ export const deliverTopologyDiagnosticCommand: TopologyDiagnosticDelivery = asyn
     () => claimPendingCommandForDelivery(input.commandId),
     'topology diagnostic socket delivery claim',
   );
-  if (!claimed) return false;
+  // Only a claimed row is pushed. `cancelled` is terminal (claim-time
+  // eligibility already settled it); `held` / `not_claimable` leave it to the
+  // heartbeat claim.
+  if (claimed.status !== 'claimed') return false;
 
   const delivered = sendCommandToAgent(input.agentId, {
     id: input.commandId,

@@ -44,3 +44,24 @@ func TestScopedDNSSplitDomainsAndZones(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// #7819: the production reader wires the name-family probe, and Interfaces passes it through.
+func TestDarwinReaderReportsInterfaceKind(t *testing.T) {
+	r, ok := NewReader("epoch").(*DarwinReader)
+	if !ok || r.InterfaceKind == nil {
+		t.Fatal("NewReader did not wire an interface-kind probe")
+	}
+	if got := r.InterfaceKind(net.Interface{Name: "utun3"}); got != "tunnel" {
+		t.Fatalf("utun3: kind %q, want tunnel", got)
+	}
+	reader := &DarwinReader{Identities: NewInterfaceIdentities(func(string) (string, error) { return "key-1", nil }),
+		InterfacesOS: func() ([]net.Interface, error) {
+			return []net.Interface{{Index: 9, Name: "utun3", Flags: net.FlagUp}}, nil
+		},
+		InterfaceAddrs: func(net.Interface) ([]net.Addr, error) { return nil, nil },
+		InterfaceKind:  r.InterfaceKind}
+	s, e := reader.Interfaces(context.Background(), Context{})
+	if e != nil || len(s.Rows) != 1 || s.Rows[0].Kind != "tunnel" {
+		t.Fatal(s.Rows, e)
+	}
+}

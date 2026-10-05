@@ -67,18 +67,18 @@ export async function resolveBillingPaymentSettings(db: Tx, args: { partnerId: s
     overdueReminderEveryDays: pick(org?.overdueReminderEveryDays, partner?.overdueReminderEveryDays, d.overdueReminderEveryDays),
   };
 }
-function columns(patch: PartnerPaymentSettingsPatch) {
-  const defined = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)) as PartnerPaymentSettingsPatch;
+function columns(patch: OrgPaymentSettingsPatch) {
+  const defined = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)) as OrgPaymentSettingsPatch;
   return defined.autopayCapEnabled !== undefined && defined.autopayCapEnabled !== true
-    ? { ...defined, autopayCapAmount: null, autopayCapCurrency: null }
-    : defined;
+    ? { ...defined, autopayCapAmount: null, autopayCapCurrency: null } : defined;
 }
-export async function updatePartnerPaymentSettings(db: Tx, partnerId: string, patch: PartnerPaymentSettingsPatch, actorUserId: string): Promise<void> {
-  const set = columns(partnerPaymentSettingsPatchSchema.parse(patch));
+export async function updatePartnerPaymentSettings(db: Tx, partnerId: string,
+  patch: PartnerPaymentSettingsPatch, actorUserId: string): Promise<void> {
+  const { feeAttestation, ...settings } = partnerPaymentSettingsPatchSchema.parse(patch);
+  const set = { ...columns(settings), ...(feeAttestation ? {
+    feeAttestedBy: actorUserId, feeAttestedAt: new Date(),
+  } : {}) };
   if (!Object.keys(set).length) return;
-  // The sole HTTP caller checks full-partner capability and audits actorUserId.
-  // W5 consumes actorUserId for attestation provenance; W1 cannot write fees.
-  void actorUserId;
   await db.insert(billingPaymentSettings).values({ partnerId, orgId: null, ...set })
     .onConflictDoUpdate({ target: billingPaymentSettings.partnerId,
       targetWhere: isNotNull(billingPaymentSettings.partnerId), set });

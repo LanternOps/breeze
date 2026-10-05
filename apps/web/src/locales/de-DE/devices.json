@@ -2436,6 +2436,7 @@
       "bulkWakeSomeFailed": "Aufwecken einiger Geräte fehlgeschlagen",
       "commandQueued": "{{action}} eingereiht — wird ausgeführt, wenn {{hostname}} wieder verbunden ist",
       "commandSent": "{{action}} an {{hostname}} gesendet",
+      "commandCancelled": "{{action}} wurde nicht an {{hostname}} gesendet: Befehl abgebrochen ({{reason}})",
       "compareNeedsTwo": "Der Vergleich benötigt mindestens 2 Agent-Geräte.",
       "decommissionCancelled": "Entfernen abgebrochen",
       "decommissionFailed": "Entfernen fehlgeschlagen",

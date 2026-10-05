@@ -68,10 +68,10 @@ describe('billing payment settings', () => {
       autopayCapAmount: null, autopayCapCurrency: null });
     expect(f.upsert).toHaveBeenCalledTimes(2);
   });
-  it('revalidates service callers and never writes forbidden fee fields', async () => {
+  it('revalidates service callers and never writes raw provenance or org attestation', async () => {
     const f = fixture([]);
-    await expect(updatePartnerPaymentSettings(f.tx, partnerId, { cardFeeBps: 100 } as never, actorId)).rejects.toThrow();
-    await expect(updateOrgPaymentSettings(f.tx, orgId, { achFeeAmount: '1.00' } as never, actorId)).rejects.toThrow();
+    await expect(updatePartnerPaymentSettings(f.tx, partnerId, { feeAttestedBy: actorId } as never, actorId)).rejects.toThrow();
+    await expect(updateOrgPaymentSettings(f.tx, orgId, { feeAttestation: {} } as never, actorId)).rejects.toThrow();
     expect(f.values).not.toHaveBeenCalled();
     await updatePartnerPaymentSettings(f.tx, partnerId, {}, actorId);
     await updatePartnerPaymentSettings(f.tx, partnerId, { remindersEnabled: undefined }, actorId);
@@ -82,4 +82,23 @@ describe('billing payment settings', () => {
     f.upsert.mockRejectedValueOnce(new Error('database unavailable'));
     await expect(updatePartnerPaymentSettings(f.tx, partnerId, { remindersEnabled: true }, actorId)).rejects.toThrow('database unavailable');
   });
+});
+
+it('stamps only server provenance and leaves existing attestation on ordinary edits', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-01T12:00:00Z'));
+  try {
+    const conflict = vi.fn().mockResolvedValue(undefined);
+    const values = vi.fn(() => ({ onConflictDoUpdate: conflict }));
+    const cx = { insert: vi.fn(() => ({ values })) } as unknown as Tx;
+    const partner = '11111111-1111-4111-8111-111111111111';
+    const actor = '22222222-2222-4222-8222-222222222222';
+    await updatePartnerPaymentSettings(cx, partner, { cardFeeBps: 300,
+      feeAttestation: { acquirerAndNetworksNotified30DaysAgo: true, doesNotExceedAcceptanceCost: true } }, actor);
+    expect(values).toHaveBeenLastCalledWith({ partnerId: partner, orgId: null, cardFeeBps: 300,
+      feeAttestedBy: actor, feeAttestedAt: new Date('2026-10-01T12:00:00Z') });
+    expect(conflict.mock.calls[0]![0].set).not.toHaveProperty('feeAttestation');
+    await updatePartnerPaymentSettings(cx, partner, { cardFeeBps: 0 }, actor);
+    expect(conflict.mock.calls[1]![0].set).toEqual({ cardFeeBps: 0 });
+    await expect(updateOrgPaymentSettings(cx, partner, { feeAttestation: {} } as never, actor)).rejects.toThrow();
+  } finally { vi.useRealTimers(); }
 });

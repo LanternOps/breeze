@@ -230,6 +230,13 @@ const CLEANUP_TABLES = [
   // reaches them). Without this a snapshot id deleted by one test stays
   // unavailable to every later test that reuses the same literal id.
   'backup_snapshot_id_tombstones',
+  // Org-erasure backup fences: platform evidence with no org FK (it must
+  // survive the erasure), so no cascade reaches them. Storage GC honours a
+  // fence by snapshot id alone, so a fence left by one test would protect a
+  // same-id prefix in every later test.
+  'backup_erasure_targets',
+  'backup_erasure_manifests',
+  'backup_erasure_fence_refs',
   'device_commands',
   'device_group_memberships',
   'device_groups',

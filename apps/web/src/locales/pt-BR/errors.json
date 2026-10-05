@@ -26,5 +26,6 @@
   "TICKET_TRIAGE_CATEGORY_MISMATCH": "A categoria sugerida mudou — revise antes de aplicar",
   "MAILBOX_RECONSENT_REQUIRED": "Esta caixa de email precisa ser reconectada para continuar sincronizando chamados",
   "tool_source_unavailable": "A fonte desta ferramenta está indisponível no momento",
-  "ai_not_configured": "A IA não está configurada neste servidor. Um administrador precisa adicionar uma chave de provedor de modelos."
+  "ai_not_configured": "A IA não está configurada neste servidor. Um administrador precisa adicionar uma chave de provedor de modelos.",
+  "ACCESS_REVIEW_SELF_DECISION": "Você não pode decidir sobre o seu próprio acesso — outro administrador precisa revisar este item"
 }

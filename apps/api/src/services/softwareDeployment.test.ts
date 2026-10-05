@@ -249,6 +249,20 @@ describe('createSoftwareDeployment', () => {
   });
 
 
+  it('dispatchSoftwareInstallToDevice refuses (throws with the reason) when the push claim cancels the install', async () => {
+    dispatchDeviceCommandMock.mockResolvedValue({
+      ok: true,
+      command: { id: 'cmd-dev-1', deviceId: 'dev-1', type: 'software_install', status: 'cancelled' },
+      delivery: 'cancelled',
+      cancelReason: 'requester_inactive',
+      deliverBy: new Date(),
+    });
+
+    await expect(
+      dispatchSoftwareInstallToDevice('dep-1', { id: 'dev-1', agentId: 'agent-1' }, { deploymentId: 'dep-1', retryCount: 0 }),
+    ).rejects.toThrow('requester_inactive');
+  });
+
   it('a dispatch failure on one device does not abort the fan-out for the rest', async () => {
     // #5128: dispatchSoftwareInstallToDevice now THROWS when the seam refuses
     // (decommissioned / trust-denied — checks that did not exist on this path

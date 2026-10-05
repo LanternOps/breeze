@@ -79,7 +79,7 @@ export type StepUpOperation =
   | 'ai_script_lane_grant'
   // Partner-wide sibling of `ai_script_lane_grant`: raising the PARTNER
   // ceiling (`unattended_allowed` and, while it is already true, any
-  // widening of tier/classes/rate/protected-resources/reviewerModel) fans
+  // widening of tier/classes/rate/protected-resources/proposing) fans
   // out to every org under the partner that has opted in, so it gets the
   // same fresh-MFA-plus-resource-binding treatment as the org-scope grant.
   | 'ai_partner_script_ceiling_grant'
@@ -288,8 +288,26 @@ export interface ScriptLaneWideningDelta {
   unattendedAllowedClasses: string[];
   maxUnattendedPerHour: number;
   protectedResourcesEmptied: boolean;
-  reviewerModel: string | null;
   proposingEnabled: boolean;
+}
+
+/**
+ * The canonical, explicitly-picked form of a widening delta that both digests
+ * hash. Picking (rather than spreading the input) means the mint side (a
+ * client resource parsed by `routes/auth/schemas.ts`) and the redeem side (the
+ * delta the policy routes build server-side) hash the same keys in the same
+ * order, and a stray key — e.g. the retired `reviewerModel` from a cached
+ * pre-W08 client (#7606) — can never change the digest.
+ */
+function canonicalWidening(widening: ScriptLaneWideningDelta | undefined) {
+  if (!widening) return null;
+  return {
+    maxUnattendedRiskTier: widening.maxUnattendedRiskTier,
+    unattendedAllowedClasses: [...widening.unattendedAllowedClasses].sort(),
+    maxUnattendedPerHour: widening.maxUnattendedPerHour,
+    protectedResourcesEmptied: widening.protectedResourcesEmptied,
+    proposingEnabled: widening.proposingEnabled,
+  };
 }
 
 /** Bind a factor-removal grant to one exact server-side passkey row. */
@@ -298,7 +316,7 @@ export interface ScriptLaneWideningDelta {
  * value (`unattendedEnabled`), and to the lane-reset action when `reset` is
  * set. Same one-org-one-value shape as the maintenance digest. `widening`
  * additionally binds a grant minted for a WIDENING save (tier/classes/rate/
- * emptied protectedResources/reviewerModel/proposingEnabled changed while the
+ * emptied protectedResources/proposingEnabled changed while the
  * lane is already enabled) to the exact wider values being persisted.
  */
 export function scriptLanePolicyResourceDigest(input: {
@@ -311,9 +329,7 @@ export function scriptLanePolicyResourceDigest(input: {
     orgId: input.orgId,
     unattendedEnabled: input.unattendedEnabled,
     reset: input.reset === true,
-    widening: input.widening
-      ? { ...input.widening, unattendedAllowedClasses: [...input.widening.unattendedAllowedClasses].sort() }
-      : null,
+    widening: canonicalWidening(input.widening),
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
@@ -332,9 +348,7 @@ export function partnerScriptCeilingResourceDigest(input: {
   const canonical = JSON.stringify({
     partnerId: input.partnerId,
     unattendedAllowed: input.unattendedAllowed,
-    widening: input.widening
-      ? { ...input.widening, unattendedAllowedClasses: [...input.widening.unattendedAllowedClasses].sort() }
-      : null,
+    widening: canonicalWidening(input.widening),
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }

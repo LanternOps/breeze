@@ -1,4 +1,4 @@
-import { RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
+import { invoices } from '../db/schema/invoices';
 import { invoiceCollectionAttempts, orgPaymentMethods, orgAutopayEnrollments } from '../db/schema/autopay';
 import Stripe from 'stripe';
 import { and, eq, inArray, isNull, isNotNull, lte, or, sql } from 'drizzle-orm';
@@ -118,7 +118,7 @@ export async function archiveSupersededCredential(
     sql`exists (select 1 from ${invoiceCollectionAttempts}
       where (${invoiceCollectionAttempts.invoiceStripePaymentId} = ${invoiceStripePayments.id}
         or ${invoiceCollectionAttempts.stripePaymentIntentId} = ${invoiceStripePayments.stripeObjectId})
-      and ${inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES])})`,
+      and ${inArray(invoiceCollectionAttempts.state, ['reserved', 'created', 'confirming', 'processing', 'requires_action', 'unapplied'])})`,
   ));
 
   return archived.id;
@@ -246,16 +246,26 @@ export async function eraseExpiredStripeCredentials(now: Date = new Date()): Pro
   let erased = 0;
   let skipped = 0;
   for (const candidate of candidates) {
-    const [activeAttempt] = await db.select({ id: invoiceCollectionAttempts.id })
-      .from(invoiceCollectionAttempts)
-      .innerJoin(orgPaymentMethods, eq(orgPaymentMethods.id, invoiceCollectionAttempts.paymentMethodId))
-      .innerJoin(orgAutopayEnrollments, eq(orgAutopayEnrollments.id, orgPaymentMethods.enrollmentId))
+    // A mapped attempt keeps its account binding even after its method is removed.
+    // Only an unmapped reservation falls back to the source enrollment's account.
+    const [unresolved] = await db.select({ id: invoiceCollectionAttempts.id }).from(invoiceCollectionAttempts)
+      .innerJoin(invoices, eq(invoices.id, invoiceCollectionAttempts.invoiceId))
+      .leftJoin(invoiceStripePayments, eq(invoiceStripePayments.id, invoiceCollectionAttempts.invoiceStripePaymentId))
+      .leftJoin(orgPaymentMethods, eq(orgPaymentMethods.id, invoiceCollectionAttempts.paymentMethodId))
+      .leftJoin(orgAutopayEnrollments, eq(orgAutopayEnrollments.id, orgPaymentMethods.enrollmentId))
       .where(and(
-        eq(orgAutopayEnrollments.partnerId, candidate.partnerId),
-        eq(orgAutopayEnrollments.stripeAccountId, candidate.stripeAccountId),
-        inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES]),
+        eq(invoices.partnerId, candidate.partnerId),
+        inArray(invoiceCollectionAttempts.state, ['reserved', 'created', 'confirming', 'processing', 'requires_action', 'unapplied']),
+        or(
+          eq(invoiceStripePayments.stripeAccountId, candidate.stripeAccountId),
+          and(
+            isNull(invoiceCollectionAttempts.invoiceStripePaymentId),
+            eq(orgAutopayEnrollments.partnerId, candidate.partnerId),
+            eq(orgAutopayEnrollments.stripeAccountId, candidate.stripeAccountId),
+          ),
+        ),
       )).limit(1);
-    if (activeAttempt) { skipped++; continue; }
+    if (unresolved) { skipped++; continue; }
     const pastHardCap = candidate.eraseHardCapAt.getTime() <= now.getTime();
     if (!pastHardCap) {
       const [dependent] = await db.select({ id: invoiceStripePayments.id })

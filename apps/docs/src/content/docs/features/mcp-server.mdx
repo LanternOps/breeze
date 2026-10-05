@@ -242,7 +242,7 @@ List tools return `hasMore` and `nextCursor` in their result; when `hasMore` is 
 | `manage_alert_rules` | 1/2/3 | Full alert rule lifecycle: list, get, create, update, delete rules; test rules; list notification channels; alert summary. Create/update are Tier 2; delete is Tier 3. |
 | `list_incidents` | 1 | List incidents by organization, status, severity, classification, assignee, or date range. |
 | `list_remediation_suggestions` | 1 | List remediation suggestions by organization, source, device, or status, limited to accessible devices. |
-| `find_proven_fixes` | 1 | Find fixes proven by observed outcomes on the same alert or anomaly episode across your clients, with track records (counts only — never another client's details). |
+| `find_proven_fixes` | 1 | Find fixes proven by observed outcomes on the same alert, anomaly episode, or a device plus a structured alert condition (`deviceId` + `problem`, never free text) across your clients, with track records (counts only — never another client's details). |
 
 ### Command and script execution
 

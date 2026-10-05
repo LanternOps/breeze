@@ -114,6 +114,41 @@ describe('negotiateRecoveryCapabilities', () => {
     expect(result).toMatchObject({ ok: false, error: 'storage_identity_drift' });
   });
 
+  // #6490: a self-contained snapshot (referenced_files NULL/0) streams every
+  // object from its OWN prefix via the live-config-first resolution, so a
+  // destination changed after the snapshot was written must be refused at
+  // authenticate/exchange too — not discovered per-file after provisioning.
+  it('#6490: self-contained snapshot whose resolved provider identity drifted from the pinned identity is refused', () => {
+    for (const referencedFiles of [null, 0]) {
+      const result = negotiateRecoveryCapabilities(base({
+        referencedFiles, clientCapabilities: [CAP], storageIdentity: 's3::e::old-bucket',
+        resolvedProviderIdentity: 's3::e::new-bucket',
+      }));
+      expect(result).toMatchObject({ ok: false, status: 409, error: 'storage_identity_drift', enqueueHydration: false });
+    }
+  });
+
+  it('#6490: self-contained snapshot with a pinned identity but NO resolvable provider identity is refused as drift', () => {
+    const result = negotiateRecoveryCapabilities(base({
+      referencedFiles: null, storageIdentity: 's3::e::old-bucket', resolvedProviderIdentity: null,
+    }));
+    expect(result).toMatchObject({ ok: false, error: 'storage_identity_drift' });
+  });
+
+  it('#6490: an EMPTY-string pinned identity is not treated as "no identity" — it fails closed as drift', () => {
+    const result = negotiateRecoveryCapabilities(base({
+      referencedFiles: null, storageIdentity: '', resolvedProviderIdentity: 's3::e::any-bucket',
+    }));
+    expect(result).toMatchObject({ ok: false, error: 'storage_identity_drift' });
+  });
+
+  it('#6490: self-contained legacy snapshot with NO pinned identity is still granted (nothing to compare against)', () => {
+    const result = negotiateRecoveryCapabilities(base({
+      referencedFiles: null, storageIdentity: null, resolvedProviderIdentity: 's3::e::any-bucket',
+    }));
+    expect(result).toMatchObject({ ok: true, granted: [], fileIndex: null });
+  });
+
   it('unknown client capability strings are ignored, not rejected — forward compatibility', () => {
     const result = negotiateRecoveryCapabilities(base({ referencedFiles: null, clientCapabilities: [CAP, 'future-cap-v2'] }));
     expect(result).toMatchObject({ ok: true, granted: [CAP] });

@@ -21,6 +21,7 @@ import { isEligibleTicketRecipient } from './ticketPush';
 import type { AiDraftOutboxClaim } from './aiTimeEntryProposal';
 import type { AddinTicketSummary } from '@breeze/shared';
 import { markRequestAuditWritten } from './auditRequestTracking';
+import { scrubAlertText } from '../utils/endpointDisplay';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
 export type TicketSource = (typeof ticketSourceEnum.enumValues)[number];
@@ -2778,8 +2779,10 @@ export async function createTicketFromAlert(
 
   const ticket = await createTicket({
     orgId: alert.orgId,
-    subject: overrides.subject ?? alert.title ?? `Alert ${alertId}`,
-    description: overrides.description ?? alert.message ?? undefined,
+    // Text copied from the alert shows endpoints as scheme + host (#7920);
+    // a subject or description the user supplied is kept as typed.
+    subject: overrides.subject ?? scrubAlertText(alert.title, alert.context) ?? `Alert ${alertId}`,
+    description: overrides.description ?? scrubAlertText(alert.message, alert.context) ?? undefined,
     deviceId: alert.deviceId ?? undefined,
     categoryId: overrides.categoryId,
     priority: overrides.priority ?? SEVERITY_TO_PRIORITY[alert.severity ?? ''] ?? 'normal',

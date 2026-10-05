@@ -4,11 +4,12 @@
  * The route gates every call on BILLING_MANAGE + canManagePartnerWidePolicies
  * + MFA and runs ensurePartnerCutover first (routes/aiModels/shared.ts
  * registryWrite). Each write then runs in ONE system transaction behind the
- * per-partner registry lock (the key W03's lockPartnerRegistryReconcile, cutover
- * and compatRemap use; W04 try-locks it, a held lock → 503 registry_busy),
+ * per-partner registry lock (registryWriteLock.ts; the key the bootstrap, cutover
+ * and connectionRemap use; W04 try-locks it, a held lock → 503 registry_busy),
  * so it serialises with a concurrent
- * /ai/provider key or kind switch that remaps offering ids — the same pattern
- * as partnerLlmConfig.inRegistryWrite. System scope bypasses RLS, so every
+ * Anthropic connect, disconnect or kind switch that remaps offering ids — the
+ * same pattern as anthropicConnectionWrites' inRegistryWrite (which takes
+ * lockPartnerRegistry). System scope bypasses RLS, so every
  * statement is pinned to input.partnerId (from auth, never from the body).
  *
  * All gates reuse W03's rule table via checkEnableEligibility, and every DB

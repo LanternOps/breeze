@@ -1,0 +1,120 @@
+import { useEffect, useState } from 'react';
+import { apiGet, apiPost } from '@/lib/api';
+import { runAction } from '@/lib/runAction';
+import type { AutopayPageData, AutopayPortalPage, MethodType, SetupOutcome } from '@/lib/autopay';
+export default function AutopaySetupPage({ token, portal = false, mode = 'setup', onStopped }: {
+  token?: string; portal?: boolean; mode?: 'setup' | 'return' | 'stop'; onStopped?: () => void;
+}) {
+  const [data, setData] = useState<AutopayPageData | null>(null);
+  const [stopName, setStopName] = useState<string | null>(null);
+  const [method, setMethod] = useState<MethodType>('us_bank_account');
+  const [accepted, setAccepted] = useState(false); const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState(''); const [failed, setFailed] = useState(false);
+  const [restartUrl,setRestartUrl]=useState('/portal/payment-methods');
+  const [finished, setFinished] = useState(false); const [outcome, setOutcome] = useState<SetupOutcome | null>(null);
+  const config = { redirectOnUnauthorized: portal };
+  const base = portal ? '/portal/payment-methods' : `/autopay/public/${encodeURIComponent(token ?? '')}`;
+  const onOutcome = (message: string, error: boolean) => { setFeedback(message); setFailed(error); };
+  useEffect(() => {
+    if (mode === 'return') return;
+    let cancelled = false;
+    const path = mode === 'stop' && !portal ? `${base}/stop` : base;
+    void apiGet<AutopayPortalPage>(path, { redirectOnUnauthorized: portal }).then(result => {
+      if (cancelled) return;
+      if (!result.data) { onOutcome(result.error || 'This link is unavailable. Ask your service provider for a new one.', true); return; }
+      if (mode === 'stop' || result.data.stopOnly) { setStopName(result.data.partnerName); return; }
+      setData(result.data); setMethod(result.data.achMode === 'card_only' ? 'card' : 'us_bank_account'); setAccepted(false);
+    });
+    return () => { cancelled = true; };
+  }, [base, mode, portal]);
+  async function start() {
+    if (!data || !accepted || busy) return; setBusy(true);
+    const result = await runAction<{ url: string }>({
+      request: () => apiPost(`${base}/setup-session`, { methodType: method, consentAccepted: true, disclosureHash: data.disclosures[method].hash }, config),
+      onOutcome, successMessage: 'Opening secure Stripe setup…', errorFallback: 'Could not open secure setup. Try again.',
+      validate: value => typeof value.url === 'string' && value.url.startsWith('https://checkout.stripe.com/'),
+    });
+    if (result) {
+      if (!portal && token) {
+        try { sessionStorage.setItem('autopay-return-token', token); }
+        catch { onOutcome('Enable session storage to return securely from Stripe, then try again.', true); setBusy(false); return; }
+      }
+      window.location.assign(result.url);
+    } else { setBusy(false); setAccepted(false); }
+  }
+  async function confirmReturn() {
+    if (busy) return; setBusy(true);
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const checkoutSessionId = params.get('session_id');
+      const returnPortal = params.get('target') === 'portal';
+      let returnToken: string | null = null;
+      if (!returnPortal) {
+        try { returnToken = sessionStorage.getItem('autopay-return-token'); }
+        catch { onOutcome('Enable session storage to return securely from Stripe, then try again.', true); return; }
+      }
+      if (!checkoutSessionId || (!returnPortal && !returnToken)) {
+        onOutcome('This return link is incomplete. Contact your service provider.', true); return;
+      }
+      const result = await runAction<SetupOutcome>({
+        request: () => apiPost(returnPortal ? '/portal/payment-methods/setup-return' : '/autopay/public/setup-return',
+          { checkoutSessionId, ...(!returnPortal ? { token: returnToken } : {}) }, { redirectOnUnauthorized: returnPortal }),
+        onOutcome, successMessage: 'Setup checked.', errorFallback: 'Could not confirm setup. Try again.',
+      });
+      if (result) {
+        setOutcome(result);setRestartUrl(returnPortal?'/portal/payment-methods':`/portal/autopay/${encodeURIComponent(returnToken??'')}`);
+        if (!returnPortal && result.outcome!=='in_progress') {
+          try { sessionStorage.removeItem('autopay-return-token'); }
+          catch { onOutcome('Setup checked, but could not clear the return token from session storage. Close this tab when finished.', true); }
+        }
+      }
+    } finally { setBusy(false); }
+  }
+
+  async function stop() {
+    if (busy || finished) return; setBusy(true);
+    const result = await runAction({ request: () => apiPost(portal ? '/portal/autopay/stop' : `${base}/stop`, {}, config),
+      onOutcome, successMessage: 'Automatic payments stopped. Any payment already processing will still complete.',
+      errorFallback: 'Could not stop automatic payments. Try again.' });
+    setFinished(result !== null); setBusy(false);
+    if (result !== null) onStopped?.();
+  }
+  return <section className="mx-auto max-w-xl space-y-5 p-6" data-testid="autopay-setup-page">
+    {feedback && <p role={failed ? 'alert' : 'status'} data-testid="autopay-feedback">{feedback}</p>}
+    {mode === 'return' ? <div data-testid="autopay-return">
+      <h1>Confirm automatic payment setup</h1>
+      {(!outcome||outcome.outcome==='in_progress') && <button data-testid="autopay-return-submit" disabled={busy} onClick={() => void confirmReturn()}>Confirm setup</button>}
+      {outcome && <div data-testid="autopay-return-outcome">
+        <h2>{({ activated: 'Automatic payments are set up', pending_verification: 'Bank verification is pending',
+          stale_generation: 'This setup request is no longer current', failed: 'Setup was not completed', in_progress: 'Your setup is still being confirmed — check back shortly', abandoned: 'This setup session expired — start again',
+          unsupported_method: 'This payment method can’t be used for automatic payments' } satisfies Record<SetupOutcome['outcome'], string>)[outcome.outcome]}</h2>
+        {(outcome.outcome === 'activated' || outcome.outcome === 'pending_verification') && <p data-testid="autopay-return-fee">{outcome.methodLabel} — {outcome.feeText}</p>}
+        {outcome.outcome === 'unsupported_method' && <p data-testid="autopay-unsupported-method">Please enter your card details directly, or use a bank account. Automatic payments were not set up with this method, and nothing was saved.</p>}
+        {(outcome.outcome==='abandoned'||outcome.outcome==='unsupported_method')&&<a data-testid="autopay-restart" href={restartUrl}>Start again</a>}
+        {outcome.outcome === 'pending_verification' && <p>Follow Stripe’s verification instructions. No automatic payment can be made until verification completes.</p>}
+        {outcome.outcome === 'stale_generation' && <p>This return did not restart automatic payments. Ask your service provider for a new request.</p>}
+      </div>}
+    </div> : mode === 'stop' || stopName ? stopName && <div data-testid="autopay-stop-confirm">
+      <h1>Stop automatic payments to {stopName}?</h1>
+      <p>Future automatic payments will stop. A bank payment already processing cannot be recalled. Open invoices still need to be paid.</p>
+      <button data-testid="autopay-stop-submit" disabled={busy || finished} onClick={() => void stop()}>Stop automatic payments</button>
+    </div> : data && <>
+      {data.logoUrl && <img src={data.logoUrl} alt={`${data.partnerName} logo`} className="max-h-16" />}
+      <h1>Set up automatic payments to {data.partnerName}</h1><p>{data.scheduleText}</p>
+      <p>This applies to new invoices after enrollment. You can stop automatic payments at any time.</p>
+      <fieldset disabled={busy}><legend>Choose your payment method</legend>
+        {(data.achMode === 'card_only' ? ['card'] : data.achMode === 'ach_only' ? ['us_bank_account'] : ['us_bank_account', 'card']).map(value => {
+          const type = value as MethodType;
+          return <label key={type} className="block my-3"><input type="radio" name="autopay-method" data-testid={`autopay-method-${type}`}
+            checked={method === type} onChange={() => { setMethod(type); setAccepted(false); }} />
+            {type === 'card' ? 'Card' : data.achMode === 'ach_preferred' ? 'Bank account (recommended)' : 'Bank account'}
+            <span className="block" data-testid={`autopay-fee-${type}`}>{data.disclosures[type].feeText}</span>
+          </label>;
+        })}
+      </fieldset>
+      <p data-testid="autopay-consent-text">{data.disclosures[method].text}</p>
+      <label><input data-testid="autopay-consent" type="checkbox" checked={accepted} disabled={busy} onChange={e => setAccepted(e.target.checked)} /> I agree to this authorization.</label>
+      <button data-testid="autopay-setup-submit" disabled={!accepted || busy} onClick={() => void start()}>Continue to secure Stripe setup</button>
+    </>}
+  </section>;
+}

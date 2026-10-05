@@ -110,6 +110,8 @@ vi.mock('../services/authLifecycle', async (importOriginal) => {
   };
 });
 
+vi.mock('../services/email', () => ({ getEmailService: vi.fn() }));
+
 const { writeRouteAuditMock } = vi.hoisted(() => ({ writeRouteAuditMock: vi.fn() }));
 vi.mock('../services/auditEvents', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/auditEvents')>()),
@@ -127,10 +129,16 @@ vi.mock('../services/roleAssignment', async (importOriginal) => {
   return { ...actual, assertCanManageTarget: assertCanManageTargetMock };
 });
 
+const { canSelfDecideMock } = vi.hoisted(() => ({ canSelfDecideMock: vi.fn() }));
+vi.mock('../services/accessReviewSelfDecision', () => ({
+  canSelfDecideAccessReviewItem: canSelfDecideMock,
+}));
+
 import { db } from '../db';
 import { users, userPasskeys } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
 import { runPostCommitCleanup } from '../services/authLifecycle';
+import { getEmailService } from '../services/email';
 
 describe('access review routes', () => {
   let app: Hono;
@@ -331,7 +339,89 @@ describe('access review routes', () => {
       const body = await res.json();
       expect(body.id).toBe('review-1');
       expect(body.items).toHaveLength(1);
+      // The caller (user-123) has no item here, so there is nothing to gate.
+      expect(body.viewer).toEqual({ userId: 'user-123', selfDecision: null });
+      expect(canSelfDecideMock).not.toHaveBeenCalled();
     });
+
+    it('does not gate (or evaluate) your own item once the review is completed', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                { id: 'review-1', name: 'R', description: null, status: 'completed', reviewerId: 'user-123', dueDate: null, createdAt: new Date(), completedAt: new Date() }
+              ])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([
+                  { id: 'item-own', userId: 'user-123', userName: 'Me', userEmail: 'me@example.com', roleId: 'role-1', roleName: 'Admin', decision: 'approved', notes: null, reviewedAt: new Date(), selfDecided: true }
+                ])
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
+          })
+        } as any);
+
+      const res = await app.request('/access-reviews/review-1');
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).viewer).toEqual({ userId: 'user-123', selfDecision: null });
+      expect(canSelfDecideMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [false, 'blocked'],
+      [true, 'single_admin_exception'],
+    ] as const)(
+      'tells the UI how the caller\'s own item is gated (canSelfDecide=%s → %s)',
+      async (allowed, expected) => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  { id: 'review-1', name: 'R', description: null, status: 'in_progress', reviewerId: 'user-123', dueDate: null, createdAt: new Date(), completedAt: null }
+                ])
+              })
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([
+                    { id: 'item-own', userId: 'user-123', userName: 'Me', userEmail: 'me@example.com', roleId: 'role-1', roleName: 'Admin', decision: 'approved', notes: null, reviewedAt: new Date(), selfDecided: true }
+                  ])
+                })
+              })
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
+            })
+          } as any);
+        canSelfDecideMock.mockResolvedValueOnce(allowed);
+
+        const res = await app.request('/access-reviews/review-1');
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.viewer).toEqual({ userId: 'user-123', selfDecision: expected });
+        expect(body.items[0].selfDecided).toBe(true);
+        expect(canSelfDecideMock).toHaveBeenCalledWith({ scope: 'partner', partnerId: 'partner-123' }, 'user-123');
+      }
+    );
 
     it('should return 404 when review is missing', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
@@ -351,7 +441,195 @@ describe('access review routes', () => {
     });
   });
 
+  describe('POST /access-reviews/:id/notify', () => {
+    const selectOnce = (rows: any[]) =>
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) })
+        })
+      } as any);
+    const review = {
+      id: 'review-1', name: 'Q4 Review', status: 'pending',
+      dueDate: new Date('2026-10-16T00:00:00.000Z'), reviewerId: 'rev-1'
+    };
+    const notify = () => app.request('/access-reviews/review-1/notify', { method: 'POST' });
+
+    it('emails the reviewer through the server email service', async () => {
+      const sendEmail = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(getEmailService).mockReturnValue({ sendEmail } as any);
+      selectOnce([review]);
+      selectOnce([{ email: 'rev@example.com' }]);
+
+      const res = await notify();
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ emailed: true, recipients: 1 });
+      expect(sendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ to: 'rev@example.com', purpose: 'staff.access_review_notice' })
+      );
+    });
+
+    it('reports email_not_configured instead of failing when no email service exists', async () => {
+      vi.mocked(getEmailService).mockReturnValue(null);
+      selectOnce([review]);
+      selectOnce([{ email: 'rev@example.com' }]);
+
+      const res = await notify();
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ emailed: false, reason: 'email_not_configured' });
+    });
+
+    it('reports send_failed when the transport throws', async () => {
+      vi.mocked(getEmailService).mockReturnValue({ sendEmail: vi.fn().mockRejectedValue(new Error('smtp down')) } as any);
+      selectOnce([review]);
+      selectOnce([{ email: 'rev@example.com' }]);
+
+      const res = await notify();
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ emailed: false, reason: 'send_failed' });
+    });
+
+    it('reports no_reviewer_email when the reviewer has no address (and never sends)', async () => {
+      const sendEmail = vi.fn();
+      vi.mocked(getEmailService).mockReturnValue({ sendEmail } as any);
+      selectOnce([review]);
+      selectOnce([]);
+
+      const res = await notify();
+
+      expect(await res.json()).toEqual({ emailed: false, reason: 'no_reviewer_email' });
+      expect(sendEmail).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for a review outside the caller scope', async () => {
+      selectOnce([]);
+      const res = await notify();
+      expect(res.status).toBe(404);
+    });
+
+    it('rejects notifying a completed review', async () => {
+      selectOnce([{ ...review, status: 'completed' }]);
+      const res = await notify();
+      expect(res.status).toBe(400);
+    });
+  });
+
   describe('PATCH /access-reviews/:id/items/:itemId', () => {
+    function selectOnce(rows: unknown[]) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(rows)
+          })
+        })
+      } as any);
+    }
+
+    /**
+     * Mocks the item UPDATE (capturing its SET) and, for a review still
+     * 'pending', the follow-up status bump to 'in_progress'.
+     */
+    function mockItemUpdate(returned: Record<string, unknown> | null, reviewWasPending: boolean) {
+      const set = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue(returned ? [returned] : [])
+        })
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set } as any);
+      if (reviewWasPending) {
+        vi.mocked(db.update).mockReturnValueOnce({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+        } as any);
+      }
+      return set;
+    }
+
+    function patch(body: Record<string, unknown>) {
+      return app.request('/access-reviews/review-1/items/item-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+    }
+
+    describe('separation of duties (own item)', () => {
+      it('refuses a decision on your own item when another eligible decider exists (403, nothing written)', async () => {
+        selectOnce([{ id: 'review-1', status: 'pending' }]);
+        selectOnce([{ id: 'item-1', userId: 'user-123' }]);
+        canSelfDecideMock.mockResolvedValueOnce(false);
+
+        const res = await patch({ decision: 'approved' });
+
+        expect(res.status).toBe(403);
+        const body = await res.json();
+        expect(body.code).toBe('ACCESS_REVIEW_SELF_DECISION');
+        expect(canSelfDecideMock).toHaveBeenCalledWith({ scope: 'partner', partnerId: 'partner-123' }, 'user-123');
+        expect(db.update).not.toHaveBeenCalled();
+        expect(writeRouteAuditMock).not.toHaveBeenCalled();
+      });
+
+      it('also refuses resetting your own item to pending when another decider exists', async () => {
+        selectOnce([{ id: 'review-1', status: 'in_progress' }]);
+        selectOnce([{ id: 'item-1', userId: 'user-123' }]);
+        canSelfDecideMock.mockResolvedValueOnce(false);
+
+        const res = await patch({ decision: 'pending' });
+
+        expect(res.status).toBe(403);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('allows the self-decision under the single-admin exception and flags it on the item + audit', async () => {
+        selectOnce([{ id: 'review-1', status: 'pending' }]);
+        selectOnce([{ id: 'item-1', userId: 'user-123' }]);
+        canSelfDecideMock.mockResolvedValueOnce(true);
+        const set = mockItemUpdate({
+          id: 'item-1', decision: 'approved', notes: null, reviewedAt: new Date(), selfDecided: true
+        }, true);
+
+        const res = await patch({ decision: 'approved' });
+
+        expect(res.status).toBe(200);
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({
+          decision: 'approved', reviewedBy: 'user-123', selfDecided: true
+        }));
+        const body = await res.json();
+        expect(body.selfDecided).toBe(true);
+        expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          action: 'access_review.item.update',
+          details: expect.objectContaining({ selfDecided: true })
+        }));
+      });
+
+      it('a single admin resetting their own item to pending clears the flag (no decision stands)', async () => {
+        selectOnce([{ id: 'review-1', status: 'in_progress' }]);
+        selectOnce([{ id: 'item-1', userId: 'user-123' }]);
+        canSelfDecideMock.mockResolvedValueOnce(true);
+        const set = mockItemUpdate({ id: 'item-1', decision: 'pending', notes: null, reviewedAt: new Date(), selfDecided: false }, false);
+
+        const res = await patch({ decision: 'pending' });
+
+        expect(res.status).toBe(200);
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({ decision: 'pending', selfDecided: false }));
+      });
+
+      it('deciding another user\'s item never consults the exception and clears any earlier self-decision flag', async () => {
+        selectOnce([{ id: 'review-1', status: 'in_progress' }]);
+        selectOnce([{ id: 'item-1', userId: 'someone-else' }]);
+        const set = mockItemUpdate({ id: 'item-1', decision: 'revoked', notes: null, reviewedAt: new Date(), selfDecided: false }, false);
+
+        const res = await patch({ decision: 'revoked' });
+
+        expect(res.status).toBe(200);
+        expect(canSelfDecideMock).not.toHaveBeenCalled();
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({
+          decision: 'revoked', reviewedBy: 'user-123', selfDecided: false
+        }));
+      });
+    });
+
     it('should update a review item and mark review in progress', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -360,6 +638,7 @@ describe('access review routes', () => {
           })
         })
       } as any);
+      selectOnce([{ id: 'item-1', userId: 'user-1' }]);
       vi.mocked(db.update)
         .mockReturnValueOnce({
           set: vi.fn().mockReturnValue({
@@ -424,20 +703,8 @@ describe('access review routes', () => {
     });
 
     it('should return 404 when item is missing', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: 'review-1', status: 'pending' }])
-          })
-        })
-      } as any);
-      vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([])
-          })
-        })
-      } as any);
+      selectOnce([{ id: 'review-1', status: 'pending' }]);
+      selectOnce([]);
 
       const res = await app.request('/access-reviews/review-1/items/item-1', {
         method: 'PATCH',
@@ -446,6 +713,7 @@ describe('access review routes', () => {
       });
 
       expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
     });
   });
 

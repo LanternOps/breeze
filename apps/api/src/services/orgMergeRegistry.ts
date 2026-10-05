@@ -130,6 +130,7 @@ function buildFollowsParentEntries(): Record<string, OrgMergePolicy> {
 }
 
 const SPECIAL: Record<string, OrgMergePolicy> = {
+  autopay_setup_attempts: {kind:'leave-for-erasure',note:'Immutable enrollment authority stays with the loser; its generation/status fence prevents completion after merge'},
   billing_payment_settings: { kind: 'keep-survivor' },
   org_autopay_enrollments: { kind: 'custom', note: 'Cancel with org_merged and retain authority on the loser.' },
   org_autopay_consents: { kind: 'leave-for-erasure', note: 'Append-only authorization evidence belongs to the loser.' },

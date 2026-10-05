@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import PhysicalCoveragePanel from './PhysicalCoveragePanel';
 afterEach(cleanup);
@@ -25,4 +25,23 @@ it('announces the coverage state and says nothing is missing when complete', () 
   render(<PhysicalCoveragePanel coverage={{ state: 'complete', reasons: [] }} />);
   expect(screen.getByTestId('topology-coverage')).toHaveTextContent('Complete');
   expect(screen.getByRole('status')).toBeInTheDocument();
+});
+
+it('keeps the reasons behind a keyboard-operable disclosure so the status stays one line', () => {
+  render(<PhysicalCoveragePanel coverage={{ state: 'limited', reasons: [reason('collection_timeout')] }} />);
+  const toggle = screen.getByRole('button', { name: 'Collection coverage' });
+  expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.getByTestId('topology-coverage-reasons')).not.toBeVisible();
+  toggle.focus();
+  fireEvent.click(toggle);
+  expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.getByTestId('topology-coverage-reasons')).toBeVisible();
+  fireEvent.keyDown(screen.getByTestId('topology-coverage-reasons'), { key: 'Escape' });
+  expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  expect(toggle).toHaveFocus();
+});
+
+it('offers no disclosure when there is nothing to explain', () => {
+  render(<PhysicalCoveragePanel coverage={{ state: 'complete', reasons: [] }} />);
+  expect(screen.queryByRole('button', { name: 'Collection coverage' })).toBeNull();
 });

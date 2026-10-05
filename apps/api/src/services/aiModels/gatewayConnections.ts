@@ -27,7 +27,7 @@
  *   clears last_error. A base-URL change makes each offering's verification
  *   stale by fingerprint (gatewayCapabilities.endpointFingerprint) — offerings
  *   are never written for it. A key rotation leaves verification valid.
- * - "Delete" is a soft-disconnect (compatRemap.disconnectCompat shape): status
+ * - "Delete" is a soft-disconnect (connectionRemap.disconnectAnthropicConnection shape): status
  *   'disconnected', key triplet NULL, config_version bumped, offerings
  *   disabled, base_url kept (shape_chk). Never a hard delete: a reserved turn
  *   on one of its offerings must still settle (ai_invocations provenance

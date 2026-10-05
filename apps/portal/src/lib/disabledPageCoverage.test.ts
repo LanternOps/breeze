@@ -169,6 +169,8 @@ describe('visibility-gate handling in portal pages', () => {
  * - account-disabled: the destination — guarding it would loop.
  * - quote/[token], invoice/[token], invoice/return: the URL token IS the
  *   capability; these documents are emailed to people who never sign in.
+ * - autopay token pages (including stop/skip/confirm) and return: public payment
+ *   capabilities; skip loads token state with GET and acts only on explicit POST.
  */
 const UNAUTHENTICATED_PAGES = new Set([
   'index.astro',
@@ -180,6 +182,12 @@ const UNAUTHENTICATED_PAGES = new Set([
   'quote/[token].astro',
   'invoice/[token].astro',
   'invoice/return.astro',
+  'autopay/[token].astro',
+  'autopay/[token]/stop.astro',
+  'autopay/[token]/skip.astro',
+  // Emailed payment capability; GET renders, explicit POST confirms.
+  'autopay/[token]/confirm.astro',
+  'autopay/return.astro',
 ]);
 
 /** src/pages-relative file → the route the middleware sees (base stripped). */

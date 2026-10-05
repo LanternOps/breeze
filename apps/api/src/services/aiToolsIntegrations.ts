@@ -18,24 +18,15 @@ import { eq, and, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
-import { createHash } from 'node:crypto';
 import { decryptForColumn } from './secretCrypto';
+import { describeEndpointUrl, type EndpointUrlView } from '../utils/endpointDisplay';
 import { getWebhookWorker } from '../workers/webhookDelivery';
 
-interface WebhookEndpointView {
-  /** Scheme + host (+ non-default port) only, or a fixed placeholder. */
-  url: string;
-  /** Short stable hash of the full URL so two endpoints on one host differ. */
-  fingerprint: string | null;
-}
-
-// webhooks.url is encrypted at rest, and for chat-provider endpoints (Slack
-// `/services/T/B/<x>`, Discord `/api/webhooks/<id>/<x>`, Teams) the PATH is
-// what authorizes a post, not just userinfo or the query string. AI tools
-// therefore show only the origin, plus a short fingerprint of the full URL so
-// the model can still tell webhooks on the same host apart. Plaintext legacy
-// rows pass through decryptForColumn unchanged.
-function describeWebhookEndpoint(stored: string): WebhookEndpointView {
+// webhooks.url is encrypted at rest, and for chat-provider endpoints the PATH
+// is what authorizes a post, so AI tools show only the origin plus a short
+// fingerprint (see utils/endpointDisplay). Plaintext legacy rows pass through
+// decryptForColumn unchanged.
+function describeWebhookEndpoint(stored: string): EndpointUrlView {
   let decrypted: string;
   try {
     // Legacy plaintext rows pass through decryptForColumn unchanged (no throw).
@@ -45,18 +36,7 @@ function describeWebhookEndpoint(stored: string): WebhookEndpointView {
     // fall back to the raw ciphertext; emit a fixed placeholder instead.
     return { url: '[encrypted]', fingerprint: null };
   }
-  let origin: string;
-  try {
-    origin = new URL(decrypted).origin;
-  } catch {
-    return { url: '[invalid-url]', fingerprint: null };
-  }
-  // Non-special schemes have an opaque origin ("null"); show nothing of them.
-  if (origin === 'null') return { url: '[invalid-url]', fingerprint: null };
-  return {
-    url: origin,
-    fingerprint: createHash('sha256').update(decrypted).digest('hex').slice(-6),
-  };
+  return describeEndpointUrl(decrypted);
 }
 
 type IntegrationHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;

@@ -1,3 +1,4 @@
+import { enqueueOnlineReceipt } from './autopay/paymentNotices';
 import { and, eq, isNull, isNotNull } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { invoices, invoicePayments } from '../db/schema/invoices';
@@ -30,7 +31,7 @@ interface CaptureInput {
  *  run only after the reconcile transaction — and its invoice row lock — end. */
 type ReconcileOutcome =
   | { kind: 'noop'; invoiceId: string }
-  | { kind: 'terminal'; invoiceId: string; orgId: string; partnerId: string; reason: string }
+  | { kind: 'terminal'; invoiceId: string; orgId: string; partnerId: string; reason: string; source: (typeof invoiceStripePayments.$inferSelect)['source'] }
   | {
     kind: 'recorded'; invoiceId: string; orgId: string; partnerId: string; paymentId: string; paid: boolean;
     // The accounting mapping row this capture created, owed a `push-payment`
@@ -115,7 +116,7 @@ export async function recordStripePayment(
     const [mapping] = await db.select().from(invoiceStripePayments)
       .where(eq(invoiceStripePayments.id, pre.id)).limit(1).for('update');
     if (!mapping) throw new Error(`Mapping for stripe object ${input.stripeObjectId} disappeared`);
-    if (mapping.invoicePaymentId) return { kind: 'noop', invoiceId: mapping.invoiceId };
+    if (mapping.invoicePaymentId || mapping.paymentCapturedAt) return { kind: 'noop', invoiceId: mapping.invoiceId };
     if ((mapping.status === 'failed' && mapping.stripeObjectType !== 'payment_intent')
         || mapping.status === 'refunded' || mapping.status === 'disputed') {
       return { kind: 'noop', invoiceId: mapping.invoiceId };
@@ -130,7 +131,7 @@ export async function recordStripePayment(
     // happen after the transaction (no Redis work under the held lock).
     const terminalFail = async (reason: string): Promise<ReconcileOutcome> => {
       await markMapping(mapping.id, 'failed');
-      return { kind: 'terminal', invoiceId: inv.id, orgId: inv.orgId, partnerId: inv.partnerId, reason };
+      return { kind: 'terminal', invoiceId: inv.id, orgId: inv.orgId, partnerId: inv.partnerId, reason, source: mapping.source };
     };
 
     if (inv.status === 'draft' || inv.status === 'void') {
@@ -178,7 +179,7 @@ export async function recordStripePayment(
     // Stripe retries; the tx rolls the orphan payment insert back too).
     const linked = await db.update(invoiceStripePayments)
       .set({ invoicePaymentId: payment!.id, status: 'succeeded', stripePaymentIntentId: input.stripePaymentIntentId,
-             paymentReceivedAt: receivedAt,
+             paymentReceivedAt: receivedAt, paymentCapturedAt: new Date(),
              lastEventAt: new Date(), updatedAt: new Date() })
       .where(and(eq(invoiceStripePayments.id, mapping.id), isNull(invoiceStripePayments.invoicePaymentId)))
       .returning({ id: invoiceStripePayments.id });
@@ -204,6 +205,8 @@ export async function recordStripePayment(
       invoicePaymentId: payment!.id, invoiceId: inv.id, partnerId: inv.partnerId,
     });
     const [updated] = await db.select().from(invoices).where(eq(invoices.id, inv.id)).limit(1);
+    // Receipt intent commits with the ledger for Checkout, PI and sweep captures.
+    await enqueueOnlineReceipt(db, mapping.id);
     return { kind: 'recorded', invoiceId: inv.id, orgId: inv.orgId, partnerId: inv.partnerId,
              paymentId: payment!.id, paid: updated?.status === 'paid', paymentPushMappingId };
   };
@@ -236,7 +239,7 @@ export async function recordStripePayment(
     // mismatch, overpayment, account mismatch, void/draft invoice). That is a money
     // divergence requiring human reconciliation — surface it to Sentry, not just logs.
     captureException(new Error(`[stripeReconcile] terminal payment failure (${outcome.reason}) stripeObjectId=${input.stripeObjectId} invoiceId=${outcome.invoiceId}`));
-    await afterCommit('settle-emit-payment.failed', commitCtx, () => emitInvoiceEvent({
+    if (outcome.source !== 'autopay') await afterCommit('settle-emit-payment.failed', commitCtx, () => emitInvoiceEvent({
       type: 'payment.failed', invoiceId: outcome.invoiceId, orgId: outcome.orgId, partnerId: outcome.partnerId }));
   } else if (outcome.kind === 'recorded') {
     const commitCtx = { partnerId: outcome.partnerId, invoiceId: outcome.invoiceId, stripeObjectId: input.stripeObjectId };

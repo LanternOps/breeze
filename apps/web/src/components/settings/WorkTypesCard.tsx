@@ -17,7 +17,8 @@ export interface WorkTypesCardHandle {
   rename: (id: string) => void;
   archive: (id: string) => void;
 }
-export default function WorkTypesCard({ onLoad, ref }: { onLoad?: (workTypes: WorkTypeOption[]) => void; ref?: Ref<WorkTypesCardHandle> }) {
+/** `readOnly` hides every mutation control (add/rename/archive) and no-ops the imperative handle. */
+export default function WorkTypesCard({ onLoad, ref, readOnly = false }: { onLoad?: (workTypes: WorkTypeOption[]) => void; ref?: Ref<WorkTypesCardHandle>; readOnly?: boolean }) {
   const { t } = useTranslation('settings');
   const [workTypes, setWorkTypes] = useState<WorkTypeOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -28,12 +29,12 @@ export default function WorkTypesCard({ onLoad, ref }: { onLoad?: (workTypes: Wo
   const [editName, setEditName] = useState('');
   const newNameRef = useRef<HTMLInputElement>(null);
   useImperativeHandle(ref, () => ({
-    add: () => { newNameRef.current?.focus(); },
+    add: () => { if (!readOnly) newNameRef.current?.focus(); },
     rename: (id) => {
       const workType = workTypes.find(item => item.id === id);
-      if (workType && !busy) { setEditingId(id); setEditName(workType.name); }
+      if (workType && !busy && !readOnly) { setEditingId(id); setEditName(workType.name); }
     },
-    archive: (id) => { void mutate('DELETE', id); },
+    archive: (id) => { if (!readOnly) void mutate('DELETE', id); },
   }));
 
   const load = useCallback(async () => {
@@ -66,7 +67,7 @@ export default function WorkTypesCard({ onLoad, ref }: { onLoad?: (workTypes: Wo
 
   async function mutate(method: 'POST' | 'PATCH' | 'DELETE', id?: string) {
     const nextName = (method === 'POST' ? name : editName).trim();
-    if (busy || (method !== 'DELETE' && (!nextName || nextName.length > 60))) return;
+    if (readOnly || busy || (method !== 'DELETE' && (!nextName || nextName.length > 60))) return;
     setBusy(true);
     try {
       await runAction({
@@ -106,13 +107,13 @@ export default function WorkTypesCard({ onLoad, ref }: { onLoad?: (workTypes: Wo
     <section className="mt-8 border-t pt-6" data-testid="work-types-card" aria-labelledby="work-types-title">
       <h2 id="work-types-title" className="text-lg font-semibold">{t('workTypes.title')}</h2>
       <p className="mt-1 text-sm text-muted-foreground">{t('workTypes.description')}</p>
-      <form className="mt-4 flex flex-wrap items-end gap-2" onSubmit={(event) => { event.preventDefault(); void mutate('POST'); }}>
+      {!readOnly && <form className="mt-4 flex flex-wrap items-end gap-2" onSubmit={(event) => { event.preventDefault(); void mutate('POST'); }}>
         <label className="flex min-w-0 flex-1 flex-col gap-1 text-sm font-medium">
           {t('workTypes.newName')}
           <input ref={newNameRef} data-testid="work-type-new-name" className={inputClass} maxLength={60} value={name} disabled={busy} onChange={(event) => setName(event.target.value)} />
         </label>
         <button type="submit" data-testid="work-type-create" className={buttonClass} disabled={busy || !name.trim()}>{t('workTypes.create')}</button>
-      </form>
+      </form>}
       {loading ? <p className="mt-4 text-sm text-muted-foreground" role="status">{t('ticketCategoriesPage.loading')}</p>
         : failed ? <div className="mt-4 flex flex-wrap items-center gap-2 text-sm" role="alert" data-testid="work-types-load-error">
           {t('workTypes.loadError')}
@@ -128,8 +129,8 @@ export default function WorkTypesCard({ onLoad, ref }: { onLoad?: (workTypes: Wo
             </form> : <>
               <span className="min-w-0 flex-1 break-words text-sm font-medium">{workType.name}</span>
               <span className="rounded-full bg-muted px-2 py-1 text-xs">{workType.isActive ? t('ticketCategoriesPage.active') : t('workTypes.archived')}</span>
-              <button type="button" data-testid={`work-type-rename-${workType.id}`} className={buttonClass} disabled={busy} onClick={() => { setEditingId(workType.id); setEditName(workType.name); }}>{t('workTypes.rename')}</button>
-              {workType.isActive && <button type="button" data-testid={`work-type-archive-${workType.id}`} className={buttonClass} disabled={busy} onClick={() => void mutate('DELETE', workType.id)}>{t('workTypes.archive')}</button>}
+              {!readOnly && <button type="button" data-testid={`work-type-rename-${workType.id}`} className={buttonClass} disabled={busy} onClick={() => { setEditingId(workType.id); setEditName(workType.name); }}>{t('workTypes.rename')}</button>}
+              {!readOnly && workType.isActive && <button type="button" data-testid={`work-type-archive-${workType.id}`} className={buttonClass} disabled={busy} onClick={() => void mutate('DELETE', workType.id)}>{t('workTypes.archive')}</button>}
             </>}
           </li>)}
         </ul>}

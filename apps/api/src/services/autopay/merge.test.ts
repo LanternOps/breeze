@@ -1,7 +1,7 @@
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const m=vi.hoisted(()=>({ execute:vi.fn(), getClient:vi.fn(), retrieve:vi.fn(), detach:vi.fn(), findArchive:vi.fn() }));
-vi.mock('../../db',()=>({db:{execute:m.execute},withSystemDbAccessContext:async(fn:()=>Promise<unknown>)=>fn(),runOutsideDbContext:async(fn:()=>Promise<unknown>)=>fn()}));
+vi.mock('../../db',()=>({hasDbAccessContext:()=>false,db:{execute:m.execute},withSystemDbAccessContext:async(fn:()=>Promise<unknown>)=>fn(),runOutsideDbContext:async(fn:()=>Promise<unknown>)=>fn()}));
 vi.mock('../partnerStripe', () => ({
   getPartnerStripeClient: m.getClient,
   PartnerStripeError: class PartnerStripeError extends Error { constructor(message: string, readonly code: string) { super(message); } },

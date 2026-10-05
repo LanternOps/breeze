@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import { markPermissionGate } from './permissionGate';
 import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { UNASSIGNED_POOL_ORG_TYPE } from '../services/unassignedPool/orgType';
 import {
@@ -405,7 +406,7 @@ export async function partnerApiAuthMiddleware(c: Context, next: Next): Promise<
 export function requirePartnerApiScope(
   ...required: PartnerServicePrincipalScope[]
 ): MiddlewareHandler {
-  return async (c, next) => {
+  return markPermissionGate(async (c, next) => {
     const principal = c.get('partnerApiPrincipal');
     if (!principal) {
       throw new HTTPException(401, { message: AUTH_REQUIRED_MESSAGE });
@@ -416,5 +417,5 @@ export function requirePartnerApiScope(
     }
 
     await next();
-  };
+  }, `partner-api:${required.join('+')}`);
 }

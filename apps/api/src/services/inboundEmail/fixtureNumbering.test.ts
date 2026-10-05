@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { fourDigitSuffix } from './fixtureNumbering';
+import { fourDigitSuffix, uniqueInternalNumber } from './fixtureNumbering';
+import { TICKET_TOKEN_RE } from './threadMatcher';
 
 describe('fourDigitSuffix', () => {
   it('never exceeds 4 characters, even for scientific-notation-shaped slices (#4495)', () => {
@@ -58,5 +59,25 @@ describe('fourDigitSuffix', () => {
         expect(result).toMatch(/^\d{4}$/);
       }
     }
+  });
+});
+
+describe('uniqueInternalNumber (#7868)', () => {
+  it('never repeats within a process — 4-digit numbers collide by pigeonhole at 10k+', () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 25_000; i++) seen.add(uniqueInternalNumber());
+    expect(seen.size).toBe(25_000);
+  });
+
+  it('fits tickets.internal_number varchar(20) and is a full subject-token match', () => {
+    for (let i = 0; i < 100; i++) {
+      const n = uniqueInternalNumber();
+      expect(n.length).toBeLessThanOrEqual(20);
+      expect(n.match(TICKET_TOKEN_RE)?.[0]).toBe(n);
+    }
+  });
+
+  it('cannot collide with app-allocated numbers (4-digit padded counter)', () => {
+    expect(uniqueInternalNumber()).toMatch(/^T-2026-\d{9}$/);
   });
 });

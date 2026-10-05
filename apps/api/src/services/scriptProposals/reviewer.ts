@@ -334,9 +334,9 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   await ensureStaticScanRow(job, scan);
 
   // The effective lane policy supplies only the advisory ceiling for the prompt
-  // (spec §9); the lane's own evaluator re-reads it at decision time. Its
-  // `reviewerModel` no longer routes anything: the `script_reviewer`
-  // assignment is authoritative (W02 projected the old value into it).
+  // (spec §9); the lane's own evaluator re-reads it at decision time. The
+  // reviewer's model is the `script_reviewer` assignment (the policy's old
+  // reviewerModel was retired in W08, #7606).
   const effectivePolicy = await resolveReviewerPolicy(job.orgId);
   const partnerId = await readOrgPartnerId(job.orgId);
   // Resolved BEFORE admission (quorum #4): an unusable reviewer model never

@@ -85,7 +85,6 @@ import { _resetAiKillStateCacheForTest } from '../aiKillState';
 const effectivePolicy = (overrides: Partial<AiAgentPolicy> = {}): AiAgentPolicy => ({
   enabled: true,
   mode: 'shadow',
-  model: null,
   toolAllowlist: ['manage_services:restart'],
   protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
   limits: AI_AGENT_LIMIT_DEFAULTS,

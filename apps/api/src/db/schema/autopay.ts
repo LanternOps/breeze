@@ -1,3 +1,4 @@
+import type {AutopayFeeTerms,AutopayScheduleTerms} from '@breeze/shared';
 import type { AutopayCancelSource, AutopayNeedsAttentionReason, AutopayPaymentMethodType, CardFundingType, AccountHolderType, ConsentSource, AutopayIneligibleReason, CollectionFailureClass, CollectionAttemptInitiator } from '@breeze/shared';
 import { pgTable, uuid, text, boolean, integer, numeric, jsonb, date, timestamp, char, pgEnum, check, unique, uniqueIndex, index, foreignKey } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -58,6 +59,7 @@ export const orgAutopayEnrollments = pgTable('org_autopay_enrollments', {
   stripeAccountId: text('stripe_account_id').notNull(),
   stripeCustomerId: text('stripe_customer_id'),
   effectiveFrom: timestamp('effective_from', { withTimezone: true }),
+  staffEmailDedupeKeys: text('staff_email_dedupe_keys').array().notNull().default(sql`'{}'::text[]`),
   requestedBy: uuid('requested_by'),
   requestedAt: timestamp('requested_at', { withTimezone: true }),
   requestRecipientEmail: text('request_recipient_email'),
@@ -84,6 +86,8 @@ export const orgPaymentMethods = pgTable('org_payment_methods', {
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   enrollmentId: uuid('enrollment_id').notNull(),
   stripePaymentMethodId: text('stripe_payment_method_id').notNull(),
+  detachStripeAccountId: text('detach_stripe_account_id'),
+  detachStripeCustomerId: text('detach_stripe_customer_id'),
   type: text('type').notNull().$type<AutopayPaymentMethodType>(),
   cardBrand: text('card_brand'),
   cardLast4: text('card_last4'),
@@ -113,7 +117,9 @@ export const orgPaymentMethods = pgTable('org_payment_methods', {
   check('org_payment_methods_account_holder_type_check', sql`${t.accountHolderType} IN ('individual','company')`),
   unique().on(t.id,t.orgId),
   foreignKey({name:'org_payment_methods_enrollment_org_fk',columns:[t.enrollmentId,t.orgId],foreignColumns:[orgAutopayEnrollments.id,orgAutopayEnrollments.orgId]}),
-  uniqueIndex('org_payment_methods_autopay_uq').on(t.orgId).where(sql`${t.isAutopayMethod} AND ${t.status} IN ('active','pending_verification')`),
+  // One autopay-method row per org whatever its status: a retained unusable row must
+  // never sit beside its replacement (D-17, 2026-12-11-130000).
+  uniqueIndex('org_payment_methods_one_autopay_uq').on(t.orgId).where(sql`${t.isAutopayMethod}`),
 ]);
 
 export const orgAutopayConsents = pgTable('org_autopay_consents', {
@@ -124,8 +130,8 @@ export const orgAutopayConsents = pgTable('org_autopay_consents', {
   paymentMethodId: uuid('payment_method_id').notNull(),
   consentTextVersion: text('consent_text_version').notNull(),
   consentTextHash: text('consent_text_hash').notNull(),
-  feeTerms: jsonb('fee_terms').notNull(),
-  scheduleTerms: jsonb('schedule_terms').notNull(),
+  feeTerms: jsonb('fee_terms').$type<AutopayFeeTerms>().notNull(),
+  scheduleTerms: jsonb('schedule_terms').$type<AutopayScheduleTerms>().notNull(),
   contactEmail: text('contact_email').notNull(),
   ip: text('ip'),
   userAgent: text('user_agent'),
@@ -186,7 +192,7 @@ export const invoiceAutopaySchedules = pgTable('invoice_autopay_schedules', {
 }, (t) => [
   check('invoice_autopay_schedules_eligible_chk', sql`${t.eligible} = (${t.ineligibleReason} IS NULL)`),
   check('invoice_autopay_schedules_collect_on_chk', sql`${t.state} NOT IN ('scheduled','retry_scheduled') OR ${t.collectOn} IS NOT NULL`),
-  check('invoice_autopay_schedules_ineligible_reason_check', sql`${t.ineligibleReason} IN ('not_enrolled','enrolled_after_issue','method_not_usable','over_cap','cap_currency_mismatch','ach_currency_unsupported','excluded_contract','excluded_invoice','charging_disabled','stripe_unavailable')`),
+  check('invoice_autopay_schedules_ineligible_reason_check', sql`${t.ineligibleReason} IN ('not_enrolled','enrolled_after_issue','consent_required','method_not_usable','over_cap','cap_currency_mismatch','ach_currency_unsupported','excluded_contract','excluded_invoice','charging_disabled','stripe_unavailable','above_authorized_cap')`),
   check('invoice_autopay_schedules_attempt_count_check', sql`${t.attemptCount} >= 0`),
   check('invoice_autopay_schedules_authority_chk', sql`${t.enrollmentId} IS NOT NULL OR ${t.state} IN ('succeeded','failed','skipped_by_client','excluded_by_msp','cancelled','not_needed')`),
   unique().on(t.invoiceId),

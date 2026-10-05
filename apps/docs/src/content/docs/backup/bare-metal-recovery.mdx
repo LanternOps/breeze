@@ -368,3 +368,4 @@ For recovering individual files or databases onto an already-enrolled device, us
 - Tokens are hashed (SHA-256) at rest and cannot be retrieved after creation
 - Each token is scoped to a single snapshot and organization
 - Expired tokens are automatically invalidated
+- A token is consumed by the first recovery that completes (fully or with some files failed). A run that fails before completing — for example a network drop mid-download — is recorded against the token but does not consume it, so you can rerun `bmr-recover` with the same token until it expires. Revoke the token from the console if you no longer want it usable.

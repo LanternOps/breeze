@@ -1003,6 +1003,8 @@
         "addPathOrProcess": "Yol veya süreç ekle",
         "autoQuarantine": "Otomatik karantina",
         "moveThreatsToQuarantineImmediately": "Tehditleri hemen karantinaya taşıyın.",
+        "autoQuarantineReapproval": "Otomatik karantina duraklatıldı: devices:execute iznine sahip bir kullanıcı bu ayarları yeniden kaydedene kadar taramalar yalnızca algılama yapar.",
+        "autoQuarantineApproverInvalid": "Otomatik karantina duraklatıldı: onu onaylayan kullanıcı artık devices:execute erişimine sahip değil. Bu izne sahip bir kullanıcı bu ayarları yeniden kaydedene kadar taramalar yalnızca algılama yapar.",
         "autoQuarantine2": "otomatikKarantina",
         "scheduledScans2": "planlanmışTaramalar",
         "scanMinute": "scanMinute",

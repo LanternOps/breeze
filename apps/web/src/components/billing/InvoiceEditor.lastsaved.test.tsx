@@ -27,6 +27,7 @@ const json = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
 
 function draft(): InvoiceDetail {
   return {
+    autopay: null,
     invoice: {
       id: 'inv-1', invoiceNumber: null, orgId: 'org-1', siteId: null, status: 'draft',
       currencyCode: 'USD', issueDate: null, dueDate: null, sentAt: null, subtotal: '0.00', taxRate: null,

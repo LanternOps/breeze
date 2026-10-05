@@ -95,7 +95,6 @@ function policy(overrides: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
   return {
     enabled: true,
     mode: 'act',
-    model: null,
     toolAllowlist: ['run_script'],
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
     limits: AI_AGENT_LIMIT_DEFAULTS,

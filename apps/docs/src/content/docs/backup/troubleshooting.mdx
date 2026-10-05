@@ -255,7 +255,7 @@ Breeze does not create simulated verification records or silent pending restores
 
 **Cause:** The token may have expired, been used already, or was copied incorrectly.
 
-**Fix:** Generate a [new recovery token](/backup/bare-metal-recovery/). Tokens are single-use and time-limited. Ensure you copy the full token string without trailing whitespace.
+**Fix:** Generate a [new recovery token](/backup/bare-metal-recovery/). A token is consumed once a recovery completes with it and stops working when it expires; a recovery that failed before completing does not consume it, so `Token is used` means a recovery already finished with that token. Ensure you copy the full token string without trailing whitespace.
 
 ---
 

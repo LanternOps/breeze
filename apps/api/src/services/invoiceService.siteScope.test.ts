@@ -1,3 +1,4 @@
+vi.mock('./autopay/invoiceControls', () => ({ getInvoiceAutopayView: vi.fn().mockResolvedValue(null), renoticeSchedule: vi.fn() }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Site-axis (sub-org) authorization guard for invoiceService (SR5-14). Mirrors the

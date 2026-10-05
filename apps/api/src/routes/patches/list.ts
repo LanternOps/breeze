@@ -3,7 +3,8 @@ import { zValidator } from '../../lib/validation';
 import { and, eq, sql, asc, desc, type SQL, type Column } from 'drizzle-orm';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db } from '../../db';
+import { readOwnPartnerAxisRows } from '../../db/partnerAxisRead';
 import { patches, patchApprovals, devices, devicePatches } from '../../db/schema';
 import { listPatchesSchema, listSourcesSchema, patchIdParamSchema } from './schemas';
 import { getPagination, inferPatchOs, resolvePartnerIdForOrg } from './helpers';
@@ -202,20 +203,20 @@ listRoutes.get(
         approvalConditions.push(eq(patchApprovals.ringId, query.ringId));
       }
 
-      // patch_approvals is partner-axis RLS; org-scoped callers cannot read it
-      // in request context (accessiblePartnerIds=[]). The partner is SERVER-DERIVED
-      // (from the access-checked org, or from the caller's own token), so system
-      // context is safe.
-      const approvals = await runOutsideDbContext(() =>
-        withSystemDbAccessContext(() =>
-          db
-            .select({
-              patchId: patchApprovals.patchId,
-              status: patchApprovals.status
-            })
-            .from(patchApprovals)
-            .where(and(...approvalConditions))
-        )
+      // patch_approvals is partner-axis RLS with an own-partner SELECT branch
+      // (#7647): readOwnPartnerAxisRows reads it on the request's own connection
+      // when the ambient context covers approvalPartnerId, and only takes the
+      // second-connection system escape otherwise (#7663). The partner is
+      // SERVER-DERIVED (from the access-checked org, or from the caller's own
+      // token) and the query stays pinned to it.
+      const approvals = await readOwnPartnerAxisRows(approvalPartnerId, () =>
+        db
+          .select({
+            patchId: patchApprovals.patchId,
+            status: patchApprovals.status
+          })
+          .from(patchApprovals)
+          .where(and(...approvalConditions))
       );
 
       approvalStatuses = Object.fromEntries(

@@ -66,6 +66,7 @@
     "aiAgents": "Agenti AI",
     "aiAgentRuns": "Esecuzioni agenti IA",
     "aiImpact": "Impatto IA",
+    "fixMemory": "Memoria delle correzioni",
     "fleetDesign": "Progettazione flotta",
     "customFields": "Campi personalizzati",
     "savedFilters": "Filtri salvati",
@@ -107,7 +108,9 @@
     "system": "Sistema",
     "monitorConversion": "Conversione monitor",
     "timeSync": "Sincronizzazione dell’ora",
-    "aiModels": "Modelli di IA"
+    "aiModels": "Modelli di IA",
+    "autopay": "Autopay",
+    "payments": "Payments"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -2375,7 +2378,10 @@
           "script": "Script",
           "template": "Modello",
           "playbook": "Playbook",
-          "diagnostic": "Diagnostica"
+          "diagnostic": "Diagnostica",
+          "builtin": "Azione integrata",
+          "manualSteps": "Passaggi manuali",
+          "scriptDraft": "Bozza di script"
         },
         "targetIdentifiers": {
           "script": "script {{id}}",
@@ -2384,7 +2390,8 @@
           "templateMissing": "modello senza ID modello",
           "playbook": "playbook {{id}}",
           "playbookMissing": "playbook senza playbook ID",
-          "diagnostic": "azione diagnostica"
+          "diagnostic": "azione diagnostica",
+          "builtin": "azione integrata {{action}}"
         },
         "targetDevices": {
           "none": "Nessun dispositivo di destinazione in questo suggerimento",
@@ -2396,9 +2403,12 @@
           "generateFailed": "Impossibile generare le correzioni suggerite",
           "updateFailed": "Impossibile aggiornare la correzione suggerita",
           "executeFailed": "Impossibile eseguire la correzione suggerita",
-          "approvalFailed": "Impossibile richiedere l'approvazione"
+          "approvalFailed": "Impossibile richiedere l'approvazione",
+          "researchFailed": "Impossibile avviare la ricerca",
+          "draftFailed": "Impossibile aprire la bozza dello script."
         },
         "messages": {
+          "draftCopied": "L’archiviazione è bloccata: il riepilogo è stato copiato; incollalo nel generatore di script.",
           "disabled": "Le correzioni suggerite sono disabilitate",
           "generated": "Correzioni suggerite generate",
           "accepted": "Correzione suggerita accettata",
@@ -2482,6 +2492,52 @@
             "inconclusive": "non conclusivo",
             "cancelled": "annullato"
           }
+        },
+        "groups": {
+          "proven": "Soluzioni comprovate",
+          "ai": "Suggerimenti dell’IA",
+          "similar": "Soluzioni simili",
+          "legacy": "Precedenti corrispondenze per parole chiave"
+        },
+        "badges": {
+          "aiResearched": "Ricercato dall’IA",
+          "aiWritten": "Scritto dall’IA — verifica prima di seguirlo"
+        },
+        "track": {
+          "lastVerified": "ultima verifica {{days}} g fa",
+          "neverVerified": "non ancora verificato"
+        },
+        "research": {
+          "running": "Ricerca in corso…",
+          "runningDeep": "Ricerca approfondita in corso…",
+          "stalled": "Ricerca ancora in corso — ricontrolla tra qualche minuto.",
+          "failed": "Ricerca non riuscita.",
+          "noSafeFix": "L’IA non ha trovato una soluzione sicura per questo problema.",
+          "checkBudget": "Controlla il budget IA",
+          "deeper": "Approfondisci la ricerca",
+          "retry": "Riprova",
+          "denial": {
+            "credits": "I crediti IA per questo periodo di fatturazione sono esauriti.",
+            "dailyBudget": "Il budget IA giornaliero per la ricerca è stato raggiunto.",
+            "orgBudget": "Il budget IA di questa organizzazione è stato raggiunto.",
+            "autoCap": "Il limite di ricerca automatica è stato raggiunto. Puoi comunque avviare la ricerca manualmente.",
+            "busy": "La ricerca è occupata al momento. Riprova tra qualche minuto.",
+            "permission": "Non hai l’autorizzazione per avviare una ricerca IA.",
+            "unavailable": "La ricerca IA è temporaneamente non disponibile.",
+            "modelUnavailable": "Il modello IA per la ricerca non è disponibile.",
+            "notProvisioned": "La ricerca IA non è ancora configurata per questa installazione."
+          }
+        },
+        "runBuiltin": "Esegui {{action}}",
+        "draftScript": "Prepara uno script",
+        "emptyHint": "Genera controlla prima le soluzioni comprovate, poi interroga l’IA.",
+        "reviewed": {
+          "pickerLabel": "Passaggi verificati",
+          "asWritten": "Passaggi così come scritti (non condivisi)",
+          "save": "Salva come passaggi verificati",
+          "saved": "Salvato come passaggi verificati",
+          "failed": "Impossibile salvare i passaggi verificati",
+          "stepsLabel": "Passaggi (uno per riga)"
         }
       }
     },
@@ -2540,5 +2596,66 @@
     "noneConfigured": "Nessun {{source}} configurato",
     "overriding": "Sovrascrive {{source}}",
     "overridingWithValue": "Sovrascrive {{source}} ({{value}})"
+  },
+  "fixMemoryPage": {
+    "title": "Memoria delle correzioni",
+    "subtitle": "Le correzioni eseguite dal tuo team e con quale frequenza hanno davvero risolto il problema.",
+    "tabs": {
+      "fixes": "Correzioni",
+      "steps": "Passaggi verificati"
+    },
+    "filters": {
+      "os": "Sistema operativo",
+      "anyOs": "Qualsiasi sistema operativo",
+      "status": "Stato",
+      "anyStatus": "Qualsiasi stato",
+      "scope": "Ambito",
+      "anyScope": "Qualsiasi ambito",
+      "condition": "Cerca per condizione"
+    },
+    "columns": {
+      "fix": "Correzione",
+      "record": "Storico dei risultati",
+      "rate": "Tasso di successo",
+      "scope": "Ambito",
+      "os": "SO",
+      "condition": "Condizione",
+      "lastVerified": "Ultima verifica",
+      "status": "Stato",
+      "actions": "Azioni"
+    },
+    "status": {
+      "active": "Attiva",
+      "demoted": "Declassata",
+      "retired": "Ritirata",
+      "stale": "Obsoleta"
+    },
+    "scope": {
+      "everyClient": "Tutti i clienti",
+      "oneClient": "Questo cliente"
+    },
+    "signature": "Firma {{prefix}}",
+    "retire": {
+      "action": "Ritira",
+      "confirmTitle": "Ritirare questa correzione?",
+      "confirmBody": "Le correzioni ritirate non vengono più suggerite. La loro cronologia viene conservata.",
+      "confirm": "Ritira correzione",
+      "success": "Correzione ritirata.",
+      "failed": "Impossibile ritirare la correzione."
+    },
+    "steps": {
+      "heading": "Passaggi",
+      "retire": "Ritira passaggi",
+      "success": "Passaggi ritirati.",
+      "failed": "Impossibile ritirare i passaggi.",
+      "empty": "Nessun passaggio verificato. Salva i passaggi da un suggerimento per vederli qui."
+    },
+    "empty": "Nessuna correzione memorizzata. Le correzioni compaiono qui dopo essere state eseguite e dopo l’osservazione del risultato.",
+    "loadMore": "Carica altro",
+    "never": "Mai",
+    "retry": "Riprova",
+    "errors": {
+      "loadFailed": "Impossibile caricare la memoria delle correzioni."
+    }
   }
 }

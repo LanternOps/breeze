@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-16
 **Status:** Approved design, pending implementation plan
-**Reference artifact:** "Animal Health at Home — IT Strategy Proposal" sample PDF (21 pages: branded cover, narrative sections with images, dual pricing tables, approval form, 7-page MSA with Exhibit A)
+**Reference artifact:** "Paws at Home Vet — IT Strategy Proposal" sample PDF (21 pages: branded cover, narrative sections with images, dual pricing tables, approval form, 7-page MSA with Exhibit A)
 
 ## Goal
 

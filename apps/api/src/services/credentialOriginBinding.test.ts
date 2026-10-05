@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
   destinationSetGainedMembers,
+  launcherTemplateOriginChanged,
   settingsSecretWouldFollowNewOrigin,
   urlOriginChanged,
   webhookOriginChangeWouldRetainAuthorization,
 } from './credentialOriginBinding';
 import { isMaskedIntegrationSecret } from './notificationChannelSecrets';
-import { LOG_FORWARDING_SECRET_DESTINATIONS } from './settingsSecretMasking';
+import {
+  LOG_FORWARDING_SECRET_DESTINATIONS,
+  REMOTE_ACCESS_LAUNCHER_SECRET_DESTINATIONS,
+} from './settingsSecretMasking';
 
 describe('destinationSetGainedMembers', () => {
   it('is false when the set is unchanged', () => {
@@ -185,5 +189,104 @@ describe('settingsSecretWouldFollowNewOrigin', () => {
       LOG_FORWARDING_SECRET_DESTINATIONS,
       isMaskedIntegrationSecret,
     )).toBe(false);
+  });
+});
+
+describe('launcherTemplateOriginChanged', () => {
+  it('is false for an identical template, including custom schemes', () => {
+    expect(launcherTemplateOriginChanged('rustdesk://{id}?password={password}', 'rustdesk://{id}?password={password}')).toBe(false);
+  });
+
+  it('is false when only the path, query or fragment changes', () => {
+    expect(launcherTemplateOriginChanged(
+      'https://acme.screenconnect.com/Host#Access///{id}/Join',
+      'https://acme.screenconnect.com/Other?x=1#Access///{id}/Join',
+    )).toBe(false);
+    expect(launcherTemplateOriginChanged('rustdesk://{id}?password={password}', 'rustdesk://{id}')).toBe(false);
+  });
+
+  it('is true when the host changes', () => {
+    expect(launcherTemplateOriginChanged(
+      'https://acme.screenconnect.com/Host#Access///{id}/Join',
+      'https://other.example.com/Host#Access///{id}/Join',
+    )).toBe(true);
+  });
+
+  it('is true when the scheme changes', () => {
+    expect(launcherTemplateOriginChanged('https://acme.example/{id}', 'http://acme.example/{id}')).toBe(true);
+    expect(launcherTemplateOriginChanged('rustdesk://{id}?password={password}', 'anydesk://{id}?password={password}')).toBe(true);
+  });
+
+  it('is true when the port changes', () => {
+    expect(launcherTemplateOriginChanged('https://acme.example/{id}', 'https://acme.example:8443/{id}')).toBe(true);
+  });
+
+  it('is true when the host placeholder moves (custom scheme)', () => {
+    expect(launcherTemplateOriginChanged('rustdesk://{id}?password={password}', 'rustdesk://relay.example/{id}?password={password}')).toBe(true);
+  });
+
+  it('fails closed (changed) when either template cannot be parsed', () => {
+    expect(launcherTemplateOriginChanged('https://acme.example/{id}', 'not a url {id}')).toBe(true);
+    expect(launcherTemplateOriginChanged('not a url {id}', 'https://acme.example/{id}')).toBe(true);
+  });
+});
+
+describe('settingsSecretWouldFollowNewOrigin — remote-access launcher passwords', () => {
+  const provider = (overrides: Record<string, unknown> = {}) => ({
+    id: 'sc',
+    name: 'ScreenConnect',
+    urlTemplate: 'https://acme.screenconnect.com/Host#Access///{id}/Join?p={password}',
+    customFieldKey: 'sc_id',
+    enabled: true,
+    ...overrides,
+  });
+  const stored = { remoteAccessProviders: { providers: [provider({ password: 'enc:v1:stored-launcher-password' })] } };
+  const check = (providers: unknown[]) => settingsSecretWouldFollowNewOrigin(
+    { remoteAccessProviders: { providers } },
+    stored,
+    REMOTE_ACCESS_LAUNCHER_SECRET_DESTINATIONS,
+    isMaskedIntegrationSecret,
+  );
+  const otherHost = 'https://other.example.com/Host#Access///{id}/Join?p={password}';
+
+  it('is true when the template host changes and the password is kept by the masked marker', () => {
+    expect(check([provider({ urlTemplate: otherHost, password: '********' })])).toBe(true);
+  });
+
+  it('is true when the template host changes and the password is kept by omission', () => {
+    expect(check([provider({ urlTemplate: otherHost })])).toBe(true);
+  });
+
+  it('is true when the template host changes and the stored ciphertext is echoed', () => {
+    expect(check([provider({ urlTemplate: otherHost, password: 'enc:v1:stored-launcher-password' })])).toBe(true);
+  });
+
+  it('matches entries by id, not position', () => {
+    expect(check([
+      provider({ id: 'rd', urlTemplate: 'rustdesk://{id}', password: 'typed' }),
+      provider({ urlTemplate: otherHost, password: '********' }),
+    ])).toBe(true);
+  });
+
+  it('is false when a fresh password is typed alongside the new template', () => {
+    expect(check([provider({ urlTemplate: otherHost, password: 'typed-password' })])).toBe(false);
+  });
+
+  it('is false when the template keeps its host', () => {
+    expect(check([provider({ urlTemplate: 'https://acme.screenconnect.com/Other#Access///{id}/Join', password: '********' })])).toBe(false);
+  });
+
+  it('is false for an unchanged custom-scheme template with a masked password', () => {
+    const rustdesk = provider({ id: 'rd', urlTemplate: 'rustdesk://{id}?password={password}' });
+    expect(settingsSecretWouldFollowNewOrigin(
+      { remoteAccessProviders: { providers: [{ ...rustdesk, password: '********' }] } },
+      { remoteAccessProviders: { providers: [{ ...rustdesk, password: 'enc:v1:stored' }] } },
+      REMOTE_ACCESS_LAUNCHER_SECRET_DESTINATIONS,
+      isMaskedIntegrationSecret,
+    )).toBe(false);
+  });
+
+  it('is false for a new provider id (no stored password to carry)', () => {
+    expect(check([provider({ id: 'new', urlTemplate: otherHost, password: '********' })])).toBe(false);
   });
 });

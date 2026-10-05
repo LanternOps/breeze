@@ -225,18 +225,18 @@ describe('command delivery to a parked device (real Postgres)', () => {
     const inventory = await pending(parked.id, 'refresh_inventory');
     const uninstall = await pending(parked.id, 'self_uninstall');
 
-    await expect(claimPendingCommandForDelivery(inventory)).resolves.toBeNull();
+    await expect(claimPendingCommandForDelivery(inventory)).resolves.toEqual({ status: 'cancelled', id: inventory, reason: 'device_pending_assignment' });
     const cancelled = await commandRow(inventory);
     expect(cancelled.status).toBe('cancelled');
     expect(cancelled.result).toMatchObject({ reason: 'device_pending_assignment' });
 
-    await expect(claimPendingCommandForDelivery(uninstall)).resolves.toMatchObject({ id: uninstall });
+    await expect(claimPendingCommandForDelivery(uninstall)).resolves.toMatchObject({ status: 'claimed', id: uninstall });
     expect((await commandRow(uninstall)).status).toBe('sent');
   });
 
   it('the single-row push claim still delivers to a device in a customer org', async () => {
     const inventory = await pending(control.id, 'refresh_inventory');
-    await expect(claimPendingCommandForDelivery(inventory)).resolves.toMatchObject({ id: inventory });
+    await expect(claimPendingCommandForDelivery(inventory)).resolves.toMatchObject({ status: 'claimed', id: inventory });
   });
 
   it('queueCommand refuses a parked device and writes nothing, but queues removal', async () => {

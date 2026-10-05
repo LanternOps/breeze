@@ -76,6 +76,10 @@ vi.mock('../../services/helperPermissions', () => ({
   resolveHelperPermissionLevelForDevice: vi.fn(),
 }));
 
+vi.mock('../../services/helperSettings', () => ({
+  buildHelperConfigUpdate: vi.fn(async () => ({ enabled: true })),
+}));
+
 vi.mock('../../services/helperAiAgent', () => ({
   buildHelperSystemPrompt: vi.fn(() => 'helper system prompt'),
 }));

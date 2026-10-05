@@ -45,6 +45,7 @@ export interface UncoveredDevices {
 
 /** A row from `GET /contracts` (the full `contracts` table row). */
 export interface ContractSummary {
+  autopayExcluded: boolean;
   id: string;
   partnerId: string;
   orgId: string;
@@ -147,6 +148,7 @@ export interface PeriodOutcome {
 
 /** Shape of `GET /contracts/:id` — `{ data: { contract, lines, periods } }`. */
 export interface ContractDetail {
+  autopayEnabled: boolean;
   contract: ContractSummary;
   lines: ContractLine[];
   periods: ContractBillingPeriod[];

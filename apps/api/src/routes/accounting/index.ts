@@ -1,3 +1,5 @@
+import { abandonAccountingFees } from '../../services/accounting/accountingFeeAbandonment';
+import { isAutopayEnabledForPartner } from '../../services/autopay/autopayGate';
 import { Hono, type Context, type Env, type MiddlewareHandler } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { zValidator } from '../../lib/validation';
@@ -5,10 +7,11 @@ import { z } from 'zod';
 import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { accountingConnections, accountingEntityMappings, invoicePayments, invoices } from '../../db/schema';
+import { accountingConnections, accountingEntityMappings, invoicePayments, invoiceStripePayments, invoices } from '../../db/schema';
 import {
   authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext,
 } from '../../middleware/auth';
+import { markPermissionGate, permissionGateLabel } from '../../middleware/permissionGate';
 import { PERMISSIONS } from '../../services/permissions';
 import {
   AccountingConnectionError,
@@ -96,7 +99,7 @@ const requireSiteWrite = requirePermission(PERMISSIONS.SITES_WRITE.resource, PER
  * separate route-contract/availability residual rather than an authz bypass.
  */
 function partnerScopedPermission(...guards: MiddlewareHandler[]): MiddlewareHandler {
-  return async (c, next) => {
+  const composed: MiddlewareHandler = async (c, next) => {
     if (c.get('auth')?.scope === 'system') return next();
     // Run the guards in order, propagating whatever a denying guard returns
     // (its 403 Response) instead of falling through to the handler.
@@ -107,6 +110,10 @@ function partnerScopedPermission(...guards: MiddlewareHandler[]): MiddlewareHand
     };
     return run(0);
   };
+  // The composition enforces the wrapped permission grants, so it is itself a
+  // permission gate for the write-route contract test.
+  const labels = guards.map(permissionGateLabel).filter((label): label is string => label !== undefined);
+  return labels.length > 0 ? markPermissionGate(composed, labels.join('+')) : composed;
 }
 
 // NOTE: the accounting:read guard is folded INTO this composition rather than
@@ -163,6 +170,8 @@ const callbackQuerySchema = z.object({
   error: z.string().transform((v) => v.slice(0, 100)).optional(),
 });
 const settingsSchema = z.object({
+  feeIncomeItemRef: z.string().trim().min(1).max(64).nullable().optional(),
+  feeIncomeAccountRef: z.string().trim().min(1).max(64).nullable().optional(),
   pushMode: z.enum(['auto', 'manual']).optional(),
   defaultIncomeAccountRef: z.string().max(64).nullable().optional(),
   defaultTaxCodeRef: z.string().max(64).nullable().optional(),
@@ -523,7 +532,12 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
   // disconnect's.
   const discardPending = async () => {
     const result = await discardPendingTenantSelection({
-      partnerId: partner.partnerId, provider, reason: 'cancel', runInDbContext: runInDb,
+      partnerId: partner.partnerId, provider, reason: 'cancel',
+      // Authorization and the scoped read above also cover this pending path.
+      // Commit deletion, fee abandonment and user-scoped fanout together.
+      runInDbContext: (fn) => runOutsideDbContext(() =>
+        withSystemDbAccessContext(fn, 'accounting.disconnect')),
+      onDeleted: (connectionId) => abandonAccountingFees(db, partner.partnerId, connectionId),
     });
     if (!result.discarded) return false;
     auditOwedDeletesDiscarded(c, { provider, connectionId: result.connectionId, reason: 'disconnect', owed: result.owedPaymentDeletes });
@@ -559,7 +573,11 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
     }
   }
   const providerRelease = full ? await releaseProviderConnection(full) : 'skipped';
-  const { removed, connectionId, owedPaymentDeletes } = await runInDb(() => deleteConnection(db, partner.partnerId, provider));
+  // Partner-wide authority and the scoped connection were checked above. The
+  // atomic disconnect also fans out user-scoped staff notifications, which
+  // cannot be inserted for other MSP staff in the caller's user context.
+  const { removed, connectionId, owedPaymentDeletes } = await runOutsideDbContext(()=>
+    withSystemDbAccessContext(()=>deleteConnection(db,partner.partnerId,provider),'accounting.disconnect'));
   if (!removed) return c.json({ error: 'Accounting connection not found' }, 404);
   audit(connectionId ?? ref.id, full?.status ?? ref.status, { providerRelease });
   // The disconnect is never blocked, but a QuickBooks payment deletion Breeze
@@ -593,6 +611,10 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccount
   if (gate) return gate;
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const autopayEnabled = await isAutopayEnabledForPartner(db, partner.partnerId);
+  const feeErrors = await db.select({ n: sql<number>`count(*)::int` }).from(invoiceStripePayments)
+    .innerJoin(invoices, eq(invoices.id, invoiceStripePayments.invoiceId))
+    .where(and(eq(invoices.partnerId, partner.partnerId), sql`${invoiceStripePayments.feeAccountingError} IS NOT NULL`));
   const connection = await getConnection(db, partner.partnerId, provider);
   // What the provider can do and which setup steps it has (Xero W02). DB-only:
   // the organisation name / demo badge come from GET /:provider/settings/options.
@@ -604,6 +626,8 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccount
   if (!connection) {
     return c.json({
       ...providerShape,
+      autopayEnabled,
+      feeAccountingErrorCount: feeErrors[0]?.n ?? 0,
       status: 'disconnected',
       environment: null,
       pushMode: 'auto',
@@ -623,11 +647,15 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccount
   }
   return c.json({
     ...providerShape,
+    autopayEnabled,
+    feeAccountingErrorCount: feeErrors[0]?.n ?? 0,
     status: connection.status,
     environment: connection.environment,
     pushMode: connection.pushMode,
     connectedAt: connection.createdAt,
     lastError: connection.lastError,
+    feeIncomeItemRef: connection.feeIncomeItemRef ?? null,
+    feeIncomeAccountRef: connection.feeIncomeAccountRef ?? null,
     defaultIncomeAccountRef: connection.defaultIncomeAccountRef,
     defaultTaxCodeRef: connection.defaultTaxCodeRef,
     defaultExemptTaxCodeRef: connection.defaultExemptTaxCodeRef,
@@ -766,9 +794,20 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
 
+  if (('feeIncomeItemRef' in body || 'feeIncomeAccountRef' in body)
+    && !await isAutopayEnabledForPartner(db, partner.partnerId)) {
+    return c.json({ error: 'Automatic payments are not enabled', code: 'autopay_not_enabled' }, 404);
+  }
+  if ((provider === 'xero' && body.feeIncomeItemRef != null)
+    || (provider !== 'xero' && body.feeIncomeAccountRef != null)) {
+    return c.json({ error: 'Use the processing fee mapping for this accounting provider' }, 400);
+  }
+
   const [updated] = await db
     .update(accountingConnections)
     .set({
+      ...('feeIncomeItemRef' in body ? { feeIncomeItemRef: body.feeIncomeItemRef } : {}),
+      ...('feeIncomeAccountRef' in body ? { feeIncomeAccountRef: body.feeIncomeAccountRef } : {}),
       ...('pushMode' in body ? { pushMode: body.pushMode } : {}),
       ...('defaultIncomeAccountRef' in body ? { defaultIncomeAccountRef: body.defaultIncomeAccountRef } : {}),
       ...('defaultTaxCodeRef' in body ? { defaultTaxCodeRef: body.defaultTaxCodeRef } : {}),
@@ -794,6 +833,8 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
       eq(accountingConnections.provider, provider)
     ))
     .returning({
+      feeIncomeItemRef: accountingConnections.feeIncomeItemRef,
+      feeIncomeAccountRef: accountingConnections.feeIncomeAccountRef,
       status: accountingConnections.status,
       environment: accountingConnections.environment,
       pushMode: accountingConnections.pushMode,

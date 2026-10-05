@@ -1274,10 +1274,40 @@ Canned reply templates are partner-scoped. Management operations require `partne
 | `POST` | `/ai/sessions/:id/messages` | Send message (streaming) |
 | `POST` | `/ai/sessions/:id/interrupt` | Interrupt response |
 | `POST` | `/ai/sessions/:id/approve/:executionId` | Approve tool execution |
+| `POST` | `/ai/sessions/:id/continue` | Start a linked continuation chat (on another model) that opens from a summary of this one (v0.121.0+) |
 | `GET` | `/ai/usage` | AI usage stats |
 | `GET` | `/ai/budget` | AI budget info |
 | `GET` | `/ai/admin/sessions` | Admin: list all sessions |
 | `GET` | `/ai/admin/security-events` | Admin: security events |
+
+### AI model registry
+
+The API behind **Partner Settings → AI Providers & Models** (v0.121.0+). Connection, model, default and residency routes require partner-wide access; the per-organization defaults need organization read or write permission (writes also need MFA), and usage needs permission to read all AI sessions. See [Bring Your Own LLM Key](/features/bring-your-own-llm-key/).
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/ai/models` | Connections, model offerings and feature defaults for your partner |
+| `POST` | `/ai/models/connections` | Add a connection (provider API key or OpenAI-compatible endpoint) |
+| `PATCH` | `/ai/models/connections/:id` | Update connection settings |
+| `POST` | `/ai/models/connections/:id/key` | Rotate the connection's key |
+| `POST` | `/ai/models/connections/:id/endpoint` | Set the connection's endpoint |
+| `POST` | `/ai/models/connections/:id/refresh` | Re-discover the connection's models |
+| `POST` | `/ai/models/connections/:id/offerings` | Add a model to an OpenAI-compatible connection by hand |
+| `DELETE` | `/ai/models/connections/:id` | Disconnect (removes the key and disables its models) |
+| `POST` | `/ai/models/offerings/platform/:platformModelId` | Enable a Breeze platform model for your partner |
+| `POST` | `/ai/models/offerings/:id/enabled` | Enable or disable a model |
+| `PATCH` | `/ai/models/offerings/:id` | Update a model's details and price |
+| `POST` | `/ai/models/offerings/:id/verify` | Run the verification checks on a model |
+| `PUT` | `/ai/models/assignments` | Set the default model, backup models and options per AI feature |
+| `GET` / `PUT` | `/ai/models/orgs/:orgId/assignments` | Read or narrow one organization's model defaults |
+| `PUT` | `/ai/models/residency` | Turn the residency requirement on or off |
+| `GET` | `/ai/models/residency/preview` | List the AI features the residency requirement would disable |
+| `GET` | `/ai/models/usage` | AI usage by model, feature, technician and organization |
+| `GET` | `/ai/models/usage/quality` | Model quality view |
+
+<Aside type="caution" title="Deprecated in v0.121.0, removed in v0.122.0">
+  `/ai/provider` (`GET`, `PATCH`, `DELETE`, `POST /key`, `POST /endpoint`) is replaced by the registry above: connect a key with `POST /ai/models/connections`, rotate it with `POST /ai/models/connections/:id/key`, set an endpoint with `POST /ai/models/connections/:id/endpoint`, and disconnect with `DELETE /ai/models/connections/:id`. The single partner default model becomes per-feature defaults (`PUT /ai/models/assignments`). Three request fields are retired the same way: `reviewerModel` on the script policy routes (use the `script_reviewer` feature default), `allowedModels` on the AI for Office organization policy (use the `office_chat` feature's permitted models or `PUT /ai/models/orgs/:orgId/assignments`), and `model` on AI agents (send `offeringId`, an enabled model from `GET /ai/models`; `null` follows the AI agents default). In v0.121.0 the retired fields are ignored; from v0.122.0 `/ai/provider` returns `404` and a request carrying a retired field is rejected with `400`.
+</Aside>
 
 ## MCP Server
 

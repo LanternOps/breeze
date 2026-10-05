@@ -2251,6 +2251,17 @@ export async function checkDeviceMaintenanceWindow(deviceId: string, now?: Date)
 export async function resolveSecurityScanSettingsForDevice(
   deviceId: string,
 ): Promise<SecurityScanSettings | null> {
+  return (await resolveSecurityScanPolicyForDevice(deviceId))?.settings ?? null;
+}
+
+/**
+ * {@link resolveSecurityScanSettingsForDevice} plus the id of the winning
+ * `security` feature link (for an inherited link, the PARENT's link id — the
+ * row that carries the auto-quarantine authority stamp).
+ */
+export async function resolveSecurityScanPolicyForDevice(
+  deviceId: string,
+): Promise<{ settings: SecurityScanSettings; featureLinkId: string } | null> {
   const hierarchy = await loadDeviceHierarchy(deviceId);
   if (!hierarchy) return null;
 
@@ -2259,6 +2270,7 @@ export async function resolveSecurityScanSettingsForDevice(
 
   const rows = await db
     .select({
+      featureLinkId: configPolicyEffectiveFeatureLinks.id,
       inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
       assignmentLevel: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
@@ -2288,7 +2300,8 @@ export async function resolveSecurityScanSettingsForDevice(
     );
 
   if (rows.length === 0) return null;
-  return parseSecurityScanSettings(sortByHierarchy(rows)[0]!.inlineSettings);
+  const winner = sortByHierarchy(rows)[0]!;
+  return { settings: parseSecurityScanSettings(winner.inlineSettings), featureLinkId: winner.featureLinkId };
 }
 
 /**

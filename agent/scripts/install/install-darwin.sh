@@ -20,34 +20,19 @@ fi
 
 echo "Installing Breeze Agent..."
 
-ensure_breeze_group() {
-    if dscl . -read /Groups/breeze &>/dev/null; then
-        if ! dscl . -read /Groups/breeze PrimaryGroupID &>/dev/null; then
-            echo "Error: existing 'breeze' group has no PrimaryGroupID; refusing to continue" >&2
-            exit 1
-        fi
-        return
-    fi
+# ensure_breeze_group: create the IPC socket group, or repair one left without
+# a PrimaryGroupID (#7829). Shared with the daemon and the .pkg postinstall.
+# shellcheck source=../../internal/sessionbroker/ensure_ipc_group.sh
+. "$(dirname "$0")/../../internal/sessionbroker/ensure_ipc_group.sh"
 
-    local gid
-    gid=350
-    while [ "$gid" -le 499 ]; do
-        if ! dscl . -list /Groups PrimaryGroupID 2>/dev/null | awk '{print $2}' | grep -qx "$gid"; then
-            dscl . -create /Groups/breeze
-            dscl . -create /Groups/breeze PrimaryGroupID "$gid"
-            echo "Created 'breeze' group for IPC socket access (gid $gid)."
-            return
-        fi
-        gid=$((gid + 1))
-    done
-
-    echo "Error: no free local system GID available for 'breeze' group" >&2
-    exit 1
-}
-
-# breeze_group_has_member reports whether $1 is in the breeze group.
+# breeze_group_has_member reports whether $1 is in the breeze group. The
+# member list is captured before matching: piping it into `grep -q` lets grep
+# exit at the first match, and under this script's pipefail a SIGPIPE on the
+# rest of a long list reads as "not a member".
 breeze_group_has_member() {
-    dscl . -read /Groups/breeze GroupMembership 2>/dev/null | tr ' ' '\n' | grep -qx "$1"
+    local members
+    members=$(dscl . -read /Groups/breeze GroupMembership 2>/dev/null | tr ' ' '\n') || return 1
+    grep -qx -- "$1" <<< "$members"
 }
 
 # Add every logged-in GUI user to the breeze group so their desktop helper can

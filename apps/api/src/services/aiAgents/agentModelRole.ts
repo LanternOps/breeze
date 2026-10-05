@@ -22,6 +22,8 @@ export const AGENT_PROFILE_ROLE = {
   narrative: 'analysis',
   design: 'analysis',
   patch: 'analysis',
+  // AI Suggested Fixes W2 — read-only research reasoning, never act-mode.
+  remediation_research: 'analysis',
 } as const satisfies Record<AiAgentRunProfile, AiAgentEscalationRole>;
 
 /** Profiles whose act mode executes actions on devices. */

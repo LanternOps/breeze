@@ -147,8 +147,8 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   ['services/aiToolsAgentLogs.ts:436', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — trigger_agent_upgrade / trigger_agent_restart: same aiExecuteCommand
   // -> resolveCommandCreatedBy path.
-  ['services/aiToolsAgentMgmt.ts:442', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsAgentMgmt.ts:540', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentMgmt.ts:458', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentMgmt.ts:566', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (b) — manage_ai_agents is in AGENT_HUMAN_ONLY_TOOLS: an ai_agent
   // principal is refused in checkAgentGuardrails before the handler runs at
   // all (P2-5, #4192 — the tool GRANTS agent authority, so an agent must
@@ -161,16 +161,16 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // (c) — test_webhook: `userId` lives only in the in-memory `event.metadata`
   // object handed to the webhook worker's queueDelivery; the actual
   // `webhookDeliveries` DB insert a few lines above never includes it.
-  ['services/aiToolsIntegrations.ts:360', 'userId is in the webhook worker event payload, never in the webhookDeliveries DB insert'],
+  ['services/aiToolsIntegrations.ts:340', 'userId is in the webhook worker event payload, never in the webhookDeliveries DB insert'],
   // (c) — execute_command / registry_operations: same aiExecuteCommand ->
   // resolveCommandCreatedBy path.
-  ['services/aiToolsScripts.ts:715', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsScripts.ts:1702', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsScripts.ts:727', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsScripts.ts:1720', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — cancel_script_execution: cancelScriptExecution's own comment says
   // it "probes-and-degrades [actorId] against users rather than raising
   // 23503" — the same resolver shape as resolveCommandCreatedBy, just local
   // to scriptCancellation.ts.
-  ['services/aiToolsScripts.ts:808', 'cancelScriptExecution probes-and-degrades actorId against users, not a raw column write'],
+  ['services/aiToolsScripts.ts:826', 'cancelScriptExecution probes-and-degrades actorId against users, not a raw column write'],
   // (c) — remediate_sensitive_data (both write sites): `updatedBy` sits
   // inside `remediationMetadata`, a `jsonb` column on `sensitive_data_findings`
   // (db/schema/sensitiveData.ts) — no FK constraint exists on a JSON key.

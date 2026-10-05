@@ -649,3 +649,10 @@ describe('POST /:id/currency — permission evidence + error details (#3778)', (
     expect(svc.changeContractCurrency).not.toHaveBeenCalled();
   });
 });
+
+it('PATCH accepts boolean autopay exclusion and rejects nonboolean',async()=>{
+ vi.mocked(svc.updateContract).mockResolvedValue({id:CONTRACT_ID} as never);
+ const res=await app().request(`/${CONTRACT_ID}`,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({autopayExcluded:true})});
+ expect(res.status).toBe(200);expect(svc.updateContract).toHaveBeenLastCalledWith(CONTRACT_ID,expect.objectContaining({autopayExcluded:true}),expect.anything());
+ expect((await app().request(`/${CONTRACT_ID}`,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({autopayExcluded:'true'})})).status).toBe(400);
+});

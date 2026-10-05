@@ -1,3 +1,6 @@
+import {invoicePaySchema,getBankAutopayOffer,startInvoiceBankSetup,collectAfterBankSetup} from '../services/autopay/bankPayment';
+import { getTrustedClientIpOrUndefined } from '../services/clientIp';
+import { getInvoiceAutopayOffer } from '../services/autopay/payAndSave';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
@@ -21,6 +24,8 @@ import { portalBase } from '../services/portalUrl';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { resolveOrgLinkGate, PUBLIC_LINK_ORG_UNAVAILABLE } from '../services/publicLinkOrgGate';
+import { readInFlightCollection } from '../services/autopay/reservation';
+import { releaseInvoiceConfirmation } from '../services/autopay/confirmPayment';
 
 /**
  * Unauthenticated, token-gated PUBLIC INVOICE surface — the customer's durable
@@ -156,13 +161,24 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
     const chargeNow = computeChargeNow({
       depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance,
     });
+    // #7824: advisory in-flight autopay state (the pay route's 409 is the gate).
+    let collectionInProgress: { amount: string; actionRequired: boolean } | null = null;
+    try {
+      const inFlight = await readInFlightCollection(db, inv.id);
+      if (inFlight.inProgress) collectionInProgress = { amount: inFlight.amount, actionRequired: inFlight.actionRequired === true };
+    } catch (err) {
+      console.error('[invoicesPublic] in-flight collection lookup failed', { invoiceId: inv.id, err });
+    }
     return {
       invoice: { ...toCustomerInvoiceHeader(inv), paidAt: inv.paidAt },
+      collectionInProgress,
       lines: rows.map(toCustomerInvoiceLine),
       chargeNow,
       // #7509: no Pay CTA unless the partner can actually take online payment.
       payable: PAYABLE.has(inv.status) && Number(inv.balance) > 0
         && await isPartnerOnlinePaymentAvailable(inv.partnerId),
+      autopay: await getInvoiceAutopayOffer(inv.orgId, inv.id),
+      bankAutopay: await getBankAutopayOffer(inv.id,inv.orgId),
       branding: brandingBlock(inv, partner, brand),
     };
   }));
@@ -224,13 +240,14 @@ invoicesPublicRoutes.get('/:token/pdf', zValidator('param', tokenParam), async (
 // now (deposit-aware). Return URLs carry ONLY the session id — the durable
 // bearer token must never reach Stripe's logs (spec §5); the return page
 // exchanges the session id back into the public URL via /settle-return.
-invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), async (c) => {
+invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), zValidator('json',invoicePaySchema), async (c) => {
   applyPublicLinkHeaders(c);
   // Same-origin fetch shape: the page always POSTs JSON. A cross-site form
   // can't set this header, and there is no ambient credential to ride anyway.
   if (!(c.req.header('content-type') ?? '').includes('application/json')) {
     return c.json({ error: 'Invalid request' }, 400);
   }
+  const body=c.req.valid('json');
   const inv = await resolve(c.req.valid('param').token);
   if (!inv) return c.json(invalidLink, 401);
   if (await orgLinkGone(inv)) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
@@ -238,16 +255,30 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), async 
 
   const returnBase = `${portalBase()}/invoice/return`;
   try {
+    if('methodType' in body && body.methodType==='us_bank_account'){
+      const result=body.phase==='setup'
+        ? await startInvoiceBankSetup({invoiceId:inv.id,orgId:inv.orgId,terms:body,returnTo:'public',
+          ip:getTrustedClientIpOrUndefined(c)??null,userAgent:c.req.header('user-agent')??null})
+        : await collectAfterBankSetup({invoiceId:inv.id,orgId:inv.orgId,setupSessionId:body.setupSessionId!});
+      if ('outcome' in result && result.outcome !== 'created') return c.json({error:'Payment has not started. Review the invoice payment status.',data:result},409);
+      return c.json({data:result});
+    }
     // The producer owns short committed contexts. Do not hide a caller's held
     // transaction with runOutsideDbContext: its Stripe guard must see it.
     const link = await createInvoicePayLink(inv.id, { userId: null, partnerId: null, accessibleOrgIds: [inv.orgId] }, {
       successUrl: `${returnBase}?session_id={CHECKOUT_SESSION_ID}`,
       cancelUrl: `${returnBase}?canceled=1&session_id={CHECKOUT_SESSION_ID}`,
       idempotencySuffix: '_pub',
+      ...body, ip: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,
     });
     return c.json({ data: { url: link.url } });
   } catch (err) {
     if (err instanceof InvoiceServiceError) {
+      // Local compatibility translation until the shared autopay error mapper lands.
+      if (('saveForAutopay' in body && body.saveForAutopay) && err.status === 404 && err.code === 'INVALID_STATE'
+        && err.message === 'Automatic payments unavailable') {
+        return c.json({ error: 'Automatic payments are not enabled', code: 'autopay_not_enabled' }, 404);
+      }
       if (err.code === 'COLLECTION_IN_PROGRESS') {
         return c.json({ error: 'A payment is already processing', code: err.code }, 409);
       }
@@ -262,6 +293,27 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), async 
       }
       return c.json({ error: err.message, code: err.code }, err.status);
     }
+    throw err;
+  }
+});
+
+// POST /:token/autopay-confirmation — the invoice page's way out of an
+// off-session payment waiting on bank authentication (3DS). Does what the
+// emailed confirm link does: cancels that PaymentIntent and releases the
+// reservation so the customer can pay on-session with the Pay button.
+invoicesPublicRoutes.post('/:token/autopay-confirmation', zValidator('param', tokenParam), async (c) => {
+  applyPublicLinkHeaders(c);
+  if (!(c.req.header('content-type') ?? '').includes('application/json')) {
+    return c.json({ error: 'Invalid request' }, 400);
+  }
+  const inv = await resolve(c.req.valid('param').token);
+  if (!inv) return c.json(invalidLink, 401);
+  if (await orgLinkGone(inv)) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
+  if (await overPublicOpLimit('autopay-confirmation', inv.id, 10)) return c.json({ error: 'Too many requests' }, 429);
+  try {
+    return c.json({ data: await releaseInvoiceConfirmation({ invoiceId: inv.id, orgId: inv.orgId }) });
+  } catch (err) {
+    if (err instanceof InvoiceServiceError && err.status < 500) return c.json({ error: err.message, code: err.code }, err.status);
     throw err;
   }
 });

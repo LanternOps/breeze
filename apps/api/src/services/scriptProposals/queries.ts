@@ -39,25 +39,31 @@ export async function loadLatestReview(proposalId: string, orgId: string) {
   );
 }
 
+/**
+ * A proposal's runs, read in whatever DB context the CALLER holds, so RLS
+ * scopes them to the caller's tenant. The `get_script_proposal` AI tool reads
+ * them this way inside its per-call transaction (#7918): escaping to a system
+ * context there would take a second pooled connection while the first is held.
+ */
+export function selectProposalExecutions(proposalId: string) {
+  return db
+    .select({
+      id: scriptExecutions.id,
+      deviceId: scriptExecutions.deviceId,
+      status: scriptExecutions.status,
+      exitCode: scriptExecutions.exitCode,
+      startedAt: scriptExecutions.startedAt,
+      completedAt: scriptExecutions.completedAt,
+      hostname: devices.hostname,
+    })
+    .from(scriptExecutions)
+    .leftJoin(devices, eq(devices.id, scriptExecutions.deviceId))
+    .where(eq(scriptExecutions.proposalId, proposalId))
+    .orderBy(desc(scriptExecutions.startedAt));
+}
+
 export async function loadProposalExecutions(proposalId: string) {
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(() =>
-      db
-        .select({
-          id: scriptExecutions.id,
-          deviceId: scriptExecutions.deviceId,
-          status: scriptExecutions.status,
-          exitCode: scriptExecutions.exitCode,
-          startedAt: scriptExecutions.startedAt,
-          completedAt: scriptExecutions.completedAt,
-          hostname: devices.hostname,
-        })
-        .from(scriptExecutions)
-        .leftJoin(devices, eq(devices.id, scriptExecutions.deviceId))
-        .where(eq(scriptExecutions.proposalId, proposalId))
-        .orderBy(desc(scriptExecutions.startedAt)),
-    ),
-  );
+  return runOutsideDbContext(() => withSystemDbAccessContext(() => selectProposalExecutions(proposalId)));
 }
 
 /**

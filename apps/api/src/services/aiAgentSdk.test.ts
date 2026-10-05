@@ -69,14 +69,6 @@ vi.mock('./aiAgent', () => ({
   waitForApproval: vi.fn(),
 }));
 
-vi.mock('./llm/llmAvailability', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./llm/llmAvailability')>();
-  return {
-    ...actual,
-    llmUnusableCode: vi.fn(actual.llmUnusableCode),
-  };
-});
-
 // W06: an env OpenAI-compatible deployment (MCP_LLM_PROVIDER) is plain config;
 // chat on it resolves through the registry like every other surface.
 const envConfig = vi.hoisted(() => ({ provider: null as string | null }));
@@ -4162,6 +4154,43 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
   // all four simultaneously and the suite stayed green — these tests close
   // that gap, one exit per test.
   // ----------------------------------------------------------------------
+
+  // #7918: a second run_script on a proposal an earlier intent already
+  // claimed used to come back as the generic "Failed to create approval
+  // record", which told the model nothing — it reported that nothing ran.
+  it('tells the model why a run_script proposal cannot be run again instead of a generic failure (#7918)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true, tier: 3, requiresApproval: true, description: 'Run script',
+    } as any);
+    mockInsertReturning({ id: 'exec-7918' });
+    mockCreateActionIntent.mockRejectedValue(Object.assign(
+      new Error('Proposal p-7918 is not runnable: it is not reviewed, has expired, or has already been claimed by another intent'),
+      { name: 'ActionIntentError', code: 'proposal_not_runnable' },
+    ));
+    const session = makeActiveSession({});
+
+    const res = await createSessionPreToolUse(session)('run_script', { proposalId: 'p-7918', deviceIds: ['d1'] });
+
+    expect(res.allowed).toBe(false);
+    const error = (res as { error: string }).error;
+    expect(error).toMatch(/^proposal_not_runnable: /);
+    expect(error).toContain('p-7918');
+    expect(error).toContain('get_script_proposal');
+    expect(error).toContain('get_script_execution');
+    expect(error).not.toContain('Failed to create approval record');
+  });
+
+  it('keeps the generic message for any other intent-creation failure (#7918)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true, tier: 3, requiresApproval: true, description: 'Run script',
+    } as any);
+    mockInsertReturning({ id: 'exec-7918b' });
+    mockCreateActionIntent.mockRejectedValue(new Error('connection reset'));
+
+    const res = await createSessionPreToolUse(makeActiveSession({}))('run_script', { proposalId: 'p-1', deviceIds: ['d1'] });
+
+    expect(res).toEqual({ allowed: false, error: 'Failed to create approval record' });
+  });
 
   it('aborts the plan when creating the approval ledger record throws', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({

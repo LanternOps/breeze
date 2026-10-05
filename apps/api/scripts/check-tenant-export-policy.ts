@@ -41,7 +41,10 @@ export function findTenantExportPolicyIssues(
       if (!classified.has(column)) issues.push(`${table}.${column}: unclassified`);
     }
     for (const column of classified) {
-      if (!live.has(column)) issues.push(`${table}.${column}: classification has no live column`);
+      // A retiring column (mayBeAbsent, #7606) is allowed to be gone already.
+      if (!live.has(column) && policy.columns[column]!.mayBeAbsent !== true) {
+        issues.push(`${table}.${column}: classification has no live column`);
+      }
     }
   }
 

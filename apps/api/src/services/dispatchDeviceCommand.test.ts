@@ -125,7 +125,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     });
     claimMock.mockImplementation(async () => {
       expect(depth).toBe(0);
-      return { id: 'cmd-1', executedAt: new Date() };
+      return { status: 'claimed', id: 'cmd-1', executedAt: new Date() };
     });
     sendMock.mockImplementation(() => { expect(depth).toBe(0); return true; });
     const result = await dispatchDeviceCommandWithSystemPrecheck({
@@ -195,7 +195,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
   it('online device → claim + push, delivery=delivered, and the row still carries a deadline', async () => {
     selectReturning(deviceRow('online'));
     const executedAt = new Date();
-    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt });
+    claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt });
     sendMock.mockReturnValue(true);
     const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
     expect(res.ok && res.delivery).toBe('delivered');
@@ -204,11 +204,29 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     expect(releaseMock).not.toHaveBeenCalled();
   });
 
+  it('a push the claim cancels is reported as cancelled with its reason, not queued_live', async () => {
+    selectReturning(deviceRow('online'));
+    claimMock.mockResolvedValue({ status: 'cancelled', id: 'cmd-1', reason: 'device_moved_org' });
+    const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
+    expect(res).toMatchObject({ ok: true, delivery: 'cancelled', cancelReason: 'device_moved_org' });
+    expect(res.ok && res.command.status).toBe('cancelled');
+    expect(sendMock).not.toHaveBeenCalled();
+    expect(releaseMock).not.toHaveBeenCalled();
+  });
+
+  it('a push the claim holds stays queued_live for the heartbeat', async () => {
+    selectReturning(deviceRow('online'));
+    claimMock.mockResolvedValue({ status: 'held', id: 'cmd-1', reason: 'claim_lock_conflict' });
+    const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
+    expect(res.ok && res.delivery).toBe('queued_live');
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
   describe('deferDelivery (#7187)', () => {
     it('persists the row but neither claims nor pushes until deliver() runs', async () => {
       selectReturning(deviceRow('online'));
       const executedAt = new Date();
-      claimMock.mockResolvedValue({ id: 'cmd-1', executedAt });
+      claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt });
       sendMock.mockReturnValue(true);
 
       const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory', deferDelivery: true });
@@ -255,7 +273,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
 
     it('without deferDelivery the immediate push is unchanged and carries no continuation', async () => {
       selectReturning(deviceRow('online'));
-      claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+      claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });
       sendMock.mockReturnValue(true);
       const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
       expect(res.ok && res.delivery).toBe('delivered');
@@ -266,7 +284,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
   it('online device, push fails → claim released, delivery=queued_live', async () => {
     selectReturning(deviceRow('online'));
     const executedAt = new Date();
-    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt });
+    claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt });
     sendMock.mockReturnValue(false);
     const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
     expect(res.ok && res.delivery).toBe('queued_live');
@@ -290,7 +308,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
   it('runs the delivery refresher before decrypt on the enqueue-time push', async () => {
     selectReturning(deviceRow('online'));
     const executedAt = new Date();
-    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt });
+    claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt });
     sendMock.mockReturnValue(true);
     refreshMock.mockResolvedValue({ s3Key: 'k', downloadUrl: 'https://fresh.example' });
     await dispatchDeviceCommand({
@@ -311,7 +329,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
   it('a refresher failure releases the claim instead of pushing a stale payload', async () => {
     selectReturning(deviceRow('online'));
     const executedAt = new Date();
-    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt });
+    claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt });
     refreshMock.mockResolvedValue(null);
     const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'software_install', payload: { s3Key: 'k' } });
     expect(sendMock).not.toHaveBeenCalled();
@@ -377,7 +395,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
 
   it('queues a storage-destination read to a device whose backup helper supports storage sessions', async () => {
     selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: 1 });
-    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+    claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });
     sendMock.mockReturnValue(true);
     const res = await dispatchDeviceCommand({
       deviceId: DEVICE,
@@ -403,7 +421,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
 
   it('queues a backup to S3 storage for a device that has not reported its helper yet', async () => {
     selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: null, backupWriteProtocolVersion: null });
-    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+    claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });
     sendMock.mockReturnValue(true);
     const res = await dispatchDeviceCommand({
       deviceId: DEVICE,
@@ -416,7 +434,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
 
   it('queues a backup to S3 storage to a helper that reports brokered writes', async () => {
     selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: 1, backupWriteProtocolVersion: 1 });
-    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+    claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });
     sendMock.mockReturnValue(true);
     const res = await dispatchDeviceCommand({
       deviceId: DEVICE,
@@ -428,7 +446,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
 
   it('queues a local-destination read to any helper', async () => {
     selectReturning({ ...deviceRow('online'), backupReadProtocolVersion: 0 });
-    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+    claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });
     sendMock.mockReturnValue(true);
     const res = await dispatchDeviceCommand({
       deviceId: DEVICE,
@@ -460,7 +478,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     // reboots — from the legacy 30-minute execution clock to 5 minutes. NULL
     // restores the legacy clock exactly.
     selectReturning(deviceRow('online'));
-    claimMock.mockResolvedValue(null);
+    claimMock.mockResolvedValue({ status: 'not_claimable', id: 'cmd-1' });
     const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'list_processes' });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
@@ -513,7 +531,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
       refreshMock.mockImplementation(async (_t: string, p: unknown) => p);
       decryptMock.mockImplementation((c: unknown) => c);
       queueCommandMock.mockResolvedValue({ id: 'cmd-1', type, status: 'pending' });
-      claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+      claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });
       sendMock.mockReturnValue(true);
       const res = await dispatchDeviceCommand({ deviceId: DEVICE, type });
       expect(res.ok && res.delivery).toBe('delivered');
@@ -524,7 +542,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
 
   it('a non-power-state command never pays for the in-flight probe', async () => {
     selectReturning(deviceRow('online'));
-    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+    claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });
     sendMock.mockReturnValue(true);
     await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
     expect(inFlightMock).not.toHaveBeenCalled();
@@ -565,7 +583,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
 
   it('a non-power-state command to an online device is still pushed immediately', async () => {
     selectReturning(deviceRow('online'));
-    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+    claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });
     sendMock.mockReturnValue(true);
     const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
     expect(res.ok && res.delivery).toBe('delivered');
@@ -584,7 +602,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     // recoverable, and worth reporting.
     selectReturning(deviceRow('online'));
     const executedAt = new Date();
-    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt });
+    claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt });
     sendMock.mockReturnValue(false);
     releaseMock.mockRejectedValue(new Error('pool exhausted'));
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});

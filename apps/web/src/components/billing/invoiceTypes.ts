@@ -192,7 +192,12 @@ export interface AccountingSyncSummary {
   remoteDeleted?: boolean;
 }
 
+import type { InvoiceAutopayView } from '@breeze/shared';
+export type { InvoiceAutopayView } from '@breeze/shared';
+
 export interface InvoiceDetail {
+  unappliedCount?: number;
+  autopay: InvoiceAutopayView | null;
   invoice: InvoiceSummary;
   lines: InvoiceLine[];
   branding?: InvoiceBranding;

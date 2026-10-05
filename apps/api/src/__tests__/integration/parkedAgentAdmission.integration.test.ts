@@ -183,7 +183,8 @@ beforeEach(async () => {
   const partner = await createPartner({ status: 'active' });
   partnerId = partner.id;
   pool = await seedHoldingOrg(partnerId);
-  const org = await createOrganization({ partnerId, status: 'active' });
+  // Helper enabled so the regular device's Helper session is admitted.
+  const org = await createOrganization({ partnerId, status: 'active', settings: { helper: { enabled: true } } });
   const site = await createSite({ orgId: org.id });
   regularOrgId = org.id;
   regularSiteId = site.id;

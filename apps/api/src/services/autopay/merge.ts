@@ -1,5 +1,6 @@
 import { RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
 import { captureException } from '../sentry';
+import { assertNoHeldDbContextForStripe } from '../stripeSettle';
 import { findLatestArchivedCredentialForAccount } from '../stripeCredentialArchive';
 import { sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -43,14 +44,20 @@ export const autopayMergeExecutors: Readonly<Record<string,CustomMergeExecutor>>
   },
 };
 
-// Removed rows are the durable queue. Only org_merged remains pending; a successful
-// detach changes its reason to org_merged:detached, leaving the authority removed.
-export async function drainAutopayMethodDetaches(): Promise<void> {
+// Removed rows and explicitly queued unusable captures form the durable queue.
+// This includes W02 stop/replacement removals
+// with null or existing unusability reasons. Acknowledgement preserves the reason
+// and appends :detached; backoff and terminal failures apply to every entry.
+export async function drainAutopayMethodDetaches(target?: { partnerId: string; methodId: string }): Promise<void> {
+  assertNoHeldDbContextForStripe('drainAutopayMethodDetaches');
   await runOutsideDbContext(async()=>{
     const rows=await withSystemDbAccessContext(()=>db.execute(sql`
-      SELECT m.id,m.org_id,m.detach_attempts,m.stripe_payment_method_id,e.partner_id,e.stripe_account_id,e.stripe_customer_id
+      SELECT m.id,m.org_id,m.detach_attempts,m.stripe_payment_method_id,e.partner_id,COALESCE(m.detach_stripe_account_id,e.stripe_account_id) AS stripe_account_id,COALESCE(m.detach_stripe_customer_id,e.stripe_customer_id) AS stripe_customer_id
       FROM org_payment_methods m JOIN org_autopay_enrollments e ON e.id=m.enrollment_id AND e.org_id=m.org_id
-      WHERE m.status='removed' AND m.unusable_reason='org_merged' AND m.detach_failed_at IS NULL AND m.detach_next_attempt_at<=now()
+      WHERE (m.status='removed' OR (m.status='unusable' AND m.removed_at IS NOT NULL AND m.detach_stripe_account_id IS NOT NULL)) AND COALESCE(m.unusable_reason,'') NOT LIKE '%:detached' AND m.detach_failed_at IS NULL AND m.detach_next_attempt_at<=now()
+      AND NOT EXISTS (SELECT 1 FROM invoice_collection_attempts a WHERE a.payment_method_id=m.id
+        AND a.state IN (${sql.join(RESERVING_COLLECTION_ATTEMPT_STATES.map(state => sql`${state}`), sql`, `)}))
+      ${target ? sql`AND e.partner_id=${target.partnerId}::uuid AND m.id=${target.methodId}::uuid` : sql``}
       ORDER BY m.detach_next_attempt_at,m.removed_at,m.id LIMIT 100`));
     for (const row of rows as unknown as Array<{id:string;org_id:string;detach_attempts:number;stripe_payment_method_id:string;partner_id:string;stripe_account_id:string;stripe_customer_id:string|null}>) {
       try {
@@ -73,7 +80,7 @@ export async function drainAutopayMethodDetaches(): Promise<void> {
         } catch (error) {
           if ((error as { code?: string })?.code !== 'resource_missing') throw error;
         }
-        await withSystemDbAccessContext(()=>db.execute(sql`UPDATE org_payment_methods SET unusable_reason='org_merged:detached' WHERE id=${row.id}::uuid AND status='removed' AND unusable_reason='org_merged'`));
+        await withSystemDbAccessContext(()=>db.execute(sql`UPDATE org_payment_methods SET unusable_reason=CASE WHEN unusable_reason='org_merged' THEN 'org_merged:detached' ELSE COALESCE(unusable_reason,'removed') || ':detached' END WHERE id=${row.id}::uuid AND (status='removed' OR (status='unusable' AND removed_at IS NOT NULL AND detach_stripe_account_id IS NOT NULL)) AND COALESCE(unusable_reason,'') NOT LIKE '%:detached'`));
       } catch(error) {
         const terminal = (row.detach_attempts ?? 0) + 1 >= 8;
         const tags = { service: 'autopayMethodDetach', autopay_method_id: row.id, org_id: row.org_id, autopay_phase: terminal ? 'detach_failed' : 'retry' };
@@ -85,7 +92,7 @@ export async function drainAutopayMethodDetaches(): Promise<void> {
             SET detach_attempts=detach_attempts+1,
                 detach_failed_at=CASE WHEN detach_attempts+1>=8 THEN now() ELSE NULL END,
                 detach_next_attempt_at=now()+LEAST(60*power(2,LEAST(detach_attempts,9)),21600)*interval '1 second'
-            WHERE id=${row.id}::uuid AND status='removed' AND unusable_reason='org_merged' AND detach_failed_at IS NULL`));
+            WHERE id=${row.id}::uuid AND (status='removed' OR (status='unusable' AND removed_at IS NOT NULL AND detach_stripe_account_id IS NOT NULL)) AND COALESCE(unusable_reason,'') NOT LIKE '%:detached' AND detach_failed_at IS NULL`));
         } catch (persistError) {
           console.error('[autopay] method detach backoff persistence failed', tags);
           captureException(new Error('Autopay detach backoff persistence failed'), undefined, { ...tags, autopay_phase: 'persistence' });

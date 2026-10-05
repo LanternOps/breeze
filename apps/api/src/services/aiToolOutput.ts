@@ -1069,7 +1069,7 @@ export function compactToolResultForChat(
   // cannot survive into a truncated `preview` further down (#2603). This is the
   // single chokepoint every aiTools*.ts result passes through, which is why the
   // fix does not need a catch-block edit in each of the ~19 leaking handlers.
-  const errorScrubbed = scrubErrorFieldsDeep(parsed);
+  const errorScrubbed = scrubErrorFieldsDeep(parsed, 0, false, { toolName });
 
   // Neutralize injection-shaped text in fields that carry raw, endpoint- or
   // vendor-sourced content before it is measured/compacted. Same chokepoint

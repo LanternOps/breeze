@@ -1,9 +1,9 @@
 import { beforeEach, expect, it, vi } from 'vitest';
-const h = vi.hoisted(() => ({ row: {} as any, ackFailures: 0, send: vi.fn(), capture: vi.fn() }));
+const h = vi.hoisted(() => ({ row: {} as any, ackFailures: 0, invoiceEligible: true, send: vi.fn(), capture: vi.fn() }));
 vi.mock('../email', () => ({ getEmailService: () => ({ sendEmail: h.send }) }));
 vi.mock('../sentry', () => ({ captureException: h.capture }));
 vi.mock('../../db', async () => {
-  const { billingNoticeOutbox } = await import('../../db/schema');
+  const { billingNoticeOutbox, invoices } = await import('../../db/schema');
   const db: any = {
     transaction: (fn: any) => fn(db),
     select: () => {
@@ -11,7 +11,7 @@ vi.mock('../../db', async () => {
       const chain: any = {};
       for (const key of ['where', 'orderBy', 'limit', 'for', 'innerJoin']) chain[key] = () => chain;
       chain.from = (t: any) => { table = t; return chain; };
-      chain.then = (resolve: any, reject: any) => Promise.resolve(table === billingNoticeOutbox ? [structuredClone(h.row)] : [{ id: 'partner', name: 'Partner' }]).then(resolve, reject);
+      chain.then = (resolve: any, reject: any) => Promise.resolve(table === billingNoticeOutbox ? [structuredClone(h.row)] : table === invoices ? (h.invoiceEligible ? [{ id: 'invoice' }] : []) : [{ id: 'partner', name: 'Partner' }]).then(resolve, reject);
       return chain;
     },
     update: () => ({ set: (values: any) => {
@@ -27,7 +27,7 @@ vi.mock('../../db', async () => {
 });
 import { dispatchPendingBillingNotices, registerNoticeSentHandler } from './noticeOutbox';
 beforeEach(() => {
-  vi.clearAllMocks(); h.ackFailures = 0;
+  vi.clearAllMocks(); h.ackFailures = 0; h.invoiceEligible = true;
   h.send.mockReset().mockResolvedValue(undefined);
   h.row = { id: 'outbox', orgId: 'org', kind: 'autopay_request', status: 'pending', attempts: 0, sentAt: null,
     rendered: { subject: 'Notice', html: '<p>Notice</p>', text: 'Notice' }, toEmail: 'client@example.test' };
@@ -68,4 +68,22 @@ it.each([false, true])('terminalizes already exhausted rows (sent=%s) before att
   expect(await dispatchPendingBillingNotices()).toEqual({ sent: 0, failed: 1 });
   expect(h.row.status).toBe(sent ? 'handler_failed' : 'failed');
   expect(h.send).not.toHaveBeenCalled(); expect(h.capture).toHaveBeenCalledOnce();
+});
+
+it.each(['payment_reminder', 'payment_overdue'])('cancels ineligible %s without delivery or retry', async kind => {
+  h.row.kind = kind; h.row.invoiceId = 'invoice'; h.invoiceEligible = false;
+  expect(await dispatchPendingBillingNotices()).toEqual({ sent: 0, failed: 0 });
+  expect(h.row).toMatchObject({ status: 'cancelled' });
+  expect(h.row.lastError).toBeTruthy();
+  expect(h.send).not.toHaveBeenCalled();
+});
+it('leaves non-reminder delivery unaffected by invoice eligibility', async () => {
+  h.invoiceEligible = false;
+  expect(await dispatchPendingBillingNotices()).toEqual({ sent: 1, failed: 0 });
+  expect(h.send).toHaveBeenCalledOnce();
+});
+it('finishes an accepted reminder without revalidating or resending', async () => {
+  h.row.kind = 'payment_reminder'; h.row.sentAt = new Date(); h.invoiceEligible = false;
+  expect(await dispatchPendingBillingNotices()).toEqual({ sent: 1, failed: 0 });
+  expect(h.row.status).toBe('sent'); expect(h.send).not.toHaveBeenCalled();
 });

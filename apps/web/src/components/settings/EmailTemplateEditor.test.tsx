@@ -247,7 +247,9 @@ describe('EmailTemplateEditor', () => {
     );
 
     for (const key of varsForEmailTemplate(id)) {
-      expect(screen.getByTestId(`email-template-var-${key}`)).toBeTruthy();
+      const chip = screen.getByTestId(`email-template-var-${key}`);
+      expect(chip).toBeTruthy();
+      expect(chip.textContent).not.toBe(`emailTemplates.variables.${key}`);
     }
     if (emailTemplateHasCta(id)) {
       expect(screen.getByTestId('email-template-button-label')).toBeTruthy();

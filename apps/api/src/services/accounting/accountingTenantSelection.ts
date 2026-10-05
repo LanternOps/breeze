@@ -152,6 +152,8 @@ export type DiscardPendingResult =
 export async function discardPendingTenantSelection(input: {
   partnerId: string; provider: AccountingProviderId; connectionId?: string; olderThan?: Date;
   reason: 'cancel' | 'reaped'; runInDbContext: DbContextRunner;
+  /** Local disconnect bookkeeping; runs in the deletion transaction, before remote cleanup. */
+  onDeleted?: (connectionId: string) => Promise<void>;
 }): Promise<DiscardPendingResult> {
   assertNoAmbientDbContext('discardPendingTenantSelection');
   // Row FIRST: a select racing this cancel/reap then finds nothing to claim,
@@ -163,10 +165,14 @@ export async function discardPendingTenantSelection(input: {
   // such a row, because a discarded payment delete is unrecoverable (the
   // Payment Breeze voided stays in the books) while a kept row only holds the
   // partner's connection slot until someone cancels, disconnects or re-picks.
-  const deleted = await input.runInDbContext(() => deletePendingTenantRow(db, {
-    partnerId: input.partnerId, provider: input.provider, connectionId: input.connectionId, olderThan: input.olderThan,
-    reason: input.reason, keepIfOwedPaymentDeletes: input.reason === 'reaped',
-  }));
+  const deleted = await input.runInDbContext(async () => {
+    const row = await deletePendingTenantRow(db, {
+      partnerId: input.partnerId, provider: input.provider, connectionId: input.connectionId, olderThan: input.olderThan,
+      reason: input.reason, keepIfOwedPaymentDeletes: input.reason === 'reaped',
+    });
+    if (row?.kind === 'deleted') await input.onDeleted?.(row.id);
+    return row;
+  });
   if (!deleted) return { discarded: false };
   if (deleted.kind === 'kept_owed_payment_deletes') {
     const { count, remoteEntityIds } = deleted.owedPaymentDeletes;

@@ -187,7 +187,7 @@ An agent's administrative site assignment does not prove its current LAN is the 
 
 A gateway is initially an address/service node keyed by its resolved local network context, family, address, and zone.
 Its label is “Reported gateway”; a virtual gateway address must not be silently renamed as one physical router in an HA pair.
-ARP/NDP+unique inventory identity can attach a scoped alias to a gateway, but shared/virtual MACs and competing candidates remain unresolved.
+Canonical aliasing requires independently trusted, unique inventory identity. Cache mappings may separately corroborate presentation placement or gateway candidates without binding or merging identities (amended 2026-10-02, #7816/#7817 — see `plans/monitoring/2026-10-02-topology-neighbour-corroboration.md`); shared/virtual MACs and competing candidates remain unresolved.
 Inventory enrichment preserves the existing canonical gateway identity and coordinates; merges require the data/API contracts' alias/redirect transaction.
 Never infer a gateway from `.1`, `.254`, an HTTP port, a router classifier, or the first IP returned by discovery.
 
@@ -208,7 +208,7 @@ Reconcile one site revision transactionally in this order; stable sort keys make
 2. Create configured network groups, observer-local interface-prefix groups, and explicitly inferred discovery-profile groups.
 3. Add `network_member` from a device/interface to its supported group. An OS prefix is observed membership in its local context; cross-observer grouping remains separately inferred.
 4. For discovery-only assets, add inferred membership only for a unique configured/profile group containing their address. A scan range is not itself proof of a broadcast domain.
-5. If grouping is ambiguous or no prefix is known, place the asset in “Network membership unknown”; its visual containment does not create a network-member claim.
+5. If grouping is ambiguous or no prefix is known, place the asset in “Network membership unknown”; its visual containment does not create a network-member claim. Qualified exact inventory-tuple/cache correlation may annotate containment as inferred/low; retain state, freshness, provenance and ambiguity, with no reachability or diagnostic authority (amended 2026-10-02, #7816).
 6. Add observer interface→gateway `default_route` relationships for reported default-route next hops, keeping route attributes and alternative next hops.
 7. Render a network→gateway overview projection only from those relationships, retaining supporting observer IDs/counts and per-family route alternatives in the inspector.
 8. Add an Internet diagnostic destination with unknown health. Before a suitable test, its connecting line is schematic and explicitly labeled “Not tested.”
@@ -353,7 +353,7 @@ These facts can coexist without one overwriting another. New physical detail enr
 Reciprocal LLDP/CDP reports merge only when endpoint identities and compatible port identities match; keep both source observations.
 Canonical physical-link identity includes both endpoint port identities. Distinct parallel ports stay distinct; link aggregation groups are explicit metadata, not deduplication keys.
 If ports cannot be resolved, retain a provisional adjacency and never claim an exact cable count; later evidence refines it through aliases without losing layout.
-Use high confidence for supported typed OS/LLDP/controller facts, medium for unique FDB candidates, low for prefix/profile/label inference, and asserted for manual claims.
+Use high confidence for supported typed OS/LLDP/controller facts, medium for unique FDB candidates, low for prefix/profile/label inference, and asserted for manual claims. Presentation-only neighbour-cache corroboration (`neighbor_seen` placement, gateway MAC corroboration) is low and never raises a canonical claim's confidence, whatever the cache state (amended 2026-10-02, #7816/#7817).
 Reciprocal independent corroboration is shown in evidence count; confidence values are categories, not uncalibrated probability percentages.
 Conflicting manual and observed connections remain separately inspectable; neither collection nor an LLM silently deletes a manual assertion.
 Every inferred relationship exposes its rule ID/version, supporting observation IDs, limitations, and rejection alternatives for deterministic replay.
