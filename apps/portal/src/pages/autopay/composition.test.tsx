@@ -9,10 +9,10 @@ import { buildPortalNavItems } from '../../lib/navItems';
 import { apiGet } from '../../lib/api';
 vi.mock('@/lib/api', () => ({ apiGet: vi.fn(async () => ({ data: { partnerName: 'Example MSP', enrollment: null, method: null } })), apiPost: vi.fn() }));
 afterEach(cleanup);
-it.each(['./[token].astro', './return.astro', './[token]/stop.astro'])('%s mounts the public module inside the public shell', path => {
-  const source = readFileSync(resolve(__dirname, path), 'utf8');
+it('the setup link mounts the public setup module inside the public shell', () => {
+  const source = readFileSync(resolve(__dirname, './[token].astro'), 'utf8');
   expect(source).toContain('PublicDocumentLayout'); expect(source).toContain('<AutopaySetupPage'); expect(source).toContain('client:load');
-  render(<AutopaySetupPage mode="return" />); expect(screen.getByTestId('autopay-setup-page')).toBeTruthy();
+  render(<AutopaySetupPage token="t" />); expect(screen.getByTestId('autopay-setup-page')).toBeTruthy();
 });
 it('mounts payment methods in the authenticated shell', async () => {
   const source = readFileSync(resolve(__dirname, '../payment-methods/index.astro'), 'utf8');

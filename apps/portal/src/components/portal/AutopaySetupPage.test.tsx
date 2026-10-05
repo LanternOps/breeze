@@ -1,124 +1,151 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { apiGet, apiPost } from '@/lib/api';
 import AutopaySetupPage from './AutopaySetupPage';
 vi.mock('@/lib/api', () => ({ apiGet: vi.fn(), apiPost: vi.fn() }));
 afterEach(() => { cleanup(); vi.restoreAllMocks(); sessionStorage.clear(); });
-const disclosure = { text: 'I authorize Example MSP under these schedule terms.', hash: 'a'.repeat(64), feeText: 'No fee applies.' };
-beforeEach(() => {
-  vi.clearAllMocks();
-  vi.mocked(apiGet).mockResolvedValue({ data: { partnerName: 'Example MSP', logoUrl: null,
-    scheduleText: 'Invoices are charged on the later date.', achMode: 'ach_only', enrollment: { status: 'requested' }, method: null,
-    disclosures: { card: disclosure, us_bank_account: disclosure } } });
-});
-it('ACH-only never offers card, requires consent, and reports stale terms', async () => {
-  vi.mocked(apiPost).mockResolvedValue({ error: 'Terms changed. Reload this page.', statusCode: 409 });
-  render(<AutopaySetupPage token="test-token" />);
-  expect(await screen.findByTestId('autopay-method-us_bank_account')).toBeChecked();
-  expect(screen.queryByTestId('autopay-method-card')).toBeNull();
-  expect(screen.getByTestId('autopay-setup-submit')).toBeDisabled();
-  fireEvent.click(screen.getByTestId('autopay-consent'));
-  fireEvent.click(screen.getByTestId('autopay-setup-submit'));
-  await waitFor(() => expect(apiPost).toHaveBeenCalledWith('/autopay/public/test-token/setup-session',
-    { methodType: 'us_bank_account', consentAccepted: true, disclosureHash: disclosure.hash }, { redirectOnUnauthorized: false }));
-  expect(await screen.findByTestId('autopay-feedback')).toHaveTextContent('Terms changed');
-});
-it('renders the ungated stop confirmation without a setup feature request and stops only on click', async () => {
-  vi.mocked(apiGet).mockResolvedValue({ data: { partnerName: 'Example MSP', orgName: 'Example client', processingWarning: true } });
-  render(<AutopaySetupPage token="stop-token" mode="stop" />);
-  expect(await screen.findByTestId('autopay-stop-confirm')).toHaveTextContent('Stop automatic payments to Example MSP?');
-  expect(apiGet).toHaveBeenCalledExactlyOnceWith('/autopay/public/stop-token/stop', { redirectOnUnauthorized: false });
-  expect(apiPost).not.toHaveBeenCalled();
-  vi.mocked(apiPost).mockResolvedValue({ data: { success: true } });
-  fireEvent.click(screen.getByTestId('autopay-stop-submit'));
-  await waitFor(() => expect(apiPost).toHaveBeenCalledExactlyOnceWith('/autopay/public/stop-token/stop', {}, { redirectOnUnauthorized: false }));
-  expect(await screen.findByTestId('autopay-feedback')).toHaveTextContent('Automatic payments stopped');
-  expect(screen.getByTestId('autopay-stop-submit')).toBeDisabled();
-});
-it('a return page does not activate on mount and distinguishes debit fee outcome', async () => {
-  window.history.replaceState({}, '', '/autopay/return?target=public&session_id=cs_test_1');
-  sessionStorage.setItem('autopay-return-token', 'test-token');
-  vi.mocked(apiPost).mockResolvedValue({ data: { outcome: 'activated', orgId: 'org', methodLabel: 'Visa debit ••1234', feeText: 'No fee applies.' } });
-  render(<AutopaySetupPage mode="return" />);
-  expect(apiPost).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByTestId('autopay-return-submit'));
-  expect(await screen.findByTestId('autopay-return-outcome')).toHaveTextContent('Visa debit ••1234 — No fee applies.');
-  expect(apiPost).toHaveBeenCalledWith('/autopay/public/setup-return', { checkoutSessionId: 'cs_test_1', token: 'test-token' }, { redirectOnUnauthorized: false });
-});
-it('uses the actual Stripe portal return target and never sends a public token', async () => {
-  window.history.replaceState({}, '', '/autopay/return?target=portal&session_id=cs_test_2');
-  sessionStorage.setItem('autopay-return-token', 'another-public-tab');
-  vi.mocked(apiPost).mockResolvedValue({ data: { outcome: 'pending_verification', orgId: 'org', methodLabel: 'Bank ••6789', feeText: 'No fee applies.' } });
-  render(<AutopaySetupPage mode="return" />);
-  fireEvent.click(screen.getByTestId('autopay-return-submit'));
-  await waitFor(() => expect(apiPost).toHaveBeenCalledWith('/portal/payment-methods/setup-return', { checkoutSessionId: 'cs_test_2' }, { redirectOnUnauthorized: true }));
+
+const cardText = 'I authorize Example MSP to save this card and use it to pay future invoices automatically.';
+const bankText = 'I authorize Example MSP to save this US bank account and to initiate ACH debits from it.';
+const schedule = { offsetDays: 0, rule: 'later', cap: { enabled: false } };
+const card = { text: cardText, hash: 'a'.repeat(64), feeText: 'Card fee text', scheduleTerms: schedule };
+const bank = { text: bankText, hash: 'b'.repeat(64), feeText: 'Bank fee text', scheduleTerms: schedule };
+function page(over: Record<string, unknown> = {}) {
+  return { data: { partnerName: 'Example MSP', logoUrl: null, supportEmail: 'billing@msp.example', scheduleText: 'Old schedule sentence.',
+    achMode: 'ach_preferred', enrollment: { status: 'requested' }, method: null, disclosures: { card, us_bank_account: bank },
+    fees: { card: { kind: 'card_percent', feeAmount: '3.00', appliedBps: 300 }, debit: { kind: 'none', feeAmount: '0.00' },
+      us_bank_account: { kind: 'ach_flat', feeAmount: '1.00' } }, ...over } } as never;
+}
+beforeEach(() => { vi.clearAllMocks(); vi.mocked(apiGet).mockResolvedValue(page()); });
+
+describe('setup page', () => {
+  it('opens as the MSP asking, with the terms at a glance instead of the schedule paragraph twice', async () => {
+    render(<AutopaySetupPage token="test-token" />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Pay future invoices automatically' })).toBeInTheDocument();
+    expect(screen.getAllByText('Example MSP').length).toBeGreaterThan(0);
+    expect(screen.getByText("On each invoice's due date")).toBeInTheDocument();
+    expect(screen.queryByText('Old schedule sentence.')).toBeNull();
+    expect(screen.queryByText(/This applies to new invoices after enrollment/)).toBeNull();
+    expect(screen.getByRole('link', { name: 'billing@msp.example' })).toBeInTheDocument();
+    expect(document.querySelector('main')).toBeNull();
+  });
+
+  it('names each method with its fee and only recommends bank when it is not the dearer option', async () => {
+    render(<AutopaySetupPage token="test-token" />);
+    expect(await screen.findByTestId('autopay-fee-us_bank_account')).toHaveTextContent('$1.00 fee');
+    expect(screen.getByTestId('autopay-fee-card')).toHaveTextContent('Credit cards: up to 3% fee');
+    expect(screen.getByText('Recommended by Example MSP')).toBeInTheDocument();
+    expect(screen.getByTestId('autopay-method-us_bank_account')).toBeChecked();
+    cleanup();
+    vi.mocked(apiGet).mockResolvedValue(page({ fees: { card: { kind: 'none', feeAmount: '0.00', appliedBps: null },
+      debit: { kind: 'none', feeAmount: '0.00' }, us_bank_account: { kind: 'ach_flat', feeAmount: '1.00' } } }));
+    render(<AutopaySetupPage token="test-token" />);
+    expect(await screen.findByTestId('autopay-fee-card')).toHaveTextContent('No fee');
+    expect(screen.queryByText('Recommended by Example MSP')).toBeNull();
+  });
+
+  it('shows the full authorization beside its checkbox and re-asks when the method changes', async () => {
+    render(<AutopaySetupPage token="test-token" />);
+    expect(await screen.findByTestId('autopay-consent-text')).toHaveTextContent(bankText);
+    const submit = screen.getByTestId('autopay-setup-submit');
+    expect(submit).toBeDisabled();
+    expect(screen.getByText('Tick the box above to continue.')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('autopay-consent'));
+    expect(submit).toBeEnabled();
+    fireEvent.click(screen.getByTestId('autopay-method-card'));
+    expect(screen.getByTestId('autopay-consent-text')).toHaveTextContent(cardText);
+    expect(screen.getByTestId('autopay-consent')).not.toBeChecked();
+    expect(screen.getByText('The authorization changed. Please read it and agree again.')).toBeInTheDocument();
+  });
+
+  it('sends the displayed terms once, stores the return token and opens Stripe', async () => {
+    const assign = vi.fn();
+    vi.spyOn(window, 'location', 'get').mockReturnValue({ ...window.location, assign } as never);
+    let resolve!: (value: unknown) => void;
+    vi.mocked(apiPost).mockReturnValue(new Promise(r => { resolve = r; }) as never);
+    render(<AutopaySetupPage token="test-token" />);
+    fireEvent.click(await screen.findByTestId('autopay-consent'));
+    fireEvent.click(screen.getByTestId('autopay-setup-submit'));
+    fireEvent.click(screen.getByTestId('autopay-setup-submit'));
+    expect(screen.getByTestId('autopay-setup-submit')).toHaveTextContent('Opening Stripe…');
+    resolve({ data: { url: 'https://checkout.stripe.com/c/pay' } });
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('https://checkout.stripe.com/c/pay'));
+    expect(apiPost).toHaveBeenCalledExactlyOnceWith('/autopay/public/test-token/setup-session',
+      { methodType: 'us_bank_account', consentAccepted: true, disclosureHash: bank.hash }, { redirectOnUnauthorized: false });
+    expect(sessionStorage.getItem('autopay-return-token')).toBe('test-token');
+  });
+
+  it('terms changed on the server: warns, reloads the terms and asks again', async () => {
+    vi.mocked(apiPost).mockResolvedValue({ error: 'The terms changed. Review them and try again.', statusCode: 409 } as never);
+    render(<AutopaySetupPage token="test-token" />);
+    fireEvent.click(await screen.findByTestId('autopay-consent'));
+    fireEvent.click(screen.getByTestId('autopay-setup-submit'));
+    expect(await screen.findByText('Example MSP updated these terms a moment ago.')).toBeInTheDocument();
+    await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId('autopay-consent')).not.toBeChecked();
+  });
+
+  it('any other failure keeps the agreement and offers a retry', async () => {
+    vi.mocked(apiPost).mockResolvedValue({ error: 'boom', statusCode: 500 } as never);
+    render(<AutopaySetupPage token="test-token" />);
+    fireEvent.click(await screen.findByTestId('autopay-consent'));
+    fireEvent.click(screen.getByTestId('autopay-setup-submit'));
+    expect(await screen.findByRole('alert')).toHaveTextContent("We couldn't open Stripe's secure page.");
+    expect(screen.getByTestId('autopay-consent')).toBeChecked();
+    expect(screen.getByTestId('autopay-setup-submit')).toBeEnabled();
+  });
+
+  it('ACH-only shows bank as a single method; card-only shows card', async () => {
+    vi.mocked(apiGet).mockResolvedValue(page({ achMode: 'ach_only' }));
+    render(<AutopaySetupPage token="test-token" />);
+    expect(await screen.findByTestId('autopay-fee-us_bank_account')).toBeInTheDocument();
+    expect(screen.queryByRole('radio')).toBeNull();
+    expect(screen.queryByTestId('autopay-fee-card')).toBeNull();
+    cleanup();
+    vi.mocked(apiGet).mockResolvedValue(page({ achMode: 'card_only' }));
+    render(<AutopaySetupPage token="test-token" />);
+    expect(await screen.findByTestId('autopay-consent-text')).toHaveTextContent(cardText);
+  });
+
+  it('an unusable link explains itself instead of "not found"', async () => {
+    vi.mocked(apiGet).mockResolvedValue({ error: 'This link was already used.', code: 'link_used', statusCode: 404,
+      errorData: { partnerName: 'Example MSP', enrollmentStatus: 'active' } } as never);
+    render(<AutopaySetupPage token="test-token" />);
+    expect(await screen.findByRole('heading', { name: "You're already set up" })).toBeInTheDocument();
+  });
+
+  it('a load failure offers a refresh', async () => {
+    vi.mocked(apiGet).mockResolvedValue({ error: 'Network error' } as never);
+    render(<AutopaySetupPage token="test-token" />);
+    expect(await screen.findByRole('heading', { name: "We couldn't load this page" })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeInTheDocument();
+  });
 });
 
-it('portal confirmation does not access unavailable session storage', async () => {
-  window.history.replaceState({}, '', '/autopay/return?target=portal&session_id=cs_portal');
-  const storage = vi.spyOn(window, 'sessionStorage', 'get').mockImplementation(() => { throw new Error('blocked'); });
-  vi.mocked(apiPost).mockResolvedValue({ data: { outcome: 'activated', orgId: 'org', methodLabel: 'Card', feeText: 'No fee applies.' } });
-  render(<AutopaySetupPage mode="return" />);
-  fireEvent.click(screen.getByTestId('autopay-return-submit'));
-  expect(await screen.findByTestId('autopay-return-outcome')).toHaveTextContent('Automatic payments are set up');
-  expect(storage).not.toHaveBeenCalled();
-  expect(apiPost).toHaveBeenCalledWith('/portal/payment-methods/setup-return', { checkoutSessionId: 'cs_portal' }, { redirectOnUnauthorized: true });
-});
-it('public storage read failure reports feedback and allows retry', async () => {
-  window.history.replaceState({}, '', '/autopay/return?target=public&session_id=cs_public');
-  sessionStorage.setItem('autopay-return-token', 'test-token');
-  const read = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
-  render(<AutopaySetupPage mode="return" />);
-  fireEvent.click(screen.getByTestId('autopay-return-submit'));
-  expect(await screen.findByTestId('autopay-feedback')).toHaveTextContent('Enable session storage');
-  expect(screen.getByTestId('autopay-return-submit')).toBeEnabled();
-  expect(apiPost).not.toHaveBeenCalled();
-  read.mockRestore();
-  vi.mocked(apiPost).mockResolvedValue({ data: { outcome: 'activated', orgId: 'org', methodLabel: 'Card', feeText: 'No fee applies.' } });
-  fireEvent.click(screen.getByTestId('autopay-return-submit'));
-  expect(await screen.findByTestId('autopay-return-outcome')).toHaveTextContent('Automatic payments are set up');
-});
-it('public storage removal failure preserves the confirmed outcome and reports feedback', async () => {
-  window.history.replaceState({}, '', '/autopay/return?target=public&session_id=cs_public');
-  sessionStorage.setItem('autopay-return-token', 'test-token');
-  vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new Error('blocked'); });
-  vi.mocked(apiPost).mockResolvedValue({ data: { outcome: 'activated', orgId: 'org', methodLabel: 'Card', feeText: 'No fee applies.' } });
-  render(<AutopaySetupPage mode="return" />);
-  fireEvent.click(screen.getByTestId('autopay-return-submit'));
-  expect(await screen.findByTestId('autopay-return-outcome')).toHaveTextContent('Automatic payments are set up');
-  expect(screen.getByTestId('autopay-feedback')).toHaveTextContent('could not clear');
-  expect(apiPost).toHaveBeenCalledTimes(1);
-});
-it.each(['in_progress','abandoned'])('renders %s honestly with a next action',async outcome=>{
- window.history.replaceState({},'', '/autopay/return?target=public&session_id=cs_test');sessionStorage.setItem('autopay-return-token','test-token');
- vi.mocked(apiPost).mockResolvedValue({data:{outcome,orgId:'org',methodLabel:null,feeText:''}});
- render(<AutopaySetupPage mode="return"/>);fireEvent.click(screen.getByTestId('autopay-return-submit'));
- expect(await screen.findByTestId('autopay-return-outcome')).toHaveTextContent(outcome==='in_progress'?'Your setup is still being confirmed — check back shortly':'This setup session expired — start again');
- if(outcome==='in_progress'){expect(sessionStorage.getItem('autopay-return-token')).toBe('test-token');expect(screen.getByTestId('autopay-return-submit')).toBeEnabled();}
- else expect(screen.getByTestId('autopay-restart')).toHaveAttribute('href','/portal/autopay/test-token');
-});
-
-it.each([['public','/portal/autopay/test-token'],['portal','/portal/payment-methods']] as const)('explains an unsupported %s method with a way to start again',async(target,href)=>{
- window.history.replaceState({},'',`/autopay/return?target=${target}&session_id=cs_test`);sessionStorage.setItem('autopay-return-token','test-token');
- vi.mocked(apiPost).mockResolvedValue({data:{outcome:'unsupported_method',orgId:'org',methodLabel:null,feeText:'No usable payment method confirmed.'}});
- render(<AutopaySetupPage mode="return"/>);fireEvent.click(screen.getByTestId('autopay-return-submit'));
- const result=await screen.findByTestId('autopay-return-outcome');
- expect(result).toHaveTextContent('This payment method can’t be used for automatic payments');
- expect(screen.getByTestId('autopay-unsupported-method')).toHaveTextContent('Please enter your card details directly, or use a bank account');
- expect(screen.getByTestId('autopay-restart')).toHaveAttribute('href',href);
- expect(screen.queryByTestId('autopay-return-fee')).toBeNull();expect(screen.queryByTestId('autopay-return-submit')).toBeNull();
-});
-
-it.each(['stop','setup'] as const)('uses disabled-partner stop-only data in portal %s mode',async mode=>{
-  vi.mocked(apiGet).mockResolvedValue({statusCode:200,data:{stopOnly:true,partnerName:'Example MSP',enrollment:{status:'paused'},method:null}});
-  render(<AutopaySetupPage portal mode={mode}/>);
-  expect(await screen.findByTestId('autopay-stop-confirm')).toHaveTextContent('Example MSP');
-  expect(apiGet).toHaveBeenCalledExactlyOnceWith('/portal/payment-methods',{redirectOnUnauthorized:true});
-  expect(screen.queryByTestId('autopay-setup-submit')).toBeNull();expect(screen.queryByTestId('autopay-consent')).toBeNull();
-  expect(apiPost).not.toHaveBeenCalled();
-  vi.mocked(apiPost).mockResolvedValue({data:{success:true}});
-  fireEvent.click(screen.getByTestId('autopay-stop-submit'));
-  await waitFor(()=>expect(apiPost).toHaveBeenCalledExactlyOnceWith('/portal/autopay/stop',{}, {redirectOnUnauthorized:true}));
-  expect(await screen.findByTestId('autopay-feedback')).toHaveTextContent('Automatic payments stopped');
+describe('changing an existing method (card-expiring link or portal)', () => {
+  const active = page({ enrollment: { status: 'active' },
+    method: { type: 'card', cardBrand: 'visa', cardFunding: 'credit', cardLast4: '4242', status: 'active' } });
+  it('says what it replaces and preselects the current method type (P-4)', async () => {
+    vi.mocked(apiGet).mockResolvedValue(active);
+    render(<AutopaySetupPage token="test-token" />);
+    expect(await screen.findByRole('heading', { name: 'Change your payment method' })).toBeInTheDocument();
+    expect(screen.getByText(/replaces your Visa credit card ending in 4242/)).toBeInTheDocument();
+    expect(screen.getByTestId('autopay-method-card')).toBeChecked();
+  });
+  it('in the portal: an inline form with a Cancel, posting to the portal route', async () => {
+    vi.mocked(apiGet).mockResolvedValue(active);
+    const onCancel = vi.fn();
+    render(<AutopaySetupPage portal onCancel={onCancel} />);
+    expect(await screen.findByRole('heading', { level: 2, name: 'Change your payment method' })).toBeInTheDocument();
+    expect(apiGet).toHaveBeenCalledWith('/portal/payment-methods', { redirectOnUnauthorized: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onCancel).toHaveBeenCalled();
+  });
+  it('switched off in the portal: no form, a plain explanation', async () => {
+    vi.mocked(apiGet).mockResolvedValue({ data: { stopOnly: true, partnerName: 'Example MSP', enrollment: { status: 'active' }, method: null } } as never);
+    render(<AutopaySetupPage portal />);
+    expect(await screen.findByText("Changing your payment method isn't available right now.")).toBeInTheDocument();
+    expect(screen.queryByTestId('autopay-setup-submit')).toBeNull();
+  });
 });
