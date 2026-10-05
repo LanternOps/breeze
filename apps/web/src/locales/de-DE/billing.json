@@ -2566,14 +2566,22 @@
       "inactive": "Kartengebühren sind erst aktiv, wenn Ihr Partneradministrator beide folgenden Erklärungen bestätigt.",
       "notified": "Ich habe meinen Acquirer (Stripe) und die Kartennetzwerke vor mindestens 30 Tagen benachrichtigt",
       "cost": "Diese Gebühr übersteigt nicht meine Kosten für die Kartenakzeptanz",
-      "rules": "Nur Kreditkarten. Keine Kartengebühr in CA, CT, ME oder MA; in Colorado gilt eine Obergrenze von 2 %. Gebühren gelten nur für berechtigte automatische US-Zahlungen in USD. Leer übernimmt den übergeordneten Wert; null befreit diesen Kunden. Einmalige Zahlungslinks sind gebührenfrei.",
+      "rules": "Nur Kreditkarten. Keine Kartengebühr in CA, CT, ME oder MA; in Colorado gilt eine Obergrenze von 2 %. Gebühren gelten nur für berechtigte automatische US-Zahlungen in USD. Einmalige Zahlungslinks sind gebührenfrei.",
       "legal": "Breeze bietet keine Rechtsberatung. Sie sind für die Zulässigkeit von Zuschlägen, Hinweise und die steuerliche Behandlung verantwortlich.",
       "lowerAuthorization": "Kunden mit niedrigeren autorisierten Gebühren: {{count}}. Ihre bisherige Autorisierung gilt, bis sie aktualisierte Bedingungen akzeptieren.",
       "authorizedCard": "Autorisiert: {{accepted}} Basispunkte; eingestellt: {{configured}}",
       "authorizedAch": "Autorisiert: USD {{accepted}}; eingestellt: USD {{configured}}",
       "requestAuthorization": "Aktualisierte Autorisierung anfordern",
       "requestFailed": "Aktualisierte Autorisierung konnte nicht angefordert werden. Prüfen Sie den Rechnungskontakt und die Stripe-Verfügbarkeit.",
-      "requested": "Aktualisierte Autorisierung angefordert. Die bisherige Autorisierung bleibt gültig."
+      "requested": "Aktualisierte Autorisierung angefordert. Die bisherige Autorisierung bleibt gültig.",
+      "attestationOnFile": "Bestätigung hinterlegt: {{name}} hat am {{date}} beide Erklärungen bestätigt.",
+      "attestationOnFileUnknown": "Bestätigung hinterlegt: Beide Erklärungen wurden am {{date}} bestätigt.",
+      "reattestHelp": "Für eine erneute Bestätigung aktivieren Sie beide Erklärungen und speichern. Dadurch wird eine neue Bestätigung mit Ihrem Namen und dem aktuellen Datum erfasst, die die hinterlegte ersetzt. Die autorisierten Gebühren Ihrer Kunden ändern sich dadurch nicht.",
+      "authorizedCardNone": "Keine Autorisierung hinterlegt; eingestellt: {{configured}} Basispunkte",
+      "authorizedAchNone": "Keine Autorisierung hinterlegt; eingestellt: USD {{configured}}",
+      "lowerAuthorizationOrg": "Dieser Kunde hat die eingestellte Gebühr nicht autorisiert. Eine bestehende Autorisierung gilt weiter, bis er aktualisierte Bedingungen akzeptiert.",
+      "blankPartner": "Leer verwendet den Breeze-Standard (keine Gebühr). Um einen einzelnen Kunden auszunehmen, setzen Sie seine Gebühr auf dessen Abrechnungsseite auf 0.",
+      "blankOrg": "Leer übernimmt den Partnerstandard. Geben Sie 0 ein, um diesen Kunden auszunehmen."
     }
   },
   "reminders": {

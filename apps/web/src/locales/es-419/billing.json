@@ -2566,14 +2566,22 @@
       "inactive": "Las comisiones por tarjeta no se activan hasta que el administrador del socio confirme ambas declaraciones siguientes.",
       "notified": "Notifiqué a mi adquirente (Stripe) y a las redes de tarjetas hace al menos 30 días",
       "cost": "Esta comisión no supera mi costo de aceptación de tarjetas",
-      "rules": "Solo tarjetas de crédito. No se cobra comisión por tarjeta en CA, CT, ME ni MA; en Colorado el límite es del 2 %. Las comisiones solo se aplican a pagos automáticos elegibles de EE. UU. en USD. Dejar en blanco hereda el valor; cero exime a este cliente. Los enlaces de pago único no tienen comisión.",
+      "rules": "Solo tarjetas de crédito. No se cobra comisión por tarjeta en CA, CT, ME ni MA; en Colorado el límite es del 2 %. Las comisiones solo se aplican a pagos automáticos elegibles de EE. UU. en USD. Los enlaces de pago único no tienen comisión.",
       "legal": "Breeze no brinda asesoramiento legal. Usted es responsable de la elegibilidad de los recargos, los avisos y el tratamiento fiscal.",
       "lowerAuthorization": "Clientes con comisiones autorizadas más bajas: {{count}}. Su autorización actual sigue vigente hasta que acepten los nuevos términos.",
       "authorizedCard": "Autorizado: {{accepted}} puntos básicos; configurado: {{configured}}",
       "authorizedAch": "Autorizado: USD {{accepted}}; configurado: USD {{configured}}",
       "requestAuthorization": "Solicitar autorización actualizada",
       "requestFailed": "No se pudo solicitar la autorización actualizada. Verifique el contacto de facturación y la disponibilidad de Stripe.",
-      "requested": "Se solicitó la autorización actualizada. La autorización actual sigue vigente."
+      "requested": "Se solicitó la autorización actualizada. La autorización actual sigue vigente.",
+      "attestationOnFile": "Confirmación registrada: {{name}} confirmó ambas declaraciones el {{date}}.",
+      "attestationOnFileUnknown": "Confirmación registrada: ambas declaraciones se confirmaron el {{date}}.",
+      "reattestHelp": "Para volver a confirmar, marca ambas declaraciones y guarda. Así se registra una nueva confirmación a tu nombre con la fecha actual, que reemplaza la registrada. No cambia la comisión autorizada de ningún cliente.",
+      "authorizedCardNone": "No hay autorización registrada; configurado: {{configured}} puntos básicos",
+      "authorizedAchNone": "No hay autorización registrada; configurado: USD {{configured}}",
+      "lowerAuthorizationOrg": "Este cliente no autorizó la comisión configurada. Cualquier autorización existente sigue vigente hasta que acepte los nuevos términos.",
+      "blankPartner": "En blanco usa el valor predeterminado de Breeze (sin comisión). Para eximir a un cliente, establece su comisión en 0 en la página de facturación de ese cliente.",
+      "blankOrg": "En blanco usa el valor predeterminado del socio. Ingresa 0 para eximir a este cliente."
     }
   },
   "reminders": {

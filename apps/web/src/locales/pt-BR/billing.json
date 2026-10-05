@@ -2566,14 +2566,22 @@
       "inactive": "As taxas de cartão ficam inativas até que o administrador do parceiro confirme as duas declarações abaixo.",
       "notified": "Notifiquei meu adquirente (Stripe) e as bandeiras de cartão há pelo menos 30 dias",
       "cost": "Esta taxa não excede meu custo de aceitação de cartões",
-      "rules": "Somente cartões de crédito. Sem taxa de cartão em CA, CT, ME ou MA; no Colorado, o limite é de 2%. As taxas se aplicam apenas a pagamentos automáticos elegíveis dos EUA em USD. Em branco herda o valor; zero isenta este cliente. Links de pagamento avulso não têm taxa.",
+      "rules": "Somente cartões de crédito. Sem taxa de cartão em CA, CT, ME ou MA; no Colorado, o limite é de 2%. As taxas se aplicam apenas a pagamentos automáticos elegíveis dos EUA em USD. Links de pagamento avulso não têm taxa.",
       "legal": "O Breeze não oferece aconselhamento jurídico. Você é responsável pela elegibilidade das sobretaxas, pelos avisos e pelo tratamento tributário.",
       "lowerAuthorization": "Clientes com taxas autorizadas menores: {{count}}. A autorização atual permanece válida até que aceitem os novos termos.",
       "authorizedCard": "Autorizado: {{accepted}} pontos-base; configurado: {{configured}}",
       "authorizedAch": "Autorizado: USD {{accepted}}; configurado: USD {{configured}}",
       "requestAuthorization": "Solicitar autorização atualizada",
       "requestFailed": "Não foi possível solicitar a autorização atualizada. Verifique o contato de cobrança e a disponibilidade do Stripe.",
-      "requested": "Autorização atualizada solicitada. A autorização atual permanece válida."
+      "requested": "Autorização atualizada solicitada. A autorização atual permanece válida.",
+      "attestationOnFile": "Atestado registrado: {{name}} confirmou as duas declarações em {{date}}.",
+      "attestationOnFileUnknown": "Atestado registrado: as duas declarações foram confirmadas em {{date}}.",
+      "reattestHelp": "Para atestar novamente, marque as duas declarações e salve. Isso registra um novo atestado em seu nome com a data atual, substituindo o registrado. A taxa autorizada por seus clientes não muda.",
+      "authorizedCardNone": "Nenhuma autorização registrada; configurado: {{configured}} pontos-base",
+      "authorizedAchNone": "Nenhuma autorização registrada; configurado: USD {{configured}}",
+      "lowerAuthorizationOrg": "Este cliente não autorizou a taxa configurada. Qualquer autorização existente permanece válida até que ele aceite os novos termos.",
+      "blankPartner": "Em branco usa o padrão do Breeze (sem taxa). Para isentar um cliente, defina a taxa dele como 0 na página de faturamento desse cliente.",
+      "blankOrg": "Em branco usa o padrão do parceiro. Informe 0 para isentar este cliente."
     }
   },
   "reminders": {

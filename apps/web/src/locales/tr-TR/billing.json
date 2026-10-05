@@ -2566,14 +2566,22 @@
       "inactive": "İş ortağı yöneticiniz aşağıdaki iki beyanı da onaylayana kadar kart ücretleri uygulanmaz.",
       "notified": "Üye işyeri hizmet sağlayıcımı (Stripe) ve kart ağlarını en az 30 gün önce bilgilendirdim",
       "cost": "Bu ücret, kart kabul maliyetimi aşmıyor",
-      "rules": "Yalnızca kredi kartları. CA, CT, ME veya MA’da kart ücreti uygulanmaz; Colorado’da üst sınır %2’dir. Ücretler yalnızca USD cinsinden uygun ABD otomatik ödemelerine uygulanır. Boş alan üst düzeydeki değeri devralır; sıfır bu müşteriyi muaf tutar. Tek seferlik ödeme bağlantılarında ücret yoktur.",
+      "rules": "Yalnızca kredi kartları. CA, CT, ME veya MA’da kart ücreti uygulanmaz; Colorado’da üst sınır %2’dir. Ücretler yalnızca USD cinsinden uygun ABD otomatik ödemelerine uygulanır. Tek seferlik ödeme bağlantılarında ücret yoktur.",
       "legal": "Breeze hukuki danışmanlık sağlamaz. Ek ücret uygunluğu, bildirimler ve vergi uygulamalarından siz sorumlusunuz.",
       "lowerAuthorization": "Daha düşük ücretlere yetki veren müşteriler: {{count}}. Yeni koşulları kabul edene kadar mevcut yetkilendirmeleri geçerli kalır.",
       "authorizedCard": "Yetkilendirilen: {{accepted}} baz puan; yapılandırılan: {{configured}}",
       "authorizedAch": "Yetkilendirilen: USD {{accepted}}; yapılandırılan: USD {{configured}}",
       "requestAuthorization": "Güncel yetkilendirme iste",
       "requestFailed": "Güncel yetkilendirme istenemedi. Faturalandırma kişisini ve Stripe hazırlığını kontrol edin.",
-      "requested": "Güncel yetkilendirme istendi. Mevcut yetkilendirme geçerliliğini korur."
+      "requested": "Güncel yetkilendirme istendi. Mevcut yetkilendirme geçerliliğini korur.",
+      "attestationOnFile": "Kayıtlı beyan: {{name}}, {{date}} tarihinde iki beyanı da onayladı.",
+      "attestationOnFileUnknown": "Kayıtlı beyan: İki beyan da {{date}} tarihinde onaylandı.",
+      "reattestHelp": "Yeniden beyan etmek için iki beyanı da işaretleyip kaydedin. Bu, adınıza ve güncel tarihe yeni bir beyan kaydeder ve kayıtlı olanın yerini alır. Hiçbir müşterinin yetkilendirdiği ücret değişmez.",
+      "authorizedCardNone": "Kayıtlı yetkilendirme yok; yapılandırılan: {{configured}} baz puan",
+      "authorizedAchNone": "Kayıtlı yetkilendirme yok; yapılandırılan: USD {{configured}}",
+      "lowerAuthorizationOrg": "Bu müşteri yapılandırılan ücrete yetki vermedi. Mevcut yetkilendirmesi, yeni koşulları kabul edene kadar geçerli kalır.",
+      "blankPartner": "Boş bırakılırsa Breeze varsayılanı kullanılır (ücret yok). Tek bir müşteriyi muaf tutmak için o müşterinin Faturalandırma sayfasında ücretini 0 yapın.",
+      "blankOrg": "Boş bırakılırsa iş ortağı varsayılanı kullanılır. Bu müşteriyi muaf tutmak için 0 girin."
     }
   },
   "reminders": {
