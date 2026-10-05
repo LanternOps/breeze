@@ -273,3 +273,13 @@ it('cancels a refund notice bound to another org',async()=>{
  receipt({orgId:'other'});h.row.rendered.frozen={mappingId:'mapping',variant:'refund',refundedAmount:'51.50'};
  await dispatchPendingBillingNotices();expect(h.row.status).toBe('cancelled');expect(h.send).not.toHaveBeenCalled();
 });
+it('treats an active replacement beside a stale unusable autopay row as replaced (D-17 shape)', async () => {
+  payment('returned'); h.row.rendered.frozen.tokenId = 'token';
+  h.rows.set(billingLinkTokens, [{ id: 'token', orgId: 'org', enrollmentId: 'enrollment', generation: 1, purpose: 'enroll',
+    expiresAt: new Date(Date.now() + 86_400_000), consumedAt: null, revokedAt: null }]);
+  h.rows.set(orgPaymentMethods, [{ id: 'old', orgId: 'org', status: 'unusable', isAutopayMethod: true },
+    { id: 'new', orgId: 'org', status: 'active', isAutopayMethod: true }]);
+  await dispatchPendingBillingNotices();
+  expect(h.row.status).toBe('cancelled');
+  expect(f.attemptNotice).toHaveBeenCalledWith(expect.anything(), 'attempt', 'returned', 'mapping:dp_1', { fallback: true });
+});

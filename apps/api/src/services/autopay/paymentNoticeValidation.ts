@@ -108,9 +108,11 @@ async function updateLinkStillTrue(tx: Parameters<NoticePreSendValidator>[0], or
     .where(eq(orgAutopayEnrollments.orgId, orgId)).limit(1);
   if (!enrollment || enrollment.id !== token.enrollmentId || enrollment.status !== 'active'
     || enrollment.generation !== token.generation) return false;
-  const [method] = await tx.select().from(orgPaymentMethods).where(and(
-    eq(orgPaymentMethods.orgId, orgId), eq(orgPaymentMethods.isAutopayMethod, true))).limit(1);
-  return method?.status !== 'active';
+  // Every autopay-flagged row, not LIMIT 1: a stale unusable row can sit beside the
+  // active replacement (D-17), and any active one means the update already happened.
+  const methods = await tx.select({ status: orgPaymentMethods.status }).from(orgPaymentMethods).where(and(
+    eq(orgPaymentMethods.orgId, orgId), eq(orgPaymentMethods.isAutopayMethod, true)));
+  return !methods.some(method => method.status === 'active');
 }
 
 /** A receipt stays a true record after a refund (or a card chargeback), so this
