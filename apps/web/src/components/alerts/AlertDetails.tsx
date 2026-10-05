@@ -36,7 +36,8 @@ import { anomalyDeepLinkHash, formatAnomalyConfidence, formatAnomalyType, format
 export type NotificationHistory = {
   id: string;
   channelType: 'email' | 'slack' | 'teams' | 'pagerduty' | 'webhook' | 'sms';
-  channelName: string;
+  // null once the channel is deleted: delivery history outlives its channel.
+  channelName: string | null;
   sentAt: string;
   status: 'sent' | 'failed' | 'pending';
   recipient?: string;
@@ -371,7 +372,7 @@ export default function AlertDetails({
                       <div className="flex items-center gap-3">
                         <ChannelIcon className="h-4 w-4 text-muted-foreground" />
                         <div>
-                          <p className="text-sm font-medium">{notification.channelName}</p>
+                          <p className="text-sm font-medium">{notification.channelName ?? '—'}</p>
                           {notification.recipient && (
                             <p className="text-xs text-muted-foreground">{notification.recipient}</p>
                           )}

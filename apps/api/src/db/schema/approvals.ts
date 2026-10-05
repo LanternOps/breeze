@@ -32,7 +32,7 @@ export const approvalRequests = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
     requestingClientId: text('requesting_client_id').references(() => oauthClients.id),
-    requestingSessionId: text('requesting_session_id').references(() => oauthSessions.id),
+    requestingSessionId: text('requesting_session_id').references(() => oauthSessions.id, { onDelete: 'set null' }),
     requestingClientLabel: varchar('requesting_client_label', { length: 255 }).notNull(),
     requestingMachineLabel: varchar('requesting_machine_label', { length: 255 }),
     actionLabel: text('action_label').notNull(),

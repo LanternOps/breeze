@@ -75,7 +75,7 @@ export const stripeConnectAccounts = pgTable('stripe_connect_accounts', {
   status: stripeConnectStatusEnum('status').notNull().default('connected'),
   // Legacy Connect-OAuth scope (unused by the API-key path; retained until a later drop migration).
   scope: varchar('scope', { length: 50 }),
-  connectedBy: uuid('connected_by').references(() => users.id),
+  connectedBy: uuid('connected_by').references(() => users.id, { onDelete: 'set null' }),
   connectedAt: timestamp('connected_at').defaultNow().notNull(),
   disconnectedAt: timestamp('disconnected_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),

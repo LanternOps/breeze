@@ -665,17 +665,12 @@ maintenanceRoutes.delete(
     const siteScopeDenied = await enforceWindowSiteScope(c, window);
     if (siteScopeDenied) return siteScopeDenied;
 
-    // Delete only future occurrences (preserve past ones for audit)
-    await db
-      .delete(maintenanceOccurrences)
-      .where(
-        and(
-          eq(maintenanceOccurrences.windowId, windowId),
-          gte(maintenanceOccurrences.startTime, new Date())
-        )
-      );
-
-    // Delete the window
+    // Delete the window. Its occurrences, past and future, go with it:
+    // maintenance_occurrences.window_id is ON DELETE CASCADE (an occurrence
+    // has no meaning without its window, and org erasure relies on this).
+    // Past occurrences were never actually kept here -- with any past
+    // occurrence present the old NO ACTION FK made this delete fail. The
+    // record of the deletion is the maintenance_window.delete audit entry.
     await db.delete(maintenanceWindows).where(eq(maintenanceWindows.id, windowId));
 
     writeRouteAudit(c, {

@@ -76,6 +76,9 @@ const FOLLOWS_PARENT_NOTES: Readonly<Record<string, string>> = {
   psa_ticket_mappings: 'connection/alert/device-keyed',
   deployment_results: 'deployment-keyed',
   report_runs: 'parent-keyed (reports)',
+  // No org_id column: keyed by review_id / role_id / user_id, all of which
+  // keep their ids through a merge (roles and users are repointed in place).
+  access_review_items: 'review/role/user-keyed',
 };
 const FOLLOWS_PARENT_OWN_ORG_ID_EXCEPTIONS = new Set(['software_deployments']);
 
