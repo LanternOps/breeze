@@ -69,6 +69,17 @@ describe('antivirusHandler', () => {
     expect(result.description).toMatch(/no data/i);
   });
 
+  // #7965: an agent whose AV collection failed omits realTimeProtection, and
+  // ingest now stores null. That must not fire not_protected either.
+  it('not_protected: a null realTimeProtection (collection failed) must NOT read as unprotected', async () => {
+    setRows([makeStatus({ realTimeProtection: null })]);
+
+    const result = await antivirusHandler.evaluate({ type: 'antivirus', check: 'not_protected' }, DEVICE_ID);
+
+    expect(result.passed).toBe(false);
+    expect(result.description).toMatch(/no data/i);
+  });
+
   it('definitions_stale: passes when definitionsDate is older than staleAfterDays', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-13T00:00:00.000Z'));
