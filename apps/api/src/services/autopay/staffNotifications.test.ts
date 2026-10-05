@@ -16,7 +16,7 @@ describe('autopay staff notifications', () => {
   beforeEach(() => { vi.clearAllMocks(); h.rows.length = 0; h.claimed.clear(); h.send.mockResolvedValue({}); });
   it('uses billing type and stable event payload, sends only to partner billing address', async () => {
     h.rows.push([{ userId: '11111111-1111-4111-8111-111111111111' }], [{ userId: '11111111-1111-4111-8111-111111111111' }, { userId: '22222222-2222-4222-8222-222222222222' }],
-      [{ billingEmail: 'billing@example.test' }]);
+      [{ name: 'Example client' }], [{ billingEmail: 'billing@example.test' }], [{ name: 'Example client' }]);
     await notifyAutopayStaff({ orgId: '33333333-3333-4333-8333-333333333333', partnerId: '44444444-4444-4444-8444-444444444444', event: 'autopay.enrolled',
       dedupeKey: 'enrollment:1:activated', message: 'Example client enabled automatic payments.' });
     expect(h.inserts).toHaveBeenCalledWith([
@@ -75,7 +75,7 @@ it('selects only active org staff and this partner with all or selected-org acce
 
 it('links payment attention to its invoice independently of enrollment rollout',async()=>{
   const invoiceId='55555555-5555-4555-8555-555555555555';
-  h.rows.push([{userId:'11111111-1111-4111-8111-111111111111'}],[],[{billingEmail:null}]);
+  h.rows.push([{userId:'11111111-1111-4111-8111-111111111111'}],[],[{name:'Example client'}],[{billingEmail:null}]);
   await notifyAutopayStaff({orgId:'33333333-3333-4333-8333-333333333333',partnerId:'44444444-4444-4444-8444-444444444444',
     invoiceId,event:'payment.unapplied',dedupeKey:'attempt:unapplied',message:'Review captured money.'});
   expect(h.inserts).toHaveBeenCalledWith([expect.objectContaining({link:`/billing/invoices/${invoiceId}`,priority:'high',
@@ -90,4 +90,52 @@ it('keeps partner-only configuration attention out of customer notifications',as
  expect(h.rows).toEqual([]);
  expect(h.inserts).toHaveBeenCalledWith([expect.objectContaining({userId:'partner-staff',
   dedupeKey:'autopay:charging_disabled:partner:2026-10-03:partner-staff'})]);
+});
+
+describe('staff notices name the client organization (D-13)', () => {
+  const orgId = '33333333-3333-4333-8333-333333333333';
+  const partnerId = '44444444-4444-4444-8444-444444444444';
+  beforeEach(() => { vi.clearAllMocks(); h.rows.length = 0; h.claimed.clear(); h.predicates.length = 0; h.send.mockResolvedValue({}); });
+  it('puts the organization name in the in-app title and body', async () => {
+    h.rows.push([{ userId: 'staff' }], [], [{ name: 'Acme Dental' }]);
+    await enqueueAutopayStaffNotifications(db, { orgId, partnerId, event: 'autopay.enrolled', dedupeKey: 'enrolled:1', message: 'Automatic payments enabled.' });
+    expect(h.inserts).toHaveBeenCalledWith([expect.objectContaining({
+      title: 'Automatic payments enabled: Acme Dental', message: 'Acme Dental: Automatic payments enabled.' })]);
+  });
+  it('does not repeat a name the caller message already carries', async () => {
+    h.rows.push([{ userId: 'staff' }], [], [{ name: 'Acme Dental' }]);
+    await enqueueAutopayStaffNotifications(db, { orgId, partnerId, event: 'autopay.stopped', dedupeKey: 'stopped:1', message: 'Automatic payments stopped for Acme Dental.' });
+    expect(h.inserts).toHaveBeenCalledWith([expect.objectContaining({
+      title: 'Automatic payments stopped: Acme Dental', message: 'Automatic payments stopped for Acme Dental.' })]);
+  });
+  it('keeps the title within the 255-character column for a long organization name', async () => {
+    const long = 'A'.repeat(255);
+    h.rows.push([{ userId: 'staff' }], [], [{ name: long }]);
+    await enqueueAutopayStaffNotifications(db, { orgId, partnerId, event: 'autopay.needs_attention', dedupeKey: 'long:1', message: 'Update method.' });
+    const [[rows]] = h.inserts.mock.calls as [[{ title: string }[]]];
+    expect(Array.from(rows[0]!.title).length).toBeLessThanOrEqual(255);
+    expect(rows[0]!.title.startsWith('Payment needs attention: AAA')).toBe(true);
+  });
+  it('reads the organization only through its id', async () => {
+    h.rows.push([{ userId: 'staff' }], [], [{ name: 'Acme Dental' }]);
+    await enqueueAutopayStaffNotifications(db, { orgId, partnerId, event: 'autopay.enrolled', dedupeKey: 'enrolled:2', message: 'Enabled.' });
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const query = new PgDialect().sqlToQuery(h.predicates[2] as import('drizzle-orm').SQL);
+    expect(query.sql).toContain('"organizations"."id"'); expect(query.params).toEqual([orgId]);
+  });
+  it('names the organization in the staff email subject and body', async () => {
+    h.rows.push([{ billingEmail: 'billing@example.test' }], [{ name: 'Acme <Dental>' }]);
+    await sendAutopayStaffEmail({ orgId, partnerId, event: 'autopay.needs_attention', dedupeKey: 'attention:1', message: 'Update the payment method.' });
+    expect(h.send).toHaveBeenCalledWith(expect.objectContaining({
+      subject: 'Payment needs attention: Acme <Dental>',
+      html: expect.stringContaining('Acme &lt;Dental&gt;'),
+      text: expect.stringContaining('Client: Acme <Dental>'),
+    }));
+    expect(h.send.mock.calls[0]![0].text).toContain('Update the payment method.');
+  });
+  it('still sends a useful subject when the organization cannot be read', async () => {
+    h.rows.push([{ billingEmail: 'billing@example.test' }], []);
+    await sendAutopayStaffEmail({ orgId, partnerId, event: 'autopay.enrolled', dedupeKey: 'enrolled:3', message: 'Automatic payments enabled.' });
+    expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ subject: 'Automatic payments enabled' }));
+  });
 });
