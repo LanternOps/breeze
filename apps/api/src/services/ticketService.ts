@@ -3097,8 +3097,21 @@ export async function moveTicketOrg(
 ): Promise<typeof tickets.$inferSelect> {
   const userId = actorUserFk(actor);
   const auditActor = actorAuditIdentity(actor);
+  // The CAS token is the row's CONTENT without the Partner API feed stamp, not
+  // its xmin. Every comment write re-stamps the parent ticket's
+  // partner_feed_xid (breeze_ticket_comments_touch_parent_feed), which
+  // rewrites the row and so changes xmin; with an xmin token a comment landing
+  // between this snapshot and the UPDATE below (a time-entry feed line, a
+  // portal reply, an inbound email) would abort the move with a spurious 409.
+  // Hashing to_jsonb(row) minus that one column still catches every real
+  // concurrent change — any other column, including updated_at — and lets a
+  // feed-only re-stamp through. Exercised by
+  // ticketMoveOrgFeedRestamp.integration.test.ts.
   const snapshots = await db
-    .select({ ...getTableColumns(tickets), rowVersion: sql<string>`${tickets}.xmin::text` })
+    .select({
+      ...getTableColumns(tickets),
+      rowVersion: sql<string>`md5((to_jsonb(${tickets}) - 'partner_feed_xid')::text)`,
+    })
     .from(tickets)
     .where(eq(tickets.id, ticketId))
     .limit(1);
@@ -3106,7 +3119,7 @@ export async function moveTicketOrg(
   if (!snapshot) throw new TicketServiceError('Ticket not found', 404);
   const rowVersion = snapshot.rowVersion;
   // Keep the service's historical no-op contract: callers receive the exact
-  // ticket object produced by Drizzle.  The xmin value is an internal CAS
+  // ticket object produced by Drizzle.  The content hash is an internal CAS
   // token, not part of the public ticket shape, so remove only that projected
   // helper field instead of cloning every selected column.
   delete (snapshot as Partial<typeof snapshot>).rowVersion;
@@ -3381,7 +3394,8 @@ export async function moveTicketOrg(
       .where(and(
         eq(tickets.id, ticketId),
         eq(tickets.orgId, ticket.orgId),
-        sql`${tickets}.xmin::text = ${rowVersion}`,
+        // Same expression as the snapshot token above (see the note there).
+        sql`md5((to_jsonb(${tickets}) - 'partner_feed_xid')::text) = ${rowVersion}`,
       ))
       .returning();
     if (!row) {
