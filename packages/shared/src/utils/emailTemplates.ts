@@ -284,7 +284,7 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
     subject: 'Automatic payments are back on with {{partner_name}}',
     heading: 'Automatic payments are back on', buttonLabel: '',
     html: `<p>Hi {{client_name}},</p>
-<p>{{partner_name}} has turned automatic payments back on. Invoices issued from today will be paid automatically with your {{payment_method}}. Invoices issued while payments were paused aren't included, so please pay those from their emails.</p>
+<p>{{partner_name}} has turned automatic payments back on. Invoices issued from today will be paid automatically with your {{payment_method}}. Invoices issued before today aren't included, even if a payment was planned for them before the pause, so please pay those from their emails.</p>
 <p>We'll email you the amount and date before each payment.</p>`,
   },
   card_expiring: {

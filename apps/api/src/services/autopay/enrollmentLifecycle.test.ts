@@ -113,7 +113,7 @@ describe('lifecycle behavior',()=>{
   h.rows.push([]);await expect(pauseAutopay(db,actor,orgId)).rejects.toThrow('Organization not found');expect(h.calls.some(c=>c.op==='update')).toBe(false);
  });
  it('resumes from now without restoring schedules or advancing generation',async()=>{
-  h.rows.push([org],[{...enrollment,status:'paused'}],[{...enrollment,status:'active'}]);noticeRows('autopay_resumed');h.method.mockResolvedValue({status:'active'});
+  h.rows.push([org],[{...enrollment,status:'paused'}],[{...enrollment,status:'active'}],[]);noticeRows('autopay_resumed');h.method.mockResolvedValue({status:'active'});
   await resumeAutopay(db,actor,orgId);
   expect(h.calls.filter(c=>c.op==='update').map(c=>c.value)).toEqual([orgAutopayEnrollments]);
   expect(h.calls.find(c=>c.op==='set')!.value).toEqual({status:'active',effectiveFrom:expect.any(Date),pausedBy:null,pausedAt:null});
@@ -189,7 +189,7 @@ describe('staff email committed-state guard',()=>{
 
 it.each(['pause','resume'] as const)('renders an accurate %s notice through the lifecycle caller',async action=>{
  h.rows.push([org],[{...enrollment,status:action==='pause'?'active':'paused'}],[{...enrollment,status:action==='pause'?'paused':'active',effectiveFrom:new Date()}]);
- if(action==='pause')h.rows.push([],[],[],[],[]);
+ h.rows.push(...(action==='pause'?[[],[],[],[],[]]:[[]]));
  h.rows.push([org],[{id:partnerId,name:'Example MSP'}],[{settings:{}}]);
  h.method.mockResolvedValue({status:'active'});
  await (action==='pause'?pauseAutopay(db,actor,orgId):resumeAutopay(db,actor,orgId));
@@ -261,6 +261,7 @@ it.each([
  if(action==='stop')h.rows.push([{...enrollment,...updated}],[],[],[]);
  else h.rows.push([{...enrollment,...updated}]);
  if(action==='pause')h.rows.push([],[],[],[],[]);
+ if(action==='resume')h.rows.push([]);
  h.rows.push([org],[{id:partnerId,name:'Example MSP'}],[{settings:{}}]);
  h.method.mockResolvedValue({status:'active'});
  await (action==='pause'?pauseAutopay(db,actor,orgId):action==='resume'?resumeAutopay(db,actor,orgId):turnOffAutopay(db,actor,orgId));
@@ -313,7 +314,7 @@ describe('announced charges cancelled by a pause or stop',()=>{
 it.each([['card','A credit-card processing fee of up to 3% applies.','No processing fee applies.'],
  ['us_bank_account','No processing fee applies.','credit-card processing fee']] as const)(
  'the resume email states only the %s terms',async(type,own,other)=>{
-  h.rows.push([org],[{...enrollment,status:'paused'}],[{...enrollment,status:'active',effectiveFrom:new Date()}]);
+  h.rows.push([org],[{...enrollment,status:'paused'}],[{...enrollment,status:'active',effectiveFrom:new Date()}],[]);
   noticeRows('autopay_resumed');h.method.mockResolvedValue({status:'active',type});
   await resumeAutopay(db,actor,orgId);
   for(const body of [h.enqueue.mock.calls[0]![1].rendered.html,h.enqueue.mock.calls[0]![1].rendered.text]){
@@ -328,4 +329,18 @@ it('a re-authorization names an MSP whose name contains $& literally',async()=>{
  h.rows.push([org],[{id:partnerId,name:'Fix$&Co'}],[{settings:{}}]);
  await requestAutopay(db,actor,{orgIds:[orgId],mode:'reauthorize'});
  expect(h.enqueue.mock.calls[0]![1].rendered.text).toContain('Fix$&Co has updated the terms of your automatic payments');
+});
+// FP-25: a pause's cancelled payments are never re-planned, so the resume email says what it
+// doesn't cover (everything issued before today) and links the invoices still to pay.
+it('the resume email lists the open invoices it will not pay automatically',async()=>{
+ h.rows.push([org],[{...enrollment,status:'paused'}],[{...enrollment,status:'active',effectiveFrom:new Date()}],[invoice]);
+ h.rows.push([org],[{id:partnerId,name:'Example MSP'}],[{settings:{}}]);
+ h.method.mockResolvedValue({status:'active',type:'card'});
+ await resumeAutopay(db,actor,orgId);
+ const {text,html}=h.enqueue.mock.calls[0]![1].rendered as {text:string;html:string};
+ for(const body of [text,html]){
+  expect(body).toContain('even if a payment was planned for them before the pause');
+  expect(body).not.toContain('Invoices issued while payments were paused');
+ }
+ expect(text).toMatch(/Invoices still open\nINV-1 · \$12\.00: https:\/\/portal\.example\.test\/invoice\/invoice-token/);
 });

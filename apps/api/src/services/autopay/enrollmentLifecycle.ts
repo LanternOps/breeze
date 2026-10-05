@@ -117,7 +117,7 @@ async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect
   ...(kind==='autopay_stopped'&&extra.variant!=='request_withdrawn'?[`To turn automatic payments back on, ask ${partner.name} to send you a new setup link.`]:[])];
  const rendered=await renderBillingNotice(kind,{autopay:{partnerId:partner.id,orgId:org.id,variant:extra.variant,locked:extra.locked,
   vars:{partner_name:partner.name,org_name:org.name,client_name:clientNameFor(org.billingContact,org.name),...vars},ctaUrl:url,scheduleText,feeText,stopUrl,
-  openInvoices:kind==='autopay_request'||kind==='autopay_resumed'?undefined:openInvoices??[],processingText:processingText?.replaceAll('{{partner_name}}',()=>partner.name),
+  openInvoices:kind==='autopay_request'?undefined:kind==='autopay_resumed'?(openInvoices?.length?openInvoices:undefined):openInvoices??[],processingText:processingText?.replaceAll('{{partner_name}}',()=>partner.name),
   summary:kind==='autopay_resumed'&&extra.methodLabel?[{label:'Payment method',value:extra.methodLabel},...termsSummary(disclosures).slice(0,-2)]
    :kind==='autopay_request'?termsSummary(disclosures,extra.variant==='reauthorize'):undefined,
   notes:notes.length?notes:undefined}},db);
@@ -235,7 +235,10 @@ export async function resumeAutopay(db:Tx,actor:InvoiceActor,orgId:string):Promi
  const recipient=enrollment.requestRecipientEmail??contact(org.billingContact);
  if(recipient){
   const label=formatPaymentMethod(method);
-  await notice(db,updated!,'autopay_resumed',recipient,{payment_method:paymentMethodInSentence(label)},undefined,undefined,undefined,undefined,method.type,{methodLabel:label});
+  // FP-25: the pause cancelled any planned payments and they are never re-planned; only
+  // invoices issued from now are paid automatically, so link the ones still to pay.
+  const links=await openInvoiceLinks(db,orgId);
+  await notice(db,updated!,'autopay_resumed',recipient,{payment_method:paymentMethodInSentence(label)},undefined,links,undefined,undefined,method.type,{methodLabel:label});
  }
 }
 const clientStopToken=new AsyncLocalStorage<string>();
