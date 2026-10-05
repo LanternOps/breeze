@@ -182,3 +182,16 @@ it.each([['processing',true],['confirming',true],['created',false]] as const)('s
   if(refused)expect(schedule).toMatchObject({state:'collecting',stateReason:null,clientSkippedAt:null});
   else expect(schedule).toMatchObject({state:'collecting',stateReason:'control_pending:skip'});
 });
+
+it('the skip view names the invoice and MSP, and still describes it after the client stops automatic payments',async()=>{
+  const f=await fixture();
+  await withSystemDbAccessContext(()=>db.update(partners).set({billingEmail:'billing@control.example'}).where(eq(partners.name,'Control fixture')));
+  expect(await withSystemDbAccessContext(()=>getSkipInvoiceView(db,f.token))).toMatchObject({state:'scheduled',skippable:true,
+    invoiceNumber:f.invoice.invoiceNumber,amount:'100.00',dueDate:'2026-10-31',collectOn:'2026-10-31',partnerName:'Control fixture',
+    supportEmail:'billing@control.example',processing:false,control:null});
+  await withSystemDbAccessContext(async()=>{
+    await db.update(orgAutopayEnrollments).set({status:'cancelled',cancelledAt:new Date(),cancelSource:'client'}).where(eq(orgAutopayEnrollments.orgId,f.invoice.orgId));
+    await db.update(invoiceAutopaySchedules).set({state:'cancelled'}).where(eq(invoiceAutopaySchedules.id,f.schedule.id));
+  });
+  expect(await withSystemDbAccessContext(()=>getSkipInvoiceView(db,f.token))).toMatchObject({state:'cancelled',skippable:false,invoiceNumber:f.invoice.invoiceNumber});
+});

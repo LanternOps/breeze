@@ -10,7 +10,8 @@ import { createPartner, createOrganization } from '../../__tests__/integration/d
 import { mintBillingLinkToken } from './linkTokens';
 import { stopAutopayByClient, withAutopayStopToken } from './enrollmentLifecycle';
 import { completeAutopaySetup } from './enrollmentService';
-import { completeOwnedAutopaySetup, resolveAutopayLinkIdentity, resolveAutopayReturnIdentity, resolveAutopayOrgIdentity } from './customerViews';
+import { completeOwnedAutopaySetup, describeAutopayLinkFailure, getAutopayStopView, resolveAutopayLinkIdentity, resolveAutopayReturnIdentity, resolveAutopayOrgIdentity } from './customerViews';
+import { partners } from '../../db/schema';
 
 // Keep identity, ownership, disclosure, and method queries real. Stripe completion
 // is the external boundary; verify that ownership rejects before reaching it.
@@ -107,5 +108,40 @@ describe('customer token and return ownership against PostgreSQL', () => {
       current: { status: expect.any(String), methodLabel: 'Visa debit card ending in 1234' },
     });
     expect(completeAutopaySetup).toHaveBeenCalledWith(f.identity.partnerId, { checkoutSessionId: f.attempt.checkoutSessionId }, expect.any(Function));
+  });
+});
+
+describe('client pages are told why a link is unusable (real PostgreSQL)', () => {
+  it('distinguishes an unknown, used, expired and replaced setup link, and a stopped stop link', async () => {
+    const f = await fixture();
+    await system(() => db.update(partners).set({ billingEmail: 'billing@msp.example' }).where(eq(partners.id, f.identity.partnerId)));
+    expect(await describeAutopayLinkFailure('x'.repeat(43), 'enroll')).toEqual({ error: expect.any(String), code: 'link_invalid' });
+
+    await system(() => db.update(billingLinkTokens).set({ consumedAt: new Date() }).where(eq(billingLinkTokens.id, f.link.id)));
+    await system(() => db.update(orgAutopayEnrollments).set({ status: 'active', effectiveFrom: new Date() }).where(eq(orgAutopayEnrollments.id, f.identity.enrollmentId)));
+    expect(await describeAutopayLinkFailure(f.link.token, 'enroll')).toMatchObject({ code: 'link_used', enrollmentStatus: 'active',
+      partnerName: expect.any(String), supportEmail: 'billing@msp.example' });
+
+    const expired = await system(() => mintBillingLinkToken(db, { ...f.identity, purpose: 'enroll', ttlDays: 1 }));
+    await system(() => db.update(billingLinkTokens).set({ expiresAt: new Date(0) }).where(eq(billingLinkTokens.id, expired.id)));
+    expect(await describeAutopayLinkFailure(expired.token, 'enroll')).toMatchObject({ code: 'link_expired' });
+
+    // A resend bumps the generation and revokes older links.
+    const old = await system(() => mintBillingLinkToken(db, { ...f.identity, purpose: 'stop_autopay', ttlDays: 1 }));
+    await system(async () => {
+      await db.update(billingLinkTokens).set({ revokedAt: new Date() }).where(eq(billingLinkTokens.id, old.id));
+      await db.update(orgAutopayEnrollments).set({ generation: 2 }).where(eq(orgAutopayEnrollments.id, f.identity.enrollmentId));
+    });
+    expect(await describeAutopayLinkFailure(old.token, 'stop_autopay')).toMatchObject({ code: 'link_replaced' });
+  });
+
+  it('a stop link used to stop reports automatic payments are off, and the stop view says who stopped them', async () => {
+    const f = await fixture();
+    await system(() => db.update(orgAutopayEnrollments).set({ status: 'active', effectiveFrom: new Date() }).where(eq(orgAutopayEnrollments.id, f.identity.enrollmentId)));
+    const stop = await system(() => mintBillingLinkToken(db, { ...f.identity, purpose: 'stop_autopay', ttlDays: 1 }));
+    await withAutopayStopToken(stop.token, () => system(() => stopAutopayByClient(db, { orgId: f.identity.orgId, source: 'link' })));
+    expect(await describeAutopayLinkFailure(stop.token, 'stop_autopay')).toMatchObject({ code: 'link_used', enrollmentStatus: 'cancelled' });
+    expect(await getAutopayStopView(f.identity.orgId)).toMatchObject({ enrollment: { status: 'cancelled', cancelSource: 'client',
+      cancelledAt: expect.any(String) }, method: null, openInvoiceCount: 0 });
   });
 });
