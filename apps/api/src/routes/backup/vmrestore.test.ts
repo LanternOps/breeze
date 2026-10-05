@@ -25,6 +25,7 @@ const runOutsideDbContextMock = vi.fn((fn: () => unknown) => fn());
 // The integrity check itself is covered in restoreIntegrityGate.test.ts; here
 // only how the route uses its answer.
 const integrityGate = vi.hoisted(() => ({ gate: vi.fn(), check: vi.fn(), record: vi.fn() }));
+vi.mock('../../services/authEpochs', () => ({ getUserEpochs: async () => ({ authEpoch: 1, mfaEpoch: 2 }) }));
 vi.mock('./restoreIntegrityGate', () => ({
   gateRestoreCommand: (...args: unknown[]) => integrityGate.gate(...args),
   checkRestoreIntegrityRequest: (...args: unknown[]) => integrityGate.check(...args),
@@ -560,6 +561,9 @@ describe('vm restore routes — rebuild engine', () => {
         commandType: 'bare_metal_rebuild',
         stepUpGrant: '66666666-6666-4666-8666-666666666666',
         confirmUnattestedRestore: undefined,
+        // Read in the request context: the engine's org-scoped transaction
+        // cannot see a partner-level technician's user row.
+        userEpochs: { authEpoch: 1, mfaEpoch: 2 },
       });
       expect(createBareMetalRecoveryMock).not.toHaveBeenCalled();
       expect(queueBareMetalRebuildMock).not.toHaveBeenCalled();

@@ -48,6 +48,12 @@ export type RestoreIntegrityRequest = {
   stepUpGrant?: string;
   /** Only honoured while two-factor authentication is disabled on the deployment. */
   confirmUnattestedRestore?: boolean;
+  /**
+   * The user's epochs, read by the caller in the request's own DB context.
+   * Required when the check runs inside a narrower org-scoped transaction,
+   * which cannot see a partner-level user's row.
+   */
+  userEpochs?: { authEpoch: number; mfaEpoch: number } | null;
 };
 
 export type RestoreIntegrityCheck =
@@ -108,7 +114,7 @@ export async function checkRestoreIntegrityRequest(
   }
 
   if (!req.stepUpGrant) return stepUpRequired();
-  const epochs = await getUserEpochs(userId!);
+  const epochs = req.userEpochs !== undefined ? req.userEpochs : await getUserEpochs(userId!);
   if (!epochs) return stepUpRequired();
   // Missing, stale, replayed and mismatched grants are one answer on purpose.
   const consumed = await consumeStepUpGrant(req.stepUpGrant, {

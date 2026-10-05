@@ -13,6 +13,7 @@ import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { queueCommandForExecution, CommandTypes } from '../../services/commandQueue';
 import { PERMISSIONS } from '../../services/permissions';
 import { startRebuildEngineVmRestore } from '../../services/vmRestoreRebuildEngine';
+import { getUserEpochs } from '../../services/authEpochs';
 import { isRestoreHelperUpdateRequiredError } from '../../services/backupRestoreGate';
 import {
   checkRestoreIntegrityRequest,
@@ -151,6 +152,9 @@ vmRestoreRoutes.post(
       ], 'restore');
       if (!authorization.ok) return authorization.response;
 
+      // Read in the request context: the engine's org-scoped transaction
+      // below cannot see a partner-level technician's user row.
+      const userEpochs = auth.user?.id && payload.stepUpGrant ? await getUserEpochs(auth.user.id) : undefined;
       const result = await runInOrg(orgId, () =>
         startRebuildEngineVmRestore({
           orgId,
@@ -172,6 +176,7 @@ vmRestoreRoutes.post(
               commandType: CommandTypes.BARE_METAL_REBUILD,
               stepUpGrant: payload.stepUpGrant,
               confirmUnattestedRestore: payload.confirmUnattestedRestore,
+              ...(userEpochs !== undefined ? { userEpochs } : {}),
             };
             const check = await checkRestoreIntegrityRequest(c, request);
             if (!check.ok) return check;

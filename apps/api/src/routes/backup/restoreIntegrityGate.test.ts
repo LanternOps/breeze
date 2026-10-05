@@ -119,6 +119,15 @@ describe('checkRestoreIntegrityRequest', () => {
     });
   });
 
+  it('uses epochs the caller read in the request context instead of reading them again', async () => {
+    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested'));
+    mocks.consumeStepUpGrant.mockResolvedValue(true);
+    const out = await checkRestoreIntegrityRequest(ctx(), request({ stepUpGrant: GRANT, userEpochs: { authEpoch: 7, mfaEpoch: 9 } }));
+    expect(out).toEqual({ ok: true, authorizationReason: 'unattested' });
+    expect(mocks.getUserEpochs).not.toHaveBeenCalled();
+    expect(mocks.consumeStepUpGrant).toHaveBeenCalledWith(GRANT, expect.objectContaining({ authEpoch: 7, mfaEpoch: 9 }));
+  });
+
   it('a grant that does not match (other restore, replayed, expired) is a step-up request again', async () => {
     mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
     mocks.consumeStepUpGrant.mockResolvedValue(false);
