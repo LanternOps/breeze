@@ -210,6 +210,16 @@ it('the stop email never lists an invoice whose payment is already processing as
  expect(text).toContain("A payment for invoice INV-3 is already processing and can't be stopped; you'll get a receipt when it completes.");
  expect(text).toMatch(/Invoices still open\nINV-1 /);expect(text).not.toMatch(/INV-3 · /);
 });
+// Final-V nit: when every open invoice already has a payment processing, the stop email does
+// not also say "You have no open invoices right now".
+it('the stop email does not claim no open invoices while a payment is processing',async()=>{
+ h.stopSchedules.mockResolvedValue({processing:['INV-3'],cancelling:[]});
+ h.rows.push([org],[enrollment],[{...enrollment,status:'cancelled'}],[],[],[{...invoice,id:'55555555-5555-4555-8555-555555555555',invoiceNumber:'INV-3'}]);noticeRows('autopay_stopped');
+ await turnOffAutopay(db,actor,orgId);
+ const {text,html}=h.enqueue.mock.calls[0]![1].rendered as {text:string;html:string};
+ expect(text).toContain("A payment for invoice INV-3 is already processing and can't be stopped");
+ for(const body of [text,html])expect(body).not.toMatch(/no open invoices/);
+});
 it('protects the pending Stop disclosure outside a custom notice body',async()=>{
  h.stopSchedules.mockResolvedValue({processing:['INV-3'],cancelling:['INV-1','INV-2']});
  h.rows.push([org],[enrollment],[{...enrollment,status:'cancelled'}],[],[],[invoice]);noticeRows('autopay_stopped');

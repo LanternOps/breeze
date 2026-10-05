@@ -93,7 +93,7 @@ function termsSummary(disclosures:{type:AutopayPaymentMethodType;disclosure:Disc
 /** terms: which schedule and fee terms the email restates. A request offers every
  * available method; a resume restates the client's own method; pause and stop restate
  * none (P-19: they repeated bank fee terms to card clients). */
-async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect,kind:'autopay_request'|'autopay_stopped'|'autopay_paused'|'autopay_resumed',recipient:string,vars:Record<string,string>,url?:string,openInvoices?:AutopayNoticeContext['openInvoices'],processingText?:string,dedupeKey?:string,
+async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect,kind:'autopay_request'|'autopay_stopped'|'autopay_paused'|'autopay_resumed',recipient:string,vars:Record<string,string>,url?:string,openInvoices?:AutopayNoticeContext['openInvoices']|null,processingText?:string,dedupeKey?:string,
  terms:'all'|'none'|AutopayPaymentMethodType='all',extra:Pick<AutopayNoticeContext,'variant'|'notes'|'locked'>&{methodLabel?:string;announcedInvoiceIds?:string[]}={}){
  const announcedInvoiceIds=extra.announcedInvoiceIds??[];
  const [org]=await db.select().from(organizations).where(eq(organizations.id,enrollment.orgId)).limit(1);
@@ -117,7 +117,7 @@ async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect
   ...(kind==='autopay_stopped'&&extra.variant!=='request_withdrawn'?[`To turn automatic payments back on, ask ${partner.name} to send you a new setup link.`]:[])];
  const rendered=await renderBillingNotice(kind,{autopay:{partnerId:partner.id,orgId:org.id,variant:extra.variant,locked:extra.locked,
   vars:{partner_name:partner.name,org_name:org.name,client_name:clientNameFor(org.billingContact,org.name),...vars},ctaUrl:url,scheduleText,feeText,stopUrl,
-  openInvoices:kind==='autopay_request'?undefined:kind==='autopay_resumed'?(openInvoices?.length?openInvoices:undefined):openInvoices??[],processingText:processingText?.replaceAll('{{partner_name}}',()=>partner.name),
+  openInvoices:kind==='autopay_request'||openInvoices===null?undefined:kind==='autopay_resumed'?(openInvoices?.length?openInvoices:undefined):openInvoices??[],processingText:processingText?.replaceAll('{{partner_name}}',()=>partner.name),
   summary:kind==='autopay_resumed'&&extra.methodLabel?[{label:'Payment method',value:extra.methodLabel},...termsSummary(disclosures).slice(0,-2)]
    :kind==='autopay_request'?termsSummary(disclosures,extra.variant==='reauthorize'):undefined,
   notes:notes.length?notes:undefined}},db);
@@ -274,7 +274,11 @@ async function stop(db:Tx,orgId:string,source:'client'|'msp',actor?:InvoiceActor
  const recipient=enrollment.requestRecipientEmail??contact(org.billingContact);
  // Who stopped it, and whether there was ever anything set up to stop.
  const variant=enrollment.status==='requested'&&!removed.length?'request_withdrawn':source==='msp'?'msp':undefined;
- if(recipient)await notice(db,updated!,'autopay_stopped',recipient,{stopped_by:source==='client'?'You':'Your service provider',open_invoices_text:openInvoicesText(links)},undefined,links,
+ // Final-V nit: when every open invoice has a payment processing, say nothing about "no open
+ // invoices": the processing lines below speak for them.
+ const onlyProcessing=!links.length&&pendingInvoices.processing.length>0;
+ if(recipient)await notice(db,updated!,'autopay_stopped',recipient,{stopped_by:source==='client'?'You':'Your service provider',
+  open_invoices_text:onlyProcessing?'You have no other open invoices right now.':openInvoicesText(links)},undefined,onlyProcessing?null:links,
   // FP-14: a processing debit can't be stopped; it may still be returned, so no "will complete".
   [...pendingInvoices.processing.map(number=>`A payment for invoice ${number} is already processing and can't be stopped; you'll get a receipt when it completes.`),
    ...pendingInvoices.cancelling.map(number=>`A payment already in progress for invoice ${number} is being cancelled. A receipt will follow if it had already completed.`),
