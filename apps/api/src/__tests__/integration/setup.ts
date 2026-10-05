@@ -28,6 +28,7 @@ import Redis, { type RedisOptions } from 'ioredis';
 import * as schema from '../../db/schema';
 import { assertTestDatabaseUrlSafe } from '../../testUtils/integrationDatabaseSafety';
 import { REDIS_CLIENT_BASE_OPTIONS } from '../../services/redis';
+import { __resetAgentAuthNegativeCacheForTests } from '../../middleware/agentAuthNegativeCache';
 
 // Load test environment variables
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
@@ -405,4 +406,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await cleanupDatabase();
+  // #8050 — the agent-auth negative cache is in-process state that outlives
+  // the truncate above: a rejection cached against one test's (agentId, token)
+  // must not answer the next test, which may seed that same pair as valid.
+  __resetAgentAuthNegativeCacheForTests();
 });

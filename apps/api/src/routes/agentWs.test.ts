@@ -1232,6 +1232,179 @@ function updateResult(rows: unknown[] = []) {
   };
 }
 
+// #8050 — the WS upgrade shares the agent-auth negative cache (its own
+// 'ws' namespace). A repeat of the same terminally-rejected (agentId, token)
+// must return the identical validation result with ZERO DB work, while every
+// non-terminal refusal (quarantine, draining tenant, parked, cert binding) and
+// every success keeps paying its own lookup.
+describe('validateAgentToken — negative cache for terminal rejections (#8050)', () => {
+  const TOKEN = 'brz_ws_negcache_token';
+  const OTHER_TOKEN = 'brz_ws_negcache_other';
+  const tokenHash = createHash('sha256').update(TOKEN).digest('hex');
+  const deviceRow = {
+    id: 'device-1',
+    orgId: 'org-1',
+    partnerId: 'partner-1',
+    agentTokenHash: tokenHash,
+    previousTokenHash: null,
+    previousTokenExpiresAt: null,
+    watchdogTokenHash: null,
+    previousWatchdogTokenHash: null,
+    previousWatchdogTokenExpiresAt: null,
+    status: 'online',
+    agentTokenSuspendedAt: null,
+    organizationType: 'customer',
+  };
+
+  // Persistent (not Once), so a second lookup — a cache MISS — succeeds and
+  // is counted; the assertions below rely on that. The device lookup goes
+  // through innerJoin; the enforce-mode certificate lookup selects without a
+  // join and returns `certRows`.
+  function armDeviceSelect(row: unknown | undefined, certRows: unknown[] = []) {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({
+        innerJoin: vi.fn(() => ({
+          where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue(row ? [row] : []) })),
+        })),
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue(certRows),
+          orderBy: vi.fn(() => ({ limit: vi.fn().mockResolvedValue(certRows) })),
+        })),
+      })),
+    } as any);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    delete process.env.AGENT_MTLS_BINDING_MODE;
+  });
+
+  afterEach(() => {
+    delete process.env.AGENT_MTLS_BINDING_MODE;
+    vi.mocked(db.select).mockReset();
+  });
+
+  const terminalCases: Array<{ name: string; row: unknown | undefined; tenant?: null; reason: string }> = [
+    { name: 'no device row', row: undefined, reason: 'unauthorized' },
+    {
+      name: 're-enrollment required',
+      row: { ...deviceRow, agentTokenHash: null, watchdogTokenHash: null },
+      reason: 're_enrollment_required',
+    },
+    { name: 'decommissioned', row: { ...deviceRow, status: 'decommissioned' }, reason: 'unauthorized' },
+    {
+      name: 'token suspended',
+      row: { ...deviceRow, agentTokenSuspendedAt: new Date('2026-01-01T00:00:00Z') },
+      reason: 'unauthorized',
+    },
+    {
+      name: 'token-hash mismatch',
+      row: { ...deviceRow, agentTokenHash: createHash('sha256').update('brz_someone_else').digest('hex') },
+      reason: 'unauthorized',
+    },
+    { name: 'tenant-state denied', row: deviceRow, tenant: null, reason: 'unauthorized' },
+  ];
+
+  for (const tc of terminalCases) {
+    it(`${tc.name}: the repeat makes no DB call and returns the same result`, async () => {
+      armDeviceSelect(tc.row);
+      if (tc.tenant === null) vi.mocked(getAgentTenantState).mockResolvedValue(null);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      const first = await validateAgentToken('agent-1', TOKEN);
+      expect(first).toEqual({ ok: false, reason: tc.reason });
+      const selects = vi.mocked(db.select).mock.calls.length;
+      const systemCtx = vi.mocked(withSystemDbAccessContext).mock.calls.length;
+      const tenantLookups = vi.mocked(getAgentTenantState).mock.calls.length;
+      expect(selects).toBe(1);
+
+      const second = await validateAgentToken('agent-1', TOKEN);
+      expect(second).toEqual(first);
+      expect(vi.mocked(db.select).mock.calls.length).toBe(selects);
+      expect(vi.mocked(withSystemDbAccessContext).mock.calls.length).toBe(systemCtx);
+      expect(vi.mocked(getAgentTenantState).mock.calls.length).toBe(tenantLookups);
+      warnSpy.mockRestore();
+    });
+  }
+
+  it('the upgrade route replays the identical re-enrollment 401 body with no second lookup', async () => {
+    armDeviceSelect({ ...deviceRow, agentTokenHash: null, watchdogTokenHash: null });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const app = createAgentWsRoutes((() => vi.fn()) as any);
+
+    const r1 = await app.request('/agent-1/ws', { headers: { Authorization: `Bearer ${TOKEN}` } });
+    const r2 = await app.request('/agent-1/ws', { headers: { Authorization: `Bearer ${TOKEN}` } });
+
+    expect(r1.status).toBe(401);
+    expect(r2.status).toBe(401);
+    expect(await r2.json()).toEqual(await r1.json());
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+
+  it('a cached rejection for one token does not affect a different token for the same agentId', async () => {
+    armDeviceSelect(deviceRow);
+
+    expect(await validateAgentToken('agent-1', OTHER_TOKEN)).toEqual({ ok: false, reason: 'unauthorized' });
+    expect(await validateAgentToken('agent-1', OTHER_TOKEN)).toEqual({ ok: false, reason: 'unauthorized' });
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+
+    expect((await validateAgentToken('agent-1', TOKEN)).ok).toBe(true);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+  });
+
+  it('a REST-surface cache entry never answers the WS upgrade', async () => {
+    const { agentAuthNegativeCache } = await import('../middleware/agentAuthNegativeCache');
+    agentAuthNegativeCache.remember('rest', 'agent-1', tokenHash, 'tenant_denied');
+    armDeviceSelect(deviceRow);
+
+    expect((await validateAgentToken('agent-1', TOKEN)).ok).toBe(true);
+  });
+
+  const nonTerminalCases: Array<{ name: string; row: unknown; certRows?: unknown[]; setup?: () => void }> = [
+    { name: 'quarantined', row: { ...deviceRow, status: 'quarantined' } },
+    {
+      name: 'draining (offboarding) tenant',
+      row: deviceRow,
+      setup: () => vi.mocked(getAgentTenantState).mockResolvedValue('draining'),
+    },
+    { name: 'parked (holding org)', row: { ...deviceRow, organizationType: 'unassigned_pool' } },
+    {
+      // enforce mode, an active certificate on file, and no assertion
+      // presented: the binding check fails closed.
+      name: 'certificate-binding failure',
+      row: deviceRow,
+      certRows: [{ serialNumber: 'AABBCCDDEEFF00112233', state: 'active' }],
+      setup: () => {
+        process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+      },
+    },
+  ];
+
+  for (const tc of nonTerminalCases) {
+    it(`${tc.name}: is NOT cached — every attempt re-checks the DB`, async () => {
+      armDeviceSelect(tc.row, tc.certRows);
+      tc.setup?.();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      expect(await validateAgentToken('agent-1', TOKEN)).toEqual({ ok: false, reason: 'unauthorized' });
+      const firstSelects = vi.mocked(db.select).mock.calls.length;
+      expect(await validateAgentToken('agent-1', TOKEN)).toEqual({ ok: false, reason: 'unauthorized' });
+      expect(vi.mocked(db.select).mock.calls.length).toBe(firstSelects * 2);
+      warnSpy.mockRestore();
+    });
+  }
+
+  it('a successful upgrade auth is never cached and never blocked', async () => {
+    armDeviceSelect(deviceRow);
+    for (let i = 0; i < 3; i++) {
+      expect((await validateAgentToken('agent-1', TOKEN)).ok).toBe(true);
+    }
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe('agent websocket handshake', () => {
   beforeEach(() => {
     vi.resetAllMocks();
