@@ -732,3 +732,10 @@ it('a chargeable invoice carries no blocked reason', async () => {
   const f = fixture({ noticeSentAt: new Date('2020-01-01'), termsSnapshot: schedule.termsSnapshot });
   expect(await getInvoiceAutopayView(f.tx, f.inv as any)).toMatchObject({ canChargeNow: true, chargeBlockedReason: null });
 });
+
+// F-6: the staff "client skipped" notice names the invoice, like every invoice-scoped staff notice.
+it('the skip staff notice names the invoice', async () => {
+  const f = fixture();
+  await skipInvoice(f.tx, 'token');
+  expect(h.staff).toHaveBeenCalledWith(f.tx, expect.objectContaining({ event: 'autopay.skipped', invoiceId: invoice.id }));
+});

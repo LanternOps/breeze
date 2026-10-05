@@ -173,7 +173,8 @@ export async function finalizeInvoiceControl(tx: Tx, invoice: typeof invoices.$i
     return { status: 'excluded' };
   }
   await enqueueSkippedInvoiceConfirmation(tx, invoice);
-  const staffNotice: AutopayStaffNotice = { orgId: invoice.orgId, partnerId: invoice.partnerId,
+  // F-6: name the invoice (its number and link), like every invoice-scoped staff notice.
+  const staffNotice: AutopayStaffNotice = { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
     event: 'autopay.skipped', dedupeKey: `autopay:${invoice.id}:skipped`,
     message: 'The client skipped automatic payment for this invoice.' };
   await enqueueAutopayStaffNotifications(tx, staffNotice);
