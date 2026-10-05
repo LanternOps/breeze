@@ -64,7 +64,10 @@ export async function enqueueAutopayNotice(tx: Tx, scheduleId: string): Promise<
     skipUrl: buildBillingLinkUrl('skip_invoice', skip.token),
     stopUrl: buildBillingLinkUrl('stop_autopay', stop.token),
     methodLabel,
-    preheader: `${emailMoney(toMinorUnits(terms.feeAmount, terms.currency) > 0 ? total : terms.principal, terms.currency)} will be charged on or around ${chargeOn}.`,
+    // R12: the fee is a maximum (a debit or prepaid card pays none), so the total is "up to", as in the facts table.
+    preheader: toMinorUnits(terms.feeAmount, terms.currency) > 0
+      ? `Up to ${emailMoney(total, terms.currency)} will be charged on or around ${chargeOn}.`
+      : `${emailMoney(terms.principal, terms.currency)} will be charged on or around ${chargeOn}.`,
     authorizationText: terms.methodType === 'us_bank_account'
       ? `You authorized this debit when you set up automatic payments with ${partner!.name}. The payment date is when the debit starts; your bank decides when it settles.`
       : `You authorized this payment when you set up automatic payments with ${partner!.name}.`,

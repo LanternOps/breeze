@@ -101,9 +101,9 @@ function skipViewStatus(invoice: typeof invoices.$inferSelect, schedule: typeof 
   // open again was refunded or returned, and the client needs to know it is owed.
   if (invoice.status === 'paid') return 'paid';
   if (processing) return 'processing';
-  if (schedule?.state === 'succeeded') {
-    return OPEN_INVOICE.includes(invoice.status) && toMinorUnits(invoice.balance, invoice.currencyCode) > 0 ? 'reversed' : 'not_needed';
-  }
+  // R4: nothing to pay or skip on a voided, closed or settled invoice, whatever the schedule remembers.
+  if (!OPEN_INVOICE.includes(invoice.status) || toMinorUnits(invoice.balance, invoice.currencyCode) <= 0) return 'not_needed';
+  if (schedule?.state === 'succeeded') return 'reversed';
   if (schedule?.state === 'skipped_by_client') return 'skipped';
   if (!schedule || !authority || !OPEN_INVOICE.includes(invoice.status)
     || toMinorUnits(invoice.balance, invoice.currencyCode) <= 0
@@ -123,9 +123,11 @@ function notNeededReason(invoice: typeof invoices.$inferSelect, schedule: typeof
   if (invoice.autopayExcluded || control === 'exclude' || schedule?.state === 'excluded_by_msp') return 'excluded';
   if (schedule?.state === 'failed') return 'failed';
   if (enrollment?.status === 'paused') return 'paused';
-  if (control === 'stop' || schedule?.state === 'cancelled' || !enrollment || enrollment.status !== 'active') return 'stopped';
+  if (control === 'stop' || !enrollment || enrollment.status !== 'active') return 'stopped';
   if (enrollment.generation !== generation || (schedule && (schedule.enrollmentId !== enrollment.id
     || schedule.enrollmentGeneration !== generation))) return 'replaced';
+  // R2: only a stop turns automatic payments off; any other cancellation ended this one payment.
+  if (schedule?.state === 'cancelled') return schedule.stateReason === 'stop' ? 'stopped' : 'cancelled';
   if (schedule && !schedule.eligible) return 'not_included';
   return 'not_scheduled';
 }

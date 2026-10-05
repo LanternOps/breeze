@@ -304,3 +304,12 @@ it.each([['card','A credit-card processing fee of up to 3% applies.','No process
    expect(body).toContain(own);expect(body).not.toContain(other);
   }
  });
+
+// R11: the MSP's name is inserted literally into the re-authorization line ($& stays $&).
+it('a re-authorization names an MSP whose name contains $& literally',async()=>{
+ const current={...enrollment,status:'active',stripeAccountId:'acct_test',stripeConnectionId:'connection'};
+ h.rows.push([org],[current],[{id:'connection',stripeAccountId:'acct_test'}],[]);
+ h.rows.push([org],[{id:partnerId,name:'Fix$&Co'}],[{settings:{}}]);
+ await requestAutopay(db,actor,{orgIds:[orgId],mode:'reauthorize'});
+ expect(h.enqueue.mock.calls[0]![1].rendered.text).toContain('Fix$&Co has updated its payment terms.');
+});

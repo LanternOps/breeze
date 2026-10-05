@@ -381,3 +381,37 @@ it('a bank account awaiting verification gets the one-more-step email, with its 
   expect(queued.rendered.text).not.toContain('Starts with');
   expect(queued.rendered.text).toContain(snapshot.text);
 });
+
+// R1: the enrollment stays paused when a paused client saves a method (an MSP re-authorization,
+// or bank verification finishing after a pause). The email must not say "automatic payments are on".
+it('a paused client who saves a method is told it is saved and payments are paused, not on',async()=>{
+ const value=attempt({tokenId:'token',source:'setup_page',createdAt:new Date('2026-10-02')});
+ m.intent.mockResolvedValue({...await m.intent(),metadata:{...(await m.intent()).metadata,token_id:'token'}});
+ queueAuthority(value);
+ Object.assign(m.rows[3]![0]!,{status:'paused',effectiveFrom:new Date('2026-09-01'),pausedAt:new Date('2026-10-01')});
+ m.rows.push([{id:'method_one',status:'active',isAutopayMethod:true}],[],[{id:'method_one'}],[],[],[],[],[{settings:{}}]);
+ m.mint.mockResolvedValue({id:'stop',token:'stop-token'});
+ expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
+ const queued=m.enqueue.mock.calls.find(([,row])=>row.kind==='autopay_enrolled')![1];
+ expect(queued.rendered.subject).toBe('Your payment method is saved for Example MSP');
+ expect(queued.rendered.text).toContain('Example MSP has paused automatic payments');
+ expect(queued.rendered.text).not.toMatch(/automatic payments are (now )?on/i);
+ expect(queued.rendered.text).not.toContain('Starts with');
+ expect(queued.rendered.frozen).toMatchObject({variant:'paused'});
+});
+it('bank verification that finishes after a pause says the account is verified and payments are paused',async()=>{
+ const value=attempt({methodType:'us_bank_account',outcome:'pending_verification'});
+ queueAuthority(value);Object.assign(m.rows[3]![0]!,{status:'paused',pausedAt:new Date('2026-10-02')});
+ m.rows.push([{id:'bank_method',status:'pending_verification',isAutopayMethod:true}],[],[{id:'bank_method'}],[],[],[{settings:{}}]);
+ m.intent.mockResolvedValue({...await m.intent(),mandate:'mandate'});
+ m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one',us_bank_account:{last4:'6789',bank_name:'STRIPE TEST BANK',account_holder_type:'individual'}});
+ m.mandate.mockResolvedValue({status:'active',payment_method:'pm_one'});
+ m.mint.mockResolvedValue({id:'stop',token:'stop-token'});
+ expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
+ const queued=m.enqueue.mock.calls[0]![1];
+ expect(queued.dedupeKey).toBe(`${value.id}:autopay_enrolled:verified`);
+ expect(queued.rendered.subject).toBe('Your payment method is saved for Example MSP');
+ expect(queued.rendered.text).toContain('Example MSP has paused automatic payments');
+ expect(queued.rendered.text).not.toMatch(/automatic payments are (now )?on/i);
+ expect(queued.rendered.text).not.toContain('Starts with');
+});

@@ -667,8 +667,9 @@ it.each([
   ['excluded', (f: ReturnType<typeof fixture>) => { f.inv.autopayExcluded = true; f.sched.state = 'excluded_by_msp'; }],
   ['excluded', (f: ReturnType<typeof fixture>) => { f.sched.state = 'collecting'; (f.sched as { stateReason: string | null }).stateReason = 'control_pending:exclude'; f.data.set(invoiceCollectionAttempts, [{ id: 'a', state: 'created' }]); }],
   ['failed', (f: ReturnType<typeof fixture>) => { f.sched.state = 'failed'; }],
-  ['stopped', (f: ReturnType<typeof fixture>) => { f.sched.state = 'cancelled'; }],
+  ['stopped', (f: ReturnType<typeof fixture>) => { f.sched.state = 'cancelled'; (f.sched as { stateReason: string | null }).stateReason = 'stop'; }],
   ['stopped', (f: ReturnType<typeof fixture>) => { f.data.get(orgAutopayEnrollments)![0].status = 'cancelled'; }],
+  ['cancelled', (f: ReturnType<typeof fixture>) => { f.sched.state = 'cancelled'; }],
   ['paused', (f: ReturnType<typeof fixture>) => { f.data.get(orgAutopayEnrollments)![0].status = 'paused'; }],
   ['replaced', (f: ReturnType<typeof fixture>) => { f.sched.enrollmentGeneration = 2; }],
   ['not_included', (f: ReturnType<typeof fixture>) => { f.sched.state = 'not_needed'; f.sched.eligible = false; }],
@@ -683,4 +684,24 @@ it('a skippable invoice carries no reason, and reports whether the MSP put autom
   const off = fixture();
   off.data.set(partners, [{ enabled: false, name: 'Partner' }]);
   expect(await getSkipInvoiceView(off.tx, 'token')).toMatchObject({ status: 'ready', onHold: true });
+});
+
+// R2: a schedule cancelled for another reason while automatic payments stay on is not "off".
+it.each(['provider_canceled', 'paused_by_msp', 'authority_changed'])('a %s schedule with an active enrollment is a cancelled payment, not "stopped"', async stateReason => {
+  const f = fixture({ state: 'cancelled', stateReason });
+  expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ status: 'not_needed', reason: 'cancelled' });
+});
+it('a schedule cancelled by a stop is still "stopped"', async () => {
+  const f = fixture({ state: 'cancelled', stateReason: 'stop' });
+  expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ status: 'not_needed', reason: 'stopped' });
+});
+// R4: a skipped invoice that was later voided, closed or settled never asks to be paid.
+it.each([
+  ['voided', { status: 'void' }, 'void'],
+  ['settled to zero', { balance: '0.00' }, 'nothing_due'],
+  ['closed', { status: 'draft' }, 'nothing_due'],
+] as const)('a skipped invoice later %s reports nothing to pay', async (_label, inv, reason) => {
+  const f = fixture({ state: 'skipped_by_client' });
+  Object.assign(f.inv, inv);
+  expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ status: 'not_needed', reason });
 });

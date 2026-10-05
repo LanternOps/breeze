@@ -184,7 +184,9 @@ export interface InvoiceAutopayView {
 export const AUTOPAY_SKIP_VIEW_STATUSES=['ready','skipped','pending','processing','action_required','paid','reversed','not_needed'] as const;
 export type AutopaySkipViewStatus=(typeof AUTOPAY_SKIP_VIEW_STATUSES)[number];
 /** Why a skip link has nothing to skip (status 'not_needed'), so the page can say so plainly. */
-export const AUTOPAY_SKIP_NOT_NEEDED_REASONS=['void','nothing_due','excluded','failed','stopped','paused','replaced','not_included','not_scheduled'] as const;
+/** 'cancelled': this payment was cancelled (bank confirmation released, an earlier pause,
+ * changed authority) while automatic payments stay on; 'stopped' is automatic payments off. */
+export const AUTOPAY_SKIP_NOT_NEEDED_REASONS=['void','nothing_due','excluded','failed','stopped','paused','replaced','cancelled','not_included','not_scheduled'] as const;
 export type AutopaySkipNotNeededReason=(typeof AUTOPAY_SKIP_NOT_NEEDED_REASONS)[number];
 export const bankPaySchema=bankPaymentConsentSchema.omit({invoiceId:true,orgId:true}).extend({
  methodType:z.literal('us_bank_account'),phase:z.enum(['setup','collect']),consentAccepted:z.literal(true),

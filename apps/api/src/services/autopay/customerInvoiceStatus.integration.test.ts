@@ -4,7 +4,7 @@ import { expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, invoices, stripeConnectAccounts, orgAutopayEnrollments,
-  orgPaymentMethods, invoiceAutopaySchedules, invoiceCollectionAttempts } from '../../db/schema';
+  orgPaymentMethods, invoiceAutopaySchedules, invoiceCollectionAttempts, invoiceStripePayments } from '../../db/schema';
 import { getCustomerInvoiceAutopay } from './customerInvoiceStatus';
 
 async function fixture() {
@@ -50,3 +50,22 @@ it('a real in-flight attempt is processing and blocks paying now', async () => {
   const result = await withSystemDbAccessContext(() => getCustomerInvoiceAutopay(db, { invoiceId: f.invoice.id, orgId: f.org.id }));
   expect(result.status).toMatchObject({ state: 'processing', amount: '50.00', canPayNow: false });
 });
+
+// R3 on real Postgres, through portal RLS: "Paid automatically" only while the automatic
+// payment's Stripe record still stands (the unit harness ignores the join and where clauses).
+it.each([['succeeded', '0', 'paid_automatically'], ['refunded', '5000', null], ['partially_refunded', '1000', null]] as const)(
+  'a paid invoice whose automatic payment is %s reads %s', async (paymentStatus, refunded, expected) => {
+    const f = await fixture();
+    await withSystemDbAccessContext(async () => {
+      await db.update(invoices).set({ status: 'paid', balance: '0.00', amountPaid: '50.00', paidAt: new Date('2026-10-31T08:00:00Z') }).where(eq(invoices.id, f.invoice.id));
+      await db.update(invoiceAutopaySchedules).set({ state: 'succeeded', attemptCount: 1 }).where(eq(invoiceAutopaySchedules.id, f.schedule.id));
+      const [mapping] = await db.insert(invoiceStripePayments).values({ orgId: f.org.id, invoiceId: f.invoice.id, stripeAccountId: `acct_${f.invoice.id}`,
+        stripeObjectType: 'payment_intent', stripeObjectId: `pi_${f.invoice.id}`, amount: '50.00', currency: 'USD', source: 'autopay',
+        paymentMethodType: 'card', status: paymentStatus, refundedAmountMinor: refunded }).returning();
+      await db.insert(invoiceCollectionAttempts).values({ orgId: f.org.id, invoiceId: f.invoice.id, scheduleId: f.schedule.id, paymentMethodId: f.method.id,
+        attemptNo: 1, idempotencyKey: `status-paid-${f.invoice.id}`, principalAmount: '50.00', currency: 'USD', initiatedBy: 'scheduler',
+        state: 'succeeded', invoiceStripePaymentId: mapping!.id });
+    });
+    const result = await asPortal(f.org.id, f.partner.id, () => getCustomerInvoiceAutopay(db, { invoiceId: f.invoice.id, orgId: f.org.id }));
+    expect(result.status?.state ?? null).toBe(expected);
+  });

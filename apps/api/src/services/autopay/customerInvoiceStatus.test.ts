@@ -3,14 +3,14 @@ const h = vi.hoisted(() => ({ rows: new Map<unknown, any[]>(), inFlight: vi.fn()
 vi.mock('./reservation', () => ({ readInFlightCollection: h.inFlight }));
 vi.mock('./paymentMethods', () => ({ getAutopayMethod: h.method }));
 import { getCustomerInvoiceAutopay } from './customerInvoiceStatus';
-import { invoices, invoiceAutopaySchedules, orgAutopayEnrollments, orgPaymentMethods } from '../../db/schema';
+import { invoices, invoiceAutopaySchedules, invoiceCollectionAttempts, orgAutopayEnrollments, orgPaymentMethods } from '../../db/schema';
 
 function fakeDb() {
   const query = () => {
     let table: unknown;
     const c: any = {};
     c.from = (t: unknown) => { table = t; return c; };
-    for (const op of ['where', 'limit', 'orderBy']) c[op] = () => c;
+    for (const op of ['where', 'limit', 'orderBy', 'innerJoin']) c[op] = () => c;
     c.then = (resolve: any, reject: any) => Promise.resolve(h.rows.get(table) ?? []).then(resolve, reject);
     return c;
   };
@@ -93,7 +93,20 @@ describe('getCustomerInvoiceAutopay', () => {
     seed({ state: 'action_required' });
     expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state: 'action_required', canPayNow: false });
   });
+  // R3: "Paid automatically" only while the automatic payment still stands.
+  it.each([
+    ['returned (payment_reversed)', { stateReason: 'payment_reversed' }, { status: 'succeeded', refundedAmountMinor: '0' }],
+    ['refunded in full', {}, { status: 'refunded', refundedAmountMinor: '10000' }],
+    ['partly refunded', {}, { status: 'partially_refunded', refundedAmountMinor: '1000' }],
+    ['disputed', {}, { status: 'disputed', refundedAmountMinor: '0' }],
+    ['with no linked payment', {}, null],
+  ])('an invoice paid again after its automatic payment was %s is not "paid automatically"', async (_label, schedule, payment) => {
+    seed({ state: 'succeeded', ...schedule }, { status: 'paid', balance: '0.00', paidAt: new Date('2026-11-10T08:00:00Z') });
+    h.rows.set(invoiceCollectionAttempts, payment ? [payment] : []);
+    expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toBeNull();
+  });
   it('an invoice the schedule paid says so', async () => {
+    h.rows.set(invoiceCollectionAttempts, [{ status: 'succeeded', refundedAmountMinor: '0' }]);
     seed({ state: 'succeeded' }, { status: 'paid', balance: '0.00', paidAt: new Date('2026-11-04T08:00:00Z') });
     expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state: 'paid_automatically', paidAt: '2026-11-04T08:00:00.000Z' });
   });

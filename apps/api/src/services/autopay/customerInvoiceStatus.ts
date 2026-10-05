@@ -1,6 +1,6 @@
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { autopayTermsSnapshotSchema, formatPaymentMethod, type CustomerInvoiceAutopayStatus } from '@breeze/shared';
-import { invoices, invoiceAutopaySchedules, orgAutopayEnrollments, orgPaymentMethods } from '../../db/schema';
+import { invoices, invoiceAutopaySchedules, invoiceCollectionAttempts, invoiceStripePayments, orgAutopayEnrollments, orgPaymentMethods } from '../../db/schema';
 import { readInFlightCollection } from './reservation';
 import { getAutopayMethod } from './paymentMethods';
 import type { Tx } from './types';
@@ -55,7 +55,20 @@ export async function getCustomerInvoiceAutopay(db: Tx, ids: { invoiceId: string
       ...(moving && moving.orgId === invoice.orgId ? { methodLabel: formatPaymentMethod(moving), methodType: moving.type } : {}) });
   }
   if (!schedule) return { enrolled, status: null };
-  if (schedule.state === 'succeeded' && invoice.status === 'paid') return status('paid_automatically');
+  if (schedule.state === 'succeeded' && invoice.status === 'paid') {
+    // R3: only while the automatic payment still stands. A returned debit keeps the schedule
+    // 'succeeded' with payment_reversed, and a refund or dispute only changes the Stripe
+    // mapping; an invoice paid again some other way must not read "Paid automatically".
+    if (schedule.stateReason === 'payment_reversed') return { enrolled, status: null };
+    const [payment] = await db.select({ status: invoiceStripePayments.status, refundedAmountMinor: invoiceStripePayments.refundedAmountMinor })
+      .from(invoiceCollectionAttempts)
+      .innerJoin(invoiceStripePayments, eq(invoiceStripePayments.id, invoiceCollectionAttempts.invoiceStripePaymentId))
+      .where(and(eq(invoiceCollectionAttempts.scheduleId, schedule.id), eq(invoiceCollectionAttempts.orgId, invoice.orgId),
+        eq(invoiceCollectionAttempts.state, 'succeeded')))
+      .orderBy(desc(invoiceCollectionAttempts.createdAt)).limit(1);
+    const stands = payment?.status === 'succeeded' && Number(payment.refundedAmountMinor) === 0;
+    return stands ? status('paid_automatically') : { enrolled, status: null };
+  }
   if (!OPEN.has(invoice.status)) return { enrolled, status: null };
   switch (schedule.state) {
     case 'awaiting_notice': return status('awaiting_notice');

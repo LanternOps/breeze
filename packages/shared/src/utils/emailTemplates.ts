@@ -349,6 +349,11 @@ const VARIANT_DEFAULTS: Record<string, Partial<EmailTemplateFieldDefaults>> = {
     heading: 'Your bank account is verified', html: `<p>Hi {{client_name}},</p>
 <p>Stripe has verified your bank account, so automatic payments with {{partner_name}} are now on.</p>
 <p>Any invoice we've already emailed you about with a payment date will be charged as that email described. For new invoices, we'll email you the amount and date before each payment.</p>` },
+  // R1: a method saved (or a bank account verified) while the MSP has automatic payments paused.
+  'autopay_enrolled:paused': { subject: 'Your payment method is saved for {{partner_name}}',
+    heading: 'Your payment method is saved', html: `<p>Hi {{client_name}},</p>
+<p>Your {{payment_method}} is saved. {{partner_name}} has paused automatic payments, so nothing is charged automatically for now.</p>
+<p>We'll email you when automatic payments resume, and before each payment after that. Meanwhile, please pay any invoice that's due from its email.</p>` },
   'autopay_stopped:msp': { subject: 'Automatic payments are off with {{partner_name}}', heading: 'Automatic payments are off',
     html: `<p>Hi {{client_name}},</p>
 <p>{{partner_name}} turned off automatic payments for your account. Your saved payment method has been removed, and no new automatic payments will start.</p>` },

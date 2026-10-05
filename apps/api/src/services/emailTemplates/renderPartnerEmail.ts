@@ -141,7 +141,8 @@ function applyCta(
   const safeUrl = ctaUrl && isSafeHttpUrl(ctaUrl) ? ctaUrl : null;
   if (emailTemplateHasCta(id) && safeUrl) {
     const button = renderButton(label, safeUrl);
-    if (slotted) return inner.replaceAll(sentinel, button);
+    // R11: function replacers insert labels and names literally ($& in a label stays $&).
+    if (slotted) return inner.replaceAll(sentinel, () => button);
     return `${inner}${button}`;
   }
   return inner.replaceAll(sentinel, '');
@@ -151,14 +152,14 @@ function applyCta(
 function ctaAsText(inner: string, id: EmailTemplateId, ctaUrl: string | undefined, label: string, sentinel: string): string {
   const safeUrl = ctaUrl && isSafeHttpUrl(ctaUrl) ? ctaUrl : null;
   const line = emailTemplateHasCta(id) && safeUrl ? `<p>${escapeHtml(label)}: ${escapeHtml(safeUrl)}</p>` : '';
-  if (inner.includes(sentinel)) return inner.replaceAll(sentinel, line);
+  if (inner.includes(sentinel)) return inner.replaceAll(sentinel, () => line);
   return `${inner}${line}`;
 }
 
 function spliceBeforeCta(inner: string, beforeCta: string | undefined, sentinel: string): string {
   if (!beforeCta) return inner;
   if (inner.includes(sentinel)) {
-    return inner.replace(sentinel, `${beforeCta}${sentinel}`);
+    return inner.replace(sentinel, () => `${beforeCta}${sentinel}`);
   }
   return `${inner}${beforeCta}`;
 }

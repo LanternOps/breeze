@@ -194,8 +194,10 @@ async function renderReminder(
   // The announced date is ours (not a partner var): written into the locked copy, escaped.
   const announcedOn = r.announcedFor ? ` for on or around ${escapeHtml(emailDate(r.announcedFor))}` : '';
   // The reason is ours too (a fixed sentence per reason, carrying the MSP's name): escaped.
-  const locked = lockedCopy ? { ...lockedCopy, html: lockedCopy.html.replace('{{announced_on}}', announcedOn)
-    .replace('{{not_charged_reason}}', escapeHtml(r.notChargedReason ?? `${r.partnerName} will not charge this invoice automatically.`)) } : null;
+  // Function replacers: an MSP name with $& or $' is inserted literally (R11).
+  const reason = escapeHtml(r.notChargedReason ?? `${r.partnerName} will not charge this invoice automatically.`);
+  const locked = lockedCopy ? { ...lockedCopy, html: lockedCopy.html.replace('{{announced_on}}', () => announcedOn)
+    .replace('{{not_charged_reason}}', () => reason) } : null;
   return {
     id: kind, brandName: r.partnerName, ctaUrl: r.payLink,
     custom: locked ? { ...locked } : partnerEmailCustomFromSettings(r.partnerSettings, kind),

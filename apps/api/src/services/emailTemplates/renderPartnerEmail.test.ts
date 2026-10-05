@@ -278,3 +278,23 @@ describe('renderPartnerEmail text body and variants', () => {
     expect(renderPartnerEmail({ id: 'payment_failed', variant: 'confirm', custom, vars: { invoice_number: 'INV-7' } }).subject).toBe('Custom INV-7');
   });
 });
+
+// R11: names and labels are inserted literally. A string replacement would expand `$&`,
+// `$'`, `$1`… in an MSP's name or button label into pieces of the template.
+describe('replacement patterns in partner text are literal', () => {
+  it('a button label with $& and $\' renders as written, in HTML and text', () => {
+    const out = renderPartnerEmail(commentArgs({
+      custom: { subject: null, heading: null, buttonLabel: "Pay $& now $'", html: '<p>Hello {{cta_button}} there</p>' },
+    }));
+    expect(out.html).toContain("Pay $&amp; now $&#39;</a>");
+    expect(out.bodyText).toContain("Pay $& now $': https://manage.example/portal/tickets/abc");
+    expect(out.html).not.toMatch(/__CTA|cta-sentinel/i);
+  });
+  it('content spliced before the button keeps its $& literally', () => {
+    const out = renderPartnerEmail(commentArgs({
+      custom: { subject: null, heading: null, buttonLabel: null, html: '<p>Hello {{cta_button}}</p>' },
+      bodyBeforeCta: '<p>Fee: $& and $1</p>',
+    }));
+    expect(out.html).toContain('<p>Fee: $& and $1</p>');
+  });
+});

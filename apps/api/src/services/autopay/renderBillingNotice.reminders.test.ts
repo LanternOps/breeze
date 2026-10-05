@@ -87,3 +87,11 @@ it.each(['payment_receipt','payment_failed'] as const)('renders readable %s text
  if(kind==='payment_failed') {expect(rendered.text).toContain('Your bank requires confirmation.');expect(rendered.text).toContain('https://portal.example.test/confirm');}
  else {expect(rendered.text).toContain('Visa ••4242');expect(rendered.text).toContain('Processing fee: USD 3.00');}
 });
+
+// R11: an MSP name with $& (or a reason with $') is inserted literally into the locked copy.
+it('a not-charged notice keeps replacement patterns in the MSP name literal', async () => {
+  const rendered = await renderBillingNotice('payment_reminder', { ...ctx, data: { ...ctx.data, variant: 'not_charged', announcedFor: '2026-11-04',
+    partnerName: "Fix$&Co $'" } });
+  expect(rendered.text).toContain("Fix$&Co $' will not charge this invoice automatically.");
+  expect(rendered.text).not.toContain('{{');
+});
