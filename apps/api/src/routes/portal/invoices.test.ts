@@ -1,3 +1,5 @@
+const portalSentry=vi.hoisted(()=>vi.fn());
+vi.mock('../../services/sentry',()=>({captureException:portalSentry}));
 const bankRoutes=vi.hoisted(()=>({setup:vi.fn(),collect:vi.fn(),offer:vi.fn(async()=>null)}));
 vi.mock('../../services/autopay/bankPayment',async original=>({
  ...await original<typeof import('../../services/autopay/bankPayment')>(),
@@ -770,6 +772,20 @@ describe('GET /invoices/:id carries how this invoice will be paid (D-4)', () => 
     expect(body.autopayEnrolled).toBe(true);
     expect(body.autopay).toBeNull();
     expect(portalAutopay.status).toHaveBeenCalledWith(expect.anything(), { invoiceId: INV_ID, orgId: ORG_ID });
+  });
+  // R9: unknown enrollment fails closed: no setup or bank offer, and the failure is reported.
+  it('a failed status read offers nothing that saves a method and reports it', async () => {
+    portalAutopay.offer.mockResolvedValueOnce({ eligible: true } as never);
+    bankRoutes.offer.mockResolvedValueOnce({ available: true } as never);
+    portalAutopay.status.mockRejectedValueOnce(new Error('db down'));
+    getCustomerInvoiceMock.mockResolvedValue({ partnerId: 'p1', invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' }, lines: [] });
+    const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.autopayStatus).toBeNull();
+    expect(body.autopay).toBeNull();
+    expect(body.bankAutopay).toBeNull();
+    expect(portalSentry).toHaveBeenCalledWith(expect.objectContaining({ message: 'db down' }), undefined, expect.objectContaining({ autopay_phase: 'invoice_status' }));
   });
 });
 vi.mock('../../services/autopay/payAndSave', async importOriginal => {

@@ -10,6 +10,8 @@ vi.mock('../../services/autopay/enrollmentService',()=>({createAutopaySetupSessi
 vi.mock('../../services/autopay/consentText',()=>({withAcceptedAutopayDisclosure:(_hash:string,fn:()=>unknown)=>fn()}));
 vi.mock('../../services/autopay/autopayGate',()=>({requireAutopayEnabled:()=>async(c:any,next:any)=>c.req.header('x-disabled')?c.json({code:'autopay_not_enabled'},404):next()}));
 vi.mock('../../services/clientIp',()=>({getTrustedClientIpOrUndefined:()=>undefined}));
+const sentry=vi.hoisted(()=>vi.fn());
+vi.mock('../../services/sentry',()=>({captureException:sentry}));
 vi.mock('../../services/autopay/enrollmentLifecycle',()=>({withAutopayStopToken:h.stopToken}));
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { publicAutopayRoutes } from './public';
@@ -59,6 +61,16 @@ describe('public autopay token boundaries',()=>{
   });
 });
 
+// R10: a branding read that fails while switched off still refuses, without a name, and is reported.
+it('a failed branding read on a switched-off refusal is logged and reported, and still refuses',async()=>{
+  h.branding.mockRejectedValueOnce(new Error('branding down'));
+  const error=vi.spyOn(console,'error').mockImplementation(()=>{});
+  const res=await app.request('/autopay/public/token',{headers:{'x-disabled':'1'}});
+  expect(res.status).toBe(404);expect(await res.json()).toMatchObject({code:'autopay_not_enabled',data:{}});
+  expect(error).toHaveBeenCalledWith(expect.stringContaining('Branding'),expect.objectContaining({message:'branding down'}));
+  expect(sentry).toHaveBeenCalledWith(expect.objectContaining({message:'branding down'}),undefined,expect.objectContaining({autopay_phase:'gate_branding'}));
+  error.mockRestore();
+});
 describe('public domain errors and validation',()=>{
   it.each([
     ['The terms changed. Review them and try again.',409],

@@ -1,3 +1,5 @@
+const sentryCapture=vi.hoisted(()=>vi.fn());
+vi.mock('../services/sentry',()=>({captureException:sentryCapture}));
 const bankRoutes=vi.hoisted(()=>({setup:vi.fn(),collect:vi.fn(),offer:vi.fn(async()=>null)}));
 vi.mock('../services/autopay/bankPayment',async original=>({
  ...await original<typeof import('../services/autopay/bankPayment')>(),
@@ -560,13 +562,21 @@ describe('the invoice page learns how this invoice will be paid (D-4)', () => {
     expect(data.autopayEnrolled).toBe(false);
     expect(data.autopayStatus).toBeNull();
   });
-  it('still renders when the status read fails', async () => {
+  // R9: the page still renders, but without knowing whether the client is enrolled it must not
+  // offer setup or a bank payment that would replace their method: fail closed, and report it.
+  it('still renders when the status read fails, offering nothing that saves a method', async () => {
     resolveMock.mockResolvedValue(invoice());
+    offerMock.mockResolvedValueOnce(offer as never);
+    bankRoutes.offer.mockResolvedValueOnce({ available: true } as never);
     customerAutopayMock.mockRejectedValueOnce(new Error('db down'));
     dbResults.push(PARTNER_ROW, BRAND_ROW, []);
     const res = await app().request(`/invoices/public/${TOKEN}`);
     expect(res.status).toBe(200);
-    expect((await res.json()).data.autopayStatus).toBeNull();
+    const { data } = await res.json();
+    expect(data.autopayStatus).toBeNull();
+    expect(data.autopay).toBeNull();
+    expect(data.bankAutopay).toBeNull();
+    expect(sentryCapture).toHaveBeenCalledWith(expect.objectContaining({ message: 'db down' }), undefined, expect.objectContaining({ autopay_phase: 'invoice_status' }));
   });
 });
 it('public invoice pay forwards only explicit card authorization', async () => {

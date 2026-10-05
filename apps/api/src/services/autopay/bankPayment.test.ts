@@ -130,7 +130,7 @@ it('does not offer bank payment while money is reserved or unapplied',async()=>{
 it('requires fresh displayed terms when the balance changed before setup',async()=>{
  completionFixture();bank.rows=[[{...invoice,balance:'90.00'}],[enrollment],[{id:invoice.orgId,status:'active'}],[]];
  bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64)});bank.quote.mockReturnValue({feeAmount:'0.00'});
- await expect(startInvoiceBankSetup({invoiceId:invoice.id,orgId:invoice.orgId,terms:{...accepted,methodType:'us_bank_account',phase:'setup',consentAccepted:true,currency:'USD'},returnTo:'public',ip:null,userAgent:null})).rejects.toMatchObject({status:409});
+ await expect(startInvoiceBankSetup({invoiceId:invoice.id,orgId:invoice.orgId,terms:{...accepted,methodType:'us_bank_account',phase:'setup',consentAccepted:true,currency:'USD'},returnTo:'public',ip:null,userAgent:null})).rejects.toMatchObject({status:409,details:{reason:'terms_changed'}});
  expect(createAutopaySetupSession).not.toHaveBeenCalled();
 });
 

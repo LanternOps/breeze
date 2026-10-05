@@ -16,7 +16,7 @@ describe('accepted authorization', () => {
   it('refuses a missing or changed browser disclosure', async () => {
     expect(() => requireAcceptedAutopayDisclosure('a'.repeat(64))).toThrow();
     await expect(withAcceptedAutopayDisclosure('a'.repeat(64), async () =>
-      requireAcceptedAutopayDisclosure('b'.repeat(64)))).rejects.toMatchObject({status:409});
+      requireAcceptedAutopayDisclosure('b'.repeat(64)))).rejects.toMatchObject({status:409,details:{reason:'terms_changed'}});
   });
   it('isolates two simultaneous browsers', async () => {
     await Promise.all(['a','b'].map(letter => withAcceptedAutopayDisclosure(letter.repeat(64), async () => {

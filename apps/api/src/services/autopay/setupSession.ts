@@ -53,7 +53,7 @@ export async function prepareAutopayCapture(input:SetupInput,source:AutopaySetup
     stripeAccountCountry:ready.accountCountry,orgBillingCountry:org.billingAddressCountry,orgBillingRegion:org.billingAddressRegion,
     cardFeeBps:settings.cardFeeBps.value,achFeeAmount:settings.achFeeAmount.value,feeAttested:settings.feeAttested});
    if(invoice.balance!==bankPayment.principal||quote.feeAmount!==bankPayment.fee||invoice.currencyCode!==bankPayment.currency)
-    throw new InvoiceServiceError('The terms changed. Review them and try again.',409,'INVALID_STATE');
+    throw new InvoiceServiceError('The terms changed. Review them and try again.',409,'INVALID_STATE',{reason:'terms_changed'});
   }
   if((disclosure.achMode==='card_only'&&input.methodType!=='card')||(disclosure.achMode==='ach_only'&&input.methodType!=='us_bank_account'))
    throw new InvoiceServiceError('Payment method unavailable',409,'INVALID_STATE');

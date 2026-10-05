@@ -59,8 +59,13 @@ const gate:MiddlewareHandler=async(c,next)=>{
   if(passed||!(refused instanceof Response))return refused;
   const body=await refused.clone().json().catch(()=>({})) as Record<string,unknown>;
   const identity=c.get('autopayIdentity');
+  // R10: the refusal still goes out unbranded, but a failed read is never silent.
   const branding=await runOutsideDbContext(()=>withSystemDbAccessContext(()=>loadAutopayBranding(db,
-    {orgId:identity.orgId,partnerId:identity.partnerId}))).catch(()=>({}));
+    {orgId:identity.orgId,partnerId:identity.partnerId}))).catch((error:unknown)=>{
+    console.error('[autopay] Branding for a switched-off refusal could not be read',error);
+    captureException(error,undefined,{autopay_phase:'gate_branding'});
+    return {};
+  });
   return c.json({...body,data:branding},refused.status as 404);
 };
 publicAutopayRoutes.post('/setup-return',boundary('enroll',true),gate,zValidator('json',returning),async c=>{
@@ -114,7 +119,9 @@ publicAutopayRoutes.post('/:token/confirm',boundary('confirm_payment'),publicJso
       if(error instanceof InvoiceServiceError&&error.status===404)return c.json({error:'Link unavailable'},404);
       console.error('[autopay] Public confirmation failed',error);
       captureException(error,undefined,{autopay_phase:'confirm'});
-      if(error instanceof InvoiceServiceError && error.status<500)return c.json({error:error.message},error.status);
+      // R5: code and reason let the page tell "under review" from "still processing".
+      if(error instanceof InvoiceServiceError && error.status<500)return c.json({error:error.message,code:error.code,
+        ...(error.details?{details:error.details}:{})},error.status);
       return c.json({error:'Payment could not be confirmed. Refresh the invoice to check its status.'},500);
     }
   });

@@ -262,6 +262,13 @@ it('confirmation recovery is scanner safe and available with rollout disabled',a
  expect(post.status).toBe(200);expect(await post.json()).toEqual({processing:true});
  expect(h.identity).toHaveBeenCalledWith('token','confirm_payment');
 });
+// R5: the page classifies a refusal by its code and reason, so the route passes them through.
+it('a refused confirmation carries its code and reason',async()=>{
+ h.confirm.mockRejectedValueOnce(new InvoiceServiceError('Payment received but needs billing review',409,'INVALID_STATE',{reason:'needs_review'}));
+ const res=await app.request('/api/v1/autopay/public/token/confirm',{method:'POST',headers,body:'{}'});
+ expect(res.status).toBe(409);
+ expect(await res.json()).toMatchObject({code:'INVALID_STATE',details:{reason:'needs_review'}});
+});
 it('confirm rejects missing authority, stale binding, cross-origin and invalid JSON',async()=>{
  const url='/api/v1/autopay/public/token/confirm';
  h.identity.mockResolvedValueOnce(null);expect((await app.request(url)).status).toBe(404);

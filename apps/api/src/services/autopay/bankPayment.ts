@@ -86,7 +86,7 @@ export async function startInvoiceBankSetup(input:{invoiceId:string;orgId:string
   const offer=await getBankAutopayOffer(input.invoiceId,input.orgId);
   if(!offer?.available||offer.principal!==input.terms.principal||offer.fee!==input.terms.fee
     ||offer.currency!==input.terms.currency||offer.disclosureHash!==input.terms.disclosureHash){
-    throw new InvoiceServiceError('The terms changed. Review them and try again.',409,'INVALID_STATE');
+    throw new InvoiceServiceError('The terms changed. Review them and try again.',409,'INVALID_STATE',{reason:'terms_changed'});
   }
   const authority=await withSystemDbAccessContext(async()=>{
     const [enrollment]=await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId,input.orgId)).limit(1).for('update');

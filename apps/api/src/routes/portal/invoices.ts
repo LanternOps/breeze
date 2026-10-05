@@ -1,3 +1,4 @@
+import { captureException } from '../../services/sentry';
 import {invoicePaySchema,getBankAutopayOffer,startInvoiceBankSetup,collectAfterBankSetup} from '../../services/autopay/bankPayment';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { getInvoiceAutopayOffer, prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave } from '../../services/autopay/payAndSave';
@@ -180,11 +181,16 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
   }
 
   // D-4: how this invoice will be paid; an enrolled client is not offered setup again.
+  // R9: when the status can't be read, enrollment is unknown, so fail closed: offer nothing
+  // that saves a method (it could silently replace an enrolled client's).
   let customerAutopay: Awaited<ReturnType<typeof getCustomerInvoiceAutopay>> = { enrolled: false, status: null };
+  let autopayKnown = true;
   try {
     customerAutopay = await getCustomerInvoiceAutopay(db, { invoiceId: id, orgId: auth.user.orgId });
   } catch (err) {
+    autopayKnown = false;
     console.error('[portal/invoices] autopay status lookup failed', { invoiceId: id, err });
+    captureException(err, undefined, { autopay_phase: 'invoice_status' });
   }
 
   return c.json({
@@ -194,8 +200,8 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
     collectionInProgress,
     autopayStatus: customerAutopay.status,
     autopayEnrolled: customerAutopay.enrolled,
-    autopay: customerAutopay.enrolled ? null : await getInvoiceAutopayOffer(auth.user.orgId, id),
-    bankAutopay: await runOutsideDbContext(()=>getBankAutopayOffer(id,auth.user.orgId)),
+    autopay: customerAutopay.enrolled || !autopayKnown ? null : await getInvoiceAutopayOffer(auth.user.orgId, id),
+    bankAutopay: autopayKnown ? await runOutsideDbContext(()=>getBankAutopayOffer(id,auth.user.orgId)) : null,
     branding: {
       partnerName: partner?.name ?? null,
       logoUrl: brand?.logoUrl ?? null,

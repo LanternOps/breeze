@@ -58,7 +58,7 @@ export function withAcceptedAutopayDisclosure<T>(hash:string,fn:()=>Promise<T>):
  return accepted.run(hash,fn);
 }
 export function requireAcceptedAutopayDisclosure(hash:string):void{
- if(accepted.getStore()!==hash)throw new InvoiceServiceError('The terms changed. Review them and try again.',409,'INVALID_STATE');
+ if(accepted.getStore()!==hash)throw new InvoiceServiceError('The terms changed. Review them and try again.',409,'INVALID_STATE',{reason:'terms_changed'});
 }
 import type { AutopayDisclosure } from '@breeze/shared';
 export type { AutopayDisclosure } from '@breeze/shared';

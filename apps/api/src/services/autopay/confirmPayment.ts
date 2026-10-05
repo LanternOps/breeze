@@ -90,9 +90,10 @@ async function cancelForOnSessionPayment(attemptId: string)
   await resumeCollectionAttempt(attemptId, true);
   const current = await loadAttemptForReconciliation(attemptId);
   if (current.attempt.state === 'processing') return { state: 'processing' };
-  if (current.attempt.state === 'unapplied') throw new InvoiceServiceError('Payment received but needs billing review', 409, 'INVALID_STATE');
+  // R5: reasons the pages branch on (never the English message).
+  if (current.attempt.state === 'unapplied') throw new InvoiceServiceError('Payment received but needs billing review', 409, 'INVALID_STATE', { reason: 'needs_review' });
   if (current.attempt.state === 'succeeded') return { state: 'succeeded', paid: !!current.mapping.invoicePaymentId };
-  if (current.attempt.state !== 'canceled') throw new InvoiceServiceError('Payment is still processing', 409, 'INVALID_STATE');
+  if (current.attempt.state !== 'canceled') throw new InvoiceServiceError('Payment is still processing', 409, 'INVALID_STATE', { reason: 'processing' });
   return { state: 'canceled' };
 }
 

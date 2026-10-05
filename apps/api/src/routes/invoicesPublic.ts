@@ -1,3 +1,4 @@
+import { captureException } from '../services/sentry';
 import {invoicePaySchema,getBankAutopayOffer,startInvoiceBankSetup,collectAfterBankSetup} from '../services/autopay/bankPayment';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { getInvoiceAutopayOffer } from '../services/autopay/payAndSave';
@@ -172,11 +173,15 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
     }
     // D-4: how this invoice will be paid. An enrolled client is told, and is not
     // offered automatic-payment setup again (the save-card offer is withheld).
+    // R9: unknown enrollment fails closed: no offer that saves a method.
     let customerAutopay: Awaited<ReturnType<typeof getCustomerInvoiceAutopay>> = { enrolled: false, status: null };
+    let autopayKnown = true;
     try {
       customerAutopay = await getCustomerInvoiceAutopay(db, { invoiceId: inv.id, orgId: inv.orgId });
     } catch (err) {
+      autopayKnown = false;
       console.error('[invoicesPublic] autopay status lookup failed', { invoiceId: inv.id, err });
+      captureException(err, undefined, { autopay_phase: 'invoice_status' });
     }
     return {
       invoice: { ...toCustomerInvoiceHeader(inv), paidAt: inv.paidAt },
@@ -188,8 +193,8 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       // #7509: no Pay CTA unless the partner can actually take online payment.
       payable: PAYABLE.has(inv.status) && Number(inv.balance) > 0
         && await isPartnerOnlinePaymentAvailable(inv.partnerId),
-      autopay: customerAutopay.enrolled ? null : await getInvoiceAutopayOffer(inv.orgId, inv.id),
-      bankAutopay: await getBankAutopayOffer(inv.id,inv.orgId),
+      autopay: customerAutopay.enrolled || !autopayKnown ? null : await getInvoiceAutopayOffer(inv.orgId, inv.id),
+      bankAutopay: autopayKnown ? await getBankAutopayOffer(inv.id,inv.orgId) : null,
       branding: brandingBlock(inv, partner, brand),
     };
   }));

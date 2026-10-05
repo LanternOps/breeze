@@ -120,3 +120,12 @@ it('a canceled confirmation still reports what the open invoice owes',async()=>{
  h.rows.set(invoiceCollectionAttempts,[{...attempt,state:'canceled'}]);
  expect(await getConfirmPaymentView('token')).toMatchObject({state:'not_needed',invoiceStatus:'sent',balance:'90.00'});
 });
+
+// R5: a 409 says WHY by reason, not by English text: the confirm page must tell "money
+// arrived, under review" (never pay again) from "still processing".
+it.each([['unapplied','needs_review'],['processing_late','processing']] as const)('a %s outcome refuses with reason %s',async(kind,reason)=>{
+ h.resume.mockResolvedValue(undefined);
+ h.history.mockResolvedValue(kind==='unapplied'?{attempt:{...attempt,state:'unapplied'},mapping:{invoicePaymentId:null}}
+  :{attempt:{...attempt,state:'requires_action'},mapping:{invoicePaymentId:null}});
+ await expect(confirmInvoicePayment('token')).rejects.toMatchObject({status:409,details:{reason}});
+});
