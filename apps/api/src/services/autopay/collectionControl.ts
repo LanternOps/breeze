@@ -13,8 +13,7 @@ import { enqueueBillingNotice } from './noticeOutbox';
 import { renderBillingNotice } from './renderBillingNotice';
 import { enqueueAutopayStaffNotifications, type AutopayStaffNotice } from './staffNotifications';
 import type { Tx } from './types';
-import { announcedCharges, announcedOn } from './announcedCharges';
-import { escapeHtml } from '../emailLayout';
+import { noticeChargeNotMade } from './notChargedNotice';
 
 // Controls may fence new collections, but terminal schedule outcomes are history.
 const CONTROL_SCHEDULE_STATES: Array<(typeof invoiceAutopaySchedules.$inferSelect)['state']> =
@@ -168,7 +167,8 @@ export async function finalizeInvoiceControl(tx: Tx, invoice: typeof invoices.$i
   await tx.update(invoiceAutopaySchedules).set({ state, nextAttemptAt: null, stateReason: kind })
     .where(eq(invoiceAutopaySchedules.id, schedule.id));
   if (kind === 'exclude') {
-    await enqueueExcludedInvoiceNotice(tx, invoice);
+    // D-19: a charge the client was already told about will not happen (one shared notice shape).
+    await noticeChargeNotMade(tx, { invoiceId: invoice.id, reason: 'exclude' });
     return { status: 'excluded' };
   }
   await enqueueSkippedInvoiceConfirmation(tx, invoice);
@@ -196,31 +196,6 @@ async function enqueueSkippedInvoiceConfirmation(tx: Tx, invoice: typeof invoice
     kind: 'payment_reminder', seq: 0, dedupeKey: `invoice:${invoice.id}:skip:1`, toEmail: recipient,
     rendered: { ...rendered, subject: `Automatic payment skipped — ${invoice.invoiceNumber}`,
       html: `<p>${prefix}</p>${rendered.html}`, text: `${prefix}\n\n${rendered.text}` } });
-}
-
-/** D-19: an MSP exclusion after the pre-charge notice went out. Mirrors the skip
- * confirmation: the client was told the invoice would be charged, so they hear it
- * will not be, and how to pay. Nothing is sent when no charging notice was delivered. */
-async function enqueueExcludedInvoiceNotice(tx: Tx, invoice: typeof invoices.$inferSelect): Promise<void> {
-  const [announced] = await announcedCharges(tx, { invoiceId: invoice.id });
-  if (!announced) return;
-  const [org] = await tx.select().from(organizations).where(eq(organizations.id, invoice.orgId)).limit(1);
-  const [partner] = await tx.select().from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
-  if (!org || !partner) throw new Error('Exclusion notice ownership unavailable');
-  const recipient = resolveBillingEmail(org.billingContact);
-  if (!recipient) return;
-  const link = await getOrMintInvoiceLink(invoice, tx);
-  const rendered = await renderBillingNotice('payment_reminder', { partnerId: invoice.partnerId, orgId: invoice.orgId,
-    mandatory: {}, frozen: { amount: invoice.balance, currency: invoice.currencyCode, dueDate: invoice.dueDate },
-    data: { invoiceNumber: invoice.invoiceNumber, balance: invoice.balance, currency: invoice.currencyCode,
-      dueDate: invoice.dueDate, daysOverdue: 0, payLink: buildPublicInvoiceUrl(link.token),
-      partnerName: partner.name, orgName: org.name, partnerSettings: partner.settings } }, tx);
-  const prefix = `${partner.name} will not charge this invoice automatically. The automatic payment announced${announcedOn(announced)} will not happen. You can pay using the invoice link.`;
-  // One notice per announcement: a re-included, re-noticed and re-excluded invoice is told again.
-  await enqueueBillingNotice(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
-    kind: 'payment_reminder', seq: 0, dedupeKey: `invoice:${invoice.id}:exclude:${announced.noticeSeq}`, toEmail: recipient,
-    rendered: { ...rendered, subject: `Automatic payment cancelled — ${invoice.invoiceNumber}`,
-      html: `<p>${escapeHtml(prefix)}</p>${rendered.html}`, text: `${prefix}\n\n${rendered.text}` } });
 }
 
 /** Recover fences using the same mapping-bound, outside-transaction provider path

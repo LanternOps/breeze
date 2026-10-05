@@ -573,7 +573,7 @@ it('tells the client an announced invoice will not be charged after an MSP exclu
   f.data.set(billingNoticeOutbox, [{ ...sentNotice }]);
   expect(await setInvoiceAutopayExcluded(f.tx, invoice.id, true, actor)).toMatchObject({ status: 'excluded' });
   expect(h.confirmation).toHaveBeenCalledExactlyOnceWith(f.tx, expect.objectContaining({
-    kind: 'payment_reminder', seq: 0, invoiceId: invoice.id, dedupeKey: `invoice:${invoice.id}:exclude:1`,
+    kind: 'payment_reminder', seq: 0, invoiceId: invoice.id, dedupeKey: `invoice:${invoice.id}:not_charged:1`,
     rendered: expect.objectContaining({ subject: 'Automatic payment cancelled — INV-1' }),
   }));
   const { rendered } = h.confirmation.mock.calls[0]![1];
@@ -594,7 +594,7 @@ it('tells the client once the reconciler finalizes a pending exclusion of an ann
   f.inv.autopayExcluded = true;
   f.data.set(billingNoticeOutbox, [{ ...sentNotice }]);
   expect(await finalizeInvoiceControl(f.tx, f.inv as any, f.sched as any, 'exclude')).toEqual({ status: 'excluded' });
-  expect(h.confirmation).toHaveBeenCalledExactlyOnceWith(f.tx, expect.objectContaining({ dedupeKey: `invoice:${invoice.id}:exclude:1` }));
+  expect(h.confirmation).toHaveBeenCalledExactlyOnceWith(f.tx, expect.objectContaining({ dedupeKey: `invoice:${invoice.id}:not_charged:1` }));
 });
 
 // D-22: a stale skip link on a paid, closed or unscheduled invoice must not offer "Skip".

@@ -2047,7 +2047,7 @@ it('a missing authorization at charge time emails staff once and tells each noti
   expect(schedule).toMatchObject({state:'failed',stateReason:'consent_required'});
   const notices=(await outboxFor(invoice.id)).filter(n=>n.kind==='payment_reminder');
   expect(notices).toEqual([expect.objectContaining({dedupeKey:`invoice:${invoice.id}:not_charged:1`,toEmail:'billing@example.test',status:'pending'})]);
-  expect((notices[0]!.rendered as {text:string}).text).toContain('will not be charged automatically');
+  expect((notices[0]!.rendered as {text:string}).text).toMatch(/needs your updated authorization before charging automatically\. The automatic payment announced .*will not happen\./);
  }
  expect(provider.create).not.toHaveBeenCalled();
 });
@@ -2109,9 +2109,16 @@ it('a cap cancellation before confirm records its reason and tells the client an
  expect(await scheduleFor(f)).toMatchObject({state:'cancelled',stateReason:'above_authorized_cap'});
  const notices=(await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder');
  expect(notices).toEqual([expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`,status:'pending'})]);
- expect((notices[0]!.rendered as {text:string}).text).toContain('limit you authorized');
+ const text=(notices[0]!.rendered as {text:string}).text;
+ expect(text).toContain('limit you authorized');
+ // One shape with the MSP exclusion notice (D-19): it names the announced charge that will not happen.
+ expect(text).toMatch(/The automatic payment announced for on or around \d{4}-\d{2}-\d{2} will not happen\. You can pay using the invoice link\./);
  expect(mail.staff()[0]!.text).toMatch(/limit the client authorized/);
+ // Once per announcement, whatever the reason: a later exclusion of the same announced charge adds nothing.
+ await withSystemDbAccessContext(()=>noticeChargeNotMade(db,{invoiceId:f.invoice.id,reason:'exclude'}));
+ expect((await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder')).toHaveLength(1);
 });
+import { noticeChargeNotMade } from './notChargedNotice';
 
 // B1-5 / P-18: re-authorizing a bank payment for the same invoice (a changed total, or a
 // spent authority) re-runs bank setup. It is the same enrollment, not a new one: the
