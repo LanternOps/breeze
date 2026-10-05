@@ -50,8 +50,8 @@
     "test:run": "vitest run"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.286",
-    "@anthropic-ai/sdk": "^0.128.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.288",
+    "@anthropic-ai/sdk": "^0.131.0",
     "@aws-sdk/client-s3": "^3.1100.0",
     "@aws-sdk/lib-storage": "^3.1100.0",
     "@aws-sdk/s3-request-presigner": "^3.1140.0",
