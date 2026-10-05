@@ -152,7 +152,7 @@ it('requires return identity for staff and preserves the invoice destination', a
   expect(h.staff).toHaveBeenCalledWith(expect.objectContaining({ invoiceId: 'invoice', dedupeKey: 'autopay:a:payment.ach_returned:mapping:dp_1' }));
 });
 
-import { enqueueMethodUnusableNotice } from './paymentNotices';
+import { enqueueMethodUnusableNotice, enqueueMethodUnusablePayNotice } from './paymentNotices';
 describe('method-unusable notice for a due schedule with no attempt of its own', () => {
   beforeEach(() => {
     rows.set(invoiceAutopaySchedules, [{ id: 'schedule', invoiceId: 'invoice', orgId: 'org', enrollmentId: 'enrollment',
@@ -254,6 +254,77 @@ describe('client payment notices name the invoice, the provider and the method (
       expect(body).toContain('USD 2.70');
       expect(body).toContain('USD 90.00');
       expect(body).toContain('Nothing has been charged');
+    }
+  });
+});
+
+describe('a returned bank payment whose account can no longer be used (2b-2)', () => {
+  beforeEach(() => {
+    Object.assign(rows.get(invoiceStripePayments)![0]!, { status: 'disputed', disputeFundsWithdrawn: true, invoicePaymentId: null, paymentMethodType: 'us_bank_account' });
+    Object.assign(rows.get(orgPaymentMethods)![0]!, { type: 'us_bank_account', bankLast4: '6789', status: 'unusable', isAutopayMethod: true });
+  });
+  it('leads with paying the invoice and adds the update-method link with the 2b update layout', async () => {
+    await enqueueAttemptNotice(tx, 'a', 'returned', 'mapping:dp_1');
+    expect(h.mint).toHaveBeenCalledWith(tx, expect.objectContaining({ purpose: 'enroll', enrollmentId: 'enrollment', generation: 7, ttlDays: 14 }));
+    const { html, text, frozen } = lastQueued();
+    expect(frozen).toMatchObject({ variant: 'returned', tokenId: 'token-row', returnIdentity: 'mapping:dp_1' });
+    expect(html).toContain('href="https://example.test/invoice/pay"');
+    expect(html).toContain('href="https://example.test/enroll/secret"');
+    expect(text).toContain('Pay invoice: https://example.test/invoice/pay');
+    expect(text).toContain('Update payment method: https://example.test/enroll/secret');
+    for (const body of [html, text]) {
+      expect(body).toContain('bank account ending in 6789 can no longer be used for automatic payments');
+      expect(body).toContain('does not pay this invoice');
+    }
+  });
+  it('keeps the plain returned email for a soft return that left the account usable', async () => {
+    rows.get(orgPaymentMethods)![0]!.status = 'active';
+    await enqueueAttemptNotice(tx, 'a', 'returned', 'mapping:dp_1');
+    expect(h.mint).not.toHaveBeenCalled();
+    const { html, text } = lastQueued();
+    for (const body of [html, text]) { expect(body).not.toContain('Update payment method'); expect(body).not.toContain('can no longer be used'); }
+  });
+  it('leaves the update link out once autopay no longer holds that account', async () => {
+    rows.get(orgAutopayEnrollments)![0]!.status = 'cancelled';
+    await enqueueAttemptNotice(tx, 'a', 'returned', 'mapping:dp_1');
+    expect(h.mint).not.toHaveBeenCalled();
+    expect(lastQueued().text).not.toContain('Update payment method');
+  });
+  it('re-issues without the update link under its own dedupe key', async () => {
+    await enqueueAttemptNotice(tx, 'a', 'returned', 'mapping:dp_1', { fallback: true });
+    expect(h.mint).not.toHaveBeenCalled();
+    expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ dedupeKey: 'a:payment_failed:returned:mapping:dp_1:reissued' }));
+    expect(lastQueued().text).not.toContain('Update payment method');
+  });
+});
+describe('re-issuing an update-method email as the pay variant (2b-1)', () => {
+  it('sends the pay variant for the same attempt under its own dedupe key', async () => {
+    rows.get(invoiceCollectionAttempts)![0]!.failureClass = 'hard';
+    await enqueueAttemptNotice(tx, 'a', 'pay', undefined, { fallback: true });
+    expect(h.mint).not.toHaveBeenCalled();
+    expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ dedupeKey: 'a:payment_failed:pay:reissued:1',
+      rendered: expect.objectContaining({ frozen: expect.objectContaining({ attemptId: 'a', variant: 'pay', tokenId: null }) }) }));
+    const { html, text } = lastQueued();
+    for (const body of [html, text]) {
+      expect(body).toContain('There will be no automatic retry.');
+      expect(body).not.toContain('Update payment method');
+    }
+    expect(text).toContain('Pay invoice: https://example.test/invoice/pay');
+  });
+  it('re-issues a schedule-bound method-unusable email as the pay variant without minting a link', async () => {
+    rows.set(invoiceAutopaySchedules, [{ id: 'schedule', invoiceId: 'invoice', orgId: 'org', enrollmentId: 'enrollment',
+      enrollmentGeneration: 7, state: 'failed', stateReason: 'method_not_usable' }]);
+    rows.get(orgAutopayEnrollments)![0]!.status = 'cancelled';
+    await enqueueMethodUnusablePayNotice(tx, 'schedule');
+    expect(h.mint).not.toHaveBeenCalled();
+    expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ kind: 'payment_failed', invoiceId: 'invoice',
+      dedupeKey: 'invoice:payment_failed:method_not_usable:pay:1',
+      rendered: expect.objectContaining({ frozen: expect.objectContaining({ attemptId: null, scheduleId: 'schedule', variant: 'pay', tokenId: null }) }) }));
+    const { html, text } = lastQueued();
+    for (const body of [html, text]) {
+      expect(body).toContain('was not charged automatically');
+      expect(body).toContain('There will be no automatic retry.');
+      expect(body).not.toContain('Update payment method');
     }
   });
 });

@@ -2,6 +2,8 @@ import { beforeEach, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({ row: {} as any, ackFailures: 0, invoiceEligible: true, rows: new Map<unknown,any[]>(), send: vi.fn(), capture: vi.fn() }));
 vi.mock('../email', () => ({ getEmailService: () => ({ sendEmail: h.send }) }));
 vi.mock('../sentry', () => ({ captureException: h.capture }));
+const f = vi.hoisted(() => ({ attemptNotice: vi.fn(), schedulePay: vi.fn() }));
+vi.mock('./paymentNotices', () => ({ enqueueAttemptNotice: f.attemptNotice, enqueueMethodUnusablePayNotice: f.schedulePay }));
 vi.mock('../../db', async () => {
   const { billingNoticeOutbox, invoices } = await import('../../db/schema');
   const db: any = {
@@ -56,11 +58,31 @@ it('sends the method-unusable notice while the schedule is still failed for that
 });
 it.each([
  ['the invoice is paid',()=>{h.invoiceEligible=false;}],
- ['a replacement method is active',()=>{h.rows.set(orgPaymentMethods,[{id:'replacement',orgId:'org',enrollmentId:'enrollment',status:'active',isAutopayMethod:true}]);}],
  ['the schedule moved on',()=>{h.rows.get(invoiceAutopaySchedules)![0].state='scheduled';}],
- ['the enrollment was stopped',()=>{h.rows.get(orgAutopayEnrollments)![0].status='cancelled';}],
  ['the schedule belongs to another invoice',()=>{h.rows.get(invoiceAutopaySchedules)![0].id='other-schedule';}],
 ])('cancels the method-unusable notice when %s',async(_case,change)=>{
  methodUnusable();change();
+ await dispatchPendingBillingNotices();expect(h.row.status).toBe('cancelled');expect(h.send).not.toHaveBeenCalled();
+ expect(f.schedulePay).not.toHaveBeenCalled();
+});
+// 2b-1: the invoice still was not charged; only the update link stopped being true.
+it.each([
+ ['a replacement method is active',()=>{h.rows.set(orgPaymentMethods,[{id:'replacement',orgId:'org',enrollmentId:'enrollment',status:'active',isAutopayMethod:true}]);}],
+ ['the enrollment was stopped',()=>{h.rows.get(orgAutopayEnrollments)![0].status='cancelled';}],
+ ['the enrollment was paused',()=>{h.rows.get(orgAutopayEnrollments)![0].status='paused';}],
+ ['the MSP excluded the invoice',()=>{h.rows.get(invoices)![0].autopayExcluded=true;}],
+])('re-issues the method-unusable notice as the pay variant when %s',async(_case,change)=>{
+ methodUnusable();change();
+ await dispatchPendingBillingNotices();expect(h.row.status).toBe('cancelled');expect(h.send).not.toHaveBeenCalled();
+ expect(f.schedulePay).toHaveBeenCalledWith(expect.anything(),'schedule');
+});
+it('sends the schedule-bound pay variant whatever happened to autopay since',async()=>{
+ methodUnusable();h.row.rendered.frozen={attemptId:null,scheduleId:'schedule',variant:'pay',tokenId:null,returnIdentity:null};
+ h.rows.get(orgAutopayEnrollments)![0].status='cancelled';
+ expect(await dispatchPendingBillingNotices()).toEqual({sent:1,failed:0});expect(h.send).toHaveBeenCalledOnce();
+});
+it('cancels the schedule-bound pay variant once the invoice is paid',async()=>{
+ methodUnusable();h.row.rendered.frozen={attemptId:null,scheduleId:'schedule',variant:'pay',tokenId:null,returnIdentity:null};
+ h.invoiceEligible=false;
  await dispatchPendingBillingNotices();expect(h.row.status).toBe('cancelled');expect(h.send).not.toHaveBeenCalled();
 });

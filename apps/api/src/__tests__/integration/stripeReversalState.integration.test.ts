@@ -548,6 +548,14 @@ runDb.each(['R07', 'R02'])('disables a bank method after authoritative %s return
   expect(await withSystemDbAccessContext(() => getAutopayMethod(db, f.orgId))).toBeNull();
   const [method] = await withSystemDbAccessContext(() => db.select().from(orgPaymentMethods).where(eq(orgPaymentMethods.orgId, f.orgId)));
   expect(method).toMatchObject({ status: 'unusable', unusableReason: code });
+  // 2b-2: the returned email says the account can no longer be used and offers the update link.
+  const [returnedNotice] = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(and(
+    eq(billingNoticeOutbox.invoiceId, f.invoiceId), eq(billingNoticeOutbox.kind, 'payment_failed'))));
+  const returnedBody = returnedNotice!.rendered as { text: string; frozen: { variant: string; tokenId: string | null } };
+  expect(returnedBody.frozen).toMatchObject({ variant: 'returned', tokenId: expect.any(String) });
+  expect(returnedBody.text).toContain('bank account ending in 6789 can no longer be used for automatic payments');
+  expect(returnedBody.text).toMatch(/Pay invoice: https?:\/\/\S+/);
+  expect(returnedBody.text).toMatch(/Update payment method: https?:\/\/\S+/);
   await withSystemDbAccessContext(async () => {
     await db.update(partners).set({ autopayEnabled: true }).where(eq(partners.id, f.partnerId));
     await db.update(stripeConnectAccounts).set({ status: 'connected', accountCountry: 'US',
@@ -767,4 +775,23 @@ runDb('still sends the receipt of a payment refunded before dispatch', async () 
   const [receipt] = await receiptRows(f.invoiceId);
   expect(receipt).toMatchObject({ status: 'sent' });
   expect(returnMail.send).toHaveBeenCalledTimes(1);
+});
+
+// Batch 3b (2b-3): a return held until after capture is applied, and its email enqueued,
+// before the attempt itself is marked succeeded. Dispatch in that window still sends it.
+runDb('sends the returned email while the captured attempt is still processing', async () => {
+  returnMail.send.mockClear();
+  const f = await seedAutopayBank();
+  await withSystemDbAccessContext(async () => {
+    await db.update(invoiceCollectionAttempts).set({ state: 'processing' }).where(eq(invoiceCollectionAttempts.id, f.attemptId));
+    await db.update(invoiceStripePayments).set({ paymentCapturedAt: new Date() }).where(eq(invoiceStripePayments.id, f.mappingId));
+  });
+  await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: `evt_processing_return_${f.invoiceId}`,
+    eventType: 'charge.dispute.funds_withdrawn', providerCreated: 300, refundedAmountMinor: null,
+    disputeId: `dp_${f.invoiceId}`, disputeAmountMinor: 10000, disputeFundsWithdrawn: true }));
+  await dispatchPendingBillingNotices(new Date(Date.now() + 1000));
+  const [returned] = await returnedFailures(f.invoiceId);
+  expect(returned).toMatchObject({ status: 'sent', lastError: null });
+  expect(returnMail.send).toHaveBeenCalledWith(expect.objectContaining({
+    text: expect.stringContaining('returned a previously completed payment') }));
 });
