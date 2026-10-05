@@ -136,6 +136,7 @@ describe('generic audit fallback — org targeted by a partner-scope request', (
   const ORG_A = '11111111-1111-4111-8111-111111111111';
   const ORG_B = '22222222-2222-4222-8222-222222222222';
   const FOREIGN_ORG = '33333333-3333-4333-8333-333333333333';
+  const PARTNER_ID = '44444444-4444-4444-8444-444444444444';
   const realMiddleware = buildMiddleware(resolveFallbackOrgId as (c: unknown, path: string) => Promise<string | null>);
 
   function partnerApp(accessibleOrgIds: string[]) {
@@ -144,7 +145,7 @@ describe('generic audit fallback — org targeted by a partner-scope request', (
       c.set('auth', {
         scope: 'partner',
         orgId: null,
-        partnerId: '44444444-4444-4444-8444-444444444444',
+        partnerId: PARTNER_ID,
         accessibleOrgIds,
         canAccessOrg: (id: string) => accessibleOrgIds.includes(id),
         user: { id: actorId, email: 'tech@example.test' },
@@ -155,6 +156,8 @@ describe('generic audit fallback — org targeted by a partner-scope request', (
     app.patch('/api/v1/orgs/:orgId/billing-settings', (c) => c.json({ data: {} }));
     app.post('/api/v1/scripts', (c) => c.json({ data: {} }, 201));
     app.post('/api/v1/partner/known-guests', (c) => c.json({ data: {} }, 201));
+    app.post('/api/v1/catalog/denied', (c) => c.json({ error: 'forbidden' }, 403));
+    app.post('*', (c) => c.json({ data: {} }, 201));
     return app;
   }
 
@@ -175,14 +178,59 @@ describe('generic audit fallback — org targeted by a partner-scope request', (
     // it is UI state, not the org this partner-level write acted on.
     const res = await partnerApp([ORG_A, ORG_B]).request(`/api/v1/partner/known-guests?orgId=${ORG_A}`, { method: 'POST' });
     expect(res.status).toBe(201);
-    expect(values).not.toHaveBeenCalled();
+    expect(values).toHaveBeenCalledTimes(1);
+    expect(values).not.toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_A }));
   });
 
   it.each([
     [`/api/v1/orgs/${FOREIGN_ORG}/billing-settings`, 'PATCH'],
     [`/api/v1/orgs/${FOREIGN_ORG}/billing-settings?orgId=${ORG_A}`, 'PATCH'],
-  ])('writes nothing when %s names an org outside the caller\'s access', async (url, method) => {
+  ])('never files %s under an org outside the caller\'s access', async (url, method) => {
     await partnerApp([ORG_A, ORG_B]).request(url, { method });
+    for (const [row] of values.mock.calls) {
+      expect(row.orgId ?? null).toBeNull();
+    }
+  });
+
+  // Partner-level writes (catalog, distributors, price books, UniFi, known
+  // guests, work types, deliverable/checklist templates, third-party catalog)
+  // have no org of their own. They are recorded as partner-level rows
+  // (org_id NULL) attributed to the caller's partner rather than dropped.
+  it.each([
+    '/api/v1/catalog/items',
+    '/api/v1/catalog/distributors',
+    '/api/v1/catalog/price-books',
+    '/api/v1/unifi/connect',
+    '/api/v1/partner/known-guests',
+    '/api/v1/billing-profiles/work-types',
+    '/api/v1/deliverable-templates',
+    '/api/v1/ticket-checklist-templates',
+    '/api/v1/third-party-catalog/items',
+  ])('records a partner-level row for a multi-org partner caller on %s', async (url) => {
+    const res = await partnerApp([ORG_A, ORG_B]).request(url, { method: 'POST' });
+    expect(res.status).toBe(201);
+    expect(values).toHaveBeenCalledTimes(1);
+    const [row] = values.mock.calls[0]!;
+    expect(row.orgId ?? null).toBeNull();
+    expect(row).toEqual(expect.objectContaining({
+      actorId,
+      actorType: 'user',
+      result: 'success',
+      details: expect.objectContaining({ fallback: true, path: url, partnerId: PARTNER_ID }),
+    }));
+  });
+
+  it('records the partner-level row as denied when the write was refused', async () => {
+    await partnerApp([ORG_A, ORG_B]).request('/api/v1/catalog/denied', { method: 'POST' });
+    expect(values).toHaveBeenCalledTimes(1);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ result: 'denied' }));
+  });
+
+  it('still writes nothing for an unauthenticated request it cannot attribute', async () => {
+    const app = new Hono();
+    app.use('*', realMiddleware);
+    app.post('/api/v1/catalog/items', (c) => c.json({ data: {} }, 201));
+    await app.request('/api/v1/catalog/items', { method: 'POST' });
     expect(values).not.toHaveBeenCalled();
   });
 

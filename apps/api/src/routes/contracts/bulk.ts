@@ -6,6 +6,7 @@ import { bulkContractIdsSchema } from '@breeze/shared';
 import { runBulkIsolated } from '../../lib/bulkOps';
 import { deleteDraftContract, cancelContract } from '../../services/contractService';
 import { contractActorFrom, handleContractError } from './contracts';
+import { auditBillingDocument } from '../../services/billingDocumentAudit';
 
 export const contractBulkRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
@@ -17,7 +18,9 @@ contractBulkRoutes.post('/bulk-delete', scopes, writePerm, zValidator('json', bu
     const ctx = dbAccessContextFromAuth(c.get('auth') as AuthContext);
     const actor = contractActorFrom(c);
     const { ids } = c.req.valid('json');
-    return c.json({ data: await runBulkIsolated(ctx, ids, (id) => deleteDraftContract(id, actor)) });
+    // Each item is audited after its own transaction commits; skipped/failed ids are not.
+    return c.json({ data: await runBulkIsolated(ctx, ids, (id) => deleteDraftContract(id, actor),
+      async (_id, deleted) => auditBillingDocument(c, 'contract', 'delete', deleted, { bulk: true })) });
   } catch (err) { return handleContractError(c, err); }
 });
 
@@ -26,6 +29,7 @@ contractBulkRoutes.post('/bulk-cancel', scopes, managePerm, zValidator('json', b
     const ctx = dbAccessContextFromAuth(c.get('auth') as AuthContext);
     const actor = contractActorFrom(c);
     const { ids } = c.req.valid('json');
-    return c.json({ data: await runBulkIsolated(ctx, ids, (id) => cancelContract(id, actor)) });
+    return c.json({ data: await runBulkIsolated(ctx, ids, (id) => cancelContract(id, actor),
+      async (_id, cancelled) => auditBillingDocument(c, 'contract', 'cancel', cancelled, { bulk: true })) });
   } catch (err) { return handleContractError(c, err); }
 });

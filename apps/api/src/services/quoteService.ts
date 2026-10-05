@@ -1415,9 +1415,11 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
   return { ...updated!, deviceSetDrift };
 }
 
-export async function deleteDraftQuote(id: string, actor: QuoteActor) {
-  await loadDraft(id, actor);
+/** Returns the deleted quote's id and org so the caller can audit the delete. */
+export async function deleteDraftQuote(id: string, actor: QuoteActor): Promise<{ id: string; orgId: string }> {
+  const q = await loadDraft(id, actor);
   await db.delete(quotes).where(eq(quotes.id, id)); // blocks/lines cascade
+  return { id: q.id, orgId: q.orgId };
 }
 
 /**

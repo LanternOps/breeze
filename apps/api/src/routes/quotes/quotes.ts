@@ -37,6 +37,7 @@ import {
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { PdfMergeError } from '../../services/pdfMerge';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { auditBillingDocument } from '../../services/billingDocumentAudit';
 import { QUOTE_ACCEPTANCE_EVIDENCE_META, toAcceptanceEvidenceMeta } from '../../services/quoteAcceptanceEvidence';
 
 export const quoteCrudRoutes = new Hono();
@@ -74,8 +75,11 @@ quoteCrudRoutes.get('/', scopes, readPerm, zValidator('query', listQuotesQuerySc
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.post('/', scopes, writePerm, zValidator('json', createQuoteSchema), async (c) => {
-  try { return c.json({ data: await createQuote(c.req.valid('json'), quoteActorFrom(c)) }); }
-  catch (err) { return handleServiceError(c, err); }
+  try {
+    const quote = await createQuote(c.req.valid('json'), quoteActorFrom(c));
+    auditBillingDocument(c, 'quote', 'create', quote);
+    return c.json({ data: quote });
+  } catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.post('/:id/clone', scopes, writePerm, zValidator('param', idParam), async (c) => {
   // Optional retarget/rename body. Distinguish an ABSENT body (legacy callers
@@ -265,7 +269,11 @@ quoteCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), z
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.delete('/:id', scopes, writePerm, zValidator('param', idParam), async (c) => {
-  try { await deleteDraftQuote(c.req.valid('param').id, quoteActorFrom(c)); return c.json({ data: { ok: true } }); }
+  try {
+    const deleted = await deleteDraftQuote(c.req.valid('param').id, quoteActorFrom(c));
+    auditBillingDocument(c, 'quote', 'delete', deleted);
+    return c.json({ data: { ok: true } });
+  }
   catch (err) { return handleServiceError(c, err); }
 });
 // Draft-only atomic change-currency op (#3774) — the ONLY mutation path for a

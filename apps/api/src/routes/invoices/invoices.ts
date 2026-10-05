@@ -13,6 +13,7 @@ import {
   changeInvoiceCurrency
 } from '../../services/invoiceService';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { auditBillingDocument } from '../../services/billingDocumentAudit';
 import { InvoiceServiceError, type InvoiceActor } from '../../services/invoiceTypes';
 import { resolveInvoiceBranding } from '../../services/quoteBranding';
 
@@ -55,8 +56,11 @@ invoiceCrudRoutes.get('/', scopes, readPerm, zValidator('query', listInvoicesQue
   catch (err) { return handleServiceError(c, err); }
 });
 invoiceCrudRoutes.post('/', scopes, writePerm, zValidator('json', createManualInvoiceSchema), async (c) => {
-  try { return c.json({ data: await createManualInvoice(c.req.valid('json'), invoiceActorFrom(c)) }); }
-  catch (err) { return handleServiceError(c, err); }
+  try {
+    const invoice = await createManualInvoice(c.req.valid('json'), invoiceActorFrom(c));
+    auditBillingDocument(c, 'invoice', 'create', invoice);
+    return c.json({ data: invoice });
+  } catch (err) { return handleServiceError(c, err); }
 });
 invoiceCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), async (c) => {
   try {
@@ -76,7 +80,11 @@ invoiceCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam),
   catch (err) { return handleServiceError(c, err); }
 });
 invoiceCrudRoutes.delete('/:id', scopes, writePerm, zValidator('param', idParam), async (c) => {
-  try { await deleteDraftInvoice(c.req.valid('param').id, invoiceActorFrom(c)); return c.json({ data: { ok: true } }); }
+  try {
+    const deleted = await deleteDraftInvoice(c.req.valid('param').id, invoiceActorFrom(c));
+    auditBillingDocument(c, 'invoice', 'delete', deleted);
+    return c.json({ data: { ok: true } });
+  }
   catch (err) { return handleServiceError(c, err); }
 });
 invoiceCrudRoutes.post('/:id/lines', scopes, writePerm, zValidator('param', idParam), zValidator('json', manualLineSchema), async (c) => {

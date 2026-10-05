@@ -12,6 +12,7 @@ import {
 } from '../../services/contractService';
 import { ContractServiceError, type ContractActor } from '../../services/contractTypes';
 import { contractActorPermissionEvidence } from '../../services/contractActor';
+import { auditBillingDocument } from '../../services/billingDocumentAudit';
 
 export const contractCrudRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
@@ -56,8 +57,11 @@ contractCrudRoutes.get('/', scopes, readPerm, zValidator('query', listContractsQ
   catch (err) { return handleContractError(c, err); }
 });
 contractCrudRoutes.post('/', scopes, writePerm, zValidator('json', createContractSchema), async (c) => {
-  try { return c.json({ data: await createContract(c.req.valid('json'), contractActorFrom(c)) }); }
-  catch (err) { return handleContractError(c, err); }
+  try {
+    const contract = await createContract(c.req.valid('json'), contractActorFrom(c));
+    auditBillingDocument(c, 'contract', 'create', contract);
+    return c.json({ data: contract });
+  } catch (err) { return handleContractError(c, err); }
 });
 contractCrudRoutes.get('/:id/estimate', scopes, readPerm, zValidator('param', idParam), async (c) => {
   try { return c.json({ data: await computeContractEstimate(c.req.valid('param').id, contractActorFrom(c)) }); }
@@ -72,7 +76,11 @@ contractCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam)
   catch (err) { return handleContractError(c, err); }
 });
 contractCrudRoutes.delete('/:id', scopes, writePerm, zValidator('param', idParam), async (c) => {
-  try { await deleteDraftContract(c.req.valid('param').id, contractActorFrom(c)); return c.json({ data: { ok: true } }); }
+  try {
+    const deleted = await deleteDraftContract(c.req.valid('param').id, contractActorFrom(c));
+    auditBillingDocument(c, 'contract', 'delete', deleted);
+    return c.json({ data: { ok: true } });
+  }
   catch (err) { return handleContractError(c, err); }
 });
 // Atomic change-currency op (#3774) — the ONLY mutation path for a document's
