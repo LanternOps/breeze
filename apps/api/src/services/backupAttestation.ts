@@ -201,6 +201,7 @@ export type RecordAttestationOutcome =
   | 'invalid'
   | 'missing_from_capable'
   | 'not_offered'
+  | 'capability_unknown'
   | 'missing_expectation';
 
 export type RecordSnapshotAttestationInput = {
@@ -217,7 +218,12 @@ export type RecordSnapshotAttestationInput = {
   /** Agent-reported count of manifest entries inherited from the base. */
   referencedFiles: number | undefined;
   deviceAgentId: string | null;
-  deviceIntegrityProtocolVersion: number;
+  /**
+   * The integrity protocol the device's helper reported; null when it has not
+   * reported one. Unreported is not "older helper": it never counts as a
+   * helper that does not offer attestations.
+   */
+  deviceIntegrityProtocolVersion: number | null;
   acceptedVia: 'agent_result' | 'late_agent_result';
   /**
    * True only when the caller consumed this job's dispatch expectation (or
@@ -259,7 +265,7 @@ export type AttestationRowValues = {
 export type AttestationEvaluation =
   | { kind: 'insert'; row: AttestationRowValues }
   | { kind: 'refuse'; outcome: 'invalid' | 'binding_mismatch'; reason: string }
-  | { kind: 'absent'; outcome: 'missing_from_capable' | 'not_offered' | 'missing_expectation' };
+  | { kind: 'absent'; outcome: 'missing_from_capable' | 'not_offered' | 'capability_unknown' | 'missing_expectation' };
 
 /** The raw statement string of an attestation envelope, or null when the envelope is malformed. */
 export function attestationStatementOf(attestation: unknown): string | null {
@@ -280,9 +286,10 @@ export function attestationVerificationMode(storageIdentity: string): 'server_fe
 export function evaluateSnapshotAttestation(input: RecordSnapshotAttestationInput): AttestationEvaluation {
   if (!input.dispatchExpectationVerified) return { kind: 'absent', outcome: 'missing_expectation' };
   if (input.attestation === undefined || input.attestation === null) {
+    const version = input.deviceIntegrityProtocolVersion;
     return {
       kind: 'absent',
-      outcome: input.deviceIntegrityProtocolVersion >= 1 ? 'missing_from_capable' : 'not_offered',
+      outcome: version === null ? 'capability_unknown' : version >= 1 ? 'missing_from_capable' : 'not_offered',
     };
   }
 
@@ -421,8 +428,13 @@ export async function recordSnapshotAttestation(
     }
   } else if (evaluation.kind === 'absent') {
     outcome = evaluation.outcome;
-    const capable = input.deviceIntegrityProtocolVersion >= 1;
-    if (outcome === 'missing_from_capable' || (outcome === 'missing_expectation' && capable)) {
+    // Only a helper that reported it predates attestations keeps the legacy
+    // projection; an unreported one is treated like a capable one, as the
+    // backup worker does when it picks an incremental base.
+    const version = input.deviceIntegrityProtocolVersion;
+    const knownLegacy = version !== null && version < 1;
+    if (outcome === 'missing_from_capable' || outcome === 'capability_unknown'
+      || (outcome === 'missing_expectation' && !knownLegacy)) {
       await projectIntegrityStatus(input.snapshotDbId, 'unattested');
     }
   } else if (evaluation.kind === 'refuse') {
@@ -533,13 +545,14 @@ export type AttestationResultFields = {
   referencedFiles?: number;
 };
 
-async function loadDeviceIntegrity(deviceId: string): Promise<{ agentId: string | null; integrityVersion: number }> {
+async function loadDeviceIntegrity(deviceId: string): Promise<{ agentId: string | null; integrityVersion: number | null }> {
   const [device] = await db
     .select({ agentId: devices.agentId, integrityVersion: devices.backupIntegrityProtocolVersion })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
-  return { agentId: device?.agentId ?? null, integrityVersion: device?.integrityVersion ?? 0 };
+  // NULL (not reported) stays null: it is not evidence of an older helper.
+  return { agentId: device?.agentId ?? null, integrityVersion: device?.integrityVersion ?? null };
 }
 
 /**
