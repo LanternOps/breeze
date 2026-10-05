@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import type { HttpBindings } from "@hono/node-server";
-import { and, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { db, withSystemDbAccessContext } from "../db";
 import { installerBootstrapTokens } from "../db/schema/installerBootstrapTokens";
@@ -9,7 +9,10 @@ import {
   hashEnrollmentKey,
   hashEnrollmentKeyCandidates,
 } from "../services/enrollmentKeySecurity";
-import { BOOTSTRAP_TOKEN_PATTERN } from "../services/installerBootstrapToken";
+import {
+  BOOTSTRAP_TOKEN_PATTERN,
+  hashBootstrapToken,
+} from "../services/installerBootstrapToken";
 import { getTrustedClientIp } from "../services/clientIp";
 import { clampTtlToCap } from "../services/enrollmentDefaults";
 import { envInt } from "../utils/envInt";
@@ -134,10 +137,22 @@ async function redeemBootstrapToken(c: Context, token: string) {
 
   const result = await withSystemDbAccessContext(async () => {
     // ── 1. Look up token ──────────────────────────────────────────────
+    // Rows store a keyed hash of the token. Rows issued before hashing have
+    // token_hash NULL and keep their plaintext until they expire (the expiry
+    // check below refuses them after that); the plaintext branch is confined
+    // to exactly those rows so a hashed row can never match on `token`.
     const [row] = await db
       .select()
       .from(installerBootstrapTokens)
-      .where(eq(installerBootstrapTokens.token, token))
+      .where(
+        or(
+          eq(installerBootstrapTokens.tokenHash, hashBootstrapToken(token)),
+          and(
+            isNull(installerBootstrapTokens.tokenHash),
+            eq(installerBootstrapTokens.token, token),
+          ),
+        ),
+      )
       .limit(1);
 
     if (!row) {
@@ -146,6 +161,18 @@ async function redeemBootstrapToken(c: Context, token: string) {
         tokenHash: hashTokenForLog(token),
         ip,
       });
+      // Operator hint for the miss that is NOT a typo or a deleted key: tokens
+      // are matched by a keyed hash, so a well-formed token from a genuine
+      // installer also misses here when that installer came from somewhere
+      // this server's table/pepper can't see. Correlate by the same log hash;
+      // never the token or its stored digest.
+      console.warn(
+        "[installer] bootstrap token not found. If this installer was downloaded from this server, likely causes: "
+          + "it was issued by a newer API version that was then rolled back (re-download the installer); "
+          + "ENROLLMENT_KEY_PEPPER was changed since it was issued (every outstanding installer link is invalidated; re-download); "
+          + "or it belongs to a different Breeze server.",
+        { tokenHash: hashTokenForLog(token) },
+      );
       return null;
     }
 

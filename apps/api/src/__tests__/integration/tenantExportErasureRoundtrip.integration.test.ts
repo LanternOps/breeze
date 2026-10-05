@@ -442,8 +442,8 @@ describe('tenant export + erasure round-trip (live DB)', () => {
       `);
       await getTestDb().execute(sql`
         INSERT INTO installer_bootstrap_tokens
-          (id, org_id, token, parent_enrollment_key_id, parent_credential_generation, expires_at)
-        VALUES (${tokenId}, ${orgId}, ${token}, ${keyId}, ${epoch}, now() + interval '1 hour')
+          (id, org_id, token, token_hash, parent_enrollment_key_id, parent_credential_generation, expires_at)
+        VALUES (${tokenId}, ${orgId}, ${token}, ${'h-' + token}, ${keyId}, ${epoch}, now() + interval '1 hour')
       `);
     }
 
@@ -496,6 +496,7 @@ describe('tenant export + erasure round-trip (live DB)', () => {
       expect(enrollmentRows[0]).not.toHaveProperty(secret);
     }
     expect(bootstrapRows[0]).not.toHaveProperty('token');
+    expect(bootstrapRows[0]).not.toHaveProperty('token_hash');
 
     // The value must be READABLE in the archive, not just counted: `field_key`
     // is denormalized onto the row precisely because `readOrgRows` is a bare

@@ -5,6 +5,7 @@ import { installerBootstrapTokens } from '../db/schema/installerBootstrapTokens'
 import {
   generateBootstrapToken,
   bootstrapTokenExpiresAt,
+  hashBootstrapToken,
 } from './installerBootstrapToken';
 import { clampTtlToCap } from './enrollmentDefaults';
 
@@ -53,6 +54,12 @@ export interface IssueBootstrapTokenInput {
 
 export interface IssuedBootstrapToken {
   id: string;
+  /**
+   * The raw token. This return value is the ONLY place it exists — the row
+   * stores just its keyed hash — so every caller must build the installer
+   * (MSI filename, app bundle name, response body) from this value. A later
+   * download cannot re-read it; it mints a new token instead.
+   */
   token: string;
   expiresAt: Date;
   parentKeyName: string;
@@ -174,8 +181,11 @@ export async function issueBootstrapTokenForKey(
     ? rawExpiresAt
     : new Date(Date.now() + cappedTtlMinutes * 60 * 1000);
 
+  // Only the keyed hash is persisted; the raw token is returned to the caller
+  // exactly once, to be written into the installer it is serving. The legacy
+  // plaintext `token` column is left NULL.
   const [row] = await db.insert(installerBootstrapTokens).values({
-    token,
+    tokenHash: hashBootstrapToken(token),
     orgId: parent.orgId,
     parentEnrollmentKeyId: parent.id,
     parentCredentialGeneration: parent.credentialGeneration,

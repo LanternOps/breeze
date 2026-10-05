@@ -143,7 +143,7 @@ describe('buildTenantExportPlan', () => {
 
   const enrollmentEpochs = [
     ['enrollment_keys', 'credential_generation', ['key', 'key_secret_hash', 'short_code']],
-    ['installer_bootstrap_tokens', 'parent_credential_generation', ['token']],
+    ['installer_bootstrap_tokens', 'parent_credential_generation', ['token', 'token_hash']],
   ] as const;
 
   it.each(enrollmentEpochs)(
