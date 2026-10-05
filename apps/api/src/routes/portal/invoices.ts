@@ -1,7 +1,7 @@
 import {invoicePaySchema,getBankAutopayOffer,startInvoiceBankSetup,collectAfterBankSetup} from '../../services/autopay/bankPayment';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { getInvoiceAutopayOffer, prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave } from '../../services/autopay/payAndSave';
-import { assertNoActiveCollection, readInFlightCollection } from '../../services/autopay/reservation';
+import { assertNoActiveCollection, holdsClientMoney, readInFlightCollection } from '../../services/autopay/reservation';
 import { releaseInvoiceConfirmation } from '../../services/autopay/confirmPayment';
 import { Hono } from 'hono';
 import { z } from 'zod';
@@ -283,7 +283,13 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   // the customer is asked to retry rather than handed a link nobody can kill.
   // Elects its own system scope — never wrap it in a bare context here (#5611).
   try {
-    await withSystemDbAccessContext(() => assertNoActiveCollection(db, inv.id));
+    await withSystemDbAccessContext(async () => {
+      await assertNoActiveCollection(db, inv.id);
+      // Twin of createInvoicePayLink's guard: no card Pay while captured money is unapplied (B1-2).
+      if (await holdsClientMoney(db, inv.id)) {
+        throw new InvoiceServiceError('A payment for this invoice was received and is being reviewed', 409, 'COLLECTION_IN_PROGRESS');
+      }
+    });
     await assertNoPendingRevocation(inv.id);
   } catch (err) {
     if (err instanceof InvoiceServiceError && (err.code === REVOCATION_PENDING_CODE || err.code === 'COLLECTION_IN_PROGRESS')) {

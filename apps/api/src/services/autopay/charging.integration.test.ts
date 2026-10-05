@@ -2209,3 +2209,16 @@ it('re-issues a waiting method-unusable email as the pay variant after autopay i
     expect(toB[0]!.text).not.toContain('Update payment method');
   } finally { mail.mockRestore(); }
 });
+
+// B1-2 follow-up: plain card Pay (Checkout) starts a new payment too. While Stripe holds
+// money captured for this invoice that could not be applied, a card payment would charge
+// the client twice.
+it('card Pay refuses to mint Checkout while an unapplied attempt holds the client\'s money',async()=>{
+ const f=await fixture();
+ await withSystemDbAccessContext(()=>db.insert(invoiceCollectionAttempts).values({orgId:f.org.id,invoiceId:f.invoice.id,scheduleId:f.schedule.id,
+  attemptNo:1,paymentMethodId:f.method.id,idempotencyKey:`autopay_${f.schedule.id}_1`,principalAmount:'100.00',feeAmount:'0.00',
+  currency:'USD',state:'unapplied',initiatedBy:'scheduler'}));
+ provider.sessionCreate.mockResolvedValue({id:'cs_unapplied',url:'https://checkout.stripe.com/c/pay/unapplied',payment_intent:null});
+ await expect(createInvoicePayLink(f.invoice.id,f.actor)).rejects.toMatchObject({status:409,code:'COLLECTION_IN_PROGRESS'});
+ expect(provider.sessionCreate).not.toHaveBeenCalled();
+});
