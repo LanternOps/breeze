@@ -173,6 +173,17 @@ describe('changing an existing method (card-expiring link or portal)', () => {
     expect(await screen.findByRole('heading', { name: 'Review your updated terms' })).toBeInTheDocument();
     expect(screen.getByText(/Example MSP has updated the terms of your automatic payments\. Review them below and agree to keep automatic payments on/)).toBeInTheDocument();
   });
+  // FP-22: a changed limit is at a glance, not only inside the authorization text.
+  it('a review of updated terms shows the payment limit at a glance', async () => {
+    const capped = { ...schedule, cap: { enabled: true, amount: '200.00', currency: 'USD' } };
+    vi.mocked(apiGet).mockResolvedValue(page({ enrollment: { status: 'active' }, termsChanged: true,
+      disclosures: { card: { ...card, scheduleTerms: capped }, us_bank_account: { ...bank, scheduleTerms: capped } },
+      method: { type: 'card', cardBrand: 'visa', cardFunding: 'credit', cardLast4: '4242', status: 'active' } }));
+    render(<AutopaySetupPage token="test-token" />);
+    expect(await screen.findByRole('heading', { name: 'Review your updated terms' })).toBeInTheDocument();
+    expect(screen.getByText('Limit')).toBeInTheDocument();
+    expect(screen.getByText('Up to $200.00 per invoice')).toBeInTheDocument();
+  });
   it('in the portal: an inline form with a Cancel, posting to the portal route', async () => {
     vi.mocked(apiGet).mockResolvedValue(active);
     const onCancel = vi.fn();

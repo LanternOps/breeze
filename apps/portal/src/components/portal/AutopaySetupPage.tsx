@@ -187,6 +187,8 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
         { label: 'Notice', value: 'An email with the amount and date before each payment' },
         // V-38: a change applies to what hasn't been charged yet, not to "invoices issued after".
         update ? { label: 'Applies to', value: 'Payments not yet started, on the same invoices as now' } : { label: 'Invoices', value: `Issued after you set this up${cap}` },
+        // FP-22: a change keeps the limit visible (a re-authorization may be about the limit).
+        ...(update && scheduleTerms?.cap.enabled ? [{ label: 'Limit', value: `Up to ${money(scheduleTerms.cap.amount, scheduleTerms.cap.currency)} per invoice` }] : []),
         { label: 'Control', value: 'Skip any payment from its email, or stop at any time' },
       ]} />
     </div>
