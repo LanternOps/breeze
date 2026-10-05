@@ -207,3 +207,21 @@ export interface AutopayConfirmView extends AutopayBranding {
  state:CollectionAttemptState|'not_needed';amount:string;currency:string;
  invoiceNumber:string|null;methodLabel:string|null;invoiceUrl:string|null;
 }
+
+/** The invoice pages' view of this invoice's automatic payment (client wording is the page's job). */
+export const CUSTOMER_INVOICE_AUTOPAY_STATES=['awaiting_notice','scheduled','delayed','processing','action_required','retry_scheduled',
+ 'failed','skipped','not_included','paid_automatically'] as const;
+export type CustomerInvoiceAutopayState=(typeof CUSTOMER_INVOICE_AUTOPAY_STATES)[number];
+export interface CustomerInvoiceAutopayStatus {
+ state:CustomerInvoiceAutopayState;
+ /** YYYY-MM-DD: the scheduled charge date, or the next retry's date. */
+ chargeDate:string|null;
+ /** The noticed principal and maximum fee (collection may lower the fee). */
+ amount:string|null;fee:string|null;currency:string;
+ methodLabel:string|null;methodType:AutopayPaymentMethodType|null;
+ /** delayed: 'method_not_usable' | 'pending_verification' | 'on_hold'; not_included: the ineligible reason. */
+ reason:string|null;
+ paidAt:string|null;
+ /** False while money is reserved for this invoice (the pay routes would refuse). */
+ canPayNow:boolean;
+}

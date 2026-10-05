@@ -3,6 +3,7 @@ import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { getInvoiceAutopayOffer, prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave } from '../../services/autopay/payAndSave';
 import { assertNoActiveCollection, readInFlightCollection } from '../../services/autopay/reservation';
 import { releaseInvoiceConfirmation } from '../../services/autopay/confirmPayment';
+import { getCustomerInvoiceAutopay } from '../../services/autopay/customerInvoiceStatus';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
@@ -178,12 +179,22 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
     console.error('[portal/invoices] in-flight collection lookup failed', { invoiceId: id, err });
   }
 
+  // D-4: how this invoice will be paid; an enrolled client is not offered setup again.
+  let customerAutopay: Awaited<ReturnType<typeof getCustomerInvoiceAutopay>> = { enrolled: false, status: null };
+  try {
+    customerAutopay = await getCustomerInvoiceAutopay(db, { invoiceId: id, orgId: auth.user.orgId });
+  } catch (err) {
+    console.error('[portal/invoices] autopay status lookup failed', { invoiceId: id, err });
+  }
+
   return c.json({
     invoice: result.invoice,
     lines: result.lines.map(toCustomerInvoiceLine),
     onlinePaymentAvailable,
     collectionInProgress,
-    autopay: await getInvoiceAutopayOffer(auth.user.orgId),
+    autopayStatus: customerAutopay.status,
+    autopayEnrolled: customerAutopay.enrolled,
+    autopay: customerAutopay.enrolled ? null : await getInvoiceAutopayOffer(auth.user.orgId),
     bankAutopay: await runOutsideDbContext(()=>getBankAutopayOffer(id,auth.user.orgId)),
     branding: {
       partnerName: partner?.name ?? null,

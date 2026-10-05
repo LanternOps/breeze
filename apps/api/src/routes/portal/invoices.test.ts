@@ -748,9 +748,25 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
   });
 });
 
+const portalAutopay = vi.hoisted(() => ({ status: vi.fn(async () => ({ enrolled: false, status: null })), offer: vi.fn(async () => null) }));
+vi.mock('../../services/autopay/customerInvoiceStatus', () => ({ getCustomerInvoiceAutopay: portalAutopay.status }));
+describe('GET /invoices/:id carries how this invoice will be paid (D-4)', () => {
+  it('an enrolled client gets the status and no offer to set up again', async () => {
+    const scheduled = { state: 'scheduled', chargeDate: '2026-11-04', amount: '50.00', fee: '0.00', currency: 'USD',
+      methodLabel: 'Bank account ending in 6789', methodType: 'us_bank_account', reason: null, paidAt: null, canPayNow: true };
+    portalAutopay.offer.mockResolvedValueOnce({ eligible: true } as never);
+    portalAutopay.status.mockResolvedValueOnce({ enrolled: true, status: scheduled } as never);
+    getCustomerInvoiceMock.mockResolvedValue({ partnerId: 'p1', invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' }, lines: [] });
+    const body = await (await app().request(`/invoices/${INV_ID}`, { method: 'GET' })).json();
+    expect(body.autopayStatus).toEqual(scheduled);
+    expect(body.autopayEnrolled).toBe(true);
+    expect(body.autopay).toBeNull();
+    expect(portalAutopay.status).toHaveBeenCalledWith(expect.anything(), { invoiceId: INV_ID, orgId: ORG_ID });
+  });
+});
 vi.mock('../../services/autopay/payAndSave', async importOriginal => {
   const actual = await importOriginal<typeof import('../../services/autopay/payAndSave')>();
-  return { ...actual, getInvoiceAutopayOffer: vi.fn(async () => null),
+  return { ...actual, getInvoiceAutopayOffer: portalAutopay.offer,
     bindCardPayAndSave:vi.fn(async()=>{}),
     prepareCardPayAndSave: vi.fn(async (_invoiceId: string, _orgId: string, input: { saveForAutopay?: boolean }) => {
       if (input.saveForAutopay) throw new Error('Unexpected accepted save in ordinary-payment fixture');
