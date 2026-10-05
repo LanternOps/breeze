@@ -1,17 +1,17 @@
-import BankAutopayPayment from './BankAutopayPayment';
-import { AutopayConfirmationNotice } from './AutopayConfirmationNotice';
+import { InvoicePaymentPanel } from './autopay/InvoicePaymentPanel';
 import { runAction } from '@/lib/runAction';
 import { invoiceAutopayInput } from '@/lib/api';
 import { withBase } from '@/lib/basePath';
 import { useEffect, useState, Fragment } from 'react';
-import { ArrowLeft, AlertCircle, Download, CreditCard } from 'lucide-react';
-import { type BrandingConfig, type InvoiceDetail, type InvoiceAutopayDisclosure, type InvoiceStatus, buildPortalApiUrl, portalApi, lineWorkedVsBilledNote } from '@/lib/api';
+import { ArrowLeft, AlertCircle, Download } from 'lucide-react';
+import { type BrandingConfig, type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi, lineWorkedVsBilledNote } from '@/lib/api';
 import { groupInvoiceLinesByTicket } from '@/lib/invoiceLineGroups';
 import { money, shortDate } from '@/lib/format';
 import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { DocumentPaper, DocumentHeader, DocumentTerms, DocumentTermsCollapsible, type DocSeller } from './documentShell';
-import { BTN_PRIMARY, BTN_SECONDARY } from './ui';
+import { BTN_PRIMARY, BTN_SECONDARY, Notice } from './ui';
+import { cn } from '@/lib/utils';
 
 // Invoice statuses that can be paid online (mirrors the API's PAYABLE set).
 const PAYABLE_STATUSES: ReadonlySet<InvoiceStatus> = new Set(['sent', 'partially_paid', 'overdue']);
@@ -69,12 +69,8 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [paying, setPaying] = useState(false);
-  const [saveForAutopay, setSaveForAutopay] = useState(false);
-  useEffect(() => { setSaveForAutopay(false); }, [detail?.autopay?.disclosureHash]);
   const [payError, setPayError] = useState<string | null>(null);
   const [payTerminal, setPayTerminal] = useState(false);
-  // Set once the customer cancels an autopay payment that was waiting on their bank.
-  const [confirmationReleased, setConfirmationReleased] = useState(false);
   // Verify-on-return settle state. 'idle' until we detect the post-Checkout return.
   const [settleState, setSettleState] = useState<'idle' | 'settling' | 'pending' | 'failed'>('idle');
 
@@ -153,13 +149,9 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
     amountPaid: invoice.amountPaid,
     balance: invoice.balance,
   }, invoice.currencyCode);
-  // #7824. Once the customer has released a payment waiting on their bank, the
-  // server reservation is gone and the Pay button is the way to pay.
-  const collectionInProgress = confirmationReleased ? null : detail.collectionInProgress ?? null;
-  const awaitingBank = collectionInProgress?.actionRequired === true;
-  const payLabel = chargeNow.isDeposit
-    ? `Pay deposit ${money(chargeNow.amount, currency)}`
-    : `Pay ${money(chargeNow.amount, currency)}`;
+  // #7824: the server reservation. Once the customer releases a payment waiting on
+  // their bank, the panel clears it locally and the Pay button is the way to pay.
+  const collectionInProgress = detail.collectionInProgress ?? null;
   // Per-line Tax column only when this invoice carries tax (mirrors the Tax row).
   const taxRate = invoice.taxRate ? Number(invoice.taxRate) : 0;
   const showTax = Number(invoice.taxTotal) > 0;
@@ -171,7 +163,7 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
     { label: 'Due', value: shortDate(invoice.dueDate) },
   ];
 
-  const payInvoice = async () => {
+  const payInvoice = async (saveForAutopay: boolean) => {
     if (paying) return; setPaying(true); setPayError(null);
     const result = await runAction({
       request: async () => {
@@ -216,90 +208,63 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
     }
   };
 
-  return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <a href={withBase("/invoices")} className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground">
-          <ArrowLeft className="h-4 w-4" />
-          Back to invoices
-        </a>
-        <div className="flex flex-wrap items-center gap-2">
-          {canPay && (
-            <>
-              <BankAutopayPayment target={{invoiceId:invoice.id}} offer={detail.bankAutopay}/>
-            <InvoiceAutopayConsent disclosure={detail.autopay} checked={saveForAutopay} paying={paying} onChange={setSaveForAutopay} />
-              <button
-                type="button"
-                onClick={() => void payInvoice()}
-                disabled={paying || collectionInProgress != null}
-                data-testid="invoice-pay-button"
-                className={BTN_PRIMARY}
-              >
-                <CreditCard className="h-4 w-4" />
-                {paying ? 'Opening secure checkout' : payLabel}
-              </button>
-            </>
-          )}
-          <button
-            type="button"
-            onClick={() => void downloadPdf()}
-            disabled={downloading}
-            className={canPay ? BTN_SECONDARY : BTN_PRIMARY}
-          >
-            <Download className="h-4 w-4" />
-            {downloading ? 'Preparing' : 'Download PDF'}
-          </button>
-        </div>
-      </div>
-
-      {canPay && collectionInProgress && awaitingBank && (
-        <AutopayConfirmationNotice amount={collectionInProgress.amount} currency={currency}
-          release={() => portalApi.releaseAutopayConfirmation(invoice.id)} onReleased={() => setConfirmationReleased(true)} />
-      )}
-      {canPay && confirmationReleased && (
-        <div role="status" className="rounded-md bg-warning/10 p-3 text-sm font-medium text-warning-on-tint" data-testid="autopay-confirmation-released">
-          The automatic payment was canceled. Use Pay above to pay securely — your bank will ask you to confirm.
-        </div>
-      )}
-      {canPay && collectionInProgress && !awaitingBank && (
-        <div role="status" className="rounded-md bg-warning/10 p-3 text-sm font-medium text-warning-on-tint" data-testid="invoice-collection-processing">
-          Payment processing via autopay — {money(collectionInProgress.amount, currency)} is being collected automatically. No action needed.
-        </div>
-      )}
-
-      {settleState === 'settling' && (
-        <div role="status" className="rounded-md bg-warning/10 p-3 text-sm font-medium text-warning-on-tint" data-testid="invoice-settle-confirming">
-          Confirming your payment…
-        </div>
-      )}
+  const notices = (
+    <>
+      {settleState === 'settling' && <Notice tone="primary" title="Confirming your payment…" data-testid="invoice-settle-confirming" />}
       {settleState === 'failed' && (
-        <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm font-medium text-destructive-on-tint" data-testid="invoice-settle-failed">
-          We couldn't confirm your payment just now. If your card was charged, it will be applied shortly — and your IT team can confirm it for you.
-        </div>
+        <Notice tone="destructive" title="We couldn't confirm your payment just now." data-testid="invoice-settle-failed">
+          <p>{`If your card was charged, it will be applied shortly, and ${branding?.partnerName ?? 'your IT team'} can confirm it for you.`}</p>
+        </Notice>
       )}
       {settleState === 'pending' && (
-        <div role="status" className="rounded-md bg-warning/10 p-3 text-sm font-medium text-warning-on-tint" data-testid="invoice-settle-pending">
-          Thanks! We're still confirming your payment — this can take a moment. Refresh shortly to see it applied.
-        </div>
+        <Notice tone="primary" title="Thanks! We're still confirming your payment." data-testid="invoice-settle-pending">
+          <p>This can take a moment. Refresh shortly to see it applied.</p>
+        </Notice>
       )}
+      {invoice.status === 'paid' && !detail.autopayStatus && <Notice tone="success" title="Paid. Thank you." />}
       {payError && (
-        <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint" data-testid="invoice-pay-error">
-          <p className="font-medium">{payError}</p>
+        <Notice tone="destructive" title={payError} data-testid="invoice-pay-error">
           {/* A terminal 409 leaves a dead button; the customer still has a bill.
               Name the next step so the page does not end on a refusal. */}
           {payTerminal && (
-            <p className="mt-1 text-foreground/80" data-testid="invoice-pay-next-step">
+            <p data-testid="invoice-pay-next-step">
               {branding?.partnerName
-                ? `Ask ${branding.partnerName} how to pay this invoice — they can take payment another way.`
-                : 'Ask your IT team how to pay this invoice — they can take payment another way.'}
+                ? `Ask ${branding.partnerName} how to pay this invoice. They can take payment another way.`
+                : 'Ask your IT team how to pay this invoice. They can take payment another way.'}
             </p>
           )}
-        </div>
+        </Notice>
       )}
-      {downloadError && (
-        <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm font-medium text-destructive-on-tint">{downloadError}</div>
-      )}
+      {downloadError && <Notice tone="destructive" title={downloadError} />}
+    </>
+  );
 
+  return (
+    <div className="space-y-5">
+      <a href={withBase("/invoices")} className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground">
+        <ArrowLeft className="h-4 w-4" />
+        Back to invoices
+      </a>
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start">
+      {/* The panel comes first on phones; at lg it sits beside the invoice (D-4). */}
+      <div className="lg:col-start-2 lg:row-start-1">
+        <InvoicePaymentPanel portal
+          currency={currency} balance={invoice.balance} dueDate={invoice.dueDate} status={invoice.status}
+          canPay={canPay} onlinePaymentUnavailable={detail.onlinePaymentAvailable === false && PAYABLE_STATUSES.has(invoice.status)}
+          charge={chargeNow} autopayStatus={detail.autopayStatus ?? null} autopayEnrolled={detail.autopayEnrolled === true}
+          saveOffer={detail.autopay} bankTarget={{ invoiceId: invoice.id }} bankOffer={detail.bankAutopay}
+          collectionInProgress={collectionInProgress} partnerName={branding?.partnerName}
+          paying={paying} onPay={save => void payInvoice(save)} payTestId="invoice-pay-button" processingTestId="invoice-collection-processing"
+          release={() => portalApi.releaseAutopayConfirmation(invoice.id)} notices={notices}
+          download={(
+            <button type="button" onClick={() => void downloadPdf()} disabled={downloading} className={cn(canPay ? BTN_SECONDARY : BTN_PRIMARY, 'w-full')}>
+              <Download className="h-4 w-4" aria-hidden="true" />
+              {downloading ? 'Preparing…' : 'Download PDF'}
+            </button>
+          )}
+        />
+      </div>
+      <div className="min-w-0 lg:col-start-1 lg:row-start-1">
       <DocumentPaper testId="invoice-document" primaryColor={branding?.primaryColor}>
         <DocumentHeader
           logoUrl={branding?.logoUrl}
@@ -316,13 +281,13 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
 
         <div className="overflow-hidden rounded-lg border bg-card">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[28rem] text-sm">
+            <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
                   <th className="px-4 py-2.5 text-left font-medium sm:px-5">Description</th>
-                  <th className="px-2 py-2.5 text-right font-medium">Qty</th>
-                  <th className="px-2 py-2.5 text-right font-medium">Price</th>
-                  {showTax && <th className="px-2 py-2.5 text-right font-medium">Tax</th>}
+                  <th className="hidden px-2 py-2.5 text-right font-medium sm:table-cell">Qty</th>
+                  <th className="hidden px-2 py-2.5 text-right font-medium sm:table-cell">Price</th>
+                  {showTax && <th className="hidden px-2 py-2.5 text-right font-medium sm:table-cell">Tax</th>}
                   <th className="px-4 py-2.5 text-right font-medium sm:px-5">Amount</th>
                 </tr>
               </thead>
@@ -357,6 +322,8 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
                           <tr key={`${title}-${index}`} className="border-b align-top last:border-0">
                             <td className="px-4 py-3 text-foreground sm:px-5">
                               {title}
+                              {/* P-7: on phones Qty and Price fold under the description instead of clipping the table. */}
+                              <div className="mt-0.5 text-xs tabular-nums text-muted-foreground sm:hidden" data-testid={`invoice-line-qty-${index}`}>{l.quantity} × {money(l.unitPrice, currency)}</div>
                               {blurb && <div className="mt-0.5 text-xs text-muted-foreground">{blurb}</div>}
                               {note && <div className="mt-0.5 text-xs text-muted-foreground" data-testid={`invoice-line-worked-vs-billed-${index}`}>{note}</div>}
                               {l.ticketNumber && (
@@ -368,9 +335,9 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
                                 </div>
                               )}
                             </td>
-                            <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>
-                            <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{money(l.unitPrice, currency)}</td>
-                            {showTax && <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{tax === null ? '—' : money(tax, currency)}</td>}
+                            <td className="hidden whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground sm:table-cell">{l.quantity}</td>
+                            <td className="hidden whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground sm:table-cell">{money(l.unitPrice, currency)}</td>
+                            {showTax && <td className="hidden whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground sm:table-cell">{tax === null ? '—' : money(tax, currency)}</td>}
                             <td className="whitespace-nowrap px-4 py-3 text-right font-medium tabular-nums text-foreground sm:px-5">{money(l.lineTotal, currency)}</td>
                           </tr>
                         );
@@ -411,23 +378,10 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
           <DocumentTermsCollapsible text={invoice.termsAndConditions} testId="invoice-terms-conditions" />
         )}
       </DocumentPaper>
+      </div>
+      </div>
     </div>
   );
-}
-
-/** Shared by the signed-in and public invoice payment controls. */
-export function InvoiceAutopayConsent({ disclosure, checked, paying, onChange }: {
-  disclosure?: InvoiceAutopayDisclosure | null;
-  checked: boolean;
-  paying: boolean;
-  onChange: (checked: boolean) => void;
-}) {
-  if (!disclosure?.eligible) return null;
-  return <label className="block text-sm">
-    <input type="checkbox" data-testid="autopay-save-card" checked={checked} disabled={paying}
-      onChange={e => onChange(e.target.checked)} /> Use this card for future invoices
-    <span className="block" data-testid="autopay-save-card-text">{disclosure.consentText}</span>
-  </label>;
 }
 
 export default InvoiceDetailView;

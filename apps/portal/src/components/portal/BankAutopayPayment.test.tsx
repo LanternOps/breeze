@@ -107,7 +107,7 @@ it.each([
  vi.mocked(apiGet).mockResolvedValueOnce({data:{invoice:{id:'invoice-1'},bankAutopay:fresh}});
  fireEvent.click(screen.getByTestId('autopay-bank-restart'));
  const pay=await screen.findByTestId('autopay-bank-pay');expect(pay).toBeDisabled();
- expect(screen.getByText(/Invoice payment: USD 90.00/)).toBeTruthy();
+ expect(screen.getByTestId('autopay-bank-module')).toHaveTextContent('Invoice payment$90.00');
  vi.mocked(apiPost).mockResolvedValueOnce({data:{url:'https://checkout.stripe.com/c/setup/restart'}});
  fireEvent.click(screen.getByTestId('autopay-bank-consent'));fireEvent.click(pay);
  await waitFor(()=>expect(apiPost).toHaveBeenLastCalledWith('/portal/invoices/invoice-1/pay',
@@ -153,8 +153,8 @@ const lowered={...offer,fee:'2.00',disclosureHash:'c'.repeat(64),methodStatus:'a
   consentText:'I authorize a bank payment of USD 100.00, plus a processing fee of USD 2.00, for this invoice.'};
 async function restartsAtNewTotal(notCharged:boolean){
   const change=await screen.findByTestId('autopay-bank-terms-changed');
-  expect(change).toHaveTextContent('The processing fee changed from USD 2.50 to USD 2.00.');
-  expect(change).toHaveTextContent('New total: USD 102.00.');
+  expect(change).toHaveTextContent('The processing fee changed from $2.50 to $2.00.');
+  expect(change).toHaveTextContent('New total: $102.00.');
   // Only a server answer that never debits may say so; a return alone proves nothing.
   if(notCharged)expect(change).toHaveTextContent('Your bank account was not charged.');
   else expect(change).not.toHaveTextContent('not charged');

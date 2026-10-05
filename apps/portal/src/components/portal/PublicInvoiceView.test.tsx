@@ -30,17 +30,14 @@ describe('PublicInvoiceView — autopay collection in flight (#7824)', () => {
     expect((screen.getByTestId('public-invoice-pay') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('disables Pay and shows the processing note while a collection is in flight', async () => {
-    const { portalApi } = await import('@/lib/api');
-    const pay = vi.spyOn(portalApi, 'payPublicInvoice' as never);
+  it('offers no Pay and says the payment is being collected while a collection is in flight', async () => {
     render(<PublicInvoiceView token="t" initial={detail({ collectionInProgress: { amount: '100.00' } })} />);
-    const btn = screen.getByTestId('public-invoice-pay') as HTMLButtonElement;
-    expect(btn.disabled).toBe(true);
-    fireEvent.click(btn);
-    expect(pay).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('public-invoice-pay')).toBeNull();
     const note = screen.getByTestId('public-invoice-collection-processing');
-    expect(note.textContent).toContain('Payment processing via autopay');
-    expect(note.textContent).toContain('$100.00');
+    expect(note.textContent).toContain('$100.00 is being collected');
+    expect(note.textContent).toContain('No action needed.');
+    // Informational, not amber: the client has nothing to do (DESIGN.md).
+    expect(note.innerHTML).not.toContain('text-warning');
   });
 });
 
@@ -54,7 +51,7 @@ describe('PublicInvoiceView — autopay payment waiting on the bank (off-session
     expect(notice.textContent).toContain('$100.00');
     expect(screen.queryByTestId('public-invoice-collection-processing')).toBeNull();
     expect(document.body.textContent).not.toContain('No action needed');
-    expect((screen.getByTestId('public-invoice-pay') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByTestId('public-invoice-pay')).toBeNull();
   });
 
   it('releases the off-session payment, reloads the invoice and lets the card Pay button work', async () => {
@@ -68,6 +65,27 @@ describe('PublicInvoiceView — autopay payment waiting on the bank (off-session
     await waitFor(() => expect(reload).toHaveBeenCalledWith('t', { redirectOnUnauthorized: false }));
     await waitFor(() => expect((screen.getByTestId('public-invoice-pay') as HTMLButtonElement).disabled).toBe(false));
     expect(screen.queryByTestId('autopay-confirmation-notice')).toBeNull();
+    expect(screen.getByTestId('autopay-confirmation-released')).toHaveTextContent('Pay below');
+    fireEvent.click(screen.getByTestId('public-invoice-pay'));
+    await waitFor(() => expect(pay).toHaveBeenCalledWith('t', { saveForAutopay: false }));
+  });
+
+  // PR #7983 review: a released payment must stay visibly released, and Pay must work,
+  // even when re-reading the invoice afterwards fails or throws.
+  it.each([
+    ['fails', { error: 'Network error' }],
+    ['throws', null],
+  ] as const)('keeps the released state and a working Pay when reloading the invoice %s', async (_label, response) => {
+    const { portalApi } = await import('@/lib/api');
+    vi.spyOn(portalApi, 'releasePublicAutopayConfirmation').mockResolvedValue({ data: { data: { outcome: 'released' } }, statusCode: 200 });
+    const reload = vi.spyOn(portalApi, 'getPublicInvoice');
+    if (response) reload.mockResolvedValue(response as never); else reload.mockRejectedValue(new Error('offline'));
+    const pay = vi.spyOn(portalApi, 'payPublicInvoice').mockResolvedValue({ error: 'stop here', statusCode: 409 });
+    render(<PublicInvoiceView token="t" initial={waiting()} />);
+    fireEvent.click(screen.getByTestId('autopay-confirmation-continue'));
+    expect(await screen.findByTestId('autopay-confirmation-released')).toHaveTextContent('The automatic payment was canceled.');
+    await waitFor(() => expect(screen.getByTestId('autopay-confirmation-released')).toHaveTextContent("We couldn't refresh the invoice"));
+    expect(document.body.textContent).not.toContain('Continue to cancel');
     fireEvent.click(screen.getByTestId('public-invoice-pay'));
     await waitFor(() => expect(pay).toHaveBeenCalledWith('t', { saveForAutopay: false }));
   });

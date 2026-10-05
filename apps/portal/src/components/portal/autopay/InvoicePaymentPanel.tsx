@@ -1,0 +1,215 @@
+import { useEffect, useState, type ReactNode } from 'react';
+import { CreditCard } from 'lucide-react';
+import type { CustomerInvoiceAutopayStatus } from '@breeze/shared';
+import type { ApiResponse, AutopayConfirmationRelease, BankAutopayOffer, InvoiceAutopayDisclosure } from '@/lib/api';
+import { withBase } from '@/lib/basePath';
+import { longDate, money } from '@/lib/format';
+import { methodInSentence } from '@/lib/autopay';
+import { cn } from '@/lib/utils';
+import { BTN_BLOCK, BTN_PRIMARY, BTN_SECONDARY, LINK, Notice, StatusMark, type MarkTone } from '../ui';
+import BankAutopayPayment from '../BankAutopayPayment';
+import { AutopayConfirmationNotice } from '../AutopayConfirmationNotice';
+import { AuthorizationBox } from './AuthorizationBox';
+import { MethodChoice, type MethodOption } from './MethodChoice';
+import { SummaryList } from './SummaryList';
+
+type Option = 'card' | 'card_save' | 'bank';
+type PayKind = 'pay' | 'pay_now_instead' | 'pay_now_primary' | 'none';
+type StatusCopy = { mark?: { tone: MarkTone; label: string }; text: string; extra?: ReactNode; summary?: boolean; pay: PayKind; testId?: string };
+
+export interface InvoicePaymentPanelProps {
+  /** Portal (signed-in) pages may link to Payment methods. */
+  portal?: boolean;
+  currency: string; balance: string; dueDate: string | null; status: string; paidAt?: string | null;
+  /** The invoice can be paid online now (server-payable, balance > 0, online payment available). */
+  canPay: boolean;
+  onlinePaymentUnavailable?: boolean;
+  charge: { amount: string; isDeposit: boolean };
+  autopayStatus?: CustomerInvoiceAutopayStatus | null;
+  autopayEnrolled?: boolean;
+  saveOffer?: InvoiceAutopayDisclosure | null;
+  bankTarget: { invoiceId: string; publicToken?: string };
+  bankOffer?: BankAutopayOffer | null;
+  collectionInProgress?: { amount: string; actionRequired?: boolean } | null;
+  partnerName?: string | null;
+  paying: boolean;
+  /** Start a card checkout; `save` = the client agreed to save the card. */
+  onPay: (save: boolean) => void;
+  payTestId: string; processingTestId: string;
+  release: () => Promise<ApiResponse<AutopayConfirmationRelease>>;
+  /** Re-read the invoice after a release; false when that failed. */
+  reload?: () => Promise<boolean>;
+  /** Payment errors, checkout-return and settle notices from the page. */
+  notices?: ReactNode;
+  download: ReactNode;
+}
+
+const NOT_INCLUDED: Record<string, string> = {
+  enrolled_after_issue: 'This invoice was issued before you set up automatic payments, so please pay it here.',
+  over_cap: 'This invoice is over your automatic payment limit, so please pay it here.',
+  above_authorized_cap: 'This invoice is over the limit you authorized for automatic payments, so please pay it here.',
+  cap_currency_mismatch: "This invoice's currency can't be paid automatically, so please pay it here.",
+  ach_currency_unsupported: "This invoice's currency can't be paid automatically from a bank account, so please pay it here.",
+};
+
+function statusCopy(s: CustomerInvoiceAutopayStatus, msp: string, portal: boolean): StatusCopy | null {
+  const method = s.methodLabel ? `your ${methodInSentence(s.methodLabel)}` : 'your saved payment method';
+  const date = s.chargeDate ? longDate(s.chargeDate) : null;
+  switch (s.state) {
+    case 'scheduled':
+      return { mark: { tone: 'primary', label: 'Automatic payment' }, summary: true, pay: s.canPayNow ? 'pay_now_instead' : 'none',
+        text: date ? `This invoice will be paid automatically on ${date} with ${method}.` : `This invoice will be paid automatically with ${method}.` };
+    case 'awaiting_notice':
+      return { mark: { tone: 'primary', label: 'Automatic payment' }, pay: s.canPayNow ? 'pay_now_instead' : 'none',
+        text: `This invoice will be paid automatically with ${method}. We'll email you the payment date first.` };
+    case 'delayed':
+      if (s.reason === 'pending_verification') {
+        return { mark: { tone: 'warning', label: 'Verify your bank' }, pay: 'pay_now_instead',
+          text: 'This invoice will be paid automatically once your bank account is verified. Stripe will email you instructions.' };
+      }
+      if (s.reason === 'on_hold') {
+        return { mark: { tone: 'neutral', label: 'On hold' }, pay: 'pay_now_instead',
+          text: `Automatic payment for this invoice is on hold at ${msp}. You can pay it now instead.` };
+      }
+      return { mark: { tone: 'warning', label: 'Needs attention' }, pay: 'pay',
+        text: `We couldn't charge ${method.replace(/^your /, 'your saved ')}, so this invoice is waiting. Please pay it now so it doesn't become overdue.`,
+        extra: portal ? <a className={cn(LINK, 'text-sm')} href={withBase('/payment-methods')}>Update your payment method</a> : undefined };
+    case 'retry_scheduled':
+      return { mark: { tone: 'warning', label: "Payment didn't go through" }, pay: 'pay_now_primary',
+        text: `The last attempt didn't go through. We'll try ${method} again${date ? ` on ${date}` : ''}, or you can pay now.` };
+    case 'processing':
+      return { mark: { tone: 'primary', label: 'Processing' }, pay: 'none', testId: 'processing',
+        text: `${money(s.amount ?? '0', s.currency)} is being collected from ${method}.${s.methodType === 'us_bank_account' ? ' Bank payments usually take a few business days to clear.' : ''} No action needed.` };
+    case 'failed':
+      return { mark: { tone: 'destructive', label: "Payment didn't go through" }, pay: 'pay', text: "Automatic payment didn't go through. Please pay this invoice below." };
+    case 'skipped':
+      return { mark: { tone: 'neutral', label: 'Skipped' }, pay: 'pay', text: 'You skipped the automatic payment for this invoice. Please pay it below.' };
+    case 'not_included':
+      return { pay: 'pay', text: s.reason?.startsWith('excluded') ? `${msp} asked for this invoice to be paid directly.`
+        : NOT_INCLUDED[s.reason ?? ''] ?? 'This invoice is not paid automatically, so please pay it here.' };
+    case 'paid_automatically':
+      return { mark: { tone: 'success', label: 'Paid' }, pay: 'none',
+        text: `Paid automatically${s.paidAt ? ` on ${longDate(s.paidAt)}` : ''} with ${method}. Thank you.` };
+    default:
+      return null;
+  }
+}
+
+/**
+ * The invoice pages' payment panel: the balance first, then how this invoice gets
+ * paid. A client who isn't enrolled picks one way to pay; consent appears only for
+ * the options that save a method. An enrolled client is told the date and method
+ * of the automatic payment, with a quiet "Pay now instead" (D-4).
+ */
+export function InvoicePaymentPanel(p: InvoicePaymentPanelProps) {
+  const msp = p.partnerName || 'your service provider';
+  const [option, setOption] = useState<Option>('card');
+  const [accepted, setAccepted] = useState(false);
+  const [released, setReleased] = useState<null | 'ok' | 'reload_failed'>(null);
+  // Fresh consent whenever the offered terms change.
+  useEffect(() => { setAccepted(false); }, [p.saveOffer?.disclosureHash]);
+
+  const s = p.autopayStatus ?? null;
+  const inFlight = released ? null : p.collectionInProgress ?? null;
+  const waitingOnBank = !released && (inFlight?.actionRequired === true || s?.state === 'action_required');
+  const processing = !waitingOnBank && (!!inFlight || s?.state === 'processing');
+  const copy = s && !waitingOnBank && !(released && s.state === 'action_required')
+    ? statusCopy(processing && s.state !== 'processing' ? { ...s, state: 'processing', amount: inFlight?.amount ?? s.amount } : s, msp, !!p.portal)
+    : processing && inFlight ? statusCopy({ state: 'processing', amount: inFlight.amount, currency: p.currency, chargeDate: null, fee: null,
+      methodLabel: null, methodType: null, reason: null, paidAt: null, canPayNow: false }, msp, !!p.portal) : null;
+  const pay: PayKind = !p.canPay ? 'none' : waitingOnBank || processing ? 'none' : copy?.pay ?? 'pay';
+  const offers = pay === 'pay' && !p.autopayEnrolled;
+  const saveAvailable = offers && !!p.saveOffer?.eligible;
+  const bankAvailable = offers && !!p.bankOffer;
+  const chosen: Option = (option === 'card_save' && !saveAvailable) || (option === 'bank' && !bankAvailable) ? 'card' : option;
+
+  const amount = money(p.charge.amount, p.currency);
+  const paid = p.status === 'paid';
+  const overdue = p.status === 'overdue';
+  const options: MethodOption<Option>[] = [
+    { value: 'card', name: 'Card', detail: 'Pay this invoice once.', testId: 'autopay-option-card' },
+    ...(saveAvailable ? [{ value: 'card_save' as const, name: 'Card, and save it for future invoices', testId: 'autopay-option-card_save',
+      detail: 'Pays this invoice now and saves the card for automatic payments.' }] : []),
+    ...(bankAvailable ? [{ value: 'bank' as const, name: 'Bank account', testId: 'autopay-option-bank',
+      fee: Number(p.bankOffer!.fee) > 0 ? `${money(p.bankOffer!.fee, p.bankOffer!.currency)} fee` : 'No fee',
+      detail: 'Pays this invoice and turns on automatic payments for future invoices.' }] : []),
+  ];
+  const payLabel = pay === 'pay_now_instead' || pay === 'pay_now_primary' ? 'Pay now instead'
+    : chosen === 'card_save' ? `Pay ${amount} and save card`
+    : p.charge.isDeposit ? `Pay deposit ${amount}` : `Pay ${amount}`;
+  const needsConsent = chosen === 'card_save';
+
+  const onRelease = async () => {
+    setReleased('ok');
+    const ok = p.reload ? await p.reload().catch(() => false) : true;
+    if (!ok) setReleased('reload_failed');
+  };
+
+  return (
+    <aside aria-label="Payment" className="space-y-5 rounded-xl border border-border bg-card p-5 sm:p-6 lg:sticky lg:top-6" data-testid="invoice-payment-panel">
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">{paid ? 'Balance' : 'Balance due'}</p>
+        <p className="mt-1 font-display text-[1.75rem] font-semibold leading-tight text-figures text-foreground">{money(p.balance, p.currency)}</p>
+        {!paid && p.dueDate && (
+          <p className={cn('mt-1 text-sm', overdue ? 'font-medium text-warning-on-tint' : 'text-muted-foreground')}>
+            {overdue ? `Was due ${longDate(p.dueDate)}` : `Due ${longDate(p.dueDate)}`}
+          </p>
+        )}
+      </div>
+      {p.notices}
+      {released && (
+        <Notice tone="primary" title="The automatic payment was canceled." data-testid="autopay-confirmation-released">
+          <p>Pay below. Your bank will ask you to confirm the payment.</p>
+          {released === 'reload_failed' && <p>We couldn't refresh the invoice. Refresh the page if anything looks out of date.</p>}
+        </Notice>
+      )}
+      {waitingOnBank && p.canPay && (
+        <AutopayConfirmationNotice amount={inFlight?.amount ?? s?.amount ?? p.charge.amount} currency={p.currency}
+          release={p.release} onReleased={onRelease} />
+      )}
+      {copy && (
+        <div className="space-y-3" role="status" data-testid={copy.testId === 'processing' ? p.processingTestId : 'invoice-autopay-status'}>
+          {copy.mark && <StatusMark tone={copy.mark.tone}>{copy.mark.label}</StatusMark>}
+          <p className="text-sm leading-relaxed text-foreground">{copy.text}</p>
+          {copy.summary && s && (s.amount || s.fee) && (
+            <SummaryList rows={[...(s.amount ? [{ label: 'Amount', value: money(s.amount, s.currency), figure: true }] : []),
+              ...(s.fee && Number(s.fee) > 0 ? [{ label: 'Fee', value: `up to ${money(s.fee, s.currency)}` }] : [])]} />
+          )}
+          {copy.extra}
+        </div>
+      )}
+      {!p.canPay && p.onlinePaymentUnavailable && !paid && (
+        <p className="text-sm text-muted-foreground">{`Online payment isn't available for this invoice. Please contact ${msp} to pay.`}</p>
+      )}
+      {pay !== 'none' && (
+        <div className="space-y-4">
+          {options.length > 1 && offers && (
+            <MethodChoice legend="How would you like to pay?" name="invoice-pay-option" options={options} value={chosen}
+              onChange={next => { setOption(next); setAccepted(false); }} disabled={p.paying} />
+          )}
+          {chosen === 'bank' ? (
+            <BankAutopayPayment target={p.bankTarget} offer={p.bankOffer} />
+          ) : (
+            <>
+              {needsConsent && p.saveOffer && (
+                <AuthorizationBox id="autopay-save" text={p.saveOffer.consentText} checked={accepted} onChange={setAccepted} disabled={p.paying}
+                  testIds={{ text: 'autopay-save-card-text', checkbox: 'autopay-save-card' }} />
+              )}
+              <button type="button" data-testid={p.payTestId} disabled={p.paying || (needsConsent && !accepted)}
+                onClick={() => p.onPay(needsConsent && accepted)}
+                className={cn(pay === 'pay_now_instead' ? BTN_SECONDARY : BTN_PRIMARY, 'w-full')}>
+                <CreditCard className="h-4 w-4" aria-hidden="true" />
+                {p.paying ? 'Opening secure checkout…' : payLabel}
+              </button>
+              {needsConsent && !accepted && <p className="text-sm text-muted-foreground">Tick the box above to continue.</p>}
+              <p className="text-xs text-muted-foreground">Secure payment by Stripe.</p>
+            </>
+          )}
+        </div>
+      )}
+      <div className={cn('pt-1', BTN_BLOCK)}>{p.download}</div>
+    </aside>
+  );
+}
+
+export default InvoicePaymentPanel;

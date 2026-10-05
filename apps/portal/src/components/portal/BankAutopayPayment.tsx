@@ -1,4 +1,12 @@
-import {useEffect,useState} from 'react';
+import {useEffect,useState,type ReactElement} from 'react';
+import {cn} from '@/lib/utils';
+import {money} from '@/lib/format';
+import {withBase} from '@/lib/basePath';
+import {BTN_PRIMARY,BTN_SECONDARY,Notice} from './ui';
+import {AutopayShell} from './autopay/AutopayShell';
+import {AuthorizationBox} from './autopay/AuthorizationBox';
+import {StatePanel} from './autopay/StatePanel';
+import {SummaryList} from './autopay/SummaryList';
 import {apiGet,apiPost,type ApiResponse,type BankAutopayOffer} from '@/lib/api';
 import {runAction} from '@/lib/runAction';
 import {navigateTo} from '@/lib/navigation';
@@ -28,11 +36,11 @@ function storedTerms(value:unknown):Terms|undefined{
     ?termsOf(v as Terms):undefined;
 }
 const cents=(value:string)=>{const [whole,fraction]=value.split('.');return Number(whole)*100+Number(fraction);};
-const usd=(currency:string,value:number)=>`${currency} ${Math.trunc(value/100)}.${String(value%100).padStart(2,'0')}`;
+const total=(t:Terms)=>money((cents(t.principal)+cents(t.fee))/100,t.currency);
 function changeText({from,to}:Changed):string{
-  const parts=[from.fee!==to.fee?`The processing fee changed from ${from.currency} ${from.fee} to ${to.currency} ${to.fee}.`:'',
-    from.principal!==to.principal?`The amount due changed from ${from.currency} ${from.principal} to ${to.currency} ${to.principal}.`:''].filter(Boolean);
-  return `${parts.length?parts.join(' '):'The payment terms changed.'} New total: ${usd(to.currency,cents(to.principal)+cents(to.fee))}.`;
+  const parts=[from.fee!==to.fee?`The processing fee changed from ${money(from.fee,from.currency)} to ${money(to.fee,to.currency)}.`:'',
+    from.principal!==to.principal?`The amount due changed from ${money(from.principal,from.currency)} to ${money(to.principal,to.currency)}.`:''].filter(Boolean);
+  return `${parts.length?parts.join(' '):'The payment terms changed.'} New total: ${total(to)}.`;
 }
 function unwrap<T>(response:ApiResponse<T|{data:T}>,publicRequest:boolean):ApiResponse<T>{
   return {...response,data:publicRequest?(response.data as {data?:T}|undefined)?.data:response.data as T|undefined};
@@ -47,6 +55,7 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
   const [message,setMessage]=useState(''),[failed,setFailed]=useState(false);
   const [recovery,setRecovery]=useState<'in_progress'|'abandoned'|'reauthorize'|null>(null);
   const [changed,setChanged]=useState<Changed|null>(null);
+  const [cancelled,setCancelled]=useState(false),[invoiceHref,setInvoiceHref]=useState<string|null>(null);
   const outcome=(text:string,error:boolean)=>{setMessage(text);setFailed(error);};
   /** Shows a freshly read offer against the terms this setup authorized. The same terms
    * stay accepted (#7897); different terms need a new authorization and bank setup,
@@ -64,6 +73,11 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
     if(!returning)return;let canceled=false;
     try{
       const stored=JSON.parse(sessionStorage.getItem(key)??'null') as (Target&{setupSessionId?:string;accepted?:unknown})|null;
+      // The way back to the invoice the client was paying, for every return state.
+      if(stored&&typeof stored.invoiceId==='string')setInvoiceHref(typeof stored.publicToken==='string'
+        ?withBase(`/invoice/${encodeURIComponent(stored.publicToken)}`):withBase(`/invoices/${encodeURIComponent(stored.invoiceId)}`));
+      // Stripe "Back" before connecting the bank: nothing was saved or charged.
+      if(new URLSearchParams(window.location.search).get('cancelled')==='1'){setCancelled(true);return;}
       const session=new URLSearchParams(window.location.search).get('session_id')??stored?.setupSessionId;
       if(!stored||typeof stored.invoiceId!=='string'||(stored.publicToken!==undefined&&typeof stored.publicToken!=='string')||!session||!/^cs_[A-Za-z0-9_]+$/.test(session))throw new Error();
       sessionStorage.setItem(key,JSON.stringify({...stored,setupSessionId:session}));
@@ -151,24 +165,46 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
     setBusy(false);
     if(!conflict)outcome('Payment has not started. Refresh the invoice to check its status.',true);
   }
-  if(!view)return returning?<p role="status" data-testid="autopay-bank-return-status">{message||'Loading invoice…'}</p>:null;
+  const summary=(offer:BankAutopayOffer)=>[{label:'Invoice payment',value:money(offer.principal,offer.currency)},
+    {label:'Processing fee',value:Number(offer.fee)>0?money(offer.fee,offer.currency):'None'},
+    {label:'Total',value:total(offer),figure:true}];
+  const frame=(children:ReactElement)=>returning?<AutopayShell testId="autopay-bank-return">{children}</AutopayShell>:children;
+  if(!view){
+    if(!returning)return null;
+    if(cancelled)return frame(<StatePanel title="Your bank connection wasn't finished" mark={{tone:'neutral',label:'Not paid'}}
+      primary={invoiceHref?{label:'Back to the invoice',href:invoiceHref}:null}>
+      <p>You left Stripe's page before connecting your bank account. Nothing was saved or charged.</p>
+      {!invoiceHref&&<p>Open the invoice from your email to pay it.</p>}
+    </StatePanel>);
+    return frame(message?<StatePanel title="Open the invoice to continue" primary={invoiceHref?{label:'Open the invoice',href:invoiceHref}:null} testId="autopay-bank-return-status">
+      <p>{failed?"We couldn't pick up where you left off on this page. Open the invoice again to finish paying.":message}</p>
+    </StatePanel>:<StatePanel title="Finishing your bank connection…" testId="autopay-bank-return-status"><p>This takes a few seconds.</p></StatePanel>);
+  }
   const pending=!!view.setupSessionId&&view.offer.methodStatus==='pending_verification';
-  if(!view.offer.available&&!pending)return <p data-testid="autopay-bank-unavailable">Bank payment is unavailable for this invoice.</p>;
-  return <section data-testid="autopay-bank-module" className="space-y-3">
-    <h2>Pay by bank and set up autopay</h2>
-    <p>Invoice payment: {view.offer.currency} {view.offer.principal}. Processing fee: {view.offer.currency} {view.offer.fee}.</p>
-    {changed&&!finished&&<div role="alert" data-testid="autopay-bank-terms-changed">
+  if(!view.offer.available&&!pending)return frame(<p className="text-sm text-muted-foreground" data-testid="autopay-bank-unavailable">Bank payment isn't available for this invoice right now. You can pay it by card.</p>);
+  const tone:'destructive'|'primary'=failed?'destructive':'primary';
+  const body=<section data-testid="autopay-bank-module" className="space-y-4">
+    {returning&&<h1 className="font-display text-[1.5rem] font-semibold leading-tight tracking-tight text-foreground sm:text-[1.75rem]">Pay by bank</h1>}
+    <SummaryList rows={summary(view.offer)}/>
+    {changed&&!finished&&<Notice tone="warning" title="The total changed, so no payment was made." data-testid="autopay-bank-terms-changed">
       <p>{changeText(changed)}{changed.notCharged?' Your bank account was not charged.':''}</p>
-      <p>Review the new terms below and authorize them to continue. You will confirm your bank account with Stripe again.</p>
-    </div>}
-    {message&&<p role={failed?'alert':'status'} data-testid="autopay-bank-result">{message}</p>}
-    {recovery==='abandoned'||recovery==='reauthorize'?<button type="button" data-testid="autopay-bank-restart" disabled={busy} onClick={()=>void restart()}>Restart bank setup</button>
-      :recovery==='in_progress'?<button type="button" data-testid="autopay-bank-refresh" disabled={busy} onClick={()=>void refresh()}>Refresh verification</button>
-      :pending&&!finished?<div data-testid="autopay-bank-pending"><p>Bank verification is pending. No payment has started.</p>
-      <button type="button" data-testid="autopay-bank-refresh" disabled={busy} onClick={()=>void refresh()}>Refresh verification</button></div>
-      :!finished&&<><label><input type="checkbox" data-testid="autopay-bank-consent" checked={accepted} disabled={busy}
-        onChange={event=>setAccepted(event.target.checked)}/>{view.offer.consentText}</label>
-        <button type="button" data-testid={view.setupSessionId?'autopay-bank-confirm-pay':'autopay-bank-pay'} disabled={busy||!accepted}
-          onClick={()=>void submit()}>{view.setupSessionId?'Pay this invoice now':changed?'Authorize the new total':'Pay by bank and set up autopay'}</button></>}
+      <p>Please read the new authorization and agree to it. You'll connect your bank account with Stripe again.</p>
+    </Notice>}
+    {message&&<Notice tone={finished?'primary':tone} data-testid="autopay-bank-result">{finished?<><p className="font-semibold">Bank payment started</p>
+      <p>{`Your bank payment of ${total(view.offer)} has started. Bank payments usually take a few business days to clear, and we'll email you a receipt when it does. Automatic payments are now on for future invoices.`}</p></>
+      :<p>{message}</p>}</Notice>}
+    {recovery==='abandoned'||recovery==='reauthorize'?<button type="button" className={cn(BTN_PRIMARY,'w-full')} data-testid="autopay-bank-restart" disabled={busy} onClick={()=>void restart()}>Connect your bank again</button>
+      :recovery==='in_progress'?<button type="button" className={cn(BTN_SECONDARY,'w-full')} data-testid="autopay-bank-refresh" disabled={busy} onClick={()=>void refresh()}>Check again</button>
+      :pending&&!finished?<Notice tone="warning" title="Your bank account needs verifying first." data-testid="autopay-bank-pending"
+        action={<button type="button" className={BTN_SECONDARY} data-testid="autopay-bank-refresh" disabled={busy} onClick={()=>void refresh()}>Check again</button>}>
+        <p>Stripe will email you instructions, usually within 1–2 business days. No payment has started.</p></Notice>
+      :!finished&&<div className="space-y-4">
+        <AuthorizationBox id="autopay-bank-authorization" text={view.offer.consentText} checked={accepted} disabled={busy}
+          onChange={setAccepted} testIds={{text:'autopay-bank-consent-text',checkbox:'autopay-bank-consent'}}/>
+        <button type="button" className={cn(BTN_PRIMARY,'w-full')} data-testid={view.setupSessionId?'autopay-bank-confirm-pay':'autopay-bank-pay'} disabled={busy||!accepted}
+          onClick={()=>void submit()}>{busy?(view.setupSessionId?'Starting your payment…':'Opening Stripe…'):view.setupSessionId?`Pay ${total(view.offer)} now`:changed?`Agree and pay ${total(view.offer)}`:`Pay ${total(view.offer)} by bank`}</button>
+        {!accepted&&<p className="text-sm text-muted-foreground">Tick the box above to continue.</p>}
+      </div>}
   </section>;
+  return frame(body);
 }

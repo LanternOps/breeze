@@ -1,16 +1,18 @@
-import BankAutopayPayment from './BankAutopayPayment';
-import { AutopayConfirmationNotice } from './AutopayConfirmationNotice';
-import { InvoiceAutopayConsent } from './InvoiceDetailView';
+import { InvoicePaymentPanel } from './autopay/InvoicePaymentPanel';
+import { Notice } from './ui';
 import { runAction } from '@/lib/runAction';
 import { invoiceAutopayInput } from '@/lib/api';
 import { Fragment, useEffect, useState } from 'react';
-import { CreditCard, Download } from 'lucide-react';
+import { Download } from 'lucide-react';
 import { withBase } from '@/lib/basePath';
 import { portalApi, buildPortalApiUrl, type PublicInvoiceDetail, lineWorkedVsBilledNote } from '@/lib/api';
 import { groupInvoiceLinesByTicket } from '@/lib/invoiceLineGroups';
 import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
 import { DocumentPaper, DocumentHeader, DocumentTerms, DocumentTermsCollapsible, type DocSeller } from './documentShell';
 import { money } from '@/lib/money';
+import { longDate } from '@/lib/format';
+import { cn } from '@/lib/utils';
+import { BTN_PRIMARY, BTN_SECONDARY } from './ui';
 
 /**
  * The public (token-gated) invoice page — the customer's durable no-login
@@ -53,8 +55,6 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
   const [loadError, setLoadError] = useState<string | null>(error ?? null);
   const [loading, setLoading] = useState(initial == null && !error);
   const [paying, setPaying] = useState(false);
-  const [saveForAutopay, setSaveForAutopay] = useState(false);
-  useEffect(() => { setSaveForAutopay(false); }, [detail?.autopay?.disclosureHash]);
   const [payError, setPayError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
@@ -95,15 +95,19 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
 
   const { invoice, lines, chargeNow, payable, branding } = detail;
   const collectionInProgress = detail.collectionInProgress ?? null; // #7824
-  // Off-session 3DS: the reserved payment is waiting on the customer's bank.
-  const awaitingBank = collectionInProgress?.actionRequired === true;
   const releaseConfirmation = async () => {
     const response = await portalApi.releasePublicAutopayConfirmation(token);
     return { ...response, data: response.data?.data };
   };
-  const reloadAfterRelease = async () => {
-    const res = await portalApi.getPublicInvoice(token, { redirectOnUnauthorized: false });
-    if (res.data?.data) setDetail(res.data.data);
+  // After a released 3DS payment: re-read the invoice. False (not a throw) when that
+  // fails, so the panel keeps the released state and says to refresh (PR #7983 review).
+  const reloadAfterRelease = async (): Promise<boolean> => {
+    try {
+      const res = await portalApi.getPublicInvoice(token, { redirectOnUnauthorized: false });
+      if (!res.data?.data) return false;
+      setDetail(res.data.data);
+      return true;
+    } catch { return false; }
   };
   const returnFlag = typeof window !== 'undefined'
     ? new URLSearchParams(window.location.search)
@@ -150,16 +154,13 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
   const taxPct = taxRate > 0 ? Number((taxRate * 100).toFixed(3)) : 0;
   const seller = (invoice.sellerSnapshot ?? null) as DocSeller | null;
   const canPay = payable && chargeNow != null && !justPaid && !paymentPending;
-  const payLabel = chargeNow?.isDeposit
-    ? `Pay deposit ${money(chargeNow.amount, currency)}`
-    : `Pay ${money(chargeNow?.amount ?? 0, currency)}`;
 
   const headerDates = [
     { label: 'Issued', value: shortDate(invoice.issueDate ?? null) },
     { label: 'Due', value: shortDate(invoice.dueDate ?? null) },
   ];
 
-  const pay = async () => {
+  const pay = async (saveForAutopay: boolean) => {
     if (paying) return; setPaying(true); setPayError(null);
     const result = await runAction({
       request: () => portalApi.payPublicInvoice(token, invoiceAutopayInput(saveForAutopay, detail.autopay)),
@@ -193,75 +194,53 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
     }
   };
 
-  return (
-    <div className="mx-auto w-full max-w-3xl space-y-5 p-2 sm:p-4">
-      {/* Amount panel + actions — the reason the customer is here, above the paper. */}
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        {canPay && (
-          <>
-            <BankAutopayPayment target={{invoiceId:invoice.id,publicToken:token}} offer={detail.bankAutopay}/>
-            <InvoiceAutopayConsent disclosure={detail.autopay} checked={saveForAutopay} paying={paying} onChange={setSaveForAutopay} />
-            <button
-              type="button"
-              onClick={() => void pay()}
-              disabled={paying || collectionInProgress != null}
-              data-testid="public-invoice-pay"
-              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            >
-              <CreditCard className="h-4 w-4" />
-              {paying ? 'Redirecting…' : payLabel}
-            </button>
-          </>
-        )}
-        <button
-          type="button"
-          onClick={() => void downloadPdf()}
-          disabled={downloading}
-          data-testid="public-invoice-download"
-          className={
-            canPay
-              ? 'inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50'
-              : 'inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50'
-          }
-        >
-          <Download className="h-4 w-4" />
-          {downloading ? 'Preparing…' : 'Download PDF'}
-        </button>
-      </div>
-
-      {(justPaid || isPaid) && (
-        <div className="rounded-md bg-success/10 p-3 text-sm text-success" data-testid="public-invoice-paid-banner">
-          {isPaid
-            ? `Paid${invoice.paidAt ? ` on ${shortDate(invoice.paidAt)}` : ''} — thank you! You can download a copy for your records below.`
-            : 'Payment received — thank you! It may take a moment to appear on the invoice.'}
-        </div>
+  const notices = (
+    <>
+      {isPaid && !detail.autopayStatus && (
+        <Notice tone="success" title={`Paid${invoice.paidAt ? ` on ${longDate(invoice.paidAt)}` : ''}. Thank you.`} data-testid="public-invoice-paid-banner">
+          <p>You can download a copy for your records.</p>
+        </Notice>
       )}
-      {canPay && collectionInProgress && awaitingBank && (
-        <AutopayConfirmationNotice amount={collectionInProgress.amount} currency={currency}
-          release={releaseConfirmation} onReleased={reloadAfterRelease} />
-      )}
-      {canPay && collectionInProgress && !awaitingBank && (
-        <div className="rounded-md bg-warning/10 p-3 text-sm text-warning" data-testid="public-invoice-collection-processing">
-          Payment processing via autopay — {money(collectionInProgress.amount, currency)} is being collected automatically. No action needed.
-        </div>
+      {justPaid && !isPaid && (
+        <Notice tone="success" title="Payment received. Thank you!" data-testid="public-invoice-paid-banner">
+          <p>It may take a moment to show on the invoice.</p>
+        </Notice>
       )}
       {paymentPending && !isPaid && (
-        <div className="rounded-md bg-warning/10 p-3 text-sm text-warning" data-testid="public-invoice-pending-banner">
-          Thanks! We're still confirming your payment — this can take a moment. Refresh shortly to see it applied.
-        </div>
+        <Notice tone="primary" title="Thanks! We're still confirming your payment." data-testid="public-invoice-pending-banner">
+          <p>This can take a moment. Refresh shortly to see it applied.</p>
+        </Notice>
       )}
-      {isOverdue && !justPaid && (
-        <div className="rounded-md bg-warning/10 p-3 text-sm text-warning" data-testid="public-invoice-overdue-banner">
-          This invoice was due {shortDate(invoice.dueDate ?? null)}.
-        </div>
-      )}
-      {payError && (
-        <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive" data-testid="public-invoice-pay-error">{payError}</div>
-      )}
-      {downloadError && (
-        <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{downloadError}</div>
-      )}
+      {payError && <Notice tone="destructive" title={payError} data-testid="public-invoice-pay-error" />}
+      {downloadError && <Notice tone="destructive" title={downloadError} />}
+    </>
+  );
 
+  return (
+    <div className="mx-auto grid w-full max-w-5xl gap-5 p-0 sm:p-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start">
+      {/* The panel comes first on phones (the amount and the way to pay); at lg it sits
+          beside the invoice, which stays the document (D-4). */}
+      <div className="lg:col-start-2 lg:row-start-1">
+        <InvoicePaymentPanel
+          currency={currency} balance={invoice.balance ?? '0'} dueDate={invoice.dueDate ?? null} status={invoice.status}
+          paidAt={invoice.paidAt ?? null} canPay={canPay} onlinePaymentUnavailable={!payable && !isPaid}
+          charge={chargeNow ?? { amount: invoice.balance ?? '0', isDeposit: false }}
+          autopayStatus={detail.autopayStatus ?? null} autopayEnrolled={detail.autopayEnrolled === true}
+          saveOffer={detail.autopay} bankTarget={{ invoiceId: invoice.id, publicToken: token }} bankOffer={detail.bankAutopay}
+          collectionInProgress={collectionInProgress} partnerName={branding.partnerName}
+          paying={paying} onPay={save => void pay(save)} payTestId="public-invoice-pay" processingTestId="public-invoice-collection-processing"
+          release={releaseConfirmation} reload={reloadAfterRelease} notices={notices}
+          download={(
+            <button type="button" onClick={() => void downloadPdf()} disabled={downloading} data-testid="public-invoice-download"
+              className={cn(canPay ? BTN_SECONDARY : BTN_PRIMARY, 'w-full')}>
+              <Download className="h-4 w-4" aria-hidden="true" />
+              {downloading ? 'Preparing…' : 'Download PDF'}
+            </button>
+          )}
+        />
+      </div>
+
+      <div className="min-w-0 space-y-5 lg:col-start-1 lg:row-start-1">
       <DocumentPaper primaryColor={branding.primaryColor} testId="public-invoice" docTheme={branding.theme}>
         <DocumentHeader
           logoUrl={branding.logoUrl}
@@ -278,13 +257,13 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
 
         <div className="overflow-hidden rounded-lg border bg-card">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[28rem] text-sm">
+            <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
                   <th className="px-4 py-2.5 text-left font-medium sm:px-5">Description</th>
-                  <th className="px-2 py-2.5 text-right font-medium">Qty</th>
-                  <th className="px-2 py-2.5 text-right font-medium">Price</th>
-                  {showTax && <th className="px-2 py-2.5 text-right font-medium">Tax</th>}
+                  <th className="hidden px-2 py-2.5 text-right font-medium sm:table-cell">Qty</th>
+                  <th className="hidden px-2 py-2.5 text-right font-medium sm:table-cell">Price</th>
+                  {showTax && <th className="hidden px-2 py-2.5 text-right font-medium sm:table-cell">Tax</th>}
                   <th className="px-4 py-2.5 text-right font-medium sm:px-5">Amount</th>
                 </tr>
               </thead>
@@ -319,12 +298,14 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
                           <tr key={`${title}-${index}`} className="border-b align-top last:border-0">
                             <td className="px-4 py-3 text-foreground sm:px-5">
                               {title}
+                              {/* P-7: on phones Qty and Price fold under the description instead of clipping the table. */}
+                              <div className="mt-0.5 text-xs tabular-nums text-muted-foreground sm:hidden" data-testid={`invoice-line-qty-${index}`}>{l.quantity} × {money(l.unitPrice, currency)}</div>
                               {blurb && <div className="mt-0.5 text-xs text-muted-foreground">{blurb}</div>}
                               {note && <div className="mt-0.5 text-xs text-muted-foreground" data-testid={`invoice-line-worked-vs-billed-${index}`}>{note}</div>}
                             </td>
-                            <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>
-                            <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{money(l.unitPrice, currency)}</td>
-                            {showTax && <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{tax === null ? '—' : money(tax, currency)}</td>}
+                            <td className="hidden whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground sm:table-cell">{l.quantity}</td>
+                            <td className="hidden whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground sm:table-cell">{money(l.unitPrice, currency)}</td>
+                            {showTax && <td className="hidden whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground sm:table-cell">{tax === null ? '—' : money(tax, currency)}</td>}
                             <td className="whitespace-nowrap px-4 py-3 text-right font-medium tabular-nums text-foreground sm:px-5">{money(l.lineTotal, currency)}</td>
                           </tr>
                         );
@@ -371,6 +352,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
         <a href={withBase('/login')} className="text-primary hover:underline">Sign in</a>{' '}
         to see all your invoices.
       </p>
+      </div>
     </div>
   );
 }
