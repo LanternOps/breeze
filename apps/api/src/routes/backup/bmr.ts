@@ -46,11 +46,9 @@ import {
   toIsoString,
 } from '../../services/recoveryBootstrap';
 import { getAuthenticatedRecoveryDownloadTarget } from '../../services/recoveryDownloadService';
-import {
-  lookupIntegrityInformational,
-  recoveryBootstrapIntegrity,
-  resolveRestoreIntegrity,
-} from '../../services/backupRestoreIntegrity';
+import { evaluateRecoveryIntegrity } from '../../services/backupRecoveryIntegrityGate';
+import { CommandTypes } from '../../services/commandTypes';
+import { checkRestoreIntegrityRequest, recordRequestAuthorization, restoreIntegrityResponse } from './restoreIntegrityGate';
 import {
   getRecoveryMediaArtifact,
   getRecoveryMediaDownloadTarget,
@@ -569,6 +567,21 @@ bmrRoutes.post(
       }
     }
 
+    // Integrity (routes/backup/restoreIntegrityGate.ts): a recovery restores
+    // the snapshot onto its own device. A snapshot without a usable
+    // attestation needs a step-up; its authorization is bound to the token in
+    // this request's transaction, and recovery authentication checks it.
+    const integrityRequest = {
+      orgId,
+      snapshotDbId: snapshot.id,
+      targetDeviceId: snapshot.deviceId,
+      commandType: CommandTypes.BMR_RECOVER,
+      stepUpGrant: payload.stepUpGrant,
+      confirmUnattestedRestore: payload.confirmUnattestedRestore,
+    };
+    const integrityCheck = await checkRestoreIntegrityRequest(c, integrityRequest);
+    if (!integrityCheck.ok) return restoreIntegrityResponse(c, integrityCheck);
+
     const plainToken = generateRecoveryToken();
     const tokenHash = hashRecoveryToken(plainToken);
     const expiresAt = new Date(Date.now() + payload.expiresInHours * 60 * 60 * 1000);
@@ -590,6 +603,15 @@ bmrRoutes.post(
 
     if (!row) {
       return c.json({ error: 'Failed to create recovery token' }, 500);
+    }
+    if (integrityCheck.authorizationReason) {
+      await recordRequestAuthorization(
+        c,
+        integrityRequest,
+        integrityCheck.authorizationReason,
+        { recoveryTokenId: row.id },
+        { inCurrentTransaction: true },
+      );
     }
 
     const serverUrl = resolveServerUrl(c.req.url);
@@ -1241,10 +1263,35 @@ bmrPublicRoutes.post(
       // and the run was dead. Sliding is bounded by the token's own
       // expires_at (24 h for exchange-minted tokens) and by the per-token
       // authenticate rate limit above.
+      // Restore integrity (services/backupRecoveryIntegrityGate.ts): the
+      // recovery client must check restored bytes against the snapshot
+      // attestation, and a snapshot without a usable attestation needs a
+      // confirmed authorization bound to this token or its recovery. Runs on
+      // every (re-)authentication, before the status flips below, so a token
+      // issued before this check existed is covered at its next call.
+      const { capabilities: clientCapabilities, integrityProtocolVersion } = c.req.valid('json');
+      const integrityOutcome = await evaluateRecoveryIntegrity({
+        snapshotDbId: snapshot.id,
+        targetDeviceId: row.deviceId,
+        clientIntegrityProtocolVersion: integrityProtocolVersion,
+        recoveryTokenId: row.id,
+      });
+      if (!integrityOutcome.ok) {
+        writeAuditEvent(c, {
+          orgId: row.orgId,
+          action: 'bmr.recovery.authenticate',
+          resourceType: 'recovery_token',
+          resourceId: row.id,
+          details: { snapshotId: row.snapshotId, reason: integrityOutcome.body.error },
+          result: 'failure',
+          errorMessage: integrityOutcome.body.error,
+        });
+        return c.json(integrityOutcome.body, integrityOutcome.status);
+      }
+
       // W09 (#6464) Task 5: capability negotiation runs BEFORE the status
       // flips below. An incompatible or not-yet-ready client is refused
       // here, before authenticatedAt/status are ever written.
-      const { capabilities: clientCapabilities } = c.req.valid('json');
       // readSnapshotFileIndexState already resolves referencedFiles via the
       // snapshot's owning job (backupSnapshotFileIndex.ts loadReferencedFiles),
       // so a separate backupJobs query here would be redundant.
@@ -1378,13 +1425,7 @@ bmrPublicRoutes.post(
         .where(eq(bareMetalRecoveries.recoveryTokenId, row.id))
         .limit(1);
 
-      // The snapshot's integrity expectation (informational in this release).
-      const integrity = recoveryBootstrapIntegrity(
-        await lookupIntegrityInformational(
-          { label: 'recovery bootstrap', snapshotRef: snapshot.id },
-          () => resolveRestoreIntegrity(snapshot.id),
-        ),
-      );
+      const integrity = integrityOutcome.integrity;
 
       const authenticatedPayload = buildAuthenticatedBootstrapPayload({
         tokenId: row.id,

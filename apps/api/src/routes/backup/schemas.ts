@@ -365,9 +365,15 @@ export const bmrCreateTokenSchema = z.object({
   expiresInHours: z.number().int().min(1).max(168).default(24),
 });
 
+// The snapshot integrity protocol the recovery client implements (2 = checks
+// every restored byte against the snapshot attestation). Optional in the
+// schema so an older client gets an actionable refusal, not a 400.
+const recoveryIntegrityProtocolVersion = z.number().int().min(0).max(1000).optional();
+
 export const bmrAuthenticateSchema = z.object({
   token: z.string().min(1),
   capabilities: z.array(z.string().min(1).max(64)).max(16).optional(),
+  integrityProtocolVersion: recoveryIntegrityProtocolVersion,
 });
 
 export const bmrRecoveryDownloadSchema = z.object({
@@ -417,6 +423,7 @@ export const bmrExchangeSchema = z.object({
   // W07a: the OS the recovery media boots, so a code issued for the other
   // platform is refused (409 media_platform_mismatch) before it is claimed.
   mediaPlatform: z.enum(['linux', 'windows']).optional(),
+  integrityProtocolVersion: recoveryIntegrityProtocolVersion,
 });
 
 // W09a (#6464) Task 6: bound the agent-reported `result` payload so an

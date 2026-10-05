@@ -276,6 +276,24 @@ vi.mock('../../services/backupRestoreIntegrity', async (importOriginal) => ({
   resolveRestoreIntegrity: (id: string) => resolveRestoreIntegrityMock(id),
 }));
 
+// Recovery integrity enforcement is covered in backupRecoveryIntegrityGate.test.ts;
+// here only how authenticate uses its answer.
+const ATTESTED_BLOCK = {
+  v: 1, mode: 'attested', trust: 'server_verified', snapshotId: 'snap-ext-001',
+  objects: [{ role: 'manifest', key: 'snapshots/snap-ext-001/manifest.json', sha256: 'a'.repeat(64), size: 1 }],
+};
+const evaluateRecoveryIntegrityMock = vi.hoisted(() => vi.fn());
+vi.mock('../../services/backupRecoveryIntegrityGate', () => ({
+  evaluateRecoveryIntegrity: (...args: unknown[]) => evaluateRecoveryIntegrityMock(...args),
+}));
+
+const integrityGate = vi.hoisted(() => ({ check: vi.fn(), record: vi.fn() }));
+vi.mock('./restoreIntegrityGate', () => ({
+  checkRestoreIntegrityRequest: (...args: unknown[]) => integrityGate.check(...args),
+  recordRequestAuthorization: (...args: unknown[]) => integrityGate.record(...args),
+  restoreIntegrityResponse: (c: any, check: any) => c.json(check.body, check.status),
+}));
+
 vi.mock('../../services/recoveryAuthorizationSubject', () => ({
   captureRecoveryAuthorizationSubject: (...args: unknown[]) =>
     captureRecoveryAuthorizationSubjectMock(...(args as [])),
@@ -357,6 +375,10 @@ describe('bmr routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    evaluateRecoveryIntegrityMock.mockReset();
+    evaluateRecoveryIntegrityMock.mockResolvedValue({ ok: true, integrity: ATTESTED_BLOCK });
+    integrityGate.check.mockResolvedValue({ ok: true, authorizationReason: null });
+    integrityGate.record.mockResolvedValue('authorization-1');
     selectMock.mockReset();
     selectMock.mockImplementation(() => chainMock([]));
     insertMock.mockReset();
@@ -648,6 +670,51 @@ describe('bmr routes', () => {
     expect(body.token.startsWith('brz_rec_')).toBe(true);
   });
 
+  describe('recovery token integrity', () => {
+    const tokenRows = () => {
+      selectMock.mockReturnValueOnce(chainMock([{ id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, bareMetalRestorable: true }]));
+      insertMock.mockReturnValueOnce(chainMock([{
+        id: TOKEN_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, restoreType: 'bare_metal',
+        expiresAt: new Date('2026-03-30T00:00:00.000Z'), createdAt: new Date('2026-03-29T00:00:00.000Z'),
+      }]));
+    };
+    const post = (body: Record<string, unknown> = {}) => app.request('/backup/bmr/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ snapshotId: SNAPSHOT_ID, restoreType: 'bare_metal', expiresInHours: 24, ...body }),
+    });
+
+    it('answers a step-up request and mints no token', async () => {
+      tokenRows();
+      integrityGate.check.mockResolvedValueOnce({ ok: false, status: 403, body: { code: 'STEP_UP_REQUIRED', error: 'confirm' } });
+      const res = await post({ stepUpGrant: '66666666-6666-4666-8666-666666666666' });
+      expect(res.status).toBe(403);
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(integrityGate.check).toHaveBeenCalledWith(expect.anything(), {
+        orgId: ORG_ID,
+        snapshotDbId: SNAPSHOT_ID,
+        targetDeviceId: DEVICE_ID,
+        commandType: 'bmr_recover',
+        stepUpGrant: '66666666-6666-4666-8666-666666666666',
+        confirmUnattestedRestore: undefined,
+      });
+    });
+
+    it('records a confirmed token\'s authorization bound to the token, in the same transaction', async () => {
+      tokenRows();
+      integrityGate.check.mockResolvedValueOnce({ ok: true, authorizationReason: 'unattested_legacy' });
+      const res = await post();
+      expect(res.status).toBe(201);
+      expect(integrityGate.record).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ snapshotDbId: SNAPSHOT_ID, targetDeviceId: DEVICE_ID, commandType: 'bmr_recover' }),
+        'unattested_legacy',
+        { recoveryTokenId: TOKEN_ID },
+        { inCurrentTransaction: true },
+      );
+    });
+  });
+
   it('returns enriched token metadata without the hash', async () => {
     updateMock.mockReturnValueOnce(chainMock([]));
     selectMock
@@ -837,13 +904,17 @@ describe('bmr routes', () => {
       },
     });
     expect(body.authenticatedAt).toBeTruthy();
-    expect(resolveRestoreIntegrityMock).toHaveBeenCalledWith(SNAPSHOT_ID);
-    // No expectation resolved: nothing is added to the shape older clients know.
-    expect(body).not.toHaveProperty('integrity');
+    // The decided integrity block rides on the envelope and the bootstrap.
+    expect(body.integrity).toEqual(ATTESTED_BLOCK);
+    expect(evaluateRecoveryIntegrityMock).toHaveBeenCalledWith({
+      snapshotDbId: SNAPSHOT_ID,
+      targetDeviceId: DEVICE_ID,
+      clientIntegrityProtocolVersion: undefined,
+      recoveryTokenId: TOKEN_ID,
+    });
   });
 
-  it('authenticate: the bootstrap carries the snapshot integrity expectation', async () => {
-    resolveRestoreIntegrityMock.mockResolvedValueOnce({ mode: 'unattested', snapshotId: 'snap-ext-001', reason: 'unattested_legacy' });
+  const authenticateRows = () => {
     selectMock
       .mockReturnValueOnce(chainMock([{
         id: TOKEN_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID,
@@ -861,39 +932,33 @@ describe('bmr routes', () => {
       .mockReturnValueOnce(chainMock([{ configId: null }]))
       .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, hostname: 'srv-01', osType: 'windows' }]));
     updateMock.mockReturnValueOnce(chainMock([]));
+  };
+
+  it('authenticate: the bootstrap carries the decided integrity block (override for a confirmed unattested restore)', async () => {
+    const block = { v: 1, mode: 'unattested_override', snapshotId: 'snap-ext-001', authorizationId: 'auth-1' };
+    evaluateRecoveryIntegrityMock.mockResolvedValueOnce({ ok: true, integrity: block });
+    authenticateRows();
 
     const res = await app.request('/backup/bmr/recover/authenticate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: VALID_RECOVERY_TOKEN }),
+      body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, integrityProtocolVersion: 2 }),
     });
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    const block = { v: 1, mode: 'unattested', snapshotId: 'snap-ext-001', reason: 'unattested_legacy' };
     expect(body.integrity).toEqual(block);
     expect(body.bootstrap.integrity).toEqual(block);
+    expect(evaluateRecoveryIntegrityMock).toHaveBeenCalledWith(expect.objectContaining({ clientIntegrityProtocolVersion: 2 }));
   });
 
-  it('authenticate: an integrity lookup failure still returns the bootstrap, without a block', async () => {
-    resolveRestoreIntegrityMock.mockRejectedValueOnce(new Error('statement timeout'));
-    selectMock
-      .mockReturnValueOnce(chainMock([{
-        id: TOKEN_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID,
-        restoreType: 'bare_metal', targetConfig: null, status: 'active',
-        createdAt: new Date('2026-03-29T00:00:00.000Z'), expiresAt: new Date('2099-04-01T00:00:00.000Z'),
-        authenticatedAt: null, completedAt: null,
-      }]))
-      .mockReturnValueOnce(chainMock([{
-        id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-        configId: null, snapshotId: 'snap-ext-001', label: 'Backup', location: null,
-        timestamp: new Date('2026-03-29T12:34:56.000Z'), size: 1234, fileCount: 12,
-        metadata: { providerType: 's3' }, backupType: 'file', isIncremental: false,
-        hardwareProfile: null, systemStateManifest: null,
-      }]))
-      .mockReturnValueOnce(chainMock([{ configId: null }]))
-      .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, hostname: 'srv-01', osType: 'windows' }]));
-    updateMock.mockReturnValueOnce(chainMock([]));
+  it('authenticate: an integrity refusal is a terminal 409 and the token is not authenticated', async () => {
+    evaluateRecoveryIntegrityMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      body: { error: 'recovery_client_update_required', message: 'This recovery tool is too old to check backup integrity.' },
+    });
+    authenticateRows();
 
     const res = await app.request('/backup/bmr/recover/authenticate', {
       method: 'POST',
@@ -901,10 +966,27 @@ describe('bmr routes', () => {
       body: JSON.stringify({ token: VALID_RECOVERY_TOKEN }),
     });
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.tokenId).toBe(TOKEN_ID);
-    expect(body).not.toHaveProperty('integrity');
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'recovery_client_update_required',
+      message: 'This recovery tool is too old to check backup integrity.',
+    });
+    // Only the stale-token sweep updates; the token itself is never flipped.
+    expect(updateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('authenticate: an integrity lookup failure never returns a bootstrap', async () => {
+    evaluateRecoveryIntegrityMock.mockRejectedValueOnce(new Error('statement timeout'));
+    authenticateRows();
+
+    const res = await app.request('/backup/bmr/recover/authenticate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, integrityProtocolVersion: 2 }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(updateMock).toHaveBeenCalledTimes(1);
   });
 
   it('authenticate: legacy client (no capabilities) on a referenced snapshot is refused before the status flips', async () => {
