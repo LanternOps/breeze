@@ -365,6 +365,8 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
           .where(eq(invoiceCollectionAttempts.id,attempt.id));
         await db.update(invoiceStripePayments).set({status:'refunded',refundedAmountMinor:String(originalMinor),feeReversedAmount:mapping.feeAmount,updatedAt:new Date()})
           .where(eq(invoiceStripePayments.id,mapping.id));
+        // The client was charged and is now refunded, with no receipt ever sent: tell them (F5).
+        await enqueueRefundNotice(db,mapping.id,{priorRefundedMinor:Number(mapping.refundedAmountMinor ?? 0),refundedMinor:originalMinor,unapplied:true});
         await db.update(stripeFinancialEvents).set({status:'applied',processedAt:new Date(),lastError:null,updatedAt:new Date()})
           .where(eq(stripeFinancialEvents.id,event.id));
         return {state:'applied',invoiceId:invoice.id,orgId:invoice.orgId,partnerId:invoice.partnerId,change:'unchanged'};

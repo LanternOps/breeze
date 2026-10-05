@@ -44,10 +44,14 @@ export async function enqueueOnlineReceipt(tx: Tx, mappingId: string): Promise<v
  * payment the client was charged. Tells them the amount, where it goes and the invoice
  * balance afterwards. Caller holds the invoice lock and has recomputed the balance. */
 export async function enqueueRefundNotice(tx: Tx, mappingId: string,
-  refund: { priorRefundedMinor: number; refundedMinor: number }): Promise<void> {
+  refund: { priorRefundedMinor: number; refundedMinor: number; unapplied?: boolean }): Promise<void> {
   if (refund.refundedMinor <= refund.priorRefundedMinor) return;
   const [mapping] = await tx.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.id, mappingId)).limit(1);
-  if (!mapping?.paymentReceivedAt) return;
+  // Money captured but never applied to the invoice has no received date; it was still
+  // charged, so its refund is still reported (F5), dated by the capture.
+  const paidOn = mapping?.paymentReceivedAt
+    ?? (refund.unapplied && mapping ? (mapping.paymentCapturedAt ?? mapping.createdAt).toISOString().slice(0, 10) : null);
+  if (!mapping || !paidOn) return;
   const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, mapping.invoiceId)).limit(1);
   const [org] = await tx.select().from(organizations).where(eq(organizations.id, mapping.orgId)).limit(1);
   if (!invoice) throw new Error('Invoice not found for notice');
@@ -64,9 +68,11 @@ export async function enqueueRefundNotice(tx: Tx, mappingId: string,
   const known = methodLabel !== 'Online payment';
   const rendered = renderRefundNotice({ partnerName: partner.name, invoiceNumber: invoice.invoiceNumber ?? '',
     refunded: money(refunded), refundedTo: known ? methodLabel : 'the original payment method',
-    originalPayment: `${money(original)} on ${mapping.paymentReceivedAt}`,
+    originalPayment: `${money(original)} on ${paidOn}`,
     full: refund.refundedMinor >= toMinorUnits(original, mapping.currency),
-    balanceLine: toMinorUnits(invoice.balance, invoice.currencyCode) > 0
+    balanceLine: refund.unapplied
+      ? `This payment was not applied to invoice ${invoice.invoiceNumber}, so the invoice is unchanged.`
+      : toMinorUnits(invoice.balance, invoice.currencyCode) > 0
       ? `Balance due on invoice ${invoice.invoiceNumber} after this refund: ${invoice.currencyCode} ${invoice.balance}`
       : `Invoice ${invoice.invoiceNumber} has no balance due.`,
     invoiceUrl: buildPublicInvoiceUrl((await getOrMintInvoiceLink(invoice, tx)).token),

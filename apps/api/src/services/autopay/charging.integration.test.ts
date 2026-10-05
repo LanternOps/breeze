@@ -2222,3 +2222,27 @@ it('card Pay refuses to mint Checkout while an unapplied attempt holds the clien
  await expect(createInvoicePayLink(f.invoice.id,f.actor)).rejects.toMatchObject({status:409,code:'COLLECTION_IN_PROGRESS'});
  expect(provider.sessionCreate).not.toHaveBeenCalled();
 });
+
+// F5: money captured but never applied (the invoice was voided first), then refunded in
+// full by the MSP. The client was charged and refunded; they get a refund email that says
+// nothing was applied to the invoice.
+it('a full refund of an unapplied autopay capture sends the client a refund notice (F5)',async()=>{
+ const f=await fixture();
+ const result=await attemptCollection(inputFor(f));
+ await withSystemDbAccessContext(()=>db.update(invoices).set({status:'void'}).where(eq(invoices.id,f.invoice.id)));
+ currentPi={...currentPi,status:'succeeded',amount_received:10000,last_payment_error:null};
+ await applyAttemptOutcome(f.partner.id,result.attemptId!);
+ expect((await attempts(f.invoice.id))[0]!.state).toBe('unapplied');
+ const refund={partnerId:f.partner.id,stripeAccountId:'acct_autopay_test',stripeEventId:`evt_unapplied_refund_${f.invoice.id}`,
+  eventType:'charge.refunded',livemode:false,providerCreated:Math.floor(Date.now()/1000),paymentIntentId:currentPi.id,
+  currency:'USD',chargeAmountMinor:10000,refundedAmountMinor:10000};
+ await ingestStripeFinancialEvent(refund); await ingestStripeFinancialEvent(refund);
+ expect((await attempts(f.invoice.id))[0]).toMatchObject({state:'canceled',failureCode:'unapplied_refunded'});
+ const refunds=(await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId,f.invoice.id))))
+  .filter(n=>n.kind==='payment_receipt'&&(n.rendered as {frozen?:{variant?:string}}).frozen?.variant==='refund');
+ expect(refunds).toHaveLength(1);
+ const text=(refunds[0]!.rendered as {text:string}).text;
+ expect(text).toContain('Refunded: USD 100.00');
+ expect(text).toContain(`was not applied to invoice ${f.invoice.invoiceNumber}`);
+ expect(text).not.toContain('Balance due');
+});
