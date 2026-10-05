@@ -1193,21 +1193,34 @@ describe('assignee notification: rich email', () => {
     expect(html).not.toContain('\u{1F600}'.repeat(1201));
   });
 
-  it('a failing name lookup throws BEFORE the dedupe anchor, so the retry can still send', async () => {
-    selectMock.mockResolvedValueOnce([{ ...ticketRow, deviceId: 'd-1' }]);
-    selectMock.mockResolvedValueOnce([{ name: 'Client Co' }]); // org name
-    selectMock.mockRejectedValueOnce(new Error('connection reset')); // device name
+  // One case per lookup: moving ANY of the three below createNotification
+  // would let it run after the anchor, so createNotification would have been
+  // called by the time it throws and the first assertion below fails.
+  it.each([
+    { lookup: 'org name', before: [] as unknown[][] },
+    { lookup: 'device name', before: [[{ name: 'Client Co' }]] },
+    { lookup: 'status name', before: [[{ name: 'Client Co' }], [{ displayName: 'FRONT-DESK-01', hostname: 'fd01' }]] },
+  ])('a failing $lookup lookup throws BEFORE the dedupe anchor, so the retry can still send', async ({ before }) => {
+    const row = { ...ticketRow, deviceId: 'd-1', statusId: 's-1' };
+    selectMock.mockResolvedValueOnce([row]);
+    for (const r of before) selectMock.mockResolvedValueOnce(r);
+    selectMock.mockRejectedValueOnce(new Error('connection reset'));
 
     await expect(handleTicketEvent(event as never)).rejects.toThrow('connection reset');
     expect(push.createNotification).not.toHaveBeenCalled();
     expect(sendEmailMock).not.toHaveBeenCalled();
 
-    // BullMQ retry of the same event: no dedupe row was written, so it sends.
-    selectMock.mockResolvedValueOnce([{ ...ticketRow, deviceId: 'd-1' }]);
+    // BullMQ retry of the same event: no dedupe row was written, so it sends once.
+    selectMock.mockResolvedValueOnce([row]);
+    selectMock.mockResolvedValueOnce([{ name: 'Client Co' }]);
+    selectMock.mockResolvedValueOnce([{ displayName: 'FRONT-DESK-01', hostname: 'fd01' }]);
+    selectMock.mockResolvedValueOnce([{ name: 'Waiting on vendor' }]);
     await handleTicketEvent(event as never);
     expect(push.createNotification).toHaveBeenCalledTimes(1);
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
-    expect((sendEmailMock.mock.calls[0]![0] as { html: string }).html).toContain('FRONT-DESK-01');
+    const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
+    expect(html).toContain('FRONT-DESK-01');
+    expect(html).toMatch(/>Status<\/td><td[^>]*>Waiting on vendor</);
   });
 
   it('a replayed event (dedupe anchor already written) sends no email', async () => {
