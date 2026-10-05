@@ -52,6 +52,12 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // settings back onto the child.
   'services/monitors/monitorAttachments.ts',
 
+  // Auto-quarantine stored authority: reads the execution_authority_* columns
+  // of ONE link by id — the link the effective view already chose as winner
+  // (an inherited row keeps the parent's link id). The envelope columns are not
+  // projected by the view, so the authored row is the only place to read them.
+  'services/securityScanQuarantineAuthority.ts',
+
   // #6370 W05c1 — conversion operates on the policy's OWN authored rows: it
   // retires them and re-homes their alerts. The effective view would hand back
   // a PARENT policy's link for a feature the child does not override, and

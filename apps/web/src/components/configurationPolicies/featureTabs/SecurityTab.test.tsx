@@ -163,3 +163,25 @@ describe('SecurityTab scan settings (#6263 W01)', () => {
     expect(screen.getByTestId('security-scan-timeout-minutes')).toBeTruthy();
   });
 });
+
+// Auto-quarantine dispatches only under a stored approval (devices:execute +
+// MFA). A link without one runs scans detect-only until it is saved again.
+describe('SecurityTab auto-quarantine approval', () => {
+  const ownLink = (approval?: 'approved' | 'reapproval_required' | 'not_enabled'): FeatureLink => ({
+    id: 'link-own',
+    featureType: 'security',
+    featurePolicyId: null,
+    inlineSettings: { autoQuarantine: true },
+    ...(approval ? { autoQuarantineApproval: approval } : {}),
+  });
+
+  it('warns that scans run detect-only when auto-quarantine needs re-approval', () => {
+    render(<SecurityTab {...baseProps} existingLink={ownLink('reapproval_required')} />);
+    expect(screen.getByTestId('security-auto-quarantine-reapproval')).toBeTruthy();
+  });
+
+  it('shows no warning for an approved link', () => {
+    render(<SecurityTab {...baseProps} existingLink={ownLink('approved')} />);
+    expect(screen.queryByTestId('security-auto-quarantine-reapproval')).toBeNull();
+  });
+});

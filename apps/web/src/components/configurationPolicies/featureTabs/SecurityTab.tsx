@@ -268,6 +268,16 @@ export default function SecurityTab({
             checked={settings.autoQuarantine}
             onChange={(v) => update("autoQuarantine", v)}
           />
+          {effectiveLink?.autoQuarantineApproval === "reapproval_required" && (
+            <p
+              data-testid="security-auto-quarantine-reapproval"
+              className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700"
+            >
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.securityTab.autoQuarantineReapproval",
+              )}
+            </p>
+          )}
         </div>
       </div>
 

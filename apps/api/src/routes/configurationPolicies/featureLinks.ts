@@ -54,6 +54,9 @@ import {
 } from './schemas';
 import { AutomationReferenceAuthorizationError } from '../../services/automationReferenceAuthorization';
 import { checkHpCmslWriteAllowed, warrantyLinkEnablesCollection } from './hpCmslGate';
+import { checkSecurityQuarantineWrite } from './securityQuarantineGate';
+import { withoutFeatureLinkAuthority } from '../../services/securityScanQuarantineAuthority';
+import type { SensitiveDataAuthorityValues } from '../../services/sensitiveDataPolicyAuthority';
 
 /**
  * 400 body when two compliance rule sets in the link share a name, else null.
@@ -192,6 +195,20 @@ featureLinkRoutes.post(
     if (data.featureType === 'warranty' && warrantyHpCmslRequested(data.inlineSettings)) {
       const gate = checkHpCmslWriteAllowed(auth, c.get('permissions') as UserPermissions | undefined);
       if (!gate.allowed) return c.json(gate.body, 403);
+    }
+
+    // IOC auto-quarantine is a device-execution grant: devices:execute + MFA,
+    // and the write stamps the stored authority scheduled scans dispatch under.
+    let securityAuthority: SensitiveDataAuthorityValues | null = null;
+    if (data.featureType === 'security') {
+      const gate = checkSecurityQuarantineWrite(
+        auth,
+        c.get('permissions') as UserPermissions | undefined,
+        { orgId: policy.orgId, partnerId: policy.partnerId },
+        data.inlineSettings,
+      );
+      if (!gate.allowed) return c.json(gate.body, 403);
+      securityAuthority = gate.executionAuthority;
     }
 
     // Validate the referenced feature policy exists (only when a policy ID is provided)
@@ -382,13 +399,23 @@ featureLinkRoutes.post(
     // withDbAccessContext transaction.
     let link;
     try {
-      link = await addFeatureLink(
-        id,
-        data.featureType,
-        data.featurePolicyId,
-        data.inlineSettings,
-        { userId: auth.user.id }
-      );
+      link = data.featureType === 'security'
+        ? await addFeatureLink(
+            id,
+            data.featureType,
+            data.featurePolicyId,
+            data.inlineSettings,
+            { userId: auth.user.id },
+            undefined,
+            { executionAuthority: securityAuthority },
+          )
+        : await addFeatureLink(
+            id,
+            data.featureType,
+            data.featurePolicyId,
+            data.inlineSettings,
+            { userId: auth.user.id }
+          );
     } catch (error) {
       if (error instanceof AutomationReferenceAuthorizationError) {
         return c.json({ error: 'Unknown or unauthorized automation reference' }, 400);
@@ -415,7 +442,7 @@ featureLinkRoutes.post(
       details: { featureType: data.featureType, featurePolicyId: data.featurePolicyId },
     });
 
-    return c.json(link, 201);
+    return c.json(withoutFeatureLinkAuthority(link), 201);
   }
 );
 
@@ -463,6 +490,21 @@ featureLinkRoutes.patch(
     if (existingLink.featureType === 'warranty' && warrantyHpCmslRequested(data.inlineSettings)) {
       const gate = checkHpCmslWriteAllowed(auth, c.get('permissions') as UserPermissions | undefined);
       if (!gate.allowed) return c.json(gate.body, 403);
+    }
+
+    // Same auto-quarantine gate as POST. Only a settings write re-stamps (or
+    // clears) the stored authority; a featurePolicyId-only edit leaves it.
+    const securitySettingsWrite = existingLink.featureType === 'security' && data.inlineSettings !== undefined;
+    let securityAuthority: SensitiveDataAuthorityValues | null = null;
+    if (securitySettingsWrite) {
+      const gate = checkSecurityQuarantineWrite(
+        auth,
+        c.get('permissions') as UserPermissions | undefined,
+        { orgId: policy.orgId, partnerId: policy.partnerId },
+        data.inlineSettings,
+      );
+      if (!gate.allowed) return c.json(gate.body, 403);
+      securityAuthority = gate.executionAuthority;
     }
 
     if (data.featurePolicyId !== undefined && data.featurePolicyId !== null) {
@@ -627,7 +669,11 @@ featureLinkRoutes.patch(
 
     let updated;
     try {
-      updated = await updateFeatureLink(linkId, data, id, { userId: auth.user.id });
+      updated = securitySettingsWrite
+        ? await updateFeatureLink(linkId, data, id, { userId: auth.user.id }, undefined, {
+            executionAuthority: securityAuthority,
+          })
+        : await updateFeatureLink(linkId, data, id, { userId: auth.user.id });
     } catch (error) {
       if (error instanceof AutomationReferenceAuthorizationError) {
         return c.json({ error: 'Unknown or unauthorized automation reference' }, 400);
@@ -651,7 +697,7 @@ featureLinkRoutes.patch(
       details: { linkId, changedFields: Object.keys(data) },
     });
 
-    return c.json(updated);
+    return c.json(withoutFeatureLinkAuthority(updated));
   }
 );
 

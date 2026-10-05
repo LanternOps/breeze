@@ -126,6 +126,20 @@ export const configPolicyFeatureLinks = pgTable('config_policy_feature_links', {
   featureType: configFeatureTypeEnum('feature_type').notNull(),
   featurePolicyId: uuid('feature_policy_id'),
   inlineSettings: jsonb('inline_settings'),
+  // Stored execution authority for device-execution effects a link enables
+  // (today: `security` auto-quarantine). Same envelope as
+  // sensitive_data_policies; owner = this link's policy. All NULL = none.
+  // See services/securityScanQuarantineAuthority.ts.
+  executionAuthorityVersion: integer('execution_authority_version'),
+  executionAuthorityKind: varchar('execution_authority_kind', { length: 32 })
+    .$type<'organization_restricted' | 'organization_unrestricted' | 'partner_unrestricted'>(),
+  executionAuthoritySiteIds: uuid('execution_authority_site_ids').array(),
+  executionAuthorityUserId: uuid('execution_authority_user_id'),
+  executionAuthorityPrincipalKind: varchar('execution_authority_principal_kind', { length: 16 })
+    .$type<'user' | 'system'>(),
+  executionAuthorityFingerprint: varchar('execution_authority_fingerprint', { length: 64 }),
+  executionAuthorityCapturedAt: timestamp('execution_authority_captured_at', { withTimezone: true }),
+  executionAuthorityGeneration: uuid('execution_authority_generation'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
