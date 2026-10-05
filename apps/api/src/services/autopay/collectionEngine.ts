@@ -1016,12 +1016,16 @@ async function applyObservedOutcome(data: AttemptHistory, stripe: Stripe, observ
     }
     await enqueueAttemptNotice(db, attemptId, authRequired ? 'confirm'
       : failureClass === 'hard' || failureClass === 'revoked' ? 'update' : 'pay');
-    if (authRequired || !next) await enqueueOutcomeAttention(authRequired ? 'autopay.needs_attention' : 'payment.failed_final', locked.invoice, attemptId);
-    return authRequired ? {event:'autopay.needs_attention' as const,orgId:locked.invoice.orgId}
-      : next ? null : {event:'payment.failed_final' as const,orgId:locked.invoice.orgId};
+    // FP-13: say what happened (a first hard decline never "stopped retrying"; a bank
+    // confirmation request needs the client), the same in-app and by email.
+    const message = authRequired ? STAFF_AUTH_REQUIRED
+      : failureClass === 'hard' || failureClass === 'revoked' ? STAFF_HARD_DECLINE : STAFF_RETRIES_EXHAUSTED;
+    if (authRequired || !next) await enqueueOutcomeAttention(authRequired ? 'autopay.needs_attention' : 'payment.failed_final', locked.invoice, attemptId, message);
+    return authRequired ? {event:'autopay.needs_attention' as const,orgId:locked.invoice.orgId,message}
+      : next ? null : {event:'payment.failed_final' as const,orgId:locked.invoice.orgId,message};
   }, 'autopay.applyOutcome');
   if (event) await notifyPaymentAttention({partnerId,orgId:event.orgId,
-    invoiceId:data.invoice.id,attemptId,event:event.event});
+    invoiceId:data.invoice.id,attemptId,event:event.event,message:event.message});
 }
 
 async function renoticeCanceledAttempt(invoice: typeof invoices.$inferSelect,
@@ -1155,6 +1159,9 @@ async function failedForUnusableMethod(invoice: typeof invoices.$inferSelect, sc
       : 'Automatic payments are no longer active for this client, so no update email was sent: ask them to pay it.'}` });
 }
 
+const STAFF_HARD_DECLINE = "The automatic payment was declined and won't be retried: the saved payment method can no longer be used. The client was asked to pay the invoice and update their payment method.";
+const STAFF_AUTH_REQUIRED = "The client's bank asked them to confirm this payment (3D Secure). They were emailed a link to confirm it; nothing is charged until they do, and they can also pay the invoice directly.";
+const STAFF_RETRIES_EXHAUSTED = 'The automatic payment failed on its last retry. The client was asked to pay the invoice directly.';
 async function enqueueOutcomeAttention(event: 'payment.unapplied'|'payment.failed_final'|'autopay.needs_attention', invoice: typeof invoices.$inferSelect, attemptId: string, message?:string) {
   await enqueueAutopayStaffNotifications(db, {orgId:invoice.orgId,partnerId:invoice.partnerId,invoiceId:invoice.id,event,
     dedupeKey:`autopay:${attemptId}:${event}`,message:message ?? (event === 'payment.unapplied' ? 'Captured money could not be applied; review the Stripe payment.' : event === 'payment.failed_final' ? 'Automatic payment stopped retrying; the client can pay directly.' : 'Payment requires attention.')});

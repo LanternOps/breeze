@@ -1062,6 +1062,19 @@ it.each([
  expect(h.attemptNotice).toHaveBeenCalledWith(expect.anything(),attempt.id,variant);
  if(event)expect(h.attention).toHaveBeenCalledWith(expect.objectContaining({event}));else expect(h.attention).not.toHaveBeenCalled();
 });
+// FP-13: staff copy says what actually happened (a first decline is not "stopped retrying";
+// a bank confirmation request says the client must confirm), the same in-app and by email.
+it.each([
+ ['card','stolen_card','requires_payment_method',"The automatic payment was declined and won't be retried: the saved payment method can no longer be used. The client was asked to pay the invoice and update their payment method."],
+ ['card','authentication_required','requires_action',"The client's bank asked them to confirm this payment (3D Secure). They were emailed a link to confirm it; nothing is charged until they do, and they can also pay the invoice directly."],
+ ['us_bank_account','R03','requires_payment_method',"The automatic payment was declined and won't be retried: the saved payment method can no longer be used. The client was asked to pay the invoice and update their payment method."],
+] as const)('staff hear what happened to a %s %s decline',async(methodType,code,status,message)=>{
+ recovery(true);update(invoiceStripePayments,{paymentMethodType:methodType});
+ h.piRetrieve.mockResolvedValue({...pi,status,last_payment_error:{code}});
+ await applyAttemptOutcome(invoice.partnerId,attempt.id);
+ expect(h.attention).toHaveBeenCalledWith(expect.objectContaining({message}));
+ expect(h.staff).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({message}));
+});
 
 it('rethrows held-context programming errors during method admission',async()=>{
  const error=Object.assign(new Error('held context'),{name:'HeldDbContextForStripeError'});

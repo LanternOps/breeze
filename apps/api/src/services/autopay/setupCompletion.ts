@@ -244,7 +244,8 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   // FP-11: staff hear "enabled" when a method can be charged: not while a bank waits for verification.
   if(variant&&variant!=='pending_verification'&&variant!=='pending_change')runAfterDbContextExit('autopay.enrolled',async()=>{
    const [committed]=await withSystemDbAccessContext(()=>db.select().from(autopaySetupAttempts).where(eq(autopaySetupAttempts.id,attempt.id)).limit(1));
-   if(committed?.outcome===outcome)await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,event:updated?'autopay.method_updated':'autopay.enrolled',
+   // FP-13: never "Automatic payments enabled" for a method saved while payments are paused.
+   if(committed?.outcome===outcome)await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,event:updated||variant==='paused'?'autopay.method_updated':'autopay.enrolled',
     dedupeKey:`${attempt.id}:enrolled:${baseVariant==='verified'?'verified':outcome}`,
     message:variant==='paused'?`${updated?'Payment method updated':'Payment method saved'} while automatic payments are paused.`
      :baseVariant==='verified'?`${updated?'Payment method updated':'Automatic payments enabled'}: the bank account is verified.`

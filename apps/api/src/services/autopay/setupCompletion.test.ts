@@ -400,6 +400,13 @@ it('a paused client who saves a method is told it is saved and payments are paus
  expect(queued.rendered.text).not.toMatch(/automatic payments are (now )?on/i);
  expect(queued.rendered.text).not.toContain('Starts with');
  expect(queued.rendered.frozen).toMatchObject({variant:'paused'});
+ // FP-13: staff never get "Automatic payments enabled" for a method saved while paused.
+ const {runAfterDbContextExit}=await import('../../db');
+ const {notifyAutopayStaff}=await import('./staffNotifications');
+ const enrolled=vi.mocked(runAfterDbContextExit).mock.calls.find(([name])=>name==='autopay.enrolled')!;
+ m.rows.push([{outcome:'activated'}]);await (enrolled[1] as ()=>Promise<void>)();
+ expect(notifyAutopayStaff).toHaveBeenCalledWith(expect.objectContaining({event:'autopay.method_updated',
+  message:'Payment method saved while automatic payments are paused.'}));
 });
 it('bank verification that finishes after a pause says the account is verified and payments are paused',async()=>{
  const value=attempt({methodType:'us_bank_account',outcome:'pending_verification'});
