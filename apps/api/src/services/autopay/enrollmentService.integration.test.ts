@@ -435,3 +435,29 @@ it('a stop also retires a bank still waiting for verification beside the working
  const methods=await methodsOf(f.org.id);
  expect(methods.every(m=>m.status==='removed'&&!m.isAutopayMethod)).toBe(true);
 });
+
+// V2-2: after the grace ended an invoice's automatic payment (the client was told it won't be
+// charged), the "bank verified" email must not promise that charge. It names what will still be
+// paid automatically, and links what won't.
+it('the verified email promises charges only for invoices whose automatic payment is still planned (V2-2)',async()=>{
+ const f=await verificationFixture();const bank={id:'pm_verify',type:'us_bank_account',customer:null} as Stripe.PaymentMethod;
+ await persistCapturedAutopayMethod(f.attempt.id,bank,'pending_verification','seti_verify',null);
+ const invoice=async(number:string,state:'scheduled'|'cancelled',stateReason:string|null)=>withSystemDbAccessContext(async()=>{
+  const [row]=await db.insert(invoices).values({partnerId:f.partner.id,orgId:f.org.id,invoiceNumber:number,currencyCode:'USD',status:'sent',
+   issueDate:'2026-10-01',dueDate:'2026-10-03',subtotal:'100.00',total:'100.00',amountPaid:'0.00',balance:'100.00'}).returning();
+  await db.insert(invoiceAutopaySchedules).values({orgId:f.org.id,invoiceId:row!.id,enrollmentId:f.enrollment.id,enrollmentGeneration:1,eligible:true,
+   collectOn:'2026-10-03',termsSnapshot:{},state,stateReason,noticeSentAt:new Date('2026-10-02T12:00:00Z')});
+  return row!;
+ });
+ await invoice('INV-STILL',"scheduled",'method_not_usable');
+ await invoice('INV-ENDED','cancelled','bank_unverified');
+ await persistCapturedAutopayMethod(f.attempt.id,{...bank,customer:'cus_verify'},'activated','seti_verify','mandate_verify');
+ const [verified]=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.dedupeKey,`${f.attempt.id}:autopay_enrolled:verified`)));
+ const {text,html}=verified!.rendered as {text:string;html:string};
+ for(const body of [text,html]){
+  expect(body).not.toMatch(/will be charged as that email described/);
+  expect(body).toContain('Invoice INV-STILL will now be paid automatically from this account.');
+  expect(body).toMatch(/Invoice INV-ENDED \(\$100\.00\) won(?:'|&#39;)t be paid automatically, as we emailed you/);
+ }
+ expect(text).toMatch(/Invoice INV-ENDED \(\$100\.00\) won't be paid automatically, as we emailed you\. Pay it here: https?:\/\/\S+\/invoice\//);
+});

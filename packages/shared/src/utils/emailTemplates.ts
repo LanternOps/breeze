@@ -348,7 +348,7 @@ const VARIANT_DEFAULTS: Record<string, Partial<EmailTemplateFieldDefaults>> = {
   'autopay_enrolled:verified': { subject: 'Your bank account is verified: automatic payments are on with {{partner_name}}',
     heading: 'Your bank account is verified', html: `<p>Hi {{client_name}},</p>
 <p>Stripe has verified your bank account, so automatic payments with {{partner_name}} are now on.</p>
-<p>Any invoice we've already emailed you about with a payment date will be charged as that email described. For new invoices, we'll email you the amount and date before each payment.</p>` },
+<p>We'll email you the amount and date before each payment.</p>` },
   // FP-1: an enrolled client is asked to accept updated terms (fee or limit), not invited anew.
   'autopay_request:reauthorize': { subject: 'Please review your updated automatic payment terms with {{partner_name}}',
     heading: 'Review your updated terms', buttonLabel: 'Review the terms', html: `<p>Hi {{client_name}},</p>

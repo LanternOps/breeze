@@ -15,7 +15,8 @@ import {mintBillingLinkToken,buildBillingLinkUrl} from './linkTokens';
 import {detachPaymentMethodPostCommit,enqueueRejectedAutopayMethod} from './paymentMethods';
 import {resolveBillingEmail} from '../invoicePdf';
 import {getOrMintInvoiceLink,buildPublicInvoiceUrl} from '../invoiceLinkToken';
-import {invoices} from '../../db/schema';
+import {invoices,invoiceAutopaySchedules} from '../../db/schema';
+import {DEFERRAL_END_REASONS} from './notChargedNotice';
 import {formatPaymentMethod} from '@breeze/shared';
 import {notifyAutopayStaff} from './staffNotifications';
 import {autopayConsentSnapshotSchema} from './types';
@@ -205,10 +206,28 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
    eq(invoices.id,snapshot.bankPayment.invoiceId),eq(invoices.orgId,attempt.orgId))).limit(1):[];
   const stillToPay=bankPayInvoice&&bankPayInvoice.orgId===attempt.orgId&&['sent','partially_paid','overdue'].includes(bankPayInvoice.status)
    &&Number(bankPayInvoice.balance)>0?bankPayInvoice:null;
+  // V2-2: what the verified bank now means for invoices the client already heard about. Only a
+  // schedule still planned is charged; one the grace ended (the client was told it won't be
+  // charged) stays manual and is linked. Never a blanket "charged as that email described".
+  const announced=baseVariant==='verified'&&enrollment.status!=='paused'?await db.select({schedule:invoiceAutopaySchedules,invoice:invoices})
+   .from(invoiceAutopaySchedules).innerJoin(invoices,and(eq(invoices.id,invoiceAutopaySchedules.invoiceId),eq(invoices.orgId,invoiceAutopaySchedules.orgId)))
+   .where(and(eq(invoiceAutopaySchedules.orgId,attempt.orgId),eq(invoiceAutopaySchedules.enrollmentId,enrollment.id),
+    inArray(invoices.status,['sent','partially_paid','overdue']),sql`${invoices.balance} > 0`,
+    sql`((${invoiceAutopaySchedules.state} IN ('scheduled','retry_scheduled') AND ${invoiceAutopaySchedules.noticeSentAt} IS NOT NULL)
+     OR (${invoiceAutopaySchedules.state} = 'cancelled' AND ${inArray(invoiceAutopaySchedules.stateReason,[...DEFERRAL_END_REASONS])}))`))
+   .orderBy(invoices.invoiceNumber):[];
+  const others=announced.filter(row=>row.invoice.orgId===attempt.orgId&&row.invoice.id!==stillToPay?.id);
+  // A first bank was announced as "paid once it's verified"; a changed one replaced a card that kept paying.
+  const stillPlanned=variant==='verified'?others.filter(row=>row.schedule.state!=='cancelled'):[];
+  const ended=others.filter(row=>row.schedule.state==='cancelled');
   if(variant){
    const stop=await mintBillingLinkToken(db,{orgId:attempt.orgId,purpose:'stop_autopay',enrollmentId:enrollment.id,generation:enrollment.generation,ttlDays:365});
    const payLink=stillToPay?{label:'Pay it by bank',url:buildPublicInvoiceUrl((await getOrMintInvoiceLink(stillToPay,db)).token),
     note:`Invoice ${stillToPay.invoiceNumber} is still unpaid (${emailMoney(stillToPay.balance,stillToPay.currencyCode)}).`}:null;
+   const endedLinks=await Promise.all(ended.map(async row=>({label:'Pay it here',url:buildPublicInvoiceUrl((await getOrMintInvoiceLink(row.invoice,db)).token),
+    note:`Invoice ${row.invoice.invoiceNumber} (${emailMoney(row.invoice.balance,row.invoice.currencyCode)}) won't be paid automatically, as we emailed you.`})));
+   const processingText=[lockedLine,...stillPlanned.map(row=>`Invoice ${row.invoice.invoiceNumber} will now be paid automatically from this account.`)]
+    .filter(Boolean).join('\n')||undefined;
    const methodLabel=formatStripePaymentMethod(method);
    const displayFee=verifiedFeeText(method.type,method.card?.funding??null,snapshot.feeText,method.card);
    const verifiedCredit=method.type==='card'&&displayFee===snapshot.feeText&&snapshot.feeTerms.cardFeeBps>0;
@@ -218,7 +237,7 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
    const acceptedOn=emailDate(attempt.createdAt??new Date());
    const cap=snapshot.scheduleTerms.cap;
    const rendered=await renderBillingNotice('autopay_enrolled',{autopay:{partnerId:attempt.partnerId,orgId:attempt.orgId,
-     variant:variant==='activated'?undefined:variant,locked,processingText:lockedLine,...(payLink?{links:[payLink]}:{}),
+     variant:variant==='activated'?undefined:variant,locked,processingText,...(payLink||endedLinks.length?{links:[...(payLink?[payLink]:[]),...endedLinks]}:{}),
      vars:{partner_name:snapshot.partnerName,org_name:org.name,client_name:clientNameFor(org.billingContact,org.name),
       payment_method:paymentMethodInSentence(methodLabel),schedule_text:snapshot.scheduleText,fee_text:displayFee},
      summary:[{label:variant==='pending_verification'?'Bank account':'Payment method',value:`${methodLabel}${variant==='pending_verification'?' (waiting for verification)':''}`},

@@ -252,7 +252,8 @@ it('fences a setup started before the current pause even with same-generation to
 it('does not append consent again when the same bank setup finishes verification',async()=>{
  const value=attempt({methodType:'us_bank_account',outcome:'pending_verification'});
  queueAuthority(value);
- m.rows.push([{id:'bank_method',status:'pending_verification',isAutopayMethod:true}],[],[{id:'bank_method'}],[],[],[{settings:{}}]);
+ // The empty row is V2-2's read of invoices already announced (none here).
+ m.rows.push([{id:'bank_method',status:'pending_verification',isAutopayMethod:true}],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
  m.intent.mockResolvedValue({...await m.intent(),mandate:'mandate'});
  m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one',us_bank_account:{last4:'6789',bank_name:'STRIPE TEST BANK',account_holder_type:'individual'}});
  m.mandate.mockResolvedValue({status:'active',payment_method:'pm_one'});
@@ -432,7 +433,7 @@ it('a bank verified for a bank payment links the invoice still to pay',async()=>
  const value=attempt({methodType:'us_bank_account',outcome:'pending_verification',consentSnapshot:{...snapshot,bankPayment}});
  queueAuthority(value);
  m.rows.push([{id:'bank_method',status:'pending_verification',isAutopayMethod:true}],[],[{id:'bank_method'}],[],[],
-  [{id:bankPayment.invoiceId,orgId:value.orgId,invoiceNumber:'INV-2026-0019',status:'sent',balance:'120.00',currencyCode:'USD'}],[{settings:{}}]);
+  [{id:bankPayment.invoiceId,orgId:value.orgId,invoiceNumber:'INV-2026-0019',status:'sent',balance:'120.00',currencyCode:'USD'}],[],[{settings:{}}]);
  m.intent.mockResolvedValue({...await m.intent(),mandate:'mandate'});
  m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one',us_bank_account:{last4:'6789',bank_name:'STRIPE TEST BANK',account_holder_type:'individual'}});
  m.mandate.mockResolvedValue({status:'active',payment_method:'pm_one'});
