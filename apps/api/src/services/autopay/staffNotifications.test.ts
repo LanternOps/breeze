@@ -138,6 +138,14 @@ describe('staff notices name the client organization (D-13)', () => {
     }));
     expect(h.send.mock.calls[0]![0].text).toContain('Update the payment method.');
   });
+  // V2-3 and the Final-V nit: an accepted re-authorization and a failed bank change that left
+  // the working method in place are not "Payment method updated" / "Payment needs attention".
+  it.each([['autopay.terms_accepted', 'Updated terms accepted'], ['autopay.verification_failed', 'Bank verification failed']] as const)(
+    'titles %s as "%s", at normal priority', async (event, title) => {
+      h.rows.push([{ userId: 'staff' }], [], [{ name: 'Acme Dental' }]);
+      await enqueueAutopayStaffNotifications(db, { orgId, partnerId, event, dedupeKey: `${event}:1`, message: 'Message.' });
+      expect(h.inserts).toHaveBeenCalledWith([expect.objectContaining({ title: `${title}: Acme Dental`, priority: 'normal' })]);
+    });
   it('still sends a useful subject when the organization cannot be read', async () => {
     h.rows.push([{ billingEmail: 'billing@example.test' }], []);
     await sendAutopayStaffEmail({ orgId, partnerId, event: 'autopay.enrolled', dedupeKey: 'enrolled:3', message: 'Automatic payments enabled.' });

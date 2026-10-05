@@ -366,6 +366,10 @@ const VARIANT_DEFAULTS: Record<string, Partial<EmailTemplateFieldDefaults>> = {
   'autopay_enrolled:verified_change': { subject: 'Your bank account is verified: your payment method has changed with {{partner_name}}',
     heading: 'Your bank account is verified', html: `<p>Hi {{client_name}},</p>
 <p>Stripe has verified your {{payment_method}}. From now on, automatic payments with {{partner_name}} use it.</p>` },
+  // V2-3: a re-authorization accepted with the same card or bank (the terms changed, the method didn't).
+  'autopay_enrolled:terms_accepted': { subject: 'Your updated automatic payment terms are accepted with {{partner_name}}',
+    heading: 'Your updated terms are accepted', html: `<p>Hi {{client_name}},</p>
+<p>Thanks for accepting the updated terms of your automatic payments with {{partner_name}}. Automatic payments continue with your {{payment_method}} on these terms.</p>` },
   'autopay_enrolled:method_changed': { subject: 'Your payment method has changed with {{partner_name}}',
     heading: 'Your payment method has changed', html: `<p>Hi {{client_name}},</p>
 <p>From now on, automatic payments with {{partner_name}} use your {{payment_method}}.</p>` },

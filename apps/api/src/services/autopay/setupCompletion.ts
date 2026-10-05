@@ -109,7 +109,8 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
    }
    runAfterDbContextExit('autopay.verificationFailed',async()=>{
     const [committed]=await withSystemDbAccessContext(()=>db.select().from(autopaySetupAttempts).where(eq(autopaySetupAttempts.id,attempt.id)).limit(1));
-    if(committed?.outcome==='failed')await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,event:'autopay.needs_attention',
+    // A failed change leaves the working method paying: nothing needs attention (Final-V).
+    if(committed?.outcome==='failed')await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,event:working?'autopay.verification_failed':'autopay.needs_attention',
      dedupeKey:`${attempt.id}:verification_failed`,message:working?'Bank verification failed. Automatic payments continue with the previous payment method.'
       :'Automatic payments need a verified payment method.'});
    });
@@ -190,16 +191,27 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   const updated=replaced.some(old=>old.id!==saved!.id);
   const previous=keepWorking?working:replaced.find(old=>old.id!==saved!.id)??null;
   const previousLabel=previous?formatPaymentMethod(previous):null;
+  // V2-3: a re-authorization accepted by re-entering the SAME card or bank is not a method
+  // change. When its accepted terms differ from that method's last authorization, the client
+  // hears the updated terms are accepted (with the limit and fee), never "It replaces your …".
+  const sameMethod=!!previous&&previous.type===saved!.type&&(saved!.type==='card'
+   ?previous.cardBrand===saved!.cardBrand&&previous.cardLast4===saved!.cardLast4&&previous.cardExpMonth===saved!.cardExpMonth&&previous.cardExpYear===saved!.cardExpYear
+   :!!saved!.bankLast4&&previous.bankName===saved!.bankName&&previous.bankLast4===saved!.bankLast4);
+  const [previousConsent]=sameMethod&&baseVariant==='activated'?await db.select({textHash:orgAutopayConsents.consentTextHash}).from(orgAutopayConsents)
+   .where(and(eq(orgAutopayConsents.orgId,attempt.orgId),eq(orgAutopayConsents.enrollmentId,enrollment.id),eq(orgAutopayConsents.paymentMethodId,previous!.id)))
+   .orderBy(desc(orgAutopayConsents.createdAt)).limit(1):[];
+  const termsAccepted=!!previousConsent&&previousConsent.textHash!==snapshot.textHash;
   // R1: the enrollment stays paused (above); a usable method saved while paused is "saved,
   // payments paused", never "automatic payments are on". Pending verification says nothing is charged yet anyway.
   const variant=baseVariant&&baseVariant!=='pending_verification'&&enrollment.status==='paused'?'paused'
    :baseVariant==='pending_verification'&&keepWorking?'pending_change'
    :baseVariant==='verified'&&updated?'verified_change'
+   :baseVariant==='activated'&&updated&&termsAccepted?'terms_accepted'
    :baseVariant==='activated'&&updated?'method_changed':baseVariant;
   // The product's copy wherever a partner's generic "you're set up" wording would be untrue.
-  const locked=variant==='paused'||variant==='pending_change'||variant==='verified_change'||variant==='method_changed';
+  const locked=variant==='paused'||variant==='pending_change'||variant==='verified_change'||variant==='method_changed'||variant==='terms_accepted';
   const lockedLine=variant==='pending_change'&&previousLabel?`Until it's verified, we'll keep using your ${paymentMethodInSentence(previousLabel)} for automatic payments.`
-   :(variant==='verified_change'||variant==='method_changed')&&previousLabel?`It replaces your ${paymentMethodInSentence(previousLabel)}.`:undefined;
+   :(variant==='verified_change'||variant==='method_changed')&&previousLabel&&!sameMethod?`It replaces your ${paymentMethodInSentence(previousLabel)}.`:undefined;
   // FP-7: a bank verified for a bank payment: the page promised an email to come back and pay
   // that invoice (it was issued before automatic payments, so it isn't collected by itself).
   const [bankPayInvoice]=baseVariant==='verified'&&snapshot.bankPayment?await db.select().from(invoices).where(and(
@@ -242,8 +254,9 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
       payment_method:paymentMethodInSentence(methodLabel),schedule_text:snapshot.scheduleText,fee_text:displayFee},
      summary:[{label:variant==='pending_verification'?'Bank account':'Payment method',value:`${methodLabel}${variant==='pending_verification'?' (waiting for verification)':''}`},
       {label:"When you're charged",value:autopayScheduleSummary(snapshot.scheduleTerms)},{label:'Processing fee',value:fee},
-      ...(cap.enabled?[{label:'Which invoices',value:`Up to ${emailMoney(cap.amount,cap.currency)} each`}]:[]),
-      ...(variant==='pending_verification'||variant==='pending_change'||variant==='paused'||variant==='method_changed'||variant==='verified_change'?[]
+      ...(variant==='terms_accepted'?[{label:'Limit',value:cap.enabled?`Up to ${emailMoney(cap.amount,cap.currency)} per invoice`:'No limit'}]
+       :cap.enabled?[{label:'Which invoices',value:`Up to ${emailMoney(cap.amount,cap.currency)} each`}]:[]),
+      ...(variant==='pending_verification'||variant==='pending_change'||variant==='paused'||variant==='method_changed'||variant==='verified_change'||variant==='terms_accepted'?[]
        :[{label:'Starts with',value:`Invoices issued from ${emailDate(enrollment.effectiveFrom??new Date())}`}])],
      terms:{title:'Your authorization',paragraphs:baseVariant==='verified'
       ?[`You accepted these terms on ${acceptedOn} (terms version ${snapshot.version}). We sent you a copy when you set up automatic payments.`]
@@ -264,9 +277,11 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   if(variant&&variant!=='pending_verification'&&variant!=='pending_change')runAfterDbContextExit('autopay.enrolled',async()=>{
    const [committed]=await withSystemDbAccessContext(()=>db.select().from(autopaySetupAttempts).where(eq(autopaySetupAttempts.id,attempt.id)).limit(1));
    // FP-13: never "Automatic payments enabled" for a method saved while payments are paused.
-   if(committed?.outcome===outcome)await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,event:updated||variant==='paused'?'autopay.method_updated':'autopay.enrolled',
+   if(committed?.outcome===outcome)await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,
+    event:variant==='terms_accepted'?'autopay.terms_accepted':updated||variant==='paused'?'autopay.method_updated':'autopay.enrolled',
     dedupeKey:`${attempt.id}:enrolled:${baseVariant==='verified'?'verified':outcome}`,
-    message:variant==='paused'?`${updated?'Payment method updated':'Payment method saved'} while automatic payments are paused.`
+    message:variant==='terms_accepted'?'The client accepted the updated terms.'
+     :variant==='paused'?`${updated?'Payment method updated':'Payment method saved'} while automatic payments are paused.`
      :baseVariant==='verified'?`${updated?'Payment method updated':'Automatic payments enabled'}: the bank account is verified.`
      :updated?'Payment method updated.':'Automatic payments enabled.'});
   });

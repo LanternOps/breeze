@@ -416,7 +416,8 @@ it('a failed verification keeps the card, tells the client, and staff hear the s
  const rendered=failed[0]!.rendered as {subject:string;text:string};
  expect(rendered.subject).toBe("We couldn't verify your bank account for Example MSP");
  expect(rendered.text).toContain('Your automatic payments continue with your Visa credit card ending in 4242.');
- await vi.waitFor(()=>expect(notifyAutopayStaff).toHaveBeenCalledWith(expect.objectContaining({event:'autopay.needs_attention',
+ // Final-V nit: nothing needs attention (the card still pays), so not "Payment needs attention".
+ await vi.waitFor(()=>expect(notifyAutopayStaff).toHaveBeenCalledWith(expect.objectContaining({event:'autopay.verification_failed',
   message:'Bank verification failed. Automatic payments continue with the previous payment method.'})));
 });
 it('a first-time bank that fails verification tells the client to set up again (F-1)',async()=>{
@@ -460,4 +461,32 @@ it('the verified email promises charges only for invoices whose automatic paymen
   expect(body).toMatch(/Invoice INV-ENDED \(\$100\.00\) won(?:'|&#39;)t be paid automatically, as we emailed you/);
  }
  expect(text).toMatch(/Invoice INV-ENDED \(\$100\.00\) won't be paid automatically, as we emailed you\. Pay it here: https?:\/\/\S+\/invoice\//);
+});
+
+// V2-3: accepting a re-authorization by re-entering the SAME card is not a method change: the
+// client hears the updated terms are accepted, with the new limit, never "It replaces your Visa … 4242".
+it('a same-card re-authorization confirms the accepted terms and states the new limit (V2-3)',async()=>{
+ const f=await activeCardChangeFixture();
+ const capped={offsetDays:0,rule:'later',cap:{enabled:true,amount:'300.00',currency:'USD'}};
+ const attempt=await withSystemDbAccessContext(async()=>{
+  // The card's accepted authorization (no limit), then a re-authorization attempt with a $300 limit.
+  await db.insert(orgAutopayConsents).values({orgId:f.org.id,enrollmentId:f.enrollment.id,generation:1,paymentMethodId:f.card.id,consentTextVersion:'2026-10-01.v1',
+   consentTextHash:'c'.repeat(64),feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'},
+   scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},contactEmail:'billing@example.test',ip:null,userAgent:null,source:'setup_page'});
+  await db.update(orgPaymentMethods).set({cardExpMonth:12,cardExpYear:2030}).where(eq(orgPaymentMethods.id,f.card.id));
+  const [row]=await db.insert(autopaySetupAttempts).values({orgId:f.org.id,partnerId:f.partner.id,enrollmentId:f.enrollment.id,generation:1,tokenId:f.token.id,
+   source:'setup_page',methodType:'card',stripeConnectionId:f.conn.id,stripeAccountId:f.conn.stripeAccountId,stripeCustomerId:'cus_verify',
+   consentSnapshot:{...(f.attempt.consentSnapshot as object),textHash:'d'.repeat(64),scheduleTerms:capped,
+    feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'}}}).returning();
+  return row!;
+ });
+ expect((await persistCapturedAutopayMethod(attempt.id,{id:'pm_card_again',type:'card',customer:'cus_verify',card:liveCard} as Stripe.PaymentMethod,'activated','seti_again',null)).outcome).toBe('activated');
+ const notices=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId,f.org.id)));
+ const rendered=notices.find(n=>n.kind==='autopay_enrolled')!.rendered as {subject:string;text:string};
+ expect(rendered.subject).toBe('Your updated automatic payment terms are accepted with Example MSP');
+ expect(rendered.text).toContain('Limit: Up to $300.00 per invoice');
+ expect(rendered.text).toContain('Automatic payments continue with your Visa credit card ending in 4242');
+ expect(rendered.text).not.toMatch(/It replaces your|has changed/);
+ await vi.waitFor(()=>expect(notifyAutopayStaff).toHaveBeenCalledWith(expect.objectContaining({event:'autopay.terms_accepted',
+  message:'The client accepted the updated terms.'})));
 });
