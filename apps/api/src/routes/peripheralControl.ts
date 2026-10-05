@@ -12,6 +12,7 @@ import {
   peripheralPolicyActionEnum,
   peripheralPolicyTargetTypeEnum,
   devices,
+  deviceGroups,
   type PeripheralExceptionRule,
   type PeripheralPolicyTargetIds
 } from '../db/schema';
@@ -20,7 +21,7 @@ import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../services/partnerWideAccess';
-import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
+import { canMutateOrgWideGovernance, hasSiteCeiling, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import {
   resolvePeripheralPolicyDeviceIds,
   schedulePeripheralPolicyDevices,
@@ -239,6 +240,97 @@ function peripheralPolicyAccessCondition(auth: AuthContext): SQL | undefined {
   return orgCond;
 }
 
+/** The caller's site ceiling, or undefined when they are not site-restricted. */
+function readerSiteCeiling(auth: AuthContext): string[] | undefined {
+  return hasSiteCeiling(auth) ? auth.allowedSiteIds : undefined;
+}
+
+/**
+ * For a site-restricted reader: only policies that reach at least one of
+ * their sites — an org-wide policy, or a site/group/device-targeted policy
+ * whose targets include something in their sites. `jsonb_exists*` (the `?` /
+ * `?|` operators) is false rather than an error on a missing key.
+ */
+function peripheralPolicySiteVisibilityCondition(allowedSiteIds: string[], orgId: string | null): SQL {
+  const siteArray = allowedSiteIds.length > 0
+    ? sql`ARRAY[${sql.join(allowedSiteIds.map((id) => sql`${id}`), sql`, `)}]::text[]`
+    : sql`ARRAY[]::text[]`;
+  const deviceOrg = orgId ? sql` AND ${eq(devices.orgId, orgId)}` : sql``;
+  const groupOrg = orgId ? sql` AND ${eq(deviceGroups.orgId, orgId)}` : sql``;
+  return sql`(
+    ${peripheralPolicies.targetType} = ${'organization'}
+    OR (${peripheralPolicies.targetType} = ${'site'}
+      AND jsonb_exists_any(${peripheralPolicies.targetIds}->'siteIds', ${siteArray}))
+    OR (${peripheralPolicies.targetType} = ${'device'} AND EXISTS (
+      SELECT 1 FROM ${devices}
+      WHERE ${inArray(devices.siteId, allowedSiteIds)}${deviceOrg}
+        AND jsonb_exists(${peripheralPolicies.targetIds}->'deviceIds', ${devices.id}::text)))
+    OR (${peripheralPolicies.targetType} = ${'group'} AND EXISTS (
+      SELECT 1 FROM ${deviceGroups}
+      WHERE ${inArray(deviceGroups.siteId, allowedSiteIds)}${groupOrg}
+        AND jsonb_exists(${peripheralPolicies.targetIds}->'groupIds', ${deviceGroups.id}::text)))
+  )`;
+}
+
+type PolicyTargetsRow = { targetType: string; targetIds: PeripheralPolicyTargetIds | null };
+
+function stringIds(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
+}
+
+/**
+ * Narrow each policy's `targetIds` to the sites, groups and devices inside the
+ * reader's site ceiling, so a site-restricted reader never sees identifiers
+ * from sites they cannot access. Unrestricted readers get rows unchanged.
+ */
+async function projectPolicyTargetsForReader<T extends PolicyTargetsRow>(
+  rows: T[],
+  allowedSiteIds: string[] | undefined
+): Promise<T[]> {
+  if (!allowedSiteIds) return rows;
+  const allowed = new Set(allowedSiteIds);
+
+  const deviceIds = [...new Set(rows.flatMap((r) => stringIds(r.targetIds?.deviceIds)))];
+  const groupIds = [...new Set(rows.flatMap((r) => stringIds(r.targetIds?.groupIds)))];
+  const visibleDevices = new Set<string>();
+  const visibleGroups = new Set<string>();
+  if (deviceIds.length > 0) {
+    const found = await db
+      .select({ id: devices.id, siteId: devices.siteId })
+      .from(devices)
+      .where(inArray(devices.id, deviceIds));
+    for (const d of found) if (d.siteId && allowed.has(d.siteId)) visibleDevices.add(d.id);
+  }
+  if (groupIds.length > 0) {
+    const found = await db
+      .select({ id: deviceGroups.id, siteId: deviceGroups.siteId })
+      .from(deviceGroups)
+      .where(inArray(deviceGroups.id, groupIds));
+    for (const g of found) if (g.siteId && allowed.has(g.siteId)) visibleGroups.add(g.id);
+  }
+
+  return rows.map((row) => {
+    const t = row.targetIds ?? {};
+    const projected: PeripheralPolicyTargetIds = {};
+    if (t.siteIds !== undefined) projected.siteIds = stringIds(t.siteIds).filter((id) => allowed.has(id));
+    if (t.groupIds !== undefined) projected.groupIds = stringIds(t.groupIds).filter((id) => visibleGroups.has(id));
+    if (t.deviceIds !== undefined) projected.deviceIds = stringIds(t.deviceIds).filter((id) => visibleDevices.has(id));
+    return { ...row, targetIds: projected };
+  });
+}
+
+/** After projection: does this policy still reach anything the reader can see? */
+function policyReachesReader(row: PolicyTargetsRow): boolean {
+  const t = row.targetIds ?? {};
+  switch (row.targetType) {
+    case 'organization': return true;
+    case 'site': return (t.siteIds?.length ?? 0) > 0;
+    case 'group': return (t.groupIds?.length ?? 0) > 0;
+    case 'device': return (t.deviceIds?.length ?? 0) > 0;
+    default: return false;
+  }
+}
+
 async function getPolicyWithAccess(policyId: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(peripheralPolicies.id, policyId)];
   const accessCondition = peripheralPolicyAccessCondition(auth);
@@ -446,6 +538,8 @@ peripheralControlRoutes.get(
     if (query.isActive !== undefined) conditions.push(eq(peripheralPolicies.isActive, query.isActive === 'true'));
     if (query.action) conditions.push(eq(peripheralPolicies.action, query.action));
     if (query.deviceClass) conditions.push(eq(peripheralPolicies.deviceClass, query.deviceClass));
+    const siteCeiling = readerSiteCeiling(auth);
+    if (siteCeiling) conditions.push(peripheralPolicySiteVisibilityCondition(siteCeiling, auth.orgId));
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     const limit = query.limit ?? 100;
@@ -465,7 +559,7 @@ peripheralControlRoutes.get(
       .offset(offset);
 
     return c.json({
-      data: rows,
+      data: await projectPolicyTargetsForReader(rows, siteCeiling),
       pagination: {
         total: Number(countRow?.count ?? 0),
         limit,
@@ -485,7 +579,12 @@ peripheralControlRoutes.get(
     const { id } = c.req.valid('param');
     const policy = await getPolicyWithAccess(id, auth);
     if (!policy) return c.json({ error: 'Policy not found' }, 404);
-    return c.json({ data: policy });
+    const siteCeiling = readerSiteCeiling(auth);
+    if (!siteCeiling) return c.json({ data: policy });
+    // Same visibility and target narrowing as the list.
+    const [visible] = await projectPolicyTargetsForReader([policy], siteCeiling);
+    if (!visible || !policyReachesReader(visible)) return c.json({ error: 'Policy not found' }, 404);
+    return c.json({ data: visible });
   }
 );
 
