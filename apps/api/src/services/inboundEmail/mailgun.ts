@@ -1,5 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { HonoRequest } from 'hono';
+import { parseMailboxes, parseSingleMailbox } from './addressParse';
 import { getConfig } from '../../config/validate';
 import { BREEZE_OUTBOUND_HEADER } from '../emailDomains/outboundMarker';
 import type {
@@ -37,10 +38,14 @@ export class MailgunInboundProvider implements InboundEmailProvider {
   async parse(req: HonoRequest): Promise<NormalizedInboundEmail> {
     const b = (await req.parseBody()) as Record<string, string>;
     const from = extractEmail(b.sender || b.from || '');
-    // A missing or null envelope sender proves nothing, so it never matches.
-    const envelopeSender = b.sender ? extractEmail(b.sender) : '';
-    const envelopeMatchesFrom = envelopeSender !== '' && envelopeSender !== '<>' && envelopeSender === extractEmail(b.from || '');
-    const fromName = extractName(b.from || '');
+    // The visible From is compared as its RFC 5322 mailbox: an address inside a
+    // quoted display name or comment is not the sender (see addressParse.ts).
+    // A missing or null envelope sender, or a From that is not exactly one
+    // mailbox, proves nothing, so it never matches.
+    const visibleFrom = parseSingleMailbox(b.from);
+    const envelopeSender = b.sender ? parseSingleMailbox(b.sender)?.address ?? '' : '';
+    const envelopeMatchesFrom = envelopeSender !== '' && visibleFrom !== null && envelopeSender === visibleFrom.address;
+    const fromName = parseMailboxes(b.from)[0]?.name ?? '';
     const refs = (b['References'] || '').trim();
     // When no Message-Id is present, fall back to a content hash that is STABLE
     // across provider retries — the signing `timestamp` differs each retry, so
@@ -216,15 +221,10 @@ function normalizeVerdict(raw: string | undefined): SenderAuthVerdict {
   }
 }
 
-// `Jane Doe <jane@x.com>` → `jane@x.com`; bare address passes through.
+// `Jane Doe <jane@x.com>` → `jane@x.com`; bare address passes through. The first
+// RFC 5322 mailbox; an unparseable value falls back to itself, lower-cased.
 function extractEmail(s: string): string {
-  const m = s.match(/<([^>]+)>/);
-  return (m ? (m[1] ?? s) : s).trim().toLowerCase();
-}
-
-function extractName(s: string): string {
-  const m = s.match(/^\s*"?([^"<]+?)"?\s*</);
-  return m ? (m[1] ?? '').trim() : '';
+  return parseMailboxes(s)[0]?.address ?? s.trim().toLowerCase();
 }
 
 function parseHeader(headersJson: string | undefined, name: string): string | undefined {

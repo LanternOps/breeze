@@ -118,6 +118,36 @@ describe('MailgunInboundProvider.parse', () => {
     expect(same.forwardScanText).toBe(fields['body-plain']);
   });
 
+  // The envelope/From comparison must use the RFC 5322 mailbox, never an address
+  // that merely appears inside a quoted display name or a comment.
+  it.each([
+    ['a quoted display name containing an address', '"Tech <tech@msp.example>" <attacker@evil.example>'],
+    ['a comment containing an address', 'attacker@evil.example (Tech <tech@msp.example>)'],
+    ['a quoted display name before a bare address', '"Tech <tech@msp.example>" attacker@evil.example'],
+  ])('does not treat %s as the visible From', async (_label, from) => {
+    const n = await provider.parse({ parseBody: async () => ({ ...fields, sender: 'tech@msp.example', from }) } as any);
+    expect(n.forwardScanText).toBeUndefined();
+    expect(n.fromName).not.toBe('Tech');
+  });
+
+  it('does not match when the visible From holds more than one mailbox', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields, sender: 'tech@msp.example', from: 'tech@msp.example, attacker@evil.example',
+    }) } as any);
+    expect(n.forwardScanText).toBeUndefined();
+  });
+
+  it.each([
+    ['a normal display name', 'Tech <tech@msp.example>', 'Tech'],
+    ['a bare address', 'tech@msp.example', undefined],
+    ['a quoted display name with escapes and a comma', '"Doe, \\"Tech\\"" <tech@msp.example>', 'Doe, "Tech"'],
+  ])('matches the envelope sender for %s', async (_label, from, name) => {
+    const n = await provider.parse({ parseBody: async () => ({ ...fields, sender: 'tech@msp.example', from }) } as any);
+    expect(n.from).toBe('tech@msp.example');
+    expect(n.fromName).toBe(name);
+    expect(n.forwardScanText).toBe(fields['body-plain']);
+  });
+
   it('exposes no forwardScanText when the envelope sender is missing or null', async () => {
     const { sender: _omit, ...withoutSender } = fields;
     const missing = await provider.parse({ parseBody: async () => withoutSender } as any);

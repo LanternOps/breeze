@@ -118,6 +118,25 @@ describe('normalizeGmailMessage', () => {
     expect(n.raw.fromName).toBe('Cust Name');
   });
 
+  // The sender is the RFC 5322 mailbox, never an address inside a quoted display
+  // name or a comment (staff-forward routing looks the sender up as staff).
+  it.each([
+    ['a quoted display name containing an address', '"Tech <tech@msp.example>" <attacker@evil.example>', 'attacker@evil.example'],
+    ['a comment containing an address', 'attacker@evil.example (Tech <tech@msp.example>)', 'attacker@evil.example'],
+    ['a quoted display name before a bare address', '"Tech <tech@msp.example>" attacker@evil.example', 'attacker@evil.example'],
+    ['a normal display name', 'Tech <Tech@MSP.example>', 'tech@msp.example'],
+    ['a bare address', 'tech@msp.example', 'tech@msp.example'],
+  ])('takes the mailbox address for %s', (_label, value, address) => {
+    const n = normalizeGmailMessage(baseMessage([{ name: 'From', value }]), 'p', MAILBOX, SUB);
+    expect(n.from).toBe(address);
+  });
+
+  it('withholds forwardScanText when From holds more than one mailbox', () => {
+    const n = normalizeGmailMessage(baseMessage([{ name: 'From', value: 'tech@msp.example, attacker@evil.example' }]), 'p', MAILBOX, SUB);
+    expect(n.from).toBe('tech@msp.example');
+    expect(n.forwardScanText).toBeUndefined();
+  });
+
   it('exposes only a real text/plain body for staff-forward detection', () => {
     const withPlain = baseMessage([{ name: 'From', value: 'a@x.com' }], [
       { mimeType: 'text/plain', filename: '', body: { data: b64url('plain') } },
