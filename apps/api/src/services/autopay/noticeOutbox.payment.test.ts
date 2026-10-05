@@ -143,14 +143,14 @@ import { STALE_REMINDER_REASON } from './reminderValidation';
 function reminder(frozen:Record<string,unknown>={amount:'100.00',currency:'USD',dueDate:'2026-10-08',daysOverdue:0}){
  h.row.kind='payment_overdue';h.row.invoiceId='invoice';h.row.rendered.frozen=frozen;
  h.rows.set(invoices,[{id:'invoice',orgId:'org',status:'overdue',balance:'100.00',currencyCode:'USD',dueDate:'2026-10-08'}]);
- h.rows.set(invoiceCollectionAttempts,[{reservedAmount:'0.00'}]);
+ h.rows.set(invoiceCollectionAttempts,[]);
 }
 it('sends a reminder whose frozen amount and due date are still current',async()=>{
  reminder({amount:'100',currency:'USD',dueDate:'2026-10-08',daysOverdue:0});
  expect(await dispatchPendingBillingNotices()).toEqual({sent:1,failed:0});expect(h.send).toHaveBeenCalledOnce();
 });
-it('cancels a reminder while a collection attempt is reserving the invoice',async()=>{
- reminder();h.rows.set(invoiceCollectionAttempts,[{reservedAmount:'100.00'}]);
+it('cancels a reminder while a collection attempt is in flight',async()=>{
+ reminder();h.rows.set(invoiceCollectionAttempts,[{id:'attempt',invoiceId:'invoice',state:'processing'}]);
  await dispatchPendingBillingNotices();
  expect(h.row).toMatchObject({status:'cancelled',lastError:'Payment in progress'});expect(h.send).not.toHaveBeenCalled();
 });

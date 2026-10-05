@@ -1,9 +1,9 @@
-import { and, eq, gt } from 'drizzle-orm';
-import { invoices } from '../../db/schema';
+import { and, eq, gt, inArray } from 'drizzle-orm';
+import { ACTIVE_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
+import { invoices, invoiceCollectionAttempts } from '../../db/schema';
 import { sqlOpenAr } from '../../db/schema/invoices';
 import { buildPublicLinkLiveOrgPredicate } from '../publicLinkOrgGate';
 import { toMinorUnits } from '../stripeMoney';
-import { readInFlightCollection } from './reservation';
 import type { NoticePreSendValidator } from './noticeOutbox';
 import type { RenderedNotice } from './types';
 
@@ -26,8 +26,13 @@ export const validateReminder: NoticePreSendValidator = async (tx, row) => {
     sqlOpenAr(invoices), gt(invoices.balance, '0'), buildPublicLinkLiveOrgPredicate(invoices.orgId),
   )).limit(1);
   if (!invoice) return 'Reminder invoice or tenant no longer eligible';
-  // Same reserving-state set as the pay routes' 409: "View & pay" would be refused.
-  if ((await readInFlightCollection(tx, invoice.id)).inProgress) return 'Payment in progress';
+  // Same in-flight set as the sweep. A requires_action attempt is not suppressed: the
+  // client must confirm it with their bank, and the invoice page offers that action.
+  const [inFlight] = await tx.select({ id: invoiceCollectionAttempts.id }).from(invoiceCollectionAttempts).where(and(
+    eq(invoiceCollectionAttempts.invoiceId, invoice.id),
+    inArray(invoiceCollectionAttempts.state, [...ACTIVE_COLLECTION_ATTEMPT_STATES]),
+  )).limit(1);
+  if (inFlight) return 'Payment in progress';
   const frozen = (row.rendered as RenderedNotice).frozen;
   if (frozen?.currency !== invoice.currencyCode || frozen.dueDate !== invoice.dueDate
     || !sameAmount(frozen.amount, invoice.balance, invoice.currencyCode)) return STALE_REMINDER_REASON;
