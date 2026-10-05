@@ -1172,6 +1172,17 @@ describe('assignee notification: rich email', () => {
     expect(html).toContain('Assigned to you: Printer &lt;down&gt;</h1>');
   });
 
+  it('cuts the body at 1,200 code units without leaving half of a surrogate pair', async () => {
+    selectMock.mockResolvedValueOnce([{ ...ticketRow, description: `${'a'.repeat(1199)}\u{1F600}tail` }]);
+
+    await handleTicketEvent(event as never);
+
+    const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
+    expect(html).toContain('a'.repeat(1199));
+    expect(html).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    expect(html).not.toContain('tail');
+  });
+
   it('a failing name lookup throws BEFORE the dedupe anchor, so the retry can still send', async () => {
     selectMock.mockResolvedValueOnce([{ ...ticketRow, deviceId: 'd-1' }]);
     selectMock.mockResolvedValueOnce([{ name: 'Client Co' }]); // org name

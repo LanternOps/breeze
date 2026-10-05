@@ -150,7 +150,10 @@ export function buildAssigneeEmailHtml(
   deviceName: string | null,
 ): string {
   const url = `${dashboardBaseUrl()}/tickets/${t.id}`;
-  const bodyHtml = escapeHtml((t.description ?? '').slice(0, 1200)).replace(/\n/g, '<br>');
+  // slice() counts UTF-16 code units; drop a high surrogate left unpaired at
+  // the cut so an emoji at the boundary is removed whole, not corrupted.
+  const excerpt = (t.description ?? '').slice(0, 1200).replace(/[\uD800-\uDBFF]$/, '');
+  const bodyHtml = escapeHtml(excerpt).replace(/\n/g, '<br>');
   const requester = [t.submitterName, t.submitterEmail].filter(Boolean).map(String).join(' ').trim();
   const row = (k: string, v: string) =>
     v ? `<tr><td style="padding:4px 12px 4px 0;color:#6b7280;font-size:13px;white-space:nowrap;vertical-align:top;">${k}</td><td style="padding:4px 0;color:#111111;font-size:13px;">${v}</td></tr>` : '';
