@@ -5,7 +5,8 @@
  *
  * Security contract (spec 2026-07-19-reset-password-reveal-design.md):
  * - Shape-1 org RLS scopes every read and the burn write; fail closed.
- * - Requester-only; admin fallback (approvals:decide + org access) exists only
+ * - Requester-only (with a live re-check that the requester still holds the
+ *   permission to create the intent); admin fallback (approvals:decide + org access) exists only
  *   for API-key-requested intents, which have no requesting user.
  * - At most one reveal ever succeeds (CAS burn); 7-day window from executedAt.
  * - The plaintext appears ONLY in the success response body — never in audit
@@ -19,6 +20,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
 import { authMiddleware } from '../middleware/auth';
 import { canAccessOrg, getUserPermissions, userCanDecideApprovals } from '../services/permissions';
+import { checkToolPermissionForResolvedUser } from '../services/aiGuardrails';
 import { writeRouteAudit } from '../services/auditEvents';
 import { recordActionIntentEvent } from '../services/actionIntents/metrics';
 import {
@@ -68,26 +70,41 @@ actionIntentsRoutes.post(
         details: { intentId: intent.id, actionName: intent.actionName, revealPath },
       });
 
+    // Both paths re-resolve permissions live: authority checked when the
+    // intent was created (or decided) may have been revoked since, and the
+    // reveal window is days long.
+    const perms = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        getUserPermissions(auth.user.id, {
+          partnerId: auth.partnerId ?? undefined,
+          orgId: intent.orgId,
+        }),
+      ),
+    );
+    if (!perms || !canAccessOrg(perms, intent.orgId)) {
+      audit('denied');
+      return c.json({ error: 'forbidden' }, 403);
+    }
+
     if (intent.requestedByUserId) {
-      if (intent.requestedByUserId !== auth.user.id) {
+      // Requester path: identity AND the requester must still hold the
+      // permission needed to create this intent in the first place.
+      const permissionError = intent.requestedByUserId === auth.user.id
+        ? checkToolPermissionForResolvedUser(
+          intent.actionName,
+          (intent.arguments ?? {}) as Record<string, unknown>,
+          perms,
+        )
+        : 'not_requester';
+      if (permissionError) {
         audit('denied');
         return c.json({ error: 'forbidden' }, 403);
       }
-    } else {
+    } else if (!userCanDecideApprovals(perms)) {
       // API-key/MCP-requested intent: no requesting user exists. Mirror the
       // decide path's live permission re-resolution (approvals.ts:540-566).
-      const perms = await runOutsideDbContext(() =>
-        withSystemDbAccessContext(() =>
-          getUserPermissions(auth.user.id, {
-            partnerId: auth.partnerId ?? undefined,
-            orgId: intent.orgId,
-          }),
-        ),
-      );
-      if (!perms || !canAccessOrg(perms, intent.orgId) || !userCanDecideApprovals(perms)) {
-        audit('denied');
-        return c.json({ error: 'forbidden' }, 403);
-      }
+      audit('denied');
+      return c.json({ error: 'forbidden' }, 403);
     }
 
     const executedAtMs = intent.executedAt ? new Date(intent.executedAt).getTime() : 0;
