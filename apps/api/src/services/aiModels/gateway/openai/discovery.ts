@@ -109,6 +109,13 @@ export async function discoverOpenAiCompatibleModels(input: {
       if (deadline.signal.aborted) throw new Error(TIMED_OUT);
       throw error;
     }
+    if (res.status === 401 || res.status === 403) {
+      // An auth rejection often echoes a masked or partial copy of the key,
+      // which the exact-match scrub cannot recognise. This message is stored
+      // on the connection, so keep a fixed one (as the request path does).
+      await res.body?.cancel().catch(() => {});
+      throw new Error(`The endpoint rejected the connection's key (HTTP ${res.status} for /models).`);
+    }
     if (!res.ok) {
       const body = await readUpstreamErrorText(res, grant, 300);
       throw new Error(scrubSecrets(`The endpoint returned HTTP ${res.status} for /models: ${body}`, [input.credential.secret], 400));
