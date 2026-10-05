@@ -343,6 +343,7 @@ const EXEMPT: Record<string, string> = {
   'services/scriptExecution.ts': 'request path: Route callers only; device gated by auth.canAccessOrg',
   'services/scriptExitCodeAlerts.ts': 'derived: Acts on the single device tied to the execution row being ingested; no device-set selection',
   'services/scriptProposals/reviewer.ts': 'derived: Reads only proposal.targetDeviceIds, re-filtered by the proposal\'s own orgId',
+  'services/securityScanQuarantineAuthority.ts': 'derived: reads the one device a queued security scan already targets, to check it against the stored auto-quarantine authority; selects nothing',
   'services/scriptSecretDelivery.ts': 'derived: Operates only on already-claimed commands for the calling agent\'s own device',
   'services/sentinelOne/actions.ts': 'request path: orgId/deviceIds from request/AI-chat callers; devices filtered by eq(devices.orgId, params.orgId)',
   'services/softwareDeployment.ts': 'org-pinned: Fan-out always filters eq(devices.orgId, deployment.orgId), an org-owned row from request-created deployments',

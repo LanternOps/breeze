@@ -491,6 +491,9 @@ describe('featureLinks routes', () => {
           partnerId: PARTNER_POLICY.partnerId,
           partnerOrgAccess: 'all',
         }));
+        // A security link with auto-quarantine on (the default) checks
+        // devices:execute from the resolved permissions.
+        c.set('permissions', permState.permissions);
         await next();
       });
       app.route('/', featureLinkRoutes);

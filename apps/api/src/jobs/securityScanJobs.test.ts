@@ -59,14 +59,20 @@ vi.mock('../services/cronDue', () => ({
 
 vi.mock('../services/featureConfigResolver', () => ({
   resolveSecurityScanSettingsForDevice: vi.fn(),
+  resolveSecurityScanPolicyForDevice: vi.fn(),
   resolveAllSecurityScanScheduledDevices: vi.fn(),
   resolvePartnerTimezoneForOrg: vi.fn(),
+}));
+
+vi.mock('../services/securityScanQuarantineAuthority', () => ({
+  resolveSecurityScanQuarantineAuthority: vi.fn(),
 }));
 
 import { db } from '../db';
 import { queueCommandForExecution } from '../services/commandQueue';
 import { isCronDue } from '../services/cronDue';
-import { resolveSecurityScanSettingsForDevice } from '../services/featureConfigResolver';
+import { resolveSecurityScanPolicyForDevice } from '../services/featureConfigResolver';
+import { resolveSecurityScanQuarantineAuthority } from '../services/securityScanQuarantineAuthority';
 import {
   processDispatchScan,
   shouldScheduleSecurityScan,
@@ -100,14 +106,94 @@ describe('processDispatchScan', () => {
     setMock.mockReset().mockImplementation(() => chain([{ id: queuedScan.id }]));
     vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
     vi.mocked(queueCommandForExecution).mockResolvedValue({ command: { id: 'cmd-1', status: 'pending' } } as any);
-    vi.mocked(resolveSecurityScanSettingsForDevice).mockResolvedValue({
-      ...SECURITY_SCAN_SETTINGS_DEFAULTS,
-      exclusions: ['C:\\Backups'],
-      maxFileSizeMb: 64,
-      scanTimeoutMinutes: 30,
-      autoQuarantine: false,
-      scanType: 'full',
+    vi.mocked(resolveSecurityScanPolicyForDevice).mockResolvedValue({
+      settings: {
+        ...SECURITY_SCAN_SETTINGS_DEFAULTS,
+        exclusions: ['C:\\Backups'],
+        maxFileSizeMb: 64,
+        scanTimeoutMinutes: 30,
+        autoQuarantine: false,
+        scanType: 'full',
+      },
+      featureLinkId: 'link-1',
     });
+    vi.mocked(resolveSecurityScanQuarantineAuthority).mockResolvedValue({ allowed: true });
+  });
+
+  function admitDispatch() {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chain([queuedScan])) // scan lookup
+      .mockReturnValueOnce(chain([{ count: 0 }])) // org running
+      .mockReturnValueOnce(chain([{ count: 0 }])) // device running
+      .mockReturnValueOnce(chain([{ count: 0 }])); // device pending commands
+  }
+
+  function quarantinePolicy() {
+    vi.mocked(resolveSecurityScanPolicyForDevice).mockResolvedValue({
+      settings: { ...SECURITY_SCAN_SETTINGS_DEFAULTS, autoQuarantine: true },
+      featureLinkId: 'link-1',
+    });
+  }
+
+  it('dispatches detect-only and records why when auto-quarantine has no valid stored authority', async () => {
+    admitDispatch();
+    quarantinePolicy();
+    vi.mocked(resolveSecurityScanQuarantineAuthority).mockResolvedValue({
+      allowed: false, reason: 'reapproval_required',
+    });
+
+    const result = await processDispatchScan({
+      type: 'dispatch-scan',
+      scanId: queuedScan.id,
+      origin: 'policy_scheduler',
+      configPolicyId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      occurrenceIso: '2026-09-18T02:00:00.000Z',
+    });
+
+    expect(result.dispatched).toBe(true);
+    expect(resolveSecurityScanQuarantineAuthority).toHaveBeenCalledWith('link-1', queuedScan.deviceId);
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      queuedScan.deviceId,
+      'security_scan',
+      expect.objectContaining({ autoQuarantine: false }),
+      expect.anything(),
+    );
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'running',
+      autoQuarantineSuppressedReason: 'reapproval_required',
+    }));
+  });
+
+  it('keeps auto-quarantine when the stored authority resolves', async () => {
+    admitDispatch();
+    quarantinePolicy();
+
+    await processDispatchScan({ type: 'dispatch-scan', scanId: queuedScan.id, origin: 'manual' });
+
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      queuedScan.deviceId,
+      'security_scan',
+      expect.objectContaining({ autoQuarantine: true }),
+      expect.anything(),
+    );
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'running',
+      autoQuarantineSuppressedReason: null,
+    }));
+  });
+
+  it('does not consult the authority for a scan without auto-quarantine', async () => {
+    admitDispatch();
+
+    await processDispatchScan({ type: 'dispatch-scan', scanId: queuedScan.id, origin: 'manual' });
+
+    expect(resolveSecurityScanQuarantineAuthority).not.toHaveBeenCalled();
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      queuedScan.deviceId,
+      'security_scan',
+      expect.objectContaining({ autoQuarantine: false }),
+      expect.anything(),
+    );
   });
 
   it('does nothing when the scan row has vanished', async () => {

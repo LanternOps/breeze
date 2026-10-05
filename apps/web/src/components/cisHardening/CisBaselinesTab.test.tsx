@@ -360,3 +360,66 @@ describe('CisBaselinesTab partner-wide ownership', () => {
     expect(screen.getByRole('button', { name: /new baseline/i })).toBeDisabled();
   });
 });
+
+// Scheduled baselines carry a stored approval; one without it (every schedule
+// saved before approvals existed) is skipped by the scheduler until re-saved.
+describe('CisBaselinesTab schedule re-approval', () => {
+  beforeEach(() => {
+    orgStoreState.currentOrgId = 'org-1';
+    orgStoreState.allOrgs = false;
+    orgStoreState.organizations = [{ id: 'org-1', name: 'Acme' }];
+    orgStoreState.organizationsLoaded = true;
+    fetchWithAuthMock.mockReset();
+  });
+
+  it('marks only the schedule that needs re-approval', async () => {
+    mockList([
+      {
+        ...baseline,
+        scanSchedule: { enabled: true, intervalHours: 24 },
+        scheduleApproval: { status: 'reapproval_required', approvedBy: null, approvedAt: null },
+      },
+      {
+        ...baseline,
+        id: 'baseline-3',
+        name: 'CIS Windows L1 approved',
+        scanSchedule: { enabled: true, intervalHours: 24 },
+        scheduleApproval: { status: 'approved', approvedBy: 'user-1', approvedAt: '2026-12-10T00:00:00.000Z' },
+      },
+      {
+        ...baseline,
+        id: 'baseline-4',
+        name: 'CIS Windows L1 legacy',
+        scanSchedule: { enabled: true, intervalHours: 24 },
+        scheduleApproval: { status: 'legacy_grandfathered', approvedBy: 'user-1', approvedAt: null },
+      },
+    ]);
+
+    render(<CisBaselinesTab refreshKey={0} onMutate={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText('CIS Windows L1 approved')).toBeInTheDocument());
+    expect(screen.getAllByTestId('cis-baseline-schedule-reapproval')).toHaveLength(1);
+    expect(screen.getByText('Needs re-approval')).toBeInTheDocument();
+  });
+
+  it('names the approver who lost execute access', async () => {
+    mockList([
+      {
+        ...baseline,
+        scanSchedule: { enabled: true, intervalHours: 24 },
+        scheduleApproval: {
+          status: 'reapproval_required',
+          reason: 'approver_invalid',
+          approvedBy: 'user-9',
+          approverName: 'Departed Tech',
+          approvedAt: null,
+        },
+      },
+    ]);
+
+    render(<CisBaselinesTab refreshKey={0} onMutate={vi.fn()} />);
+
+    const badge = await screen.findByTestId('cis-baseline-schedule-reapproval');
+    expect(badge.getAttribute('title')).toContain('Departed Tech');
+  });
+});

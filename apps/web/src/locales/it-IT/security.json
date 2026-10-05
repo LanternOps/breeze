@@ -1739,7 +1739,11 @@
     },
     "schedule": {
       "everyHours": "Ogni {{hours}}h",
-      "manual": "Manuale"
+      "manual": "Manuale",
+      "reapprovalRequired": "Nuova approvazione richiesta",
+      "reapprovalTitle": "Le scansioni pianificate sono in pausa finché un utente con l'autorizzazione devices:execute non salva di nuovo questa baseline.",
+      "approverInvalidTitle": "Le scansioni pianificate sono state interrotte: l'approvatore {{name}} non ha più l'accesso devices:execute. Un utente con questa autorizzazione deve salvare di nuovo questa baseline.",
+      "unknownApprover": "(utente sconosciuto)"
     },
     "status": {
       "active": "Attiva",
