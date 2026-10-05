@@ -61,7 +61,18 @@ const bmrMocks = vi.hoisted(() => ({
   createAuditLogAsync: vi.fn(async () => undefined),
 }));
 
+const actorGate = vi.hoisted(() => ({ refusal: vi.fn(async (): Promise<unknown> => null) }));
+vi.mock('./backupRestoreActorGate', () => ({
+  restoreIntegrityRefusalForActor: (...args: unknown[]) => actorGate.refusal(...(args as [])),
+}));
+
 vi.mock('./bareMetalRecoveryService', () => ({
+  RecoveryIntegrityRefusedError: class RecoveryIntegrityRefusedError extends Error {
+    constructor(public status: number, public body: Record<string, unknown>) {
+      super(String(body.error));
+      this.name = 'RecoveryIntegrityRefusedError';
+    }
+  },
   BareMetalRecoveryError: class BareMetalRecoveryError extends Error {
     constructor(public code: string, public status: number, public details?: Record<string, unknown>) {
       super(code);
@@ -88,7 +99,7 @@ vi.mock('./auditService', () => ({
 import { db } from '../db';
 import { queueCommandForExecution, queueCommandForExecutionWithSystemPrecheck } from './commandQueue';
 import { enqueueDrExecutionReconcile } from '../jobs/drExecutionWorker';
-import { BareMetalRecoveryError } from './bareMetalRecoveryService';
+import { BareMetalRecoveryError, RecoveryIntegrityRefusedError } from './bareMetalRecoveryService';
 import {
   classifyDrExecutionAuthorizationError,
   computeGroupResults,
@@ -765,6 +776,34 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
     expect(results.dispatchStatus).toBe('partial');
   });
 
+  it('each recovery is created with an integrity decision that refuses a snapshot without a usable attestation', async () => {
+    await dispatchGroup(execution('failover'), bmrGroup() as any, initialResults());
+    const integrity = bmrMocks.createBareMetalRecovery.mock.calls[0]![0].integrity as (s: { id: string; deviceId: string }) => Promise<any>;
+    expect(typeof integrity).toBe('function');
+
+    actorGate.refusal.mockResolvedValueOnce({ code: 'snapshot_integrity_unavailable', message: 'no attestation' });
+    expect(await integrity({ id: SNAP_1, deviceId: DEVICE_ID })).toEqual({
+      ok: false, status: 409, body: { error: 'snapshot_integrity_unavailable', message: 'no attestation' },
+    });
+    expect(actorGate.refusal).toHaveBeenCalledWith({
+      snapshotDbId: SNAP_1, targetDeviceId: DEVICE_ID, commandType: 'bmr_recover', actor: 'system',
+    });
+    expect(await integrity({ id: SNAP_1, deviceId: DEVICE_ID })).toEqual({ ok: true });
+  });
+
+  it('an integrity refusal while creating a recovery becomes a failedDispatches entry', async () => {
+    bmrMocks.createBareMetalRecovery.mockReset();
+    bmrMocks.createBareMetalRecovery
+      .mockResolvedValueOnce({ row: recoveryRow(REC_1, DEVICE_ID, 'created'), code: 'AAA-BBB-CCC' })
+      .mockRejectedValueOnce(new RecoveryIntegrityRefusedError(409, { error: 'snapshot_integrity_unavailable', message: 'no attestation' }));
+
+    const { results } = await dispatchGroup(execution('failover'), bmrGroup() as any, initialResults());
+
+    expect(results.failedDispatches).toEqual([
+      expect.objectContaining({ deviceId: DEVICE_2, error: 'no attestation' }),
+    ]);
+  });
+
   it('a device with no restorable snapshot at dispatch time is a failedDispatches entry', async () => {
     bmrMocks.resolveLatestRestorableSnapshot.mockImplementation(async (_o: string, d: string) => (d === DEVICE_ID ? { id: SNAP_1, platform: 'linux' } : null));
 
@@ -1203,6 +1242,28 @@ describe('DR command steps and stored credentials', () => {
     expect(payload).not.toHaveProperty('providerConfig');
     expect(payload).not.toHaveProperty('password');
     expect(JSON.stringify(payload)).not.toContain('synthetic');
+  });
+
+  it('refuses a restore step whose snapshot has no usable attestation, before anything is queued', async () => {
+    vi.mocked(db.select).mockImplementationOnce(() => createQueryChain([{
+      id: SNAPSHOT_ROW_ID, snapshotId: 'provider-snap-1', configId: CONFIG_ID, provider: 's3',
+    }]) as any);
+    actorGate.refusal.mockResolvedValueOnce({ code: 'snapshot_integrity_unavailable', message: 'no attestation' });
+
+    const { results, pending } = await dispatchGroup(
+      execution(),
+      group('hyperv_restore', { snapshotId: 'provider-snap-1', vmName: 'Recovered VM' }),
+      initialResults(),
+    );
+
+    expect(pending).toEqual([]);
+    expect(actorGate.refusal).toHaveBeenCalledWith({
+      snapshotDbId: SNAPSHOT_ROW_ID, targetDeviceId: DEVICE_ID, commandType: 'hyperv_restore', actor: 'system',
+    });
+    expect(results.failedDispatches).toEqual([
+      expect.objectContaining({ groupId: GROUP_ID, deviceId: DEVICE_ID, commandType: 'hyperv_restore', error: 'no attestation' }),
+    ]);
+    expect(results.dispatchStatus).toBe('failed');
   });
 
   it('fails the device dispatch when the step snapshot has no resolvable destination', async () => {
