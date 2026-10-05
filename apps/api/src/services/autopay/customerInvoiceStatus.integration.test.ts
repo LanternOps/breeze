@@ -30,7 +30,7 @@ it('a portal user sees their scheduled invoice in words, through RLS', async () 
   const f = await fixture();
   const result = await asPortal(f.org.id, f.partner.id, () => getCustomerInvoiceAutopay(db, { invoiceId: f.invoice.id, orgId: f.org.id }));
   expect(result).toEqual({ enrolled: true, status: { state: 'scheduled', chargeDate: '2026-10-31', amount: '50.00', fee: '1.50', currency: 'USD',
-    methodLabel: 'Visa credit card ending in 4242', methodType: 'card', reason: null, paidAt: null, canPayNow: true } });
+    methodLabel: 'Visa credit card ending in 4242', methodType: 'card', reason: null, paidAt: null, canPayNow: true, enrollmentActive: true } });
 });
 
 it('another org cannot read it', async () => {

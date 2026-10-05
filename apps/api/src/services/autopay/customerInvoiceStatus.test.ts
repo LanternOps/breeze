@@ -3,7 +3,7 @@ const h = vi.hoisted(() => ({ rows: new Map<unknown, any[]>(), inFlight: vi.fn()
 vi.mock('./reservation', () => ({ readInFlightCollection: h.inFlight }));
 vi.mock('./paymentMethods', () => ({ getAutopayMethod: h.method }));
 import { getCustomerInvoiceAutopay } from './customerInvoiceStatus';
-import { invoices, invoiceAutopaySchedules, invoiceCollectionAttempts, orgAutopayEnrollments, orgPaymentMethods } from '../../db/schema';
+import { invoices, invoiceAutopaySchedules, invoiceCollectionAttempts, orgAutopayEnrollments, orgPaymentMethods, partners } from '../../db/schema';
 
 function fakeDb() {
   const query = () => {
@@ -26,6 +26,7 @@ function seed(schedule: Record<string, unknown> | null, invoice: Record<string, 
   h.rows.set(invoiceAutopaySchedules, schedule ? [{ invoiceId: 'invoice', orgId: 'org', enrollmentId: 'enrollment', state: 'scheduled',
     stateReason: null, ineligibleReason: null, collectOn: '2026-11-04', nextAttemptAt: null, termsSnapshot: terms, ...schedule }] : []);
   h.rows.set(orgAutopayEnrollments, [{ id: 'enrollment', orgId: 'org', status: 'active', needsAttentionReason: null, ...enrollment }]);
+  h.rows.set(partners, [{ enabled: true }]);
 }
 beforeEach(() => {
   vi.clearAllMocks(); h.rows.clear();
@@ -38,7 +39,7 @@ describe('getCustomerInvoiceAutopay', () => {
     seed({});
     expect(await getCustomerInvoiceAutopay(fakeDb(), ids)).toEqual({ enrolled: true, status: { state: 'scheduled', chargeDate: '2026-11-04',
       amount: '50.00', fee: '1.50', currency: 'USD', methodLabel: 'Visa credit card ending in 4242', methodType: 'card', reason: null,
-      paidAt: null, canPayNow: true } });
+      paidAt: null, canPayNow: true, enrollmentActive: true } });
   });
   it('labels the noticed method from the terms when the saved method changed', async () => {
     seed({ termsSnapshot: { ...terms, methodId: 'old', methodType: 'us_bank_account', last4: '6789' } });
@@ -131,5 +132,39 @@ describe('getCustomerInvoiceAutopay', () => {
   it('a closed invoice that autopay did not pay has no status', async () => {
     seed({ state: 'not_needed', ineligibleReason: 'enrolled_after_issue' }, { status: 'paid', balance: '0.00' });
     expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toBeNull();
+  });
+});
+
+describe('Final-A paper cuts', () => {
+  // FP-9: switched off, the invoice no longer promises a payment date.
+  it.each([{}, { state: 'awaiting_notice' }, { state: 'retry_scheduled', nextAttemptAt: new Date('2026-11-07T06:00:00Z') }])(
+    'while the MSP has automatic payments switched off, %j reads "on hold"', async schedule => {
+      seed(schedule);
+      h.rows.set(partners, [{ enabled: false }]);
+      expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state: 'delayed', reason: 'on_hold' });
+    });
+  // FP-6: the client's own bank payment is not "paid automatically".
+  it('a paid invoice the client paid by bank reads "paid by bank"', async () => {
+    seed(null, { status: 'paid', balance: '0.00', paidAt: new Date('2026-10-05T08:00:00Z') });
+    h.rows.set(invoiceCollectionAttempts, [{ status: 'succeeded', refundedAmountMinor: '0', initiatedBy: 'client_on_session', scheduleId: null, paymentMethodId: 'pm-bank' }]);
+    h.rows.set(orgPaymentMethods, [{ id: 'pm-bank', orgId: 'org', type: 'us_bank_account', bankLast4: '6789', status: 'active' }]);
+    expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state: 'paid_by_bank', paidAt: '2026-10-05T08:00:00.000Z',
+      methodLabel: 'Bank account ending in 6789', methodType: 'us_bank_account' });
+  });
+  it('a client bank payment on an invoice that also had a schedule is still "paid by bank"', async () => {
+    seed({ id: 'schedule', state: 'succeeded' }, { status: 'paid', balance: '0.00', paidAt: new Date('2026-10-05T08:00:00Z') });
+    h.rows.set(invoiceCollectionAttempts, [{ status: 'succeeded', refundedAmountMinor: '0', initiatedBy: 'client_on_session', scheduleId: null, paymentMethodId: 'pm-bank' }]);
+    h.rows.set(orgPaymentMethods, [{ id: 'pm-bank', orgId: 'org', type: 'us_bank_account', bankLast4: '6789', status: 'active' }]);
+    expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state: 'paid_by_bank' });
+  });
+  // FP-6: a refunded or returned automatic payment reopens the invoice; say so.
+  it.each([{ stateReason: 'payment_reversed' }, {}])('an open invoice whose automatic payment succeeded and was reversed (%j) reads "reversed"', async schedule => {
+    seed({ state: 'succeeded', ...schedule }, { status: 'sent', balance: '50.00' });
+    expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state: 'reversed', amount: '50.00' });
+  });
+  // FP-5: the panel knows the client's automatic payments are on even when this payment failed.
+  it('a failed automatic payment carries that the enrollment is active', async () => {
+    seed({ state: 'failed', stateReason: 'hard' }, {}, { needsAttentionReason: 'method_unusable' });
+    expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state: 'failed', enrollmentActive: true });
   });
 });

@@ -209,3 +209,31 @@ describe('realistic payloads (CustomerInvoiceAutopayStatus as the API sends it)'
     expect(screen.getByText("Online payment isn't available for this invoice. Please contact Example MSP to pay.")).toBeInTheDocument();
   });
 });
+
+describe('Final-A paper cuts', () => {
+  // FP-6
+  it('a client bank payment reads "Paid by bank"', () => {
+    panel({ status: 'paid', canPay: false, balance: '0.00', autopayStatus: { ...scheduled, state: 'paid_by_bank', paidAt: '2026-10-05T08:00:00Z',
+      methodType: 'us_bank_account', methodLabel: 'Bank account ending in 6789' } as never });
+    expect(screen.getByText('Paid by bank on October 5, 2026 from your bank account ending in 6789. Thank you.')).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/automatically/);
+  });
+  it('a reversed automatic payment says the invoice is due again', () => {
+    panel({ balance: '100.00', autopayStatus: { ...scheduled, state: 'reversed', amount: '100.00' } as never });
+    expect(screen.getByText('The automatic payment for this invoice was refunded or returned, so $100.00 is due again. Please pay it below.')).toBeInTheDocument();
+    expect(screen.getByTestId('public-invoice-pay')).toHaveTextContent('Pay $200.00');
+  });
+  // FP-5 (V-15): a failed payment for a client whose automatic payments are on.
+  it('a failed payment for an enrolled client never offers to "turn on" automatic payments, and says how to fix the method', () => {
+    panel({ autopayStatus: { ...scheduled, state: 'failed', enrollmentActive: true } as never, bankOffer, saveOffer });
+    expect(screen.getByText('Pays this invoice and uses this bank account for your automatic payments from now on.')).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/turns on automatic payments/);
+    expect(screen.getByText(/To keep automatic payments working, update your payment method with the link in your latest email from Example MSP\./)).toBeInTheDocument();
+  });
+  // FP-5 (V-14): the bank module widens the rail at lg instead of growing a very tall column.
+  it('choosing the bank marks the rail so the grid can widen it', () => {
+    panel({ bankOffer });
+    fireEvent.click(screen.getByTestId('autopay-option-bank'));
+    expect(screen.getByTestId('invoice-payment-panel')).toHaveAttribute('data-bank-chosen', 'true');
+  });
+});
