@@ -294,13 +294,8 @@ export async function reserveCollection(input: CollectionInput)
   }, 'autopay.reserve');
 }
 
-/** Human-readable PaymentIntent description for the MSP's Stripe dashboard. No statement
- * descriptor suffix is set: on a connected account it joins that account's own prefix
- * under a 22-character limit we cannot see, and a rejected create would block collection. */
-export function paymentIntentDescription(invoiceNumber: string | null, partnerName: string | null): string {
-  const text = [`Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''}`, partnerName?.replace(/\s+/g, ' ').trim()].filter(Boolean).join(' · ');
-  return Array.from(text).slice(0, 500).join('');
-}
+import { paymentIntentDescription } from './paymentDescription';
+export { paymentIntentDescription };
 export function paymentIntentCreateParams(attempt: typeof invoiceCollectionAttempts.$inferSelect,
   customer: string, method: string, partnerId: string, methodType: 'card' | 'us_bank_account',
   description?: string): Stripe.PaymentIntentCreateParams {

@@ -1,14 +1,15 @@
 import { captureException } from '../../services/sentry';
 import {invoicePaySchema,getBankAutopayOffer,startInvoiceBankSetup,collectAfterBankSetup} from '../../services/autopay/bankPayment';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
-import { getInvoiceAutopayOffer, prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave } from '../../services/autopay/payAndSave';
+import { getInvoiceAutopayOffer, prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave, withPaymentDescription } from '../../services/autopay/payAndSave';
+import { paymentIntentDescription } from '../../services/autopay/paymentDescription';
 import { assertNoActiveCollection, holdsClientMoney, readInFlightCollection } from '../../services/autopay/reservation';
 import { releaseInvoiceConfirmation } from '../../services/autopay/confirmPayment';
 import { getCustomerInvoiceAutopay } from '../../services/autopay/customerInvoiceStatus';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { and, desc, eq, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, getTableColumns, ne, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { invoices, invoiceStripePayments, partners, stripeConnectAccounts } from '../../db/schema';
 import { portalBranding } from '../../db/schema/portal';
@@ -278,7 +279,8 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   const { id } = c.req.valid('param');
 
   const [inv] = await withSystemDbAccessContext(() =>
-    db.select().from(invoices)
+    db.select({ ...getTableColumns(invoices), partnerName: partners.name }).from(invoices)
+      .leftJoin(partners, eq(partners.id, invoices.partnerId))
       .where(and(eq(invoices.id, id), eq(invoices.orgId, auth.user.orgId), ne(invoices.status, 'draft')))
       .limit(1)
   );
@@ -394,7 +396,8 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     // to `revoked` on the strength of this pin. Adding a delayed method here
     // requires changing that mapping first. Mirror: services/invoiceCheckout.ts.
     payment_method_types: ['card'],
-    ...cardSaveStripeFields(capture),
+    // FP-20: the PaymentIntent names the invoice and MSP, as autopay ones do.
+    ...withPaymentDescription(cardSaveStripeFields(capture), paymentIntentDescription(inv.invoiceNumber, inv.partnerName)),
     line_items: [{
       price_data: {
         currency: inv.currencyCode.toLowerCase(),
@@ -431,7 +434,8 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     // `_e<quantum>` (SEC-150): `expires_at` is part of the request and Stripe
     // refuses an idempotent replay whose parameters moved, so the hour quantum
     // is folded into the key — see checkoutSessionExpiry().
-    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${capture ? `_save_${capture.id}` : ''}_e${expiryQuantum}`,
+    // `_pd`: the request carries a PaymentIntent description (see services/invoiceCheckout.ts).
+    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${capture ? `_save_${capture.id}` : ''}_e${expiryQuantum}_pd`,
   }));
   } catch (err) {
     // Customer-facing path (spec §10): a currency the partner's account cannot
