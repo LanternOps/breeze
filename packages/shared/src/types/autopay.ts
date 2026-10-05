@@ -41,7 +41,7 @@ export type BillingLinkPurpose = (typeof BILLING_LINK_PURPOSES)[number];
 export type ConsentSource = (typeof CONSENT_SOURCES)[number];
 
 export const AUTOPAY_SETUP_SOURCES = CONSENT_SOURCES;
-export const AUTOPAY_SETUP_OUTCOMES = ['activated','pending_verification','stale_generation','failed','in_progress','abandoned'] as const;
+export const AUTOPAY_SETUP_OUTCOMES = ['activated','pending_verification','stale_generation','failed','in_progress','abandoned','unsupported_method'] as const;
 export type AutopaySetupSource = (typeof AUTOPAY_SETUP_SOURCES)[number];
 export type AutopaySetupOutcome = (typeof AUTOPAY_SETUP_OUTCOMES)[number];
 export interface AutopaySetupCompletion { outcome: AutopaySetupOutcome; orgId: string }

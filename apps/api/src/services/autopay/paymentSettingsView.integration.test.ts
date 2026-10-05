@@ -137,7 +137,8 @@ it('appends consent for distinct A → B → A setups and makes each completion 
       contactEmail: 'billing@example.test', ip: null, userAgent: null,
     }, 'setup_page'));
     const method = { id: `pm_${f.org.id}`, type: 'card', customer: f.enrollment.stripeCustomerId,
-      card: { brand: 'visa', funding: 'credit', last4: '1234', exp_month: 12, exp_year: 2030, country: 'US' } } as Stripe.PaymentMethod;
+      card: { brand: 'visa', funding: 'credit', last4: '1234', exp_month: 12, exp_year: 2030, country: 'US',
+        wallet: null, networks: { available: ['visa'], preferred: null } } } as Stripe.PaymentMethod;
     await Promise.all([1, 2].map(() => persistCapturedAutopayMethod(captured.id, method, 'activated', `seti_${captured.id}`, null)));
     acceptedHashes.push(disclosure.textHash);
     const consents = await system(() => db.select().from(orgAutopayConsents)
