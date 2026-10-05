@@ -38,7 +38,7 @@
 --
 -- device_software.device_id -> devices gets the same treatment in the next
 -- migration, which runs outside a transaction because device_software is a
--- large, hot table; the remaining child edges are in 2026-12-12-160200.
+-- large, hot table; the remaining child edges are in 2026-12-13-110200.
 --
 -- Locking. These child tables are small, so each FK is re-added validating,
 -- inside autoMigrate's per-file transaction. Dropping an FK removes its RI

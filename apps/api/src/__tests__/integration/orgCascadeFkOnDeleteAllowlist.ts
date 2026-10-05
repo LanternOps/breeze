@@ -193,7 +193,7 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
       + 'through its ON DELETE CASCADE site_id edge instead.',
   },
   // Every FK-only child edge an ordinary, in-use org reaches came off this
-  // ledger in 2026-12-12-160000 / -160100 / -160200, which gave each one an ON
+  // ledger in 2026-12-13-110000 / -110100 / -110200, which gave each one an ON
   // DELETE action: CASCADE where the child is meaningless without its parent
   // (per-device results, alert notifications, ticket comments, AI messages,
   // login sessions, role permissions, ...), SET NULL for nullable

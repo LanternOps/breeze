@@ -17,7 +17,7 @@ Last release: **v0.121.0** (2026-10-03).
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
 - **Database migrations take brief exclusive locks on busy tables.** The
-  `2026-12-12-160000/160100/160200` migrations redefine foreign keys on child
+  `2026-12-13-110000/110100/110200` migrations redefine foreign keys on child
   tables of `users`, `devices`, `alerts`, `tickets`, `roles` and others. Each
   swap briefly takes an ACCESS EXCLUSIVE lock on the child **and** the parent
   table, and waits at most 5 s for it (`lock_timeout`). If a long-running
