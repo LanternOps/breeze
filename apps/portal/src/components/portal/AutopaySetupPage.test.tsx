@@ -148,7 +148,9 @@ describe('changing an existing method (card-expiring link or portal)', () => {
     expect(screen.getByText(/replaces your Visa credit card ending in 4242/)).toBeInTheDocument();
     expect(screen.getByTestId('autopay-method-card')).toBeChecked();
     // V-38: a change applies to payments not yet started, and the tab says so.
-    expect(screen.getByText('Payments not yet started')).toBeInTheDocument();
+    // FP-2: the authorization's "invoices issued before I set this up" means the original setup;
+    // the page says the same invoices stay covered, so the two read as one rule.
+    expect(screen.getByText('Payments not yet started, on the same invoices as now')).toBeInTheDocument();
     expect(screen.queryByText(/Issued after you set this up/)).toBeNull();
     expect(document.title).toBe('Change payment method');
   });

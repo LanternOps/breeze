@@ -184,7 +184,7 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
         { label: 'When', value: scheduleTerms ? autopayScheduleSummary(scheduleTerms) : data.scheduleText },
         { label: 'Notice', value: 'An email with the amount and date before each payment' },
         // V-38: a change applies to what hasn't been charged yet, not to "invoices issued after".
-        update ? { label: 'Applies to', value: 'Payments not yet started' } : { label: 'Invoices', value: `Issued after you set this up${cap}` },
+        update ? { label: 'Applies to', value: 'Payments not yet started, on the same invoices as now' } : { label: 'Invoices', value: `Issued after you set this up${cap}` },
         { label: 'Control', value: 'Skip any payment from its email, or stop at any time' },
       ]} />
     </div>
