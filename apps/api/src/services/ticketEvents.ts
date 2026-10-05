@@ -84,8 +84,9 @@ export async function enqueueTicketEvent(input: TicketEventInput): Promise<void>
   await getTicketEventsQueue().add(event.type, event, {
     removeOnComplete: { count: 100 },
     removeOnFail: { count: 500 },
-    // Retry with back-off: the service emits events while the request transaction
-    // is still open, so the worker may dequeue before the ticket row is visible.
+    // Retry with back-off: request-path emitters (emitTicketEvent) queue while
+    // the request transaction is still open, so the worker may dequeue before
+    // the ticket row is visible.
     attempts: 3,
     backoff: { type: 'exponential', delay: 2000 }
   });

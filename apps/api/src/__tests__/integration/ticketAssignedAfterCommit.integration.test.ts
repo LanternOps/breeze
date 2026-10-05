@@ -146,6 +146,9 @@ describe('ticket.assigned is queued only after the assignment commits (#7963)', 
     // End to end: the queued job now notifies the assignee, because the worker
     // can only ever read the committed assignment.
     await handleTicketEvent(jobs[0] as unknown as TicketEvent);
+    // A re-queue of the same row (queued, then the mark-published step failed)
+    // carries the same deterministic eventId, so it must not notify twice.
+    await handleTicketEvent({ ...jobs[0] } as unknown as TicketEvent);
     const rows = await withSystemDbAccessContext(() =>
       db
         .select({ userId: userNotifications.userId, dedupeKey: userNotifications.dedupeKey })
@@ -157,6 +160,26 @@ describe('ticket.assigned is queued only after the assignment commits (#7963)', 
         dedupeKey: `ticket:${fx.ticket.id}:assigned:${fx.assignee.id}:${jobs[0]!.eventId}`,
       },
     ]);
+  });
+
+  runDb('a self-assign still notifies nobody: the actor survives the outbox round trip', async () => {
+    const fx = await seed();
+
+    await withDbAccessContext({ ...fx.context, userId: fx.assignee.id }, () =>
+      assignTicket(fx.ticket.id, fx.assignee.id, { kind: 'user', userId: fx.assignee.id }));
+    await publishFromOutside();
+
+    // Queued (not mistaken for a pre-#7963 row), carrying the actor...
+    const jobs = assignedFor(fx.ticket.id);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({ actorUserId: fx.assignee.id, payload: { assigneeId: fx.assignee.id } });
+
+    // ...so the worker's self-assign skip fires.
+    await handleTicketEvent(jobs[0] as unknown as TicketEvent);
+    const rows = await withSystemDbAccessContext(() =>
+      db.select({ id: userNotifications.id }).from(userNotifications)
+        .where(eq(userNotifications.userId, fx.assignee.id)));
+    expect(rows).toEqual([]);
   });
 
   runDb('a rolled-back assignment queues nothing', async () => {
