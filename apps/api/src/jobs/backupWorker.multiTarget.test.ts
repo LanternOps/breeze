@@ -24,6 +24,7 @@ const mockDb = {
   insert: vi.fn(),
   update: vi.fn(),
   selectDistinct: vi.fn(),
+  transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(mockDb)),
 };
 
 // A device parked in a holding org is covered in backupWorker.test.ts; here
@@ -91,10 +92,17 @@ vi.mock('../services/backupStorageWriteDelivery', () => ({
     : reason),
 }));
 
-const queueBackupStopCommandMock = vi.fn(async (_deviceId: string, _opts: { jobId?: string }) => ({ command: { id: 'stop-1', status: 'sent' } }));
-vi.mock('../services/commandQueue', () => ({
-  queueBackupStopCommand: queueBackupStopCommandMock,
+const insertQueuedCommandMock = vi.fn(async (_tx: unknown, input: { id: string }) => ({ id: input.id }));
+vi.mock('../services/commandQueueInsert', () => ({
+  insertQueuedCommandInTransaction: insertQueuedCommandMock,
 }));
+/** The (deviceId, payload) of every backup_stop the worker persisted. */
+function queuedStops() {
+  return insertQueuedCommandMock.mock.calls
+    .map(([, input]) => input as unknown as { deviceId: string; type: string; payload: Record<string, unknown> })
+    .filter((input) => input.type === 'backup_stop')
+    .map((input) => ({ deviceId: input.deviceId, payload: input.payload }));
+}
 
 vi.mock('../services/agentCommandRelay', () => ({
   isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
@@ -260,8 +268,7 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
     expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: false });
     expect(agentRelayMock.dispatchCommandToAgent).toHaveBeenCalledTimes(1);
     // The target that did go out is stopped on the helper, by its job id.
-    expect(queueBackupStopCommandMock).toHaveBeenCalledTimes(1);
-    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-1', { jobId: 'job-1' });
+    expect(queuedStops()).toEqual([{ deviceId: 'device-1', payload: { reason: 'cancelled', jobId: 'job-1' } }]);
     for (const id of ['job-1', 'child-1']) {
       expect(updatesFor(id).some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'device_org_changed')).toBe(true);
     }
@@ -275,14 +282,14 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
       return { status: 'sent', via: 'local' };
     });
     expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: false });
-    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-1', { jobId: 'job-1' });
+    expect(queuedStops()).toEqual([{ deviceId: 'device-1', payload: { reason: 'cancelled', jobId: 'job-1' } }]);
     expect(updatesFor('job-1').some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'device_org_changed')).toBe(true);
     expect(updatesFor('job-1').some((u) => u.payload.status === 'running')).toBe(false);
   });
 
   it('does not stop anything when the device stays put', async () => {
     expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: true });
-    expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
+    expect(queuedStops()).toEqual([]);
   });
 
   it('re-checks the config generation immediately before each send', async () => {

@@ -7,6 +7,7 @@
  * - process-results: Updates job/snapshot rows from agent result payload
  */
 
+import { randomUUID } from 'node:crypto';
 import { Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import {
@@ -51,6 +52,8 @@ import { backupWriteRefusalMessage, brokerWorkerBackupPayload } from '../service
 import { BACKUP_HELPER_UNREPORTED_MESSAGE, backupHelperProtocolsUnreported } from '../services/backupHelperProtocols';
 import { backupWriteHelperRefusal } from '../services/backupWriteHelperGate';
 import { captureException } from '../services/sentry';
+import { insertQueuedCommandInTransaction } from '../services/commandQueueInsert';
+import { CommandTypes } from '../services/commandTypes';
 import { createAuditLogAsync } from '../services/auditService';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import {
@@ -1871,20 +1874,24 @@ async function processDispatchBackup(
     }
 
     // Work that went out before the device left the job's organization is
-    // stopped on the helper, each target by its own job id. Queued with no DB
-    // context open, like the sends themselves.
+    // stopped on the helper, each target by its own job id. The stop is a
+    // durable device_commands row the device picks up on its next claim: this
+    // worker may run on an instance that holds no agent sockets, so it never
+    // goes through the socket-local queue (commandQueue.ts).
     if (sentWorkRevoked) {
       const revokeDetail = dispatchRefusal ?? 'device_org_changed';
-      // Loaded on this rare path only: the command queue's module graph is
-      // large and nothing else in this worker needs it.
-      const { queueBackupStopCommand } = await import('../services/commandQueue');
       for (const target of prepared) {
         if (sendState.get(target.commandJobId) !== 'sent') continue;
         try {
-          const { error } = await queueBackupStopCommand(data.deviceId, { jobId: target.commandJobId });
-          if (error) {
-            console.warn(`[BackupWorker] Failed to queue backup_stop for job ${target.commandJobId}: ${error}`);
-          }
+          await runWithSystemDbAccess(() => db.transaction((tx) => insertQueuedCommandInTransaction(tx, {
+            id: randomUUID(),
+            deviceId: data.deviceId,
+            type: CommandTypes.BACKUP_STOP,
+            // jobId targets one workload on a queue-capable helper; older
+            // helpers ignore it and stop every backup on the device.
+            payload: { reason: 'cancelled', jobId: target.commandJobId },
+            createdBy: null,
+          })));
         } catch (err) {
           console.warn(`[BackupWorker] Failed to queue backup_stop for job ${target.commandJobId}:`, err);
         }
