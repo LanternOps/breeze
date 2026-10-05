@@ -66,6 +66,7 @@ vi.mock('../db/schema', () => ({
     id: 'devices.id',
     orgId: 'devices.orgId',
     siteId: 'devices.siteId',
+    deviceRole: 'devices.deviceRole',
     deviceRoleSource: 'devices.deviceRoleSource',
     agentId: 'devices.agentId',
     status: 'devices.status',
@@ -546,8 +547,50 @@ describe('processResults — type_source', () => {
     // COALESCE keeps a NULL device_role_source (never set) counting as
     // non-manual, as the old IS DISTINCT FROM did.
     expect(where.params).toContain('devices.deviceRoleSource');
-    expect(where.sql).toContain(`not in ('manual', 'ai')`);
     expect(where.sql).toContain(`coalesce(`);
+  });
+
+  it('only lets discovery claim a device role nobody else owns — never an agent-detected one (#7971)', async () => {
+    // A Windows Server with RDP/SMB and no SSH classifies as 'workstation' on
+    // the agent's port scan. Its OS-derived role ('server', source 'auto') must
+    // outrank that guess. The guard is a POSITIVE allowlist in the statement:
+    // discovery may overwrite only its own earlier write ('discovery') or an
+    // agent-sourced row that still carries no role ('auto' + 'unknown'). Any
+    // other source — manual, ai, or a source added later — is left alone.
+    const updateCalls: Array<{ table: unknown; args: Record<string, unknown>; where: unknown }> = [];
+
+    selectQueue = [
+      ...baseSelectQueue(),
+      [{ id: 'asset-1', typeSource: 'auto', detectedTypeSource: null }], // [6] existing
+      [{ linkedDeviceId: null }],                                          // [7] not yet linked
+      [{ deviceId: 'device-1' }],                                          // [8] auto-link match found
+    ];
+
+    vi.mocked(mockDb.update).mockImplementation((table: unknown) => {
+      const chain: Record<string, unknown> = {};
+      let args: Record<string, unknown> = {};
+      chain.set = (a: Record<string, unknown>) => { args = a; return chain; };
+      chain.where = (w: unknown) => {
+        updateCalls.push({ table, args, where: w });
+        return updateResult();
+      };
+      return chain;
+    });
+
+    await processResults(makeData([
+      { ip: '192.168.1.54', mac: 'aa:bb:cc:dd:ee:54', assetType: 'workstation', methods: [] },
+    ]));
+
+    const roleUpdate = updateCalls.find((c) => c.table === devices && 'deviceRole' in c.args);
+    expect(roleUpdate).toBeDefined();
+    const where = renderSqlQuery(roleUpdate!.where);
+    expect(where.params).toContain('devices.deviceRoleSource');
+    expect(where.params).toContain('devices.deviceRole');
+    expect(where.sql).toContain(`= 'discovery'`);
+    expect(where.sql).toContain(`= 'auto'`);
+    expect(where.sql).toContain(`= 'unknown'`);
+    // The old deny-list let an 'auto' role through; it must be gone.
+    expect(where.sql).not.toContain(`not in ('manual', 'ai')`);
   });
 
   it('does not auto-link a same-MAC/private-IP device from a sibling site', async () => {
