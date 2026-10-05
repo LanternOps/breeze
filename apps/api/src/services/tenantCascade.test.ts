@@ -368,6 +368,11 @@ describe('cascadeDeleteOrg', () => {
     // Provide a non-zero rowCount for the first few execute() calls;
     // device_commands is cleared first then the cascade walk begins.
     mockState.executeResponses = [
+      // Shared-identity detach runs before the pre-clears: the users UPDATE
+      // and the partner_users.org_ids cleanup. Neither is a deletion, so
+      // neither is summed into totalRowsDeleted.
+      { rowCount: 2 }, // users detached
+      { rowCount: 1 }, // partner_users.org_ids
       { rowCount: 5 }, // device_commands
       // One extra: the accounting_entity_mappings entry also runs a
       // retained-count SELECT (the payment mappings that still owe QuickBooks a
@@ -381,6 +386,7 @@ describe('cascadeDeleteOrg', () => {
     );
     // 5 from device_commands + 3 per cascade table.
     expect(stats.totalRowsDeleted).toBe(5 + 3 * cascadeOrder.length);
+    expect(stats.usersDetached).toBe(2);
   });
 
   it('tolerates a missing associated system-scoped table (42P01, FLAT shape)', async () => {

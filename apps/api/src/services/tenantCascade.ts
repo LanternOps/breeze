@@ -1396,6 +1396,62 @@ export interface CascadeStats {
    * `tablesDeleted.alerts`; broken out because they are not this org's rows.
    */
   foreignTopologyAlertsDeleted: number;
+  /**
+   * Users whose home org was this org but who hold a partner membership, and
+   * were therefore detached to partner-level staff (org_id -> NULL) instead of
+   * being deleted (step 1a-ter). Not counted in `totalRowsDeleted`.
+   */
+  usersDetached: number;
+}
+
+/**
+ * Step 1a-ter of `cascadeDeleteOrg`: separate the partner's shared identities
+ * from the org being erased, BEFORE anything keyed on a user is cleared.
+ *
+ * `users` is dual-axis (CLAUDE.md shape 4): `partner_id` is always set and
+ * `org_id` names a home org for customer users and for the MSP's own
+ * internal-org staff. The walk erases users by `org_id`, which is right for a
+ * customer user and wrong for a user who ALSO holds a `partner_users`
+ * membership -- that identity is the partner's (it signs in to manage every
+ * org the membership grants), not the erased org's data. Deleting it would
+ * take an MSP technician's account, and through `partner_users ON DELETE
+ * CASCADE` their partner access, down with one customer's erasure. So such a
+ * user is detached instead: `org_id` becomes NULL, which is exactly the shape
+ * of partner-level staff (see routes/users.ts invite tenancy). The org-bound
+ * rows around them still go -- the `organization_users` row for this org and
+ * everything else keyed on `org_id` is erased by the walk as usual -- while
+ * the partner identity, its membership, and its own mobile registrations
+ * survive. `auth_epoch` advances so any token minted while the erased org was
+ * the home org stops being accepted.
+ *
+ * Users WITHOUT a partner membership are left for the walk to delete, and
+ * their FK-only children (mobile_devices, push_notifications,
+ * mobile_sessions, partner_users) go with them by ON DELETE CASCADE.
+ *
+ * The same step drops this org from every `partner_users.org_ids` selection
+ * (`org_access = 'selected'`), so no membership keeps naming a tenant that no
+ * longer exists. Rows that do not list this org are not touched.
+ *
+ * Both statements are idempotent, so a re-run after a partial erasure is a
+ * no-op here.
+ */
+async function detachSharedIdentitiesFromOrg(orgId: string): Promise<number> {
+  return dbModule.withSystemDbAccessContext(async () => {
+    const detached = await dbModule.db.execute(sql`
+      UPDATE users u
+      SET org_id = NULL,
+          auth_epoch = u.auth_epoch + 1,
+          updated_at = now()
+      WHERE u.org_id = ${orgId}::uuid
+        AND EXISTS (SELECT 1 FROM partner_users pu WHERE pu.user_id = u.id)
+    `);
+    await dbModule.db.execute(sql`
+      UPDATE partner_users
+      SET org_ids = array_remove(org_ids, ${orgId}::uuid)
+      WHERE ${orgId}::uuid = ANY(org_ids)
+    `);
+    return extractRowCount(detached);
+  });
 }
 
 export type TenantCascadeRefusalCode = 'LEGAL_HOLD_ACTIVE';
@@ -1554,6 +1610,7 @@ export async function cascadeDeleteOrg(
     tablesDeleted: {},
     totalRowsDeleted: 0,
     foreignTopologyAlertsDeleted: 0,
+    usersDetached: 0,
   };
 
   // Write the tenant.erasure audit row FIRST so it survives the cascade.
@@ -1728,6 +1785,27 @@ export async function cascadeDeleteOrg(
     }
     console.warn(
       `[tenantCascade] artifact blob pre-clear skipped for missing table ai_run_artifacts (org=${orgId})`,
+    );
+  }
+
+  // 1a-ter. Detach shared identities (users of this org who also hold a
+  //    partner membership) BEFORE step 1b, whose user_sso_identities clear
+  //    keys off `users.org_id` and would otherwise strip a detached user's
+  //    partner-level SSO links. See detachSharedIdentitiesFromOrg.
+  try {
+    stats.usersDetached = await detachSharedIdentitiesFromOrg(orgId);
+    if (stats.usersDetached > 0) {
+      console.warn(
+        `[tenantCascade] org=${orgId}: detached ${stats.usersDetached} user(s) holding a partner `
+        + 'membership to partner-level staff instead of deleting them',
+      );
+    }
+  } catch (err) {
+    await writeErasureFailedAudit(orgId, performedBy, performedByEmail, 'users (detach shared identities)', stats, err);
+    throw new Error(
+      `[tenantCascade] detaching shared identities failed for org=${orgId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
     );
   }
 
@@ -1921,6 +1999,7 @@ export async function cascadeDeleteOrg(
       ...(stats.foreignTopologyAlertsDeleted > 0
         ? { foreignTopologyAlertsDeleted: stats.foreignTopologyAlertsDeleted }
         : {}),
+      ...(stats.usersDetached > 0 ? { usersDetached: stats.usersDetached } : {}),
     },
     result: 'success',
   });

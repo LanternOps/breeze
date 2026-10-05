@@ -178,8 +178,8 @@ export const scriptTags = pgTable('script_tags', {
 }));
 
 export const scriptToTags = pgTable('script_to_tags', {
-  scriptId: uuid('script_id').notNull().references(() => scripts.id),
-  tagId: uuid('tag_id').notNull().references(() => scriptTags.id)
+  scriptId: uuid('script_id').notNull().references(() => scripts.id, { onDelete: 'cascade' }),
+  tagId: uuid('tag_id').notNull().references(() => scriptTags.id, { onDelete: 'cascade' })
 }, (table) => ({
   pk: primaryKey({ columns: [table.scriptId, table.tagId] }),
   tagIdIdx: index('script_to_tags_tag_id_idx').on(table.tagId)

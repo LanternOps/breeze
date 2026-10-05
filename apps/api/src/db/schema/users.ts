@@ -137,7 +137,7 @@ export const rolePermissions = pgTable('role_permissions', {
 export const partnerUsers = pgTable('partner_users', {
   id: uuid('id').primaryKey().defaultRandom(),
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
-  userId: uuid('user_id').notNull().references(() => users.id),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   roleId: uuid('role_id').notNull().references(() => roles.id),
   orgAccess: orgAccessEnum('org_access').notNull().default('none'),
   orgIds: uuid('org_ids').array(),
