@@ -44,9 +44,9 @@ export default function AutopaySkipPage({ token }: { token: string }) {
     if (result?.data?.status === 'skipped') setOutcome('skipped');
     else if (result?.data?.status === 'pending') setOutcome('pending');
     else if (result?.statusCode === 409 && result.code === 'COLLECTION_IN_PROGRESS') {
-      // Why it was refused is on the schedule: already with Stripe, or another change pending.
-      const fresh = await load();
-      setOutcome(fresh?.processing ? 'processing' : 'changing');
+      // The code is shared: only details.reason 'payment_processing' means the money is
+      // already with Stripe (#7983). Anything else is another change already pending.
+      setOutcome(result.errorDetails?.reason === 'payment_processing' ? 'processing' : 'changing');
     } else setRefused(true);
     inFlight.current = false; setBusy(false);
   }
@@ -76,8 +76,9 @@ export default function AutopaySkipPage({ token }: { token: string }) {
     ...(view.methodLabel ? [{ label: 'Payment method', value: view.methodLabel }] : []),
   ];
 
-  const state = outcome ?? (view.state === 'skipped_by_client' ? 'skipped'
-    : view.processing ? 'processing' : view.control === 'skip' ? 'pending' : view.control ? 'changing' : null);
+  // The server's status says what the page may offer; only 'ready' offers Skip.
+  const state = outcome ?? (view.status === 'skipped' ? 'skipped' : view.status === 'processing' ? 'processing'
+    : view.status === 'pending' ? 'pending' : null);
   let panel: ReactElement;
   if (state === 'skipped') {
     panel = <StatePanel mark={{ tone: 'neutral', label: 'Skipped' }} title="This payment is skipped" testId="autopay-skip-done"
@@ -96,15 +97,15 @@ export default function AutopaySkipPage({ token }: { token: string }) {
     panel = <StatePanel mark={{ tone: 'primary', label: 'In progress' }} title="This payment is already being changed" primary={viewInvoice ? { ...viewInvoice, variant: 'secondary' } : null} secondary={contact}>
       <p>{`Check your email for an update, or contact ${msp}.`}</p>
     </StatePanel>;
-  } else if (view.invoiceStatus === 'paid' || view.state === 'succeeded') {
+  } else if (view.status === 'paid') {
     panel = <StatePanel mark={{ tone: 'success', label: 'Paid' }} title="This invoice is already paid" primary={viewInvoice ? { ...viewInvoice, variant: 'secondary' } : null}>
       <p>Nothing more to do. Thank you.</p>
     </StatePanel>;
-  } else if (view.state === 'action_required') {
+  } else if (view.status === 'action_required') {
     panel = <StatePanel mark={{ tone: 'warning', label: 'Confirmation needed' }} title="This payment needs your confirmation" primary={viewInvoice ? { ...viewInvoice, variant: 'primary' } : null}>
       <p>Your bank asked you to confirm this payment. Use the "Confirm payment" link in our latest email, or open the invoice to pay it yourself.</p>
     </StatePanel>;
-  } else if (!view.skippable) {
+  } else if (view.status !== 'ready') {
     panel = <StatePanel title="This invoice won't be charged automatically" primary={viewInvoice ? { ...viewInvoice, variant: 'primary' } : null} summary={summary}>
       <p>{`There's no automatic payment to skip. Please pay ${invoice} from the invoice page.`}</p>
     </StatePanel>;

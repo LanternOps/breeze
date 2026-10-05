@@ -1,14 +1,32 @@
 import { and, eq, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { organizationUsers, partnerUsers, users, partners, userNotifications } from '../../db/schema';
+import { organizations, organizationUsers, partnerUsers, users, partners, userNotifications } from '../../db/schema';
 import { getEmailService } from '../email';
 import { escapeHtml } from '../emailLayout';
 import type { Tx } from './types';
 export interface AutopayStaffNotice {
   orgId: string; partnerId: string; invoiceId?: string; partnerOnly?: boolean;
   event: 'autopay.enrolled' | 'autopay.stopped' | 'autopay.needs_attention' | 'autopay.skipped'
-    | 'payment.failed_final' | 'payment.ach_returned' | 'payment.unapplied';
+    | 'payment.failed_final' | 'payment.ach_returned' | 'payment.unapplied' | 'payment.disputed';
   dedupeKey: string; message: string;
+}
+const TITLE_MAX = 255;
+function eventTitle(event: AutopayStaffNotice['event']): string {
+  return event === 'autopay.enrolled' ? 'Automatic payments enabled'
+    : event === 'autopay.skipped' ? 'Automatic payment skipped'
+    : event === 'autopay.stopped' ? 'Automatic payments stopped'
+    : event === 'payment.disputed' ? 'Payment disputed' : 'Payment needs attention';
+}
+/** Staff must see which client a notice is about (D-13). Bounded to the title column. */
+function namedTitle(event: AutopayStaffNotice['event'], orgName: string | null): string {
+  // A title doubles as an email subject: keep it on one line.
+  const title = orgName ? `${eventTitle(event)}: ${orgName.replace(/[\r\n]+/g, ' ')}` : eventTitle(event);
+  const chars = Array.from(title);
+  return chars.length > TITLE_MAX ? `${chars.slice(0, TITLE_MAX - 1).join('')}…` : title;
+}
+async function orgName(db: Tx, orgId: string): Promise<string | null> {
+  const [org] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+  return org?.name ?? null;
 }
 /** Insert in the lifecycle caller's transaction so rollback/commit includes staff visibility. */
 export async function enqueueAutopayStaffNotifications(db: Tx, input: AutopayStaffNotice): Promise<void> {
@@ -22,25 +40,28 @@ export async function enqueueAutopayStaffNotifications(db: Tx, input: AutopaySta
       and(eq(partnerUsers.orgAccess,'selected'),sql`${input.orgId} = ANY(${partnerUsers.orgIds})`))));
   const urgent = input.event === 'autopay.needs_attention' || input.event.startsWith('payment.');
   const ids = [...new Set([...local,...partnerStaff].map((row) => row.userId))];
-  if (ids.length) await db.insert(userNotifications).values(ids.map((userId) => ({
+  if (!ids.length) return;
+  const name = await orgName(db, input.orgId);
+  const message = name && !input.message.includes(name) ? `${name}: ${input.message}` : input.message;
+  await db.insert(userNotifications).values(ids.map((userId) => ({
     userId, orgId: input.orgId, type: 'billing' as const,
     priority: urgent ? 'high' as const : 'normal' as const,
-    title: input.event === 'autopay.enrolled' ? 'Automatic payments enabled'
-      : input.event === 'autopay.skipped' ? 'Automatic payment skipped'
-      : input.event === 'autopay.stopped' ? 'Automatic payments stopped' : 'Payment needs attention',
-    message: input.message, link: input.invoiceId ? `/billing/invoices/${input.invoiceId}` : '/billing/autopay', metadata: { event: input.event },
+    title: namedTitle(input.event, name),
+    message, link: input.invoiceId ? `/billing/invoices/${input.invoiceId}` : '/billing/autopay', metadata: { event: input.event },
     dedupeKey: `${input.dedupeKey}:${userId}`, read: false,
   }))).onConflictDoNothing();
 }
 
 /** Call only after checking the committed lifecycle state, outside its held context. */
 export async function sendAutopayStaffEmail(input: AutopayStaffNotice): Promise<void> {
-  const email = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  const recipient = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const [partner] = await db.select({ billingEmail: partners.billingEmail }).from(partners)
       .where(eq(partners.id,input.partnerId)).limit(1);
-    return partner?.billingEmail;
+    if (!partner?.billingEmail) return null;
+    return { email: partner.billingEmail, name: await orgName(db, input.orgId) };
   }));
-  if (!email) return;
+  if (!recipient) return;
+  const { email, name } = recipient;
   const service = getEmailService();
   if (!service) throw new Error('Staff email transport is unavailable');
   const claimed = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.execute(sql`
@@ -49,7 +70,9 @@ export async function sendAutopayStaffEmail(input: AutopayStaffNotice): Promise<
       AND NOT (${input.dedupeKey}=ANY(staff_email_dedupe_keys)) RETURNING id`)));
   if (!Array.from(claimed).length) return;
   await runOutsideDbContext(() => service.sendEmail({ to: email, purpose: 'staff.autopay',
-    subject: 'Automatic payments update', html: `<p>${escapeHtml(input.message)}</p>`, text: input.message }));
+    subject: namedTitle(input.event, name),
+    html: `${name ? `<p><strong>Client:</strong> ${escapeHtml(name)}</p>` : ''}<p>${escapeHtml(input.message)}</p>`,
+    text: name ? `Client: ${name}\n\n${input.message}` : input.message }));
 }
 
 /** Compatibility adapter for callers that already run after commit. */

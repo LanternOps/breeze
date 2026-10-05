@@ -170,6 +170,9 @@ export interface ApiResponse<T> {
    *  branding so a replaced proposal can show a branded notice instead of a bare
    *  failure. */
   errorData?: unknown;
+  /** The `details` object of an error body: a refusal's structured reason when the
+   *  `code` alone is shared by several refusals (e.g. COLLECTION_IN_PROGRESS). */
+  errorDetails?: Record<string, unknown>;
   statusCode?: number;
   headers?: Headers;
 }
@@ -242,6 +245,7 @@ export async function apiRequest<T>(
         error: body?.error || 'That didn\'t go through. Nothing was lost — try again in a moment.',
         code: typeof body?.code === 'string' ? body.code : undefined,
         errorData: body?.data,
+        errorDetails: body?.details && typeof body.details === 'object' && !Array.isArray(body.details) ? body.details : undefined,
         statusCode: response.status,
         headers: response.headers
       };

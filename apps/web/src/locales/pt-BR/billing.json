@@ -2568,14 +2568,63 @@
       "inactive": "As taxas de cartão ficam inativas até que o administrador do parceiro confirme as duas declarações abaixo.",
       "notified": "Notifiquei meu adquirente (Stripe) e as bandeiras de cartão há pelo menos 30 dias",
       "cost": "Esta taxa não excede meu custo de aceitação de cartões",
-      "rules": "Somente cartões de crédito. Sem taxa de cartão em CA, CT, ME ou MA; no Colorado, o limite é de 2%. As taxas se aplicam apenas a pagamentos automáticos elegíveis dos EUA em USD. Em branco herda o valor; zero isenta este cliente. Links de pagamento avulso não têm taxa.",
+      "rules": "Somente cartões de crédito. Sem taxa de cartão em CA, CT, ME ou MA; no Colorado, o limite é de 2%. As taxas se aplicam apenas a pagamentos automáticos elegíveis dos EUA em USD. Links de pagamento avulso não têm taxa.",
       "legal": "O Breeze não oferece aconselhamento jurídico. Você é responsável pela elegibilidade das sobretaxas, pelos avisos e pelo tratamento tributário.",
       "lowerAuthorization": "Clientes com taxas autorizadas menores: {{count}}. A autorização atual permanece válida até que aceitem os novos termos.",
       "authorizedCard": "Autorizado: {{accepted}} pontos-base; configurado: {{configured}}",
       "authorizedAch": "Autorizado: USD {{accepted}}; configurado: USD {{configured}}",
       "requestAuthorization": "Solicitar autorização atualizada",
       "requestFailed": "Não foi possível solicitar a autorização atualizada. Verifique o contato de cobrança e a disponibilidade do Stripe.",
-      "requested": "Autorização atualizada solicitada. A autorização atual permanece válida."
+      "requested": "Autorização atualizada solicitada. A autorização atual permanece válida.",
+      "attestationOnFile": "Atestado registrado: {{name}} confirmou as duas declarações em {{date}}.",
+      "attestationOnFileUnknown": "Atestado registrado: as duas declarações foram confirmadas em {{date}}.",
+      "reattestHelp": "Para atestar novamente, marque as duas declarações e salve. Isso registra um novo atestado em seu nome com a data atual, substituindo o registrado. A taxa autorizada por seus clientes não muda.",
+      "authorizedCardNone": "Nenhuma autorização registrada; configurado: {{configured}} pontos-base",
+      "authorizedAchNone": "Nenhuma autorização registrada; configurado: USD {{configured}}",
+      "lowerAuthorizationOrg": "Este cliente não autorizou a taxa configurada. Qualquer autorização existente permanece válida até que ele aceite os novos termos.",
+      "blankPartner": "Em branco usa o padrão do Breeze (sem taxa). Para isentar um cliente, defina a taxa dele como 0 na página de faturamento desse cliente.",
+      "blankOrg": "Em branco usa o padrão do parceiro. Informe 0 para isentar este cliente.",
+      "inactiveOrg": "As taxas de cartão ficam inativas até que um administrador do parceiro confirme as duas declarações sobre taxas na aba Payments das configurações de faturamento do parceiro.",
+      "missingAuthorization": "Nenhuma autorização registrada: {{count}}. Os pagamentos automáticos não podem cobrar estes clientes até que autorizem a forma de pagamento salva.",
+      "missingAuthorizationOrg": "Este cliente não tem autorização registrada para a forma de pagamento salva. Os pagamentos automáticos não podem cobrá-lo até que o cliente autorize.",
+      "requestMissingAuthorization": "Solicitar autorização"
+    },
+    "enrollmentTitle": "Adesão ao pagamento automático",
+    "requestSentTo": "Solicitação enviada para {{email}}.",
+    "result": {
+      "paused": "Pagamentos automáticos pausados.",
+      "resumed": "Pagamentos automáticos retomados.",
+      "turnedOff": "Pagamentos automáticos desativados."
+    },
+    "needsAttention": {
+      "method_unusable": "Não é possível cobrar a forma de pagamento salva.",
+      "stripe_account_changed": "A conta Stripe conectada mudou depois da adesão deste cliente.",
+      "key_missing_permissions": "A chave do Stripe não tem permissões necessárias para pagamentos automáticos.",
+      "verification_failed": "A verificação da conta bancária falhou."
+    },
+    "chargeOutcome": {
+      "succeeded": "Pagamento recebido.",
+      "processing": "Pagamento enviado. Ele está em processamento, e a fatura será atualizada quando for liquidado.",
+      "requiresAction": "O banco do cliente exige que ele confirme este pagamento. Se houver um contato de faturamento registrado, ele receberá por e-mail um link para confirmar.",
+      "declined": "O pagamento não foi concluído.",
+      "cardDeclined": "O cartão foi recusado.",
+      "expiredCard": "O cartão expirou. Peça ao cliente para atualizar a forma de pagamento.",
+      "insufficientFunds": "O pagamento foi recusado por saldo insuficiente.",
+      "canceled": "O pagamento foi cancelado antes de ser concluído.",
+      "unapplied": "O pagamento foi capturado, mas precisa de conciliação. Revise-o antes de cobrar novamente."
+    },
+    "chargeRefused": {
+      "notice_lead": "O período de aviso do cliente ainda não terminou. A fatura poderá ser cobrada quando terminar.",
+      "no_eligible_notice": "Esta fatura não tem aviso de pagamento automático, então não pode ser cobrada automaticamente.",
+      "renotice_required": "O aviso de pagamento precisa ser enviado novamente antes que esta fatura possa ser cobrada.",
+      "collection_in_progress": "Já há um pagamento em andamento para esta fatura.",
+      "checkout_session_unrevoked": "O cliente pode estar pagando esta fatura online agora. Tente novamente em alguns minutos.",
+      "retry_not_due": "A próxima tentativa ainda não está prevista.",
+      "not_payable": "Esta fatura não está aberta para pagamento.",
+      "nothing_to_pay": "Não resta nada a pagar nesta fatura.",
+      "enrollment_inactive": "Os pagamentos automáticos não estão ativos para este cliente.",
+      "schedule_inactive": "Esta fatura não está mais agendada para pagamento automático.",
+      "generic": "Não foi possível iniciar o pagamento automático. Atualize a fatura para ver o status atual."
     }
   },
   "reminders": {
@@ -2596,7 +2645,7 @@
     "sources": {
       "org": "organização",
       "partner": "padrão do parceiro",
-      "default": "padrão do sistema"
+      "default": "padrão do Breeze"
     },
     "save": "Salvar configurações de pagamento",
     "saving": "Salvando…",

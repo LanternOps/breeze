@@ -1,9 +1,10 @@
+import { paymentMethodInSentence } from '@breeze/shared';
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import type { AutopayConfirmView } from '@breeze/shared';
 import { apiGet, apiPost } from '@/lib/api';
 import { navigateTo } from '@/lib/navigation';
 import { money } from '@/lib/format';
-import { linkFailureOf, methodInSentence } from '@/lib/autopay';
+import { linkFailureOf} from '@/lib/autopay';
 import { cn } from '@/lib/utils';
 import { BTN_BLOCK, BTN_PRIMARY, LINK, Notice } from './ui';
 import { AutopayShell } from './autopay/AutopayShell';
@@ -88,7 +89,7 @@ export default function AutopayConfirmPage({ token }: { token: string }) {
       <p>{`Your payment came through, and ${msp} is reviewing how it's applied. You don't need to do anything, and they'll contact you if needed.`}</p>
     </StatePanel>;
   } else {
-    const method = view.methodLabel ? ` with your ${methodInSentence(view.methodLabel)}` : '';
+    const method = view.methodLabel ? ` with your ${paymentMethodInSentence(view.methodLabel)}` : '';
     panel = <div className="space-y-5">
       <StatePanel mark={{ tone: 'warning', label: 'Confirmation needed' }} title={`Confirm your payment for ${invoice}`}
         summary={[...(view.invoiceNumber ? [{ label: 'Invoice', value: view.invoiceNumber }] : []),

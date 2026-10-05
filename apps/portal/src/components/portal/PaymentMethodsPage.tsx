@@ -1,9 +1,10 @@
+import { paymentMethodInSentence } from '@breeze/shared';
 import { useEffect, useState, type ReactNode } from 'react';
 import { formatMonthYear, type AutopayEnrollmentView, type AutopayMethodView } from '@breeze/shared';
 import { apiGet, apiPost } from '@/lib/api';
 import { withBase } from '@/lib/basePath';
 import { longDate } from '@/lib/format';
-import { methodInSentence, savedMethodLabel, type AutopayPortalPage } from '@/lib/autopay';
+import { savedMethodLabel, type AutopayPortalPage } from '@/lib/autopay';
 import { cn } from '@/lib/utils';
 import { BTN_BLOCK, BTN_PRIMARY, BTN_SECONDARY, LINK, Notice, PageHeader, StatusMark, TH, type MarkTone } from './ui';
 import AutopaySetupPage from './AutopaySetupPage';
@@ -57,7 +58,7 @@ function summarize(data: AutopayPortalPage, msp: string): Summary {
   }
   if (reason === 'method_unusable' || reason === 'verification_failed') {
     const what = reason === 'verification_failed'
-      ? `We couldn't verify your ${method ? methodInSentence(savedMethodLabel(method)) : 'bank account'}. Add it again, or choose a card.`
+      ? `We couldn't verify your ${method ? paymentMethodInSentence(savedMethodLabel(method)) : 'bank account'}. Add it again, or choose a card.`
       : 'This payment method can\'t be charged any more. Add a new card or bank account so future invoices can be paid automatically. Invoices due meanwhile need to be paid from their emails.';
     return { tone: 'warning', label: 'Needs attention', lines: method?.status === 'unusable' || reason === 'verification_failed' ? methodLines : [],
       attention: canUpdate ? what : `${what.split('. ')[0]}. Contact ${msp} to update it.`,

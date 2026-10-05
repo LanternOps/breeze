@@ -6,7 +6,7 @@ vi.mock('@/lib/api', () => ({ apiGet: vi.fn(), apiPost: vi.fn() }));
 import AutopaySkipPage from './AutopaySkipPage';
 afterEach(() => { cleanup(); });
 function view(over: Record<string, unknown> = {}) {
-  return { data: { state: 'scheduled', control: null, processing: false, skippable: true, invoiceNumber: 'INV-2026-0003', invoiceStatus: 'sent',
+  return { data: { status: 'ready', state: 'scheduled', control: null, processing: false, invoiceNumber: 'INV-2026-0003', invoiceStatus: 'sent',
     dueDate: '2026-10-08', collectOn: '2026-11-04', amount: '50.00', fee: '1.50', currency: 'USD',
     methodLabel: 'Visa credit card ending in 4242', methodType: 'card', invoiceUrl: 'https://portal.example.test/portal/invoice/inv-token',
     partnerName: 'Example MSP', logoUrl: null, supportEmail: 'billing@msp.example', ...over } } as never;
@@ -40,24 +40,25 @@ it('omits a zero fee', async () => {
 });
 
 it('a payment already with Stripe: says it has started, and offers no skip', async () => {
-  vi.mocked(apiGet).mockResolvedValue(view({ state: 'collecting', processing: true, methodType: 'us_bank_account', methodLabel: 'Bank account ending in 6789' }));
+  vi.mocked(apiGet).mockResolvedValue(view({ status: 'processing', state: 'collecting', processing: true, methodType: 'us_bank_account', methodLabel: 'Bank account ending in 6789' }));
   render(<AutopaySkipPage token="t" />);
   expect(await screen.findByRole('heading', { name: 'This payment has already started' })).toBeInTheDocument();
   expect(screen.getByText(/Bank payments usually take a few business days to finish/)).toBeInTheDocument();
   expect(screen.queryByTestId('autopay-skip-submit')).toBeNull();
 });
 
+// #7983: the 409 code is shared; only details.reason 'payment_processing' promises a receipt.
 it.each([
-  [{ processing: true }, 'This payment has already started'],
-  [{ processing: false, control: 'exclude' }, 'This payment is already being changed'],
-])('a skip refused after the page loaded re-reads why: %j', async (after, title) => {
-  vi.mocked(apiPost).mockResolvedValue({ error: 'refused', statusCode: 409, code: 'COLLECTION_IN_PROGRESS' } as never);
+  [{ reason: 'payment_processing' }, 'This payment has already started', /You'll get a receipt when it completes/],
+  [{ reason: 'control_pending' }, 'This payment is already being changed', /Check your email for an update, or contact Example MSP/],
+  [undefined, 'This payment is already being changed', /Check your email for an update, or contact Example MSP/],
+] as const)('a skip refused after the page loaded says why from details.reason: %j', async (details, title, text) => {
+  vi.mocked(apiPost).mockResolvedValue({ error: 'refused', statusCode: 409, code: 'COLLECTION_IN_PROGRESS', errorDetails: details } as never);
   render(<AutopaySkipPage token="t" />);
-  const button = await screen.findByTestId('autopay-skip-submit');
-  vi.mocked(apiGet).mockResolvedValue(view({ state: 'collecting', ...after }));
-  fireEvent.click(button);
+  fireEvent.click(await screen.findByTestId('autopay-skip-submit'));
   expect(await screen.findByRole('heading', { name: title })).toBeInTheDocument();
-  if (title.includes('being changed')) expect(screen.getByText(/Check your email for an update, or contact Example MSP/)).toBeInTheDocument();
+  expect(screen.getByText(text)).toBeInTheDocument();
+  if (title.includes('being changed')) expect(document.body.textContent).not.toMatch(/receipt/);
   expect(screen.queryByTestId('autopay-skip-submit')).toBeNull();
 });
 
@@ -69,11 +70,12 @@ it('a skip accepted while a payment is being stopped says so without claiming it
 });
 
 it.each([
-  [{ state: 'skipped_by_client', skippable: false }, 'This payment is skipped'],
-  [{ state: 'succeeded', invoiceStatus: 'paid', skippable: false }, 'This invoice is already paid'],
-  [{ state: 'cancelled', skippable: false }, "This invoice won't be charged automatically"],
-  [{ state: 'action_required', skippable: true }, 'This payment needs your confirmation'],
-  [{ state: 'scheduled', control: 'skip', skippable: false }, "We're trying to stop this payment"],
+  [{ status: 'skipped', state: 'skipped_by_client' }, 'This payment is skipped'],
+  [{ status: 'paid', state: 'succeeded', invoiceStatus: 'paid' }, 'This invoice is already paid'],
+  [{ status: 'not_needed', state: 'cancelled' }, "This invoice won't be charged automatically"],
+  [{ status: 'not_needed', state: 'scheduled', control: 'exclude' }, "This invoice won't be charged automatically"],
+  [{ status: 'action_required', state: 'action_required' }, 'This payment needs your confirmation'],
+  [{ status: 'pending', state: 'scheduled', control: 'skip' }, "We're trying to stop this payment"],
 ])('%j', async (over, title) => {
   vi.mocked(apiGet).mockResolvedValue(view(over));
   render(<AutopaySkipPage token="t" />);

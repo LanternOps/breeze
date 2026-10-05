@@ -29,7 +29,7 @@ import { requireMfa } from '../../middleware/auth';
 import { enqueueTenantErasure } from '../../jobs/tenantErasure';
 import { createAuditLog } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
-import { hasActiveLegalHoldSnapshots, LEGAL_HOLD_ACTIVE_MESSAGE } from '../../services/tenantCascade';
+import { hasActiveBackupLegalHold, LEGAL_HOLD_ACTIVE_MESSAGE } from '../../services/tenantCascade';
 
 export const tenantErasureRoutes = new Hono();
 
@@ -81,7 +81,7 @@ tenantErasureRoutes.post(
     // (which re-checks this itself, see cascadeDeleteOrg) skips silently.
     // This is a convenience check, not the enforcement point — the worker's
     // own check is what actually protects every erasure entry point.
-    if (await hasActiveLegalHoldSnapshots(orgId)) {
+    if (await hasActiveBackupLegalHold(orgId)) {
       await createAuditLog({
         orgId: null,
         actorType: 'user',

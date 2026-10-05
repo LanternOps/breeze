@@ -107,9 +107,16 @@ export interface ResolvedPaymentSettings {
 }
 export interface FeeAuthorizationGap {
  orgId:string;orgName:string;methodType:AutopayPaymentMethodType;
- authorizedCardFeeBps:number;authorizedAchFeeAmount:string;cardFeeBps:number;achFeeAmount:string;
+ /** Null when no authorization for the current method is on file (distinct from an authorized 0);
+  * such a client is listed whatever the configured fee, because collection refuses it. */
+ authorizedCardFeeBps:number|null;authorizedAchFeeAmount:string|null;cardFeeBps:number;achFeeAmount:string;
 }
-export interface PaymentSettingsView { feeAuthorizationGaps?:FeeAuthorizationGap[]; autopayEnabled:boolean;values:PaymentValues;inherited:ResolvedPaymentSettings;effective:ResolvedPaymentSettings }
+/** The partner's processing-fee attestation on file. attestedByName is null when the user is no longer readable. */
+export interface FeeAttestationRecord { attestedAt:string;attestedByName:string|null }
+export interface PaymentSettingsView { feeAuthorizationGaps?:FeeAuthorizationGap[];
+ /** Partner view only: null when no attestation is on file. */
+ feeAttestation?:FeeAttestationRecord|null;
+ autopayEnabled:boolean;values:PaymentValues;inherited:ResolvedPaymentSettings;effective:ResolvedPaymentSettings }
 
 export const autopayScheduleTermsSchema=z.object({offsetDays:z.number().int().min(0).max(60),rule:z.enum(AUTOPAY_OFFSET_RULES),
  cap:z.discriminatedUnion('enabled',[z.object({enabled:z.literal(false)}),z.object({enabled:z.literal(true),amount:z.string(),currency:z.string()})])});
@@ -167,6 +174,11 @@ export interface InvoiceAutopayView {
  state:AutopayScheduleState|'processing'|'unapplied';reason:string|null;collectOn:string|null;
  noticeSentAt:string|null;excluded:boolean;canExclude:boolean;canChargeNow:boolean;processing:boolean;unapplied:boolean;
 }
+/** What the public skip page may offer. Only 'ready' offers "Skip this payment";
+ * 'paid' and 'not_needed' mean a stale link (paid, closed, void, or not scheduled for
+ * automatic payment) that must not offer a skip (D-22). */
+export const AUTOPAY_SKIP_VIEW_STATUSES=['ready','skipped','pending','processing','action_required','paid','not_needed'] as const;
+export type AutopaySkipViewStatus=(typeof AUTOPAY_SKIP_VIEW_STATUSES)[number];
 export const bankPaySchema=bankPaymentConsentSchema.omit({invoiceId:true,orgId:true}).extend({
  methodType:z.literal('us_bank_account'),phase:z.enum(['setup','collect']),consentAccepted:z.literal(true),
  setupSessionId:z.string().regex(/^cs_[A-Za-z0-9_]+$/).max(255).optional(),
@@ -196,9 +208,9 @@ export interface AutopayStopView extends AutopayBranding {
 }
 /** GET /autopay/public/:token/skip: names the invoice, amount and charge date. */
 export interface AutopaySkipView extends AutopayBranding {
- state:AutopayScheduleState;collectOn:string|null;control:ControlMarker|null;processing:boolean;
- /** False when the schedule is no longer this link's to skip (stopped, paused, re-enrolled). */
- skippable:boolean;
+ /** What the page may offer; only 'ready' offers "Skip this payment" (see AUTOPAY_SKIP_VIEW_STATUSES). */
+ status:AutopaySkipViewStatus;
+ state:AutopayScheduleState|'not_needed';collectOn:string|null;control:ControlMarker|null;processing:boolean;
  invoiceNumber:string|null;invoiceStatus:string;dueDate:string|null;amount:string|null;fee:string|null;currency:string;
  methodLabel:string|null;methodType:AutopayPaymentMethodType|null;invoiceUrl:string|null;
 }

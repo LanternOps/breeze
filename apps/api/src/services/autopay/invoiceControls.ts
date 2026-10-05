@@ -1,11 +1,11 @@
-import { autopayTermsSnapshotSchema, formatPaymentMethod, parseAutopayTerms, type AutopaySkipView } from '@breeze/shared';
+import { autopayTermsSnapshotSchema, formatPaymentMethod, parseAutopayTerms, type AutopaySkipView, type AutopaySkipViewStatus } from '@breeze/shared';
 import { getAutopayMethod } from './paymentMethods';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { toMinorUnits, fromMinorUnits } from '../stripeMoney';
 import { and, eq, inArray } from 'drizzle-orm';
 import { ACTIVE_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
 import { invoices, invoiceAutopaySchedules, invoiceCollectionAttempts, billingNoticeOutbox,
-  orgAutopayEnrollments, invoiceLines, contracts } from '../../db/schema';
+  orgAutopayEnrollments, invoiceLines, contracts, partners } from '../../db/schema';
 import { InvoiceServiceError, type InvoiceActor } from '../invoiceTypes';
 import { requireInvoiceAccess } from '../invoiceService';
 import { assertNoActiveCollection } from './reservation';
@@ -15,7 +15,7 @@ import { loadAutopayBranding } from './customerBranding';
 import { planAutopayForInvoice, noticeLeadDays } from './scheduler';
 import { enqueueAutopayNotice, type AutopayTerms } from './chargingNotice';
 import { isAutopayEnabledForPartner } from './autopayGate';
-import { collectionFenced, hasUnstoppableCollection, pendingInvoiceControl, requestInvoiceControl, type InvoiceControlResult } from './collectionControl';
+import { collectionFenced, hasUnstoppableCollection, isControllableSchedule, pendingInvoiceControl, requestInvoiceControl, type InvoiceControlResult } from './collectionControl';
 import type { Tx } from './types';
 
 export async function assertControllable(tx: Tx, invoiceId: string): Promise<void> {
@@ -53,10 +53,11 @@ async function skipAuthority(tx: Tx, token: string, lock: boolean) {
 }
 
 /**
- * The skip page's view: it names the invoice, amount, charge date and method, and
- * says whether this link can still skip it. A link that no longer controls the
- * schedule (stopped, paused, re-enrolled) still describes the invoice so the client
- * is never left at "unavailable"; only an unknown link is refused. Read-only.
+ * The skip page's view: it names the invoice, amount, charge date, method and MSP,
+ * and says what the page may offer (status). Only 'ready' offers "Skip this
+ * payment". A link that no longer controls the schedule (stopped, paused,
+ * re-enrolled) still describes the invoice so the client is never left at
+ * "unavailable"; only an unknown link is refused. Read-only (no link is minted).
  */
 export async function getSkipInvoiceView(tx: Tx, token: string): Promise<AutopaySkipView> {
   const link = await resolveBillingLinkToken(tx, token, 'skip_invoice');
@@ -75,17 +76,32 @@ export async function getSkipInvoiceView(tx: Tx, token: string): Promise<Autopay
   const control = pendingInvoiceControl(schedule?.stateReason ?? null);
   // processing: a payment is already with Stripe and the skip would be refused.
   const processing = await hasUnstoppableCollection(tx, invoice.id);
-  const state = schedule?.state ?? 'not_needed';
-  const open = ['sent', 'partially_paid', 'overdue'].includes(invoice.status);
   const live = invoice.status === 'void' ? null : peekInvoiceLink(invoice);
   return {
     ...await loadAutopayBranding(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId }),
-    state, collectOn: schedule?.collectOn ?? null, control, processing,
-    skippable: authority && open && !processing && !control && ['awaiting_notice', 'scheduled', 'retry_scheduled', 'collecting', 'action_required'].includes(state),
+    status: skipViewStatus(invoice, schedule ?? null, control, processing, authority),
+    state: schedule?.state ?? 'not_needed', collectOn: schedule?.collectOn ?? null, control, processing,
     invoiceNumber: invoice.invoiceNumber, invoiceStatus: invoice.status, dueDate: invoice.dueDate,
     amount: terms?.principal ?? invoice.balance, fee: terms?.feeAmount ?? null, currency: invoice.currencyCode,
     methodLabel, methodType: terms?.methodType ?? null, invoiceUrl: live ? buildPublicInvoiceUrl(live.token) : null,
   };
+}
+/** D-22: a stale skip link (paid, closed or void invoice, one not scheduled for
+ * automatic payment, or one whose enrollment no longer backs it) reports that
+ * skipping is no longer needed instead of offering it. 'processing' uses the same
+ * predicate as the skip POST's 409 details.reason 'payment_processing', and wins
+ * over a pending control: that money moves regardless. */
+function skipViewStatus(invoice: typeof invoices.$inferSelect, schedule: typeof invoiceAutopaySchedules.$inferSelect | null,
+  control: ReturnType<typeof pendingInvoiceControl>, processing: boolean, authority: boolean): AutopaySkipViewStatus {
+  if (invoice.status === 'paid' || schedule?.state === 'succeeded') return 'paid';
+  if (processing) return 'processing';
+  if (schedule?.state === 'skipped_by_client') return 'skipped';
+  if (!schedule || !authority || !['sent', 'partially_paid', 'overdue'].includes(invoice.status)
+    || toMinorUnits(invoice.balance, invoice.currencyCode) <= 0
+    || invoice.autopayExcluded || !schedule.eligible || !isControllableSchedule(schedule.state)
+    || control === 'exclude' || control === 'stop') return 'not_needed';
+  if (control === 'skip') return 'pending';
+  return schedule.state === 'action_required' ? 'action_required' : 'ready';
 }
 
 export async function skipInvoice(tx: Tx, token: string): Promise<InvoiceControlResult> {

@@ -255,22 +255,27 @@ describe('reminder liveness and dispatch validation', () => {
 
 // G: a reminder must not say "View & pay" while a payment is already in flight
 // (e.g. "Pay by bank and set up autopay" creates an unscheduled ACH attempt).
-async function inFlightAttempt(f: Awaited<ReturnType<typeof fixture>>, label: string) {
+async function inFlightAttempt(f: Awaited<ReturnType<typeof fixture>>, label: string,
+  state: 'processing' | 'requires_action' = 'processing') {
   const target = f.created.find(row => row.label === label)!;
   return withSystemDbAccessContext(async () => {
     const [connection] = await db.select().from(stripeConnectAccounts).where(eq(stripeConnectAccounts.partnerId, f.partnerId));
-    const [enrollment] = await db.insert(orgAutopayEnrollments).values({
-      partnerId: f.partnerId, orgId: target.orgId, status: 'active', generation: 1,
-      stripeConnectionId: connection!.id, stripeAccountId: connection!.stripeAccountId,
-      stripeCustomerId: `cus_${target.id}`, effectiveFrom: new Date('2026-01-01'), requestedAt: new Date('2026-01-01'),
-    }).returning();
+    // An off-session attempt belongs to the fixture's own schedule (e.g. an 'action_required' 3DS wait).
+    const [schedule] = await db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.invoiceId, target.id));
+    const [enrollment] = schedule
+      ? await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.id, schedule.enrollmentId!))
+      : await db.insert(orgAutopayEnrollments).values({
+        partnerId: f.partnerId, orgId: target.orgId, status: 'active', generation: 1,
+        stripeConnectionId: connection!.id, stripeAccountId: connection!.stripeAccountId,
+        stripeCustomerId: `cus_${target.id}`, effectiveFrom: new Date('2026-01-01'), requestedAt: new Date('2026-01-01'),
+      }).returning();
     const [method] = await db.insert(orgPaymentMethods).values({ orgId: target.orgId, enrollmentId: enrollment!.id,
       stripePaymentMethodId: `pm_${target.id}`, type: 'us_bank_account', bankName: 'Test bank', bankLast4: '6789',
       accountHolderType: 'company', status: 'active', isAutopayMethod: true }).returning();
     const [attempt] = await db.insert(invoiceCollectionAttempts).values({ orgId: target.orgId, invoiceId: target.id,
-      scheduleId: null, attemptNo: 1, paymentMethodId: method!.id, stripePaymentIntentId: `pi_${target.id}`,
+      scheduleId: schedule?.id ?? null, attemptNo: 1, paymentMethodId: method!.id, stripePaymentIntentId: `pi_${target.id}`,
       idempotencyKey: `reminder_in_flight_${target.id}`, principalAmount: '100.00', feeAmount: '0.00', currency: 'EUR',
-      state: 'processing', initiatedBy: 'client_on_session' }).returning();
+      state, initiatedBy: schedule ? 'scheduler' : 'client_on_session' }).returning();
     return { target, attemptId: attempt!.id };
   });
 }
@@ -292,6 +297,23 @@ describe('reminders while a payment is in flight', () => {
     await withSystemDbAccessContext(() => db.update(invoiceCollectionAttempts)
       .set({ state: 'failed', failureClass: 'nsf' }).where(eq(invoiceCollectionAttempts.id, attemptId)));
     expect(await runInvoiceReminderSweep(new Date('2026-10-06T06:18:00Z'))).toEqual({ enqueued: 1, skippedNoContact: 0 });
+  });
+  // A payment waiting on the client's bank (3DS) completes only if they act, and the
+  // invoice page offers "Continue to payment": the reminder must still go out.
+  it('still enqueues a reminder while an off-session payment waits on bank confirmation', async () => {
+    const f = await fixture(['action_required']);
+    await inFlightAttempt(f, 'action_required', 'requires_action');
+    expect(await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'))).toEqual({ enqueued: 1, skippedNoContact: 0 });
+    expect(await dispatchPendingBillingNotices(new Date(Date.now() + 1000))).toEqual({ sent: 1, failed: 0 });
+  });
+  it('sends a queued reminder at dispatch when the payment then waits on bank confirmation', async () => {
+    const f = await fixture(['action_required']);
+    expect(await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'))).toEqual({ enqueued: 1, skippedNoContact: 0 });
+    const { target } = await inFlightAttempt(f, 'action_required', 'requires_action');
+    expect(await dispatchPendingBillingNotices(new Date(Date.now() + 1000))).toEqual({ sent: 1, failed: 0 });
+    const [row] = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox)
+      .where(eq(billingNoticeOutbox.invoiceId, target.id)));
+    expect(row).toMatchObject({ status: 'sent', lastError: null });
   });
 });
 

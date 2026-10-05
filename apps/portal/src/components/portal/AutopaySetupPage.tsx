@@ -1,10 +1,11 @@
+import { paymentMethodInSentence } from '@breeze/shared';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Lock } from 'lucide-react';
 import { autopayScheduleSummary, type AutopayCustomerPage } from '@breeze/shared';
 import { apiGet, apiPost } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { money } from '@/lib/format';
-import { linkFailureOf, methodFeeLabel, methodInSentence, savedMethodLabel, type AutopayPortalPage, type MethodType } from '@/lib/autopay';
+import { linkFailureOf, methodFeeLabel, savedMethodLabel, type AutopayPortalPage, type MethodType } from '@/lib/autopay';
 import { BTN_BLOCK, BTN_PRIMARY, BTN_SECONDARY, Notice } from './ui';
 import { AutopayShell } from './autopay/AutopayShell';
 import { AuthorizationBox } from './autopay/AuthorizationBox';
@@ -143,7 +144,7 @@ export default function AutopaySetupPage({ token, portal = false, onCancel }: {
       </H>
       <p className="text-sm leading-relaxed text-muted-foreground">
         {update
-          ? `Your new method replaces your ${methodInSentence(savedMethodLabel(data.method))} for future automatic payments. Your schedule stays the same.`
+          ? `Your new method replaces your ${paymentMethodInSentence(savedMethodLabel(data.method))} for future automatic payments. Your schedule stays the same.`
           : `${msp} will charge each new invoice to the payment method you choose, and email you before every payment.`}
       </p>
     </div>

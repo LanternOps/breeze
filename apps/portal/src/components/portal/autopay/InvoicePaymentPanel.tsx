@@ -1,10 +1,10 @@
+import { paymentMethodInSentence } from '@breeze/shared';
 import { useEffect, useState, type ReactNode } from 'react';
 import { CreditCard } from 'lucide-react';
 import type { CustomerInvoiceAutopayStatus } from '@breeze/shared';
 import type { ApiResponse, AutopayConfirmationRelease, BankAutopayOffer, InvoiceAutopayDisclosure } from '@/lib/api';
 import { withBase } from '@/lib/basePath';
 import { longDate, money } from '@/lib/format';
-import { methodInSentence } from '@/lib/autopay';
 import { cn } from '@/lib/utils';
 import { BTN_BLOCK, BTN_PRIMARY, BTN_SECONDARY, LINK, Notice, StatusMark, type MarkTone } from '../ui';
 import BankAutopayPayment from '../BankAutopayPayment';
@@ -53,7 +53,7 @@ const NOT_INCLUDED: Record<string, string> = {
 };
 
 function statusCopy(s: CustomerInvoiceAutopayStatus, msp: string, portal: boolean): StatusCopy | null {
-  const method = s.methodLabel ? `your ${methodInSentence(s.methodLabel)}` : 'your saved payment method';
+  const method = s.methodLabel ? `your ${paymentMethodInSentence(s.methodLabel)}` : 'your saved payment method';
   const date = s.chargeDate ? longDate(s.chargeDate) : null;
   switch (s.state) {
     case 'scheduled':

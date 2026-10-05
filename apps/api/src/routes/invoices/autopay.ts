@@ -49,7 +49,9 @@ invoiceAutopayRoutes.post('/:id/autopay/charge-now',
         return schedule.id;
       });
       const result = await attemptCollection({ invoiceId, scheduleId, initiatedBy: 'msp_charge_now' });
-      if (result.outcome !== 'created') return c.json({ error: result.reason, code: result.reason }, 409);
+      // outcome tells staff whether a payment was attempted (failed / requires_action)
+      // or never started (deferred / refused); reason alone cannot.
+      if (result.outcome !== 'created') return c.json({ error: result.reason, code: result.reason, outcome: result.outcome }, 409);
       return c.json({ data: result });
     } catch (error) { return handleServiceError(c, error); }
   });

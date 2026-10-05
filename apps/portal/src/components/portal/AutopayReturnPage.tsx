@@ -1,8 +1,8 @@
+import { paymentMethodInSentence } from '@breeze/shared';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import type { AutopayBranding, AutopaySetupResult } from '@breeze/shared';
 import { apiPost } from '@/lib/api';
 import { withBase } from '@/lib/basePath';
-import { methodInSentence } from '@/lib/autopay';
 import { AutopayShell } from './autopay/AutopayShell';
 import { StatePanel, type PanelAction } from './autopay/StatePanel';
 
@@ -131,7 +131,7 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
       break;
     case 'outcome': {
       const r = phase.result;
-      const method = methodInSentence(r.methodLabel ?? 'payment method');
+      const method = paymentMethodInSentence(r.methodLabel ?? 'payment method');
       const body = (() => {
         switch (r.outcome) {
           case 'activated':
@@ -164,7 +164,7 @@ export default function AutopayReturnPage({ retryDelaysMs = [3000, 6000, 12000, 
           case 'stale_generation':
             return r.current?.status === 'active'
               ? <StatePanel mark={{ tone: 'success', label: 'On' }} title="You're already set up" primary={back}>
-                <p>{`This setup was replaced by a newer one. Automatic payments are on with your ${methodInSentence(r.current.methodLabel ?? 'saved payment method')}.`}</p>
+                <p>{`This setup was replaced by a newer one. Automatic payments are on with your ${paymentMethodInSentence(r.current.methodLabel ?? 'saved payment method')}.`}</p>
               </StatePanel>
               : <StatePanel mark={{ tone: 'neutral', label: 'Not set up' }} title="This setup link was replaced" primary={contact} secondary={back}>
                 <p>{`${branding?.partnerName || 'Your service provider'} sent you a newer setup link, so nothing was saved or charged here. Please use the link in your most recent email from ${msp}.`}</p>

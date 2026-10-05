@@ -62,7 +62,7 @@ describe('completion fences',()=>{
   const rendered=m.enqueue.mock.calls[0]![1].rendered;
   expect(rendered.subject).toContain('Example MSP');
   for(const body of [rendered.html,rendered.text]){
-   expect(body).toContain('Example client');expect(body).toContain('visa debit');
+   expect(body).toContain('Example client');expect(body).toContain('Visa debit card ending in 1234');expect(body).not.toContain('visa debit');
    expect(body).toContain(snapshot.scheduleText);expect(body).toContain('No processing fee applies to this card.');
   }
   m.writes.length=0;queueAuthority(attempt({outcome:'activated',completedAt:new Date()}));

@@ -96,6 +96,9 @@ export async function dispatchPendingBillingNotices(now = new Date()): Promise<{
               const reason = await validate(tx, current);
               if (!reason) return true;
               await tx.update(billingNoticeOutbox).set({ status: 'cancelled', lastError: reason }).where(owns(current));
+              // Validator reasons are fixed strings. Never log the recipient or the rendered body.
+              console.info('[billingNoticeOutbox] cancelled before send', { billing_notice_id: current.id,
+                billing_notice_kind: current.kind, org_id: current.orgId, reason });
               return false;
             }));
             if (!allowed) continue;

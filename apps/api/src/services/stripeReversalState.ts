@@ -1,9 +1,9 @@
 import { allocateReversal } from './autopay/refundAllocation';
 import { reportCollectionError } from './autopay/collectionErrors';
-import { enqueueAutopayStaffNotifications } from './autopay/staffNotifications';
+import { enqueueAutopayStaffNotifications, sendAutopayStaffEmail, type AutopayStaffNotice } from './autopay/staffNotifications';
 import { applyAttemptOutcome } from './autopay/collectionEngine';
 import { invoiceCollectionAttempts, invoiceAutopaySchedules, orgPaymentMethods } from '../db/schema';
-import { enqueueAttemptNotice, notifyPaymentAttention } from './autopay/paymentNotices';
+import { enqueueAttemptNotice, enqueueRefundNotice, notifyPaymentAttention } from './autopay/paymentNotices';
 import { classifyCollectionFailure } from './autopay/failureClassifier';
 import { markPaymentMethodUnusable } from './autopay/paymentMethods';
 import { getPartnerStripeClient, PartnerStripeError } from './partnerStripe';
@@ -57,6 +57,7 @@ type ApplyResult =
       change: 'reduced' | 'restored' | 'unchanged';
       returnAttention?: { partnerId: string; orgId: string; invoiceId: string; attemptId: string;
         returnIdentity: string; event: 'payment.ach_returned' };
+      disputeAttention?: AutopayStaffNotice;
       accountingDeleteMappingId?: string | null;
       accountingPushMappingId?: string | null;
       audit?: {
@@ -508,9 +509,12 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
     }
 
     await recomputeInvoiceStatus(mapping.invoiceId);
+    // D-20: tell the client about money sent back to them, with the balance this left.
+    if (refunded > priorRefunded) await enqueueRefundNotice(db, mapping.id, { priorRefundedMinor: priorRefunded, refundedMinor: refunded });
     let returnAttention: Extract<ApplyResult,{state:'applied'}>['returnAttention'];
-    if (mapping.source === 'autopay' && mapping.paymentMethodType === 'us_bank_account'
-      && event.disputeFundsWithdrawn === true && targetMinor < previousMinor) {
+    let disputeAttention: AutopayStaffNotice | undefined;
+    const achAutopayReturn = mapping.source === 'autopay' && mapping.paymentMethodType === 'us_bank_account';
+    if (achAutopayReturn && event.disputeFundsWithdrawn === true && targetMinor < previousMinor) {
       if (bankReturn?.mappingId !== mapping.id) throw new Error('Returned payment details missing');
       const [attempt] = await db.select().from(invoiceCollectionAttempts)
         .where(eq(invoiceCollectionAttempts.invoiceStripePaymentId,mapping.id)).limit(1).for('update');
@@ -530,6 +534,13 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
         attemptId:attempt.id,returnIdentity,event:'payment.ach_returned'};
       await enqueueAutopayStaffNotifications(db,{...returnAttention,dedupeKey:`autopay:${attempt.id}:payment.ach_returned:${returnIdentity}`,
         message:`A bank payment was returned. Invoice ${invoice.id}, attempt ${attempt.id}: the invoice balance has reopened.`});
+    } else if (event.disputeFundsWithdrawn === true && targetMinor < previousMinor) {
+      // #7897: a card (or pay-link) dispute withdrew funds and reopened the invoice. Staff hear
+      // it, as they do an ACH return. The client opened the dispute with their bank, so no client email.
+      disputeAttention = { partnerId: invoice.partnerId, orgId: invoice.orgId, invoiceId: invoice.id, event: 'payment.disputed',
+        dedupeKey: `payment:${mapping.id}:disputed:${event.disputeId ?? event.stripeEventId}`,
+        message: `A payment for invoice ${invoice.invoiceNumber ?? invoice.id} was disputed. Stripe withdrew ${mapping.currency} ${fromMinorUnits(disputeAmount, mapping.currency)} and the invoice balance has reopened. Respond to the dispute in Stripe.` };
+      await enqueueAutopayStaffNotifications(db, disputeAttention);
     }
     await db.update(stripeFinancialEvents).set({
       status: 'applied', attemptCount: event.attemptCount + 1, lastError: null,
@@ -540,6 +551,7 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
       partnerId: invoice.partnerId, paymentId,
       change: targetMinor < previousMinor ? 'reduced' : targetMinor > previousMinor ? 'restored' : 'unchanged',
       returnAttention,
+      disputeAttention,
       accountingDeleteMappingId,
       accountingPushMappingId,
       audit,
@@ -552,6 +564,12 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
       catch (error) {
         reportCollectionError(error,{invoice_id:outcome.invoiceId,org_id:outcome.returnAttention.orgId,
           attempt_id:outcome.returnAttention.attemptId,return_identity:outcome.returnAttention.returnIdentity,autopay_phase:'return_staff_email'});
+      }
+    }
+    if (outcome.disputeAttention) {
+      try { await sendAutopayStaffEmail(outcome.disputeAttention); }
+      catch (error) {
+        reportCollectionError(error,{invoice_id:outcome.invoiceId,org_id:outcome.orgId,autopay_phase:'dispute_staff_email'});
       }
     }
     if (outcome.accountingDeleteMappingId) {

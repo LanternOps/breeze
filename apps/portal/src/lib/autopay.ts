@@ -25,8 +25,3 @@ export function methodFeeLabel(type: 'card' | 'us_bank_account', quote: FeeQuote
   if (quote.kind === 'ach_flat') return `${money(quote.feeAmount ?? '0', currency)} fee`;
   return type === 'card' && quote.appliedBps != null ? `Credit cards: up to ${formatPercentBps(quote.appliedBps)} fee` : null;
 }
-
-/** A method label inside a sentence: "your bank account ending in 6789", but "your Visa …". */
-export function methodInSentence(label: string): string {
-  return /^(Bank account|Card|Credit card|Debit card|Prepaid card)\b/.test(label) ? label[0]!.toLowerCase() + label.slice(1) : label;
-}

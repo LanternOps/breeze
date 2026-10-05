@@ -2568,14 +2568,63 @@
       "inactive": "Card fees are inactive until your partner administrator affirms both statements below.",
       "notified": "I notified my acquirer (Stripe) and the card networks at least 30 days ago",
       "cost": "This fee does not exceed my cost of card acceptance",
-      "rules": "Credit cards only. No card fee in CA, CT, ME or MA; Colorado is capped at 2%. Fees apply only to eligible US automatic payments in USD. Blank inherits; zero exempts this customer. One-time pay links have no fee.",
+      "rules": "Credit cards only. No card fee in CA, CT, ME or MA; Colorado is capped at 2%. Fees apply only to eligible US automatic payments in USD. One-time pay links have no fee.",
       "legal": "Breeze is not legal advice. You are responsible for surcharge eligibility, notices and tax treatment.",
       "lowerAuthorization": "Clients with lower authorized fees: {{count}}. Their existing authorization remains in effect until they accept updated terms.",
       "authorizedCard": "Authorized: {{accepted}} basis points; configured: {{configured}}",
       "authorizedAch": "Authorized: USD {{accepted}}; configured: USD {{configured}}",
       "requestAuthorization": "Request updated authorization",
       "requestFailed": "Could not request updated authorization. Check the billing contact and Stripe readiness.",
-      "requested": "Updated authorization requested. Existing authorization remains in effect."
+      "requested": "Updated authorization requested. Existing authorization remains in effect.",
+      "attestationOnFile": "Attestation on file: {{name}} affirmed both statements on {{date}}.",
+      "attestationOnFileUnknown": "Attestation on file: both statements were affirmed on {{date}}.",
+      "reattestHelp": "To re-attest, tick both statements and save. That records a new attestation under your name with the current date, replacing the one on file. It does not change any client's authorized fee.",
+      "authorizedCardNone": "No authorization on file; configured: {{configured}} basis points",
+      "authorizedAchNone": "No authorization on file; configured: USD {{configured}}",
+      "lowerAuthorizationOrg": "This client has not authorized the configured fee. Any existing authorization stays in effect until they accept updated terms.",
+      "blankPartner": "Blank uses the Breeze default (no fee). To exempt one client, set its fee to 0 on that client's Billing page.",
+      "blankOrg": "Blank uses the partner default. Enter 0 to exempt this client.",
+      "inactiveOrg": "Card fees are inactive until a partner administrator affirms both fee statements on the Payments tab of the partner Billing settings.",
+      "missingAuthorization": "No authorization on file: {{count}}. Automatic payments can't charge these clients until they authorize their saved payment method.",
+      "missingAuthorizationOrg": "This client has no authorization on file for its saved payment method. Automatic payments can't charge it until the client authorizes.",
+      "requestMissingAuthorization": "Request authorization"
+    },
+    "enrollmentTitle": "Automatic payment enrollment",
+    "requestSentTo": "Request sent to {{email}}.",
+    "result": {
+      "paused": "Automatic payments paused.",
+      "resumed": "Automatic payments resumed.",
+      "turnedOff": "Automatic payments turned off."
+    },
+    "needsAttention": {
+      "method_unusable": "The saved payment method can't be charged.",
+      "stripe_account_changed": "The connected Stripe account changed after this client enrolled.",
+      "key_missing_permissions": "The Stripe key is missing permissions that automatic payments need.",
+      "verification_failed": "Bank account verification failed."
+    },
+    "chargeOutcome": {
+      "succeeded": "Payment received.",
+      "processing": "Payment submitted. It is processing, and the invoice updates when it settles.",
+      "requiresAction": "The client's bank requires them to confirm this payment. If a billing contact is on file, they are emailed a link to confirm it.",
+      "declined": "The payment did not go through.",
+      "cardDeclined": "The card was declined.",
+      "expiredCard": "The card has expired. Ask the client to update their payment method.",
+      "insufficientFunds": "The payment was declined for insufficient funds.",
+      "canceled": "The payment was canceled before it completed.",
+      "unapplied": "The payment was captured but needs reconciliation. Review it before collecting again."
+    },
+    "chargeRefused": {
+      "notice_lead": "The client's notice period has not ended yet. The invoice can be charged once it does.",
+      "no_eligible_notice": "This invoice has no automatic payment notice, so it cannot be charged automatically.",
+      "renotice_required": "The payment notice must be sent again before this invoice can be charged.",
+      "collection_in_progress": "A payment for this invoice is already in progress.",
+      "checkout_session_unrevoked": "The client may be paying this invoice online right now. Try again in a few minutes.",
+      "retry_not_due": "The next retry is not due yet.",
+      "not_payable": "This invoice is not open for payment.",
+      "nothing_to_pay": "Nothing is left to pay on this invoice.",
+      "enrollment_inactive": "Automatic payments are not active for this client.",
+      "schedule_inactive": "This invoice is no longer scheduled for automatic payment.",
+      "generic": "Automatic payment could not be started. Refresh the invoice to see its current status."
     }
   },
   "reminders": {
@@ -2596,7 +2645,7 @@
     "sources": {
       "org": "organization",
       "partner": "partner default",
-      "default": "system default"
+      "default": "Breeze default"
     },
     "save": "Save payment settings",
     "saving": "Saving…",

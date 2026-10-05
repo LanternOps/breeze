@@ -45,7 +45,8 @@ export type EmailTemplateVarKey =
   | 'amount_due' | 'pay_link' | 'days_overdue'
   | 'charge_date' | 'fee_amount' | 'invoice_link'
   | 'amount_paid' | 'total_charged' | 'paid_on' | 'balance_remaining'
-  | 'failure_text' | 'action_link' | 'action_label';
+  | 'failure_text' | 'action_link' | 'action_label'
+  | 'charge_total' | 'attempted_amount';
 
 const COMMENT_NOTIFICATION_VARS = [
   'ticket_number',
@@ -103,7 +104,7 @@ const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {
   quote_send: QUOTE_SEND_VARS,
   invoice_send: INVOICE_SEND_VARS,
   invoice_autopay: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date',
-    'charge_date', 'payment_method', 'fee_amount', 'invoice_link'],
+    'charge_date', 'payment_method', 'fee_amount', 'charge_total', 'invoice_link'],
   portal_invite: PORTAL_INVITE_VARS,
   autopay_request: ['partner_name','org_name','cta_button','client_name','setup_link','ach_mode_text'],
   autopay_enrolled: ['partner_name','org_name','client_name','payment_method','schedule_text','fee_text'],
@@ -115,7 +116,8 @@ const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {
   payment_overdue: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date', 'days_overdue', 'pay_link', 'cta_button'],
   payment_receipt: ['org_name','partner_name','invoice_number','amount_paid','fee_amount',
     'total_charged','payment_method','paid_on','balance_remaining'],
-  payment_failed: ['org_name','partner_name','invoice_number','amount_due','failure_text','action_link','action_label'],
+  payment_failed: ['org_name','partner_name','invoice_number','amount_due','failure_text','action_link','action_label',
+    'payment_method','attempted_amount'],
 };
 
 const LABEL_BY_ID: Record<EmailTemplateId, string> = {
@@ -226,7 +228,7 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
   invoice_autopay: {
     subject: 'Invoice {{invoice_number}} — automatic payment notice',
     heading: 'Your invoice is ready', buttonLabel: 'View invoice',
-    html: '<p>{{amount_due}} is due on {{due_date}}. We will initiate payment on or around {{charge_date}} using {{payment_method}}. Processing fee: {{fee_amount}}.</p>',
+    html: '<p>{{partner_name}} has sent you invoice {{invoice_number}} for {{amount_due}}, due on {{due_date}}.</p><p>It will be paid automatically: we will initiate the payment on or around {{charge_date}} using {{payment_method}}.</p>',
   },
   invoice_send: {
     subject: 'Invoice {{invoice_number}} from {{partner_name}}',
@@ -301,7 +303,7 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
 <p>{{cta_button}}</p>`,
   },
   payment_receipt: { subject: 'Payment receipt for {{invoice_number}}', heading: 'Payment received',
-    buttonLabel: '', html: '<p>Paid: {{amount_paid}}. Processing fee: {{fee_amount}}. Total charged: {{total_charged}}.</p><p>{{payment_method}} on {{paid_on}}. Remaining balance: {{balance_remaining}}.</p>' },
+    buttonLabel: '', html: '<p>Thank you. {{partner_name}} received your payment for invoice {{invoice_number}}.</p><p>Paid on {{paid_on}}. Remaining balance: {{balance_remaining}}.</p>' },
   payment_failed: { subject: 'Action needed for invoice {{invoice_number}}', heading: 'Payment needs attention',
     buttonLabel: 'Review payment', html: '<p>{{failure_text}}</p><p>Amount due: {{amount_due}}.</p>' },
 };
