@@ -18,6 +18,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { jobSchedule } from './scheduleRegistry';
 import { attachWorkerObservability } from './workerObservability';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import { resolveCisBaselineScheduleAuthority } from '../services/cisBaselineScheduleAuthority';
 
 const { db } = dbModule;
 
@@ -65,6 +66,14 @@ type RunBaselineScanJobData = {
   requestedBy?: string | null;
   deviceIds?: string[];
   origin?: 'scheduled' | 'manual';
+  /**
+   * Scheduled runs only: the baseline's execution_authority_generation the
+   * scheduler admitted. The run re-resolves the authority and must see this
+   * exact generation, so a re-approval or revocation between enqueue and run
+   * (or a job left in Redis from before stored authority existed) dispatches
+   * nothing.
+   */
+  authorityGeneration?: string;
 };
 
 type AggregateScoresJobData = {
@@ -94,12 +103,22 @@ export function getCisQueue(): Queue<CisJobData> {
   return cisQueue;
 }
 
-async function processScheduleScans(): Promise<{ enqueued: number }> {
+async function processScheduleScans(): Promise<{ enqueued: number; reapprovalRequired: number }> {
   const now = new Date();
   const dueBaselines = await db
     .select({
       id: cisBaselines.id,
       scanSchedule: cisBaselines.scanSchedule,
+      orgId: cisBaselines.orgId,
+      partnerId: cisBaselines.partnerId,
+      executionAuthorityVersion: cisBaselines.executionAuthorityVersion,
+      executionAuthorityKind: cisBaselines.executionAuthorityKind,
+      executionAuthoritySiteIds: cisBaselines.executionAuthoritySiteIds,
+      executionAuthorityUserId: cisBaselines.executionAuthorityUserId,
+      executionAuthorityPrincipalKind: cisBaselines.executionAuthorityPrincipalKind,
+      executionAuthorityFingerprint: cisBaselines.executionAuthorityFingerprint,
+      executionAuthorityCapturedAt: cisBaselines.executionAuthorityCapturedAt,
+      executionAuthorityGeneration: cisBaselines.executionAuthorityGeneration,
     })
     .from(cisBaselines)
     .where(
@@ -111,15 +130,25 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
     );
 
   if (dueBaselines.length === 0) {
-    return { enqueued: 0 };
+    return { enqueued: 0, reapprovalRequired: 0 };
   }
 
   const queue = getCisQueue();
   // Hourly slot used as jobId suffix to deduplicate scans within the same scheduling window
   const slot = Math.floor(Date.now() / (60 * 60 * 1000));
   let enqueued = 0;
+  let reapprovalRequired = 0;
 
   for (const baseline of dueBaselines) {
+    // A schedule is only a request to scan. It dispatches under the stored
+    // authority of the user who approved it, re-resolved live here; a legacy
+    // row with no stamp, or an approver who lost devices:execute, is skipped
+    // (nextScanAt left as-is so a re-approval takes effect on the next tick).
+    const authority = await resolveCisBaselineScheduleAuthority(baseline);
+    if (!authority) {
+      reapprovalRequired++;
+      continue;
+    }
     try {
       await queue.add(
         'run-baseline-scan',
@@ -127,6 +156,7 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
           type: 'run-baseline-scan',
           baselineId: baseline.id,
           origin: 'scheduled',
+          authorityGeneration: authority.generation,
         },
         {
           jobId: `cis-scan-${baseline.id}-${slot}`,
@@ -155,7 +185,13 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
     }
   }
 
-  return { enqueued };
+  if (reapprovalRequired > 0) {
+    console.warn(
+      `[CisJobs] processScheduleScans: skipped ${reapprovalRequired} due baseline(s) whose schedule needs re-approval`,
+    );
+  }
+
+  return { enqueued, reapprovalRequired };
 }
 
 /**
@@ -180,6 +216,7 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
 export async function selectCisScanTargetDevices(
   baseline: Pick<typeof cisBaselines.$inferSelect, 'orgId' | 'partnerId' | 'osType'>,
   deviceIds?: string[] | null,
+  options: { siteIds?: string[] | null } = {},
 ): Promise<Array<{ id: string; orgId: string }>> {
   const ownerCondition = baseline.partnerId
     ? inArray(
@@ -202,6 +239,12 @@ export async function selectCisScanTargetDevices(
 
   if (Array.isArray(deviceIds) && deviceIds.length > 0) {
     deviceConditions.push(inArray(devices.id, deviceIds));
+  }
+
+  // Site ceiling of a site-restricted approver (scheduled runs only).
+  if (Array.isArray(options.siteIds)) {
+    if (options.siteIds.length === 0) return [];
+    deviceConditions.push(inArray(devices.siteId, options.siteIds));
   }
 
   return db
@@ -235,7 +278,23 @@ async function processRunBaselineScan(data: RunBaselineScanJobData): Promise<{
     };
   }
 
-  const rows = await selectCisScanTargetDevices(baseline, data.deviceIds);
+  let requestedBy = data.requestedBy ?? undefined;
+  let siteIds: string[] | null = null;
+  if (data.origin === 'scheduled') {
+    const authority = data.authorityGeneration
+      ? await resolveCisBaselineScheduleAuthority(baseline)
+      : null;
+    if (!authority || authority.generation !== data.authorityGeneration) {
+      console.warn(
+        `[CisJobs] processRunBaselineScan: scheduled run for baseline ${baseline.id} not dispatched — schedule authority missing, stale or revoked`,
+      );
+      return { baselineId: baseline.id, devicesTargeted: 0, commandsQueued: 0 };
+    }
+    requestedBy = authority.userId ?? undefined;
+    siteIds = authority.siteIds;
+  }
+
+  const rows = await selectCisScanTargetDevices(baseline, data.deviceIds, { siteIds });
 
   let commandsQueued = 0;
   const seen = new Set<string>();
@@ -257,7 +316,7 @@ async function processRunBaselineScan(data: RunBaselineScanJobData): Promise<{
           level: baseline.level,
           customExclusions: baseline.customExclusions ?? [],
         },
-        data.requestedBy ?? undefined
+        requestedBy
       );
       commandsQueued++;
     } catch (error) {
@@ -652,6 +711,22 @@ export async function scheduleCisRemediationWithResult(
 
   for (const actionId of uniqueActionIds) {
     try {
+      // A finished job keeps its id for a while (removeOnComplete), and BullMQ
+      // silently ignores an add with an existing id. An action approved again
+      // after being returned to pending (queue failure, or the one-time
+      // re-approval after the CIS authority upgrade) must get a fresh job.
+      const jobId = `cis-remediation-${actionId}`;
+      const existing = await queue.getJob(jobId);
+      if (existing) {
+        const state = await existing.getState();
+        if (isReusableState(state)) {
+          queuedActionIds.push(actionId);
+          continue;
+        }
+        await existing.remove().catch((error) => {
+          console.error(`[CisJobs] Failed to remove stale remediation job ${jobId}:`, error);
+        });
+      }
       await queue.add(
         'remediate-action',
         {
@@ -659,7 +734,7 @@ export async function scheduleCisRemediationWithResult(
           actionId,
         },
         {
-          jobId: `cis-remediation-${actionId}`,
+          jobId,
           removeOnComplete: { count: 100 },
           removeOnFail: { count: 200 },
           attempts: 3,
@@ -690,4 +765,6 @@ export async function scheduleCisRemediation(actionIds: string[]): Promise<numbe
 
 export const __testOnly = {
   processRemediationAction,
+  processScheduleScans,
+  processRunBaselineScan,
 };

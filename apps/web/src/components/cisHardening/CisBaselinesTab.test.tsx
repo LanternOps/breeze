@@ -360,3 +360,38 @@ describe('CisBaselinesTab partner-wide ownership', () => {
     expect(screen.getByRole('button', { name: /new baseline/i })).toBeDisabled();
   });
 });
+
+// Scheduled baselines carry a stored approval; one without it (every schedule
+// saved before approvals existed) is skipped by the scheduler until re-saved.
+describe('CisBaselinesTab schedule re-approval', () => {
+  beforeEach(() => {
+    orgStoreState.currentOrgId = 'org-1';
+    orgStoreState.allOrgs = false;
+    orgStoreState.organizations = [{ id: 'org-1', name: 'Acme' }];
+    orgStoreState.organizationsLoaded = true;
+    fetchWithAuthMock.mockReset();
+  });
+
+  it('marks only the schedule that needs re-approval', async () => {
+    mockList([
+      {
+        ...baseline,
+        scanSchedule: { enabled: true, intervalHours: 24 },
+        scheduleApproval: { status: 'reapproval_required', approvedBy: null, approvedAt: null },
+      },
+      {
+        ...baseline,
+        id: 'baseline-3',
+        name: 'CIS Windows L1 approved',
+        scanSchedule: { enabled: true, intervalHours: 24 },
+        scheduleApproval: { status: 'approved', approvedBy: 'user-1', approvedAt: '2026-12-10T00:00:00.000Z' },
+      },
+    ]);
+
+    render(<CisBaselinesTab refreshKey={0} onMutate={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText('CIS Windows L1 approved')).toBeInTheDocument());
+    expect(screen.getAllByTestId('cis-baseline-schedule-reapproval')).toHaveLength(1);
+    expect(screen.getByText('Needs re-approval')).toBeInTheDocument();
+  });
+});

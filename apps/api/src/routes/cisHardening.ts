@@ -14,8 +14,15 @@ import {
 } from '../db/schema';
 import { scheduleCisRemediation, scheduleCisRemediationWithResult, scheduleCisScan } from '../jobs/cisJobs';
 import { captureException } from '../services/sentry';
-import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
-import { canAccessSite, type UserPermissions } from '../services/permissions';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import {
+  captureCisBaselineAuthority,
+  describeCisScheduleApproval,
+  EMPTY_CIS_BASELINE_AUTHORITY,
+  isCisBaselineScheduled,
+  withoutCisBaselineAuthority,
+} from '../services/cisBaselineScheduleAuthority';
 import { extractFailedCheckIds, normalizeCisSchedule } from '../services/cisHardening';
 import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
@@ -210,11 +217,26 @@ async function resolveAuthorizedCisScanDeviceIds(
 
 function mapBaselineRow(row: typeof cisBaselines.$inferSelect) {
   return {
-    ...row,
+    ...withoutCisBaselineAuthority(row),
+    // 'reapproval_required' = the schedule is on but carries no valid stored
+    // authority, so the scheduler skips it until a user with devices:execute
+    // (and MFA) saves the baseline again.
+    scheduleApproval: describeCisScheduleApproval(row),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
 }
+
+/**
+ * The CIS write surface (baseline save — which arms a recurring scan — plus
+ * remediation request and approval, which queue hardening commands on
+ * endpoints) is a device-execution action: devices:execute with MFA, the same
+ * bar as script runs and software deployment.
+ */
+const requireCisExecute = requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action);
+
+const CIS_SCHEDULE_AUTHORITY_DENIED =
+  'You cannot approve a recurring CIS scan for this owner. A scheduled baseline must be saved by a user who can run commands on every device it targets.';
 
 function mapResultRow(row: typeof cisBaselineResults.$inferSelect) {
   return {
@@ -342,7 +364,8 @@ cisHardeningRoutes.get(
 cisHardeningRoutes.post(
   '/baselines',
   requireScope('organization', 'partner', 'system'),
-  requirePermission('orgs', 'write'),
+  requireCisExecute,
+  requireMfa(),
   zValidator('json', upsertBaselineSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -381,9 +404,22 @@ cisHardeningRoutes.post(
         }
       }
 
+      const nextSchedule = normalizeCisSchedule(body.scanSchedule);
+      const nextIsActive = body.isActive ?? existing.isActive;
+      // Every save of a scheduled baseline re-arms its stored authority to the
+      // saving user (fresh generation); turning the schedule off clears it.
+      let authority: ReturnType<typeof captureCisBaselineAuthority> | typeof EMPTY_CIS_BASELINE_AUTHORITY =
+        EMPTY_CIS_BASELINE_AUTHORITY;
+      if (isCisBaselineScheduled({ isActive: nextIsActive, scanSchedule: nextSchedule })) {
+        const captured = captureCisBaselineAuthority(auth, { orgId: existing.orgId, partnerId: existing.partnerId });
+        if (!captured) return c.json({ error: CIS_SCHEDULE_AUTHORITY_DENIED }, 403);
+        authority = captured;
+      }
+
       const [updated] = await db
         .update(cisBaselines)
         .set({
+          ...authority,
           // Ownership is immutable: no orgId/partnerId in the SET. Moving a
           // baseline between owners would silently re-tenant every historical
           // result that references it.
@@ -392,8 +428,8 @@ cisHardeningRoutes.post(
           benchmarkVersion: body.benchmarkVersion,
           level: body.level,
           customExclusions: body.customExclusions ?? [],
-          scanSchedule: normalizeCisSchedule(body.scanSchedule),
-          isActive: body.isActive ?? existing.isActive,
+          scanSchedule: nextSchedule,
+          isActive: nextIsActive,
           updatedAt: new Date(),
         })
         .where(eq(cisBaselines.id, existing.id))
@@ -443,9 +479,20 @@ cisHardeningRoutes.post(
       owner = { orgId: orgResult.orgId, partnerId: null };
     }
 
+    const createdSchedule = normalizeCisSchedule(body.scanSchedule);
+    const createdIsActive = body.isActive ?? true;
+    let createdAuthority: ReturnType<typeof captureCisBaselineAuthority> | typeof EMPTY_CIS_BASELINE_AUTHORITY =
+      EMPTY_CIS_BASELINE_AUTHORITY;
+    if (isCisBaselineScheduled({ isActive: createdIsActive, scanSchedule: createdSchedule })) {
+      const captured = captureCisBaselineAuthority(auth, owner);
+      if (!captured) return c.json({ error: CIS_SCHEDULE_AUTHORITY_DENIED }, 403);
+      createdAuthority = captured;
+    }
+
     const [created] = await db
       .insert(cisBaselines)
       .values({
+        ...createdAuthority,
         orgId: owner.orgId,
         partnerId: owner.partnerId,
         name: body.name,
@@ -453,8 +500,8 @@ cisHardeningRoutes.post(
         benchmarkVersion: body.benchmarkVersion,
         level: body.level,
         customExclusions: body.customExclusions ?? [],
-        scanSchedule: normalizeCisSchedule(body.scanSchedule),
-        isActive: body.isActive ?? true,
+        scanSchedule: createdSchedule,
+        isActive: createdIsActive,
         createdBy: auth.user.id,
         updatedAt: new Date(),
       })
@@ -803,7 +850,8 @@ cisHardeningRoutes.get(
 cisHardeningRoutes.post(
   '/remediate',
   requireScope('organization', 'partner', 'system'),
-  requirePermission('orgs', 'write'),
+  requireCisExecute,
+  requireMfa(),
   zValidator('json', remediateSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -967,7 +1015,8 @@ cisHardeningRoutes.post(
 cisHardeningRoutes.post(
   '/remediate/approve',
   requireScope('organization', 'partner', 'system'),
-  requirePermission('orgs', 'write'),
+  requireCisExecute,
+  requireMfa(),
   zValidator('json', approveRemediationSchema),
   async (c) => {
     const auth = c.get('auth');

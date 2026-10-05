@@ -214,6 +214,15 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
                     {bl.scanSchedule?.enabled
                       ? t('cisHardeningCisBaselinesTab.schedule.everyHours', { hours: bl.scanSchedule.intervalHours })
                       : t('cisHardeningCisBaselinesTab.schedule.manual')}
+                    {bl.scheduleApproval?.status === 'reapproval_required' && (
+                      <span
+                        data-testid="cis-baseline-schedule-reapproval"
+                        title={t('cisHardeningCisBaselinesTab.schedule.reapprovalTitle')}
+                        className="ml-2 inline-flex rounded-full border border-amber-500/30 bg-amber-500/20 px-2 py-0.5 text-xs font-semibold text-amber-700"
+                      >
+                        {t('cisHardeningCisBaselinesTab.schedule.reapprovalRequired')}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <span

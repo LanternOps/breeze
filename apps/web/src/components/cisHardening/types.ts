@@ -54,6 +54,13 @@ export type Baseline = {
   level: string;
   benchmarkVersion: string;
   scanSchedule?: { enabled?: boolean; intervalHours?: number } | null;
+  // Stored approval of the recurring scan. 'reapproval_required' = the
+  // scheduler skips this baseline until a user with devices:execute saves it.
+  scheduleApproval?: {
+    status: 'approved' | 'reapproval_required' | 'not_scheduled';
+    approvedBy: string | null;
+    approvedAt: string | null;
+  };
   isActive: boolean;
   createdAt: string;
   updatedAt: string;

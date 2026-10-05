@@ -80,6 +80,19 @@ export const cisBaselines = pgTable('cis_baselines', {
   scanSchedule: jsonb('scan_schedule').$type<CisScanSchedule>(),
   isActive: boolean('is_active').notNull().default(true),
   createdBy: uuid('created_by').references(() => users.id),
+  // Stored execution authority for the recurring scan (same envelope as
+  // sensitive_data_policies; services/cisBaselineScheduleAuthority.ts). All NULL
+  // = no approval on record: the scheduler does not dispatch the baseline.
+  executionAuthorityVersion: integer('execution_authority_version'),
+  executionAuthorityKind: varchar('execution_authority_kind', { length: 32 })
+    .$type<'organization_restricted' | 'organization_unrestricted' | 'partner_unrestricted'>(),
+  executionAuthoritySiteIds: uuid('execution_authority_site_ids').array(),
+  executionAuthorityUserId: uuid('execution_authority_user_id'),
+  executionAuthorityPrincipalKind: varchar('execution_authority_principal_kind', { length: 16 })
+    .$type<'user' | 'system'>(),
+  executionAuthorityFingerprint: varchar('execution_authority_fingerprint', { length: 64 }),
+  executionAuthorityCapturedAt: timestamp('execution_authority_captured_at', { withTimezone: true }),
+  executionAuthorityGeneration: uuid('execution_authority_generation'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
