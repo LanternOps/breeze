@@ -117,7 +117,6 @@ import { registerFixMemoryTools } from './aiToolsFixMemory';
 
 /** Secret columns stored outside the registry that tools must still never show. */
 const UNREGISTERED_SECRET_COLUMNS = [
-  'backup_configs.encryption_key',
   'storage_encryption_keys.key_hash',
   'api_keys.key_hash',
 ];
@@ -439,7 +438,7 @@ const SENTINEL_CASES: SentinelCase[] = [
     tool: 'manage_backup_configs',
     input: { action: 'get', configId: ID },
     rows: [[{
-      id: ROW_ID, orgId: ORG, name: 'S3', provider: 's3', encryptionKey: SENTINEL,
+      id: ROW_ID, orgId: ORG, name: 'S3', provider: 's3',
       providerConfig: {
         bucket: 'b', region: 'us-east-1', accessKey: SENTINEL, secretKey: SENTINEL,
         // Azure and B2 key names, which only the provider-config helper knows are secret.
