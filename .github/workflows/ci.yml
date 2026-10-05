@@ -1992,6 +1992,13 @@ jobs:
       # Verified like winsvcinstall: with GOOS=windows GOARCH=amd64
       # CGO_ENABLED=0 it vets, its test binary compiles, and its Windows
       # dependency graph contains no cgo and no other first-party package.
+      #
+      # ./internal/svcquery (#7967) carries windows-tagged tests for the
+      # least-privilege service open (query-only access mask, not-found vs
+      # access-denied classification, WinDefend query). Verified with
+      # GOOS=windows GOARCH=amd64 CGO_ENABLED=0: vets and its test binary
+      # compiles; no cgo and no remote/desktop in its dependency graph.
+      #
       # ./internal/collectors/timesync (#7452) carries windows-tagged tests
       # that run nowhere else: the unsafe struct sizes/offsets the DsRole,
       # DsGetDcNameW and GetDynamicTimeZoneInformation syscalls write into, the
@@ -2005,7 +2012,7 @@ jobs:
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/windisks ./internal/recoveryconsole ./internal/backup/rebuild ./internal/backup/winhive ./internal/backup/bmr ./internal/backup/hosttool ./internal/collectors/timesync ./internal/executor ./internal/securefs ./internal/winsvcinstall ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/windisks ./internal/recoveryconsole ./internal/backup/rebuild ./internal/backup/winhive ./internal/backup/bmr ./internal/backup/hosttool ./internal/collectors/timesync ./internal/executor ./internal/securefs ./internal/winsvcinstall ./internal/svcquery ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two

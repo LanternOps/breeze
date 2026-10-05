@@ -3,9 +3,11 @@
 package svcquery
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -29,14 +31,22 @@ func GetStatus(name string) (ServiceInfo, error) {
 	}
 	defer m.Disconnect()
 
-	s, err := m.OpenService(name)
+	s, err := openServiceForQuery(m, name)
 	if err != nil {
+		if !errors.Is(err, ErrServiceNotFound) {
+			// The service may exist (e.g. access denied) — do not fall back to
+			// a display-name scan or report it as not found.
+			return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: open service %s: %w", name, err)
+		}
 		// Fallback: try to resolve as a display name
 		resolved, resolveErr := resolveDisplayName(m, name)
 		if resolveErr != nil {
-			return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: open service %s: %w", name, err)
+			if errors.Is(resolveErr, ErrServiceNotFound) {
+				return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: open service %s: %w", name, err)
+			}
+			return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: resolve display name %q: %w", name, resolveErr)
 		}
-		s, err = m.OpenService(resolved)
+		s, err = openServiceForQuery(m, resolved)
 		if err != nil {
 			return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: open service %s (resolved from %q): %w", resolved, name, err)
 		}
@@ -75,7 +85,7 @@ func ListServices() ([]ServiceInfo, error) {
 
 	services := make([]ServiceInfo, 0, len(names))
 	for _, name := range names {
-		s, err := m.OpenService(name)
+		s, err := openServiceForQuery(m, name)
 		if err != nil {
 			continue
 		}
@@ -106,7 +116,7 @@ func resolveDisplayName(m *mgr.Mgr, displayName string) (string, error) {
 	}
 	lower := strings.ToLower(displayName)
 	for _, keyName := range names {
-		s, err := m.OpenService(keyName)
+		s, err := openServiceForQuery(m, keyName)
 		if err != nil {
 			continue
 		}
@@ -119,7 +129,37 @@ func resolveDisplayName(m *mgr.Mgr, displayName string) (string, error) {
 			return keyName, nil
 		}
 	}
-	return "", fmt.Errorf("no service with display name %q", displayName)
+	return "", fmt.Errorf("no service with display name %q: %w", displayName, ErrServiceNotFound)
+}
+
+// queryServiceAccess is the only access svcquery needs: Query() requires
+// SERVICE_QUERY_STATUS and Config() requires SERVICE_QUERY_CONFIG.
+// mgr.(*Mgr).OpenService requests SERVICE_ALL_ACCESS, which services with a
+// restrictive DACL (e.g. WinDefend) refuse with "Access is denied" (#7967).
+const queryServiceAccess = windows.SERVICE_QUERY_STATUS | windows.SERVICE_QUERY_CONFIG
+
+// openServiceForQuery opens a service read-only. A service that does not exist
+// is reported as an error wrapping ErrServiceNotFound.
+func openServiceForQuery(m *mgr.Mgr, name string) (*mgr.Service, error) {
+	namePtr, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid service name %q: %w", ErrServiceNotFound, name, err)
+	}
+	h, err := windows.OpenService(m.Handle, namePtr, queryServiceAccess)
+	if err != nil {
+		return nil, classifyOpenError(err)
+	}
+	return &mgr.Service{Name: name, Handle: h}, nil
+}
+
+// classifyOpenError wraps ErrServiceNotFound around OpenService errors that
+// prove the service does not exist. Everything else (notably
+// ERROR_ACCESS_DENIED) is returned unchanged: the service may exist.
+func classifyOpenError(err error) error {
+	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) || errors.Is(err, windows.ERROR_INVALID_NAME) {
+		return fmt.Errorf("%w: %w", ErrServiceNotFound, err)
+	}
+	return err
 }
 
 func mapWindowsState(state svc.State) ServiceStatus {
