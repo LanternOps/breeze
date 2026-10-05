@@ -131,7 +131,9 @@ export function InvoicePaymentPanel(p: InvoicePaymentPanelProps) {
   const waitingOnBank = !released && (inFlight?.actionRequired === true || s?.state === 'action_required');
   const processing = !waitingOnBank && (!!inFlight || s?.state === 'processing');
   const copy = s && !waitingOnBank && !(released && s.state === 'action_required')
-    ? statusCopy(processing && s.state !== 'processing' ? { ...s, state: 'processing', amount: inFlight?.amount ?? s.amount } : s, msp, !!p.portal)
+    // An in-flight amount without the API's processing status: the schedule's noticed fee is a
+    // maximum, not what is moving, so don't print it as the fee.
+    ? statusCopy(processing && s.state !== 'processing' ? { ...s, state: 'processing', amount: inFlight?.amount ?? s.amount, fee: null } : s, msp, !!p.portal)
     : processing && inFlight ? statusCopy({ state: 'processing', amount: inFlight.amount, currency: p.currency, chargeDate: null, fee: null,
       methodLabel: null, methodType: null, reason: null, paidAt: null, canPayNow: false }, msp, !!p.portal) : null;
   const pay: PayKind = !p.canPay ? 'none' : waitingOnBank || processing ? 'none' : copy?.pay ?? 'pay';

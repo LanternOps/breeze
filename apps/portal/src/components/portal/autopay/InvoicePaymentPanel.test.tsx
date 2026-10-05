@@ -109,6 +109,12 @@ describe('enrolled: the invoice says how it will be paid instead of offering set
     expect(line).toHaveTextContent('Bank payments usually take a few business days to clear.');
     expect(line).not.toHaveTextContent('saved payment method');
   });
+  it('an in-flight amount beside a scheduled status never prints the noticed maximum fee as moving', () => {
+    panel({ autopayStatus: scheduled, collectionInProgress: { amount: '50.00', actionRequired: false } });
+    const line = screen.getByTestId('public-invoice-collection-processing');
+    expect(line).toHaveTextContent('$50.00 is being collected from your Visa credit card ending in 4242.');
+    expect(line).not.toHaveTextContent('fee');
+  });
   it('processing: no action, no Pay', () => {
     panel({ autopayStatus: { ...scheduled, state: 'processing', fee: '0.00', canPayNow: false, methodType: 'us_bank_account', methodLabel: 'Bank account ending in 6789' }, autopayEnrolled: true });
     expect(screen.getByTestId('public-invoice-collection-processing')).toHaveTextContent('$50.00 is being collected from your bank account ending in 6789');
