@@ -80,13 +80,15 @@ function feeRows(disclosures:{type:AutopayPaymentMethodType;disclosure:Disclosur
  });
 }
 /** The "How it works" facts of a request or resume. */
-function termsSummary(disclosures:{type:AutopayPaymentMethodType;disclosure:Disclosure}[]):{label:string;value:string}[]{
+function termsSummary(disclosures:{type:AutopayPaymentMethodType;disclosure:Disclosure}[],reauthorize=false):{label:string;value:string}[]{
  const first=disclosures[0]?.disclosure;
  if(!first)return [];
  const cap=first.scheduleTerms?.cap;
+ // FP-22: an enrolled client keeps the invoices already covered; a re-authorization states the limit, not "issued after you set this up".
+ const invoicesRow=reauthorize?(cap?.enabled?[{label:'Limit',value:`Up to ${emailMoney(cap.amount,cap.currency)} per invoice`}]:[])
+  :[{label:'Which invoices',value:`Invoices issued after you set this up${cap?.enabled?`, up to ${emailMoney(cap.amount,cap.currency)} each`:''}`}];
  return [{label:"When you're charged",value:first.scheduleTerms?autopayScheduleSummary(first.scheduleTerms):first.scheduleText},...feeRows(disclosures),
-  {label:'Which invoices',value:`Invoices issued after you set this up${cap?.enabled?`, up to ${emailMoney(cap.amount,cap.currency)} each`:''}`},
-  {label:'Before each payment',value:'We email you the amount and date'}];
+  ...invoicesRow,{label:'Before each payment',value:'We email you the amount and date'}];
 }
 /** terms: which schedule and fee terms the email restates. A request offers every
  * available method; a resume restates the client's own method; pause and stop restate
@@ -117,7 +119,7 @@ async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect
   vars:{partner_name:partner.name,org_name:org.name,client_name:clientNameFor(org.billingContact,org.name),...vars},ctaUrl:url,scheduleText,feeText,stopUrl,
   openInvoices:kind==='autopay_request'||kind==='autopay_resumed'?undefined:openInvoices??[],processingText:processingText?.replaceAll('{{partner_name}}',()=>partner.name),
   summary:kind==='autopay_resumed'&&extra.methodLabel?[{label:'Payment method',value:extra.methodLabel},...termsSummary(disclosures).slice(0,-2)]
-   :kind==='autopay_request'?termsSummary(disclosures):undefined,
+   :kind==='autopay_request'?termsSummary(disclosures,extra.variant==='reauthorize'):undefined,
   notes:notes.length?notes:undefined}},db);
  // Pause/resume/stop emails are revalidated at dispatch against this transition.
  if(kind!=='autopay_request')rendered.frozen={...rendered.frozen,transitionAt:lifecycleTransitionAt(kind,enrollment)};

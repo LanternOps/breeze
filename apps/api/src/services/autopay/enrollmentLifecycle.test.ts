@@ -21,7 +21,7 @@ describe('enrollment lifecycle',()=>{
  });
 });
 
-const h = vi.hoisted(() => ({ lockInvoices: vi.fn(), stopSchedules: vi.fn(), rows: [] as unknown[][], calls: [] as {op:string;value:unknown}[], enqueue: vi.fn(), mint: vi.fn(), revoke: vi.fn(), gate: vi.fn(), readiness: vi.fn(), method: vi.fn(), after: vi.fn(), resolve: vi.fn(), staff: vi.fn(), staffEmail: vi.fn(), achMode: 'ach_preferred' as 'ach_preferred'|'ach_only'|'card_only' }));
+const h = vi.hoisted(() => ({ lockInvoices: vi.fn(), stopSchedules: vi.fn(), rows: [] as unknown[][], calls: [] as {op:string;value:unknown}[], enqueue: vi.fn(), mint: vi.fn(), revoke: vi.fn(), gate: vi.fn(), readiness: vi.fn(), method: vi.fn(), after: vi.fn(), resolve: vi.fn(), staff: vi.fn(), staffEmail: vi.fn(), achMode: 'ach_preferred' as 'ach_preferred'|'ach_only'|'card_only', scheduleTerms: undefined as unknown }));
 vi.mock('../../db', () => {
  const chain: Record<string, unknown> = {};
  for (const op of ['select','from','innerJoin','where','limit','for','update','set','returning','insert','values']) {
@@ -44,7 +44,7 @@ vi.mock('./paymentMethods',()=>({getAutopayMethod:h.method,detachPaymentMethodPo
 vi.mock('./staffNotifications',()=>({notifyAutopayStaff:vi.fn(),enqueueAutopayStaffNotifications:h.staff,sendAutopayStaffEmail:h.staffEmail}));
 vi.mock('./billingPaymentSettings',()=>({resolveBillingPaymentSettings:async()=>({
  autopayOffsetDays:{value:0},autopayOffsetRule:{value:'later'},achMode:{value:'ach_preferred'}})}));
-vi.mock('./consentText',()=>({buildAutopayDisclosure:async(_db:unknown,_org:unknown,method:string)=>({achMode:h.achMode,scheduleText:'Server schedule.',feeText:method==='card'?'A credit-card processing fee of up to 3% applies.':'No processing fee applies.'})}));
+vi.mock('./consentText',()=>({buildAutopayDisclosure:async(_db:unknown,_org:unknown,method:string)=>({achMode:h.achMode,scheduleText:'Server schedule.',...(h.scheduleTerms?{scheduleTerms:h.scheduleTerms}:{}),feeText:method==='card'?'A credit-card processing fee of up to 3% applies.':'No processing fee applies.'})}));
 vi.mock('../invoiceLinkToken',()=>({getOrMintInvoiceLink:vi.fn(async()=>({token:'invoice-token'})),
  buildPublicInvoiceUrl:(token:string)=>`https://portal.example.test/invoice/${token}`}));
 import { db } from '../../db';
@@ -59,7 +59,7 @@ const org={id:orgId,partnerId,status:'active',type:'customer',name:'Example clie
 const enrollment={id:'33333333-3333-4333-8333-333333333333',orgId,partnerId,status:'active',generation:9,requestRecipientEmail:null};
 const invoice={id:'44444444-4444-4444-8444-444444444444',invoiceNumber:'INV-1',balance:'12.00',currencyCode:'USD'};
 function noticeRows(kind:string){h.rows.push([org],[{id:partnerId,name:'Example MSP'}],[{settings:{emailTemplates:{[kind]:{html:'<p>Replacement body only</p>'}}}}]);}
-beforeEach(()=>{vi.clearAllMocks();h.achMode='ach_preferred';h.rows=[];h.calls=[];h.stopSchedules.mockResolvedValue({processing:[],cancelling:[]});h.gate.mockResolvedValue(true);h.readiness.mockResolvedValue({ready:true});h.mint.mockResolvedValue({id:'66666666-6666-4666-8666-666666666666',token:'server-token'});});
+beforeEach(()=>{vi.clearAllMocks();h.achMode='ach_preferred';h.scheduleTerms=undefined;h.rows=[];h.calls=[];h.stopSchedules.mockResolvedValue({processing:[],cancelling:[]});h.gate.mockResolvedValue(true);h.readiness.mockResolvedValue({ready:true});h.mint.mockResolvedValue({id:'66666666-6666-4666-8666-666666666666',token:'server-token'});});
 describe('lifecycle behavior',()=>{
  it.each(['pause','stop'] as const)('%s cancels future schedules without changing processing collection attempts and protects invoice links',async action=>{
   h.rows.push([org],[enrollment],[{...enrollment,status:action==='pause'?'paused':'cancelled'}],[]);
@@ -224,6 +224,7 @@ it('protects the pending Stop disclosure outside a custom notice body',async()=>
 });
 
 it.each(['active','paused'])('reauthorizes %s once without changing enrollment or schedules',async status=>{
+ h.scheduleTerms={offsetDays:0,rule:'later',cap:{enabled:true,amount:'200.00',currency:'USD'}};
  const current={...enrollment,status,stripeAccountId:'acct_test',stripeConnectionId:'connection'};
  h.rows.push([org],[current],[{id:'connection',stripeAccountId:'acct_test'}],[]);
  noticeRows('autopay_request');
@@ -241,6 +242,9 @@ it.each(['active','paused'])('reauthorizes %s once without changing enrollment o
   expect(body).toContain('Example MSP has updated the terms of your automatic payments');
   expect(body).toContain('Your automatic payments continue on the terms you already accepted until you review and accept the new ones.');
   expect(body).toContain('server-token/enroll');
+  // FP-22: the limit at a glance, without the first-time "issued after you set this up".
+  expect(body).not.toContain('issued after you set this up');
+  expect(body).toContain('Up to $200.00 per invoice');
  }
  h.rows.push([org],[current],[{id:'connection',stripeAccountId:'acct_test'}],[{id:'notice'}]);
  await requestAutopay(db,actor,{orgIds:[orgId],mode:'reauthorize'});
