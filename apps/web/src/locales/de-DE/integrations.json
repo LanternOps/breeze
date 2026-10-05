@@ -350,7 +350,6 @@
     "securityAccessAndDataControlAPIControlsManage": "Sicherheit → Zugriffs- und Datenkontrolle → API-Kontrollen → Domänenweite Delegation verwalten → Neu hinzufügen",
     "pasteTheServiceAccountsClientIDAndIn": ". Fügen Sie die Client-ID des Dienstkontos ein, fügen Sie unter „OAuth-Bereiche“ die durch Kommas getrennte Liste unten ein und klicken Sie dann auf „Autorisieren“.",
     "oauthScopesToAuthorize": "Zu autorisierende OAuth-Bereiche:",
-    "gmailMarkHandledScopeNote": "Nur wenn der Server GMAIL_HANDLED_LABEL setzt (eingegangene Support-Mails kennzeichnen und archivieren): zusätzlich diesen Bereich autorisieren.",
     "primaryDomain": "Primäre Domäne",
     "superAdminEmailImpersonated": "E-Mail des Superadministrators (gefälscht)",
     "adminExampleCom": "admin@example.com",

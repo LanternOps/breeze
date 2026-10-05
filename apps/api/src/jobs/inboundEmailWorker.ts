@@ -62,16 +62,18 @@ export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promis
     }
   };
 
-  // M365 attachments (#6688): Graph download + blob put happen HERE, before the
-  // transaction opens, never inside it (see fetchInboundAttachments.ts). Only a
-  // generation-bound job can name the tenant to fetch from.
   if (email.provider === 'gmail') {
     await run();
-    // Opt-in (GMAIL_HANDLED_LABEL): label/archive only mail that actually became
-    // a ticket. Never throws; runs after the pipeline's transaction has closed.
+    // Opt-in per mailbox (ticket_mailbox_connections.gmail_handled_label):
+    // label/archive only mail that actually became a ticket. Never throws; runs
+    // after the pipeline's transaction has closed and opens no transaction
+    // across its Gmail calls.
     await markIngestedGmailHandled(email, mailboxGeneration);
     return;
   }
+  // M365 attachments (#6688): Graph download + blob put happen HERE, before the
+  // transaction opens, never inside it (see fetchInboundAttachments.ts). Only a
+  // generation-bound job can name the tenant to fetch from.
   if (email.provider !== 'm365' || !mailboxGeneration?.tenantId || !email.hasAttachments) return run();
 
   await prepareM365Attachments(email, {

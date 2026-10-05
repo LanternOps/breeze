@@ -350,7 +350,6 @@
     "securityAccessAndDataControlAPIControlsManage": "Sicurezza → Accesso e controllo dati → Controlli API → Gestisci delega a livello di dominio → Aggiungi nuovo",
     "pasteTheServiceAccountsClientIDAndIn": ". Incolla l'ID client dell'account di servizio e, in Ambiti OAuth, incolla l'elenco separato da virgole qui sotto, quindi fai clic su Autorizza. ",
     "oauthScopesToAuthorize": "Ambiti OAuth da autorizzare:",
-    "gmailMarkHandledScopeNote": "Solo se il server imposta GMAIL_HANDLED_LABEL (etichettare e archiviare la posta di supporto ricevuta): autorizza anche questo ambito.",
     "primaryDomain": "Dominio primario",
     "superAdminEmailImpersonated": "Email super-admin (impersonata)",
     "adminExampleCom": "admin@example.com",

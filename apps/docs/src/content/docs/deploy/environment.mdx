@@ -846,20 +846,6 @@ Two failure modes are silent from the sender's side, so check these first if mai
 
 Breeze trusts the `Authentication-Results` header only when Mailgun itself stamped it, and requires **DMARC pass** to mark a sender verified — SPF and DKIM alone are not sufficient.
 
-## Gmail support mailbox: label and archive ticketed mail
-
-Optional. Off while `GMAIL_HANDLED_LABEL` is unset.
-
-| Variable | Default | Description |
-|---|---|---|
-| `GMAIL_HANDLED_LABEL` | — | User label added to Gmail mail that created a ticket or was threaded onto one. Mail that was quarantined, ignored, skipped or failed is never touched. Gmail system label names are refused. |
-| `GMAIL_ARCHIVE_ON_HANDLE` | `true` | Also remove `INBOX` from handled mail. Set `false` to label only. |
-| `GMAIL_HANDLED_LABEL_TTL_MS` | `600000` | How long the resolved label id is cached. |
-
-<Aside type="caution">
-  Mailbox polling only needs read access. Labelling uses a separate client with the `https://www.googleapis.com/auth/gmail.modify` scope, which you must add to the service account's domain-wide delegation grant (the Google Workspace integration page lists it). Without it, labelling fails and mail stays in the inbox; ingestion is unaffected.
-</Aside>
-
 ## Ticket Mailbox (M365 email-to-ticket)
 
 These enable partners to connect a Microsoft 365 shared support mailbox so customer email becomes tickets and replies are sent from that mailbox. This is a **separate** Azure app registration from the Cloud-to-Cloud Backup app above, and an alternative to the Mailgun inbound path above — it needs no MX records or DNS changes.

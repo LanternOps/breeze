@@ -143,8 +143,8 @@ export interface InboundMailboxSession {
  * from the read session so a missing modify grant fails only the best-effort
  * label call, never ingestion. Its identity() reads the account sub through the
  * SAME token that performs the modify, so the caller can prove the mailbox is
- * still the account the message was ingested from. Only built when
- * GMAIL_HANDLED_LABEL is set.
+ * still the account the message was ingested from. Only built for a mailbox
+ * connection that has a handled label set.
  */
 export function getInboundModifyGmailClient(
   decryptedKeyJson: string,
@@ -165,7 +165,7 @@ export function getInboundMailboxSession(
 }
 
 /** Per-request timeout for the best-effort mark-handled session: short, because
- *  it runs inside the shared inbound worker and holds a row lock. */
+ *  it runs inline in the shared inbound worker. */
 export const GMAIL_MODIFY_REQUEST_TIMEOUT_MS = 8_000;
 
 function buildInboundSession(

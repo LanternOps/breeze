@@ -19,6 +19,8 @@
 import type { gmail_v1 } from '@googleapis/gmail';
 import { getInboundMailboxSession } from '../googleClient';
 import { MAX_BODY_B64_CHARS, MAX_BODY_BYTES } from './normalizeGmailMessage';
+import { assertUsableHandledLabelName, HandledLabelError } from './handledLabel';
+export { assertUsableHandledLabelName, HandledLabelError, HANDLED_LABEL_MAX_LENGTH, isUsableHandledLabelName } from './handledLabel';
 
 /** Which half of the connect-time probe failed, so the caller maps it to the right
  *  error code (a mailbox read failure vs a missing identity grant). */
@@ -368,26 +370,11 @@ export async function resolveReferencedTextBodies(
 }
 
 // ---------------------------------------------------------------------------
-// Opt-in mark-handled (label + optional archive). Only reachable when
-// gmailHandledConfig().enabled, in which case the session was minted with
-// gmail.modify (GMAIL_INBOUND_MODIFY_SCOPES). Never called on the default
-// read-only connector.
+// Opt-in mark-handled (label + optional archive). Only reachable for a mailbox
+// connection whose gmail_handled_label is set, in which case the session was
+// minted with gmail.modify (GMAIL_INBOUND_MODIFY_SCOPES). Never called on the
+// default read-only connector.
 // ---------------------------------------------------------------------------
-
-/** Gmail system label names that must never be the handled label: a system
- *  label (e.g. TRASH) as the target would silently dispose of ticketed mail.
- *  CATEGORY_* is covered by the prefix check. */
-const RESERVED_LABEL_NAMES = new Set([
-  'INBOX', 'SPAM', 'TRASH', 'UNREAD', 'STARRED', 'IMPORTANT', 'SENT', 'DRAFT', 'CHAT',
-]);
-
-export function assertUsableHandledLabelName(name: string): void {
-  const upper = name.trim().toUpperCase();
-  if (!upper) throw new Error('GMAIL_HANDLED_LABEL is empty');
-  if (RESERVED_LABEL_NAMES.has(upper) || upper.startsWith('CATEGORY_')) {
-    throw new Error(`GMAIL_HANDLED_LABEL "${name}" is a Gmail system label; the handled label must be a user label`);
-  }
-}
 
 /** Resolved label ids per (Google account, mailbox, labelName). Label ids are
  *  per account, so the immutable account sub is part of the key: a mailbox
@@ -421,7 +408,7 @@ async function resolveHandledLabelId(
   let id = labels.find((l) => l.name === labelName && l.type === 'user')?.id ?? null;
   if (!id) {
     if (labels.some((l) => l.name === labelName && l.type !== 'user')) {
-      throw new Error(`Gmail label "${labelName}" is a system label, not a usable user label`);
+      throw new HandledLabelError(`Gmail label "${labelName}" is a system label, not a usable user label`);
     }
     try {
       const created = await gmail.users.labels.create({

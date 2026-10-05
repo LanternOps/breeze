@@ -7,6 +7,7 @@ import { loginPathWithNext } from '../../lib/authScope';
 import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
 import { useTranslation } from 'react-i18next';
+import { GMAIL_INBOUND_MODIFY_SCOPES } from '@breeze/shared';
 import '@/lib/i18n';
 
 // Gmail management surface (#6593). The API is provider-agnostic — `GET
@@ -17,6 +18,17 @@ import '@/lib/i18n';
 // Gmail DWD route `POST /tickets/mailbox/connect/gmail` (never the Microsoft
 // consent path, which would convert the row to m365 and drop its Gmail binding);
 // that route is org-scoped, so a gmail row carries its owning `orgId`.
+
+// Per-mailbox "mark handled" (#7949): label mail that became a ticket and
+// optionally archive it. null label = off. `error` is a fixed code the API
+// records when marking fails (never upstream text).
+interface GmailHandlingDTO {
+  label: string | null;
+  archive: boolean;
+  error: string | null;
+}
+
+const HANDLED_ERROR_CODES = new Set(['access_denied', 'rate_limited', 'unavailable', 'label_invalid', 'failed']);
 
 interface GmailMailboxConnectionDTO {
   id: string;
@@ -29,6 +41,7 @@ interface GmailMailboxConnectionDTO {
   lastPolledAt: string | null;
   lastMessageAt: string | null;
   verificationError: string | null;
+  gmailHandling: GmailHandlingDTO | null;
 }
 
 interface OrgOption {
@@ -59,6 +72,17 @@ function isMailboxStatus(value: unknown): value is GmailMailboxConnectionDTO['st
   );
 }
 
+function parseGmailHandling(value: unknown): GmailHandlingDTO | null | undefined {
+  // Absent (older API) or null: no setting to show. Present but malformed:
+  // undefined, which makes the whole row (and so the list) malformed.
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value)) return undefined;
+  if (!isNullableString(value.label) || typeof value.archive !== 'boolean') return undefined;
+  const error = 'error' in value ? value.error : null;
+  if (!isNullableString(error)) return undefined;
+  return { label: value.label, archive: value.archive, error };
+}
+
 function parseMailboxConnection(value: unknown): GmailMailboxConnectionDTO | null {
   if (!isRecord(value)) return null;
   if (typeof value.id !== 'string' || value.id.length === 0) return null;
@@ -75,6 +99,8 @@ function parseMailboxConnection(value: unknown): GmailMailboxConnectionDTO | nul
   // Provider defaults to m365 when absent (older API responses); this card keeps
   // only gmail rows — an m365 row belongs to the Microsoft card.
   const provider = value.provider === 'gmail' ? 'gmail' : 'm365';
+  const gmailHandling = parseGmailHandling(value.gmailHandling);
+  if (gmailHandling === undefined) return null;
 
   return {
     id: value.id,
@@ -87,7 +113,118 @@ function parseMailboxConnection(value: unknown): GmailMailboxConnectionDTO | nul
     lastPolledAt: value.lastPolledAt,
     lastMessageAt: value.lastMessageAt,
     verificationError,
+    gmailHandling,
   };
+}
+
+/**
+ * The per-mailbox "mark handled" line, plus (for admins) a row drawer that edits
+ * it with its own Save. Turning it on needs gmail.modify in the org's
+ * domain-wide delegation grant, so the scope is shown next to the field rather
+ * than to every tenant on the Google Workspace integration page.
+ */
+function GmailHandlingRow({
+  connection,
+  canAdminMailbox,
+  busy,
+  onSave,
+}: {
+  connection: GmailMailboxConnectionDTO;
+  canAdminMailbox: boolean;
+  busy: boolean;
+  onSave: (id: string, label: string | null, archive: boolean) => Promise<boolean>;
+}) {
+  const { t } = useTranslation('settings');
+  const handling = connection.gmailHandling ?? { label: null, archive: true, error: null };
+  const [open, setOpen] = useState(false);
+  const [label, setLabel] = useState(handling.label ?? '');
+  const [archive, setArchive] = useState(handling.archive);
+
+  const startEdit = () => {
+    setLabel(handling.label ?? '');
+    setArchive(handling.archive);
+    setOpen(true);
+  };
+  const save = async () => {
+    const ok = await onSave(connection.id, label.trim() ? label.trim() : null, archive);
+    if (ok) setOpen(false);
+  };
+
+  return (
+    <div className="flex flex-col gap-1" data-testid="gmail-handling">
+      <p className="text-xs text-muted-foreground" data-testid="gmail-handling-summary">
+        {!handling.label
+          ? t('gmailMailbox.handling.off')
+          : handling.archive
+            ? t('gmailMailbox.handling.onArchive', { label: handling.label })
+            : t('gmailMailbox.handling.onLabelOnly', { label: handling.label })}
+      </p>
+      {handling.label && handling.error ? (
+        <p className="text-xs text-destructive" data-testid="gmail-handling-error">
+          {t(/* i18n-dynamic */ `gmailMailbox.handling.error.${HANDLED_ERROR_CODES.has(handling.error) ? handling.error : 'failed'}`)}
+        </p>
+      ) : null}
+      {canAdminMailbox && !open ? (
+        <button
+          type="button"
+          data-testid="gmail-handling-edit"
+          disabled={busy}
+          className="self-start text-sm text-primary hover:underline disabled:opacity-50"
+          onClick={startEdit}
+        >
+          {t('gmailMailbox.handling.edit')}
+        </button>
+      ) : null}
+      {canAdminMailbox && open ? (
+        <div className="mt-1 flex flex-col gap-2 rounded border p-3" data-testid="gmail-handling-form">
+          <label className="text-sm" htmlFor={`gmail-handling-label-${connection.id}`}>
+            {t('gmailMailbox.handling.labelField')}
+          </label>
+          <input
+            id={`gmail-handling-label-${connection.id}`}
+            data-testid="gmail-handling-label"
+            className="rounded border p-2 text-sm"
+            maxLength={100}
+            placeholder={t('gmailMailbox.handling.labelPlaceholder')}
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+          />
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              data-testid="gmail-handling-archive"
+              checked={archive}
+              onChange={(e) => setArchive(e.target.checked)}
+            />
+            {t('gmailMailbox.handling.archiveField')}
+          </label>
+          <p className="text-xs text-muted-foreground">{t('gmailMailbox.handling.scopeNote')}</p>
+          <pre className="whitespace-pre-wrap break-all rounded bg-muted p-2 text-xs text-muted-foreground">
+            {GMAIL_INBOUND_MODIFY_SCOPES.join(',')}
+          </pre>
+          <div className="flex gap-3">
+            <button
+              type="button"
+              data-testid="gmail-handling-save"
+              disabled={busy}
+              className="rounded-md bg-primary px-3 py-1 text-sm text-primary-foreground disabled:opacity-50"
+              onClick={() => void save()}
+            >
+              {t('common:actions.save')}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              className="text-sm hover:underline disabled:opacity-50"
+              onClick={() => setOpen(false)}
+            >
+              {t('common:actions.cancel')}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function GmailMailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean }) {
@@ -232,6 +369,33 @@ function GmailMailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean
     [onUnauthorized, refresh, t],
   );
 
+  const saveHandling = useCallback(
+    async (id: string, label: string | null, archive: boolean) => {
+      setBusy(true);
+      try {
+        await runAction({
+          request: () =>
+            fetchWithAuth(`/tickets/mailbox/connections/${id}/gmail-handling`, {
+              method: 'PATCH',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ label, archive }),
+            }),
+          errorFallback: t('gmailMailbox.handling.saveFailed'),
+          successMessage: t('gmailMailbox.handling.saved'),
+          onUnauthorized,
+        });
+        await refresh();
+        return true;
+      } catch (err) {
+        if (!(err instanceof ActionError)) handleActionError(err, t('gmailMailbox.handling.saveFailed'));
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [onUnauthorized, refresh, t],
+  );
+
   const visible = connections.filter((c) => c.status !== 'disabled');
 
   return (
@@ -283,6 +447,12 @@ function GmailMailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean
                   {c.verificationError}
                 </p>
               ) : null}
+              <GmailHandlingRow
+                connection={c}
+                canAdminMailbox={canAdminMailbox}
+                busy={busy}
+                onSave={saveHandling}
+              />
               {canAdminMailbox ? (
                 <div className="flex gap-3">
                   {c.status === 'error' || c.status === 'reauth_required' ? (

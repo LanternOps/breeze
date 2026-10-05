@@ -86,22 +86,12 @@ describe('inbound mailbox scopes (mark-handled opt-in)', () => {
     expect(ALL_DWD_SCOPES_CSV).not.toContain('gmail.modify');
   });
 
-  it('the opt-in grant list is the default grant plus gmail.modify', async () => {
-    const { GOOGLE_DWD_SCOPES_CSV_WITH_GMAIL_MODIFY } = await import('@breeze/shared');
-    expect(GOOGLE_DWD_SCOPES_CSV_WITH_GMAIL_MODIFY).toBe(`${ALL_DWD_SCOPES_CSV},https://www.googleapis.com/auth/gmail.modify`);
-  });
-
-  it('the read session stays read-only even when mark-handled is configured', async () => {
-    process.env.GMAIL_HANDLED_LABEL = 'Handled';
-    try {
-      const { getInboundMailboxSession } = await import('./googleClient');
-      const session = getInboundMailboxSession(VALID_KEY, 'support@example.com');
-      const scopes = (session.gmail as unknown as { context: { _options: { auth: { scopes: string[] } } } }).context._options.auth.scopes;
-      expect(scopes).toContain('https://www.googleapis.com/auth/gmail.readonly');
-      expect(scopes).not.toContain('https://www.googleapis.com/auth/gmail.modify');
-    } finally {
-      delete process.env.GMAIL_HANDLED_LABEL;
-    }
+  it('the read session stays read-only (marking uses its own session)', async () => {
+    const { getInboundMailboxSession } = await import('./googleClient');
+    const session = getInboundMailboxSession(VALID_KEY, 'support@example.com');
+    const scopes = (session.gmail as unknown as { context: { _options: { auth: { scopes: string[] } } } }).context._options.auth.scopes;
+    expect(scopes).toContain('https://www.googleapis.com/auth/gmail.readonly');
+    expect(scopes).not.toContain('https://www.googleapis.com/auth/gmail.modify');
   });
 
   it('builds a modify session with gmail.modify plus identity scopes, never readonly', async () => {

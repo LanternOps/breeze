@@ -1496,7 +1496,26 @@
     "namePlaceholder": "Soporte",
     "connect": "Conectar",
     "credentialOrg": "Credencial: conexión de Google Workspace de {{org}}",
-    "credentialOrgUnknown": "una organización que no puedes ver"
+    "credentialOrgUnknown": "una organización que no puedes ver",
+    "handling": {
+      "off": "Desactivado: el correo permanece en la bandeja de entrada después de convertirse en ticket.",
+      "onArchive": "El correo que se convierte en ticket recibe la etiqueta de Gmail \"{{label}}\" y se archiva fuera de la bandeja de entrada.",
+      "onLabelOnly": "El correo que se convierte en ticket recibe la etiqueta de Gmail \"{{label}}\" y permanece en la bandeja de entrada.",
+      "edit": "Cambiar el manejo del correo",
+      "labelField": "Etiqueta de Gmail para el correo con ticket (déjala en blanco para desactivarlo)",
+      "labelPlaceholder": "Breeze/Ticket",
+      "archiveField": "Archivarlo también (quitarlo de la bandeja de entrada)",
+      "scopeNote": "Etiquetar requiere este alcance adicional en la delegación de todo el dominio de la organización. Leer el correo no lo necesita, así que la consulta sigue funcionando sin él.",
+      "saved": "Manejo del correo guardado",
+      "saveFailed": "No se pudo guardar el manejo del correo.",
+      "error": {
+        "access_denied": "Error al etiquetar: Google denegó el acceso. Agrega el alcance gmail.modify a la delegación de todo el dominio.",
+        "rate_limited": "Error al etiquetar: se alcanzó el límite de Gmail. Se volverá a intentar con el correo nuevo.",
+        "unavailable": "Error al etiquetar: Gmail no respondió a tiempo. Se volverá a intentar con el correo nuevo.",
+        "label_invalid": "Error al etiquetar: esta etiqueta no se puede usar. Elige otro nombre.",
+        "failed": "Error al etiquetar. El correo permanece en la bandeja de entrada."
+      }
+    }
   },
   "orgApprovalSecurityTab": {
     "title": "Seguridad de aprobación",

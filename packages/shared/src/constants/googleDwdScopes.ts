@@ -47,7 +47,8 @@ export const GMAIL_INBOUND_SCOPES = [
  * separate label call, never by the read session, so reading keeps using
  * GMAIL_INBOUND_SCOPES and a missing modify grant can only stop the labelling,
  * never ingestion. Not part of GOOGLE_DWD_SCOPES_CSV; an admin who turns the
- * feature on adds it to the grant (GOOGLE_DWD_SCOPES_CSV_WITH_GMAIL_MODIFY).
+ * feature on for a mailbox adds it to the grant (the Gmail mailbox settings card
+ * lists it next to the setting).
  */
 export const GMAIL_INBOUND_MODIFY_SCOPES = [
   'https://www.googleapis.com/auth/gmail.modify',
@@ -72,11 +73,4 @@ export const GOOGLE_DWD_SCOPES_CSV = [
   ...GMAIL_INBOUND_SCOPES,
   ...CALENDAR_SCOPES,
   ...LICENSING_SCOPES,
-].join(',');
-
-/** The default grant plus GMAIL_INBOUND_MODIFY_SCOPES, for operators who enable
- *  the opt-in Gmail mark-handled feature (GMAIL_HANDLED_LABEL). */
-export const GOOGLE_DWD_SCOPES_CSV_WITH_GMAIL_MODIFY = [
-  GOOGLE_DWD_SCOPES_CSV,
-  ...GMAIL_INBOUND_MODIFY_SCOPES,
 ].join(',');

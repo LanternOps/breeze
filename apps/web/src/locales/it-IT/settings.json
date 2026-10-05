@@ -1496,7 +1496,26 @@
     "namePlaceholder": "Assistenza",
     "connect": "Connetti",
     "credentialOrg": "Credenziali: connessione Google Workspace di {{org}}",
-    "credentialOrgUnknown": "un'organizzazione che non puoi vedere"
+    "credentialOrgUnknown": "un'organizzazione che non puoi vedere",
+    "handling": {
+      "off": "Disattivato: la posta resta nella posta in arrivo dopo essere diventata un ticket.",
+      "onArchive": "La posta che diventa un ticket riceve l'etichetta Gmail \"{{label}}\" e viene archiviata fuori dalla posta in arrivo.",
+      "onLabelOnly": "La posta che diventa un ticket riceve l'etichetta Gmail \"{{label}}\" e resta nella posta in arrivo.",
+      "edit": "Modifica la gestione della posta",
+      "labelField": "Etichetta Gmail per la posta con ticket (lascia vuoto per disattivare)",
+      "labelPlaceholder": "Breeze/Ticket",
+      "archiveField": "Archiviala anche (rimuovila dalla posta in arrivo)",
+      "scopeNote": "L'etichettatura richiede questo ambito aggiuntivo nella delega a livello di dominio dell'organizzazione. La lettura della posta non lo richiede, quindi il polling continua a funzionare anche senza.",
+      "saved": "Gestione della posta salvata",
+      "saveFailed": "Impossibile salvare la gestione della posta.",
+      "error": {
+        "access_denied": "Etichettatura non riuscita: Google ha negato l'accesso. Aggiungi l'ambito gmail.modify alla delega a livello di dominio.",
+        "rate_limited": "Etichettatura non riuscita: raggiunto il limite di Gmail. La nuova posta verrà riprovata.",
+        "unavailable": "Etichettatura non riuscita: Gmail non ha risposto in tempo. La nuova posta verrà riprovata.",
+        "label_invalid": "Etichettatura non riuscita: questa etichetta non può essere usata. Scegli un altro nome.",
+        "failed": "Etichettatura non riuscita. La posta resta nella posta in arrivo."
+      }
+    }
   },
   "orgApprovalSecurityTab": {
     "title": "Sicurezza approvazioni",

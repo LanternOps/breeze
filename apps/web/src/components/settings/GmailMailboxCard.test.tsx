@@ -241,4 +241,72 @@ describe('GmailMailboxCard', () => {
       expect(call![1].method).toBe('DELETE');
     });
   });
+
+  describe('mail handling (per-mailbox mark handled, #7949)', () => {
+    const HANDLED = { ...GROW, gmailHandling: { label: 'Breeze/Ticketed', archive: true, error: null, errorAt: null } };
+
+    it('says it is off for a mailbox without a label (and for an older API without the field)', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [{ ...GROW, gmailHandling: { label: null, archive: true, error: null, errorAt: null } }, { ...GROW, id: 'g2', mailboxAddress: 'b@client.example' }] }));
+      render(<GmailMailboxCard />);
+      await screen.findByText('help@client.example');
+      const lines = screen.getAllByTestId('gmail-handling-summary').map((el) => el.textContent);
+      expect(lines).toHaveLength(2);
+      for (const line of lines) expect(line).toMatch(/^Off/);
+    });
+
+    it('shows the label, the archive choice, and a recorded failure', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [{ ...HANDLED, gmailHandling: { ...HANDLED.gmailHandling, error: 'access_denied' } }] }));
+      render(<GmailMailboxCard />);
+      expect(await screen.findByTestId('gmail-handling-summary')).toHaveTextContent('"Breeze/Ticketed" and is archived');
+      expect(screen.getByTestId('gmail-handling-error')).toHaveTextContent(/gmail\.modify/);
+    });
+
+    it('treats a malformed gmailHandling field as a load error', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [{ ...GROW, gmailHandling: { label: 5, archive: true } }] }));
+      render(<GmailMailboxCard />);
+      expect(await screen.findByTestId('gmail-load-error')).toBeInTheDocument();
+    });
+
+    it('read-only users see the setting but cannot change it', async () => {
+      grantedActions.delete('ticket_mailbox:admin');
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [HANDLED] }));
+      render(<GmailMailboxCard />);
+      await screen.findByTestId('gmail-handling-summary');
+      expect(screen.queryByTestId('gmail-handling-edit')).not.toBeInTheDocument();
+    });
+
+    it('saves label and archive through the row drawer with PATCH, showing the extra scope next to the field', async () => {
+      fetchWithAuth
+        .mockResolvedValueOnce(jsonRes({ connections: [GROW] }))
+        .mockResolvedValueOnce(jsonRes({ ok: true }))
+        .mockResolvedValueOnce(jsonRes({ connections: [HANDLED] }));
+      render(<GmailMailboxCard />);
+      fireEvent.click(await screen.findByTestId('gmail-handling-edit'));
+      expect(screen.getByTestId('gmail-handling-form')).toHaveTextContent('https://www.googleapis.com/auth/gmail.modify');
+      fireEvent.change(screen.getByTestId('gmail-handling-label'), { target: { value: '  Breeze/Ticketed ' } });
+      fireEvent.click(screen.getByTestId('gmail-handling-archive'));
+      fireEvent.click(screen.getByTestId('gmail-handling-save'));
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(
+        '/tickets/mailbox/connections/g1/gmail-handling',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ label: 'Breeze/Ticketed', archive: false }) }),
+      ));
+      await waitFor(() => expect(screen.queryByTestId('gmail-handling-form')).not.toBeInTheDocument());
+    });
+
+    it('a blank label turns it off, and a failed save keeps the drawer open with feedback', async () => {
+      fetchWithAuth
+        .mockResolvedValueOnce(jsonRes({ connections: [HANDLED] }))
+        .mockResolvedValueOnce(jsonRes({ error: 'bad label' }, false, 400));
+      render(<GmailMailboxCard />);
+      fireEvent.click(await screen.findByTestId('gmail-handling-edit'));
+      fireEvent.change(screen.getByTestId('gmail-handling-label'), { target: { value: '   ' } });
+      fireEvent.click(screen.getByTestId('gmail-handling-save'));
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(
+        '/tickets/mailbox/connections/g1/gmail-handling',
+        expect.objectContaining({ body: JSON.stringify({ label: null, archive: true }) }),
+      ));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      expect(screen.getByTestId('gmail-handling-form')).toBeInTheDocument();
+    });
+  });
 });

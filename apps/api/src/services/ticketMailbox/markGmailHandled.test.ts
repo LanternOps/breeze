@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { gmail_v1 } from '@googleapis/gmail';
 import { markGmailHandled, resetHandledLabelCache, assertUsableHandledLabelName } from './googleMailboxClient';
-import { gmailHandledConfig } from './gmailHandledConfig';
+import { HandledLabelError, isUsableHandledLabelName } from './handledLabel';
+import { handledErrorCode } from './markIngestedGmailHandled';
 
 type Label = { id: string; name: string; type?: string };
 
@@ -26,14 +27,28 @@ const MB = 'support@example.com';
 const opts = (o: Partial<{ accountSub: string; labelName: string; archive: boolean; labelCacheTtlMs: number }> = {}) =>
   ({ accountSub: 'sub-A', labelName: 'Handled', archive: true, labelCacheTtlMs: 600_000, ...o });
 
-describe('gmailHandledConfig', () => {
-  it('is OFF when GMAIL_HANDLED_LABEL is unset or blank (connector stays read-only)', () => {
-    expect(gmailHandledConfig({}).enabled).toBe(false);
-    expect(gmailHandledConfig({ GMAIL_HANDLED_LABEL: '   ' }).enabled).toBe(false);
+describe('isUsableHandledLabelName', () => {
+  it('accepts ordinary and nested user label names', () => {
+    expect(isUsableHandledLabelName('Breeze')).toBe(true);
+    expect(isUsableHandledLabelName('Breeze/Ticketed')).toBe(true);
+    expect(isUsableHandledLabelName('x'.repeat(100))).toBe(true);
   });
-  it('is ON with archive by default when a label is set; archive can be turned off', () => {
-    expect(gmailHandledConfig({ GMAIL_HANDLED_LABEL: 'Breeze' })).toMatchObject({ enabled: true, labelName: 'Breeze', archive: true });
-    expect(gmailHandledConfig({ GMAIL_HANDLED_LABEL: 'Breeze', GMAIL_ARCHIVE_ON_HANDLE: 'false' }).archive).toBe(false);
+  it('refuses blank, padded, over-long and system label names (any case)', () => {
+    for (const bad of ['', '   ', ' Breeze', 'x'.repeat(101), 'INBOX', 'inbox', 'Trash', 'SPAM', 'category_updates']) {
+      expect(isUsableHandledLabelName(bad), bad).toBe(false);
+    }
+  });
+});
+
+describe('handledErrorCode', () => {
+  it('maps marking failures to the fixed codes stored on the connection', () => {
+    expect(handledErrorCode(Object.assign(new Error('x'), { status: 403 }))).toBe('access_denied');
+    expect(handledErrorCode(Object.assign(new Error('x'), { status: 401 }))).toBe('access_denied');
+    expect(handledErrorCode(Object.assign(new Error('x'), { status: 429 }))).toBe('rate_limited');
+    expect(handledErrorCode(Object.assign(new Error('x'), { status: 503 }))).toBe('unavailable');
+    expect(handledErrorCode(new Error('socket hang up'))).toBe('unavailable');
+    expect(handledErrorCode(Object.assign(new Error('x'), { status: 400 }))).toBe('failed');
+    expect(handledErrorCode(new HandledLabelError('system label'))).toBe('label_invalid');
   });
 });
 
@@ -88,10 +103,11 @@ describe('markGmailHandled', () => {
   });
 
   it('refuses a reserved system label name and a same-named system label', async () => {
-    expect(() => assertUsableHandledLabelName('TRASH')).toThrow(/system label/);
+    expect(() => assertUsableHandledLabelName('TRASH')).toThrow(HandledLabelError);
     expect(() => assertUsableHandledLabelName('CATEGORY_PROMOTIONS')).toThrow(/system label/);
     const f = fakeGmail({ labels: [{ id: 'SYS', name: 'Handled', type: 'system' }] });
-    await expect(markGmailHandled(f.gmail, MB, 'm4', opts())).rejects.toThrow(/system label/);
+    // Typed, so the caller records label_invalid instead of retrying it as transient.
+    await expect(markGmailHandled(f.gmail, MB, 'm4', opts())).rejects.toBeInstanceOf(HandledLabelError);
     expect(f.modify).not.toHaveBeenCalled();
   });
 

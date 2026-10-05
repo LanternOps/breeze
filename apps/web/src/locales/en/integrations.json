@@ -350,7 +350,6 @@
     "securityAccessAndDataControlAPIControlsManage": "Security → Access and data control → API controls → Manage Domain Wide Delegation → Add new",
     "pasteTheServiceAccountsClientIDAndIn": ". Paste the service account's Client ID, and in OAuth Scopes paste the comma-separated list below, then Authorize. ",
     "oauthScopesToAuthorize": "OAuth scopes to authorize:",
-    "gmailMarkHandledScopeNote": "Only if the server sets GMAIL_HANDLED_LABEL (label and archive ingested support mail): also authorize this scope.",
     "primaryDomain": "Primary domain",
     "superAdminEmailImpersonated": "Super-admin email (impersonated)",
     "adminExampleCom": "admin@example.com",

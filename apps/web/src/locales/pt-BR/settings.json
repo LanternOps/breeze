@@ -1496,7 +1496,26 @@
     "namePlaceholder": "Suporte",
     "connect": "Conectar",
     "credentialOrg": "Credencial: conexão do Google Workspace de {{org}}",
-    "credentialOrgUnknown": "uma organização que você não pode ver"
+    "credentialOrgUnknown": "uma organização que você não pode ver",
+    "handling": {
+      "off": "Desativado: o e-mail continua na caixa de entrada depois de virar um ticket.",
+      "onArchive": "O e-mail que vira um ticket recebe o marcador do Gmail \"{{label}}\" e é arquivado fora da caixa de entrada.",
+      "onLabelOnly": "O e-mail que vira um ticket recebe o marcador do Gmail \"{{label}}\" e continua na caixa de entrada.",
+      "edit": "Alterar o tratamento de e-mails",
+      "labelField": "Marcador do Gmail para e-mails com ticket (deixe em branco para desativar)",
+      "labelPlaceholder": "Breeze/Ticket",
+      "archiveField": "Também arquivar (remover da caixa de entrada)",
+      "scopeNote": "A marcação precisa deste escopo adicional na delegação em todo o domínio da organização. A leitura dos e-mails não precisa dele, então a consulta continua funcionando sem ele.",
+      "saved": "Tratamento de e-mails salvo",
+      "saveFailed": "Não foi possível salvar o tratamento de e-mails.",
+      "error": {
+        "access_denied": "Falha ao marcar: o Google negou o acesso. Adicione o escopo gmail.modify à delegação em todo o domínio.",
+        "rate_limited": "Falha ao marcar: limite de taxa do Gmail atingido. Novos e-mails serão tentados novamente.",
+        "unavailable": "Falha ao marcar: o Gmail não respondeu a tempo. Novos e-mails serão tentados novamente.",
+        "label_invalid": "Falha ao marcar: este marcador não pode ser usado. Escolha outro nome.",
+        "failed": "Falha ao marcar. O e-mail continua na caixa de entrada."
+      }
+    }
   },
   "orgApprovalSecurityTab": {
     "title": "Segurança de aprovação",

@@ -1496,7 +1496,26 @@
     "namePlaceholder": "Destek",
     "connect": "Bağlan",
     "credentialOrg": "Kimlik bilgisi: {{org}} kuruluşunun Google Workspace bağlantısı",
-    "credentialOrgUnknown": "göremediğiniz bir kuruluş"
+    "credentialOrgUnknown": "göremediğiniz bir kuruluş",
+    "handling": {
+      "off": "Kapalı: posta, talebe dönüştükten sonra gelen kutusunda kalır.",
+      "onArchive": "Talebe dönüşen posta \"{{label}}\" Gmail etiketini alır ve gelen kutusundan arşivlenir.",
+      "onLabelOnly": "Talebe dönüşen posta \"{{label}}\" Gmail etiketini alır ve gelen kutusunda kalır.",
+      "edit": "Posta işlemeyi değiştir",
+      "labelField": "Talebe dönüşen posta için Gmail etiketi (kapatmak için boş bırakın)",
+      "labelPlaceholder": "Breeze/Talep",
+      "archiveField": "Ayrıca arşivle (gelen kutusundan kaldır)",
+      "scopeNote": "Etiketleme, kuruluşun alan genelinde yetkilendirmesinde bu ek kapsamı gerektirir. Posta okumak bunu gerektirmez, bu nedenle yoklama onsuz da çalışmaya devam eder.",
+      "saved": "Posta işleme kaydedildi",
+      "saveFailed": "Posta işleme kaydedilemedi.",
+      "error": {
+        "access_denied": "Etiketleme başarısız: Google erişimi reddetti. gmail.modify kapsamını alan genelinde yetkilendirmeye ekleyin.",
+        "rate_limited": "Etiketleme başarısız: Gmail hız sınırına ulaşıldı. Yeni postalar yeniden denenecek.",
+        "unavailable": "Etiketleme başarısız: Gmail zamanında yanıt vermedi. Yeni postalar yeniden denenecek.",
+        "label_invalid": "Etiketleme başarısız: bu etiket kullanılamaz. Farklı bir ad seçin.",
+        "failed": "Etiketleme başarısız. Posta gelen kutusunda kalır."
+      }
+    }
   },
   "orgApprovalSecurityTab": {
     "title": "Onay Güvenliği",
