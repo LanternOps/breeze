@@ -46,6 +46,16 @@ it.each(['card_only','ach_preferred','ach_only'] as const)('admits bank pay usin
   else {expect(offer).toMatchObject({available:true,fee:'0.00',disclosureHash:'a'.repeat(64)});}
 });
 
+it('the one-time authorization names the invoice, the amount, the fee and the total in plain money',async()=>{
+  vi.clearAllMocks();
+  bank.rows=[[{id:'invoice',orgId:'org',partnerId:'partner',currencyCode:'USD',status:'sent',balance:'200.00',invoiceNumber:'INV-2026-0006'}],
+    [{status:'requested',stripeAccountId:'acct_test'}],[{id:'org',status:'active',deletedAt:null,currencyCode:'USD'}],[]];
+  bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64),text:'I authorize Example MSP to save this US bank account.'});
+  bank.quote.mockReturnValue({feeAmount:'1.00'});
+  const offer=await getBankAutopayOffer('invoice','org');
+  expect(offer?.consentText).toBe('I authorize a one-time bank payment of $200.00 plus a $1.00 processing fee ($201.00 in total) for invoice INV-2026-0006. I authorize Example MSP to save this US bank account.');
+});
+
 vi.mock('../invoicePdf',()=>({resolveBillingEmail:vi.fn()}));
 vi.mock('../partnerStripe',()=>({getPartnerStripeClient:vi.fn()}));
 vi.mock('../stripeSettle',()=>({assertNoHeldDbContextForStripe:vi.fn()}));

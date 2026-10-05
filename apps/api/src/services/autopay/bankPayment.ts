@@ -1,3 +1,4 @@
+import { formatMoney } from '@breeze/shared';
 import {payAndSaveSchema} from './payAndSave';
 import {z} from 'zod';
 import {organizations} from '../../db/schema';
@@ -37,6 +38,13 @@ export const invoicePaySchema=z.preprocess(value=>{
   return value;
 },z.discriminatedUnion('methodType',[bankPaySchema,
   payAndSaveSchema.safeExtend({methodType:z.literal('card').optional()})]));
+/** The one-time part of a pay-by-bank authorization, shown before the recurring text.
+ * Not part of the hashed disclosure (the amounts are bound structurally in bankPayment). */
+export function bankPaymentAuthorization(principal:string,fee:string,invoiceNumber:string|null):string{
+  const total=fromMinorUnits(toMinorUnits(principal,'USD')+toMinorUnits(fee,'USD'),'USD');
+  const usd=(value:string)=>formatMoney(value,'USD','en-US');
+  return `I authorize a one-time bank payment of ${usd(principal)} plus a ${usd(fee)} processing fee (${usd(total)} in total) for ${invoiceNumber?`invoice ${invoiceNumber}`:'this invoice'}.`;
+}
 export async function getBankAutopayOffer(invoiceId:string,orgId:string):Promise<BankAutopayOffer|null>{
   return withSystemDbAccessContext(async()=>{
     const [invoice]=await db.select().from(invoices).where(and(eq(invoices.id,invoiceId),eq(invoices.orgId,orgId))).limit(1);
@@ -60,7 +68,7 @@ export async function getBankAutopayOffer(invoiceId:string,orgId:string):Promise
     const method=await getAutopayMethod(db,orgId);
     if(!available&&method?.status!=='pending_verification')return null;
     return {available,principal:invoice.balance,fee:quote.feeAmount,currency:'USD' as const,disclosureHash:disclosure.hash,
-      consentText:`I authorize a bank payment of USD ${invoice.balance}, plus a processing fee of USD ${quote.feeAmount}, for this invoice. ${disclosure.text}`,
+      consentText:bankPaymentAuthorization(invoice.balance,quote.feeAmount,invoice.invoiceNumber)+` ${disclosure.text}`,
       methodStatus:method?.type==='us_bank_account'&&(method.status==='active'||method.status==='pending_verification')?method.status:null};
   });
 }

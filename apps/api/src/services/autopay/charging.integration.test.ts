@@ -1547,7 +1547,7 @@ it.each(['none', 'not_needed', 'scheduled'] as const)(
     // The invoice offers the new total and accepts a fresh authorization for it.
     const offer = await getBankAutopayOffer(f.invoice.id, f.org.id);
     expect(offer).toMatchObject({ available: true, principal: '100.00', fee: '2.00', methodStatus: 'active' });
-    expect(offer!.consentText).toContain('plus a processing fee of USD 2.00');
+    expect(offer!.consentText).toContain('plus a $2.00 processing fee ($102.00 in total)');
     await expect(startInvoiceBankSetup({ invoiceId: f.invoice.id, orgId: f.org.id, returnTo: 'public', ip: null, userAgent: null,
       terms: { methodType: 'us_bank_account', phase: 'setup', consentAccepted: true, principal: '100.00', fee: '2.50', currency: 'USD',
         disclosureHash: offer!.disclosureHash } })).rejects.toMatchObject({ status: 409 });
