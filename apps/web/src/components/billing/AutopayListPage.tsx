@@ -43,10 +43,15 @@ export default function AutopayListPage() {
     <button type="button" data-testid={id(variant, `autopay-resend-${row.orgId}`)} className={autopayButton.secondary} disabled={busy} onClick={() => void send([row.orgId])}>{t('autopay.resend')}</button>;
   const renderLastCharge = (row: AutopayRow) => row.lastCharge
     ? t(/* i18n-dynamic */ `autopay.attemptStates.${row.lastCharge.state}`, { defaultValue: row.lastCharge.state }) : t('autopay.noCharge');
-  const renderAttention = (row: AutopayRow, variant: Variant) => row.awaitingNotice && row.awaitingNotice.count > 0 &&
+  // FP-19: a needs-attention client says why here too, not only in the status column.
+  const renderAttention = (row: AutopayRow, variant: Variant) => <>
+    {row.status === 'needs_attention' && row.enrollment?.needsAttentionReason && <p data-testid={id(variant, `autopay-attention-${row.orgId}`)}>
+      {t(/* i18n-dynamic */ `autopay.needsAttention.${row.enrollment.needsAttentionReason}`, { defaultValue: t('autopay.status.needs_attention') })}</p>}
+    {row.awaitingNotice && row.awaitingNotice.count > 0 &&
     <a data-testid={variant === 'card' ? `autopay-card-notice-stuck-${row.orgId}` : 'autopay-notice-stuck'} href={`/billing/invoices/${row.awaitingNotice.invoiceId}`} className="text-primary hover:underline">
       <span>{t('autopay.noticeStuck')}</span>{row.awaitingNotice.reason && <>: {t(/* i18n-dynamic */ autopayReasonKey(row.awaitingNotice.reason),{nsSeparator:false})}</>}
-    </a>;
+    </a>}
+  </>;
   const th = 'px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground';
   return <div data-testid="autopay-list" className="space-y-4">
     <PageHeader title={t('autopay.title')} headingTestId="autopay-heading"

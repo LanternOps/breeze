@@ -95,3 +95,13 @@ export function autopayScheduleSummary(terms: { offsetDays: number; rule: 'earli
     ? `On the due date, or ${days} after the invoice is issued if that's later`
     : `${days} after the invoice is issued, or on the due date if that's sooner`;
 }
+
+/** FP-19: Stripe reports some bank names in capitals ("STRIPE TEST BANK"); show them as names.
+ * Mixed-case names are left alone; short tokens and dotted abbreviations stay capitals ("N.A.", "NA"). */
+export function bankNameLabel(name: string): string {
+  if (!name || /[a-z]/.test(name)) return name;
+  const small = new Set(['of', 'and', 'the', 'for']);
+  return name.toLowerCase().replace(/[a-z][a-z'.]*/g, (word, index: number) =>
+    word.includes('.') || (word.length <= 2 && !small.has(word)) ? word.toUpperCase()
+      : index > 0 && small.has(word) ? word : word[0]!.toUpperCase() + word.slice(1));
+}

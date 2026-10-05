@@ -2561,7 +2561,10 @@
       "failed": "Pagamento non riuscito",
       "requires_action": "Conferma richiesta",
       "canceled": "Annullato",
-      "unapplied": "Il pagamento richiede riconciliazione"
+      "unapplied": "Il pagamento richiede riconciliazione",
+      "returned": "Stornato",
+      "refunded": "Rimborsato",
+      "disputed": "Contestato"
     },
     "fees": {
       "title": "Commissioni di elaborazione",

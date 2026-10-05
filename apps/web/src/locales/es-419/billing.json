@@ -2561,7 +2561,10 @@
       "failed": "Pago fallido",
       "requires_action": "Se requiere confirmación",
       "canceled": "Cancelado",
-      "unapplied": "El pago requiere conciliación"
+      "unapplied": "El pago requiere conciliación",
+      "returned": "Devuelto",
+      "refunded": "Reembolsado",
+      "disputed": "Disputado"
     },
     "fees": {
       "title": "Comisiones de procesamiento",

@@ -2561,7 +2561,10 @@
       "failed": "Zahlung fehlgeschlagen",
       "requires_action": "Bestätigung erforderlich",
       "canceled": "Abgebrochen",
-      "unapplied": "Zahlung muss zugeordnet werden"
+      "unapplied": "Zahlung muss zugeordnet werden",
+      "returned": "Zurückgebucht",
+      "refunded": "Erstattet",
+      "disputed": "Angefochten"
     },
     "fees": {
       "title": "Bearbeitungsgebühren",

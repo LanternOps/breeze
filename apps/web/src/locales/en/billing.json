@@ -2561,7 +2561,10 @@
       "failed": "Failed",
       "requires_action": "Confirmation required",
       "canceled": "Cancelled",
-      "unapplied": "Payment needs reconciliation"
+      "unapplied": "Payment needs reconciliation",
+      "returned": "Returned",
+      "refunded": "Refunded",
+      "disputed": "Disputed"
     },
     "fees": {
       "title": "Processing fees",

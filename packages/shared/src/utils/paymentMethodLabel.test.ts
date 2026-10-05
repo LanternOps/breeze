@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  autopayScheduleSummary, cardBrandLabel, formatCalendarDate, formatMonthYear, formatPaymentMethod, formatPercentBps, paymentMethodInSentence,
+  autopayScheduleSummary, bankNameLabel, cardBrandLabel, formatCalendarDate, formatMonthYear, formatPaymentMethod, formatPercentBps, paymentMethodInSentence,
 } from './paymentMethodLabel';
 
 describe('cardBrandLabel', () => {
@@ -96,4 +96,10 @@ describe('autopayScheduleSummary', () => {
   ] as const)('%j', (terms, text) => {
     expect(autopayScheduleSummary(terms)).toBe(text);
   });
+});
+
+// FP-19: Stripe reports some bank names in capitals; every surface shows them as names.
+describe('bankNameLabel', () => {
+  it.each([['STRIPE TEST BANK', 'Stripe Test Bank'], ['BANK OF AMERICA, N.A.', 'Bank of America, N.A.'], ['JPMORGAN CHASE BANK, NA', 'Jpmorgan Chase Bank, NA'],
+    ['Wells Fargo', 'Wells Fargo'], ['', '']])('%s reads as %s', (raw, shown) => expect(bankNameLabel(raw)).toBe(shown));
 });

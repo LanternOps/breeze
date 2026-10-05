@@ -2561,7 +2561,10 @@
       "failed": "Ödeme başarısız",
       "requires_action": "Onay gerekli",
       "canceled": "İptal edildi",
-      "unapplied": "Ödeme mutabakat gerektiriyor"
+      "unapplied": "Ödeme mutabakat gerektiriyor",
+      "returned": "İade edildi (banka)",
+      "refunded": "İade edildi",
+      "disputed": "İtiraz edildi"
     },
     "fees": {
       "title": "İşlem ücretleri",

@@ -2561,7 +2561,10 @@
       "failed": "Falha no pagamento",
       "requires_action": "Confirmação necessária",
       "canceled": "Cancelado",
-      "unapplied": "O pagamento precisa de conciliação"
+      "unapplied": "O pagamento precisa de conciliação",
+      "returned": "Devolvido",
+      "refunded": "Reembolsado",
+      "disputed": "Contestado"
     },
     "fees": {
       "title": "Taxas de processamento",

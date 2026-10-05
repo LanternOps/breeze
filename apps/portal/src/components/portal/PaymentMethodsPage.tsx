@@ -1,6 +1,6 @@
 import { paymentMethodInSentence } from '@breeze/shared';
 import { useEffect, useState, type ReactNode } from 'react';
-import { formatMonthYear, type AutopayEnrollmentView, type AutopayMethodView } from '@breeze/shared';
+import { bankNameLabel, formatMonthYear, type AutopayEnrollmentView, type AutopayMethodView } from '@breeze/shared';
 import { apiGet, apiPost } from '@/lib/api';
 import { withBase } from '@/lib/basePath';
 import { longDate } from '@/lib/format';
@@ -14,14 +14,8 @@ type View = 'summary' | 'setup' | 'stop';
 type Summary = { tone: MarkTone; label: string; lines: ReactNode[]; attention?: string;
   update?: { label: string; primary: boolean } | null };
 
-/** V-35: Stripe reports some bank names in capitals ("STRIPE TEST BANK"); show them as names. */
-export function bankDisplayName(name: string): string {
-  if (/[a-z]/.test(name)) return name;
-  const small = new Set(['of', 'and', 'the', 'for']);
-  return name.toLowerCase().replace(/[a-z][a-z'.]*/g, (word, index: number) =>
-    word.includes('.') || (word.length <= 2 && !small.has(word)) ? word.toUpperCase() // "N.A.", "NA"
-      : index > 0 && small.has(word) ? word : word[0]!.toUpperCase() + word.slice(1));
-}
+/** V-35 / FP-19: one shared formatter for bank names. */
+export const bankDisplayName = bankNameLabel;
 
 function expiringSoon(method: AutopayMethodView): boolean {
   if (method.type !== 'card' || !method.cardExpMonth || !method.cardExpYear) return false;

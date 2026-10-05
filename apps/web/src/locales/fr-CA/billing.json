@@ -2561,7 +2561,10 @@
       "failed": "Échec du paiement",
       "requires_action": "Confirmation requise",
       "canceled": "Annulé",
-      "unapplied": "Rapprochement du paiement requis"
+      "unapplied": "Rapprochement du paiement requis",
+      "returned": "Retourné",
+      "refunded": "Remboursé",
+      "disputed": "Contesté"
     },
     "fees": {
       "title": "Frais de traitement",
