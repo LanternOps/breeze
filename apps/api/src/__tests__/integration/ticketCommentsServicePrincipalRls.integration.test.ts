@@ -11,7 +11,7 @@
  *   3. it does NOT admit the same row on a ticket the principal cannot reach
  *      (cross-partner forge → 42501), nor a 'service_principal' row that
  *      still names a user (the policy is user_id IS NULL, not "or").
- *   4. (2026-12-12-140000-ticket-comments-service-principal-partner-check.sql)
+ *   4. (2026-12-12-150000-ticket-comments-service-principal-partner-check.sql)
  *      origin_principal_id must name a partner_service_principals row of the
  *      ticket's own partner — another partner's principal, or an id that
  *      names no principal, is a 42501. actorOwnsComment and echo
@@ -35,7 +35,7 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 // replayMigration takes the shipped file NAME (it resolves the migrations
 // directory itself and re-applies every later file touching the same objects).
 const MIGRATION_FILE = '2026-12-04-101100-ticket-comments-service-principal-origin.sql';
-const PARTNER_CHECK_MIGRATION_FILE = '2026-12-12-140000-ticket-comments-service-principal-partner-check.sql';
+const PARTNER_CHECK_MIGRATION_FILE = '2026-12-12-150000-ticket-comments-service-principal-partner-check.sql';
 
 async function seedPrincipal(partnerId: string): Promise<string> {
   const adminDb = getTestDb() as any;
