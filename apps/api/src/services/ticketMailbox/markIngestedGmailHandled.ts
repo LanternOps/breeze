@@ -29,6 +29,7 @@ import type { MailboxGenerationContext } from '../inboundEmailQueue';
 import { decryptConnectionKey } from '../googleHelpers';
 import { getInboundModifyGmailClient, type InboundMailboxSession } from '../googleClient';
 import { captureException } from '../sentry';
+import { pgErrorCode } from '../../utils/pgErrors';
 import { classifyGmailError, markGmailHandled } from './googleMailboxClient';
 import { HandledLabelError, isUsableHandledLabelName } from './handledLabel';
 
@@ -118,9 +119,16 @@ function shouldReportLookupFailure(connectionId: string, at: number): boolean {
   return true;
 }
 
+/** 55P03 lock_not_available (lock_timeout) or 57014 query_canceled
+ *  (statement_timeout): the bookkeeping write gave up waiting on the row. */
+function isBookkeepingTimeout(err: unknown): boolean {
+  const code = pgErrorCode(err);
+  return code === '55P03' || code === '57014';
+}
+
 type MarkContext =
   | { kind: 'stale' | 'skipped' | 'not_ticketed' }
-  | { kind: 'no_credential'; priorError: string | null }
+  | { kind: 'no_credential' }
   | {
     kind: 'ready';
     mailboxAddress: string;
@@ -196,7 +204,7 @@ export async function markIngestedGmailHandled(
         .from(googleWorkspaceConnections)
         .where(eq(googleWorkspaceConnections.orgId, live.orgId))
         .limit(1);
-      if (!cred || cred.status !== 'active') return { kind: 'no_credential', priorError: live.priorError };
+      if (!cred || cred.status !== 'active') return { kind: 'no_credential' };
       return {
         kind: 'ready',
         mailboxAddress: live.mailboxAddress,
@@ -208,7 +216,7 @@ export async function markIngestedGmailHandled(
       };
     }, 'gmailHandled.load'));
 
-  const recordFailure = async (code: GmailHandledErrorCode, priorError: string | null, err: unknown) => {
+  const recordFailure = async (code: GmailHandledErrorCode, err: unknown) => {
     let transitioned = false;
     console.warn('[gmailHandled] mark-handled failed; message stays in the inbox', {
       connectionId: generation.connectionId, code, err: err instanceof Error ? err.message : String(err),
@@ -246,8 +254,16 @@ export async function markIngestedGmailHandled(
       console.warn('[gmailHandled] could not record the failure on the connection', {
         connectionId: generation.connectionId, err: dbErr instanceof Error ? dbErr.message : String(dbErr),
       });
-      // Could not tell whether this was a change; fall back to the snapshot.
-      transitioned = priorError !== code;
+      // Whether this was a change is unknown, and the pre-call snapshot cannot
+      // tell: every attempt that loaded the same snapshot would infer the same
+      // "change" and report it. A lock/statement timeout means another
+      // transaction holds the row; report nothing (the console line above
+      // stays). Any other DB failure is reported at most once per connection
+      // per window, like a lookup failure.
+      if (!isBookkeepingTimeout(dbErr) && shouldReportLookupFailure(generation.connectionId, Date.now())) {
+        safeCapture(err, code);
+      }
+      return;
     }
     if (transitioned) safeCapture(err, code);
   };
@@ -277,11 +293,10 @@ export async function markIngestedGmailHandled(
 
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const build = deps.modifyClient ?? getInboundModifyGmailClient;
-  let priorError: string | null = null;
   for (let attempt = 0; ; attempt++) {
     const remaining = remainingMs();
     if (remaining <= 0) {
-      await recordFailure('unavailable', priorError, new Error('mark-handled time budget spent'));
+      await recordFailure('unavailable', new Error('mark-handled time budget spent'));
       return 'failed';
     }
     let ctx: MarkContext;
@@ -299,20 +314,27 @@ export async function markIngestedGmailHandled(
       return 'failed';
     }
     if (ctx.kind === 'no_credential') {
-      await recordFailure('no_credential', ctx.priorError, new Error('Google Workspace credential missing or inactive'));
+      await recordFailure('no_credential', new Error('Google Workspace credential missing or inactive'));
       return 'no_credential';
     }
     if (ctx.kind !== 'ready') return ctx.kind;
-    priorError = ctx.priorError;
     if (!isUsableHandledLabelName(ctx.labelName)) {
-      await recordFailure('label_invalid', priorError, new HandledLabelError('stored label name is not a usable user label'));
+      await recordFailure('label_invalid', new HandledLabelError('stored label name is not a usable user label'));
+      return 'failed';
+    }
+
+    // What is left AFTER the reads: the Gmail requests get only that, so a slow
+    // context load never extends the Gmail time past the budget.
+    const gmailRemaining = Math.floor(remainingMs());
+    if (gmailRemaining <= 0) {
+      await recordFailure('unavailable', new Error('mark-handled time budget spent'));
       return 'failed';
     }
 
     try {
       // No transaction is open here. Prove through the SAME token that will
       // modify that the mailbox is still the account the message came from.
-      const session = build(ctx.saKey, ctx.mailboxAddress, AbortSignal.timeout(remaining));
+      const session = build(ctx.saKey, ctx.mailboxAddress, AbortSignal.timeout(gmailRemaining));
       const liveSub = (await session.identity()).sub;
       if (liveSub !== sub) {
         console.warn('[gmailHandled] mailbox now resolves to a different Google account; not modifying', {
@@ -336,7 +358,7 @@ export async function markIngestedGmailHandled(
         await sleep(delay);
         continue;
       }
-      await recordFailure(code, priorError, err);
+      await recordFailure(code, err);
       return 'failed';
     }
   }

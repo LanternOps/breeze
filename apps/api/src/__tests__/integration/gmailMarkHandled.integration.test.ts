@@ -352,6 +352,73 @@ describe('markIngestedGmailHandled (post-ticket, real DB)', () => {
     expect(elapsed).toBeLessThan(4_000);
   });
 
+  it('identical failures whose recording times out on a locked row are not reported to Sentry, and the next real change still is', async () => {
+    const { email, generation, connId } = await seed('created');
+    gm.markGmailHandled.mockRejectedValue(Object.assign(new Error('insufficient scope'), { status: 403 }));
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((r) => { locked = r; });
+    const holder = runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      await appDb.select({ id: ticketMailboxConnections.id }).from(ticketMailboxConnections)
+        .where(eq(ticketMailboxConnections.id, connId)).for('update');
+      locked();
+      await Promise.race([held, new Promise((r) => setTimeout(r, 8_000))]);
+    }));
+    await lockTaken;
+    // Both attempts load gmail_handled_error = NULL, then block recording the code.
+    const results = await Promise.all([
+      markIngestedGmailHandled(email, generation, deps),
+      markIngestedGmailHandled(email, generation, deps),
+    ]);
+    release();
+    await holder;
+    expect(results).toEqual(['failed', 'failed']);
+    expect((await readConn(connId)).gmailHandledError).toBeNull();
+    expect(sentry.captureException).not.toHaveBeenCalled();
+
+    // With the row free again, the change is recorded and reported once.
+    expect(await markIngestedGmailHandled(email, generation, deps)).toBe('failed');
+    expect((await readConn(connId)).gmailHandledError).toBe('access_denied');
+    expect(sentry.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('a slow context load is taken out of the Gmail time: the request is aborted at the original deadline', async () => {
+    const { email, generation } = await seed('created');
+    const budgetMs = 2_000;
+    const loadDelayMs = 1_200;
+    let signal: AbortSignal | undefined;
+    let abortedAfter: number | undefined;
+    let started = 0;
+    gm.markGmailHandled.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+      signal!.addEventListener('abort', () => {
+        abortedAfter = Date.now() - started;
+        reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+      });
+    }));
+    // Hold the inbound log table so the context load's read of it waits ~loadDelayMs.
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((r) => { locked = r; });
+    const holder = runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      await appDb.execute(sql`LOCK TABLE ticket_email_inbound IN ACCESS EXCLUSIVE MODE`);
+      locked();
+      await new Promise((r) => setTimeout(r, loadDelayMs));
+    }));
+    await lockTaken;
+    started = Date.now();
+    const result = await markIngestedGmailHandled(email, generation, {
+      sleep: async () => {},
+      budgetMs,
+      modifyClient: (_k: string, _m: string, s?: AbortSignal) => { signal = s; return sessionFor(SUB)(); },
+    });
+    await holder;
+    expect(result).toBe('failed');
+    expect(gm.markGmailHandled).toHaveBeenCalledTimes(1);
+    expect(abortedAfter).toBeGreaterThanOrEqual(loadDelayMs);
+    // Before the fix the abort timer got the full budget after the load (~3.2s).
+    expect(abortedAfter).toBeLessThan(budgetMs + 600);
+  });
+
   it('stops retrying once the overall time budget is spent, and records it', async () => {
     const { email, generation, connId } = await seed('created');
     let t = 0;
