@@ -261,6 +261,17 @@ it('captured money not yet applied says it was received, with no Pay', () => {
   expect(document.body.textContent).not.toMatch(/didn't go through/);
 });
 
+// V2-1: a first bank still waiting for verification carries the caveat before any deferral.
+it('a scheduled payment from a bank still waiting for verification says it must be verified first', () => {
+  panel({ autopayStatus: { ...scheduled, reason: 'pending_verification', methodType: 'us_bank_account', methodLabel: 'Bank account ending in 6789' } as never, autopayEnrolled: true });
+  expect(screen.getByText(/will be paid automatically on .* with your bank account ending in 6789 once that account is verified\. Stripe will email you instructions\./)).toBeInTheDocument();
+  expect(screen.getByText('Verify your bank')).toBeInTheDocument();
+});
+it('an invoice awaiting its notice from a bank still waiting for verification says so', () => {
+  panel({ autopayStatus: { ...scheduled, state: 'awaiting_notice', reason: 'pending_verification', methodType: 'us_bank_account', methodLabel: 'Bank account ending in 6789' } as never, autopayEnrolled: true });
+  expect(screen.getByText(/will be paid automatically with your bank account ending in 6789 once that account is verified\. We'll email you the payment date first\./)).toBeInTheDocument();
+});
+
 // F-8
 it('an invoice issued before the updated authorization says so, and offers Pay', () => {
   panel({ autopayStatus: { ...scheduled, state: 'not_included', reason: 'issued_before_authorization' } as never, autopayEnrolled: true });

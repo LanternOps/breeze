@@ -66,6 +66,12 @@ describe('getCustomerInvoiceAutopay', () => {
     seed(schedule as Record<string, unknown>);
     expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject(expected);
   });
+  // V2-1: a first bank still waiting for verification is the caveat from the start, not only once it defers.
+  it.each(['scheduled', 'awaiting_notice'] as const)('%s with a bank still waiting for verification says so', async state => {
+    h.method.mockResolvedValue({ ...card, type: 'us_bank_account', status: 'pending_verification' });
+    seed({ state, stateReason: null });
+    expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state, reason: 'pending_verification' });
+  });
   it('a pending bank account defers with its own reason', async () => {
     h.method.mockResolvedValue({ ...card, type: 'us_bank_account', status: 'pending_verification' });
     seed({ stateReason: 'method_not_usable' });

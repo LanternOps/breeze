@@ -101,12 +101,14 @@ export async function getCustomerInvoiceAutopay(db: Tx, ids: { invoiceId: string
   if (['awaiting_notice', 'scheduled', 'retry_scheduled'].includes(schedule.state)
     && !await isAutopayEnabledForPartner(db, invoice.partnerId)) return status('delayed', 'on_hold');
   switch (schedule.state) {
-    case 'awaiting_notice': return status('awaiting_notice');
+    // V2-1: a first bank still waiting for verification (the only kind that is the autopay
+    // method while pending, F-1) is the caveat from the start, as the notice says.
+    case 'awaiting_notice': return status('awaiting_notice', method?.status === 'pending_verification' ? 'pending_verification' : null);
     case 'scheduled': {
       const reason = schedule.stateReason;
       if (reason === 'method_not_usable') return status('delayed', method?.status === 'pending_verification' ? 'pending_verification' : 'method_not_usable');
       if (reason && ON_HOLD.has(reason)) return status('delayed', 'on_hold');
-      return status('scheduled');
+      return status('scheduled', method?.status === 'pending_verification' ? 'pending_verification' : null);
     }
     case 'collecting': return status('processing');
     case 'retry_scheduled':

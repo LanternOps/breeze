@@ -68,11 +68,16 @@ function statusCopy(s: CustomerInvoiceAutopayStatus, msp: string, portal: boolea
   const date = s.chargeDate ? longDate(s.chargeDate) : null;
   switch (s.state) {
     case 'scheduled':
+      // V2-1: a bank still waiting for verification is paid only once it's verified.
+      if (s.reason === 'pending_verification') {
+        return { mark: { tone: 'warning', label: 'Verify your bank' }, summary: true, pay: s.canPayNow ? 'pay_now_instead' : 'none',
+          text: `This invoice will be paid automatically${date ? ` on ${date}` : ''} with ${method} once that account is verified. Stripe will email you instructions.` };
+      }
       return { mark: { tone: 'primary', label: 'Automatic payment' }, summary: true, pay: s.canPayNow ? 'pay_now_instead' : 'none',
         text: date ? `This invoice will be paid automatically on ${date} with ${method}.` : `This invoice will be paid automatically with ${method}.` };
     case 'awaiting_notice':
       return { mark: { tone: 'primary', label: 'Automatic payment' }, pay: s.canPayNow ? 'pay_now_instead' : 'none',
-        text: `This invoice will be paid automatically with ${method}. We'll email you the payment date first.` };
+        text: `This invoice will be paid automatically with ${method}${s.reason === 'pending_verification' ? ' once that account is verified' : ''}. We'll email you the payment date first.` };
     case 'delayed':
       if (s.reason === 'pending_verification') {
         return { mark: { tone: 'warning', label: 'Verify your bank' }, pay: 'pay_now_instead',
