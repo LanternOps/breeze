@@ -220,7 +220,7 @@ it.each(['active','paused'])('reauthorizes %s once without changing enrollment o
  expect(queued.kind).toBe('autopay_request');expect(queued.dedupeKey).toContain('reauthorize');
  for(const body of [queued.rendered.html,queued.rendered.text]){
   expect(body).toContain('Replacement body only');
-  expect(body).toContain('Your service provider has updated its processing fee terms; your current authorization stays in place at the previously accepted fee until you review and accept the new terms');
+  expect(body).toContain('Your service provider has updated its payment terms; your current authorization stays in place on the terms you accepted until you review and accept the new terms');
   expect(body).toContain('credit-card processing fee');expect(body).toContain('server-token/enroll');
  }
  h.rows.push([org],[current],[{id:'connection',stripeAccountId:'acct_test'}],[{id:'notice'}]);

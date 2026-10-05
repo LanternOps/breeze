@@ -96,6 +96,9 @@ export interface FeeAuthorizationGap {
  /** Null when no authorization for the current method is on file (distinct from an authorized 0);
   * such a client is listed whatever the configured fee, because collection refuses it. */
  authorizedCardFeeBps:number|null;authorizedAchFeeAmount:string|null;cardFeeBps:number;achFeeAmount:string;
+ /** Set when the accepted cap is narrower than the configured one (the MSP raised or removed it):
+  * invoices between the two are not charged automatically until the client accepts new terms. */
+ capGap?:{authorized:{enabled:true;amount:string;currency:string};configured:{enabled:false}|{enabled:true;amount:string;currency:string}}|null;
 }
 /** The partner's processing-fee attestation on file. attestedByName is null when the user is no longer readable. */
 export interface FeeAttestationRecord { attestedAt:string;attestedByName:string|null }

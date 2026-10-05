@@ -98,7 +98,8 @@ export async function requestAutopay(db:Tx,actor:InvoiceActor,input:{orgIds:stri
    }
    const card=await buildAutopayDisclosure(db,orgId,'card');
    const bank=card.achMode==='card_only'?null:await buildAutopayDisclosure(db,orgId,'us_bank_account');
-   const termsHash=createHash('sha256').update(JSON.stringify([card.feeTerms,bank?.feeTerms])).digest('hex');
+   // Fee and schedule terms (the cap): raising or removing the cap needs the client's acceptance too (2a-1).
+   const termsHash=createHash('sha256').update(JSON.stringify([card.feeTerms,bank?.feeTerms,card.scheduleTerms])).digest('hex');
    const dedupeKey=`${existing!.id}:reauthorize:${existing!.generation}:${existing!.pausedAt?.toISOString()??'active'}:${termsHash}`;
    // Bind each notice to its own token. Historical notices must not prevent
    // recovery after expiry, consumption, revocation or terminal delivery failure.
@@ -115,7 +116,7 @@ export async function requestAutopay(db:Tx,actor:InvoiceActor,input:{orgIds:stri
     const url=buildBillingLinkUrl('enroll',token.token);
     await notice(db,existing!,'autopay_request',recipient,{setup_link:url,
      ach_mode_text:card.achMode==='ach_only'?'Use a US bank account.':'Choose a bank account or card.'},url,undefined,
-     'Your service provider has updated its processing fee terms; your current authorization stays in place at the previously accepted fee until you review and accept the new terms',`${dedupeKey}:${token.id}`);
+     'Your service provider has updated its payment terms; your current authorization stays in place on the terms you accepted until you review and accept the new terms',`${dedupeKey}:${token.id}`);
    }
    result.requested.push(orgId);continue;
   }

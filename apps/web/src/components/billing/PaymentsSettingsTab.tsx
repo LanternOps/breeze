@@ -50,13 +50,22 @@ export function FeeFields({ view, setValues, disabled, scope, affirmations, setA
     ? client.authorizedCardFeeBps === null : client.authorizedAchFeeAmount === null;
   const missing = gaps.filter(unauthorized);
   const lower = gaps.filter(client => !unauthorized(client));
-  const gapText = (client: FeeAuthorizationGap) => client.methodType === 'card'
+  const feeText = (client: FeeAuthorizationGap) => client.methodType === 'card'
     ? client.authorizedCardFeeBps === null
       ? t('autopay.fees.authorizedCardNone', { configured: client.cardFeeBps })
       : t('autopay.fees.authorizedCard', { accepted: client.authorizedCardFeeBps, configured: client.cardFeeBps })
     : client.authorizedAchFeeAmount === null
       ? t('autopay.fees.authorizedAchNone', { configured: client.achFeeAmount })
       : t('autopay.fees.authorizedAch', { accepted: client.authorizedAchFeeAmount, configured: client.achFeeAmount });
+  // A client is listed for a lower fee, a narrower accepted cap (2a-1), or both: name only what differs.
+  const feeLower = (client: FeeAuthorizationGap) => unauthorized(client) || (client.methodType === 'card'
+    ? client.authorizedCardFeeBps! < client.cardFeeBps
+    : BigInt(client.authorizedAchFeeAmount!.replace('.', '')) < BigInt(client.achFeeAmount.replace('.', '')));
+  const capText = ({ capGap }: FeeAuthorizationGap) => capGap ? t('autopay.fees.authorizedCap', {
+    accepted: `${capGap.authorized.currency} ${capGap.authorized.amount}`,
+    configured: capGap.configured.enabled ? `${capGap.configured.currency} ${capGap.configured.amount}` : t('autopay.fees.noCap') }) : '';
+  const gapText = (client: FeeAuthorizationGap) => [feeLower(client) || !client.capGap ? feeText(client) : '', capText(client)]
+    .filter(Boolean).join('. ');
   const gapRow = (client: FeeAuthorizationGap, action: string) => <li key={client.orgId} className="flex flex-wrap items-center justify-between gap-2 text-sm">
     <span className="min-w-0 break-words">{scope === 'org' ? gapText(client) : <>{client.orgName} — {gapText(client)}</>}</span>
     <button type="button" data-testid={`autopay-reauthorize-${client.orgId}`} disabled={disabled || requesting}
