@@ -273,11 +273,13 @@ export default function SecurityTab({
               data-testid="security-auto-quarantine-reapproval"
               className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700"
             >
-              {i18n.t(
-                effectiveLink.autoQuarantineApprovalReason === "approver_invalid"
-                  ? "policies:configurationPolicies.featureTabs.securityTab.autoQuarantineApproverInvalid"
-                  : "policies:configurationPolicies.featureTabs.securityTab.autoQuarantineReapproval",
-              )}
+              {effectiveLink.autoQuarantineApprovalReason === "approver_invalid"
+                ? i18n.t(
+                    "policies:configurationPolicies.featureTabs.securityTab.autoQuarantineApproverInvalid",
+                  )
+                : i18n.t(
+                    "policies:configurationPolicies.featureTabs.securityTab.autoQuarantineReapproval",
+                  )}
             </p>
           )}
         </div>
