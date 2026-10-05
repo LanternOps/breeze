@@ -111,5 +111,5 @@ it.each([
  fireEvent.click(screen.getByTestId('autopay-bank-consent'));fireEvent.click(pay);
  await waitFor(()=>expect(apiPost).toHaveBeenLastCalledWith('/portal/invoices/invoice-1/pay',
   expect.objectContaining({phase:'setup',principal:'90.00',disclosureHash:'b'.repeat(64)}),{redirectOnUnauthorized:true}));
- expect(apiPost.mock.lastCall![1]).not.toHaveProperty('setupSessionId');
+ expect(vi.mocked(apiPost).mock.lastCall![1]).not.toHaveProperty('setupSessionId');
 });
