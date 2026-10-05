@@ -44,6 +44,7 @@
 import { inArray, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { backupErasureFenceRefs, backupErasureTargets, type BackupErasureTargetSource } from '../db/schema/backupErasureFences';
+import { backupConfigs } from '../db/schema/backup';
 import { asRecord, getStringValue, normalizeStorageIdentity } from './backupStorageIdentity';
 
 function rowsOf<T>(result: unknown): T[] {
@@ -73,7 +74,7 @@ type TargetInsert = typeof backupErasureTargets.$inferInsert;
 
 // ── Destination resolution ──────────────────────────────────────────────────
 
-type ConfigRow = { id: string; provider: string; provider_config: unknown };
+type ConfigRow = { id: string; provider: string; providerConfig: unknown };
 
 interface Destination {
   storageIdentity: string | null;
@@ -102,7 +103,7 @@ function resolveDestination(
   }
   if (config) {
     return {
-      storageIdentity: normalizeStorageIdentity(config.provider, asRecord(config.provider_config)),
+      storageIdentity: normalizeStorageIdentity(config.provider, asRecord(config.providerConfig)),
       provider: config.provider,
     };
   }
@@ -121,11 +122,14 @@ async function loadConfigs(configIds: Iterable<string | null | undefined>): Prom
   const map = new Map<string, ConfigRow>();
   for (let i = 0; i < ids.length; i += 1000) {
     const chunk = ids.slice(i, i + 1000);
-    const rows = rowsOf<ConfigRow>(await dbModule.db.execute(sql`
-      SELECT id, provider::text AS provider, provider_config FROM backup_configs
-       WHERE id IN (${sql.join(chunk.map((id) => sql`${id}::uuid`), sql`, `)})
-    `));
-    for (const row of rows) map.set(row.id, row);
+    // Read through the Drizzle column, never raw SQL: provider_config is
+    // sealed at rest and the column opens it (db/schema/backup.ts). Only the
+    // destination fields (bucket / endpoint / path) feed the identity.
+    const rows = await dbModule.db
+      .select({ id: backupConfigs.id, provider: backupConfigs.provider, providerConfig: backupConfigs.providerConfig })
+      .from(backupConfigs)
+      .where(inArray(backupConfigs.id, chunk));
+    for (const row of rows) map.set(row.id, { id: row.id, provider: String(row.provider), providerConfig: row.providerConfig });
   }
   return map;
 }
@@ -169,12 +173,14 @@ type ArtifactRow = {
   signature_storage_key: string | null;
 };
 
-const SNAPSHOT_COLUMNS = sql.raw(
+// Built on use, not at import: importing this module (pulled in by the GC job)
+// must not evaluate drizzle helpers, so suites that mock drizzle-orm still load.
+const snapshotColumns = () => sql.raw(
   'id, snapshot_id, config_id, job_id, storage_identity, size, file_count, "timestamp", '
   + 'is_immutable, immutable_until, immutability_enforcement::text AS immutability_enforcement, metadata',
 );
-const ID_COLUMNS = sql.raw('snapshot_id, storage_identity, config_id');
-const ARTIFACT_COLUMNS = sql.raw('snapshot_id AS snapshot_db_id, storage_key, checksum_storage_key, signature_storage_key');
+const idColumns = () => sql.raw('snapshot_id, storage_identity, config_id');
+const artifactColumns = () => sql.raw('snapshot_id AS snapshot_db_id, storage_key, checksum_storage_key, signature_storage_key');
 
 function toDate(value: Date | string | null | undefined): Date | null {
   if (value === null || value === undefined) return null;
@@ -290,7 +296,7 @@ async function loadSnapshotsById(ids: Iterable<string | null | undefined>): Prom
   for (let i = 0; i < unique.length; i += 1000) {
     const chunk = unique.slice(i, i + 1000);
     const rows = rowsOf<SnapshotRow>(await dbModule.db.execute(sql`
-      SELECT ${SNAPSHOT_COLUMNS} FROM backup_snapshots
+      SELECT ${snapshotColumns()} FROM backup_snapshots
        WHERE id IN (${sql.join(chunk.map((id) => sql`${id}::uuid`), sql`, `)})
     `));
     for (const row of rows) map.set(row.id, row);
@@ -353,19 +359,19 @@ export async function captureBackupErasureFence(
   return dbModule.withSystemDbAccessContext(async () => {
     const manifestId = await ensureManifest(orgId, opts.erasureJobId ?? null);
     const snapshots = rowsOf<SnapshotRow>(await dbModule.db.execute(sql`
-      SELECT ${SNAPSHOT_COLUMNS} FROM backup_snapshots WHERE org_id = ${orgId}::uuid
+      SELECT ${snapshotColumns()} FROM backup_snapshots WHERE org_id = ${orgId}::uuid
     `));
     const retirements = rowsOf<IdRow>(await dbModule.db.execute(sql`
-      SELECT ${ID_COLUMNS} FROM backup_snapshot_retirements WHERE org_id = ${orgId}::uuid
+      SELECT ${idColumns()} FROM backup_snapshot_retirements WHERE org_id = ${orgId}::uuid
     `));
     const reservations = rowsOf<IdRow>(await dbModule.db.execute(sql`
-      SELECT ${ID_COLUMNS} FROM backup_snapshot_id_reservations WHERE org_id = ${orgId}::uuid
+      SELECT ${idColumns()} FROM backup_snapshot_id_reservations WHERE org_id = ${orgId}::uuid
     `));
     const media = rowsOf<ArtifactRow>(await dbModule.db.execute(sql`
-      SELECT ${ARTIFACT_COLUMNS} FROM recovery_media_artifacts WHERE org_id = ${orgId}::uuid
+      SELECT ${artifactColumns()} FROM recovery_media_artifacts WHERE org_id = ${orgId}::uuid
     `));
     const bootMedia = rowsOf<ArtifactRow>(await dbModule.db.execute(sql`
-      SELECT ${ARTIFACT_COLUMNS} FROM recovery_boot_media_artifacts WHERE org_id = ${orgId}::uuid
+      SELECT ${artifactColumns()} FROM recovery_boot_media_artifacts WHERE org_id = ${orgId}::uuid
     `));
     const snapshotsById = new Map(snapshots.map((s) => [s.id, s]));
     const missing = [...media, ...bootMedia]

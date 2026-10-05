@@ -350,6 +350,7 @@ const EXEMPT: Record<string, string> = {
   'services/softwarePolicyExecutableRulesAuthorization.ts': 'Pure permission/authorization helper; never reads the devices table',
   'services/softwarePolicyRemediationPreview.ts': 'request path: Preview scoped by the caller\'s own orgCondition/site allowlist from the request path',
   'services/systemCleanup.ts': 'request path: Per-device lock scoped by device.id+orgId passed in from route/AI tool call',
+  'services/erasureBackupLegalHold.ts': 'lifecycle: erasure legal-hold precheck; reads the devices of the one org being erased (org_id = the erasure subject) to resolve effective backup holds; dispatches nothing',
   'services/tenantCascade.ts': 'lifecycle: Org/partner erasure cascade; deletes all rows for the org(s) being erased, including holding org',
   'services/tenantLifecycle.ts': 'lifecycle: Suspend/restore agent credentials tied to org/partner status change (suspend/archive/offboard)',
   'services/tenantOffboarding.ts': 'lifecycle: Queues/cancels self_uninstall drain for all orgs under an offboarding partner',
