@@ -4,7 +4,7 @@ import { expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, invoices, stripeConnectAccounts, orgAutopayEnrollments,
-  orgPaymentMethods, invoiceAutopaySchedules, invoiceCollectionAttempts, invoiceStripePayments } from '../../db/schema';
+  orgPaymentMethods, invoiceAutopaySchedules, invoiceCollectionAttempts, invoiceStripePayments, invoicePayments } from '../../db/schema';
 import { getCustomerInvoiceAutopay } from './customerInvoiceStatus';
 
 async function fixture() {
@@ -59,9 +59,12 @@ it.each([['succeeded', '0', 'paid_automatically'], ['refunded', '5000', null], [
     await withSystemDbAccessContext(async () => {
       await db.update(invoices).set({ status: 'paid', balance: '0.00', amountPaid: '50.00', paidAt: new Date('2026-10-31T08:00:00Z') }).where(eq(invoices.id, f.invoice.id));
       await db.update(invoiceAutopaySchedules).set({ state: 'succeeded', attemptCount: 1 }).where(eq(invoiceAutopaySchedules.id, f.schedule.id));
+      // A succeeded mapping must carry its applied invoice payment (DB constraint).
+      const [applied] = await db.insert(invoicePayments).values({ invoiceId: f.invoice.id, orgId: f.org.id, amount: '50.00', method: 'card',
+        receivedAt: '2026-10-31', recordedBy: null }).returning({ id: invoicePayments.id });
       const [mapping] = await db.insert(invoiceStripePayments).values({ orgId: f.org.id, invoiceId: f.invoice.id, stripeAccountId: `acct_${f.invoice.id}`,
         stripeObjectType: 'payment_intent', stripeObjectId: `pi_${f.invoice.id}`, amount: '50.00', currency: 'USD', source: 'autopay',
-        paymentMethodType: 'card', status: paymentStatus, refundedAmountMinor: refunded }).returning();
+        paymentMethodType: 'card', status: paymentStatus, refundedAmountMinor: refunded, invoicePaymentId: applied!.id }).returning();
       await db.insert(invoiceCollectionAttempts).values({ orgId: f.org.id, invoiceId: f.invoice.id, scheduleId: f.schedule.id, paymentMethodId: f.method.id,
         attemptNo: 1, idempotencyKey: `status-paid-${f.invoice.id}`, principalAmount: '50.00', currency: 'USD', initiatedBy: 'scheduler',
         state: 'succeeded', invoiceStripePaymentId: mapping!.id });
