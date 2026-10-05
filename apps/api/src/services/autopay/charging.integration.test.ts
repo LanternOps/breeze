@@ -862,7 +862,9 @@ it('Stop fences all invoices, sends one protected notice, and detaches only afte
   const stoppedContent = stopped[0]!.rendered as {html: string; text: string};
   for (const body of [stoppedContent.html, stoppedContent.text]) {
     expect(body).toContain(f.invoice.invoiceNumber); expect(body).toContain(second.invoice.invoiceNumber);
-    expect(body).toContain('is being cancelled'); expect(body).toContain('receipt');
+    // Both debits are processing when Stop runs: they complete, they are not cancelled (spec 6.6).
+    expect(body).toContain('is already processing and will complete'); expect(body).toContain('receipt');
+    expect(body).not.toContain('is being cancelled');
   }
   await drainAutopayMethodDetaches(); expect(provider.methodDetach).not.toHaveBeenCalled();
   provider.retrieve.mockImplementation(async id => {
@@ -917,7 +919,8 @@ it('Stop includes a schedule-less bank debit in the protected pending notice', a
   provider.methodDetach.mockClear();
   await withSystemDbAccessContext(() => turnOffAutopay(db, f.actor, f.org.id));
   const [notice] = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.kind, 'autopay_stopped')));
-  expect((notice!.rendered as {text: string}).text).toContain(`invoice ${f.invoice.invoiceNumber} is being cancelled`);
+  expect((notice!.rendered as {text: string}).text).toContain(`invoice ${f.invoice.invoiceNumber} is already processing and will complete`);
+  expect((notice!.rendered as {text: string}).text).not.toContain('is being cancelled');
   await drainAutopayMethodDetaches(); expect(provider.methodDetach).not.toHaveBeenCalled();
   expect((await attempts(f.invoice.id))[0]!.state).toBe('processing');
 });

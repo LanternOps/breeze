@@ -188,7 +188,8 @@ async function stop(db:Tx,orgId:string,source:'client'|'msp',actor?:InvoiceActor
  const lines=links.map(link=>`${link.number}: ${link.currency} ${link.amount} — ${link.url}`);
  const recipient=enrollment.requestRecipientEmail??contact(org.billingContact);
  if(recipient)await notice(db,updated!,'autopay_stopped',recipient,{stopped_by:source==='client'?'You':'Your service provider',open_invoices_text:lines.join('\n')||'There are no open invoices.'},undefined,links,
-  pendingInvoices.map(number=>`A payment already in progress for invoice ${number} is being cancelled. A receipt will follow if it had already completed.`).join('\n'));
+  [...pendingInvoices.processing.map(number=>`A payment for invoice ${number} is already processing and will complete; you'll get a receipt.`),
+   ...pendingInvoices.cancelling.map(number=>`A payment already in progress for invoice ${number} is being cancelled. A receipt will follow if it had already completed.`)].join('\n'));
  const staffNotice:AutopayStaffNotice={orgId,partnerId:enrollment.partnerId,event:'autopay.stopped',
   dedupeKey:`${enrollment.id}:stopped:${enrollment.generation}`,message:`Automatic payments stopped for ${org.name}.`};
  await enqueueAutopayStaffNotifications(db,staffNotice);
