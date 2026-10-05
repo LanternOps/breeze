@@ -401,4 +401,25 @@ describe('CisBaselinesTab schedule re-approval', () => {
     expect(screen.getAllByTestId('cis-baseline-schedule-reapproval')).toHaveLength(1);
     expect(screen.getByText('Needs re-approval')).toBeInTheDocument();
   });
+
+  it('names the approver who lost execute access', async () => {
+    mockList([
+      {
+        ...baseline,
+        scanSchedule: { enabled: true, intervalHours: 24 },
+        scheduleApproval: {
+          status: 'reapproval_required',
+          reason: 'approver_invalid',
+          approvedBy: 'user-9',
+          approverName: 'Departed Tech',
+          approvedAt: null,
+        },
+      },
+    ]);
+
+    render(<CisBaselinesTab refreshKey={0} onMutate={vi.fn()} />);
+
+    const badge = await screen.findByTestId('cis-baseline-schedule-reapproval');
+    expect(badge.getAttribute('title')).toContain('Departed Tech');
+  });
 });

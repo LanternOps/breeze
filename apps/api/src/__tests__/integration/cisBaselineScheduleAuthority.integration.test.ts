@@ -162,7 +162,9 @@ describe('cis_baselines stored execution authority', () => {
       downgraded: await resolveCisScheduleDispatch(downgraded),
     }));
     expect(decisions.kept).toMatchObject({ ok: true, mode: 'legacy', authority: { userId: executor.user.id } });
-    expect(decisions.downgraded).toEqual({ ok: false, reason: 'reapproval_required', revokeLegacy: true });
+    expect(decisions.downgraded).toEqual({
+      ok: false, reason: 'reapproval_required', revokeLegacy: true, checkStatus: 'approver_invalid',
+    });
   });
 
   it('a stamped row cannot also be on the legacy path (CHECK)', async () => {

@@ -4,6 +4,7 @@ import { parseSecurityScanSettings } from '@breeze/shared';
 import { db } from '../db';
 import { configPolicyFeatureLinks, configurationPolicies, devices, organizations } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import { captureException } from './sentry';
 import {
   authorityAdmitsDevice,
   captureSensitiveDataAuthority,
@@ -104,14 +105,37 @@ function hasEnvelope(row: LinkAuthorityColumns): boolean {
 }
 
 /** Static approval state of a security link for API responses (live revocation is checked at dispatch). */
+export type QuarantineApproval = {
+  status: 'approved' | 'legacy_grandfathered' | 'reapproval_required' | 'not_enabled';
+  reason: 'approver_invalid' | 'not_approved' | 'invalid_approval' | null;
+};
+
 export function describeQuarantineApproval(
-  link: { featureType: string; inlineSettings: unknown; executionAuthorityLegacy?: string | null } & LinkAuthorityColumns,
+  link: {
+    featureType: string;
+    inlineSettings: unknown;
+    executionAuthorityLegacy?: string | null;
+    executionAuthorityStatus?: string | null;
+  } & LinkAuthorityColumns,
   owner: { orgId: string | null; partnerId: string | null },
-): 'approved' | 'legacy_grandfathered' | 'reapproval_required' | 'not_enabled' | undefined {
+): QuarantineApproval | undefined {
   if (link.featureType !== 'security') return undefined;
-  if (!securitySettingsAutoQuarantine(link.inlineSettings)) return 'not_enabled';
-  if (!hasEnvelope(link) && link.executionAuthorityLegacy === 'grandfathered') return 'legacy_grandfathered';
-  return decodeSensitiveDataAuthority({ ...owner, ...pickAuthority(link) }) ? 'approved' : 'reapproval_required';
+  if (!securitySettingsAutoQuarantine(link.inlineSettings)) return { status: 'not_enabled', reason: null };
+  if (!hasEnvelope(link)) {
+    if (link.executionAuthorityLegacy === 'grandfathered') return { status: 'legacy_grandfathered', reason: null };
+    if (link.executionAuthorityLegacy === 'revoked') return { status: 'reapproval_required', reason: 'approver_invalid' };
+    return { status: 'reapproval_required', reason: 'not_approved' };
+  }
+  if (!decodeSensitiveDataAuthority({ ...owner, ...pickAuthority(link) })) {
+    return { status: 'reapproval_required', reason: 'invalid_approval' };
+  }
+  // Intact stamp whose approver failed the last dispatch check: scans are
+  // running detect-only, so do not keep reporting "approved". A transient
+  // 'lookup_failed' does not claim the approval is gone.
+  if (link.executionAuthorityStatus === 'approver_invalid') {
+    return { status: 'reapproval_required', reason: 'approver_invalid' };
+  }
+  return { status: 'approved', reason: null };
 }
 
 function pickAuthority(row: LinkAuthorityColumns): LinkAuthorityColumns {
@@ -128,7 +152,11 @@ function pickAuthority(row: LinkAuthorityColumns): LinkAuthorityColumns {
 }
 
 /** Strip the raw envelope from a feature-link row before it leaves the API. */
-export function withoutFeatureLinkAuthority<T extends Partial<LinkAuthorityColumns> & { executionAuthorityLegacy?: unknown }>(row: T) {
+export function withoutFeatureLinkAuthority<T extends Partial<LinkAuthorityColumns> & {
+  executionAuthorityLegacy?: unknown;
+  executionAuthorityStatus?: unknown;
+  executionAuthorityStatusAt?: unknown;
+}>(row: T) {
   const {
     executionAuthorityVersion: _version,
     executionAuthorityKind: _kind,
@@ -139,6 +167,8 @@ export function withoutFeatureLinkAuthority<T extends Partial<LinkAuthorityColum
     executionAuthorityCapturedAt: _capturedAt,
     executionAuthorityGeneration: _generation,
     executionAuthorityLegacy: _legacy,
+    executionAuthorityStatus: _status,
+    executionAuthorityStatusAt: _statusAt,
     ...visible
   } = row;
   return visible;
@@ -153,13 +183,21 @@ export async function resolveSecurityScanQuarantineAuthority(
   featureLinkId: string,
   deviceId: string,
 ): Promise<QuarantineAuthorityDecision> {
+  const unavailable = (error: unknown): QuarantineAuthorityDecision => {
+    console.error('[SecurityScanQuarantineAuthority] authority lookup failed:', error);
+    captureException(error);
+    return { allowed: false, reason: 'authority_unavailable' };
+  };
+
+  let rows;
   try {
-    const [link] = await db
+    rows = await db
       .select({
         orgId: configurationPolicies.orgId,
         partnerId: configurationPolicies.partnerId,
         createdBy: configurationPolicies.createdBy,
         executionAuthorityLegacy: configPolicyFeatureLinks.executionAuthorityLegacy,
+        executionAuthorityStatus: configPolicyFeatureLinks.executionAuthorityStatus,
         executionAuthorityVersion: configPolicyFeatureLinks.executionAuthorityVersion,
         executionAuthorityKind: configPolicyFeatureLinks.executionAuthorityKind,
         executionAuthoritySiteIds: configPolicyFeatureLinks.executionAuthoritySiteIds,
@@ -175,51 +213,91 @@ export async function resolveSecurityScanQuarantineAuthority(
       .innerJoin(configurationPolicies, eq(configurationPolicies.id, configPolicyFeatureLinks.configPolicyId))
       .where(eq(configPolicyFeatureLinks.id, featureLinkId))
       .limit(1);
+  } catch (error) {
+    return unavailable(error);
+  }
+  const link = rows[0];
+  if (!link) return { allowed: false, reason: 'reapproval_required' };
 
-    if (!link) return { allowed: false, reason: 'reapproval_required' };
+  // Persist the check outcome, only when it changed, so the API/UI can say why
+  // quarantine stopped. Revoking a grandfathered link is one-way.
+  const record = async (status: 'ok' | 'approver_invalid' | 'lookup_failed', revokeLegacy = false) => {
+    const statusChanged = status !== link.executionAuthorityStatus;
+    if (!statusChanged && !revokeLegacy) return;
+    try {
+      await db
+        .update(configPolicyFeatureLinks)
+        .set({
+          ...(revokeLegacy ? { executionAuthorityLegacy: 'revoked' as const } : {}),
+          ...(statusChanged ? { executionAuthorityStatus: status, executionAuthorityStatusAt: new Date() } : {}),
+        })
+        .where(revokeLegacy
+          ? and(
+              eq(configPolicyFeatureLinks.id, featureLinkId),
+              eq(configPolicyFeatureLinks.executionAuthorityLegacy, 'grandfathered'),
+              isNull(configPolicyFeatureLinks.executionAuthorityGeneration),
+            )
+          : eq(configPolicyFeatureLinks.id, featureLinkId));
+    } catch (error) {
+      console.error('[SecurityScanQuarantineAuthority] failed to record authority status:', error);
+      captureException(error);
+    }
+  };
 
-    let authority: EffectiveSensitiveDataAuthority | null;
-    if (hasEnvelope(link)) {
-      if (!decodeSensitiveDataAuthority(link)) return { allowed: false, reason: 'reapproval_required' };
+  let authority: EffectiveSensitiveDataAuthority | null;
+  if (hasEnvelope(link)) {
+    if (!decodeSensitiveDataAuthority(link)) {
+      await record('approver_invalid');
+      return { allowed: false, reason: 'reapproval_required' };
+    }
+    try {
       authority = await resolveSensitiveDataAuthorityInCurrentSystemContext(link);
-      if (!authority) return { allowed: false, reason: 'authority_revoked' };
-    } else if (link.executionAuthorityLegacy === 'grandfathered') {
+    } catch (error) {
+      await record('lookup_failed');
+      return unavailable(error);
+    }
+    if (!authority) {
+      await record('approver_invalid');
+      return { allowed: false, reason: 'authority_revoked' };
+    }
+  } else if (link.executionAuthorityLegacy === 'grandfathered') {
+    try {
       authority = await resolveLegacyPrincipalExecuteAuthorityInCurrentSystemContext(
         { orgId: link.orgId, partnerId: link.partnerId },
         link.createdBy,
       );
-      if (!authority) {
-        // One-way: the creator no longer qualifies, so the link needs an
-        // explicit re-approval even if they regain the permission later.
-        await db
-          .update(configPolicyFeatureLinks)
-          .set({ executionAuthorityLegacy: 'revoked' })
-          .where(and(
-            eq(configPolicyFeatureLinks.id, featureLinkId),
-            eq(configPolicyFeatureLinks.executionAuthorityLegacy, 'grandfathered'),
-            isNull(configPolicyFeatureLinks.executionAuthorityGeneration),
-          ));
-        return { allowed: false, reason: 'reapproval_required' };
-      }
-    } else {
+    } catch (error) {
+      await record('lookup_failed');
+      return unavailable(error);
+    }
+    if (!authority) {
+      // The creator no longer qualifies: re-approval is required even if they
+      // regain the permission later.
+      await record('approver_invalid', true);
       return { allowed: false, reason: 'reapproval_required' };
     }
+  } else {
+    return { allowed: false, reason: 'reapproval_required' };
+  }
 
-    const [device] = await db
+  await record('ok');
+
+  let device;
+  try {
+    [device] = await db
       .select({ orgId: devices.orgId, siteId: devices.siteId, partnerId: organizations.partnerId })
       .from(devices)
       .innerJoin(organizations, eq(organizations.id, devices.orgId))
       .where(eq(devices.id, deviceId))
       .limit(1);
-    const owner = link.orgId
-      ? { orgId: link.orgId, partnerId: null }
-      : { orgId: null, partnerId: link.partnerId! };
-    if (!device || !authorityAdmitsDevice(authority, owner, device)) {
-      return { allowed: false, reason: 'device_out_of_scope' };
-    }
-    return { allowed: true };
   } catch (error) {
-    console.error('[SecurityScanQuarantineAuthority] authority resolution failed:', error);
-    return { allowed: false, reason: 'authority_unavailable' };
+    return unavailable(error);
   }
+  const owner = link.orgId
+    ? { orgId: link.orgId, partnerId: null }
+    : { orgId: null, partnerId: link.partnerId! };
+  if (!device || !authorityAdmitsDevice(authority, owner, device)) {
+    return { allowed: false, reason: 'device_out_of_scope' };
+  }
+  return { allowed: true };
 }

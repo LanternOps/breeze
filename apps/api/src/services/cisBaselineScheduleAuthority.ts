@@ -1,5 +1,6 @@
 import type { cisBaselines } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import { captureException } from './sentry';
 import {
   captureSensitiveDataAuthority,
   decodeSensitiveDataAuthority,
@@ -46,12 +47,26 @@ export type CisBaselineAuthorityColumns = Pick<
   | 'executionAuthorityFingerprint'
   | 'executionAuthorityCapturedAt'
   | 'executionAuthorityGeneration'
-> & Partial<Pick<CisBaselineRow, 'executionAuthorityLegacy' | 'createdBy'>>;
+> & Partial<Pick<
+  CisBaselineRow,
+  'executionAuthorityLegacy' | 'createdBy' | 'executionAuthorityStatus' | 'executionAuthorityStatusAt'
+>>;
+
+export type CisAuthorityCheckStatus = 'ok' | 'approver_invalid' | 'lookup_failed';
 
 export type CisScheduleApproval = {
   status: 'approved' | 'legacy_grandfathered' | 'reapproval_required' | 'not_scheduled';
+  /**
+   * Why re-approval is required: the approver (or legacy creator) failed the
+   * live check ('approver_invalid'), the row was never approved
+   * ('not_approved'), or its stored approval is malformed ('invalid_approval').
+   */
+  reason: 'approver_invalid' | 'not_approved' | 'invalid_approval' | null;
   approvedBy: string | null;
   approvedAt: string | null;
+  /** Last dispatch-time check outcome and when it last changed (null = not checked yet). */
+  checkStatus: CisAuthorityCheckStatus | null;
+  checkStatusSince: string | null;
 };
 
 export const EMPTY_CIS_BASELINE_AUTHORITY = EMPTY_SENSITIVE_DATA_AUTHORITY;
@@ -108,19 +123,37 @@ export function captureCisBaselineAuthority(
 export function describeCisScheduleApproval(
   row: CisBaselineAuthorityColumns & { isActive: boolean; scanSchedule: unknown },
 ): CisScheduleApproval {
-  if (!isCisBaselineScheduled(row)) {
-    return { status: 'not_scheduled', approvedBy: null, approvedAt: null };
-  }
-  if (!hasEnvelope(row) && row.executionAuthorityLegacy === 'grandfathered') {
-    return { status: 'legacy_grandfathered', approvedBy: row.createdBy ?? null, approvedAt: null };
+  const check = {
+    checkStatus: row.executionAuthorityStatus ?? null,
+    checkStatusSince: row.executionAuthorityStatusAt ? row.executionAuthorityStatusAt.toISOString() : null,
+  };
+  const result = (
+    status: CisScheduleApproval['status'],
+    reason: CisScheduleApproval['reason'],
+    approvedBy: string | null = null,
+    approvedAt: string | null = null,
+  ): CisScheduleApproval => ({ status, reason, approvedBy, approvedAt, ...check });
+
+  if (!isCisBaselineScheduled(row)) return result('not_scheduled', null);
+  if (!hasEnvelope(row)) {
+    if (row.executionAuthorityLegacy === 'grandfathered') {
+      return result('legacy_grandfathered', null, row.createdBy ?? null);
+    }
+    if (row.executionAuthorityLegacy === 'revoked') {
+      return result('reapproval_required', 'approver_invalid', row.createdBy ?? null);
+    }
+    return result('reapproval_required', 'not_approved');
   }
   const decoded = decodeSensitiveDataAuthority(persisted(row));
-  if (!decoded) return { status: 'reapproval_required', approvedBy: null, approvedAt: null };
-  return {
-    status: 'approved',
-    approvedBy: decoded.userId,
-    approvedAt: row.executionAuthorityCapturedAt ? row.executionAuthorityCapturedAt.toISOString() : null,
-  };
+  if (!decoded) return result('reapproval_required', 'invalid_approval');
+  const approvedAt = row.executionAuthorityCapturedAt ? row.executionAuthorityCapturedAt.toISOString() : null;
+  // The stamp itself is intact, but the last dispatch found its approver no
+  // longer qualifies: the schedule is paused, so say so instead of "approved".
+  // A transient 'lookup_failed' does not claim the approval is gone.
+  if (row.executionAuthorityStatus === 'approver_invalid') {
+    return result('reapproval_required', 'approver_invalid', decoded.userId, approvedAt);
+  }
+  return result('approved', null, decoded.userId, approvedAt);
 }
 
 /** Strip the raw envelope from a row before it leaves the API. */
@@ -135,6 +168,8 @@ export function withoutCisBaselineAuthority<T extends CisBaselineAuthorityColumn
     executionAuthorityCapturedAt: _capturedAt,
     executionAuthorityGeneration: _generation,
     executionAuthorityLegacy: _legacy,
+    executionAuthorityStatus: _status,
+    executionAuthorityStatusAt: _statusAt,
     ...visible
   } = row;
   return visible;
@@ -152,28 +187,50 @@ export async function resolveCisBaselineScheduleAuthority(
     return await resolveSensitiveDataAuthorityInCurrentSystemContext(persisted(row));
   } catch (error) {
     console.error('[CisBaselineScheduleAuthority] authority resolution failed:', error);
+    captureException(error);
     return null;
   }
 }
 
 export type CisScheduleDispatch =
-  | { ok: true; mode: 'stamped' | 'legacy'; authority: EffectiveSensitiveDataAuthority }
-  | { ok: false; reason: 'reapproval_required' | 'authority_unavailable'; revokeLegacy?: true };
+  | { ok: true; mode: 'stamped' | 'legacy'; authority: EffectiveSensitiveDataAuthority; checkStatus: 'ok' }
+  | {
+      ok: false;
+      reason: 'reapproval_required' | 'authority_unavailable';
+      revokeLegacy?: true;
+      /** Absent when no live check ran (row never approved, or legacy already revoked). */
+      checkStatus?: 'approver_invalid' | 'lookup_failed';
+    };
 
 /**
  * The scheduler's decision for one baseline: stamped envelope (re-resolved
  * live), else the legacy creator path for a grandfathered row, else paused.
- * `revokeLegacy` asks the caller to flip a grandfathered row to 'revoked'.
- * A lookup failure on the legacy path skips the tick without revoking.
+ * `checkStatus` is what the caller persists on the row (on change) so the API
+ * can say why a schedule stopped; `revokeLegacy` asks it to flip a
+ * grandfathered row to 'revoked'. A lookup failure is transient: it is
+ * reported to Sentry and retried next tick, never revoked.
  */
 export async function resolveCisScheduleDispatch(
   row: CisBaselineAuthorityColumns,
 ): Promise<CisScheduleDispatch> {
+  const lookupFailed = (error: unknown): CisScheduleDispatch => {
+    console.error('[CisBaselineScheduleAuthority] authority lookup failed:', error);
+    captureException(error);
+    return { ok: false, reason: 'authority_unavailable', checkStatus: 'lookup_failed' };
+  };
+
   if (hasEnvelope(row)) {
-    const authority = await resolveCisBaselineScheduleAuthority(row);
-    return authority
-      ? { ok: true, mode: 'stamped', authority }
-      : { ok: false, reason: 'reapproval_required' };
+    if (!decodeSensitiveDataAuthority(persisted(row))) {
+      return { ok: false, reason: 'reapproval_required', checkStatus: 'approver_invalid' };
+    }
+    try {
+      const authority = await resolveSensitiveDataAuthorityInCurrentSystemContext(persisted(row));
+      return authority
+        ? { ok: true, mode: 'stamped', authority, checkStatus: 'ok' }
+        : { ok: false, reason: 'reapproval_required', checkStatus: 'approver_invalid' };
+    } catch (error) {
+      return lookupFailed(error);
+    }
   }
   if (row.executionAuthorityLegacy !== 'grandfathered') {
     return { ok: false, reason: 'reapproval_required' };
@@ -184,10 +241,9 @@ export async function resolveCisScheduleDispatch(
       row.createdBy ?? null,
     );
     return authority
-      ? { ok: true, mode: 'legacy', authority }
-      : { ok: false, reason: 'reapproval_required', revokeLegacy: true };
+      ? { ok: true, mode: 'legacy', authority, checkStatus: 'ok' }
+      : { ok: false, reason: 'reapproval_required', revokeLegacy: true, checkStatus: 'approver_invalid' };
   } catch (error) {
-    console.error('[CisBaselineScheduleAuthority] legacy authority check failed:', error);
-    return { ok: false, reason: 'authority_unavailable' };
+    return lookupFailed(error);
   }
 }

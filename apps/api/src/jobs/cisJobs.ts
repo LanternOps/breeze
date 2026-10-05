@@ -127,6 +127,7 @@ async function processScheduleScans(): Promise<{ enqueued: number; reapprovalReq
       executionAuthorityCapturedAt: cisBaselines.executionAuthorityCapturedAt,
       executionAuthorityGeneration: cisBaselines.executionAuthorityGeneration,
       executionAuthorityLegacy: cisBaselines.executionAuthorityLegacy,
+      executionAuthorityStatus: cisBaselines.executionAuthorityStatus,
       createdBy: cisBaselines.createdBy,
     })
     .from(cisBaselines)
@@ -154,24 +155,37 @@ async function processScheduleScans(): Promise<{ enqueued: number; reapprovalReq
     // row, of its creator — re-resolved live here. Anything else is skipped
     // (nextScanAt left as-is so a re-approval takes effect on the next tick).
     const decision = await resolveCisScheduleDispatch(baseline);
-    if (!decision.ok) {
-      reapprovalRequired++;
-      if (decision.revokeLegacy) {
-        // One-way: the creator no longer qualifies, so the row needs an
-        // explicit re-approval even if they regain the permission later.
-        await db
-          .update(cisBaselines)
-          .set({ executionAuthorityLegacy: 'revoked' })
-          .where(and(
+
+    // Persist the check outcome (only when it changed) so the API can say WHY a
+    // schedule stopped, e.g. its approver left — not keep reporting "approved".
+    const statusChanged = decision.checkStatus !== undefined
+      && decision.checkStatus !== baseline.executionAuthorityStatus;
+    const revokeLegacy = !decision.ok && decision.revokeLegacy === true;
+    if (statusChanged || revokeLegacy) {
+      // Revoking is one-way: the creator no longer qualifies, so the row
+      // needs an explicit re-approval even if they regain the permission.
+      const where = revokeLegacy
+        ? and(
             eq(cisBaselines.id, baseline.id),
             eq(cisBaselines.executionAuthorityLegacy, 'grandfathered'),
             isNull(cisBaselines.executionAuthorityGeneration),
-          ))
-          .catch((error) => {
-            console.error(`[CisJobs] processScheduleScans: failed to flag baseline ${baseline.id} for re-approval:`, error);
-            captureException(error);
-          });
-      }
+          )
+        : eq(cisBaselines.id, baseline.id);
+      await db
+        .update(cisBaselines)
+        .set({
+          ...(revokeLegacy ? { executionAuthorityLegacy: 'revoked' as const } : {}),
+          ...(statusChanged ? { executionAuthorityStatus: decision.checkStatus, executionAuthorityStatusAt: now } : {}),
+        })
+        .where(where)
+        .catch((error) => {
+          console.error(`[CisJobs] processScheduleScans: failed to record authority status for baseline ${baseline.id}:`, error);
+          captureException(error);
+        });
+    }
+
+    if (!decision.ok) {
+      reapprovalRequired++;
       continue;
     }
     try {

@@ -13,6 +13,8 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn(),
   withSystemDbAccessContext: vi.fn(),
 }));
+const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./sensitiveDataPolicyAuthority', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./sensitiveDataPolicyAuthority')>()),
   resolveSensitiveDataAuthorityInCurrentSystemContext: resolveStampedMock,
@@ -65,19 +67,27 @@ describe('describeQuarantineApproval', () => {
   });
 
   it('reports approved / legacy_grandfathered / reapproval_required / not_enabled', () => {
-    expect(describeQuarantineApproval(link({ ...AUTHORITY }), ORG)).toBe('approved');
-    expect(describeQuarantineApproval(link({ executionAuthorityLegacy: 'grandfathered' }), ORG)).toBe('legacy_grandfathered');
-    expect(describeQuarantineApproval(link({ executionAuthorityLegacy: 'revoked' }), ORG)).toBe('reapproval_required');
-    expect(describeQuarantineApproval(link({}), ORG)).toBe('reapproval_required');
-    expect(describeQuarantineApproval(link({ inlineSettings: { autoQuarantine: false } }), ORG)).toBe('not_enabled');
+    expect(describeQuarantineApproval(link({ ...AUTHORITY }), ORG)?.status).toBe('approved');
+    expect(describeQuarantineApproval(link({ executionAuthorityLegacy: 'grandfathered' }), ORG)?.status).toBe('legacy_grandfathered');
+    expect(describeQuarantineApproval(link({ executionAuthorityLegacy: 'revoked' }), ORG))
+      .toEqual({ status: 'reapproval_required', reason: 'approver_invalid' });
+    expect(describeQuarantineApproval(link({}), ORG)).toEqual({ status: 'reapproval_required', reason: 'not_approved' });
+    expect(describeQuarantineApproval(link({ inlineSettings: { autoQuarantine: false } }), ORG)?.status).toBe('not_enabled');
     expect(describeQuarantineApproval({ ...link({}), featureType: 'patch' }, ORG)).toBeUndefined();
+  });
+
+  it('a stamped link whose approver failed the last dispatch check needs re-approval; a transient failure does not', () => {
+    expect(describeQuarantineApproval(link({ ...AUTHORITY, executionAuthorityStatus: 'approver_invalid' }), ORG))
+      .toEqual({ status: 'reapproval_required', reason: 'approver_invalid' });
+    expect(describeQuarantineApproval(link({ ...AUTHORITY, executionAuthorityStatus: 'lookup_failed' }), ORG)?.status)
+      .toBe('approved');
   });
 
   it('does not accept a stamp minted for a different owner', () => {
     expect(describeQuarantineApproval(
       link({ ...AUTHORITY }),
       { orgId: '22222222-2222-2222-2222-222222222222', partnerId: null },
-    )).toBe('reapproval_required');
+    )?.status).toBe('reapproval_required');
   });
 });
 
@@ -85,7 +95,8 @@ describe('resolveSecurityScanQuarantineAuthority', () => {
   const DEVICE = { orgId: ORG.orgId, siteId: 'site-1', partnerId: 'partner-1' };
   const linkRow = (extra: Record<string, unknown>) => ({
     orgId: ORG.orgId, partnerId: null, createdBy: 'creator-1',
-    ...EMPTY_SENSITIVE_DATA_AUTHORITY, executionAuthorityLegacy: null, ...extra,
+    ...EMPTY_SENSITIVE_DATA_AUTHORITY, executionAuthorityLegacy: null,
+    executionAuthorityStatus: null, ...extra,
   });
 
   beforeEach(() => {
@@ -110,7 +121,11 @@ describe('resolveSecurityScanQuarantineAuthority', () => {
 
     expect(await resolveSecurityScanQuarantineAuthority('link-1', 'device-1'))
       .toEqual({ allowed: false, reason: 'reapproval_required' });
-    expect(setMock).toHaveBeenCalledWith({ executionAuthorityLegacy: 'revoked' });
+    expect(setMock).toHaveBeenCalledWith({
+      executionAuthorityLegacy: 'revoked',
+      executionAuthorityStatus: 'approver_invalid',
+      executionAuthorityStatusAt: expect.any(Date),
+    });
   });
 
   it('a stamped link ignores the legacy path even when its stamp fails', async () => {
@@ -129,5 +144,40 @@ describe('resolveSecurityScanQuarantineAuthority', () => {
     expect(await resolveSecurityScanQuarantineAuthority('link-1', 'device-1'))
       .toEqual({ allowed: false, reason: 'reapproval_required' });
     expect(resolveLegacyMock).not.toHaveBeenCalled();
+  });
+
+  it('records approver_invalid when a stamped approver stops qualifying', async () => {
+    selectMock.mockReturnValueOnce(chain([linkRow({ ...AUTHORITY, executionAuthorityStatus: 'ok' })]));
+    resolveStampedMock.mockResolvedValue(null);
+
+    await resolveSecurityScanQuarantineAuthority('link-1', 'device-1');
+
+    expect(setMock).toHaveBeenCalledWith({
+      executionAuthorityStatus: 'approver_invalid',
+      executionAuthorityStatusAt: expect.any(Date),
+    });
+  });
+
+  it('a lookup error is a transient lookup_failed, reported to Sentry, never a revoke', async () => {
+    selectMock.mockReturnValueOnce(chain([linkRow({ executionAuthorityLegacy: 'grandfathered' })]));
+    resolveLegacyMock.mockRejectedValue(new Error('db down'));
+
+    expect(await resolveSecurityScanQuarantineAuthority('link-1', 'device-1'))
+      .toEqual({ allowed: false, reason: 'authority_unavailable' });
+    expect(captureExceptionMock).toHaveBeenCalled();
+    expect(setMock).toHaveBeenCalledWith({
+      executionAuthorityStatus: 'lookup_failed',
+      executionAuthorityStatusAt: expect.any(Date),
+    });
+  });
+
+  it('does not rewrite an unchanged status', async () => {
+    selectMock
+      .mockReturnValueOnce(chain([linkRow({ ...AUTHORITY, executionAuthorityStatus: 'ok' })]))
+      .mockReturnValueOnce(chain([DEVICE]));
+    resolveStampedMock.mockResolvedValue(LIVE);
+
+    expect(await resolveSecurityScanQuarantineAuthority('link-1', 'device-1')).toEqual({ allowed: true });
+    expect(updateMock).not.toHaveBeenCalled();
   });
 });

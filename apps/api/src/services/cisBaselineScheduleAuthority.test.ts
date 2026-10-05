@@ -6,6 +6,8 @@ const { resolveStampedMock, resolveLegacyMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({ db: {}, runOutsideDbContext: vi.fn(), withSystemDbAccessContext: vi.fn() }));
+const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./sensitiveDataPolicyAuthority', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./sensitiveDataPolicyAuthority')>()),
   resolveSensitiveDataAuthorityInCurrentSystemContext: resolveStampedMock,
@@ -27,6 +29,13 @@ const legacyRow = (legacy: 'grandfathered' | 'revoked' | null) => ({
   scanSchedule: { enabled: true },
   ...EMPTY_SENSITIVE_DATA_AUTHORITY,
   executionAuthorityLegacy: legacy,
+  executionAuthorityStatus: null as null | 'ok' | 'approver_invalid' | 'lookup_failed',
+  executionAuthorityStatusAt: null as Date | null,
+});
+const stampedRow = (extra: Record<string, unknown> = {}) => ({
+  ...legacyRow(null),
+  ...captureSystemSensitiveDataAuthority({ orgId: ORG, partnerId: null }),
+  ...extra,
 });
 
 describe('resolveCisScheduleDispatch', () => {
@@ -37,20 +46,21 @@ describe('resolveCisScheduleDispatch', () => {
   it('grandfathers a legacy row while its creator holds devices:execute', async () => {
     resolveLegacyMock.mockResolvedValue(LIVE);
     const decision = await resolveCisScheduleDispatch(legacyRow('grandfathered'));
-    expect(decision).toEqual({ ok: true, mode: 'legacy', authority: LIVE });
+    expect(decision).toEqual({ ok: true, mode: 'legacy', authority: LIVE, checkStatus: 'ok' });
     expect(resolveLegacyMock).toHaveBeenCalledWith({ orgId: ORG, partnerId: null }, 'creator-1');
   });
 
   it('downgrades a legacy row whose creator is inactive or lost devices:execute, and asks to revoke', async () => {
     resolveLegacyMock.mockResolvedValue(null);
     expect(await resolveCisScheduleDispatch(legacyRow('grandfathered')))
-      .toEqual({ ok: false, reason: 'reapproval_required', revokeLegacy: true });
+      .toEqual({ ok: false, reason: 'reapproval_required', revokeLegacy: true, checkStatus: 'approver_invalid' });
   });
 
   it('a lookup failure skips the tick without revoking', async () => {
     resolveLegacyMock.mockRejectedValue(new Error('db down'));
     expect(await resolveCisScheduleDispatch(legacyRow('grandfathered')))
-      .toEqual({ ok: false, reason: 'authority_unavailable' });
+      .toEqual({ ok: false, reason: 'authority_unavailable', checkStatus: 'lookup_failed' });
+    expect(captureExceptionMock).toHaveBeenCalled();
   });
 
   it('a revoked legacy row never re-enters the legacy path', async () => {
@@ -63,17 +73,42 @@ describe('resolveCisScheduleDispatch', () => {
   it('a stamped row ignores the legacy path even when its stamp fails', async () => {
     resolveStampedMock.mockResolvedValue(null);
     resolveLegacyMock.mockResolvedValue(LIVE);
-    const stamped = {
-      ...legacyRow(null),
-      ...captureSystemSensitiveDataAuthority({ orgId: ORG, partnerId: null }),
-    };
-    expect(await resolveCisScheduleDispatch(stamped)).toEqual({ ok: false, reason: 'reapproval_required' });
+    expect(await resolveCisScheduleDispatch(stampedRow()))
+      .toEqual({ ok: false, reason: 'reapproval_required', checkStatus: 'approver_invalid' });
     expect(resolveLegacyMock).not.toHaveBeenCalled();
+  });
+
+  it('a stamped row whose live lookup errors is a transient lookup_failed, reported to Sentry', async () => {
+    resolveStampedMock.mockRejectedValue(new Error('db down'));
+    expect(await resolveCisScheduleDispatch(stampedRow()))
+      .toEqual({ ok: false, reason: 'authority_unavailable', checkStatus: 'lookup_failed' });
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
+  it('a stamped row that resolves reports ok', async () => {
+    resolveStampedMock.mockResolvedValue(LIVE);
+    expect(await resolveCisScheduleDispatch(stampedRow()))
+      .toEqual({ ok: true, mode: 'stamped', authority: LIVE, checkStatus: 'ok' });
   });
 
   it('reports legacy_grandfathered vs reapproval_required', () => {
     expect(describeCisScheduleApproval(legacyRow('grandfathered')).status).toBe('legacy_grandfathered');
-    expect(describeCisScheduleApproval(legacyRow('revoked')).status).toBe('reapproval_required');
-    expect(describeCisScheduleApproval(legacyRow(null)).status).toBe('reapproval_required');
+    expect(describeCisScheduleApproval(legacyRow('revoked'))).toMatchObject({
+      status: 'reapproval_required', reason: 'approver_invalid', approvedBy: 'creator-1',
+    });
+    expect(describeCisScheduleApproval(legacyRow(null))).toMatchObject({
+      status: 'reapproval_required', reason: 'not_approved',
+    });
+  });
+
+  it('a stamped row whose approver failed the last dispatch check is reported as needing re-approval', () => {
+    const at = new Date('2026-12-12T00:00:00.000Z');
+    expect(describeCisScheduleApproval(stampedRow({ executionAuthorityStatus: 'ok' })).status).toBe('approved');
+    expect(describeCisScheduleApproval(stampedRow({
+      executionAuthorityStatus: 'approver_invalid', executionAuthorityStatusAt: at,
+    }))).toMatchObject({ status: 'reapproval_required', reason: 'approver_invalid', checkStatusSince: at.toISOString() });
+    // A transient lookup failure does not claim the approval is gone.
+    expect(describeCisScheduleApproval(stampedRow({ executionAuthorityStatus: 'lookup_failed' })))
+      .toMatchObject({ status: 'approved', checkStatus: 'lookup_failed' });
   });
 });

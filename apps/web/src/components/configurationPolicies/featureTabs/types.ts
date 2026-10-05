@@ -29,6 +29,8 @@ export type FeatureLink = {
    * until a user with devices:execute saves the link.
    */
   autoQuarantineApproval?: 'approved' | 'legacy_grandfathered' | 'reapproval_required' | 'not_enabled';
+  /** Why re-approval is required; 'approver_invalid' = the approver lost devices:execute or left. */
+  autoQuarantineApprovalReason?: 'approver_invalid' | 'not_approved' | 'invalid_approval' | null;
   createdAt?: string;
   updatedAt?: string;
 };

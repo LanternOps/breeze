@@ -185,6 +185,16 @@ describe('SecurityTab auto-quarantine approval', () => {
     expect(screen.queryByTestId('security-auto-quarantine-reapproval')).toBeNull();
   });
 
+  it('says the approver lost execute access when that is why quarantine stopped', () => {
+    render(
+      <SecurityTab
+        {...baseProps}
+        existingLink={{ ...ownLink('reapproval_required'), autoQuarantineApprovalReason: 'approver_invalid' }}
+      />,
+    );
+    expect(screen.getByTestId('security-auto-quarantine-reapproval').textContent).toMatch(/no longer has/i);
+  });
+
   it('shows no warning for a grandfathered legacy link', () => {
     render(<SecurityTab {...baseProps} existingLink={ownLink('legacy_grandfathered')} />);
     expect(screen.queryByTestId('security-auto-quarantine-reapproval')).toBeNull();

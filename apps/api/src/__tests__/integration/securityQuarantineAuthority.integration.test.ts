@@ -218,6 +218,11 @@ describe('security feature-link auto-quarantine authority', () => {
     expect(await legacyState(keptLink.id)).toBe('grandfathered');
     // One-way: flagged for re-approval.
     expect(await legacyState(downgradedLink.id)).toBe('revoked');
+    const [status] = await withDbAccessContext(SYSTEM_CTX, () => db
+      .select({ status: configPolicyFeatureLinks.executionAuthorityStatus, at: configPolicyFeatureLinks.executionAuthorityStatusAt })
+      .from(configPolicyFeatureLinks)
+      .where(eq(configPolicyFeatureLinks.id, downgradedLink.id)));
+    expect(status).toMatchObject({ status: 'approver_invalid', at: expect.any(Date) });
 
     // A save through the service leaves the legacy path for good.
     await withDbAccessContext(SYSTEM_CTX, () => updateFeatureLink(

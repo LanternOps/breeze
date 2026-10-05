@@ -2138,7 +2138,12 @@ export async function listFeatureLinks(configPolicyId: string, executor: DbExecu
         inlineSettings: effectiveInlineSettings,
         // security links only: 'reapproval_required' = auto-quarantine is on but
         // has no valid stored authority, so scans run detect-only.
-        ...(autoQuarantineApproval ? { autoQuarantineApproval } : {}),
+        ...(autoQuarantineApproval
+          ? {
+              autoQuarantineApproval: autoQuarantineApproval.status,
+              autoQuarantineApprovalReason: autoQuarantineApproval.reason,
+            }
+          : {}),
       };
     })
   );

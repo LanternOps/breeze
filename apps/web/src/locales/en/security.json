@@ -1741,7 +1741,9 @@
       "everyHours": "Every {{hours}}h",
       "manual": "Manual",
       "reapprovalRequired": "Needs re-approval",
-      "reapprovalTitle": "Scheduled scans are paused until a user with the devices:execute permission saves this baseline again."
+      "reapprovalTitle": "Scheduled scans are paused until a user with the devices:execute permission saves this baseline again.",
+      "approverInvalidTitle": "Scheduled scans stopped: approver {{name}} no longer has devices:execute access. A user with that permission must save this baseline again.",
+      "unknownApprover": "(unknown user)"
     },
     "status": {
       "active": "Active",

@@ -11,6 +11,7 @@ import {
   cisRemediationActions,
   devices,
   organizations,
+  users,
 } from '../db/schema';
 import { scheduleCisRemediation, scheduleCisRemediationWithResult, scheduleCisScan } from '../jobs/cisJobs';
 import { captureException } from '../services/sentry';
@@ -350,8 +351,32 @@ cisHardeningRoutes.get(
       .limit(limit)
       .offset(offset);
 
+    const data = rows.map(mapBaselineRow);
+    // Name the approver of every schedule that stopped because that user no
+    // longer qualifies, so the UI can say who to replace. Best-effort: a user
+    // this caller cannot see simply has no name.
+    const stoppedApproverIds = [...new Set(data
+      .filter((row) => row.scheduleApproval.reason === 'approver_invalid' && row.scheduleApproval.approvedBy)
+      .map((row) => row.scheduleApproval.approvedBy!))];
+    const approverNames = new Map<string, string>();
+    if (stoppedApproverIds.length > 0) {
+      const named = await db
+        .select({ id: users.id, name: users.name })
+        .from(users)
+        .where(inArray(users.id, stoppedApproverIds));
+      for (const user of named) approverNames.set(user.id, user.name);
+    }
+
     return c.json({
-      data: rows.map(mapBaselineRow),
+      data: data.map((row) => (row.scheduleApproval.reason === 'approver_invalid'
+        ? {
+            ...row,
+            scheduleApproval: {
+              ...row.scheduleApproval,
+              approverName: approverNames.get(row.scheduleApproval.approvedBy ?? '') ?? null,
+            },
+          }
+        : row)),
       pagination: {
         limit,
         offset,

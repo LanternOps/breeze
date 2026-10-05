@@ -112,3 +112,19 @@ ALTER TABLE cis_baselines
     execution_authority_legacy IS NULL
     OR (execution_authority_legacy IN ('grandfathered', 'revoked') AND execution_authority_generation IS NULL)
   );
+
+-- Outcome of the most recent dispatch-time authority check, written only when
+-- it changes, so the API can say why a schedule / auto-quarantine stopped
+-- (e.g. its approver left) instead of reporting a stale "approved".
+ALTER TABLE cis_baselines
+  ADD COLUMN IF NOT EXISTS execution_authority_status varchar(32),
+  ADD COLUMN IF NOT EXISTS execution_authority_status_at timestamptz;
+
+ALTER TABLE cis_baselines
+  DROP CONSTRAINT IF EXISTS cis_baselines_execution_authority_status_chk;
+
+ALTER TABLE cis_baselines
+  ADD CONSTRAINT cis_baselines_execution_authority_status_chk CHECK (
+    execution_authority_status IS NULL
+    OR execution_authority_status IN ('ok', 'approver_invalid', 'lookup_failed')
+  );

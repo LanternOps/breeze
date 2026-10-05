@@ -217,7 +217,12 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
                     {bl.scheduleApproval?.status === 'reapproval_required' && (
                       <span
                         data-testid="cis-baseline-schedule-reapproval"
-                        title={t('cisHardeningCisBaselinesTab.schedule.reapprovalTitle')}
+                        title={bl.scheduleApproval.reason === 'approver_invalid'
+                          ? t('cisHardeningCisBaselinesTab.schedule.approverInvalidTitle', {
+                              name: bl.scheduleApproval.approverName
+                                ?? t('cisHardeningCisBaselinesTab.schedule.unknownApprover'),
+                            })
+                          : t('cisHardeningCisBaselinesTab.schedule.reapprovalTitle')}
                         className="ml-2 inline-flex rounded-full border border-amber-500/30 bg-amber-500/20 px-2 py-0.5 text-xs font-semibold text-amber-700"
                       >
                         {t('cisHardeningCisBaselinesTab.schedule.reapprovalRequired')}

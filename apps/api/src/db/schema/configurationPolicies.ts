@@ -146,6 +146,12 @@ export const configPolicyFeatureLinks = pgTable('config_policy_feature_links', {
   // once, detect-only until re-approved. NULL for every link written since.
   executionAuthorityLegacy: varchar('execution_authority_legacy', { length: 16 })
     .$type<'grandfathered' | 'revoked'>(),
+  // Outcome of the most recent dispatch-time authority check, written only on
+  // change: 'ok' | 'approver_invalid' (quarantine suppressed) | 'lookup_failed'
+  // (transient). NULL = not checked yet.
+  executionAuthorityStatus: varchar('execution_authority_status', { length: 32 })
+    .$type<'ok' | 'approver_invalid' | 'lookup_failed'>(),
+  executionAuthorityStatusAt: timestamp('execution_authority_status_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({

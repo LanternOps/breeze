@@ -99,6 +99,13 @@ export const cisBaselines = pgTable('cis_baselines', {
   // row saved since (a save always stamps). Never set alongside an envelope.
   executionAuthorityLegacy: varchar('execution_authority_legacy', { length: 16 })
     .$type<'grandfathered' | 'revoked'>(),
+  // Outcome of the scheduler's most recent live authority check, written only
+  // when it changes: 'ok', 'approver_invalid' (approver inactive / lost
+  // devices:execute — the schedule is paused) or 'lookup_failed' (transient;
+  // retried next tick). NULL = not checked yet.
+  executionAuthorityStatus: varchar('execution_authority_status', { length: 32 })
+    .$type<'ok' | 'approver_invalid' | 'lookup_failed'>(),
+  executionAuthorityStatusAt: timestamp('execution_authority_status_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({

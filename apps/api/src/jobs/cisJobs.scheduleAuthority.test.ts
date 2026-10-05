@@ -89,8 +89,8 @@ describe('CIS scheduled scans require a valid stored authority', () => {
     setMock.mockImplementation(() => chain(undefined));
     updateMock.mockReturnValue({ set: setMock });
     resolveAuthorityMock.mockImplementation(async (row: { executionAuthorityGeneration: string | null; executionAuthorityLegacy?: string }) => {
-      if (row.executionAuthorityGeneration === 'gen-1') return { ok: true, mode: 'stamped', authority: AUTHORITY };
-      if (row.executionAuthorityLegacy === 'grandfathered') return { ok: true, mode: 'legacy', authority: CREATOR_AUTHORITY };
+      if (row.executionAuthorityGeneration === 'gen-1') return { ok: true, mode: 'stamped', authority: AUTHORITY, checkStatus: 'ok' };
+      if (row.executionAuthorityLegacy === 'grandfathered') return { ok: true, mode: 'legacy', authority: CREATOR_AUTHORITY, checkStatus: 'ok' };
       return { ok: false, reason: 'reapproval_required' };
     });
   });
@@ -204,14 +204,18 @@ describe('CIS scheduled scans require a valid stored authority', () => {
 
   it('pauses and flags a legacy schedule whose creator no longer qualifies', async () => {
     selectMock.mockReturnValueOnce(chain([GRANDFATHERED]));
-    resolveAuthorityMock.mockResolvedValueOnce({ ok: false, reason: 'reapproval_required', revokeLegacy: true });
+    resolveAuthorityMock.mockResolvedValueOnce({ ok: false, reason: 'reapproval_required', revokeLegacy: true, checkStatus: 'approver_invalid' });
 
     const result = await __testOnly.processScheduleScans();
 
     expect(result.enqueued).toBe(0);
     expect(result.reapprovalRequired).toBe(1);
     expect(addMock).not.toHaveBeenCalled();
-    expect(setMock).toHaveBeenCalledWith({ executionAuthorityLegacy: 'revoked' });
+    expect(setMock).toHaveBeenCalledWith({
+      executionAuthorityLegacy: 'revoked',
+      executionAuthorityStatus: 'approver_invalid',
+      executionAuthorityStatusAt: expect.any(Date),
+    });
   });
 
   it('a legacy run job dispatches under the creator, attributed to them', async () => {
@@ -241,5 +245,29 @@ describe('CIS scheduled scans require a valid stored authority', () => {
     });
 
     expect(result.commandsQueued).toBe(0);
+  });
+
+  it('persists the check outcome when a stamped approver stops qualifying, and only on change', async () => {
+    const revokedApprover = { ...APPROVED, id: 'baseline-stamped-bad', executionAuthorityStatus: 'ok' };
+    const alreadyFlagged = { ...APPROVED, id: 'baseline-stamped-flagged', executionAuthorityStatus: 'approver_invalid' };
+    selectMock.mockReturnValueOnce(chain([revokedApprover, alreadyFlagged]));
+    resolveAuthorityMock.mockResolvedValue({ ok: false, reason: 'reapproval_required', checkStatus: 'approver_invalid' });
+
+    const result = await __testOnly.processScheduleScans();
+
+    expect(result.enqueued).toBe(0);
+    expect(setMock).toHaveBeenCalledTimes(1);
+    expect(setMock).toHaveBeenCalledWith({
+      executionAuthorityStatus: 'approver_invalid',
+      executionAuthorityStatusAt: expect.any(Date),
+    });
+  });
+
+  it('records a recovered check as ok', async () => {
+    selectMock.mockReturnValueOnce(chain([{ ...APPROVED, executionAuthorityStatus: 'lookup_failed' }]));
+
+    await __testOnly.processScheduleScans();
+
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ executionAuthorityStatus: 'ok' }));
   });
 });

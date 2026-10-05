@@ -39,6 +39,7 @@ vi.mock('../db/schema', () => ({
   },
   devices: { id: 'devices.id', orgId: 'devices.orgId' },
   organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
+  users: { id: 'users.id', name: 'users.name' },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -286,5 +287,35 @@ describe('GET /cis/baselines surfaces schedules that need re-approval', () => {
     expect(body.data[2]).not.toHaveProperty('executionAuthorityLegacy');
     expect(body.data[0]).not.toHaveProperty('executionAuthorityFingerprint');
     expect(body.data[0]).not.toHaveProperty('executionAuthorityGeneration');
+  });
+
+  it('names the approver of a stamped schedule that stopped because they lost execute access', async () => {
+    const approverId = '77777777-7777-7777-7777-777777777777';
+    const { captureSensitiveDataAuthority } = await import('../services/sensitiveDataPolicyAuthority');
+    const userStamp = captureSensitiveDataAuthority({
+      scope: 'organization', user: { id: approverId }, orgId: 'org-111',
+      canAccessOrg: () => true,
+    } as any, { orgId: 'org-111', partnerId: null })!;
+    mockList([makeBaseline({
+      ...userStamp,
+      executionAuthorityStatus: 'approver_invalid',
+      executionAuthorityStatusAt: new Date('2026-12-12T00:00:00.000Z'),
+    })]);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ id: approverId, name: 'Departed Tech' }]) }),
+    } as any);
+
+    const res = await app.request('/cis/baselines', { headers: { Authorization: 'Bearer token' } });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].scheduleApproval).toEqual(expect.objectContaining({
+      status: 'reapproval_required',
+      reason: 'approver_invalid',
+      approvedBy: approverId,
+      approverName: 'Departed Tech',
+      checkStatusSince: '2026-12-12T00:00:00.000Z',
+    }));
+    expect(body.data[0]).not.toHaveProperty('executionAuthorityStatus');
   });
 });

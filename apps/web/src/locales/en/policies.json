@@ -1004,6 +1004,7 @@
         "autoQuarantine": "Auto-quarantine",
         "moveThreatsToQuarantineImmediately": "Move threats to quarantine immediately.",
         "autoQuarantineReapproval": "Auto-quarantine is paused: scans run detect-only until a user with the devices:execute permission saves these settings again.",
+        "autoQuarantineApproverInvalid": "Auto-quarantine is paused: the user who approved it no longer has devices:execute access. Scans run detect-only until a user with that permission saves these settings again.",
         "autoQuarantine2": "autoQuarantine",
         "scheduledScans2": "scheduledScans",
         "scanMinute": "scanMinute",

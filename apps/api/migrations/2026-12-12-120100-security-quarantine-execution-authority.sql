@@ -136,3 +136,19 @@ ALTER TABLE config_policy_feature_links
     execution_authority_legacy IS NULL
     OR (execution_authority_legacy IN ('grandfathered', 'revoked') AND execution_authority_generation IS NULL)
   );
+
+-- Outcome of the most recent dispatch-time authority check, written only when
+-- it changes, so the API can say why a schedule / auto-quarantine stopped
+-- (e.g. its approver left) instead of reporting a stale "approved".
+ALTER TABLE config_policy_feature_links
+  ADD COLUMN IF NOT EXISTS execution_authority_status varchar(32),
+  ADD COLUMN IF NOT EXISTS execution_authority_status_at timestamptz;
+
+ALTER TABLE config_policy_feature_links
+  DROP CONSTRAINT IF EXISTS config_policy_feature_links_execution_authority_status_chk;
+
+ALTER TABLE config_policy_feature_links
+  ADD CONSTRAINT config_policy_feature_links_execution_authority_status_chk CHECK (
+    execution_authority_status IS NULL
+    OR execution_authority_status IN ('ok', 'approver_invalid', 'lookup_failed')
+  );
