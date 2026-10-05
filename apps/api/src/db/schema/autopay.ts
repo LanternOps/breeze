@@ -118,7 +118,7 @@ export const orgPaymentMethods = pgTable('org_payment_methods', {
   unique().on(t.id,t.orgId),
   foreignKey({name:'org_payment_methods_enrollment_org_fk',columns:[t.enrollmentId,t.orgId],foreignColumns:[orgAutopayEnrollments.id,orgAutopayEnrollments.orgId]}),
   // One autopay-method row per org whatever its status: a retained unusable row must
-  // never sit beside its replacement (D-17, 2026-12-10-130000).
+  // never sit beside its replacement (D-17, 2026-12-11-130000).
   uniqueIndex('org_payment_methods_one_autopay_uq').on(t.orgId).where(sql`${t.isAutopayMethod}`),
 ]);
 
