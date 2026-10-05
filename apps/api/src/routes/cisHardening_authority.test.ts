@@ -114,6 +114,7 @@ function makeBaseline(overrides: Record<string, unknown> = {}) {
     executionAuthorityFingerprint: null,
     executionAuthorityCapturedAt: null,
     executionAuthorityGeneration: null,
+    executionAuthorityLegacy: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -190,6 +191,29 @@ describe('CIS write routes require devices:execute and MFA', () => {
     expect(inserted.executionAuthorityKind).toBe('organization_unrestricted');
     expect(inserted.executionAuthorityGeneration).toMatch(/^[0-9a-f-]{36}$/);
     expect(inserted.executionAuthorityFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(inserted.executionAuthorityLegacy).toBeNull();
+  });
+
+  it('saving a grandfathered legacy baseline stamps it and clears the legacy marker for good', async () => {
+    gate.granted = new Set(['devices:execute']);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([makeBaseline({ executionAuthorityLegacy: 'grandfathered' })]),
+        }),
+      }),
+    } as any);
+    const setMock = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([makeBaseline()]) }),
+    });
+    vi.mocked(db.update).mockReturnValueOnce({ set: setMock } as any);
+
+    const res = await post(app, '/cis/baselines', { ...WRITE_ROUTES[0]!.body, id: BASELINE_ID });
+
+    expect(res.status).toBe(200);
+    const set = setMock.mock.calls[0]![0];
+    expect(set.executionAuthorityLegacy).toBeNull();
+    expect(set.executionAuthorityGeneration).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it('a baseline with its schedule turned off carries no authority stamp', async () => {
@@ -208,6 +232,7 @@ describe('CIS write routes require devices:execute and MFA', () => {
     const inserted = valuesMock.mock.calls[0]![0];
     expect(inserted.executionAuthorityGeneration).toBeNull();
     expect(inserted.executionAuthorityUserId).toBeNull();
+    expect(inserted.executionAuthorityLegacy).toBeNull();
   });
 });
 
@@ -242,6 +267,7 @@ describe('GET /cis/baselines surfaces schedules that need re-approval', () => {
     mockList([
       makeBaseline(),
       makeBaseline({ id: '55555555-5555-5555-5555-555555555555', scanSchedule: { enabled: false } }),
+      makeBaseline({ id: '66666666-6666-6666-6666-666666666666', executionAuthorityLegacy: 'grandfathered' }),
     ]);
 
     const res = await app.request('/cis/baselines', { headers: { Authorization: 'Bearer token' } });
@@ -254,6 +280,10 @@ describe('GET /cis/baselines surfaces schedules that need re-approval', () => {
     expect(body.data[1].scheduleApproval).toEqual(
       expect.objectContaining({ status: 'not_scheduled' }),
     );
+    expect(body.data[2].scheduleApproval).toEqual(
+      expect.objectContaining({ status: 'legacy_grandfathered', approvedBy: 'user-1' }),
+    );
+    expect(body.data[2]).not.toHaveProperty('executionAuthorityLegacy');
     expect(body.data[0]).not.toHaveProperty('executionAuthorityFingerprint');
     expect(body.data[0]).not.toHaveProperty('executionAuthorityGeneration');
   });

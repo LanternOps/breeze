@@ -4,13 +4,14 @@
  *   - the shape CHECK rejects a partial envelope;
  *   - the live resolver admits only an approver who still holds devices:execute,
  *     and never a legacy (unstamped) row;
- *   - the migration returns undispatched approved remediation actions to
- *     pending approval, and is idempotent.
+ *   - legacy rows are grandfathered on a creator who holds devices:execute
+ *     and downgraded otherwise; a stamped row is never legacy; the migration
+ *     never re-grandfathers on replay.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { eq, inArray, sql } from 'drizzle-orm';
+import { inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { cisBaselines, cisRemediationActions, devices } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
@@ -18,6 +19,7 @@ import { captureSystemSensitiveDataAuthority } from '../../services/sensitiveDat
 import {
   captureCisBaselineAuthority,
   resolveCisBaselineScheduleAuthority,
+  resolveCisScheduleDispatch,
 } from '../../services/cisBaselineScheduleAuthority';
 import { createOrganization, createPartner, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
@@ -139,59 +141,58 @@ describe('cis_baselines stored execution authority', () => {
     expect(resolved).toMatchObject({ kind: 'partner_unrestricted' });
   });
 
-  it('migration returns undispatched approved remediation actions to pending approval, idempotently', async () => {
-    const env = await setupTestEnvironment({ scope: 'organization' });
-    const suffix = crypto.randomUUID().slice(0, 8);
-    const [device] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(devices).values({
-      orgId: env.organization.id, siteId: env.site.id, agentId: `cis-auth-${suffix}`,
-      hostname: `cis-auth-${suffix}`, osType: 'windows', osVersion: '11',
-      architecture: 'x64', agentVersion: '1.0.0', status: 'online',
-    }).returning({ id: devices.id }));
-    createdDevices.push(device!.id);
+  it('grandfathers a legacy row on a creator with devices:execute and downgrades one whose creator lacks it', async () => {
+    const executor = await setupTestEnvironment({
+      scope: 'organization',
+      rolePermissions: [{ resource: 'devices', action: 'execute' }],
+    });
+    const writerOnly = await setupTestEnvironment({
+      scope: 'organization',
+      rolePermissions: [{ resource: 'devices', action: 'write' }],
+    });
+    const kept = await insertBaseline({
+      orgId: executor.organization.id, createdBy: executor.user.id, executionAuthorityLegacy: 'grandfathered',
+    });
+    const downgraded = await insertBaseline({
+      orgId: writerOnly.organization.id, createdBy: writerOnly.user.id, executionAuthorityLegacy: 'grandfathered',
+    });
 
-    const base = {
-      orgId: env.organization.id,
-      deviceId: device!.id,
-      action: 'apply',
-      approvalStatus: 'approved' as const,
-      approvedBy: env.user.id,
-      approvedAt: new Date(),
-      requestedBy: env.user.id,
-      details: { source: 'api' },
-    };
-    const inserted = await withDbAccessContext(SYSTEM_CTX, () => db.insert(cisRemediationActions).values([
-      { ...base, checkId: 'undispatched', status: 'queued' as const },
-      { ...base, checkId: 'dispatched', status: 'in_progress' as const, commandId: crypto.randomUUID() },
-      { ...base, checkId: 'pending', status: 'pending_approval' as const, approvalStatus: 'pending' as const, approvedBy: null, approvedAt: null },
-    ]).returning({ id: cisRemediationActions.id }));
+    const decisions = await withDbAccessContext(SYSTEM_CTX, async () => ({
+      kept: await resolveCisScheduleDispatch(kept),
+      downgraded: await resolveCisScheduleDispatch(downgraded),
+    }));
+    expect(decisions.kept).toMatchObject({ ok: true, mode: 'legacy', authority: { userId: executor.user.id } });
+    expect(decisions.downgraded).toEqual({ ok: false, reason: 'reapproval_required', revokeLegacy: true });
+  });
 
-    const readStates = () => withDbAccessContext(SYSTEM_CTX, () => db
-      .select({
-        checkId: cisRemediationActions.checkId,
-        status: cisRemediationActions.status,
-        approvalStatus: cisRemediationActions.approvalStatus,
-        approvedBy: cisRemediationActions.approvedBy,
-      })
-      .from(cisRemediationActions)
-      .where(inArray(cisRemediationActions.id, inserted.map((r) => r.id))));
+  it('a stamped row cannot also be on the legacy path (CHECK)', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    await expect(withDbAccessContext(SYSTEM_CTX, () => db.insert(cisBaselines).values({
+      ...BASE,
+      orgId: org.id,
+      ...captureSystemSensitiveDataAuthority({ orgId: org.id, partnerId: null }),
+      executionAuthorityLegacy: 'grandfathered',
+    }).returning())).rejects.toMatchObject({ cause: { code: '23514' } });
+  });
 
-    const expected = [
-      { checkId: 'dispatched', status: 'in_progress', approvalStatus: 'approved', approvedBy: env.user.id },
-      { checkId: 'pending', status: 'pending_approval', approvalStatus: 'pending', approvedBy: null },
-      { checkId: 'undispatched', status: 'pending_approval', approvalStatus: 'pending', approvedBy: null },
-    ];
+  it('migration replay never re-grandfathers a row that left the legacy path', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const left = await insertBaseline({ orgId: org.id, executionAuthorityLegacy: null });
+    const revoked = await insertBaseline({ orgId: org.id, executionAuthorityLegacy: 'revoked' });
 
     const migration = readFileSync(MIGRATION_FILE, 'utf8');
     await getTestDb().execute(sql.raw(migration));
-    expect((await readStates()).sort((a, b) => a.checkId.localeCompare(b.checkId))).toEqual(expected);
-
     await getTestDb().execute(sql.raw(migration));
-    expect((await readStates()).sort((a, b) => a.checkId.localeCompare(b.checkId))).toEqual(expected);
 
-    const [undispatched] = await withDbAccessContext(SYSTEM_CTX, () => db
-      .select({ details: cisRemediationActions.details })
-      .from(cisRemediationActions)
-      .where(eq(cisRemediationActions.id, inserted[0]!.id)));
-    expect(undispatched?.details).toMatchObject({ source: 'api', returnedForReapprovalAt: expect.any(String) });
+    const rows = await withDbAccessContext(SYSTEM_CTX, () => db
+      .select({ id: cisBaselines.id, legacy: cisBaselines.executionAuthorityLegacy })
+      .from(cisBaselines)
+      .where(inArray(cisBaselines.id, [left.id, revoked.id])));
+    expect(Object.fromEntries(rows.map((r) => [r.id, r.legacy]))).toEqual({
+      [left.id]: null,
+      [revoked.id]: 'revoked',
+    });
   });
 });

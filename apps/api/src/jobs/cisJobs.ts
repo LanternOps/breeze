@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import {
   cisBaselines,
@@ -18,7 +18,8 @@ import { isReusableState } from '../services/bullmqUtils';
 import { jobSchedule } from './scheduleRegistry';
 import { attachWorkerObservability } from './workerObservability';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
-import { resolveCisBaselineScheduleAuthority } from '../services/cisBaselineScheduleAuthority';
+import { resolveCisScheduleDispatch } from '../services/cisBaselineScheduleAuthority';
+import { resolveLegacyPrincipalExecuteAuthorityInCurrentSystemContext } from '../services/sensitiveDataPolicyAuthority';
 
 const { db } = dbModule;
 
@@ -74,6 +75,12 @@ type RunBaselineScanJobData = {
    * nothing.
    */
   authorityGeneration?: string;
+  /**
+   * Scheduled runs of a grandfathered legacy baseline (no envelope): the run
+   * re-checks the creator live and dispatches only while the row is still
+   * unstamped and grandfathered.
+   */
+  legacyAuthority?: true;
 };
 
 type AggregateScoresJobData = {
@@ -119,6 +126,8 @@ async function processScheduleScans(): Promise<{ enqueued: number; reapprovalReq
       executionAuthorityFingerprint: cisBaselines.executionAuthorityFingerprint,
       executionAuthorityCapturedAt: cisBaselines.executionAuthorityCapturedAt,
       executionAuthorityGeneration: cisBaselines.executionAuthorityGeneration,
+      executionAuthorityLegacy: cisBaselines.executionAuthorityLegacy,
+      createdBy: cisBaselines.createdBy,
     })
     .from(cisBaselines)
     .where(
@@ -141,12 +150,28 @@ async function processScheduleScans(): Promise<{ enqueued: number; reapprovalReq
 
   for (const baseline of dueBaselines) {
     // A schedule is only a request to scan. It dispatches under the stored
-    // authority of the user who approved it, re-resolved live here; a legacy
-    // row with no stamp, or an approver who lost devices:execute, is skipped
+    // authority of the user who approved it — or, for a grandfathered legacy
+    // row, of its creator — re-resolved live here. Anything else is skipped
     // (nextScanAt left as-is so a re-approval takes effect on the next tick).
-    const authority = await resolveCisBaselineScheduleAuthority(baseline);
-    if (!authority) {
+    const decision = await resolveCisScheduleDispatch(baseline);
+    if (!decision.ok) {
       reapprovalRequired++;
+      if (decision.revokeLegacy) {
+        // One-way: the creator no longer qualifies, so the row needs an
+        // explicit re-approval even if they regain the permission later.
+        await db
+          .update(cisBaselines)
+          .set({ executionAuthorityLegacy: 'revoked' })
+          .where(and(
+            eq(cisBaselines.id, baseline.id),
+            eq(cisBaselines.executionAuthorityLegacy, 'grandfathered'),
+            isNull(cisBaselines.executionAuthorityGeneration),
+          ))
+          .catch((error) => {
+            console.error(`[CisJobs] processScheduleScans: failed to flag baseline ${baseline.id} for re-approval:`, error);
+            captureException(error);
+          });
+      }
       continue;
     }
     try {
@@ -156,7 +181,9 @@ async function processScheduleScans(): Promise<{ enqueued: number; reapprovalReq
           type: 'run-baseline-scan',
           baselineId: baseline.id,
           origin: 'scheduled',
-          authorityGeneration: authority.generation,
+          ...(decision.mode === 'stamped'
+            ? { authorityGeneration: decision.authority.generation }
+            : { legacyAuthority: true as const }),
         },
         {
           jobId: `cis-scan-${baseline.id}-${slot}`,
@@ -281,10 +308,16 @@ async function processRunBaselineScan(data: RunBaselineScanJobData): Promise<{
   let requestedBy = data.requestedBy ?? undefined;
   let siteIds: string[] | null = null;
   if (data.origin === 'scheduled') {
-    const authority = data.authorityGeneration
-      ? await resolveCisBaselineScheduleAuthority(baseline)
+    const decision = data.authorityGeneration || data.legacyAuthority
+      ? await resolveCisScheduleDispatch(baseline)
       : null;
-    if (!authority || authority.generation !== data.authorityGeneration) {
+    const authority = decision?.ok
+      && (decision.mode === 'stamped'
+        ? decision.authority.generation === data.authorityGeneration
+        : data.legacyAuthority === true)
+      ? decision.authority
+      : null;
+    if (!authority) {
       console.warn(
         `[CisJobs] processRunBaselineScan: scheduled run for baseline ${baseline.id} not dispatched — schedule authority missing, stale or revoked`,
       );
@@ -429,7 +462,7 @@ async function processRemediationActionInContext(data: RemediateActionJobData): 
   }
 
   const [device] = await db
-    .select({ id: devices.id, orgId: devices.orgId })
+    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
     .from(devices)
     .where(eq(devices.id, candidate.deviceId))
     .for('update');
@@ -461,6 +494,43 @@ async function processRemediationActionInContext(data: RemediateActionJobData): 
           ...(action.details ?? {}),
           cancelledReason: 'device_org_changed_before_dispatch',
           cancelledAt: new Date().toISOString(),
+        },
+      })
+      .where(and(
+        eq(cisRemediationActions.id, action.id),
+        eq(cisRemediationActions.status, 'queued'),
+      ));
+    return { actionId: action.id, queued: false, commandId: null };
+  }
+
+  // The approval is only as good as the approver right now: active, still
+  // holding devices:execute for the action's org, and still reaching the
+  // device's site. This also covers actions approved before the approve route
+  // required devices:execute + MFA (they keep working while their approver
+  // qualifies). Otherwise the action returns to pending for re-approval. A
+  // lookup failure throws, so the job retries without changing the action.
+  const approver = await resolveLegacyPrincipalExecuteAuthorityInCurrentSystemContext(
+    { orgId: action.orgId, partnerId: null },
+    action.approvedBy,
+  );
+  const approverReachesDevice = !!approver
+    && (approver.siteIds === null || (device.siteId !== null && approver.siteIds.includes(device.siteId)));
+  if (!approverReachesDevice) {
+    console.warn(
+      `[CisJobs] processRemediationAction: action ${action.id} returned to pending — approver no longer holds devices:execute for this device`,
+    );
+    await db
+      .update(cisRemediationActions)
+      .set({
+        status: 'pending_approval',
+        approvalStatus: 'pending',
+        approvedBy: null,
+        approvedAt: null,
+        approvalNote: null,
+        details: {
+          ...(action.details ?? {}),
+          returnedForReapprovalAt: new Date().toISOString(),
+          returnedForReapprovalReason: 'approver_lacks_execute',
         },
       })
       .where(and(

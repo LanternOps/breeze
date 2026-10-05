@@ -420,6 +420,9 @@ cisHardeningRoutes.post(
         .update(cisBaselines)
         .set({
           ...authority,
+          // A save is an explicit (re-)approval: the row leaves the legacy
+          // grandfathering path permanently.
+          executionAuthorityLegacy: null,
           // Ownership is immutable: no orgId/partnerId in the SET. Moving a
           // baseline between owners would silently re-tenant every historical
           // result that references it.
@@ -493,6 +496,7 @@ cisHardeningRoutes.post(
       .insert(cisBaselines)
       .values({
         ...createdAuthority,
+        executionAuthorityLegacy: null,
         orgId: owner.orgId,
         partnerId: owner.partnerId,
         name: body.name,

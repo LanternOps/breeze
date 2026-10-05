@@ -28,7 +28,7 @@ export type FeatureLink = {
    * quarantine is on but has no stored approval, so scans run detect-only
    * until a user with devices:execute saves the link.
    */
-  autoQuarantineApproval?: 'approved' | 'reapproval_required' | 'not_enabled';
+  autoQuarantineApproval?: 'approved' | 'legacy_grandfathered' | 'reapproval_required' | 'not_enabled';
   createdAt?: string;
   updatedAt?: string;
 };

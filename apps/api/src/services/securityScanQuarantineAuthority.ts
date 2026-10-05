@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { parseSecurityScanSettings } from '@breeze/shared';
 
 import { db } from '../db';
@@ -9,7 +9,9 @@ import {
   captureSensitiveDataAuthority,
   decodeSensitiveDataAuthority,
   EMPTY_SENSITIVE_DATA_AUTHORITY,
+  resolveLegacyPrincipalExecuteAuthorityInCurrentSystemContext,
   resolveSensitiveDataAuthorityInCurrentSystemContext,
+  type EffectiveSensitiveDataAuthority,
   type PersistedSensitiveDataAuthority,
   type SensitiveDataAuthorityValues,
 } from './sensitiveDataPolicyAuthority';
@@ -28,6 +30,16 @@ import {
  * scan still runs — detect-only — and the scan row records why
  * (`security_scans.auto_quarantine_suppressed_reason`). Scans whose policy has
  * auto-quarantine off never consult this.
+ *
+ * Links that predate the envelope are grandfathered on the policy's creator
+ * (`execution_authority_legacy = 'grandfathered'`): quarantine keeps working
+ * while `configuration_policies.created_by` is active and holds
+ * devices:execute for the policy owner, checked live with the same resolution
+ * as a stamp. Neither the policy nor the link records an updater, so the
+ * creator is the only principal on record; it is set from the authenticated
+ * user on insert and never rewritten. The first failed check flips the link to
+ * 'revoked' (detect-only, re-approval required), and any later write through
+ * the feature-link service clears the legacy marker for good.
  */
 
 export type QuarantineSuppressedReason =
@@ -45,8 +57,7 @@ export type QuarantineAuthorityDecision =
   | { allowed: false; reason: QuarantineSuppressedReason };
 
 export type FeatureLinkAuthorityValues =
-  | SensitiveDataAuthorityValues
-  | typeof EMPTY_SENSITIVE_DATA_AUTHORITY;
+  (SensitiveDataAuthorityValues | typeof EMPTY_SENSITIVE_DATA_AUTHORITY) & { executionAuthorityLegacy: null };
 
 /** The effective auto-quarantine flag of a security link's settings (defaults apply). */
 export function securitySettingsAutoQuarantine(inlineSettings: unknown): boolean {
@@ -79,19 +90,27 @@ export function securityLinkAuthorityColumns(
   executionAuthority: SensitiveDataAuthorityValues | null | undefined,
 ): FeatureLinkAuthorityValues | undefined {
   if (featureType !== 'security') return undefined;
-  if (executionAuthority && securitySettingsAutoQuarantine(inlineSettings)) return executionAuthority;
-  return EMPTY_SENSITIVE_DATA_AUTHORITY;
+  // Every security write leaves the legacy grandfathering path permanently.
+  if (executionAuthority && securitySettingsAutoQuarantine(inlineSettings)) {
+    return { ...executionAuthority, executionAuthorityLegacy: null };
+  }
+  return { ...EMPTY_SENSITIVE_DATA_AUTHORITY, executionAuthorityLegacy: null };
 }
 
 type LinkAuthorityColumns = Omit<PersistedSensitiveDataAuthority, 'orgId' | 'partnerId'>;
 
+function hasEnvelope(row: LinkAuthorityColumns): boolean {
+  return Object.values(pickAuthority(row)).some((value) => value !== null);
+}
+
 /** Static approval state of a security link for API responses (live revocation is checked at dispatch). */
 export function describeQuarantineApproval(
-  link: { featureType: string; inlineSettings: unknown } & LinkAuthorityColumns,
+  link: { featureType: string; inlineSettings: unknown; executionAuthorityLegacy?: string | null } & LinkAuthorityColumns,
   owner: { orgId: string | null; partnerId: string | null },
-): 'approved' | 'reapproval_required' | 'not_enabled' | undefined {
+): 'approved' | 'legacy_grandfathered' | 'reapproval_required' | 'not_enabled' | undefined {
   if (link.featureType !== 'security') return undefined;
   if (!securitySettingsAutoQuarantine(link.inlineSettings)) return 'not_enabled';
+  if (!hasEnvelope(link) && link.executionAuthorityLegacy === 'grandfathered') return 'legacy_grandfathered';
   return decodeSensitiveDataAuthority({ ...owner, ...pickAuthority(link) }) ? 'approved' : 'reapproval_required';
 }
 
@@ -109,7 +128,7 @@ function pickAuthority(row: LinkAuthorityColumns): LinkAuthorityColumns {
 }
 
 /** Strip the raw envelope from a feature-link row before it leaves the API. */
-export function withoutFeatureLinkAuthority<T extends Partial<LinkAuthorityColumns>>(row: T) {
+export function withoutFeatureLinkAuthority<T extends Partial<LinkAuthorityColumns> & { executionAuthorityLegacy?: unknown }>(row: T) {
   const {
     executionAuthorityVersion: _version,
     executionAuthorityKind: _kind,
@@ -119,6 +138,7 @@ export function withoutFeatureLinkAuthority<T extends Partial<LinkAuthorityColum
     executionAuthorityFingerprint: _fingerprint,
     executionAuthorityCapturedAt: _capturedAt,
     executionAuthorityGeneration: _generation,
+    executionAuthorityLegacy: _legacy,
     ...visible
   } = row;
   return visible;
@@ -138,6 +158,8 @@ export async function resolveSecurityScanQuarantineAuthority(
       .select({
         orgId: configurationPolicies.orgId,
         partnerId: configurationPolicies.partnerId,
+        createdBy: configurationPolicies.createdBy,
+        executionAuthorityLegacy: configPolicyFeatureLinks.executionAuthorityLegacy,
         executionAuthorityVersion: configPolicyFeatureLinks.executionAuthorityVersion,
         executionAuthorityKind: configPolicyFeatureLinks.executionAuthorityKind,
         executionAuthoritySiteIds: configPolicyFeatureLinks.executionAuthoritySiteIds,
@@ -154,12 +176,34 @@ export async function resolveSecurityScanQuarantineAuthority(
       .where(eq(configPolicyFeatureLinks.id, featureLinkId))
       .limit(1);
 
-    if (!link || !decodeSensitiveDataAuthority(link)) {
+    if (!link) return { allowed: false, reason: 'reapproval_required' };
+
+    let authority: EffectiveSensitiveDataAuthority | null;
+    if (hasEnvelope(link)) {
+      if (!decodeSensitiveDataAuthority(link)) return { allowed: false, reason: 'reapproval_required' };
+      authority = await resolveSensitiveDataAuthorityInCurrentSystemContext(link);
+      if (!authority) return { allowed: false, reason: 'authority_revoked' };
+    } else if (link.executionAuthorityLegacy === 'grandfathered') {
+      authority = await resolveLegacyPrincipalExecuteAuthorityInCurrentSystemContext(
+        { orgId: link.orgId, partnerId: link.partnerId },
+        link.createdBy,
+      );
+      if (!authority) {
+        // One-way: the creator no longer qualifies, so the link needs an
+        // explicit re-approval even if they regain the permission later.
+        await db
+          .update(configPolicyFeatureLinks)
+          .set({ executionAuthorityLegacy: 'revoked' })
+          .where(and(
+            eq(configPolicyFeatureLinks.id, featureLinkId),
+            eq(configPolicyFeatureLinks.executionAuthorityLegacy, 'grandfathered'),
+            isNull(configPolicyFeatureLinks.executionAuthorityGeneration),
+          ));
+        return { allowed: false, reason: 'reapproval_required' };
+      }
+    } else {
       return { allowed: false, reason: 'reapproval_required' };
     }
-
-    const authority = await resolveSensitiveDataAuthorityInCurrentSystemContext(link);
-    if (!authority) return { allowed: false, reason: 'authority_revoked' };
 
     const [device] = await db
       .select({ orgId: devices.orgId, siteId: devices.siteId, partnerId: organizations.partnerId })

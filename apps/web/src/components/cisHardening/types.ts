@@ -57,7 +57,9 @@ export type Baseline = {
   // Stored approval of the recurring scan. 'reapproval_required' = the
   // scheduler skips this baseline until a user with devices:execute saves it.
   scheduleApproval?: {
-    status: 'approved' | 'reapproval_required' | 'not_scheduled';
+    // 'legacy_grandfathered' = saved before approvals existed; keeps running
+    // while its creator holds devices:execute (no badge).
+    status: 'approved' | 'legacy_grandfathered' | 'reapproval_required' | 'not_scheduled';
     approvedBy: string | null;
     approvedAt: string | null;
   };

@@ -3,14 +3,18 @@
 --
 -- 1. cis_baselines gains the same creator-bound authority envelope as
 --    sensitive_data_policies (version, kind, site ceiling, approving user,
---    fingerprint, capture time, generation). The scheduler dispatches a
---    baseline only when that envelope re-resolves live. Existing rows are NOT
---    backfilled — inventing an approver would defeat the point — so every
---    pre-existing scheduled baseline stops dispatching until a user with
---    devices:execute (and MFA) saves it once.
--- 2. Remediation actions approved under the old permission but not yet
---    dispatched (status 'queued', no command) return to pending approval so
---    they are approved once more under the new requirement.
+--    fingerprint, capture time, generation). The scheduler re-resolves it live
+--    before every scheduled dispatch.
+-- 2. Rows that exist when this runs carry no envelope and are marked
+--    execution_authority_legacy = 'grandfathered'. No authority is invented:
+--    the scheduler checks the row's created_by LIVE at each dispatch (active +
+--    devices:execute for the owner) and flips the row to 'revoked' — paused,
+--    re-approval required — the first time that fails. Any save (which always
+--    requires devices:execute + MFA) clears the marker for good. The marker is
+--    written only in the same run that adds the column, so a replay never
+--    re-grandfathers a row that has since left the legacy path.
+--
+-- Remediation actions need no column: dispatch re-checks the approver live.
 --
 -- Idempotent. Elects system scope before any write (FORCE ROW LEVEL SECURITY).
 
@@ -80,33 +84,31 @@ ALTER TABLE cis_baselines
 
 DO $$
 DECLARE
-  pending_schedules bigint;
-  returned_actions bigint;
+  grandfathered bigint;
 BEGIN
   PERFORM set_config('breeze.scope', 'system', true);
 
-  SELECT count(*) INTO pending_schedules
-    FROM cis_baselines
-   WHERE is_active = true
-     AND COALESCE((scan_schedule->>'enabled')::boolean, true) = true
-     AND execution_authority_generation IS NULL;
-  IF pending_schedules > 0 THEN
-    RAISE WARNING 'cis: % scheduled baseline(s) pending re-approval (no stored authority)', pending_schedules;
-  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'cis_baselines'
+       AND column_name = 'execution_authority_legacy'
+  ) THEN
+    ALTER TABLE cis_baselines ADD COLUMN execution_authority_legacy varchar(16);
 
-  UPDATE cis_remediation_actions
-     SET status = 'pending_approval',
-         approval_status = 'pending',
-         approved_by = NULL,
-         approved_at = NULL,
-         approval_note = NULL,
-         details = COALESCE(details, '{}'::jsonb)
-           || jsonb_build_object('returnedForReapprovalAt', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
-   WHERE status = 'queued'
-     AND approval_status = 'approved'
-     AND command_id IS NULL;
-  GET DIAGNOSTICS returned_actions = ROW_COUNT;
-  IF returned_actions > 0 THEN
-    RAISE WARNING 'cis: returned % undispatched approved remediation action(s) to pending approval', returned_actions;
+    UPDATE cis_baselines
+       SET execution_authority_legacy = 'grandfathered'
+     WHERE execution_authority_generation IS NULL;
+    GET DIAGNOSTICS grandfathered = ROW_COUNT;
+    RAISE WARNING 'cis: % existing baseline(s) grandfathered on their creator pending re-approval', grandfathered;
   END IF;
 END $$;
+
+ALTER TABLE cis_baselines
+  DROP CONSTRAINT IF EXISTS cis_baselines_execution_authority_legacy_chk;
+
+-- A stamped row is never on the legacy path.
+ALTER TABLE cis_baselines
+  ADD CONSTRAINT cis_baselines_execution_authority_legacy_chk CHECK (
+    execution_authority_legacy IS NULL
+    OR (execution_authority_legacy IN ('grandfathered', 'revoked') AND execution_authority_generation IS NULL)
+  );

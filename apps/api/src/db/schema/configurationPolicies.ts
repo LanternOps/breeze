@@ -140,6 +140,12 @@ export const configPolicyFeatureLinks = pgTable('config_policy_feature_links', {
   executionAuthorityFingerprint: varchar('execution_authority_fingerprint', { length: 64 }),
   executionAuthorityCapturedAt: timestamp('execution_authority_captured_at', { withTimezone: true }),
   executionAuthorityGeneration: uuid('execution_authority_generation'),
+  // Links that existed before stored authority: 'grandfathered' = auto-
+  // quarantine keeps working while the policy's `created_by` holds
+  // devices:execute (checked live at dispatch); 'revoked' = that check failed
+  // once, detect-only until re-approved. NULL for every link written since.
+  executionAuthorityLegacy: varchar('execution_authority_legacy', { length: 16 })
+    .$type<'grandfathered' | 'revoked'>(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({

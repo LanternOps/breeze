@@ -167,7 +167,7 @@ describe('SecurityTab scan settings (#6263 W01)', () => {
 // Auto-quarantine dispatches only under a stored approval (devices:execute +
 // MFA). A link without one runs scans detect-only until it is saved again.
 describe('SecurityTab auto-quarantine approval', () => {
-  const ownLink = (approval?: 'approved' | 'reapproval_required' | 'not_enabled'): FeatureLink => ({
+  const ownLink = (approval?: 'approved' | 'legacy_grandfathered' | 'reapproval_required' | 'not_enabled'): FeatureLink => ({
     id: 'link-own',
     featureType: 'security',
     featurePolicyId: null,
@@ -182,6 +182,11 @@ describe('SecurityTab auto-quarantine approval', () => {
 
   it('shows no warning for an approved link', () => {
     render(<SecurityTab {...baseProps} existingLink={ownLink('approved')} />);
+    expect(screen.queryByTestId('security-auto-quarantine-reapproval')).toBeNull();
+  });
+
+  it('shows no warning for a grandfathered legacy link', () => {
+    render(<SecurityTab {...baseProps} existingLink={ownLink('legacy_grandfathered')} />);
     expect(screen.queryByTestId('security-auto-quarantine-reapproval')).toBeNull();
   });
 });

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { addMock, queueCommandMock, selectMock, updateMock, resolveAuthorityMock } = vi.hoisted(() => ({
+const { addMock, queueCommandMock, selectMock, updateMock, resolveAuthorityMock, setMock } = vi.hoisted(() => ({
+  setMock: vi.fn(),
   addMock: vi.fn(),
   queueCommandMock: vi.fn(),
   selectMock: vi.fn(),
@@ -43,7 +44,7 @@ vi.mock('../services/redis', () => ({
 }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/cisBaselineScheduleAuthority', () => ({
-  resolveCisBaselineScheduleAuthority: resolveAuthorityMock,
+  resolveCisScheduleDispatch: resolveAuthorityMock,
 }));
 
 import { __testOnly } from './cisJobs';
@@ -69,6 +70,8 @@ const LEGACY = {
   executionAuthorityGeneration: null,
 };
 const APPROVED = { ...LEGACY, id: 'baseline-approved', executionAuthorityGeneration: 'gen-1' };
+const GRANDFATHERED = { ...LEGACY, id: 'baseline-grandfathered', executionAuthorityLegacy: 'grandfathered', createdBy: 'creator-1' };
+const CREATOR_AUTHORITY = { kind: 'organization_unrestricted', siteIds: null, userId: 'creator-1', principalKind: 'user', fingerprint: 'x', generation: '00000000-0000-0000-0000-000000000000' };
 const AUTHORITY = {
   kind: 'organization_unrestricted',
   siteIds: null,
@@ -83,9 +86,13 @@ describe('CIS scheduled scans require a valid stored authority', () => {
     vi.clearAllMocks();
     addMock.mockResolvedValue({ id: 'job-1' });
     queueCommandMock.mockResolvedValue({ id: 'cmd-1' });
-    updateMock.mockReturnValue(chain(undefined));
-    resolveAuthorityMock.mockImplementation(async (row: { executionAuthorityGeneration: string | null }) =>
-      row.executionAuthorityGeneration === 'gen-1' ? AUTHORITY : null);
+    setMock.mockImplementation(() => chain(undefined));
+    updateMock.mockReturnValue({ set: setMock });
+    resolveAuthorityMock.mockImplementation(async (row: { executionAuthorityGeneration: string | null; executionAuthorityLegacy?: string }) => {
+      if (row.executionAuthorityGeneration === 'gen-1') return { ok: true, mode: 'stamped', authority: AUTHORITY };
+      if (row.executionAuthorityLegacy === 'grandfathered') return { ok: true, mode: 'legacy', authority: CREATOR_AUTHORITY };
+      return { ok: false, reason: 'reapproval_required' };
+    });
   });
 
   it('does not enqueue a due legacy baseline that carries no authority stamp', async () => {
@@ -132,7 +139,7 @@ describe('CIS scheduled scans require a valid stored authority', () => {
 
   it('a scheduled run whose approver no longer resolves queues nothing', async () => {
     selectMock.mockReturnValueOnce(chain([APPROVED]));
-    resolveAuthorityMock.mockResolvedValueOnce(null);
+    resolveAuthorityMock.mockResolvedValueOnce({ ok: false, reason: 'reapproval_required' });
 
     const result = await __testOnly.processRunBaselineScan({
       type: 'run-baseline-scan',
@@ -180,5 +187,59 @@ describe('CIS scheduled scans require a valid stored authority', () => {
 
     expect(result.commandsQueued).toBe(1);
     expect(resolveAuthorityMock).not.toHaveBeenCalled();
+  });
+
+  it('grandfathers a legacy schedule whose creator still holds devices:execute', async () => {
+    selectMock.mockReturnValueOnce(chain([GRANDFATHERED]));
+
+    const result = await __testOnly.processScheduleScans();
+
+    expect(result.enqueued).toBe(1);
+    expect(addMock).toHaveBeenCalledWith(
+      'run-baseline-scan',
+      expect.objectContaining({ baselineId: GRANDFATHERED.id, origin: 'scheduled', legacyAuthority: true }),
+      expect.anything(),
+    );
+  });
+
+  it('pauses and flags a legacy schedule whose creator no longer qualifies', async () => {
+    selectMock.mockReturnValueOnce(chain([GRANDFATHERED]));
+    resolveAuthorityMock.mockResolvedValueOnce({ ok: false, reason: 'reapproval_required', revokeLegacy: true });
+
+    const result = await __testOnly.processScheduleScans();
+
+    expect(result.enqueued).toBe(0);
+    expect(result.reapprovalRequired).toBe(1);
+    expect(addMock).not.toHaveBeenCalled();
+    expect(setMock).toHaveBeenCalledWith({ executionAuthorityLegacy: 'revoked' });
+  });
+
+  it('a legacy run job dispatches under the creator, attributed to them', async () => {
+    selectMock
+      .mockReturnValueOnce(chain([GRANDFATHERED]))
+      .mockReturnValueOnce(chain([{ id: 'device-1', orgId: 'org-1' }]));
+
+    const result = await __testOnly.processRunBaselineScan({
+      type: 'run-baseline-scan',
+      baselineId: GRANDFATHERED.id,
+      origin: 'scheduled',
+      legacyAuthority: true,
+    });
+
+    expect(result.commandsQueued).toBe(1);
+    expect(queueCommandMock).toHaveBeenCalledWith('device-1', 'cis_benchmark', expect.anything(), 'creator-1');
+  });
+
+  it('a legacy run job queues nothing once the baseline has been stamped', async () => {
+    selectMock.mockReturnValueOnce(chain([APPROVED]));
+
+    const result = await __testOnly.processRunBaselineScan({
+      type: 'run-baseline-scan',
+      baselineId: APPROVED.id,
+      origin: 'scheduled',
+      legacyAuthority: true,
+    });
+
+    expect(result.commandsQueued).toBe(0);
   });
 });

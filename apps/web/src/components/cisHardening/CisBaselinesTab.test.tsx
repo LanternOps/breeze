@@ -386,6 +386,13 @@ describe('CisBaselinesTab schedule re-approval', () => {
         scanSchedule: { enabled: true, intervalHours: 24 },
         scheduleApproval: { status: 'approved', approvedBy: 'user-1', approvedAt: '2026-12-10T00:00:00.000Z' },
       },
+      {
+        ...baseline,
+        id: 'baseline-4',
+        name: 'CIS Windows L1 legacy',
+        scanSchedule: { enabled: true, intervalHours: 24 },
+        scheduleApproval: { status: 'legacy_grandfathered', approvedBy: 'user-1', approvedAt: null },
+      },
     ]);
 
     render(<CisBaselinesTab refreshKey={0} onMutate={vi.fn()} />);

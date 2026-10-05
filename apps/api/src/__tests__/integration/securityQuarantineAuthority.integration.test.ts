@@ -4,6 +4,8 @@
  *     captured authority and auto-quarantine on, and clear it otherwise;
  *   - the dispatch resolver admits only a live devices:execute approver, for a
  *     device inside the policy owner;
+ *   - a grandfathered legacy link keeps quarantining while its policy creator
+ *     holds devices:execute, and is revoked (one-way) when not;
  *   - the shape CHECK rejects a partial envelope; the migration is idempotent.
  */
 import { readFileSync } from 'node:fs';
@@ -170,6 +172,61 @@ describe('security feature-link auto-quarantine authority', () => {
     expect(await withDbAccessContext(SYSTEM_CTX, () =>
       resolveSecurityScanQuarantineAuthority(executorLink!.id, foreignDevice.id)))
       .toEqual({ allowed: false, reason: 'device_out_of_scope' });
+  });
+
+  it('grandfathers a legacy link on a policy creator with devices:execute and downgrades one without', async () => {
+    const executor = await setupTestEnvironment({
+      scope: 'organization',
+      rolePermissions: [{ resource: 'devices', action: 'execute' }],
+    });
+    const writer = await setupTestEnvironment({
+      scope: 'organization',
+      rolePermissions: [{ resource: 'devices', action: 'write' }],
+    });
+
+    const legacyLink = async (env: Env) => {
+      const [policy] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(configurationPolicies).values({
+        orgId: env.organization.id,
+        name: `Legacy IOC ${crypto.randomUUID().slice(0, 8)}`,
+        createdBy: env.user.id,
+      }).returning());
+      createdPolicies.push(policy!.id);
+      const [link] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: policy!.id,
+        featureType: 'security',
+        inlineSettings: { autoQuarantine: true },
+        executionAuthorityLegacy: 'grandfathered',
+      }).returning());
+      return link!;
+    };
+
+    const keptLink = await legacyLink(executor);
+    const keptDevice = await createDevice(executor);
+    const downgradedLink = await legacyLink(writer);
+    const downgradedDevice = await createDevice(writer);
+
+    expect(await withDbAccessContext(SYSTEM_CTX, () =>
+      resolveSecurityScanQuarantineAuthority(keptLink.id, keptDevice.id))).toEqual({ allowed: true });
+    expect(await withDbAccessContext(SYSTEM_CTX, () =>
+      resolveSecurityScanQuarantineAuthority(downgradedLink.id, downgradedDevice.id)))
+      .toEqual({ allowed: false, reason: 'reapproval_required' });
+
+    const legacyState = (id: string) => withDbAccessContext(SYSTEM_CTX, async () => (await db
+      .select({ legacy: configPolicyFeatureLinks.executionAuthorityLegacy })
+      .from(configPolicyFeatureLinks)
+      .where(eq(configPolicyFeatureLinks.id, id)))[0]!.legacy);
+    expect(await legacyState(keptLink.id)).toBe('grandfathered');
+    // One-way: flagged for re-approval.
+    expect(await legacyState(downgradedLink.id)).toBe('revoked');
+
+    // A save through the service leaves the legacy path for good.
+    await withDbAccessContext(SYSTEM_CTX, () => updateFeatureLink(
+      keptLink.id, { inlineSettings: { autoQuarantine: true } }, keptLink.configPolicyId,
+    ));
+    expect(await legacyState(keptLink.id)).toBeNull();
+    expect(await withDbAccessContext(SYSTEM_CTX, () =>
+      resolveSecurityScanQuarantineAuthority(keptLink.id, keptDevice.id)))
+      .toEqual({ allowed: false, reason: 'reapproval_required' });
   });
 
   it('rejects a partial envelope (shape CHECK) and replays the migration idempotently', async () => {

@@ -93,6 +93,12 @@ export const cisBaselines = pgTable('cis_baselines', {
   executionAuthorityFingerprint: varchar('execution_authority_fingerprint', { length: 64 }),
   executionAuthorityCapturedAt: timestamp('execution_authority_captured_at', { withTimezone: true }),
   executionAuthorityGeneration: uuid('execution_authority_generation'),
+  // Rows that existed before stored authority: 'grandfathered' = the schedule
+  // keeps dispatching while `created_by` holds devices:execute (checked live);
+  // 'revoked' = that check failed once, re-approval required. NULL for every
+  // row saved since (a save always stamps). Never set alongside an envelope.
+  executionAuthorityLegacy: varchar('execution_authority_legacy', { length: 16 })
+    .$type<'grandfathered' | 'revoked'>(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
