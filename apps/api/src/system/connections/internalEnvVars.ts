@@ -456,7 +456,6 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   SOFTWARE_UPLOAD_SESSION_MAX_AGE_HOURS: 'timing knob',
   // SSO_*
   SSO_DOMAIN_VERIFICATION_STRICT: 'SSO policy flag',
-  STAFF_FORWARD_DOMAINS: 'inbound email staff-forward domains (opt-in)',
   // STALE_*
   STALE_REAPER_MAX_PER_RUN: 'worker throughput knob',
   // SYNTHETIC_*

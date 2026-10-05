@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Mock harness. The db mock captures inserts/updates and serves canned select
@@ -212,10 +212,11 @@ vi.mock('../../db/schema', () => ({
     deletedAt: 'deletedAt', submittedBy: 'submittedBy', requesterContactId: 'requesterContactId',
     assignedTo: 'assignedTo', submitterEmail: 'submitterEmail'
   },
-  users: { __t: 'users', id: 'id', email: 'email', partnerId: 'partnerId', status: 'status' },
+  users: { __t: 'users', id: 'id', email: 'email', partnerId: 'partnerId', orgId: 'orgId', status: 'status' },
+  partnerUsers: { __t: 'partner_users', userId: 'userId', partnerId: 'partnerId', orgAccess: 'orgAccess', orgIds: 'orgIds' },
   ticketComments: { __t: 'ticket_comments', ticketId: 'ticketId' },
   portalUsers: { __t: 'portal_users', id: 'id', orgId: 'orgId', email: 'email' },
-  organizations: { __t: 'organizations', id: 'id', partnerId: 'partnerId' },
+  organizations: { __t: 'organizations', id: 'id', partnerId: 'partnerId', status: 'status', type: 'type', deletedAt: 'deletedAt' },
   partners: { __t: 'partners', id: 'id', status: 'status' },
   ticketMailboxConnections: {
     __t: 'ticket_mailbox_connections', id: 'id', partnerId: 'partnerId', tenantId: 'tenantId',
@@ -2068,18 +2069,18 @@ describe('staff-forward intake', () => {
     state.selectRows['ticket_email_inbound'] = [];
     state.selectRows['tickets'] = [];
     state.selectRows['portal_users'] = [];
-    // The outer sender is an active Breeze user of this partner (staff).
-    state.selectRows['users'] = [{ id: 'u-staff' }];
+    // The outer sender is partner-level staff of this partner with access to
+    // every org. The users/partner_users join is served from the 'users' key.
+    state.selectRows['users'] = [{ orgAccess: 'all', orgIds: null }];
     resolveMock.mockResolvedValue('p-1');
     resolveRequesterMock.mockReset();
-  });
-
-  afterEach(() => {
-    delete process.env.STAFF_FORWARD_DOMAINS;
+    loadPolicyMock.mockResolvedValue({
+      enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null,
+      dropUnverifiedSenders: false, staffForwardRouting: true,
+    });
   });
 
   it('routes a staff forward by the ORIGINAL sender domain, with no autoresponse and no contact', async () => {
-    process.env.STAFF_FORWARD_DOMAINS = 'msp.example';
     state.selectRows['organizations'] = [{ id: 'o-client' }];
     resolveOrgMock.mockImplementation(async (addr: string) =>
       addr.endsWith('@client.example') ? { orgId: 'o-client', autoCreateContact: true } : { orgId: 'o-msp', autoCreateContact: true });
@@ -2096,7 +2097,6 @@ describe('staff-forward intake', () => {
   });
 
   it('does not scan HTML-only mail: an HTML-only staff forward routes normally by sender', async () => {
-    process.env.STAFF_FORWARD_DOMAINS = 'msp.example';
     state.selectRows['organizations'] = [{ id: 'o-msp' }];
     resolveOrgMock.mockImplementation(async (addr: string) =>
       addr.endsWith('@client.example') ? { orgId: 'o-client', autoCreateContact: false } : { orgId: 'o-msp', autoCreateContact: false });
@@ -2115,7 +2115,6 @@ describe('staff-forward intake', () => {
   });
 
   it('routes by the original sender even when the staff forwarder has a portal login', async () => {
-    process.env.STAFF_FORWARD_DOMAINS = 'msp.example';
     state.selectRows['portal_users'] = [{ id: 'pu-staff', orgId: 'o-msp' }];
     state.selectRows['organizations'] = [{ id: 'o-client' }];
     resolveOrgMock.mockImplementation(async (addr: string) =>
@@ -2129,8 +2128,8 @@ describe('staff-forward intake', () => {
     expect(maybeSendAutoresponseMock).not.toHaveBeenCalled();
   });
 
-  it('ignores a forwarded block when the OUTER sender is not a staff domain (ordinary routing)', async () => {
-    process.env.STAFF_FORWARD_DOMAINS = 'msp.example';
+  it('ignores a forwarded block when the outer sender is not partner staff (ordinary routing)', async () => {
+    state.selectRows['users'] = [];
     state.selectRows['organizations'] = [{ id: 'o-other' }];
     resolveOrgMock.mockImplementation(async (addr: string) =>
       addr.endsWith('@client.example') ? { orgId: 'o-client', autoCreateContact: false } : { orgId: 'o-other', autoCreateContact: false });
@@ -2141,7 +2140,8 @@ describe('staff-forward intake', () => {
     expect(input.orgId).toBe('o-other');
   });
 
-  it('is disabled when STAFF_FORWARD_DOMAINS is unset (secure default)', async () => {
+  it('is disabled when the partner has not turned staffForwardRouting on (default)', async () => {
+    loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false, staffForwardRouting: false });
     state.selectRows['organizations'] = [{ id: 'o-msp' }];
     resolveOrgMock.mockImplementation(async (addr: string) =>
       addr.endsWith('@client.example') ? { orgId: 'o-client', autoCreateContact: false } : { orgId: 'o-msp', autoCreateContact: false });
@@ -2153,7 +2153,6 @@ describe('staff-forward intake', () => {
   });
 
   it('does not reroute a forward whose original sender is on the forwarder\'s own domain', async () => {
-    process.env.STAFF_FORWARD_DOMAINS = 'msp.example';
     state.selectRows['organizations'] = [{ id: 'o-msp' }];
     resolveOrgMock.mockResolvedValue({ orgId: 'o-msp', autoCreateContact: false });
     const internal = forwardBody.replace('jane@client.example', 'colleague@msp.example');
@@ -2164,9 +2163,10 @@ describe('staff-forward intake', () => {
     expect(String(inboundOf()[0]!.error ?? '')).not.toContain('staff-forward');
   });
 
-  it('gives a staff domain no forward routing in a partner where the sender is not an active user', async () => {
-    process.env.STAFF_FORWARD_DOMAINS = 'msp.example';
-    state.selectRows['users'] = []; // not a user of THIS partner
+  it('gives no forward routing to a sender who is not active partner-level staff of THIS partner', async () => {
+    // A customer-org user, a disabled user, or a user of another partner: the
+    // staff query returns nothing (its predicates are proven in the integration suite).
+    state.selectRows['users'] = [];
     state.selectRows['organizations'] = [{ id: 'o-msp' }];
     resolveOrgMock.mockImplementation(async (addr: string) =>
       addr.endsWith('@client.example') ? { orgId: 'o-client', autoCreateContact: false } : { orgId: 'o-msp', autoCreateContact: false });
@@ -2178,7 +2178,6 @@ describe('staff-forward intake', () => {
   });
 
   it('never applies to a staff forward that fails sender authentication (quarantined first)', async () => {
-    process.env.STAFF_FORWARD_DOMAINS = 'msp.example';
     resolveOrgMock.mockResolvedValue({ orgId: 'o-client', autoCreateContact: false });
 
     await processInboundEmail(email({
@@ -2191,7 +2190,6 @@ describe('staff-forward intake', () => {
   });
 
   it('threads a staff forward that replies on an existing ticket instead of creating one', async () => {
-    process.env.STAFF_FORWARD_DOMAINS = 'msp.example';
     resolveOrgMock.mockResolvedValue({ orgId: 'o-client', autoCreateContact: false });
     state.selectRows['tickets'] = [{
       id: 't-1', partnerId: 'p-1', orgId: 'o-1', status: 'open',
@@ -2209,7 +2207,6 @@ describe('staff-forward intake', () => {
   });
 
   it('falls through to ordinary routing when the original domain is unmapped', async () => {
-    process.env.STAFF_FORWARD_DOMAINS = 'msp.example';
     state.selectRows['organizations'] = [{ id: 'o-msp' }];
     resolveOrgMock.mockImplementation(async (addr: string) =>
       addr.endsWith('@msp.example') ? { orgId: 'o-msp', autoCreateContact: false } : null);
@@ -2218,5 +2215,29 @@ describe('staff-forward intake', () => {
 
     const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(input.orgId).toBe('o-msp');
+  });
+
+  it('requires the staff member\'s org access to cover the target org', async () => {
+    state.selectRows['organizations'] = [{ id: 'o-msp' }];
+    resolveOrgMock.mockImplementation(async (addr: string) =>
+      addr.endsWith('@client.example') ? { orgId: 'o-client', autoCreateContact: false } : { orgId: 'o-msp', autoCreateContact: false });
+
+    // Limited to other orgs: routes normally by the forwarder.
+    state.selectRows['users'] = [{ orgAccess: 'selected', orgIds: ['o-other'] }];
+    await processInboundEmail(email({ from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody }));
+    // No org access at all: routes normally.
+    state.selectRows['users'] = [{ orgAccess: 'none', orgIds: null }];
+    await processInboundEmail(email({
+      from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody,
+      providerMessageId: 'pm-none', messageId: '<pm-none@msp.example>',
+    }));
+    // Selected orgs that include the target org: re-routed.
+    state.selectRows['users'] = [{ orgAccess: 'selected', orgIds: ['o-client'] }];
+    await processInboundEmail(email({
+      from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody,
+      providerMessageId: 'pm-sel', messageId: '<pm-sel@msp.example>',
+    }));
+
+    expect(createTicketMock.mock.calls.map((c) => (c[0] as Record<string, unknown>).orgId)).toEqual(['o-msp', 'o-msp', 'o-client']);
   });
 });

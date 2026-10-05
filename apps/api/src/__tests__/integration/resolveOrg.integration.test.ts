@@ -176,16 +176,16 @@ describe('loadPartnerInboundPolicy', () => {
   it('reads routing policy from partners.settings JSONB, defaulting absent to quarantine', async () => {
     const { p } = await seedPartnerOrg();
     const defaults = await withSystemDbAccessContext(() => loadPartnerInboundPolicy(p.id));
-    expect(defaults).toEqual({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false });
+    expect(defaults).toEqual({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false, staffForwardRouting: false });
 
     const adminDb = getTestDb() as any;
     await adminDb
       .update(partners)
-      .set({ settings: { ticketing: { inbound: { unknownSenderMode: 'drop', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: true } } } })
+      .set({ settings: { ticketing: { inbound: { unknownSenderMode: 'drop', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: true, staffForwardRouting: true } } } })
       .where(eq(partners.id, p.id));
 
     const set = await withSystemDbAccessContext(() => loadPartnerInboundPolicy(p.id));
-    expect(set).toEqual({ enabled: true, unknownSenderMode: 'drop', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: true });
+    expect(set).toEqual({ enabled: true, unknownSenderMode: 'drop', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: true, staffForwardRouting: true });
   });
 
   // #3597. `enabled` is the ONE field here that defaults permissive: the toggle was
@@ -224,6 +224,6 @@ describe('loadPartnerInboundPolicy', () => {
       .where(eq(partners.id, p.id));
 
     const set = await withSystemDbAccessContext(() => loadPartnerInboundPolicy(p.id));
-    expect(set).toEqual({ enabled: true, unknownSenderMode: 'triage', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: false });
+    expect(set).toEqual({ enabled: true, unknownSenderMode: 'triage', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: false, staffForwardRouting: false });
   });
 });

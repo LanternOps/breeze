@@ -13,7 +13,10 @@
  * an internal org bucket, gated on the OUTER message already being verified.
  *
  * Parses a provider-supplied text/plain body only; the caller never passes text derived from
- * HTML, so HTML-only mail routes normally. A
+ * HTML, so HTML-only mail routes normally. In practice that makes it a Gmail
+ * feature: the Microsoft 365 mailbox path receives HTML bodies (Graph is not
+ * asked for text), and modern Outlook marks a forward with an underscore rule
+ * rather than "-----Original Message-----", which is not recognized. A
  * forward is recognized ONLY by an exact forward-marker line (Gmail
  * "---------- Forwarded message ---------" or Outlook "-----Original
  * Message-----") whose very next line starts a header block containing a From:
@@ -24,8 +27,9 @@
  * Recognition is textual: nothing in the message proves a mail client wrote the
  * marker, so a staff member who types the exact marker line and header block
  * gets the same routing. That is accepted because only an authenticated, active
- * user of the partner on a configured staff domain can trigger the path, and it
- * only chooses which customer org the new ticket is filed under.
+ * partner-level staff user of the partner, in a partner that turned the setting
+ * on, can trigger the path, and it only chooses which customer org (one that user
+ * already has access to) the new ticket is filed under.
  */
 
 // An email address inside angle brackets, or a bare address. Intentionally
@@ -41,7 +45,6 @@ const HEADER_LINE = /^[A-Za-z][A-Za-z -]{0,30}:/;
 const DATE_LINE = /^(?:Sent|Date):/;
 const SUBJECT_LINE = /^Subject:/;
 
-/** Pull the first email address out of a "From:" header line. */
 /**
  * Remove RFC5322 quoted display-names and parenthesized comments (which may be
  * nested and may contain escapes) so an address inside them cannot be mistaken
@@ -72,6 +75,7 @@ function stripQuotesAndComments(line: string): string {
   return out;
 }
 
+/** Pull the first email address out of a "From:" header line. */
 function addrFromLine(line: string): string | null {
   const cleaned = stripQuotesAndComments(line);
   const angle = cleaned.match(ANGLE_ADDR)?.[1];
