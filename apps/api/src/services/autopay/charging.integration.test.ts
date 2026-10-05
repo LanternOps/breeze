@@ -2061,9 +2061,11 @@ it('a method the live check rejects is marked unusable, so the due invoice fails
  const mail=captureMail();
  try {
   await runAutopayCollection(); await runAutopayCollection(new Date(Date.now()+86_400_000));
-  await vi.waitFor(()=>expect(mail.staff().length).toBeGreaterThanOrEqual(1));
+  await vi.waitFor(()=>expect(mail.staff().length).toBeGreaterThanOrEqual(2));
  } finally { mail.restore(); }
- expect(mail.staff()).toHaveLength(1);
+ // One email per stage for the dead method, across both invoices and both runs (F3): the
+ // admission check that found it, then the invoices it left uncharged.
+ expect(mail.staff().map(message=>message.text.includes('was not charged automatically')).sort()).toEqual([false,true]);
  const [method]=await withSystemDbAccessContext(()=>db.select().from(orgPaymentMethods).where(eq(orgPaymentMethods.id,f.method.id)));
  expect(method).toMatchObject({status:'unusable',isAutopayMethod:true});
  for(const invoice of [f.invoice,b.invoice]){
