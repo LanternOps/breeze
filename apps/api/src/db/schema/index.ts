@@ -195,6 +195,7 @@ export * from './backupErasureFences';
 export * from './backupStorageSessions';
 export * from './backupStorageCredentialHistory';
 export * from './backupSnapshotAttestations';
+export * from './backupRestoreAuthorizations';
 export * from './devicePoolAssignmentEvents';
 export * from './aiModelRegistry';
 export * from './aiModelRegistryCutover';
