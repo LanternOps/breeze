@@ -23,10 +23,11 @@ export function isControllableSchedule(state: (typeof invoiceAutopaySchedules.$i
 
 /** Spec 6.6: once an attempt has been sent to Stripe for confirmation it cannot be
  * recalled (a processing ACH debit always completes or returns), so a client skip
- * is refused rather than promised. Reserved/created attempts are fenced before
+ * or an MSP exclusion is refused rather than promised. Reserved/created attempts are fenced before
  * confirmation and requires_action PaymentIntents can still be cancelled. */
 const UNSTOPPABLE_ATTEMPT_STATES = ['confirming', 'processing'] as const;
 export const SKIP_PROCESSING_MESSAGE = "A payment for this invoice is already processing and can't be stopped. You'll get a receipt when it completes.";
+const EXCLUDE_PROCESSING_MESSAGE = "A payment for this invoice is already processing and can't be stopped. Exclude the invoice after the payment completes or fails.";
 export async function hasUnstoppableCollection(tx: Tx, invoiceId: string): Promise<boolean> {
   const rows = await tx.select({ state: invoiceCollectionAttempts.state }).from(invoiceCollectionAttempts)
     .where(and(eq(invoiceCollectionAttempts.invoiceId, invoiceId),
@@ -114,8 +115,10 @@ export async function requestInvoiceControl(tx: Tx, input: {
   if (input.kind === 'skip' && (!schedule?.enrollmentId || !['awaiting_notice', 'scheduled', 'retry_scheduled', 'collecting', 'action_required'].includes(schedule.state))) {
     throw new InvoiceServiceError('Invoice cannot be skipped', 409, 'INVALID_STATE');
   }
-  if (input.kind === 'skip' && await hasUnstoppableCollection(tx, invoice.id)) {
-    throw new InvoiceServiceError(SKIP_PROCESSING_MESSAGE, 409, 'COLLECTION_IN_PROGRESS');
+  // Neither control may promise to stop money it cannot stop. Refuse before any fence is written.
+  if (await hasUnstoppableCollection(tx, invoice.id)) {
+    throw new InvoiceServiceError(input.kind === 'skip' ? SKIP_PROCESSING_MESSAGE : EXCLUDE_PROCESSING_MESSAGE,
+      409, 'COLLECTION_IN_PROGRESS', { reason: 'payment_processing' });
   }
   const now = new Date();
   if (input.kind === 'exclude' && !invoice.autopayExcluded) {

@@ -248,6 +248,21 @@ it.each(['confirming', 'processing'])('refuses to skip while a %s payment cannot
   expect(f.sched).toMatchObject({ clientSkippedAt: null, stateReason: null });
   expect(h.confirmation).not.toHaveBeenCalled(); expect(h.staff).not.toHaveBeenCalled();
 });
+// The MSP Exclude has the same limit: a payment already with Stripe cannot be recalled.
+it.each(['confirming', 'processing'])('refuses an MSP exclusion while a %s payment cannot be stopped, with no fence written', async state => {
+  const f = fixture({ state: 'collecting' }, [{ id: 'attempt', state }]);
+  await expect(setInvoiceAutopayExcluded(f.tx, invoice.id, true, actor)).rejects.toMatchObject({ status: 409,
+    code: 'COLLECTION_IN_PROGRESS', details: { reason: 'payment_processing' } });
+  expect(f.writes).toEqual([]);
+  expect(f.inv.autopayExcluded).toBe(false);
+  expect(f.sched).toMatchObject({ mspExcludedAt: null, stateReason: null });
+});
+it.each(['reserved', 'created', 'requires_action'])('still fences an MSP exclusion for a %s attempt that can be cancelled', async state => {
+  const f = fixture({ state: 'collecting' }, [{ id: 'attempt', state }]);
+  expect(await setInvoiceAutopayExcluded(f.tx, invoice.id, true, actor)).toMatchObject({ status: 'pending', control: 'exclude' });
+  expect(f.inv.autopayExcluded).toBe(true);
+  expect(f.sched).toMatchObject({ stateReason: 'control_pending:exclude' });
+});
 it.each([['confirming', true], ['processing', true], ['created', false], ['requires_action', false]] as const)(
   'tells the skip page before the click whether a %s payment can still be stopped', async (state, processing) => {
     const f = fixture({ state: 'collecting' }, [{ id: 'attempt', state }]);

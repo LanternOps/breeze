@@ -2494,6 +2494,7 @@
     "requestedCount_other": "Requests sent to {{count}} clients.",
     "chargeDate": "Charge on or around {{date}}",
     "excludeInvoice": "Exclude this invoice from automatic payments",
+    "excludeRefusedProcessing": "This invoice's payment is already processing and can't be stopped. You can exclude the invoice once the payment completes or fails.",
     "excludeContract": "Exclude invoices containing this contract",
     "failed": "Could not update automatic payment. Please try again.",
     "states": {

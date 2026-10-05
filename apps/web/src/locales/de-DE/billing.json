@@ -2494,6 +2494,7 @@
     "requestedCount_other": "Anfragen an {{count}} Kunden gesendet.",
     "chargeDate": "Abbuchung am oder um den {{date}}",
     "excludeInvoice": "Diese Rechnung von automatischen Zahlungen ausschließen",
+    "excludeRefusedProcessing": "Die Zahlung für diese Rechnung wird bereits verarbeitet und kann nicht gestoppt werden. Sie können die Rechnung ausschließen, sobald die Zahlung abgeschlossen oder fehlgeschlagen ist.",
     "excludeContract": "Rechnungen mit diesem Vertrag ausschließen",
     "failed": "Automatische Zahlung konnte nicht aktualisiert werden. Bitte erneut versuchen.",
     "states": {

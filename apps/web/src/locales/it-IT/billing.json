@@ -2494,6 +2494,7 @@
     "requestedCount_other": "Richieste inviate a {{count}} clienti.",
     "chargeDate": "Addebito intorno al {{date}}",
     "excludeInvoice": "Escludi questa fattura dai pagamenti automatici",
+    "excludeRefusedProcessing": "Il pagamento di questa fattura è già in elaborazione e non può essere interrotto. Puoi escludere la fattura quando il pagamento sarà completato o non riuscito.",
     "excludeContract": "Escludi le fatture che contengono questo contratto",
     "failed": "Impossibile aggiornare il pagamento automatico. Riprova.",
     "states": {

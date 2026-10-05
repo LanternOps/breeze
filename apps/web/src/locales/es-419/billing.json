@@ -2494,6 +2494,7 @@
     "requestedCount_other": "Solicitudes enviadas a {{count}} clientes.",
     "chargeDate": "Cobro el {{date}} o cerca de esa fecha",
     "excludeInvoice": "Excluir esta factura de los pagos automáticos",
+    "excludeRefusedProcessing": "El pago de esta factura ya se está procesando y no se puede detener. Puede excluir la factura cuando el pago se complete o falle.",
     "excludeContract": "Excluir las facturas que incluyan este contrato",
     "failed": "No se pudo actualizar el pago automático. Inténtalo de nuevo.",
     "states": {

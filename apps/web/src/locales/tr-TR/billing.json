@@ -2494,6 +2494,7 @@
     "requestedCount_other": "{{count}} müşteriye istek gönderildi.",
     "chargeDate": "{{date}} tarihinde veya yakınında tahsil edilir",
     "excludeInvoice": "Bu faturayı otomatik ödemelerden hariç tut",
+    "excludeRefusedProcessing": "Bu faturanın ödemesi zaten işleniyor ve durdurulamaz. Ödeme tamamlandığında veya başarısız olduğunda faturayı hariç tutabilirsiniz.",
     "excludeContract": "Bu sözleşmeyi içeren faturaları hariç tut",
     "failed": "Otomatik ödeme güncellenemedi. Lütfen tekrar deneyin.",
     "states": {

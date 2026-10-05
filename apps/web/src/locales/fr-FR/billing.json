@@ -2494,6 +2494,7 @@
     "requestedCount_other": "Demandes envoyées à {{count}} clients.",
     "chargeDate": "Prélèvement aux alentours du {{date}}",
     "excludeInvoice": "Exclure cette facture des paiements automatiques",
+    "excludeRefusedProcessing": "Le paiement de cette facture est déjà en cours de traitement et ne peut pas être arrêté. Vous pourrez exclure la facture une fois le paiement abouti ou échoué.",
     "excludeContract": "Exclure les factures comprenant ce contrat",
     "failed": "Impossible de mettre à jour le paiement automatique. Veuillez réessayer.",
     "states": {

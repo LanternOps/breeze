@@ -51,3 +51,18 @@ it('reports a pending exclusion instead of saved',async()=>{
  render(<InvoiceDetail detail={detail} onChanged={()=>{}}/>);fireEvent.click(screen.getByTestId('autopay-invoice-excluded'));
  await waitFor(()=>expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({message:'Exclusion requested; stopping the pending payment'})));
 });
+
+it('explains an exclusion refused because the payment is already processing',async()=>{
+ h.fetch.mockImplementation(async(_url:string,opts?:RequestInit)=>({ok:opts?.method!=='PATCH',status:opts?.method==='PATCH'?409:200,
+  json:async()=>opts?.method==='PATCH'?{error:'A payment for this invoice is already processing and can\'t be stopped.',code:'COLLECTION_IN_PROGRESS',details:{reason:'payment_processing'}}:{data:[]}}));
+ const changed=vi.fn();render(<InvoiceDetail detail={detail} onChanged={changed}/>);fireEvent.click(screen.getByTestId('autopay-invoice-excluded'));
+ await waitFor(()=>expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({type:'error',
+  message:"This invoice's payment is already processing and can't be stopped. You can exclude the invoice once the payment completes or fails."})));
+ expect(changed).not.toHaveBeenCalled();
+});
+it('keeps the server message for other exclusion conflicts',async()=>{
+ h.fetch.mockImplementation(async(_url:string,opts?:RequestInit)=>({ok:opts?.method!=='PATCH',status:opts?.method==='PATCH'?409:200,
+  json:async()=>opts?.method==='PATCH'?{error:'Another payment control is pending',code:'COLLECTION_IN_PROGRESS'}:{data:[]}}));
+ render(<InvoiceDetail detail={detail} onChanged={()=>{}}/>);fireEvent.click(screen.getByTestId('autopay-invoice-excluded'));
+ await waitFor(()=>expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({type:'error',message:'Another payment control is pending'})));
+});

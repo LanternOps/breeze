@@ -417,20 +417,24 @@ it.each(['skip', 'exclude', 'stop'] as const)('%s finalizes immediately and fenc
   expect(provider.confirm).not.toHaveBeenCalled();
 });
 
-// Skip is refused once an attempt is confirming (spec 6.6); MSP exclude and stop
-// still fence and cancel. The skip refusal for this exact state is covered below.
-it.each(['exclude', 'stop'] as const)('%s stays pending until cancellation is verified, then finalizes once', async kind => {
+// Client skip and MSP exclude are refused once an attempt is confirming (spec 6.6);
+// stop still fences and cancels it. Exclude is driven from a created attempt (PI
+// made, not yet sent for confirmation), the state it can really cancel. The
+// refusals for confirming/processing are covered below.
+it.each([['exclude', 'created'], ['stop', 'confirming']] as const)('%s stays pending until cancellation is verified, then finalizes once (%s)', async (kind, state) => {
   const f = await fixture();
   provider.confirm.mockRejectedValueOnce(new Error('crash before confirm'));
   await expect(attemptCollection(inputFor(f))).rejects.toThrow('crash before confirm');
   await withSystemDbAccessContext(async () => {
+    if (state === 'created') await db.update(invoiceCollectionAttempts).set({state: 'created'})
+      .where(eq(invoiceCollectionAttempts.invoiceId, f.invoice.id));
     if (kind === 'stop') await turnOffAutopay(db, f.actor, f.org.id);
     else expect(await requestInvoiceControl(db, {invoiceId: f.invoice.id, kind, actor: f.actor})).toMatchObject({status: 'pending'});
   });
   expect(await scheduleFor(f)).toMatchObject({state: 'collecting', stateReason: `control_pending:${kind}`});
   provider.cancel.mockRejectedValueOnce(new Error('cancel response lost'));
   await reconcilePendingControls(); // retrieve still says requires_confirmation
-  expect((await attempts(f.invoice.id))[0]!.state).toBe('confirming');
+  expect((await attempts(f.invoice.id))[0]!.state).toBe(state);
   expect(await scheduleFor(f)).toMatchObject({stateReason: `control_pending:${kind}`});
   await reconcilePendingControls();
   expect((await attempts(f.invoice.id))[0]!.state).toBe('canceled');
@@ -441,14 +445,18 @@ it.each(['exclude', 'stop'] as const)('%s stays pending until cancellation is ve
   expect(provider.confirm).toHaveBeenCalledTimes(1);
 });
 
-it.each(['confirming', 'processing'] as const)('refuses a client skip once the attempt is %s; the payment completes with no skip confirmation', async state => {
+it.each(['confirming', 'processing'] as const)('refuses a client skip and an MSP exclusion once the attempt is %s; the payment completes with no skip confirmation', async state => {
   const f = await fixture();
   if (state === 'confirming') provider.confirm.mockRejectedValueOnce(new Error('crash before confirm'));
   await (state === 'confirming' ? expect(attemptCollection(inputFor(f))).rejects.toThrow('crash before confirm') : attemptCollection(inputFor(f)));
   expect((await attempts(f.invoice.id))[0]!.state).toBe(state);
-  await expect(withSystemDbAccessContext(() => requestInvoiceControl(db, {invoiceId: f.invoice.id, kind: 'skip', actor: f.actor})))
-    .rejects.toMatchObject({status: 409, code: 'COLLECTION_IN_PROGRESS'});
-  expect(await scheduleFor(f)).toMatchObject({state: 'collecting', stateReason: null, clientSkippedAt: null});
+  for (const kind of ['skip', 'exclude'] as const) {
+    await expect(withSystemDbAccessContext(() => requestInvoiceControl(db, {invoiceId: f.invoice.id, kind, actor: f.actor})))
+      .rejects.toMatchObject({status: 409, code: 'COLLECTION_IN_PROGRESS', details: {reason: 'payment_processing'}});
+  }
+  expect(await scheduleFor(f)).toMatchObject({state: 'collecting', stateReason: null, clientSkippedAt: null, mspExcludedAt: null});
+  const [unexcluded] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, f.invoice.id)));
+  expect(unexcluded!.autopayExcluded).toBe(false);
   // No fence was written, so the ordinary reconcile path finishes the payment.
   const [attempt] = await attempts(f.invoice.id);
   if (state === 'confirming') await resumeCollectionAttempt(attempt!.id);
@@ -497,7 +505,8 @@ it('schedule-less pending exclusion is discovered and releases only a verified c
   provider.confirm.mockRejectedValueOnce(new Error('crash'));
   await expect(attemptCollection(inputFor(f))).rejects.toThrow('crash');
   await withSystemDbAccessContext(async () => {
-    await db.update(invoiceCollectionAttempts).set({scheduleId: null, initiatedBy: 'client_on_session'})
+    // A created attempt (PI made, not yet sent for confirmation) is the one exclusion can still stop.
+    await db.update(invoiceCollectionAttempts).set({scheduleId: null, initiatedBy: 'client_on_session', state: 'created'})
       .where(eq(invoiceCollectionAttempts.invoiceId, f.invoice.id));
     await db.delete(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id, f.schedule.id));
     expect(await requestInvoiceControl(db, {invoiceId: f.invoice.id, kind: 'exclude', actor: f.actor})).toMatchObject({status: 'pending'});
@@ -1170,7 +1179,20 @@ it.each(['failed', 'skipped_by_client', 'excluded_by_msp', 'cancelled', 'not_nee
     expect(await scheduleFor(f)).toEqual(before);
   });
 
-it.each(['exclude', 'stop'] as const)('%s preserves terminal schedule history even with a live bank reservation', async kind => {
+it('exclude is refused for a processing bank debit and leaves terminal schedule history untouched', async () => {
+  const f = await fixture(); const bank = await bankSetup(f, 'terminal_exclude'); serveBank([bank]);
+  await withSystemDbAccessContext(() => db.update(invoiceAutopaySchedules).set({state: 'not_needed', stateReason: 'historical'})
+    .where(eq(invoiceAutopaySchedules.id, f.schedule.id)));
+  await collectAfterBankSetup({invoiceId: f.invoice.id, orgId: f.org.id, setupSessionId: bank.session.id!});
+  const before = await scheduleFor(f);
+  await expect(withSystemDbAccessContext(() => requestInvoiceControl(db, {invoiceId: f.invoice.id, kind: 'exclude', actor: f.actor})))
+    .rejects.toMatchObject({status: 409, code: 'COLLECTION_IN_PROGRESS'});
+  expect(await scheduleFor(f)).toEqual(before);
+  expect((await attempts(f.invoice.id))[0]!.state).toBe('processing');
+  const [invoice] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, f.invoice.id)));
+  expect(invoice!.autopayExcluded).toBe(false);
+});
+it.each(['stop'] as const)('%s preserves terminal schedule history even with a live bank reservation', async kind => {
   const f = await fixture(); const bank = await bankSetup(f, 'terminal_control'); serveBank([bank]);
   await withSystemDbAccessContext(() => db.update(invoiceAutopaySchedules).set({state: 'not_needed', stateReason: 'historical'})
     .where(eq(invoiceAutopaySchedules.id, f.schedule.id)));
