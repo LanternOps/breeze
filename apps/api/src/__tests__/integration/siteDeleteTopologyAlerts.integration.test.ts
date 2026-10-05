@@ -80,8 +80,10 @@ describe('DELETE /orgs/sites/:id with site-owned topology alerts (T3)', () => {
       SELECT conrelid::regclass::text AS tbl FROM pg_constraint
       WHERE confrelid = 'public.alerts'::regclass AND contype = 'f' AND confdeltype = 'a'
         AND conrelid <> 'public.alerts'::regclass`) as unknown as Array<{ tbl: string }>;
+    // alert_correlations / alert_notifications left this list when
+    // 2026-12-12-160200 made their alert FKs ON DELETE CASCADE.
     expect([...new Set(rows.map((r) => r.tbl))].sort()).toEqual([
-      'alert_correlations', 'alert_notifications', 'log_correlations', 'network_change_events', 'psa_ticket_mappings',
+      'log_correlations', 'network_change_events', 'psa_ticket_mappings',
     ]);
   });
 });
