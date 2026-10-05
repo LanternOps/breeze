@@ -143,6 +143,14 @@ it('derives invoice bank metadata on both provider objects exclusively from dura
  const metadata={invoice_id:bankPayment.invoiceId,principal_minor:'10000',fee_minor:'250',currency:'USD'};
  expect(sent.metadata).toMatchObject(metadata);expect(sent.setup_intent_data.metadata).toMatchObject(metadata);
  expect(sent.success_url).toContain('&target=public&bank=1');
+ // Stripe "Back" from a bank payment returns to the bank return page, which leads back
+ // to the invoice the client was paying (public or portal), not to a setup page.
+ expect(sent.cancel_url).toMatch(/\/autopay\/return\?cancelled=1&bank=1$/);
+});
+it.each(['public','portal'] as const)('a %s invoice bank payment cancels back to the bank return page',async returnTo=>{
+ const bankPayment={invoiceId:'10000000-0000-4000-8000-000000000001',orgId:'20000000-0000-4000-8000-000000000001',principal:'100.00',fee:'2.50',currency:'USD',disclosureHash:'a'.repeat(64)};
+ await createHostedAutopaySession({...attempt,methodType:'us_bank_account',consentSnapshot:{...consentSnapshot,bankPayment}},returnTo);
+ expect(mock.create.mock.calls[0]![0].cancel_url).toMatch(/\/autopay\/return\?cancelled=1&bank=1$/);
 });
 
 it('prepares new same-generation authorization while paused without resuming',async()=>{

@@ -108,7 +108,10 @@ export async function createHostedAutopaySession(attempt:{id:string;partnerId:st
   ...(attempt.methodType==='us_bank_account'?{currency:'usd',payment_method_options:{us_bank_account:{verification_method:'automatic' as const}}}:{}),
   metadata:{...metadata,...paymentMetadata},setup_intent_data:{metadata:{...metadata,...paymentMetadata}},
   success_url:`${portalBase()}/autopay/return?session_id={CHECKOUT_SESSION_ID}&target=${returnTo}${bank?'&bank=1':''}`,
-  cancel_url:returnTo==='portal'?`${portalBase()}/payment-methods`:`${portalBase()}/autopay/return?cancelled=1`
+  // A bank payment started on an invoice cancels back to the bank return page, which
+  // leads the client back to that invoice; a plain setup cancels to where it started.
+  cancel_url:bank?`${portalBase()}/autopay/return?cancelled=1&bank=1`
+   :returnTo==='portal'?`${portalBase()}/payment-methods`:`${portalBase()}/autopay/return?cancelled=1`
  },{idempotencyKey:`autopay_setup_${attempt.id}`}));
  }catch(error){throw mapStripeCheckoutError(error,'USD')??error;}
 }
