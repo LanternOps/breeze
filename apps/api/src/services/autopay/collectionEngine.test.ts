@@ -1117,7 +1117,7 @@ it.each(['scheduled','retry_scheduled'] as const)('fails a due %s schedule once 
   expect(h.methodNotice).toHaveBeenCalledWith(expect.anything(), schedule.id);
   // R2: staff hear about each failed invoice in-app, and once per dead method by email.
   expect(h.staff).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ event: 'autopay.needs_attention',
-    invoiceId: invoice.id, dedupeKey: `autopay:${schedule.id}:method_not_usable`, emailDedupeKey: `autopay:method_unusable:${method.id}` }));
+    invoiceId: invoice.id, dedupeKey: `autopay:${schedule.id}:method_not_usable`, emailDedupeKey: `autopay:method_unusable:${method.id}:not_charged` }));
   vi.restoreAllMocks();
   mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], new Date(now.getTime() + 86_400_000));
   expect(await runAutopayCollection(new Date(now.getTime() + 86_400_000))).toEqual({ attempted: 0, deferred: 0 });
@@ -1133,7 +1133,11 @@ it('marks an active method the live check did not admit unusable instead of defe
   await runAutopayCollection(now);
   expect(h.unusable).toHaveBeenCalledWith(expect.anything(), method.id, 'live_method_mismatch');
   expect(h.staff).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ event: 'autopay.needs_attention',
-    emailDedupeKey: `autopay:method_unusable:${method.id}` }));
+    emailDedupeKey: `autopay:method_unusable:${method.id}:admission` }));
+  // F3: the admission email and the later "not charged" email claim different keys, so the
+  // first never suppresses the second (which may say the client could not be told).
+  const keys = h.staff.mock.calls.map(call => (call[1] as { emailDedupeKey?: string }).emailDedupeKey).filter(Boolean);
+  expect(new Set(keys).size).toBe(keys.length);
 });
 it.each([
   ['a pending microdeposit verification', () => h.method.mockResolvedValue({ ...method, status: 'pending_verification' })],

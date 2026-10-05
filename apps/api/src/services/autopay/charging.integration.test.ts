@@ -2269,3 +2269,18 @@ it.each(['msp_charge_now','scheduler'] as const)('a %s attempt on an excluded co
  expect((notices[0]!.rendered as {text:string}).text).toContain('asked for this invoice to be paid directly');
  expect(provider.create).not.toHaveBeenCalled();
 });
+
+// F1: a staff email for an org with no autopay enrollment (a pay-link card dispute) is sent,
+// not dropped because its dedupe claim had no enrollment row to live on.
+import { sendAutopayStaffEmail } from './staffNotifications';
+it('sends a staff email for an org with no autopay enrollment (F1)',async()=>{
+ const partner=await withSystemDbAccessContext(()=>createPartner());
+ const org=await withSystemDbAccessContext(()=>createOrganization({partnerId:partner.id}));
+ await withSystemDbAccessContext(()=>db.update(partners).set({billingEmail:'msp@example.test'}).where(eq(partners.id,partner.id)));
+ expect(await withSystemDbAccessContext(()=>db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId,org.id)))).toEqual([]);
+ const mail=captureMail();
+ try { await sendAutopayStaffEmail({orgId:org.id,partnerId:partner.id,event:'payment.disputed',
+   dedupeKey:`payment:${randomUUID()}:disputed:dp_f1`,message:'A payment was disputed.'}); }
+ finally { mail.restore(); }
+ expect(mail.staff()).toEqual([expect.objectContaining({to:'msp@example.test',subject:expect.stringContaining('Payment disputed')})]);
+});

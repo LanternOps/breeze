@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import { and, eq, or, sql } from 'drizzle-orm';
 import { db, runAfterDbContextExit, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { invoices, organizations, organizationUsers, partnerUsers, users, partners, userNotifications } from '../../db/schema';
 import { getEmailService } from '../email';
+import { getRedis } from '../redis';
 import { escapeHtml } from '../emailLayout';
 import type { Tx } from './types';
 export interface AutopayStaffNotice {
@@ -74,15 +76,53 @@ export async function sendAutopayStaffEmail(input: AutopayStaffNotice): Promise<
   const { email, name, number } = recipient;
   const service = getEmailService();
   if (!service) throw new Error('Staff email transport is unavailable');
-  const claimed = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.execute(sql`
+  const claim = await claimStaffEmail(input);
+  if (!claim) return;
+  try {
+    await runOutsideDbContext(() => service.sendEmail({ to: email, purpose: 'staff.autopay',
+      subject: namedTitle(input.event, name),
+      html: `${name ? `<p><strong>Client:</strong> ${escapeHtml(name)}</p>` : ''}${number ? `<p><strong>Invoice:</strong> ${escapeHtml(number)}</p>` : ''}<p>${escapeHtml(input.message)}</p>`,
+      text: [name ? `Client: ${name}` : '', number ? `Invoice: ${number}` : ''].filter(Boolean).join('\n') + (name || number ? '\n\n' : '') + input.message }));
+  } catch (error) {
+    // A failed send must not burn the key: release it so the next occurrence can send (F3).
+    await claim.release().catch(releaseError => console.error('[autopay] staff email claim release failed',
+      { orgId: input.orgId, dedupeKey: input.dedupeKey, error: releaseError instanceof Error ? releaseError.message : String(releaseError) }));
+    throw error;
+  }
+}
+
+/** Seconds a Redis claim holds for an org with no autopay enrollment row. */
+const STAFF_EMAIL_CLAIM_TTL_SECONDS = 30 * 86_400;
+type StaffEmailClaim = { release: () => Promise<void> };
+/** At most one staff email per dedupe key, taken before sending and released if the send
+ * fails. Durable on the org's autopay enrollment row (every autopay event has one). An org
+ * with none, such as a pay-link card dispute (F1), claims a Redis slot instead; when Redis
+ * cannot answer the email is sent anyway, as the lane alerts do (partnerLaneSend.ts): a
+ * duplicate staff email is a nuisance, a dropped dispute or failure notice is not. */
+async function claimStaffEmail(input: AutopayStaffNotice): Promise<StaffEmailClaim | null> {
+  const system = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
+  const claimed = await system(() => db.execute(sql`
     UPDATE org_autopay_enrollments SET staff_email_dedupe_keys=array_append(staff_email_dedupe_keys,${input.dedupeKey})
     WHERE org_id=${input.orgId}::uuid AND partner_id=${input.partnerId}::uuid
-      AND NOT (${input.dedupeKey}=ANY(staff_email_dedupe_keys)) RETURNING id`)));
-  if (!Array.from(claimed).length) return;
-  await runOutsideDbContext(() => service.sendEmail({ to: email, purpose: 'staff.autopay',
-    subject: namedTitle(input.event, name),
-    html: `${name ? `<p><strong>Client:</strong> ${escapeHtml(name)}</p>` : ''}${number ? `<p><strong>Invoice:</strong> ${escapeHtml(number)}</p>` : ''}<p>${escapeHtml(input.message)}</p>`,
-    text: [name ? `Client: ${name}` : '', number ? `Invoice: ${number}` : ''].filter(Boolean).join('\n') + (name || number ? '\n\n' : '') + input.message }));
+      AND NOT (${input.dedupeKey}=ANY(staff_email_dedupe_keys)) RETURNING id`));
+  if (Array.from(claimed).length) return { release: async () => { await system(() => db.execute(sql`
+    UPDATE org_autopay_enrollments SET staff_email_dedupe_keys=array_remove(staff_email_dedupe_keys,${input.dedupeKey})
+    WHERE org_id=${input.orgId}::uuid AND partner_id=${input.partnerId}::uuid`)); } };
+  const enrolled = await system(() => db.execute(sql`SELECT id FROM org_autopay_enrollments
+    WHERE org_id=${input.orgId}::uuid AND partner_id=${input.partnerId}::uuid LIMIT 1`));
+  if (Array.from(enrolled).length) return null; // already claimed: sent before
+  const tags = { orgId: input.orgId, partnerId: input.partnerId, event: input.event, dedupeKey: input.dedupeKey };
+  console.info('[autopay] staff email for an org with no autopay enrollment: claiming in Redis', tags);
+  const key = `autopay:staff-email:${input.orgId}:${createHash('sha256').update(input.dedupeKey).digest('hex')}`;
+  try {
+    const redis = getRedis();
+    if (redis) {
+      if (await redis.set(key, '1', 'EX', STAFF_EMAIL_CLAIM_TTL_SECONDS, 'NX') !== 'OK') return null;
+      return { release: async () => { await redis.del(key); } };
+    }
+  } catch { /* fall through: send without a claim */ }
+  console.warn('[autopay] staff email could not be deduplicated (Redis unavailable); sending anyway', tags);
+  return { release: async () => {} };
 }
 
 /** Needs-attention found on a collection path (S-1): in-app in the caller's transaction and

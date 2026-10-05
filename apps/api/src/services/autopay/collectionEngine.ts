@@ -43,8 +43,10 @@ export function collectionNoticeAllows(sentAt: Date | null, lead: number, now: D
 }
 
 const defer = (reason: string): CollectionResult => ({ attemptId: null, outcome: 'deferred', reason });
-/** One staff email per unusable method, however many due invoices it fails (S-1). */
-const methodUnusableEmailKey = (methodId: string) => `autopay:method_unusable:${methodId}`;
+/** One staff email per unusable method and stage, however many due invoices it reaches (S-1):
+ * the admission check that found it, then the invoices it left uncharged. Distinct stages so
+ * the first never suppresses the second, which may say the client could not be told (F3). */
+const methodUnusableEmailKey = (methodId: string, stage: 'admission' | 'not_charged') => `autopay:method_unusable:${methodId}:${stage}`;
 const refuse = (reason: string): CollectionResult => ({ attemptId: null, outcome: 'refused', reason });
 type Method = typeof orgPaymentMethods.$inferSelect;
 type Enrollment = typeof orgAutopayEnrollments.$inferSelect;
@@ -98,7 +100,7 @@ async function prepareMethodAdmission(invoiceId: string) {
       if(missing)await markPaymentMethodUnusable(db,snapshot.method.id,'resource_missing');
       await enqueueAutopayStaffAttention(db,{orgId:snapshot.invoice.orgId,partnerId:snapshot.invoice.partnerId,invoiceId,
         event:'autopay.needs_attention',dedupeKey:`autopay_admission:${snapshot.enrollment.id}:${snapshot.enrollment.generation}:${snapshot.method.id}:${missing?'missing':'credentials'}`,
-        ...(missing?{emailDedupeKey:methodUnusableEmailKey(snapshot.method.id)}:{}),
+        ...(missing?{emailDedupeKey:methodUnusableEmailKey(snapshot.method.id,'admission')}:{}),
         message:missing?'Automatic payment method is missing or detached. Update the saved method.':'Stripe credentials require attention before automatic payments can continue.'});
     },'autopay.admissionFailure');
     return defer(missing?'method_not_usable':'stripe_unavailable');
@@ -157,7 +159,7 @@ export async function reserveCollection(input: CollectionInput)
       await enqueueAutopayStaffAttention(db, { orgId: invoice.orgId, partnerId: invoice.partnerId,
         event: 'autopay.needs_attention',
         dedupeKey: `autopay_method_admission_${enrollment.id}_${enrollment.generation}_${method.id}`,
-        emailDedupeKey: methodUnusableEmailKey(method.id),
+        emailDedupeKey: methodUnusableEmailKey(method.id, 'admission'),
         message: 'Automatic payments need a supported payment method. Ask the client to update the saved payment method.',
       });
       return defer('method_not_usable');
@@ -1146,7 +1148,7 @@ async function failedForUnusableMethod(invoice: typeof invoices.$inferSelect, sc
     .where(and(eq(orgPaymentMethods.orgId, invoice.orgId), eq(orgPaymentMethods.isAutopayMethod, true))).limit(1);
   await enqueueAutopayStaffAttention(db, { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
     event: 'autopay.needs_attention', dedupeKey: `autopay:${scheduleId}:method_not_usable`,
-    ...(dead ? { emailDedupeKey: methodUnusableEmailKey(dead.id) } : {}),
+    ...(dead ? { emailDedupeKey: methodUnusableEmailKey(dead.id, 'not_charged') } : {}),
     message: `The saved payment method can no longer be used, so this invoice was not charged automatically. ${
       gap === null ? 'The client was asked to pay it and to update their payment method.'
       : gap === 'no_billing_contact' ? 'The client has no billing contact, so they were not told: ask them to pay it and update their payment method.'
