@@ -101,7 +101,8 @@ export default function AutopaySkipPage({ token }: { token: string }) {
   const summary: SummaryRow[] = [
     ...(view.invoiceNumber ? [{ label: 'Invoice', value: view.invoiceNumber }] : []),
     ...(view.amount ? [{ label: 'Amount', value: money(view.amount, view.currency), figure: true }] : []),
-    ...(view.fee && Number(view.fee) > 0 ? [{ label: 'Fee', value: `up to ${money(view.fee, view.currency)}` }] : []),
+    // FP-16: a card fee depends on the card's funding ("up to"); a bank fee is flat (exact).
+    ...(view.fee && Number(view.fee) > 0 ? [{ label: 'Fee', value: `${view.methodType === 'card' ? 'up to ' : ''}${money(view.fee, view.currency)}` }] : []),
     ...(view.collectOn ? [{ label: 'Scheduled for', value: longDate(view.collectOn) }] : []),
     ...(view.methodLabel ? [{ label: 'Payment method', value: view.methodLabel }] : []),
   ];

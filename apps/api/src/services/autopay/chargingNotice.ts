@@ -71,10 +71,12 @@ export async function enqueueAutopayNotice(tx: Tx, scheduleId: string): Promise<
     stopUrl: buildBillingLinkUrl('stop_autopay', stop.token),
     methodLabel,
     // R12: the fee is a maximum (a debit or prepaid card pays none), so the total is "up to", as in the facts table.
+    feeVaries: terms.feeKind === 'card_percent',
     preheader: awaitingVerification ? 'Verify your bank account so this invoice can be paid automatically.'
-      : toMinorUnits(terms.feeAmount, terms.currency) > 0
+      : toMinorUnits(terms.feeAmount, terms.currency) > 0 && terms.feeKind === 'card_percent'
       ? `Up to ${emailMoney(total, terms.currency)} will be charged on or around ${chargeOn}.`
-      : `${emailMoney(terms.principal, terms.currency)} will be charged on or around ${chargeOn}.`,
+      // FP-16: a flat fee is exact.
+      : `${emailMoney(toMinorUnits(terms.feeAmount, terms.currency) > 0 ? total : terms.principal, terms.currency)} will be charged on or around ${chargeOn}.`,
     authorizationText: terms.methodType === 'us_bank_account'
       ? `You authorized this debit when you set up automatic payments with ${partner!.name}. The payment date is when the debit starts; your bank decides when it settles.`
       : `You authorized this payment when you set up automatic payments with ${partner!.name}.`,

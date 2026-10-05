@@ -68,6 +68,8 @@ export interface ChargingNoticeContext {
   methodLabel?: string;
   /** 'pending_verification': the noticed bank account still awaits verification (F-2). */
   variant?: 'pending_verification';
+  /** FP-16: false for a flat fee (exact); a card percentage depends on funding ("up to"). Default true. */
+  feeVaries?: boolean;
   /** The authorization line for this method type (card vs bank debit). */
   authorizationText: string;
   preheader?: string;
@@ -81,11 +83,12 @@ export function renderChargingNotice(ctx: ChargingNoticeContext): RenderedNotice
   const v = ctx.vars;
   const feeFree = typeof ctx.frozen.fee === 'string' && /^0+(?:\.0+)?$/.test(ctx.frozen.fee);
   const pending = ctx.variant === 'pending_verification';
+  const upTo = ctx.feeVaries === false ? '' : 'up to ';
   const rendered = renderBillingEmail({ id: 'invoice_autopay', variant: ctx.variant, custom: ctx.custom ?? null, vars: v, brandName: v.partner_name ?? '',
     ctaUrl: v.invoice_link, preheader: ctx.preheader,
     summary: [
       { label: 'Amount', value: v.amount_due ?? '' },
-      ...(feeFree ? [] : [{ label: 'Processing fee', value: `up to ${v.fee_amount}` }, { label: 'Total charge', value: `up to ${v.charge_total}` }]),
+      ...(feeFree ? [] : [{ label: 'Processing fee', value: `${upTo}${v.fee_amount}` }, { label: 'Total charge', value: `${upTo}${v.charge_total}` }]),
       { label: 'Payment date', value: `On or around ${v.charge_date}` },
       { label: 'Payment method', value: `${ctx.methodLabel ?? capitalized(v.payment_method ?? '')}${pending ? ' (waiting for verification)' : ''}` },
       ...(v.due_date ? [{ label: 'Due date', value: v.due_date }] : []),

@@ -268,3 +268,11 @@ it('an invoice issued before the updated authorization says so, and offers Pay',
   expect(document.body.textContent).not.toMatch(/over the limit/);
   expect(screen.getByTestId('public-invoice-pay')).toHaveTextContent('Pay $200.00');
 });
+
+// FP-16
+it('a scheduled bank payment states its flat fee and total exactly', () => {
+  panel({ balance: '50.00', autopayStatus: { ...scheduled, fee: '1.00', methodType: 'us_bank_account', methodLabel: 'Bank account ending in 6789' } as never, autopayEnrolled: true });
+  expect(screen.getByText('$1.00')).toBeInTheDocument();
+  expect(screen.getByText('$51.00')).toBeInTheDocument();
+  expect(screen.queryByText(/up to/)).toBeNull();
+});

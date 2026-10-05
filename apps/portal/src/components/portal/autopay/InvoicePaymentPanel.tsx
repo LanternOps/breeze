@@ -224,8 +224,9 @@ export function InvoicePaymentPanel(p: InvoicePaymentPanelProps) {
           <p className="text-sm leading-relaxed text-foreground">{copy.text}</p>
           {/* V-28: the balance is already above; state the fee and what will actually be charged. */}
           {copy.summary && s && cents(s.fee) > 0 && (
-            <SummaryList rows={[{ label: 'Processing fee', value: `up to ${money(s.fee!, s.currency)}` },
-              { label: 'Total charged', value: `up to ${money(sum(s.amount ?? p.balance, s.fee), s.currency)}`, figure: true }]} />
+            // FP-16: "up to" only where the fee depends on card funding; a bank fee is flat.
+            <SummaryList rows={[{ label: 'Processing fee', value: `${s.methodType === 'card' ? 'up to ' : ''}${money(s.fee!, s.currency)}` },
+              { label: 'Total charged', value: `${s.methodType === 'card' ? 'up to ' : ''}${money(sum(s.amount ?? p.balance, s.fee), s.currency)}`, figure: true }]} />
           )}
           {copy.extra}
         </div>

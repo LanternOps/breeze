@@ -178,7 +178,8 @@ it('states the total charge and freezes the invoice number, provider, method and
   const rendered = (h.writes[0]!.values as { rendered: { html: string; text: string; frozen: Record<string, unknown> } }).rendered;
   expect(rendered.frozen).toMatchObject({ invoiceNumber: 'INV-1', partnerName: 'Partner', methodLabel: 'Bank ••1234', total: '101.00' });
   // One money formatter: the facts table states amount, fee and total once each, in the same form.
-  for (const line of ['Amount: $100.00', 'Processing fee: up to $1.00', 'Total charge: up to $101.00', 'Payment method: Bank ••1234']) {
+  // FP-16: a flat bank fee is exact; "up to" is only for card fees that depend on funding.
+  for (const line of ['Amount: $100.00', 'Processing fee: $1.00', 'Total charge: $101.00', 'Payment method: Bank ••1234']) {
     expect(rendered.text.split(line).length - 1, line).toBe(1);
   }
   expect(rendered.html).toContain('>Total charge</td>');
@@ -186,8 +187,8 @@ it('states the total charge and freezes the invoice number, provider, method and
   for (const body of [rendered.html, rendered.text]) { expect(body).toContain('INV-1'); expect(body).toContain('Partner'); }
   expect(rendered.html.match(/<p style="margin: 16px 0 0;[^>]*>([^<]*)<\/p>/)?.[1]).toBe('Partner');
   // R12: the inbox preview agrees with the facts table: the fee is a maximum, so the total is too.
-  expect(rendered.html).toContain('Up to $101.00 will be charged on or around');
-  expect(rendered.html).not.toMatch(/>\$101\.00 will be charged/);
+  expect(rendered.html).toContain('>$101.00 will be charged on or around');
+  expect(rendered.text).not.toMatch(/up to \$1\.00/i);
 });
 
 // F-2: a bank still waiting for verification at notice time cannot be charged on the date;
@@ -201,4 +202,15 @@ it('a notice for a bank still awaiting verification says to verify it or pay ano
   expect(rendered.text).toContain('Payment method: Bank ••1234 (waiting for verification)');
   expect(rendered.text).not.toMatch(/don't need to do anything/i);
   expect(rendered.html).toContain('Verify your bank account so this invoice can be paid automatically.');
+});
+
+// FP-16 / R12: a card percentage fee depends on the card's funding, so it is "up to".
+it('a card percentage fee is stated as a maximum', async () => {
+  const card = { ...schedule, termsSnapshot: { ...terms, methodType: 'card', feeAmount: '3.00', feeKind: 'card_percent', cardFeeBps: 300 } };
+  h.responses.push([card], [invoice], [org], [partner], [], [method], [org], [{ id: row.id }], []);
+  await enqueueAutopayNotice(db, schedule.id);
+  const rendered = (h.writes[0]!.values as { rendered: { html: string; text: string } }).rendered;
+  expect(rendered.text).toContain('Processing fee: up to $3.00');
+  expect(rendered.text).toContain('Total charge: up to $103.00');
+  expect(rendered.html).toContain('Up to $103.00 will be charged on or around');
 });

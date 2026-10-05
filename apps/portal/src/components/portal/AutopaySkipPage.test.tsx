@@ -210,3 +210,11 @@ it('a refused skip whose re-read finds the link revoked explains the link', asyn
   fireEvent.click(submit);
   expect(await screen.findByRole('heading', { name: 'This link was replaced' })).toBeInTheDocument();
 });
+
+// FP-16: a flat bank fee is exact; only a card fee is "up to".
+it('a bank fee is shown exactly, a card fee as a maximum', async () => {
+  vi.mocked(apiGet).mockResolvedValue(view({ methodType: 'us_bank_account', methodLabel: 'Bank account ending in 6789', fee: '1.00' }));
+  render(<AutopaySkipPage token="t" />);
+  expect(await screen.findByText('$1.00')).toBeInTheDocument();
+  expect(screen.queryByText(/up to/)).toBeNull();
+});
