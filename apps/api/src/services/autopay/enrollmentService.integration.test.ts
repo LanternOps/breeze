@@ -282,3 +282,42 @@ it.each(['setup_page','pay_and_save'] as const)('refuses a Link wallet card from
  expect(saved.enrollments[0]).toMatchObject({status:'active',needsAttentionReason:null,effectiveFrom:new Date('2026-09-01')});
  expect(notifyAutopayStaff).not.toHaveBeenCalled();
 });
+
+// D-17: a hard-declined card stays the autopay method (status unusable) until it is
+// replaced. Replacement must retire it, or two rows carry is_autopay_method and every
+// reader that picks "the" method can pick the dead card.
+async function deadCardFixture(){
+ const f=await verificationFixture();
+ const dead=await withSystemDbAccessContext(async()=>{
+  await db.update(orgAutopayEnrollments).set({status:'active',effectiveFrom:new Date('2026-09-01'),needsAttentionReason:'method_unusable'})
+   .where(eq(orgAutopayEnrollments.id,f.enrollment.id));
+  const [row]=await db.insert(orgPaymentMethods).values({orgId:f.org.id,enrollmentId:f.enrollment.id,stripePaymentMethodId:'pm_dead',
+   type:'card',cardBrand:'visa',cardFunding:'credit',cardLast4:'0341',status:'unusable',unusableReason:'card_declined',isAutopayMethod:true}).returning();
+  const [card]=await db.insert(autopaySetupAttempts).values({orgId:f.org.id,partnerId:f.partner.id,enrollmentId:f.enrollment.id,generation:1,tokenId:f.token.id,
+   source:'setup_page',methodType:'card',stripeConnectionId:f.conn.id,stripeAccountId:f.conn.stripeAccountId,stripeCustomerId:'cus_verify',
+   consentSnapshot:{...(f.attempt.consentSnapshot as object),feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'}}}).returning();
+  return {row:row!,card:card!};
+ });
+ return {...f,dead:dead.row,attempt:dead.card};
+}
+it('replacing a hard-declined card retires it, leaving exactly one autopay method (D-17)',async()=>{
+ const f=await deadCardFixture();
+ const detach=vi.fn(async()=>({}));
+ vi.mocked(getPartnerStripeClient).mockResolvedValue({stripeAccountId:'acct_verify',defaultCurrency:'USD',stripe:{paymentMethods:{retrieve:vi.fn(async()=>({customer:'cus_verify'})),detach}}} as any);
+ expect((await persistCapturedAutopayMethod(f.attempt.id,{id:'pm_new',type:'card',customer:'cus_verify',card:liveCard} as Stripe.PaymentMethod,'activated','seti_new',null)).outcome).toBe('activated');
+ const rows=await withSystemDbAccessContext(()=>db.select().from(orgPaymentMethods));
+ expect(rows.filter(m=>m.isAutopayMethod).map(m=>[m.stripePaymentMethodId,m.status])).toEqual([['pm_new','active']]);
+ expect(rows.find(m=>m.id===f.dead.id)).toMatchObject({status:'removed',isAutopayMethod:false,removedAt:expect.any(Date),unusableReason:expect.stringMatching(/^card_declined/)});
+ const [enrollment]=await withSystemDbAccessContext(()=>db.select().from(orgAutopayEnrollments));
+ expect(enrollment?.needsAttentionReason).toBeNull();
+ await vi.waitFor(()=>expect(detach).toHaveBeenCalledExactlyOnceWith('pm_dead'));
+});
+async function pgCode(promise:Promise<unknown>):Promise<string|undefined>{
+ try{await promise;}catch(err){const e=err as {code?:string;cause?:{code?:string}};return e.cause?.code??e.code;}
+ throw new Error('expected the statement to fail');
+}
+it('the database refuses a second autopay-method row for an org whatever its status (D-17)',async()=>{
+ const f=await deadCardFixture();
+ expect(await pgCode(withSystemDbAccessContext(()=>db.insert(orgPaymentMethods).values({orgId:f.org.id,enrollmentId:f.enrollment.id,
+  stripePaymentMethodId:'pm_second',type:'card',status:'active',isAutopayMethod:true})))).toBe('23505');
+});

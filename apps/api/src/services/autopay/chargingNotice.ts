@@ -1,7 +1,7 @@
 import { enqueueAutopayStaffNotifications } from './staffNotifications';
 import { parseAutopayTerms } from '@breeze/shared';
 import { collectionFenced } from './collectionControl';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../../db';
 import { billingNoticeOutbox, invoiceAutopaySchedules, invoices,
   orgAutopayEnrollments, orgPaymentMethods, organizations, partners, stripeConnectAccounts } from '../../db/schema';
@@ -125,6 +125,7 @@ const validateAutopayNotice: NoticePreSendValidator = async (tx, row) => {
     || frozen.enrollmentGeneration !== schedule.enrollmentGeneration) return obsolete;
   const [method] = await tx.select().from(orgPaymentMethods).where(and(
     eq(orgPaymentMethods.orgId, row.orgId), eq(orgPaymentMethods.isAutopayMethod, true),
+    inArray(orgPaymentMethods.status, ['active', 'pending_verification']),
   )).limit(1);
   if (!method || method.orgId !== row.orgId || method.enrollmentId !== enrollment.id || !method.isAutopayMethod
     || !['active', 'pending_verification'].includes(method.status)

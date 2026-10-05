@@ -1875,3 +1875,44 @@ it.each(['expired','revoked'] as const)('a %s bank authority is a structured, re
   .toEqual({attemptId:null,outcome:'refused',reason:'bank_authorization_expired'});
  expect(await attempts(f.invoice.id)).toEqual([]);expect(provider.create).not.toHaveBeenCalled();
 });
+
+// D-17 (lab B4): after a hard decline the dead card kept is_autopay_method, so the
+// charging-notice pre-send check read the dead card and cancelled every new notice
+// ("Automatic payment notice no longer current"), re-minted each minute.
+it('after a hard-declined card is replaced, the next charging notice is sent, not cancelled (D-17)',async()=>{
+ const f=await fixture();
+ provider.confirm.mockImplementationOnce(async()=>{
+  currentPi={...currentPi,status:'requires_payment_method',last_payment_error:{type:'card_error',code:'card_declined',decline_code:'stolen_card'}};
+  throw Object.assign(new Error('Your card was declined.'),{type:'StripeCardError',statusCode:402,code:'card_declined',decline_code:'stolen_card',payment_intent:currentPi});
+ });
+ expect(await attemptCollection(inputFor(f))).toMatchObject({outcome:'failed',failureClass:'hard'});
+ const setup=await withSystemDbAccessContext(async()=>{
+  const token=await mintBillingLinkToken(db,{orgId:f.org.id,enrollmentId:f.enrollment.id,generation:1,purpose:'enroll',ttlDays:1});
+  const [row]=await db.insert(autopaySetupAttempts).values({orgId:f.org.id,partnerId:f.partner.id,enrollmentId:f.enrollment.id,generation:1,
+   stripeConnectionId:f.connection.id,stripeAccountId:f.connection.stripeAccountId,stripeCustomerId:'cus_autopay_test',tokenId:token.id,
+   source:'setup_page',methodType:'card',setupIntentId:'seti_card_replacement',
+   consentSnapshot:{version:'2026-10-01.v1',text:'Authorization',hash:'a'.repeat(64),textHash:'b'.repeat(64),partnerName:f.partner.name,
+    scheduleText:'Due date',feeText:'No fee',achMode:'ach_preferred',scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},
+    feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:true,currency:'USD'},source:'setup_page',
+    contactEmail:'billing@example.test',ip:null,userAgent:null,invoiceId:null,checkoutKey:null}}).returning();
+  return row!;
+ });
+ const card={id:'pm_card_replacement',type:'card',customer:'cus_autopay_test',card:{brand:'visa',funding:'credit',last4:'4444',exp_month:12,
+  exp_year:2030,country:'US',wallet:null,networks:{available:['visa'],preferred:null}}} as unknown as Stripe.PaymentMethod;
+ expect((await persistCapturedAutopayMethod(setup.id,card,'activated','seti_card_replacement',null)).outcome).toBe('activated');
+ const next=await withSystemDbAccessContext(async()=>{
+  const today=new Date().toISOString().slice(0,10);
+  const [invoice]=await db.insert(invoices).values({partnerId:f.partner.id,orgId:f.org.id,invoiceNumber:`T-${randomUUID()}`,currencyCode:'USD',
+   status:'sent',issueDate:today,dueDate:today,total:'40.00',balance:'40.00',amountPaid:'0.00'}).returning();
+  return planAutopayForInvoice(db,invoice!.id);
+ });
+ expect(next).toMatchObject({eligible:true,state:'awaiting_notice'});
+ registerAutopayNoticeHandlers();
+ const sendEmail=vi.fn(async()=>{});
+ const mail=vi.spyOn(emailModule,'getEmailService').mockReturnValue({sendEmail} as unknown as NonNullable<ReturnType<typeof emailModule.getEmailService>>);
+ try { await dispatchPendingBillingNotices(); } finally { mail.mockRestore(); }
+ const [notice]=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.id,next!.noticeOutboxId!)));
+ expect(notice).toMatchObject({kind:'invoice_autopay',status:'sent',lastError:null});
+ const [schedule]=await withSystemDbAccessContext(()=>db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id,next!.id)));
+ expect(schedule).toMatchObject({state:'scheduled',noticeOutboxId:notice!.id});
+});

@@ -63,10 +63,7 @@ export const validatePaymentActionNotice: NoticePreSendValidator = async (tx, ro
   if (frozen.variant === 'confirm') return attempt.state === 'requires_action' ? null : obsolete;
   if (frozen.variant === 'update') {
     if (!['failed', 'canceled'].includes(attempt.state) || !['hard', 'revoked'].includes(attempt.failureClass ?? '')) return obsolete;
-    const [method] = await tx.select().from(orgPaymentMethods).where(and(
-      eq(orgPaymentMethods.orgId, row.orgId), eq(orgPaymentMethods.isAutopayMethod, true),
-    )).limit(1);
-    return method?.status === 'active' ? obsolete : null;
+    return await hasActiveReplacement(tx, row.orgId) ? obsolete : null;
   }
   return obsolete;
 };
@@ -111,8 +108,13 @@ async function validateMethodUnusableNotice(tx: Parameters<NoticePreSendValidato
     .where(eq(orgAutopayEnrollments.orgId, row.orgId)).limit(1);
   if (!enrollment || enrollment.orgId !== row.orgId || enrollment.status !== 'active'
     || schedule.enrollmentId !== enrollment.id || schedule.enrollmentGeneration !== enrollment.generation) return obsolete;
-  const [method] = await tx.select().from(orgPaymentMethods).where(and(
-    eq(orgPaymentMethods.orgId, row.orgId), eq(orgPaymentMethods.isAutopayMethod, true),
+  return await hasActiveReplacement(tx, row.orgId) ? obsolete : null;
+}
+
+/** An active autopay method means the client already replaced the unusable one. */
+async function hasActiveReplacement(tx: Parameters<NoticePreSendValidator>[0], orgId: string): Promise<boolean> {
+  const [method] = await tx.select({ status: orgPaymentMethods.status }).from(orgPaymentMethods).where(and(
+    eq(orgPaymentMethods.orgId, orgId), eq(orgPaymentMethods.isAutopayMethod, true), eq(orgPaymentMethods.status, 'active'),
   )).limit(1);
-  return method?.status === 'active' ? obsolete : null;
+  return method?.status === 'active';
 }

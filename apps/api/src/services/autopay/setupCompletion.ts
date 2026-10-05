@@ -100,8 +100,10 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
    await enqueueRejectedAutopayMethod(db,attempt,method);
    return {outcome:'stale_generation',orgId:attempt.orgId};
   }
+  // Retire whatever row is the current autopay method, including a hard-declined one that
+  // kept the flag as 'unusable' (D-17); one flagged row per org is a database invariant.
   const replaced=await db.update(orgPaymentMethods).set({isAutopayMethod:false,status:'removed',removedAt:new Date()})
-   .where(and(eq(orgPaymentMethods.orgId,attempt.orgId),eq(orgPaymentMethods.isAutopayMethod,true),inArray(orgPaymentMethods.status,['active','pending_verification']))).returning();
+   .where(and(eq(orgPaymentMethods.orgId,attempt.orgId),eq(orgPaymentMethods.isAutopayMethod,true),inArray(orgPaymentMethods.status,['active','pending_verification','unusable']))).returning();
   const holderType=method.us_bank_account?.account_holder_type;
   const values:typeof orgPaymentMethods.$inferInsert={orgId:attempt.orgId,enrollmentId:enrollment.id,stripePaymentMethodId:method.id,type:attempt.methodType,
    cardBrand:method.card?.brand??null,cardLast4:method.card?.last4??null,cardExpMonth:method.card?.exp_month??null,cardExpYear:method.card?.exp_year??null,
