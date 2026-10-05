@@ -25,7 +25,6 @@ import { beforeAll, afterAll, beforeEach } from 'vitest';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres, { type Sql } from 'postgres';
 import Redis, { type RedisOptions } from 'ioredis';
-import * as schema from '../../db/schema';
 import { assertTestDatabaseUrlSafe } from '../../testUtils/integrationDatabaseSafety';
 import { REDIS_CLIENT_BASE_OPTIONS } from '../../services/redis';
 
@@ -50,7 +49,10 @@ if (!process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM) {
 // postgres pool is opened or destructive SQL is run. The dedicated request-role
 // runner uses this same helper so its role DDL cannot drift outside this boundary.
 
-export type TestDatabase = PostgresJsDatabase<typeof schema>;
+// Schema-less, matching the production `db` (#8052): no relational
+// `db.query.*` builders, so a TestDatabase is interchangeable with the
+// production type. Use the core builder (`select().from(...)`) in tests.
+export type TestDatabase = PostgresJsDatabase;
 
 let testClient: Sql;
 let testDb: TestDatabase;
@@ -127,7 +129,7 @@ export async function setupIntegrationTests() {
     onnotice: () => {}
   });
 
-  testDb = drizzle(testClient, { schema });
+  testDb = drizzle(testClient);
 
   // Raw `breeze_app` client (no proxy guard) for RLS negative-control writes.
   // Connects as the same unprivileged role as production code-under-test, so
@@ -140,7 +142,7 @@ export async function setupIntegrationTests() {
     connect_timeout: 10,
     onnotice: () => {}
   });
-  appDb = drizzle(appClient, { schema });
+  appDb = drizzle(appClient);
 
   // Create Redis connection
   testRedis = new Redis(REDIS_URL, {
