@@ -7,7 +7,6 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { sql, type SQL } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
-import * as schema from './schema';
 import { captureMessage } from '../services/sentry';
 import {
   logRequestDatabaseConfigSource,
@@ -114,7 +113,11 @@ export async function assertRequestDatabaseRoleSafe(): Promise<RequestDatabaseRo
   return role;
 }
 
-const baseDb = drizzle(client, { schema });
+// No `{ schema }` (#8052). With one, drizzle builds a relational query builder
+// for every table (~570) each time it constructs a `PgDatabase` — on every
+// transaction and savepoint — and no production code uses `db.query.*` /
+// `tx.query.*`. Use the core builder (`db.select().from(...)`) instead.
+const baseDb = drizzle(client);
 const dbContextStorage = new AsyncLocalStorage<typeof baseDb>();
 // Parallel store holding the DbAccessContext METADATA (scope + allowlists) for
 // the active request transaction. Kept separate from dbContextStorage (which
@@ -467,14 +470,14 @@ export function formatHeldContextWarning(input: {
  * Anything with drizzle's `.execute(sql`…`)` shape — the module-scope `db`, a
  * `db.transaction` handle, or the resolved `getCurrentDb()`. Lets the GUC
  * writer below be shared by every context opener instead of each one keeping
- * its own copy of the six `set_config` calls.
+ * its own copy of the `set_config` prologue.
  */
 interface GucExecutor {
   execute: (query: SQL) => Promise<unknown>;
 }
 
 /**
- * Write the seven `breeze.*` RLS GUCs (six statements) for `context` onto the CURRENT transaction
+ * Write the seven `breeze.*` RLS GUCs (ONE statement, #8052) for `context` onto the CURRENT transaction
  * (`set_config(..., true)` == SET LOCAL, so they unwind with it).
  *
  * Single source of truth for the GUC contract: `withDbAccessContext`,
@@ -499,27 +502,26 @@ async function applyAccessContextGucs(
       ? context.reportHistoryOrgIds.join(',')
       : '';
 
-  // `deadline.throwIfAborted()` at EVERY statement boundary, not just the first.
-  // `Promise.race` does not cancel its loser (#6048): once the budget has
-  // expired the caller has already been given a typed error and the connection
-  // is being reclaimed, so a statement that finally resolved late must not be
-  // allowed to queue the remaining five onto a connection that is being torn
-  // down — or worse, has already been recycled to a different tenant's request.
-  const statements: SQL[] = [
-    sql`select set_config('breeze.scope', ${context.scope}, true)`,
-    sql`select set_config('breeze.org_id', ${context.orgId ?? ''}, true)`,
-    sql`select set_config('breeze.accessible_org_ids', ${serializedOrgIds}, true)`,
-    sql`select set_config('breeze.accessible_partner_ids', ${serializedPartnerIds}, true)`,
-    sql`select set_config('breeze.user_id', ${serializedUserId}, true)`,
-    // Two GUCs in ONE statement: the report-history ids ride with the partner
-    // id so the prologue stays six round trips on every request.
-    sql`select set_config('breeze.current_partner_id', ${context.currentPartnerId ?? ''}, true), set_config('breeze.report_history_org_ids', ${serializedReportHistoryOrgIds}, true)`,
-  ];
+  // ONE statement for all seven GUCs (#8052). This used to be six sequential
+  // round trips per transaction — about 65% of every statement a busy API
+  // issued. All seven `set_config` calls sit in one target list, so either all
+  // seven land or the statement errors and the transaction aborts; there is no
+  // partially-applied context to observe.
+  //
+  // The text MUST keep starting with `select set_config('breeze.` — that is the
+  // prefix the #6048/#6348 wedged-backend reclaimer matches on
+  // (`WEDGED_BACKEND_PROLOGUE_QUERY_PREFIX` in wedgedBackends.ts).
+  //
+  // `deadline.throwIfAborted()` on BOTH sides of the round trip. `Promise.race`
+  // does not cancel its loser (#6048): once the budget has expired the caller
+  // has already been given a typed error and the connection is being reclaimed,
+  // so a statement that finally resolved late must not let the opener carry on
+  // onto a connection that is being torn down — or worse, has already been
+  // recycled to a different tenant's request.
+  const statement = sql`select set_config('breeze.scope', ${context.scope}, true), set_config('breeze.org_id', ${context.orgId ?? ''}, true), set_config('breeze.accessible_org_ids', ${serializedOrgIds}, true), set_config('breeze.accessible_partner_ids', ${serializedPartnerIds}, true), set_config('breeze.user_id', ${serializedUserId}, true), set_config('breeze.current_partner_id', ${context.currentPartnerId ?? ''}, true), set_config('breeze.report_history_org_ids', ${serializedReportHistoryOrgIds}, true)`;
 
-  for (const statement of statements) {
-    deadline?.throwIfAborted();
-    await executor.execute(statement);
-  }
+  deadline?.throwIfAborted();
+  await executor.execute(statement);
   deadline?.throwIfAborted();
 }
 
