@@ -188,6 +188,7 @@ import { reportableCutoverError } from './services/aiModels/registryCutover';
 import { runEnvOpenAiBootstrapAtBoot } from './services/aiModels/envOpenAiBootstrap';
 import { registerGatewayConnectionCheck } from './services/aiModels/gatewayConnectionState';
 import { sealUnsealedBackupProviderConfigs } from './services/backupProviderConfigBackfill';
+import { hashLegacyInstallerBootstrapTokens } from './services/installerBootstrapTokenHashBackfill';
 import { safeErrorMessage } from './services/aiModels/safeDbError';
 import { baselineCredentialHistory } from './services/backupStorageCredentialHistory';
 import { runStartupTaskWithRetry } from './services/startupTaskRetry';
@@ -1919,6 +1920,32 @@ async function bootstrap(): Promise<void> {
     .catch((err) => {
       console.error('[startup] Sealing stored backup destination credentials failed:', err);
       captureException(err, undefined, { area: 'backup_provider_config_backfill' });
+    });
+
+  // Installer bootstrap tokens are stored as a keyed hash on issue; this hashes
+  // the plaintext rows issued before that. Detached and idempotent like the
+  // sweeps above — redemption matches both forms. A missing
+  // ENROLLMENT_KEY_PEPPER rejects the whole sweep here (logged + reported),
+  // never the boot.
+  void hashLegacyInstallerBootstrapTokens()
+    .then((stats) => {
+      if (stats.scanned > 0) {
+        console.log(
+          `[startup] Installer bootstrap tokens hashed: ${stats.hashed}/${stats.scanned} token(s) `
+            + `(${stats.contended} changed concurrently, ${stats.failed} failed)`,
+        );
+      }
+      if (stats.failed > 0 || stats.contended > 0) {
+        captureException(
+          new Error(`installer bootstrap token hashing left ${stats.failed} failed and ${stats.contended} contended token(s)`),
+          undefined,
+          { area: 'installer_bootstrap_token_hash_backfill' },
+        );
+      }
+    })
+    .catch((err) => {
+      console.error('[startup] Hashing stored installer bootstrap tokens failed:', err);
+      captureException(err, undefined, { area: 'installer_bootstrap_token_hash_backfill' });
     });
 
   // W06 (#7604, D6): MCP_LLM_PROVIDER=openai-compatible → one env-managed

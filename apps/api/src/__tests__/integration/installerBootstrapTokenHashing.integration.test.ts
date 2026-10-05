@@ -25,6 +25,7 @@ import {
 } from '../../services/installerBootstrapToken';
 import { issueBootstrapTokenForKey } from '../../services/installerBootstrapTokenIssuance';
 import { installerRoutes } from '../../routes/installer';
+import { hashLegacyInstallerBootstrapTokens } from '../../services/installerBootstrapTokenHashBackfill';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -215,5 +216,59 @@ describe('installer bootstrap tokens are stored hashed (real Postgres)', () => {
       .then(() => null, (err: unknown) => err as { code?: string; cause?: { code?: string } });
     expect(failure).not.toBeNull();
     expect(failure!.code ?? failure!.cause?.code).toBe('23514');
+  });
+
+  runDb('the boot step hashes legacy rows in place: plaintext gone, still redeemable by the raw token', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const parentId = await seedParent(env);
+    const liveRaw = generateBootstrapToken();
+    const expiredRaw = generateBootstrapToken();
+
+    const [live, expired] = await withSystemDbAccessContext(async () => {
+      const base = {
+        orgId: env.organization.id,
+        parentEnrollmentKeyId: parentId,
+        siteId: env.site.id,
+        maxUsage: 1,
+        installerPlatform: 'windows',
+        usageKind: 'per_download',
+      } as const;
+      const [l] = await db
+        .insert(installerBootstrapTokens)
+        .values({ ...base, token: liveRaw, expiresAt: new Date(Date.now() + 60 * 60 * 1000) })
+        .returning({ id: installerBootstrapTokens.id });
+      const [e] = await db
+        .insert(installerBootstrapTokens)
+        .values({
+          ...base,
+          token: expiredRaw,
+          createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+          expiresAt: new Date(Date.now() - 60 * 1000),
+        })
+        .returning({ id: installerBootstrapTokens.id });
+      return [l!.id, e!.id];
+    });
+
+    const stats = await hashLegacyInstallerBootstrapTokens();
+    expect(stats.failed).toBe(0);
+    expect(stats.hashed).toBeGreaterThanOrEqual(2);
+
+    for (const [id, raw] of [[live, liveRaw], [expired, expiredRaw]] as const) {
+      const row = await storedRow(id);
+      expect(row.token).toBeNull();
+      expect(row.tokenHash).toBe(hashBootstrapToken(raw));
+    }
+
+    // Idempotent: a second boot finds nothing left to do and changes nothing.
+    const again = await hashLegacyInstallerBootstrapTokens();
+    expect(again).toEqual({ scanned: 0, hashed: 0, contended: 0, failed: 0 });
+    expect((await storedRow(live)).tokenHash).toBe(hashBootstrapToken(liveRaw));
+
+    // The live installer still works, now through the hash path...
+    expect((await redeem(liveRaw)).status).toBe(200);
+    expect((await storedRow(live)).consumedCount).toBe(1);
+    // ...and the expired one is still refused by its expiry.
+    expect((await redeem(expiredRaw)).status).toBe(404);
+    expect((await storedRow(expired)).consumedCount).toBe(0);
   });
 });

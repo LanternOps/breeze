@@ -8,8 +8,9 @@
 -- token_hash IS NULL — the rows issued before this change, which keep working
 -- until their own expires_at and then drain through the existing cleanup.
 --
--- No backfill: the hash needs the API's pepper, which the database does not
--- have, and the legacy rows are self-expiring.
+-- No SQL backfill: the hash needs the API's pepper, which the database does
+-- not have. The API hashes existing plaintext rows in place at boot instead
+-- (services/installerBootstrapTokenHashBackfill.ts, detached from src/index.ts).
 --
 -- Plain (non-CONCURRENTLY) unique constraint: the new column is all NULL at
 -- creation, so the index build is trivial, and the table holds one row per
