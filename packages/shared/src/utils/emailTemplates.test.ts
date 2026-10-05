@@ -217,13 +217,13 @@ it('pins the invoice autopay variable contract', () => {
   expect(EMAIL_TEMPLATE_IDS).toContain('invoice_autopay');
   expect(varsForEmailTemplate('invoice_autopay')).toEqual([
     'org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date',
-    'charge_date', 'payment_method', 'fee_amount', 'invoice_link',
+    'charge_date', 'payment_method', 'fee_amount', 'charge_total', 'invoice_link',
   ]);
 });
 
 it('pins the closed payment notice variable contracts', () => {
   expect(varsForEmailTemplate('payment_receipt')).toEqual(['org_name','partner_name','invoice_number','amount_paid','fee_amount','total_charged','payment_method','paid_on','balance_remaining']);
-  expect(varsForEmailTemplate('payment_failed')).toEqual(['org_name','partner_name','invoice_number','amount_due','failure_text','action_link','action_label']);
+  expect(varsForEmailTemplate('payment_failed')).toEqual(['org_name','partner_name','invoice_number','amount_due','failure_text','action_link','action_label','payment_method','attempted_amount']);
   expect(emailTemplateLabel('payment_receipt')).toBe('Online payment receipt');
   expect(emailTemplateLabel('payment_failed')).toBe('Payment could not be completed');
   expect(emailTemplateHasCta('payment_receipt')).toBe(false);

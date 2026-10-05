@@ -113,7 +113,7 @@ it('keeps receipt itemization when the partner removes every editable amount', a
       fee_amount:'USD 3.00', total_charged:'USD 103.00', payment_method:'Visa ••4242', paid_on:'2026-10-01', balance_remaining:'USD 0.00' },
     frozen: { amount:'100.00', fee:'3.00', total:'103.00' },
   } });
-  for (const value of ['Principal: USD 100.00','Processing fee: USD 3.00','Total charged: USD 103.00']) {
+  for (const value of ['Invoice: INV-1','Amount paid: USD 100.00','Processing fee: USD 3.00','Total charged: USD 103.00','Paid with: Visa ••4242']) {
     expect(out.html).toContain(value); expect(out.text).toContain(value);
   }
   expect(out.frozen).toEqual({ amount:'100.00', fee:'3.00', total:'103.00' });

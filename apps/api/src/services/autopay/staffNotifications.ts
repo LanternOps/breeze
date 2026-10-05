@@ -7,7 +7,7 @@ import type { Tx } from './types';
 export interface AutopayStaffNotice {
   orgId: string; partnerId: string; invoiceId?: string; partnerOnly?: boolean;
   event: 'autopay.enrolled' | 'autopay.method_updated' | 'autopay.stopped' | 'autopay.needs_attention' | 'autopay.skipped'
-    | 'payment.failed_final' | 'payment.ach_returned' | 'payment.unapplied';
+    | 'payment.failed_final' | 'payment.ach_returned' | 'payment.unapplied' | 'payment.disputed';
   dedupeKey: string; message: string;
 }
 const TITLE_MAX = 255;
@@ -15,7 +15,8 @@ function eventTitle(event: AutopayStaffNotice['event']): string {
   return event === 'autopay.enrolled' ? 'Automatic payments enabled'
     : event === 'autopay.method_updated' ? 'Payment method updated'
     : event === 'autopay.skipped' ? 'Automatic payment skipped'
-    : event === 'autopay.stopped' ? 'Automatic payments stopped' : 'Payment needs attention';
+    : event === 'autopay.stopped' ? 'Automatic payments stopped'
+    : event === 'payment.disputed' ? 'Payment disputed' : 'Payment needs attention';
 }
 /** Staff must see which client a notice is about (D-13). Bounded to the title column. */
 function namedTitle(event: AutopayStaffNotice['event'], orgName: string | null): string {

@@ -13,6 +13,8 @@ import { enqueueBillingNotice } from './noticeOutbox';
 import { renderBillingNotice } from './renderBillingNotice';
 import { enqueueAutopayStaffNotifications, type AutopayStaffNotice } from './staffNotifications';
 import type { Tx } from './types';
+import { announcedCharges, announcedOn } from './announcedCharges';
+import { escapeHtml } from '../emailLayout';
 
 // Controls may fence new collections, but terminal schedule outcomes are history.
 const CONTROL_SCHEDULE_STATES: Array<(typeof invoiceAutopaySchedules.$inferSelect)['state']> =
@@ -48,8 +50,10 @@ export async function lockInvoicesForEnrollmentStop(tx: Tx, orgId: string): Prom
     .orderBy(invoices.id).for('update');
 }
 
-/** Caller holds invoice and enrollment locks; never release an unresolved reservation. */
-export async function stopEnrollmentSchedules(tx: Tx, enrollmentId: string): Promise<string[]> {
+/** Caller holds invoice and enrollment locks; never release an unresolved reservation.
+ * Returns the invoices a payment still holds: `processing` ones complete (spec 6.6),
+ * `cancelling` ones can still be stopped. An invoice is listed under each that applies. */
+export async function stopEnrollmentSchedules(tx: Tx, enrollmentId: string): Promise<{ processing: string[]; cancelling: string[] }> {
   const schedules = await tx.select().from(invoiceAutopaySchedules)
     .where(and(eq(invoiceAutopaySchedules.enrollmentId, enrollmentId),
       inArray(invoiceAutopaySchedules.state, CONTROL_SCHEDULE_STATES))).for('update');
@@ -67,12 +71,15 @@ export async function stopEnrollmentSchedules(tx: Tx, enrollmentId: string): Pro
     ));
   }
   // Invoice-bound bank collections can reserve without ever having a schedule.
-  const pending = await tx.select({ id: invoices.id, number: invoices.invoiceNumber }).from(invoiceCollectionAttempts)
+  const pending = await tx.select({ id: invoices.id, number: invoices.invoiceNumber, state: invoiceCollectionAttempts.state }).from(invoiceCollectionAttempts)
     .innerJoin(orgPaymentMethods, eq(orgPaymentMethods.id, invoiceCollectionAttempts.paymentMethodId))
     .innerJoin(invoices, eq(invoices.id, invoiceCollectionAttempts.invoiceId))
     .where(and(eq(orgPaymentMethods.enrollmentId, enrollmentId),
       inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES])));
-  return [...new Set(pending.map(invoice => invoice.number ?? invoice.id))];
+  const numbers = (unstoppable: boolean) => [...new Set(pending
+    .filter(row => (UNSTOPPABLE_ATTEMPT_STATES as readonly string[]).includes(row.state) === unstoppable)
+    .map(invoice => invoice.number ?? invoice.id))];
+  return { processing: numbers(true), cancelling: numbers(false) };
 }
 
 /** Shared by all collection producers, including confirmation of an existing PI. */
@@ -160,7 +167,10 @@ export async function finalizeInvoiceControl(tx: Tx, invoice: typeof invoices.$i
   if (!isControllableSchedule(schedule.state)) return { status: kind === 'skip' ? 'skipped' : 'excluded' };
   await tx.update(invoiceAutopaySchedules).set({ state, nextAttemptAt: null, stateReason: kind })
     .where(eq(invoiceAutopaySchedules.id, schedule.id));
-  if (kind === 'exclude') return { status: 'excluded' };
+  if (kind === 'exclude') {
+    await enqueueExcludedInvoiceNotice(tx, invoice);
+    return { status: 'excluded' };
+  }
   await enqueueSkippedInvoiceConfirmation(tx, invoice);
   const staffNotice: AutopayStaffNotice = { orgId: invoice.orgId, partnerId: invoice.partnerId,
     event: 'autopay.skipped', dedupeKey: `autopay:${invoice.id}:skipped`,
@@ -186,6 +196,31 @@ async function enqueueSkippedInvoiceConfirmation(tx: Tx, invoice: typeof invoice
     kind: 'payment_reminder', seq: 0, dedupeKey: `invoice:${invoice.id}:skip:1`, toEmail: recipient,
     rendered: { ...rendered, subject: `Automatic payment skipped — ${invoice.invoiceNumber}`,
       html: `<p>${prefix}</p>${rendered.html}`, text: `${prefix}\n\n${rendered.text}` } });
+}
+
+/** D-19: an MSP exclusion after the pre-charge notice went out. Mirrors the skip
+ * confirmation: the client was told the invoice would be charged, so they hear it
+ * will not be, and how to pay. Nothing is sent when no charging notice was delivered. */
+async function enqueueExcludedInvoiceNotice(tx: Tx, invoice: typeof invoices.$inferSelect): Promise<void> {
+  const [announced] = await announcedCharges(tx, { invoiceId: invoice.id });
+  if (!announced) return;
+  const [org] = await tx.select().from(organizations).where(eq(organizations.id, invoice.orgId)).limit(1);
+  const [partner] = await tx.select().from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
+  if (!org || !partner) throw new Error('Exclusion notice ownership unavailable');
+  const recipient = resolveBillingEmail(org.billingContact);
+  if (!recipient) return;
+  const link = await getOrMintInvoiceLink(invoice, tx);
+  const rendered = await renderBillingNotice('payment_reminder', { partnerId: invoice.partnerId, orgId: invoice.orgId,
+    mandatory: {}, frozen: { amount: invoice.balance, currency: invoice.currencyCode, dueDate: invoice.dueDate },
+    data: { invoiceNumber: invoice.invoiceNumber, balance: invoice.balance, currency: invoice.currencyCode,
+      dueDate: invoice.dueDate, daysOverdue: 0, payLink: buildPublicInvoiceUrl(link.token),
+      partnerName: partner.name, orgName: org.name, partnerSettings: partner.settings } }, tx);
+  const prefix = `${partner.name} will not charge this invoice automatically. The automatic payment announced${announcedOn(announced)} will not happen. You can pay using the invoice link.`;
+  // One notice per announcement: a re-included, re-noticed and re-excluded invoice is told again.
+  await enqueueBillingNotice(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
+    kind: 'payment_reminder', seq: 0, dedupeKey: `invoice:${invoice.id}:exclude:${announced.noticeSeq}`, toEmail: recipient,
+    rendered: { ...rendered, subject: `Automatic payment cancelled — ${invoice.invoiceNumber}`,
+      html: `<p>${escapeHtml(prefix)}</p>${rendered.html}`, text: `${prefix}\n\n${rendered.text}` } });
 }
 
 /** Recover fences using the same mapping-bound, outside-transaction provider path

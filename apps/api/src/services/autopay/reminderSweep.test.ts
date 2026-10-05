@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { reminderDueToday, reminderStep, runInvoiceReminderSweep } from './reminderSweep';
-import { RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
+import { ACTIVE_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
 import { STALE_REMINDER_REASON } from './reminderValidation';
 
 const input = {
@@ -312,7 +312,7 @@ describe('runInvoiceReminderSweep', () => {
     expect(mock.enqueue.mock.calls.map(call => call[1].invoiceId).sort()).toEqual(rows.map(r => r.id).sort());
     expect(mock.queries.filter(q => q.locked)).toHaveLength(351);
   });
-  it('excludes invoices with a reserving collection attempt in discovery and in the locked recheck', async () => {
+  it('excludes invoices with an in-flight collection attempt in discovery and in the locked recheck', async () => {
     seedMock(); await runInvoiceReminderSweep(now);
     const dialect = new PgDialect();
     const candidates = mock.queries.filter(q => q.table === organizations || q.table === invoices);
@@ -320,7 +320,9 @@ describe('runInvoiceReminderSweep', () => {
     for (const q of candidates) {
       const query = dialect.sqlToQuery(q.predicate as Parameters<PgDialect['sqlToQuery']>[0]);
       expect(query.sql).toContain('invoice_collection_attempts');
-      expect(query.params).toEqual(expect.arrayContaining([...RESERVING_COLLECTION_ATTEMPT_STATES]));
+      expect(query.params).toEqual(expect.arrayContaining([...ACTIVE_COLLECTION_ATTEMPT_STATES]));
+      // A payment waiting on bank (3DS) confirmation is client-actionable: the reminder still goes out.
+      expect(query.params).not.toContain('requires_action');
     }
   });
   describe('stale reminder replacement', () => {

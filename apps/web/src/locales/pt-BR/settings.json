@@ -1354,7 +1354,9 @@
       "action_link": "Link da ação",
       "action_label": "Rótulo da ação",
       "days_overdue": "Dias em atraso",
-      "pay_link": "Link de pagamento"
+      "pay_link": "Link de pagamento",
+      "charge_total": "Cobrança total",
+      "attempted_amount": "Valor do pagamento tentado"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",

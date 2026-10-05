@@ -1,5 +1,6 @@
 import type Stripe from 'stripe';
 import type {CardFundingType} from '@breeze/shared';
+import {formatStripePaymentMethod} from './methodLabel';
 import {and,desc,eq,inArray,ne,sql} from 'drizzle-orm';
 import {db,withSystemDbAccessContext,runOutsideDbContext,runAfterDbContextExit} from '../../db';
 import {organizations,stripeConnectAccounts,orgAutopayEnrollments,orgPaymentMethods,orgAutopayConsents,billingLinkTokens} from '../../db/schema';
@@ -134,7 +135,7 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   const announce=!wasPending&&!earlierBankPay;
   if(announce){
   const stop=await mintBillingLinkToken(db,{orgId:attempt.orgId,purpose:'stop_autopay',enrollmentId:enrollment.id,generation:enrollment.generation,ttlDays:365});
-  const methodDescription=method.card?`${method.card.brand} ${method.card.funding} ••${method.card.last4}`:`${method.us_bank_account?.bank_name??'Bank'} ••${method.us_bank_account?.last4??''}`;
+  const methodDescription=formatStripePaymentMethod(method);
   const paymentMethod=methodDescription+(outcome==='pending_verification'?' (bank verification pending; no automatic payments yet)':'');
   const displayFee=verifiedFeeText(method.type,method.card?.funding??null,snapshot.feeText,method.card);
   await enqueueBillingNotice(db,{orgId:attempt.orgId,partnerId:attempt.partnerId,enrollmentId:enrollment.id,kind:'autopay_enrolled',seq:attempt.generation,

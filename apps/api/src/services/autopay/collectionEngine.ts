@@ -1,6 +1,6 @@
 import { hasSupportedCardEvidence } from './feeDisclosure';
 import { isCollectionProgrammingError, reportCollectionError } from './collectionErrors';
-import { parseAutopayTerms } from '@breeze/shared';
+import { formatPaymentMethod, parseAutopayTerms } from '@breeze/shared';
 import { resolveAttemptProvenance } from './attemptProvenance';
 import {getClientPaymentAuthority} from './clientPaymentAuthority';
 import {autopayConsentSnapshotSchema} from './types';
@@ -213,7 +213,7 @@ export async function reserveCollection(input: CollectionInput)
       await db.update(invoiceAutopaySchedules).set({ state: 'awaiting_notice', noticeSentAt: null,
         noticeOutboxId: null, collectOn, termsSnapshot: { ...terms, methodId: method.id, methodType: method.type,
           last4: method.cardLast4 ?? method.bankLast4 ?? '',
-          methodLabel: `${method.cardBrand ?? method.bankName ?? 'Payment method'} ••${method.cardLast4 ?? method.bankLast4 ?? ''}`,
+          methodLabel: formatPaymentMethod(method),
           accountHolderType: method.accountHolderType, noticeLeadDays: noticeLeadDays(method),
           principal, feeAmount: quote.feeAmount, feeKind: quote.kind, cardFeeBps: settings.cardFeeBps.value,
           achFeeAmount: settings.achFeeAmount.value, chargeDate: collectOn, noticeSeq: terms.noticeSeq + 1 } })
@@ -1046,7 +1046,7 @@ async function renoticeCanceledAttempt(invoice: typeof invoices.$inferSelect,
     nextAttemptAt: null, noticeSentAt: null, noticeOutboxId: null, collectOn,
     termsSnapshot: { ...terms, methodId: method.id, methodType: method.type,
       last4: method.cardLast4 ?? method.bankLast4 ?? '',
-      methodLabel: `${method.cardBrand ?? method.bankName ?? 'Payment method'} ••${method.cardLast4 ?? method.bankLast4 ?? ''}`,
+      methodLabel: formatPaymentMethod(method),
       accountHolderType: method.accountHolderType, noticeLeadDays: noticeLeadDays(method), principal,
       feeAmount: quote.feeAmount, feeKind: quote.kind, cardFeeBps: settings.cardFeeBps.value,
       achFeeAmount: settings.achFeeAmount.value, chargeDate: collectOn, noticeSeq: terms.noticeSeq + 1 } })

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { buildPortalApiUrl, portalApi, publicApiPath } from './api';
+import { apiPost, buildPortalApiUrl, portalApi, publicApiPath } from './api';
 
 // Regression guard for the same-origin client API base (the deploy relies on it):
 // with PUBLIC_API_URL unset, the browser must issue RELATIVE /api/v1 requests so
@@ -452,5 +452,22 @@ describe('portalApi customer reports', () => {
       code: 'PORTAL_REPORT_NOT_GENERATED',
       statusCode: 404,
     });
+  });
+});
+
+// A refusal's structured reason (e.g. an autopay skip refused because the payment is
+// already processing) must reach the caller: the code alone is shared by other refusals.
+describe('error details', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('surfaces an error body\'s details separately from data', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: 'A payment is already processing', code: 'COLLECTION_IN_PROGRESS', details: { reason: 'payment_processing' },
+    }), { status: 409 })));
+    const result = await apiPost('/autopay/public/token/skip', {}, { redirectOnUnauthorized: false });
+    expect(result).toMatchObject({ code: 'COLLECTION_IN_PROGRESS', statusCode: 409, errorDetails: { reason: 'payment_processing' } });
+    expect(result.data).toBeUndefined();
   });
 });

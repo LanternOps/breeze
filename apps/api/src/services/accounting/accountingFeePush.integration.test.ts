@@ -17,7 +17,7 @@ import JSZip from 'jszip';
 import {ingestStripeFinancialEvent} from '../stripeReversalState';
 import {recordStripePayment} from '../stripeReconcile';
 import {buildOrgExportZip} from '../tenantExport';
-vi.mock('../autopay/paymentNotices',()=>({enqueueOnlineReceipt:vi.fn().mockResolvedValue(undefined)}));
+vi.mock('../autopay/paymentNotices',()=>({enqueueOnlineReceipt:vi.fn().mockResolvedValue(undefined),enqueueRefundNotice:vi.fn().mockResolvedValue(undefined)}));
 vi.mock('../../jobs/accountingSyncWorker',()=>({enqueueAccountingPaymentPush:vi.fn().mockResolvedValue(undefined),enqueueAccountingPaymentDelete:vi.fn().mockResolvedValue(undefined)}));
 vi.mock('../invoiceEvents',()=>({emitInvoiceEvent:vi.fn().mockResolvedValue(undefined)}));
 vi.mock('../auditEvents',()=>({writeAuditEventAsync:vi.fn().mockResolvedValue(undefined),requestLikeFromSnapshot:()=>({req:{header:()=>undefined}})}));

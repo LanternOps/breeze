@@ -1,3 +1,4 @@
+import {formatPaymentMethod} from '@breeze/shared';
 import {and,eq,inArray,isNull} from 'drizzle-orm';
 import {db,runOutsideDbContext,withSystemDbAccessContext} from '../../db';
 import {organizations,partners,orgAutopayEnrollments,orgPaymentMethods,billingNoticeOutbox} from '../../db/schema';
@@ -47,7 +48,7 @@ export async function checkExpiringAutopayCards(now:Date=new Date()):Promise<{en
         const rendered=await renderBillingNotice('card_expiring',{autopay:{
           partnerId:row.org.partnerId,orgId:row.org.id,ctaUrl:url,scheduleText:terms.scheduleText,feeText:terms.feeText,
           vars:{partner_name:terms.partnerName,org_name:row.org.name,client_name:row.org.name,
-            payment_method:`${current.cardBrand??'Card'} ••${current.cardLast4??'----'}`,expires_on:expiresOn,update_link:url},
+            payment_method:formatPaymentMethod(current),expires_on:expiresOn,update_link:url},
         }});
         return (await enqueueBillingNotice(db,{orgId:row.org.id,partnerId:row.org.partnerId,enrollmentId:row.enrollment.id,
           kind:'card_expiring',seq:1,dedupeKey,toEmail,rendered})).created;

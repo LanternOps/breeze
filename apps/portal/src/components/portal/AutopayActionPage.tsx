@@ -6,17 +6,23 @@ type ActionResult = { success?: boolean; status?: 'pending' | 'skipped'; url?: s
 const pendingMessage = "Skip requested — a payment already in progress is being stopped; we'll confirm by email.";
 // Spec 6.6: a payment already sent to Stripe (ACH processing) cannot be recalled.
 const processingMessage = "A payment for this invoice is already processing and can't be stopped. You'll get a receipt when it completes.";
+// The same 409 code refuses a skip while another change is pending (e.g. an MSP exclusion):
+// nothing may be processing, so this must not promise a receipt.
+const changingMessage = (partnerName: string | null) =>
+  `This payment is already being changed. Check your email for an update, or contact ${partnerName || 'your provider'}.`;
 export default function AutopayActionPage({ token, action }: { token: string; action: 'skip' | 'confirm' }) {
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [partnerName, setPartnerName] = useState<string | null>(null);
   const endpoint = `/autopay/public/${encodeURIComponent(token)}/${action}`;
   useEffect(() => {
     let canceled = false;
     setReady(false); setMessage('');
-    void apiGet<{ state: string; control?: string | null; processing?: boolean }>(endpoint, { redirectOnUnauthorized: false }).then(result => {
+    void apiGet<{ state: string; control?: string | null; processing?: boolean; partnerName?: string | null }>(endpoint, { redirectOnUnauthorized: false }).then(result => {
       if (canceled) return;
       if (result.data && !result.error) {
+        setPartnerName(result.data.partnerName ?? null);
         if (action === 'skip' && result.data.control === 'skip') setMessage(pendingMessage);
         else if (action === 'skip' && result.data.processing === true) setMessage(processingMessage);
         else if (action === 'skip' && result.data.state === 'skipped_by_client') setMessage('Automatic payment skipped. You can still pay the invoice directly.');
@@ -29,17 +35,19 @@ export default function AutopayActionPage({ token, action }: { token: string; ac
   const submit = async () => {
     if (busy || !ready) return;
     setBusy(true);
-    let unstoppable = false;
+    let refusal = null as string | null;
     const result = await runAction<ActionResult>({
       request: async () => {
         const response = await apiPost<ActionResult>(endpoint, {}, { redirectOnUnauthorized: false });
-        unstoppable = action === 'skip' && response.statusCode === 409 && response.code === 'COLLECTION_IN_PROGRESS';
+        if (action === 'skip' && response.statusCode === 409 && response.code === 'COLLECTION_IN_PROGRESS') {
+          refusal = response.errorDetails?.reason === 'payment_processing' ? processingMessage : changingMessage(partnerName);
+        }
         return response;
       },
       errorFallback: 'The request could not be completed.', successMessage: 'Request completed.',
       onOutcome: text => setMessage(text),
     });
-    if (unstoppable) { setReady(false); setMessage(processingMessage); }
+    if (refusal) { setReady(false); setMessage(refusal); }
     if (result) {
       if (result.url) void navigateTo(result.url);
       else {

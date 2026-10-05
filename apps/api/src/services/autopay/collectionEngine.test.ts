@@ -249,7 +249,8 @@ it.each(['method', 'holder', 'fee'])('re-notices changed %s terms', async change
   await expect(reserveCollection(input)).resolves.toMatchObject({ reason: 'renotice_required' });
   expect(attempts()).toEqual([]); expect(h.notice).toHaveBeenCalledOnce();
   expect(h.writes).toContainEqual({ table: invoiceAutopaySchedules, values: expect.objectContaining({
-    state: 'awaiting_notice', noticeSentAt: null, noticeOutboxId: null, termsSnapshot: expect.objectContaining({ noticeSeq: 2 }),
+    state: 'awaiting_notice', noticeSentAt: null, noticeOutboxId: null,
+    termsSnapshot: expect.objectContaining({ noticeSeq: 2, methodLabel: 'Visa credit card ending in 4242' }),
   }) });
 });
 it('excludes invoices with an excluded source contract', async () => {
@@ -637,7 +638,8 @@ it('cancels and re-notices a replacement rail before confirmation', async () => 
   await resumeCollectionAttempt(attempt.id);
   expect(h.confirm).not.toHaveBeenCalled(); expect(h.cancel).toHaveBeenCalledOnce();
   expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'awaiting_notice',
-    termsSnapshot: expect.objectContaining({ methodId: replacement.id, methodType: 'us_bank_account', noticeSeq: 2 }) });
+    termsSnapshot: expect.objectContaining({ methodId: replacement.id, methodType: 'us_bank_account', noticeSeq: 2,
+      methodLabel: 'Bank account' }) });
   expect(h.notice).toHaveBeenCalledOnce();
 });
 

@@ -62,7 +62,7 @@ describe('completion fences',()=>{
   const rendered=m.enqueue.mock.calls[0]![1].rendered;
   expect(rendered.subject).toContain('Example MSP');
   for(const body of [rendered.html,rendered.text]){
-   expect(body).toContain('Example client');expect(body).toContain('visa debit');
+   expect(body).toContain('Example client');expect(body).toContain('Visa debit card ending in 1234');expect(body).not.toContain('visa debit');
    expect(body).toContain(snapshot.scheduleText);expect(body).toContain('No processing fee applies to this card.');
   }
   m.writes.length=0;queueAuthority(attempt({outcome:'activated',completedAt:new Date()}));
@@ -293,7 +293,7 @@ it('uses live credit evidence for enrollment and owned return under nonzero fees
  m.rows.push([],[],[{id:'method_one'}],[],[],[],[{settings:{}}]);
  const {completeOwnedAutopaySetup}=await import('./customerViews');
  const result=await completeOwnedAutopaySetup({orgId:value.orgId,partnerId:value.partnerId},'cs_one');
- expect(result).toMatchObject({outcome:'activated',methodLabel:'visa credit ••1234',feeText:accepted.feeText});
+ expect(result).toMatchObject({outcome:'activated',methodLabel:'Visa credit card ending in 1234',feeText:accepted.feeText});
  for(const body of [m.enqueue.mock.calls[0]![1].rendered.html,m.enqueue.mock.calls[0]![1].rendered.text])expect(body).toContain(accepted.feeText);
  expect(m.writes).toContainEqual(expect.objectContaining({cardFunding:'credit'}));
  const stored=m.writes.find(row=>'cardFunding' in row)!;

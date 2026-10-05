@@ -1354,7 +1354,9 @@
       "action_link": "Link dell’azione",
       "action_label": "Etichetta dell’azione",
       "days_overdue": "Giorni di ritardo",
-      "pay_link": "Link di pagamento"
+      "pay_link": "Link di pagamento",
+      "charge_total": "Addebito totale",
+      "attempted_amount": "Importo del pagamento tentato"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
