@@ -1,5 +1,5 @@
 import { and, eq, or, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runAfterDbContextExit, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { invoices, organizations, organizationUsers, partnerUsers, users, partners, userNotifications } from '../../db/schema';
 import { getEmailService } from '../email';
 import { escapeHtml } from '../emailLayout';
@@ -82,6 +82,17 @@ export async function sendAutopayStaffEmail(input: AutopayStaffNotice): Promise<
     subject: namedTitle(input.event, name),
     html: `${name ? `<p><strong>Client:</strong> ${escapeHtml(name)}</p>` : ''}${number ? `<p><strong>Invoice:</strong> ${escapeHtml(number)}</p>` : ''}<p>${escapeHtml(input.message)}</p>`,
     text: [name ? `Client: ${name}` : '', number ? `Invoice: ${number}` : ''].filter(Boolean).join('\n') + (name || number ? '\n\n' : '') + input.message }));
+}
+
+/** Needs-attention found on a collection path (S-1): in-app in the caller's transaction and
+ * the partner billing email once that context exits. Only for observed conditions that stay
+ * true if the caller rolls back (missing consent, a method collection cannot use). The email
+ * claims emailDedupeKey (default dedupeKey), so a condition that recurs on every run, or that
+ * reaches several invoices at once, emails once while each invoice keeps its in-app notice. */
+export async function enqueueAutopayStaffAttention(db: Tx, input: AutopayStaffNotice & { emailDedupeKey?: string }): Promise<void> {
+  const { emailDedupeKey, ...notice } = input;
+  await enqueueAutopayStaffNotifications(db, notice);
+  runAfterDbContextExit('autopay.staffAttentionEmail', () => sendAutopayStaffEmail({ ...notice, dedupeKey: emailDedupeKey ?? notice.dedupeKey }));
 }
 
 /** Compatibility adapter for callers that already run after commit. */

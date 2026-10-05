@@ -8,7 +8,7 @@ import {autopaySetupAttempts} from '../../db/schema/autopaySetupAttempts';
 import { captureException } from '../sentry';
 import { classifyCollectionFailure } from './failureClassifier';
 import { retryAt } from './retryDates';
-import { enqueueAttemptNotice, enqueueMethodUnusableNotice, notifyPaymentAttention } from './paymentNotices';
+import { enqueueAttemptNotice, enqueueMethodUnusableNotice, noticeDedupeKey, notifyPaymentAttention } from './paymentNotices';
 import { resolveMergedOrgIds } from '../orgMergeProvenance';
 import { requestInvoiceSessionRevocation } from '../stripeSessionRevocation';
 import { collectionFenced, finalizeInvoiceControl, isControllableSchedule, pendingInvoiceControl } from './collectionControl';
@@ -22,7 +22,9 @@ import { assertNoHeldDbContextForStripe, settlePaymentIntent } from '../stripeSe
 import type Stripe from 'stripe';
 import { getPartnerStripeClient } from '../partnerStripe';
 import { InvoiceServiceError } from '../invoiceTypes';
-import { enqueueAutopayStaffNotifications } from './staffNotifications';
+import { enqueueAutopayStaffAttention, enqueueAutopayStaffNotifications } from './staffNotifications';
+import { isNotChargedReason, noticeChargeNotMade } from './notChargedNotice';
+import { resolveBillingEmail } from '../invoicePdf';
 import { lockInvoiceForCollection } from './reservation';
 import { getAutopayMethod, markPaymentMethodUnusable } from './paymentMethods';
 import { isAutopayEnabledForPartner } from './autopayGate';
@@ -41,6 +43,8 @@ export function collectionNoticeAllows(sentAt: Date | null, lead: number, now: D
 }
 
 const defer = (reason: string): CollectionResult => ({ attemptId: null, outcome: 'deferred', reason });
+/** One staff email per unusable method, however many due invoices it fails (S-1). */
+const methodUnusableEmailKey = (methodId: string) => `autopay:method_unusable:${methodId}`;
 const refuse = (reason: string): CollectionResult => ({ attemptId: null, outcome: 'refused', reason });
 type Method = typeof orgPaymentMethods.$inferSelect;
 type Enrollment = typeof orgAutopayEnrollments.$inferSelect;
@@ -92,8 +96,9 @@ async function prepareMethodAdmission(invoiceId: string) {
       || ['INVALID_STRIPE_KEY','STRIPE_KEY_UNREADABLE','NO_STRIPE_KEY'].includes(provider.code ?? '');
     if (missing || credentials) await withSystemDbAccessContext(async()=>{
       if(missing)await markPaymentMethodUnusable(db,snapshot.method.id,'resource_missing');
-      await enqueueAutopayStaffNotifications(db,{orgId:snapshot.invoice.orgId,partnerId:snapshot.invoice.partnerId,invoiceId,
+      await enqueueAutopayStaffAttention(db,{orgId:snapshot.invoice.orgId,partnerId:snapshot.invoice.partnerId,invoiceId,
         event:'autopay.needs_attention',dedupeKey:`autopay_admission:${snapshot.enrollment.id}:${snapshot.enrollment.generation}:${snapshot.method.id}:${missing?'missing':'credentials'}`,
+        ...(missing?{emailDedupeKey:methodUnusableEmailKey(snapshot.method.id)}:{}),
         message:missing?'Automatic payment method is missing or detached. Update the saved method.':'Stripe credentials require attention before automatic payments can continue.'});
     },'autopay.admissionFailure');
     return defer(missing?'method_not_usable':'stripe_unavailable');
@@ -141,15 +146,19 @@ export async function reserveCollection(input: CollectionInput)
       || method.type !== admission.method.type || method.accountHolderType !== admission.method.accountHolderType
       || method.cardFunding !== admission.method.cardFunding) return defer('method_not_usable');
     if (!admittedMethod(admission.live, method, enrollment)) {
-      if ((typeof admission.live.customer === 'string' ? admission.live.customer : admission.live.customer?.id) !== enrollment.stripeCustomerId) {
-        await markPaymentMethodUnusable(db, method.id, 'payment_method_detached');
-      }
+      // Collection can never charge this method as noticed (detached, or its live funding,
+      // card evidence or holder type no longer match). Leaving it active deferred every due
+      // invoice forever with reminders suppressed and the client never told (R1). Unusable,
+      // it fails due schedules with the update-method notice, like a hard decline.
+      const detached = (typeof admission.live.customer === 'string' ? admission.live.customer : admission.live.customer?.id) !== enrollment.stripeCustomerId;
+      await markPaymentMethodUnusable(db, method.id, detached ? 'payment_method_detached' : 'live_method_mismatch');
       await db.update(orgAutopayEnrollments).set({ needsAttentionReason: 'method_unusable' })
         .where(eq(orgAutopayEnrollments.id, enrollment.id));
-      await enqueueAutopayStaffNotifications(db, { orgId: invoice.orgId, partnerId: invoice.partnerId,
+      await enqueueAutopayStaffAttention(db, { orgId: invoice.orgId, partnerId: invoice.partnerId,
         event: 'autopay.needs_attention',
         dedupeKey: `autopay_method_admission_${enrollment.id}_${enrollment.generation}_${method.id}`,
-        message: 'Automatic payments need a supported payment method. Review the saved payment method.',
+        emailDedupeKey: methodUnusableEmailKey(method.id),
+        message: 'Automatic payments need a supported payment method. Ask the client to update the saved payment method.',
       });
       return defer('method_not_usable');
     }
@@ -954,9 +963,19 @@ async function applyObservedOutcome(data: AttemptHistory, stripe: Stripe, observ
     if (state === 'canceled' && (!attempt.failureClass || attempt.failureClass === 'auth_required' || cancellationReason
       || pendingInvoiceControl(schedule?.stateReason ?? null) || schedule?.stateReason === RENOTICE_PENDING
       || collectionFenced({ schedule: schedule, invoice: locked.invoice, enrollment }))) {
-      await db.update(invoiceCollectionAttempts).set({ state: 'canceled', updatedAt: new Date() })
+      // Keep why it was canceled on the attempt: Charge now reports it instead of a bare "canceled" (R3).
+      await db.update(invoiceCollectionAttempts).set({ state: 'canceled', updatedAt: new Date(),
+        ...(cancellationReason && !attempt.failureCode ? { failureCode: cancellationReason } : {}) })
         .where(attemptStateGuard(attempt));
       await finalizeCanceledSchedule(locked.invoice, schedule, enrollment, cancellationReason);
+      // A pre-confirm cap or authorization check stopped a charge whose notice already went out.
+      if (isNotChargedReason(cancellationReason) && schedule && schedule.id === attempt.scheduleId) {
+        const [after] = await db.select({ state: invoiceAutopaySchedules.state, stateReason: invoiceAutopaySchedules.stateReason })
+          .from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id, schedule.id)).limit(1);
+        if (after && !isControllableSchedule(after.state) && after.stateReason === cancellationReason) {
+          await noticeChargeNotMade(db, { invoiceId: locked.invoice.id, scheduleId: schedule.id, reason: cancellationReason });
+        }
+      }
       if (cancellationReason === 'action_required_expired') {
         await enqueueAttemptNotice(db, attemptId, 'expired');
         await enqueueAutopayStaffNotifications(db, { partnerId, orgId: locked.invoice.orgId,
@@ -1070,13 +1089,22 @@ export async function runAutopayCollection(now = new Date()): Promise<{ attempte
               const [failed]=await db.update(invoiceAutopaySchedules).set({state:'failed',stateReason:'method_not_usable',nextAttemptAt:null})
                 .where(and(eq(invoiceAutopaySchedules.id,row.id),inArray(invoiceAutopaySchedules.state,['scheduled','retry_scheduled'])))
                 .returning({id:invoiceAutopaySchedules.id});
-              if (failed) await enqueueMethodUnusableNotice(db,row.id);
+              if (failed) await failedForUnusableMethod(invoice,row.id);
               return;
             }
-            await db.update(invoiceAutopaySchedules).set(result.outcome==='refused'
+            const [moved]=await db.update(invoiceAutopaySchedules).set(result.outcome==='refused'
               ? {state:'failed',stateReason:result.reason,nextAttemptAt:null}
               : {stateReason:result.reason,nextAttemptAt:new Date(now.getTime()+(['charging_disabled','stripe_unavailable','method_not_usable'].includes(result.reason ?? '') ? 86_400_000 : 3_600_000))})
-              .where(and(eq(invoiceAutopaySchedules.id,row.id),inArray(invoiceAutopaySchedules.state,['scheduled','retry_scheduled'])));
+              .where(and(eq(invoiceAutopaySchedules.id,row.id),inArray(invoiceAutopaySchedules.state,['scheduled','retry_scheduled'])))
+              .returning({state:invoiceAutopaySchedules.state});
+            // A refused charge the client was told about (a missing authorization, or a contract
+            // the MSP excluded, which reserve already moved to excluded_by_msp) must not stay
+            // announced: tell the client, then normal reminders apply (2a-3). enrollment_inactive
+            // needs nothing here: stop and pause send their own emails.
+            if (result.outcome==='refused' && isNotChargedReason(result.reason)
+              && (moved?.state==='failed' || result.reason==='excluded_contract')) {
+              await noticeChargeNotMade(db,{invoiceId:invoice.id,scheduleId:row.id,reason:result.reason});
+            }
             if (result.reason === 'charging_disabled') await enqueueAutopayStaffNotifications(db, {
               orgId: invoice.orgId, partnerId: invoice.partnerId, partnerOnly: true,
               event: 'autopay.needs_attention',
@@ -1095,6 +1123,32 @@ export async function runAutopayCollection(now = new Date()): Promise<{ attempte
   }
   if(total>0 && errors.length===total)throw new AggregateError(errors,'Every automatic collection failed');
   return { attempted, deferred };
+}
+
+/** A due schedule just failed because the org has no usable method. Caller holds the
+ * invoice lock in the transaction that failed it. The client gets the update-method notice;
+ * staff get an in-app notice per invoice and one email per dead method (R2). */
+async function failedForUnusableMethod(invoice: typeof invoices.$inferSelect, scheduleId: string): Promise<void> {
+  await enqueueMethodUnusableNotice(db, scheduleId);
+  const [notice] = await db.select({ id: billingNoticeOutbox.id }).from(billingNoticeOutbox)
+    .where(eq(billingNoticeOutbox.dedupeKey, noticeDedupeKey(invoice.id, 'payment_failed:method_not_usable'))).limit(1);
+  let gap: 'no_billing_contact' | 'enrollment_inactive' | null = null;
+  if (!notice) {
+    const [org] = await db.select({ billingContact: organizations.billingContact }).from(organizations)
+      .where(eq(organizations.id, invoice.orgId)).limit(1);
+    gap = resolveBillingEmail(org?.billingContact) ? 'enrollment_inactive' : 'no_billing_contact';
+    console.warn('[autopay] Method-unusable failure: no client notice could be sent', { orgId: invoice.orgId,
+      invoiceId: invoice.id, scheduleId, reason: gap });
+  }
+  const [dead] = await db.select({ id: orgPaymentMethods.id }).from(orgPaymentMethods)
+    .where(and(eq(orgPaymentMethods.orgId, invoice.orgId), eq(orgPaymentMethods.isAutopayMethod, true))).limit(1);
+  await enqueueAutopayStaffAttention(db, { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
+    event: 'autopay.needs_attention', dedupeKey: `autopay:${scheduleId}:method_not_usable`,
+    ...(dead ? { emailDedupeKey: methodUnusableEmailKey(dead.id) } : {}),
+    message: `The saved payment method can no longer be used, so this invoice was not charged automatically. ${
+      gap === null ? 'The client was asked to pay it and to update their payment method.'
+      : gap === 'no_billing_contact' ? 'The client has no billing contact, so they were not told: ask them to pay it and update their payment method.'
+      : 'Automatic payments are no longer active for this client, so no update email was sent: ask them to pay it.'}` });
 }
 
 async function enqueueOutcomeAttention(event: 'payment.unapplied'|'payment.failed_final'|'autopay.needs_attention', invoice: typeof invoices.$inferSelect, attemptId: string, message?:string) {

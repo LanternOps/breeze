@@ -1247,7 +1247,9 @@ it.each(['empty', 'canceled', 'succeeded', 'changed_account', 'missing'] as cons
       expect(provider.search).not.toHaveBeenCalled();
       await resumeCollectionAttempt(attempt!.id);
       const notices=await withSystemDbAccessContext(()=>db.select().from(userNotifications).where(eq(userNotifications.orgId,f.org.id)));
-      expect(notices).toHaveLength(1);expect(notices[0]!.message).toContain(attempt!.id);expect(notices[0]!.message).toContain('Reservation retained');
+      expect(notices).toHaveLength(1);expect(notices[0]!.message).toContain('reservation is kept');
+      // P-17: named by invoice number, never by the raw attempt or invoice id.
+      expect(notices[0]!.message).toContain(f.invoice.invoiceNumber!);expect(notices[0]!.message).not.toContain(attempt!.id);
     }
     else {
       expect(provider.search).toHaveBeenCalledOnce();
@@ -2006,4 +2008,100 @@ it('clears payment_reversed once a won dispute restores the payment (#7897)',asy
  await ingestStripeFinancialEvent(dispute(`evt_won_${f.invoice.id}`,'charge.dispute.closed',false,now+60));
  expect((await withSystemDbAccessContext(()=>db.select().from(invoices).where(eq(invoices.id,f.invoice.id))))[0]!.status).toBe('paid');
  expect(await scheduleFor(f)).toMatchObject({state:'succeeded',stateReason:null});
+});
+
+// ---- S-1, R1, R2, 2a-3, R3: collection outcomes that stop a noticed charge ----
+function captureMail(){
+ const sendEmail=vi.fn(async(_message:{to:string;purpose:string;subject:string;text:string;html:string})=>{});
+ const spy=vi.spyOn(emailModule,'getEmailService').mockReturnValue({sendEmail} as unknown as NonNullable<ReturnType<typeof emailModule.getEmailService>>);
+ return {restore:()=>spy.mockRestore(),staff:()=>sendEmail.mock.calls.map(([message])=>message).filter(message=>message.purpose==='staff.autopay')};
+}
+async function withStaffEmail(f:Awaited<ReturnType<typeof fixture>>){
+ await withSystemDbAccessContext(async()=>{
+  await db.update(partners).set({billingEmail:'msp@example.test'}).where(eq(partners.id,f.partner.id));
+  await createUser({partnerId:f.partner.id,withMembership:true});
+ });
+}
+const outboxFor=(invoiceId:string)=>withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId,invoiceId)));
+const uuidPattern=/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+it('a missing authorization at charge time emails staff once and tells each noticed client the charge will not happen (S-1, 2a-3)',async()=>{
+ const f=await fixture(undefined,{consent:'missing'}); await withStaffEmail(f);
+ const b=await siblingSchedule(f);
+ const mail=captureMail();
+ try {
+  await runAutopayCollection();
+  await vi.waitFor(()=>expect(mail.staff()).toHaveLength(1));
+ } finally { mail.restore(); }
+ expect(mail.staff()[0]).toMatchObject({to:'msp@example.test'});
+ expect(mail.staff()[0]!.text).toMatch(/authorization/i); expect(mail.staff()[0]!.text).not.toMatch(uuidPattern);
+ for(const invoice of [f.invoice,b.invoice]){
+  const [schedule]=await withSystemDbAccessContext(()=>db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.invoiceId,invoice.id)));
+  expect(schedule).toMatchObject({state:'failed',stateReason:'consent_required'});
+  const notices=(await outboxFor(invoice.id)).filter(n=>n.kind==='payment_reminder');
+  expect(notices).toEqual([expect.objectContaining({dedupeKey:`invoice:${invoice.id}:not_charged:1`,toEmail:'billing@example.test',status:'pending'})]);
+  expect((notices[0]!.rendered as {text:string}).text).toContain('will not be charged automatically');
+ }
+ expect(provider.create).not.toHaveBeenCalled();
+});
+
+it('a method the live check rejects is marked unusable, so the due invoice fails and client and staff are told once (R1, R2)',async()=>{
+ const f=await fixture(); await withStaffEmail(f);
+ // A stored credit card whose live record now reports debit: collection can never charge it as noticed.
+ provider.methodRetrieve.mockImplementation(async id=>({id,customer:'cus_autopay_test',type:'card',
+  card:{brand:'visa',funding:'debit',wallet:null,networks:{available:['visa'],preferred:null}}}));
+ const b=await siblingSchedule(f);
+ const mail=captureMail();
+ try {
+  await runAutopayCollection(); await runAutopayCollection(new Date(Date.now()+86_400_000));
+  await vi.waitFor(()=>expect(mail.staff().length).toBeGreaterThanOrEqual(1));
+ } finally { mail.restore(); }
+ expect(mail.staff()).toHaveLength(1);
+ const [method]=await withSystemDbAccessContext(()=>db.select().from(orgPaymentMethods).where(eq(orgPaymentMethods.id,f.method.id)));
+ expect(method).toMatchObject({status:'unusable',isAutopayMethod:true});
+ for(const invoice of [f.invoice,b.invoice]){
+  const [schedule]=await withSystemDbAccessContext(()=>db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.invoiceId,invoice.id)));
+  expect(schedule).toMatchObject({state:'failed',stateReason:'method_not_usable',nextAttemptAt:null});
+  expect((await outboxFor(invoice.id)).filter(n=>n.dedupeKey===`${invoice.id}:payment_failed:method_not_usable:1`)).toHaveLength(1);
+  const attention=await withSystemDbAccessContext(()=>db.select().from(userNotifications).where(eq(userNotifications.orgId,f.org.id)));
+  expect(attention.some(n=>n.link===`/billing/invoices/${invoice.id}`&&(n.metadata as {event?:string})?.event==='autopay.needs_attention')).toBe(true);
+ }
+ expect(provider.create).not.toHaveBeenCalled();
+});
+
+it('a failed method-unusable schedule with no billing contact still tells staff, and logs that the client was not told (R2)',async()=>{
+ const f=await fixture(); await withStaffEmail(f);
+ await withSystemDbAccessContext(()=>db.update(organizations).set({billingContact:null}).where(eq(organizations.id,f.org.id)));
+ provider.methodRetrieve.mockImplementation(async id=>({id,customer:'cus_autopay_test',type:'card',
+  card:{brand:'visa',funding:'debit',wallet:null,networks:{available:['visa'],preferred:null}}}));
+ const warn=vi.spyOn(console,'warn').mockImplementation(()=>{});
+ const mail=captureMail();
+ try {
+  await runAutopayCollection();
+  await vi.waitFor(()=>expect(mail.staff().length).toBeGreaterThanOrEqual(1));
+  expect(warn).toHaveBeenCalledWith(expect.stringContaining('no client notice'),expect.objectContaining({invoiceId:f.invoice.id,reason:'no_billing_contact'}));
+ } finally { mail.restore(); warn.mockRestore(); }
+ expect(await scheduleFor(f)).toMatchObject({state:'failed',stateReason:'method_not_usable'});
+ expect((await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_failed')).toEqual([]);
+ const attention=await withSystemDbAccessContext(()=>db.select().from(userNotifications).where(eq(userNotifications.orgId,f.org.id)));
+ expect(attention.find(n=>n.link===`/billing/invoices/${f.invoice.id}`)?.message).toMatch(/no billing contact/i);
+});
+
+it('a cap cancellation before confirm records its reason and tells the client and staff (R3)',async()=>{
+ const f=await capFixture({enabled:true,amount:'50.00',currency:'USD'}); await withStaffEmail(f);
+ const info=vi.spyOn(console,'info').mockImplementation(()=>{});
+ const mail=captureMail();
+ let result:Awaited<ReturnType<typeof attemptCollection>>;
+ try {
+  result=await attemptCollection(inputFor(f));
+  await vi.waitFor(()=>expect(mail.staff()).toHaveLength(1));
+  expect(info).toHaveBeenCalledWith(expect.stringContaining('not charged automatically'),expect.objectContaining({invoiceId:f.invoice.id,reason:'above_authorized_cap'}));
+ } finally { mail.restore(); info.mockRestore(); }
+ expect(result).toMatchObject({outcome:'canceled',reason:'above_authorized_cap'});
+ expect((await attempts(f.invoice.id))[0]).toMatchObject({state:'canceled',failureCode:'above_authorized_cap'});
+ expect(await scheduleFor(f)).toMatchObject({state:'cancelled',stateReason:'above_authorized_cap'});
+ const notices=(await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder');
+ expect(notices).toEqual([expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`,status:'pending'})]);
+ expect((notices[0]!.rendered as {text:string}).text).toContain('limit you authorized');
+ expect(mail.staff()[0]!.text).toMatch(/limit the client authorized/);
 });

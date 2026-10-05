@@ -11,7 +11,7 @@ const { client, h } = vi.hoisted(() => ({ client: vi.fn(), h: {
   beforeRead: vi.fn(),
   balance: '100.00', reserved: '0.00', ordinal: 0,
   method: vi.fn(), gate: vi.fn(), readiness: vi.fn(), settings: vi.fn(),
-  retrieve: vi.fn(), create: vi.fn(), notice: vi.fn(), staff: vi.fn(),
+  retrieve: vi.fn(), create: vi.fn(), notice: vi.fn(), staff: vi.fn(), notCharged: vi.fn(),
   piRetrieve: vi.fn(), confirm: vi.fn(), cancel: vi.fn(), settle: vi.fn(), attemptNotice: vi.fn(), attention: vi.fn(), methodNotice: vi.fn(),
   capture: vi.fn(), unusable: vi.fn(), provenance: vi.fn(), accountProvenance:vi.fn(), revocation: vi.fn(), persist: false, mappingError: false,
 } }));
@@ -22,13 +22,16 @@ vi.mock('../stripeSettle', () => ({ assertNoHeldDbContextForStripe: () => {
 }, settlePaymentIntent: h.settle }));
 vi.mock('../orgMergeProvenance', () => ({ resolveMergedOrgIds: h.provenance }));
 vi.mock('../stripeSessionRevocation', () => ({ requestInvoiceSessionRevocation: h.revocation }));
-vi.mock('./paymentNotices', () => ({ enqueueAttemptNotice: h.attemptNotice, notifyPaymentAttention: h.attention, enqueueMethodUnusableNotice: h.methodNotice }));
+vi.mock('./paymentNotices', () => ({ enqueueAttemptNotice: h.attemptNotice, notifyPaymentAttention: h.attention, enqueueMethodUnusableNotice: h.methodNotice,
+  noticeDedupeKey: (id: string, kind: string) => `${id}:${kind}:1` }));
+vi.mock('./notChargedNotice', async importOriginal => ({ ...await importOriginal<typeof import('./notChargedNotice')>(), noticeChargeNotMade: h.notCharged }));
 vi.mock('./paymentMethods', () => ({ getAutopayMethod: h.method, markPaymentMethodUnusable: h.unusable }));
 vi.mock('./autopayGate', () => ({ isAutopayEnabledForPartner: h.gate }));
 vi.mock('./stripeCapabilities', () => ({ getAutopayStripeReadiness: h.readiness }));
 vi.mock('./billingPaymentSettings', () => ({ resolveBillingPaymentSettings: h.settings }));
 vi.mock('./chargingNotice', () => ({ enqueueAutopayNotice: h.notice }));
-vi.mock('./staffNotifications', () => ({ enqueueAutopayStaffNotifications: h.staff }));
+// Collection-path attention also emails after commit (S-1); the in-app half is what these tests observe.
+vi.mock('./staffNotifications', () => ({ enqueueAutopayStaffNotifications: h.staff, enqueueAutopayStaffAttention: h.staff }));
 vi.mock('../../db', () => {
   const query = (projection?: Record<string, unknown>, write?: { table: unknown; values: any }) => {
     const read: { table: unknown; where?: SQL; lock?: string } = { table: undefined };
@@ -1104,20 +1107,34 @@ it.each(['scheduled','retry_scheduled'] as const)('fails a due %s schedule once 
   update(invoiceAutopaySchedules, { state, nextAttemptAt: null });
   h.persist = true;
   h.method.mockResolvedValue(null);
+  h.rows.set(orgPaymentMethods, [{ ...method, status: 'unusable' }]);
   mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], now);
   expect(await runAutopayCollection(now)).toEqual({ attempted: 0, deferred: 1 });
   expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'failed', stateReason: 'method_not_usable', nextAttemptAt: null });
   expect(h.methodNotice).toHaveBeenCalledOnce();
   expect(h.methodNotice).toHaveBeenCalledWith(expect.anything(), schedule.id);
+  // R2: staff hear about each failed invoice in-app, and once per dead method by email.
+  expect(h.staff).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ event: 'autopay.needs_attention',
+    invoiceId: invoice.id, dedupeKey: `autopay:${schedule.id}:method_not_usable`, emailDedupeKey: `autopay:method_unusable:${method.id}` }));
   vi.restoreAllMocks();
   mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], new Date(now.getTime() + 86_400_000));
   expect(await runAutopayCollection(new Date(now.getTime() + 86_400_000))).toEqual({ attempted: 0, deferred: 0 });
   expect(h.methodNotice).toHaveBeenCalledOnce();
   expect(attempts()).toEqual([]); expect(h.create).not.toHaveBeenCalled();
 });
+// R1: an active method the live check rejects no longer defers forever; it is marked
+// unusable so the next pass fails the schedule with the update-method notice.
+it('marks an active method the live check did not admit unusable instead of deferring forever', async () => {
+  const now = new Date();
+  h.persist = true; h.retrieve.mockResolvedValue({ ...card, card: { ...card.card, wallet: { type: 'link' } } });
+  mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], now);
+  await runAutopayCollection(now);
+  expect(h.unusable).toHaveBeenCalledWith(expect.anything(), method.id, 'live_method_mismatch');
+  expect(h.staff).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ event: 'autopay.needs_attention',
+    emailDedupeKey: `autopay:method_unusable:${method.id}` }));
+});
 it.each([
   ['a pending microdeposit verification', () => h.method.mockResolvedValue({ ...method, status: 'pending_verification' })],
-  ['an active method the live check did not admit', () => h.retrieve.mockResolvedValue({ ...card, card: { ...card.card, wallet: { type: 'link' } } })],
 ] as const)('keeps deferring daily while %s still exists', async (_case, change) => {
   const now = new Date();
   h.persist = true; change();
