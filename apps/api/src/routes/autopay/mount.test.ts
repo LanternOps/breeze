@@ -278,5 +278,10 @@ it.each([null,{id:'schedule',eligible:true,state:'scheduled',noticeSentAt:new Da
 });
 it('Charge now returns a stale-state service refusal as 409',async()=>{
  chargeRows();h.collect.mockResolvedValue({outcome:'deferred',reason:'retry_not_due',attemptId:null});
- const response=await charge();expect(response.status).toBe(409);expect(await response.json()).toEqual({error:'retry_not_due',code:'retry_not_due'});
+ const response=await charge();expect(response.status).toBe(409);expect(await response.json()).toEqual({error:'retry_not_due',code:'retry_not_due',outcome:'deferred'});
+});
+it('Charge now tells staff whether a payment was attempted, not only the provider code',async()=>{
+ chargeRows();h.collect.mockResolvedValue({outcome:'requires_action',state:'requires_action',reason:'authentication_required',attemptId:'attempt',failureClass:'auth_required'});
+ const response=await charge();expect(response.status).toBe(409);
+ expect(await response.json()).toEqual({error:'authentication_required',code:'authentication_required',outcome:'requires_action'});
 });
