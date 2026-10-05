@@ -9,6 +9,7 @@ export * from './assuranceLevel';
 export * from './ticketTemplate';
 export * from './alertTemplate';
 export * from './emailTemplates';
+export * from './paymentMethodLabel';
 export * from './hrefSafety';
 export * from './quoteMath';
 export * from './documentTerms';

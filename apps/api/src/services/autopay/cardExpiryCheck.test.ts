@@ -10,7 +10,7 @@ vi.mock('./renderBillingNotice',()=>({renderBillingNotice:h.render}));
 vi.mock('./consentText',()=>({buildAutopayDisclosure:h.disclosure}));
 import {checkExpiringAutopayCards,isCardExpiring} from './cardExpiryCheck';
 const methodId='11111111-1111-4111-8111-111111111111';
-const row={method:{id:methodId,orgId:'22222222-2222-4222-8222-222222222222',enrollmentId:'33333333-3333-4333-8333-333333333333',cardBrand:'visa',cardLast4:'1234',cardExpYear:2026,cardExpMonth:10},
+const row={method:{id:methodId,orgId:'22222222-2222-4222-8222-222222222222',enrollmentId:'33333333-3333-4333-8333-333333333333',type:'card',cardBrand:'visa',cardLast4:'1234',cardExpYear:2026,cardExpMonth:10},
   enrollment:{id:'33333333-3333-4333-8333-333333333333',generation:4,requestRecipientEmail:'billing@example.test'},
   org:{id:'22222222-2222-4222-8222-222222222222',partnerId:'44444444-4444-4444-8444-444444444444',name:'Example client',billingContact:{email:'billing@example.test'}}};
 describe('autopay card expiry',()=>{
@@ -25,7 +25,7 @@ describe('autopay card expiry',()=>{
     expect(await checkExpiringAutopayCards(new Date('2026-10-02T06:28:00Z'))).toEqual({enqueued:1});
     expect(h.mint).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({purpose:'enroll',generation:4,ttlDays:30}));
     expect(h.enqueue).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({kind:'card_expiring',dedupeKey:`card-expiring:${methodId}`,seq:1}));
-    expect(h.render).toHaveBeenCalledWith('card_expiring',expect.objectContaining({autopay:expect.objectContaining({vars:expect.objectContaining({expires_on:'2026-10-31'})})}));
+    expect(h.render).toHaveBeenCalledWith('card_expiring',expect.objectContaining({autopay:expect.objectContaining({vars:expect.objectContaining({expires_on:'2026-10-31',payment_method:'Visa card ending in 1234'})})}));
   });
   it('does not mint another token or send another message on a repeated daily run',async()=>{
     h.rows.push([row],[row.org],[row.enrollment],[row.method],[{id:'66666666-6666-4666-8666-666666666666'}]);

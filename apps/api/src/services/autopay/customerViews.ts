@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { and,eq,inArray,isNull } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import type { AutopayCustomerPage,AutopayPortalPage,AutopaySetupResult,BillingLinkPurpose } from '@breeze/shared';
+import { formatStripePaymentMethod } from './methodLabel';
 import { db,runOutsideDbContext,withSystemDbAccessContext } from '../../db';
 import { organizations,partners,portalBranding,orgAutopayEnrollments,billingLinkTokens } from '../../db/schema';
 import { autopaySetupAttempts } from '../../db/schema/autopaySetupAttempts';
@@ -122,9 +123,7 @@ export async function completeOwnedAutopaySetup(identity:AutopayIdentity,checkou
   let methodLabel:string|null=null;
   let feeText='No usable payment method confirmed.';
   const result=await completeAutopaySetup(identity.partnerId,{checkoutSessionId},method=>{
-    methodLabel=method.type==='card'
-      ?`${method.card?.brand??'Card'} ${method.card?.funding??'unknown'} ••${method.card?.last4??'----'}`
-      :`${method.us_bank_account?.bank_name??'Bank account'} ••${method.us_bank_account?.last4??'----'}`;
+    methodLabel=formatStripePaymentMethod(method);
     // Confirmation describes this setup's accepted terms, never newer settings.
     const snapshot=autopayConsentSnapshotSchema.safeParse(owned.consentSnapshot);
     feeText=verifiedFeeText(method.type,method.card?.funding??null,

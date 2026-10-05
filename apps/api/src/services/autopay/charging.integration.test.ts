@@ -1261,7 +1261,7 @@ it('re-notices with the current saved method, not the issued method snapshot', a
     const {renoticeSchedule}=await import('./invoiceControls');
     await renoticeSchedule(db,f.invoice.id);
   });
-  expect((await scheduleFor(f)).termsSnapshot).toMatchObject({last4:'9999',noticeSeq:2});
+  expect((await scheduleFor(f)).termsSnapshot).toMatchObject({last4:'9999',noticeSeq:2,methodLabel:'Visa credit card ending in 9999'});
 });
 it('orphan notice sweep retries missing contacts and canceled notices', async () => {
   const f=await fixture();
