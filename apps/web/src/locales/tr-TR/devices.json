@@ -2825,7 +2825,8 @@
     "submitStepUp": "Doğrula ve taşı",
     "submitting": "İşleniyor…",
     "cancel": "İptal",
-    "genericError": "Cihaz taşınamadı."
+    "genericError": "Cihaz taşınamadı.",
+    "timeout": "Taşıma beklenenden uzun sürüyor ve sunucuda hâlâ tamamlanıyor olabilir. Bir dakika bekleyin, ardından yeniden denemeden önce cihazın hangi kuruluşta olduğunu kontrol etmek için sayfayı yenileyin."
   },
   "networkDeviceDetailPage": {
     "approval": {

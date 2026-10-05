@@ -351,6 +351,25 @@ describe('MoveDeviceOrgDialog (device move-org step-up D5)', () => {
     expect(screen.queryByTestId('move-org-stepup-code')).not.toBeInTheDocument();
   });
 
+  it('on a client timeout says the move may still be completing instead of a bare failure (#7988)', async () => {
+    const onCompleted = vi.fn();
+    moveMock.mockRejectedValueOnce(new DOMException('Request timed out after 300s', 'TimeoutError'));
+    renderDialog({ onCompleted });
+    await chooseTarget();
+    await userEvent.click(screen.getByTestId('move-org-submit'));
+    await waitFor(() => expect(screen.getByText(/may still be completing/i)).toBeInTheDocument());
+    expect(screen.queryByText(/timed out after 300s/)).not.toBeInTheDocument();
+    expect(onCompleted).not.toHaveBeenCalled();
+  });
+
+  it.each([502, 504, 524])('treats a %i gateway timeout as possibly still completing (#7988)', async (status) => {
+    moveMock.mockRejectedValueOnce(Object.assign(new Error('Failed to move device'), { status }));
+    renderDialog();
+    await chooseTarget();
+    await userEvent.click(screen.getByTestId('move-org-submit'));
+    await waitFor(() => expect(screen.getByText(/may still be completing/i)).toBeInTheDocument());
+  });
+
   it('shows the no-other-org state when every other org is inactive', () => {
     orgState.organizations = [
       { id: 'o1', name: 'Current Org', status: 'active' },

@@ -2825,7 +2825,8 @@
     "submitStepUp": "Bestätigen und verschieben",
     "submitting": "Wird ausgeführt…",
     "cancel": "Abbrechen",
-    "genericError": "Das Gerät konnte nicht verschoben werden."
+    "genericError": "Das Gerät konnte nicht verschoben werden.",
+    "timeout": "Das Verschieben dauert länger als erwartet und wird auf dem Server möglicherweise noch abgeschlossen. Warten Sie eine Minute und laden Sie die Seite dann neu, um zu prüfen, in welcher Organisation sich das Gerät befindet, bevor Sie es erneut versuchen."
   },
   "networkDeviceDetailPage": {
     "approval": {

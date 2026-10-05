@@ -2825,7 +2825,8 @@
     "submitStepUp": "Verificar y mover",
     "submitting": "Procesando…",
     "cancel": "Cancelar",
-    "genericError": "No se pudo mover el dispositivo."
+    "genericError": "No se pudo mover el dispositivo.",
+    "timeout": "El traslado está tardando más de lo esperado y es posible que aún se esté completando en el servidor. Espera un minuto y luego actualiza la página para comprobar en qué organización está el dispositivo antes de volver a intentarlo."
   },
   "networkDeviceDetailPage": {
     "approval": {
