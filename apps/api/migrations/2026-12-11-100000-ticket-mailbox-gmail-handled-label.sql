@@ -32,5 +32,5 @@ ALTER TABLE ticket_mailbox_connections
   ADD CONSTRAINT ticket_mailbox_connections_gmail_handled_error_check
   CHECK (
     gmail_handled_error IS NULL
-    OR gmail_handled_error IN ('access_denied', 'rate_limited', 'unavailable', 'label_invalid', 'failed')
+    OR gmail_handled_error IN ('access_denied', 'rate_limited', 'unavailable', 'label_invalid', 'no_credential', 'failed')
   );

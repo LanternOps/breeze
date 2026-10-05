@@ -1513,6 +1513,7 @@
         "rate_limited": "Échec de l’étiquetage : limite de débit Gmail atteinte. Les nouveaux e-mails seront retentés.",
         "unavailable": "Échec de l’étiquetage : Gmail n’a pas répondu à temps. Les nouveaux e-mails seront retentés.",
         "label_invalid": "Échec de l’étiquetage : ce libellé ne peut pas être utilisé. Choisissez un autre nom.",
+        "no_credential": "Échec de l’étiquetage : la connexion Google Workspace de cette organisation est absente ou inactive. Reconnectez-la dans Intégrations.",
         "failed": "Échec de l’étiquetage. L’e-mail reste dans la boîte de réception."
       }
     }

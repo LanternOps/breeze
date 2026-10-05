@@ -1513,6 +1513,7 @@
         "rate_limited": "Etiketleme başarısız: Gmail hız sınırına ulaşıldı. Yeni postalar yeniden denenecek.",
         "unavailable": "Etiketleme başarısız: Gmail zamanında yanıt vermedi. Yeni postalar yeniden denenecek.",
         "label_invalid": "Etiketleme başarısız: bu etiket kullanılamaz. Farklı bir ad seçin.",
+        "no_credential": "Etiketleme başarısız: bu kuruluşun Google Workspace bağlantısı eksik veya etkin değil. Entegrasyonlar altında yeniden bağlayın.",
         "failed": "Etiketleme başarısız. Posta gelen kutusunda kalır."
       }
     }

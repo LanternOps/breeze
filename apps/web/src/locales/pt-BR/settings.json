@@ -1513,6 +1513,7 @@
         "rate_limited": "Falha ao marcar: limite de taxa do Gmail atingido. Novos e-mails serão tentados novamente.",
         "unavailable": "Falha ao marcar: o Gmail não respondeu a tempo. Novos e-mails serão tentados novamente.",
         "label_invalid": "Falha ao marcar: este marcador não pode ser usado. Escolha outro nome.",
+        "no_credential": "Falha ao marcar: a conexão do Google Workspace desta organização está ausente ou inativa. Reconecte-a em Integrações.",
         "failed": "Falha ao marcar. O e-mail continua na caixa de entrada."
       }
     }

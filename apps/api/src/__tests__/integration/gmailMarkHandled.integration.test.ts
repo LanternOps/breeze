@@ -142,10 +142,12 @@ describe('markIngestedGmailHandled (post-ticket, real DB)', () => {
     expect(gm.markGmailHandled).not.toHaveBeenCalled();
   });
 
-  it('reports no_credential when the Google credential is inactive', async () => {
-    const { email, generation } = await seed('created', { credentialStatus: 'inactive' });
+  it('reports no_credential when the Google credential is inactive, and records it on the connection', async () => {
+    const { email, generation, connId } = await seed('created', { credentialStatus: 'inactive' });
     expect(await markIngestedGmailHandled(email, generation, deps)).toBe('no_credential');
     expect(gm.markGmailHandled).not.toHaveBeenCalled();
+    expect((await readConn(connId)).gmailHandledError).toBe('no_credential');
+    expect(sentry.captureException).toHaveBeenCalledTimes(1);
   });
 
   it('holds no row lock and no open transaction while Gmail is called', async () => {

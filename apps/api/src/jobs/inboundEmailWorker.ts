@@ -68,7 +68,13 @@ export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promis
     // label/archive only mail that actually became a ticket. Never throws; runs
     // after the pipeline's transaction has closed and opens no transaction
     // across its Gmail calls.
-    await markIngestedGmailHandled(email, mailboxGeneration);
+    // The ticket already exists: nothing the marking step does may fail the job
+    // (a rejected job would be retried and re-run the pipeline).
+    await markIngestedGmailHandled(email, mailboxGeneration).catch((err: unknown) => {
+      console.warn('[gmailHandled] mark-handled threw; ignored', {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    });
     return;
   }
   // M365 attachments (#6688): Graph download + blob put happen HERE, before the

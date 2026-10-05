@@ -1513,6 +1513,7 @@
         "rate_limited": "Labeln fehlgeschlagen: Gmail-Ratenlimit erreicht. Neue E-Mails werden erneut versucht.",
         "unavailable": "Labeln fehlgeschlagen: Gmail hat nicht rechtzeitig geantwortet. Neue E-Mails werden erneut versucht.",
         "label_invalid": "Labeln fehlgeschlagen: Dieses Label kann nicht verwendet werden. Wählen Sie einen anderen Namen.",
+        "no_credential": "Labeln fehlgeschlagen: Die Google Workspace-Verbindung dieser Organisation fehlt oder ist inaktiv. Verbinden Sie sie unter Integrationen erneut.",
         "failed": "Labeln fehlgeschlagen. Die E-Mail bleibt im Posteingang."
       }
     }

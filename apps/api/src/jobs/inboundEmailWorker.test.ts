@@ -142,6 +142,14 @@ describe('inboundEmailWorker', () => {
     expect(markHandledMock).not.toHaveBeenCalled();
   });
 
+  it('gmail: a mark-handled failure never fails the (already ticketed) job', async () => {
+    markHandledMock.mockRejectedValueOnce(new Error('sentry exploded'));
+    const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m3' }), provider: 'gmail' as const };
+    const gen = { provider: 'gmail', connectionId: 'c-1', partnerId: 'p-1', tenantId: null, consentAttemptId: 'a-1' };
+    await expect(workerModule.handleInboundEmail({ data: { email, mailboxGeneration: gen } } as any)).resolves.toBeUndefined();
+    expect(processInboundEmailMock).toHaveBeenCalledTimes(1);
+  });
+
   it('non-gmail jobs never call mark-handled', async () => {
     await workerModule.handleInboundEmail({ data: { email: makeEmail() } } as any);
     expect(markHandledMock).not.toHaveBeenCalled();

@@ -1513,6 +1513,7 @@
         "rate_limited": "Labelling failed: Gmail rate limit reached. New mail will be tried again.",
         "unavailable": "Labelling failed: Gmail did not respond in time. New mail will be tried again.",
         "label_invalid": "Labelling failed: this label cannot be used. Choose a different label name.",
+        "no_credential": "Labelling failed: this organization's Google Workspace connection is missing or inactive. Reconnect it under Integrations.",
         "failed": "Labelling failed. The mail stays in the inbox."
       }
     }

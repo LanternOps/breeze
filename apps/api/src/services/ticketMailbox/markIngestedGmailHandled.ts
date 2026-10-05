@@ -44,7 +44,7 @@ export const HANDLED_LABEL_CACHE_TTL_MS = 10 * 60 * 1000;
 const ERROR_REFRESH_MS = 10 * 60 * 1000;
 
 /** Fixed failure codes stored on the connection (CHECK-constrained in the DB). */
-export const GMAIL_HANDLED_ERROR_CODES = ['access_denied', 'rate_limited', 'unavailable', 'label_invalid', 'failed'] as const;
+export const GMAIL_HANDLED_ERROR_CODES = ['access_denied', 'rate_limited', 'unavailable', 'label_invalid', 'no_credential', 'failed'] as const;
 export type GmailHandledErrorCode = typeof GMAIL_HANDLED_ERROR_CODES[number];
 
 /**
@@ -91,8 +91,29 @@ export function handledErrorCode(err: unknown): GmailHandledErrorCode {
   }
 }
 
+/** Sentry reporting must never be the thing that throws into the inbound job. */
+function safeCapture(err: unknown, code: string): void {
+  try {
+    captureException(err, undefined, { component: 'gmailHandled', code }, { fingerprint: ['gmail-handled', code] });
+  } catch {
+    // Reporting is best-effort.
+  }
+}
+
+/** Lookup failures cannot be recorded on the (unreachable) row, so they are
+ *  reported to Sentry at most once per connection per ERROR_REFRESH_MS. */
+const lookupFailureReportedAt = new Map<string, number>();
+function shouldReportLookupFailure(connectionId: string, at: number): boolean {
+  const last = lookupFailureReportedAt.get(connectionId);
+  if (last !== undefined && at - last < ERROR_REFRESH_MS) return false;
+  if (lookupFailureReportedAt.size > 10_000) lookupFailureReportedAt.clear();
+  lookupFailureReportedAt.set(connectionId, at);
+  return true;
+}
+
 type MarkContext =
-  | { kind: 'stale' | 'skipped' | 'not_ticketed' | 'no_credential' }
+  | { kind: 'stale' | 'skipped' | 'not_ticketed' }
+  | { kind: 'no_credential'; priorError: string | null }
   | {
     kind: 'ready';
     mailboxAddress: string;
@@ -166,7 +187,7 @@ export async function markIngestedGmailHandled(
         .from(googleWorkspaceConnections)
         .where(eq(googleWorkspaceConnections.orgId, live.orgId))
         .limit(1);
-      if (!cred || cred.status !== 'active') return { kind: 'no_credential' };
+      if (!cred || cred.status !== 'active') return { kind: 'no_credential', priorError: live.priorError };
       return {
         kind: 'ready',
         mailboxAddress: live.mailboxAddress,
@@ -202,9 +223,7 @@ export async function markIngestedGmailHandled(
       });
     }
     // Sentry once per change of failure code, not once per message.
-    if (priorError !== code) {
-      captureException(err, undefined, { component: 'gmailHandled', code }, { fingerprint: ['gmail-handled', code] });
-    }
+    if (priorError !== code) safeCapture(err, code);
   };
 
   const clearFailure = async () => {
@@ -237,10 +256,17 @@ export async function markIngestedGmailHandled(
       // credential replacement since the last attempt takes effect here.
       ctx = await loadContext(remaining);
     } catch (err) {
+      // The DB (or credential decryption) failed, so nothing can be recorded on
+      // the connection; report it, at most once per connection per window.
       console.warn('[gmailHandled] lookup failed; message stays in the inbox', {
         connectionId: generation.connectionId, err: err instanceof Error ? err.message : String(err),
       });
+      if (shouldReportLookupFailure(generation.connectionId, Date.now())) safeCapture(err, 'lookup_failed');
       return 'failed';
+    }
+    if (ctx.kind === 'no_credential') {
+      await recordFailure('no_credential', ctx.priorError, new Error('Google Workspace credential missing or inactive'));
+      return 'no_credential';
     }
     if (ctx.kind !== 'ready') return ctx.kind;
     priorError = ctx.priorError;

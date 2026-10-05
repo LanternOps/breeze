@@ -1513,6 +1513,7 @@
         "rate_limited": "Etichettatura non riuscita: raggiunto il limite di Gmail. La nuova posta verrà riprovata.",
         "unavailable": "Etichettatura non riuscita: Gmail non ha risposto in tempo. La nuova posta verrà riprovata.",
         "label_invalid": "Etichettatura non riuscita: questa etichetta non può essere usata. Scegli un altro nome.",
+        "no_credential": "Etichettatura non riuscita: la connessione Google Workspace di questa organizzazione manca o non è attiva. Ricollegala in Integrazioni.",
         "failed": "Etichettatura non riuscita. La posta resta nella posta in arrivo."
       }
     }

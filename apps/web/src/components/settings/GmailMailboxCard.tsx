@@ -28,7 +28,7 @@ interface GmailHandlingDTO {
   error: string | null;
 }
 
-const HANDLED_ERROR_CODES = new Set(['access_denied', 'rate_limited', 'unavailable', 'label_invalid', 'failed']);
+const HANDLED_ERROR_CODES = new Set(['access_denied', 'rate_limited', 'unavailable', 'label_invalid', 'no_credential', 'failed']);
 
 interface GmailMailboxConnectionDTO {
   id: string;

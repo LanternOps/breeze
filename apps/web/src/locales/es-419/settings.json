@@ -1513,6 +1513,7 @@
         "rate_limited": "Error al etiquetar: se alcanzó el límite de Gmail. Se volverá a intentar con el correo nuevo.",
         "unavailable": "Error al etiquetar: Gmail no respondió a tiempo. Se volverá a intentar con el correo nuevo.",
         "label_invalid": "Error al etiquetar: esta etiqueta no se puede usar. Elige otro nombre.",
+        "no_credential": "Error al etiquetar: la conexión de Google Workspace de esta organización falta o está inactiva. Vuelve a conectarla en Integraciones.",
         "failed": "Error al etiquetar. El correo permanece en la bandeja de entrada."
       }
     }
