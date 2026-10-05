@@ -160,6 +160,11 @@ vi.mock('../services/backupSnapshotIdReservations', () => ({
   reclaimAbandonedReservations: vi.fn(async () => 0),
   tombstoneRetiredReservations: vi.fn(async () => 0),
 }));
+// Org-erasure fences are proven against real Postgres
+// (backupErasureFence.integration.test.ts); here nothing is fenced.
+vi.mock('../services/backupErasureFence', () => ({
+  loadBackupErasureFences: vi.fn(async () => ({ snapshotIds: new Set<string>(), objectKeys: new Set<string>() })),
+}));
 
 // `fs.realpath` fault injection for coarseStorageSignatureFromKey (review
 // round 2 HOLD item): when `realpathFailWith` is set, the module under test's

@@ -457,13 +457,21 @@ describe('storage GC racing an erasure', () => {
     await insertSnapshot(a, 'RACE-A1');
 
     let erased = false;
+    let hookError: unknown = null;
     __backupGcTestHooks.beforeIdentityState = async (identity) => {
       if (identity.orgId !== a.orgId || erased) return;
       erased = true;
-      await cascadeDeleteOrg(a.orgId, PERFORMED_BY);
+      try {
+        await cascadeDeleteOrg(a.orgId, PERFORMED_BY);
+      } catch (err) {
+        hookError = err;
+        throw err;
+      }
     };
     await sweepUnreferencedBackupObjects();
     expect(erased).toBe(true);
+    expect(hookError).toBeNull();
+    expect(await exec(sql`SELECT id FROM organizations WHERE id = ${a.orgId}`)).toHaveLength(0);
 
     const remaining = await listAll(root);
     for (const key of aKeys) expect(remaining).toContain(key);
@@ -484,13 +492,21 @@ describe('storage GC racing an erasure', () => {
     `);
 
     let erased = false;
+    let hookError: unknown = null;
     __backupGcTestHooks.afterFenceRead = async (identity) => {
       if (identity.orgId !== a.orgId || erased) return;
       erased = true;
-      await cascadeDeleteOrg(a.orgId, PERFORMED_BY);
+      try {
+        await cascadeDeleteOrg(a.orgId, PERFORMED_BY);
+      } catch (err) {
+        hookError = err;
+        throw err;
+      }
     };
     await sweepUnreferencedBackupObjects();
     expect(erased).toBe(true);
+    expect(hookError).toBeNull();
+    expect(await exec(sql`SELECT id FROM organizations WHERE id = ${a.orgId}`)).toHaveLength(0);
 
     const remaining = await listAll(root);
     for (const key of retiredKeys) expect(remaining).toContain(key);

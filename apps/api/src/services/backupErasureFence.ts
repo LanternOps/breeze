@@ -33,8 +33,7 @@
 import { inArray, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { backupErasureTargets, type BackupErasureTargetSource } from '../db/schema/backupErasureFences';
-import { normalizeStorageIdentity } from './backupStorageIdentity';
-import { asRecord, getStringValue } from './recoveryBootstrap';
+import { asRecord, getStringValue, normalizeStorageIdentity } from './backupStorageIdentity';
 
 function rowsOf<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];

@@ -15,7 +15,6 @@
  */
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { resolveBackupProtectionForDevice } from './featureConfigResolver';
 
 export type BackupLegalHoldSource = 'snapshot' | 'backup_policy' | 'configuration_policy';
 
@@ -73,6 +72,9 @@ export async function findPolicyBackupLegalHoldInContext(
 
   // Exact: the hold applies only where the policy is effective for a device
   // (assignment level/target, role/OS filters, hierarchy precedence).
+  // Loaded lazily: the resolver pulls in the whole configuration-policy graph,
+  // which tenantCascade (imported by many lightweight paths) should not carry.
+  const { resolveBackupProtectionForDevice } = await import('./featureConfigResolver');
   const devices = rowsOf<{ id: string }>(await dbModule.db.execute(sql`
     SELECT id FROM devices WHERE org_id = ${orgId}::uuid
   `));

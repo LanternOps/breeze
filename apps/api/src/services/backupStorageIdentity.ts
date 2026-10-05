@@ -7,7 +7,20 @@
  * job module.
  */
 import { resolve as resolveLocalPath } from 'node:path';
-import { getStringValue } from './recoveryBootstrap';
+
+// Local copies of recoveryBootstrap's two record helpers: that module pulls in
+// the whole schema graph, and this one is imported by the org-erasure path.
+export function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {};
+}
+
+export function getStringValue(record: Record<string, unknown> | null, key: string): string | null {
+  if (!record) return null;
+  const value = record[key];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
 
 // AWS's own default S3 endpoints. An endpoint that's EXPLICITLY the default
 // AWS endpoint must canonicalize to the same identity as a blank/omitted

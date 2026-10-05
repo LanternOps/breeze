@@ -211,6 +211,16 @@ export async function ensureAppRole(): Promise<boolean> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='backup_snapshot_id_tombstones') THEN
           REVOKE UPDATE, DELETE, TRUNCATE ON TABLE backup_snapshot_id_tombstones FROM breeze_app;
         END IF;
+        -- Org-erasure backup fences: the record of what an erased org's backup
+        -- storage was. Storage GC never reclaims a fenced prefix/key, so a
+        -- rewrite or removal here would re-expose those objects to reclaim.
+        -- Append-only for the app role (services/backupErasureFence.ts).
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='backup_erasure_manifests') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE backup_erasure_manifests FROM breeze_app;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='backup_erasure_targets') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE backup_erasure_targets FROM breeze_app;
+        END IF;
         -- #4371 — WRITER-PATH MATRIX for the six tables re-revoked below.
         --
         -- The original bug: pam_actuation_results shipped a migration REVOKE
