@@ -78,6 +78,24 @@ const negativeCacheCounter: Counter<CounterLabels> =
     registers: [metricsRegistry],
   });
 
+// Pre-seed every series at 0 so an alert/rate() on a series that has not
+// fired yet sees a zero rather than an absent series.
+const ALL_REJECTIONS: readonly AgentAuthTerminalRejection[] = [
+  'device_not_found',
+  'token_suspended',
+  'token_mismatch',
+  're_enrollment_required',
+  'decommissioned',
+  'tenant_denied',
+];
+for (const surface of ['rest', 'ws'] as const) {
+  negativeCacheCounter.inc({ surface, result: 'miss', rejection: 'none' }, 0);
+  for (const rejection of ALL_REJECTIONS) {
+    negativeCacheCounter.inc({ surface, result: 'hit', rejection }, 0);
+    negativeCacheCounter.inc({ surface, result: 'store', rejection }, 0);
+  }
+}
+
 interface Entry {
   rejection: AgentAuthTerminalRejection;
   expiresAt: number;
@@ -98,8 +116,9 @@ export class AgentAuthNegativeCache {
   constructor(options: AgentAuthNegativeCacheOptions) {
     this.ttlMs = options.ttlMs;
     this.maxEntries = Math.max(1, options.maxEntries);
-    // Read Date.now at call time (not a captured reference) so fake timers apply.
-    this.now = options.now ?? (() => Date.now());
+    // Monotonic: a wall-clock step backwards (NTP, VM resume) must not stretch
+    // an entry's life past the TTL. Read at call time so fake timers apply.
+    this.now = options.now ?? (() => performance.now());
   }
 
   get size(): number {

@@ -957,9 +957,11 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // not keep authenticating its agent fleet. The device-level checks above
   // (token suspension, decommission, quarantine) don't cover the org/partner
   // lifecycle; mirror the API-key path (apiKeyAuth → getActiveOrgTenant) and
-  // fail closed. Runs after the rate limiters so a flood from an inactive
-  // tenant can't drive uncached lookups, and returns the same opaque 401 as a
-  // stale token so the agent cannot distinguish suspension from a bad token.
+  // fail closed. Runs after the rate limiters, and returns the same opaque 401
+  // as a stale token so the agent cannot distinguish suspension from a bad
+  // token. A denial here is negative-cached (#8050), so a repeat from the same
+  // credential within the TTL is refused at the top of this middleware without
+  // reaching the device lookup, the limiters or this gate again.
   //
   // #2774 — an `offboarding` tenant resolves to 'draining': still
   // authenticated (that's the whole point — self_uninstall must be

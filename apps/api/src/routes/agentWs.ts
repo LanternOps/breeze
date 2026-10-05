@@ -1161,8 +1161,8 @@ export async function validateAgentToken(
   }
 
   if (!device.agentTokenHash && !device.watchdogTokenHash) {
-    // Logged on the first rejection only; repeats within the cache TTL are
-    // replayed above without reaching here.
+    // Logged once per negative-cache TTL per (agentId, token): repeats within
+    // the TTL are replayed above without reaching here.
     console.warn(
       `[agentWs] Device ${agentId} has no token hash — predates hash migration; signaling re_enrollment_required`
     );

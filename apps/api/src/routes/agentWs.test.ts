@@ -1343,6 +1343,38 @@ describe('validateAgentToken — negative cache for terminal rejections (#8050)'
     warnSpy.mockRestore();
   });
 
+  it('the upgrade route replays the identical opaque 401 body with no second lookup', async () => {
+    armDeviceSelect(undefined);
+    const app = createAgentWsRoutes((() => vi.fn()) as any);
+
+    for (let i = 0; i < 2; i++) {
+      const res = await app.request('/agent-1/ws', { headers: { Authorization: `Bearer ${TOKEN}` } });
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    }
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+  });
+
+  it('a cached rejection expires after the TTL and a reinstated tenant is admitted', async () => {
+    vi.useFakeTimers();
+    try {
+      armDeviceSelect(deviceRow);
+      vi.mocked(getAgentTenantState).mockResolvedValue(null);
+      expect(await validateAgentToken('agent-1', TOKEN)).toEqual({ ok: false, reason: 'unauthorized' });
+
+      vi.mocked(getAgentTenantState).mockResolvedValue('active');
+      vi.advanceTimersByTime(59_999);
+      expect(await validateAgentToken('agent-1', TOKEN)).toEqual({ ok: false, reason: 'unauthorized' });
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(1);
+      expect((await validateAgentToken('agent-1', TOKEN)).ok).toBe(true);
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a cached rejection for one token does not affect a different token for the same agentId', async () => {
     armDeviceSelect(deviceRow);
 

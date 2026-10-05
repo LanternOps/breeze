@@ -240,33 +240,41 @@ describe('agentAuthMiddleware negative cache (#8050) — terminal rejections are
     rows: () => unknown[];
     setup?: () => void;
     status: number;
+    // Pinned to the pre-#8050 wire shape, so the shared builder cannot drift:
+    // a replay-equals-first check alone would be circular.
+    message: string;
   }> = [
-    { name: 'no device row', rows: () => [], status: 401 },
+    { name: 'no device row', rows: () => [], status: 401, message: 'Invalid agent credentials' },
     {
       name: 'token suspended',
       rows: () => [makeDevice({ agentTokenSuspendedAt: new Date('2026-01-01T00:00:00Z') })],
       status: 401,
+      message: 'Invalid agent credentials',
     },
     {
       name: 'token-hash mismatch',
       rows: () => [makeDevice({ agentTokenHash: sha('brz_someone_else') })],
       status: 401,
+      message: 'Invalid agent credentials',
     },
     {
       name: 're-enrollment required (no token hashes)',
       rows: () => [makeDevice({ agentTokenHash: null, watchdogTokenHash: null })],
       status: 401,
+      message: 'Re-enrollment required: device predates token-hash migration',
     },
     {
       name: 'decommissioned and not draining',
       rows: () => [makeDevice({ status: 'decommissioned' })],
       status: 403,
+      message: 'Device has been decommissioned',
     },
     {
       name: 'tenant-state denied',
       rows: () => [makeDevice()],
       setup: () => vi.mocked(getAgentTenantState).mockResolvedValue(null),
       status: 401,
+      message: 'Invalid agent credentials',
     },
   ];
 
@@ -277,6 +285,16 @@ describe('agentAuthMiddleware negative cache (#8050) — terminal rejections are
 
       const first = await runRejected();
       expect(first.status).toBe(tc.status);
+      expect(first.resStatus).toBe(tc.status);
+      expect(first.message).toBe(tc.message);
+      if (tc.name.startsWith('re-enrollment')) {
+        expect(JSON.parse(first.body)).toEqual({
+          error: 'Re-enrollment required',
+          code: ERROR_CODES.RE_ENROLLMENT_REQUIRED,
+        });
+      } else {
+        expect(first.body).toBe(tc.message);
+      }
       const afterFirst = dbWork();
       expect(afterFirst.select).toBe(1);
 
@@ -305,7 +323,10 @@ describe('agentAuthMiddleware negative cache (#8050) — terminal rejections are
     vi.mocked(isDeviceUninstallDraining).mockResolvedValue(true);
     // Drain admits heartbeat; a non-allowed path is refused 403 (drain refusal).
     const ctxPath = '/api/v1/agents/agent-1/inventory';
-    await agentAuthMiddleware(createContext({ token: VALID_TOKEN, path: ctxPath }), vi.fn());
+    const c1 = createContext({ token: VALID_TOKEN, path: ctxPath });
+    await agentAuthMiddleware(c1, vi.fn());
+    // The drain refusal, not the decommissioned auth 403.
+    expect(c1._getResponse()).toEqual({ status: 403, body: { error: 'device_uninstall_draining' } });
     await agentAuthMiddleware(createContext({ token: VALID_TOKEN, path: ctxPath }), vi.fn());
     expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
     expect(vi.mocked(isDeviceUninstallDraining)).toHaveBeenCalledTimes(2);
