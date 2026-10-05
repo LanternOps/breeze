@@ -551,3 +551,12 @@ it('provides a money-safe confirmation preview capped to the noticed principal p
  const f=fixture({noticeSentAt:new Date('2020-01-01'),termsSnapshot:{...schedule.termsSnapshot,principal:'20.00',feeAmount:'1.00',methodLabel:'Visa ••4242'}});
  expect((await getInvoiceAutopayView(f.tx,f.inv as any))?.chargePreview).toEqual({amount:'11.00',currency:'USD',methodLabel:'Visa ••4242'});
 });
+
+// 2a-4: a not_needed schedule carries the issuance placeholder, never collection terms.
+it.each(['not_needed', 'cancelled', 'excluded_by_msp'])('projects a %s schedule with a placeholder snapshot without throwing', async state => {
+  const f = fixture({ state, eligible: false, ineligibleReason: 'method_not_usable', stateReason: 'method_not_usable',
+    noticeOutboxId: null, noticeSentAt: null, termsSnapshot: { issuedAt: '2026-10-01T00:00:00Z', noticeSeq: 0 } });
+  expect(await getInvoiceAutopayView(f.tx, f.inv as any)).toMatchObject({
+    state, reason: 'method_not_usable', canChargeNow: false, chargePreview: null,
+  });
+});
