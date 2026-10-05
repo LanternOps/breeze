@@ -898,7 +898,7 @@ const mergeContacts: CustomMergeExecutor = async (loser, survivor) => {
 // backup_configs — `backup_configs_org_default_uq ON backup_configs(org_id)
 // WHERE is_default`. Clear the loser's default flag when the survivor
 // already has one, then repoint. NEVER delete: the row carries org-owned
-// storage credentials (provider_config / encryption_key) and backup_chains,
+// storage credentials (provider_config) and backup_chains,
 // backup_snapshots and restore_jobs all reference it.
 // ---------------------------------------------------------------------------
 const mergeBackupConfigs: CustomMergeExecutor = async (loser, survivor) => {
