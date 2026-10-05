@@ -171,6 +171,7 @@ const STEP_UP_OPERATIONS = [
   'ai_script_lane_grant',
   'ai_partner_script_ceiling_grant',
   'topology_arm',
+  'backup_unattested_restore',
 ] as const satisfies readonly Exclude<
   StepUpOperation,
   'enroll_first_factor' | 'sso_reauth_manage_factor' | 'approval_decide'
@@ -261,7 +262,19 @@ export const topologyArmStepUpResource = z.object({
   action: z.enum(['arm_policy', 'arm_telemetry']),
   subjectId: z.string().uuid(),
 });
-const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource]);
+// Unattested restore binding — mirrors unattestedRestoreResourceDigest
+// (services/mfaStepUpGrant.ts). commandType is limited to the privileged
+// restore types (services/backupRestoreGate.ts): read-only validation never
+// needs a step-up, so a grant for it could never be spent.
+export const unattestedRestoreStepUpResource = z.object({
+  snapshotId: z.string().uuid(),
+  targetDeviceId: z.string().uuid(),
+  commandType: z.enum([
+    'backup_restore', 'mssql_restore', 'hyperv_restore', 'vm_restore_from_backup', 'vm_instant_boot',
+    'bmr_recover', 'bare_metal_rebuild',
+  ]),
+});
+const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource]);
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
   z.object({
     method: z.literal('totp'),

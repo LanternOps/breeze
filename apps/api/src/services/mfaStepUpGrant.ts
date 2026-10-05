@@ -108,7 +108,14 @@ export type StepUpOperation =
   // execution on customer machines to a stored frozen actor. Bound by
   // resourceDigest to the exact { siteId, action, subjectId } the operator saw,
   // so a grant for one policy/target can never arm another.
-  | 'topology_arm';
+  | 'topology_arm'
+  // Restoring a backup that has no usable integrity attestation (written
+  // before attestations existed, or a device-local backup restored onto
+  // another device). Bound by resourceDigest to exactly one { snapshotDbId,
+  // targetDeviceId, commandType }; consumed when the restore is requested,
+  // and recorded as a durable authorization with its audit event
+  // (services/backupRestoreAuthorization.ts).
+  | 'backup_unattested_restore';
 
 export interface StepUpGrant {
   id: string;
@@ -363,6 +370,24 @@ export function topologyArmResourceDigest(input: {
     action: input.action,
     siteId: input.siteId.toLowerCase(),
     subjectId: input.subjectId.toLowerCase(),
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Unattested-restore step-up binding: one snapshot, one target device, one
+ * restore command type. Keys in fixed order, ids lower-cased, so the mint
+ * route and every restore route produce byte-identical input.
+ */
+export function unattestedRestoreResourceDigest(input: {
+  snapshotDbId: string;
+  targetDeviceId: string;
+  commandType: string;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    commandType: input.commandType,
+    snapshotDbId: input.snapshotDbId.toLowerCase(),
+    targetDeviceId: input.targetDeviceId.toLowerCase(),
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }

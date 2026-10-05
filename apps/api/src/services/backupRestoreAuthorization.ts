@@ -16,31 +16,21 @@
  * row up by that binding and compare its tuple; a payload that merely claims
  * an override is never trusted.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { eq, or } from 'drizzle-orm';
 import { db, hasDbAccessContext, withDbTransaction } from '../db';
 import { auditLogs } from '../db/schema/audit';
 import { backupRestoreAuthorizations } from '../db/schema/backupRestoreAuthorizations';
 import type { RestoreAuthorizationReason } from './backupRestoreGate';
+import { unattestedRestoreResourceDigest } from './mfaStepUpGrant';
 
 export const UNATTESTED_RESTORE_AUDIT_ACTION = 'backup.restore.unattested_override';
 
 /** One restore an authorization covers. */
 export type RestoreTuple = { snapshotDbId: string; targetDeviceId: string; commandType: string };
 
-/**
- * Canonical step-up resource digest for one unattested restore. The mint route
- * and every restore route must produce byte-identical input for the same
- * intent: keys in fixed order, ids lower-cased.
- */
-export function unattestedRestoreResourceDigest(t: RestoreTuple): `sha256:${string}` {
-  const canonical = JSON.stringify({
-    commandType: t.commandType,
-    snapshotDbId: t.snapshotDbId.toLowerCase(),
-    targetDeviceId: t.targetDeviceId.toLowerCase(),
-  });
-  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
-}
+/** Canonical step-up resource digest for one unattested restore (shared with the step-up mint route). */
+export { unattestedRestoreResourceDigest };
 
 export type RestoreAuthorizationBinding =
   | { commandId: string }
