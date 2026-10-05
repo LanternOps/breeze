@@ -77,7 +77,7 @@ vi.mock('../../db', () => {
     try { return await fn(); } finally { h.depth--; }
   } };
 });
-import { collectionNoticeAllows, reserveCollection, paymentIntentCreateParams, outcomeState, resumeCollectionAttempt, applyAttemptOutcome, loadAttemptForReconciliation, attemptCollection, readProviderFailure, runAutopayCollection } from './collectionEngine';
+import { collectionNoticeAllows, reserveCollection, paymentIntentCreateParams, paymentIntentDescription, outcomeState, resumeCollectionAttempt, applyAttemptOutcome, loadAttemptForReconciliation, attemptCollection, readProviderFailure, runAutopayCollection } from './collectionEngine';
 import { reconcilePendingControls, requestInvoiceControl } from './collectionControl';
 import { db, withSystemDbAccessContext } from '../../db';
 import { computeCollectOn } from './scheduler';
@@ -376,6 +376,20 @@ it('creates unconfirmed with principal and fee metadata, never confirms before m
   expect(params).toMatchObject({ amount: 10250, currency: 'usd', customer: 'cus_test',
     payment_method: 'pm_test', confirm: false, metadata: { principal_minor: '10000', fee_minor: '250' } });
   expect(params).not.toHaveProperty('off_session');
+});
+it('describes the PaymentIntent by invoice number and MSP, keeping metadata as is', () => {
+  const attempt = { id: '10000000-0000-4000-8000-000000000001', invoiceId: '20000000-0000-4000-8000-000000000001',
+    orgId: '30000000-0000-4000-8000-000000000001', principalAmount: '100.00', feeAmount: '0.00', currency: 'USD' } as never;
+  const params = paymentIntentCreateParams(attempt, 'cus_test', 'pm_test', '40000000-0000-4000-8000-000000000001', 'us_bank_account',
+    paymentIntentDescription('INV-2026-0008', 'Example MSP'));
+  expect(params.description).toBe('Invoice INV-2026-0008 · Example MSP');
+  expect(params.metadata).toEqual({ invoice_id: '20000000-0000-4000-8000-000000000001', org_id: '30000000-0000-4000-8000-000000000001',
+    partner_id: '40000000-0000-4000-8000-000000000001', attempt_id: '10000000-0000-4000-8000-000000000001', principal_minor: '10000', fee_minor: '0' });
+  expect(params).not.toHaveProperty('statement_descriptor');
+  expect(params).not.toHaveProperty('statement_descriptor_suffix');
+  expect(paymentIntentDescription(null, 'Example MSP')).toBe('Invoice · Example MSP');
+  expect(paymentIntentDescription('INV-1', null)).toBe('Invoice INV-1');
+  expect(paymentIntentDescription('INV-1', 'x'.repeat(2000))!.length).toBeLessThanOrEqual(500);
 });
 it.each([
   ['processing', null, 'processing'], ['requires_action', null, 'requires_action'],

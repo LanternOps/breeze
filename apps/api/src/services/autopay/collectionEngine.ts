@@ -14,7 +14,7 @@ import { requestInvoiceSessionRevocation } from '../stripeSessionRevocation';
 import { collectionFenced, finalizeInvoiceControl, isControllableSchedule, pendingInvoiceControl } from './collectionControl';
 import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { invoices, invoiceLines, contracts, organizations, orgAutopayEnrollments, orgPaymentMethods,
+import { invoices, invoiceLines, contracts, organizations, partners, orgAutopayEnrollments, orgPaymentMethods,
   invoiceAutopaySchedules, invoiceCollectionAttempts, invoiceStripePayments, billingNoticeOutbox, billingLinkTokens } from '../../db/schema';
 import { RESERVING_COLLECTION_ATTEMPT_STATES, type CollectionAttemptInitiator } from '@breeze/shared';
 import { toMinorUnits, fromMinorUnits } from '../stripeMoney';
@@ -280,12 +280,21 @@ export async function reserveCollection(input: CollectionInput)
   }, 'autopay.reserve');
 }
 
+/** Human-readable PaymentIntent description for the MSP's Stripe dashboard. No statement
+ * descriptor suffix is set: on a connected account it joins that account's own prefix
+ * under a 22-character limit we cannot see, and a rejected create would block collection. */
+export function paymentIntentDescription(invoiceNumber: string | null, partnerName: string | null): string {
+  const text = [`Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''}`, partnerName?.replace(/\s+/g, ' ').trim()].filter(Boolean).join(' · ');
+  return Array.from(text).slice(0, 500).join('');
+}
 export function paymentIntentCreateParams(attempt: typeof invoiceCollectionAttempts.$inferSelect,
-  customer: string, method: string, partnerId: string, methodType: 'card' | 'us_bank_account'): Stripe.PaymentIntentCreateParams {
+  customer: string, method: string, partnerId: string, methodType: 'card' | 'us_bank_account',
+  description?: string): Stripe.PaymentIntentCreateParams {
   const principal = toMinorUnits(attempt.principalAmount, attempt.currency);
   const fee = toMinorUnits(attempt.feeAmount, attempt.currency);
   return { amount: principal + fee, currency: attempt.currency.toLowerCase(), customer,
     payment_method: method, payment_method_types: [methodType], confirm: false,
+    ...(description ? { description } : {}),
     metadata: { invoice_id: attempt.invoiceId, org_id: attempt.orgId, partner_id: partnerId,
       attempt_id: attempt.id, principal_minor: String(principal), fee_minor: String(fee) } };
 }
@@ -687,10 +696,12 @@ export async function resumeCollectionAttempt(attemptId: string, cancelOnly = fa
     const { stripe } = await withSystemDbAccessContext(() => getPartnerStripeClient(data.invoice.partnerId, {
       reconciliationAccountId: accountId, reason: 'autopay_recovery',
     }));
-    const settings = await withSystemDbAccessContext(() => resolveBillingPaymentSettings(db,
-      { partnerId: data.invoice.partnerId, orgId: data.invoice.orgId }));
+    const { settings, partnerName } = await withSystemDbAccessContext(async () => ({
+      settings: await resolveBillingPaymentSettings(db, { partnerId: data.invoice.partnerId, orgId: data.invoice.orgId }),
+      partnerName: (await db.select({ name: partners.name }).from(partners).where(eq(partners.id, data.invoice.partnerId)).limit(1))[0]?.name ?? null,
+    }));
     const params = paymentIntentCreateParams(data.attempt, customerId,
-      paymentMethodId, data.invoice.partnerId, methodType);
+      paymentMethodId, data.invoice.partnerId, methodType, paymentIntentDescription(data.invoice.invoiceNumber, partnerName));
     // Unscheduled attempts have no notice snapshot. Bind their create-time authority to the PI.
     if (!data.attempt.scheduleId) Object.assign(params.metadata!, {
       authority_generation: String(capture?.setup.generation ?? data.enrollment.generation), authority_customer: customerId,

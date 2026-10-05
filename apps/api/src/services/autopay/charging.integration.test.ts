@@ -1976,3 +1976,13 @@ it.each(['hard_decline','released_3ds'] as const)('marks the mapping failed once
  const [mapping]=await withSystemDbAccessContext(()=>db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.id,attempt!.invoiceStripePaymentId!)));
  expect(mapping).toMatchObject({status:'failed',invoicePaymentId:null});
 });
+
+it.each(['scheduler','bank_pay'] as const)('the %s PaymentIntent names the invoice and the MSP in its description',async path=>{
+ const f=await fixture();
+ if(path==='scheduler')await attemptCollection(inputFor(f));
+ else { const a=await bankSetup(f,'described'); serveBank([a]);
+  await collectAfterBankSetup({invoiceId:f.invoice.id,orgId:f.org.id,setupSessionId:a.session.id!}); }
+ expect(provider.create).toHaveBeenCalledOnce();
+ expect(provider.create.mock.calls[0]![0]).toMatchObject({description:`Invoice ${f.invoice.invoiceNumber} · ${f.partner.name}`,
+  metadata:expect.objectContaining({invoice_id:f.invoice.id,attempt_id:expect.any(String)})});
+});
