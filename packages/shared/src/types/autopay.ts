@@ -187,9 +187,9 @@ export type AutopayConfirmationRelease={outcome:'released'|'processing'|'paid'|'
  * matched a real link (its holder received it by email); never for an unknown token. */
 export const AUTOPAY_LINK_FAILURE_CODES=['link_invalid','link_expired','link_replaced','link_used','autopay_not_enabled'] as const;
 export type AutopayLinkFailureCode=(typeof AUTOPAY_LINK_FAILURE_CODES)[number];
-export interface AutopayLinkFailure extends Partial<AutopayBranding> {
- error:string;code:AutopayLinkFailureCode;enrollmentStatus?:AutopayEnrollmentStatus|null;
-}
+export interface AutopayLinkFailureDetails extends Partial<AutopayBranding> { enrollmentStatus?:AutopayEnrollmentStatus|null }
+/** Error body: details ride under `data` (the portal client's errorData), like QUOTE_SUPERSEDED's branding. */
+export interface AutopayLinkFailure { error:string;code:AutopayLinkFailureCode;data?:AutopayLinkFailureDetails }
 /** GET /autopay/public/:token/stop */
 export interface AutopayStopView extends AutopayBranding {
  orgName:string;processingWarning:string;enrollment:AutopayEnrollmentView|null;method:AutopayMethodView|null;openInvoiceCount:number;

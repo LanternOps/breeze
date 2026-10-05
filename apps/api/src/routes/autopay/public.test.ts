@@ -16,7 +16,7 @@ import { publicAutopayRoutes } from './public';
 const app=new Hono().route('/autopay/public',publicAutopayRoutes);
 const identity={orgId:'11111111-1111-4111-8111-111111111111',partnerId:'22222222-2222-4222-8222-222222222222',tokenId:'33333333-3333-4333-8333-333333333333',enrollmentId:'44444444-4444-4444-8444-444444444444',generation:1};
 const headers={'content-type':'application/json'};
-beforeEach(()=>{vi.clearAllMocks();h.describe.mockResolvedValue({error:'This link has expired.',code:'link_expired',partnerName:'Example MSP'});h.stopView.mockResolvedValue({partnerName:'Example MSP',enrollment:{status:'active'},openInvoiceCount:1});h.branding.mockResolvedValue({partnerName:'Example MSP',logoUrl:null,supportEmail:'billing@msp.example'});h.skipView.mockResolvedValue({state:'scheduled',skippable:true,invoiceNumber:'INV-1'});h.skip.mockResolvedValue({status:'skipped'});h.identity.mockResolvedValue(identity);h.returnIdentity.mockResolvedValue(identity);h.stop.mockResolvedValue(undefined);h.stopToken.mockImplementation((_token:string,fn:()=>unknown)=>fn());h.page.mockResolvedValue({contactEmail:'billing@example.test',partnerName:'Example MSP'});h.create.mockResolvedValue({url:'https://checkout.stripe.com/c/test'});h.complete.mockResolvedValue({outcome:'activated',orgId:identity.orgId,methodLabel:'Visa debit ••1234',feeText:'No fee applies.'});});
+beforeEach(()=>{vi.clearAllMocks();h.describe.mockResolvedValue({error:'This link has expired.',code:'link_expired',data:{partnerName:'Example MSP'}});h.stopView.mockResolvedValue({partnerName:'Example MSP',enrollment:{status:'active'},openInvoiceCount:1});h.branding.mockResolvedValue({partnerName:'Example MSP',logoUrl:null,supportEmail:'billing@msp.example'});h.skipView.mockResolvedValue({state:'scheduled',skippable:true,invoiceNumber:'INV-1'});h.skip.mockResolvedValue({status:'skipped'});h.identity.mockResolvedValue(identity);h.returnIdentity.mockResolvedValue(identity);h.stop.mockResolvedValue(undefined);h.stopToken.mockImplementation((_token:string,fn:()=>unknown)=>fn());h.page.mockResolvedValue({contactEmail:'billing@example.test',partnerName:'Example MSP'});h.create.mockResolvedValue({url:'https://checkout.stripe.com/c/test'});h.complete.mockResolvedValue({outcome:'activated',orgId:identity.orgId,methodLabel:'Visa debit ••1234',feeText:'No fee applies.'});});
 describe('public autopay token boundaries',()=>{
   it('GET setup and stop never create sessions or cancel enrollment',async()=>{
     expect((await app.request('/autopay/public/token')).status).toBe(200);
@@ -115,7 +115,7 @@ describe('client pages are told why a link cannot be used',()=>{
     h.identity.mockResolvedValue(null);
     const res=await app.request('/autopay/public'+path);
     expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({error:'This link has expired.',code:'link_expired',partnerName:'Example MSP'});
+    expect(await res.json()).toEqual({error:'This link has expired.',code:'link_expired',data:{partnerName:'Example MSP'}});
     expect(h.describe).toHaveBeenCalledWith('token',purpose);
   });
   it('mutations keep the bare refusal and never describe the link',async()=>{
@@ -126,7 +126,7 @@ describe('client pages are told why a link cannot be used',()=>{
   it('setup while switched off names the MSP so the page can say who to contact',async()=>{
     const res=await app.request('/autopay/public/token',{headers:{'x-disabled':'1'}});
     expect(res.status).toBe(404);
-    expect(await res.json()).toMatchObject({code:'autopay_not_enabled',partnerName:'Example MSP',supportEmail:'billing@msp.example'});
+    expect(await res.json()).toMatchObject({code:'autopay_not_enabled',data:{partnerName:'Example MSP',supportEmail:'billing@msp.example'}});
     expect(h.branding).toHaveBeenCalledWith(expect.anything(),{orgId:identity.orgId,partnerId:identity.partnerId});
   });
   it('the stop page reads the stop view (method, status, open invoices)',async()=>{

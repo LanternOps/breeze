@@ -105,8 +105,8 @@ export async function describeAutopayLinkFailure(token:string,purpose:BillingLin
       :failure==='revoked'?(enrollment?.status==='cancelled'?'link_used':'link_replaced')
       :'link_invalid';
     if(code==='link_invalid')return invalid;
-    return {error:LINK_FAILURE_TEXT[code],code,...await loadAutopayBranding(db,{orgId:org.id,partnerId:org.partnerId}),
-      enrollmentStatus:enrollment?.status??null};
+    return {error:LINK_FAILURE_TEXT[code],code,data:{...await loadAutopayBranding(db,{orgId:org.id,partnerId:org.partnerId}),
+      enrollmentStatus:enrollment?.status??null}};
   });
 }
 /** The public stop page: who is asking, what is being removed and what stays open. */

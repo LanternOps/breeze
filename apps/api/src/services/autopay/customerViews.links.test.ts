@@ -46,13 +46,14 @@ describe('describeAutopayLinkFailure', () => {
     ['a matched link whose generation moved on', { failure: null, row: { ...link, generation: 1 } }, { code: 'link_replaced' }],
   ] as const)('%s', async (_label, inspected, expected) => {
     h.inspect.mockResolvedValue({ row: link, ...inspected });
-    expect(await describeAutopayLinkFailure('token', 'enroll')).toMatchObject({ ...expected, ...branding });
+    const { enrollmentStatus, ...code } = expected as { code: string; enrollmentStatus?: string };
+    expect(await describeAutopayLinkFailure('token', 'enroll')).toMatchObject({ ...code, data: { ...branding, ...(enrollmentStatus ? { enrollmentStatus } : {}) } });
   });
   it('a stop link revoked by the stop itself says automatic payments are off', async () => {
     h.rows.set(orgAutopayEnrollments, [{ id: 'enrollment', orgId, status: 'cancelled', generation: 2 }]);
     h.inspect.mockResolvedValue({ row: { ...link, purpose: 'stop_autopay' }, failure: 'revoked' });
     expect(await describeAutopayLinkFailure('token', 'stop_autopay'))
-      .toMatchObject({ code: 'link_used', enrollmentStatus: 'cancelled', ...branding });
+      .toMatchObject({ code: 'link_used', data: { enrollmentStatus: 'cancelled', ...branding } });
   });
   it('a link for a deleted or suspended org is invalid and reveals nothing', async () => {
     h.rows.set(organizations, [{ id: orgId, partnerId, status: 'suspended', deletedAt: null }]);

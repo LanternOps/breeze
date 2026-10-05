@@ -61,7 +61,7 @@ const gate:MiddlewareHandler=async(c,next)=>{
   const identity=c.get('autopayIdentity');
   const branding=await runOutsideDbContext(()=>withSystemDbAccessContext(()=>loadAutopayBranding(db,
     {orgId:identity.orgId,partnerId:identity.partnerId}))).catch(()=>({}));
-  return c.json({...branding,...body},refused.status as 404);
+  return c.json({...body,data:branding},refused.status as 404);
 };
 publicAutopayRoutes.post('/setup-return',boundary('enroll',true),gate,zValidator('json',returning),async c=>{
   return c.json(await completeOwnedAutopaySetup(c.get('autopayIdentity'),c.req.valid('json').checkoutSessionId));
