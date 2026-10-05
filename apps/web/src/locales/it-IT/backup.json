@@ -1105,5 +1105,19 @@
     "restrictedDescriptorsShowPaths_other": "Mostra {{count}} percorsi",
     "restrictedDescriptorsUnlisted_one": "Altro {{count}} elemento non è elencato.",
     "restrictedDescriptorsUnlisted_other": "Altri {{count}} elementi non sono elencati."
+  },
+  "unattestedRestoreStepUp": {
+    "heading": "Conferma questo ripristino",
+    "introUnattested": "Questo backup non ha un'attestazione di integrità, quindi il suo contenuto non può essere confrontato con un record verificato prima del ripristino.",
+    "introProducerOnly": "Questo backup è stato archiviato dove solo il dispositivo originale può verificarne l'integrità. Il ripristino su un altro dispositivo richiede la tua conferma.",
+    "twoFactor": "Conferma con l'autenticazione a due fattori per continuare.",
+    "confirmOnly": "Conferma per continuare. Il ripristino viene registrato nel registro di controllo.",
+    "code": "Codice di autenticazione",
+    "passkey": "Ti verrà chiesto di usare la tua passkey.",
+    "noFactor": "Configura l'autenticazione a due fattori nel tuo profilo, quindi riprova.",
+    "confirm": "Conferma e ripristina",
+    "cancel": "Annulla",
+    "failed": "La verifica non è stata accettata. Riprova.",
+    "unavailable": "Impossibile avviare la verifica. Riprova."
   }
 }

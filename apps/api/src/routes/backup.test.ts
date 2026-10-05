@@ -46,6 +46,13 @@ const deleteMock = vi.fn(() => chainMock([]));
 
 // Key history recording is covered by configs.test.ts and its integration suite.
 vi.mock('../services/backupStorageCredentialHistory', () => ({ recordCredentialChange: async () => undefined }));
+// Restore integrity checks are covered in backup/restoreIntegrityGate.test.ts.
+vi.mock('./backup/restoreIntegrityGate', () => ({
+  checkRestoreIntegrityRequest: async () => ({ ok: true, authorizationReason: null }),
+  gateRestoreCommand: async () => ({ ok: true }),
+  recordRequestAuthorization: async () => 'authorization-1',
+  restoreIntegrityResponse: (c: any, check: any) => c.json(check.body, check.status),
+}));
 vi.mock('../db', () => ({
   withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
   db: {

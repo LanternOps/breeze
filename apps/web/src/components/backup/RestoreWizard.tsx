@@ -24,6 +24,12 @@ import { showToast } from '../shared/Toast';
 import { useTranslation } from 'react-i18next';
 import { asList } from '@/lib/asList';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
+import {
+  isUnattestedRestoreStepUp,
+  suppressUnattestedRestoreStepUpToast,
+  useUnattestedRestoreStepUp,
+  type UnattestedRestoreExtras,
+} from './useUnattestedRestoreStepUp';
 import '../../lib/i18n';
 
 type RestoreType = 'full' | 'selective';
@@ -353,7 +359,11 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
     return () => window.clearInterval(timer);
   }, [activeRestore?.id, fetchRestoreHistory, fetchRestoreJob]);
 
-  const handleRestore = useCallback(async () => {
+  // A backup without an integrity attestation is restored only after the
+  // operator confirms it (two-factor when enabled); the server asks for it.
+  const unattestedStepUp = useUnattestedRestoreStepUp();
+
+  const submitRestore = useCallback(async (extras: UnattestedRestoreExtras) => {
     try {
       setRestoring(true);
       setRestoreError(undefined);
@@ -362,7 +372,8 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
         snapshotId,
         restoreType,
         selectedPaths: restoreType === 'selective' ? Array.from(selectedFiles) : [],
-        targetPath: destination === 'alternate' ? alternatePath : undefined
+        targetPath: destination === 'alternate' ? alternatePath : undefined,
+        ...extras,
       };
 
       // runAction (CLAUDE.md): a failed restore must toast, not just tint a
@@ -375,6 +386,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
           }),
         errorFallback: 'Failed to start restore',
         parseSuccess: (data) => ((data as { data?: RestoreJob })?.data ?? data) as RestoreJob,
+        suppressErrorToast: suppressUnattestedRestoreStepUpToast,
       });
       setRestoreJob(created);
       // Name the device, not the job UUID; the Latest restore job panel
@@ -396,11 +408,19 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
       // already toasted by runAction, and the inline banner keeps the detail
       // on screen next to the wizard controls.
       if (err instanceof ActionError && err.status === 401) return;
+      // The confirmation prompt handles a step-up request.
+      if (isUnattestedRestoreStepUp(err)) throw err;
       setRestoreError(err instanceof Error ? err.message : 'Failed to start restore');
     } finally {
       setRestoring(false);
     }
   }, [alternatePath, destination, fetchRestoreHistory, restoreType, selectedFiles, selectedSnapshot, snapshotId, t]);
+
+  const { run: runWithStepUp } = unattestedStepUp;
+  const handleRestore = useCallback(() => {
+    // Every other failure was surfaced by submitRestore itself.
+    void runWithStepUp(submitRestore).catch(() => undefined);
+  }, [runWithStepUp, submitRestore]);
 
   const handleCancelRestore = useCallback(async (restoreId: string) => {
     setCancellingRestoreId(restoreId);
@@ -466,6 +486,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
           {error}
         </div>
       )}
+      {unattestedStepUp.prompt}
       {restoreError && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {restoreError}

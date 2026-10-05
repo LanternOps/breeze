@@ -1105,5 +1105,19 @@
     "restrictedDescriptorsShowPaths_other": "Mostrar {{count}} caminhos",
     "restrictedDescriptorsUnlisted_one": "Mais {{count}} item não está listado.",
     "restrictedDescriptorsUnlisted_other": "Mais {{count}} itens não estão listados."
+  },
+  "unattestedRestoreStepUp": {
+    "heading": "Confirmar esta restauração",
+    "introUnattested": "Este backup não tem um atestado de integridade, portanto seu conteúdo não pode ser conferido com um registro verificado antes da restauração.",
+    "introProducerOnly": "Este backup foi armazenado onde somente o dispositivo original pode verificar sua integridade. Restaurá-lo em outro dispositivo exige sua confirmação.",
+    "twoFactor": "Confirme com a autenticação de dois fatores para continuar.",
+    "confirmOnly": "Confirme para continuar. A restauração é registrada no log de auditoria.",
+    "code": "Código de autenticação",
+    "passkey": "Será solicitado que você use sua chave de acesso.",
+    "noFactor": "Configure a autenticação de dois fatores no seu perfil e tente novamente.",
+    "confirm": "Confirmar e restaurar",
+    "cancel": "Cancelar",
+    "failed": "A verificação não foi aceita. Tente novamente.",
+    "unavailable": "Não foi possível iniciar a verificação. Tente novamente."
   }
 }

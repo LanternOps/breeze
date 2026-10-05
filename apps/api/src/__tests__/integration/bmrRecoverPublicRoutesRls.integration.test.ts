@@ -7,6 +7,8 @@ import { Hono } from 'hono';
 import { afterAll, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { getTestDb } from './setup';
+import { createHash } from 'node:crypto';
+import { attestSnapshotForTest } from './restoreIntegrityFixture';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import {
   backupConfigs,
@@ -123,6 +125,7 @@ async function seedOrgWithLocalSnapshot(label: string) {
       deviceId: device.id,
       configId: config.id,
       snapshotId: providerSnapshotId,
+      storageIdentity: `local::${storageRoot}`,
       metadata: { platform: 'windows' },
     })
     .returning({ id: backupSnapshots.id });
@@ -132,6 +135,11 @@ async function seedOrgWithLocalSnapshot(label: string) {
   await mkdir(snapshotDir, { recursive: true });
   const manifestContent = `manifest for ${label} ${suffix}`;
   await writeFile(join(snapshotDir, 'manifest.json'), manifestContent, 'utf8');
+  // Attested by its producing helper over the exact manifest bytes.
+  await attestSnapshotForTest(snapshot.id, {
+    manifestSha256: createHash('sha256').update(manifestContent, 'utf8').digest('hex'),
+    manifestSize: Buffer.byteLength(manifestContent),
+  });
 
   return {
     orgId: org.id as string,
@@ -216,7 +224,12 @@ async function seedThreeGenerationChain() {
       await writeFile(abs, `content for ${file.backupPath}`, 'utf8');
     }
     const manifest = { id: snapshotId, files };
-    await writeFile(join(dir, 'manifest.json'), JSON.stringify(manifest), 'utf8');
+    const manifestBytes = JSON.stringify(manifest);
+    await writeFile(join(dir, 'manifest.json'), manifestBytes, 'utf8');
+    await attestSnapshotForTest(snapshot.id, {
+      manifestSha256: createHash('sha256').update(manifestBytes, 'utf8').digest('hex'),
+      manifestSize: Buffer.byteLength(manifestBytes),
+    });
 
     return { snapshotDbId: snapshot.id as string, snapshotId, jobId: job.id as string };
   }
@@ -262,7 +275,7 @@ runDb(
     const response = await app.request('/bmr/recover/authenticate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ token, integrityProtocolVersion: 2 }),
     });
 
     const body = await response.json();
@@ -291,7 +304,7 @@ runDb(
     const authRes = await app.request('/bmr/recover/authenticate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ token, integrityProtocolVersion: 2 }),
     });
     expect(authRes.status).toBe(200);
 
@@ -348,7 +361,7 @@ runDb('R6/R7/R9/R19: hydrates a three-generation chain, authorizes exact referen
   const exchangeApp = makeExchangeApp();
   const withCap = await exchangeApp.request('/bmr/recover/exchange', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code: formatRecoveryCode(code), capabilities: ['snapshot-file-membership-v1'] }),
+    body: JSON.stringify({ code: formatRecoveryCode(code), capabilities: ['snapshot-file-membership-v1'], integrityProtocolVersion: 2 }),
   });
   expect(withCap.status).toBe(200);
   const withCapBody = await withCap.json();
@@ -387,7 +400,7 @@ runDb('exchange without capabilities on a referenced snapshot is refused before 
   const exchangeApp = makeExchangeApp();
   const res = await exchangeApp.request('/bmr/recover/exchange', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code: formatRecoveryCode(code) }), // no capabilities — legacy client
+    body: JSON.stringify({ code: formatRecoveryCode(code), integrityProtocolVersion: 2 }), // no capabilities — legacy client
   });
   expect(res.status).toBe(409);
   expect((await res.json()).error).toBe('client_capability_required');
@@ -410,7 +423,7 @@ runDb('org B\'s snapshot key is refused through org A\'s token, even for an auth
   const authApp = makeApp();
   const authRes = await authApp.request('/bmr/recover/authenticate', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token, capabilities: ['snapshot-file-membership-v1'] }),
+    body: JSON.stringify({ token, capabilities: ['snapshot-file-membership-v1'], integrityProtocolVersion: 2 }),
   });
   expect(authRes.status).toBe(200);
 
@@ -439,7 +452,12 @@ runDb('R19: a 100,000-entry manifest with an empty agent-reported index hydrates
   const files = Array.from({ length: 100_000 }, (_, i) => ({
     sourcePath: `/f${i}`, backupPath: `snapshots/${fixture.g1.snapshotId}/files/f${i}.gz`, size: 1,
   }));
-  await writeFile(join(dir, 'manifest.json'), JSON.stringify({ id: g4Id, files }), 'utf8');
+  const g4Manifest = JSON.stringify({ id: g4Id, files });
+  await writeFile(join(dir, 'manifest.json'), g4Manifest, 'utf8');
+  await attestSnapshotForTest(g4!.id, {
+    manifestSha256: createHash('sha256').update(g4Manifest, 'utf8').digest('hex'),
+    manifestSize: Buffer.byteLength(g4Manifest),
+  });
   // NOTE: this test does NOT physically write 100,000 files to disk — only
   // the manifest. hydrateSnapshotFileIndex never reads the referenced content
   // objects themselves, only the manifest — proven by this test passing
