@@ -1476,7 +1476,7 @@ and `lines: await withBlockHistory(await withLineRefs(lines)),` in both return s
     const audit = { orgId: c.orgId, contractId, contractName: c.name, contractLineId: row.id, lineType: row.lineType };
     if (row.lineType === 'hour_block') {
       // Already retired: idempotent, and retired_at must not move (W02 bounds the
-      // close-out sweep by period_start < retired_at).
+      // close-out sweep to claims with generated_at <= retired_at).
       if (row.hourBlockRetiredAt !== null) return { ...audit, retired: true };
       // Index C7: history => retire (never delete: the ledger FK is ON DELETE RESTRICT and a
       // claimed-but-unclosed period must still close via W02's sweep); else delete.
