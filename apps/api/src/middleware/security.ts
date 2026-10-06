@@ -248,7 +248,16 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
         if (!canonicalHost) {
           // Never reflect an unrecognized Host into a redirect — reject
           // instead of redirecting to a domain the client didn't ask for.
-          return c.text('Bad Request', 400);
+          // A stable machine code makes the 400 diagnosable (#7875) without
+          // echoing the received or configured Host back to the caller.
+          c.set('rejectReason', 'force_https_non_canonical_host');
+          return c.json(
+            {
+              error: 'FORCE_HTTPS_NON_CANONICAL_HOST',
+              docs: 'https://docs.breezermm.com/deploy/tls/',
+            },
+            400,
+          );
         }
         const location = canonicalHttpsRedirect(c, publicApiUrl);
         if (location) {
