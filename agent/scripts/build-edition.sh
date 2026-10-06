@@ -38,6 +38,7 @@
 set -euo pipefail
 
 HOSTPOLICY_PKG="github.com/breeze-rmm/agent/internal/hostpolicy"
+BRANDING_PKG="github.com/breeze-rmm/agent/internal/branding"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -70,6 +71,14 @@ Environment:
                          forbidden (must be empty/unset) for self-host.
   CGO_ENABLED             Passed through if already set by the caller;
                          defaults to 0 otherwise.
+  BREEZE_BRAND_*          Optional display strings baked into the binary (see
+                         agent/internal/branding). Set any of BREEZE_BRAND_ plus
+                         AGENT_DISPLAY_NAME, AGENT_DESCRIPTION,
+                         WATCHDOG_DISPLAY_NAME, WATCHDOG_DESCRIPTION,
+                         AGENT_CLI_SHORT or WATCHDOG_CLI_SHORT. Unset or blank
+                         adds no flag. A value over 256 bytes, or holding a
+                         control character, single quote, double quote, backslash or
+                         percent sign, is refused.
 EOF
 }
 
@@ -212,6 +221,48 @@ case "$edition" in
     fi
     ;;
 esac
+
+# Optional operator display strings (see agent/internal/branding). Each
+# BREEZE_BRAND_* variable set to a non-blank value becomes one quoted -X flag;
+# unset or blank adds nothing, so a build with no brand is exactly what it was
+# before. The value is validated here because it travels through -ldflags and
+# ends up in files the service manager reads: it is refused if it holds a
+# control character (a newline would inject directives into a systemd unit),
+# a single quote or backslash (they break the -ldflags quoting), a double
+# quote (PowerShell drops it on the way to wix, so the MSI would carry
+# altered text), a percent sign (systemd expands it as a specifier) or is longer than 256 bytes
+# (Windows caps service display names at 256 characters; bytes are counted so
+# the rule does not depend on the shell's locale). The value is never echoed.
+# eval, not ${!name}: indirect expansion with a default is not reliable on
+# bash 3.2; env_name always comes from the fixed calls below.
+add_brand_flag() {
+  local env_name="$1" go_var="$2" value bytes
+  eval "value=\"\${${env_name}:-}\""
+  case "$value" in
+    *[![:space:]]*) ;;
+    *) return 0 ;;
+  esac
+  bytes=$(( $(printf '%s' "$value" | LC_ALL=C wc -c) ))
+  if [ "$bytes" -gt 256 ]; then
+    echo "build-edition.sh: ${env_name} is longer than 256 bytes — refusing to build" >&2
+    exit 1
+  fi
+  case "$value" in
+    *[[:cntrl:]]*|*"'"*|*'\'*|*'%'*|*'"'*)
+      echo "build-edition.sh: ${env_name} contains a control character, single quote, double quote, backslash or percent sign — refusing to build" >&2
+      exit 1
+      ;;
+  esac
+  ldflags="${ldflags} -X '${BRANDING_PKG}.${go_var}=${value}'"
+  display_ldflags="${display_ldflags} -X '${BRANDING_PKG}.${go_var}=${value}'"
+}
+
+add_brand_flag BREEZE_BRAND_AGENT_DISPLAY_NAME AgentServiceDisplayName
+add_brand_flag BREEZE_BRAND_AGENT_DESCRIPTION AgentServiceDescription
+add_brand_flag BREEZE_BRAND_WATCHDOG_DISPLAY_NAME WatchdogServiceDisplayName
+add_brand_flag BREEZE_BRAND_WATCHDOG_DESCRIPTION WatchdogServiceDescription
+add_brand_flag BREEZE_BRAND_AGENT_CLI_SHORT AgentCLIShort
+add_brand_flag BREEZE_BRAND_WATCHDOG_CLI_SHORT WatchdogCLIShort
 
 if [ "$windowsgui" -eq 1 ]; then
   ldflags="${ldflags} -H windowsgui"
