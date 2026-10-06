@@ -14,6 +14,12 @@ vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
 
+const resizeToDataUrl = vi.fn();
+vi.mock('@/lib/logoDataUrl', async (orig) => ({
+  ...(await orig<typeof import('@/lib/logoDataUrl')>()),
+  resizeToDataUrl: (...args: unknown[]) => resizeToDataUrl(...args),
+}));
+
 const fetchMock = vi.mocked(fetchWithAuth);
 
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
@@ -261,5 +267,41 @@ describe('OrgBrandingEditor coordinated save (#6030)', () => {
     await waitFor(() => expect(screen.getByTestId('branding-save')).not.toBeDisabled());
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
     expect(screen.queryByTestId('branding-save-status')).toBeNull();
+  });
+});
+
+describe('OrgBrandingEditor logo upload (#8017)', () => {
+  const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==';
+  beforeEach(() => {
+    vi.clearAllMocks();
+    URL.createObjectURL = vi.fn(() => 'blob:http://localhost/abc');
+    URL.revokeObjectURL = vi.fn();
+  });
+
+  const pickLogo = (container: HTMLElement) => {
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(['x'], 'logo.png', { type: 'image/png' })] } });
+  };
+
+  it('persists an encoded data URI, never a session-local blob: URL', async () => {
+    resizeToDataUrl.mockResolvedValue(DATA_URL);
+    const onSave = vi.fn();
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" onSave={onSave} />);
+    pickLogo(container);
+    await waitFor(() => expect(resizeToDataUrl).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: 'Save branding' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    expect(onSave.mock.calls[0][0].logoUrl).toBe(DATA_URL);
+  });
+
+  it('rejects an oversized logo and keeps the previous logo', async () => {
+    resizeToDataUrl.mockResolvedValue('data:image/png;base64,' + 'A'.repeat(400_001));
+    const onSave = vi.fn();
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" branding={{ logoUrl: 'https://cdn.example.com/old.png' }} onSave={onSave} />);
+    pickLogo(container);
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    fireEvent.click(screen.getByRole('button', { name: 'Save branding' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    expect(onSave.mock.calls[0][0].logoUrl).toBe('https://cdn.example.com/old.png');
   });
 });
