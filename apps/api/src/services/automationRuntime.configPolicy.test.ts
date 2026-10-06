@@ -1278,6 +1278,65 @@ describe('executeConfigPolicyAutomationRun', () => {
     expect(reconcileRunMock).not.toHaveBeenCalled();
   });
 
+  it('stops quietly when the run is cancelled after the fence but before a device seed (#8104)', async () => {
+    const automation = makeConfigPolicyAutomation({
+      actions: [{ type: 'execute_command', command: 'echo nope' }],
+    });
+
+    let selectCallCount = 0;
+    vi.mocked(db.select).mockImplementation(() => {
+      selectCallCount++;
+      if (selectCallCount === 1) {
+        return {
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ orgId: 'org-1' }]),
+              }),
+            }),
+          }),
+        } as any;
+      }
+      if (selectCallCount === 2) {
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: 'dev-1', hostname: 'host-1', displayName: null, osType: 'linux', status: 'online' },
+            ]),
+          }),
+        } as any;
+      }
+      return { from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any;
+    });
+
+    const run = { id: 'run-cp-late-cancel', automationId: null, status: 'running', logs: [] };
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([run]),
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    // The pre-seed fence passed; the cancel committed before the seed's own
+    // run-row lock, so the seed refused and inserted nothing.
+    seedActionResultsMock.mockResolvedValueOnce('run_cancelled');
+
+    const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
+
+    expect(result).toEqual({
+      runId: 'run-cp-late-cancel',
+      status: 'cancelled',
+      devicesSucceeded: 0,
+      devicesFailed: 0,
+    });
+    expect(seedActionResultsMock).toHaveBeenCalledTimes(1);
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+    expect(claimActionDispatchMock).not.toHaveBeenCalled();
+    expect(recordActionDispatchMock).not.toHaveBeenCalled();
+  });
+
   it('propagates reconciliation publication failures', async () => {
     const automation = makeConfigPolicyAutomation({
       actions: [{ type: 'execute_command', command: 'echo ok' }],

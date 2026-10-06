@@ -591,18 +591,43 @@ async function reconcileInCurrentContext(
   return buildPublications(aggregate.status);
 }
 
+/**
+ * Seed one `pending` ledger row per action for one device of a run.
+ *
+ * #8104 — the seed is itself a dispatch-side write, so it is FENCED against a
+ * run-wide cancel in the same transaction as the insert. `cancelAutomationRun`
+ * terminalises only rows that are `pending` when it commits; a row inserted
+ * after that commit would sit `pending` forever, since the runtime's next
+ * fence check just stops dispatching. The runtime's own pre-seed check runs in
+ * an earlier transaction and cannot close that window, so the run row is read
+ * here `FOR KEY SHARE`, which conflicts with the cancel's `FOR UPDATE`: either
+ * this seed commits first and the cancel's sweep sees its rows, or the cancel
+ * commits first and this returns `run_cancelled` without inserting anything.
+ * The run row is locked BEFORE the device row, matching the run-before-action
+ * order every other dispatch path uses.
+ */
 export async function seedAutomationActionResults(input: {
   trigger?: RemediationTrigger;
   runId: string;
   device: { id: string; orgId: string };
   actions: Array<{ actionIndex: number; actionType: string }>;
-}): Promise<void> {
+}): Promise<'seeded' | 'run_cancelled'> {
   const indexes = new Set(input.actions.map((action) => action.actionIndex));
   if (indexes.size !== input.actions.length) throw new Error('Automation action indexes must be unique per device');
   if (input.actions.some((action) => action.actionIndex < 0)) throw new Error('Automation action indexes must be non-negative');
-  if (input.actions.length === 0) return;
+  if (input.actions.length === 0) return 'seeded';
 
-  await inDeliberateSystemContext(async () => {
+  return inDeliberateSystemContext(async () => {
+    const runRows = await db.execute(sql`
+      SELECT status
+      FROM automation_runs
+      WHERE id = ${input.runId}::uuid
+      FOR KEY SHARE
+    `) as unknown as Array<{ status: string }>;
+    const run = runRows[0];
+    if (!run) throw new Error(`Automation run ${input.runId} not found`);
+    if (run.status === 'cancelled') return 'run_cancelled' as const;
+
     const locked = await db.execute(sql`
       SELECT id, org_id
       FROM devices
@@ -640,6 +665,7 @@ export async function seedAutomationActionResults(input: {
         throw new Error(`Automation action seed conflict at index ${action.actionIndex}`);
       }
     }
+    return 'seeded' as const;
   });
 }
 

@@ -23,7 +23,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 
-import { withSystemDbAccessContext } from '../../db';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   automationActionResults,
   automationRuns,
@@ -41,6 +41,31 @@ import { getTestDb } from './setup';
 
 const { publishEventMock } = vi.hoisted(() => ({ publishEventMock: vi.fn().mockResolvedValue('event-id') }));
 vi.mock('../../services/eventBus', () => ({ publishEvent: publishEventMock }));
+
+// #8104 — a deterministic interleaving hook. When set, it runs once, right
+// before the Nth ledger seed (counted from when it was armed), so a test can
+// commit a cancel in the exact window between the runtime's pre-seed fence
+// check and a device's ledger insert.
+const seedHook = vi.hoisted(() => ({
+  beforeSeed: null as null | { remaining: number; run: () => Promise<void> },
+}));
+vi.mock('../../services/automationActionResults', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/automationActionResults')>();
+  return {
+    ...actual,
+    seedAutomationActionResults: async (...args: Parameters<typeof actual.seedAutomationActionResults>) => {
+      const hook = seedHook.beforeSeed;
+      if (hook) {
+        hook.remaining -= 1;
+        if (hook.remaining === 0) {
+          seedHook.beforeSeed = null;
+          await hook.run();
+        }
+      }
+      return actual.seedAutomationActionResults(...args);
+    },
+  };
+});
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -160,6 +185,33 @@ describe('automation replay idempotency — real PostgreSQL (#3189)', () => {
     }
     const commands = await commandsFor(f.deviceIds);
     expect(commands).toHaveLength(ledger.filter((row) => row.status === 'queued').length);
+  });
+
+  runDb('a cancel committing between the pre-seed fence and a device seed strands no pending action (#8104)', async () => {
+    const f = await fixture(3);
+
+    // Device 1 is seeded before the cancel; the cancel then commits (on its
+    // own connection, as the route would) before device 2 is seeded. This is
+    // the window the 15 ms race above only sometimes lands in.
+    let cancel: Awaited<ReturnType<typeof cancelAutomationRun>> | undefined;
+    seedHook.beforeSeed = {
+      remaining: 2,
+      run: async () => {
+        cancel = await runOutsideDbContext(() =>
+          cancelAutomationRun({ runId: f.run.id, actorId: null, actorLabel: 'replay-integration' }));
+      },
+    };
+
+    const outcome = await executeAutomationRun(f.run.id, f.deviceIds);
+
+    expect(seedHook.beforeSeed).toBeNull();
+    expect(cancel?.kind).toBe('cancelled');
+    expect(outcome.status).toBe('cancelled');
+    const ledger = await ledgerFor(f.run.id);
+    for (const row of ledger) {
+      expect(row.status).toBe('cancelled');
+    }
+    expect(await commandsFor(f.deviceIds)).toHaveLength(0);
   });
 
   runDb('two trigger attempts for one schedule slot yield one run; manual runs are never deduplicated', async () => {
