@@ -94,7 +94,7 @@ Each is pinned by a named test in the owning task.
 | W1 | Epoch lineage foundation | — | 1 (`device_ownership_epochs`, closures, `devices.ownership_epoch`, epoch trigger, retirement markers) | High (tenancy, trigger on `devices`) | Sonnet implements, Opus reviews |
 | W2 | Epoch-anchor the PAM chain | W1 | 1 (`device_epoch` columns, FK swaps, freeze and insert guards, closed predicate) + deletion/site-move code | High (FKs on evidence, deletion) | Opus implements, Opus reviews |
 | W3 | Lineage binding and result path (server) | W2 | 1 (definer function) | High (agent-facing protocol, auth) | Opus implements, Opus reviews |
-| W4 | Agent identity refresh and `retired` retirement | W3 (server surfaces) | 0 (API response fields only) | High (agent-shipped) | Opus implements, Opus reviews + Windows lab |
+| W4 | Agent identity refresh and `retired` retirement | W3 (server surfaces) | 1 (`devices.agent_identity_epoch_ack`) | High (agent-shipped) | Opus implements, Opus reviews + Windows lab |
 | W5 | Merge evidence holds and survivor read access | W2 | 1 (`org_evidence_holds`, lineage RLS branch) | High (erasure, RLS) | Opus implements, Opus reviews |
 | W6 | Enablement behind flag + full matrix | W3, W4, W5 | 1 (trigger predicate reads GUC; registry kind) | High (flips the guards) | Opus implements, Opus reviews + owner sign-off |
 
@@ -167,9 +167,16 @@ describe('device ownership epochs — foundation', () => {
 });
 ```
 
-If `db-utils` has no `createDevice`, use the device-insert helper already used
-by `pamDeviceMoveGuard.integration.test.ts`. Grep for `INSERT INTO devices` in
-that file.
+`db-utils.ts` has **no** `createDevice` export; each suite defines its own.
+Add one as part of this task:
+
+```ts
+createDevice({ orgId, siteId, hostname = 'host-' + id8 }): Promise<{ id: string }>
+```
+
+Base it on the device insert in `pamDeviceMoveGuard.integration.test.ts`
+(`grep -n "INSERT INTO devices"`). Every later task imports it from
+`./db-utils`.
 
 - [ ] **Step 2: Run it and confirm it fails**
 
@@ -185,7 +192,8 @@ SELECT set_config('breeze.scope', 'system', true);
 
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS ownership_epoch integer NOT NULL DEFAULT 1;
 ALTER TABLE devices DROP CONSTRAINT IF EXISTS devices_ownership_epoch_chk;
-ALTER TABLE devices ADD CONSTRAINT devices_ownership_epoch_chk CHECK (ownership_epoch >= 1);
+ALTER TABLE devices ADD CONSTRAINT devices_ownership_epoch_chk CHECK (ownership_epoch >= 1) NOT VALID;
+ALTER TABLE devices VALIDATE CONSTRAINT devices_ownership_epoch_chk;
 
 CREATE TABLE IF NOT EXISTS device_ownership_epochs (
   device_id uuid NOT NULL,
@@ -211,6 +219,7 @@ CREATE TABLE IF NOT EXISTS device_ownership_epoch_closures (
   CONSTRAINT device_ownership_epoch_closures_epoch_fkey
     FOREIGN KEY (device_id, org_id, epoch)
     REFERENCES device_ownership_epochs(device_id, org_id, epoch) ON DELETE CASCADE
+    DEFERRABLE INITIALLY IMMEDIATE   -- CLAUDE.md: composite FK over org_id (org-merge SET CONSTRAINTS ALL DEFERRED)
 );
 CREATE INDEX IF NOT EXISTS device_ownership_epoch_closures_org_idx ON device_ownership_epoch_closures (org_id);
 
@@ -330,8 +339,10 @@ it('org change appends a closure, a new epoch, and retirement markers atomically
   const siteA = await createSite({ orgId: a.id });
   const siteB = await createSite({ orgId: b.id });
   const device = await createDevice({ orgId: a.id, siteId: siteA.id, hostname: 'host-a' });
-  await db.execute(sql`SELECT set_config('breeze.ownership_change_cause', 'device_move', false)`);
-  await db.execute(sql`UPDATE devices SET org_id = ${b.id}, site_id = ${siteB.id} WHERE id = ${device.id}`);
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('breeze.ownership_change_cause', 'device_move', true)`);
+    await tx.execute(sql`UPDATE devices SET org_id = ${b.id}, site_id = ${siteB.id} WHERE id = ${device.id}`);
+  });
   const [d] = await db.execute(sql`SELECT ownership_epoch FROM devices WHERE id = ${device.id}`) as any[];
   expect(d.ownership_epoch).toBe(2);
   const epochs = await db.execute(sql`SELECT epoch, org_id, cause FROM device_ownership_epochs WHERE device_id = ${device.id} ORDER BY epoch`) as any[];
@@ -366,7 +377,11 @@ Expected: `ownership_epoch` is still 1, or no closure exists.
 
 ```sql
 CREATE OR REPLACE FUNCTION public.breeze_device_ownership_epoch_advance()
-RETURNS trigger LANGUAGE plpgsql AS $$
+RETURNS trigger LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+SET "breeze.scope" = 'system'   -- function-level SET: reverts on exit, never leaks into the caller's tx
+AS $$
 DECLARE cause text := coalesce(nullif(current_setting('breeze.ownership_change_cause', true), ''), 'unspecified');
 BEGIN
   IF NEW.org_id IS NOT DISTINCT FROM OLD.org_id THEN RETURN NEW; END IF;
@@ -390,17 +405,19 @@ CREATE TRIGGER devices_ownership_epoch_advance BEFORE UPDATE OF org_id ON device
   FOR EACH ROW EXECUTE FUNCTION public.breeze_device_ownership_epoch_advance();
 ```
 
-The trigger writes as the updating caller. The closure, epoch, and retirement
-inserts need system scope or target-org access. Verify that the move route
-(`routes/devices/moveOrg.ts`) and the merge engine already run under a context
-that passes the closure policy for **both** orgs.
+The function is `SECURITY DEFINER` with a function-level
+`SET "breeze.scope" = 'system'`. This is required, not optional:
+`pam_ledger_retirements` is system-only, and the `pam_actuations` SELECT
+must see the *source* org's rows, but a route-scoped move caller may hold
+access to only one of the two orgs.
 
-If either does not, make the function `SECURITY DEFINER` with
-`SET search_path = public, pg_temp` and owner `breeze_migrator`. That role
-bypasses RLS on these three tables only through policy, not ownership, so
-also add `breeze_current_scope() = 'system'` coverage via
-`set_config('breeze.scope','system',true)` inside the function. Record the
-decision in the migration comment.
+A function-level `SET` reverts on exit. Never use an in-body
+`set_config(..., true)`, which would leak system scope into the rest of the
+caller's transaction. The owner is the migration role. FORCE RLS binds the
+owner, so the system-scope GUC (not ownership) is what passes the policies.
+Add this test: **a move by an actor holding only target-org access still
+writes the closure, the epoch, and one retirement marker per source
+actuation** (seed the PAM rows with the Task 1.4 helper).
 
 Also add the PAM epoch tables to the exclusion list of
 `breeze_device_child_orgid_tables()`. Copy its full current body from
@@ -445,6 +462,17 @@ Expected: these fail, naming the three new tables.
   W2 adds the exact-epoch predicate. Until then, deletion by `device_id` is
   correct, because no device has more than one epoch while the guard blocks
   PAM moves. Non-PAM devices with several epochs carry no evidence.
+- `routes/devices/moveOrg.coverage.test.ts`: add `device_ownership_epochs`,
+  `device_ownership_epoch_closures`, and `pam_ledger_retirements` to
+  `INTENTIONALLY_NO_ORG_ID`, with a spec §4 citation. These tables are never
+  restamped; lineage is appended by the trigger. Do **not** add them to
+  `CORE_DEVICE_ORG_DENORMALIZED_TABLES`.
+- Export policy for the new **column** `devices.ownership_epoch`: classify it
+  as `included` in `CORE_TENANT_EXPORT_POLICY`.
+- Verify the deletion order. `elevation_requests → device_ownership_epochs`
+  (added in W2) has no `ON DELETE`. Confirm `tenantCascade.integration.test.ts`'s
+  FK-children-before-parents property passes. Do not assume alphabetical order
+  satisfies it.
 - `rls-coverage.integration.test.ts`: add `pam_ledger_retirements` to the
   intentionally system-scoped allowlist, with a comment citing spec §4.5.
 
@@ -459,6 +487,34 @@ cd apps/api && npx tsc --noEmit -p tsconfig.json
 Check the exit code, not a piped tail.
 
 - [ ] **Step 5: Commit** — `chore(api): register ownership epoch tables in tenancy contracts (#4477)`
+
+### Task 1.4: Historical-epoch test seed helper
+
+Waves 2, 3, and 5 need fixtures that production cannot create until W6: a
+device with closed PAM history in epoch 1 that now lives in epoch 2 or 3.
+Every later task uses this one helper instead of improvising.
+
+**Files:** create `apps/api/src/__tests__/integration/ownershipEpochFixture.ts`.
+
+- [ ] **Step 1: Write the failing self-test**
+  (`ownershipEpochFixture.integration.test.ts`). Expected results:
+  - `seedMovedDeviceWithHistory({ path: ['A','B'] })` returns a device at
+    `ownership_epoch = 2` in B.
+  - The epoch rows are `[1:A, 2:B]`, with one closure.
+  - It returns a closed epoch-1 PAM chain in A (request, actuation, cleaned
+    result).
+  - One retirement marker exists.
+  - `path: ['A','B','A']` gives three epochs.
+- [ ] **Step 2: Implement.** The helper uses the superuser test connection
+  (`postgres(DATABASE_URL)`). Inside one transaction it runs
+  `SET LOCAL session_replication_role = replica` to suppress user triggers
+  for that transaction only. It then inserts devices, epochs, closures,
+  markers, and PAM rows with explicit `ownership_epoch` and `device_epoch`
+  values. `replica` also disables the RI (FK) triggers, so FKs are **not**
+  checked inside the helper. After commit, it runs `SELECT` assertions that
+  every FK target exists; the self-test checks this. Never use this helper outside tests.
+  Integration-only, so CI's integration job is the gate.
+- [ ] **Step 3: GREEN + commit** — `test(api): historical ownership-epoch fixture (#4477)`
 
 ---
 
@@ -560,6 +616,11 @@ docker exec … psql -c "\d elevation_requests"
 ```
 
 - [ ] **Step 4: Run and confirm it passes.** Then run the full existing PAM integration set (every `pam*.integration.test.ts`) and `orgCascadeFkOnDelete.integration.test.ts`. Expected: green with no expectation edits.
+
+- [ ] **Step 4b: Export policy for the new columns.** Classify `device_epoch`
+  on `elevation_requests`, `pam_actuations`, and `pam_actuation_results` as
+  `included`, then run `tenant-export-policy.integration.test.ts` and
+  `tenantExportErasureRoundtrip.integration.test.ts`.
 
 - [ ] **Step 5: Commit** — `feat(api): anchor PAM chain FKs to device ownership epochs (#4477)`
 
@@ -670,6 +731,12 @@ Before adding the check, confirm that no lifecycle path moves a row out of
 `cleaned`. Grep `observed_state` in `pamActuationLifecycle.ts` and
 `pamActuationResult.ts`. If one exists, stop and raise it as a spec question.
 
+This trigger is defense in depth. Verified 2026-10-05: no current path leaves
+`cleaned`. The worker's protection rests on `current_command_id`
+(`pamActuationWorker.ts:62`), not on `observed_state`, and the CHECK at
+`2026-09-16-pam-actuation-lifecycle.sql:78` only ties `cleaned_at` to
+`cleaned`.
+
 - [ ] **Step 4: Run and confirm it passes**, plus `pamActuationTransitions.integration.test.ts`.
 - [ ] **Step 5: Commit** — `feat(api): single closed-actuation predicate for ownership transfer (#4477)`
 
@@ -766,7 +833,7 @@ appended §"2026-10 amendment"). Tests: `pamReconciliationBinding.integration.te
 
 - [ ] **RED tests**
   - `v1 historical candidate is stale`: a device moved A → B (seeded
-    directly under system scope with W1/W2 rows); a v1 request for the
+    with `seedMovedDeviceWithHistory` from Task 1.4); a v1 request for the
     epoch-1 cleaned actuation returns `stale`, never `unresolved`.
   - `v2 historical candidate is retired`.
   - `v2 historical non-closed candidate is unresolved`.
@@ -869,6 +936,21 @@ appended §"2026-10 amendment"). Tests: `pamReconciliationBinding.integration.te
 
 ### Task 4.4: Server identity delivery and dispatch gate
 
+**Migration:** `<next>-device-agent-identity-epoch-ack.sql`:
+
+```sql
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS agent_identity_epoch_ack integer;
+```
+
+It is nullable; null means the agent has never reported, so the device is not
+dispatchable for any epoch greater than 1. Add the Drizzle column, run
+`pnpm db:check-drift`, and classify the column `included` in
+`CORE_TENANT_EXPORT_POLICY`.
+
+During rollout, the dispatch gate treats null as acked **only** for
+`ownership_epoch = 1`, so devices that never moved keep receiving PAM
+commands from today's agents.
+
 - [ ] **RED (API unit + integration):**
   - The heartbeat response carries the identity of the live row.
   - The agent-reported `ownershipEpoch` updates `agent_identity_epoch_ack`
@@ -911,7 +993,11 @@ Tests: `orgEvidenceHold.integration.test.ts`,
 `pamReadPathScoping.test.ts`.
 
 **Interfaces produced:**
-- Table `org_evidence_holds`: Shape 3, registered in `PARTNER_TENANT_TABLES`,
+- Table `org_evidence_holds`: Shape 3 (partner-axis), with **no column named
+  `org_id`**. It has `loser_org_id` with no FK (it must outlive nothing) and
+  `survivor_org_id` with an FK `ON DELETE RESTRICT`, so survivor erasure must
+  process its holds first. This mirrors `org_merge_events`, so the org cascade
+  list and the org merge registry do not apply. It is registered in `PARTNER_TENANT_TABLES`,
   the partner cascade, and the export policy.
 - `public.breeze_has_merged_lineage_access(p_org uuid) RETURNS boolean` —
   `SECURITY DEFINER`, `STABLE`, depth 5, partner-pinned.
@@ -925,7 +1011,9 @@ Tests: `orgEvidenceHold.integration.test.ts`,
 
 - [ ] **RED:** a merge whose loser holds a *closed* PAM chain. Phase B and C
   are invoked through the engine test hook, which bypasses the still-live
-  `blocks-merge` with the W6 GUC set **only inside the test transaction**.
+  `blocks-merge` by building the post-Phase-B state with
+  `seedMovedDeviceWithHistory`, then driving Phase C, the job, and the sweeper
+  directly. No W6 switch exists yet.
   Assertions:
   - A hold row exists.
   - The job's erasure enqueue is skipped and the audit is written.
@@ -982,6 +1070,15 @@ Tests: `orgEvidenceHold.integration.test.ts`,
 - `services/pamDeviceMoveGuard.ts`: on that path the error is
   `PAM_DEVICE_MOVE_ACTIVE`. Pending un-actuated requests are expired with
   reason `ownership_changed` (OD4).
+- `routes/devices/core.ts`: remove `elevation_requests` from the org-move
+  restamp list (`:327`) and add it to `INTENTIONALLY_NO_ORG_ID` in
+  `moveOrg.coverage.test.ts`. The epoch freeze trigger from W2 would otherwise
+  refuse a move of a device with closed requests.
+
+  In the move path's `DEVICE_SITE_DENORMALIZED_TABLES` loop (`:526`, used by
+  `moveOrg.ts`), add the current-epoch filter for `elevation_requests`.
+  Un-actuated pending requests are expired first (OD4). Add matrix rows for
+  both.
 - `routes/devices/moveOrg.ts`: sets both GUCs per transaction from env flag
   `PAM_OWNERSHIP_EPOCH_TRANSFER`.
 - `services/orgMergeRegistry.ts`: the new kind `epoch-frozen`, added to the

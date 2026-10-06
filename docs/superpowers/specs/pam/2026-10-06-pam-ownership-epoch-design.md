@@ -101,7 +101,7 @@ All facts were checked against `origin/main` at `9b9f3fc28d`.
    `validatePamLifetimeLocalIdentity` (`agent/internal/heartbeat/handlers_actuate.go:130-138`)
    rejects any PAM v2 command whose `orgId` differs from the enrolled value.
    **After any move, a new-epoch PAM command would be refused on the
-   endpoint.** Peripheral v2 (`peripheral/v2.go:66`) and Track D rollback
+   endpoint.** Peripheral v2 (`agent/internal/peripheral/v2.go:66`) and Track D rollback
    (`handlers_rollback_backend.go:179`) have the same stale-identity
    dependency.
 6. **The endpoint ledger never drops cleaned entries.** Restart re-reconciles
@@ -435,6 +435,9 @@ still has other members.
 3. The agent identity refresh and `retired` ledger retirement ship in an agent
    release.
 4. Holds and survivor read access follow.
+Items 1–4 are not strictly ordered. Holds (4) depend only on (1), and the
+plan runs them in parallel with (2).
+
 5. **Enablement wave:** flag `PAM_OWNERSHIP_EPOCH_TRANSFER` (default off). The
    flag switches the move route, the device trigger predicate (via a GUC the
    trigger reads, never a code-only switch), and the merge policy. It is
