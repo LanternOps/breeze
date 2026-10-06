@@ -69,7 +69,7 @@ describe('lifecycle email ordering', () => {
     expect(await dispatchPendingBillingNotices(new Date(start + 10 * 60_000))).toEqual({ sent: 1, failed: 0 });
     expect(await kinds()).toEqual({ autopay_paused: 'cancelled', autopay_resumed: 'sent' });
     expect(send).toHaveBeenCalledTimes(2);
-    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ subject: expect.stringMatching(/resumed/i) }));
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ subject: expect.stringMatching(/back on/i) }));
   });
 });
 
@@ -103,7 +103,7 @@ describe('stop email for payments still in flight', () => {
     const rendered = stopped!.rendered as { html: string; text: string };
     for (const body of [rendered.html, rendered.text]) {
       for (const number of ['INV-PROCESSING', 'INV-CONFIRMING']) {
-        expect(body).toContain(`A payment for invoice ${number} is already processing and will complete`);
+        expect(body).toContain(`A payment for invoice ${number} is already processing and can`);
         expect(body).not.toContain(`invoice ${number} is being cancelled`);
       }
       for (const number of ['INV-BANK-CONFIRM', 'INV-RESERVED']) {

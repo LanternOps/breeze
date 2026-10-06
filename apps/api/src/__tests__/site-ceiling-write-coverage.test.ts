@@ -318,6 +318,8 @@ describe('site-ceiling write coverage (contract-site-ceiling-gate)', () => {
       // route and its AI-tool twin.
       'routes/monitorDefinitions.ts',
       'services/aiToolsMonitors.ts',
+      // Org-wide user-risk policy (weights, thresholds, interventions).
+      'routes/userRisk.ts',
     ];
 
     for (const rel of fixed) {

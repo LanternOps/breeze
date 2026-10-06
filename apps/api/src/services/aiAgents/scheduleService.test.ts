@@ -6,6 +6,7 @@ import type { AiSweepKind } from '@breeze/shared';
 import type { AuthContext } from '../../middleware/auth';
 import { AgentAccessDeniedError } from './access';
 import { PartnerWideWriteDeniedError } from '../partnerWideAccess';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 
 // One shared mutable fixture store. Rows are dispatched by DRIZZLE TABLE NAME
 // (same idiom as effectivePolicy.test.ts) so the suite exercises the REAL
@@ -1152,6 +1153,41 @@ describe('deleteSchedule', () => {
     dbState.scheduleRows = [[baselineRow()]];
 
     await expect(deleteSchedule(orgAuth(), BASELINE_ID)).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+    expect(dbState.deleteCount).toBe(0);
+  });
+});
+
+describe('site-restricted callers', () => {
+  const restricted = () => orgAuth({ allowedSiteIds: ['00000000-0000-4000-8000-0000000000aa'] });
+
+  it('cannot create an org override (org-wide)', async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+    dbState.insertReturning = overrideRow();
+
+    await expect(createSchedule(restricted(), {
+      ownerScope: 'organization',
+      orgId: ORG_ID,
+      baselineScheduleId: BASELINE_ID,
+      enabled: true,
+      sweepKinds: ['disk_pressure'] as AiSweepKind[],
+    })).rejects.toThrow(SITE_CEILING_WRITE_DENIED_MESSAGE);
+    expect(dbState.inserted).toBeNull();
+  });
+
+  it('cannot update an org override', async () => {
+    dbState.scheduleRows = [[overrideRow()]];
+    dbState.updateReturning = overrideRow({ enabled: false });
+
+    await expect(updateSchedule(restricted(), OVERRIDE_ID, { enabled: false }))
+      .rejects.toThrow(SITE_CEILING_WRITE_DENIED_MESSAGE);
+    expect(dbState.updatedValues).toBeNull();
+  });
+
+  it('cannot delete an org override', async () => {
+    dbState.scheduleRows = [[overrideRow()]];
+
+    await expect(deleteSchedule(restricted(), OVERRIDE_ID))
+      .rejects.toThrow(SITE_CEILING_WRITE_DENIED_MESSAGE);
     expect(dbState.deleteCount).toBe(0);
   });
 });

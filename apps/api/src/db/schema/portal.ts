@@ -201,9 +201,9 @@ export const tickets = pgTable('tickets', {
 
 export const ticketComments = pgTable('ticket_comments', {
   id: uuid('id').primaryKey().defaultRandom(),
-  ticketId: uuid('ticket_id').notNull().references(() => tickets.id),
-  portalUserId: uuid('portal_user_id').references(() => portalUsers.id),
-  userId: uuid('user_id').references(() => users.id),
+  ticketId: uuid('ticket_id').notNull().references(() => tickets.id, { onDelete: 'cascade' }),
+  portalUserId: uuid('portal_user_id').references(() => portalUsers.id, { onDelete: 'set null' }),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
   authorName: varchar('author_name', { length: 255 }),
   authorType: varchar('author_type', { length: 50 }),
   content: text('content').notNull(),

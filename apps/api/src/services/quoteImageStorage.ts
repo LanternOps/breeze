@@ -4,7 +4,7 @@ import { db, runOutsideDbContext } from '../db';
 import { quoteImages, quoteLines } from '../db/schema/quotes';
 import { readCatalogItemImage } from './catalogImageStorage';
 import { sniffImageMime } from './avatarStorage';
-import { safeFetch, SsrfBlockedError } from './urlSafety';
+import { ResponseTooLargeError, safeFetch, SsrfBlockedError } from './urlSafety';
 
 export { sniffImageMime };
 export const MAX_QUOTE_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // reuse the avatar cap
@@ -97,8 +97,14 @@ const REMOTE_IMAGE_TIMEOUT_MS = 8000;
 export async function fetchRemoteImage(url: string): Promise<{ mime: string; buffer: Buffer }> {
   let res: Response;
   try {
-    res = await runOutsideDbContext(() => safeFetch(url, { timeoutMs: REMOTE_IMAGE_TIMEOUT_MS }));
+    res = await runOutsideDbContext(() => safeFetch(url, {
+      timeoutMs: REMOTE_IMAGE_TIMEOUT_MS,
+      maxBytes: MAX_QUOTE_IMAGE_SIZE_BYTES,
+    }));
   } catch (err) {
+    // `maxBytes` makes safeFetch drop the socket at the first byte past the cap,
+    // so an oversized body is never buffered in full.
+    if (err instanceof ResponseTooLargeError) throw new RemoteImageError('too_large', 'Image is larger than 5 MB', { cause: err });
     // These failures (blocked SSRF target, DNS/host failure, timeout) are almost
     // always caused by the user-supplied URL, so we surface a deliberately generic
     // message (no SSRF-probe fingerprinting) and do NOT alert to Sentry — `cause`
@@ -112,9 +118,8 @@ export async function fetchRemoteImage(url: string): Promise<{ mime: string; buf
 
   if (!res.ok) throw new RemoteImageError('unreachable', "Couldn't reach that URL", { cause: new Error(`upstream responded ${res.status}`) });
 
-  // Fast-reject on a truthful Content-Length. Note `safeFetch` already buffers the
-  // entire response body before returning, so this doesn't bound peak memory — it
-  // just skips the extra `Buffer.from(arrayBuffer())` copy for honest servers.
+  // Fast-reject on a truthful Content-Length. Peak memory is already bounded by
+  // `maxBytes` above; this just skips the extra copy for honest servers.
   const declared = Number(res.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > MAX_QUOTE_IMAGE_SIZE_BYTES) {
     throw new RemoteImageError('too_large', 'Image is larger than 5 MB');

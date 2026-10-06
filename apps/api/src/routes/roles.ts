@@ -17,6 +17,7 @@ import {
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
+import { isPgForeignKeyViolation } from '../utils/pgErrors';
 
 import { isHiddenOrgType } from '../services/unassignedPool/visibility';
 export const roleRoutes = new Hono();
@@ -1153,11 +1154,23 @@ roleRoutes.delete(
       );
     }
 
-    // Delete role permissions and role
-    await db.transaction(async (tx) => {
-      await tx.delete(rolePermissions).where(eq(rolePermissions.roleId, roleId));
-      await tx.delete(roles).where(eq(roles.id, roleId));
-    });
+    // Delete role permissions and role. access_review_items.role_id has no
+    // ON DELETE action on purpose: a completed review's items (decisions,
+    // notes, reviewer) are evidence and must not vanish because the reviewed
+    // role was deleted afterwards. The FK is the check (an RLS-scoped count
+    // here could miss items on reviews the caller cannot see), so map its
+    // violation to a clean 409.
+    try {
+      await db.transaction(async (tx) => {
+        await tx.delete(rolePermissions).where(eq(rolePermissions.roleId, roleId));
+        await tx.delete(roles).where(eq(roles.id, roleId));
+      });
+    } catch (err) {
+      if (isPgForeignKeyViolation(err, 'access_review_items_role_id_roles_id_fk')) {
+        return c.json({ error: 'Role is referenced by access reviews' }, 409);
+      }
+      throw err;
+    }
 
     writeRoleAudit(c, auth, scopeContext, {
       action: 'role.delete',

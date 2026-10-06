@@ -8,6 +8,7 @@ import { createOrganization, createPartner } from '../../__tests__/integration/d
 import { invoiceRoutes } from '../../routes/portal/invoices';
 import { finishCardPayAndSave } from './payAndSave';
 import { getPartnerStripeClient } from '../partnerStripe';
+import { CURRENT_AUTOPAY_CONSENT_VERSION } from './consentText';
 vi.mock('../partnerStripe', () => ({ getPartnerStripeClient: vi.fn() }));
 
 describe('pay-and-save real DB fences', () => {
@@ -37,7 +38,7 @@ describe('pay-and-save real DB fences', () => {
     const response = await app(org.id).request(`/invoices/${invoice.id}`);
     expect(response.status).toBe(200);
     expect((await response.json()).autopay).toEqual({ eligible: true, consentText: expect.stringContaining('Example MSP'),
-      consentVersion: '2026-10-01.v1', disclosureHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      consentVersion: CURRENT_AUTOPAY_CONSENT_VERSION, disclosureHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
     expect((await app(other.id).request(`/invoices/${invoice.id}`)).status).toBe(404);
     await withSystemDbAccessContext(() => db.update(partners).set({ autopayEnabled: false }).where(eq(partners.id, partner.id)));
     expect((await (await app(org.id).request(`/invoices/${invoice.id}`)).json()).autopay).toBeNull();

@@ -1,3 +1,4 @@
+import { bankNameLabel } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction } from '../../lib/runAction';
 import { i18n } from '../../lib/i18n';
@@ -37,7 +38,7 @@ export function cardBrandLabel(brand: string | null | undefined): string {
 }
 export function methodLabel(method: AutopayRow['method']): string {
   if (!method) return '—';
-  if (method.type !== 'card') return `${method.bankName ?? i18n.t('billing:autopay.bank')} ••${method.bankLast4 ?? '????'}`;
+  if (method.type !== 'card') return `${method.bankName ? bankNameLabel(method.bankName) : i18n.t('billing:autopay.bank')} ••${method.bankLast4 ?? '????'}`;
   const expiry = method.cardExpMonth && method.cardExpYear
     ? ` ${String(method.cardExpMonth).padStart(2, '0')}/${method.cardExpYear}` : '';
   return `${cardBrandLabel(method.cardBrand)} ••${method.cardLast4 ?? '????'}${expiry}`;

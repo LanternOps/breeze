@@ -52,7 +52,9 @@ vi.mock('../../services/permissions', () => ({
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
-vi.mock('../../db', () => ({ db: {}, runOutsideDbContext: vi.fn(), withSystemDbAccessContext: vi.fn() }));
+vi.mock('../../db', () => ({ db: {}, runOutsideDbContext: vi.fn((fn: () => unknown) => fn()), withSystemDbAccessContext: vi.fn() }));
+vi.mock('../../services/redis', () => ({ getRedis: vi.fn(() => ({})) }));
+vi.mock('../../services/rate-limit', () => ({ rateLimiter: vi.fn() }));
 
 vi.mock('../../services/aiModels/registryCutover', () => ({ ensurePartnerCutover: vi.fn() }));
 vi.mock('../../services/aiModels/registryView', () => ({ buildPartnerModelsSnapshot: vi.fn() }));
@@ -124,6 +126,7 @@ import {
 } from '../../services/aiModels/anthropicConnectionWrites';
 import { ConnectionCheckError } from '../../services/aiModels/connectionProbe';
 import { RegistryWriteError } from '../../services/aiModels/registryWriteErrors';
+import { rateLimiter } from '../../services/rate-limit';
 
 const chatRow = {
   surface: 'chat', role: 'default', defaultOfferingId: A, permittedOfferingIds: null,
@@ -184,6 +187,7 @@ beforeEach(() => {
   permissionsState.approvalsDecide = true;
   authState.value = baseAuth();
   vi.mocked(ensurePartnerCutover).mockResolvedValue(true);
+  vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 10, resetAt: new Date(Date.now() + 60_000) });
   vi.mocked(buildPartnerModelsSnapshot).mockResolvedValue({ connections: [] } as any);
   // The partner already has its Anthropic connection C (getConnection below
   // resolves it, live): creating another is the R1-cap 409.
@@ -587,6 +591,17 @@ describe('/ai/models partner routes — refresh and verify (Task 8b)', () => {
       orgId: null, action: 'ai_models.offering.verify_requested', resourceType: 'partner', resourceId: P,
       details: { offeringId: A, connectionId: C },
     }));
+  });
+  it('POST /offerings/:id/verify is rate limited per partner → 429 with Retry-After, nothing queued', async () => {
+    vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 120_000) });
+    const res = await call('POST', `/offerings/${A}/verify`);
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ code: 'rate_limited' });
+    expect(Number(res.headers.get('Retry-After'))).toBeGreaterThan(0);
+    expect(rateLimiter).toHaveBeenCalledWith(expect.anything(), `rl:ai-models:offering-verify:${P}`, expect.any(Number), expect.any(Number));
+    expect(getOffering).not.toHaveBeenCalled();
+    expect(enqueueConnectionSync).not.toHaveBeenCalled();
+    expect(enqueueOfferingVerification).not.toHaveBeenCalled();
   });
   it('POST /offerings/:id/verify on a platform offering is 409 (operator-verified), no enqueue', async () => {
     vi.mocked(getOffering).mockResolvedValue({ id: A, partnerId: P, connectionId: null } as any);

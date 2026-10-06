@@ -201,7 +201,7 @@ it('a cap change issues one new reauthorization with generic payment-terms copy 
   expect(all).toHaveLength(2);
   for (const notice of all) {
     const text = (notice.rendered as { text: string }).text;
-    expect(text).toContain('updated its payment terms'); expect(text).not.toContain('processing fee terms');
+    expect(text).toContain('updated the terms of your automatic payments'); expect(text).not.toContain('processing fee terms');
   }
 });
 it('lists a client whose accepted cap is narrower than the configured one, and only then (2a-1)', async () => {

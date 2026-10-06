@@ -29,3 +29,14 @@ export function autopayCapReason(input: { current: Cap; accepted: Cap; total: st
   }
   return null;
 }
+
+/** F-8: an invoice frozen at issue as above the authorized cap stays manual (it was issued
+ * before the client's updated authorization, and the re-authorization says received invoices
+ * aren't included), but once the latest accepted authorization covers its amount, saying it
+ * is "over the limit you authorized" is no longer true. */
+export async function coveredByAcceptedCap(tx: Tx, key: AutopayConsentKey, total: string, currency: string): Promise<boolean> {
+  const cap = await acceptedAutopayCap(tx, key);
+  if (!cap) return false;
+  if (!cap.enabled) return true;
+  return cap.currency.toUpperCase() === currency.toUpperCase() && toMinorUnits(total, currency) <= toMinorUnits(cap.amount, currency);
+}

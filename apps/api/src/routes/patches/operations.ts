@@ -24,6 +24,49 @@ function canAccessDeviceSite(device: { siteId?: string | null }, permissions: Us
   return typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId);
 }
 
+function targetDeviceIds(targets: unknown): string[] {
+  const ids = (targets as { deviceIds?: unknown } | null)?.deviceIds;
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
+}
+
+/**
+ * A job's `targets.deviceIds` can span the whole org. For a caller limited to
+ * a subset of sites, keep only the devices in those sites (the same rule the
+ * per-device results already follow). Unrestricted callers get rows unchanged.
+ */
+async function narrowJobTargetsToSites<T extends { targets: unknown }>(
+  jobs: T[],
+  permissions: UserPermissions | undefined
+): Promise<T[]> {
+  if (!permissions?.allowedSiteIds) return jobs;
+
+  const allIds = [...new Set(jobs.flatMap((job) => targetDeviceIds(job.targets)))];
+  const visible = new Set<string>();
+  if (allIds.length > 0) {
+    const rows = await db
+      .select({ id: devices.id, siteId: devices.siteId })
+      .from(devices)
+      .where(inArray(devices.id, allIds));
+    for (const row of rows) {
+      if (canAccessDeviceSite(row, permissions)) visible.add(row.id);
+    }
+  }
+
+  return jobs.map((job) => {
+    const targets = job.targets;
+    if (!targets || typeof targets !== 'object' || Array.isArray(targets)) {
+      return { ...job, targets: { deviceIds: [] } };
+    }
+    return {
+      ...job,
+      targets: {
+        ...(targets as Record<string, unknown>),
+        deviceIds: targetDeviceIds(targets).filter((id) => visible.has(id)),
+      },
+    };
+  });
+}
+
 // POST /patches/scan - Trigger patch scan for devices
 operationsRoutes.post(
   '/scan',
@@ -143,11 +186,28 @@ operationsRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const allowedSiteIds = permissions?.allowedSiteIds;
+
+    if (allowedSiteIds && allowedSiteIds.length === 0) {
+      return c.json({ data: [], pagination: { page, limit, total: 0 } });
+    }
 
     const conditions = [];
     const orgCond = auth.orgCondition(patchJobs.orgId);
     if (orgCond) conditions.push(orgCond);
     if (query.status) conditions.push(eq(patchJobs.status, query.status));
+    if (allowedSiteIds) {
+      // Site-restricted callers only see jobs that target at least one device
+      // in their sites. `jsonb_exists` (the `?` operator) is false rather than
+      // an error when `targets.deviceIds` is missing or not an array.
+      conditions.push(sql`EXISTS (
+        SELECT 1 FROM ${devices}
+        WHERE ${devices.orgId} = ${patchJobs.orgId}
+          AND ${inArray(devices.siteId, allowedSiteIds)}
+          AND jsonb_exists(${patchJobs.targets}->'deviceIds', ${devices.id}::text)
+      )`);
+    }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -187,7 +247,7 @@ operationsRoutes.get(
       .where(whereClause);
 
     return c.json({
-      data: jobs,
+      data: await narrowJobTargetsToSites(jobs, permissions),
       pagination: { page, limit, total: Number(countResult[0]?.count ?? 0) }
     });
   }
@@ -266,14 +326,24 @@ operationsRoutes.get(
       .where(eq(patchJobResults.jobId, job.id))
       .orderBy(desc(patchJobResults.createdAt));
 
-    // Site-restricted callers only see per-device results for devices in
-    // their allowed sites (the job row itself is org-scoped; results are not).
+    // Site-restricted callers only see per-device results and target devices
+    // in their allowed sites (the job row itself is org-scoped; results are not).
     const permissions = c.get('permissions') as UserPermissions | undefined;
     const visibleResults = results
       .filter((r) => canAccessDeviceSite({ siteId: r.deviceSiteId }, permissions))
       .map(({ deviceSiteId: _deviceSiteId, ...rest }) => rest);
+    const [visibleJob] = await narrowJobTargetsToSites([job], permissions);
+    // Same visibility rule as the jobs list: a site-restricted caller does not
+    // see a job that touches none of their devices.
+    if (
+      permissions?.allowedSiteIds &&
+      visibleResults.length === 0 &&
+      targetDeviceIds(visibleJob?.targets).length === 0
+    ) {
+      return c.json({ error: 'Patch job not found' }, 404);
+    }
 
-    return c.json({ data: { ...job, results: visibleResults } });
+    return c.json({ data: { ...visibleJob, results: visibleResults } });
   }
 );
 

@@ -13,7 +13,7 @@ export const ticketResponseTemplates = pgTable('ticket_response_templates', {
   category: varchar('category', { length: 100 }),
   sortOrder: integer('sort_order').notNull().default(0),
   isActive: boolean('is_active').notNull().default(true),
-  createdBy: uuid('created_by').references(() => users.id),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (t) => [index('ticket_response_templates_partner_idx').on(t.partnerId)]);

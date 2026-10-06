@@ -423,7 +423,7 @@ describe('userRiskRoutes', () => {
       updatedBy: '00000000-0000-0000-0000-000000000099'
     });
 
-    const app = buildApp();
+    const app = buildApp({ allowedSiteIds: undefined });
     const res = await app.request('/user-risk/policy', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -432,6 +432,20 @@ describe('userRiskRoutes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.orgId).toBe(ORG_ID);
+  });
+
+  it.each([
+    ['restricted to one site', ['00000000-0000-4000-8000-000000000050']],
+    ['restricted to zero sites', []]
+  ])('PUT /policy rejects a caller %s — the policy is org-wide', async (_label, siteIds) => {
+    const app = buildApp({ allowedSiteIds: siteIds });
+    const res = await app.request('/user-risk/policy', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ thresholds: { high: 1 }, interventions: { autoAssignTraining: true } })
+    });
+    expect(res.status).toBe(403);
+    expect(updateUserRiskPolicy).not.toHaveBeenCalled();
   });
 
   it('GET /policy returns org policy', async () => {

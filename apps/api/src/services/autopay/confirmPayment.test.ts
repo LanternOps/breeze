@@ -13,9 +13,9 @@ vi.mock('../../db',()=>{
 vi.mock('./linkTokens',()=>({resolveBillingLinkToken:h.resolve}));
 vi.mock('./collectionEngine',()=>({resumeCollectionAttempt:h.resume,loadAttemptForReconciliation:h.history}));
 vi.mock('../stripeSettle',()=>({assertNoHeldDbContextForStripe:()=>{expect(h.depth).toBe(0);}}));
-vi.mock('../invoiceLinkToken',()=>({getOrMintInvoiceLink:h.mint,buildPublicInvoiceUrl:()=> 'https://portal.example.test/invoice/token'}));
+vi.mock('../invoiceLinkToken',()=>({getOrMintInvoiceLink:h.mint,peekInvoiceLink:()=>({token:'token'}),buildPublicInvoiceUrl:()=> 'https://portal.example.test/invoice/token'}));
 import { getConfirmPaymentView,confirmInvoicePayment } from './confirmPayment';
-import { billingNoticeOutbox,invoices,orgAutopayEnrollments,invoiceAutopaySchedules,invoiceCollectionAttempts } from '../../db/schema';
+import { billingNoticeOutbox,invoices,orgAutopayEnrollments,invoiceAutopaySchedules,invoiceCollectionAttempts,orgPaymentMethods,partners } from '../../db/schema';
 const invoice={id:'invoice',orgId:'org',partnerId:'partner',status:'sent',balance:'100.00',currencyCode:'USD',autopayExcluded:false};
 const attempt={id:'attempt',invoiceId:invoice.id,orgId:invoice.orgId,scheduleId:'schedule',attemptNo:1,stripePaymentIntentId:'pi_original',state:'requires_action',principalAmount:'100.00',currency:'USD'};
 const link={id:'token',invoiceId:invoice.id,orgId:invoice.orgId,enrollmentId:'enrollment',generation:1};
@@ -30,7 +30,8 @@ beforeEach(()=>{vi.clearAllMocks();h.rows.clear();h.writes.length=0;h.depth=0;
  h.rows.set(invoiceAutopaySchedules,[{id:'schedule',invoiceId:'invoice',orgId:'org',enrollmentId:'enrollment',enrollmentGeneration:1,attemptCount:1}]);
 });
 it('GET resolves the frozen attempt without provider or mutation work',async()=>{
- expect(await getConfirmPaymentView('token')).toEqual({state:'requires_action',amount:'100.00',currency:'USD'});
+ expect(await getConfirmPaymentView('token')).toEqual({state:'requires_action',amount:'100.00',fee:'0.00',currency:'USD',invoiceNumber:null,invoiceStatus:'sent',balance:'100.00',
+  methodLabel:null,partnerName:'',logoUrl:null,supportEmail:null,invoiceUrl:'https://portal.example.test/invoice/token'});
  expect(h.resume).not.toHaveBeenCalled();expect(h.writes).toEqual([]);
 });
 it('cancels the exact original before consuming once and returning the invoice URL',async()=>{
@@ -100,4 +101,37 @@ it('invoice pages surface a cancellation that did not land',async()=>{
  h.resume.mockResolvedValue(undefined);
  h.history.mockResolvedValue({attempt:{...attempt,state:'requires_action'},mapping:{invoicePaymentId:null}});
  await expect(releaseInvoiceConfirmation({invoiceId:invoice.id,orgId:invoice.orgId})).rejects.toMatchObject({status:409});
+});
+
+it('GET names the invoice, the charged method and the MSP for the confirm page',async()=>{
+ h.rows.set(invoices,[{...invoice,invoiceNumber:'INV-7'}]);
+ h.rows.set(invoiceCollectionAttempts,[{...attempt,paymentMethodId:'pm-row'}]);
+ h.rows.set(orgPaymentMethods,[{id:'pm-row',orgId:'org',type:'card',cardBrand:'visa',cardFunding:'credit',cardLast4:'3184'}]);
+ h.rows.set(partners,[{name:'Example MSP',billingEmail:'billing@msp.example'}]);
+ expect(await getConfirmPaymentView('token')).toMatchObject({invoiceNumber:'INV-7',methodLabel:'Visa credit card ending in 3184',
+  partnerName:'Example MSP',supportEmail:'billing@msp.example'});
+ expect(h.writes).toEqual([]);expect(h.mint).not.toHaveBeenCalled();
+});
+
+// V-3: after the client cancels the bank-confirmation payment on the invoice, the confirm
+// link must say what is still owed, not imply the invoice was settled.
+it('a canceled confirmation still reports what the open invoice owes',async()=>{
+ h.rows.set(invoices,[{...invoice,balance:'90.00'}]);
+ h.rows.set(invoiceCollectionAttempts,[{...attempt,state:'canceled'}]);
+ expect(await getConfirmPaymentView('token')).toMatchObject({state:'not_needed',invoiceStatus:'sent',balance:'90.00'});
+});
+
+// R5: a 409 says WHY by reason, not by English text: the confirm page must tell "money
+// arrived, under review" (never pay again) from "still processing".
+it.each([['unapplied','needs_review'],['processing_late','processing']] as const)('a %s outcome refuses with reason %s',async(kind,reason)=>{
+ h.resume.mockResolvedValue(undefined);
+ h.history.mockResolvedValue(kind==='unapplied'?{attempt:{...attempt,state:'unapplied'},mapping:{invoicePaymentId:null}}
+  :{attempt:{...attempt,state:'requires_action'},mapping:{invoicePaymentId:null}});
+ await expect(confirmInvoicePayment('token')).rejects.toMatchObject({status:409,details:{reason}});
+});
+
+// FP-4: the attempt's fee is part of what the bank asked to confirm.
+it('the confirm view carries the attempt fee',async()=>{
+ h.rows.set(invoiceCollectionAttempts,[{...attempt,principalAmount:'90.00',feeAmount:'2.70'}]);
+ expect(await getConfirmPaymentView('token')).toMatchObject({amount:'90.00',fee:'2.70'});
 });

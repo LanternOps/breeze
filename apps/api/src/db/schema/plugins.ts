@@ -88,7 +88,7 @@ export const pluginInstallations = pgTable('plugin_installations', {
 
 export const pluginLogs = pgTable('plugin_logs', {
   id: uuid('id').primaryKey().defaultRandom(),
-  installationId: uuid('installation_id').notNull().references(() => pluginInstallations.id),
+  installationId: uuid('installation_id').notNull().references(() => pluginInstallations.id, { onDelete: 'cascade' }),
   level: varchar('level', { length: 20 }).notNull(),
   message: text('message').notNull(),
   context: jsonb('context'),

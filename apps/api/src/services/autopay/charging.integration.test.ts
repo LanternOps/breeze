@@ -864,12 +864,12 @@ it('Stop fences all invoices, sends one protected notice, and detaches only afte
   for (const body of [stoppedContent.html, stoppedContent.text]) {
     expect(body).toContain(f.invoice.invoiceNumber); expect(body).toContain(second.invoice.invoiceNumber);
     // Both debits are processing when Stop runs: they complete, they are not cancelled (spec 6.6).
-    expect(body).toContain('is already processing and will complete'); expect(body).toContain('receipt');
+    expect(body).toContain('is already processing and can'); expect(body).toContain('receipt');
     expect(body).not.toContain('is being cancelled');
     // D-19: the announced charge that was simply cancelled is named; in-flight ones are not told "will not happen".
-    expect(body).toContain(`Invoice ${idle.invoice.invoiceNumber}: the automatic payment announced`);
-    expect(body).not.toContain(`Invoice ${f.invoice.invoiceNumber}: the automatic payment announced`);
-    expect(body).not.toContain(`Invoice ${second.invoice.invoiceNumber}: the automatic payment announced`);
+    expect(body).toContain(`Invoice ${idle.invoice.invoiceNumber}: the automatic payment we planned`);
+    expect(body).not.toContain(`Invoice ${f.invoice.invoiceNumber}: the automatic payment we planned`);
+    expect(body).not.toContain(`Invoice ${second.invoice.invoiceNumber}: the automatic payment we planned`);
   }
   await drainAutopayMethodDetaches(); expect(provider.methodDetach).not.toHaveBeenCalled();
   provider.retrieve.mockImplementation(async id => {
@@ -924,7 +924,7 @@ it('Stop includes a schedule-less bank debit in the protected pending notice', a
   provider.methodDetach.mockClear();
   await withSystemDbAccessContext(() => turnOffAutopay(db, f.actor, f.org.id));
   const [notice] = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.kind, 'autopay_stopped')));
-  expect((notice!.rendered as {text: string}).text).toContain(`invoice ${f.invoice.invoiceNumber} is already processing and will complete`);
+  expect((notice!.rendered as {text: string}).text).toContain(`invoice ${f.invoice.invoiceNumber} is already processing and can`);
   expect((notice!.rendered as {text: string}).text).not.toContain('is being cancelled');
   await drainAutopayMethodDetaches(); expect(provider.methodDetach).not.toHaveBeenCalled();
   expect((await attempts(f.invoice.id))[0]!.state).toBe('processing');
@@ -1560,7 +1560,7 @@ it.each(['none', 'not_needed', 'scheduled'] as const)(
     // The invoice offers the new total and accepts a fresh authorization for it.
     const offer = await getBankAutopayOffer(f.invoice.id, f.org.id);
     expect(offer).toMatchObject({ available: true, principal: '100.00', fee: '2.00', methodStatus: 'active' });
-    expect(offer!.consentText).toContain('plus a processing fee of USD 2.00');
+    expect(offer!.consentText).toContain('plus a $2.00 processing fee ($102.00 in total)');
     await expect(startInvoiceBankSetup({ invoiceId: f.invoice.id, orgId: f.org.id, returnTo: 'public', ip: null, userAgent: null,
       terms: { methodType: 'us_bank_account', phase: 'setup', consentAccepted: true, principal: '100.00', fee: '2.50', currency: 'USD',
         disclosureHash: offer!.disclosureHash } })).rejects.toMatchObject({ status: 409 });
@@ -1957,6 +1957,8 @@ it('bank pay refuses a lower fee than the client authorized (B1-1)',async()=>{
 import { getInvoiceAutopayOffer } from './payAndSave';
 it('offers neither bank pay nor card pay-and-save while an unapplied attempt holds money for the invoice (B1-2)',async()=>{
  const f=await fixture();
+ // Not yet active: bank pay is never offered over a working method on active automatic payments (G3).
+ await withSystemDbAccessContext(()=>db.update(orgAutopayEnrollments).set({status:'requested'}).where(eq(orgAutopayEnrollments.id,f.enrollment.id)));
  expect(await getBankAutopayOffer(f.invoice.id,f.org.id)).toMatchObject({available:true});
  expect(await getInvoiceAutopayOffer(f.org.id,f.invoice.id)).toMatchObject({eligible:true});
  await withSystemDbAccessContext(()=>db.insert(invoiceCollectionAttempts).values({orgId:f.org.id,invoiceId:f.invoice.id,scheduleId:f.schedule.id,
@@ -2047,7 +2049,7 @@ it('a missing authorization at charge time emails staff once and tells each noti
   expect(schedule).toMatchObject({state:'failed',stateReason:'consent_required'});
   const notices=(await outboxFor(invoice.id)).filter(n=>n.kind==='payment_reminder');
   expect(notices).toEqual([expect.objectContaining({dedupeKey:`invoice:${invoice.id}:not_charged:1`,toEmail:'billing@example.test',status:'pending'})]);
-  expect((notices[0]!.rendered as {text:string}).text).toMatch(/needs your updated authorization before charging automatically\. The automatic payment announced .*will not happen\./);
+  expect((notices[0]!.rendered as {text:string}).text).toMatch(/needs your updated authorization before charging automatically\. The automatic payment we planned .*will not happen\./);
  }
  expect(provider.create).not.toHaveBeenCalled();
 });
@@ -2114,7 +2116,8 @@ it('a cap cancellation before confirm records its reason and tells the client an
  const text=(notices[0]!.rendered as {text:string}).text;
  expect(text).toContain('limit you authorized');
  // One shape with the MSP exclusion notice (D-19): it names the announced charge that will not happen.
- expect(text).toMatch(/The automatic payment announced for on or around \d{4}-\d{2}-\d{2} will not happen\. You can pay using the invoice link\./);
+ // One date formatter ("November 4, 2026") and the locked not-charged wording (wave 1).
+ expect(text).toMatch(/The automatic payment we planned to take on or around [A-Z][a-z]+ \d{1,2}, \d{4} will not happen\. Please pay \$[\d,]+\.\d{2} using the invoice link\./);
  expect(mail.staff()[0]!.text).toMatch(/limit the client authorized/);
  // Once per announcement, whatever the reason: a later exclusion of the same announced charge adds nothing.
  await withSystemDbAccessContext(()=>noticeChargeNotMade(db,{invoiceId:f.invoice.id,reason:'exclude'}));
@@ -2163,7 +2166,8 @@ it.each([['exclude', 'payment_reminder'], ['pause', 'autopay_paused'], ['stop', 
     expect(told[0]!.invoiceId ?? f.invoice.id).toBe(f.invoice.id);
     const text = (told[0]!.rendered as {text: string}).text;
     expect(text).toContain(f.invoice.invoiceNumber);
-    expect(text).toMatch(/announced for on or around \d{4}-\d{2}-\d{2} will not happen/);
+    // One date formatter: "November 4, 2026", never an ISO date.
+    expect(text).toMatch(/we planned to take on or around [A-Z][a-z]+ \d{1,2}, \d{4} will not happen/);
     if (kind !== 'exclude') expect(text).not.toMatch(/processing fee/i);
   });
 it('an MSP exclusion before the charging notice went out sends nothing new', async () => {
@@ -2244,7 +2248,7 @@ it('a full refund of an unapplied autopay capture sends the client a refund noti
   .filter(n=>n.kind==='payment_receipt'&&(n.rendered as {frozen?:{variant?:string}}).frozen?.variant==='refund');
  expect(refunds).toHaveLength(1);
  const text=(refunds[0]!.rendered as {text:string}).text;
- expect(text).toContain('Refunded: USD 100.00');
+ expect(text).toContain('Refunded: $100.00');
  expect(text).toContain(`was not applied to invoice ${f.invoice.invoiceNumber}`);
  expect(text).not.toContain('Balance due');
 });
@@ -2320,6 +2324,94 @@ it.each(['pause_then_resume','stop_then_rerequest'] as const)('a superseded %s e
  expect(lifecycle).toMatchObject({status:'cancelled',lastError:'Automatic payment status changed since this notice'});
  const told=rows.filter(row=>row.kind==='payment_reminder'&&row.invoiceId===f.invoice.id);
  expect(told).toEqual([expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`,status:'sent'})]);
- expect((told[0]!.rendered as {text:string}).text).toMatch(/announced for on or around \d{4}-\d{2}-\d{2} will not happen/);
+ expect((told[0]!.rendered as {text:string}).text).toMatch(/we planned to take on or around [A-Z][a-z]+ \d{1,2}, \d{4} will not happen/);
  expect(await scheduleFor(f)).toMatchObject({state:'cancelled'});
+});
+
+// G1/G2: an invoice is either still going to be charged (schedule active, no reminders) or it
+// is not (schedule ended, client told once, reminders resume). A deferral that outlasts the
+// grace (2 days from when the charge was due) ends the schedule with the not-charged notice.
+async function deferFor(f:Awaited<ReturnType<typeof fixture>>,cause:'charging_disabled'|'stripe_unavailable'|'bank_unverified'){
+ await withSystemDbAccessContext(async()=>{
+  if(cause==='charging_disabled')await db.update(partners).set({autopayEnabled:false}).where(eq(partners.id,f.partner.id));
+  else if(cause==='stripe_unavailable')await db.update(stripeConnectAccounts).set({autopayMissingPermissions:['payment_intents.write']}).where(eq(stripeConnectAccounts.id,f.connection.id));
+  else await db.update(orgPaymentMethods).set({type:'us_bank_account',cardBrand:null,cardLast4:null,cardFunding:null,bankName:'Test Bank',bankLast4:'6789',
+   accountHolderType:'individual',status:'pending_verification'}).where(eq(orgPaymentMethods.id,f.method.id));
+ });
+}
+const endReason={charging_disabled:'charging_on_hold',stripe_unavailable:'service_unavailable',bank_unverified:'bank_unverified'} as const;
+const endLine={charging_disabled:/Automatic payments are on hold/,stripe_unavailable:/couldn't reach our payment service/,
+ bank_unverified:/bank account still isn't verified/} as const;
+it.each(['charging_disabled','stripe_unavailable','bank_unverified'] as const)('a %s deferral within the grace keeps the schedule; past it, the schedule ends and the client is told once (G1)',async cause=>{
+ const f=await fixture();
+ const due=new Date(`${f.schedule.collectOn}T00:00:00.000Z`);
+ await deferFor(f,cause);
+ // Within the grace: deferred, still covering the invoice.
+ await runAutopayCollection(new Date(due.getTime()+30*3_600_000));
+ expect(await scheduleFor(f)).toMatchObject({state:'scheduled'});
+ expect((await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder')).toEqual([]);
+ // Past the grace: ended, told once however many runs follow.
+ await runAutopayCollection(new Date(due.getTime()+49*3_600_000));
+ await runAutopayCollection(new Date(due.getTime()+73*3_600_000));
+ expect(await scheduleFor(f)).toMatchObject({state:'cancelled',stateReason:endReason[cause],nextAttemptAt:null});
+ const told=(await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder');
+ expect(told).toEqual([expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`,toEmail:'billing@example.test'})]);
+ expect((told[0]!.rendered as {text:string}).text).toMatch(endLine[cause]);
+ expect((told[0]!.rendered as {text:string}).text).toMatch(/will not happen/);
+ expect(provider.create).not.toHaveBeenCalled();
+});
+it('a short switch-off within the grace still charges on the next run (G1)',async()=>{
+ const f=await fixture();
+ const due=new Date(`${f.schedule.collectOn}T00:00:00.000Z`);
+ await deferFor(f,'charging_disabled');
+ await runAutopayCollection(new Date(due.getTime()+8*3_600_000));
+ await withSystemDbAccessContext(()=>db.update(partners).set({autopayEnabled:true}).where(eq(partners.id,f.partner.id)));
+ await runAutopayCollection(new Date(due.getTime()+33*3_600_000));
+ expect((await attempts(f.invoice.id))[0]?.state).toBe('processing');
+ expect((await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder')).toEqual([]);
+});
+// G2: a retry that keeps being deferred (a soft decline, then autopay switched off) is measured
+// from when the retry was due, not left 'retry_scheduled' forever.
+it.each([['within',1],['past',3]] as const)('a deferred retry %s the grace (G2)',async(_label,daysLate)=>{
+ const f=await fixture();
+ const now=new Date();
+ // The first attempt failed softly; the retry was due 3 days after it (retryAt), daysLate days ago.
+ const firstAt=new Date(now.getTime()-(3+daysLate)*86_400_000);
+ await withSystemDbAccessContext(async()=>{
+  await db.insert(invoiceCollectionAttempts).values({orgId:f.org.id,invoiceId:f.invoice.id,scheduleId:f.schedule.id,paymentMethodId:f.method.id,
+   attemptNo:1,principalAmount:'100.00',feeAmount:'0.00',currency:'USD',idempotencyKey:`retry-${randomUUID()}`,state:'failed',
+   failureClass:'soft',failureCode:'card_declined',initiatedBy:'scheduler',createdAt:firstAt,updatedAt:firstAt});
+  await db.update(invoiceAutopaySchedules).set({state:'retry_scheduled',stateReason:'soft',attemptCount:1,
+   collectOn:firstAt.toISOString().slice(0,10),nextAttemptAt:new Date(now.getTime()-3_600_000)}).where(eq(invoiceAutopaySchedules.id,f.schedule.id));
+  // The failure email told the client the retry date (V2-5).
+  await db.insert(billingNoticeOutbox).values({orgId:f.org.id,invoiceId:f.invoice.id,enrollmentId:f.enrollment.id,kind:'payment_failed',seq:1,
+   dedupeKey:`${f.invoice.id}:payment_failed:retry`,toEmail:'billing@example.test',status:'sent',sentAt:firstAt,
+   rendered:{subject:'Payment failed',html:'<p>x</p>',text:'x',frozen:{variant:'pay',retryOn:new Date(firstAt.getTime()+3*86_400_000).toISOString()}}});
+ });
+ await deferFor(f,'charging_disabled');
+ await runAutopayCollection(now);
+ if(daysLate===1){
+  expect(await scheduleFor(f)).toMatchObject({state:'retry_scheduled',stateReason:'charging_disabled'});
+  expect((await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder')).toEqual([]);
+ }else{
+  expect(await scheduleFor(f)).toMatchObject({state:'cancelled',stateReason:'charging_on_hold',nextAttemptAt:null});
+  const told=(await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder');
+  expect(told).toEqual([expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`})]);
+  // V2-5: the date the client was last given is the retry, not the first notice's date.
+  const retryDay=new Intl.DateTimeFormat('en-US',{month:'long',day:'numeric',year:'numeric',timeZone:'UTC'}).format(new Date(firstAt.getTime()+3*86_400_000));
+  expect((told[0]!.rendered as {text:string}).text).toContain(`The automatic payment we planned to try again on or after ${retryDay} will not happen.`);
+ }
+ expect(provider.create).not.toHaveBeenCalled();
+});
+// G3: bank pay makes the new account the autopay method at once (exempt from F-1's keep-working
+// rule), so the API refuses it over a working card on active automatic payments, not only the UI.
+it('refuses bank pay over a working card on active automatic payments (G3)',async()=>{
+ const f=await fixture();
+ expect(await getBankAutopayOffer(f.invoice.id,f.org.id)).toBeNull();
+ await expect(startInvoiceBankSetup({invoiceId:f.invoice.id,orgId:f.org.id,returnTo:'public',ip:null,userAgent:null,
+  terms:{methodType:'us_bank_account',phase:'setup',consentAccepted:true,principal:'100.00',fee:'0.00',currency:'USD',disclosureHash:'a'.repeat(64)}}))
+  .rejects.toMatchObject({status:409});
+ expect(provider.sessionCreate).not.toHaveBeenCalled();
+ const [method]=await withSystemDbAccessContext(()=>db.select().from(orgPaymentMethods).where(eq(orgPaymentMethods.id,f.method.id)));
+ expect(method).toMatchObject({status:'active',isAutopayMethod:true});
 });

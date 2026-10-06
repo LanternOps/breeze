@@ -1,4 +1,4 @@
-import { formatMoney } from '@breeze/shared';
+import { formatCalendarDate, formatMoney } from '@breeze/shared';
 import { portalLocale } from '@/lib/money';
 /**
  * Shared customer-facing formatters. These were duplicated verbatim in four
@@ -30,4 +30,10 @@ export function shortDate(value: string | null | undefined): string {
   const d = new Date(value.length === 10 ? `${value}T00:00:00` : value);
   if (Number.isNaN(d.getTime())) return value;
   return d.toLocaleDateString();
+}
+
+/** "November 4, 2026" in the customer's locale. Date-only values are calendar
+ *  days (no timezone shift); timestamps render in the viewer's zone. */
+export function longDate(value: string | null | undefined): string {
+  return formatCalendarDate(value, portalLocale());
 }

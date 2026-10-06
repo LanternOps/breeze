@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 vi.mock('../../db', () => ({
@@ -204,6 +204,104 @@ describe('GET /patches/jobs', () => {
       data: [],
       pagination: { page: 1, limit: 50, total: 0 },
     });
+  });
+});
+
+describe('GET /patches/jobs — site-restricted callers', () => {
+  const OTHER_DEVICE_ID = '55555555-5555-4555-8555-555555555555';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    grantedPermission = 'devices:read';
+    vi.mocked(canAccessSite).mockImplementation((_p: any, siteId: string) => siteId === 'site-a');
+  });
+
+  afterEach(() => {
+    vi.mocked(canAccessSite).mockImplementation(() => true);
+  });
+
+  it('only lists jobs that target a device in the caller\'s sites', async () => {
+    const whereCalls: CapturedCall[] = [];
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chain([], whereCalls))
+      .mockReturnValueOnce(chain([{ count: 0 }]));
+
+    const res = await mountApp(orgScopedAuth(ORG_ID), { allowedSiteIds: ['site-a'] }).request('/patches/jobs');
+
+    expect(res.status).toBe(200);
+    const whereCall = whereCalls.find((c) => c.method === 'where');
+    const conditionText = JSON.stringify(whereCall?.args, (_key, value) =>
+      typeof value === 'function' ? '[function]' : value,
+    );
+    expect(conditionText).toContain('devices.siteId');
+    expect(conditionText).toContain('site-a');
+  });
+
+  it('returns only the target devices in the caller\'s sites', async () => {
+    const jobRow = {
+      id: JOB_ID,
+      orgId: ORG_ID,
+      name: 'Fleet patch',
+      status: 'completed',
+      targets: { deviceIds: [DEVICE_ID, OTHER_DEVICE_ID], configPolicyName: 'Baseline' },
+    };
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chain([jobRow]))
+      .mockReturnValueOnce(chain([{ count: 1 }]))
+      .mockReturnValueOnce(chain([
+        { id: DEVICE_ID, siteId: 'site-a' },
+        { id: OTHER_DEVICE_ID, siteId: 'site-b' },
+      ]));
+
+    const res = await mountApp(orgScopedAuth(ORG_ID), { allowedSiteIds: ['site-a'] }).request('/patches/jobs');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].targets).toEqual({ deviceIds: [DEVICE_ID], configPolicyName: 'Baseline' });
+  });
+
+  it('returns nothing for a caller restricted to zero sites, without querying', async () => {
+    const res = await mountApp(orgScopedAuth(ORG_ID), { allowedSiteIds: [] }).request('/patches/jobs');
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: [], pagination: { page: 1, limit: 50, total: 0 } });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('job detail 404s when none of the job\'s devices are in the caller\'s sites', async () => {
+    const jobRow = { id: JOB_ID, orgId: ORG_ID, name: 'Fleet patch', status: 'completed', targets: { deviceIds: [OTHER_DEVICE_ID] } };
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chain([jobRow]))
+      .mockReturnValueOnce(chain([{ id: 'r-out', deviceId: OTHER_DEVICE_ID, deviceSiteId: 'site-b' }]))
+      .mockReturnValueOnce(chain([{ id: OTHER_DEVICE_ID, siteId: 'site-b' }]));
+
+    const res = await mountApp(orgScopedAuth(ORG_ID), { allowedSiteIds: ['site-a'] }).request(`/patches/jobs/${JOB_ID}`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it('job detail also narrows target devices to the caller\'s sites', async () => {
+    const jobRow = {
+      id: JOB_ID,
+      orgId: ORG_ID,
+      name: 'Fleet patch',
+      status: 'completed',
+      targets: { deviceIds: [DEVICE_ID, OTHER_DEVICE_ID] },
+    };
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chain([jobRow]))
+      .mockReturnValueOnce(chain([]))
+      .mockReturnValueOnce(chain([
+        { id: DEVICE_ID, siteId: 'site-a' },
+        { id: OTHER_DEVICE_ID, siteId: 'site-b' },
+      ]));
+
+    const res = await mountApp(orgScopedAuth(ORG_ID), { allowedSiteIds: ['site-a'] }).request(`/patches/jobs/${JOB_ID}`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.targets).toEqual({ deviceIds: [DEVICE_ID] });
   });
 });
 

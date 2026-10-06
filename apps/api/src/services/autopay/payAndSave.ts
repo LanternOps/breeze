@@ -37,6 +37,11 @@ export type CardSaveInput = {
   contactEmail?: string;
 };
 
+/** FP-20: add a PaymentIntent description to Checkout fields, keeping any card-save data. */
+export function withPaymentDescription<T extends { payment_intent_data?: Stripe.Checkout.SessionCreateParams.PaymentIntentData }>(fields: T, description: string)
+  : T & { payment_intent_data: Stripe.Checkout.SessionCreateParams.PaymentIntentData } {
+  return { ...fields, payment_intent_data: { ...(fields.payment_intent_data ?? {}), description } };
+}
 export function cardSaveStripeFields(
   attempt: { id: string; stripeCustomerId: string | null } | null,
 ): Pick<Stripe.Checkout.SessionCreateParams, 'customer' | 'payment_intent_data' | 'wallet_options'> {

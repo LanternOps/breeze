@@ -217,7 +217,7 @@ it('returns lower authorized client fees from both fee Save responses', async ()
     autopayCap: { value: { enabled: false }, source: 'default' } });
   m.feeGapRows = [{ orgId, orgName: 'Example client', methodType: 'card', feeTerms: {
     methodType: 'card', cardFeeBps: 100, achFeeAmount: '0.00', feeAttested: true, currency: 'USD',
-  }, cardFeeBps: null, achFeeAmount: null }];
+  }, cardFeeBps: null, achFeeAmount: null, billingAddressCountry: 'US', billingAddressRegion: 'NY' }];
   for (const path of [partnerPath, orgPath]) {
     const response = await request(path, 'PUT', { cardFeeBps: 300 });
     expect(response.status).toBe(200);

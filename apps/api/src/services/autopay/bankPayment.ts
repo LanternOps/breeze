@@ -1,3 +1,4 @@
+import { formatMoney, formatPaymentMethod } from '@breeze/shared';
 import {payAndSaveSchema} from './payAndSave';
 import {z} from 'zod';
 import {organizations} from '../../db/schema';
@@ -15,7 +16,7 @@ import {autopayConsentSnapshotSchema} from './types';
 import {holdsClientMoney} from './reservation';
 import {collectionFenced} from './collectionControl';
 import {invoiceAutopaySchedules} from '../../db/schema';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, runOutsideDbContext } from '../../db';
 import { invoices, billingLinkTokens, orgAutopayEnrollments } from '../../db/schema';
 import { assertNoHeldDbContextForStripe } from '../stripeSettle';
@@ -37,6 +38,13 @@ export const invoicePaySchema=z.preprocess(value=>{
   return value;
 },z.discriminatedUnion('methodType',[bankPaySchema,
   payAndSaveSchema.safeExtend({methodType:z.literal('card').optional()})]));
+/** The one-time part of a pay-by-bank authorization, shown before the recurring text.
+ * Not part of the hashed disclosure (the amounts are bound structurally in bankPayment). */
+export function bankPaymentAuthorization(principal:string,fee:string,invoiceNumber:string|null):string{
+  const total=fromMinorUnits(toMinorUnits(principal,'USD')+toMinorUnits(fee,'USD'),'USD');
+  const usd=(value:string)=>formatMoney(value,'USD','en-US');
+  return `I authorize a one-time bank payment of ${usd(principal)} plus a ${usd(fee)} processing fee (${usd(total)} in total) for ${invoiceNumber?`invoice ${invoiceNumber}`:'this invoice'}.`;
+}
 export async function getBankAutopayOffer(invoiceId:string,orgId:string):Promise<BankAutopayOffer|null>{
   return withSystemDbAccessContext(async()=>{
     const [invoice]=await db.select().from(invoices).where(and(eq(invoices.id,invoiceId),eq(invoices.orgId,orgId))).limit(1);
@@ -58,10 +66,21 @@ export async function getBankAutopayOffer(invoiceId:string,orgId:string):Promise
       stripeAccountCountry:ready.accountCountry,orgBillingCountry:org.billingAddressCountry,orgBillingRegion:org.billingAddressRegion,
       cardFeeBps:settings.cardFeeBps.value,achFeeAmount:settings.achFeeAmount.value,feeAttested:settings.feeAttested});
     const method=await getAutopayMethod(db,orgId);
+    // G3: bank pay makes the new account the autopay method at once (it is exempt from F-1's
+    // keep-working rule), so it is never offered over a working method while automatic payments
+    // are active. The one exception is the bank this invoice's own bank payment saved: the
+    // return page reads this offer to finish that payment.
+    if(enrollment.status==='active'&&method?.status==='active'){
+      const [own]=method.type==='us_bank_account'&&method.stripeSetupIntentId?await db.select({id:autopaySetupAttempts.id}).from(autopaySetupAttempts).where(and(
+        eq(autopaySetupAttempts.orgId,orgId),eq(autopaySetupAttempts.enrollmentId,enrollment.id),eq(autopaySetupAttempts.setupIntentId,method.stripeSetupIntentId),
+        sql`${autopaySetupAttempts.consentSnapshot}->'bankPayment'->>'invoiceId' = ${invoice.id}`)).limit(1):[];
+      if(!own)return null;
+    }
     if(!available&&method?.status!=='pending_verification')return null;
     return {available,principal:invoice.balance,fee:quote.feeAmount,currency:'USD' as const,disclosureHash:disclosure.hash,
-      consentText:`I authorize a bank payment of USD ${invoice.balance}, plus a processing fee of USD ${quote.feeAmount}, for this invoice. ${disclosure.text}`,
-      methodStatus:method?.type==='us_bank_account'&&(method.status==='active'||method.status==='pending_verification')?method.status:null};
+      consentText:bankPaymentAuthorization(invoice.balance,quote.feeAmount,invoice.invoiceNumber)+` ${disclosure.text}`,
+      ...(method?.type==='us_bank_account'&&(method.status==='active'||method.status==='pending_verification')
+        ?{methodStatus:method.status,methodLabel:formatPaymentMethod(method)}:{methodStatus:null,methodLabel:null})};
   });
 }
 /** Invoice-bound bank-pay authority. Stripe microdeposits take 1-2 business days to
@@ -77,7 +96,7 @@ export async function startInvoiceBankSetup(input:{invoiceId:string;orgId:string
   const offer=await getBankAutopayOffer(input.invoiceId,input.orgId);
   if(!offer?.available||offer.principal!==input.terms.principal||offer.fee!==input.terms.fee
     ||offer.currency!==input.terms.currency||offer.disclosureHash!==input.terms.disclosureHash){
-    throw new InvoiceServiceError('The terms changed. Review them and try again.',409,'INVALID_STATE');
+    throw new InvoiceServiceError('The terms changed. Review them and try again.',409,'INVALID_STATE',{reason:'terms_changed'});
   }
   const authority=await withSystemDbAccessContext(async()=>{
     const [enrollment]=await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId,input.orgId)).limit(1).for('update');
