@@ -68,6 +68,19 @@ const PARTNER_SERVICE_PRINCIPAL_MCP_SCOPE_SET = new Set<string>(
   PARTNER_SERVICE_PRINCIPAL_MCP_SCOPES,
 );
 
+export const PARTNER_SERVICE_PRINCIPAL_MCP_READ_REQUIRED_ERROR =
+  'MCP scopes ai:write, ai:execute and ai:execute_admin require ai:read: every MCP request needs ai:read';
+
+/**
+ * Every MCP request requires ai:read (mcpServer.ts preflight), so a principal
+ * holding a higher MCP scope without it could authenticate but never make a
+ * request. Rejected at create/update and at MCP authentication.
+ */
+export function partnerServicePrincipalMcpScopesMissingRead(scopes: readonly string[]): boolean {
+  const mcp = partnerServicePrincipalMcpScopes(scopes);
+  return mcp.length > 0 && !mcp.includes('ai:read');
+}
+
 /** The MCP (ai:*) subset of a principal's scopes, in their stored order. */
 export function partnerServicePrincipalMcpScopes(
   scopes: readonly string[],

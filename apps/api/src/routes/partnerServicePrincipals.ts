@@ -21,7 +21,9 @@ import {
 import {
   DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES,
   type PartnerServicePrincipalScope,
+  PARTNER_SERVICE_PRINCIPAL_MCP_READ_REQUIRED_ERROR,
   partnerServicePrincipalMcpScopes,
+  partnerServicePrincipalMcpScopesMissingRead,
   validatePartnerServicePrincipalScopes,
 } from '../services/partnerServicePrincipalScopes';
 
@@ -113,6 +115,9 @@ function validatePrincipalFields(
   if (input.scopes) {
     const validated = validatePartnerServicePrincipalScopes(input.scopes);
     if (!validated.ok) return { response: c.json({ error: validated.error, details: validated.details }, validated.status) };
+    if (partnerServicePrincipalMcpScopesMissingRead(validated.scopes)) {
+      return { response: c.json({ error: PARTNER_SERVICE_PRINCIPAL_MCP_READ_REQUIRED_ERROR, code: 'MCP_SCOPE_REQUIRES_AI_READ' }, 400) };
+    }
     scopes = validated.scopes;
   }
   if (input.sourceCidrs?.some((entry) => !isValidIpOrCidr(entry))) {

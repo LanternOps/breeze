@@ -285,6 +285,23 @@ describe('service principal management routes', () => {
       expect(db.update).not.toHaveBeenCalled();
     });
 
+    it.each([['ai:write'], ['ai:execute'], ['ai:execute_admin']])('rejects %s without ai:read on create and update, before any write', async (scope) => {
+      const created = await app.request('/partner-service-principals', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'no-read', scopes: [scope], sourceCidrs: [] }),
+      });
+      expect(created.status).toBe(400);
+      expect(await created.json()).toMatchObject({ code: 'MCP_SCOPE_REQUIRES_AI_READ' });
+      const updated = await app.request(`/partner-service-principals/${PRINCIPAL_ID}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scopes: ['devices:read', scope] }),
+      });
+      expect(updated.status).toBe(400);
+      expect(await updated.json()).toMatchObject({ code: 'MCP_SCOPE_REQUIRES_AI_READ' });
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     it('lets a full admin grant every MCP scope', async () => {
       selectRows([]);
       const returning = vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, name: 'claude-automation', scopes: [] }]);

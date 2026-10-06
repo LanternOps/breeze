@@ -262,7 +262,7 @@ A partner service principal can also authenticate the [MCP server](/features/mcp
 | `ai:execute` | Tier 3 tools (still approval-only unless the principal is listed in `MCP_UNATTENDED_TIER3_PRINCIPALS` as `partner_sp:<id>`) |
 | `ai:execute_admin` | Tier 3 tools in production when `MCP_REQUIRE_EXECUTE_ADMIN` is on |
 
-They are opt-in and never default. Granting one requires the acting admin to hold the permissions an organization API key's creator needs for the same scope. Over MCP the principal reaches every organization of its partner; its per-tool permissions are its owner's (the admin who created it) live partner role, and the owner must keep all-organization access or the key is refused.
+They are opt-in and never default, and `ai:write`, `ai:execute` and `ai:execute_admin` each require `ai:read`. Granting one requires the acting admin to hold the permissions an organization API key's creator needs for the same scope. Over MCP the principal reaches every organization of its partner; its per-tool permissions are its owner's (the admin who created it) live partner role, and the owner must keep all-organization access or the key is refused.
 
 ---
 

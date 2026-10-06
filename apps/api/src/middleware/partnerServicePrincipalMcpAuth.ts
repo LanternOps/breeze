@@ -8,7 +8,11 @@ import { rateLimiter } from '../services/rate-limit';
 import { validateApiKeyScopeDelegation } from '../services/apiKeyScopes';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { getUserPermissions, type UserPermissions } from '../services/permissions';
-import { partnerServicePrincipalMcpScopes } from '../services/partnerServicePrincipalScopes';
+import {
+  PARTNER_SERVICE_PRINCIPAL_MCP_READ_REQUIRED_ERROR,
+  partnerServicePrincipalMcpScopes,
+  partnerServicePrincipalMcpScopesMissingRead,
+} from '../services/partnerServicePrincipalScopes';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { enforcePreLookupProbeRateLimit } from './apiKeyAuth';
 import { resolvePartnerAccess } from './bearerTokenAuth';
@@ -152,6 +156,9 @@ export async function partnerServicePrincipalMcpAuthMiddleware(c: Context, next:
   const mcpScopes = partnerServicePrincipalMcpScopes(credential.scopes);
   if (mcpScopes.length === 0) {
     throw new HTTPException(403, { message: 'Partner service principal is not granted MCP access' });
+  }
+  if (partnerServicePrincipalMcpScopesMissingRead(mcpScopes)) {
+    throw new HTTPException(403, { message: PARTNER_SERVICE_PRINCIPAL_MCP_READ_REQUIRED_ERROR });
   }
 
   try {

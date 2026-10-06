@@ -7,6 +7,7 @@ import {
   PARTNER_SERVICE_PRINCIPAL_SCOPES,
   hasPartnerServicePrincipalScope,
   partnerServicePrincipalMcpScopes,
+  partnerServicePrincipalMcpScopesMissingRead,
   validatePartnerServicePrincipalScopes,
 } from './partnerServicePrincipalScopes';
 
@@ -16,6 +17,17 @@ describe('partner service principal MCP scopes', () => {
     for (const scope of PARTNER_SERVICE_PRINCIPAL_MCP_SCOPES) {
       expect(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES).not.toContain(scope);
     }
+  });
+
+  it('flags any MCP scope set that lacks ai:read', () => {
+    for (const scope of ['ai:write', 'ai:execute', 'ai:execute_admin']) {
+      expect(partnerServicePrincipalMcpScopesMissingRead([scope])).toBe(true);
+      expect(partnerServicePrincipalMcpScopesMissingRead(['devices:read', scope])).toBe(true);
+      expect(partnerServicePrincipalMcpScopesMissingRead(['ai:read', scope])).toBe(false);
+    }
+    expect(partnerServicePrincipalMcpScopesMissingRead(['ai:read'])).toBe(false);
+    // No MCP scope at all is a Partner-API-only principal, not this error.
+    expect(partnerServicePrincipalMcpScopesMissingRead(['devices:read'])).toBe(false);
   });
 
   it('partnerServicePrincipalMcpScopes keeps only the ai:* subset, in order', () => {

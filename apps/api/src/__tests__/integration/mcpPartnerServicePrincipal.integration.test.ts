@@ -298,6 +298,15 @@ describe('partner service principal key on MCP: fail closed', () => {
     expect(res.status).toBe(403);
   });
 
+  it.each([['ai:write'], ['ai:execute'], ['ai:execute_admin']])('refuses a principal holding %s without ai:read, with a clear error', async (scope) => {
+    // Inserted directly (the admin routes reject this shape) to prove the
+    // auth path fails closed on any stored row that has it.
+    const p = await partnerFixture([scope]);
+    const res = await mcp(p.key.rawKey, 'tools/list');
+    expect(res.status).toBe(403);
+    expect(JSON.stringify(res.body)).toContain('require ai:read');
+  });
+
   it('denies when the owner is disabled, removed from the partner, or reduced below the MCP scopes', async () => {
     const disabled = await partnerFixture(['ai:read']);
     expect((await mcp(disabled.key.rawKey, 'tools/list')).status).toBe(200);
