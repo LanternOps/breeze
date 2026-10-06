@@ -79,10 +79,11 @@ export class MailgunInboundProvider implements InboundEmailProvider {
       // the visible From address: the staff check then applies to the address
       // the message shows, as it does for Gmail and Microsoft 365.
       // Mailgun synthesizes body-plain from the HTML when a message has no
-      // text/plain part, so also require the top-level Content-Type to be
-      // text/plain or multipart (an absent or unparseable one fails closed). A
-      // multipart message whose only text part is HTML cannot be told apart from
-      // Mailgun's fields and is scanned from Mailgun's text rendering.
+      // text/plain part, and its fields do not say which happened. So scan only
+      // when the top-level Content-Type itself promises a plain part: text/plain,
+      // or multipart/alternative (a plain/HTML pair). Anything else, including
+      // multipart/mixed or /related (attachments, inline images) and an absent
+      // or unparseable header, fails closed and routes normally.
       forwardScanText: envelopeMatchesFrom && mayCarryPlainPart(parseHeader(b['message-headers'], 'Content-Type'))
         ? (b['body-plain'] || undefined)
         : undefined,
@@ -234,12 +235,12 @@ function extractEmail(s: string): string {
   return parseMailboxes(s)[0]?.address ?? s.trim().toLowerCase();
 }
 
-// Whether a message with this top-level Content-Type can hold a provider-supplied
-// text/plain part: text/plain itself, or any multipart. text/html, other types
-// and an unknown Content-Type cannot (see the forwardScanText note in parse()).
+// Whether this top-level Content-Type promises a sender-written text/plain body:
+// text/plain itself, or multipart/alternative. Every other type, and an unknown
+// one, does not (see the forwardScanText note in parse()).
 function mayCarryPlainPart(contentType: string | undefined): boolean {
   const type = (contentType ?? '').split(';')[0]!.trim().toLowerCase();
-  return type === 'text/plain' || type.startsWith('multipart/');
+  return type === 'text/plain' || type === 'multipart/alternative';
 }
 
 function parseHeader(headersJson: string | undefined, name: string): string | undefined {

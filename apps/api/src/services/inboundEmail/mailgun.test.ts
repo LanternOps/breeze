@@ -165,10 +165,23 @@ describe('MailgunInboundProvider.parse', () => {
     }
   });
 
+  // multipart/mixed or /related may hold HTML plus attachments or inline images
+  // and no text/plain part at all, so Mailgun's body-plain is not trusted there.
+  it.each([
+    'multipart/mixed; boundary="b2"',
+    'multipart/related; boundary="b3"',
+    'application/octet-stream',
+  ])('exposes no forwardScanText for a %s message', async (contentType) => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields, 'message-headers': JSON.stringify([['Content-Type', contentType]]),
+    }) } as any);
+    expect(n.forwardScanText).toBeUndefined();
+  });
+
   it.each([
     'text/plain; charset=UTF-8',
     'multipart/alternative; boundary="b1"',
-    'multipart/mixed; boundary="b2"',
+    'Multipart/Alternative; boundary="b1"',
   ])('exposes forwardScanText for a %s message', async (contentType) => {
     const n = await provider.parse({ parseBody: async () => ({
       ...fields, 'message-headers': JSON.stringify([['Content-Type', contentType]]),
