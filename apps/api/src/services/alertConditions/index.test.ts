@@ -26,6 +26,8 @@ import { interpolateAlertTemplate } from '@breeze/shared';
 import { patchComplianceKind } from '../monitors/kinds/patchCompliance';
 import { bandwidthKind } from '../monitors/kinds/bandwidth';
 import { networkErrorsKind } from '../monitors/kinds/networkErrors';
+import { serviceKind } from '../monitors/kinds/service';
+import { processKind } from '../monitors/kinds/process';
 
 describe('condition registry wiring (issue #1857)', () => {
   it('resolves the legacy "status" condition type to the offline handler', () => {
@@ -418,5 +420,31 @@ describe('evaluateConditions primary actualValue is deterministic, not a race (f
 
     const result = await resultPromise;
     expect(result.context.actualValue).toBe(92);
+  });
+});
+
+describe('evaluateConditions context for service/process watches (issue #7966)', () => {
+  beforeEach(() => {
+    mockDbSelect.mockReset();
+    getRecentMetricsMock.mockReset();
+    getLatestMetricMock.mockReset();
+    getLatestMetricMock.mockResolvedValue(null as never);
+  });
+
+  it.each([
+    ['service_stopped', 'serviceName', 'Spooler', serviceKind],
+    ['process_stopped', 'processName', 'nginx', processKind],
+  ] as const)('%s carries %s into the context so the kind templates render with no {{ left', async (type, key, name, kind) => {
+    const spy = vi.spyOn(conditionRegistry, 'evaluate').mockResolvedValue({ passed: true, description: 'stopped' } as never);
+    try {
+      const result = await evaluateConditions({ type, [key]: name } as never, 'device-1');
+      expect(result.triggered).toBe(true);
+      expect(result.context[key]).toBe(name);
+      const ctx = { ...result.context, deviceName: 'PC-1' };
+      expect(interpolateAlertTemplate(kind.titleTemplate, ctx)).not.toContain('{{');
+      expect(interpolateAlertTemplate(kind.messageTemplate, ctx)).not.toContain('{{');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
