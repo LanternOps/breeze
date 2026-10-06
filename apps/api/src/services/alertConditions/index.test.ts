@@ -447,4 +447,17 @@ describe('evaluateConditions context for service/process watches (issue #7966)',
       spy.mockRestore();
     }
   });
+
+  it('finds the name on a leaf nested inside a condition group', async () => {
+    const spy = vi.spyOn(conditionRegistry, 'evaluate').mockResolvedValue({ passed: true, description: 'stopped' } as never);
+    try {
+      const result = await evaluateConditions(
+        { logic: 'and', conditions: [{ logic: 'or', conditions: [{ type: 'service_stopped', serviceName: 'Nested' }] }] } as never,
+        'device-1'
+      );
+      expect(result.context.serviceName).toBe('Nested');
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
