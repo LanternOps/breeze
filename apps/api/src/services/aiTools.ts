@@ -95,6 +95,7 @@ import { registerDeliverableTools } from './aiToolsDeliverables';
 import { registerQuoteTools } from './aiToolsQuotes';
 import { registerOrgTools } from './aiToolsOrgs';
 import { registerPamTools } from './aiToolsPam';
+import { registerDiagnosticAccessTools } from './aiToolsDiagnosticAccess';
 import { registerExportTools } from './aiToolsExport';
 import { registerArtifactTools } from './aiToolsArtifacts';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
@@ -362,6 +363,7 @@ registerAgentMgmtTools(aiTools);
 registerAiAgentGovernanceTools(aiTools);
 registerUITools(aiTools);
 registerPamTools(aiTools);
+registerDiagnosticAccessTools(aiTools);
 registerVulnerabilityTools(aiTools);
 // Execution plane W04 — sandbox workspace tools (services/workspace/).
 registerWorkspaceTools(aiTools);

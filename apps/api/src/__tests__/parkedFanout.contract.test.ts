@@ -199,6 +199,8 @@ const EXEMPT: Record<string, string> = {
   'services/aiToolsTicketing.ts': 'identity match pinned to the ticket\'s own org',
   'services/auditFallbackOrg.ts': 'request path: reads the org of the one device the request URL named, to file its audit row; not a selector',
   'services/auditOrgResolver.ts': 'resolves the org an audit row belongs to',
+  'services/diagnosticAccess/delivery.ts': 'derived: looks up the device a queued diag_file_* command already names, at delivery; command delivery refuses parked devices',
+  'services/diagnosticAccess/grants.ts': 'derived: device lookup by an existing grant\'s own device, to re-check approver site access',
   'services/deviceOrgMove/moveDeviceOrgInTransaction.ts': 'request path: moves the one device its caller named, after that caller\'s own checks; not a selector',
   'services/monitors/networkCheckAlertDevice.ts': 'resolves a device inside the org chosen by networkCheckAlertSweep',
   'services/orgAccountReadiness.ts': 'org administration (holding org already guarded)',

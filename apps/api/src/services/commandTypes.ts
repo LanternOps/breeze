@@ -49,6 +49,11 @@ export const CommandTypes = {
   // File operations
   FILE_LIST: 'file_list',
   FILE_READ: 'file_read',
+  // Administrator-approved diagnostic reads (services/diagnosticAccess): a
+  // signed per-command authorization is minted at delivery; the agent refuses
+  // these without one, and an agent that predates them refuses them as unknown.
+  DIAG_FILE_LIST: 'diag_file_list',
+  DIAG_FILE_READ: 'diag_file_read',
   FILE_WRITE: 'file_write',
   FILE_DELETE: 'file_delete',
   FILE_MKDIR: 'file_mkdir',

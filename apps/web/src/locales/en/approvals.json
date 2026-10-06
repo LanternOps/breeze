@@ -120,5 +120,32 @@
     "activeBody": "Since {{date}}, the platform default requires a registered approver device to approve high- and critical-risk requests, because no approval-security choice has been saved for your partner account. That is why these approvals ask for your device.",
     "settingsLink": "Review approval security",
     "registerLink": "Register an approver device"
+  },
+  "diagnosticAccess": {
+    "title": "Read-only diagnostic access",
+    "organization": "Organization",
+    "device": "Device",
+    "access": "Access",
+    "readOnlyOps": "Read-only: {{operations}}. No writes, deletes, renames, scripts or registry changes.",
+    "duration": "Duration",
+    "durationValue": "{{minutes}} minutes from approval",
+    "purpose": "Purpose",
+    "requestedBy": "Requested by",
+    "principalUser": "Breeze AI chat",
+    "principalApiKey": "MCP API key",
+    "principalOauth": "MCP OAuth connection",
+    "paths": "Paths",
+    "recursive": "Whole subtree",
+    "thisFolderOnly": "This folder and the files directly in it",
+    "sensitiveHeading": "Sensitive stores explicitly requested",
+    "noSensitive": "Known locations of browser passwords and cookies, credential stores, private keys and stored tokens are withheld, even inside these paths. This is a fixed list; anything else inside these paths is readable.",
+    "opList": "list",
+    "opRead": "read",
+    "classes": {
+      "browser_secrets": "Browser passwords, cookies and their encryption keys",
+      "credential_store": "Operating-system credential stores",
+      "private_keys": "Private keys (SSH, GnuPG, TLS)",
+      "session_tokens": "Stored session tokens and cloud credentials"
+    }
   }
 }

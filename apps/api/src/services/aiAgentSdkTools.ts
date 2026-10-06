@@ -38,7 +38,7 @@ import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema
 import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { deliveryToolShape, executeCommandShape, setDeviceContextShape, toolInputSchemas } from './aiToolSchemas';
+import { deliveryToolShape, diagnosticAccessShapes, executeCommandShape, setDeviceContextShape, toolInputSchemas } from './aiToolSchemas';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { captureMessage } from './sentry';
@@ -261,6 +261,12 @@ export const TOOL_TIERS = {
   get_device_context: 1,
   set_device_context: 2,
   resolve_device_context: 2,
+  // Administrator-approved read-only diagnostic access
+  request_diagnostic_access: 2,
+  list_diagnostic_access_grants: 1,
+  revoke_diagnostic_access: 2,
+  diagnostic_list_directory: 2,
+  diagnostic_read_file: 2,
   // Boot performance & startup tools
   analyze_boot_performance: 1,
   manage_startup_items: 3,
@@ -2415,6 +2421,43 @@ export function buildBreezeSdkTools(
         contextId: uuid,
       },
       makeHandler('resolve_device_context', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Administrator-approved read-only diagnostic access
+
+    tool(
+      'request_diagnostic_access',
+      registryDescription('request_diagnostic_access'),
+      diagnosticAccessShapes.request_diagnostic_access,
+      makeHandler('request_diagnostic_access', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_diagnostic_access_grants',
+      registryDescription('list_diagnostic_access_grants'),
+      diagnosticAccessShapes.list_diagnostic_access_grants,
+      makeHandler('list_diagnostic_access_grants', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'revoke_diagnostic_access',
+      registryDescription('revoke_diagnostic_access'),
+      diagnosticAccessShapes.revoke_diagnostic_access,
+      makeHandler('revoke_diagnostic_access', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'diagnostic_list_directory',
+      registryDescription('diagnostic_list_directory'),
+      diagnosticAccessShapes.diagnostic_list_directory,
+      makeHandler('diagnostic_list_directory', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'diagnostic_read_file',
+      registryDescription('diagnostic_read_file'),
+      diagnosticAccessShapes.diagnostic_read_file,
+      makeHandler('diagnostic_read_file', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Boot performance & startup tools
