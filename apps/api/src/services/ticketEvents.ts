@@ -73,21 +73,37 @@ export function getTicketEventsQueue(): Queue {
   return queue;
 }
 
+/**
+ * Queue a ticket event, throwing when it cannot be queued. For a caller that
+ * owns a retry of its own — ticketOutboxPublisher leaves its outbox row
+ * unpublished on a throw, so the next pass queues it again (#7963).
+ * Request-path emitters use emitTicketEvent instead.
+ */
+export async function enqueueTicketEvent(input: TicketEventInput): Promise<void> {
+  const event = { ...input, eventId: input.eventId ?? randomUUID() } as TicketEvent;
+  await getTicketEventsQueue().add(event.type, event, {
+    removeOnComplete: { count: 100 },
+    removeOnFail: { count: 500 },
+    // Retry with back-off: request-path emitters (emitTicketEvent) queue while
+    // the request transaction is still open, so the worker may dequeue before
+    // the ticket row is visible.
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 2000 }
+  });
+}
+
 // Fire-and-forget by design: a Redis outage must never fail the user-facing
 // mutation that emitted the event. Consumers (notifications) are best-effort.
+//
+// Not for `ticket.assigned` (#7963): an emit from inside the request
+// transaction can reach the worker before the assignment commits, and the
+// worker reads the old assignee as "reassigned since" and drops it. That event
+// is queued by ticketOutboxPublisher from the committed outbox row instead.
 export async function emitTicketEvent(input: TicketEventInput): Promise<void> {
-  const event = { ...input, eventId: input.eventId ?? randomUUID() } as TicketEvent;
   try {
-    await getTicketEventsQueue().add(event.type, event, {
-      removeOnComplete: { count: 100 },
-      removeOnFail: { count: 500 },
-      // Retry with back-off: the service emits events while the request transaction
-      // is still open, so the worker may dequeue before the ticket row is visible.
-      attempts: 3,
-      backoff: { type: 'exponential', delay: 2000 }
-    });
+    await enqueueTicketEvent(input);
   } catch (err) {
-    console.error('[TicketEvents] failed to enqueue', event.type, `ticketId=${event.ticketId}`, `orgId=${event.orgId}`, err instanceof Error ? err.message : err);
+    console.error('[TicketEvents] failed to enqueue', input.type, `ticketId=${input.ticketId}`, `orgId=${input.orgId}`, err instanceof Error ? err.message : err);
     captureException(err instanceof Error ? err : new Error(String(err)));
   }
 }

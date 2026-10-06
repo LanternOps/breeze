@@ -16,6 +16,8 @@ vi.mock('../../services/partnerStripe', () => ({
     defaultCurrency: 'USD',
   })),
 }));
+const { capture } = vi.hoisted(() => ({ capture: vi.fn() }));
+vi.mock('../../services/sentry', () => ({ captureException: capture }));
 vi.mock('../../services/invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockResolvedValue(undefined) }));
 
@@ -151,6 +153,42 @@ describe('direct-account Stripe financial event cursor (real PostgreSQL)', () =>
       // the operator-review banner that only manual SQL could ever clear.
       financialEventLastError: null,
     });
+  });
+
+  // #8021: one partner's standing blocked reversals paged Sentry on every 10-minute sweep.
+  runDb('pages operator review on entry and on each newly blocked reversal, not on every sweep', async () => {
+    const f = await seedConnection();
+    eventsList.mockResolvedValue({ has_more: false, data: [] });
+    const [conn] = await withSystemDbAccessContext(() => db.select({ id: stripeConnectAccounts.id })
+      .from(stripeConnectAccounts).where(eq(stripeConnectAccounts.partnerId, f.partnerId)));
+    const block = (id: string) => withSystemDbAccessContext(() => db.insert(stripeFinancialEvents).values({
+      partnerId: f.partnerId, stripeConnectionId: conn!.id, stripeAccountId: f.accountId,
+      stripeEventId: `${id}_${f.accountId}`, eventType: 'charge.refunded', livemode: false, providerCreated: 150,
+      paymentIntentId: `pi_${id}`, currency: 'usd', payloadDigest: 'a'.repeat(64),
+      status: 'blocked', lastError: 'payment_mapping_not_ready_retry_exhausted',
+    // updated_at keeps microseconds but the poll stamp is a millisecond Date; a gap
+    // keeps a row blocked just before a poll from sharing that poll's millisecond.
+    })).then(() => new Promise(resolve => setTimeout(resolve, 5)));
+    const reviewPages = () => capture.mock.calls
+      .filter(([err, , tags]) => err?.message === 'Stripe payment reversal requires operator review'
+        && tags?.partner_id === f.partnerId);
+    const banner = async () => (await withSystemDbAccessContext(() => db.select({ e: stripeConnectAccounts.financialEventLastError })
+      .from(stripeConnectAccounts).where(eq(stripeConnectAccounts.partnerId, f.partnerId))))[0]!.e;
+
+    await block('evt_blocked_1');
+    await pollPartnerStripeFinancialEvents(f.partnerId, new Date());
+    expect(reviewPages()).toHaveLength(1);
+    expect(await banner()).toMatch(/operator review/);
+
+    await pollPartnerStripeFinancialEvents(f.partnerId, new Date());
+    await pollPartnerStripeFinancialEvents(f.partnerId, new Date());
+    expect(reviewPages()).toHaveLength(1);
+    expect(await banner()).toMatch(/operator review/);
+
+    await block('evt_blocked_2');
+    await pollPartnerStripeFinancialEvents(f.partnerId, new Date());
+    expect(reviewPages()).toHaveLength(2);
+    expect(reviewPages()[1]![2]).toMatchObject({ blocked_events: '2', newly_blocked_events: '1' });
   });
 });
 it('quarantines a poison autopay event without blocking the later refund',async()=>{

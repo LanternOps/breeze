@@ -192,3 +192,72 @@ describe('polling retained accounts after disconnect', () => {
     expect(m.capture).not.toHaveBeenCalled();
   });
 });
+
+// #8021: a partner whose reversals are blocked for operator review stays in that
+// state until someone acts, so the poller must page Sentry when the state is
+// entered or grows — not on every 10-minute sweep — while the partner-facing
+// banner is still re-asserted on each poll.
+describe('blocked reversal alerting', () => {
+  const REVIEW = 'One or more Stripe payment reversals require operator review.';
+  const now = new Date('2026-10-20T00:00:00Z');
+  const previousPoll = new Date('2026-10-19T23:50:00Z');
+  beforeEach(() => {
+    vi.resetAllMocks(); vi.useFakeTimers(); vi.setSystemTime(now); m.depth = 0;
+    m.replay.mockResolvedValue(0); m.setupReplay.mockResolvedValue(0);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  async function sweep(opts: { lastError: string | null; lastPolledAt: Date | null; blocked: number; fresh: number }) {
+    const connection = { ...base, livemode: false, cursorCreated: 1792368000, pageAfter: null,
+      scanUpperCreated: null, lastError: opts.lastError, lastPolledAt: opts.lastPolledAt };
+    m.select.mockImplementation(() => {
+      const chain = {
+        from: () => chain, where: () => chain, orderBy: () => chain,
+        limit: async () => [connection],
+        then: (resolve: (rows: unknown[]) => unknown) =>
+          Promise.resolve([{ value: opts.blocked, fresh: opts.fresh }]).then(resolve),
+      };
+      return chain;
+    });
+    m.client.mockResolvedValue({ stripeAccountId: base.stripeAccountId,
+      stripe: { events: { list: vi.fn(async () => ({ data: [], has_more: false })) } } });
+    const writes: Record<string, unknown>[] = [];
+    m.update.mockImplementation(() => ({ set: (values: Record<string, unknown>) => {
+      writes.push(values);
+      return { where: () => Object.assign(Promise.resolve(), { returning: async () => [{ id: 'connection' }] }) };
+    } }));
+    await pollStripeFinancialEvents();
+    return writes;
+  }
+
+  it('pages when a partner first enters operator review', async () => {
+    const writes = await sweep({ lastError: null, lastPolledAt: previousPoll, blocked: 41, fresh: 0 });
+    expect(m.capture).toHaveBeenCalledOnce();
+    expect(m.capture.mock.calls[0]![0].message).toBe('Stripe payment reversal requires operator review');
+    expect(writes.at(-1)).toMatchObject({ financialEventLastError: REVIEW });
+  });
+
+  it('does not page again on later sweeps while nothing new is blocked, but keeps the banner', async () => {
+    const writes = await sweep({ lastError: REVIEW, lastPolledAt: previousPoll, blocked: 41, fresh: 0 });
+    expect(m.capture).not.toHaveBeenCalled();
+    expect(writes.at(-1)).toMatchObject({ financialEventLastError: REVIEW });
+  });
+
+  it('pages again when another reversal is blocked after the previous poll', async () => {
+    await sweep({ lastError: REVIEW, lastPolledAt: previousPoll, blocked: 42, fresh: 1 });
+    expect(m.capture).toHaveBeenCalledOnce();
+    expect(m.capture.mock.calls[0]![2]).toMatchObject({ blocked_events: '42', newly_blocked_events: '1' });
+  });
+
+  it('pages after an unrelated poll error replaced the review banner', async () => {
+    await sweep({ lastError: 'Stripe payment reversal reconciliation could not complete and will retry automatically.',
+      lastPolledAt: previousPoll, blocked: 41, fresh: 0 });
+    expect(m.capture).toHaveBeenCalledOnce();
+  });
+
+  it('neither pages nor sets the banner when nothing is blocked', async () => {
+    const writes = await sweep({ lastError: null, lastPolledAt: previousPoll, blocked: 0, fresh: 0 });
+    expect(m.capture).not.toHaveBeenCalled();
+    expect(writes.every(w => w.financialEventLastError === null)).toBe(true);
+  });
+});

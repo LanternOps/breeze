@@ -1692,7 +1692,7 @@ describe('assignTicket', () => {
     assigneeEligibleMock.mockResolvedValue(true);
   });
 
-  it('updates assignee, writes an assignment feed entry, emits ticket.assigned', async () => {
+  it('updates assignee and writes an assignment feed entry, without queuing ticket.assigned in-transaction (#7963)', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', assignedTo: null }])  // ticket
       .mockResolvedValueOnce([{ id: 'u-2', partnerId: 'p-1' }]);                                                 // assignee
@@ -1708,10 +1708,9 @@ describe('assignTicket', () => {
       newValue: 'u-2'
     });
 
-    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'ticket.assigned',
-      payload: expect.objectContaining({ assigneeId: 'u-2' })
-    }));
+    // #7963: the job is queued by ticketOutboxPublisher from the committed
+    // outbox row, never from inside the request transaction.
+    expect(emitMock).not.toHaveBeenCalled();
     expect(emitTriageFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
       eventType: 'ticket.assignee_changed',
       dedupeKey: 'assignedTo:null:"u-2"',
@@ -1752,7 +1751,9 @@ describe('assignTicket', () => {
     expect(valuesMock).toHaveBeenCalledTimes(2);
     const outboxPayload = valuesMock.mock.calls[1]![0];
     expect(outboxPayload).toMatchObject({ orgId: 'o-1', ticketId: 't-1', eventType: 'ticket.assigned' });
-    expect(outboxPayload.payload).toEqual({ assigneeId: 'u-2' });
+    expect(outboxPayload.payload).toEqual({
+      assigneeId: 'u-2', actorUserId: actor.userId, actorPrincipalId: null, partnerId: 'p-1',
+    });
   });
 
   it('throws 409 on concurrent modification and does NOT write a feed entry or emit', async () => {
@@ -4955,7 +4956,10 @@ describe('service-principal actor (Partner API tickets, Wave 1)', () => {
 
     await assignTicket('t-1', 'u-tech', spActor);
     expect(valuesMock.mock.calls[0]![0]).toMatchObject({ commentType: 'assignment', userId: null, originPrincipalKind: 'service_principal', originPrincipalId: SP_PRINCIPAL_ID });
-    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.assigned', actorUserId: null, actorPrincipalId: SP_PRINCIPAL_ID }));
+    expect(valuesMock.mock.calls[1]![0]).toMatchObject({
+      eventType: 'ticket.assigned',
+      payload: { assigneeId: 'u-tech', actorUserId: null, actorPrincipalId: SP_PRINCIPAL_ID, partnerId: 'p-1' },
+    });
     expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({ action: 'ticket.assign', actorType: 'api_key', actorId: SP_PRINCIPAL_ID }));
 
     valuesMock.mockClear(); setMock.mockClear(); auditMock.mockClear();

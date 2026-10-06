@@ -1934,15 +1934,17 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
     newValue: assigneeId
   });
 
-  await emitTicketEvent({
-    type: 'ticket.assigned',
-    ticketId,
-    orgId: ticket.orgId,
-    partnerId: ticket.partnerId ?? null,
+  // #7963: no emitTicketEvent here. A job queued now could run before this
+  // transaction commits; the worker would read the previous assignee, treat it
+  // as "reassigned since" and drop the notification for good. The outbox row
+  // commits (or rolls back) with the assignment, and ticketOutboxPublisher
+  // queues the `ticket.assigned` job from it. The actor and partner ride the
+  // row so the worker can still skip a self-assign.
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.assigned', {
+    assigneeId,
     ...actorEventIdentity(actor),
-    payload: { assigneeId }
+    partnerId: ticket.partnerId ?? null,
   });
-  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.assigned', { assigneeId });
   await createAuditLogAsync({
     orgId: ticket.orgId,
     ...actorAuditIdentity(actor),

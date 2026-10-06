@@ -300,7 +300,9 @@ describe('discovered_assets classifier precedence (#3187)', () => {
            set device_role = (select asset_type from discovered_assets where id = ${assetId}),
                device_role_source = 'discovery'
          where id = ${deviceId}
-           and coalesce(device_role_source, 'auto') not in ('manual', 'ai')
+           and (coalesce(device_role_source, 'auto') = 'discovery'
+             or (coalesce(device_role_source, 'auto') = 'auto'
+               and coalesce(device_role, 'unknown') = 'unknown'))
            and exists (
              select 1 from discovered_assets
               where id = ${assetId}
@@ -357,6 +359,24 @@ describe('discovered_assets classifier precedence (#3187)', () => {
     const aiDevice = await makeDevice({ deviceRole: 'server', deviceRoleSource: 'ai' });
     await propagate(okAsset.id, aiDevice.id);
     expect(await roleOf(aiDevice.id)).toBe('server');
+
+    // 2c. #7971: an agent-detected role (OS-derived 'server', source 'auto')
+    //     outranks a port-scan 'workstation' guess. A Windows Server with
+    //     RDP/SMB and no SSH classifies as 'workstation' on the agent scan.
+    const wsAsset = await seedAsset(org.id, site.id, {
+      ipAddress: '10.88.1.12', macAddress: null,
+      assetType: 'workstation', typeSource: 'auto',
+      detectedAssetType: 'workstation', detectedTypeSource: 'agent_scan',
+    });
+    const agentServer = await makeDevice({ deviceRole: 'server', deviceRoleSource: 'auto' });
+    await propagate(wsAsset.id, agentServer.id);
+    expect(await roleOf(agentServer.id)).toBe('server');
+
+    // 2d. ...while a role discovery itself wrote earlier still re-converges on
+    //     the asset's settled type.
+    const discoveryDevice = await makeDevice({ deviceRole: 'printer', deviceRoleSource: 'discovery' });
+    await propagate(wsAsset.id, discoveryDevice.id);
+    expect(await roleOf(discoveryDevice.id)).toBe('workstation');
 
     // 3. A manually-typed ASSET does not push its type onto the device either.
     const manualAsset = await seedAsset(org.id, site.id, {
