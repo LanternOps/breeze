@@ -6,7 +6,12 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('../../db/schema', () => ({
-  partners: { id: 'partners.id' },
+  partners: {
+    id: 'partners.id',
+    slug: 'partners.slug',
+    status: 'partners.status',
+    deletedAt: 'partners.deletedAt',
+  },
   ssoProviders: {
     id: 'ssoProviders.id',
     partnerId: 'ssoProviders.partnerId',
@@ -31,7 +36,14 @@ vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
+// The shared auth response floor is a no-op under NODE_ENV=test anyway; mocked
+// here so the slug route's "awaited on every path" contract is observable.
+vi.mock('./helpers', () => ({
+  authResponseFloorPromise: vi.fn(() => Promise.resolve()),
+}));
+
 import { loginContextRoutes } from './loginContext';
+import { authResponseFloorPromise } from './helpers';
 import { db, withSystemDbAccessContext } from '../../db';
 import { rateLimiter, getRedis } from '../../services';
 import { captureException } from '../../services/sentry';
@@ -214,6 +226,164 @@ describe('GET /auth/login-context (#2183)', () => {
     expect(body).toEqual({ branding: null, partnerSso: null });
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(consoleErrorSpy).toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalledWith(expect.any(Error), expect.anything());
+
+    consoleErrorSpy.mockRestore();
+  });
+});
+
+async function getSlugContext(slug: string) {
+  return loginContextRoutes.request(`/login-context/partner/${slug}`);
+}
+
+const NULL_CONTEXT = { branding: null, partnerSso: null };
+
+describe('GET /auth/login-context/partner/:slug (#4017)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 29, resetAt: new Date() } as any);
+    vi.mocked(db.select).mockReset().mockReturnValue(selectChain([]) as any);
+    delete process.env.IS_HOSTED;
+  });
+
+  it.each(['true', '1'])(
+    'resolves on a hosted instance (IS_HOSTED=%s) — the visitor supplies the tenant, so no hosted guard',
+    async (spelling) => {
+      process.env.IS_HOSTED = spelling;
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectChain([{ id: PARTNER_UUID, slug: 'acme-msp' }]) as any)
+        .mockReturnValueOnce(selectChain([]) as any)
+        .mockReturnValueOnce(selectChain([{ name: 'Okta', enforceSSO: true }]) as any);
+
+      const res = await getSlugContext('acme-msp');
+      expect(res.status).toBe(200);
+      expect((await res.json()).partnerSso).toEqual({
+        providerName: 'Okta',
+        loginUrl: `/api/v1/sso/login/partner/${PARTNER_UUID}`,
+        enforceSSO: true,
+      });
+    }
+  );
+
+  it('resolves branding + partnerSso for a known slug', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([{ id: PARTNER_UUID, slug: 'acme-msp' }]) as any)
+      .mockReturnValueOnce(selectChain([{
+        logoUrl: 'https://cdn.example.com/logo.png',
+        accentColor: '#112233',
+        headline: 'Welcome back',
+      }]) as any)
+      .mockReturnValueOnce(selectChain([{ name: 'Okta', enforceSSO: false }]) as any);
+
+    const res = await getSlugContext('acme-msp');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      branding: { logoUrl: 'https://cdn.example.com/logo.png', accentColor: '#112233', headline: 'Welcome back' },
+      partnerSso: { providerName: 'Okta', loginUrl: `/api/v1/sso/login/partner/${PARTNER_UUID}`, enforceSSO: false },
+    });
+  });
+
+  it('returns the null shape for an unknown slug, with no branding/provider read', async () => {
+    const res = await getSlugContext('does-not-exist');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(NULL_CONTEXT);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers an unknown slug and a known-but-unconfigured slug identically (status, body, headers)', async () => {
+    const unknown = await getSlugContext('ghost-partner');
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([{ id: PARTNER_UUID, slug: 'quiet-partner' }]) as any)
+      .mockReturnValueOnce(selectChain([]) as any)
+      .mockReturnValueOnce(selectChain([]) as any);
+    const known = await getSlugContext('quiet-partner');
+
+    expect(known.status).toBe(unknown.status);
+    expect(await known.text()).toBe(await unknown.text());
+    expect([...known.headers.entries()]).toEqual([...unknown.headers.entries()]);
+  });
+
+  it('is never publicly cacheable', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([{ id: PARTNER_UUID, slug: 'acme-msp' }]) as any)
+      .mockReturnValueOnce(selectChain([]) as any)
+      .mockReturnValueOnce(selectChain([{ name: 'Okta', enforceSSO: false }]) as any);
+
+    const res = await getSlugContext('acme-msp');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('awaits the shared auth response floor before answering', async () => {
+    let release!: () => void;
+    vi.mocked(authResponseFloorPromise).mockReturnValueOnce(new Promise<void>((r) => { release = r; }));
+
+    let settled = false;
+    const pending = getSlugContext('ghost-partner').then((res) => { settled = true; return res; });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(settled).toBe(false);
+
+    release();
+    expect((await pending).status).toBe(200);
+  });
+
+  it('matches case-insensitively and prefers the exact-case row when two slugs differ only by case', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([
+        { id: PARTNER_UUID_2, slug: 'acme' },
+        { id: PARTNER_UUID, slug: 'Acme' },
+      ]) as any)
+      .mockReturnValueOnce(selectChain([]) as any)
+      .mockReturnValueOnce(selectChain([{ name: 'Okta', enforceSSO: false }]) as any);
+
+    const body = await (await getSlugContext('Acme')).json();
+    expect(body.partnerSso.loginUrl).toBe(`/api/v1/sso/login/partner/${PARTNER_UUID}`);
+  });
+
+  it('refuses to guess when two slugs differ only by case and neither matches exactly', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectChain([
+      { id: PARTNER_UUID_2, slug: 'acme' },
+      { id: PARTNER_UUID, slug: 'Acme' },
+    ]) as any);
+
+    const res = await getSlugContext('ACME');
+    expect(await res.json()).toEqual(NULL_CONTEXT);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('429s past its own rate-limit bucket without touching the DB', async () => {
+    vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() } as any);
+
+    const res = await getSlugContext('acme-msp');
+    expect(res.status).toBe(429);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(rateLimiter).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('login-context:slug:'), 30, 60);
+  });
+
+  it('calls rateLimiter even when Redis is unavailable (fail-closed)', async () => {
+    vi.mocked(getRedis).mockReturnValue(null as any);
+    vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() } as any);
+
+    const res = await getSlugContext('acme-msp');
+    expect(rateLimiter).toHaveBeenCalledWith(null, expect.stringContaining('login-context:slug:'), 30, 60);
+    expect(res.status).toBe(429);
+  });
+
+  it('400s on an oversized slug without touching the DB', async () => {
+    const res = await getSlugContext('a'.repeat(101));
+    expect(res.status).toBe(400);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('degrades to the null shape (200, no-store) when the DB read throws', async () => {
+    vi.mocked(withSystemDbAccessContext).mockRejectedValueOnce(new Error('connection reset'));
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const res = await getSlugContext('acme-msp');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(NULL_CONTEXT);
+    expect(res.headers.get('cache-control')).toBe('no-store');
     expect(captureException).toHaveBeenCalledWith(expect.any(Error), expect.anything());
 
     consoleErrorSpy.mockRestore();

@@ -169,3 +169,103 @@ describe('GET /auth/login-context — real-DB e2e (#2183)', () => {
     expect(body).toEqual({ branding: null, partnerSso: null });
   });
 });
+
+describe('GET /auth/login-context/partner/:slug — real-DB e2e (#4017)', () => {
+  it('resolves branding + partnerSso by slug on a multi-partner instance', async () => {
+    const app = buildApp();
+    const partner = await createPartner({ slug: 'acme-msp-4017' });
+    await createPartner({ slug: 'other-msp-4017' });
+    await createBranding(partner.id, { headline: 'Welcome to Acme' });
+    await createPartnerAxisProvider(partner.id, { status: 'active', name: 'Acme Okta' });
+
+    const res = await app.request('/auth/login-context/partner/acme-msp-4017');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.branding.headline).toBe('Welcome to Acme');
+    expect(body.partnerSso).toEqual({
+      providerName: 'Acme Okta',
+      loginUrl: `/api/v1/sso/login/partner/${partner.id}`,
+      enforceSSO: false,
+    });
+  });
+
+  it('matches the slug case-insensitively', async () => {
+    const app = buildApp();
+    const partner = await createPartner({ slug: 'case-msp-4017' });
+    await createPartnerAxisProvider(partner.id, { status: 'active', name: 'Case IdP' });
+
+    const body = await (await app.request('/auth/login-context/partner/Case-MSP-4017')).json();
+    expect(body.partnerSso?.providerName).toBe('Case IdP');
+  });
+
+  it('picks the OLDEST active provider, the same one the partner SSO entry route starts', async () => {
+    const app = buildApp();
+    const partner = await createPartner({ slug: 'multi-provider-4017' });
+    await createPartnerAxisProvider(partner.id, { status: 'active', name: 'First Provider' });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await createPartnerAxisProvider(partner.id, { status: 'active', name: 'Second Provider' });
+
+    const body = await (await app.request('/auth/login-context/partner/multi-provider-4017')).json();
+    expect(body.partnerSso.providerName).toBe('First Provider');
+  });
+
+  it('answers an unknown slug, an unconfigured partner, and suspended / soft-deleted partners identically', async () => {
+    const app = buildApp();
+    await createPartner({ slug: 'quiet-partner-4017' });
+    const suspended = await createPartner({ slug: 'suspended-partner-4017', status: 'suspended' });
+    await createPartnerAxisProvider(suspended.id, { status: 'active' });
+    await createBranding(suspended.id);
+    const deleted = await createPartner({ slug: 'deleted-partner-4017', deletedAt: new Date() });
+    await createPartnerAxisProvider(deleted.id, { status: 'active' });
+
+    const slugs = ['does-not-exist-4017', 'quiet-partner-4017', 'suspended-partner-4017', 'deleted-partner-4017'];
+    for (const slug of slugs) {
+      const res = await app.request(`/auth/login-context/partner/${slug}`);
+      expect({
+        slug,
+        status: res.status,
+        body: await res.text(),
+        cacheControl: res.headers.get('cache-control'),
+      }).toEqual({
+        slug,
+        status: 200,
+        body: JSON.stringify({ branding: null, partnerSso: null }),
+        cacheControl: 'no-store',
+      });
+    }
+  });
+
+  it('resolves on a hosted instance, where the singleton route stays silent', async () => {
+    const previous = process.env.IS_HOSTED;
+    process.env.IS_HOSTED = 'true';
+    try {
+      const app = buildApp();
+      const partner = await createPartner({ slug: 'hosted-partner-4017' });
+      await createPartnerAxisProvider(partner.id, { status: 'active', name: 'Hosted Okta' });
+
+      const bySlug = await (await app.request('/auth/login-context/partner/hosted-partner-4017')).json();
+      expect(bySlug.partnerSso.providerName).toBe('Hosted Okta');
+
+      const singleton = await (await app.request('/auth/login-context')).json();
+      expect(singleton).toEqual({ branding: null, partnerSso: null });
+    } finally {
+      if (previous === undefined) delete process.env.IS_HOSTED;
+      else process.env.IS_HOSTED = previous;
+    }
+  });
+
+  it('rate-limits by client after 30 requests, in a bucket separate from the singleton route', async () => {
+    const app = buildApp();
+    await createPartner({ slug: 'rl-partner-4017' });
+
+    const statuses: number[] = [];
+    for (let i = 0; i < 31; i++) {
+      statuses.push((await app.request('/auth/login-context/partner/rl-partner-4017')).status);
+    }
+    expect(statuses.slice(0, 30).every((s) => s === 200)).toBe(true);
+    expect(statuses[30]).toBe(429);
+
+    // The singleton route's budget is untouched.
+    expect((await app.request('/auth/login-context')).status).toBe(200);
+  });
+});
