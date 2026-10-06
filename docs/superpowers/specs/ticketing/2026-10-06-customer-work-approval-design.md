@@ -207,7 +207,7 @@ Indexes and constraints:
 - Unique `(id, ticket_id)`. This is the target of the `time_entries` composite FK.
 - Partial unique `(ticket_id, trigger) WHERE status = 'pending'`: at most one open
   request per trigger per ticket.
-- Index `(org_id, status, expires_at)` for the sweep.
+- Indexes `(status, expires_at)` for the sweep and `(org_id, status)` for the portal and staff lists.
 - `ticket_approval_requests_decision_shape_chk`. When `status IN ('approved','denied')`,
   `decided_at`, `decision_origin` and `decided_revision` must be set. `on_behalf`
   requires `decision_method` and a non-blank `decision_reference`. `customer` requires
@@ -265,7 +265,7 @@ settings registry test pins.
 
 The single choke point is `apps/api/src/services/timeEntryService.ts`. The only
 application-code writers of `time_entries` are `createTimeEntry` (`:644`),
-`startTimer` (`:834`), `stopTimer` → `stopRunningEntry` (`:764`/`:929`) and
+`startTimer` (`:834`), `stopTimer` → `stopRunningEntry` (`:929`/`:770`) and
 `updateTimeEntry` (`:1001`). `updateTimeEntry` also covers the mobile stop-replay
 `PATCH {endedAt}`. Every caller goes through these: REST (`routes/timeEntries/timeEntries.ts`),
 the Office add-in (`routes/officeAddin/time.ts`), the AI tool `manage_tickets`
@@ -307,6 +307,18 @@ written:
   ticket's entries where `is_billable`, `coverage = 'billable'`, `ended_at IS NOT NULL`
   and `billing_status IN ('not_billed','billed','contract')`. Held entries are not
   consumed. They are the overage the open request asks about.
+- **Queue rule.** While a `pending` budget request exists on the ticket, every later
+  billable entry is held on it. Later entries do not get tested against the remaining
+  headroom. This rule exists because of the following failure. Budget 120, 90
+  consumed, a 60-minute entry held asking +30. A later 20-minute entry would pass
+  (110 ≤ 120), and approving +30 would then fail to release the 60 (110 + 60 > 150).
+  The customer would have approved a figure that was never enough. With the queue
+  rule, the 20 joins the request, `revision` bumps, and the ask is recomputed.
+- **The ask** is computed over the whole ticket, never per entry:
+  `requested_extension_minutes = max(0, consumedMinutes + Σ held minutes − ceilingMinutes)`.
+  It is rounded up to 15 minutes; `requested_extension_amount` is computed the same
+  way in cents. Summing per-entry overages under-asks whenever two entries are held,
+  because each one is measured against a `consumed` figure that excludes the other.
 - `consumedAmount` = Σ `multiplyToCurrency(minutes/60, hourly_rate)` over the same
   set, accumulated in cents (`packages/shared/src/utils/currency.ts:169`).
 - `ceilingMinutes` = `budget_minutes` + Σ `approved_extension_minutes` of approved
@@ -315,7 +327,12 @@ written:
 Null budget means no ceiling on that axis, and zero is rejected by CHECK. Either
 ceiling triggers. Money means labour only: time entries at their stamped rate, before
 tax, with no parts. If the ticket has an amount budget and the entry has no stamped
-`hourly_rate`, the entry is held. An unknown price cannot be shown to fit.
+`hourly_rate`, or is stamped in a currency other than `budget_currency_code`, the entry
+is held. An unknown price cannot be shown to fit. Consumed rows with no rate count as
+0 toward the money figure. They are visible to staff as a rate gap
+(`isMissingRateGap`), and they were already let through. Money math uses the
+invoice quantity derivation (`invoiceAssembly.ts:102`) and `multiplyToCurrency`, so a
+held figure always equals what the invoice would charge.
 
 If `consumed + this entry` exceeds either ceiling, the entry is held. The whole entry
 is held, not split at the boundary: the invoice shows the entry as the tech wrote it.
@@ -369,7 +386,15 @@ All of these run in one transaction under the §5.2 lock order:
 - **Expire.** The `ticketSlaWorker` sweep marks the request `expired`. Its entries stay
   held. Staff re-send, which creates a new request, moves the entries and cancels the
   old one, or staff mark them `no_charge`.
-- **Cancel.** Staff withdraw a request, and its entries return to the gate.
+- **Cancel.** Staff withdraw a request. Each linked entry, in id order, re-runs the
+  gate with the queue rule ignoring the cancelled request. Entries that fit become
+  `not_billed`, and the rest are held on a new pending request.
+- **Every decision path** (approve, deny, cancel, re-ask, write-off, expire) starts
+  from a request or entry id. It reads that row unlocked to learn the ticket, takes
+  `organizations SHARE → tickets FOR UPDATE`, then locks the request and its entries
+  and re-checks status. A row that changed between the read and the lock is
+  re-evaluated or refused with `409`. Expiry selects due ids, then expires each one
+  under its own ticket lock with `SKIP LOCKED`. It is never one bulk `UPDATE`.
 - A decision is accepted only if `decided_revision = revision`. A stale page gets a
   `409 REQUEST_CHANGED`, so the customer always approves the amount they saw.
 
@@ -377,14 +402,14 @@ All of these run in one transaction under the §5.2 lock order:
 
 A new enum value is fail-closed for the invoice gatherers, which select `= 'not_billed'`.
 It is not fail-closed for readers that use `ne(...)` or count "unbilled". The plan
-audits each of the 25 files that read `billing_status`, as of
-`grep -rln billing_status apps/*/src packages/shared/src`. The known non-trivial ones:
+audits every file that reads `billing_status`. That is 29 files at plan time, from
+`grep -rln "billing_status\|billingStatus" apps/*/src packages/shared/src`, excluding tests. The known non-trivial ones:
 
 | reader | required behaviour |
 |---|---|
 | `ticketMoveCurrencyGuard.ts:105` | counts `not_billed` entries to block a currency-crossing move; must count `awaiting_approval` too (it carries a stamped currency) |
 | `orgCurrencyService.ts` | currency-change guard: same |
-| `portal/supportUsage.ts:89,124-135` | `ne('no_charge')`; held time must show as "awaiting your approval", not as billed or included |
+| `services/portal/supportUsage.ts:89,124-135` | `ne('no_charge')`; held time must show as "awaiting your approval", not as billed or included |
 | `invoiceAssembly.ts:61` `isMissingRateGap` | no change; held entries never reach it |
 | `timeEntryService.listBillables` (`:1755`) → `routes/tickets/export.ts` | export held entries with their status, not as billable |
 | `businessReports/technicianTimeReport.ts`, `packages/shared/src/reportPdf/technicianTimePdf.ts` | new status label |
@@ -435,7 +460,7 @@ covers whether the requester should be the fallback approver.
 - Ticket detail gets a **Budget** field (hours and/or amount), a progress bar
   (consumed vs ceiling, held time shaded), and an **Approvals** panel: request, cancel,
   re-send, and record a decision on behalf.
-- `POST /tickets/:id/approval-requests` (staff-raised ask), `POST /ticket-approval-requests/:id/cancel`,
+- `POST /tickets/:id/approval-requests` (staff-raised ask), `POST /ticket-approval-requests/:id/cancel`, `POST /ticket-approval-requests/:id/reask` (the "Ask again" / re-send action),
   `POST /ticket-approval-requests/:id/decide-on-behalf` `{ decision, revision, method, reference, signerName, signerEmail?, note? }`.
 - Held entries show an "Awaiting customer approval" chip in the ticket time list and
   in the timesheet.
@@ -455,7 +480,7 @@ Ticket watchers do not exist (no `ticket_watchers` table), so they are out of sc
 |---|---|
 | set a ticket budget, raise or cancel a request | `tickets:write` |
 | record a decision on behalf | new `tickets:record_approval`, back-filled to every role holding `tickets:manage`, as `quotes:accept` was (`2026-10-27-100100-quotes-accept-permission.sql`) |
-| write off a held entry (`no_charge`) | `manage_billing`, via the existing `assertManageBilling` (`timeEntryService.ts:1048`) |
+| write off a held entry (`no_charge`) | `manage_billing`, via the existing `assertManageBilling` (`timeEntryService.ts:1049`) |
 | edit `ticket_approval_settings` (partner row) | `canManagePartnerWidePolicies(auth)` (`services/partnerWideAccess.ts`) |
 | edit the org override | the permission that already guards org Ticketing settings (`OrgTicketSettingsEditor.tsx`) |
 | AI tools | may read request status. They may not decide, record on behalf, or set budgets (money-committing, human-only, the same stance as quote accept-on-behalf §3) |

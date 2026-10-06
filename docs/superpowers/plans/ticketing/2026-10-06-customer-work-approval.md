@@ -504,7 +504,7 @@ ALTER TABLE ticket_parts ADD CONSTRAINT ticket_parts_billing_status_not_held_chk
 - [ ] **Step 5: Drizzle columns.** Add `budgetMinutes`, `budgetAmount` and `budgetCurrencyCode` to
   `tickets`. Add `approvalRequestId` to `timeEntries`. Add `isAfterHours` to `workTypes`. Add the
   full `ticketApprovalRequests` table, with a header comment stating that the FKs,
-  CHECKs and trigger are SQL-only, as `timeTracking.ts:27-40` does. Run
+  CHECKs and trigger are SQL-only. `timeTracking.ts:27-40` is the precedent for composite FKs; extend the note to cover CHECKs and the trigger. Run
   `pnpm db:check-drift` against a migrated test-stack DB. Expected: no drift.
 
 - [ ] **Step 6: Run the integration test and confirm it passes.** Same command as Step 2. Expected: PASS, 6 tests.
@@ -531,6 +531,8 @@ git commit -m "feat(tickets): ticket approval requests table, budget and after-h
   - Append `approval_request_id` to the existing `time_entries` row.
 - `apps/api/src/services/ticketOrgMoveLockOrder.ts`: append `'ticket_approval_requests'` LAST to both `TICKET_ORG_DENORMALIZED_TABLES` and `TICKET_CHILD_ORG_REWRITE_LOCK_ORDER`, with a comment citing #4617.
 - `apps/api/src/routes/devices/core.ts:442`: append `'ticket_approval_requests'` LAST to `CUSTOM_ORG_REWRITE_TABLES`, at the same relative position.
+- `apps/api/src/services/deviceOrgMove/moveDeviceOrgInTransaction.ts`: the device-move path does **not** loop over the list. It has one hand-written re-stamp per table (~`:969-1010`; `moveOrg.test.ts` pins the statement sequence). Add `await tx.execute(sql\`UPDATE ${sql.identifier('ticket_approval_requests')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)\`)` LAST, after the `ticket_external_refs` statements, with a comment in the style of the `ticket_checklist_items` block. Update `moveOrg.test.ts`'s expected sequence. Without this, the deferred `ticket_approval_requests_ticket_org_fk` fails at commit on every device move with a ticket that has a request. `moveTicketOrg` (`ticketService.ts:3440`) loops `TICKET_ORG_DENORMALIZED_TABLES` and needs only the list entry.
+- Add a comment beside the list entries. Writers lock `request → time_entries`, while the movers rewrite `time_entries` first and `ticket_approval_requests` last. That is deadlock-free only because both sides take the `tickets` row lock first. The W01 Task 4 Step 5 org-move test and the W02 Task 4 concurrency test pin it.
 - `apps/api/src/services/ticketService.ts:3144` and `apps/api/src/services/deviceOrgMove/moveDeviceOrgInTransaction.ts:178`: add `ticket_approval_requests_ticket_org_fk` to both `SET CONSTRAINTS … DEFERRED` lists.
 - `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`: add `ticket_approval_settings` to `DUAL_AXIS_TENANT_TABLES`. `ticket_approval_requests` is Shape 1 and auto-discovered, so it needs no allowlist entry.
 
@@ -589,6 +591,7 @@ export interface GateInput {
     startedAt: Date; isAfterHoursWorkType: boolean;
   };
   afterHoursCovered: boolean;          // an approved window covers entry.startedAt, or released by an approved auto request
+  pendingBudgetRequest: boolean;       // queue rule (spec §5.3): a pending budget request exists on the ticket
   operation: 'create_finished' | 'start_timer' | 'stop' | 'update';
 }
 export type GateResult =
@@ -611,6 +614,7 @@ const base = (): GateInput => ({
   approvedExtensions: { minutes: 0, amountCents: 0 },
   entry: { isBillable: true, coverage: 'billable', minutes: 30, hourlyRate: '100.00', currencyCode: 'USD', startedAt: new Date('2026-10-06T14:00:00Z'), isAfterHoursWorkType: false },
   afterHoursCovered: false,
+  pendingBudgetRequest: false,
   operation: 'create_finished',
 });
 const w = (f: (i: GateInput) => void) => { const i = base(); f(i); return i; };
@@ -643,6 +647,13 @@ describe('evaluateApprovalGate', () => {
     ['hard: start uncovered after-hours refused', w(i => { i.settings.enforcement = 'hard'; i.operation = 'start_timer'; i.entry.minutes = null; i.entry.isAfterHoursWorkType = true; }), { kind: 'refuse', trigger: 'after_hours' }],
     ['hard mode never refuses a completed entry', w(i => { i.settings.enforcement = 'hard'; i.entry.minutes = 999; }), { kind: 'hold', trigger: 'budget', overMinutes: 969, overAmountCents: 0 }],
     ['hard mode never refuses a stop', w(i => { i.settings.enforcement = 'hard'; i.operation = 'stop'; i.entry.minutes = 999; }), { kind: 'hold', trigger: 'budget', overMinutes: 969, overAmountCents: 0 }],
+    ['queue rule: pending request holds an entry that would fit', w(i => { i.pendingBudgetRequest = true; i.consumed.minutes = 0; i.entry.minutes = 5; }), { kind: 'hold', trigger: 'budget', overMinutes: 0, overAmountCents: 0 }],
+    ['queue rule: hard start refused while pending', w(i => { i.settings.enforcement = 'hard'; i.pendingBudgetRequest = true; i.operation = 'start_timer'; i.entry.minutes = null; i.consumed.minutes = 0; }), { kind: 'refuse', trigger: 'budget' }],
+    ['running timer edited onto after-hours work type is not held until stop', w(i => { i.operation = 'update'; i.entry.minutes = null; i.entry.isAfterHoursWorkType = true; }), { kind: 'pass' }],
+    ['amount budget + entry in other currency holds', w(i => {
+      i.ticket = { budgetMinutes: null, budgetAmount: '100.00', budgetCurrencyCode: 'USD' };
+      i.consumed = { minutes: 0, amountCents: 0 }; i.entry.currencyCode = 'EUR'; i.entry.minutes = 1; }),
+      { kind: 'hold', trigger: 'budget', overMinutes: 0, overAmountCents: 0 }],
   ])('%s', (_name, input, expected) => {
     expect(evaluateApprovalGate(input)).toEqual(expected);
   });
@@ -662,8 +673,11 @@ describe('evaluateApprovalGate', () => {
 import { multiplyToCurrency, toCents } from '@breeze/shared';
 export /* types from Interfaces above */;
 
-function entryCents(e: GateInput['entry']): number | null {
+// Quantity derivation MUST match invoiceAssembly.ts:102 (minutes/60) and its
+// rounding; if invoiceAssembly exposes a helper for the hours string, use it.
+function entryCents(e: GateInput['entry'], budgetCurrency: string | null): number | null {
   if (e.minutes == null || e.hourlyRate == null || e.currencyCode == null) return null;
+  if (budgetCurrency != null && e.currencyCode !== budgetCurrency) return null;
   return toCents(multiplyToCurrency(String(e.minutes / 60), e.hourlyRate, e.currencyCode));
 }
 
@@ -676,6 +690,7 @@ export function evaluateApprovalGate(i: GateInput): GateResult {
   // After-hours first (spec §5.4).
   if (s.afterHoursTrigger && e.isAfterHoursWorkType && !i.afterHoursCovered) {
     if (i.operation === 'start_timer') return s.enforcement === 'hard' ? { kind: 'refuse', trigger: 'after_hours' } : { kind: 'pass' };
+    if (e.minutes == null) return { kind: 'pass' }; // still running; evaluated at stop
     return { kind: 'hold', trigger: 'after_hours', overMinutes: 0, overAmountCents: 0 };
   }
 
@@ -686,16 +701,18 @@ export function evaluateApprovalGate(i: GateInput): GateResult {
   if (ceilMin == null && ceilCents == null) return { kind: 'pass' };
 
   if (i.operation === 'start_timer') {
+    if (i.pendingBudgetRequest) return s.enforcement === 'hard' ? { kind: 'refuse', trigger: 'budget' } : { kind: 'pass' };
     const atCeiling = (ceilMin != null && i.consumed.minutes >= ceilMin) || (ceilCents != null && i.consumed.amountCents >= ceilCents);
     return atCeiling && s.enforcement === 'hard' ? { kind: 'refuse', trigger: 'budget' } : { kind: 'pass' };
   }
   if (e.minutes == null) return { kind: 'pass' }; // still running after an update; evaluated at stop
+  if (i.pendingBudgetRequest) return { kind: 'hold', trigger: 'budget', overMinutes: 0, overAmountCents: 0 }; // queue rule
 
   const overMinutes = ceilMin == null ? 0 : Math.max(0, i.consumed.minutes + e.minutes - ceilMin);
   let overAmountCents = 0;
   let unknownMoney = false;
   if (ceilCents != null) {
-    const c = entryCents(e);
+    const c = entryCents(e, t.budgetCurrencyCode);
     if (c == null) unknownMoney = true;
     else overAmountCents = Math.max(0, i.consumed.amountCents + c - ceilCents);
   }
@@ -711,7 +728,7 @@ export function evaluateApprovalGate(i: GateInput): GateResult {
   them. If `toCents` lives in `quoteMath`, import it from there. Never use
   `Number(rate) * hours`.
 
-- [ ] **Step 4: Run it and confirm it passes.** Same command. Expected: PASS, 18 tests.
+- [ ] **Step 4: Run it and confirm it passes.** Same command. Expected: PASS, 22 tests.
 
 - [ ] **Step 5: Commit.** Message: `feat(tickets): pure approval gate evaluation (#4617)`.
 
@@ -722,7 +739,10 @@ export function evaluateApprovalGate(i: GateInput): GateResult {
 - Create: `apps/api/src/services/ticketApproval/requests.integration.test.ts` (under `src/__tests__/integration/` if that is where the integration config globs; check `vitest.integration.config.ts` `include`)
 
 **Interfaces:**
-- Produces `loadGateContext(db, { ticketId, orgId, partnerId, excludeEntryId?: string, entryStartedAt: Date, workTypeId: string | null }): Promise<Omit<GateInput, 'entry' | 'operation'> & { isAfterHoursWorkType: boolean }>`. It must be called **while the ticket row lock is held**. It sums consumption with this SQL:
+- Produces `loadGateContext(db, { ticketId, orgId, partnerId, excludeEntryId?: string, entryStartedAt: Date, workTypeId: string | null, ignoreRequestId?: string }): Promise<Omit<GateInput, 'entry' | 'operation'> & { isAfterHoursWorkType: boolean }>`.
+  `pendingBudgetRequest` is true when a `pending` budget request exists on the ticket
+  other than `ignoreRequestId`. Decision re-runs pass the request being decided or
+  cancelled. It must be called **while the ticket row lock is held**. It sums consumption with this SQL:
 
 ```sql
 SELECT
@@ -739,10 +759,11 @@ WHERE ticket_id = $1 AND is_billable AND coverage = 'billable' AND ended_at IS N
 - Produces `holdEntryOnRequest(db, { ticketId, orgId, trigger, enforcement, ttlHours, overMinutes, overAmountCents, currencyCode, entryId, afterHoursWorkTypeId? }): Promise<{ requestId: string; created: boolean }>`.
   It locks the pending request for `(ticket_id, trigger)` `FOR UPDATE`, or inserts one.
   If the insert races on `ticket_approval_requests_one_pending_uq`, it catches `23505`
-  and re-selects. On join it sets `revision = revision + 1`, recomputes
-  `requested_extension_minutes`/`_amount` as the total overage of all linked held
-  entries plus this one, rounded up to the next 15 minutes for minutes, and resets
-  `expires_at`. It sets the entry to `billing_status = 'awaiting_approval'` and
+  and re-selects. On join it sets `revision = revision + 1` and recomputes the ask over the whole
+  ticket. The formula is `requested_extension_minutes = ceil15(max(0, consumedMinutes + Σ minutes of all held entries on this request incl. this one − ceilingMinutes))`,
+  and the same in cents for the amount. Never sum per-entry overages: each one excludes
+  the others from `consumed`, so the sum under-asks. It also resets `expires_at`.
+  Add a test: budget 60, consumed 50, two held 30-minute entries → ask 50, not 40. It sets the entry to `billing_status = 'awaiting_approval'` and
   `approval_request_id`.
 - Produces `resolveRecipients(db, { orgId, ticketId, trigger }): Promise<{ approverEmails: string[]; notifyEmails: string[] }>`, per spec §6.1, with lower-cased, de-duplicated emails.
 
@@ -763,7 +784,7 @@ WHERE ticket_id = $1 AND is_billable AND coverage = 'billable' AND ended_at IS N
 - Modify: `apps/api/src/services/timeEntryService.ts`:
   - `createTimeEntry` (`:644`)
   - `startTimer` (`:834`)
-  - `stopRunningEntry` (`:764`) and `stopTimer` (`:929`)
+  - `stopRunningEntry` (`:770`) and `stopTimer` (`:929`)
   - `updateTimeEntry` (`:1001`), including the reprice block at `:1049-1060`
   - `getEntryOr404` (`:980`)
 - Modify: `apps/api/src/services/timeEntryService.test.ts`, or create `timeEntryService.approvalGate.test.ts` next to it.
@@ -868,7 +889,18 @@ export async function expireDueApprovalRequests(db: Tx, now: Date): Promise<numb
 ```
 
 Rules (spec §5.6):
-- Lock order: `tickets FOR UPDATE → request FOR UPDATE → linked entries FOR UPDATE ORDER BY id`.
+- Lock order: every function receives an id, never a locked row. Each one:
+  1. reads the request (or the entry, for write-off) **unlocked** to learn `ticket_id`
+     and `org_id`;
+  2. takes `organizations FOR SHARE` (reuse `readOrgStampingDefaults`), then
+     `tickets FOR UPDATE` (`lockTicketRow`);
+  3. locks the request `FOR UPDATE`, then the linked entries `FOR UPDATE ORDER BY id`;
+  4. re-checks status and `ticket_id`. If the ticket moved or the status changed
+     between step 1 and step 3, it retries once, then fails with `409`.
+
+  Write-off follows the same sequence. It re-checks under the lock that the entry's
+  request is still `denied`, `expired` or `cancelled`, because a concurrent re-ask may
+  have moved the entry onto a pending request.
 - The request must be `pending` (else `409 REQUEST_NOT_PENDING`), `revision` must equal
   the supplied value (else `409 REQUEST_CHANGED`), and `expires_at > now()` (else
   expire it, then `409 REQUEST_EXPIRED`).
@@ -887,8 +919,15 @@ Rules (spec §5.6):
   `time_entry.approval_written_off`.
 - **Re-ask:** the old request must be `denied`, `expired` or `cancelled`. Create a new
   `staff` request and move the old request's still-held entries to it.
-- **Expire:** `UPDATE … SET status = 'expired' WHERE status = 'pending' AND expires_at <= now RETURNING id`.
-  Entries stay held.
+- **Cancel:** set `cancelled`. Then, in id order, re-run the gate for each linked entry
+  with `ignoreRequestId` set to the cancelled request. Passing entries become
+  `not_billed` and are unlinked. The rest go through `holdEntryOnRequest`, which opens a
+  new pending request.
+- **Expire:** run `SELECT id FROM ticket_approval_requests WHERE status = 'pending' AND expires_at <= now ORDER BY id LIMIT 200`.
+  Then, for each id, open its own transaction with the full lock sequence above,
+  locking the request `FOR UPDATE SKIP LOCKED`; skip it if it is locked or no longer
+  due. Set it `expired`. Entries stay held. Never use one bulk `UPDATE`, which would
+  take request locks out of order.
 - Each transition inserts a ticket comment (`comment_type = 'system'`, `is_public = true`)
   and calls `emitTicketEvent('ticket.approval_requested' | 'ticket.approval_decided', …)`
   **after commit**. W04 adds the event types; in W02, add the types to the
@@ -901,7 +940,13 @@ Rules (spec §5.6):
   - approval with an extension smaller than the overage leaves the excess entry held
     on a new request;
   - write-off without `manage_billing` gets 403;
-  - expire leaves entries held.
+  - expire leaves entries held;
+  - cancel releases entries that now fit and re-holds the rest on a new request;
+  - write-off racing a re-ask on the same entry: exactly one wins, and no pending
+    request is left with zero held entries;
+  - the queue-rule regression: budget 120 with 90 consumed. Hold a 60-minute entry,
+    then log 20 minutes; it joins the request. Approve the recomputed ask, and both
+    entries are released.
 - [ ] **Step 2: Fail. Step 3: Implement. Step 4: Pass. Step 5: Commit.**
 
 ### Task 6: `billing_status` reader audit
