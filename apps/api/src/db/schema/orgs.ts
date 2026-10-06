@@ -95,6 +95,7 @@ export const partners = pgTable('partners', {
   signupIpClassifiedAt: timestamp('signup_ip_classified_at', { withTimezone: true }),
   emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
   paymentMethodAttachedAt: timestamp('payment_method_attached_at', { withTimezone: true }),
+  autopayEnabled: boolean('autopay_enabled').notNull().default(false),
   stripeCustomerId: text('stripe_customer_id'),
   // Billing identity snapshot, written ONLY by the separate billing service
   // from its payment-provider webhooks and read only by the abuse sweep

@@ -249,7 +249,7 @@ describe('AI Operator human-work link — tenancy (E3, #6168)', () => {
     const taskId = await seedTask(a);
     const { step, item } = await openHumanWork(a, taskId);
 
-    await withSystemDbAccessContext(() => moveTicketOrg(item.ticketId, a2.id, { userId: a.userId }));
+    await withSystemDbAccessContext(() => moveTicketOrg(item.ticketId, a2.id, { kind: 'user' as const, userId: a.userId }));
 
     // The item moved with its ticket (shipped re-stamp); the step did not.
     const [movedItem] = await withSystemDbAccessContext(() =>

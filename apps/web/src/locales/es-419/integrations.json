@@ -89,8 +89,10 @@
       "consent_expired": "La sesión de consentimiento venció. Inicia el consentimiento nuevamente.",
       "consent_state_mismatch": "No se pudo verificar la sesión de consentimiento. Iníciala nuevamente.",
       "consent_cancelled": "Se canceló el consentimiento de Microsoft.",
+      "conditional_access_blocked": "Microsoft bloqueó este inicio de sesión: la directiva de acceso condicional del inquilino lo interrumpió (por ejemplo, una comprobación del dispositivo). Vuelva a intentarlo desde un navegador en el que confíe el inquilino o consulte al administrador del inquilino.",
+      "consent_provider_error": "Microsoft devolvió un error durante el inicio de sesión. Vuelva a intentarlo; si se repite, revise los registros de inicio de sesión del inquilino.",
       "admin_role_required": "Un administrador global o administrador de roles con privilegios debe otorgar el consentimiento.",
-      "tenant_mismatch": "Microsoft devolvió otro inquilino. Inicia el consentimiento nuevamente para esta organización.",
+      "tenant_mismatch": "El administrador con el que iniciaste sesión pertenece a un inquilino de Microsoft distinto al de esta conexión. Inicia sesión con un administrador del inquilino conectado.",
       "tenant_already_bound": "Este inquilino de Microsoft ya está conectado a otra organización.",
       "credential_unavailable": "La credencial de conexión no está disponible. Comunícate con un administrador de Breeze.",
       "identity_token_invalid": "Falló la verificación de identidad del administrador de Microsoft.",
@@ -171,8 +173,10 @@
       "consent_expired": "La sesión de consentimiento venció. Inicia el consentimiento nuevamente.",
       "consent_state_mismatch": "No se pudo verificar la sesión de consentimiento. Iníciala nuevamente.",
       "consent_cancelled": "Se canceló el consentimiento de Microsoft.",
+      "conditional_access_blocked": "Microsoft bloqueó este inicio de sesión: la directiva de acceso condicional del inquilino lo interrumpió (por ejemplo, una comprobación del dispositivo). Vuelva a intentarlo desde un navegador en el que confíe el inquilino o consulte al administrador del inquilino.",
+      "consent_provider_error": "Microsoft devolvió un error durante el inicio de sesión. Vuelva a intentarlo; si se repite, revise los registros de inicio de sesión del inquilino.",
       "admin_role_required": "Un administrador global o administrador de roles con privilegios debe otorgar el consentimiento.",
-      "tenant_mismatch": "Microsoft devolvió otro inquilino. Inicia el consentimiento nuevamente para esta organización.",
+      "tenant_mismatch": "El administrador con el que iniciaste sesión pertenece a un inquilino de Microsoft distinto al de esta conexión. Inicia sesión con un administrador del inquilino conectado.",
       "tenant_already_bound": "Este inquilino de Microsoft ya está conectado a otra organización.",
       "credential_unavailable": "La credencial de conexión no está disponible. Comunícate con un administrador de Breeze.",
       "identity_token_invalid": "Falló la verificación de identidad del administrador de Microsoft.",
@@ -197,6 +201,30 @@
       "revoke": "Para revocar el acceso más adelante, desconecta aquí o quita la aplicación empresarial de Breeze en Microsoft Entra.",
       "continue": "Continuar a Microsoft",
       "defaultTarget": "el inquilino de Microsoft 365 de esta organización"
+    }
+  },
+  "m365ConfirmTenant": {
+    "title": "Confirma el inquilino de Microsoft",
+    "loading": "Cargando el inquilino en el que iniciaste sesión…",
+    "signedInAs": "Iniciaste sesión como {{username}} en el inquilino de Microsoft {{tenantId}}.",
+    "signedInTo": "Iniciaste sesión en el inquilino de Microsoft {{tenantId}}.",
+    "tenantIdLabel": "ID del inquilino",
+    "usernameLabel": "Sesión iniciada como",
+    "requestFor": "Breeze solicitará acceso a ESTE inquilino para {{orgName}}.",
+    "requestForThisOrg": "Breeze solicitará acceso a ESTE inquilino para esta organización.",
+    "mspWarning": "Si este es el inquilino de tu propio MSP y no el del cliente, cancela e inicia sesión con la cuenta de administrador del cliente. Una cuenta de invitado siempre inicia sesión en su propio inquilino de origen.",
+    "continue": "Continuar al consentimiento de Microsoft",
+    "cancel": "Cancelar, inquilino incorrecto",
+    "continueFailed": "No se pudo iniciar el consentimiento de Microsoft.",
+    "cancelFailed": "No se pudo cancelar el inicio de sesión.",
+    "cancelled": "Cancelado. No se conectó nada. Inicia el consentimiento nuevamente e inicia sesión con la cuenta de administrador del cliente.",
+    "expired": "Esta confirmación caducó o ya se usó. Inicia el consentimiento nuevamente.",
+    "steps": {
+      "title": "Cómo funciona la conexión",
+      "identity": "Inicia sesión en Microsoft como administrador global o administrador de roles con privilegios del inquilino del cliente. Breeze verifica quién eres y a qué inquilino perteneces.",
+      "confirm": "Confirma en Breeze que este es el inquilino del cliente y no el tuyo.",
+      "consent": "Aprueba los permisos de Breeze para ese inquilino en la pantalla de consentimiento de Microsoft.",
+      "verify": "Breeze comprueba su acceso a ese inquilino antes de conectarlo."
     }
   },
   "m365TenantPanel": {
@@ -1253,5 +1281,15 @@
     "showAllContacts_one": "Mostrar todos los contactos ({{count}} solo proveedor oculto)",
     "showAllContacts_other": "Mostrar todos los contactos ({{count}} solo proveedores ocultos)",
     "archived": "Archivado"
+  },
+  "accountingFees": {
+    "title": "Ingresos por comisiones de procesamiento",
+    "item": "ID del artículo de comisiones de procesamiento en QuickBooks",
+    "account": "Código de cuenta de ingresos por comisiones de procesamiento en Xero",
+    "help": "Las comisiones se registran como ingresos separados no gravables para el mismo cliente. Deben configurarse el envío automático de pagos y una cuenta de pago o depósito; Xero también requiere un código de exención de impuestos. Si se deja en blanco, la exportación de comisiones queda en espera de una asignación. Los registros existentes conservan su destino y asignación originales.",
+    "save": "Guardar asignación de comisiones",
+    "saved": "Asignación de comisiones de procesamiento guardada",
+    "failed": "No se pudo guardar la asignación de comisiones de procesamiento. Revisa tus permisos e inténtalo de nuevo.",
+    "attention": "La contabilidad de comisiones de procesamiento requiere atención. Revisa la asignación de ingresos y la conexión. Los registros de estado incierto se verifican antes de volver a intentarlo."
   }
 }

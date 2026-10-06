@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'crypto';
 import { getDefaultEnrollmentKeyTtlMinutes as getSharedDefaultEnrollmentKeyTtlMinutes } from './enrollmentKeyTtlDefault';
+import { getEnrollmentKeyPepper } from './enrollmentKeyPepper';
 
 /**
  * Mints a raw enrollment key value (64-char hex) for the Partner API
@@ -26,14 +27,7 @@ export function getDefaultEnrollmentKeyTtlMinutes(): number {
 
 // Primary pepper used for ALL new enrollment-key hashes. Required in production.
 function getPrimaryPepper(): string {
-  const pepper = process.env.ENROLLMENT_KEY_PEPPER?.trim();
-  if (pepper) return pepper;
-
-  if (process.env.NODE_ENV === 'test') {
-    return 'test-enrollment-key-pepper';
-  }
-
-  throw new Error('No enrollment key pepper configured. Set ENROLLMENT_KEY_PEPPER.');
+  return getEnrollmentKeyPepper();
 }
 
 // Legacy peppers — only consulted on the read/lookup path so that enrollment keys

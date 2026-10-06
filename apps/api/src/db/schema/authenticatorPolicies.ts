@@ -16,7 +16,7 @@ export const authenticatorPolicies = pgTable('authenticator_policies', {
   // See services/authenticatorPolicy.ts resolveEffectivePolicy.
   requireEnrollment: boolean('require_enrollment'),
   enforceFrom: timestamp('enforce_from', { withTimezone: true }),
-  updatedByUserId: uuid('updated_by_user_id').references(() => users.id),
+  updatedByUserId: uuid('updated_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 

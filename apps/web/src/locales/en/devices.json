@@ -1161,6 +1161,7 @@
     "clearCategory": "Clear",
     "columnPath": "Path",
     "columnSize": "Size",
+    "selectionLimit": "A single cleanup run can delete at most {{max}} items. Select all fills the selection up to that limit, largest first. Delete them, then run the cleanup preview again for anything left.",
     "selectionSummary": "{{count}} selected · {{size}}",
     "executeSelected": "Delete selected ({{count}})",
     "confirmTitle": "Permanently delete cleanup targets",
@@ -1921,6 +1922,10 @@
       "noReason": "No reason reported by the agent",
       "failedAt": "Last install attempt failed: {{when}}"
     },
+    "awaitingRestart": {
+      "badge": "Installed, reboot required",
+      "installedAt": "Installed {{when}}. It stays listed as pending until the device restarts."
+    },
     "approval": {
       "approved": "Approved",
       "approvedTitle": "Manually approved.",
@@ -2435,6 +2440,7 @@
       "bulkWakeSomeFailed": "Bulk Wake Some Failed",
       "commandQueued": "{{action}} queued — will run when {{hostname}} reconnects",
       "commandSent": "{{action}} sent to {{hostname}}",
+      "commandCancelled": "{{action}} was not sent to {{hostname}}: the command was cancelled ({{reason}})",
       "compareNeedsTwo": "Comparison needs at least 2 agent devices.",
       "decommissionCancelled": "Removal Cancelled",
       "decommissionFailed": "Remove Failed",
@@ -2819,7 +2825,8 @@
     "submitStepUp": "Verify and move",
     "submitting": "Working…",
     "cancel": "Cancel",
-    "genericError": "Failed to move the device."
+    "genericError": "Failed to move the device.",
+    "timeout": "The move is taking longer than expected and may still be completing on the server. Wait a minute, then refresh the page to check which organization the device is in before trying again."
   },
   "networkDeviceDetailPage": {
     "approval": {

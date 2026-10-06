@@ -212,6 +212,10 @@ Each route requires the listed scope on the principal.
 | `GET` | `/partner-api/custom-fields` | `custom-fields:read` | Export custom field definitions |
 | `GET` | `/partner-api/custom-field-values` | `custom-fields:read` | Export custom field values |
 | `GET` | `/partner-api/alerts` | `alerts:read` | Latest-state alert feed with signed cursor and checkpoint |
+| `GET` | `/partner-api/tickets` | `tickets:read` | Latest-state ticket feed with signed cursor and checkpoint; soft-deletes arrive as tombstones. Filters: `orgId`, `status`, `priority`, `assigneeId`, `externalId` (this principal's ref). |
+| `GET` | `/partner-api/tickets/ids` | `tickets:read` | Reconciliation list of live ticket ids + `changeVersion` in the accessible set, keyset-paged. |
+| `GET` | `/partner-api/tickets/:id` | `tickets:read` | Read one ticket (404 outside the principal's partner/organizations, or when soft-deleted). |
+| `GET` | `/partner-api/tickets/:id/comments` | `tickets:read` | The ticket's comments and feed entries in creation order, keyset-paged; edits change `revision`, deletes are tombstones. |
 | `POST` | `/partner-api/organizations` | `organizations:write` | Create an organization under the principal's partner. Enforces the partner's `maxOrganizations` cap (409 when reached). Body: `name`, `slug`, `type?`, `status?` (`active`/`trial`). |
 | `POST` | `/partner-api/sites` | `sites:write` | Create a site. `orgId` must be in the principal's accessible organizations (403 otherwise). Body: `orgId`, `name`, `timezone?`, `address?`, `contact?`. |
 | `POST` | `/partner-api/enrollment-keys` | `enrollment-keys:write` | Create an enrollment key. Body: `orgId`, `name`, `siteId?`, `maxUsage?`, `issueEnrollmentSecret?`, and `ttlMinutes` **or** `expiresAt` (never both). The raw key is returned once in the 201 body. `issueEnrollmentSecret: true` additionally mints a per-key `enrollmentSecret`, returned once; omitted, the key enrolls with the global `AGENT_ENROLLMENT_SECRET`. Supports `X-Idempotency-Key`. |
@@ -241,6 +245,25 @@ neither `ttlMinutes` nor `expiresAt` is supplied the key gets the same default
 lifetime as one created in the UI (30 days unless
 `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` says otherwise), clamped by
 `PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES` and by the organization's own cap.
+
+### Schema versioning and compatibility
+
+Every export response carries a `schemaVersion` (currently `"1"`). Within one
+`schemaVersion`, Breeze makes **additive changes only**:
+
+- **May change without a version bump:** new fields on a record or on a nested
+  object, new arrays, new keys under `collections`, and new optional envelope
+  keys. Existing fields keep their names, types, and nullability.
+- **Bumps `schemaVersion`:** removing or renaming a field, changing its type,
+  making a nullable field non-null or a non-null field nullable, or changing what
+  an existing field means.
+
+**Consumers must ignore keys they do not recognize.** A client that rejects a
+whole page on an unknown key breaks on the next Breeze release that adds a field.
+If you validate responses strictly, validate the fields you read and strip the
+rest, rather than failing the page. The authoritative record shapes are the Zod
+schemas in
+[`apps/api/src/routes/partnerApi/schemas.ts`](https://github.com/LanternOps/breeze/blob/main/apps/api/src/routes/partnerApi/schemas.ts).
 
 ## Alerts
 
@@ -1274,10 +1297,40 @@ Canned reply templates are partner-scoped. Management operations require `partne
 | `POST` | `/ai/sessions/:id/messages` | Send message (streaming) |
 | `POST` | `/ai/sessions/:id/interrupt` | Interrupt response |
 | `POST` | `/ai/sessions/:id/approve/:executionId` | Approve tool execution |
+| `POST` | `/ai/sessions/:id/continue` | Start a linked continuation chat (on another model) that opens from a summary of this one (v0.121.0+) |
 | `GET` | `/ai/usage` | AI usage stats |
 | `GET` | `/ai/budget` | AI budget info |
 | `GET` | `/ai/admin/sessions` | Admin: list all sessions |
 | `GET` | `/ai/admin/security-events` | Admin: security events |
+
+### AI model registry
+
+The API behind **Partner Settings → AI Providers & Models** (v0.121.0+). Connection, model, default and residency routes require partner-wide access; the per-organization defaults need organization read or write permission (writes also need MFA), and usage needs permission to read all AI sessions. See [Bring Your Own LLM Key](/features/bring-your-own-llm-key/).
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/ai/models` | Connections, model offerings and feature defaults for your partner |
+| `POST` | `/ai/models/connections` | Add a connection (provider API key or OpenAI-compatible endpoint) |
+| `PATCH` | `/ai/models/connections/:id` | Update connection settings |
+| `POST` | `/ai/models/connections/:id/key` | Rotate the connection's key |
+| `POST` | `/ai/models/connections/:id/endpoint` | Set the connection's endpoint |
+| `POST` | `/ai/models/connections/:id/refresh` | Re-discover the connection's models |
+| `POST` | `/ai/models/connections/:id/offerings` | Add a model to an OpenAI-compatible connection by hand |
+| `DELETE` | `/ai/models/connections/:id` | Disconnect (removes the key and disables its models) |
+| `POST` | `/ai/models/offerings/platform/:platformModelId` | Enable a Breeze platform model for your partner |
+| `POST` | `/ai/models/offerings/:id/enabled` | Enable or disable a model |
+| `PATCH` | `/ai/models/offerings/:id` | Update a model's details and price |
+| `POST` | `/ai/models/offerings/:id/verify` | Run the verification checks on a model |
+| `PUT` | `/ai/models/assignments` | Set the default model, backup models and options per AI feature |
+| `GET` / `PUT` | `/ai/models/orgs/:orgId/assignments` | Read or narrow one organization's model defaults |
+| `PUT` | `/ai/models/residency` | Turn the residency requirement on or off |
+| `GET` | `/ai/models/residency/preview` | List the AI features the residency requirement would disable |
+| `GET` | `/ai/models/usage` | AI usage by model, feature, technician and organization |
+| `GET` | `/ai/models/usage/quality` | Model quality view |
+
+<Aside type="caution" title="Deprecated in v0.121.0, removed in v0.122.0">
+  `/ai/provider` (`GET`, `PATCH`, `DELETE`, `POST /key`, `POST /endpoint`) is replaced by the registry above: connect a key with `POST /ai/models/connections`, rotate it with `POST /ai/models/connections/:id/key`, set an endpoint with `POST /ai/models/connections/:id/endpoint`, and disconnect with `DELETE /ai/models/connections/:id`. The single partner default model becomes per-feature defaults (`PUT /ai/models/assignments`). Three request fields are retired the same way: `reviewerModel` on the script policy routes (use the `script_reviewer` feature default), `allowedModels` on the AI for Office organization policy (use the `office_chat` feature's permitted models or `PUT /ai/models/orgs/:orgId/assignments`), and `model` on AI agents (send `offeringId`, an enabled model from `GET /ai/models`; `null` follows the AI agents default). In v0.121.0 the retired fields are ignored; from v0.122.0 `/ai/provider` returns `404` and a request carrying a retired field is rejected with `400`.
+</Aside>
 
 ## MCP Server
 

@@ -61,6 +61,7 @@ import {
 } from './networkBaselineAuthority';
 import { aiExecuteCommand } from './aiDispatch';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+import { inToolDbPhase } from './aiToolDbContext';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -121,7 +122,7 @@ function siteAccessDenied(auth: AuthContext, siteId: string | null | undefined):
 // ============================================
 
 /**
- * SEC-2026-09-05-146 — same arming contract as the REST routes: an enabled
+ * Same arming contract as the REST routes: an enabled
  * recurring schedule created or changed through the AI/MCP tool is bound to the
  * calling principal's live authority. Returns null when the schedule is
  * disabled (nothing dispatches, so nothing needs an owner).
@@ -530,7 +531,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           ...(alertOverrides.rogueDevice !== undefined ? { rogueDevice: alertOverrides.rogueDevice } : {})
         });
 
-        // SEC-146: re-arm the authority envelope and bump the generation for the
+        // Re-arm the authority envelope and bump the generation for the
         // changed schedule. Also the re-approval path for a legacy row.
         let envelope: BaselineAuthorityEnvelope | null;
         try {
@@ -605,7 +606,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       // createCatalogItem in catalogService.ts). Suppressing the conflict at the
       // statement level keeps the transaction healthy; zero returned rows means
       // a baseline already exists for this org/site/subnet.
-      // SEC-146: bind the new recurring schedule to the calling principal.
+      // Bind the new recurring schedule to the calling principal.
       let createEnvelope: BaselineAuthorityEnvelope | null;
       try {
         createEnvelope = await armScheduleAuthority(auth, {
@@ -921,6 +922,9 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     domain: 'network',
     searchHint: 'network discovery scan from a managed device to find nearby assets',
+    // The scan waits up to 120 s for the device, so it must not hold the
+    // per-call transaction across it (#7918; `AiTool.selfManagedDbContext`).
+    selfManagedDbContext: true,
     definition: {
       name: 'network_discovery',
       description: 'Initiate a network discovery scan from a device to find other devices on the network.',
@@ -937,7 +941,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
     handler: async (input, auth) => {
       const deviceId = input.deviceId as string;
 
-      const access = await verifyDeviceAccess(deviceId, auth, true);
+      const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, true));
       if ('error' in access) return JSON.stringify({ error: access.error });
 
       const result = await aiExecuteCommand(auth, 'network_discovery', deviceId, 'network_discovery', {

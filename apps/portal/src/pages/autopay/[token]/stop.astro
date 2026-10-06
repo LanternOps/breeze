@@ -1,0 +1,6 @@
+---
+import PublicDocumentLayout from '../../../layouts/PublicDocumentLayout.astro';
+import AutopayStopPage from '../../../components/portal/AutopayStopPage';
+const { token } = Astro.params;
+---
+<PublicDocumentLayout title="Stop automatic payments"><AutopayStopPage token={token!} client:load /></PublicDocumentLayout>

@@ -113,7 +113,7 @@ ticketConfigRoutes.post('/email-inbound/:id/convert', scopes, writePerm, adminMi
   try {
     const { id } = c.req.valid('param');
     const { orgId } = c.req.valid('json');
-    const row = await convertEmailInbound(partnerId, id, orgId, { userId: auth.user.id, name: auth.user.name });
+    const row = await convertEmailInbound(partnerId, id, orgId, { kind: 'user' as const, userId: auth.user.id, name: auth.user.name });
     writeRouteAudit(c, {
       orgId: null,
       action: 'ticket_email_inbound.convert',

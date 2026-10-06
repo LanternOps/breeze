@@ -1,3 +1,4 @@
+vi.mock('./autopay/autopayGate', () => ({ isAutopayEnabledForPartner: vi.fn().mockResolvedValue(false) }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Controllable Drizzle chain mock (same pattern as invoiceService.test.ts /

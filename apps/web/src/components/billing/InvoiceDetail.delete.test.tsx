@@ -26,6 +26,7 @@ const resp = (payload: unknown, ok = true): Response =>
   ({ ok, status: ok ? 200 : 500, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
 const draftDetail: InvoiceDetailData = {
+  autopay: null,
   invoice: {
     id: 'inv-1', invoiceNumber: null, orgId: 'org-1', siteId: null, status: 'draft',
     currencyCode: 'USD', issueDate: null, dueDate: null, sentAt: null,

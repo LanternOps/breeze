@@ -1,16 +1,30 @@
 import { defineConfig } from 'vitest/config';
 import { config } from 'dotenv';
+import path from 'node:path';
 
 // Load test environment variables
 config({ path: '../../.env.test', quiet: true });
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@breeze/shared': path.resolve(import.meta.dirname, '../../packages/shared/src'),
+    },
+  },
   test: {
     // explicit: vitest 5 flips the default to true; flip per package in a follow-up
     clearMocks: false,
     globals: true,
     environment: 'node',
     include: [
+      'src/services/accounting/accountingFeePush.integration.test.ts',
+      'src/index.autopay.integration.test.ts',
+      'src/db/schema/autopaySetupAttempts.integration.test.ts',
+      'src/services/autopay/enrollmentService.integration.test.ts',
+      'src/services/autopay/cardExpiryCheck.integration.test.ts',
+      // Charging locks/replay require real PostgreSQL (never the unit DB mocks).
+      'src/services/autopay/charging.integration.test.ts',
+      'src/services/autopay/**/*.integration.test.ts',
       'src/jobs/scriptVerifyReconciliation.integration.test.ts',
       'src/__tests__/integration/**/*.test.ts',
       'src/routes/integrationConnectionScope.integration.test.ts',
@@ -35,6 +49,8 @@ export default defineConfig({
       // Belong to vitest.integration.config.ts (excluded from the unit runner).
       'src/services/discovery/agentReportedBmcLink.integration.test.ts',
       'src/jobs/discoveryWorker.bmc.integration.test.ts',
+      // Scheduled discovery dispatch is enqueued only after the job row commits (#7187 hazard).
+      'src/jobs/discoveryWorker.dispatchAfterCommit.integration.test.ts',
       'src/services/topology/bmc.integration.test.ts',
       // #5861 Customer Portal Network Visibility: real-Postgres proof of
       // org isolation and partner-wide monitor result scoping.
@@ -275,6 +291,8 @@ export default defineConfig({
       // #7217 — failed Add Device attempts leave no live key; failed
       // short-link downloads give their use back; the list names the site.
       'src/routes/enrollmentKeysFailureCleanup.integration.test.ts',
+      // #7345 — Add Device reuses one parent key per (org, site, creator).
+      'src/routes/enrollmentKeysAddDeviceParent.integration.test.ts',
       // Co-located real-DB integration test for the fleet posture report
       // (#3244): the mixed never-scanned/stale/clean/detected fixture that
       // guards the two-query split — a mocked unit test cannot catch the
@@ -390,7 +408,8 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
-      include: ['src/**/*.ts'],
+      include: [
+'src/**/*.ts'],
       exclude: [
         'src/**/*.test.ts',
         'src/__tests__/**',

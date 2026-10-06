@@ -1161,6 +1161,7 @@
     "clearCategory": "Limpar seleção",
     "columnPath": "Caminho",
     "columnSize": "Tamanho",
+    "selectionLimit": "Uma única execução de limpeza pode excluir no máximo {{max}} itens. Selecionar tudo preenche a seleção até esse limite, começando pelos maiores. Exclua-os e execute a prévia da limpeza novamente para o que sobrar.",
     "selectionSummary": "{{count}} selecionados · {{size}}",
     "executeSelected": "Excluir selecionados ({{count}})",
     "confirmTitle": "Excluir permanentemente os alvos de limpeza",
@@ -1921,6 +1922,10 @@
       "noReason": "Nenhum motivo informado pelo agente",
       "failedAt": "Última tentativa de instalação falhou: {{when}}"
     },
+    "awaitingRestart": {
+      "badge": "Instalado, reinicialização necessária",
+      "installedAt": "Instalado em {{when}}. Continua listado como pendente até o dispositivo ser reiniciado."
+    },
     "approval": {
       "approved": "Aprovado",
       "approvedTitle": "Aprovado manualmente.",
@@ -2434,6 +2439,7 @@
       "bulkWakeSomeFailed": "Falha ao despertar alguns dispositivos",
       "commandQueued": "{{action}} na fila — será executado quando {{hostname}} reconectar",
       "commandSent": "{{action}} enviado para {{hostname}}",
+      "commandCancelled": "{{action}} não foi enviado para {{hostname}}: o comando foi cancelado ({{reason}})",
       "compareNeedsTwo": "A comparação requer pelo menos 2 dispositivos com agente.",
       "decommissionCancelled": "Remoção cancelada",
       "decommissionFailed": "Falha ao remover",
@@ -2819,7 +2825,8 @@
     "submitStepUp": "Verificar e mover",
     "submitting": "Processando…",
     "cancel": "Cancelar",
-    "genericError": "Não foi possível mover o dispositivo."
+    "genericError": "Não foi possível mover o dispositivo.",
+    "timeout": "A movimentação está demorando mais do que o esperado e talvez ainda esteja sendo concluída no servidor. Aguarde um minuto e atualize a página para verificar em qual organização o dispositivo está antes de tentar novamente."
   },
   "networkDeviceDetailPage": {
     "approval": {

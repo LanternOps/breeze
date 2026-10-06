@@ -682,7 +682,7 @@ describe('POST /tickets — delegates to createTicket', () => {
         submitterEmail: PORTAL_USER.email,
         submitterName: PORTAL_USER.name,
       }),
-      expect.objectContaining({ userId: PORTAL_USER.id })
+      expect.objectContaining({ kind: 'portal_user', portalUserId: PORTAL_USER.id })
     );
   });
 
@@ -741,7 +741,7 @@ describe('POST /tickets — delegates to createTicket', () => {
         formResponses: { model: 'HP LaserJet' },
         source: 'portal'
       }),
-      expect.objectContaining({ userId: PORTAL_USER.id })
+      expect.objectContaining({ kind: 'portal_user', portalUserId: PORTAL_USER.id })
     );
   });
 
@@ -968,7 +968,7 @@ describe('portal PATCH /tickets/:id/comments/:commentId', () => {
     expect(editTicketCommentMock).toHaveBeenCalledWith(
       COMMENT_ID,
       { content: 'fixed typo' },
-      expect.objectContaining({ userId: PORTAL_USER.id }),
+      expect.objectContaining({ kind: 'portal_user', portalUserId: PORTAL_USER.id }),
       { canManageAny: true, expectedTicketId: TICKET_ID }
     );
   });
@@ -1095,7 +1095,7 @@ describe('portal DELETE /tickets/:id/comments/:commentId', () => {
     });
     expect(deleteTicketCommentMock).toHaveBeenCalledWith(
       COMMENT_ID,
-      expect.objectContaining({ userId: PORTAL_USER.id }),
+      expect.objectContaining({ kind: 'portal_user', portalUserId: PORTAL_USER.id }),
       { canManageAny: true, expectedTicketId: TICKET_ID }
     );
   });

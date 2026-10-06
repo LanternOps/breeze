@@ -30,6 +30,7 @@ import { propagateCancelledDeviceCommand } from '../../services/commandCancelPro
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from '../../services/partnerTrust.commands';
 import { trustDenyBody, type TrustDenyCode } from '../../services/partnerTrust';
+import { cancelledCommandError } from '../../services/commandCancelMessage';
 
 export const commandsRoutes = new Hono();
 
@@ -162,6 +163,8 @@ commandsRoutes.post(
       | 'SITE_ACCESS_DENIED'
       | 'DECOMMISSIONED'
       | 'INSERT_FAILED'
+      // Created, then cancelled by the push's claim-time check before delivery.
+      | 'CANCELLED'
       | TrustDenyCode;
     const failed: Array<{ deviceId: string; code: BulkFailureCode; message: string }> = [];
     // Devices that completed successfully on a prior call and would queue
@@ -230,7 +233,7 @@ commandsRoutes.post(
       // records as INSERT_FAILED for that device rather than 500-ing the whole
       // batch and losing every prior success.
       let command: QueuedCommand | undefined;
-      let delivery: 'delivered' | 'queued_offline' | 'queued_live' | undefined;
+      let delivery: 'delivered' | 'queued_offline' | 'queued_live' | 'cancelled' | undefined;
       try {
         // `wake` never reaches here — it returns from its own relay path above.
         const res = await dispatchDeviceCommand({ deviceId, type: data.type, payload: data.payload || {}, userId: auth.user.id });
@@ -244,6 +247,12 @@ commandsRoutes.post(
               message: res.error,
             });
           }
+          continue;
+        }
+        if (res.delivery === 'cancelled') {
+          // The row exists but will never run: report it as a failure with the
+          // reason, not as a queued command.
+          failed.push({ deviceId, code: 'CANCELLED', message: cancelledCommandError(res.cancelReason) });
           continue;
         }
         command = res.command;
@@ -604,9 +613,11 @@ commandsRoutes.post(
       createdAt: command.createdAt,
       // #5128: how the command was handed over, and when it expires if the
       // device never comes back. 'queued_offline' is what the UI renders as
-      // "Runs when the device is online — expires <date>".
+      // "Runs when the device is online — expires <date>". 'cancelled' means
+      // the push's claim-time check refused it; `cancelReason` says why.
       delivery: res.delivery,
       deliverBy: res.deliverBy,
+      ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}),
     }, 201);
   }
 );
@@ -877,6 +888,7 @@ commandsRoutes.post(
       createdAt: command.createdAt,
       delivery: res.delivery,
       deliverBy: res.deliverBy,
+      ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}),
     }, 201);
   }
 );

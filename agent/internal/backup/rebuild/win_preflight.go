@@ -88,7 +88,7 @@ func winPreflight(ctx context.Context, r *run) error {
 					return err
 				}
 				if has {
-					return &RefusalError{Reason: fmt.Sprintf("target disk %d contains a Windows installation; pass --force-disk to overwrite it", diskNumber)}
+					return &RefusalError{Reason: fmt.Sprintf("target disk %d contains a Windows installation; pass --force-disk to overwrite it", diskNumber), Code: RefusalCodeDiskHasWindows}
 				}
 			}
 		}
@@ -134,6 +134,15 @@ func winPreflight(ctx context.Context, r *run) error {
 		}
 		if dc.IsDC {
 			return &RefusalError{Reason: fmt.Sprintf("source is a domain controller (%s); pass --allow-domain-controller and read the DC recovery guidance", dc.Evidence)}
+		}
+	}
+	if r.opts.Target.Kind == TargetDisk {
+		ref, err := r.checkGuestBuild()
+		if err != nil {
+			return err
+		}
+		if ref != nil {
+			return ref
 		}
 	}
 	r.progress(PhasePreflight, "verified", 3, 3)
@@ -208,19 +217,32 @@ func refuseOtherVolumes(man *backup.Snapshot, src *layout.Disk) error {
 			rootVol = strings.TrimRight(p.MountPoint, `\/`)
 		}
 	}
-	var n int
+	var n, junctions int
 	var first string
-	for _, f := range man.Files {
-		vol := backup.RestoreVolume(f)
+	offVolume := func(vol string) bool {
 		if !isDriveLetterVolume(vol) || strings.EqualFold(vol, rootVol) {
-			continue
+			return false
 		}
 		if first == "" {
 			first = strings.ToUpper(vol)
 		}
-		n++
+		return true
 	}
-	if n > 0 {
+	for _, f := range man.Files {
+		if offVolume(backup.RestoreVolume(f)) {
+			n++
+		}
+	}
+	// Junctions (#7325) restore under the same volume-stripped path.
+	for _, j := range man.Junctions {
+		if offVolume(backup.RestoreJunctionVolume(j)) {
+			junctions++
+		}
+	}
+	switch {
+	case junctions > 0:
+		return &RefusalError{Reason: fmt.Sprintf("snapshot contains %d files and %d junctions from volume %s; multi-volume Windows rebuilds are not supported in this build", n, junctions, first)}
+	case n > 0:
 		return &RefusalError{Reason: fmt.Sprintf("snapshot contains %d files from volume %s; multi-volume Windows rebuilds are not supported in this build", n, first)}
 	}
 	return nil

@@ -142,3 +142,17 @@ describe('portal middleware — disabled account guard', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+it.each(['/autopay/example-token', '/autopay/example-token/stop', '/autopay/return'])(
+  '%s is private, anonymous, and read-only during GET', async pathname => {
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+    try {
+      const response = await run(contextFor(pathname, { signedIn: false }));
+      expect(response.status).toBe(200);
+      expect(response.headers.get('Referrer-Policy')).toBe('no-referrer');
+      expect(response.headers.get('X-Robots-Tag')).toBe('noindex, nofollow, noarchive');
+      expect(response.headers.get('Cache-Control')).toBe('no-store');
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  },
+);

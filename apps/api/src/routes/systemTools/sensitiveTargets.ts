@@ -11,6 +11,14 @@
  * anything from an agent round-trip for the obvious cases.
  */
 
+import {
+  candidateForms,
+  isShortNameComponent,
+  normalizePath,
+  stripWindowsNamespacePrefix,
+  UNRESOLVED_FORM,
+} from '../../services/devicePathForms';
+
 // Path fragments (forward-slash-normalized, lowercased) for the agent's own
 // config/secrets directory on each supported platform. Matched at a
 // path-component boundary so e.g. ".../breezex/secrets.yaml" does not
@@ -27,18 +35,29 @@ const AGENT_CONFIG_DIR_FRAGMENTS = [
   '/library/application support/breeze',
 ];
 
-function normalizeForMatch(path: string): string {
-  return path.toLowerCase().replace(/\\/g, '/');
-}
-
 function matchesPathFragment(norm: string, frag: string): boolean {
   return norm === frag || norm.endsWith(frag) || norm.includes(`${frag}/`);
 }
 
-/** True when `path` targets the agent's own config/secrets directory. */
+/**
+ * True when `path` targets — or may target — the agent's own config/secrets
+ * directory. Windows reaches that directory under spellings other than the
+ * canonical one (compatibility junctions such as `Documents and Settings\All
+ * Users` and `ProgramData\Application Data`, trailing dots/spaces, `:stream`
+ * suffixes, redundant separators, device-namespace and admin-share prefixes),
+ * so every form the device could resolve the path to is checked, using the
+ * same resolution as the AI path restriction (services/devicePathForms.ts).
+ * An 8.3 short name can stand for any long name, so a path containing one
+ * cannot be checked and is treated as a match.
+ */
 export function isAgentConfigPath(path: string): boolean {
-  const norm = normalizeForMatch(path);
-  return AGENT_CONFIG_DIR_FRAGMENTS.some((frag) => matchesPathFragment(norm, frag));
+  const normalized = normalizePath(stripWindowsNamespacePrefix(path));
+  if (normalized.split('/').some(isShortNameComponent)) return true;
+  return candidateForms(normalized).some(
+    (form) =>
+      form === UNRESOLVED_FORM ||
+      AGENT_CONFIG_DIR_FRAGMENTS.some((frag) => matchesPathFragment(form, frag)),
+  );
 }
 
 // Top-level HKLM subkeys that hold OS credential material (SAM database,

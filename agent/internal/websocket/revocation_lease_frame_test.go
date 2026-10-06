@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// SEC-038 W05: the renewal answer is also the agent's fence resync channel, so
+// The renewal answer is also the agent's fence resync channel, so
 // the client must surface the generation/phase fields and must no longer
 // swallow `revocation_lease_unavailable` — that answer is what ends a session
 // whose FIRST renewal could not be served (owner decision 2).

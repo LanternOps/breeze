@@ -33,6 +33,7 @@ const manualLine: InvoiceDetail['lines'][number] = {
 
 function draft(lines: InvoiceDetail['lines']): InvoiceDetail {
   return {
+    autopay: null,
     invoice: {
       id: 'inv-1', invoiceNumber: null, orgId: 'org-1', siteId: null, status: 'draft',
       currencyCode: 'USD', issueDate: null, dueDate: null, sentAt: null, subtotal: '100.00', taxRate: null,

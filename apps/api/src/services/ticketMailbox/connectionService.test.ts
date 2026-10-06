@@ -566,6 +566,13 @@ describe('probeMailbox', () => {
     expect(r.error).toMatch(/403/);
   });
 
+  it.each([
+    [401, 'auth'], [403, 'policy'], [404, 'policy'], [429, 'transient'], [503, 'transient'],
+  ])('#7569: classifies Graph %i as %s', async (status, kind) => {
+    fetchMock.mockResolvedValue({ ok: false, status, json: async () => ({}) });
+    expect((await probeMailbox(TENANT_ID, 'a@a.com')).kind).toBe(kind);
+  });
+
   it('exposes a sanitized reason: status + Graph error.code, never the message body', async () => {
     fetchMock.mockResolvedValue({
       ok: false,

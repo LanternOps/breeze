@@ -10,7 +10,7 @@ import {
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { compareBaselineScan, normalizeBaselineScanSchedule } from '../services/networkBaseline';
-import { enqueueDiscoveryScan, type DiscoveredHostResult } from './discoveryWorker';
+import { enqueueDiscoveryScanAfterCommit, type DiscoveredHostResult } from './discoveryWorker';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { attachWorkerObservability } from './workerObservability';
 import {
@@ -39,7 +39,7 @@ interface ExecuteBaselineScanJobData {
   siteId: string;
   subnet: string;
   /**
-   * SEC-2026-09-05-146. `schedule` = the recurring planner issued this tick and
+   * `schedule` = the recurring planner issued this tick and
    * it must match `authorityGeneration` exactly. `manual` = an interactive
    * operator scan, already authorized live by the request that triggered it, so
    * it carries no generation. An absent trigger is a pre-upgrade payload still
@@ -144,7 +144,7 @@ async function processScheduleScans(): Promise<{ enqueued: number; blocked: numb
     try {
       const schedule = normalizeBaselineScanSchedule(baseline.scanSchedule);
 
-      // SEC-146: an enabled schedule is only a REQUEST to scan. The authority
+      // An enabled schedule is only a REQUEST to scan. The authority
       // that armed it must still resolve before anything is enqueued, so a
       // revoked schedule produces no Redis effect at all — not merely a job
       // that later declines to run.
@@ -195,7 +195,7 @@ async function processScheduleScans(): Promise<{ enqueued: number; blocked: numb
   }
   if (blocked > 0) {
     console.warn(
-      `[NetworkBaselineWorker] Skipped ${blocked} due baseline scan(s) whose arming authority no longer resolves (SEC-146)`
+      `[NetworkBaselineWorker] Skipped ${blocked} due baseline scan(s) whose arming authority no longer resolves`
     );
   }
 
@@ -207,7 +207,7 @@ async function processScheduleScans(): Promise<{ enqueued: number; blocked: numb
  * the network baseline page; the existing enable/save control re-arms it.
  */
 async function recordScheduleBlocked(baselineId: string, reason: BaselineBlockedReason): Promise<void> {
-  console.warn(`[NetworkBaselineWorker] Baseline ${baselineId} recurring scan blocked: ${reason} (SEC-146)`);
+  console.warn(`[NetworkBaselineWorker] Baseline ${baselineId} recurring scan blocked: ${reason}`);
   await db
     .update(networkBaselines)
     .set({ scheduleBlockedReason: reason, updatedAt: new Date() })
@@ -233,7 +233,7 @@ export async function processExecuteScan(data: ExecuteBaselineScanJobData): Prom
   discoveryJobId: string | null;
   blockedReason?: BaselineBlockedReason;
 }> {
-  // SEC-146: lock the baseline row for the remainder of this job's transaction
+  // Lock the baseline row for the remainder of this job's transaction
   // (the worker's withSystemDbAccessContext IS the transaction) before deciding
   // anything. A concurrent re-arm or disable then serialises against this read
   // instead of racing it, and the authority resolution below observes state that
@@ -250,7 +250,7 @@ export async function processExecuteScan(data: ExecuteBaselineScanJobData): Prom
     return { queued: false, discoveryJobId: null };
   }
 
-  // SEC-146: the recurring gate answers "may this schedule keep firing with
+  // The recurring gate answers "may this schedule keep firing with
   // nobody watching". An interactive "Scan Now" is a live request that
   // POST /network/baselines/:id/scan already authorized (org reach + site
   // ceiling + devices:write), so it is NOT subject to the envelope, schedule-
@@ -274,7 +274,7 @@ export async function processExecuteScan(data: ExecuteBaselineScanJobData): Prom
       // No discovery job, no auto-created profile, no Redis effect — and no
       // throw, so one revoked baseline never takes down the tick.
       console.warn(
-        `[NetworkBaselineWorker] Baseline ${baseline.id} dispatch denied: ${decision.reason} (SEC-146)`
+        `[NetworkBaselineWorker] Baseline ${baseline.id} dispatch denied: ${decision.reason}`
       );
       await db
         .update(networkBaselines)
@@ -340,27 +340,16 @@ export async function processExecuteScan(data: ExecuteBaselineScanJobData): Prom
   }
 
   if (created.created) {
-    try {
-      await enqueueDiscoveryScan(
-        discoveryJob.id,
-        profile.id,
-        baseline.orgId,
-        baseline.siteId,
-        null
-      );
-    } catch (error) {
-      await db
-        .update(discoveryJobs)
-        .set({
-          status: 'failed',
-          completedAt: new Date(),
-          errors: { message: 'Failed to enqueue baseline discovery scan' },
-          updatedAt: new Date()
-        })
-        .where(eq(discoveryJobs.id, discoveryJob.id));
-
-      throw error;
-    }
+    // This handler runs inside runWithSystemDbAccess; enqueue only after the
+    // job row commits (#7187 hazard). A failed enqueue leaves the row 'scheduled'
+    // for the discovery scheduler's re-dispatch sweep.
+    enqueueDiscoveryScanAfterCommit({
+      jobId: discoveryJob.id,
+      profileId: profile.id,
+      orgId: baseline.orgId,
+      siteId: baseline.siteId,
+      agentId: null,
+    });
   }
 
   await db

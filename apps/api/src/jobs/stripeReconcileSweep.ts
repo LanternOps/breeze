@@ -1,5 +1,9 @@
+import { isCollectionProgrammingError, reportCollectionError } from '../services/autopay/collectionErrors';
+import { invoiceCollectionAttempts } from '../db/schema/autopay';
+import { resumeCollectionAttempt, applyAttemptOutcome } from '../services/autopay/collectionEngine';
+import { reconcileAutopaySetups } from '../services/autopay/setupReconciliation';
 import { Job, Queue, Worker } from 'bullmq';
-import { sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { db } from '../db';
 import { invoiceStripePayments } from '../db/schema/stripePayments';
@@ -74,10 +78,33 @@ export async function reconcilePendingStripePayments(): Promise<number> {
     LIMIT ${MAX_PER_RUN}
   `), 'stripeReconcileSweep.candidates')) as unknown as { rows?: Array<{ partner_id: string; stripe_object_id: string }> };
   const list = rows.rows ?? (rows as unknown as Array<{ partner_id: string; stripe_object_id: string }>);
-  if (!Array.isArray(list) || list.length === 0) return 0;
+  let cursor: string | undefined;
+  let attemptTotal=0;
+  const attemptErrors:unknown[]=[];
+  for (;;) {
+    const attempts = await runWithSystemDbAccess(() => db.select({id:invoiceCollectionAttempts.id,
+      orgId:invoiceCollectionAttempts.orgId,invoiceId:invoiceCollectionAttempts.invoiceId,state:invoiceCollectionAttempts.state,partnerId:invoices.partnerId}).from(invoiceCollectionAttempts)
+      .innerJoin(invoices,eq(invoices.id,invoiceCollectionAttempts.invoiceId)).where(and(
+        inArray(invoiceCollectionAttempts.state,['reserved','created','confirming','processing','requires_action']),
+        cursor?gt(invoiceCollectionAttempts.id,cursor):undefined,
+      )).orderBy(asc(invoiceCollectionAttempts.id)).limit(200));
+    if(!attempts.length)break;
+    for(const attempt of attempts){
+      attemptTotal++;
+      try{
+        if(['reserved','created','confirming'].includes(attempt.state))await resumeCollectionAttempt(attempt.id);
+        else await applyAttemptOutcome(attempt.partnerId,attempt.id);
+      }catch(error){
+        reportCollectionError(error,{org_id:attempt.orgId,invoice_id:attempt.invoiceId,attempt_id:attempt.id,autopay_phase:'reconcile'});
+        if(isCollectionProgrammingError(error))throw error;
+        attemptErrors.push(error);
+      }
+    }
+    cursor=attempts[attempts.length-1]!.id;
+  }
 
   let settled = 0;
-  for (const r of list) {
+  for (const r of Array.isArray(list) ? list : []) {
     try {
       const res = await settleCheckoutSession(r.partner_id, r.stripe_object_id);
       if (res.settled) settled++;
@@ -90,6 +117,7 @@ export async function reconcilePendingStripePayments(): Promise<number> {
       console.error('[StripeReconcileSweep] settle failed', { partnerId: r.partner_id, session: r.stripe_object_id, message: err instanceof Error ? err.message : String(err) });
     }
   }
+  if(attemptTotal>0 && attemptErrors.length===attemptTotal)throw new AggregateError(attemptErrors,'Every autopay reconciliation failed');
   if (settled > 0) console.log(`[StripeReconcileSweep] settled ${settled} payment(s)`);
   if (list.length === MAX_PER_RUN) console.warn(`[StripeReconcileSweep] hit ${MAX_PER_RUN}-item cap — backlog may be growing`);
   return settled;
@@ -99,16 +127,20 @@ function createWorker(): Worker<SweepJobData> {
   return new Worker<SweepJobData>(
     QUEUE_NAME,
     async (_job: Job<SweepJobData>) => {
-      try {
-        // No wrapping context: the pass owns its own short transactions (#7065).
-        const settled = await reconcilePendingStripePayments();
-        const financialEvents = await pollStripeFinancialEvents();
-        return { settled, financialEvents };
-      } catch (err) {
-        console.error('[StripeReconcileSweep] run failed:', err);
-        captureException(err instanceof Error ? err : new Error(String(err)));
-        throw err;
+      const failures:unknown[]=[];
+      async function concern<T>(name:string,run:()=>Promise<T>):Promise<T|undefined>{
+        try{return await run();}catch(error){
+          console.error(`[StripeReconcileSweep] ${name} failed:`,error);
+          captureException(error instanceof Error?error:new Error(String(error)));
+          if(isCollectionProgrammingError(error))throw error;
+          failures.push(error);
+        }
       }
+      const settled=await concern('payments',reconcilePendingStripePayments);
+      const setups=await concern('autopay setups',reconcileAutopaySetups);
+      const financialEvents=await concern('financial events',pollStripeFinancialEvents);
+      if(failures.length)throw new AggregateError(failures,'Stripe reconciliation concerns failed');
+      return {settled,setups,financialEvents};
     },
     { connection: getBullMQConnection(), concurrency: 1 },
   );

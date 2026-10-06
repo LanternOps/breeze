@@ -126,11 +126,21 @@ async function countSkip(orgId: string, reason: string, now: number): Promise<vo
  * a non-event for the caller, and observability must never turn it into a
  * throw (the same posture `runService.ts` takes around `publishEvent`).
  */
+/**
+ * Skips that are an expected, successful outcome rather than a dropped
+ * trigger: still counted (the trace stays complete), but logged at info so
+ * they do not read as a problem in warn-level logs. `proven_fix_available`
+ * (AI Suggested Fixes W3): fix memory attached a proven fix instead of a
+ * shadow triage run.
+ */
+const EXPECTED_SKIP_REASONS: ReadonlySet<string> = new Set(['proven_fix_available']);
+
 export function recordAgentRunSkip(entry: AgentRunSkipRecord): void {
   const now = Date.now();
   const { log, suppressed } = shouldLog(`${entry.orgId}::${entry.reason}`, now);
   if (log) {
-    console.warn('[aiAgents] run skipped', {
+    const emit = EXPECTED_SKIP_REASONS.has(entry.reason) ? console.info : console.warn;
+    emit('[aiAgents] run skipped', {
       reason: entry.reason,
       orgId: entry.orgId,
       agentId: entry.agentId ?? null,

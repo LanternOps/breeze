@@ -8,7 +8,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { closeRegistryFixtures, fixtureSql, seedOffering } from './aiModelRegistryFixtures';
 import { withSystemDbAccessContext } from '../../db';
 import { reserveAiBudget } from '../../services/aiBudgetReservations';
-import { changeCompatDefaultModel, disconnectCompat } from '../../services/aiModels/compatRemap';
+import { disconnectAnthropicConnection } from '../../services/aiModels/connectionRemap';
 import { recordServedHop, startHopFor } from '../../services/aiAgents/agentRunFailover';
 import { resolveModel } from '../../services/aiModels/resolveModel';
 import { turnBindingFrom } from '../../services/aiModels/turnBinding';
@@ -248,22 +248,9 @@ describe.runIf(RUN)('W09: compat remaps keep a registry-native fallback list ver
     const f = await seedFailoverPartner();
     await setPartnerDefault(f, 'script_reviewer', f.byokOfferingId);
     await setPartnerFallbacks(f, 'script_reviewer', [f.platformOfferingId], true);
-    expect(await withSystemDbAccessContext(() => disconnectCompat(f.partnerId))).toBe(true);
+    expect(await withSystemDbAccessContext(() => disconnectAnthropicConnection(f.partnerId, f.byokConnectionId))).toBe(true);
     const row = await assignmentOf(f.partnerId, 'script_reviewer');
     expect(row.default_offering_id).toBe(f.platformOfferingId);
     expect(row.fallback_offering_ids).toEqual([f.platformOfferingId]);
-  });
-
-  it('changing the legacy default model onto a model already in the fallback list succeeds; the list is kept verbatim', async () => {
-    const f = await seedFailoverPartner();
-    const otherModel = `w09-h-${randomUUID()}`;
-    const h = await seedOffering({ partnerId: f.partnerId, connectionId: f.byokConnectionId, modelId: otherModel, source: 'discovered', enabled: true });
-    await fixtureSql`UPDATE partner_ai_connections SET legacy_default_model = ${f.modelId} WHERE id = ${f.byokConnectionId}`;
-    await setPartnerDefault(f, 'chat', f.byokOfferingId);
-    await setPartnerFallbacks(f, 'chat', [h], false);
-    await withSystemDbAccessContext(() => changeCompatDefaultModel(f.partnerId, otherModel));
-    const row = await assignmentOf(f.partnerId, 'chat');
-    expect(row.default_offering_id).toBe(h);
-    expect(row.fallback_offering_ids).toEqual([h]);
   });
 });

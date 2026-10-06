@@ -230,7 +230,7 @@ export async function buildTopologyAiEvidence(
     ? (await getTopologyRelationship(ctx, selection.subject.id)).relationship as GraphRelationship
     : null;
   const focusNodeId = subjectRelationship ? subjectRelationship.sourceNodeId : selection.subject.id;
-  const graph = await getTopologyGraph(ctx, { view: selection.view, focusNodeId, hops: 1, includeHealth: true, limit: AI_EVIDENCE_LIMITS.nodes });
+  const graph = await getTopologyGraph(ctx, { view: selection.view, focusNodeId, hops: 1, includeHealth: true, limit: AI_EVIDENCE_LIMITS.nodes }, { presentationGroups: false });
   if (graph.revisions.graph !== selection.graphRevision) {
     throw new TopologyAiEvidenceError('graph_revision_changed', 'Topology graph changed; reload the selection');
   }

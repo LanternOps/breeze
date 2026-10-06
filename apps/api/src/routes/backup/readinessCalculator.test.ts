@@ -95,3 +95,76 @@ describe('recomputeRecoveryReadinessForDevice — restore-proof scoring (#3970)'
     }
   });
 });
+
+describe('recomputeRecoveryReadinessForDevice — in-flight verifications (#7495)', () => {
+  const MINUTE_MS = 60 * 1000;
+
+  async function scoreWith(
+    rows: Array<{ verificationType: 'integrity' | 'test_restore'; status: 'passed' | 'failed' | 'pending' | 'running'; ageMs: number; restoreTimeSeconds?: number }>
+  ) {
+    const orgId = `org-inflight-${Date.now()}-${Math.random()}`;
+    const deviceId = `dev-inflight-${Date.now()}-${Math.random()}`;
+    const ids: string[] = [];
+    try {
+      for (const row of rows) {
+        const startedAt = new Date(Date.now() - row.ageMs).toISOString();
+        const inFlight = row.status === 'pending' || row.status === 'running';
+        const inserted = addBackupVerification({
+          orgId,
+          deviceId,
+          backupJobId: 'job-inflight',
+          snapshotId: 'snap-inflight',
+          verificationType: row.verificationType,
+          status: row.status,
+          startedAt,
+          completedAt: inFlight ? undefined : startedAt,
+          restoreTimeSeconds: row.restoreTimeSeconds,
+          filesVerified: 0,
+          filesFailed: row.status === 'failed' ? 1 : 0,
+          details: { source: 'test' },
+        }, orgId);
+        ids.push(inserted.id);
+      }
+      return await recomputeRecoveryReadinessForDevice(orgId, deviceId);
+    } finally {
+      for (const id of ids) {
+        const index = backupVerifications.findIndex((v) => v.id === id);
+        if (index >= 0) backupVerifications.splice(index, 1);
+        verificationOrgById.delete(id);
+      }
+    }
+  }
+
+  const history = [
+    { verificationType: 'test_restore' as const, status: 'passed' as const, ageMs: 2 * DAY_MS, restoreTimeSeconds: 240 },
+  ];
+
+  it('pending/running verifications do not lower the score', async () => {
+    const baseline = await scoreWith(history);
+    const withInFlight = await scoreWith([
+      { verificationType: 'integrity', status: 'pending', ageMs: 2 * MINUTE_MS },
+      { verificationType: 'test_restore', status: 'running', ageMs: 2 * MINUTE_MS },
+      ...history,
+    ]);
+    expect(withInFlight.readinessScore).toBe(baseline.readinessScore);
+    expect(withInFlight.riskFactors.some((f) => f.code === 'recent_verification_failure')).toBe(false);
+  });
+
+  it('only in-flight rows -> no failure charged', async () => {
+    const readiness = await scoreWith([
+      { verificationType: 'integrity', status: 'pending', ageMs: 2 * MINUTE_MS },
+    ]);
+    expect(readiness.riskFactors.some((f) => f.code === 'recent_verification_failure')).toBe(false);
+    expect(readiness.riskFactors.some((f) => f.code === 'no_verification_history')).toBe(true);
+  });
+
+  it('a stuck in-flight verification past the timeout counts as failed', async () => {
+    const baseline = await scoreWith(history);
+    const stuck = await scoreWith([
+      { verificationType: 'integrity', status: 'pending', ageMs: 45 * MINUTE_MS },
+      ...history,
+    ]);
+    expect(stuck.readinessScore).toBeLessThan(baseline.readinessScore);
+    expect(stuck.riskFactors.some((f) => f.code === 'recent_verification_failure')).toBe(true);
+  });
+});

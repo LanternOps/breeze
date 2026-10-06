@@ -48,11 +48,12 @@ func (b *Broker) setupSocket() (net.Listener, error) {
 		// Deliberately not fatal. Aborting here would leave the agent with no
 		// IPC socket at all, killing remote desktop, backup IPC and the
 		// watchdog link — strictly worse than a socket only root can reach,
-		// which is the pre-fix status quo. Warn loudly with the remedy instead.
-		log.Warn("IPC socket group could not be resolved; user-session helpers will be denied until it exists",
+		// which is the pre-fix status quo. Log one error with the remedy
+		// instead: this is the line that explains "Helper Not Connected" (#7829).
+		log.Error("IPC socket group could not be resolved; user-session helpers will be denied until it has a numeric GID",
 			"group", IPCGroupName,
 			"socket", b.socketPath,
-			"remedy", "reinstall the agent, or create the group manually, to restore user-helper IPC",
+			"remedy", "on macOS the agent retries the repair on every start (see the 'ensure' warning above for why it failed); otherwise reinstall the agent",
 			"error", resolveErr.Error())
 	}
 	res := applySocketOwner(b.socketPath, owner, os.Chown, os.Chmod)

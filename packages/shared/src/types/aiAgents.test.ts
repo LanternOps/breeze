@@ -11,18 +11,18 @@ import {
   type AlertVerdictSuggestedAction,
 } from './aiAgents';
 
-describe('AI_AGENT_POLICY_SNAPSHOT_VERSION (v15, AI Operator task-wide budgets — recipe library E2)', () => {
-  it('is the literal 15', () => {
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(15);
+describe('AI_AGENT_POLICY_SNAPSHOT_VERSION (v16, research-profile caps — AI Suggested Fixes W2)', () => {
+  it('is the literal 16', () => {
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(16);
   });
 
-  it('AiAgentPolicySnapshot.schemaVersion type-accepts every historical version 1-15', () => {
+  it('AiAgentPolicySnapshot.schemaVersion type-accepts every historical version 1-16', () => {
     // Type-level assertion: this only compiles if `schemaVersion` is widened
-    // to `1 | … | 15`. If a future bump forgets to widen the union, `tsc`
+    // to `1 | … | 16`. If a future bump forgets to widen the union, `tsc`
     // fails this assignment, not a runtime check.
     const versions: Array<AiAgentPolicySnapshot['schemaVersion']> =
-      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
   });
 });
 
@@ -79,9 +79,9 @@ describe('AI_AGENT_LIMIT_DEFAULTS (triage-profile limits, phase 2 P2-4)', () => 
 });
 
 describe('AI_AGENT_RUN_PROFILES (analysis profile, execution plane W04 #5715)', () => {
-  it('equals full, verdict, sweep, narrative, triage, design, patch, analysis', () => {
+  it('equals full, verdict, sweep, narrative, triage, design, patch, analysis, remediation_research', () => {
     expect(AI_AGENT_RUN_PROFILES).toEqual([
-      'full', 'verdict', 'sweep', 'narrative', 'triage', 'design', 'patch', 'analysis',
+      'full', 'verdict', 'sweep', 'narrative', 'triage', 'design', 'patch', 'analysis', 'remediation_research',
     ]);
   });
 });

@@ -846,5 +846,23 @@
       "unlabeled": "Sitzung ohne Bezeichnung",
       "openSession": "Sitzungsdetails öffnen"
     }
+  },
+  "activeSessionsBanner": {
+    "title_one": "Eine andere Person hat eine Sitzung auf diesem Gerät",
+    "title_other": "{{count}} andere Personen haben Sitzungen auf diesem Gerät",
+    "session": "{{name}} – {{type}}, seit {{duration}}",
+    "unknownUser": "Unbekannter Benutzer",
+    "sessionConnecting": "{{name}} – {{type}}, verbindet…",
+    "duration": {
+      "minutes_one": "{{count}} Minute",
+      "minutes_other": "{{count}} Minuten",
+      "hoursMinutes": "{{hours}} Std. {{minutes}} Min.",
+      "lessThanMinute": "weniger als einer Minute",
+      "hours_one": "{{count}} Stunde",
+      "hours_other": "{{count}} Stunden"
+    },
+    "announcement_one": "{{names}} hat eine Sitzung auf diesem Gerät",
+    "announcement_other": "{{names}} haben Sitzungen auf diesem Gerät",
+    "announcementNone": "Niemand sonst hat eine Sitzung auf diesem Gerät"
   }
 }

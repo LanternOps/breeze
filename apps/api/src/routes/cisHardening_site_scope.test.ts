@@ -87,6 +87,7 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (c: any, next: any) => {
     const allowedSiteIds = c.req.header('x-restrict-site')
       ? [c.req.header('x-restrict-site') as string]

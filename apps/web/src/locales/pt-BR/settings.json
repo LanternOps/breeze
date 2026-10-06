@@ -1331,7 +1331,44 @@
       "invoice_number": "Número da fatura",
       "due_date": "Data de vencimento",
       "invite_url": "URL do convite",
-      "cta_button": "Botão"
+      "cta_button": "Botão",
+      "client_name": "Client name",
+      "setup_link": "Automatic payments setup link",
+      "ach_mode_text": "Available payment methods",
+      "payment_method": "Saved payment method",
+      "schedule_text": "Payment schedule",
+      "fee_text": "Processing fee terms",
+      "stopped_by": "Who stopped automatic payments",
+      "open_invoices_text": "Open invoice summary",
+      "expires_on": "Card expiry date",
+      "update_link": "Payment method update link",
+      "amount_due": "Valor devido",
+      "charge_date": "Data da cobrança",
+      "fee_amount": "Taxa de processamento",
+      "invoice_link": "Link da fatura",
+      "amount_paid": "Valor pago",
+      "total_charged": "Total cobrado",
+      "paid_on": "Data do pagamento",
+      "balance_remaining": "Saldo restante",
+      "failure_text": "Detalhes da falha",
+      "action_link": "Link da ação",
+      "action_label": "Rótulo da ação",
+      "days_overdue": "Dias em atraso",
+      "pay_link": "Link de pagamento",
+      "charge_total": "Cobrança total",
+      "attempted_amount": "Valor do pagamento tentado"
+    },
+    "billingPayments": "Billing & payments",
+    "supportPortal": "Support & portal",
+    "labels": {
+      "autopay_request": "Automatic payments request",
+      "autopay_enrolled": "Automatic payments confirmed",
+      "autopay_stopped": "Automatic payments stopped",
+      "autopay_paused": "Pagamentos automáticos pausados",
+      "autopay_resumed": "Pagamentos automáticos retomados",
+      "card_expiring": "Saved card expiring",
+      "payment_receipt": "Recibo de pagamento on-line",
+      "payment_failed": "Não foi possível concluir o pagamento"
     }
   },
   "inboundEmail": {
@@ -2115,6 +2152,13 @@
     "failedToFetchReviewDetails": "Falha ao buscar detalhes da avaliação",
     "noReviewerEmailsAvailableForNotifications": "Nenhum e-mail de revisor disponível para notificações",
     "unableToLaunchEmailNotification": "Não foi possível iniciar a notificação por e-mail",
+    "reviewersEmailed": "Revisor atribuído notificado por e-mail",
+    "assignedReviewerEmailedOnly": "Revisor atribuído notificado por e-mail. Os outros revisores selecionados não receberam e-mail — uma revisão armazena apenas um revisor atribuído.",
+    "fallbackToMailClient": "{{reason}} Abrindo seu cliente de e-mail em vez disso.",
+    "fallbackEmailNotConfigured": "O envio de e-mail não está configurado neste servidor.",
+    "fallbackNoReviewerEmail": "O revisor atribuído não tem endereço de e-mail cadastrado.",
+    "fallbackSendFailed": "O servidor não conseguiu enviar o e-mail.",
+    "fallbackRequestFailed": "A solicitação de notificação falhou.",
     "failedToCreateAccessReview": "Falha ao criar revisão de acesso",
     "failedToUpdateDecision": "Falha ao atualizar a decisão",
     "failedToFetchReviewForReport": "Falha ao buscar a revisão do relatório",
@@ -2129,7 +2173,12 @@
     "sending": "Enviando...",
     "notifyReviewers": "Notificar revisores",
     "completing": "Concluindo...",
-    "completeReview": "Concluir revisão"
+    "completeReview": "Concluir revisão",
+    "selfDecided": "Autodecidido",
+    "selfDecidedHint": "Decidido pelo próprio usuário avaliado, porque nenhum outro administrador podia revisá-lo (exceção de administrador único).",
+    "ownItemBlocked": "Você não pode decidir sobre o seu próprio acesso. Outro administrador com permissão de gerenciar usuários precisa revisar este item.",
+    "ownItemBlockedShort": "Requer outro revisor",
+    "ownItemSelfDecisionWarning": "Você é o único administrador que pode revisar isto, então pode decidir sobre o seu próprio acesso. Isso será registrado como autodecisão."
   },
   "aiUsagePage": {
     "aIUsageBudget": "Uso de IA",
@@ -2291,7 +2340,8 @@
       "triage": "Investiga os alertas novos e propõe o que fazer com eles.",
       "patch": "Revisa as correções pendentes e propõe o que instalar.",
       "helpdesk": "Assume chamados e propõe respostas e próximos passos.",
-      "designer": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar."
+      "designer": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar.",
+      "research": "Integrado. Pesquisa um problema em um dispositivo quando um técnico pede e sugere correções seguras. Nunca executa nada."
     },
     "emptyState": {
       "title": "Nenhum agente ainda",
@@ -2437,7 +2487,8 @@
       "triage": "Triagem de alertas",
       "patch": "Aplicação de patches",
       "helpdesk": "Central de ajuda",
-      "designer": "Projetista de frota"
+      "designer": "Projetista de frota",
+      "research": "Pesquisa de correções"
     },
     "modes": {
       "off": "Desligado",
@@ -3741,6 +3792,11 @@
           "blurb": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar.",
           "runsWhen": "você inicia um Projeto de frota para uma organização, ou em um agendamento trimestral",
           "recommended": "uma migração do zero, ou uma auditoria de configuração trimestral"
+        },
+        "research": {
+          "blurb": "Integrado. Pesquisa um problema em um dispositivo quando um técnico pede e sugere correções seguras. Nunca executa nada.",
+          "runsWhen": "um técnico pede sugestões de correção para um problema de um dispositivo",
+          "recommended": "pesquisa automática somente leitura, um problema por vez"
         }
       },
       "kindCard": {
@@ -3768,6 +3824,36 @@
       "title": "Este agente apenas lê e escreve relatórios",
       "body": "Um Fleet Designer nunca executa nada em um dispositivo. Ligado significa que ele pode ser executado e entregar seus designs aos destinatários que você escolher.",
       "ack": "Entendo que este agente é executado sem supervisão e entrega Fleet Designs."
+    },
+    "research": {
+      "capsTitle": "Limites de pesquisa",
+      "builtInNote": "Integrado e somente sugere: nunca executa nada. Você pode desativá-lo e definir seus limites de gasto.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Pesquisas simultâneas",
+          "hint": "Quantas pesquisas podem estar em andamento ao mesmo tempo."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Pesquisas por hora",
+          "hint": "Máximo de pesquisas iniciadas em uma hora."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Pesquisas automáticas por hora",
+          "hint": "Máximo de pesquisas iniciadas automaticamente por alertas altos e críticos. 0 desativa a pesquisa automática."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Orçamento de pesquisa rápida (centavos)",
+          "hint": "Limite de gasto de uma pesquisa rápida."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Orçamento de pesquisa aprofundada (centavos)",
+          "hint": "Limite de gasto de uma pesquisa aprofundada."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Gasto diário de pesquisa (centavos)",
+          "hint": "Limite total de gasto por dia em todas as execuções deste agente."
+        }
+      }
     }
   },
   "apiKeyForm": {
@@ -4167,6 +4253,8 @@
     "lastUsed": "Usado pela última vez",
     "actions": "Ações",
     "requestFailed": "Falha na solicitação ({{status}})",
+    "notEnabledTitle": "Os apps conectados não estão ativados neste servidor",
+    "notEnabledBody": "O MCP OAuth está desativado neste servidor. Defina MCP_OAUTH_ENABLED=true e reinicie a API para permitir apps conectados.",
     "revokeConfirm": "Revogar acesso para {{name}}? O token de acesso deixará de funcionar em 10 minutos.",
     "revokeFailed": "Falha na revogação ({{status}})",
     "networkError": "Erro de rede",

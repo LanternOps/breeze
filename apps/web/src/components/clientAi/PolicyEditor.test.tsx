@@ -24,7 +24,6 @@ const DEFAULT_POLICY = {
   userAccess: 'all',
   selectedUserIds: [],
   allowedProviders: ['anthropic'],
-  allowedModels: [],
   writeMode: 'readwrite',
   dlpConfig: {},
   dailyBudgetCents: null,

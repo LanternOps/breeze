@@ -169,7 +169,7 @@ beforeEach(() => {
   insertInTx.mockResolvedValue({ id: 'cancel-cmd-id' });
   assertDeviceExecuteAllowedMock.mockResolvedValue(undefined);
   applyAutomationActionTerminalMock.mockResolvedValue(true);
-  claimMock.mockResolvedValue({ id: 'cancel-cmd-id', executedAt: new Date() });
+  claimMock.mockResolvedValue({ status: 'claimed', id: 'cancel-cmd-id', executedAt: new Date() });
   releaseMock.mockResolvedValue(undefined);
   sendCommandToAgentMock.mockImplementation(() => {
     eventOrder.push('sendCommandToAgent');
@@ -464,11 +464,27 @@ describe('deliverCancelCommand', () => {
   it('does not send when the claim was lost to the heartbeat path', async () => {
     const { deliverCancelCommand } = await import('./scriptCancellation');
     withCommandRow({ id: 'cancel-cmd-id', type: 'script_cancel', payload: {}, agentId: 'agent-1' });
-    claimMock.mockResolvedValue(null);
+    claimMock.mockResolvedValue({ status: 'not_claimable', id: 'cancel-cmd-id' });
 
     expect(await deliverCancelCommand('cancel-cmd-id', 'device-uuid')).toBe(false);
     expect(sendCommandToAgentMock).not.toHaveBeenCalled();
     expect(releaseMock).not.toHaveBeenCalled();
+  });
+
+  it('does not send, and reports the reason, when the claim cancels the cancel command', async () => {
+    const { deliverCancelCommand } = await import('./scriptCancellation');
+    withCommandRow({ id: 'cancel-cmd-id', type: 'script_cancel', payload: {}, agentId: 'agent-1' });
+    claimMock.mockResolvedValue({ status: 'cancelled', id: 'cancel-cmd-id', reason: 'device_moved_org' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    expect(await deliverCancelCommand('cancel-cmd-id', 'device-uuid')).toBe(false);
+    expect(sendCommandToAgentMock).not.toHaveBeenCalled();
+    expect(releaseMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('cancelled'),
+      expect.objectContaining({ cancelCommandId: 'cancel-cmd-id', reason: 'device_moved_org' }),
+    );
+    warn.mockRestore();
   });
 });
 

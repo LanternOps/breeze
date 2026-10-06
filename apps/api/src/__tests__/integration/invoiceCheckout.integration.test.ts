@@ -39,7 +39,7 @@ import type { InvoiceActor } from '../../services/invoiceTypes';
 interface Fixture { partnerId: string; orgId: string; userId: string }
 
 // createInvoicePayLink re-checks the durable stripe_connect_accounts row inside the
-// mapping transaction (SEC-151): the account the mock reports must exist for the seeded
+// mapping transaction: the account the mock reports must exist for the seeded
 // partner, and stripe_account_id is globally unique, so each partner gets its own id.
 let currentAccountId = 'acct_test';
 
@@ -92,7 +92,7 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     // in the CI integration glob.
     expect(inv.sentAt).toBeNull();
 
-    const res = await withSystemDbAccessContext(() => createInvoicePayLink(inv.id, actor));
+    const res = await createInvoicePayLink(inv.id, actor);
     expect(res.url).toBe('https://checkout.stripe.com/c/pay/abc');
     expect(sessionsCreateMock).toHaveBeenCalledTimes(1);
     // currency-aware minor units: $100.00 → 10000
@@ -100,11 +100,13 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     expect(call[0].line_items[0].price_data.unit_amount).toBe(10000);
     // #2245 deposit invoicing: the idempotency key now carries a _dep/_bal
     // suffix. A plain payable (non-deposit) invoice charges the balance → `_bal`.
-    // SEC-150 appends the hour quantum of the requested `expires_at`, because
+    // Appends the hour quantum of the requested `expires_at`, because
     // Stripe refuses an idempotent replay whose parameters moved — asserted
     // through checkoutSessionExpiry() so a drift between the two would fail here
-    // rather than as an idempotency_key_in_use in production.
-    expect(call[1].idempotencyKey).toBe(`inv_${inv.id}_10000_bal_e${checkoutSessionExpiry().quantum}`);
+    // rather than as an idempotency_key_in_use in production. FP-20 added the
+    // PaymentIntent description, a parameter change, hence the `_pd` key family.
+    expect(call[1].idempotencyKey).toBe(`inv_${inv.id}_10000_bal_e${checkoutSessionExpiry().quantum}_pd`);
+    expect(call[0].payment_intent_data?.description).toMatch(/^Invoice /);
     expect(call[0].expires_at).toBe(checkoutSessionExpiry().expiresAt);
 
     const mappings = await withSystemDbAccessContext(() =>
@@ -119,7 +121,7 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     const inv = await seedIssuedInvoice(f, actor);
     getClientMock.mockRejectedValue(new PartnerStripeError('not connected', 'NO_STRIPE_KEY'));
 
-    await expect(withSystemDbAccessContext(() => createInvoicePayLink(inv.id, actor)))
+    await expect(createInvoicePayLink(inv.id, actor))
       .rejects.toMatchObject({ status: 409, code: 'STRIPE_NOT_CONNECTED' });
     expect(sessionsCreateMock).not.toHaveBeenCalled();
     const mappings = await withSystemDbAccessContext(() =>
@@ -136,7 +138,7 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     const inv = await seedIssuedInvoice(f, actor);
     getClientMock.mockRejectedValue(new Error('decrypt failed'));
 
-    await expect(withSystemDbAccessContext(() => createInvoicePayLink(inv.id, actor)))
+    await expect(createInvoicePayLink(inv.id, actor))
       .rejects.toMatchObject({ status: 500, code: 'STRIPE_INIT_FAILED' });
     expect(sessionsCreateMock).not.toHaveBeenCalled();
     const mappings = await withSystemDbAccessContext(() =>
@@ -149,7 +151,7 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     const actor: InvoiceActor = { userId: f.userId, partnerId: f.partnerId, accessibleOrgIds: [f.orgId] };
     const draft = await withSystemDbAccessContext(() => svc.createManualInvoice({ orgId: f.orgId }, actor));
 
-    await expect(withSystemDbAccessContext(() => createInvoicePayLink(draft.id, actor)))
+    await expect(createInvoicePayLink(draft.id, actor))
       .rejects.toMatchObject({ status: 409, code: 'NOT_PAYABLE' });
     expect(sessionsCreateMock).not.toHaveBeenCalled();
   });
@@ -161,7 +163,7 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     // Force a paid-in-full balance while keeping the payable 'sent' status.
     await withSystemDbAccessContext(() => db.update(invoices).set({ balance: '0.00' }).where(eq(invoices.id, inv.id)));
 
-    await expect(withSystemDbAccessContext(() => createInvoicePayLink(inv.id, actor)))
+    await expect(createInvoicePayLink(inv.id, actor))
       .rejects.toMatchObject({ status: 409, code: 'NOTHING_TO_PAY' });
     expect(sessionsCreateMock).not.toHaveBeenCalled();
   });

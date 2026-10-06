@@ -42,7 +42,7 @@ import {
   updateBudget,
   getSessionHistory,
 } from '../services/aiCostTracker';
-import { createTicket, changeTicketStatus, TicketServiceError } from '../services/ticketService';
+import { createTicket, changeTicketStatus, TicketServiceError, type TicketActor } from '../services/ticketService';
 import { createTimeEntry, TimeEntryServiceError } from '../services/timeEntryService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { assertNotLocked } from '../services/effectiveSettings';
@@ -76,6 +76,7 @@ import {
   TicketDraftFailedError,
 } from '../services/aiTicketDraft';
 import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
+import { llmUnavailableBody } from '../services/llm/llmUnavailableError';
 import { anthropicClientFor, type MessageAttempt } from '../services/aiModels/connectionFactory';
 import {
   FailoverExhaustedError,
@@ -252,7 +253,7 @@ aiRoutes.post(
     } catch (err) {
       if (err instanceof LlmNotConfiguredError) return c.json(AI_NOT_CONFIGURED_BODY, 503);
       if (err instanceof InvalidSessionModelError) return c.json({ error: err.message, code: err.code }, 400);
-      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+      if (err instanceof LlmUnavailableError) return c.json(llmUnavailableBody(err), 503);
       if (err instanceof TopologyAiSessionError) return c.json({ error: err.message, code: err.code }, err.status);
       const message = err instanceof Error ? err.message : 'Failed to create session';
       if (message === 'Invalid topology context') return c.json({ error: message }, 400);
@@ -507,7 +508,7 @@ aiRoutes.post(
     try {
       client = anthropicClientFor(turn, { surface: 'one_shot_ticket_draft', orgId: session.orgId });
     } catch (err) {
-      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+      if (err instanceof LlmUnavailableError) return c.json(llmUnavailableBody(err), 503);
       throw err;
     }
     // reserveAiBudget enforces caps, NOT prepaid credits or the plan gate —
@@ -647,7 +648,7 @@ aiRoutes.post(
         });
       }
       if (err instanceof ThinTranscriptError) return c.json({ error: err.message }, 422);
-      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+      if (err instanceof LlmUnavailableError) return c.json(llmUnavailableBody(err), 503);
       console.error('[AI] Ticket draft failed:', err);
       captureException(err);
       return c.json({ error: 'Could not draft a ticket from this conversation' }, 502);
@@ -721,7 +722,7 @@ aiRoutes.post(
     let deviceId: string | undefined = session.deviceId ?? undefined;
     if (deviceId && !(await deviceInSiteScope(auth, deviceId))) deviceId = undefined;
 
-    const actor = { userId: auth.user.id, name: auth.user.name, email: auth.user.email };
+    const actor: TicketActor = { kind: 'user', userId: auth.user.id, name: auth.user.name, email: auth.user.email };
 
     let ticket;
     try {
@@ -1650,7 +1651,7 @@ aiRoutes.get(
 
     // #6577: rows written before the write-side sanitiser, and rows from
     // direct createAuditLog writers, can hold raw tool input / credentials in
-    // details. Redact on read, as the #5570 (SEC-050) history reads do.
+    // details. Redact on read, as the #5570 history reads do.
     return c.json({
       data: events.map((event) => ({
         ...event,

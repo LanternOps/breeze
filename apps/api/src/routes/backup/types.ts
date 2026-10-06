@@ -89,6 +89,8 @@ export type BackupSnapshot = {
   configId?: string | null;
   jobId: string;
   providerSnapshotId?: string | null;
+  /** backup_snapshots.integrity_status (absent on in-memory rows). */
+  integrityStatus?: string | null;
   createdAt: string;
   sizeBytes: number | null;
   fileCount: number | null;
@@ -136,6 +138,9 @@ export type RestoreJob = {
 
 export type BackupVerificationType = 'integrity' | 'test_restore';
 export type BackupVerificationStatus = 'pending' | 'running' | 'passed' | 'failed' | 'partial';
+
+/** In-flight (pending/running) verifications older than this are failed by the timeout job. */
+export const VERIFICATION_TIMEOUT_MS = 30 * 60 * 1000;
 
 export function normalizeBackupVerificationType(value?: string | null): BackupVerificationType {
   return value === 'integrity' ? 'integrity' : 'test_restore';

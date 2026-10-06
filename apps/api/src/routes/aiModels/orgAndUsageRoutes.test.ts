@@ -70,7 +70,7 @@ vi.mock('../../db', () => ({ db: {}, runOutsideDbContext: vi.fn(), withSystemDbA
 vi.mock('../../services/aiModels/registryCutover', () => ({ ensurePartnerCutover: vi.fn() }));
 vi.mock('../../services/aiModels/registryView', () => ({ buildPartnerModelsSnapshot: vi.fn(), buildOrgModelDefaults: vi.fn() }));
 vi.mock('../../services/aiModels/candidateLoader', () => ({ readOrgPartnerId: vi.fn() }));
-vi.mock('../../services/aiModels/connections', () => ({ getCompatConnection: vi.fn() }));
+vi.mock('../../services/aiModels/connections', () => ({ getConnection: vi.fn() }));
 vi.mock('../../services/aiModels/connectionSettings', () => ({ updateConnectionSettings: vi.fn() }));
 vi.mock('../../services/aiModels/offeringWrites', () => ({
   ensurePlatformOffering: vi.fn(), setOfferingEnabled: vi.fn(), updateOfferingDetails: vi.fn(), listOfferingDefaultUses: vi.fn(),
@@ -90,14 +90,21 @@ vi.mock('../../services/aiModels/qualityQueries', () => {
   return { QualityQueryTimeoutError, queryAiQualityBreakdown: vi.fn() };
 });
 vi.mock('../../services/llm/llmConfigResolver', () => ({ isLlmProviderCatalogEnabled: vi.fn(() => true) }));
-vi.mock('../../services/partnerLlmConfig', () => {
-  class PartnerLlmError extends Error {
+vi.mock('../../services/aiModels/connectionProbe', () => {
+  class ConnectionCheckError extends Error {
     constructor(message: string, readonly status: 400 | 409 | 500 | 503) {
       super(message);
     }
   }
-  return { PartnerLlmError, savePartnerLlmKey: vi.fn(), updatePartnerLlmEndpoint: vi.fn(), deletePartnerLlmConfig: vi.fn() };
+  return { ConnectionCheckError };
 });
+vi.mock('../../services/aiModels/anthropicConnectionWrites', () => ({
+  hasAnthropicConnection: vi.fn(),
+  createAnthropicKeyConnection: vi.fn(),
+  rotateAnthropicKey: vi.fn(),
+  changeAnthropicEndpoint: vi.fn(),
+  deleteAnthropicConnection: vi.fn(),
+}));
 // W05 (#7603): the user-scoped pickers mount under this router (see the last describe).
 vi.mock('../../services/aiModels/modelChoices', () => ({
   listModelChoices: vi.fn(async (i: { surface: string }) => ({ surface: i.surface, allowUserChoice: true, defaultOfferingId: null, choices: [], current: null })),

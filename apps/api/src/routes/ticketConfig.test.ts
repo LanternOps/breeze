@@ -341,7 +341,7 @@ describe('POST /ticket-config/email-inbound/:id/convert', () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ orgId: ORG_ID }),
     });
     expect(res.status).toBe(200);
-    expect(serviceMocks.convertEmailInbound).toHaveBeenCalledWith('p-1', INBOUND_ID, ORG_ID, { userId: 'u-1', name: 'Tess Tech' });
+    expect(serviceMocks.convertEmailInbound).toHaveBeenCalledWith('p-1', INBOUND_ID, ORG_ID, { kind: 'user', userId: 'u-1', name: 'Tess Tech' });
     expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'ticket_email_inbound.convert',
       resourceId: INBOUND_ID,

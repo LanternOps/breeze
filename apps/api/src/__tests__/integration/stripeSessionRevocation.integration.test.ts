@@ -1,5 +1,5 @@
 /**
- * SEC-2026-09-05-150 — fail-closed Checkout-session revocation, against real Postgres.
+ * Fail-closed Checkout-session revocation, against real Postgres.
  *
  * The finding: a Stripe Checkout session stays PROVIDER-PAYABLE after Breeze
  * resets the invoice's public link, records an alternate payment, voids the
@@ -46,12 +46,13 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 // WHICH credential expired a session — the archive contract is meaningless
 // unless the outgoing key is the one that reaches Stripe.
 // ---------------------------------------------------------------------------
-const { expireMock, retrieveMock, createMock, accountsRetrieveMock, eventsListMock, constructedKeys } = vi.hoisted(() => ({
+const { expireMock, retrieveMock, createMock, accountsRetrieveMock, eventsListMock, autopayProbeMock, constructedKeys } = vi.hoisted(() => ({
   expireMock: vi.fn(),
   retrieveMock: vi.fn(),
   createMock: vi.fn(),
   accountsRetrieveMock: vi.fn(),
   eventsListMock: vi.fn(),
+  autopayProbeMock: vi.fn(),
   constructedKeys: [] as string[],
 }));
 
@@ -60,6 +61,11 @@ vi.mock('stripe', () => ({
     public _key: string;
     accounts = { retrieve: accountsRetrieveMock };
     events = { list: eventsListMock };
+    customers = { update: autopayProbeMock };
+    setupIntents = { update: autopayProbeMock };
+    paymentIntents = { update: autopayProbeMock };
+    paymentMethods = { update: autopayProbeMock };
+    mandates = { retrieve: autopayProbeMock };
     checkout: {
       sessions: {
         expire: (id: string) => unknown;
@@ -200,6 +206,9 @@ beforeEach(() => {
   // survives `clear` and silently drives the next one (a stale
   // complete/paid retrieve turned three retryable cases into charged_repair).
   vi.resetAllMocks();
+  // W01 key validation probes nonexistent objects: permission succeeds without
+  // creating a customer, setup intent, payment intent, or payment method.
+  autopayProbeMock.mockRejectedValue(stripeError('StripeInvalidRequestError', 'resource_missing'));
   constructedKeys.length = 0;
   resetCredentialEraserThrottleForTests();
   delete process.env.STRIPE_SESSION_REVOCATION_MODE;
@@ -212,7 +221,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 // Provider-response state machine
 // ---------------------------------------------------------------------------
-describe('SEC-150 provider-response state machine', () => {
+describe('provider-response state machine', () => {
   runDb('an open session that Stripe expires becomes revoked', async () => {
     const fx = await seedFixture();
     expireMock.mockResolvedValue({ id: fx.sessionId, status: 'expired' });
@@ -332,7 +341,7 @@ describe('SEC-150 provider-response state machine', () => {
 // ---------------------------------------------------------------------------
 // Transition matrix — every fail-closed caller
 // ---------------------------------------------------------------------------
-describe('SEC-150 fail-closed transitions', () => {
+describe('fail-closed transitions', () => {
   runDb('recordPayment revokes the open session BEFORE the payment lands', async () => {
     const fx = await seedFixture();
     expireMock.mockResolvedValue({ id: fx.sessionId, status: 'expired' });
@@ -409,7 +418,7 @@ describe('SEC-150 fail-closed transitions', () => {
 // ---------------------------------------------------------------------------
 // Producers
 // ---------------------------------------------------------------------------
-describe('SEC-150 producer gate', () => {
+describe('producer gate', () => {
   runDb('createInvoicePayLink refuses to mint a session while a revocation is in flight', async () => {
     const fx = await seedFixture();
     expireMock.mockRejectedValue(stripeError('StripeAPIError')); // leaves intent pending
@@ -418,7 +427,7 @@ describe('SEC-150 producer gate', () => {
     });
     expect((await readMapping(fx.mappingId)).revocationState).toBe('revocation_requested');
 
-    await expect(withSystemDbAccessContext(() => createInvoicePayLink(fx.invoiceId, actorFor(fx.orgId) as never)))
+    await expect(createInvoicePayLink(fx.invoiceId, actorFor(fx.orgId) as never))
       .rejects.toMatchObject({ status: 409, code: 'STRIPE_REVOCATION_PENDING' });
 
     // No second mapping row was created — the window stayed closed.
@@ -452,7 +461,7 @@ describe('SEC-150 producer gate', () => {
 // ---------------------------------------------------------------------------
 // Settlement: sibling sessions
 // ---------------------------------------------------------------------------
-describe('SEC-150 sibling revocation after a capture', () => {
+describe('sibling revocation after a capture', () => {
   runDb('a capture stamps intent on the OTHER open sessions without calling Stripe from the settle path', async () => {
     const fx = await seedFixture();
     const siblingId = `${fx.sessionId}_sib`;
@@ -516,7 +525,7 @@ describe('SEC-150 sibling revocation after a capture', () => {
 // ---------------------------------------------------------------------------
 // Credential lifecycle: rotation, disconnect, archive retry, erasure
 // ---------------------------------------------------------------------------
-describe('SEC-150 credential transitions', () => {
+describe('credential transitions', () => {
   runDb('a key rotation expires the open session with the OUTGOING key first', async () => {
     const fx = await seedFixture();
     expireMock.mockImplementation((_key: string, id: string) => {
@@ -655,7 +664,7 @@ describe('SEC-150 credential transitions', () => {
 // ---------------------------------------------------------------------------
 // Operator override
 // ---------------------------------------------------------------------------
-describe('SEC-150 operator abandon', () => {
+describe('operator abandon', () => {
   runDb('abandoning unblocks the void, is audited, and is excluded from the partner banner', async () => {
     const fx = await seedFixture();
     expireMock.mockRejectedValue(stripeError('StripeAuthenticationError'));
@@ -712,7 +721,7 @@ describe('SEC-150 operator abandon', () => {
 // ---------------------------------------------------------------------------
 // Concurrency — real row locks
 // ---------------------------------------------------------------------------
-describe('SEC-150 concurrency (real Postgres locks)', () => {
+describe('concurrency (real Postgres locks)', () => {
   runDb('create-vs-revoke: no session survives payable when a pay link races a void', async () => {
     const fx = await seedFixture();
     expireMock.mockImplementation((_key: string, id: string) =>
@@ -721,7 +730,7 @@ describe('SEC-150 concurrency (real Postgres locks)', () => {
 
     const [voidOutcome, linkOutcome] = await Promise.allSettled([
       withSystemDbAccessContext(() => voidInvoice(fx.invoiceId, 'race', { reissue: false }, actorFor(fx.orgId) as never)),
-      withSystemDbAccessContext(() => createInvoicePayLink(fx.invoiceId, actorFor(fx.orgId) as never)),
+      createInvoicePayLink(fx.invoiceId, actorFor(fx.orgId) as never),
     ]);
 
     // Whichever way the race falls, the invariant is the same: every Checkout
@@ -770,7 +779,7 @@ describe('SEC-150 concurrency (real Postgres locks)', () => {
 // ---------------------------------------------------------------------------
 // Worker: due selection, DB clock, fairness
 // ---------------------------------------------------------------------------
-describe('SEC-150 revocation sweep', () => {
+describe('revocation sweep', () => {
   runDb('eligibility uses the DATABASE clock, not the worker host clock', async () => {
     const fx = await seedFixture();
     await withSystemDbAccessContext(() => db.update(invoiceStripePayments).set({
@@ -833,7 +842,7 @@ describe('SEC-150 revocation sweep', () => {
 // ---------------------------------------------------------------------------
 // Superseded-credential retention
 // ---------------------------------------------------------------------------
-describe('SEC-150 superseded-credential retention', () => {
+describe('superseded-credential retention', () => {
   async function archiveWith(fx: Fixture, opts: { eraseAfter: Date; hardCap: Date }) {
     return withSystemDbAccessContext(async () => {
       const [row] = await db.insert(stripeConnectCredentials).values({
@@ -928,7 +937,7 @@ describe('SEC-150 superseded-credential retention', () => {
 // ---------------------------------------------------------------------------
 // Legacy inventory
 // ---------------------------------------------------------------------------
-describe('SEC-150 legacy inventory', () => {
+describe('legacy inventory', () => {
   runDb('a legacy_unbounded row is revoked on first touch like any open session', async () => {
     const fx = await seedFixture();
     await withSystemDbAccessContext(() => db.update(invoiceStripePayments)
@@ -972,7 +981,7 @@ function partnerCtx(partnerId: string): DbAccessContext {
   return { scope: 'partner', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: [partnerId], userId: null };
 }
 
-describe('SEC-150 regressions', () => {
+describe('regressions', () => {
   runDb('revocation works from an ORGANIZATION-scoped caller — the credential read must escape the ambient scope', async () => {
     const fx = await seedFixture();
     expireMock.mockResolvedValue({ status: 'expired' });
@@ -1034,29 +1043,17 @@ describe('SEC-150 regressions', () => {
     await requestInvoiceSessionRevocation({
       invoiceId: fx.invoiceId, reason: 'link_reset', requestedByUserId: null,
     });
-    // Clear the producer gate so the request gets past it and reaches the
-    // post-insert raced branch — the one that used to escape the context and
-    // re-take the invoice row FOR UPDATE on a second pooled connection while the
-    // caller's transaction already held FOR KEY SHARE on it through the mapping
-    // INSERT's FK. That waits on a transaction that cannot commit until it
-    // returns, and Postgres sees no cycle to break: it hangs to statement_timeout.
+    // Bypass the revocation gate to exercise the held-context guard before Stripe.
     process.env.STRIPE_SESSION_REVOCATION_MODE = 'observe';
 
     const requestCtx: DbAccessContext = {
       scope: 'partner', orgId: null, accessibleOrgIds: [fx.orgId],
       accessiblePartnerIds: [fx.partnerId], userId: null,
     };
-    const raced = await withDbAccessContext(requestCtx, async () => {
-      try {
-        await createInvoicePayLink(fx.invoiceId, { userId: null, partnerId: fx.partnerId, accessibleOrgIds: [fx.orgId] } as never);
-        return 'minted';
-      } catch (err) {
-        return (err as { code?: string }).code ?? `other: ${(err as Error).message}`;
-      }
-    });
-    // Either outcome is acceptable; HANGING is not. Reaching this line at all is
-    // the regression assertion.
-    expect(['minted', 'STRIPE_REVOCATION_PENDING']).toContain(raced);
+    await expect(withDbAccessContext(requestCtx, () =>
+      createInvoicePayLink(fx.invoiceId, { userId: null, partnerId: fx.partnerId, accessibleOrgIds: [fx.orgId] }),
+    )).rejects.toMatchObject({ name: 'HeldDbContextForStripeError' });
+    expect(createMock).not.toHaveBeenCalled();
   }, 20_000);
 
   runDb('saving a working key re-arms blocked revocations but never an operator-abandoned one', async () => {

@@ -7,8 +7,10 @@
  * backend sat for three days in `state = 'active'`,
  * `wait_event = 'Client/ClientRead'`, with
  * `query = select set_config('breeze.scope', $1, true)` — the FIRST statement of
- * `applyAccessContextGucs` — and `backend_start == xact_start`. Nothing reaps
- * that state:
+ * `applyAccessContextGucs` — and `backend_start == xact_start`. (Since #8052 the
+ * prologue is ONE statement, `select set_config('breeze.scope', $1, true),
+ * set_config('breeze.org_id', $2, true), …`, so that is what a wedge shows now.)
+ * Nothing reaps that state:
  *
  *   - `idle_in_transaction_session_timeout` does not apply: the backend is
  *     `active`, not `idle in transaction`.
@@ -59,7 +61,7 @@
  *     legitimate state for other extended-protocol exchanges (and for
  *     `COPY ... FROM STDIN`, which this codebase does not use), so the
  *     reclaimer refuses to touch anything that is not literally one of the
- *     RLS prologue's `select set_config('breeze.…', $1, true)` statements
+ *     RLS prologue statement (`select set_config('breeze.…', $1, true), …`)
  *     (narrowed from any `set_config` in #6348 — app code also issues
  *     `set_config('lock_timeout' | 'statement_timeout', …)` mid-transaction,
  *     and those are not the prologue). The DETECTOR does not apply this clause —

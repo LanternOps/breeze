@@ -69,6 +69,17 @@ describe('quote validators', () => {
     expect('orgId' in parsed).toBe(false);
   });
 
+  it('update rejects taxRate (any value, incl. null) with a 400 instead of stripping it (#7507)', () => {
+    for (const taxRate of [0.1, 0, null]) {
+      const res = updateQuoteSchema.safeParse({ taxRate });
+      expect(res.success).toBe(false);
+      expect(res.error!.issues[0]!.path).toEqual(['taxRate']);
+      expect(res.error!.issues[0]!.message).toMatch(/organization's tax settings/);
+    }
+    // Omitted is fine — every other header field still patches.
+    expect(updateQuoteSchema.safeParse({ title: 'x' }).success).toBe(true);
+  });
+
   it('create/update accept a bounded title and reject an oversized one', () => {
     expect(createQuoteSchema.parse({ orgId: '11111111-1111-1111-1111-111111111111', title: 'Office refresh' }).title)
       .toBe('Office refresh');
@@ -322,6 +333,16 @@ describe('callout block content', () => {
     expect(quoteBlockInputSchema.safeParse({ blockType: 'callout', content: { variant: 'accent', title: 'Why this matters', html: '<p>Because.</p>' } }).success).toBe(true);
     expect(quoteBlockInputSchema.safeParse({ blockType: 'callout', content: { variant: 'loud', html: '<p>x</p>' } }).success).toBe(false);
     expect(quoteBlockInputSchema.safeParse({ blockType: 'callout', content: { variant: 'info', html: 'x'.repeat(50_001) } }).success).toBe(false);
+  });
+});
+
+describe('coverPageSchema — showContents (PDF contents list)', () => {
+  it('accepts an opt-in showContents flag and leaves it absent by default', () => {
+    expect(coverPageSchema.parse({ enabled: false, showContents: true }).showContents).toBe(true);
+    expect(coverPageSchema.parse({ enabled: true }).showContents).toBeUndefined();
+  });
+  it('rejects a non-boolean showContents', () => {
+    expect(coverPageSchema.safeParse({ enabled: true, showContents: 'yes' }).success).toBe(false);
   });
 });
 

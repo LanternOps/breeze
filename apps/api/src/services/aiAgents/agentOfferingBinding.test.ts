@@ -46,13 +46,13 @@ const writer = { userId: 'u1' };
 
 describe('bindAgentOffering (W05)', () => {
   it('null clears the policy model (the agent follows the ai_agents default)', async () => {
-    await expect(bindAgentOffering(orgOwner, null, writer)).resolves.toEqual({ model: null, offeringId: null, offeringPartnerId: null });
+    await expect(bindAgentOffering(orgOwner, null, writer)).resolves.toEqual({ offeringId: null, offeringPartnerId: null });
     expect(m.loadOfferingCandidate).not.toHaveBeenCalled();
     expect(m.ensurePartnerCutover).not.toHaveBeenCalled();
   });
 
   it('binds a permitted, eligible offering judged for the WRITER on the ai_agents surface', async () => {
-    await expect(bindAgentOffering(orgOwner, 'opus', writer)).resolves.toEqual({ model: 'logical-opus', offeringId: 'opus', offeringPartnerId: 'p1' });
+    await expect(bindAgentOffering(orgOwner, 'opus', writer)).resolves.toEqual({ offeringId: 'opus', offeringPartnerId: 'p1' });
     expect(m.eligibilityContextFor).toHaveBeenCalledWith(expect.objectContaining({
       partnerId: 'p1', orgId: 'o1', userId: 'u1', surface: 'ai_agents', transport: 'agent_sdk',
     }));

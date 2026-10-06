@@ -407,7 +407,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
         <p className="text-sm">{alert.message}</p>
       </div>
 
-      <RemediationSuggestionsPanel sourceType="alert" sourceId={alert.id} />
+      <RemediationSuggestionsPanel sourceType="alert" sourceId={alert.id} orgId={alert.orgId} />
 
       {alert.anomalyContext && (
         <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-6 shadow-xs">

@@ -341,6 +341,55 @@ export async function resolveSensitiveDataAuthorityInCurrentSystemContext(
   return persisted;
 }
 
+/** Fixed generation for a synthetic legacy envelope; never persisted. */
+const LEGACY_PRINCIPAL_GENERATION = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * Live devices:execute check for a row that predates stored authority
+ * ("grandfathered" rows: legacy CIS schedules, legacy auto-quarantine links,
+ * remediation approvals). Runs the SAME live resolution as a stamped envelope
+ * — user active, still holds devices:execute through an org membership or a
+ * partner membership that admits the org (partner-wide owners: org access
+ * 'all') — for `userId` as if it had approved the row with no site ceiling, so
+ * the result carries the user's CURRENT site ceiling.
+ *
+ * Returns null when the user does not qualify. THROWS on a lookup failure, so
+ * a caller can tell "ineligible" (downgrade and flag) from "could not check"
+ * (skip this tick, change nothing).
+ */
+export async function resolveLegacyPrincipalExecuteAuthorityInCurrentSystemContext(
+  owner: { orgId: string | null; partnerId: string | null },
+  userId: string | null,
+): Promise<EffectiveSensitiveDataAuthority | null> {
+  if (!userId) return null;
+  const typedOwner: SensitiveDataPolicyOwner | null = owner.orgId && !owner.partnerId
+    ? { orgId: owner.orgId, partnerId: null }
+    : owner.partnerId && !owner.orgId
+      ? { orgId: null, partnerId: owner.partnerId }
+      : null;
+  if (!typedOwner) return null;
+  const kind: SensitiveDataAuthorityKind = typedOwner.orgId ? 'organization_unrestricted' : 'partner_unrestricted';
+  return resolveSensitiveDataAuthorityInCurrentSystemContext({
+    orgId: typedOwner.orgId,
+    partnerId: typedOwner.partnerId,
+    executionAuthorityVersion: 1,
+    executionAuthorityKind: kind,
+    executionAuthoritySiteIds: null,
+    executionAuthorityUserId: userId,
+    executionAuthorityPrincipalKind: 'user',
+    executionAuthorityFingerprint: fingerprint({
+      owner: typedOwner,
+      kind,
+      siteIds: null,
+      userId,
+      principalKind: 'user',
+      generation: LEGACY_PRINCIPAL_GENERATION,
+    }),
+    executionAuthorityCapturedAt: new Date(0),
+    executionAuthorityGeneration: LEGACY_PRINCIPAL_GENERATION,
+  });
+}
+
 export async function resolveSensitiveDataAuthority(
   row: PersistedSensitiveDataAuthority,
 ): Promise<EffectiveSensitiveDataAuthority | null> {

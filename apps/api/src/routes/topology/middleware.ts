@@ -1,6 +1,7 @@
 import type { TopologyRequestContext, TopologyCapability } from '../../services/topology/access';
 import { requireTopologySiteAccess, TopologyError } from '../../services/topology/access';
 import type { AuthContext } from '../../middleware/auth';
+import { markPermissionGate } from '../../middleware/permissionGate';
 import { getUserPermissions, type UserPermissions } from '../../services/permissions';
 import type { MiddlewareHandler } from 'hono';
 
@@ -19,7 +20,7 @@ export function requireTopologySiteCapability(
   capability: TopologyCapability,
   siteIdParam = 'siteId',
 ): MiddlewareHandler {
-  return async (c, next) => {
+  return markPermissionGate(async (c, next) => {
     const auth = c.get('auth') as AuthContext | undefined;
     if (!auth) {
       return c.json({ error: 'Not authenticated' }, 401);
@@ -60,5 +61,5 @@ export function requireTopologySiteCapability(
       }
       throw error;
     }
-  };
+  }, `topology:${capability}`);
 }

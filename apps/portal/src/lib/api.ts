@@ -170,6 +170,9 @@ export interface ApiResponse<T> {
    *  branding so a replaced proposal can show a branded notice instead of a bare
    *  failure. */
   errorData?: unknown;
+  /** The `details` object of an error body: a refusal's structured reason when the
+   *  `code` alone is shared by several refusals (e.g. COLLECTION_IN_PROGRESS). */
+  errorDetails?: Record<string, unknown>;
   statusCode?: number;
   headers?: Headers;
 }
@@ -242,6 +245,7 @@ export async function apiRequest<T>(
         error: body?.error || 'That didn\'t go through. Nothing was lost — try again in a moment.',
         code: typeof body?.code === 'string' ? body.code : undefined,
         errorData: body?.data,
+        errorDetails: body?.details && typeof body.details === 'object' && !Array.isArray(body.details) ? body.details : undefined,
         statusCode: response.status,
         headers: response.headers
       };
@@ -511,7 +515,27 @@ export function lineWorkedVsBilledNote(l: { quantity: string; workedMinutes?: nu
   return `${worked} h worked · ${billed} h billed`;
 }
 
+import type {InvoiceAutopayOffer as InvoiceAutopayDisclosure} from '@breeze/shared';
+export type {InvoiceAutopayOffer as InvoiceAutopayDisclosure} from '@breeze/shared';
+export interface SaveForAutopayInput { saveForAutopay: boolean; consentAccepted?: true; disclosureHash?: string }
+
+export function invoiceAutopayInput(saveForAutopay: boolean, disclosure?: InvoiceAutopayDisclosure | null): SaveForAutopayInput {
+  return saveForAutopay && disclosure?.eligible
+    ? { saveForAutopay: true, consentAccepted: true, disclosureHash: disclosure.disclosureHash }
+    : { saveForAutopay: false };
+}
+
+import type { AutopayConfirmationRelease, BankAutopayOffer, BankPayInput, InvoicePayResult } from '@breeze/shared';
+export type { AutopayConfirmationRelease, BankAutopayOffer, BankPayInput, InvoicePayResult } from '@breeze/shared';
+
+import type { CustomerInvoiceAutopayStatus } from '@breeze/shared';
 export interface InvoiceDetail {
+  bankAutopay?: BankAutopayOffer | null;
+  autopay?: InvoiceAutopayDisclosure | null;
+  /** D-4: how this invoice will be paid automatically, if it will be. */
+  autopayStatus?: CustomerInvoiceAutopayStatus | null;
+  /** Automatic payments are on with a usable method: the page offers no setup. */
+  autopayEnrolled?: boolean;
   // The detail header is a separate serialization boundary on the API and
   // does not carry the list's derived `title`.
   invoice: Omit<InvoiceSummary, 'title'> & {
@@ -528,6 +552,13 @@ export interface InvoiceDetail {
    *  older API responses and fixtures predate it, in which case the view falls
    *  back to GET /portal/branding. */
   branding?: QuoteBranding;
+  /** #7509: whether the partner can take online payment. `false` hides the Pay
+   *  CTA; absent (older API / fixtures) is treated as available — the pay route
+   *  still 409s as the backstop. */
+  onlinePaymentAvailable?: boolean;
+  /** #7824: server-side autopay collection in flight (same reservation the pay
+   *  route's 409 uses). Non-null disables the Pay button; null/absent = none. */
+  collectionInProgress?: { amount: string; actionRequired?: boolean } | null;
 }
 
 export type QuoteStatus =
@@ -707,6 +738,10 @@ export interface PublicQuoteDetail {
  *  invoice deliberately carries only identity fields (no amounts), so most
  *  money fields are optional here. */
 export interface PublicInvoiceDetail {
+  bankAutopay?: BankAutopayOffer | null;
+  autopay?: InvoiceAutopayDisclosure | null;
+  autopayStatus?: CustomerInvoiceAutopayStatus | null;
+  autopayEnrolled?: boolean;
   invoice: {
     id: string;
     invoiceNumber: string | null;
@@ -732,6 +767,9 @@ export interface PublicInvoiceDetail {
   lines: InvoiceLine[];
   chargeNow: { amount: string; isDeposit: boolean } | null;
   payable: boolean;
+  /** #7824: an autopay collection is in flight (server reservation).
+   *  actionRequired: it is waiting on the customer's bank (off-session 3DS). */
+  collectionInProgress?: { amount: string; actionRequired?: boolean } | null;
   branding: {
     partnerName: string;
     contactEmail: string | null;
@@ -966,12 +1004,13 @@ export const portalApi = {
     return apiGet<InvoiceDetail>(`/portal/invoices/${id}`, config);
   },
 
-  payInvoice: async (
-    id: string,
-    config: ApiRequestConfig = {}
-  ): Promise<ApiResponse<{ url: string }>> => {
-    return apiPost<{ url: string }>(`/portal/invoices/${id}/pay`, undefined, config);
-  },
+  payInvoice: async (id: string, config: ApiRequestConfig = {}, autopay?: SaveForAutopayInput | BankPayInput): Promise<ApiResponse<InvoicePayResult>> =>
+    apiPost<InvoicePayResult>(`/portal/invoices/${id}/pay`, autopay, config),
+
+  // Cancel an autopay payment that is waiting on bank authentication so the
+  // customer can pay on-session (same effect as the emailed confirm link).
+  releaseAutopayConfirmation: async (id: string): Promise<ApiResponse<AutopayConfirmationRelease>> =>
+    apiPost<AutopayConfirmationRelease>(`/portal/invoices/${encodeURIComponent(id)}/autopay-confirmation`, {}),
 
   // Verify-on-return: settle the Checkout session server-side after the customer
   // lands back on the invoice (success_url carries the session id). Idempotent — the
@@ -1177,15 +1216,11 @@ export const portalApi = {
     );
   },
 
-  payPublicInvoice: async (
-    token: string
-  ): Promise<ApiResponse<{ data: { url: string } }>> => {
-    return apiPost<{ data: { url: string } }>(
-      `/invoices/public/${encodeURIComponent(token)}/pay`,
-      {},
-      { redirectOnUnauthorized: false }
-    );
-  },
+  payPublicInvoice: async (token: string, autopay?: SaveForAutopayInput | BankPayInput): Promise<ApiResponse<{ data: InvoicePayResult }>> =>
+    apiPost<{ data: InvoicePayResult }>(`/invoices/public/${encodeURIComponent(token)}/pay`, autopay ?? {}, { redirectOnUnauthorized: false }),
+
+  releasePublicAutopayConfirmation: async (token: string): Promise<ApiResponse<{ data: AutopayConfirmationRelease }>> =>
+    apiPost<{ data: AutopayConfirmationRelease }>(`/invoices/public/${encodeURIComponent(token)}/autopay-confirmation`, {}, { redirectOnUnauthorized: false }),
 
   // Checkout verify-on-return WITHOUT the invoice token: exchanges the Stripe
   // session id for settlement + the canonical public page url (the return urls

@@ -61,6 +61,7 @@ import {
   checkDeviceTenantState,
   checkDeviceTokenSuspension,
 } from '../middleware/deviceCredentialLifecycle';
+import { agentAuthNegativeCache, type AgentAuthTerminalRejection } from '../middleware/agentAuthNegativeCache';
 import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
 import { isParkedDeliverableCommandType } from '../services/unassignedPool/deliveryEligibility';
 import { createAuditLogAsync } from '../services/auditService';
@@ -94,7 +95,7 @@ import {
   type DesktopStreamStartActivation,
 } from '../services/desktopStreamStartActivation';
 import { getActiveTrustKeyset } from '../services/manifestSigning';
-import { nextAgentUpdateAttempt } from '@breeze/shared';
+import { ERROR_CODES, nextAgentUpdateAttempt } from '@breeze/shared';
 import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
 import {
   reconcileSoftwareInstallResult,
@@ -935,7 +936,7 @@ const revocationLeaseRenewSchema = z.object({
   type: z.literal('revocation_lease_renew'),
   sessionId: z.string().uuid(),
   /**
-   * SEC-038 W05: an opaque correlator the agent generates for a fence resync
+   * An opaque correlator the agent generates for a fence resync
    * and echoes back on the answer, so a stalled answer to an EARLIER renewal
    * can never satisfy a later resync. Optional — the watchdog's ordinary
    * renewals send none, and older agents do not send it at all.
@@ -1107,6 +1108,21 @@ export async function validateAgentToken(
 
   const tokenHash = createHash('sha256').update(token).digest('hex');
 
+  // #8050 — replay a recent TERMINAL rejection of this exact (agentId, token)
+  // before any DB work. Same contract as the REST middleware (see
+  // middleware/agentAuthNegativeCache.ts): keyed on the token hash so a forged
+  // token can never lock the real agent out, and only the rejections passed to
+  // `rejectTerminally` are stored. The caller renders the reason, so returning
+  // the same reason replays the identical status and body.
+  const cachedRejection = agentAuthNegativeCache.lookup('ws', agentId, tokenHash);
+  if (cachedRejection) {
+    return { ok: false, reason: wsReasonForTerminalRejection(cachedRejection) };
+  }
+  const rejectTerminally = (kind: AgentAuthTerminalRejection): AgentTokenValidation => {
+    agentAuthNegativeCache.remember('ws', agentId, tokenHash, kind);
+    return { ok: false, reason: wsReasonForTerminalRejection(kind) };
+  };
+
   // Authentication must work even when tenant RLS is deny-by-default.
   // Use system DB context for lookup, then scope all downstream queries to this org.
   const device = await withSystemDbAccessContext(async () => {
@@ -1141,26 +1157,35 @@ export async function validateAgentToken(
   });
 
   if (!device) {
-    return { ok: false, reason: 'unauthorized' };
+    return rejectTerminally('device_not_found');
   }
 
   if (!device.agentTokenHash && !device.watchdogTokenHash) {
+    // Logged once per negative-cache TTL per (agentId, token): repeats within
+    // the TTL are replayed above without reaching here.
     console.warn(
       `[agentWs] Device ${agentId} has no token hash — predates hash migration; signaling re_enrollment_required`
     );
-    return { ok: false, reason: 're_enrollment_required' };
+    return rejectTerminally('re_enrollment_required');
   }
 
   // Shared predicates (middleware/deviceCredentialLifecycle.ts). Every denial
   // collapses to this path's opaque `unauthorized`: a decommissioned or
   // quarantined device and a token auto-suspended for cross-tenant probing all
   // fail closed, and the agent's reconnect loop is the intended ops signal.
-  if (checkDeviceStatus(device)) {
-    return { ok: false, reason: 'unauthorized' };
+  //
+  // #8050 — `decommissioned` is cached (the WS upgrade never admits a
+  // decommissioned device, draining or not, so it is terminal here);
+  // quarantine is not, so an admin approval takes effect immediately.
+  const statusDenial = checkDeviceStatus(device);
+  if (statusDenial) {
+    return statusDenial.reason === 'decommissioned'
+      ? rejectTerminally('decommissioned')
+      : { ok: false, reason: 'unauthorized' };
   }
 
   if (checkDeviceTokenSuspension(device)) {
-    return { ok: false, reason: 'unauthorized' };
+    return rejectTerminally('token_suspended');
   }
 
   const match = matchRoleScopedAgentTokenHash({
@@ -1180,7 +1205,9 @@ export async function validateAgentToken(
     tokenHash,
   });
   if (!match || match.role !== 'agent') {
-    return { ok: false, reason: 'unauthorized' };
+    // A watchdog credential is a mismatch for this surface: only the agent
+    // role may hold the control channel, and that is fixed per token.
+    return rejectTerminally('token_mismatch');
   }
 
   // Tenant-status gate (mirror of the REST agent-auth path): refuse the WS
@@ -1193,7 +1220,15 @@ export async function validateAgentToken(
   // device_commands row, so any WS session is a fully-capable control channel
   // that the drain-mode command filtering can't see. The agent falls back to
   // heartbeat polling, which is the actual self_uninstall delivery path.
-  if ((await checkDeviceTenantState(device.orgId, { allowDraining: false })).denied) {
+  //
+  // #8050 — resolved with `allowDraining: true` purely so the two refusals can
+  // be told apart: an inactive tenant is cached, a draining one is NOT (an
+  // aborted offboarding must restore the socket at once). Both still refuse.
+  const tenantVerdict = await checkDeviceTenantState(device.orgId, { allowDraining: true });
+  if (tenantVerdict.denied) {
+    return rejectTerminally('tenant_denied');
+  }
+  if (tenantVerdict.tenantState !== 'active') {
     return { ok: false, reason: 'unauthorized' };
   }
 
@@ -1232,6 +1267,16 @@ export async function validateAgentToken(
       parked: isUnassignedPoolOrgType(device.organizationType),
     },
   };
+}
+
+/**
+ * #8050 — how each cached terminal rejection renders on the WS upgrade. Only
+ * re-enrollment is distinguishable; everything else is the opaque refusal.
+ */
+function wsReasonForTerminalRejection(
+  kind: AgentAuthTerminalRejection,
+): 'unauthorized' | 're_enrollment_required' {
+  return kind === 're_enrollment_required' ? 're_enrollment_required' : 'unauthorized';
 }
 
 // Statuses that agent-driven writes must never overwrite. Mirrored inline in
@@ -3140,7 +3185,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               hardDeadline: leaseResult.hardDeadline,
               renewEverySec: leaseResult.renewEverySec,
               graceSec: leaseResult.graceSec,
-              // SEC-038: the agent's durable start fence resyncs from these.
+              // The agent's durable start fence resyncs from these.
               ...(leaseResult.startGeneration !== undefined
                 ? { startGeneration: leaseResult.startGeneration }
                 : {}),
@@ -3364,7 +3409,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               ) || null;
               try {
                 await runWithAgentDbAccess('agentWs.desktop.peerDisconnected', async () => {
-                  // Through the terminal-intent contract (SEC-038 W03). The
+                  // Through the terminal-intent contract. The
                   // endpoint is the source of this terminal fact — the agent
                   // has already stopped — so the phase is 'confirmed' at once.
                   const result = await commitDesktopTerminalIntent({
@@ -3405,7 +3450,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             }
           }
 
-          // SEC-038 W03: the agent acknowledged a generation-bound stop. Move
+          // The agent acknowledged a generation-bound stop. Move
           // the row's teardown phase pending → confirmed — but only when the
           // result's identity names the exact terminal generation the row is
           // waiting on and the reporting agent owns the device. A legacy
@@ -3452,7 +3497,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             if (sessionId) {
               try {
                 await runWithAgentDbAccess('agentWs.desktop.consentDenied', async () => {
-                  // Through the terminal-intent contract (SEC-038 W03); the
+                  // Through the terminal-intent contract; the
                   // endpoint refused the start, so the phase is 'confirmed'.
                   const denied = await commitDesktopTerminalIntent({
                     sessionId,
@@ -3753,7 +3798,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             if (sessionId) {
               try {
                 await runWithAgentDbAccess('agentWs.desktop.captureFailed', async () => {
-                  // Through the terminal-intent contract (SEC-038 W03); the
+                  // Through the terminal-intent contract; the
                   // capture never started, so the phase is 'confirmed'.
                   const result = await commitDesktopTerminalIntent({
                     sessionId,
@@ -4690,7 +4735,7 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
       const result = await validateAgentToken(agentId, token, certAssertion);
       if (!result.ok) {
         if (result.reason === 're_enrollment_required') {
-          return c.json({ error: 'Re-enrollment required', code: 're_enrollment_required' }, 401);
+          return c.json({ error: 'Re-enrollment required', code: ERROR_CODES.RE_ENROLLMENT_REQUIRED }, 401);
         }
         return c.json({ error: 'Unauthorized' }, 401);
       }

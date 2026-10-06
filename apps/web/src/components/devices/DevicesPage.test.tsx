@@ -1685,7 +1685,8 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
         // only the immediate socket push missed (no live session,
         // preferHeartbeat); distinct from both 'delivered' and
         // 'queued_offline'. Takes precedence over `delivered` when set.
-        delivery?: 'delivered' | 'queued_offline' | 'queued_live';
+        delivery?: 'delivered' | 'queued_offline' | 'queued_live' | 'cancelled';
+        cancelReason?: string;
       } = {},
     ) {
       const { sendDeviceCommand } = await import('../../services/deviceActions');
@@ -1703,6 +1704,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
         createdAt: '2026-09-01T00:00:00.000Z',
         delivery: opts.delivery ?? (delivered ? 'delivered' : 'queued_offline'),
         deliverBy,
+        ...(opts.cancelReason ? { cancelReason: opts.cancelReason } : {}),
       } as never);
 
       vi.mocked(fetchAllDevices).mockResolvedValue({
@@ -1756,6 +1758,14 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
       fireEvent.click(await screen.findByTestId('confirm-device-action'));
       await waitFor(() => expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledTimes(1));
       expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledWith(DEV_1, 'reboot');
+    });
+
+    it('a cancelled result reports an error toast with the reason, never "sent"', async () => {
+      const toasts = await rebootDeviceWithStatus('online', { delivery: 'cancelled', cancelReason: 'device_moved_org', deliverBy: null });
+      expect(toasts.find(c => c.type === 'success')).toBeUndefined();
+      const error = toasts.find(c => c.type === 'error');
+      expect(error?.message).toMatch(/not sent to host-alpha/i);
+      expect(error?.message).toContain('device_moved_org');
     });
 
     it('online device: reports the command as sent, naming the device', async () => {

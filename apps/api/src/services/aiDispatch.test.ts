@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('./commandQueue', () => ({
   executeCommandWithSystemPrecheck: vi.fn().mockResolvedValue({ status: 'completed' }),
+  executeCommandWithCallerPrecheck: vi.fn().mockResolvedValue({ status: 'completed' }),
   executeCommand: vi.fn().mockResolvedValue({ status: 'completed' }),
   queueCommandForExecution: vi.fn().mockResolvedValue({ command: { id: 'cmd-1' } }),
   queueCommand: vi.fn().mockResolvedValue({ id: 'cmd-1' }),
@@ -18,15 +19,17 @@ vi.mock('./remoteAccessPolicy', () => ({
 }));
 vi.mock('../db', () => ({
   getCurrentDbAccessContext: vi.fn(() => ({ scope: 'organization' })),
+  hasDbAccessContext: vi.fn(() => true),
   withSystemDbAccessContext: vi.fn((fn: () => Promise<unknown>) => fn()),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
-import { executeCommandWithSystemPrecheck, executeCommand, queueCommandForExecution, queueCommand, insertQueuedCommandInTransaction } from './commandQueue';
+import { executeCommandWithSystemPrecheck, executeCommandWithCallerPrecheck, executeCommand, queueCommandForExecution, queueCommand, insertQueuedCommandInTransaction } from './commandQueue';
 import { dispatchDeviceCommand } from './dispatchDeviceCommand';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import { checkRemoteAccess } from './remoteAccessPolicy';
-import { getCurrentDbAccessContext, withSystemDbAccessContext } from '../db';
+import { getCurrentDbAccessContext, hasDbAccessContext, withSystemDbAccessContext } from '../db';
+import { dbAccessContextFromAuth } from '../middleware/auth';
 import {
   aiExecuteCommandWithSystemPrecheck,
   aiExecuteCommand,
@@ -52,6 +55,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(checkRemoteAccess).mockResolvedValue({ allowed: true });
   vi.mocked(getCurrentDbAccessContext).mockReturnValue({ scope: 'organization' } as never);
+  vi.mocked(hasDbAccessContext).mockReturnValue(true);
 });
 
 describe('aiDispatch adapter (#5022 W01)', () => {
@@ -63,6 +67,22 @@ describe('aiDispatch adapter (#5022 W01)', () => {
       'run_shell',
       {},
       expect.objectContaining({ aiOrigin: AGENT_ORIGIN }),
+    );
+  });
+
+  it('from a self-managed handler (no ambient context) prechecks under the CALLER’s own context (#7918)', async () => {
+    vi.mocked(hasDbAccessContext).mockReturnValue(false);
+    const auth = {
+      aiOrigin: AGENT_ORIGIN, scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'],
+      partnerId: 'partner-1', user: { id: 'user-1' }, principal: { kind: 'user_session' },
+    } as never;
+
+    await aiExecuteCommand(auth, 'take_screenshot', 'dev-1', 'take_screenshot', {}, { timeoutMs: 120_000 });
+
+    expect(executeCommand).not.toHaveBeenCalled();
+    expect(executeCommandWithCallerPrecheck).toHaveBeenCalledWith(
+      'dev-1', 'take_screenshot', {}, dbAccessContextFromAuth(auth),
+      expect.objectContaining({ aiOrigin: AGENT_ORIGIN, timeoutMs: 120_000 }),
     );
   });
 

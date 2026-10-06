@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readTlsObservation } from './tlsObservation';
 
 /**
@@ -155,6 +155,34 @@ describe('tlsObservationUpdate', () => {
       { expectedRequestUrl: 'https://a.example/x' },
     );
     expect(update).toEqual({});
+  });
+
+  it('logs only the scheme and host of both URLs when it drops a mismatched observation', async () => {
+    const { tlsObservationUpdate } = await import('./tlsObservation');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const update = tlsObservationUpdate(
+        {
+          sslState: 'observed',
+          sslExpiry: '2027-01-02T03:04:05Z',
+          sslIssuer: 'CN=CA',
+          sslObservedHost: 'old.example',
+          sslRequestedUrl: 'https://user:oldpass@old.example/hook?token=old-secret',
+        },
+        new Date(),
+        { expectedRequestUrl: 'https://user:newpass@new.example:8443/hook?token=new-secret', monitorId: 'm1' },
+      );
+      expect(update).toEqual({});
+      expect(warn).toHaveBeenCalledTimes(1);
+      const line = String(warn.mock.calls[0]?.[0]);
+      expect(line).toContain('https://old.example');
+      expect(line).toContain('https://new.example:8443');
+      for (const leaked of ['oldpass', 'newpass', 'old-secret', 'new-secret', '/hook', 'token=']) {
+        expect(line).not.toContain(leaked);
+      }
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('tolerates surrounding whitespace on either side rather than dropping forever', async () => {

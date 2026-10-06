@@ -228,6 +228,7 @@ vi.mock('./helpers', async () => {
 });
 
 import { inviteRoutes } from './invite';
+import { advanceUserEpochs } from '../../services/authLifecycle';
 import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, writeAuthAudit } from './helpers';
 
 const token = 'invite-token';
@@ -284,6 +285,13 @@ describe('POST /accept-invite guarded issuance', () => {
 
     expect(response.status).toBe(200);
     expect(routeState.user).toMatchObject({ status: 'active', passwordHash: 'new-password-hash', authEpoch: 4 });
+    // Accepting an invite sets a new password, so it is a credential change:
+    // any API key the identity held from before must not survive it (#7489).
+    expect(vi.mocked(advanceUserEpochs)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.any(String),
+      expect.objectContaining({ auth: true, passwordReset: true, credential: true }),
+    );
     expect(routeState.oldFamilyRevoked).toBe(true);
     expect(routeState.familyCount).toBe(1);
     expect(routeState.cookieKind).toBe('guarded');

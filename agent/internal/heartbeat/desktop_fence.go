@@ -10,7 +10,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/desktopfence"
 )
 
-// SEC-038 — the endpoint half of the remote-desktop start fence.
+// The endpoint half of the remote-desktop start fence.
 //
 // The server bumps one monotonic generation on the remote_sessions row for
 // BOTH the start-intent commit and the terminal-intent commit, and carries it

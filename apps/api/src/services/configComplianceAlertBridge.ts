@@ -55,10 +55,11 @@ import {
   organizations,
 } from '../db/schema';
 import { createAlert, resolveAlert, RESOLVABLE_ALERT_STATUSES } from './alertService';
+import { insertBuiltInAlertRule, type BuiltInAlertRuleSource } from './builtInAlertRules';
 
 const { db } = dbModule;
 
-export const CONFIG_COMPLIANCE_ALERT_SOURCE = 'config-policy-compliance';
+export const CONFIG_COMPLIANCE_ALERT_SOURCE = 'config-policy-compliance' satisfies BuiltInAlertRuleSource;
 export const CONFIG_COMPLIANCE_TEMPLATE_NAME = 'Configuration Compliance Violation';
 /** Every org alert rule this bridge creates is named `<prefix>:…` (complianceAlertReconcile.ts finds them by it). */
 export const CONFIG_COMPLIANCE_RULE_PREFIX = 'Config Compliance Rule';
@@ -112,7 +113,7 @@ function legacyAlertRuleNameFor(complianceRuleId: string): string {
   return `${CONFIG_COMPLIANCE_RULE_PREFIX}:${complianceRuleId}`;
 }
 
-type ResolvedComplianceRule = {
+export type ResolvedComplianceRule = {
   id: string;
   name: string;
   enforcementLevel: Enforcement;
@@ -280,32 +281,26 @@ async function findRuleIds(orgId: string, names: string[]): Promise<string[]> {
   return rows.map((r) => r.id);
 }
 
-async function ensureRule(orgId: string, rule: ResolvedComplianceRule): Promise<string> {
+/** Exported for testing (#7650 concurrent first-fire); handleConfigComplianceViolation calls it. */
+export async function ensureRule(orgId: string, rule: ResolvedComplianceRule): Promise<string> {
   const key = keyOf(rule);
   const name = alertRuleNameFor(key);
   const [existing] = await findRuleIds(orgId, [name]);
   if (existing) return existing;
 
   const templateId = await ensureGlobalTemplate();
-  const [created] = await db
-    .insert(alertRules)
-    .values({
-      orgId,
-      templateId,
-      name,
-      targetType: 'org',
-      targetId: orgId,
-      isActive: true,
-      overrideSettings: {
-        source: CONFIG_COMPLIANCE_ALERT_SOURCE,
-        configPolicyFeatureLinkId: key.featureLinkId,
-        configPolicyComplianceRuleName: key.ruleName,
-        cooldownMinutes: COOLDOWN_MINUTES,
-      },
-    })
-    .returning({ id: alertRules.id });
-  if (!created) throw new Error(`[configComplianceAlertBridge] failed to create rule for org ${orgId}`);
-  return created.id;
+  // Concurrent first fire returns the winner's row, never a second rule (#7650).
+  return insertBuiltInAlertRule({
+    orgId,
+    templateId,
+    name,
+    overrideSettings: {
+      source: CONFIG_COMPLIANCE_ALERT_SOURCE,
+      configPolicyFeatureLinkId: key.featureLinkId,
+      configPolicyComplianceRuleName: key.ruleName,
+      cooldownMinutes: COOLDOWN_MINUTES,
+    },
+  });
 }
 
 /**

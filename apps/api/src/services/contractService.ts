@@ -1,3 +1,4 @@
+import { isAutopayEnabledForPartner } from './autopay/autopayGate';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { assertInTransaction, db } from '../db';
 import {
@@ -352,6 +353,7 @@ export async function createContract(input: {
 
 export async function getContract(contractId: string, actor: ContractActor) {
   const contract = await getOwnedContractOr404(contractId, actor);
+  const autopayEnabled = await isAutopayEnabledForPartner(db, contract.partnerId);
   // #3205 W03: (sortOrder, createdAt, id). sortOrder alone is not a total order
   // — addContractLineToContract defaults it to 0, so everything created through
   // the editor ties — and Postgres was free to reshuffle the table on any edit.
@@ -370,7 +372,7 @@ export async function getContract(contractId: string, actor: ContractActor) {
     ? lines.length !== allLines.length
     : undefined;
   if (linesFilteredBySiteScope === true) {
-    return { contract, lines: await withLineRefs(lines), periods: null, linesFilteredBySiteScope };
+    return { autopayEnabled, contract, lines: await withLineRefs(lines), periods: null, linesFilteredBySiteScope };
   }
   // #3205 W07: one LEFT JOIN supplies the per-period outcome summary for the
   // detail table. JSON digests remain exclusive to the expanded outcome read.
@@ -396,6 +398,7 @@ export async function getContract(contractId: string, actor: ContractActor) {
     .where(eq(contractBillingPeriods.contractId, contractId))
     .orderBy(desc(contractBillingPeriods.periodStart));
   return {
+    autopayEnabled,
     contract,
     lines: await withLineRefs(lines),
     periods: periods as typeof periods | null,
@@ -1124,6 +1127,7 @@ export async function updateContract(contractId: string, patch: UpdateContractIn
   // nextBillingAt, or currencyCode from caller input. Status transitions belong
   // to dedicated lifecycle functions.
   const safeSet: Record<string, unknown> = { updatedAt: new Date() };
+  if (patch.autopayExcluded !== undefined) safeSet.autopayExcluded = patch.autopayExcluded;
   if (patch.name !== undefined)           safeSet.name           = patch.name;
   // Schedule fields are draft-only (guarded above).
   if (c.status === 'draft' && patch.billingTiming !== undefined)  safeSet.billingTiming  = patch.billingTiming;
@@ -1150,11 +1154,13 @@ export async function updateContract(contractId: string, patch: UpdateContractIn
   return getOwnedContractOr404(contractId, actor);
 }
 
-export async function deleteDraftContract(contractId: string, actor: ContractActor) {
+/** Returns the deleted contract's id, org and name so the caller can audit the delete. */
+export async function deleteDraftContract(contractId: string, actor: ContractActor): Promise<{ id: string; orgId: string; name: string }> {
   const c = await getOwnedContractOr404(contractId, actor);
   await requireWholeContractSiteAccess(actor, contractId);
   assertDraft(c);
   await db.delete(contracts).where(eq(contracts.id, contractId)); // lines cascade
+  return { id: c.id, orgId: c.orgId, name: c.name };
 }
 
 // ---------------------------------------------------------------------------

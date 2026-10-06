@@ -60,7 +60,15 @@ const ALLOWED_TAG_NAMES = new Set([
   'org_id',
   'partner_id',
   'stripe_reconcile_stage',
-  // SEC-150: which phase of Checkout-session revocation produced the alert —
+  // Autopay failures: local row UUIDs and bounded enum/phase labels only.
+  'billing_notice_id',
+  'billing_notice_kind',
+  'autopay_method_id',
+  'autopay_phase',
+  'attempt_id',
+  'schedule_id',
+  'return_identity',
+  // Which phase of Checkout-session revocation produced the alert —
   // 'request' (intent/sibling request), 'expire' (the sweep's provider call),
   // 'blocked' (terminal-unrepaired) or 'charged_repair' (the session was paid
   // after we asked for it to die). A closed four-value set of string literals
@@ -312,7 +320,7 @@ const ALLOWED_TAG_NAMES = new Set([
   // thousand. Cardinality is bounded in practice by the throttle: at most one
   // event per outage.
   'llm_egress_dropped',
-  // SEC-142/143: WHICH reservation TTL the expiry sweep fired on. A closed
+  // WHICH AI budget reservation TTL the expiry sweep fired on. A closed
   // two-literal union produced by the sweep's own arithmetic (`active_ttl` /
   // `indeterminate_ttl`) — no org, reservation or amount can reach it; those go
   // only to the console lines, which are not scrubbed. Allowlisted because

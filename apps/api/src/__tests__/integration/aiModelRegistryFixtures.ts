@@ -24,7 +24,7 @@ export function orgContext(orgId: string, partnerId: string): DbAccessContext {
   return { scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], currentPartnerId: partnerId, userId: null };
 }
 
-export function keySpec(table: 'partner_llm_configs' | 'partner_ai_connections'): EncryptedColumnSpec {
+export function keySpec(table: 'partner_ai_connections'): EncryptedColumnSpec {
   const found = encryptedColumnRegistry.find((s) => s.table === table && s.column === 'api_key_encrypted');
   if (!found) throw new Error(`${table}.api_key_encrypted is not registered`);
   return found;
@@ -48,6 +48,22 @@ export async function seedPlatformModel(modelId = `w02-test-${randomUUID()}`): P
   return String(row!.id);
 }
 
+/**
+ * A priced, offered platform model, optionally the platform default (W08 #7606).
+ * Clears any other default first (partial unique index ai_platform_models_one_default_uq);
+ * a suite that sets a default restores the previous one itself.
+ */
+export async function seedPricedPlatformModel(input: { modelId?: string; isPlatformDefault?: boolean } = {}): Promise<{ id: string; modelId: string }> {
+  const modelId = input.modelId ?? `w08-model-${randomUUID()}`;
+  if (input.isPlatformDefault) await fixtureSql`UPDATE ai_platform_models SET is_platform_default = false WHERE is_platform_default`;
+  const [row] = await fixtureSql`
+    INSERT INTO ai_platform_models (provider, model_id, display_name, platform_offered, is_platform_default, lifecycle,
+                                    input_cents_per_m, output_cents_per_m, cache_read_cents_per_m, cache_write_cents_per_m)
+    VALUES ('anthropic', ${modelId}, ${modelId}, true, ${input.isPlatformDefault ?? false}, 'available', 300, 1500, 30, 375)
+    RETURNING id`;
+  return { id: String(row!.id), modelId };
+}
+
 export async function seedOffering(input: {
   partnerId: string;
   connectionId?: string | null;
@@ -65,11 +81,15 @@ export async function seedOffering(input: {
   return String(row!.id);
 }
 
-/** Seeds a live ai_agents row (kind 'triage') owned by a partner OR an org. */
-export async function seedAgent(input: { partnerId?: string; orgId?: string; createdBy: string; model?: string | null }): Promise<string> {
+/**
+ * Seeds a live ai_agents row (kind 'triage') owned by a partner OR an org. No
+ * `model`: the policy model string was retired in W08 (#7606) and W08b drops
+ * the column, so a raw INSERT naming it would break after the drop.
+ */
+export async function seedAgent(input: { partnerId?: string; orgId?: string; createdBy: string }): Promise<string> {
   const [row] = await fixtureSql`
-    INSERT INTO ai_agents (partner_id, org_id, kind, name, created_by, model)
-    VALUES (${input.partnerId ?? null}, ${input.orgId ?? null}, 'triage', 'W02 fixture', ${input.createdBy}, ${input.model ?? null})
+    INSERT INTO ai_agents (partner_id, org_id, kind, name, created_by)
+    VALUES (${input.partnerId ?? null}, ${input.orgId ?? null}, 'triage', 'W02 fixture', ${input.createdBy})
     RETURNING id`;
   return String(row!.id);
 }

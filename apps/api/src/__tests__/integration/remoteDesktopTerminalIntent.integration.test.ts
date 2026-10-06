@@ -1,5 +1,5 @@
 /**
- * SEC-038 W03 (#5534) — the terminal-intent contract, against real Postgres.
+ * #5534 — the terminal-intent contract, against real Postgres.
  *
  * Every entry point that moves a `remote_sessions` row to a terminal status
  * must go through `terminalIntentSet` so it bumps the SAME generation every
@@ -620,7 +620,7 @@ const WRITERS: WriterCase[] = [
   },
 ];
 
-describe('SEC-038 W03 — one terminal-intent contract for every terminal writer', () => {
+describe('one terminal-intent contract for every terminal writer', () => {
   beforeEach(() => {
     dispatchCommandToAgentMock.mockClear();
     sendCommandToAgentMock.mockClear();

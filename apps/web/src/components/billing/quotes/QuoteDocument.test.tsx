@@ -104,15 +104,15 @@ describe('QuoteDocument', () => {
   it('renders the resolved customer billing address and tax id in the Prepared for block', () => {
     const detail = makeDetail({
       billTo: {
-        name: 'Animal Health at Home',
-        address: { line1: '123 Vet Way', line2: 'Suite 4', city: 'Berthoud', region: 'CO', postalCode: '80513', country: 'US' },
+        name: 'Paws at Home Vet',
+        address: { line1: '123 Vet Way', line2: 'Suite 4', city: 'Springfield', region: 'CO', postalCode: '80000', country: 'US' },
         taxId: '84-1234567',
       },
     });
-    render(<QuoteDocument detail={detail} customerName="Animal Health at Home" />);
+    render(<QuoteDocument detail={detail} customerName="Paws at Home Vet" />);
     const addr = screen.getByTestId('quote-document-billto-address');
     expect(addr).toHaveTextContent('123 Vet Way');
-    expect(addr).toHaveTextContent('Berthoud, CO, 80513');
+    expect(addr).toHaveTextContent('Springfield, CO, 80000');
     expect(screen.getByTestId('quote-document-billto-taxid')).toHaveTextContent('84-1234567');
   });
 

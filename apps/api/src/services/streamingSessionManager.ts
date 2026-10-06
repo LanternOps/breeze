@@ -27,6 +27,7 @@ import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
 import type { PendingRunResult } from './workspace/chatRunBridge';
 import { AsyncEventQueue } from '../utils/asyncQueue';
 import { prepareSdkChild, sdkModelOptions } from './aiModels/connectionFactory';
+import { takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
 import { catalogEndpointOf } from './aiModels/sdkChildEnv';
 import {
   newSdkTurnObservation,
@@ -60,6 +61,7 @@ import { DEFAULT_APPROVAL_WAIT_BUDGET_MS, loadApprovalWaitBudgetMs } from './aiA
 import { resolveTenantTools, type TenantToolDescriptor } from './toolSources/resolver';
 import { buildTenantSdkTools, tenantMcpToolNames } from './toolSources/sdkBridge';
 import { isSdkBuiltinToolUse, resolveToolSearchPolicy } from './aiToolSearchPolicy';
+import { noteStreamedToolUse, resetToolUseCorrelationMarkers, takeDroppedToolUse } from './aiToolUseCorrelation';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -523,7 +525,13 @@ export interface ActiveSession {
   mcpServer: McpSdkServerConfigWithInstance;
   /** MCP tool name prefix for stripping in SSE events (e.g. 'mcp__breeze__' or 'mcp__script_builder__') */
   mcpPrefix: string;
-  /** FIFO queue of toolUseIds from content_block_start for postToolUse correlation */
+  /**
+   * Tool calls whose content_block_start was seen and whose result has not
+   * been recorded yet, in stream order. Managed only through
+   * `aiToolUseCorrelation.ts` (#7931): results pair by the SDK's own
+   * tool_use id, never by position. An id still here when the SDK echoes its
+   * tool_result is a call our handler never ran (#3094 dropped-call fallback).
+   */
   toolUseIdQueue: string[];
   /**
    * Per-turn usage accumulated from the SDK's `assistant` messages (one per
@@ -542,14 +550,27 @@ export interface ActiveSession {
    */
   pendingTurnToolExecutionCount: number;
   /**
-   * tool_use id → bare tool name, recorded at content_block_start alongside
-   * toolUseIdQueue. Consumed by postToolUse on the normal path, or by the
-   * dropped-call fallback in the background processor's 'user' case when the
-   * SDK rejected the call before our MCP handler ever ran (issue #3094).
+   * tool_use id → bare tool name for each pending call in toolUseIdQueue.
+   * Removed when the call's result is recorded, or used by the dropped-call
+   * fallback in the background processor's 'user' case when the SDK rejected
+   * the call before our MCP handler ever ran (issue #3094). Also lets a result
+   * that arrives without an SDK id pair by tool name (#7931).
    * Optional so existing fixtures that build ActiveSession literals compile
    * unchanged; the fallback degrades to 'unknown_tool' without it.
    */
   toolUseNames?: Map<string, string>;
+  /**
+   * #7931: ids whose result was recorded BEFORE the processor reached their
+   * content_block_start. That stream event then skips the pending queue, so
+   * the call can never be mistaken for a dropped one. Cleared at turn end.
+   */
+  resultedToolUseIds?: Set<string>;
+  /**
+   * #7931 fallback for a result recorded with no SDK id and no pending
+   * same-name call: per tool name, how many such results are waiting for
+   * their content_block_start. Same purpose as `resultedToolUseIds`.
+   */
+  resultedWithoutIdByName?: Map<string, number>;
   /** Promise that resolves when background processor finishes */
   readonly processorPromise: Promise<void>;
   /** Timer for per-turn timeout; cleared when 'result' arrives */
@@ -1103,6 +1124,8 @@ export class StreamingSessionManager {
       pendingTurnUsage: emptyPendingTurnUsage(),
       pendingTurnToolExecutionCount: 0,
       toolUseNames: new Map(),
+      resultedToolUseIds: new Set(),
+      resultedWithoutIdByName: new Map(),
       processorPromise: Promise.resolve(),
       turnTimeoutId: null,
       approvalWaitDeadline: null,
@@ -1440,13 +1463,21 @@ export class StreamingSessionManager {
           // handlers and closes the SDK query. The next message rebuilds the
           // session from its row.
           session.topologyTurnSealed = true;
+          // A topology turn never shows gateway text; drop the note so a rebuilt session can't surface it later.
+          takeGatewayFailureNote(session.breezeSessionId);
           session.eventBus.publish({ type: 'error', message: 'AI request timed out. Please try again.' });
           session.eventBus.publish({ type: 'done' });
           this.remove(session.breezeSessionId);
           return;
         }
         this.stopThinking(session);
-        session.eventBus.publish({ type: 'error', message: 'AI request timed out. Please try again.' });
+        // #7794: a model-gateway failure behind the timeout (the CLI keeps
+        // retrying it) is the actionable part; say it.
+        const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
+        session.eventBus.publish({
+          type: 'error',
+          message: gatewayNote ? `AI request timed out. ${gatewayNote}` : 'AI request timed out. Please try again.',
+        });
         session.eventBus.publish({ type: 'done' });
         session.state = 'idle';
       }
@@ -1640,17 +1671,15 @@ export class StreamingSessionManager {
               ) {
                 const block = event.content_block;
 
-                // Track toolUseId for postToolUse correlation.
-                // content_block_start fires before the tool executes;
-                // postToolUse shifts the queue after execution.
-                session.toolUseIdQueue.push(block.id);
                 const bareStreamToolName = block.name.startsWith(session.mcpPrefix)
                   ? block.name.slice(session.mcpPrefix.length)
                   : block.name;
-                // Name lookup for the dropped-call fallback (#3094): if the
-                // SDK rejects this call before the MCP handler runs, the
-                // orphaned tool_result only carries the id, not the name.
-                session.toolUseNames?.set(block.id, bareStreamToolName);
+                // Register the call as pending so the dropped-call fallback
+                // (#3094) can recognise it if the SDK rejects it before our
+                // MCP handler runs. The handler usually finishes AFTER this
+                // event, but not always (#7931): if its result was already
+                // recorded, the call is not registered at all.
+                noteStreamedToolUse(session, block.id, bareStreamToolName);
 
                 // Topology M4: a fixed phase, never the model's tool name/arguments.
                 session.eventBus.publish(session.topologyInvestigation
@@ -1799,15 +1828,15 @@ export class StreamingSessionManager {
             // dispatch (e.g. a -32602 input-schema validation failure), the
             // model is fed an error tool_result while preToolUse/postToolUse
             // never fire — historically leaving NO ai_messages row, NO SSE
-            // event, and a stale toolUseIdQueue entry that misattributes every
-            // subsequent result (issue #3094: a set_device_context call with a
+            // event (issue #3094: a set_device_context call with a
             // parenthesized details value vanished from the transcript while
             // the model saw a validation error and silently retried). Detect
             // exactly those orphans — a tool_result whose tool_use id is still
-            // queued; postToolUse shifts the queue before the MCP call
-            // returns, so normally-executed calls never match here, and
-            // replayed history predates this process's queue — and record an
-            // explicit error result instead of silence.
+            // pending. A call that ran recorded its result, keyed by its own
+            // id, before the MCP call returned, so it is never pending here
+            // whichever of its stream event and its result came first
+            // (#7931); replayed history predates this process's state. Record
+            // an explicit error result instead of silence.
             const userContent = (message as SDKUserMessage).message?.content;
             if (Array.isArray(userContent)) {
               for (const block of userContent) {
@@ -1830,6 +1859,8 @@ export class StreamingSessionManager {
             this.clearTurnTimeout(session);
             // W05: a turn that ends mid-thought still closes the indicator.
             this.stopThinking(session);
+            // #7931: every stream event of the turn has been seen by now.
+            resetToolUseCorrelationMarkers(session);
             // The binding/display this turn ran under (read before anything
             // awaits; nothing can re-bind them while the turn is processing).
             const turnBinding = session.turnBinding;
@@ -1841,6 +1872,10 @@ export class StreamingSessionManager {
             }
 
             const resultMsg = message as SDKResultMessage;
+            // #7794: the model gateway's reason for this turn's failure, if it
+            // had one. Always taken here, so a note from a retry that later
+            // recovered never surfaces on a later turn.
+            const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
             // #3095: use the session's canonical org id (from the aiSessions DB
             // row — always set), NOT `auth.orgId`, which is null for partner-
             // and system-scoped users. The old guard on `auth.orgId` silently
@@ -1866,8 +1901,13 @@ export class StreamingSessionManager {
               } else if (resultMsg.subtype === 'error_max_turns') {
                 session.eventBus.publish({ type: 'error', message: 'Maximum conversation turns reached.' });
               } else {
-                session.eventBus.publish({ type: 'error', message: sanitizeErrorForClient(new Error(errorMsg ?? 'Unknown error')) });
+                session.eventBus.publish({ type: 'error', message: gatewayNote ?? sanitizeErrorForClient(new Error(errorMsg ?? 'Unknown error')) });
               }
+            } else if (gatewayNote && !topologyTurn && (resultMsg as { is_error?: unknown }).is_error === true) {
+              // The CLI gave up on the upstream after its own retries and
+              // reports that as a "success" flagged is_error: without this the
+              // technician sees an empty turn with no error (#7794).
+              session.eventBus.publish({ type: 'error', message: gatewayNote });
             }
 
             // W03: ONE cost, from the registry rate bound to this turn, over the
@@ -1919,9 +1959,10 @@ export class StreamingSessionManager {
       // this the only topology transport).
       const topologyTurn = Boolean(session.topologyInvestigation);
       await this.abortTopologyTurn(session);
+      const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
       session.eventBus.publish({
         type: 'error',
-        message: topologyTurn ? 'The topology explanation could not be completed.' : sanitizeErrorForClient(err),
+        message: topologyTurn ? 'The topology explanation could not be completed.' : gatewayNote ?? sanitizeErrorForClient(err),
       });
       session.eventBus.publish({ type: 'done' });
     } finally {
@@ -1972,22 +2013,6 @@ export class StreamingSessionManager {
     }
   }
 
-  /**
-   * Persist + emit an explicit error tool_result for a tool call the SDK
-   * rejected BEFORE our MCP handler ran (issue #3094).
-   *
-   * Detection contract: a tool_result block inside an SDK 'user' message whose
-   * tool_use id is STILL in session.toolUseIdQueue was never seen by
-   * createSessionPostToolUse (which shifts the queue synchronously before the
-   * MCP call returns). For those calls nothing else will ever write the
-   * transcript row or resolve the UI tool card, so this fallback:
-   *  - removes the stale queue entry (it would misattribute every subsequent
-   *    tool_result to the wrong toolUseId),
-   *  - emits the SSE tool_result event (UI card resolves with the error),
-   *  - persists the ai_messages tool_result row (transcript/audit review sees
-   *    an explicit failure instead of a vanished call),
-   *  - flags the session (parity with postToolUse's tool-failure auto-flag).
-   */
   /**
    * Bill one Agent SDK turn through the single billing path (W03 Task 7) and
    * return the numbers every other consumer reports. `result` null = the turn
@@ -2196,17 +2221,32 @@ export class StreamingSessionManager {
     session.eventBus.publish({ type: 'model_refusal', category, alternatives, docsUrl: REFUSAL_DOCS_URL });
   }
 
+  /**
+   * Persist + emit an explicit error tool_result for a tool call the SDK
+   * rejected BEFORE our MCP handler ran (issue #3094).
+   *
+   * Detection contract: a tool_result block inside an SDK 'user' message whose
+   * tool_use id is STILL pending (aiToolUseCorrelation.ts) was never recorded
+   * by our handler. A handler records its result under the call's own id
+   * before the MCP call returns, and a result that beats its content_block_start
+   * stops that call from ever becoming pending (#7931). For a pending call
+   * nothing else will ever write the transcript row or resolve the UI tool
+   * card, so this fallback:
+   *  - removes the pending entry,
+   *  - emits the SSE tool_result event (UI card resolves with the error),
+   *  - persists the ai_messages tool_result row (transcript/audit review sees
+   *    an explicit failure instead of a vanished call),
+   *  - flags the session (parity with postToolUse's tool-failure auto-flag).
+   */
   private async recordDroppedToolResult(
     session: ActiveSession,
     block: { tool_use_id?: string; content?: unknown; is_error?: boolean },
   ): Promise<void> {
     const toolUseId = block.tool_use_id;
     if (!toolUseId) return;
-    const queueIdx = session.toolUseIdQueue.indexOf(toolUseId);
-    if (queueIdx === -1) return; // handled by postToolUse, or replayed history
-    session.toolUseIdQueue.splice(queueIdx, 1);
-    const toolName = session.toolUseNames?.get(toolUseId) ?? 'unknown_tool';
-    session.toolUseNames?.delete(toolUseId);
+    const dropped = takeDroppedToolUse(session, toolUseId);
+    if (!dropped) return; // result recorded by our handler, or replayed history
+    const { toolName } = dropped;
 
     const rawText = Array.isArray(block.content)
       ? (block.content as Array<{ type?: string; text?: string }>)

@@ -13,6 +13,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const registered = new Map<string, { handler: (input: Record<string, unknown>, auth: unknown) => Promise<string> }>();
 
 vi.mock('../db', () => ({
+  // These handlers run as under the per-call transaction: `inToolDbPhase`
+  // (#7918) joins it rather than opening a context of its own.
+  hasDbAccessContext: vi.fn(() => true),
   runOutsideDbContext: vi.fn(async (fn) => fn()),
   withDbAccessContext: vi.fn(async (_context, fn) => fn()),
   db: {

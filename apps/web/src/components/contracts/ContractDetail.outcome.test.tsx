@@ -19,7 +19,9 @@ vi.mock('../../lib/api/contracts', async (importOriginal) => {
 });
 
 const detail: ContractDetailData = {
+  autopayEnabled: false,
   contract: {
+    autopayExcluded: false,
     id: 'c1', partnerId: 'partner-1', orgId: 'o1', name: 'Managed services', status: 'active',
     billingTiming: 'arrears', intervalMonths: 1, startDate: '2026-01-01', endDate: null,
     nextBillingAt: '2026-09-01', autoIssue: false, autoRenew: false, renewalTermMonths: null,

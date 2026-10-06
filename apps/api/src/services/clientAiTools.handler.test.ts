@@ -187,6 +187,19 @@ describe('makeClientToolHandler — success path', () => {
     const usedId = requestToolMock.mock.calls[0]![1] as string;
     expect(usedId).toMatch(/^[0-9a-f-]{36}$/);
   });
+
+  it('uses the SDK tool_use id from extra._meta, not the queue head (#7931)', async () => {
+    // Another call is pending ahead of this one: positional pairing would have
+    // handed this call toolu_other.
+    const { session } = makeSession({ queue: ['toolu_other'] });
+    requestToolMock.mockResolvedValue({ status: 'success', output: { ok: true } });
+    const handler = makeClientToolHandler('excel', 'read_selection', () => session);
+    await handler({}, { _meta: { 'claudecode/toolUseId': 'toolu_sdk_own' } });
+    expect(requestToolMock.mock.calls[0]![1]).toBe('toolu_sdk_own');
+    expect(messagesValuesMock).toHaveBeenCalledWith(expect.objectContaining({ toolUseId: 'toolu_sdk_own' }));
+    // The other call is still pending for its own result / the dropped-call fallback.
+    expect(session.toolUseIdQueue).toEqual(['toolu_other']);
+  });
 });
 
 describe('makeClientToolHandler — DLP block on tool output', () => {

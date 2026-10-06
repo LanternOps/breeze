@@ -41,6 +41,7 @@ const resp = (payload: unknown, ok = true): Response =>
   ({ ok, status: ok ? 200 : 500, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
 const contract = {
+  autopayExcluded: false,
   id: 'ct-1', partnerId: 'p1', orgId: 'org-1', name: 'Acme MSA', status: 'draft', billingTiming: 'advance',
   intervalMonths: 1, startDate: '2026-06-01', endDate: null, nextBillingAt: null, autoIssue: false, autoRenew: false,
   renewalTermMonths: null, renewalNoticeDays: null, currencyCode: 'USD', notes: null, terms: null,
@@ -64,7 +65,7 @@ describe('ContractEditor — per_device_role (#3205)', () => {
   // Edit mode = a `detail` prop ({ contract, lines, periods }), exactly as
   // ContractEditor.autosave.test.tsx renders it.
   function renderEdit(lines: unknown[] = []) {
-    return render(<ContractEditor detail={{ contract: contract as any, lines: lines as any, periods: [] }} onChanged={vi.fn()} />);
+    return render(<ContractEditor detail={{ autopayEnabled: false, contract: contract as any, lines: lines as any, periods: [] }} onChanged={vi.fn()} />);
   }
 
   it('shows the role picker only for per_device_role and clears it when the type changes', async () => {

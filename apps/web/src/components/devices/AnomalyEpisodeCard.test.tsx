@@ -6,7 +6,11 @@ import { useOrgStore } from '../../stores/orgStore';
 import type { MetricAnomalyEpisodeDto } from '@breeze/shared';
 
 const showToast = vi.fn();
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn(),
+  useAuthStore: (select: (state: { user: { canManagePartnerWide: boolean } }) => unknown) => select({ user: { canManagePartnerWide: true } }),
+}));
 vi.mock('../shared/Toast', () => ({ showToast: (input: unknown) => showToast(input) }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);

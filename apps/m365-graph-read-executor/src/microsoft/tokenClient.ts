@@ -1,4 +1,8 @@
-import { createClientAssertion } from './clientAssertion';
+import {
+  createClientAssertion,
+  tokenEndpointForAuthority,
+  type MicrosoftAuthority,
+} from './clientAssertion';
 
 const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const CLIENT_ASSERTION_TYPE = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
@@ -27,11 +31,17 @@ export class MicrosoftTokenClientError extends Error {
 }
 
 export interface MicrosoftTokenClient {
+  /**
+   * Redeems a v2 authorization code at `authority` (a tenant GUID, or
+   * `organizations` for identity-first sign-in). The client assertion audience
+   * is that same authority's token endpoint.
+   */
   exchangeAuthorizationCode(input: {
-    tenantId: string;
+    authority: MicrosoftAuthority;
     code: string;
     codeVerifier: string;
   }): Promise<OpaqueIdentityToken>;
+  /** Client-credentials token. Tenant GUID only: never `organizations`. */
   acquireGraphAppToken(input: { tenantId: string }): Promise<OpaqueAccessToken>;
 }
 
@@ -52,9 +62,12 @@ function failure(code: MicrosoftTokenClientErrorCode): MicrosoftTokenClientError
   return new MicrosoftTokenClientError(code);
 }
 
-function tenantTokenEndpoint(tenantId: string): string {
-  if (!CANONICAL_UUID.test(tenantId)) throw failure('token_request_invalid');
-  return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+function authorityTokenEndpoint(authority: MicrosoftAuthority): string {
+  try {
+    return tokenEndpointForAuthority(authority);
+  } catch {
+    throw failure('token_request_invalid');
+  }
 }
 
 function required(value: string): string {
@@ -125,8 +138,11 @@ export function createMicrosoftTokenClient(
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxResponseBytes = config.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
 
-  async function request(tenantId: string, body: URLSearchParams): Promise<Record<string, unknown>> {
-    const endpoint = tenantTokenEndpoint(tenantId);
+  async function request(
+    authority: MicrosoftAuthority,
+    body: URLSearchParams,
+  ): Promise<Record<string, unknown>> {
+    const endpoint = authorityTokenEndpoint(authority);
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw failure('token_request_invalid');
     if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes <= 0) {
       throw failure('token_request_invalid');
@@ -159,11 +175,11 @@ export function createMicrosoftTokenClient(
     }
   }
 
-  async function assertion(tenantId: string): Promise<string> {
+  async function assertion(authority: MicrosoftAuthority): Promise<string> {
     try {
       return await createClientAssertion({
         clientId: config.clientId,
-        tenantId,
+        authority,
         certificatePem: config.certificatePem,
         privateKeyPem: config.privateKeyPem,
       });
@@ -181,9 +197,9 @@ export function createMicrosoftTokenClient(
         code_verifier: required(input.codeVerifier),
         redirect_uri: config.callbackUrl,
         client_assertion_type: CLIENT_ASSERTION_TYPE,
-        client_assertion: await assertion(input.tenantId),
+        client_assertion: await assertion(input.authority),
       });
-      const response = await request(input.tenantId, body);
+      const response = await request(input.authority, body);
       if (typeof response.id_token !== 'string' || !response.id_token) {
         throw failure('token_response_invalid');
       }
@@ -191,6 +207,9 @@ export function createMicrosoftTokenClient(
     },
 
     async acquireGraphAppToken(input) {
+      // Application tokens are only ever minted for one concrete tenant; the
+      // `organizations` authority is reserved for identity-code redemption.
+      if (!CANONICAL_UUID.test(input.tenantId)) throw failure('token_request_invalid');
       const body = new URLSearchParams({
         client_id: config.clientId,
         grant_type: 'client_credentials',

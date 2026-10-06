@@ -16,10 +16,12 @@ import { adminMonitorConversionRoutes } from './monitorConversion';
 import { adminSendingDomainsRoutes } from './sendingDomains';
 import { deprecationsAdminRoutes } from './deprecations';
 import { systemConnectionsAdminRoutes } from './systemConnections';
+import { adminAutopayRolloutRoutes } from './autopayRollout';
 
 export const adminRoutes = new Hono();
 
 adminRoutes.use('*', platformAdminMiddleware);
+adminRoutes.route('/', adminAutopayRolloutRoutes);
 adminRoutes.route('/', abuseRoutes);
 adminRoutes.route('/', trustAdminRoutes);
 adminRoutes.route('/', trustActionAdminRoutes);

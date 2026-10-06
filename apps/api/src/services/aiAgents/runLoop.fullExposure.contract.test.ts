@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { declaredFullRunToolExposure, fullRunToolExposure } from './runLoop';
 import { createBreezeMcpServer, listChatSurfaceToolNames } from '../aiAgentSdkTools';
 import type { AuthContext } from '../../middleware/auth';
+import { AGENT_DENIED_READ_TOOLS, isNeverAgentTool } from '../aiGuardrails';
 
 const noAuth = (): AuthContext => {
   throw new Error('contract test must not invoke tool handlers');
@@ -53,5 +54,25 @@ describe('full-run exposure vs declared SDK tools (#7427)', () => {
     if (undeclared.length === 0) return;
     expect(() => createBreezeMcpServer(noAuth, undefined, undefined, undefined, [], { onlyTools: new Set(floor) }))
       .toThrow(/onlyTools referenced unknown tool name/);
+  });
+
+  // #7447 — exposure must never offer a tool the agent guardrail refuses by
+  // NAME (`isNeverAgentTool`: blocked / secret-bearing / human-only /
+  // agent-denied-read). The guardrail uses that same predicate, so the two
+  // cannot drift.
+  describe('exposure vs agent guardrail refusals (#7447)', () => {
+    for (const allowlist of allowlists) {
+      it(`offers no tool the agent guardrail always refuses (allowlist ${JSON.stringify(allowlist)})`, () => {
+        const refused = fullRunToolExposure(allowlist).filter((name) => isNeverAgentTool(name));
+        expect(refused).toEqual([]);
+        expect(declaredFullRunToolExposure(allowlist).filter((name) => isNeverAgentTool(name))).toEqual([]);
+      });
+    }
+
+    it('control: every AGENT_DENIED_READ_TOOLS name is a registry tool, so the check above is not vacuous', () => {
+      const registry = new Set(listChatSurfaceToolNames());
+      const present = [...AGENT_DENIED_READ_TOOLS.keys()].filter((name) => registry.has(name));
+      expect(present.length).toBeGreaterThan(0);
+    });
   });
 });

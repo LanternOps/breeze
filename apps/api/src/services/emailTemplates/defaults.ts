@@ -11,7 +11,18 @@ const PREHEADER_BY_ID: Record<EmailTemplateId, string> = {
   ticket_resolved: 'Your ticket has been resolved.',
   quote_send: 'A proposal is ready for review.',
   invoice_send: 'An invoice is ready to view.',
+  invoice_autopay: 'Your invoice and the date it will be paid automatically.',
   portal_invite: 'Set your password to access your support portal.',
+  autopay_request: 'Save a card or bank account once, and future invoices are paid on schedule.',
+  autopay_enrolled: "Here's what happens next.",
+  autopay_stopped: 'Future automatic payments have stopped.',
+  autopay_paused: 'Automatic payments will wait until your service provider resumes them.',
+  autopay_resumed: 'Automatic payments apply to future eligible invoices.',
+  card_expiring: 'Update your saved payment method.',
+  payment_reminder: 'A payment is coming due.',
+  payment_overdue: 'An invoice payment is overdue.',
+  payment_receipt: 'Your payment receipt.',
+  payment_failed: 'Your payment needs your attention.',
 };
 
 const FOOTER_BY_ID: Record<EmailTemplateId, string | undefined> = {
@@ -20,7 +31,18 @@ const FOOTER_BY_ID: Record<EmailTemplateId, string | undefined> = {
   ticket_resolved: undefined,
   quote_send: undefined,
   invoice_send: undefined,
+  invoice_autopay: 'Keep this notice for your records.',
   portal_invite: undefined,
+  autopay_request: undefined,
+  autopay_enrolled: undefined,
+  autopay_stopped: undefined,
+  autopay_paused: undefined,
+  autopay_resumed: undefined,
+  card_expiring: undefined,
+  payment_reminder: undefined,
+  payment_overdue: undefined,
+  payment_receipt: undefined,
+  payment_failed: undefined,
 };
 
 function tidyDefaultCopy(value: string): string {
@@ -31,18 +53,18 @@ function tidyDefaultCopy(value: string): string {
     .trim();
 }
 
-export function defaultHeading(id: EmailTemplateId, vars: Record<string, string> = {}): string {
+export function defaultHeading(id: EmailTemplateId, vars: Record<string, string> = {}, variant?: string): string {
   if (id === 'portal_invite' && !vars.org_name?.trim()) {
     return 'Join your support portal';
   }
   if (id === 'quote_send' && !vars.quote_title?.trim()) {
     return 'Proposal {{quote_number}}';
   }
-  return emailTemplateFieldDefaults(id).heading;
+  return emailTemplateFieldDefaults(id, variant).heading;
 }
 
-export function defaultButtonLabel(id: EmailTemplateId): string {
-  return emailTemplateFieldDefaults(id).buttonLabel;
+export function defaultButtonLabel(id: EmailTemplateId, variant?: string): string {
+  return emailTemplateFieldDefaults(id, variant).buttonLabel;
 }
 
 export function defaultPreheader(id: EmailTemplateId): string {
@@ -61,8 +83,8 @@ function omitEmptySoloParagraphs(html: string, vars: Record<string, string>): st
   });
 }
 
-export function defaultHtml(id: EmailTemplateId, vars: Record<string, string> = {}): string {
-  let html = emailTemplateFieldDefaults(id).html;
+export function defaultHtml(id: EmailTemplateId, vars: Record<string, string> = {}, variant?: string): string {
+  let html = emailTemplateFieldDefaults(id, variant).html;
   if ((id === 'invoice_send' || id === 'quote_send') && vars.pdf_attached === '0') {
     html = html.replace(' A PDF copy is attached to this email.', '');
     html = html.replace(' A PDF copy is attached.', '');
@@ -90,7 +112,7 @@ export function defaultHtml(id: EmailTemplateId, vars: Record<string, string> = 
 
 export function defaultSubject(
   id: EmailTemplateId,
-  ctx: { internalNumber?: string | null; ticketSubject?: string; vars?: Record<string, string> },
+  ctx: { internalNumber?: string | null; ticketSubject?: string; vars?: Record<string, string>; variant?: string },
 ): string {
   const vars = { ...(ctx.vars ?? {}) };
   const ticketSubject = ctx.ticketSubject ?? vars.ticket_subject ?? '';
@@ -105,7 +127,7 @@ export function defaultSubject(
   }
   const subjectTemplate = id === 'quote_send' && !vars.quote_title?.trim()
     ? 'Proposal {{quote_number}} from {{partner_name}}'
-    : emailTemplateFieldDefaults(id).subject;
+    : emailTemplateFieldDefaults(id, ctx.variant).subject;
   // Same newline strip as the custom-subject path: free-text vars (a quote
   // title) must not carry a line break into a header value.
   return tidyDefaultCopy(renderTemplate(subjectTemplate, {

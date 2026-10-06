@@ -1,7 +1,12 @@
+import { paymentIntentDescription } from './autopay/paymentDescription';
+import { getTableColumns } from 'drizzle-orm';
+import { prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave, withPaymentDescription } from './autopay/payAndSave';
+import { assertNoActiveCollection, holdsClientMoney, lockInvoiceForCollection } from './autopay/reservation';
+import type { Tx } from './autopay/types';
 import { and, eq } from 'drizzle-orm';
 import { computeChargeNow, buildStripeCurrencyWarning, type StripeCurrencyWarning } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { invoices, invoiceStripePayments, stripeConnectAccounts } from '../db/schema';
+import { invoices, invoiceStripePayments, partners, stripeConnectAccounts } from '../db/schema';
 import { getPartnerStripeClient, PartnerStripeError } from './partnerStripe';
 import { toMinorUnits } from './stripeMoney';
 import { mapStripeCheckoutError } from './stripeCheckoutErrors';
@@ -9,9 +14,10 @@ import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { requireOrgAccess, requireSiteAccess } from './invoiceService';
 import { assertNoPendingRevocation, markSessionRevocationRequestedInTx } from './stripeSessionRevocation';
 import { portalBase } from './portalUrl';
+import { assertNoHeldDbContextForStripe } from './stripeSettle';
 
 /**
- * Provider-side expiry for a new Checkout session (SEC-150, defence in depth).
+ * Provider-side expiry for a new Checkout session (defence in depth).
  *
  * Stripe expires an unclaimed session after 24h anyway; asking for it EXPLICITLY
  * means the bound is recorded on our side (`provider_expires_at`) and survives a
@@ -36,6 +42,21 @@ export function checkoutSessionExpiry(now: Date = new Date()): { expiresAt: numb
 // Statuses whose balance can be collected online. Mirrors the customer-portal
 // PAYABLE set (routes/portal/invoices.ts) — drafts/paid/void are excluded.
 const PAYABLE = new Set(['sent', 'partially_paid', 'overdue']);
+
+/** Internal publication gate shared by the portal and partner Checkout producers.
+ * Caller must keep this transaction open through mapping and revocation intent.
+ */
+export async function checkCheckoutPublicationInTx(
+  tx: Tx, inv: Pick<typeof invoices.$inferSelect, 'id' | 'currencyCode'>, chargeMinor: number,
+): Promise<{ racedCollection: boolean; racedBalance: boolean }> {
+  const collection = await lockInvoiceForCollection(tx, inv.id);
+  return {
+    racedCollection: collection.reservedAmount !== '0.00',
+    racedBalance: !PAYABLE.has(collection.invoice.status)
+      || collection.invoice.currencyCode !== inv.currencyCode
+      || toMinorUnits(computeChargeNow({ depositDue: collection.invoice.depositDue, amountPaid: collection.invoice.amountPaid, balance: collection.invoice.balance }, collection.invoice.currencyCode).amount, collection.invoice.currencyCode) !== chargeMinor,
+  };
+}
 
 /**
  * Partner-initiated "Send payment link": open a Stripe Checkout session on the
@@ -69,21 +90,35 @@ export interface InvoiceCheckoutUrls {
    *  replay outright, so each URL shape needs its own key family. Omitted for
    *  the historical portal/MSP path to keep its keys byte-identical. */
   idempotencySuffix?: string;
+  saveForAutopay?: boolean;
+  consentAccepted?: true;
+  disclosureHash?: string;
+  ip?: string | null;
+  userAgent?: string | null;
 }
 
 export async function createInvoicePayLink(
   invoiceId: string, actor: InvoiceActor, urls: InvoiceCheckoutUrls = {},
 ): Promise<{ url: string; warning?: StripeCurrencyWarning }> {
   const [inv] = await withSystemDbAccessContext(() =>
-    db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1)
+    db.select({ ...getTableColumns(invoices), partnerName: partners.name }).from(invoices)
+      .leftJoin(partners, eq(partners.id, invoices.partnerId)).where(eq(invoices.id, invoiceId)).limit(1)
   );
   if (!inv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   requireOrgAccess(actor, inv.orgId);
   // Site-axis guard: a site-restricted caller must not mint a pay link for an
   // out-of-site invoice. No-op for unrestricted (partner/system/portal) actors.
   requireSiteAccess(actor, inv.siteId);
+  await withSystemDbAccessContext(async () => {
+    await assertNoActiveCollection(db, inv.id);
+    // Card Pay starts a new payment: refuse it while Stripe holds money captured for this
+    // invoice that could not be applied, as the bank and pay-and-save offers do (B1-2).
+    if (await holdsClientMoney(db, inv.id)) {
+      throw new InvoiceServiceError('A payment for this invoice was received and is being reviewed', 409, 'COLLECTION_IN_PROGRESS');
+    }
+  });
   if (!PAYABLE.has(inv.status)) throw new InvoiceServiceError('Invoice is not payable', 409, 'NOT_PAYABLE');
-  // SEC-150 producer gate. Once a transition has recorded revocation intent for
+  // Producer gate. Once a transition has recorded revocation intent for
   // this invoice, minting another session would re-open the very window the
   // intent exists to close — and the new session would not be covered by the
   // in-flight revocation. Refuse until the sweep has settled the old ones.
@@ -99,6 +134,9 @@ export async function createInvoicePayLink(
   // Currency-aware minor units (zero-decimal currencies must not be ×100).
   const chargeMinor = toMinorUnits(chargeNow.amount, inv.currencyCode);
   if (chargeMinor <= 0) throw new InvoiceServiceError('Nothing to pay', 409, 'NOTHING_TO_PAY');
+  const { expiresAt, quantum } = checkoutSessionExpiry();
+  const capture = await prepareCardPayAndSave(inv.id, inv.orgId, urls,
+    `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${urls.idempotencySuffix ?? ''}_e${quantum}`);
 
   // The partner charges on their OWN Stripe account using their stored key (no
   // platform/Connect). stripe_connect_accounts is a partner-axis table (reused by
@@ -128,10 +166,11 @@ export async function createInvoicePayLink(
   // longer hand-appended below).
   const portalBaseUrl = portalBase();
 
-  const { expiresAt, quantum } = checkoutSessionExpiry();
 
   // Truly outside any DB context/transaction — no pooled connection is held
   // across this ~hundreds-of-ms round trip.
+  // Check before escaping ALS: runOutsideDbContext cannot release a caller's transaction.
+  assertNoHeldDbContextForStripe('createInvoicePayLink');
   let session;
   try {
     session = await runOutsideDbContext(() => stripe.checkout.sessions.create({
@@ -142,7 +181,9 @@ export async function createInvoicePayLink(
     // asynchronously. Adding a delayed method here (bank debit / transfer)
     // requires changing that mapping first. Mirror: routes/portal/invoices.ts.
     payment_method_types: ['card'],
-    // SEC-150 defence in depth: an explicit provider-side death clock, so an
+    // FP-20: the PaymentIntent names the invoice and MSP, as autopay ones do.
+    ...withPaymentDescription(cardSaveStripeFields(capture), paymentIntentDescription(inv.invoiceNumber, inv.partnerName)),
+    // Defence in depth: an explicit provider-side death clock, so an
     // unrevoked session cannot outlive the day even if every local control fails.
     expires_at: expiresAt,
     line_items: [{
@@ -163,6 +204,7 @@ export async function createInvoicePayLink(
     success_url: urls.successUrl ?? `${portalBaseUrl}/invoices/${inv.id}?paid=1&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: urls.cancelUrl ?? `${portalBaseUrl}/invoices/${inv.id}`,
     metadata: {
+      ...(capture ? { autopay_setup_attempt_id: capture.id } : {}),
       invoice_id: inv.id,
       org_id: inv.orgId,
       partner_id: inv.partnerId,
@@ -177,11 +219,13 @@ export async function createInvoicePayLink(
     // 50%-deposit invoice has the SAME chargeMinor for the deposit and the later
     // balance charge (different product name but equal amount), so the amount
     // alone can't disambiguate — the explicit dep/bal discriminator does.
-    // `_e<quantum>` (SEC-150): `expires_at` is part of the request, and Stripe
+    // `_e<quantum>`: `expires_at` is part of the request, and Stripe
     // refuses an idempotent replay whose parameters moved. Folding the hour
     // quantum into the key keeps the replay identical within the hour instead of
     // erroring across one.
-    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${urls.idempotencySuffix ?? ''}_e${quantum}`,
+    // `_pd`: the request now carries a PaymentIntent description; a new key family keeps an
+    // in-hour replay of a pre-description request from failing as a parameter mismatch.
+    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${urls.idempotencySuffix ?? ''}${capture ? `_save_${capture.id}` : ''}_e${quantum}_pd`,
   }));
   } catch (err) {
     // Friendly mapping (spec §10): a currency the account cannot present becomes a
@@ -196,7 +240,10 @@ export async function createInvoicePayLink(
   // Fresh short context so the pending-mapping write isn't a contextless 0-row
   // no-op under forced-RLS breeze_app (#1375).
   let raced = false;
+  let racedCollection = false;
+  let racedBalance = false;
   await withSystemDbAccessContext(async () => {
+    ({ racedCollection, racedBalance } = await checkCheckoutPublicationInTx(db, inv, chargeMinor));
     // Serialize the final mapping insert against account replacement. If the
     // key changed during the external Checkout call, never return an orphaned
     // payment URL whose future reversals cannot be observed.
@@ -209,7 +256,7 @@ export async function createInvoicePayLink(
     if (!currentConnection) {
       throw new InvoiceServiceError('Stripe connection changed while creating the payment link — please retry', 409, 'STRIPE_NOT_CONNECTED');
     }
-    // SEC-150: did a reset/void/pay record revocation intent WHILE the Stripe
+    // Did a reset/void/pay record revocation intent WHILE the Stripe
     // round-trip was in flight? Read it here, but never refuse before the
     // mapping is written — a session that exists on Stripe with no mapping row
     // is an orphan no revocation can ever find, which is strictly worse than
@@ -222,8 +269,8 @@ export async function createInvoicePayLink(
         eq(invoiceStripePayments.stripeObjectType, 'checkout_session'),
         eq(invoiceStripePayments.revocationState, 'revocation_requested'),
       )).limit(1);
-    raced = racedRevocation !== undefined;
-    await db.insert(invoiceStripePayments).values({
+    raced = racedRevocation !== undefined || racedCollection || racedBalance;
+    const [insertedMapping]=await db.insert(invoiceStripePayments).values({
       orgId: inv.orgId,
       invoiceId: inv.id,
       stripeAccountId,
@@ -234,23 +281,31 @@ export async function createInvoicePayLink(
       currency: inv.currencyCode,
       status: 'pending',
       providerExpiresAt: session.expires_at ? new Date(session.expires_at * 1000) : new Date(expiresAt * 1000),
-    });
+    }).onConflictDoNothing({target:invoiceStripePayments.stripeObjectId}).returning({invoiceId:invoiceStripePayments.invoiceId});
+    if(!insertedMapping){
+      const [existingMapping]=await db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.stripeObjectId,session.id)).limit(1);
+      if(!existingMapping||existingMapping.invoiceId!==inv.id||existingMapping.stripeAccountId!==stripeAccountId)
+        throw new InvoiceServiceError('Checkout session belongs to a different invoice',409,'INVALID_STATE');
+    }
     if (raced) {
-      // Stamp intent on THIS transaction handle. Never `requestInvoiceSessionRevocation`
-      // here: it escapes the context and re-takes the invoice row FOR UPDATE, which
-      // self-deadlocks against the FOR KEY SHARE the INSERT above already holds
-      // whenever this runs inside a caller's request transaction (create_pay_link via
-      // the AI tools, the public invoice-link route). The sweep expires it within 60s.
+      // Stamp intent on THIS transaction handle. Escaping to a second transaction
+      // to re-take the invoice lock would deadlock against our publication lock.
+      // The sweep expires the session within 60s.
       await markSessionRevocationRequestedInTx(session.id, 'raced_revocation', actor.userId, db);
     }
   });
 
+  if (racedCollection) {
+    throw new InvoiceServiceError('A payment is already processing', 409, 'COLLECTION_IN_PROGRESS');
+  }
   if (raced) {
     throw new InvoiceServiceError(
       'A payment link for this invoice is still being revoked — try again in a moment.',
       409, 'STRIPE_REVOCATION_PENDING',
     );
   }
+
+  await bindCardPayAndSave(capture, session);
 
   // Warn-don't-block (spec §10): the session is ALWAYS minted in the document
   // currency; a differing account default is surfaced so the partner knows they

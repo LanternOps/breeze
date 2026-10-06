@@ -6,8 +6,8 @@
  * input price, cache write 0 — the env path never had cache prices).
  *
  * Runs at boot (detached, with a bounded retry schedule) and is idempotent:
- *  - per partner, ensurePartnerCutover FIRST (Codex review #4: the cutover
- *    rewrites assignments and must never run after this), then ONE system
+ *  - per partner, ensurePartnerCutover FIRST (Codex review #4: the gate's
+ *    bootstrap writes assignments and must never run after this), then ONE system
  *    transaction holding the partner registry lock (envOpenAiBootstrapStore),
  *    so concurrent replicas serialise per partner and the second sees the
  *    first's connection;
@@ -49,7 +49,7 @@ import { scrubSecrets } from './gateway/scrub';
 import { revokeGatewayConnectionGrants } from './gatewayConnectionState';
 import { updateGatewayConnectionLocked } from './gatewayConnections';
 import * as store from './envOpenAiBootstrapStore';
-import { ensurePartnerCutover, REGISTRY_CUTOVER_RETRY_DELAYS_MS } from './registryCutover';
+import { ensurePartnerCutover } from './registryCutover';
 import { safeErrorMessage } from './safeDbError';
 
 export const ENV_CONNECTION_NAME = 'Instance OpenAI-compatible endpoint';
@@ -260,6 +260,12 @@ export async function bootstrapEnvOpenAiConnections(opts: BootstrapEnvOpenAiOpti
 }
 
 /**
+ * Bounded retry schedule for the boot run (the schedule W03's cutover sweep
+ * used; the sweep itself was removed in W08 #7606).
+ */
+export const ENV_OPENAI_BOOTSTRAP_RETRY_DELAYS_MS: readonly number[] = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
+
+/**
  * Boot entrypoint (index.ts, detached): runs the bootstrap, then re-runs it
  * after each delay while it reports a failure — e.g. the endpoint's hostname
  * not resolving yet while its container starts. Idempotent, so a re-run only
@@ -270,7 +276,7 @@ export async function runEnvOpenAiBootstrapWithRetry(opts: {
   sleep?: (ms: number) => Promise<void>;
   bootstrap?: () => Promise<EnvBootstrapReport>;
 } = {}): Promise<EnvBootstrapReport | null> {
-  const delays = opts.retryDelaysMs ?? REGISTRY_CUTOVER_RETRY_DELAYS_MS;
+  const delays = opts.retryDelaysMs ?? ENV_OPENAI_BOOTSTRAP_RETRY_DELAYS_MS;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms).unref?.(); }));
   const bootstrap = opts.bootstrap ?? (() => bootstrapEnvOpenAiConnections());
   let last: EnvBootstrapReport | null = null;

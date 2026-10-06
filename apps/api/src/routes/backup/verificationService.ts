@@ -40,6 +40,7 @@ import {
   type CapturedRecoveryAuthorizationSubject,
 } from '../../services/recoveryAuthorizationSubject';
 import { isBackupHelperUpdateRequiredError } from '../../services/backupReadHelperGate';
+import { ATTESTATION_FAILED_VERIFICATION_REASON } from '../../services/backupAttestationFailureSettlement';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -220,6 +221,7 @@ function normalizeDbSnapshotRow(row: {
   fileCount: number | null;
   label: string | null;
   location: string | null;
+  integrityStatus?: string | null;
 }): BackupSnapshot {
   return {
     id: row.id,
@@ -232,6 +234,7 @@ function normalizeDbSnapshotRow(row: {
     fileCount: row.fileCount,
     label: row.label,
     location: row.location,
+    integrityStatus: row.integrityStatus ?? null,
   };
 }
 
@@ -712,6 +715,33 @@ async function runBackupVerificationInternal(
         ? message
         : `Backup destination configuration not found for backup job ${backupJob.id}`
     );
+  }
+
+  // A snapshot that failed its integrity check is never read again (delivery
+  // refuses every read of it). Record the verification as failed now, with
+  // that reason, instead of queueing a command that can only be refused.
+  if (snapshot?.integrityStatus === 'attestation_failed') {
+    const verification = addBackupVerification({
+      orgId: input.orgId,
+      deviceId: input.deviceId,
+      backupJobId: backupJob.id,
+      snapshotId,
+      verificationType: input.verificationType,
+      status: 'failed',
+      startedAt: now,
+      completedAt: new Date().toISOString(),
+      filesVerified: 0,
+      filesFailed: 0,
+      details: {
+        source: input.source,
+        requestedBy: input.requestedBy ?? null,
+        reason: ATTESTATION_FAILED_VERIFICATION_REASON,
+        failure: 'attestation_failed',
+      },
+    }, input.orgId);
+    await persistVerificationToDb(verification);
+    recordBackupDispatchFailure('backup_verification', 'attestation_failed');
+    return { verification, readiness: null };
   }
 
   const commandType = input.verificationType === 'integrity' ? 'backup_verify' : 'backup_test_restore';

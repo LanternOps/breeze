@@ -63,7 +63,15 @@ vi.mock('./wireParams', () => ({
   }),
 }));
 
-import { resolveModel } from './resolveModel';
+import { resolveModel, unavailableMessage } from './resolveModel';
+
+describe('unavailableMessage', () => {
+  it('#7793: tools_unsupported tells the admin what to do, not only what is wrong', () => {
+    const m = unavailableMessage('tools_unsupported');
+    expect(m).toMatch(/cannot use tools/);
+    expect(m).toMatch(/AI Providers & Models/);
+  });
+});
 
 const STD = { inputCentsPerM: 200, outputCentsPerM: 1000, cacheReadCentsPerM: 20, cacheWriteCentsPerM: 250 };
 const FAST = { inputCentsPerM: 400, outputCentsPerM: 2000, cacheReadCentsPerM: 40, cacheWriteCentsPerM: 500 };

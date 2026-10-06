@@ -42,6 +42,7 @@ const fetchMock = vi.fn((...args: unknown[]) => {
 vi.mock('../../stores/auth', () => ({
   registerOrgIdProvider: vi.fn(),
   fetchWithAuth: (...args: unknown[]) => fetchMock(...args),
+  useAuthStore: (sel: (s: { user: { canManagePartnerWide?: boolean } }) => unknown) => sel({ user: { canManagePartnerWide: true } }),
 }));
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: Object.assign(

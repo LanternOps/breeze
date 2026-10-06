@@ -26,7 +26,7 @@ const stripeMocks = vi.hoisted(() => ({
   // structurally unreachable. Per-test knob; default 'USD'.
   defaultCurrency: 'USD' as string | null,
   // createInvoicePayLink re-checks the durable stripe_connect_accounts row inside
-  // the mapping transaction (SEC-151): the account the mock reports must exist
+  // the mapping transaction: the account the mock reports must exist
   // for the seeded partner, and stripe_account_id is globally unique, so each
   // seeded partner gets its own id and the mock follows it.
   accountId: 'acct_test' as string,
@@ -145,7 +145,7 @@ describe.runIf(RUN)(gateLabel('G6', 'Stripe checkout + settlement on a non-USD o
       .mockResolvedValueOnce({ id: matchedSession, url: 'https://checkout.stripe.com/c/pay/wave6b', payment_intent: null });
 
     // --- checkout ---------------------------------------------------------
-    const res = await withSystemDbAccessContext(() => createInvoicePayLink(invoice.id, fixture.actor));
+    const res = await createInvoicePayLink(invoice.id, fixture.actor);
     expect(res.url).toBe('https://checkout.stripe.com/c/pay/wave6');
     expect(stripeMocks.sessionsCreate).toHaveBeenCalledTimes(1);
 
@@ -171,7 +171,7 @@ describe.runIf(RUN)(gateLabel('G6', 'Stripe checkout + settlement on a non-USD o
 
     // Same document, EUR-settling account → nothing to warn about.
     stripeMocks.defaultCurrency = 'EUR';
-    const matched = await withSystemDbAccessContext(() => createInvoicePayLink(invoice.id, fixture.actor));
+    const matched = await createInvoicePayLink(invoice.id, fixture.actor);
     expect(
       matched.warning,
       assertionMessage('createInvoicePayLink transition', 'EUR', 'warning',
@@ -236,7 +236,7 @@ describe.runIf(RUN)(gateLabel('G6', 'Stripe checkout + settlement on a non-USD o
     stripeMocks.sessionsCreate.mockResolvedValue({
       id: jpySession, url: 'https://checkout.stripe.com/c/pay/wave6jpy', payment_intent: null,
     });
-    await withSystemDbAccessContext(() => createInvoicePayLink(invoice.id, fixture.actor));
+    await createInvoicePayLink(invoice.id, fixture.actor);
     const priceData = stripeMocks.sessionsCreate.mock.calls[0]![0].line_items[0].price_data;
     expect(
       priceData.currency,
@@ -290,7 +290,7 @@ describe.runIf(RUN)(gateLabel('G6', 'Stripe checkout + settlement on a non-USD o
     stripeMocks.sessionsCreate.mockResolvedValue({
       id: mismatchSession, url: 'https://checkout.stripe.com/c/pay/wave6mm', payment_intent: null,
     });
-    await withSystemDbAccessContext(() => createInvoicePayLink(invoice.id, fixture.actor));
+    await createInvoicePayLink(invoice.id, fixture.actor);
 
     const res = await recordStripePayment({
       stripeObjectId: mismatchSession,

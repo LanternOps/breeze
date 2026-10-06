@@ -260,6 +260,7 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
   });
 
   aiTools.set('manage_quotes', {
+    selfManagedDbContext: ['create_pay_link'],
     tier: 2 as AiToolTier,
     deviceArgs: [],
     domain: 'billing',

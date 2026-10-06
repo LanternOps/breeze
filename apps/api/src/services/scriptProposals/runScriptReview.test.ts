@@ -121,14 +121,14 @@ vi.mock('../sentry', () => ({ captureException: shared.captureExceptionMock }));
 vi.mock('./proposals', () => ({ transitionProposal: shared.transitionProposalMock }));
 // W04 (#5612): the effective lane policy is read by its own module (its two
 // SELECTs would otherwise consume this file's queued select rows). The
-// reviewer only reads `reviewerModel` (null ⇒ platform default) and the
-// advisory `maxUnattendedRiskTier` ceiling from it.
+// reviewer only reads the advisory `maxUnattendedRiskTier` ceiling from it
+// (its model is the `script_reviewer` assignment).
 vi.mock('./policy', () => ({
   resolveEffectiveScriptPolicy: vi.fn(async () => ({
     proposingEnabled: true, unattendedEnabled: false, maxUnattendedRiskTier: 'low',
     unattendedAllowedClasses: [], maxUnattendedPerHour: 10,
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
-    reviewerModel: null, source: { partnerRowId: null, orgRowId: null },
+    source: { partnerRowId: null, orgRowId: null },
   })),
 }));
 

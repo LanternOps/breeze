@@ -144,10 +144,8 @@ describe('run', () => {
     return { execute } as unknown as WorkspaceDatabase;
   }
 
-  it('records the model the host served, not an env-derived label', async () => {
-    const prev = process.env.WORKSPACE_CONTENT_LLM_MODEL;
-    process.env.WORKSPACE_CONTENT_LLM_MODEL = 'env-label-that-must-not-be-recorded';
-    try {
+  it('records the model the host served', async () => {
+    {
       const pending = [{ id: 'f1', rel_path: 'a.md', extracted_text: 'text a' }];
       const db = fakeDb(pending);
       const invoke: EnrichmentInvoke = vi.fn(async () => ({ text: GOOD, model: 'claude-served-model' }));
@@ -159,11 +157,7 @@ describe('run', () => {
       expect(inserts).toHaveLength(1);
       const params = (inserts[0] as { queryChunks: unknown[] }).queryChunks.filter((c) => typeof c === 'string');
       expect(params).toContain('claude-served-model');
-      expect(params).not.toContain('env-label-that-must-not-be-recorded');
       expect(params).not.toContain('claude-haiku-4-5');
-    } finally {
-      if (prev === undefined) delete process.env.WORKSPACE_CONTENT_LLM_MODEL;
-      else process.env.WORKSPACE_CONTENT_LLM_MODEL = prev;
     }
   });
 
@@ -225,7 +219,7 @@ describe('run', () => {
    *
    * Before this split, every ExtensionAiError became a TransientIngestError:
    * an org that had simply switched AI off, a partner on a plan without AI, or
-   * a deployment with a typo'd WORKSPACE_CONTENT_LLM_MODEL burned all
+   * a deployment with a misconfigured model burned all
    * `max_attempts`, failed the ingest job, and a fresh job repeated it forever
    * — so indexing and crosswalk never finished either. The classification now
    * comes from the HOST (`ExtensionAiError.permanent`), which is the only side

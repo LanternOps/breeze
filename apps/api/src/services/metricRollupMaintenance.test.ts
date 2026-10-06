@@ -47,10 +47,11 @@ function installDb(options: {
   lockAcquired?: boolean;
   ensure?: (month: string) => string | null;
   failOn?: (text: string, params: unknown[]) => Error | null;
-  defaultDeletes?: number[];
+  /** What the drain probe sees: a pending drain table, and the default's months. */
+  drain?: { pending?: boolean; months?: string[]; created?: string[]; batches?: Array<[number | null, number, number]> };
 } = {}) {
   const calls: Array<{ text: string; params: unknown[] }> = [];
-  const defaultDeletes = [...(options.defaultDeletes ?? [])];
+  const batches = [...(options.drain?.batches ?? [[null, 0, 0]])];
   executeMock.mockImplementation(async (statement: unknown) => {
     const { text, params } = render(statement);
     calls.push({ text, params });
@@ -73,7 +74,15 @@ function installDb(options: {
     if (text.includes('breeze_prepare_metric_rollup_compaction') || text.includes('breeze_compact_metric_rollup_partition')) {
       return [{ partitionName: `metric_rollups_y${String(params[0]).slice(0, 4)}m${String(params[0]).slice(5, 7)}` }];
     }
-    if (text.includes('DELETE FROM metric_rollups_default')) return { rowCount: defaultDeletes.shift() ?? 0 };
+    if (text.includes('breeze_metric_rollup_default_drain_exists')) {
+      return [{ pending: options.drain?.pending ?? false, months: options.drain?.months ?? [] }];
+    }
+    if (text.includes('breeze_swap_metric_rollup_default')) return [{ created: options.drain?.created ?? [] }];
+    if (text.includes('breeze_drain_metric_rollup_default_batch')) {
+      const [nextPage, moved, discarded] = batches.shift() ?? [null, 0, 0];
+      return [{ nextPage, moved: String(moved), discarded: String(discarded) }];
+    }
+    if (text.includes('breeze_finish_metric_rollup_default_drain')) return [{ dropped: true }];
     throw new Error(`unexpected statement: ${text}`);
   });
   return calls;
@@ -228,11 +237,9 @@ describe('metric rollup maintenance service', () => {
         ['2026-05-01 00:00:00', 300],
         ['2024-12-01 00:00:00', 3600],
       ]);
-      // Retention on months is partition-level only; the only DELETE left is
-      // the default partition sweep.
-      for (const call of calls.filter((c) => c.text.includes('DELETE'))) {
-        expect(call.text).toContain('DELETE FROM metric_rollups_default');
-      }
+      // Retention is partition-level only: no row DELETE anywhere, not even
+      // against metric_rollups_default (#7541 drains it instead).
+      expect(calls.filter((c) => /\bDELETE\b/.test(c.text))).toEqual([]);
     });
 
     it('runs every step in its own labeled system context with a bounded lock wait and the run lock', async () => {
@@ -249,12 +256,10 @@ describe('metric rollup maintenance service', () => {
       await runMetricRollupMaintenance({ now: NOW });
 
       expect(contextLabels).toEqual([
+        'metricRollupMaintenance.drainProbe',
         'metricRollupMaintenance.ensure',
         'metricRollupMaintenance.list',
         'metricRollupMaintenance.dropBucket',
-        'metricRollupMaintenance.pruneDefault',
-        'metricRollupMaintenance.pruneDefault',
-        'metricRollupMaintenance.pruneDefault',
       ]);
       const texts = executeMock.mock.calls.map((call) => render(call[0]).text);
       expect(texts.filter((t) => t.includes("set_config('lock_timeout'"))).toHaveLength(contextLabels.length);
@@ -316,14 +321,157 @@ describe('metric rollup maintenance service', () => {
       expect(result.droppedBucketPartitions).toEqual(['metric_rollups_y2026m05_5m']);
     });
 
-    it('sweeps the default partition in batches until it is drained, with no per-run cap', async () => {
-      installDb({ months: [], defaultDeletes: [100, 100, 100, 7] });
+    it('drains a non-empty default before ensure: swap, page batches until done, then finish (#7541)', async () => {
+      const calls = installDb({
+        months: [],
+        drain: {
+          months: ['2019-07-01 00:00:00', '2026-10-01 00:00:00'],
+          created: ['metric_rollups_y2026m10'],
+          batches: [
+            [4, 10, 2],
+            [8, 5, 0],
+            [null, 1, 3],
+          ],
+        },
+      });
 
-      const result = await runMetricRollupMaintenance({ now: NOW, deleteBatchSize: 100 });
+      const result = await runMetricRollupMaintenance({ now: NOW, defaultDrainPagesPerBatch: 4 });
 
-      // 300s tier: 100+100+100+7 (stops on the short batch); 3600s/86400s: 0.
-      expect(result.defaultPartitionRowsDeleted).toBe(307);
       expect(result.failures).toEqual([]);
+      expect(result.defaultPartitionDrain).toEqual({
+        blockedMonths: ['metric_rollups_y2019m07', 'metric_rollups_y2026m10'],
+        resumed: false,
+        swapped: true,
+        monthsCreated: ['metric_rollups_y2026m10'],
+        rowsMoved: 16,
+        rowsDiscarded: 5,
+        completed: true,
+      });
+      expect(result.defaultPartitionRowsDeleted).toBe(5);
+      // The swap gets the probed months and the daily cutoff; it never scans.
+      const literal = (iso: string) => iso.slice(0, 19).replace('T', ' ');
+      const cut = {
+        fiveMinute: literal(result.cutoffs.fiveMinute),
+        hourly: literal(result.cutoffs.hourly),
+        daily: literal(result.cutoffs.daily),
+      };
+      expect(named(calls, 'breeze_swap_metric_rollup_default').map((c) => c.params)).toEqual([
+        ['{"2019-07-01 00:00:00","2026-10-01 00:00:00"}', cut.daily],
+      ]);
+      // Page ranges advance; every batch carries the three retention cutoffs.
+      expect(named(calls, 'breeze_drain_metric_rollup_default_batch').map((c) => c.params)).toEqual([
+        [0, 4, cut.fiveMinute, cut.hourly, cut.daily],
+        [4, 4, cut.fiveMinute, cut.hourly, cut.daily],
+        [8, 4, cut.fiveMinute, cut.hourly, cut.daily],
+      ]);
+      // Each drain step is its own short transaction, all before ensure.
+      expect(contextLabels.slice(0, 7)).toEqual([
+        'metricRollupMaintenance.drainProbe',
+        'metricRollupMaintenance.drainSwap',
+        'metricRollupMaintenance.drainBatch',
+        'metricRollupMaintenance.drainBatch',
+        'metricRollupMaintenance.drainBatch',
+        'metricRollupMaintenance.drainFinish',
+        'metricRollupMaintenance.ensure',
+      ]);
+    });
+
+    it('resumes a pending drain without swapping again', async () => {
+      const calls = installDb({ months: [], drain: { pending: true, months: [], batches: [[null, 3, 0]] } });
+
+      const result = await runMetricRollupMaintenance({ now: NOW });
+
+      expect(result.failures).toEqual([]);
+      expect(result.defaultPartitionDrain).toMatchObject({ resumed: true, swapped: false, rowsMoved: 3, completed: true });
+      expect(named(calls, 'breeze_swap_metric_rollup_default')).toHaveLength(0);
+      expect(named(calls, 'breeze_finish_metric_rollup_default_drain')).toHaveLength(1);
+    });
+
+    it('does nothing to the default when it is empty', async () => {
+      const calls = installDb({ months: [] });
+
+      const result = await runMetricRollupMaintenance({ now: NOW });
+
+      expect(result.defaultPartitionDrain).toMatchObject({ blockedMonths: [], swapped: false, completed: true });
+      expect(named(calls, 'breeze_swap_metric_rollup_default')).toHaveLength(0);
+      expect(named(calls, 'breeze_drain_metric_rollup_default_batch')).toHaveLength(0);
+      expect(named(calls, 'breeze_finish_metric_rollup_default_drain')).toHaveLength(0);
+    });
+
+    it('records a failed drain move, never finishes it, and still runs retention', async () => {
+      const calls = installDb({
+        months: [
+          {
+            partitionName: 'metric_rollups_y2026m05',
+            relkind: 'p',
+            leaves: ['metric_rollups_y2026m05_1d', 'metric_rollups_y2026m05_1h', 'metric_rollups_y2026m05_5m'],
+          },
+        ],
+        drain: { months: ['2026-10-01 00:00:00'] },
+        failOn: (text) =>
+          text.includes('breeze_drain_metric_rollup_default_batch') ? new Error('canceling statement due to lock timeout') : null,
+      });
+
+      const result = await runMetricRollupMaintenance({ now: NOW });
+
+      expect(result.failures).toEqual([
+        { step: 'drain-default-move', partition: 'metric_rollups_default', error: 'canceling statement due to lock timeout' },
+      ]);
+      expect(result.defaultPartitionDrain).toMatchObject({ swapped: true, completed: false });
+      expect(named(calls, 'breeze_finish_metric_rollup_default_drain')).toHaveLength(0);
+      expect(result.droppedBucketPartitions).toEqual(['metric_rollups_y2026m05_5m']);
+    });
+
+    it('records a failed swap, moves nothing, and still runs ensure and retention', async () => {
+      const calls = installDb({
+        months: [],
+        drain: { months: ['2026-10-01 00:00:00'] },
+        failOn: (text) =>
+          text.includes('breeze_swap_metric_rollup_default') ? new Error('canceling statement due to lock timeout') : null,
+      });
+
+      const result = await runMetricRollupMaintenance({ now: NOW });
+
+      expect(result.failures).toEqual([
+        { step: 'drain-default-swap', partition: 'metric_rollups_default', error: 'canceling statement due to lock timeout' },
+      ]);
+      expect(result.defaultPartitionDrain).toMatchObject({ swapped: false, completed: false, blockedMonths: ['metric_rollups_y2026m10'] });
+      expect(named(calls, 'breeze_drain_metric_rollup_default_batch')).toHaveLength(0);
+      expect(named(calls, 'breeze_ensure_metric_rollup_partition').length).toBeGreaterThan(0);
+    });
+
+    it('records a lock lost after the probe as a failure and never finishes the drain', async () => {
+      const calls = installDb({ months: [], drain: { months: ['2026-10-01 00:00:00'] } });
+      const base = executeMock.getMockImplementation()!;
+      let lockCalls = 0;
+      executeMock.mockImplementation(async (statement: unknown) => {
+        // Probe gets the lock; the swap step finds it held by another run.
+        if (render(statement).text.includes('pg_try_advisory_xact_lock') && ++lockCalls === 2) {
+          calls.push(render(statement));
+          return [{ acquired: false }];
+        }
+        return base(statement);
+      });
+
+      const result = await runMetricRollupMaintenance({ now: NOW });
+
+      expect(result.failures).toContainEqual({
+        step: 'drain-default-swap',
+        partition: 'metric_rollups_default',
+        error: 'maintenance lock held by another run',
+      });
+      expect(named(calls, 'breeze_swap_metric_rollup_default')).toHaveLength(0);
+      expect(named(calls, 'breeze_finish_metric_rollup_default_drain')).toHaveLength(0);
+    });
+
+    it('fails the drain rather than looping when a batch does not advance', async () => {
+      installDb({ months: [], drain: { months: ['2026-10-01 00:00:00'], batches: [[0, 0, 0]] } });
+
+      const result = await runMetricRollupMaintenance({ now: NOW });
+
+      expect(result.failures).toEqual([
+        { step: 'drain-default-move', partition: 'metric_rollups_default', error: 'drain batch did not advance past page 0' },
+      ]);
     });
 
     it('reports a month the default partition blocks as a failure, not a clean run', async () => {
@@ -372,6 +520,7 @@ describe('metric rollup maintenance service', () => {
         compactedPartitions: [],
       });
       expect(named(calls, 'breeze_ensure_metric_rollup_partition')).toHaveLength(0);
+      expect(named(calls, 'breeze_swap_metric_rollup_default')).toHaveLength(0);
     });
   });
 });

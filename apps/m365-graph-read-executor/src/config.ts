@@ -84,13 +84,22 @@ function privateBindAddress(value: string): boolean {
     // RFC1918, plus RFC 6598 shared space (100.64.0.0/10): Azure Container Apps
     // workload-profile replicas only get an address from its 100.100.0.0/17 overlay.
     // Neither range is internet-routable.
-    return first === 10
+    //
+    // Exactly 127.0.0.1 (and ::1 below) is also allowed: on Azure Container Apps
+    // the in-pod Envoy sidecar delivers both ingress and health probes to the app
+    // over loopback only, so a pod-IP bind never becomes healthy. Loopback is never
+    // reachable more broadly than the pod's private interface. Other 127/8
+    // addresses stay rejected.
+    return value === '127.0.0.1'
+      || first === 10
       || (first === 172 && second >= 16 && second <= 31)
       || (first === 192 && second === 168)
       || (first === 100 && second >= 64 && second <= 127);
   }
   if (version === 6) {
     const normalized = value.toLowerCase();
+    // Canonical IPv6 loopback only; not IPv4-mapped or expanded spellings.
+    if (normalized === '::1') return true;
     return !normalized.includes('%')
       && (normalized.startsWith('fc') || normalized.startsWith('fd'));
   }

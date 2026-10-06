@@ -294,8 +294,7 @@ export const DEFAULT_PERMISSIONS = [
     description: 'Create, update, and delete PAM rules, signer groups, and org config' },
 
   // Accounting / QuickBooks integration — dedicated capabilities, distinct
-  // from the partner-authority-only gate the routes previously carried
-  // (SEC-2026-09-05-057).
+  // from the partner-authority-only gate the routes previously carried.
   { resource: 'accounting', action: 'read',
     description: 'Read accounting provider status, customers, mappings, and income accounts' },
   { resource: 'accounting', action: 'manage',
@@ -445,7 +444,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       // devices:execute/devices:write above — an Org Technician holds those
       // for ordinary device work but must not thereby gain PAM authority.
       'pam:approve', 'pam:manage_policy',
-      // Accounting (SEC-2026-09-05-057): dedicated, NOT implied by partner
+      // Accounting: dedicated, NOT implied by partner
       // authority — a full-partner low-role member must not thereby reach the
       // shared QuickBooks realm.
       'accounting:read', 'accounting:manage',

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
-	"github.com/breeze-rmm/agent/internal/backup/layout"
 	"github.com/breeze-rmm/agent/internal/backup/rebuild"
 	"github.com/breeze-rmm/agent/internal/recoveryconsole"
 	"github.com/spf13/cobra"
@@ -165,9 +164,11 @@ func readRecoveryConsoleLockHolder(path string) (int, error) {
 
 // newRecoveryConsoleCommand wires the guided bare-metal recovery console
 // (agent/internal/recoveryconsole) to the CLI. It is what
-// breeze-recovery.service runs on the recovery media (W04b) — see
+// breeze-recovery.service runs on the Linux recovery media (W04b) — see
 // agent/recovery-media/config/includes.chroot/etc/systemd/system/
-// breeze-recovery.service.
+// breeze-recovery.service — and what breeze-recovery.cmd runs on the WinPE
+// media (W07a). Everything OS-specific comes from consoleHost
+// (recovery_console_host_{other,windows}.go).
 // recoveryBakedServerFile and recoveryBakedTrustPinFile are written into the
 // recovery media chroot at build time by agent/recovery-media/build.sh's
 // --server-url and --trust-pin flags (optional — empty/missing on a build
@@ -192,6 +193,17 @@ func readBakedRecoveryConfig(path string) string {
 	return strings.TrimSpace(string(raw))
 }
 
+// loadRecoveryMediaRoots installs the media's exported root store (see
+// bmr.LoadMediaRoots) when the host has one. An unreadable or malformed
+// store is fatal: there is no fallback to unverified TLS.
+func loadRecoveryMediaRoots(h consoleHost, errOut io.Writer) error {
+	if _, err := bmr.LoadMediaRoots(h.BakedRoots); err != nil {
+		_, _ = fmt.Fprintf(errOut, "recovery media root store is unreadable; rebuild the media (%v)\n", err)
+		return fmt.Errorf("recovery media root store is unreadable; rebuild the media: %w", err)
+	}
+	return nil
+}
+
 func newRecoveryConsoleCommand() *cobra.Command {
 	var server, cmdlinePath, trustPin string
 	var allowHost, unattended bool
@@ -209,11 +221,32 @@ func newRecoveryConsoleCommand() *cobra.Command {
 				return errors.New("--unattended is reserved and not supported in this release")
 			}
 
-			raw, _ := os.ReadFile(cmdlinePath)
+			h := newConsoleHost()
+			if h.HostCheck != nil {
+				if err := h.HostCheck(); err != nil {
+					return err
+				}
+			}
 
-			sys := rebuild.NewSystem()
-			if sys == nil {
-				return rebuild.ErrUnsupportedHost
+			// Load the media's own TLS roots (WinPE only; no-op when the host
+			// has none) before anything touches the network. Fail closed.
+			if err := loadRecoveryMediaRoots(h, cmd.ErrOrStderr()); err != nil {
+				return err
+			}
+
+			// An explicit --kernel-cmdline (tests, diagnostics) wins over
+			// the host's own cmdline source; unreadable reads as empty, as
+			// the flag always has.
+			var raw string
+			if cmdlinePath != "" {
+				b, _ := os.ReadFile(cmdlinePath)
+				raw = string(b)
+			} else if h.Cmdline != nil {
+				s, err := h.Cmdline()
+				if err != nil {
+					return err
+				}
+				raw = s
 			}
 
 			// --server (explicit flag) wins over a value baked into this
@@ -223,11 +256,11 @@ func newRecoveryConsoleCommand() *cobra.Command {
 			// (a labeled, confirm-only suggestion, never a silent trust).
 			effectiveServer := server
 			if effectiveServer == "" {
-				effectiveServer = readBakedRecoveryConfig(recoveryBakedServerFile)
+				effectiveServer = readBakedRecoveryConfig(h.BakedServer)
 			}
 			effectivePin := trustPin
 			if effectivePin == "" {
-				effectivePin = readBakedRecoveryConfig(recoveryBakedTrustPinFile)
+				effectivePin = readBakedRecoveryConfig(h.BakedTrustPin)
 			}
 			if effectivePin != "" {
 				bmr.SetExpectedServerCertPin(effectivePin)
@@ -235,28 +268,29 @@ func newRecoveryConsoleCommand() *cobra.Command {
 
 			c := &recoveryconsole.Console{
 				IO:            recoveryconsole.NewTerminalIO(os.Stdin, cmd.OutOrStdout()),
-				Cmdline:       string(raw),
+				Cmdline:       raw,
 				AllowHost:     allowHost,
 				DefaultServer: effectiveServer,
 				Deps: recoveryconsole.Deps{
 					Exchange: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
 						return bmr.ExchangeRecoveryCode(ctx, server, code, version)
 					},
-					Collect:      layout.Collect,
-					MediaSources: sys.RootSources,
+					Collect:      h.Collect,
+					MediaSources: h.MediaSources,
 					Rebuild:      rebuild.Run,
 					Provider:     bmr.NewRecoveryProvider,
 					WidenScope:   bmr.WidenScopeFromManifest,
 					Progress:     bmr.PostRecoveryProgress,
-					Shell:        runRecoveryShell,
-					AcquireLock: func(ctx context.Context) (func(), error) {
-						return acquireRecoveryConsoleLock(ctx, cmd.OutOrStdout())
-					},
-					Power: func(action string) error {
-						return exec.Command("systemctl", action).Run()
-					},
-					Version: version,
+					Shell:        h.Shell,
+					Power:        h.Power,
+					Version:      version,
 				},
+			}
+			if h.AcquireLock != nil {
+				acquire := h.AcquireLock
+				c.Deps.AcquireLock = func(ctx context.Context) (func(), error) {
+					return acquire(ctx, cmd.OutOrStdout())
+				}
 			}
 
 			ctx, stop := recoveryContext()
@@ -266,7 +300,7 @@ func newRecoveryConsoleCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&server, "server", "", "Breeze server URL (default: baked into this media at build time, else breeze.server= on the kernel cmdline as an unverified suggestion, else prompted)")
-	cmd.Flags().StringVar(&cmdlinePath, "kernel-cmdline", "/proc/cmdline", "kernel cmdline file (tests)")
+	cmd.Flags().StringVar(&cmdlinePath, "kernel-cmdline", "", "kernel cmdline file, overriding the media's own (tests; default: /proc/cmdline on Linux media, <exeDir>\\cmdline.txt on WinPE media)")
 	cmd.Flags().BoolVar(&allowHost, "allow-host", false, "run outside recovery media (development only)")
 	cmd.Flags().BoolVar(&unattended, "unattended", false, "reserved")
 	cmd.Flags().StringVar(&trustPin, "trust-pin", "", "expected base64 SHA-256 SPKI pin(s) of the recovery server's TLS certificate chain — comma-separated for a set; prefer pinning the issuing CA, not the leaf, so it survives certificate rotation (default: baked into this media at build time)")

@@ -965,7 +965,7 @@ vulnerabilityRoutes.post(
       try {
         const ticket = await createTicket(
           { orgId, subject: title, description, priority, source: 'manual' },
-          { userId: auth.user.id, name: auth.user.name, email: auth.user.email },
+          { kind: 'user', userId: auth.user.id, name: auth.user.name, email: auth.user.email },
         );
         await db
           .update(deviceVulnerabilities)

@@ -259,19 +259,6 @@ export function aiScriptAuthoringEnabled(): boolean {
   return envFlag('BREEZE_AI_SCRIPT_AUTHORING_ENABLED', true);
 }
 
-// DEPRECATED (#7601 W03): no longer read by the script reviewer at runtime —
-// its model is the `script_reviewer` assignment, resolved by resolveModel.
-// Kept ONLY as the input to the registry projection (legacyReconcile.ts /
-// parity oracle), which seeds that assignment for partners not yet cut over
-// and for partners bootstrapped afterwards; W08 removes it with the
-// projection. Unset ⇒ the platform default model (which itself honours
-// ANTHROPIC_MODEL for self-hosted gateways, #1412).
-/** The reviewer's platform default from an env (extracted for the #7600 parity oracle). */
-export function resolveReviewerDefaultModel(env: NodeJS.ProcessEnv = process.env): string {
-  return env.BREEZE_AI_SCRIPT_REVIEWER_MODEL?.trim() || resolveDefaultModel(env);
-}
-export const AI_SCRIPT_REVIEWER_MODEL = resolveReviewerDefaultModel();
-
 // AI Operator durable tasks (#5205 W06, spec §11.2 "Feature controls").
 //
 // Two INDEPENDENT flags, both default OFF, both read at CALL time so a test
@@ -963,7 +950,7 @@ export function mlFeatureGloballyDisabled(flag: string): boolean {
 export type StripeSessionRevocationMode = 'enforce' | 'observe';
 
 /**
- * Enforcement gate for fail-closed Checkout-session revocation (SEC-150).
+ * Enforcement gate for fail-closed Checkout-session revocation.
  *
  * `enforce` (default): a transition that could not prove every open Checkout
  * session for the invoice is non-payable is REFUSED (503

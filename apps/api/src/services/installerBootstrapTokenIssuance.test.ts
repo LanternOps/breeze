@@ -28,6 +28,7 @@ vi.mock('../services/enrollmentDefaults', () => ({
 
 import { db } from '../db';
 import { issueBootstrapTokenForKey } from './installerBootstrapTokenIssuance';
+import { hashBootstrapToken } from './installerBootstrapToken';
 
 function mockParent(overrides: Record<string, unknown> = {}) {
   const parent = {
@@ -92,6 +93,24 @@ describe('issueBootstrapTokenForKey', () => {
         parentCredentialGeneration: 7,
       }),
     );
+  });
+
+  it('stores only the keyed hash of the token, never the plaintext, and returns the raw token once', async () => {
+    mockParent();
+    const insertedValues = mockInsert();
+
+    const result = await issueBootstrapTokenForKey({
+      parentEnrollmentKeyId: 'parent-1',
+      createdByUserId: 'user-1',
+      usageKind: 'per_download',
+      installerPlatform: 'windows',
+    });
+
+    const values = insertedValues()!;
+    expect(result.token).toMatch(/^[A-Z0-9]{10}$/);
+    expect(values.tokenHash).toBe(hashBootstrapToken(result.token));
+    expect(values.token ?? null).toBeNull();
+    expect(JSON.stringify(values)).not.toContain(result.token);
   });
 
   it('honours ttlMinutes even when the parent expires sooner (#2775)', async () => {

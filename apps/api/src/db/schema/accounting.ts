@@ -32,6 +32,8 @@ export const accountingConnections = pgTable('accounting_connections', {
   // homeCurrency above (multi-currency §11).
   multiCurrencyEnabled: boolean('multi_currency_enabled'),
   defaultIncomeAccountRef: varchar('default_income_account_ref', { length: 64 }),
+  feeIncomeItemRef: varchar('fee_income_item_ref', { length: 64 }),
+  feeIncomeAccountRef: varchar('fee_income_account_ref', { length: 64 }),
   defaultTaxCodeRef: varchar('default_tax_code_ref', { length: 64 }),
   // Xero W02. Nullable, provider-neutral names; QuickBooks leaves them null.
   defaultExemptTaxCodeRef: varchar('default_exempt_tax_code_ref', { length: 64 }),
@@ -72,7 +74,7 @@ export const accountingConnections = pgTable('accounting_connections', {
   status: varchar('status', { length: 20 }).notNull().default('connected'),
   lastSyncAt: timestamp('last_sync_at', { withTimezone: true }),
   lastError: text('last_error'),
-  connectedBy: uuid('connected_by').references(() => users.id),
+  connectedBy: uuid('connected_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({

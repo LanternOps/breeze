@@ -1331,7 +1331,44 @@
       "invoice_number": "Invoice number",
       "due_date": "Due date",
       "invite_url": "Invite URL",
-      "cta_button": "Button"
+      "cta_button": "Button",
+      "client_name": "Client name",
+      "setup_link": "Automatic payments setup link",
+      "ach_mode_text": "Available payment methods",
+      "payment_method": "Saved payment method",
+      "schedule_text": "Payment schedule",
+      "fee_text": "Processing fee terms",
+      "stopped_by": "Who stopped automatic payments",
+      "open_invoices_text": "Open invoice summary",
+      "expires_on": "Card expiry date",
+      "update_link": "Payment method update link",
+      "amount_due": "Amount due",
+      "charge_date": "Charge date",
+      "fee_amount": "Processing fee",
+      "invoice_link": "Invoice link",
+      "amount_paid": "Amount paid",
+      "total_charged": "Total charged",
+      "paid_on": "Payment date",
+      "balance_remaining": "Remaining balance",
+      "failure_text": "Failure details",
+      "action_link": "Action link",
+      "action_label": "Action label",
+      "days_overdue": "Days overdue",
+      "pay_link": "Payment link",
+      "charge_total": "Total charge",
+      "attempted_amount": "Attempted payment amount"
+    },
+    "billingPayments": "Billing & payments",
+    "supportPortal": "Support & portal",
+    "labels": {
+      "autopay_request": "Automatic payments request",
+      "autopay_enrolled": "Automatic payments confirmed",
+      "autopay_stopped": "Automatic payments stopped",
+      "autopay_paused": "Automatic payments paused",
+      "autopay_resumed": "Automatic payments resumed",
+      "card_expiring": "Saved card expiring",
+      "payment_receipt": "Online payment receipt",
+      "payment_failed": "Payment could not be completed"
     }
   },
   "inboundEmail": {
@@ -2115,6 +2152,13 @@
     "failedToFetchReviewDetails": "Failed to fetch review details",
     "noReviewerEmailsAvailableForNotifications": "No reviewer emails available for notifications",
     "unableToLaunchEmailNotification": "Unable to launch email notification",
+    "reviewersEmailed": "Assigned reviewer notified by email",
+    "assignedReviewerEmailedOnly": "Assigned reviewer notified by email. Other selected reviewers were not emailed — a review stores one assigned reviewer.",
+    "fallbackToMailClient": "{{reason}} Opening your mail client instead.",
+    "fallbackEmailNotConfigured": "Email delivery isn't configured on this server.",
+    "fallbackNoReviewerEmail": "The assigned reviewer has no email address on file.",
+    "fallbackSendFailed": "The server couldn't send the email.",
+    "fallbackRequestFailed": "The notification request failed.",
     "failedToCreateAccessReview": "Failed to create access review",
     "failedToUpdateDecision": "Failed to update decision",
     "failedToFetchReviewForReport": "Failed to fetch review for report",
@@ -2129,7 +2173,12 @@
     "sending": "Sending...",
     "notifyReviewers": "Notify Reviewers",
     "completing": "Completing...",
-    "completeReview": "Complete Review"
+    "completeReview": "Complete Review",
+    "selfDecided": "Self-decided",
+    "selfDecidedHint": "Decided by the user it is about, because no other administrator could review it (single-admin exception).",
+    "ownItemBlocked": "You can't decide on your own access. Another administrator with user management rights must review this item.",
+    "ownItemBlockedShort": "Needs another reviewer",
+    "ownItemSelfDecisionWarning": "You are the only administrator who can review this, so you may decide your own access. It will be recorded as a self-decision."
   },
   "aiUsagePage": {
     "aIUsageBudget": "AI Usage",
@@ -2291,7 +2340,8 @@
       "triage": "Investigates new alerts and proposes what to do about them.",
       "patch": "Reviews missing patches and proposes what to install.",
       "helpdesk": "Picks up tickets and proposes replies and next steps.",
-      "designer": "Reads the whole fleet and writes a justified monitoring design for a technician to approve."
+      "designer": "Reads the whole fleet and writes a justified monitoring design for a technician to approve.",
+      "research": "Built in. Researches one problem on one device when a technician asks, and suggests safe fixes. It never runs anything."
     },
     "emptyState": {
       "title": "No agents yet",
@@ -2437,7 +2487,8 @@
       "triage": "Alert triage",
       "patch": "Patching",
       "helpdesk": "Help desk",
-      "designer": "Fleet designer"
+      "designer": "Fleet designer",
+      "research": "Fix research"
     },
     "modes": {
       "off": "Off",
@@ -3741,6 +3792,11 @@
           "blurb": "Reads the whole fleet and writes a justified monitoring design for a technician to approve.",
           "runsWhen": "you start a Fleet Design for an organization, or on a quarterly schedule",
           "recommended": "a clean-slate migration, or a quarterly configuration audit"
+        },
+        "research": {
+          "blurb": "Built in. Researches one problem on one device when a technician asks, and suggests safe fixes. It never runs anything.",
+          "runsWhen": "a technician asks for fix suggestions on a device problem",
+          "recommended": "automatic, read-only research on one problem at a time"
         }
       },
       "kindCard": {
@@ -3768,6 +3824,36 @@
       "title": "This agent only reads and writes reports",
       "body": "A Fleet Designer never executes anything on a device. On means it may run and deliver its designs to the recipients you choose.",
       "ack": "I understand this agent runs unattended and delivers Fleet Designs."
+    },
+    "research": {
+      "capsTitle": "Research limits",
+      "builtInNote": "Built in and suggestion-only: it never runs anything. You can switch it off and set its spending caps.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Concurrent research runs",
+          "hint": "How many research runs may be in flight at once."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Research runs per hour",
+          "hint": "Upper bound on all research runs started in an hour."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Automatic research runs per hour",
+          "hint": "Upper bound on research started automatically from high and critical alerts. 0 turns automatic research off."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Quick research budget (cents)",
+          "hint": "Spending cap for one quick research run."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Deep research budget (cents)",
+          "hint": "Spending cap for one deep research run."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Daily research spend (cents)",
+          "hint": "Total spending cap per day across all of this agent's runs."
+        }
+      }
     }
   },
   "apiKeyForm": {
@@ -4167,6 +4253,8 @@
     "lastUsed": "Last used",
     "actions": "Actions",
     "requestFailed": "Request failed ({{status}})",
+    "notEnabledTitle": "Connected apps are not enabled on this server",
+    "notEnabledBody": "MCP OAuth is disabled on this server. Set MCP_OAUTH_ENABLED=true and restart the API to allow connected apps.",
     "revokeConfirm": "Revoke access for {{name}}? Their access token will stop working within 10 minutes.",
     "revokeFailed": "Revoke failed ({{status}})",
     "networkError": "Network error",

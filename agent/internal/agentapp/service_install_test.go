@@ -169,9 +169,27 @@ func TestApplyLaunchdJobBootstrapsAnUnloadedJob(t *testing.T) {
 	if err != nil || !started {
 		t.Fatalf("applyLaunchdJob = (%v, %v), want (true, nil)", started, err)
 	}
-	want := "launchctl bootstrap system /Library/LaunchDaemons/com.breeze.agent.plist"
+	want := "launchctl enable system/com.breeze.agent | launchctl bootstrap system /Library/LaunchDaemons/com.breeze.agent.plist"
 	if r.sequence() != want {
 		t.Errorf("argv = %q, want %q", r.sequence(), want)
+	}
+}
+
+// TestApplyLaunchdJobEnableFailureDoesNotBlockBootstrap — self_uninstall
+// leaves the label disabled in launchd's override database (#2796), and a
+// disabled label refuses bootstrap with "Bootstrap failed: 5" (#7831), so the
+// install re-enables it first. That enable is best-effort: if it fails the
+// bootstrap still runs and reports launchd's own error.
+func TestApplyLaunchdJobEnableFailureDoesNotBlockBootstrap(t *testing.T) {
+	r := newRecordingRunner()
+	r.failOn["launchctl enable system/com.breeze.agent"] = "Could not enable service"
+	started, err := applyLaunchdJob(r.run, "com.breeze.agent", "/p.plist", false,
+		serviceStartPlan{Start: true, Reason: "test"})
+	if err != nil || !started {
+		t.Fatalf("applyLaunchdJob = (%v, %v), want (true, nil)", started, err)
+	}
+	if !strings.Contains(r.sequence(), "launchctl bootstrap system /p.plist") {
+		t.Errorf("bootstrap must still run after a failed enable, got %q", r.sequence())
 	}
 }
 

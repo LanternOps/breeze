@@ -264,7 +264,7 @@ describe('ticket_email_links org re-stamp on move (#4643)', () => {
     const f = await seedSamePartnerOrgsWithDeviceTicket();
     const link = await seedLink({ orgId: f.orgA.id, partnerId: f.partner.id, ticketId: f.ticketA.id });
 
-    await withSystemDbAccessContext(() => moveTicketOrg(f.ticketA.id, f.orgB.id, { userId: f.actor.id }));
+    await withSystemDbAccessContext(() => moveTicketOrg(f.ticketA.id, f.orgB.id, { kind: 'user' as const, userId: f.actor.id }));
 
     const [row] = (await getTestDb().execute(sql`
       SELECT org_id FROM ticket_email_links WHERE id = ${link}::uuid

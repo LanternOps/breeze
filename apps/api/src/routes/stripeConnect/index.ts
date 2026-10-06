@@ -64,6 +64,8 @@ stripeConnectRoutes.post(
         defaultCurrency: result.defaultCurrency,
         accountCountry: result.accountCountry,
         accountRefreshedAt: result.accountRefreshedAt.toISOString(),
+        autopayCapabilitiesCheckedAt: result.autopayCapabilitiesCheckedAt.toISOString(),
+        autopayMissingPermissions: result.autopayMissingPermissions,
         reconciliation: { state: 'pending', lastPolledAt: null, error: null },
       });
     } catch (err) {
@@ -91,7 +93,7 @@ stripeConnectRoutes.get(
     // `reconnect_required` = the stored key no longer works and the partner
     // must paste a new one — reported as such, never as "connected" (review F4).
     const snap = await getPartnerStripeAccountSnapshot(auth.partnerId);
-    // SEC-150: revocation health rides on the SAME response as the connection so
+    // Revocation health rides on the SAME response as the connection so
     // the card can tell the partner that some payment links could not be killed.
     // System context — invoice_stripe_payments is org-axis, and a partner token
     // reading it under its own scope would silently return zero rows (#1375).
@@ -148,6 +150,8 @@ stripeConnectRoutes.post(
         defaultCurrency: result.defaultCurrency,
         accountCountry: result.accountCountry,
         accountRefreshedAt: result.accountRefreshedAt.toISOString(),
+        autopayCapabilitiesCheckedAt: result.autopayCapabilitiesCheckedAt.toISOString(),
+        autopayMissingPermissions: result.autopayMissingPermissions,
         cacheState: 'fresh',
         stale: false,
         error: null,
@@ -169,7 +173,7 @@ stripeConnectRoutes.delete(
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
     if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
-    // SEC-150: the actor is recorded on the revocation intent the disconnect
+    // The actor is recorded on the revocation intent the disconnect
     // stamps, so a stuck session can be traced to who pulled the integration.
     await disconnectPartnerStripe(auth.partnerId, auth.user?.id ?? null);
     writeRouteAudit(c, {

@@ -76,6 +76,9 @@ const FOLLOWS_PARENT_NOTES: Readonly<Record<string, string>> = {
   psa_ticket_mappings: 'connection/alert/device-keyed',
   deployment_results: 'deployment-keyed',
   report_runs: 'parent-keyed (reports)',
+  // No org_id column: keyed by review_id / role_id / user_id, all of which
+  // keep their ids through a merge (roles and users are repointed in place).
+  access_review_items: 'review/role/user-keyed',
 };
 const FOLLOWS_PARENT_OWN_ORG_ID_EXCEPTIONS = new Set(['software_deployments']);
 
@@ -130,6 +133,16 @@ function buildFollowsParentEntries(): Record<string, OrgMergePolicy> {
 }
 
 const SPECIAL: Record<string, OrgMergePolicy> = {
+  autopay_setup_attempts: {kind:'leave-for-erasure',note:'Immutable enrollment authority stays with the loser; its generation/status fence prevents completion after merge'},
+  billing_payment_settings: { kind: 'keep-survivor' },
+  org_autopay_enrollments: { kind: 'custom', note: 'Cancel with org_merged and retain authority on the loser.' },
+  org_autopay_consents: { kind: 'leave-for-erasure', note: 'Append-only authorization evidence belongs to the loser.' },
+  org_payment_methods: { kind: 'custom', note: 'Remove and retain on loser; detach from original Stripe account after commit.' },
+  invoice_autopay_schedules: { kind: 'custom', note: 'Cancel non-terminal schedules, detach enrollment authority, then repoint invoice history.' },
+  invoice_collection_attempts: { kind: 'blocks-merge', note: 'Block reserved/created/confirming/processing; otherwise repoint history after detaching method authority.' },
+  billing_notice_outbox: { kind: 'custom', note: 'Cancel unsent notices; repoint invoice rows and retain enrollment-only rows.' },
+  billing_link_tokens: { kind: 'custom', note: 'Revoke all tokens; repoint invoice rows and retain enrollment-only rows.' },
+
   organizations: { kind: 'loser-shell' },
 
   // Caller verification (#6354 W01). Bindings are canonical per org: the
@@ -243,6 +256,10 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // repoint UPDATE raises `action_intents content is immutable` and aborts
   // the entire merge the moment the loser org holds a single intent; the
   // Wave-2 gauntlet never caught it because its fixture creates none.
+  // diagnostic_access_grants: a source-org administrator's read approval for
+  // one device. The device-move trigger restamps grant rows with the device, so
+  // live ones are fenced first (orgMergeCustomExecutors.fenceDiagnosticAccessGrants).
+  diagnostic_access_grants: { kind: 'custom', note: 'pending requests expire and active grants are revoked in the resolve phase (the device trigger then restamps the dead rows with their device) — a source-org approval never authorizes reads in the survivor org' },
   action_intents: { kind: 'leave-for-erasure', note: 'org_id is trigger-immutable (action_intents_block_content_update, since 2026-07-18) — a repoint raises and aborts the merge; durable approval records die with the loser shell' },
   // ai_agent_runs: org_id joined the immutable set in
   // migrations/2026-09-06-a-agent-runs-org-immutable.sql, which also encodes
@@ -642,15 +659,16 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // 2026-10-27-130100 (#3198 W01; it was NO ACTION before and raised 23503),
   // and report_run_deliveries / service_deliverable_evidence cascade from
   // the runs in turn — so run history would be lost SILENTLY. The custom
-  // executor re-homes report_runs (and recipients) onto the survivor's
-  // definition BEFORE deleting the duplicate, so nothing cascades. Same shape
+  // executor re-homes report_runs (and recipients, deliverable evidence and
+  // auto-evidence bindings, #7443) onto the survivor's definition BEFORE
+  // deleting the duplicate, so nothing cascades. Same shape
   // as plugin_installations/plugin_logs, so the same remedy.
   //
   // Narrative definitions dedupe by non-NULL source_ai_agent_schedule_id.
   // Portal self-service definitions have a second pass keyed by type and
   // explicitly restricted to portal_self_service=true on both sides, so
   // ordinary reports of the same type remain independent.
-  reports: { kind: 'custom', note: "dedupe narrative-schedule definitions by source_ai_agent_schedule_id, portal-self-service definitions by type, and ai_fleet_design definitions by type (Fleet Designer W01, #5651); in all three passes re-home report_runs.report_id, dedupe report_schedule_recipients by (report_id, contact_id), and re-home remaining recipients before deleting duplicate definitions. Multi-org report series children (W02) colliding on reports_series_active_child_uniq (org_id, series_id) are ARCHIVED in place, never deleted and never re-homed: their runs may be deliverable evidence, and sd_evidence_report_run_fk (report_run_id, report_id) is non-deferrable with no ON UPDATE action, so moving a run would abort the merge with 23503; their recipient overrides are unioned onto the survivor's child with removes winning. NEVER delete report runs or recipient rows except recipient-key collisions; partner-owned definitions (org_id NULL, #3198) are never touched by an org merge — the pass keys on org_id = loser" },
+  reports: { kind: 'custom', note: "dedupe narrative-schedule definitions by source_ai_agent_schedule_id, portal-self-service definitions by type, and ai_fleet_design definitions by type (Fleet Designer W01, #5651); in all three passes re-home report_runs.report_id, re-point service_deliverable_evidence.report_id and service_deliverables.auto_evidence_report_id (#7443 — evidence would otherwise CASCADE away with the duplicate and the auto-evidence binding SET NULL; sd_evidence_report_run_fk is DEFERRABLE since 2026-12-03-120200 so the run/evidence pair may mismatch until commit), dedupe report_schedule_recipients by (report_id, contact_id), and re-home remaining recipients before deleting duplicate definitions. Multi-org report series children (W02) colliding on reports_series_active_child_uniq (org_id, series_id) are ARCHIVED in place, never deleted and never re-homed (their runs and evidence stay attached to the archived child); their recipient overrides are unioned onto the survivor's child with removes winning. NEVER delete report runs or recipient rows except recipient-key collisions; partner-owned definitions (org_id NULL, #3198) are never touched by an org merge — the pass keys on org_id = loser" },
   incidents: { kind: 'custom', note: "NULL the colliding loser row's source_ref (it leaves the incidents_source_ref_unique partial index, which is WHERE source_ref IS NOT NULL) and record the old value in `summary`; NEVER delete — incident_actions/incident_evidence are NOT NULL NO ACTION children and an incident is a case file, not a derived row" },
   contacts: { kind: 'custom', note: 'clear loser is_primary if survivor has one, then repoint (partial unique)' },
   backup_configs: { kind: 'custom', note: 'clear loser is_default if survivor has one, then repoint (org-owned storage creds must NOT be dropped)' },
@@ -1082,6 +1100,7 @@ const REPOINT_TABLES: readonly string[] = [
   // whose non-deferrable legs forced a custom executor.
   "ticket_checklist_items",
   "ticket_email_links",
+  "ticket_external_refs",
   "ticket_forms",
   "ticket_outbox",
   "ticket_parts",

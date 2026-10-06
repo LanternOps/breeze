@@ -11,6 +11,7 @@ import {
   EPISODE_EXPIRE_HOURS,
   EPISODE_GAP_MINUTES,
   EPISODE_MIN_BUCKETS,
+  EPISODE_PEAK_PREFERRED_METRICS,
   EPISODE_RECURRENCE_DAYS,
 } from './metricAnomalyEpisodeKeys';
 import {
@@ -240,6 +241,7 @@ async function recomputeEpisodeAggregates(
   if (episodeIds.length === 0) return [];
   const liveOnly = target === 'live' ? sql`AND ${liveEpisodeSql(nowIso)}` : sql``;
   const ids = JSON.stringify(episodeIds);
+  const preferredPeakMetrics = sql.join(EPISODE_PEAK_PREFERRED_METRICS.map((name) => sql`${name}`), sql`, `);
   const result = await db.execute(sql`
     WITH target AS (
       SELECT (jsonb_array_elements_text(${ids}::jsonb))::uuid AS episode_id
@@ -262,7 +264,7 @@ async function recomputeEpisodeAggregates(
       FROM metric_anomalies ma
       JOIN target t ON t.episode_id = ma.episode_id
       WHERE ma.org_id = ${orgId}
-      ORDER BY ma.episode_id, ma.score DESC, ma.window_start ASC
+      ORDER BY ma.episode_id, (ma.metric_name IN (${preferredPeakMetrics})) DESC, ma.score DESC, ma.window_start ASC
     )
     UPDATE metric_anomaly_episodes e
     SET first_seen_at = a.first_seen_at,

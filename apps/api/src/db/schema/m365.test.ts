@@ -59,7 +59,11 @@ describe('m365ConsentSessions schema', () => {
       'code_verifier', 'connection_id', 'consent_attempt_id', 'created_at',
       'expires_at', 'id', 'nonce', 'org_id', 'phase', 'profile', 'purpose',
       'state_hash', 'tenant_hint_hash', 'user_id',
+      // #7910 identity-first consent.
+      'flow_version', 'verified_tenant_id', 'verified_admin_object_id',
+      'verified_admin_username', 'identity_verified_at',
     ].sort());
+    expect(cfg.columns.find((c) => c.name === 'flow_version')?.notNull).toBe(true);
     expect(cfg.columns.find((c) => c.name === 'state_hash')?.notNull).toBe(true);
     expect(cfg.columns.find((c) => c.name === 'profile')?.notNull).toBe(true);
   });
@@ -75,6 +79,7 @@ describe('m365ConsentSessions schema', () => {
       'm365_consent_sessions_connection_identity_fkey',
     );
     expect(cfg.checks.map((check) => check.name).sort()).toEqual([
+      'm365_consent_sessions_flow_version_check',
       'm365_consent_sessions_phase_check',
       'm365_consent_sessions_phase_fields_check',
       'm365_consent_sessions_profile_check',

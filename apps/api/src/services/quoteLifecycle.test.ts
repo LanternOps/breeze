@@ -98,6 +98,13 @@ vi.mock('./emailDomains/partnerLaneLookup', () => ({
   })),
 }));
 
+// #7507: send re-resolves a draft's tax rate; these suites are not about tax, so
+// the sync is a no-op (no extra db read queued into the mocked chain).
+vi.mock('./quoteService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./quoteService')>();
+  return { ...actual, syncDraftQuoteTaxRate: vi.fn(async () => false) };
+});
+
 vi.mock('./quoteDeviceSet', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./quoteDeviceSet')>();
   return { ...actual, countQuoteDeviceSetLines: vi.fn() };
@@ -1328,6 +1335,15 @@ describe('sendQuote document_locale stamp', () => {
     // frozenQuote carries the stamp so the same-request PDF renders with it.
     expect(capturedPdfArgs).not.toBeNull();
     expect((capturedPdfArgs![0] as Record<string, unknown>).documentLocale).toBe('pt-BR');
+  });
+
+  it("brands the emailed PDF with the partner's Settings → Branding logo and colours when the org has no portal branding", async () => {
+    const logo = 'data:image/png;base64,iVBORw0KGgo=';
+    queueSendPath(baseQuote, { id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, settings: { branding: { logoUrl: logo, primaryColor: '#00bfa6', secondaryColor: '#0b1b2d' } } });
+    await (await sendQuote('q1', actor)).deliverEmail();
+    expect(capturedPdfArgs).not.toBeNull();
+    // renderQuotePdf(quote, blocks, lines, loadImage, branding, ...) — branding is arg index 4.
+    expect(capturedPdfArgs![4]).toMatchObject({ logoUrl: logo, primaryColor: '#00bfa6', secondaryColor: '#0b1b2d' });
   });
 
   it('threads the freshly stamped locale into the same-request PDF render (frozenQuote)', async () => {

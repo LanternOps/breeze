@@ -88,7 +88,7 @@ export const snmpMetrics = pgTable('snmp_metrics', {
 
 export const snmpAlertThresholds = pgTable('snmp_alert_thresholds', {
   id: uuid('id').primaryKey().defaultRandom(),
-  deviceId: uuid('device_id').notNull().references(() => snmpDevices.id),
+  deviceId: uuid('device_id').notNull().references(() => snmpDevices.id, { onDelete: 'cascade' }),
   oid: varchar('oid', { length: 200 }).notNull(),
   operator: varchar('operator', { length: 10 }),
   threshold: varchar('threshold', { length: 100 }),

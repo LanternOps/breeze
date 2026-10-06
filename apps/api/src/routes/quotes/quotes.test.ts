@@ -1,10 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// Route audits: assert the call, not the persistence path.
+vi.mock('../../services/auditEvents', async (importActual) => ({
+  ...(await importActual<typeof import('../../services/auditEvents')>()),
+  writeRouteAudit: vi.fn(),
+}));
+
 // Mock the service layer — routes are thin; we assert wiring, validation, error mapping.
 vi.mock('../../services/quoteService', () => ({
   createQuote: vi.fn(),
   cloneQuote: vi.fn(),
   getQuote: vi.fn(),
+  refreshDraftQuoteTaxRate: vi.fn(async () => false),
   listQuotes: vi.fn(),
   updateQuote: vi.fn(),
   deleteDraftQuote: vi.fn(),
@@ -127,6 +134,7 @@ import { eq } from 'drizzle-orm';
 import { partners } from '../../db/schema/orgs';
 import { quoteRoutes } from './index';
 import * as svc from '../../services/quoteService';
+import { writeRouteAudit } from '../../services/auditEvents';
 import { QuoteServiceError } from '../../services/quoteTypes';
 import { renderContractBlocksForClient, loadContractBlockAuthoring, loadContractPdfInputs } from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
@@ -164,7 +172,7 @@ describe('quote crud + lines routes', () => {
   });
 
   it('POST / creates a quote', async () => {
-    (svc.createQuote as any).mockResolvedValue({ id: QUOTE_ID, status: 'draft' });
+    (svc.createQuote as any).mockResolvedValue({ id: QUOTE_ID, orgId: ORG_ID, status: 'draft' });
     const res = await app().request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -174,6 +182,9 @@ describe('quote crud + lines routes', () => {
     const body = await res.json();
     expect(body.data.id).toBe(QUOTE_ID);
     expect(svc.createQuote).toHaveBeenCalledOnce();
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID, action: 'quote.create', resourceType: 'quote', resourceId: QUOTE_ID,
+    }));
   });
 
   it('POST /:id/clone clones a quote into a new draft (bodyless legacy call → no retarget)', async () => {
@@ -281,6 +292,18 @@ describe('quote crud + lines routes', () => {
     // through to their defaults, same as `branding` (Task 12).
     expect(body.data.presentation).toEqual({ theme: 'classic', pageSize: 'a4' });
     expect(svc.getQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything());
+  });
+
+  it('GET /:id refreshes a stale draft tax rate BEFORE loading the quote (#7507)', async () => {
+    (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID }, blocks: [], lines: [] });
+    const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(svc.refreshDraftQuoteTaxRate).toHaveBeenCalledWith(QUOTE_ID, expect.anything());
+    // Order matters: the detail must be read AFTER the refresh, or the editor
+    // shows the stale rate it was meant to replace.
+    const refreshOrder = (svc.refreshDraftQuoteTaxRate as any).mock.invocationCallOrder[0];
+    const getOrder = (svc.getQuote as any).mock.invocationCallOrder[0];
+    expect(refreshOrder).toBeLessThan(getOrder);
   });
 
   it('GET /:id resolves presentation.theme="condensed" from the partner default (no query beyond the existing branding selects)', async () => {
@@ -411,12 +434,15 @@ describe('quote crud + lines routes', () => {
   });
 
   it('DELETE /:id deletes a draft quote', async () => {
-    (svc.deleteDraftQuote as any).mockResolvedValue(undefined);
+    (svc.deleteDraftQuote as any).mockResolvedValue({ id: QUOTE_ID, orgId: ORG_ID });
     const res = await app().request(`/${QUOTE_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.ok).toBe(true);
     expect(svc.deleteDraftQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything());
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID, action: 'quote.delete', resourceType: 'quote', resourceId: QUOTE_ID,
+    }));
   });
 
   it('PATCH /:id/blocks/:blockId updates a heading block (200, forwards body)', async () => {
@@ -671,6 +697,10 @@ describe('quote crud + lines routes', () => {
       const res = await app().request(`/${QUOTE_ID}/pdf`, { method: 'GET' });
 
       expect(res.status).toBe(200);
+      // #7507: a draft PDF prints the current rate — refreshed before the read.
+      expect(svc.refreshDraftQuoteTaxRate).toHaveBeenCalledWith(QUOTE_ID, expect.anything());
+      expect((svc.refreshDraftQuoteTaxRate as any).mock.invocationCallOrder[0])
+        .toBeLessThan((svc.getQuote as any).mock.invocationCallOrder[0]);
       expect(res.headers.get('content-type')).toBe('application/pdf');
       const disposition = res.headers.get('content-disposition') ?? '';
       expect(disposition).toContain('inline');

@@ -12,7 +12,7 @@ import {
   changeCurrencySchema, buildStripeCurrencyWarning,
 } from '@breeze/shared';
 import {
-  createQuote, cloneQuote, reviseQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
+  createQuote, cloneQuote, reviseQuote, getQuote, refreshDraftQuoteTaxRate, listQuotes, updateQuote, deleteDraftQuote,
   addManualLine, addCatalogLine, updateLine, removeLine, addBlock, updateBlock, deleteBlock,
   reorderBlocks, reorderLines, moveLineToBlock, changeQuoteCurrency,
   refreshQuoteDeviceCounts, quoteDeviceSetEstimate,
@@ -37,6 +37,7 @@ import {
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { PdfMergeError } from '../../services/pdfMerge';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { auditBillingDocument } from '../../services/billingDocumentAudit';
 import { QUOTE_ACCEPTANCE_EVIDENCE_META, toAcceptanceEvidenceMeta } from '../../services/quoteAcceptanceEvidence';
 
 export const quoteCrudRoutes = new Hono();
@@ -74,8 +75,11 @@ quoteCrudRoutes.get('/', scopes, readPerm, zValidator('query', listQuotesQuerySc
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.post('/', scopes, writePerm, zValidator('json', createQuoteSchema), async (c) => {
-  try { return c.json({ data: await createQuote(c.req.valid('json'), quoteActorFrom(c)) }); }
-  catch (err) { return handleServiceError(c, err); }
+  try {
+    const quote = await createQuote(c.req.valid('json'), quoteActorFrom(c));
+    auditBillingDocument(c, 'quote', 'create', quote);
+    return c.json({ data: quote });
+  } catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.post('/:id/clone', scopes, writePerm, zValidator('param', idParam), async (c) => {
   // Optional retarget/rename body. Distinguish an ABSENT body (legacy callers
@@ -121,6 +125,10 @@ quoteCrudRoutes.post('/:id/revise', scopes, writePerm, zValidator('param', idPar
 quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), async (c) => {
   const id = c.req.valid('param').id;
   try {
+    // A draft opens at the rate that applies if it were sent now (#7507) — the
+    // org's tax settings may have changed since its last edit. No-op (and no
+    // write) for a sent quote or a draft that is already current.
+    await refreshDraftQuoteTaxRate(id, quoteActorFrom(c));
     const detail = await getQuote(id, quoteActorFrom(c));
     // Branding lets the in-app Preview render the customer-facing document
     // (logo, accent, seller, footer) without a second round-trip — same object
@@ -261,7 +269,11 @@ quoteCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), z
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.delete('/:id', scopes, writePerm, zValidator('param', idParam), async (c) => {
-  try { await deleteDraftQuote(c.req.valid('param').id, quoteActorFrom(c)); return c.json({ data: { ok: true } }); }
+  try {
+    const deleted = await deleteDraftQuote(c.req.valid('param').id, quoteActorFrom(c));
+    auditBillingDocument(c, 'quote', 'delete', deleted);
+    return c.json({ data: { ok: true } });
+  }
   catch (err) { return handleServiceError(c, err); }
 });
 // Draft-only atomic change-currency op (#3774) — the ONLY mutation path for a
@@ -393,6 +405,8 @@ quoteCrudRoutes.patch('/:id/orders/:orderId/lines/:lineId', scopes, fulfillPerm,
 quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), async (c) => {
   const id = c.req.valid('param').id;
   try {
+    // A draft PDF prints the rate that applies now, same as GET /:id (#7507).
+    await refreshDraftQuoteTaxRate(id, quoteActorFrom(c));
     const { quote, blocks, lines, billTo } = await getQuote(id, quoteActorFrom(c));
 
     const branding = await resolveQuoteBranding(quote);

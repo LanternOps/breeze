@@ -289,6 +289,16 @@ jobs:
       - name: Test community README automation
         run: pnpm test:community-readme
 
+      # The Tauri CLI refuses to build when the `tauri` / `tauri-plugin-*`
+      # crates and their `@tauri-apps/*` npm packages differ in major.minor.
+      # Dependabot bumps cargo and npm in separate PRs, so a crate-only bump
+      # merged green and broke the v0.121.0 helper release build. Compares
+      # each app's Cargo.lock with pnpm-lock.yaml; needs no install.
+      - name: Guard Tauri crate/npm version parity
+        run: |
+          node --test scripts/check-tauri-versions.test.mjs
+          node scripts/check-tauri-versions.mjs
+
       - name: Test mobile native CI contract
         run: node --test .github/scripts/mobile-native-ci.test.mjs
 
@@ -303,6 +313,12 @@ jobs:
 
       - name: Test per-area job gating contract
         run: node --test .github/scripts/ci-area-gating.test.mjs
+
+      # The Windows viewer update bundle must be a STORED zip — the updater
+      # cannot decompress Deflate, so a compressed one never installs (#7681).
+      # release.yml only runs for releases, so this is the PR-time check.
+      - name: Test viewer Windows updater packaging
+        run: node --test scripts/release/package-viewer-windows-updater.test.mjs
 
       # The classifier fast-tracks changes to OTHER workflow files (app=false), and
       # security.yml — which also runs this suite — does not report `CI Success`, so
@@ -1948,7 +1964,7 @@ jobs:
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/rebuild ./internal/backup/winhive ./internal/backup/bmr ./internal/backup/hosttool ./internal/collectors/timesync ./internal/executor ./internal/securefs ./internal/winsvcinstall ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/windisks ./internal/recoveryconsole ./internal/backup/rebuild ./internal/backup/winhive ./internal/backup/bmr ./internal/backup/hosttool ./internal/collectors/timesync ./internal/executor ./internal/securefs ./internal/winsvcinstall ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two
@@ -2077,7 +2093,7 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the helper token tests SKIPPED" }
           if ($passes -ne 15) { throw "expected exactly 15 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
-      # securefs's Windows implementation is the SEC-121 privileged-staging
+      # securefs's Windows implementation is the privileged-staging
       # boundary: handle-relative NtCreateFile walks, reparse-point rejection at
       # every component, the atomic FILE_RENAME_INFO publish, and symlink entry
       # restore. Its reparse-point cases plant a junction with `mklink /J` and
@@ -2092,14 +2108,66 @@ jobs:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/securefs -run '^Test(InstallFileRejectsReparsePointAtEveryDepth|InstallFileResistsConcurrentComponentSwap|RenameRelativePublishesUnderThePinnedParent|InstallDirOnWindows|InstallSymlinkOnWindows|InstallSymlinkRefusesToReplaceAJunction|BuildSymlinkReparseBufferLayout|TargetIsDirectoryRefusesToProbeRemoteShapes|VerifyPrivateDirRejectsAReparsePoint|EnsurePrivateDirRepairsAnExistingInheritedDACL|EnsurePrivateDirTightensAPermissiveProtectedDACL|VerifyPrivateDirRejectsAnInheritedDACL)$' -v 2>&1
+          $out = go test ./internal/securefs -run '^Test(InstallFileRejectsReparsePointAtEveryDepth|InstallFileResistsConcurrentComponentSwap|RenameRelativePublishesUnderThePinnedParent|InstallDirOnWindows|InstallSymlinkOnWindows|InstallSymlinkRefusesToReplaceAJunction|BuildSymlinkReparseBufferLayout|TargetIsDirectoryRefusesToProbeRemoteShapes|VerifyPrivateDirRejectsAReparsePoint|EnsurePrivateDirRepairsAnExistingInheritedDACL|EnsurePrivateDirTightensAPermissiveProtectedDACL|VerifyPrivateDirRejectsAnInheritedDACL|InstallJunctionOnWindows|InstallJunctionRefusesToReplaceOnWindows|InstallJunctionRefusesReparseAncestorOnWindows|EnsureNoReparsePointsAlongOnWindows)$' -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
-          if ($skips -ne 0) { throw "$skips of the secure-staging boundary tests SKIPPED - the SEC-121 Windows reparse-point/DACL boundary has no live coverage here" }
+          if ($skips -ne 0) { throw "$skips of the secure-staging boundary tests SKIPPED - the Windows reparse-point/DACL boundary has no live coverage here" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
-          if ($passes -ne 12) { throw "expected exactly 12 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 16) { throw "expected exactly 16 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # Grant-mode diagnostic reads (diag_file_list / diag_file_read) refuse any
+      # path whose final, handle-resolved location differs from the requested
+      # one: junctions, 8.3 short names, stream and namespace spellings, and a
+      # root swapped for a junction after approval. internal/remote/tools as a
+      # whole is excluded from the package list above (#2523), so these run by
+      # name. Only one skip is tolerated: the POSIX symlink test (Windows
+      # symlinks need a privilege; junctions are covered instead). The 8.3 test
+      # must PASS: short-name generation is switched on for the temp volume first.
+      - name: Run Windows diagnostic-access containment tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          # 8.3 names must exist for the short-name test to prove anything:
+          # enable generation on the temp volume (runners are admin).
+          $tempVolume = (Split-Path -Qualifier $env:TEMP)
+          fsutil 8dot3name set $tempVolume 0 | Out-Null
+          $out = go test ./internal/remote/tools -run '^Test(Diag|ClassifyDiagnosticPath|SensitiveReadPathsAreAllClassified)' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: (Test\S+)' | ForEach-Object { $_.Matches[0].Groups[1].Value })
+          $unexpected = @($skips | Where-Object { $_ -notin @('TestDiagnosticLinkEscapesRefused') })
+          if ($unexpected.Count -ne 0) { throw "unexpected skips: $($unexpected -join ', ') - Windows diagnostic-access containment has no live coverage for them" }
+          # Every containment, token and classifier test must PASS by name, so
+          # deleting or renaming one fails this step instead of shrinking it.
+          $required = @(
+            'TestClassifyDiagnosticPathSharedFixture',
+            'TestDiagInteropAPISignedAuthorizationVerifiesOnAgent',
+            'TestDiagInteropSealedVectorOpensWithServerKey',
+            'TestDiagnosticHardDeniedEvenIfNamed',
+            'TestDiagnosticHardLinkRefused',
+            'TestDiagnosticListPagination',
+            'TestDiagnosticListWithholdsUnapprovedSensitiveChildren',
+            'TestDiagnosticOutOfScopeAndPrefixSibling',
+            'TestDiagnosticPathFormsRejected',
+            'TestDiagnosticReadAuthorizedPaginatedAndSealed',
+            'TestDiagnosticRecursiveVsFlat',
+            'TestDiagnosticSensitiveClassMustBeExplicit',
+            'TestDiagnosticTokenFailures',
+            'TestDiagnosticTraversalSpellingsRefused',
+            'TestDiagWindowsAlternatePathFormsRefused',
+            'TestDiagWindowsCaseInsensitiveContainment',
+            'TestDiagWindowsJunctionEscapesRefused',
+            'TestDiagWindowsShortNameRefused',
+            'TestSensitiveReadPathsAreAllClassified'
+          )
+          foreach ($must in $required) {
+            if (-not ($out | Select-String -SimpleMatch "--- PASS: $must ")) { throw "$must did not PASS" }
+          }
 
       # sd_windows.go/winpriv_windows.go are the HiveNightmare-class fix
       # (CVE-2021-36934) this wave depends on: a rebuilt C:\ with no
@@ -2330,6 +2398,26 @@ jobs:
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 14) { throw "expected exactly 14 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # Junctions backed up as links and recreated on restore (#7325). These
+      # plant real junctions with `mklink /J` and restore one to another
+      # location; the rest of the junction logic is covered by the portable
+      # tests in test-agent. internal/backup is excluded from the bare package
+      # list above, so name the tests and assert they PASSED.
+      - name: Run Windows junction backup/restore tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/backup -run '^Test(PlatformSkippedReparsePoint_ClassifiesRealJunction|CollectBackupFiles_JunctionCapturedNotTraversed|Junction_BackupRestoreRoundTripOnWindows)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the junction tests SKIPPED - junction capture/restore has no live coverage here" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 3) { throw "expected exactly 3 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # -race requires cgo, which remote/desktop cannot satisfy on Windows, so
       # this covers only packages that do not import it (heartbeat, agentapp and

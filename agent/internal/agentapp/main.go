@@ -34,6 +34,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/safemode"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/securefs"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"github.com/breeze-rmm/agent/internal/state"
 	"github.com/breeze-rmm/agent/internal/unifi"
 	"github.com/breeze-rmm/agent/internal/userhelper"
@@ -423,6 +424,25 @@ func repairConfigThenInitLogging(cfg *config.Config, repair func()) {
 	initLogging(cfg)
 }
 
+// repairStartupPermissions ensures the macOS breeze group (no-op elsewhere)
+// and then repairs config/secret/helper-token permissions. The order matters
+// (#7829): fixPerms group-owns helper_token.yaml by the breeze group, so a
+// group created or repaired on this start must exist first, or the desktop
+// helper could not read its token until the NEXT restart. A group failure is
+// logged and does not skip the rest; the session broker retries it when it
+// sets up the socket. Support mode touches neither: it does not own the real
+// config dir.
+func repairStartupPermissions(supportMode bool, ensureGroup func() error, fixPerms func()) {
+	if supportMode {
+		return
+	}
+	if err := ensureGroup(); err != nil {
+		log.Warn("could not ensure IPC socket group before repairing config permissions",
+			"error", err.Error())
+	}
+	fixPerms()
+}
+
 // initLogging sets up structured logging from config. Call after config.Load().
 func initLogging(cfg *config.Config) {
 	var output io.Writer = os.Stdout
@@ -739,9 +759,7 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// them. secrets.yaml stays root-only (0600). Skipped in support mode: this
 	// operates on the REAL config dir, which a support client does not own.
 	repairConfigThenInitLogging(cfg, func() {
-		if !cfg.SupportMode {
-			config.FixConfigPermissions()
-		}
+		repairStartupPermissions(cfg.SupportMode, sessionbroker.EnsureIPCGroup, config.FixConfigPermissions)
 	})
 
 	// Record this process's live PID immediately, before any startup step that
@@ -814,6 +832,8 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 			HTTPClient:   nil, // will use default
 			MinLevel:     cfg.LogShippingLevel,
 			AuthMonitor:  authMon,
+			// Restores a set_log_level override across restarts (#7416).
+			LevelOverridePath: config.LogLevelOverridePath(),
 		})
 		// Dev builds ship info-level logs for performance tuning and diagnostics.
 		if strings.HasPrefix(version, "dev-") && cfg.LogShippingLevel == "warn" {
@@ -2142,6 +2162,8 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 			AgentVersion: version + "-helper",
 			MinLevel:     cfg.LogShippingLevel,
 			AuthMonitor:  helperAuthMon,
+			// Follows the agent's set_log_level override (#7416).
+			LevelOverridePath: config.LogLevelOverridePath(),
 		})
 		// Dev builds ship info-level logs for performance tuning and diagnostics.
 		if strings.HasPrefix(version, "dev-") && cfg.LogShippingLevel == "warn" {

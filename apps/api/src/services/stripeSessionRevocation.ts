@@ -16,7 +16,7 @@ import {
 import { requestLikeFromSnapshot, writeAuditEventAsync } from './auditEvents';
 
 /**
- * Fail-closed Stripe Checkout session revocation (SEC-2026-09-05-150).
+ * Fail-closed Stripe Checkout session revocation.
  *
  * A Checkout session stays payable ON STRIPE after Breeze resets the public
  * link, records an alternate payment, voids the invoice or replaces the key.
@@ -44,6 +44,7 @@ import { requestLikeFromSnapshot, writeAuditEventAsync } from './auditEvents';
 export type RevocationReason =
   | 'link_reset'
   | 'manual_payment'
+  | 'autopay_collection'
   | 'invoice_void'
   | 'key_replaced'
   | 'account_changed'

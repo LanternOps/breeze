@@ -1434,7 +1434,7 @@ alertsRoutes.post(
     try {
       const ticket = await createTicketFromAlert(
         id,
-        { userId: auth.user.id, name: auth.user.name },
+        { kind: 'user', userId: auth.user.id, name: auth.user.name },
         overrides
       );
       return c.json({ data: ticket }, 201);

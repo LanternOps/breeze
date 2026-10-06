@@ -16,7 +16,7 @@
  * Every other failure is rethrown so the caller's transaction rolls back and
  * the next run retries.
  */
-import { createTicket, type TicketWorkKind } from './ticketService';
+import { createTicket, type TicketActor, type TicketWorkKind } from './ticketService';
 
 export type PlannedWorkTicketResult =
   | { kind: 'created'; ticketId: string }
@@ -42,7 +42,7 @@ function errorCode(err: unknown): string | undefined {
 
 export async function createPlannedWorkTicket(
   input: PlannedWorkTicketInput,
-  actor: { userId: string; name: string },
+  actor: TicketActor,
   logContext: Record<string, string>,
 ): Promise<PlannedWorkTicketResult> {
   let assigneeId = input.assigneeId;

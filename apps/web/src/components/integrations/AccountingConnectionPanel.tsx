@@ -1,3 +1,4 @@
+import AccountingFeeSettings from "./AccountingFeeSettings";
 import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
@@ -42,6 +43,10 @@ type ConnectionStatus =
 type PushMode = "auto" | "manual";
 
 interface QuickbooksStatus {
+  autopayEnabled?: boolean;
+  feeIncomeItemRef?: string | null;
+  feeIncomeAccountRef?: string | null;
+  feeAccountingErrorCount?: number;
   status: ConnectionStatus;
   environment: "sandbox" | "production" | null;
   pushMode: PushMode;
@@ -129,7 +134,7 @@ export default function AccountingConnectionPanel({ provider, onConnectionChange
   const canWriteInvoices = usePermissions().can("invoices", "write");
 
   /**
-   * SEC-2026-09-05-057: the QuickBooks routes now carry dedicated
+   * The QuickBooks routes now carry dedicated
    * `accounting:read` / `accounting:manage` capabilities on top of the
    * full-partner authority check. Every mutating control below is disabled or
    * hidden without `accounting:manage`, matching the server gate (the panel
@@ -598,6 +603,19 @@ export default function AccountingConnectionPanel({ provider, onConnectionChange
           {loadError}
         </p>
       )}
+
+      {!isOrgScoped && <>
+        {isConnected && status?.autopayEnabled === true && <AccountingFeeSettings
+          provider={provider}
+          itemRef={status?.feeIncomeItemRef ?? null}
+          accountRef={status?.feeIncomeAccountRef ?? null}
+          disabled={!canManageAccounting}
+          onSaved={value => setStatus(previous => previous ? { ...previous, ...value } : previous)}
+        />}
+        {!!status?.feeAccountingErrorCount && <p role="alert" data-testid="autopay-accounting-fee-attention">
+          {t('accountingFees.attention')}
+        </p>}
+      </>}
 
       {!isConnected && !isPending && (
         <div className="rounded-lg border bg-card p-5">

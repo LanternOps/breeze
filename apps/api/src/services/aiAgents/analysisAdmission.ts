@@ -112,6 +112,9 @@ export const SKIP_REASON_REFUSALS = {
   design_rate: 'analysis_rate',
   max_concurrent_patch_runs: 'max_concurrent_analysis_runs',
   patch_rate: 'analysis_rate',
+  max_concurrent_research_runs: 'max_concurrent_analysis_runs',
+  research_rate: 'analysis_rate',
+  research_auto_cap: 'analysis_rate',
   // This wave's own.
   analysis_not_available: 'analysis_not_available',
   external_processing_disabled: 'external_processing_disabled',
@@ -126,6 +129,9 @@ export const SKIP_REASON_REFUSALS = {
   // AI model registry W03 — its own refusal: the setting to change is the AI
   // agents' model, not a budget or the analysis feature.
   model_unavailable: 'model_unavailable',
+  // AI Suggested Fixes W3 — only the automation ai_triage lane supplies the
+  // probe that yields this, so it is unreachable from an analysis admission.
+  proven_fix_available: 'analysis_not_available',
 } satisfies Record<AgentRunSkipReason, AnalysisAdmissionRefusal>;
 
 /** Extra sentence for the reasons whose refusal alone would mislead. */

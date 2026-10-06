@@ -1,4 +1,9 @@
-import { hasDbAccessContext, withSystemDbAccessContext } from '../db';
+import { finishCardPayAndSave } from './autopay/payAndSave';
+import type Stripe from 'stripe';
+import { and, eq } from 'drizzle-orm';
+import { invoices, invoiceStripePayments } from '../db/schema';
+import { InvoiceServiceError } from './invoiceTypes';
+import { db, runOutsideDbContext, hasDbAccessContext, withSystemDbAccessContext } from '../db';
 import { getPartnerStripeClient } from './partnerStripe';
 import { recordStripePayment } from './stripeReconcile';
 import { fromMinorUnits } from './stripeMoney';
@@ -53,7 +58,7 @@ export function assertNoHeldDbContextForStripe(operation: string): void {
  *   2. the Stripe retrieve runs outside any context;
  *   3. `recordStripePayment` opens and COMMITS its own transaction, so its
  *      post-commit events / accounting push really do run after the commit;
- *   4. the SEC-150 charged-repair park rides inside that same transaction.
+ *   4. the charged-repair park rides inside that same transaction.
  * System scope is needed throughout: the key row is partner-axis, which an
  * org-scoped portal context cannot see (the #1375 class).
  */
@@ -84,12 +89,41 @@ export async function settleCheckoutSession(
     amount: fromMinorUnits(amountCents, currency),
     currency,
   }, {
-    // SEC-150 charged-repair, stamped INSIDE the capture's transaction so the
+    // Charged-repair, stamped INSIDE the capture's transaction so the
     // park commits atomically with whatever the capture decided — see
     // recordStripePayment. A separate transaction afterwards could lose the
     // park after the capture (or its terminal-fail) had already committed.
     markChargedRepairIfRevoked: true,
   });
 
+  try {
+    await finishCardPayAndSave(partnerId, session.id);
+  } catch (err) {
+    if (err instanceof HeldDbContextForStripeError) throw err;
+    // Payment is committed. Leave the durable setup attempt unfinished so the
+    // setup reconciler can retry saving without charging the customer again.
+    console.error('[stripeSettle] booked payment card capture failed', { partnerId, sessionId: session.id, err });
+  }
   return { settled: true, invoiceId: res.invoiceId };
+}
+
+export async function settlePaymentIntent(partnerId: string, paymentIntentId: string): Promise<{ settled: boolean; status: Stripe.PaymentIntent.Status; invoiceId: string | null }> {
+  assertNoHeldDbContextForStripe('settlePaymentIntent');
+  const [mapping] = await withSystemDbAccessContext(() => db.select({
+    id: invoiceStripePayments.id, invoiceId: invoiceStripePayments.invoiceId,
+    stripeAccountId: invoiceStripePayments.stripeAccountId,
+    revocationCredentialId: invoiceStripePayments.revocationCredentialId,
+  }).from(invoiceStripePayments).innerJoin(invoices, eq(invoices.id, invoiceStripePayments.invoiceId))
+    .where(and(eq(invoices.partnerId, partnerId), eq(invoiceStripePayments.stripeObjectType, 'payment_intent'), eq(invoiceStripePayments.stripeObjectId, paymentIntentId))).limit(1));
+  if (!mapping) throw new InvoiceServiceError('Payment mapping not found', 404, 'INVOICE_NOT_FOUND');
+  const client = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId, {
+    reconciliationAccountId: mapping.stripeAccountId, archivedCredentialId: mapping.revocationCredentialId,
+    invoiceStripePaymentId: mapping.id, reason: 'payment_intent_settlement',
+  }));
+  const intent = await runOutsideDbContext(() => client!.stripe.paymentIntents.retrieve(paymentIntentId));
+  if (intent.id !== paymentIntentId) throw new Error('Stripe returned a different PaymentIntent');
+  if (intent.status !== 'succeeded') return { settled: false, status: intent.status, invoiceId: mapping.invoiceId };
+  await recordStripePayment({ stripeObjectId: intent.id, stripePaymentIntentId: intent.id, stripeAccountId: mapping.stripeAccountId, amount: fromMinorUnits(intent.amount_received, intent.currency), currency: intent.currency.toUpperCase() });
+  const [applied] = await withSystemDbAccessContext(() => db.select({ invoicePaymentId: invoiceStripePayments.invoicePaymentId }).from(invoiceStripePayments).where(eq(invoiceStripePayments.id, mapping.id)).limit(1));
+  return { settled: Boolean(applied?.invoicePaymentId), status: intent.status, invoiceId: mapping.invoiceId };
 }

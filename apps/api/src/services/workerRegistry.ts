@@ -1400,6 +1400,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'autopayWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/autopayWorker');
+      return { init: m.initializeAutopayWorkers, shutdown: m.shutdownAutopayWorkers };
+    },
+  },
+  {
     // #3828 wave-6-4 task 2. Same shape/precedent as ticketOutboxPublisher —
     // drains metric_anomaly_incidents' dispatch marker onto the generic
     // eventBus. No agent-socket-local dispatch dependency, so 'global'.
@@ -1598,7 +1606,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // SEC-142/143 (review B3): reclaims durable AI budget reservations whose
+    // Reclaims durable AI budget reservations whose
     // TTL passed without settling. `global` — the sweep is one UPDATE with no
     // socket-local state, and leaving it to the socket owner would mean a
     // worker-only deployment never reclaims a held cap. Its module closure

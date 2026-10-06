@@ -423,7 +423,7 @@ func TestDarwinUninstallScriptExecutable(t *testing.T) {
 	for _, removeConfig := range []bool{false, true} {
 		root := t.TempDir()
 		calls := filepath.Join(root, "calls")
-		for _, name := range []string{"launchctl", "pkill", "pkgutil", "rm", "ps", "sleep"} {
+		for _, name := range []string{"launchctl", "pkill", "pkgutil", "rm", "rmdir", "ps", "sleep"} {
 			body := "#!/bin/sh\nprintf '%s %s\\n' \"${0##*/}\" \"$*\" >> \"$FIXTURE_CALLS\"\n"
 			switch name {
 			case "ps":
@@ -452,6 +452,16 @@ func TestDarwinUninstallScriptExecutable(t *testing.T) {
 				t.Errorf("missing %s", artifact)
 			}
 		}
+		// #7831: the live binary is BinaryPath, but a pre-relocation copy in the
+		// other directory must go too, then the empty /Library/Breeze tree, and
+		// the launchd disable phase 1 set must be cleared once the plist is gone
+		// or the next install's bootstrap fails with EIO 5.
+		for _, artifact := range []string{"/usr/local/bin/breeze-agent", "/Library/Breeze/bin/breeze-agent", "/Library/Breeze/bin/breeze-watchdog", "rmdir /Library/Breeze/pkg-staging /Library/Breeze/bin /Library/Breeze"} {
+			if !strings.Contains(s, artifact) {
+				t.Errorf("missing %s", artifact)
+			}
+		}
+		assertOrder(t, s, "rm -f /Library/LaunchDaemons/com.breeze.agent.plist", "launchctl enable system/com.breeze.agent")
 		if strings.Contains(s, "rm -rf /Library/Application Support/Breeze") != removeConfig {
 			t.Errorf("changed optional config policy: %s", s)
 		}

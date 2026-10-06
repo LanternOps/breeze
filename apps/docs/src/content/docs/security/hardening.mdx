@@ -138,7 +138,7 @@ Breeze implements Redis-backed sliding window rate limiting:
 | API (per user) | 100 requests | 60 seconds |
 | Agent (per device) | 120 requests | 60 seconds |
 | Agent (per organization) | `max(600, devices × 12)`, capped at 20,000 | 60 seconds |
-| Enrollment | 10 attempts | 60 seconds |
+| Enrollment (per source IP) | 10 attempts (`AGENT_ENROLL_RATE_LIMIT`) | 60 seconds (`AGENT_ENROLL_RATE_WINDOW_SECONDS`) |
 
 The per-organization agent limit caps total fleet traffic for any single tenant. It scales with the org's enrolled device count between a floor (`AGENT_ORG_RATE_LIMIT_PER_MIN`, default 600) and a hard platform ceiling (`AGENT_ORG_RATE_LIMIT_MAX`, default 20,000), with the per-device allowance set by `AGENT_ORG_RATE_LIMIT_PER_DEVICE` (default 12). A flat ceiling was previously applied to every tenant regardless of fleet size, which silently dropped patch inventory for larger orgs.
 

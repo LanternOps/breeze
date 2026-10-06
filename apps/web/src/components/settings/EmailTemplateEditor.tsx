@@ -45,9 +45,34 @@ const SAMPLE_VARS: Record<string, string> = {
   expiry_date: '2026-07-01',
   accept_url: 'https://portal.example.com/quote/TOKEN',
   invoice_number: 'INV-0001',
-  due_date: '2026-09-01',
+  due_date: 'September 1, 2026',
   invite_url: 'https://portal.example.com/accept-invite?token=abc',
   cta_button: 'Button',
+  amount_due: '$1,200.00',
+  charge_date: 'September 1, 2026',
+  fee_amount: '$0.00',
+  invoice_link: 'https://portal.example.com/invoice/TOKEN',
+  amount_paid: '$1,200.00',
+  total_charged: '$1,200.00',
+  paid_on: 'September 1, 2026',
+  balance_remaining: 'Paid in full',
+  failure_text: 'The payment could not be completed.',
+  action_link: 'https://portal.example.com/invoice/TOKEN',
+  action_label: 'View invoice',
+  days_overdue: '7',
+  pay_link: 'https://portal.example.com/invoice/TOKEN',
+  client_name:'Example client',
+  setup_link:'https://portal.example.test/autopay/example-token',
+  ach_mode_text:'You can use a US bank account or a card.',
+  payment_method:'Visa debit card ending in 1234',
+  schedule_text:'Each invoice is charged on its due date.',
+  fee_text:'There is no processing fee.',
+  stopped_by:'Your accounts team',
+  open_invoices_text:'You have 1 open invoice; the links are below.',
+  expires_on:'October 2026',
+  update_link:'https://portal.example.test/autopay/update-token',
+  charge_total:'$1,236.00',
+  attempted_amount:'$1,236.00',
 };
 
 /** Same tags as apps/api/src/services/richTextSanitize.ts RICH_TEXT_ALLOWED_TAGS. */
@@ -161,7 +186,9 @@ interface Props {
 
 export default function EmailTemplateEditor({ templateId, value, onBack, onSaved }: Props) {
   const { t } = useTranslation('settings');
+  const { t: tBilling } = useTranslation('billing');
   const hasCta = emailTemplateHasCta(templateId);
+  const insertVariables = [...new Set([...varsForEmailTemplate(templateId), ...(hasCta ? ['cta_button'] : [])])];
   const initial = shownFields(templateId, value);
   const [subject, setSubject] = useState(initial.subject);
   const [heading, setHeading] = useState(initial.heading);
@@ -223,7 +250,10 @@ export default function EmailTemplateEditor({ templateId, value, onBack, onSaved
   return (
     <div className="space-y-4" data-testid="email-template-editor">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold">{emailTemplateLabel(templateId)}</h2>
+        <h2 className="text-sm font-semibold">{templateId === 'payment_reminder' ? tBilling('reminders.templates.paymentReminder')
+          : templateId === 'payment_overdue' ? tBilling('reminders.templates.paymentOverdue')
+          : templateId === 'invoice_autopay' ? tBilling('autopay.noticeTemplate')
+          : t(/* i18n-dynamic */ `emailTemplates.labels.${templateId}`, { defaultValue: emailTemplateLabel(templateId) })}</h2>
         <button
           type="button"
           onClick={onBack}
@@ -290,7 +320,7 @@ export default function EmailTemplateEditor({ templateId, value, onBack, onSaved
 
       <div className="flex flex-wrap items-center gap-1">
         <span className="text-xs text-muted-foreground">{t('emailTemplates.insert')}</span>
-        {varsForEmailTemplate(templateId).map((key) => (
+        {insertVariables.map((key) => (
           <button
             key={key}
             type="button"

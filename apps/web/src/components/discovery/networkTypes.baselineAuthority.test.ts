@@ -1,5 +1,5 @@
 /**
- * SEC-2026-09-05-146 — the API's schedule-blocked reason must survive mapping,
+ * The API's schedule-blocked reason must survive mapping,
  * or the operator never learns that their recurring scan is being held and
  * never re-approves it.
  */

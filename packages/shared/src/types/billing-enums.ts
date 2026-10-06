@@ -10,7 +10,7 @@ export const INVOICE_STATUSES = [
 ] as const;
 
 export const PAYMENT_METHODS = [
-  'cash', 'check', 'bank_transfer', 'card', 'other',
+  'cash', 'check', 'bank_transfer', 'card', 'other', 'ach_debit',
 ] as const;
 
 export const INVOICE_LINE_SOURCE_TYPES = [

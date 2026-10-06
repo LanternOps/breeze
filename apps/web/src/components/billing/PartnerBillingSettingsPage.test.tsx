@@ -8,7 +8,12 @@ import PartnerBillingSettingsPage from './PartnerBillingSettingsPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { partnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+// canManagePartnerWide mirrors /users/me (API's canManagePartnerWidePolicies); undefined = not yet known.
+let canManagePartnerWide: boolean | undefined = true;
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  useAuthStore: (sel: (s: { user: { canManagePartnerWide?: boolean } }) => unknown) => sel({ user: { canManagePartnerWide } }),
+}));
 // Grants for the billing-write gate (invoices:write, same as the PATCH route).
 let canWrite = true;
 vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: () => canWrite }) }));
@@ -30,13 +35,14 @@ function renderPage() {
 // up inside the "More" dropdown in tests. Open it before selecting any tab
 // other than the first.
 async function selectTab(id: string) {
-  const visible = screen.queryByTestId(`billing-settings-tab-${id}`);
+  const testId = id === 'payments' ? 'autopay-payments-tab' : `billing-settings-tab-${id}`;
+  const visible = screen.queryByTestId(testId);
   if (visible?.getAttribute('role') === 'tab') {
     await userEvent.click(visible);
     return;
   }
   await userEvent.click(await screen.findByTestId('billing-settings-tab-more'));
-  await userEvent.click(await screen.findByTestId(`billing-settings-tab-${id}`));
+  await userEvent.click(await screen.findByTestId(testId));
 }
 
 async function gotoDocumentsTab() {
@@ -44,20 +50,65 @@ async function gotoDocumentsTab() {
 }
 
 describe('PartnerBillingSettingsPage', () => {
+it('mounts fee settings in the real Payments tab',async()=>{
+  fetchMock.mockImplementation(async path=>json(String(path).endsWith('/payment-settings')?feeView():
+    {currencyCode:'USD',invoiceNumberPrefix:'INV',invoiceTermsDays:30}));
+  renderPage();await selectTab('payments');
+  expect(await screen.findByTestId('autopay-fee-settings-page')).toBeInTheDocument();
+  expect(await screen.findByTestId('autopay-fees')).toBeInTheDocument();
+  expect(screen.getByTestId('autopay-attest-notified')).toBeInTheDocument();
+});
+it('keeps the Payments tab but hides fees when rollout is off',async()=>{
+  fetchMock.mockImplementation(async path=>json(String(path).endsWith('/payment-settings')?feeView(false):
+    {currencyCode:'USD',invoiceNumberPrefix:'INV',invoiceTermsDays:30}));
+  renderPage();await selectTab('payments');
+  await screen.findByTestId('autopay-settings-save');
+  expect(screen.queryByTestId('autopay-fees')).toBeNull();
+});
+
+it.each([false, true])('mounts Payments when autopayEnabled=%s', async autopayEnabled => {
+  const fields = {
+    autopayOffsetDays: { value: 0, source: 'default' }, autopayOffsetRule: { value: 'later', source: 'default' },
+    autopayCap: { value: { enabled: false }, source: 'default' }, achMode: { value: 'ach_preferred', source: 'default' },
+    cardFeeBps: { value: 0, source: 'default' }, achFeeAmount: { value: '0.00', source: 'default' }, feeAttested: false,
+    remindersEnabled: { value: false, source: 'default' },
+    reminderBeforeDueDays: { value: 3, source: 'default' },
+    reminderRepeatDays: { value: null, source: 'default' },
+    overdueReminderEveryDays: { value: 7, source: 'default' },
+  };
+  fetchMock.mockImplementation(async url => {
+    if (String(url).endsWith('/billing/payment-settings')) return json({
+      effective: fields, inherited: fields, autopayEnabled,
+      values: { autopayOffsetDays: null, autopayOffsetRule: null, autopayCapEnabled: null, autopayCapAmount: null, autopayCapCurrency: null, achMode: null },
+    });
+    return json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 });
+  });
+  window.location.hash = '#payments';
+  renderPage();
+  expect(await screen.findByTestId('autopay-payments-shell')).toBeInTheDocument();
+  expect(await screen.findByTestId('autopay-reminders-section')).toBeInTheDocument();
+  expect(screen.queryByTestId('autopay-settings-section') !== null).toBe(autopayEnabled);
+  expect(window.location.hash).toBe('#payments');
+  await selectTab('defaults');
+  await selectTab('payments');
+  expect(await screen.findByTestId('autopay-reminders-section')).toBeInTheDocument();
+});
+
   beforeEach(() => {
     vi.clearAllMocks();
     canWrite = true;
+    canManagePartnerWide = true;
     window.location.hash = '';
   });
 
-  it('has four tabs in order: Defaults, Documents, Rates, Connections (Documents onward behind "More" under jsdom)', async () => {
+  it('has five tabs in order: Defaults, Documents, Rates, Payments, Connections (Documents onward behind "More" under jsdom)', async () => {
     fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
     renderPage();
     expect(await screen.findByTestId('billing-settings-tab-defaults')).toBeInTheDocument();
     await userEvent.click(await screen.findByTestId('billing-settings-tab-more'));
     expect(screen.getByTestId('billing-settings-tab-documents')).toBeInTheDocument();
     expect(screen.getByTestId('billing-settings-tab-connections')).toBeInTheDocument();
-    const order = ['billing-settings-tab-defaults', ...['documents', 'rates', 'connections'].map(id => `billing-settings-tab-${id}`)];
+    const order = ['billing-settings-tab-defaults', ...['documents', 'rates'].map(id => `billing-settings-tab-${id}`), 'autopay-payments-tab', 'billing-settings-tab-connections'];
     expect(screen.getAllByRole('tab').map(tab => tab.getAttribute('data-testid'))).toEqual([order[0]]);
     expect(screen.getAllByRole('menuitem').map(item => item.getAttribute('data-testid'))).toEqual(order.slice(1));
   });
@@ -91,6 +142,33 @@ describe('PartnerBillingSettingsPage', () => {
     expect(screen.getByTestId('partner-billing-prefix')).toBeDisabled();
     expect(screen.queryByTestId('partner-billing-save')).not.toBeInTheDocument();
     expect(screen.getByTestId('partner-billing-readonly')).toBeInTheDocument();
+    expect(screen.getByTestId('partner-billing-readonly')).not.toHaveTextContent(/all organizations/i);
+  });
+
+  it('shows the plain notice (not the partner-wide one) when both the grant and partner-wide access are missing', async () => {
+    canWrite = false;
+    canManagePartnerWide = false;
+    fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
+    renderPage();
+    expect(await screen.findByTestId('partner-billing-readonly')).not.toHaveTextContent(/all organizations/i);
+    expect(screen.getByTestId('partner-billing-currency')).toBeDisabled();
+  });
+
+  it('is read-only with a partner-wide-specific notice when invoices:write is held but partner-wide access is not (#7517)', async () => {
+    canManagePartnerWide = false;
+    fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
+    renderPage();
+    expect(await screen.findByTestId('partner-billing-currency')).toBeDisabled();
+    expect(screen.queryByTestId('partner-billing-save')).not.toBeInTheDocument();
+    expect(screen.getByTestId('partner-billing-readonly')).toHaveTextContent(/all organizations/i);
+  });
+
+  it('stays editable when partner-wide capability is not yet known (server still enforces)', async () => {
+    canManagePartnerWide = undefined;
+    fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
+    renderPage();
+    expect(await screen.findByTestId('partner-billing-currency')).toBeEnabled();
+    expect(screen.getByTestId('partner-billing-save')).toBeEnabled();
   });
 
   it('keeps the form editable with a Save button when invoices:write is held', async () => {
@@ -431,3 +509,13 @@ describe('PartnerBillingSettingsPage', () => {
     });
   });
 });
+
+function feeView(enabled=true){
+  const effective={autopayOffsetDays:{value:0,source:'default'},autopayOffsetRule:{value:'later',source:'default'},
+    autopayCap:{value:{enabled:false},source:'default'},achMode:{value:'ach_preferred',source:'default'},
+    cardFeeBps:{value:300,source:'partner'},achFeeAmount:{value:'2.50',source:'partner'},feeAttested:true,
+    remindersEnabled:{value:false,source:'default'},reminderBeforeDueDays:{value:3,source:'default'},
+    reminderRepeatDays:{value:null,source:'default'},overdueReminderEveryDays:{value:7,source:'default'}};
+  return {autopayEnabled:enabled,effective,inherited:effective,values:{autopayOffsetDays:null,autopayOffsetRule:null,
+    autopayCapEnabled:null,autopayCapAmount:null,autopayCapCurrency:null,achMode:null,cardFeeBps:null,achFeeAmount:null}};
+}

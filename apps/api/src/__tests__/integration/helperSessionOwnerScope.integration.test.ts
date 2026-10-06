@@ -44,7 +44,8 @@ afterAll(async () => {
 
 async function seed() {
   const partner = await createPartner();
-  const org = await createOrganization({ partnerId: partner.id });
+  // Helper enabled: helperAuth refuses a device whose Helper is disabled.
+  const org = await createOrganization({ partnerId: partner.id, settings: { helper: { enabled: true } } });
   const site = await createSite({ orgId: org.id });
   const tech = await createUser({ partnerId: partner.id, orgId: org.id, email: `tech-${randomUUID()}@example.com` });
   const token = `brz_helper_${randomUUID().replace(/-/g, '')}`;

@@ -35,7 +35,13 @@ export class MicrosoftIdentityFailure extends Error {
 export interface VerifiedMicrosoftAdminIdentity {
   tenantId: string;
   administratorObjectId: string;
+  /** Display-only `preferred_username`; never an authorization input. */
+  administratorUsername: string | null;
 }
+
+const MAX_USERNAME_LENGTH = 256;
+// C0 controls and DEL: a display string must not carry line breaks or escapes.
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
 
 interface VerificationDependencies {
   verificationKey?: CryptoKey | KeyObject;
@@ -59,13 +65,29 @@ function canonicalClaimGuid(value: unknown): string | undefined {
   return typeof value === 'string' && UUID.test(value) ? value.toLowerCase() : undefined;
 }
 
+function displayUsername(value: unknown): string | null {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= MAX_USERNAME_LENGTH
+    && !CONTROL_CHARACTER.test(value)
+    ? value
+    : null;
+}
+
+/**
+ * Verifies a Microsoft v2 id_token for an administrator eligible to grant
+ * tenant-wide consent. `expectedTenantId: null` (organizations sign-in)
+ * accepts whichever tenant the signed `tid` names; every other check, including
+ * the tid-derived issuer, still applies. A GUID additionally requires
+ * `tid === expectedTenantId`.
+ */
 export async function verifyMicrosoftAdminIdentity(
   idToken: OpaqueIdentityToken,
-  expected: { tenantHint: string; clientId: string; nonce: string },
+  expected: { expectedTenantId: string | null; clientId: string; nonce: string },
   dependencies: VerificationDependencies = {},
 ): Promise<VerifiedMicrosoftAdminIdentity> {
   if (
-    !canonicalExpectedGuid(expected.tenantHint)
+    (expected.expectedTenantId !== null && !canonicalExpectedGuid(expected.expectedTenantId))
     || !canonicalExpectedGuid(expected.clientId)
     || typeof expected.nonce !== 'string'
     || expected.nonce.length === 0
@@ -117,10 +139,16 @@ export async function verifyMicrosoftAdminIdentity(
     throw failure('identity_token_invalid');
   }
 
-  if (tenantId !== expected.tenantHint) throw failure('tenant_mismatch');
+  if (expected.expectedTenantId !== null && tenantId !== expected.expectedTenantId) {
+    throw failure('tenant_mismatch');
+  }
   if (!roles.some((role) => ACCEPTED_ADMIN_ROLES.has(role.toLowerCase()))) {
     throw failure('admin_role_required');
   }
 
-  return { tenantId, administratorObjectId };
+  return {
+    tenantId,
+    administratorObjectId,
+    administratorUsername: displayUsername(payload.preferred_username),
+  };
 }

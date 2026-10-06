@@ -4,6 +4,7 @@ import { users } from './users';
 import { oauthClients, oauthSessions } from './oauth';
 import { aiToolExecutions } from './ai';
 import { actionIntents } from './actionIntents';
+import { diagnosticAccessGrants } from './diagnosticAccess';
 
 export const approvalRiskTierEnum = pgEnum('approval_risk_tier', [
   'low',
@@ -32,7 +33,7 @@ export const approvalRequests = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
     requestingClientId: text('requesting_client_id').references(() => oauthClients.id),
-    requestingSessionId: text('requesting_session_id').references(() => oauthSessions.id),
+    requestingSessionId: text('requesting_session_id').references(() => oauthSessions.id, { onDelete: 'set null' }),
     requestingClientLabel: varchar('requesting_client_label', { length: 255 }).notNull(),
     requestingMachineLabel: varchar('requesting_machine_label', { length: 255 }),
     actionLabel: text('action_label').notNull(),
@@ -92,6 +93,19 @@ export const approvalRequests = pgTable(
      * approval_requests_one_source_chk.
      */
     intentId: uuid('intent_id').references(() => actionIntents.id, { onDelete: 'cascade' }),
+
+    /**
+     * Diagnostic read grants (migration 2026-12-13-130000): links this
+     * fanned-out approval row to the `diagnostic_access_grants` request it
+     * decides. Same first-wins shape as elevation_request_id. ON DELETE SET
+     * NULL so a purged grant leaves the decision row readable for audit.
+     * Mutually exclusive with the other three links
+     * (approval_requests_one_source_chk).
+     */
+    diagnosticAccessGrantId: uuid('diagnostic_access_grant_id').references(
+      () => diagnosticAccessGrants.id,
+      { onDelete: 'set null' },
+    ),
 
     /**
      * What content this decision approved: SHA-256 hex digest bound at

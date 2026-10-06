@@ -106,6 +106,10 @@ func winRestoreTree(ctx context.Context, r *run) error {
 		// belong to; the recovery environment running this recognises none
 		// of them.
 		SecurityDescriptorsAsCaptured: true,
+		// Junctions (#7325) must resolve on the rebuilt machine, whose
+		// root is C: again once it boots, not on the recovery-time volume
+		// path the restore writes through.
+		JunctionTargetsAsCaptured: true,
 	}, func(_ string, cur, total int64, msg string) {
 		r.progress(PhaseRestore, msg, cur, total)
 	})

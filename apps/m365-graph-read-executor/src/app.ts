@@ -7,6 +7,8 @@ import {
   readActionResultSchema,
   retestRequestSchema,
   retestResultSchema,
+  verifyConsentIdentityRequestSchema,
+  verifyConsentIdentityResultSchema,
   syncActionRequestSchema,
   type CompleteConsentRequest,
   type CompleteConsentResult,
@@ -15,6 +17,8 @@ import {
   type ReadActionResult,
   type RetestRequest,
   type RetestResult,
+  type VerifyConsentIdentityRequest,
+  type VerifyConsentIdentityResult,
   type SyncActionRequest,
 } from '@breeze/shared/m365';
 import { Hono, type Context } from 'hono';
@@ -30,6 +34,7 @@ const INTERACTIVE_CAPACITY_RETRY_AFTER_SECONDS = 5;
 export interface ExecutorAppDependencies {
   authenticator: InternalRequestAuthenticator;
   completeConsent(request: CompleteConsentRequest): Promise<CompleteConsentResult>;
+  verifyIdentity(request: VerifyConsentIdentityRequest): Promise<VerifyConsentIdentityResult>;
   retest(request: RetestRequest): Promise<RetestResult>;
   readAction(request: ReadActionRequest): Promise<ReadActionResult>;
   syncAction(request: SyncActionRequest): Promise<M365SyncActionResponse>;
@@ -141,6 +146,23 @@ export function createExecutorApp(dependencies: ExecutorAppDependencies): Hono {
     } catch {
       return context.json({ error: 'invalid_request' }, 400);
     }
+    if (operation === 'verify-identity') {
+      const request = verifyConsentIdentityRequestSchema.safeParse(parsed);
+      if (!request.success) return context.json({ error: 'invalid_request' }, 400);
+      if (request.data.correlationId !== authentication.correlationId) {
+        return context.json({ error: 'unauthorized' }, 401);
+      }
+      try {
+        const result = verifyConsentIdentityResultSchema.safeParse(
+          await dependencies.verifyIdentity(request.data),
+        );
+        return result.success
+          ? context.json(result.data)
+          : context.json({ error: 'internal_error' }, 500);
+      } catch {
+        return context.json({ error: 'internal_error' }, 500);
+      }
+    }
     if (operation === 'complete-consent') {
       const request = completeConsentRequestSchema.safeParse(parsed);
       if (!request.success) return context.json({ error: 'invalid_request' }, 400);
@@ -224,6 +246,7 @@ export function createExecutorApp(dependencies: ExecutorAppDependencies): Hono {
     'content-type': 'text/plain; version=0.0.4; charset=utf-8',
   }));
   app.post('/v1/complete-consent', (context) => execute(context, 'complete-consent'));
+  app.post('/v1/verify-identity', (context) => execute(context, 'verify-identity'));
   app.post('/v1/retest', (context) => execute(context, 'retest'));
   app.post('/v1/read-action', (context) => execute(context, 'read-action'));
   app.post('/v1/sync-action', (context) => execute(context, 'sync-action'));

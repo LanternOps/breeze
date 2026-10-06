@@ -54,6 +54,7 @@ import {
   getMailboxCallbackUri,
   getMailboxPlatformConfig,
 } from '../../services/ticketMailbox/mailboxToken';
+import { ERROR_CODES } from '@breeze/shared';
 
 const partnerScopes = requireScope('partner', 'system');
 const requireMailboxRead = requirePermission(
@@ -386,7 +387,7 @@ mailboxRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     if (!canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     const resolved = resolvePartnerId(auth);
     if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
@@ -444,7 +445,7 @@ mailboxRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     if (!canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     const resolved = resolvePartnerId(auth);
     if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
@@ -658,6 +659,52 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery, (result, c) =>
         reason: probe.reason,
       });
       captureException(new Error(`Mailbox probe failed during consent callback: ${probe.reason ?? 'unknown'}`), c);
+      if (probe.kind === 'policy' || probe.kind === 'transient') {
+        // #7569: consent + admin identity were verified, only the app-only mailbox
+        // read failed (typically the Application Access Policy is not applied or
+        // has not propagated yet). Bind the verified tenant in `error` so the card
+        // shows the policy snippet + Re-test, instead of `reauth_required`, which
+        // hides that step and loops the admin through re-consent.
+        let bound = false;
+        try {
+          await callbackDb(() => bindVerifiedTenant(
+            session.connectionId,
+            session.partnerId,
+            session.consentAttemptId,
+            claims.tid,
+            { microsoftOid: claims.oid, breezeUserId: session.userId },
+            { status: 'error', lastError: failureMessage(probe.reason) },
+          ));
+          bound = true;
+        } catch (error) {
+          captureException(error instanceof Error ? error : new Error('Mailbox tenant binding failed'), c);
+          console.warn('[ticketMailbox] tenant bind failed after probe failure', {
+            connectionId: session.connectionId,
+            errorName: errorClassName(error),
+          });
+          if (isOwnershipConflict(error)) {
+            return fail('ownership_conflict', 'error', { step: 'tenant_binding' }, claims.tid);
+          }
+          // anything else: fall through to the re-consent failure path
+        }
+        if (bound) {
+          console.warn('[ticketMailbox] consent callback failed', {
+            connectionId: session.connectionId,
+            phase: session.phase,
+            outcome: 'probe_failed',
+            step: 'mailbox_probe',
+            probeKind: probe.kind,
+            rowUpdated: true,
+          });
+          writeCallbackAudit(
+            c,
+            session,
+            'ticket_mailbox.verification_failed',
+            auditDetails(session, connection, 'probe_failed', claims.tid, probe.reason),
+          );
+          return c.redirect('/settings/ticketing?ticketMailbox=needs_policy#email');
+        }
+      }
       return fail('probe_failed', 'needs_policy', { step: 'mailbox_probe' }, claims.tid, probe.reason);
     }
 
@@ -710,15 +757,15 @@ mailboxRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     if (!canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     const resolved = resolvePartnerId(auth);
     if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
     const { id } = c.req.valid('param');
     const connection = await getMailboxConnection(id, resolved.partnerId);
-    if (!connection) return c.json({ error: 'Connection not found' }, 404);
+    if (!connection) return c.json({ error: 'Connection not found', code: ERROR_CODES.NOT_FOUND }, 404);
     if (!['connected', 'error'].includes(connection.status) || !connection.tenantId) {
-      return c.json({ error: 'Mailbox re-consent required' }, 409);
+      return c.json({ error: 'Mailbox re-consent required', code: ERROR_CODES.MAILBOX_RECONSENT_REQUIRED }, 409);
     }
     const snapshot = {
       id: connection.id,
@@ -767,7 +814,7 @@ mailboxRoutes.post(
         probe.ok ? undefined : probe.reason,
       ),
     });
-    if (!changed) return c.json({ error: 'Mailbox connection changed during retest' }, 409);
+    if (!changed) return c.json({ error: 'Mailbox connection changed during retest', code: ERROR_CODES.CONFLICT }, 409);
     return c.json({ ok: probe.ok, ...(probe.ok ? {} : { error: failureMessage(probe.reason) }) });
   },
 );
@@ -782,13 +829,13 @@ mailboxRoutes.delete(
   async (c) => {
     const auth = c.get('auth');
     if (!canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     const resolved = resolvePartnerId(auth);
     if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
     const id = c.req.valid('param').id;
     const connection = await getMailboxConnection(id, resolved.partnerId);
-    if (!connection) return c.json({ error: 'Connection not found' }, 404);
+    if (!connection) return c.json({ error: 'Connection not found', code: ERROR_CODES.NOT_FOUND }, 404);
     await disableConnection(id, resolved.partnerId);
     writeRouteAudit(c, {
       orgId: null,

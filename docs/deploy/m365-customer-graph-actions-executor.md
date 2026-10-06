@@ -2,15 +2,29 @@
 
 This runbook deploys the isolated `@breeze/m365-graph-actions-executor` and enables the Breeze **Customer Graph Actions** (Tier-3 mutation) path. It mirrors the [Customer Graph Read runbook](./m365-customer-graph-read-executor.md); read that first for the shared trust-boundary and identity model. This executor owns a **separate** reusable Microsoft application certificate and app-only Graph tokens with **write** scope; the browser, general API, web app, database, and audit pipeline must never receive them.
 
-The actions executor is **execute-only**. It exposes exactly `POST /v1/execute-action` (behind the same internal EdDSA request authentication as the read executor) and `GET /healthz`. It performs no consent, no browser redirect, and no general Graph proxying.
+The actions executor serves the consent operations as well as mutations. Behind the same internal EdDSA request authentication as the read executor it exposes `POST /v1/verify-identity` (identity phase of consent), `POST /v1/retest` (application-token proof and grant reconciliation, used to finish consent and by Retest), `POST /v1/execute-action` (the mutations), and `GET /healthz`. `POST /v1/complete-consent` is still served for one release for an API older than the identity-first flow; the current API never calls it. The executor never redirects a browser and is not a general Graph proxy.
 
 ## Scope and trust boundary
 
 Customer Graph Actions uses one dedicated multitenant Entra application, the fixed `customer-graph-actions` profile (manifest version 1), certificate client authentication, and app-only (application-permission) tokens. It is **separate** from — and must not reuse the application, certificate, vault secret, or signing key of — the Customer Graph Read executor, the legacy direct M365 connector, delegated communications, or PowerShell.
 
-Only the actions-executor deployment receives its vault's data-plane access. The Breeze API owns authorization, org→tenant mapping, the durable approval layer, lifecycle, and audit. It calls only the private operation `POST /v1/execute-action`. `GET /healthz` proves process health, not Key Vault or Microsoft Graph access.
+Only the actions-executor deployment receives its vault's data-plane access. The Breeze API owns authorization, org→tenant mapping, the durable approval layer, lifecycle, and audit. It calls only the private operations `POST /v1/verify-identity`, `POST /v1/retest`, and `POST /v1/execute-action`. `GET /healthz` proves process health, not Key Vault or Microsoft Graph access.
 
 A mutation only runs after Breeze's **durable approval layer** has approved the intent (see the action-intents design). The API resolves the customer tenant from the approved intent's `org_id`, fails closed on any mismatch, and passes the resolved `tenantId` to the executor per call. The executor never selects a tenant on its own.
+
+## Consent flow (identity first)
+
+Actions consent uses the same identity-first flow as the read profile; see [Consent flow (identity first)](./m365-customer-graph-read-executor.md#consent-flow-identity-first) in the read runbook. In short: a v2 OpenID Connect sign-in (`/organizations`, or the bound tenant for a reconnect) verified by this executor's `verify-identity`; for an `/organizations` sign-in, a confirm-tenant step on the card (`#m365/customer-graph-actions/confirm-tenant`); Microsoft's v1 tenant-pinned `/{verifiedTenantId}/oauth2/authorize?…&prompt=admin_consent`, whose returned code is discarded; then `retest` against the verified tenant before the tenant is bound. Both phases return to `/api/v1/m365/actions-consent/callback`.
+
+The actions confirm-tenant routes are:
+
+- `GET /m365/customer-graph-actions/connections/consent/pending?orgId=...`
+- `POST /m365/customer-graph-actions/connections/consent/continue?orgId=...`
+- `POST /m365/customer-graph-actions/connections/consent/cancel?orgId=...`
+
+They require organization write permission, current MFA, the org-wide governance gate and onboarding, accept no tenant, and answer a non-oracular `404` when nothing is pending for the calling user. The audit events are `m365.customer_graph_actions.consent_initiated`, `…admin_identity_verified`, `…tenant_confirmed`, `…admin_consent_returned`, `…tenant_binding_verified` (with `verifiedAdministratorObjectId`, the administrator Breeze verified, not a claim about who clicked Accept), `…verification_failed`, `…retested`, and `…disconnected`.
+
+**Release gate:** deploy the executor image that serves `POST /v1/verify-identity` to every region before releasing an API build that uses it. An older executor answers `404`, and onboarding fails safe as `executor_unavailable`.
 
 ## Multi-tenant model (how one certificate serves many customers)
 
@@ -95,7 +109,7 @@ Unlike the read profile, the API has **no** `M365_CUSTOMER_GRAPH_ACTIONS_CALLBAC
 | `M365_GRAPH_ACTIONS_EXECUTOR_ISSUER` | Exactly `breeze-api`. |
 | `M365_GRAPH_ACTIONS_EXECUTOR_AUDIENCE` | Exactly `m365-graph-actions-executor`. |
 | `M365_GRAPH_ACTIONS_EXECUTOR_AZURE_CREDENTIAL_MODE` | `managed-identity` or `workload-identity`; no default/CLI credential fallback. |
-| `M365_GRAPH_ACTIONS_EXECUTOR_BIND_HOST` | A private RFC1918 or RFC 6598 shared-space (`100.64.0.0/10`, e.g. the Azure Container Apps replica overlay) IPv4 or unique-local IPv6 interface, not a hostname or public/loopback/link-local address. |
+| `M365_GRAPH_ACTIONS_EXECUTOR_BIND_HOST` | A private RFC1918 or RFC 6598 shared-space (`100.64.0.0/10`) IPv4 or unique-local IPv6 interface, or exactly `127.0.0.1` / `::1`; not a hostname, wildcard, other `127/8` address, or public/link-local address. On Azure Container Apps set it to `127.0.0.1`: ingress and health probes arrive from the in-pod Envoy sidecar over loopback, so a replica bound to its overlay IP never becomes healthy. Elsewhere, bind the private interface the TLS proxy reaches. |
 | `M365_GRAPH_ACTIONS_EXECUTOR_PORT` | Integer from 1 through 65535. |
 
 Managed identity may use `AZURE_CLIENT_ID` to select a user-assigned identity. Workload identity requires `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_FEDERATED_TOKEN_FILE`.
@@ -144,14 +158,14 @@ Three deploy-time traps were found while wiring this task's compose plumbing. Ea
 
 **(b) Enabling actions tools-only still requires a `PUBLIC_URL` var.** The boot validator (`validateM365CustomerGraphActionsRuntimeConfigAtBoot`) loads the full actions executor descriptor — including the consent callback URL — whenever **either** `M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED` **or** `M365_GRAPH_ACTIONS_TOOLS_ENABLED` is set, not only when onboarding is on. The descriptor's callback-URL parser requires one of `PUBLIC_URL`, `PUBLIC_APP_URL`, or `PUBLIC_API_URL` to be set in production (it has no default). A deployment that enables only the AI tools (leaving onboarding off, e.g. because consent already happened out of band) still needs one of those three vars set or the API refuses to boot — this is easy to miss because nothing about "tools" reads like it should care about a public URL.
 
-**(c) The executor's callback URL must byte-match the API's derived one.** `M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_URL` on the **executor** is a separate, independently-configured value from the API's derived `{PUBLIC_URL origin}/api/v1/m365/actions-consent/callback`. The executor compares the `redirectUri` it receives per-request against its own configured value with strict equality (`apps/m365-graph-actions-executor/src/operations.ts`); any mismatch — a different origin, a trailing slash, `http` vs `https`, a different `PUBLIC_APP_URL` chosen over `PUBLIC_API_URL` on the API side — fails the identity-verification leg with `identity_token_invalid`. Set both from the same source of truth and verify byte-for-byte equality as part of every deploy that touches either app's public origin configuration.
+**(c) The executor's callback URL must byte-match the API's derived one.** `M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_URL` on the **executor** is a separate, independently-configured value from the API's derived `{PUBLIC_URL origin}/api/v1/m365/actions-consent/callback`. The executor compares the `redirectUri` it receives per-request against its own configured value with strict equality (`apps/m365-graph-actions-executor/src/operations.ts`); any mismatch — a different origin, a trailing slash, `http` vs `https`, a different `PUBLIC_APP_URL` chosen over `PUBLIC_API_URL` on the API side — fails the `verify-identity` leg (the first step of consent) with `identity_token_invalid`, before any consent screen. Set both from the same source of truth and verify byte-for-byte equality as part of every deploy that touches either app's public origin configuration.
 
 ## Deployment and rollout
 
 1. Deploy the API release carrying the M365 actions control-plane and the reset-password reveal path (PR #2693) to every API instance; verify the running revision.
 2. Provision the dedicated actions Entra application, certificate, Key Vault version, executor identity, private ingress, and controlled egress.
 3. Verify the exact executor tuple against the signed release inventory as described above, then deploy it **dark** by that `sha256` digest (never a mutable tag); verify `GET /healthz` returns only `{"status":"ok"}` and that identity, Key Vault, and Microsoft connectivity succeed from a non-customer test path.
-4. Keep `M365_GRAPH_ACTIONS_TOOLS_ENABLED=false`. Confirm no public route reaches `/v1/execute-action` or `/healthz`, and that only the actions-executor identity can read the pinned vault secret.
+4. Keep `M365_GRAPH_ACTIONS_TOOLS_ENABLED=false`. Confirm no public route reaches `/v1/verify-identity`, `/v1/complete-consent`, `/v1/retest`, `/v1/execute-action`, or `/healthz`, and that only the actions-executor identity can read the pinned vault secret.
 5. Consent one disposable internal Breeze org so it has an `active` `customer-graph-actions` connection, then enable only that org UUID via `M365_GRAPH_ACTIONS_TOOLS_ORG_IDS`, flip `M365_GRAPH_ACTIONS_TOOLS_ENABLED=true`, and exercise a `disable` and a `reset_password` through the full approve → headless-execute → reveal path.
 6. Expand the org allowlist gradually. Use `*` only after limited rollout is accepted.
 

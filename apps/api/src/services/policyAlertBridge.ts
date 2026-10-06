@@ -9,6 +9,7 @@ import {
   organizations,
 } from '../db/schema';
 import { createAlert, resolveAlert, RESOLVABLE_ALERT_STATUSES } from './alertService';
+import { insertBuiltInAlertRule, type BuiltInAlertRuleSource } from './builtInAlertRules';
 import type { BreezeEvent } from './eventBus';
 import {
   handleConfigComplianceCompliant,
@@ -26,7 +27,7 @@ const POLICY_TEMPLATE_NAME = 'Policy Compliance Violation';
 /** Every org alert rule this bridge creates is named `<prefix>:<policyId>` (complianceAlertReconcile.ts finds them by it). */
 export const POLICY_RULE_PREFIX = 'Policy Violation Rule';
 /** The `source` this bridge stamps on its alert rules and alerts. */
-export const POLICY_ALERT_SOURCE = 'policy-evaluation';
+export const POLICY_ALERT_SOURCE = 'policy-evaluation' satisfies BuiltInAlertRuleSource;
 
 type PolicyEventPayload = {
   policyId?: string;
@@ -94,7 +95,8 @@ async function ensureTemplate(orgId: string): Promise<string> {
   return created.id;
 }
 
-async function ensureRule(
+/** Exported for testing (#7650 concurrent first-fire); handlePolicyViolation calls it. */
+export async function ensureRule(
   orgId: string,
   policyId: string,
   policyName: string,
@@ -119,30 +121,19 @@ async function ensureRule(
 
   const templateId = await ensureTemplate(orgId);
 
-  const [created] = await db
-    .insert(alertRules)
-    .values({
-      orgId,
-      templateId,
-      name: ruleName,
-      targetType: 'org',
-      targetId: orgId,
-      isActive: true,
-      overrideSettings: {
-        severity: mapSeverityFromEnforcement(enforcement),
-        cooldownMinutes: 30,
-        policyId,
-        policyName,
-        source: POLICY_ALERT_SOURCE,
-      },
-    })
-    .returning({ id: alertRules.id });
-
-  if (!created) {
-    throw new Error('Failed to create policy alert rule');
-  }
-
-  return created.id;
+  // Concurrent first fire returns the winner's row, never a second rule (#7650).
+  return insertBuiltInAlertRule({
+    orgId,
+    templateId,
+    name: ruleName,
+    overrideSettings: {
+      severity: mapSeverityFromEnforcement(enforcement),
+      cooldownMinutes: 30,
+      policyId,
+      policyName,
+      source: POLICY_ALERT_SOURCE,
+    },
+  });
 }
 
 async function resolvePolicyAlertsForDevice(ruleId: string, deviceId: string): Promise<void> {

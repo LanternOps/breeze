@@ -23,7 +23,7 @@
  * trivially consistent, which a SQL-level LIMIT/OFFSET combined with a
  * post-hoc JS filter would not (the count and the page could disagree).
  */
-import { and, desc, eq, inArray, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../../db';
 import { devices, organizations } from '../../db/schema';
@@ -115,6 +115,49 @@ export interface FleetFindingDetail extends FleetFindingRow {
   members: FleetFindingMember[];
   runs: FleetFindingRun[];
 }
+
+type RunCountProjection = Pick<
+  FleetFindingRun,
+  'targetCount' | 'succeededCount' | 'failedCount' | 'skippedCount'
+>;
+
+function countVisibleRunTargets(targets: Array<{ status: FleetTargetStatus }>): RunCountProjection {
+  let succeededCount = 0;
+  let failedCount = 0;
+  let skippedCount = 0;
+  for (const target of targets) {
+    if (target.status === 'succeeded') succeededCount += 1;
+    else if (target.status === 'failed') failedCount += 1;
+    else if (target.status === 'skipped') skippedCount += 1;
+  }
+  return { targetCount: targets.length, succeededCount, failedCount, skippedCount };
+}
+
+const RUN_LIST_METADATA_COLUMNS = {
+  id: fleetRemediationRuns.id,
+  actionKind: fleetRemediationRuns.actionKind,
+  scriptId: fleetRemediationRuns.scriptId,
+  runAs: fleetRemediationRuns.runAs,
+  commandType: fleetRemediationRuns.commandType,
+  status: fleetRemediationRuns.status,
+  createdBy: fleetRemediationRuns.createdBy,
+  createdAt: fleetRemediationRuns.createdAt,
+  startedAt: fleetRemediationRuns.startedAt,
+  completedAt: fleetRemediationRuns.completedAt,
+};
+
+type RunListRow = RunCountProjection & {
+  id: string;
+  actionKind: 'script' | 'command';
+  scriptId: string | null;
+  runAs: 'system' | 'user' | 'elevated' | null;
+  commandType: string | null;
+  status: FleetRunStatus;
+  createdBy: string | null;
+  createdAt: Date;
+  startedAt: Date | null;
+  completedAt: Date | null;
+};
 
 export interface FleetFindingListFilters {
   /** Already access-checked by the caller (route or AI tool) — trusted as-is. */
@@ -220,17 +263,62 @@ function serializeFinding(row: RawFindingRow): FleetFindingRow {
   };
 }
 
+const FINDING_KIND_LABELS: Record<string, string> = {
+  metric_anomaly_pattern: 'Metric anomaly pattern',
+  log_correlation: 'Log pattern',
+  reliability_offenders: 'Low reliability',
+};
+
 /**
- * Fetch member deviceIds-in-scope per finding for a SCOPE-restricted caller (site
- * axis, exact-device axis, or both — each narrows independently),
- * shared by `listFleetFindings` and `getFleetFindingCounts` so the two don't
- * drift (both apply the exact same "member device in an allowed site" test —
- * see the module doc's warning about dual-map drift between call sites).
+ * Project a finding's cached producer metadata onto the member devices the
+ * caller can actually see.
+ *
+ * `title`, `summary` and `evidence` are an org-wide cache written by the
+ * producer: they embed totals and a bounded sample of individual devices (ids
+ * and hostnames). They cannot be recomputed accurately from the samples after
+ * filtering, so whenever the caller is scope-restricted, or the cache no
+ * longer matches current membership, they are replaced with a neutral title
+ * built from the visible member count. Per-device detail stays available
+ * through the (scoped) member list.
+ */
+function projectFindingMetadata(
+  row: RawFindingRow,
+  visibleDeviceIds: ReadonlySet<string>,
+  scopeRestricted: boolean
+): RawFindingRow {
+  const cachedSamples = (row.evidence as { samples?: unknown } | null)?.samples;
+  const hasNonMemberSample = Array.isArray(cachedSamples) && cachedSamples.some(
+    (sample) => !sample || typeof sample !== 'object'
+      || !visibleDeviceIds.has((sample as { deviceId?: unknown }).deviceId as string)
+  );
+  if (!scopeRestricted && row.deviceCount === visibleDeviceIds.size && !hasNonMemberSample) return row;
+
+  const count = visibleDeviceIds.size;
+  return {
+    ...row,
+    deviceCount: count,
+    title: `${FINDING_KIND_LABELS[row.kind] ?? 'Fleet finding'}: ${count} ${count === 1 ? 'device' : 'devices'}`,
+    summary: null,
+    evidence: { totalDevices: count },
+  };
+}
+
+/**
+ * Fetch the CURRENT member deviceIds visible to `auth`, per finding — shared by
+ * `listFleetFindings` and `getFleetFindingCounts` so the two don't drift (see
+ * the module doc's warning about dual-map drift between call sites).
+ *
+ * Applies to every caller, not only scope-restricted ones: a member counts only
+ * while its device is still in the finding's own org (a membership row can
+ * outlive a device's move to another org that a partner can also read). On top
+ * of that, the site axis and the exact-device axis each narrow independently —
+ * a device-less analysis run carries `allowedDeviceIds` with no
+ * `allowedSiteIds`, so a site-keyed guard alone would be a silent no-op for it.
  *
  * Returns `null` — with NO query issued — when there is nothing to check
  * (either allowlist empty, or no candidate findings): callers must treat that
  * as "nothing visible" and return their own empty result, matching the
- * existing fail-closed contract (an empty site allowlist can never match).
+ * existing fail-closed contract (an empty allowlist can never match).
  */
 async function findingDeviceIdsForCaller(
   candidateFindingIds: readonly string[],
@@ -243,15 +331,16 @@ async function findingDeviceIdsForCaller(
 
   const memberConditions: SQL[] = [inArray(fleetFindingDevices.findingId, candidateFindingIds)];
   if (allowedSiteIds) memberConditions.push(inArray(devices.siteId, allowedSiteIds));
-  // Exact-device axis, INDEPENDENT of the site branch: a device-less analysis run
-  // carries `allowedDeviceIds` with no `allowedSiteIds`, so a site-keyed guard is
-  // a silent no-op for it and this file read the whole org (audit §1.2).
   if (allowedDeviceIds) memberConditions.push(inArray(fleetFindingDevices.deviceId, [...allowedDeviceIds]));
 
   const memberRows = await db
     .select({ findingId: fleetFindingDevices.findingId, deviceId: fleetFindingDevices.deviceId })
     .from(fleetFindingDevices)
-    .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
+    .innerJoin(fleetFindings, eq(fleetFindingDevices.findingId, fleetFindings.id))
+    .innerJoin(
+      devices,
+      and(eq(fleetFindingDevices.deviceId, devices.id), eq(devices.orgId, fleetFindings.orgId))
+    )
     .where(and(...memberConditions));
 
   const deviceIdsByFinding = new Map<string, Set<string>>();
@@ -332,20 +421,15 @@ export async function listFleetFindings(
     ? await baseQuery.limit(RESOLVED_HISTORY_FETCH_CAP)
     : await baseQuery) as RawFindingRow[];
 
-  let scoped = rows;
-
-  if (callerIsScopeRestricted(auth)) {
-    const candidateIds = rows.map((r) => r.id);
-    const deviceIdsByFinding = await findingDeviceIdsForCaller(candidateIds, auth);
-
-    if (deviceIdsByFinding === null) {
-      return { findings: [], total: 0 };
-    }
-
-    scoped = rows
-      .filter((r) => (deviceIdsByFinding.get(r.id)?.size ?? 0) > 0)
-      .map((r) => ({ ...r, deviceCount: deviceIdsByFinding.get(r.id)!.size }));
+  const deviceIdsByFinding = await findingDeviceIdsForCaller(rows.map((r) => r.id), auth);
+  if (deviceIdsByFinding === null) {
+    return { findings: [], total: 0 };
   }
+
+  const restricted = callerIsScopeRestricted(auth);
+  const scoped = rows
+    .filter((r) => (deviceIdsByFinding.get(r.id)?.size ?? 0) > 0)
+    .map((r) => projectFindingMetadata(r, deviceIdsByFinding.get(r.id)!, restricted));
 
   const total = scoped.length;
   const page = scoped.slice(filters.offset, filters.offset + filters.limit);
@@ -384,18 +468,12 @@ export async function getFleetFindingCounts(auth: AuthContext): Promise<FleetFin
     .from(fleetFindings)
     .where(and(...conditions))) as Array<{ id: string; orgId: string }>;
 
-  let scoped = rows;
-
-  if (callerIsScopeRestricted(auth)) {
-    const candidateIds = rows.map((r) => r.id);
-    const deviceIdsByFinding = await findingDeviceIdsForCaller(candidateIds, auth);
-
-    if (deviceIdsByFinding === null) {
-      return { total: 0, byOrg: {} };
-    }
-
-    scoped = rows.filter((r) => (deviceIdsByFinding.get(r.id)?.size ?? 0) > 0);
+  const deviceIdsByFinding = await findingDeviceIdsForCaller(rows.map((r) => r.id), auth);
+  if (deviceIdsByFinding === null) {
+    return { total: 0, byOrg: {} };
   }
+
+  const scoped = rows.filter((r) => (deviceIdsByFinding.get(r.id)?.size ?? 0) > 0);
 
   const byOrg: Record<string, number> = {};
   for (const r of scoped) {
@@ -426,6 +504,19 @@ export async function getFleetFinding(auth: AuthContext, id: string): Promise<Fl
 
   if (!row) return null;
 
+  const { allowedSiteIds, allowedDeviceIds } = auth;
+  if (allowedSiteIds?.length === 0 || allowedDeviceIds?.length === 0) return null;
+
+  // Current members only: the device must still be in the finding's own org,
+  // and inside the caller's site/device scope. Applied in SQL so nothing
+  // outside scope is ever read, and re-checked below on the returned rows.
+  const memberConditions: SQL[] = [
+    eq(fleetFindingDevices.findingId, id),
+    eq(devices.orgId, row.orgId),
+  ];
+  if (allowedSiteIds) memberConditions.push(inArray(devices.siteId, allowedSiteIds));
+  if (allowedDeviceIds) memberConditions.push(inArray(fleetFindingDevices.deviceId, [...allowedDeviceIds]));
+
   const memberRows = await db
     .select({
       deviceId: fleetFindingDevices.deviceId,
@@ -441,45 +532,71 @@ export async function getFleetFinding(auth: AuthContext, id: string): Promise<Fl
     })
     .from(fleetFindingDevices)
     .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
-    .where(eq(fleetFindingDevices.findingId, id))
+    .where(and(...memberConditions))
     .orderBy(desc(fleetFindingDevices.lastSeenAt));
 
-  const { allowedSiteIds, allowedDeviceIds } = auth;
   const filteredMembers = memberRows.filter((m) => (
     (!allowedSiteIds || allowedSiteIds.includes(m.siteId))
-    // Exact-device axis, independent of the site branch (audit §1.2).
     && (!allowedDeviceIds || allowedDeviceIds.includes(m.deviceId))
   ));
 
-  if (callerIsScopeRestricted(auth) && filteredMembers.length === 0) {
-    // Zero-member-in-scope — omit, mirroring the list endpoint.
-    return null;
+  // No current member in scope — omit, mirroring the list endpoint.
+  if (filteredMembers.length === 0) return null;
+
+  const restricted = callerIsScopeRestricted(auth);
+
+  // Recent run history. For a scope-restricted caller the per-run counts are
+  // recomputed from the targets whose device is CURRENTLY in scope (and in the
+  // run's org); the stored totals would reveal activity on hidden devices.
+  // Runs with no visible target drop out. Visibility is applied in SQL before
+  // the 10-row cap so hidden-only runs cannot crowd out visible ones.
+  let runRows: RunListRow[];
+  if (!restricted) {
+    runRows = await db
+      .select({
+        ...RUN_LIST_METADATA_COLUMNS,
+        targetCount: fleetRemediationRuns.targetCount,
+        succeededCount: fleetRemediationRuns.succeededCount,
+        failedCount: fleetRemediationRuns.failedCount,
+        skippedCount: fleetRemediationRuns.skippedCount,
+      })
+      .from(fleetRemediationRuns)
+      .where(eq(fleetRemediationRuns.findingId, id))
+      .orderBy(desc(fleetRemediationRuns.createdAt))
+      .limit(10);
+  } else {
+    const targetConditions: SQL[] = [eq(fleetRemediationRuns.findingId, id)];
+    if (allowedSiteIds) targetConditions.push(inArray(devices.siteId, allowedSiteIds));
+    if (allowedDeviceIds) targetConditions.push(inArray(fleetRemediationRunTargets.targetDeviceUuid, [...allowedDeviceIds]));
+    runRows = await db
+      .select({
+        ...RUN_LIST_METADATA_COLUMNS,
+        targetCount: sql<number>`count(*)::int`,
+        succeededCount: sql<number>`(count(*) filter (where ${fleetRemediationRunTargets.status} = 'succeeded'))::int`,
+        failedCount: sql<number>`(count(*) filter (where ${fleetRemediationRunTargets.status} = 'failed'))::int`,
+        skippedCount: sql<number>`(count(*) filter (where ${fleetRemediationRunTargets.status} = 'skipped'))::int`,
+      })
+      .from(fleetRemediationRuns)
+      .innerJoin(fleetRemediationRunTargets, eq(fleetRemediationRunTargets.runId, fleetRemediationRuns.id))
+      .innerJoin(
+        devices,
+        and(
+          eq(devices.id, fleetRemediationRunTargets.targetDeviceUuid),
+          eq(devices.orgId, fleetRemediationRuns.orgId)
+        )
+      )
+      .where(and(...targetConditions))
+      .groupBy(...Object.values(RUN_LIST_METADATA_COLUMNS))
+      .orderBy(desc(fleetRemediationRuns.createdAt))
+      .limit(10);
   }
 
-  const runRows = await db
-    .select({
-      id: fleetRemediationRuns.id,
-      actionKind: fleetRemediationRuns.actionKind,
-      scriptId: fleetRemediationRuns.scriptId,
-      runAs: fleetRemediationRuns.runAs,
-      commandType: fleetRemediationRuns.commandType,
-      status: fleetRemediationRuns.status,
-      targetCount: fleetRemediationRuns.targetCount,
-      succeededCount: fleetRemediationRuns.succeededCount,
-      failedCount: fleetRemediationRuns.failedCount,
-      skippedCount: fleetRemediationRuns.skippedCount,
-      createdBy: fleetRemediationRuns.createdBy,
-      createdAt: fleetRemediationRuns.createdAt,
-      startedAt: fleetRemediationRuns.startedAt,
-      completedAt: fleetRemediationRuns.completedAt,
-    })
-    .from(fleetRemediationRuns)
-    .where(eq(fleetRemediationRuns.findingId, id))
-    .orderBy(desc(fleetRemediationRuns.createdAt))
-    .limit(10);
-
   return {
-    ...serializeFinding({ ...row, deviceCount: filteredMembers.length }),
+    ...serializeFinding(projectFindingMetadata(
+      row,
+      new Set(filteredMembers.map((m) => m.deviceId)),
+      restricted
+    )),
     members: filteredMembers.map((m) => ({
       deviceId: m.deviceId,
       hostname: m.hostname,
@@ -488,7 +605,11 @@ export async function getFleetFinding(auth: AuthContext, id: string): Promise<Fl
       osType: m.osType as DeviceOsType,
       sourceKind: m.sourceKind,
       sourceRowId: m.sourceRowId ?? null,
-      memberEvidence: (m.memberEvidence ?? {}) as Record<string, unknown>,
+      // Some producers capture the hostname at detection time; report the
+      // device's current one instead.
+      memberEvidence: m.memberEvidence && typeof m.memberEvidence === 'object' && 'hostname' in m.memberEvidence
+        ? { ...(m.memberEvidence as Record<string, unknown>), hostname: m.hostname }
+        : (m.memberEvidence ?? {}) as Record<string, unknown>,
       firstSeenAt: m.firstSeenAt.toISOString(),
       lastSeenAt: m.lastSeenAt.toISOString(),
     })),
@@ -534,10 +655,11 @@ export interface FleetRemediationRunDetail extends FleetFindingRun {
 /**
  * Fetch a single remediation run by id (used by `GET /fleet/findings/runs/:runId`),
  * scoped to `auth` the same way `getFleetFinding` scopes a finding: RLS/org
- * condition on the run's own `orgId` column, then an app-layer site filter on
- * its target rows (a caller's site grant can shrink after a run was created,
- * so this is re-applied on every read rather than trusted from creation
- * time).
+ * condition on the run's own `orgId` column, then — for a scope-restricted
+ * caller — a join from each target to its device's CURRENT org and site. A
+ * device can move after a run was created, so the site/hostname snapshots are
+ * never trusted for authorization, and the run's counts are recomputed from
+ * the visible targets rather than returned as stored global totals.
  *
  * Returns `null` when the run doesn't exist, isn't in an accessible org, or
  * (for a site-restricted caller) has zero targets in an allowed site —
@@ -560,19 +682,68 @@ export async function getRemediationRun(auth: AuthContext, runId: string): Promi
 
   if (!run) return null;
 
-  const targetRows = await db
-    .select()
-    .from(fleetRemediationRunTargets)
-    .where(eq(fleetRemediationRunTargets.runId, runId));
-
   const { allowedSiteIds, allowedDeviceIds } = auth;
+  const restricted = callerIsScopeRestricted(auth);
+  if (allowedSiteIds?.length === 0 || allowedDeviceIds?.length === 0) return null;
+
+  let targetRows: Array<{
+    targetDeviceUuid: string;
+    hostnameSnapshot: string | null;
+    siteIdSnapshot: string | null;
+    status: FleetTargetStatus;
+    skipReason: string | null;
+    deviceCommandId: string | null;
+    resultSummary: string | null;
+    queuedAt: Date | null;
+    completedAt: Date | null;
+  }>;
+  if (!restricted) {
+    targetRows = await db
+      .select()
+      .from(fleetRemediationRunTargets)
+      .where(eq(fleetRemediationRunTargets.runId, runId));
+  } else {
+    const targetConditions: SQL[] = [eq(fleetRemediationRunTargets.runId, runId)];
+    if (allowedSiteIds) targetConditions.push(inArray(devices.siteId, allowedSiteIds));
+    if (allowedDeviceIds) targetConditions.push(inArray(fleetRemediationRunTargets.targetDeviceUuid, [...allowedDeviceIds]));
+    targetRows = await db
+      .select({
+        targetDeviceUuid: fleetRemediationRunTargets.targetDeviceUuid,
+        // Authorization is on the device's CURRENT site, so report the
+        // matching current values rather than a historical snapshot from a
+        // site the caller may never have been allowed to see.
+        hostnameSnapshot: devices.hostname,
+        siteIdSnapshot: devices.siteId,
+        status: fleetRemediationRunTargets.status,
+        skipReason: fleetRemediationRunTargets.skipReason,
+        deviceCommandId: fleetRemediationRunTargets.deviceCommandId,
+        resultSummary: fleetRemediationRunTargets.resultSummary,
+        queuedAt: fleetRemediationRunTargets.queuedAt,
+        completedAt: fleetRemediationRunTargets.completedAt,
+      })
+      .from(fleetRemediationRunTargets)
+      .innerJoin(
+        devices,
+        and(eq(devices.id, fleetRemediationRunTargets.targetDeviceUuid), eq(devices.orgId, run.orgId))
+      )
+      .where(and(...targetConditions));
+  }
+
   const visibleTargets = targetRows.filter((t) => (
     (!allowedSiteIds || (!!t.siteIdSnapshot && allowedSiteIds.includes(t.siteIdSnapshot)))
-    // Exact-device axis, independent of the site branch (audit §1.2).
     && (!allowedDeviceIds || allowedDeviceIds.includes(t.targetDeviceUuid))
   ));
 
-  if (callerIsScopeRestricted(auth) && visibleTargets.length === 0) return null;
+  if (restricted && visibleTargets.length === 0) return null;
+
+  const counts: RunCountProjection = restricted
+    ? countVisibleRunTargets(visibleTargets)
+    : {
+        targetCount: run.targetCount,
+        succeededCount: run.succeededCount,
+        failedCount: run.failedCount,
+        skippedCount: run.skippedCount,
+      };
 
   return {
     id: run.id,
@@ -585,10 +756,7 @@ export async function getRemediationRun(auth: AuthContext, runId: string): Promi
     commandType: run.commandType ?? null,
     parameterSnapshot: (run.parameterSnapshot ?? {}) as Record<string, unknown>,
     status: run.status,
-    targetCount: run.targetCount,
-    succeededCount: run.succeededCount,
-    failedCount: run.failedCount,
-    skippedCount: run.skippedCount,
+    ...counts,
     createdBy: run.createdBy ?? null,
     createdAt: run.createdAt.toISOString(),
     startedAt: isoOrNull(run.startedAt),
@@ -612,6 +780,7 @@ export type FleetFindingLifecycleAction = 'acknowledge' | 'dismiss' | 'reopen';
 export type FleetFindingLifecycleResult =
   | { ok: true; finding: FleetFindingRow }
   | { ok: false; status: 404; error: string }
+  | { ok: false; status: 403; error: string }
   | { ok: false; status: 400; error: string };
 
 // reopen deliberately excludes 'open' (nothing to reopen) and 'resolved'
@@ -633,7 +802,19 @@ const TARGET_STATUS: Record<FleetFindingLifecycleAction, FleetFindingStatus> = {
  * Apply an acknowledge/dismiss/reopen transition, stamping the acting user
  * and timestamp columns. Returns a discriminated result so the route can map
  * it straight to an HTTP status — no exceptions for expected outcomes
- * (not-found, invalid transition).
+ * (not-found, partial access, invalid transition).
+ *
+ * A finding is ONE row shared by all of its member devices, so a transition
+ * applies to every member at once. The caller must therefore be able to see
+ * every current member:
+ * - no visible member at all -> 404, exactly like the read paths (the finding
+ *   does not exist for this caller);
+ * - some members outside the caller's site/device scope -> 403, and nothing
+ *   is written.
+ *
+ * The finding row is locked FOR UPDATE and the member devices FOR SHARE for
+ * the whole check-then-write, so a concurrent device site/org move cannot
+ * change the visibility answer between the check and the update.
  */
 export async function applyFleetFindingLifecycle(
   auth: AuthContext,
@@ -642,90 +823,113 @@ export async function applyFleetFindingLifecycle(
   notes: string | undefined,
   actorUserId: string
 ): Promise<FleetFindingLifecycleResult> {
-  const conditions: SQL[] = [eq(fleetFindings.id, id)];
-  const orgCondition = auth.orgCondition(fleetFindings.orgId);
-  if (orgCondition) conditions.push(orgCondition);
+  return db.transaction(async (tx) => {
+    const conditions: SQL[] = [eq(fleetFindings.id, id)];
+    const orgCondition = auth.orgCondition(fleetFindings.orgId);
+    if (orgCondition) conditions.push(orgCondition);
 
-  const [existing] = (await db
-    .select({ ...FINDING_COLUMNS, orgName: organizations.name })
-    .from(fleetFindings)
-    .leftJoin(organizations, eq(fleetFindings.orgId, organizations.id))
-    .where(and(...conditions))
-    .limit(1)) as RawFindingRow[];
+    const [existing] = (await tx
+      .select({ ...FINDING_COLUMNS, orgName: organizations.name })
+      .from(fleetFindings)
+      .leftJoin(organizations, eq(fleetFindings.orgId, organizations.id))
+      .where(and(...conditions))
+      .limit(1)
+      .for('update', { of: fleetFindings })) as RawFindingRow[];
 
-  if (!existing) {
-    return { ok: false, status: 404, error: 'Finding not found' };
-  }
-
-  // Site-axis scoping. The org condition above is not sufficient: a
-  // site-restricted tech shares an org with findings whose members all sit in
-  // sites they cannot see. `getFleetFinding` and `listFleetFindings` both omit
-  // those, so the write path must fail closed identically — otherwise a
-  // finding that is invisible on read is still acknowledgeable, and the 200
-  // response body leaks its evidence.
-  const { allowedSiteIds, allowedDeviceIds } = auth;
-  if (callerIsScopeRestricted(auth)) {
-    const probeConditions: SQL[] = [eq(fleetFindingDevices.findingId, id)];
-    if (allowedSiteIds) probeConditions.push(inArray(devices.siteId, allowedSiteIds));
-    // Exact-device axis, independent of the site branch (audit §1.2).
-    if (allowedDeviceIds) probeConditions.push(inArray(fleetFindingDevices.deviceId, [...allowedDeviceIds]));
-    const [inScopeMember] = allowedSiteIds?.length === 0 || allowedDeviceIds?.length === 0
-      ? []
-      : await db
-          .select({ deviceId: fleetFindingDevices.deviceId })
-          .from(fleetFindingDevices)
-          .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
-          .where(and(...probeConditions))
-          .limit(1);
-
-    if (!inScopeMember) {
+    if (!existing) {
       return { ok: false, status: 404, error: 'Finding not found' };
     }
-  }
 
-  const allowedSources = ALLOWED_SOURCE_STATUSES[action];
-  if (!allowedSources.includes(existing.status as FleetFindingStatus)) {
-    return {
-      ok: false,
-      status: 400,
-      error: `Cannot ${action} a finding with status '${existing.status}'`,
+    const { allowedSiteIds, allowedDeviceIds } = auth;
+    // An empty allowlist on either axis can never match — fail closed with no
+    // membership query, mirroring the read paths.
+    if (allowedSiteIds?.length === 0 || allowedDeviceIds?.length === 0) {
+      return { ok: false, status: 404, error: 'Finding not found' };
+    }
+
+    const memberRows = await tx
+      .select({
+        deviceId: fleetFindingDevices.deviceId,
+        orgId: devices.orgId,
+        siteId: devices.siteId,
+      })
+      .from(fleetFindingDevices)
+      .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
+      .where(eq(fleetFindingDevices.findingId, id))
+      .orderBy(fleetFindingDevices.deviceId)
+      .for('share', { of: devices });
+
+    // A member counts only while its device is still in the finding's own
+    // org: a membership row can briefly outlive a device's move to another
+    // org that a partner-scoped caller may also be able to read.
+    const currentMembers = memberRows.filter((m) => m.orgId === existing.orgId);
+    const visibleMembers = currentMembers.filter((m) => (
+      (!allowedSiteIds || allowedSiteIds.includes(m.siteId))
+      && (!allowedDeviceIds || allowedDeviceIds.includes(m.deviceId))
+    ));
+
+    if (visibleMembers.length === 0) {
+      return { ok: false, status: 404, error: 'Finding not found' };
+    }
+    if (callerIsScopeRestricted(auth) && visibleMembers.length !== memberRows.length) {
+      return {
+        ok: false,
+        status: 403,
+        error: 'This finding includes devices outside your access; only a user who can access all of its devices can change its status',
+      };
+    }
+
+    const allowedSources = ALLOWED_SOURCE_STATUSES[action];
+    if (!allowedSources.includes(existing.status as FleetFindingStatus)) {
+      return {
+        ok: false,
+        status: 400,
+        error: `Cannot ${action} a finding with status '${existing.status}'`,
+      };
+    }
+
+    const now = new Date();
+    const updateValues: Partial<typeof fleetFindings.$inferInsert> = {
+      status: TARGET_STATUS[action],
+      updatedAt: now,
     };
-  }
 
-  const now = new Date();
-  const updateValues: Partial<typeof fleetFindings.$inferInsert> = {
-    status: TARGET_STATUS[action],
-    updatedAt: now,
-  };
+    if (action === 'acknowledge') {
+      updateValues.acknowledgedAt = now;
+      updateValues.acknowledgedBy = actorUserId;
+    } else if (action === 'dismiss') {
+      updateValues.dismissedAt = now;
+      updateValues.dismissedBy = actorUserId;
+      updateValues.dismissNotes = notes ?? null;
+    } else {
+      // reopen: clear prior lifecycle stamps so a fresh ack/dismiss cycle starts clean.
+      updateValues.acknowledgedAt = null;
+      updateValues.acknowledgedBy = null;
+      updateValues.dismissedAt = null;
+      updateValues.dismissedBy = null;
+      updateValues.dismissNotes = null;
+    }
 
-  if (action === 'acknowledge') {
-    updateValues.acknowledgedAt = now;
-    updateValues.acknowledgedBy = actorUserId;
-  } else if (action === 'dismiss') {
-    updateValues.dismissedAt = now;
-    updateValues.dismissedBy = actorUserId;
-    updateValues.dismissNotes = notes ?? null;
-  } else {
-    // reopen: clear prior lifecycle stamps so a fresh ack/dismiss cycle starts clean.
-    updateValues.acknowledgedAt = null;
-    updateValues.acknowledgedBy = null;
-    updateValues.dismissedAt = null;
-    updateValues.dismissedBy = null;
-    updateValues.dismissNotes = null;
-  }
+    // The status guard makes the write a no-op if a concurrent transition
+    // already moved the row (the FOR UPDATE above makes that unreachable in
+    // practice; this keeps the update honest on its own).
+    const [updated] = await tx
+      .update(fleetFindings)
+      .set(updateValues)
+      .where(and(...conditions, eq(fleetFindings.status, existing.status as FleetFindingStatus)))
+      .returning();
 
-  const [updated] = await db
-    .update(fleetFindings)
-    .set(updateValues)
-    .where(eq(fleetFindings.id, id))
-    .returning();
+    if (!updated) {
+      return { ok: false, status: 404, error: 'Finding not found' };
+    }
 
-  if (!updated) {
-    return { ok: false, status: 404, error: 'Finding not found' };
-  }
-
-  return {
-    ok: true,
-    finding: serializeFinding({ ...updated, orgName: existing.orgName } as RawFindingRow),
-  };
+    return {
+      ok: true,
+      finding: serializeFinding(projectFindingMetadata(
+        { ...updated, orgName: existing.orgName } as RawFindingRow,
+        new Set(visibleMembers.map((m) => m.deviceId)),
+        callerIsScopeRestricted(auth)
+      )),
+    };
+  });
 }

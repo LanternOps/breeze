@@ -1331,7 +1331,44 @@
       "invoice_number": "Fatura numarası",
       "due_date": "Vade tarihi",
       "invite_url": "Davet URL'si",
-      "cta_button": "Düğme"
+      "cta_button": "Düğme",
+      "client_name": "Client name",
+      "setup_link": "Automatic payments setup link",
+      "ach_mode_text": "Available payment methods",
+      "payment_method": "Saved payment method",
+      "schedule_text": "Payment schedule",
+      "fee_text": "Processing fee terms",
+      "stopped_by": "Who stopped automatic payments",
+      "open_invoices_text": "Open invoice summary",
+      "expires_on": "Card expiry date",
+      "update_link": "Payment method update link",
+      "amount_due": "Ödenecek tutar",
+      "charge_date": "Tahsilat tarihi",
+      "fee_amount": "İşlem ücreti",
+      "invoice_link": "Fatura bağlantısı",
+      "amount_paid": "Ödenen tutar",
+      "total_charged": "Tahsil edilen toplam",
+      "paid_on": "Ödeme tarihi",
+      "balance_remaining": "Kalan bakiye",
+      "failure_text": "Hata ayrıntıları",
+      "action_link": "İşlem bağlantısı",
+      "action_label": "İşlem etiketi",
+      "days_overdue": "Gecikme günü",
+      "pay_link": "Ödeme bağlantısı",
+      "charge_total": "Toplam tahsilat",
+      "attempted_amount": "Denenen ödeme tutarı"
+    },
+    "billingPayments": "Billing & payments",
+    "supportPortal": "Support & portal",
+    "labels": {
+      "autopay_request": "Automatic payments request",
+      "autopay_enrolled": "Automatic payments confirmed",
+      "autopay_stopped": "Automatic payments stopped",
+      "autopay_paused": "Otomatik ödemeler duraklatıldı",
+      "autopay_resumed": "Otomatik ödemeler devam ediyor",
+      "card_expiring": "Saved card expiring",
+      "payment_receipt": "Çevrimiçi ödeme makbuzu",
+      "payment_failed": "Ödeme tamamlanamadı"
     }
   },
   "inboundEmail": {
@@ -2115,6 +2152,13 @@
     "failedToFetchReviewDetails": "İnceleme ayrıntıları getirilemedi",
     "noReviewerEmailsAvailableForNotifications": "Bildirimler için inceleme e-postası yok",
     "unableToLaunchEmailNotification": "E-posta bildirimi başlatılamıyor",
+    "reviewersEmailed": "Atanan gözden geçirici e-posta ile bilgilendirildi",
+    "assignedReviewerEmailedOnly": "Atanan gözden geçirici e-posta ile bilgilendirildi. Seçilen diğer gözden geçiriciler e-posta almadı — bir inceleme yalnızca tek bir atanmış gözden geçirici saklar.",
+    "fallbackToMailClient": "{{reason}} Bunun yerine e-posta istemciniz açılıyor.",
+    "fallbackEmailNotConfigured": "Bu sunucuda e-posta gönderimi yapılandırılmamış.",
+    "fallbackNoReviewerEmail": "Atanan gözden geçiricinin kayıtlı bir e-posta adresi yok.",
+    "fallbackSendFailed": "Sunucu e-postayı gönderemedi.",
+    "fallbackRequestFailed": "Bildirim isteği başarısız oldu.",
     "failedToCreateAccessReview": "Erişim incelemesi oluşturulamadı",
     "failedToUpdateDecision": "Karar güncellenemedi",
     "failedToFetchReviewForReport": "Rapor için inceleme getirilemedi",
@@ -2129,7 +2173,12 @@
     "sending": "Gönderiliyor...",
     "notifyReviewers": "İncelemecilere Bildir",
     "completing": "Tamamlanıyor...",
-    "completeReview": "İncelemeyi Tamamla"
+    "completeReview": "İncelemeyi Tamamla",
+    "selfDecided": "Kendi kararı",
+    "selfDecidedHint": "Başka hiçbir yönetici inceleyemediği için, ilgili kullanıcının kendisi tarafından karara bağlandı (tek yönetici istisnası).",
+    "ownItemBlocked": "Kendi erişiminiz hakkında karar veremezsiniz. Kullanıcı yönetimi yetkisi olan başka bir yönetici bu öğeyi incelemelidir.",
+    "ownItemBlockedShort": "Başka bir inceleyici gerekli",
+    "ownItemSelfDecisionWarning": "Bunu inceleyebilecek tek yönetici sizsiniz, bu yüzden kendi erişiminiz hakkında karar verebilirsiniz. Bu, kendi kararı olarak kaydedilecek."
   },
   "aiUsagePage": {
     "aIUsageBudget": "Yapay Zeka Kullanımı",
@@ -2291,7 +2340,8 @@
       "triage": "Yeni uyarıları inceler ve ne yapılacağını önerir.",
       "patch": "Eksik yamaları gözden geçirir ve nelerin kurulacağını önerir.",
       "helpdesk": "Talepleri üstlenir; yanıt ve sonraki adım önerir.",
-      "designer": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar."
+      "designer": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar.",
+      "research": "Yerleşik. Bir teknisyen istediğinde bir cihazdaki tek bir sorunu araştırır ve güvenli çözümler önerir. Asla bir şey çalıştırmaz."
     },
     "emptyState": {
       "title": "Henüz aracı yok",
@@ -2437,7 +2487,8 @@
       "triage": "Uyarı önceliklendirme",
       "patch": "Yama yönetimi",
       "helpdesk": "Yardım masası",
-      "designer": "Filo tasarımcısı"
+      "designer": "Filo tasarımcısı",
+      "research": "Çözüm araştırması"
     },
     "modes": {
       "off": "Kapalı",
@@ -3741,6 +3792,11 @@
           "blurb": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar.",
           "runsWhen": "bir kuruluş için Filo tasarımı başlattığınızda veya üç aylık bir zamanlamada",
           "recommended": "sıfırdan bir geçiş veya üç aylık bir yapılandırma denetimi"
+        },
+        "research": {
+          "blurb": "Yerleşik. Bir teknisyen istediğinde bir cihazdaki tek bir sorunu araştırır ve güvenli çözümler önerir. Asla bir şey çalıştırmaz.",
+          "runsWhen": "bir teknisyen bir cihaz sorunu için çözüm önerisi istediğinde",
+          "recommended": "her seferinde tek bir sorun için otomatik, salt okunur araştırma"
         }
       },
       "kindCard": {
@@ -3768,6 +3824,36 @@
       "title": "Bu aracı yalnızca okur ve rapor yazar",
       "body": "Bir Fleet Designer hiçbir zaman bir cihazda bir şey çalıştırmaz. Açık, çalışabileceği ve tasarımlarını seçtiğiniz alıcılara teslim edebileceği anlamına gelir.",
       "ack": "Bu aracının gözetimsiz çalıştığını ve Fleet Design teslim ettiğini anlıyorum."
+    },
+    "research": {
+      "capsTitle": "Araştırma limitleri",
+      "builtInNote": "Yerleşik ve yalnızca öneri sunar: hiçbir şey çalıştırmaz. Kapatabilir ve harcama limitlerini belirleyebilirsiniz.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Eşzamanlı araştırmalar",
+          "hint": "Aynı anda kaç araştırma çalışabilir."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Saatlik araştırma",
+          "hint": "Bir saatte başlatılan araştırmaların üst sınırı."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Saatlik otomatik araştırma",
+          "hint": "Yüksek ve kritik uyarılardan otomatik başlatılan araştırmaların üst sınırı. 0 otomatik araştırmayı kapatır."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Hızlı araştırma bütçesi (sent)",
+          "hint": "Bir hızlı araştırma için harcama limiti."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Derin araştırma bütçesi (sent)",
+          "hint": "Bir derin araştırma için harcama limiti."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Günlük araştırma harcaması (sent)",
+          "hint": "Bu ajanın tüm çalışmaları için günlük toplam harcama limiti."
+        }
+      }
     }
   },
   "apiKeyForm": {
@@ -4167,6 +4253,8 @@
     "lastUsed": "Son kullanılan",
     "actions": "Eylemler",
     "requestFailed": "İstek başarısız oldu ({{status}})",
+    "notEnabledTitle": "Bağlı uygulamalar bu sunucuda etkin değil",
+    "notEnabledBody": "MCP OAuth bu sunucuda devre dışı. Bağlı uygulamalara izin vermek için MCP_OAUTH_ENABLED=true ayarlayın ve API'yi yeniden başlatın.",
     "revokeConfirm": "{{name}} erişimi iptal edilsin mi? Erişim jetonları 10 dakika içinde çalışmayı durduracaktır.",
     "revokeFailed": "İptal başarısız oldu ({{status}})",
     "networkError": "Ağ hatası",

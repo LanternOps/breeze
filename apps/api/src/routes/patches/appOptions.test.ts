@@ -65,10 +65,20 @@ vi.mock('../../db/schema', () => ({
   },
 }));
 
+// Mirrors prod gate semantics: 403 unless the caller holds exactly the
+// granted permission.
+let grantedPermission: string | null = 'devices:read';
+
 vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => async (c: any, next: any) => {
     c.set('auth', currentAuth);
     await next();
+  }),
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (`${resource}:${action}` !== grantedPermission) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+    return next();
   }),
 }));
 
@@ -98,6 +108,17 @@ describe('GET /app-options', () => {
     selectMock.mockReset();
     selectDistinctMock.mockReset();
     currentAuth = systemAuth();
+    grantedPermission = 'devices:read';
+  });
+
+  it('rejects a caller without devices:read', async () => {
+    grantedPermission = null;
+
+    const res = await appOptionsRoutes.request('/app-options');
+
+    expect(res.status).toBe(403);
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(selectDistinctMock).not.toHaveBeenCalled();
   });
 
   it('merges catalog and observed entries, with catalog metadata winning on dedup', async () => {

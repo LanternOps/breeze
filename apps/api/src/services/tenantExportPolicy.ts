@@ -6,6 +6,13 @@ export type ExportColumnDecision = {
   rationale: string;
   reviewedSensitiveName?: true;
   openContainerReviewed?: true;
+  /**
+   * A retiring column: excluded from the export and allowed to be absent from
+   * the live schema, because a later migration drops it (#7606). Lets one
+   * release run against the schema both before and after that drop (and an
+   * R2 → R1 rollback keep exporting). Only valid with `decision: 'exclude'`.
+   */
+  mayBeAbsent?: true;
 };
 
 export type TenantExportTablePolicy = {
@@ -193,9 +200,19 @@ export async function buildTenantExportPlan(
     const policyColumnNames = Object.keys(policy.columns);
     for (const columnName of policyColumnNames) assertSafeIdentifier(columnName);
 
+    for (const columnName of policyColumnNames) {
+      if (policy.columns[columnName]!.mayBeAbsent === true && policy.columns[columnName]!.decision !== 'exclude') {
+        throw new Error(
+          `[tenantExport] retiring column "${table}.${columnName}" (mayBeAbsent) must be excluded`,
+        );
+      }
+    }
+
     const policyColumnSet = new Set(policyColumnNames);
     const missing = liveColumnNames.filter((name) => !policyColumnSet.has(name));
-    const extra = policyColumnNames.filter((name) => !liveColumnSet.has(name));
+    const extra = policyColumnNames.filter(
+      (name) => !liveColumnSet.has(name) && policy.columns[name]!.mayBeAbsent !== true,
+    );
     if (missing.length > 0 || extra.length > 0) {
       throw new Error(describeColumnMismatch(table, missing, extra));
     }

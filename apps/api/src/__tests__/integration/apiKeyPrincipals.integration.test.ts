@@ -45,9 +45,12 @@
  */
 import './setup';
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Hono } from 'hono';
 import { createHash, randomBytes } from 'crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import postgres from 'postgres';
 import { and, eq } from 'drizzle-orm';
 
 import {
@@ -60,6 +63,7 @@ import {
   users,
 } from '../../db/schema';
 import { PERMISSIONS, clearPermissionCache } from '../../services/permissions';
+import { advanceUserEpochs } from '../../services/authLifecycle';
 import {
   createOrganization,
   createPartner,
@@ -90,6 +94,9 @@ async function insertApiKey(opts: {
   status?: 'active' | 'revoked' | 'expired';
   principalType?: 'human' | 'service';
   principalId?: string | null;
+  creatorAuthEpoch?: number | null;
+  creatorMfaEpoch?: number | null;
+  creatorCredentialEpoch?: number | null;
 }): Promise<{ rawKey: string; id: string }> {
   const rawKey = mintRawApiKey();
   const [row] = await getTestDb()
@@ -104,6 +111,9 @@ async function insertApiKey(opts: {
       status: opts.status ?? 'active',
       principalType: opts.principalType ?? 'human',
       principalId: opts.principalId ?? null,
+      creatorAuthEpoch: opts.creatorAuthEpoch ?? null,
+      creatorMfaEpoch: opts.creatorMfaEpoch ?? null,
+      creatorCredentialEpoch: opts.creatorCredentialEpoch ?? null,
     })
     .returning();
   return { rawKey, id: row!.id };
@@ -310,5 +320,107 @@ describe('SR2-15 real-DB API key principal authorization', () => {
     // Disable the PRINCIPAL itself -> the disable-cascade gate denies.
     await setPrincipalStatus(principal.id, 'disabled');
     expect((await callWithKey(rawKey)).status).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #7489: a human key binds to the creator's CREDENTIAL epoch, not the session
+// epoch. Ordinary logout advances users.auth_epoch (services/terminalLogout.ts
+// globallyRevokeUser -> advanceUserEpochs {auth:true}); before the fix that
+// killed every key the user had minted.
+// ---------------------------------------------------------------------------
+const CREDENTIAL_EPOCH_MIGRATION = '2026-11-12-110000-api-key-creator-credential-epoch.sql';
+if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required to re-apply the #7489 migration');
+const adminSql = postgres(process.env.DATABASE_URL, { max: 1, onnotice: () => {} });
+afterAll(async () => { await adminSql.end({ timeout: 5 }); });
+
+async function liveEpochs(userId: string) {
+  const [row] = await getTestDb()
+    .select({ authEpoch: users.authEpoch, mfaEpoch: users.mfaEpoch, credentialEpoch: users.credentialEpoch })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return row!;
+}
+
+async function keyCreatorWithReadRole() {
+  const partner = await createPartner();
+  const org = await createOrganization({ partnerId: partner.id });
+  const creator = await createUser({ partnerId: partner.id, orgId: org.id, status: 'active' });
+  const role = await createRole({ scope: 'organization', orgId: org.id, partnerId: partner.id });
+  await grantRolePermissions(role.id, [{ resource: PERMISSIONS.DEVICES_READ.resource, action: PERMISSIONS.DEVICES_READ.action }]);
+  await assignUserToOrganization(creator.id, org.id, role.id);
+  return { org, creator };
+}
+
+describe('#7489 real-DB: human API keys bind to credential_epoch, not auth_epoch', () => {
+  it('a key survives its creator logging out, and dies on a password change', async () => {
+    const { org, creator } = await keyCreatorWithReadRole();
+    const minted = await liveEpochs(creator.id);
+    const { rawKey } = await insertApiKey({
+      orgId: org.id,
+      createdBy: creator.id,
+      scopes: ['devices:read'],
+      creatorAuthEpoch: minted.authEpoch,
+      creatorMfaEpoch: minted.mfaEpoch,
+      creatorCredentialEpoch: minted.credentialEpoch,
+    });
+
+    expect((await callWithKey(rawKey)).status).toBe(200);
+
+    // Exactly the epoch advance an ordinary POST /auth/logout performs.
+    await getTestDb().transaction((tx) => advanceUserEpochs(tx as never, creator.id, { auth: true }));
+    const afterLogout = await liveEpochs(creator.id);
+    expect(afterLogout.authEpoch).toBe(minted.authEpoch + 1);
+    expect(afterLogout.credentialEpoch).toBe(minted.credentialEpoch);
+    expect((await callWithKey(rawKey)).status).toBe(200);
+
+    // Exactly the epoch advance a password change/reset performs.
+    await getTestDb().transaction((tx) =>
+      advanceUserEpochs(tx as never, creator.id, { auth: true, passwordReset: true, credential: true }),
+    );
+    const res = await callWithKey(rawKey);
+    expect(res.status).toBe(401);
+    expect(await res.text()).toContain('API key creator credentials have changed');
+  });
+
+  it('the backfill carries over only keys whose auth_epoch snapshot still matches — an already-stale key is not revived', async () => {
+    const { org, creator } = await keyCreatorWithReadRole();
+    const live = await liveEpochs(creator.id);
+    const valid = await insertApiKey({
+      orgId: org.id,
+      createdBy: creator.id,
+      scopes: ['devices:read'],
+      creatorAuthEpoch: live.authEpoch,
+      creatorMfaEpoch: live.mfaEpoch,
+    });
+    // Stamped before some later auth_epoch advance: the pre-fix middleware
+    // already rejects it, and nothing proves that advance was harmless.
+    const stale = await insertApiKey({
+      orgId: org.id,
+      createdBy: creator.id,
+      scopes: ['devices:read'],
+      creatorAuthEpoch: live.authEpoch - 1,
+      creatorMfaEpoch: live.mfaEpoch,
+    });
+
+    // Re-apply the (idempotent) migration so its backfill sees these rows.
+    await adminSql.unsafe(readFileSync(join(__dirname, '../../../migrations', CREDENTIAL_EPOCH_MIGRATION), 'utf8'));
+
+    const rows = await getTestDb()
+      .select({ id: apiKeys.id, creatorCredentialEpoch: apiKeys.creatorCredentialEpoch })
+      .from(apiKeys)
+      .where(eq(apiKeys.createdBy, creator.id));
+    const byId = new Map(rows.map((r) => [r.id, r.creatorCredentialEpoch]));
+    expect(byId.get(valid.id)).toBe(live.credentialEpoch);
+    expect(byId.get(stale.id)).toBeNull();
+
+    expect((await callWithKey(valid.rawKey)).status).toBe(200);
+    expect((await callWithKey(stale.rawKey)).status).toBe(401);
+
+    // After the backfill, the carried-over key has the new semantics: a
+    // logout no longer kills it.
+    await getTestDb().transaction((tx) => advanceUserEpochs(tx as never, creator.id, { auth: true }));
+    expect((await callWithKey(valid.rawKey)).status).toBe(200);
   });
 });

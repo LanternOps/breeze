@@ -33,6 +33,8 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
+  'src/components/billing/PaymentsSettingsTab.tsx',
+  'src/components/billing/autopayClient.ts',
   'src/components/monitoring/conversion/ConversionLedger.tsx',
   'src/components/monitoring/conversion/NeedsConversionPanel.tsx',
   'src/components/monitoring/conversion/ConversionPendingBanner.tsx',
@@ -202,6 +204,12 @@ const TARGET_GLOBS = [
   'src/components/billing/quotes/QuotesPage.tsx',
   'src/components/billing/quotes/QuoteEditor.tsx',
   'src/components/alerts/CorrelatedAlertGroups.tsx',
+  // M365 confirm-tenant interstitial (#7913 W03): continue/cancel are the
+  // last step before Microsoft consent — in the targeted set from birth, with
+  // the two cards that host it.
+  'src/components/integrations/M365ConfirmTenantPanel.tsx',
+  'src/components/integrations/M365CustomerGraphReadCard.tsx',
+  'src/components/integrations/M365CustomerGraphActionsCard.tsx',
   'src/components/integrations/SecurityIntegration.tsx',
   // Accounting entity mapping workbench (QuickBooks, and Xero from W02):
   // confirm/create/unlink/sync decisions
@@ -890,7 +898,10 @@ describe('no silent mutations in targeted set', () => {
     // W05 #7603 Task 13 adds ai/AiContinuationPrompt.tsx: 212 -> 213.
     // W06 #7604 Task 14 adds aiModels/ManualModelForm.tsx: 213 → 214.
     // (connectionForms/*.tsx hold no fetch calls: ConnectionDrawer performs the connection mutations.)
-    expect(absoluteFiles.length).toBe(214);
+    // W02 autopay adds the settings writer and shared transport.
+    // M365 identity-first W03 #7913 adds M365ConfirmTenantPanel.tsx and the
+    // two Customer Graph cards that host it: 216 → 219.
+    expect(absoluteFiles.length).toBe(219);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

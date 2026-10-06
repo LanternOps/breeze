@@ -60,6 +60,7 @@ export const MAIL_PURPOSES = {
   // ---- platform lane: operations and MSP staff notices --------------------
   'ops.alert': { lane: 'platform' },
   'staff.ai_budget_alert': { lane: 'platform' },
+  'staff.autopay': { lane: 'platform' },
   'staff.contract_renewal': { lane: 'platform' },
   'staff.quote_outcome': { lane: 'platform' },
   // W03. The notice that a partner's own sending domain is verified / at risk
@@ -70,6 +71,8 @@ export const MAIL_PURPOSES = {
   'staff.alert_notification': { lane: 'platform' },
   'staff.workspace_drift_report': { lane: 'platform' },
   'staff.report_failure': { lane: 'platform' },
+  // Settings → Access Reviews: "Email reviewers" to the assigned reviewer (MSP staff).
+  'staff.access_review_notice': { lane: 'platform' },
   'deployment.invite': { lane: 'platform' },
   'ticket.staff_notification': { lane: 'platform' },
 
@@ -82,6 +85,7 @@ export const MAIL_PURPOSES = {
   // when a tech accepts on their behalf. Same envelope as the quote itself;
   // its own purpose so delivery history never reports it as a quote send.
   'quote.acceptance_recorded': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
+  'billing.notice': { lane: 'partner', stream: 'billing', fallbackFrom: 'default' },
   'invoice.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
   'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'default' },
 } as const satisfies Record<string, MailPurposePolicy>;

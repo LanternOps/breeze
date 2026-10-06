@@ -95,6 +95,7 @@ import { registerDeliverableTools } from './aiToolsDeliverables';
 import { registerQuoteTools } from './aiToolsQuotes';
 import { registerOrgTools } from './aiToolsOrgs';
 import { registerPamTools } from './aiToolsPam';
+import { registerDiagnosticAccessTools } from './aiToolsDiagnosticAccess';
 import { registerExportTools } from './aiToolsExport';
 import { registerArtifactTools } from './aiToolsArtifacts';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
@@ -168,7 +169,7 @@ export interface AiTool {
   /**
    * The handler opens its OWN short DB contexts and must not run inside a
    * caller-opened per-call transaction (#7128). Set it only for a handler
-   * that hands work to another process and then WAITS on it — `propose_script`
+   * that performs external I/O or hands work to another process and WAITS — `propose_script`
    * commits a proposal, enqueues its review, and polls up to 45 s for the
    * worker's verdict.
    *
@@ -182,11 +183,18 @@ export interface AiTool {
    * i.e. chat and agent runs), which then opens no transaction around
    * `executeTool`; `executeTool` runs its own DB-touching phases (the
    * `deviceArgs` gate, result capture) in a short caller-scoped context when
-   * none is held. A caller that holds a request-wide transaction anyway (the
-   * MCP route's auth middleware) still holds it — the handler must check
-   * `hasDbAccessContext()` and not wait under it.
+   * none is held. MCP auth uses the same predicate before opening its ambient
+   * context. Other callers must likewise avoid a held request transaction;
+   * handlers still check that boundary before external I/O.
    */
-  selfManagedDbContext?: true;
+  // An action list opts out only those actions (e.g. Stripe pay-link creation).
+  selfManagedDbContext?: true | readonly string[];
+}
+
+/** Shared by both dispatch layers so their transaction ownership agrees. */
+export function toolManagesDbContext(tool: AiTool | undefined, input: Record<string, unknown>): boolean {
+  const ownership = tool?.selfManagedDbContext;
+  return ownership === true || (Array.isArray(ownership) && ownership.includes(input.action));
 }
 
 // ============================================
@@ -355,6 +363,7 @@ registerAgentMgmtTools(aiTools);
 registerAiAgentGovernanceTools(aiTools);
 registerUITools(aiTools);
 registerPamTools(aiTools);
+registerDiagnosticAccessTools(aiTools);
 registerVulnerabilityTools(aiTools);
 // Execution plane W04 — sandbox workspace tools (services/workspace/).
 registerWorkspaceTools(aiTools);
@@ -661,7 +670,7 @@ export async function executeTool(
   // (RLS-denied) and never held across the handler. Every other tool, and any
   // call that already holds a context, is untouched: the check short-circuits
   // on the flag before it ever consults the context store.
-  const ownContext = coreTool?.selfManagedDbContext === true && !hasDbAccessContext();
+  const ownContext = toolManagesDbContext(coreTool, effectiveInput) && !hasDbAccessContext();
   const inDispatchContext = <T>(fn: () => Promise<T>): Promise<T> =>
     ownContext ? withDbAccessContext(dbAccessContextFromAuth(auth), fn) : fn();
 

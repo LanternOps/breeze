@@ -28,7 +28,7 @@ function partnerRow(over: Record<string, unknown> = {}) {
     unattendedEnabled: false, maxUnattendedRiskTier: 'medium',
     unattendedAllowedClasses: ['services', 'processes', 'temp_files'], maxUnattendedPerHour: 10,
     protectedResources: { services: ['Spooler'], paths: [], registryKeys: [], deviceTags: [] },
-    reviewerModel: null, ...over,
+    ...over,
   };
 }
 function orgRow(over: Record<string, unknown> = {}) {
@@ -37,7 +37,7 @@ function orgRow(over: Record<string, unknown> = {}) {
     unattendedEnabled: true, maxUnattendedRiskTier: 'medium',
     unattendedAllowedClasses: ['services', 'printing'], maxUnattendedPerHour: 4,
     protectedResources: { services: [], paths: ['C:\\Windows'], registryKeys: [], deviceTags: [] },
-    reviewerModel: 'claude-sonnet-x', ...over,
+    ...over,
   };
 }
 
@@ -89,13 +89,9 @@ describe('resolveEffectiveScriptPolicy', () => {
     expect((await resolveEffectiveScriptPolicy('org-1')).proposingEnabled).toBe(false);
   });
 
-  it('an org reviewerModel overrides the partner default; null falls back', async () => {
-    rows.push(partnerRow({ reviewerModel: 'partner-model' }), orgRow({ reviewerModel: null }));
-    expect((await resolveEffectiveScriptPolicy('org-1')).reviewerModel).toBe('partner-model');
-    rows.length = 0;
-    selectCalls = 0;
+  it('the effective policy carries no reviewerModel, even from a row that still has one (W08, #7606)', async () => {
     rows.push(partnerRow({ reviewerModel: 'partner-model' }), orgRow({ reviewerModel: 'org-model' }));
-    expect((await resolveEffectiveScriptPolicy('org-1')).reviewerModel).toBe('org-model');
+    expect(await resolveEffectiveScriptPolicy('org-1')).not.toHaveProperty('reviewerModel');
   });
 
   it('with neither row present everything is off and proposing still defaults on', async () => {

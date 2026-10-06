@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import type { InheritableBrandingSettings } from '@breeze/shared';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
+import { MAX_LOGO_BYTES, LOGO_ACCEPT, resizeToDataUrl } from '../../lib/logoDataUrl';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 
@@ -8,38 +9,6 @@ type Props = {
   data: InheritableBrandingSettings;
   onChange: (data: InheritableBrandingSettings) => void;
 };
-
-const MAX_LOGO_BYTES = 400_000;
-const LOGO_ACCEPT = 'image/png,image/jpeg,image/webp';
-
-function resizeToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const objectUrl = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(objectUrl);
-      const MAX = 256;
-      let { width, height } = img;
-      if (width > MAX || height > MAX) {
-        const ratio = Math.min(MAX / width, MAX / height);
-        width = Math.round(width * ratio);
-        height = Math.round(height * ratio);
-      }
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) { reject(new Error('Canvas unavailable')); return; }
-      ctx.drawImage(img, 0, 0, width, height);
-      resolve(canvas.toDataURL('image/png'));
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
-      reject(new Error('Invalid image file'));
-    };
-    img.src = objectUrl;
-  });
-}
 
 export default function PartnerBrandingTab({ data, onChange }: Props) {
   const { t } = useTranslation('settings');

@@ -449,6 +449,7 @@ export async function putObjectBuffer(
 export async function getObjectStream(
   key: string,
 ): Promise<{ body: Readable | null; contentLength: number | null }> {
+  if (staleObjectKeys.has(key)) return { body: null, contentLength: null };
   const bucket = requireBucket();
   const client = getS3Client();
   try {
@@ -528,6 +529,7 @@ export async function deleteBinary(s3Key: string): Promise<void> {
 let presignTtlWarned = false;
 
 export async function getPresignedUrl(s3Key: string, ttlSeconds?: number): Promise<string> {
+  if (staleObjectKeys.has(s3Key)) throw staleObjectNotFound(s3Key);
   const bucket = requireBucket();
   const client = getS3Client();
   const rawTtl = parseInt(process.env.S3_PRESIGN_TTL || '900', 10);
@@ -549,11 +551,51 @@ export interface SyncResult {
   uploaded: number;
   skipped: number;
   errors: string[];
+  /**
+   * Keys whose upload still failed after retrying (#7574). Each is tombstoned
+   * for this process (readers treat it as missing and fall back to disk) and
+   * its previous object is deleted best-effort. Callers should alert on it.
+   */
+  failedKeys: string[];
 }
 
-export async function syncDirectory(localDir: string, s3Prefix: string): Promise<SyncResult> {
+export interface SyncDirectoryOptions {
+  /** Attempts per file before giving up (default 3). */
+  attempts?: number;
+  /** Delay between attempts (default 1000 ms). */
+  retryDelayMs?: number;
+}
+
+// #7574: keys whose S3 object is known NOT to hold the bytes staged on disk —
+// the current release's upload failed, so whatever sits at the key (if
+// anything) is a previous release's object. agent_versions already advertises
+// the staged file's checksum, so presigning that object would hand agents old
+// bytes under the new checksum (the #7516 checksum-loop shape). The readers
+// below treat a tombstoned key exactly like a missing object, which every
+// download path already handles by serving the staged file from disk.
+//
+// In-process only: the compensating delete in syncDirectory is what protects
+// other API replicas; this set covers the case where that delete fails too.
+const staleObjectKeys = new Set<string>();
+
+/** Stands in for a provider 404 on a tombstoned key — `isS3NotFound` is true. */
+function staleObjectNotFound(key: string): Error {
+  const err = new Error(
+    `S3 object ${key} is stale (its upload for the current release failed); treating it as missing`,
+  );
+  err.name = 'NotFound';
+  return err;
+}
+
+export async function syncDirectory(
+  localDir: string,
+  s3Prefix: string,
+  options: SyncDirectoryOptions = {},
+): Promise<SyncResult> {
   const bucket = requireBucket();
-  const result: SyncResult = { uploaded: 0, skipped: 0, errors: [] };
+  const attempts = Math.max(1, options.attempts ?? 3);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 1000);
+  const result: SyncResult = { uploaded: 0, skipped: 0, errors: [], failedKeys: [] };
 
   let entries: import('node:fs').Dirent[];
   try {
@@ -570,21 +612,50 @@ export async function syncDirectory(localDir: string, s3Prefix: string): Promise
     const filePath = join(localDir, entry.name);
     const s3Key = `${s3Prefix}/${entry.name}`;
 
-    try {
-      const localChecksum = await computeFileChecksum(filePath);
-      const localSize = statSync(filePath).size;
-      const remote = await getRemoteObjectState(bucket, s3Key);
-
-      if (remote.exists && remote.checksum === localChecksum && remote.size === localSize) {
-        result.skipped++;
-        continue;
+    // Boot awaits this sync. Once one file has exhausted its retries, S3 is
+    // probably down rather than flaky: give the rest a single attempt so an
+    // outage costs one retry cycle per prefix, not one per file.
+    const fileAttempts = result.failedKeys.length > 0 ? 1 : attempts;
+    let lastError: unknown;
+    let synced = false;
+    for (let attempt = 1; attempt <= fileAttempts && !synced; attempt++) {
+      if (attempt > 1 && retryDelayMs > 0) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, retryDelayMs));
       }
+      try {
+        const localChecksum = await computeFileChecksum(filePath);
+        const localSize = statSync(filePath).size;
+        const remote = await getRemoteObjectState(bucket, s3Key);
 
-      await uploadBinary(filePath, s3Key, localChecksum);
-      result.uploaded++;
-    } catch (err) {
-      result.errors.push(`${entry.name}: ${err instanceof Error ? err.message : String(err)}`);
+        if (remote.exists && remote.checksum === localChecksum && remote.size === localSize) {
+          result.skipped++;
+        } else {
+          await uploadBinary(filePath, s3Key, localChecksum);
+          result.uploaded++;
+        }
+        staleObjectKeys.delete(s3Key);
+        synced = true;
+      } catch (err) {
+        lastError = err;
+      }
     }
+    if (synced) continue;
+
+    // The key may still hold a previous release's object. Tombstone it first
+    // (cannot fail), then try to remove the object so other replicas — and
+    // this one after a restart — miss in S3 and serve from disk too.
+    staleObjectKeys.add(s3Key);
+    result.failedKeys.push(s3Key);
+    const reason = lastError instanceof Error ? lastError.message : String(lastError);
+    let deleteNote = 'previous object deleted';
+    try {
+      await deleteBinary(s3Key);
+    } catch (err) {
+      deleteNote =
+        `previous object NOT deleted (${err instanceof Error ? err.message : String(err)}); ` +
+        'other API replicas may still serve it until a sync succeeds';
+    }
+    result.errors.push(`${entry.name}: upload failed after ${fileAttempts} attempt(s): ${reason}; ${deleteNote}`);
   }
 
   return result;

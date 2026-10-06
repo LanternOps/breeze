@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * completes in seconds".
  *
  * The automation runtime dispatches each device's action inside a short system
- * transaction that holds the device row lock (SEC-118, #5562). The
+ * transaction that holds the device row lock (#5562). The
  * script_executions row and the device_commands row are INSERTed in that
  * transaction. If the WebSocket send also happens inside it, a fast agent can
  * answer before the transaction commits: the result path reads device_commands
@@ -262,7 +262,7 @@ describe('executeAutomationActionsInOrder — commit before send (#3445)', () =>
 
     const created = events.find((e) => e.event === 'rows_created');
     const sent = events.find((e) => e.event === 'sent');
-    // Rows are still written under the per-device lock (SEC-118).
+    // Rows are still written under the per-device lock.
     expect(created?.depth).toBeGreaterThan(0);
     // The send happened, and it happened with NO transaction open: the rows it
     // refers to are committed and visible to the result path.

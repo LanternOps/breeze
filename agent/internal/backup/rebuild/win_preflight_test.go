@@ -94,6 +94,38 @@ func TestWinPreflight_RefusesDiskWithWindowsTreeUnlessForced(t *testing.T) {
 	}
 }
 
+// W07a: the disk-has-Windows refusal carries a typed code so the recovery
+// console can offer an explicit OVERWRITE instead of dead-ending.
+func TestWinPreflight_DiskHasWindowsCarriesCode(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, sys := winFakeOptions(t, dir)
+	opts.Target = Target{Kind: TargetDisk, Path: `\\.\PhysicalDrive1`}
+	opts.DryRun = true
+	sys.inWinPE = true
+	sys.diskInfo[1] = WinDiskInfo{SizeBytes: 80 * GiB}
+	sys.volumes = append(sys.volumes, fakeVolume{guidPath: `\\?\Volume{existing}\`, diskNumber: 1, partitionNumber: 1})
+	sys.hasWindowsTree[`\\?\Volume{existing}\`] = true
+
+	res, err := Run(context.Background(), opts)
+	var ref *RefusalError
+	if !errors.As(err, &ref) || ref.Code != RefusalCodeDiskHasWindows {
+		t.Fatalf("err = %v", err)
+	}
+	if res == nil || res.Status != "refused" || res.RefusalCode != RefusalCodeDiskHasWindows {
+		t.Fatalf("result = %+v", res)
+	}
+
+	// Every other refusal stays untyped.
+	opts.Target = Target{Kind: TargetDisk, Path: `\\.\PhysicalDrive1`}
+	sys.hasWindowsTree[`\\?\Volume{existing}\`] = false
+	sys.inWinPE = false
+	res, err = Run(context.Background(), opts)
+	if err == nil || res == nil || res.Status != "refused" || res.RefusalCode != "" {
+		t.Fatalf("non-windows-tree refusal must carry no code: res=%+v err=%v", res, err)
+	}
+}
+
 // R10: vhdx free space below the minimum is refused before any write.
 func TestWinPreflight_RefusesVhdxBelowFreeSpace(t *testing.T) {
 	withHostPlatformWindows(t)
@@ -385,5 +417,34 @@ func TestIsDomainController_LoadsHiveReadOnly(t *testing.T) {
 	}
 	if got := countCalls(sys.cmds, "LoadHive "); len(got) != 0 {
 		t.Fatalf("cmds = %v, isDomainController must never load read-write", sys.cmds)
+	}
+}
+
+// #7325: a junction from another volume would be flattened into the root
+// volume exactly like a file, so it is refused the same way.
+func TestWinPreflight_RefusesJunctionsFromOtherVolumes(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, sys := winFakeOptions(t, dir)
+	p := opts.Provider.(*memProvider)
+	var snap backup.Snapshot
+	if err := json.Unmarshal(p.files["snapshots/win-1/manifest.json"], &snap); err != nil {
+		t.Fatal(err)
+	}
+	snap.Junctions = append(snap.Junctions,
+		backup.SnapshotJunction{SourcePath: `D:\Shares\Link`, Target: `D:\Shares\Real`},
+		// A root-volume junction is fine.
+		backup.SnapshotJunction{SourcePath: `c:\Users\a\My Music`, Target: `C:\Users\a\Music`},
+	)
+	man, _ := json.Marshal(snap)
+	p.files["snapshots/win-1/manifest.json"] = man
+
+	res, err := Run(context.Background(), opts)
+	want := "snapshot contains 0 files and 1 junctions from volume D:; multi-volume Windows rebuilds are not supported in this build"
+	if err == nil || res == nil || res.Status != "refused" || res.Refusal != want {
+		t.Fatalf("res=%+v err=%v, want refused with %q", res, err, want)
+	}
+	if sys.has("CreateVHDX") || sys.has("WriteGPT") {
+		t.Fatalf("refusal must not write: %v", sys.cmds)
 	}
 }

@@ -1003,6 +1003,8 @@
         "addPathOrProcess": "Pfad oder Prozess hinzufügen",
         "autoQuarantine": "Automatische Quarantäne",
         "moveThreatsToQuarantineImmediately": "Verschieben Sie Bedrohungen sofort in die Quarantäne.",
+        "autoQuarantineReapproval": "Die automatische Quarantäne ist pausiert: Scans laufen nur zur Erkennung, bis ein Benutzer mit der Berechtigung devices:execute diese Einstellungen erneut speichert.",
+        "autoQuarantineApproverInvalid": "Die automatische Quarantäne ist pausiert: Der Benutzer, der sie freigegeben hat, hat keinen devices:execute-Zugriff mehr. Scans laufen nur zur Erkennung, bis ein Benutzer mit dieser Berechtigung diese Einstellungen erneut speichert.",
         "autoQuarantine2": "AutoQuarantäne",
         "scheduledScans2": "geplante Scans",
         "scanMinute": "scanMinute",

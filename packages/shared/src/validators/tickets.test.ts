@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
-  createTicketSchema, updateTicketSchema, changeTicketStatusSchema,
+  createTicketSchema, createTicketBaseSchema, refineChangeTicketStatus, changeTicketStatusBaseSchema,
+  externalTicketIdSchema, externalTicketUrlSchema,
+  updateTicketSchema, changeTicketStatusSchema,
   assignTicketSchema, addTicketCommentSchema, listTicketsQuerySchema,
   ticketCategoryInputSchema, bulkTicketActionSchema, editCommentSchema, moveTicketOrgSchema,
   createTicketFromChatSchema
@@ -387,5 +389,46 @@ describe('createTicketFromChatSchema billing defaults', () => {
   });
   it('rejects a non-boolean override', () => {
     expect(createTicketFromChatSchema.safeParse({ ...payload, billable: 'true' }).success).toBe(false);
+  });
+});
+
+describe('ticket validators — Partner API base schemas (Wave 1)', () => {
+  const orgId = '3f2f1d8e-1111-4222-8333-444455556666';
+
+  it('externalTicketIdSchema/externalTicketUrlSchema are exported for the Partner API and rejected on the staff schemas', () => {
+    expect(externalTicketIdSchema.parse('  PSA-12345 ')).toBe('PSA-12345');
+    expect(externalTicketIdSchema.safeParse('   ').success).toBe(false);
+    expect(externalTicketIdSchema.safeParse('a'.repeat(256)).success).toBe(false);
+    expect(externalTicketUrlSchema.safeParse('https://psa.example.com/t/12345').success).toBe(true);
+    expect(externalTicketUrlSchema.safeParse('http://psa.local/1').success).toBe(true);
+    for (const bad of ['javascript:alert(1)', 'ftp://psa.example.com/1', 'not a url']) {
+      expect(externalTicketUrlSchema.safeParse(bad).success).toBe(false);
+    }
+    // The staff schemas strip them: the ref lives in ticket_external_refs and
+    // is only written through the Partner API.
+    const created = createTicketSchema.safeParse({ orgId, subject: 'x', externalTicketId: 'PSA-1' });
+    expect(created.success).toBe(true);
+    if (created.success) expect('externalTicketId' in created.data).toBe(false);
+    const updated = updateTicketSchema.safeParse({ externalTicketUrl: 'https://psa.example/1' });
+    expect(updated.success).toBe(true);
+    if (updated.success) expect('externalTicketUrl' in updated.data).toBe(false);
+  });
+
+  it('createTicketBaseSchema is the bare object, so a machine surface can .omit() from it', () => {
+    const partnerSchema = createTicketBaseSchema.omit({ formId: true, formResponses: true, submittedBy: true });
+    const r = partnerSchema.safeParse({ orgId, subject: 'x', formId: '9a8b7c6d-1111-4222-8333-444455556666' });
+    expect(r.success).toBe(true);
+    if (r.success) expect('formId' in r.data).toBe(false);
+  });
+
+  it('refineChangeTicketStatus is the shared rule set: a schema without aiDraftId still enforces resolutionNote', () => {
+    const machineSchema = changeTicketStatusBaseSchema.omit({ aiDraftId: true }).superRefine(refineChangeTicketStatus);
+    expect(machineSchema.safeParse({ status: 'resolved' }).success).toBe(false);
+    expect(machineSchema.safeParse({ status: 'resolved', resolutionNote: 'done' }).success).toBe(true);
+    expect(machineSchema.safeParse({ status: 'open', statusId: orgId }).success).toBe(false);
+    expect(machineSchema.safeParse({}).success).toBe(false);
+    // Unknown keys are stripped, so an aiDraftId smuggled in is dropped rather than honoured.
+    const r = machineSchema.safeParse({ status: 'resolved', aiDraftId: orgId });
+    expect(r.success).toBe(false);
   });
 });

@@ -17,7 +17,6 @@ const positiveQty = z.number().positive().max(9_999_999_999.99).multipleOf(0.01)
 // unlike an ordered/line quantity which must always be > 0.
 const nonnegativeQty = z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01);
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD');
-const taxRate = z.number().min(0).max(1);
 
 export const quoteStatusSchema = z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded']);
 export const quoteLineRecurrenceSchema = z.enum(['one_time', 'monthly', 'annual']);
@@ -373,6 +372,9 @@ export const coverPageSchema = z.object({
   coverImageId: z.string().guid().nullable().optional(),
   preparedForName: z.string().max(255).nullable().optional(),
   showPreparedBy: z.boolean().default(true),
+  // PDF only: a contents list (section → page, linked) under the intro. Lives
+  // with the cover settings but is independent of `enabled`. Absent = off.
+  showContents: z.boolean().optional(),
 });
 
 export type CoverPage = z.infer<typeof coverPageSchema>;
@@ -389,7 +391,11 @@ export const updateQuoteSchema = z.object({
   introNotes: z.string().max(5000).nullable().optional(),
   terms: z.string().max(20_000).nullable().optional(),
   termsAndConditions: z.string().max(20_000).nullable().optional(),
-  taxRate: taxRate.nullable().optional(),
+  // NOT editable (#7507). Declared only so a caller that still sends it gets a
+  // 400 below instead of having it silently stripped: a quote's rate is the
+  // organization's tax settings (or the partner default), re-resolved on every
+  // draft edit and frozen when the quote is sent — there is no per-quote level.
+  taxRate: z.unknown().optional(),
   billToName: z.string().max(255).nullable().optional(),
   depositType: quoteDepositTypeSchema.optional(),
   depositPercent: depositPercent.nullable().optional(),
@@ -397,6 +403,12 @@ export const updateQuoteSchema = z.object({
   // leaves it untouched (same convention as every other nullable field here).
   coverPage: coverPageSchema.nullable().optional(),
 }).refine(
+  (d) => d.taxRate === undefined,
+  {
+    message: "taxRate cannot be set on a quote — it comes from the organization's tax settings (or the partner default) and is fixed when the quote is sent",
+    path: ['taxRate'],
+  },
+).refine(
   // A percent value is only meaningful for a 'percent' deposit. Reject a patch
   // that pairs a non-percent type with a percent in the same request, so the
   // contradiction is caught at the boundary instead of being silently nulled by

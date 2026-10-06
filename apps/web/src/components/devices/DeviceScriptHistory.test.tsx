@@ -16,6 +16,7 @@ vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 type MockExecuteModalProps = {
   script: { id: string; name: string };
+  orgId?: string;
   initialDeviceIds?: string[];
   initialParameters?: Record<string, string | number | boolean>;
   onExecute: (
@@ -28,8 +29,9 @@ type MockExecuteModalProps = {
 };
 
 vi.mock('../scripts/ScriptExecutionModal', () => ({
-  default: ({ script, initialDeviceIds, initialParameters, onExecute, onClose }: MockExecuteModalProps) => (
+  default: ({ script, orgId, initialDeviceIds, initialParameters, onExecute, onClose }: MockExecuteModalProps) => (
     <div data-testid="mock-execution-modal">
+      <div data-testid="mock-org-id">{orgId ?? ''}</div>
       <div data-testid="mock-script-name">{script.name}</div>
       <div data-testid="mock-initial-device-ids">{JSON.stringify(initialDeviceIds ?? null)}</div>
       <div data-testid="mock-initial-parameters">{JSON.stringify(initialParameters ?? null)}</div>
@@ -88,7 +90,7 @@ describe('DeviceScriptHistory "Run again" (#4885)', () => {
   });
 
   async function openDetails() {
-    render(<DeviceScriptHistory deviceId={DEVICE_ID} />);
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} orgId="org-b" />);
     fireEvent.click(await screen.findByText('Collect Inventory'));
     return screen.findByText('Execution Details');
   }
@@ -104,6 +106,13 @@ describe('DeviceScriptHistory "Run again" (#4885)', () => {
     expect(screen.getByTestId('mock-initial-parameters')).toHaveTextContent(JSON.stringify({ target: 'C:\\Temp' }));
     // The details view closed in favor of the execute flow.
     expect(screen.queryByText('Execution Details')).toBeNull();
+  });
+
+  it('pins the execute modal to the device org (#7479)', async () => {
+    await openDetails();
+    fireEvent.click(screen.getByTestId('device-script-run-again'));
+    expect(await screen.findByTestId('mock-execution-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('mock-org-id')).toHaveTextContent('org-b');
   });
 
   it('refreshes history after a successful "Run again" submission', async () => {

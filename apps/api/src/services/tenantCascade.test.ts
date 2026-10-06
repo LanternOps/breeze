@@ -112,8 +112,21 @@ vi.mock('../db', () => ({
     insert: vi.fn(() => ({
       values: vi.fn(() => Promise.resolve(undefined)),
     })),
+    // The shared-identity detach runs in one transaction; hand the callback
+    // this same mock so its statements go through `execute` above.
+    transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+      const mod = await import('../db');
+      return fn(mod.db);
+    }),
   },
 }));
+
+const authLifecycleMocks = vi.hoisted(() => ({
+  advanceUserEpochs: vi.fn(async () => ({})),
+  revokeAllRefreshFamilies: vi.fn(async () => undefined),
+  runPostCommitCleanup: vi.fn(async () => ({ redisOk: true, permissionCacheOk: true, oauthOk: true })),
+}));
+vi.mock('./authLifecycle', () => authLifecycleMocks);
 
 const { deleteObjectKeysMock } = vi.hoisted(() => ({ deleteObjectKeysMock: vi.fn() }));
 vi.mock('./ticketAttachmentStorage', () => ({
@@ -137,6 +150,24 @@ vi.mock('./s3Storage', () => ({
 const { createAuditLogMock } = vi.hoisted(() => ({ createAuditLogMock: vi.fn(async () => undefined) }));
 vi.mock('./auditService', () => ({
   createAuditLog: createAuditLogMock,
+}));
+
+// Backup storage fence capture and the policy-level legal-hold sources are
+// proven against real Postgres (backupErasureFence.integration.test.ts). Here
+// the fence step is a no-op, so the queued rowCount fixtures below line up
+// exactly as they did before the fence step existed.
+const { captureFenceMock } = vi.hoisted(() => ({
+  captureFenceMock: vi.fn(async () => ({ snapshotPrefixes: 0, recoveryMediaKeys: 0, unresolvedIdentity: 0 })),
+}));
+vi.mock('./backupErasureFence', () => ({
+  captureBackupErasureFence: captureFenceMock,
+  // Sets a transaction-local GUC the on-delete fence trigger reads; no row
+  // effect, so it must not consume a queued rowCount response.
+  setBackupErasureContext: vi.fn(async () => undefined),
+}));
+vi.mock('./erasureBackupLegalHold', () => ({
+  findActiveBackupLegalHold: vi.fn(async () => ((mockState.legalHoldRows ?? []).length > 0 ? 'snapshot' : null)),
+  findPolicyBackupLegalHoldInContext: vi.fn(async () => null),
 }));
 
 import {
@@ -350,6 +381,11 @@ describe('cascadeDeleteOrg', () => {
     // Provide a non-zero rowCount for the first few execute() calls;
     // device_commands is cleared first then the cascade walk begins.
     mockState.executeResponses = [
+      // Shared-identity detach runs before the pre-clears: the users UPDATE
+      // and the partner_users.org_ids cleanup. Neither is a deletion, so
+      // neither is summed into totalRowsDeleted.
+      [{ id: 'user-b' }, { id: 'user-a' }], // users detached (RETURNING id)
+      { rowCount: 1 }, // partner_users.org_ids
       { rowCount: 5 }, // device_commands
       // One extra: the accounting_entity_mappings entry also runs a
       // retained-count SELECT (the payment mappings that still owe QuickBooks a
@@ -363,6 +399,12 @@ describe('cascadeDeleteOrg', () => {
     );
     // 5 from device_commands + 3 per cascade table.
     expect(stats.totalRowsDeleted).toBe(5 + 3 * cascadeOrder.length);
+    expect(stats.usersDetached).toBe(2);
+    // Detached users go through the same session cutoff as a membership
+    // removal: epoch + refresh families in the transaction, cleanup after.
+    expect(authLifecycleMocks.advanceUserEpochs.mock.calls.map((c) => (c as unknown[])[1])).toEqual(['user-a', 'user-b']);
+    expect(authLifecycleMocks.revokeAllRefreshFamilies).toHaveBeenCalledTimes(2);
+    expect(authLifecycleMocks.runPostCommitCleanup.mock.calls.map((c) => (c as unknown[])[0])).toEqual(['user-a', 'user-b']);
   });
 
   it('tolerates a missing associated system-scoped table (42P01, FLAT shape)', async () => {

@@ -488,7 +488,7 @@ export interface XeroGetOptions {
 
 async function xeroApiCall<T>(
   ctx: XeroCallContext, method: 'GET' | 'PUT' | 'POST', path: string, operation: string,
-  write?: { body: string; idempotencyKey?: string }, read?: XeroGetOptions,
+  write?: { body: string; idempotencyKey?: string; beforeCreate?: () => Promise<void> }, read?: XeroGetOptions,
 ): Promise<T> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${ctx.accessToken}`,
@@ -503,11 +503,13 @@ async function xeroApiCall<T>(
   // wait for a slot never eats into Xero's own response time.
   // A limiter refusal is thrown by withProviderCallSlot itself (outside the
   // leaf) and propagates untouched as rate_limited.
-  const { response, text } = await withProviderCallSlot('xero', ctx.rate, ctx.connectionId, () => xeroRoundTrip(
+  const { response, text } = await withProviderCallSlot('xero', ctx.rate, ctx.connectionId, async () => {
+    await write?.beforeCreate?.();
+    return xeroRoundTrip(
     operation,
     `${XERO_API_BASE}/${path}`,
     { method, headers, body: write?.body, signal: AbortSignal.timeout(ctx.timeoutMs ?? XERO_REQUEST_TIMEOUT_MS) },
-  ));
+  ); });
 
   const remainingHeader = response.headers.get('x-daylimit-remaining');
   const remaining = remainingHeader === null || remainingHeader.trim() === '' ? NaN : Number(remainingHeader);
@@ -548,11 +550,12 @@ export async function xeroApiGet<T>(ctx: XeroCallContext, path: string, operatio
  */
 export async function xeroApiWrite<T>(
   ctx: XeroCallContext, method: 'PUT' | 'POST', path: string, body: unknown, operation: string,
-  opts: { idempotencyKey?: string } = {},
+  opts: { idempotencyKey?: string; beforeCreate?: () => Promise<void> } = {},
 ): Promise<T> {
   const json = JSON.stringify(body);
   return xeroApiCall<T>(ctx, method, path, operation, {
     body: json,
+    beforeCreate: opts.beforeCreate,
     idempotencyKey: opts.idempotencyKey ?? (method === 'PUT' ? xeroIdempotencyKey(ctx.tenantId, method, path, json) : undefined),
   });
 }

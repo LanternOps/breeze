@@ -4,12 +4,13 @@
  */
 import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { and, eq } from 'drizzle-orm';
+import { db, hasDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
+  orgAutopayEnrollments, orgPaymentMethods, invoiceCollectionAttempts, billingNoticeOutbox,
   accountingConnections, accountingEntityMappings,
   invoicePayments, invoices, invoiceStripePayments, organizations, partners,
-  stripeConnectAccounts, stripeFinancialEvents, users,
+  stripeConnectAccounts, stripeFinancialEvents, users, organizationUsers, roles, userNotifications,
 } from '../../db/schema';
 
 const { emitInvoiceEvent, writeAuditEventAsync } = vi.hoisted(() => ({
@@ -108,6 +109,36 @@ function financialEvent(f: Awaited<ReturnType<typeof seed>>, overrides: Record<s
 describe('Stripe financial reversal state (real PostgreSQL)', () => {
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => vi.useRealTimers());
+
+  runDb('ACH full dispute and reinstatement preserve principal, fee and original method', async () => {
+    const f = await seedAutopayBank(false);
+    await withSystemDbAccessContext(() => db.update(invoiceStripePayments).set({
+      stripeObjectType: 'payment_intent', stripeObjectId: f.paymentIntentId,
+      paymentMethodType: 'us_bank_account', source: 'autopay', feeAmount: '3.00', status: 'failed',
+    }).where(eq(invoiceStripePayments.stripePaymentIntentId, f.paymentIntentId)));
+    await recordStripePayment({ stripeObjectId: f.paymentIntentId, stripePaymentIntentId: f.paymentIntentId, stripeAccountId: f.accountId, amount: '103.00', currency: 'USD' });
+    const captured = await withSystemDbAccessContext(() => db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, f.invoiceId)));
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({ amount: '100.00', method: 'ach_debit' });
+    returnProvider.amount = 10300;
+    await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: 'evt_ach_withdraw', eventType: 'charge.dispute.funds_withdrawn', chargeAmountMinor: 10300, refundedAmountMinor: null, disputeId: `dp_${f.invoiceId}`, disputeAmountMinor: 10300, disputeFundsWithdrawn: true, providerCreated: 300 }));
+    expect(await withSystemDbAccessContext(() => db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, f.invoiceId)))).toHaveLength(0);
+    await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: 'evt_ach_restore', eventType: 'charge.dispute.funds_reinstated', chargeAmountMinor: 10300, refundedAmountMinor: null, disputeAmountMinor: 10300, disputeFundsWithdrawn: false, providerCreated: 301 }));
+    const restored = await withSystemDbAccessContext(() => db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, f.invoiceId)));
+    expect(restored).toHaveLength(1);
+    expect(restored[0]).toMatchObject({ amount: '100.00', method: 'ach_debit' });
+  });
+  runDb('partial gross refund reduces only the proportional principal and duplicate delivery is harmless', async () => {
+    const f = await seed(false);
+    await withSystemDbAccessContext(() => db.update(invoiceStripePayments).set({ feeAmount: '3.00', paymentMethodType: 'card', source: 'autopay', stripeObjectType: 'payment_intent', stripeObjectId: f.paymentIntentId }).where(eq(invoiceStripePayments.stripePaymentIntentId, f.paymentIntentId)));
+    await recordStripePayment({ stripeObjectId: f.paymentIntentId, stripePaymentIntentId: f.paymentIntentId, stripeAccountId: f.accountId, amount: '103.00', currency: 'USD' });
+    const event = financialEvent(f, { stripeEventId: 'evt_fee_partial', chargeAmountMinor: 10300, refundedAmountMinor: 5150 });
+    await ingestStripeFinancialEvent(event);
+    await ingestStripeFinancialEvent(event);
+    const payments = await withSystemDbAccessContext(() => db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, f.invoiceId)));
+    expect(payments).toHaveLength(1);
+    expect(payments[0]).toMatchObject({ amount: '50.00', method: 'card' });
+  });
 
   runDb('full refund transitions the mapping before deleting, so the real FK/CHECK commits', async () => {
     const f = await seed();
@@ -209,7 +240,7 @@ describe('Stripe financial reversal state (real PostgreSQL)', () => {
       .where(eq(invoicePayments.id, mapping!.invoicePaymentId!)));
     const [invoice] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, f.invoiceId)));
     expect(mapping).toMatchObject({ status: 'succeeded', disputeFundsWithdrawn: false });
-    expect(payment!.amount).toBe('100.00');
+    expect(payment).toMatchObject({ amount: '100.00', method: 'card' });
     expect(invoice).toMatchObject({ status: 'paid', balance: '0.00' });
   });
 
@@ -383,4 +414,433 @@ describe('Stripe financial reversal state (real PostgreSQL)', () => {
       .where(eq(invoiceStripePayments.stripePaymentIntentId, f.paymentIntentId)));
     expect(mapping).toMatchObject({ status: 'partially_refunded', refundedAmountMinor: '4000' });
   });
+});
+
+
+describe('C3 cumulative gross refunds allocate principal without drift', () => {
+  const cases = [
+    { name: 'fractional cent rounds half up', fee: '3.00', gross: 10300, refunds: [18], balances: ['0.17'] },
+    { name: 'successive cumulative refunds', fee: '3.00', gross: 10300, refunds: [18, 36, 103, 10299, 10300], balances: ['0.17', '0.35', '1.00', '99.99', '100.00'] },
+    { name: 'refund smaller than fee', fee: '3.00', gross: 10300, refunds: [100, 300], balances: ['0.97', '2.91'] },
+    { name: 'combined refund and dispute clamp to gross', fee: '3.00', gross: 10300, refunds: [4000], balances: ['100.00'], dispute: 10000 },
+    { name: 'zero fee compatibility', fee: null, gross: 10000, refunds: [1, 10000], balances: ['0.01', '100.00'] },
+  ];
+  for (const c of cases) runDb(c.name, async () => {
+    const f = await seed(false);
+    await withSystemDbAccessContext(() => db.update(invoiceStripePayments).set({ feeAmount: c.fee ?? '0.00' }).where(eq(invoiceStripePayments.invoiceId, f.invoiceId)));
+    await recordStripePayment({ stripeObjectId: `cs_${f.invoiceId}`, stripePaymentIntentId: f.paymentIntentId, stripeAccountId: f.accountId, amount: c.fee ? '103.00' : '100.00', currency: 'USD' });
+    for (const [i, refund] of c.refunds.entries()) {
+      await ingestStripeFinancialEvent(financialEvent(f, { chargeAmountMinor: c.gross, refundedAmountMinor: refund, providerCreated: 1788690000 + i, ...('dispute' in c ? { eventType: 'charge.dispute.funds_withdrawn', disputeFundsWithdrawn: true, disputeAmountMinor: c.dispute } : {}) }));
+      const [invoice] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, f.invoiceId)));
+      expect(invoice!.balance).toBe(c.balances[i]);
+    }
+  });
+});
+
+const returnedStaff=vi.hoisted(()=>vi.fn(async()=>undefined));
+// Keep transactional in-app notifications real; only post-commit email is a transport fake.
+vi.mock('../../services/autopay/staffNotifications', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../services/autopay/staffNotifications')>();
+  return { ...actual, sendAutopayStaffEmail: returnedStaff };
+});
+import {enqueueAttemptNotice} from '../../services/autopay/paymentNotices';
+async function seedAutopayBank(linkPayment=true) {
+  const f=await seed(linkPayment);
+  returnProvider.accountId=f.accountId; returnProvider.code='R01'; returnProvider.fail=false; returnProvider.amount=10000;
+  return withSystemDbAccessContext(async()=>{
+    await db.update(organizations).set({billingContact:{email:'billing@example.test'}}).where(eq(organizations.id,f.orgId));
+    const [role] = await db.insert(roles).values({
+      orgId: f.orgId, partnerId: f.partnerId, scope: 'organization', name: 'Return notice recipient',
+    }).returning();
+    await db.insert(organizationUsers).values({ orgId: f.orgId, userId: f.userId, roleId: role!.id });
+    const [mapping]=await db.select().from(invoiceStripePayments)
+      .where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId));
+    const [enrollment]=await db.insert(orgAutopayEnrollments).values({orgId:f.orgId,partnerId:f.partnerId,
+      status:'active',generation:1,stripeConnectionId:f.connectionId,stripeAccountId:f.accountId,
+      stripeCustomerId:`cus_${f.invoiceId}`,effectiveFrom:new Date('2026-01-01'),requestedAt:new Date('2026-01-01')}).returning();
+    const [method]=await db.insert(orgPaymentMethods).values({orgId:f.orgId,enrollmentId:enrollment!.id,
+      stripePaymentMethodId:`pm_${f.invoiceId}`,type:'us_bank_account',bankName:'Test bank',bankLast4:'6789',
+      accountHolderType:'company',status:'active',isAutopayMethod:true}).returning();
+    await db.update(invoiceStripePayments).set({stripeObjectType:'payment_intent',stripeObjectId:f.paymentIntentId,
+      source:'autopay',paymentMethodType:'us_bank_account',feeAmount:'0.00',
+      ...(!linkPayment?{status:'failed' as const}:{}),
+    }).where(eq(invoiceStripePayments.id,mapping!.id));
+    if(mapping!.invoicePaymentId)await db.update(invoicePayments).set({method:'ach_debit'})
+      .where(eq(invoicePayments.id,mapping!.invoicePaymentId));
+    const [attempt]=await db.insert(invoiceCollectionAttempts).values({orgId:f.orgId,invoiceId:f.invoiceId,
+      scheduleId:null,attemptNo:1,paymentMethodId:method!.id,stripePaymentIntentId:f.paymentIntentId,
+      invoiceStripePaymentId:mapping!.id,idempotencyKey:`autopay_return_${f.invoiceId}`,principalAmount:'100.00',
+      feeAmount:'0.00',currency:'USD',state:linkPayment?'succeeded':'unapplied',initiatedBy:'client_on_session'}).returning();
+    return {...f,attemptId:attempt!.id,mappingId:mapping!.id};
+  });
+}
+async function expectDurableReturnNotice(f: Awaited<ReturnType<typeof seedAutopayBank>>) {
+  const notices = await withSystemDbAccessContext(() => db.select().from(userNotifications)
+    .where(eq(userNotifications.orgId, f.orgId)));
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toMatchObject({
+    userId: f.userId, orgId: f.orgId, type: 'billing', priority: 'high',
+    link: `/billing/invoices/${f.invoiceId}`, metadata: { event: 'payment.ach_returned' },
+    dedupeKey: `autopay:${f.attemptId}:payment.ach_returned:${f.mappingId}:dp_${f.invoiceId}:${f.userId}`,
+  });
+  // P-17: the message names the invoice by number, never by its raw id.
+  expect(notices[0]!.message).not.toContain(f.invoiceId); expect(notices[0]!.message).not.toContain(f.attemptId);
+}
+runDb('returns and restores bank principal once, preserving ach_debit',async()=>{
+  returnedStaff.mockClear();
+  const f=await seedAutopayBank();
+  await withSystemDbAccessContext(()=>enqueueAttemptNotice(db,f.attemptId,'pay'));
+  const withdrawal=financialEvent(f,{stripeEventId:`evt_out_${f.invoiceId}`,eventType:'charge.dispute.funds_withdrawn',
+    providerCreated:300,refundedAmountMinor:null,disputeId:`dp_${f.invoiceId}`,disputeAmountMinor:10000,disputeFundsWithdrawn:true});
+  await ingestStripeFinancialEvent(withdrawal);await ingestStripeFinancialEvent(withdrawal);
+  const [open]=await withSystemDbAccessContext(()=>db.select().from(invoices).where(eq(invoices.id,f.invoiceId)));
+  expect(open!.balance).toBe('100.00');
+  const failures=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(and(
+    eq(billingNoticeOutbox.invoiceId,f.invoiceId),eq(billingNoticeOutbox.kind,'payment_failed'))));
+  expect(failures).toHaveLength(2); // prior failure cannot suppress the late-return variant
+  const returned=failures.filter(row=>(row.rendered as {frozen:{variant?:string}}).frozen.variant==='returned');
+  expect(returned).toHaveLength(1);
+  expect(returned[0]!.dedupeKey).toBe(`${f.attemptId}:payment_failed:returned:${f.mappingId}:dp_${f.invoiceId}`);
+  expect(returned[0]!.rendered).toMatchObject({frozen:{attemptId:f.attemptId,variant:'returned',tokenId:null}});
+  expect((returned[0]!.rendered as {text:string}).text).toContain('returned a previously completed payment');
+  expect(returnedStaff).toHaveBeenCalledTimes(1);
+  expect(returnedStaff).toHaveBeenCalledWith(expect.objectContaining({event:'payment.ach_returned',invoiceId:f.invoiceId,
+    dedupeKey:`autopay:${f.attemptId}:payment.ach_returned:${f.mappingId}:dp_${f.invoiceId}`}));
+  await expectDurableReturnNotice(f);
+  const restore=financialEvent(f,{stripeEventId:`evt_back_${f.invoiceId}`,eventType:'charge.dispute.funds_reinstated',
+    providerCreated:301,refundedAmountMinor:null,disputeId:`dp_${f.invoiceId}`,disputeAmountMinor:10000,disputeFundsWithdrawn:false});
+  await ingestStripeFinancialEvent(restore);await ingestStripeFinancialEvent(restore);
+  const payments=await withSystemDbAccessContext(()=>db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId,f.invoiceId)));
+  expect(payments).toHaveLength(1);expect(payments[0]).toMatchObject({amount:'100.00',method:'ach_debit'});
+  expect(returnedStaff).toHaveBeenCalledTimes(1);
+  await expectDurableReturnNotice(f);
+});
+runDb('closes a full refund of unapplied capture without inventing a ledger payment',async()=>{
+  const f=await seedAutopayBank(false);
+  const refund=financialEvent(f,{refundedAmountMinor:10000});
+  await ingestStripeFinancialEvent(refund);await ingestStripeFinancialEvent(refund);
+  const [attempt]=await withSystemDbAccessContext(()=>db.select().from(invoiceCollectionAttempts)
+    .where(eq(invoiceCollectionAttempts.id,f.attemptId)));
+  expect(attempt).toMatchObject({state:'canceled',failureCode:'unapplied_refunded'});
+  const payments=await withSystemDbAccessContext(()=>db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId,f.invoiceId)));
+  expect(payments).toHaveLength(0);
+});
+
+const returnProvider = vi.hoisted(() => ({ code: 'R01', accountId: '', amount: 10000, calls: vi.fn(), fail: false }));
+vi.mock('../../services/partnerStripe', () => ({
+  PartnerStripeError: class PartnerStripeError extends Error {},
+  getPartnerStripeClient: async () => ({ stripeAccountId: returnProvider.accountId, stripe: {
+    disputes: { retrieve: async (id: string) => {
+      expect(hasDbAccessContext()).toBe(false);
+      returnProvider.calls(id);
+      if (returnProvider.fail) throw new Error('provider unavailable');
+      const invoiceId = id.slice(3);
+      return { id, payment_intent: `pi_${invoiceId}`, charge: `ch_${invoiceId}`, currency: 'usd',
+        amount: returnProvider.amount, livemode: false, network_reason_code: returnProvider.code };
+    } },
+  } }),
+}));
+import { reserveCollection } from '../../services/autopay/collectionEngine';
+import { getAutopayMethod } from '../../services/autopay/paymentMethods';
+runDb.each(['R07', 'R02'])('disables a bank method after authoritative %s return so it cannot fund the next invoice', async code => {
+  const f = await seedAutopayBank();
+  returnProvider.code = code;
+  await ingestStripeFinancialEvent(financialEvent(f, { eventType: 'charge.dispute.funds_withdrawn',
+    refundedAmountMinor: null, disputeId: `dp_${f.invoiceId}`, disputeAmountMinor: 10000, disputeFundsWithdrawn: true }));
+  expect(await withSystemDbAccessContext(() => getAutopayMethod(db, f.orgId))).toBeNull();
+  const [method] = await withSystemDbAccessContext(() => db.select().from(orgPaymentMethods).where(eq(orgPaymentMethods.orgId, f.orgId)));
+  expect(method).toMatchObject({ status: 'unusable', unusableReason: code });
+  // 2b-2: the returned email says the account can no longer be used and offers the update link.
+  const [returnedNotice] = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(and(
+    eq(billingNoticeOutbox.invoiceId, f.invoiceId), eq(billingNoticeOutbox.kind, 'payment_failed'))));
+  const returnedBody = returnedNotice!.rendered as { text: string; frozen: { variant: string; tokenId: string | null } };
+  expect(returnedBody.frozen).toMatchObject({ variant: 'returned', tokenId: expect.any(String) });
+  expect(returnedBody.text).toContain('bank account ending in 6789 can no longer be used for automatic payments');
+  expect(returnedBody.text).toMatch(/Pay invoice: https?:\/\/\S+/);
+  expect(returnedBody.text).toMatch(/Update payment method: https?:\/\/\S+/);
+  await withSystemDbAccessContext(async () => {
+    await db.update(partners).set({ autopayEnabled: true }).where(eq(partners.id, f.partnerId));
+    await db.update(stripeConnectAccounts).set({ status: 'connected', accountCountry: 'US',
+      autopayCapabilitiesCheckedAt: new Date(), autopayMissingPermissions: [] }).where(eq(stripeConnectAccounts.id, f.connectionId));
+  });
+  const draft = await withSystemDbAccessContext(() => invoiceService.createManualInvoice({ orgId: f.orgId }, f.actor));
+  await withSystemDbAccessContext(() => invoiceService.addManualLine(draft.id, { description: 'Next service', quantity: 1, unitPrice: 100, taxable: false }, f.actor));
+  const next = await withSystemDbAccessContext(() => invoiceService.issueInvoice(draft.id, f.actor));
+  await expect(reserveCollection({ invoiceId: next.id, initiatedBy: 'client_on_session' }))
+    .resolves.toMatchObject({ outcome: 'deferred', reason: 'method_not_usable' });
+});
+runDb('cleared merge authority gets a return notice without disabling another method', async () => {
+  const f = await seedAutopayBank();
+  await withSystemDbAccessContext(() => db.update(invoiceCollectionAttempts).set({ paymentMethodId: null }).where(eq(invoiceCollectionAttempts.id, f.attemptId)));
+  returnProvider.code = 'R07';
+  await ingestStripeFinancialEvent(financialEvent(f, { eventType: 'charge.dispute.funds_withdrawn',
+    refundedAmountMinor: null, disputeId: `dp_${f.invoiceId}`, disputeAmountMinor: 10000, disputeFundsWithdrawn: true }));
+  expect(await withSystemDbAccessContext(() => getAutopayMethod(db, f.orgId))).toMatchObject({ status: 'active' });
+  expect(await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId, f.invoiceId)))).toHaveLength(1);
+});
+runDb('partial refund of unapplied money preserves attention without creating a payment', async () => {
+  const f = await seedAutopayBank(false);
+  await ingestStripeFinancialEvent(financialEvent(f, { refundedAmountMinor: 5000 }));
+  const [attempt] = await withSystemDbAccessContext(() => db.select().from(invoiceCollectionAttempts).where(eq(invoiceCollectionAttempts.id, f.attemptId)));
+  expect(attempt!.state).toBe('unapplied');
+  expect(await withSystemDbAccessContext(() => db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, f.invoiceId)))).toHaveLength(0);
+});
+
+runDb('provider lookup failure leaves the return recoverable without holding a transaction', async () => {
+  const f = await seedAutopayBank();
+  const event = financialEvent(f, { eventType: 'charge.dispute.funds_withdrawn',
+    refundedAmountMinor: null, disputeId: `dp_${f.invoiceId}`, disputeAmountMinor: 10000, disputeFundsWithdrawn: true });
+  returnProvider.fail = true;
+  await expect(ingestStripeFinancialEvent(event)).rejects.toThrow('provider unavailable');
+  returnProvider.fail = false;
+  const [invoice] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, f.invoiceId)));
+  expect(invoice!.balance).toBe('0.00');
+  const [pending] = await withSystemDbAccessContext(() => db.select().from(stripeFinancialEvents)
+    .where(eq(stripeFinancialEvents.stripeEventId, event.stripeEventId)));
+  expect(pending).toMatchObject({ status: 'pending', processedAt: null });
+  expect(await withSystemDbAccessContext(() => db.select().from(userNotifications)
+    .where(eq(userNotifications.orgId, f.orgId)))).toHaveLength(0);
+  await expect(ingestStripeFinancialEvent(event)).resolves.toMatchObject({ state: 'applied' });
+  await expectDurableReturnNotice(f);
+});
+runDb('staff delivery failure cannot prevent accounting audit or invoice hooks after a return', async () => {
+  const f = await seedAutopayBank();
+  returnedStaff.mockClear();
+  vi.mocked(writeAuditEventAsync).mockClear();
+  vi.mocked(emitInvoiceEvent).mockClear();
+  returnedStaff.mockRejectedValueOnce(new Error('staff unavailable'));
+  await expect(ingestStripeFinancialEvent(financialEvent(f, { eventType: 'charge.dispute.funds_withdrawn',
+    refundedAmountMinor: null, disputeId: `dp_${f.invoiceId}`, disputeAmountMinor: 10000, disputeFundsWithdrawn: true })))
+    .resolves.toMatchObject({ state: 'applied', change: 'reduced' });
+  expect(returnedStaff).toHaveBeenCalledTimes(1);
+  await expectDurableReturnNotice(f);
+  expect(writeAuditEventAsync).toHaveBeenCalled();
+  expect(emitInvoiceEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'payment.voided', invoiceId: f.invoiceId }));
+});
+
+import { billingLinkTokens } from '../../db/schema';
+runDb('concurrent confirm notice replay mints one generation-bound token for the exact attempt', async () => {
+  const f = await seedAutopayBank(false);
+  await Promise.all([
+    withSystemDbAccessContext(() => enqueueAttemptNotice(db, f.attemptId, 'confirm')),
+    withSystemDbAccessContext(() => enqueueAttemptNotice(db, f.attemptId, 'confirm')),
+  ]);
+  const tokens = await withSystemDbAccessContext(() => db.select().from(billingLinkTokens).where(and(
+    eq(billingLinkTokens.invoiceId, f.invoiceId), eq(billingLinkTokens.purpose, 'confirm_payment'))));
+  expect(tokens).toHaveLength(1);
+  expect(tokens[0]!.generation).toBe(1);
+  const notices = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId, f.invoiceId)));
+  expect(notices).toHaveLength(1);
+  expect(notices[0]!.rendered).toMatchObject({ frozen: { attemptId: f.attemptId, tokenId: tokens[0]!.id, variant: 'confirm' } });
+});
+
+runDb('partial refunds allocate once, ignore old totals and return the full fee at the end',async()=>{
+  const f=await seed(false);
+  await withSystemDbAccessContext(()=>db.update(invoiceStripePayments).set({feeAmount:'3.00',paymentMethodType:'card',
+    source:'autopay',stripeObjectType:'payment_intent',stripeObjectId:f.paymentIntentId})
+    .where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId)));
+  await recordStripePayment({stripeObjectId:f.paymentIntentId,stripePaymentIntentId:f.paymentIntentId,
+    stripeAccountId:f.accountId,amount:'103.00',currency:'USD'});
+  const event=financialEvent(f,{stripeEventId:`evt_half_${f.invoiceId}`,chargeAmountMinor:10300,refundedAmountMinor:5150,providerCreated:200});
+  await Promise.all([ingestStripeFinancialEvent(event),ingestStripeFinancialEvent(event)]);
+  await ingestStripeFinancialEvent(financialEvent(f,{chargeAmountMinor:10300,refundedAmountMinor:1030,providerCreated:100}));
+  let [mapping]=await withSystemDbAccessContext(()=>db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId)));
+  const [payment]=await withSystemDbAccessContext(()=>db.select().from(invoicePayments).where(eq(invoicePayments.id,mapping!.invoicePaymentId!)));
+  expect(payment!.amount).toBe('50.00');expect(mapping!.feeReversedAmount).toBe('1.50');
+  await ingestStripeFinancialEvent(financialEvent(f,{chargeAmountMinor:10300,refundedAmountMinor:10300,providerCreated:201}));
+  [mapping]=await withSystemDbAccessContext(()=>db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId)));
+  expect(mapping).toMatchObject({status:'refunded',invoicePaymentId:null,feeReversedAmount:'3.00'});
+});
+runDb('won ACH dispute restores only unrefunded principal and the correct rail',async()=>{
+  const f=await seedAutopayBank();
+  returnProvider.amount = 10300;
+  await withSystemDbAccessContext(async()=>{
+    await db.update(invoiceStripePayments).set({feeAmount:'3.00'}).where(eq(invoiceStripePayments.id,f.mappingId));
+    await db.update(invoiceCollectionAttempts).set({feeAmount:'3.00'}).where(eq(invoiceCollectionAttempts.id,f.attemptId));
+  });
+  await ingestStripeFinancialEvent(financialEvent(f,{chargeAmountMinor:10300,refundedAmountMinor:5150,providerCreated:200}));
+  const withdrawal=financialEvent(f,{stripeEventId:`evt_fee_withdrawal_${f.invoiceId}`,
+    eventType:'charge.dispute.funds_withdrawn',chargeAmountMinor:10300,disputeId:`dp_${f.invoiceId}`,
+    refundedAmountMinor:null,disputeAmountMinor:10300,disputeFundsWithdrawn:true,providerCreated:300});
+  expect(await ingestStripeFinancialEvent(withdrawal)).toMatchObject({state:'applied'});
+  const [withdrawn]=await withSystemDbAccessContext(()=>db.select().from(invoiceStripePayments)
+    .where(eq(invoiceStripePayments.id,f.mappingId)));
+  expect(withdrawn).toMatchObject({status:'disputed',invoicePaymentId:null,feeReversedAmount:'3.00'});
+  const [appliedWithdrawal]=await withSystemDbAccessContext(()=>db.select().from(stripeFinancialEvents)
+    .where(eq(stripeFinancialEvents.stripeEventId,withdrawal.stripeEventId)));
+  expect(appliedWithdrawal!.status).toBe('applied');
+  await ingestStripeFinancialEvent(financialEvent(f,{eventType:'charge.dispute.funds_reinstated',chargeAmountMinor:10300,disputeId:`dp_${f.invoiceId}`,
+    refundedAmountMinor:null,disputeAmountMinor:10300,disputeFundsWithdrawn:false,providerCreated:301}));
+  const [mapping]=await withSystemDbAccessContext(()=>db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId)));
+  const [payment]=await withSystemDbAccessContext(()=>db.select().from(invoicePayments).where(eq(invoicePayments.id,mapping!.invoicePaymentId!)));
+  expect(payment).toMatchObject({amount:'50.00',method:'ach_debit'});
+  expect(mapping).toMatchObject({status:'partially_refunded',feeReversedAmount:'1.50'});
+});
+
+runDb('fully refunds an unapplied capture including its fee without creating a payment',async()=>{
+  const f=await seedAutopayBank(false);
+  await withSystemDbAccessContext(async()=>{
+    await db.update(invoiceStripePayments).set({feeAmount:'3.00'}).where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId));
+    await db.update(invoiceCollectionAttempts).set({feeAmount:'3.00'}).where(eq(invoiceCollectionAttempts.id,f.attemptId));
+  });
+  const event=financialEvent(f,{chargeAmountMinor:10300,refundedAmountMinor:10300});
+  await ingestStripeFinancialEvent(event);await ingestStripeFinancialEvent(event);
+  const [attempt]=await withSystemDbAccessContext(()=>db.select().from(invoiceCollectionAttempts).where(eq(invoiceCollectionAttempts.id,f.attemptId)));
+  const [mapping]=await withSystemDbAccessContext(()=>db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId)));
+  const payments=await withSystemDbAccessContext(()=>db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId,f.invoiceId)));
+  expect(attempt).toMatchObject({state:'canceled',failureCode:'unapplied_refunded'});
+  expect(mapping).toMatchObject({feeReversedAmount:'3.00',invoicePaymentId:null});
+  expect(payments).toHaveLength(0);
+});
+
+runDb.each([
+  { state: 'pending', reversed: '0.00', canDelete: false },
+  { state: 'posted', reversed: '1.50', canDelete: false },
+  { state: 'posted', reversed: '0.00', canDelete: true },
+])('protects fee bookkeeping before erasure: %j', async ({ state, reversed, canDelete }) => {
+  const f = await seed(false);
+  const connection=await withSystemDbAccessContext(()=>upsertConnection(db,f.partnerId,'quickbooks',{
+    realmId:'fee-test-realm',accessToken:'test',refreshToken:'test',accessTokenExpiresAt:new Date('2099-01-01'),environment:'sandbox',homeCurrency:'USD'}));
+  await withSystemDbAccessContext(() => db.update(invoiceStripePayments).set({
+    feeAmount: '3.00', feeReversedAmount: reversed,
+    feeAccountingJournal: [{ state, connectionId:connection.id, payload: { direction: 'receipt', amount: '3.00' } }],
+  }).where(eq(invoiceStripePayments.invoiceId, f.invoiceId)));
+  const deletion = withSystemDbAccessContext(() => db.delete(invoiceStripePayments)
+    .where(eq(invoiceStripePayments.invoiceId, f.invoiceId)));
+  if (canDelete) await expect(deletion).resolves.toBeDefined();
+  else await expect(deletion).rejects.toMatchObject({ cause: { code: '23514', message: 'PROCESSING_FEE_ACCOUNTING_PENDING' } });
+});
+
+import {upsertConnection} from '../../services/accounting/accountingConnectionService';
+
+// Batch 2b (F): the returned-payment email reports a money fact. Stopping or
+// pausing autopay before the return arrives must not cancel it at dispatch.
+const returnMail = vi.hoisted(() => ({ send: vi.fn(async () => undefined) }));
+vi.mock('../../services/email', () => ({ getEmailService: () => ({ sendEmail: returnMail.send }) }));
+import { dispatchPendingBillingNotices } from '../../services/autopay/noticeOutbox';
+import { pauseAutopay, turnOffAutopay } from '../../services/autopay/enrollmentLifecycle';
+async function returnedFailures(invoiceId: string) {
+  const rows = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(and(
+    eq(billingNoticeOutbox.invoiceId, invoiceId), eq(billingNoticeOutbox.kind, 'payment_failed'))));
+  return rows.filter(row => (row.rendered as { frozen: { variant?: string } }).frozen.variant === 'returned');
+}
+runDb.each(['stop', 'pause'] as const)('dispatches the returned-payment email after autopay %s', async action => {
+  returnMail.send.mockClear();
+  const f = await seedAutopayBank();
+  await withSystemDbAccessContext(() => action === 'stop'
+    ? turnOffAutopay(db, f.actor, f.orgId) : pauseAutopay(db, f.actor, f.orgId));
+  const [enrollment] = await withSystemDbAccessContext(() => db.select().from(orgAutopayEnrollments)
+    .where(eq(orgAutopayEnrollments.orgId, f.orgId)));
+  expect(enrollment!.status).toBe(action === 'stop' ? 'cancelled' : 'paused');
+  await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: `evt_after_${action}_${f.invoiceId}`,
+    eventType: 'charge.dispute.funds_withdrawn', providerCreated: 300, refundedAmountMinor: null,
+    disputeId: `dp_${f.invoiceId}`, disputeAmountMinor: 10000, disputeFundsWithdrawn: true }));
+  expect(await returnedFailures(f.invoiceId)).toHaveLength(1);
+  await dispatchPendingBillingNotices(new Date(Date.now() + 1000));
+  const [returned] = await returnedFailures(f.invoiceId);
+  expect(returned).toMatchObject({ status: 'sent', lastError: null });
+  expect(returnMail.send).toHaveBeenCalledWith(expect.objectContaining({
+    to: 'billing@example.test', text: expect.stringContaining('returned a previously completed payment'),
+  }));
+});
+
+// Batch 2b (K): a receipt enqueued at capture is cancelled when the bank payment
+// is returned before dispatch; the returned email still goes out. A refund keeps it.
+import { enqueueOnlineReceipt } from '../../services/autopay/paymentNotices';
+async function receiptRows(invoiceId: string) {
+  return withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(and(
+    eq(billingNoticeOutbox.invoiceId, invoiceId), eq(billingNoticeOutbox.kind, 'payment_receipt'))));
+}
+runDb('cancels the receipt of a bank payment returned before dispatch and still sends the returned email', async () => {
+  returnMail.send.mockClear();
+  const f = await seedAutopayBank();
+  await withSystemDbAccessContext(() => enqueueOnlineReceipt(db, f.mappingId));
+  expect(await receiptRows(f.invoiceId)).toHaveLength(1);
+  await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: `evt_receipt_return_${f.invoiceId}`,
+    eventType: 'charge.dispute.funds_withdrawn', providerCreated: 300, refundedAmountMinor: null,
+    disputeId: `dp_${f.invoiceId}`, disputeAmountMinor: 10000, disputeFundsWithdrawn: true }));
+  await dispatchPendingBillingNotices(new Date(Date.now() + 1000));
+  const [receipt] = await receiptRows(f.invoiceId);
+  expect(receipt).toMatchObject({ status: 'cancelled', sentAt: null });
+  const [returned] = await returnedFailures(f.invoiceId);
+  expect(returned).toMatchObject({ status: 'sent' });
+  expect(returnMail.send).toHaveBeenCalledTimes(1);
+  expect(returnMail.send).toHaveBeenCalledWith(expect.objectContaining({
+    text: expect.stringContaining('returned a previously completed payment') }));
+});
+runDb('still sends the receipt of a payment refunded before dispatch', async () => {
+  returnMail.send.mockClear();
+  const f = await seedAutopayBank();
+  await withSystemDbAccessContext(() => enqueueOnlineReceipt(db, f.mappingId));
+  await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: `evt_receipt_refund_${f.invoiceId}`, refundedAmountMinor: 10000 }));
+  await dispatchPendingBillingNotices(new Date(Date.now() + 1000));
+  const [receipt] = (await receiptRows(f.invoiceId)).filter(row => (row.rendered as { frozen: { variant?: string } }).frozen.variant !== 'refund');
+  expect(receipt).toMatchObject({ status: 'sent' });
+  // The receipt and, since batch 3b (D-20), the refund notice.
+  expect(returnMail.send).toHaveBeenCalledTimes(2);
+});
+
+// Batch 3b (2b-3): a return held until after capture is applied, and its email enqueued,
+// before the attempt itself is marked succeeded. Dispatch in that window still sends it.
+runDb('sends the returned email while the captured attempt is still processing', async () => {
+  returnMail.send.mockClear();
+  const f = await seedAutopayBank();
+  await withSystemDbAccessContext(async () => {
+    await db.update(invoiceCollectionAttempts).set({ state: 'processing' }).where(eq(invoiceCollectionAttempts.id, f.attemptId));
+    await db.update(invoiceStripePayments).set({ paymentCapturedAt: new Date() }).where(eq(invoiceStripePayments.id, f.mappingId));
+  });
+  await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: `evt_processing_return_${f.invoiceId}`,
+    eventType: 'charge.dispute.funds_withdrawn', providerCreated: 300, refundedAmountMinor: null,
+    disputeId: `dp_${f.invoiceId}`, disputeAmountMinor: 10000, disputeFundsWithdrawn: true }));
+  await dispatchPendingBillingNotices(new Date(Date.now() + 1000));
+  const [returned] = await returnedFailures(f.invoiceId);
+  expect(returned).toMatchObject({ status: 'sent', lastError: null });
+  expect(returnMail.send).toHaveBeenCalledWith(expect.objectContaining({
+    text: expect.stringContaining('returned a previously completed payment') }));
+});
+
+// Batch 3b (D-20): a refund tells the client the amount, where it goes and the balance after.
+async function refundNotices(invoiceId: string) {
+  return (await receiptRows(invoiceId)).filter(row => (row.rendered as { frozen: { variant?: string } }).frozen.variant === 'refund');
+}
+runDb('a refund tells the client the amount refunded, the method and the invoice balance afterwards', async () => {
+  const f = await seedAutopayBank();
+  const first = financialEvent(f, { stripeEventId: `evt_refund_a_${f.invoiceId}`, refundedAmountMinor: 4000 });
+  await ingestStripeFinancialEvent(first); await ingestStripeFinancialEvent(first);
+  let notices = await refundNotices(f.invoiceId);
+  expect(notices).toHaveLength(1);
+  expect(notices[0]!.dedupeKey).toBe(`${f.mappingId}:payment_receipt:refund:4000`);
+  let text = (notices[0]!.rendered as { text: string }).text;
+  // One money formatter in client emails ("$40.00", never "USD 40.00").
+  expect(text).toContain('Refunded: $40.00');
+  expect(text).toContain('Refunded to: Bank account ending in 6789');
+  expect(text).toMatch(/Balance due on invoice \S+ after this refund: \$40\.00/);
+  await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: `evt_refund_b_${f.invoiceId}`, refundedAmountMinor: 10000, providerCreated: 1_788_690_001 }));
+  notices = await refundNotices(f.invoiceId);
+  expect(notices).toHaveLength(2);
+  text = (notices.find(row => row.dedupeKey.endsWith(':10000'))!.rendered as { text: string }).text;
+  expect(text).toContain('Refunded: $60.00');
+  expect(text).toMatch(/after this refund: \$100\.00/);
+});
+
+// Batch 3b (#7897): a card dispute withdrawal raises a staff notice, as an ACH return does.
+// The client gets none: they opened the dispute with their own bank (see the batch report).
+runDb('a card dispute withdrawal raises one staff notice and staff email, and no client email', async () => {
+  returnedStaff.mockClear();
+  const f = await seedAutopayBank();
+  await withSystemDbAccessContext(() => db.update(invoiceStripePayments).set({ paymentMethodType: 'card' })
+    .where(eq(invoiceStripePayments.id, f.mappingId)));
+  const withdrawal = financialEvent(f, { stripeEventId: `evt_card_dispute_${f.invoiceId}`, eventType: 'charge.dispute.funds_withdrawn',
+    providerCreated: 300, refundedAmountMinor: null, disputeId: `dp_card_${f.invoiceId}`, disputeAmountMinor: 10000, disputeFundsWithdrawn: true });
+  await ingestStripeFinancialEvent(withdrawal); await ingestStripeFinancialEvent(withdrawal);
+  const notices = await withSystemDbAccessContext(() => db.select().from(userNotifications).where(eq(userNotifications.orgId, f.orgId)));
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toMatchObject({ userId: f.userId, priority: 'high', link: `/billing/invoices/${f.invoiceId}`,
+    metadata: { event: 'payment.disputed' } });
+  expect(notices[0]!.message).toContain('USD 100.00');
+  expect(returnedStaff).toHaveBeenCalledTimes(1);
+  expect(returnedStaff).toHaveBeenCalledWith(expect.objectContaining({ event: 'payment.disputed', invoiceId: f.invoiceId }));
+  const clientMail = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(and(
+    eq(billingNoticeOutbox.invoiceId, f.invoiceId), eq(billingNoticeOutbox.kind, 'payment_failed'))));
+  expect(clientMail).toHaveLength(0);
 });

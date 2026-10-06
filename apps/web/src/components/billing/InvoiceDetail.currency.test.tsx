@@ -35,6 +35,7 @@ const resp = (payload: unknown, status = 200): Response =>
 
 function detail(status: InvoiceStatus, currencyCode = 'USD'): InvoiceDetailData {
   return {
+    autopay: null,
     invoice: {
       id: 'inv-1', invoiceNumber: null, orgId: 'org-1', siteId: null, status,
       currencyCode, issueDate: null, dueDate: null, sentAt: null,

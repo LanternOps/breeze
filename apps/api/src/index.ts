@@ -49,6 +49,11 @@ import { xeroWebhookRoutes } from './routes/webhooks/xero';
 import { resendWebhookRoutes } from './routes/webhooks/emailProvider';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
+import { billingPaymentSettingsRoutes } from './routes/billingPaymentSettings';
+import { autopayRoutes } from './routes/autopay';
+import { mountAutopayChargingRoutes } from './routes/autopay/mount';
+import { publicAutopayRoutes } from './routes/autopay/public';
+import { portalPaymentMethodRoutes } from './routes/portal/paymentMethods';
 import { contractRoutes } from './routes/contracts';
 import { timeEntriesRoutes } from './routes/timeEntries';
 import { billingProfilesRoutes } from './routes/billingProfiles';
@@ -159,7 +164,6 @@ import { aiRoutes } from './routes/ai';
 import { aiScriptProposalRoutes } from './routes/ai/scriptProposals';
 import { aiScriptPolicyRoutes } from './routes/ai/scriptPolicy';
 import { partnerAiScriptPolicyRoutes } from './routes/partnerAiScriptPolicy';
-import { aiProviderRoutes } from './routes/aiProvider';
 import { aiModelsRoutes } from './routes/aiModels';
 import { aiAgentsRoutes } from './routes/aiAgents';
 import { aiArtifactRoutes } from './routes/aiArtifacts';
@@ -174,17 +178,20 @@ import { devPushRoutes } from './routes/devPush';
 import { helperRoutes } from './routes/helper';
 import { playbookRoutes } from './routes/playbooks';
 import { remediationSuggestionRoutes } from './routes/remediationSuggestions';
+import { fixMemoryRoutes } from './routes/fixMemory';
 import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
 import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './services/monitors/conversion/retirementSweep';
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
-import { reportableCutoverError, runRegistryCutoverSweepWithRetry } from './services/aiModels/registryCutover';
+import { reportableCutoverError } from './services/aiModels/registryCutover';
 import { runEnvOpenAiBootstrapAtBoot } from './services/aiModels/envOpenAiBootstrap';
 import { registerGatewayConnectionCheck } from './services/aiModels/gatewayConnectionState';
 import { sealUnsealedBackupProviderConfigs } from './services/backupProviderConfigBackfill';
+import { hashLegacyInstallerBootstrapTokens } from './services/installerBootstrapTokenHashBackfill';
 import { safeErrorMessage } from './services/aiModels/safeDbError';
 import { baselineCredentialHistory } from './services/backupStorageCredentialHistory';
+import { runStartupTaskWithRetry } from './services/startupTaskRetry';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
 import { dnsSecurityRoutes } from './routes/dnsSecurity';
@@ -346,7 +353,7 @@ const REQUIRE_REDIS_ON_STARTUP = envFlag(
   (process.env.NODE_ENV ?? 'development') === 'production'
 );
 
-const app = new Hono();
+export const app = new Hono();
 
 /**
  * Boot-time connectivity results. These drive the startup fail-fast gate and
@@ -677,12 +684,25 @@ api.use('*', async (c, next) => {
     return;
   }
 
+  const auth = c.get('auth') as {
+    user?: { id?: string; email?: string };
+    orgId?: string | null;
+    scope?: string;
+    partnerId?: string | null;
+  } | undefined;
+
+  // A write that names no org the caller can reach — partner-level config
+  // (catalog, price books, templates, integrations) or a body-targeted route —
+  // is still recorded when a signed-in user made it: as a partner-level row
+  // (org_id NULL) rather than under a guessed org. Partner-scope callers are
+  // attributed to their own partner. Unattributable requests (no user) are
+  // still skipped.
   const orgId = await resolveFallbackOrgId(c, path);
-  if (!orgId) {
+  if (!orgId && !auth?.user?.id) {
     return;
   }
+  const partnerId = !orgId && auth?.scope === 'partner' && auth.partnerId ? auth.partnerId : undefined;
 
-  const auth = c.get('auth') as { user?: { id?: string; email?: string }; orgId?: string | null } | undefined;
   const status = c.res.status;
 
   let result: 'success' | 'denied' | 'failure';
@@ -704,13 +724,13 @@ api.use('*', async (c, next) => {
   }
 
   writeAuditEvent(c, {
-    orgId,
+    orgId: orgId ?? null,
     actorType,
     actorId: auth?.user?.id ?? undefined,
     actorEmail: auth?.user?.email,
     action: buildFallbackAction(method, path),
     resourceType: getResourceTypeFromPath(path),
-    details: { path, method, statusCode: status, fallback: true },
+    details: { path, method, statusCode: status, fallback: true, ...(partnerId ? { partnerId } : {}) },
     result
   });
 });
@@ -749,6 +769,7 @@ api.route('/catalog', catalogRoutes);
 // auth-gated /invoices router so the unauthenticated /invoices/public/* sub-path
 // isn't swallowed by invoiceRoutes' auth middleware (mirrors /quotes/public).
 api.route('/invoices/public', invoicesPublicRoutes);
+mountAutopayChargingRoutes(api);
 api.route('/invoices', invoiceRoutes);
 // Public, token-gated quote acceptance (no auth) — MUST precede the auth-gated
 // /quotes router so the unauthenticated /quotes/public/* sub-path isn't swallowed
@@ -767,6 +788,7 @@ api.route('/', invoiceAssemblyRoutes);
 // /api/v1/partner/billing-settings and /api/v1/orgs/:orgId/billing-settings.
 // invoiceSettingsRoutes applies authMiddleware itself.
 api.route('/', invoiceSettingsRoutes);
+api.route('/', billingPaymentSettingsRoutes);
 api.route('/time-entries', timeEntriesRoutes);
 api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/billing-profiles', billingProfilesRoutes);
@@ -774,6 +796,10 @@ api.route('/ticket-config', ticketConfigRoutes);
 api.route('/', ticketResponseTemplateRoutes);
 api.route('/', ticketFormRoutes);
 api.route('/', tenantVariableRoutes);
+// Self-contained autopay auth must run before the broad org/portal routers.
+api.route('/autopay/public', publicAutopayRoutes);
+api.route('/portal', portalPaymentMethodRoutes);
+api.route('/', autopayRoutes);
 api.route('/orgs', orgRoutes);
 api.route('/orgs', orgMergeRoutes);
 api.route('/orgs', orgArchiveRoutes);
@@ -955,7 +981,6 @@ api.route('/metrics', metricsRoutes);
 api.route('/agent-ws', createAgentWsRoutes(upgradeWebSocket));
 api.route('/agent-versions', agentVersionRoutes);
 api.route('/viewers', viewerRoutes);
-api.route('/ai/provider', aiProviderRoutes);
 // AI model registry (W04 #7602) — before the broad '/ai' mounts (Hono matches in order).
 api.route('/ai/models', aiModelsRoutes);
 // BEFORE /ai/agents: aiAgentsRoutes owns /:id, which would otherwise capture
@@ -992,6 +1017,7 @@ api.route('/dev', devPushRoutes);
 api.route('/helper', helperRoutes);
 api.route('/playbooks', playbookRoutes);
 api.route('/remediation-suggestions', remediationSuggestionRoutes);
+api.route('/fix-memory', fixMemoryRoutes);
 api.route('/changes', changesRoutes);
 api.route('/dns-security', dnsSecurityRoutes);
 api.route('/s1', sentinelOneRoutes);
@@ -1845,7 +1871,11 @@ async function bootstrap(): Promise<void> {
   // partners × ~40 queries each must never delay /health. One-time per partner
   // (partners.settings marker), each partner its own transaction; opt out with
   // BREEZE_BUILTIN_MONITORS_AUTOSEED=false.
-  void ensureBuiltInMonitorsForAllPartners()
+  void runStartupTaskWithRetry('built-in monitors provisioning', () => ensureBuiltInMonitorsForAllPartners(), {
+    hasFailures: (r) => r.failed > 0,
+    onFailure: ({ attempt, error, result }) =>
+      console.error(`[startup] Built-in monitors provisioning attempt ${attempt + 1} failed:`, error ?? `${result?.failed} partner(s) failed`),
+  })
     .then((result) => {
       if (result.provisioned > 0 || result.failed > 0) {
         console.log(
@@ -1861,7 +1891,11 @@ async function bootstrap(): Promise<void> {
   // write; this seals values stored before that. Detached after serve() like
   // the built-ins above: readers open both forms, so nothing waits on it.
   // Idempotent — once every value is sealed it finds nothing to do.
-  void sealUnsealedSettingsSecrets()
+  void runStartupTaskWithRetry('settings secret sealing', () => sealUnsealedSettingsSecrets(), {
+    hasFailures: (r) => Object.values(r).some((s) => s.failed > 0),
+    onFailure: ({ attempt, error }) =>
+      console.error(`[startup] Sealing stored settings secrets attempt ${attempt + 1} failed:`, error ?? 'row failures'),
+  })
     .then((result) => {
       const touched = Object.entries(result).filter(([, stats]) => stats.scanned > 0);
       if (touched.length > 0) {
@@ -1901,29 +1935,37 @@ async function bootstrap(): Promise<void> {
       captureException(err, undefined, { area: 'backup_provider_config_backfill' });
     });
 
-  // AI model registry W03 (#7601 Task 6A): cut every partner over to the
-  // registry in the background — each partner is projected from legacy config
-  // exactly once, durably (replaces W02's per-boot re-projection). Detached:
-  // /health is never blocked. A singleton lease makes concurrent replicas (and
-  // the split worker, which runs the same sweep) no-ops, and resolveModel cuts
-  // a partner over on demand if its first AI request beats the sweep.
-  void runRegistryCutoverSweepWithRetry()
-    .then((result) => {
-      console.log(
-        `[startup] AI model registry cutover sweep: ${result.outcome}, ${result.processed} partner(s) cut over, ${result.failed.length} failed`,
-      );
+  // Installer bootstrap tokens are stored as a keyed hash on issue; this hashes
+  // the plaintext rows issued before that. Detached and idempotent like the
+  // sweeps above — redemption matches both forms. A missing
+  // ENROLLMENT_KEY_PEPPER rejects the whole sweep here (logged + reported),
+  // never the boot.
+  void hashLegacyInstallerBootstrapTokens()
+    .then((stats) => {
+      if (stats.scanned > 0) {
+        console.log(
+          `[startup] Installer bootstrap tokens hashed: ${stats.hashed}/${stats.scanned} token(s) `
+            + `(${stats.contended} changed concurrently, ${stats.failed} failed)`,
+        );
+      }
+      if (stats.failed > 0 || stats.contended > 0) {
+        captureException(
+          new Error(`installer bootstrap token hashing left ${stats.failed} failed and ${stats.contended} contended token(s)`),
+          undefined,
+          { area: 'installer_bootstrap_token_hash_backfill' },
+        );
+      }
     })
     .catch((err) => {
-      // Scrubbed: a query error's message carries the statement's bound values.
-      console.error('[startup] AI model registry cutover sweep failed:', safeErrorMessage(err));
-      captureException(reportableCutoverError(err), undefined, { area: 'ai_model_registry_cutover' });
+      console.error('[startup] Hashing stored installer bootstrap tokens failed:', err);
+      captureException(err, undefined, { area: 'installer_bootstrap_token_hash_backfill' });
     });
 
   // W06 (#7604, D6): MCP_LLM_PROVIDER=openai-compatible → one env-managed
   // OpenAI-compatible connection + priced offering per partner (and the chat
-  // default re-pointed once); unset → those connections are released. Started
-  // after the cutover sweep: each partner is cut over FIRST inside the
-  // bootstrap, so the cutover can never undo it. Detached and retried on a
+  // default re-pointed once); unset → those connections are released. Each
+  // partner's registry gate (ensurePartnerCutover, W08 bootstrap) runs FIRST
+  // inside the bootstrap, so the gate can never undo it. Detached and retried on a
   // bounded schedule; idempotent across restarts and replicas (per-partner
   // registry lock). One Sentry event if it still ends incomplete; then, every
   // 10 minutes, partners created since boot get their connection. Never logs
@@ -1937,9 +1979,16 @@ async function bootstrap(): Promise<void> {
   // Storage keys that S3 backup destinations used before backups were written
   // only through storage sessions are recorded once, so each stays listed
   // until there is evidence it was disabled. Detached after serve() like the
-  // sweep above; idempotent (a destination whose current key is recorded is
+  // backfills above; idempotent (a destination whose current key is recorded is
   // skipped) and never logs a key.
-  void baselineCredentialHistory()
+  void runStartupTaskWithRetry('backup storage key history', () => baselineCredentialHistory(), {
+    hasFailures: (r) => r.failed > 0,
+    onFailure: ({ attempt, error }) =>
+      console.error(
+        `[startup] Recording backup storage key history attempt ${attempt + 1} failed:`,
+        error instanceof Error ? error.name : error ? 'unknown' : 'destination failures',
+      ),
+  })
     .then((result) => {
       if (result.recorded > 0 || result.failed > 0) {
         console.log(
@@ -2008,7 +2057,9 @@ async function bootstrap(): Promise<void> {
   installSignalHandlers();
 }
 
-void bootstrap().catch((error) => {
-  console.error('[CRITICAL] API startup failed:', error);
-  process.exit(1);
-});
+if (!process.env.VITEST) {
+  void bootstrap().catch((error) => {
+    console.error('[CRITICAL] API startup failed:', error);
+    process.exit(1);
+  });
+}

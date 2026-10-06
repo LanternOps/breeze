@@ -77,7 +77,7 @@ API keys follow the same security model as agent tokens:
 
 - **Format**: `brz_` prefix for identification
 - **Storage**: SHA-256 hash only — the plaintext key is shown once at creation, never again
-- **Scoping**: JSONB scope array with wildcard support (`*` for full access)
+- **Scoping**: JSONB scope array from a closed allowlist (`services/apiKeyScopes.ts`); wildcards (`*`) are rejected, and a creator can only delegate scopes they hold themselves
 - **Lifecycle**: Configurable expiration, revocable, status tracking (active/revoked/expired)
 - **Rate limiting**: Per-key configurable request limits
 - **Audit trail**: `lastUsedAt` timestamp and `usageCount` updated on every use
@@ -158,7 +158,7 @@ The agent runs on customer endpoints with elevated privileges. Its security is p
 - **Validation**: Every agent REST request and WebSocket connection validates the bearer token against the stored hash
 - **Status checks**: Decommissioned and quarantined devices are rejected with 403
 
-When a device record exists in the database but has no token hash — the case for legacy devices enrolled before the v0.62 token-hash migration — the API returns a structured `{ code: "re_enrollment_required" }` signal on both the WebSocket auth path and HTTP 401 responses (`apps/api/src/middleware/agentAuth.ts`, `apps/api/src/routes/agentWs.ts`). The agent treats this as a non-fault terminal state: it stops retrying with the orphaned credential and prompts the operator to re-enroll the device, rather than silently failing in a reconnect loop or appearing healthy while unable to receive commands. This makes upgrade behavior explicit and auditable.
+When a device record exists in the database but has no token hash — the case for legacy devices enrolled before the v0.62 token-hash migration — the API returns a structured `{ code: "RE_ENROLLMENT_REQUIRED" }` signal on both the WebSocket auth path and HTTP 401 responses (`apps/api/src/middleware/agentAuth.ts`, `apps/api/src/routes/agentWs.ts`). The agent treats this as a non-fault terminal state: it stops retrying with the orphaned credential and prompts the operator to re-enroll the device, rather than silently failing in a reconnect loop or appearing healthy while unable to receive commands. This makes upgrade behavior explicit and auditable.
 
 ### Config File Permissions
 

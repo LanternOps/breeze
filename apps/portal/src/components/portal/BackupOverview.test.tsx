@@ -84,7 +84,7 @@ describe('BackupOverview', () => {
 
   it('never contradicts a ledger that holds backups', () => {
     // dataStatus 'no_data' keys on a passed VERIFICATION, not on backups: the
-    // band used to sit above "Protected devices 3 of 4" and a real restore point.
+    // band used to sit above "Devices backed up 3 of 4" and a real restore point.
     render(
       <BackupOverview
         overview={{ ...configuredOverview, dataStatus: 'no_data', lastPassedVerification: null }}
@@ -187,7 +187,7 @@ describe('BackupOverview', () => {
     }
 
     for (const label of [
-      'Protected devices',
+      'Devices backed up',
       'Backup health',
       'Last verification',
       'Last restore test',

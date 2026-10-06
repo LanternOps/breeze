@@ -190,6 +190,7 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'ANTHROPIC_BASE_URL', secret: false },
       { name: 'ANTHROPIC_MODEL', secret: false },
       { name: 'AI_PLATFORM_INFERENCE_GEO', secret: false },
+      { name: 'AI_GATEWAY_HEADERS_TIMEOUT_SECONDS', secret: false },
     ],
   }),
   // W06: these no longer drive a separate chat runtime. When MCP_LLM_PROVIDER
@@ -234,7 +235,6 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', secret: false },
       { name: 'BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED', secret: false },
       { name: 'BREEZE_AI_SCRIPT_AUTHORING_ENABLED', secret: false },
-      { name: 'BREEZE_AI_SCRIPT_REVIEWER_MODEL', secret: false },
       { name: 'AI_OPERATOR_TASKS_ENABLED', secret: false },
       { name: 'AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED', secret: false },
     ],

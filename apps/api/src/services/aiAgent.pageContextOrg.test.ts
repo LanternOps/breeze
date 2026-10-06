@@ -212,7 +212,7 @@ describe('createSession page-context org anchoring (#5593)', () => {
     const valuesSpy = expectInsert();
 
     await createSession(partnerAuth(), {
-      pageContext: { type: 'dashboard', orgName: 'Mountain Capital' },
+      pageContext: { type: 'dashboard', orgName: 'Summit Peak' },
     });
 
     expect(selectMock).not.toHaveBeenCalled();

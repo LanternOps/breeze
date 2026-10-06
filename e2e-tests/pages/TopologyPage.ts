@@ -5,6 +5,8 @@ export class TopologyPage {
   private selectedOrg: string | undefined;
   entry = () => this.page.getByTestId('topology-entry');
   explorer = () => this.page.getByTestId('topology-explorer');
+  /** The explorer once a layout result has reached the canvas (`data-layout-applied`). */
+  layoutApplied = () => this.page.locator('[data-testid="topology-explorer"][data-layout-applied]');
   canvas = () => this.page.getByTestId('topology-canvas');
   list = () => this.page.getByTestId('topology-list');
   counts = () => this.page.getByTestId('topology-counts');

@@ -17,10 +17,10 @@ describe('partner partner-service-principal scopes', () => {
   });
 
   it('rejects an unsupported scope', () => {
-    expect(validatePartnerServicePrincipalScopes(['organizations:read', 'tickets:read'])).toEqual({
+    expect(validatePartnerServicePrincipalScopes(['organizations:read', 'billing:read'])).toEqual({
       ok: false,
       status: 400,
-      error: 'Unsupported partner service principal scope: tickets:read',
+      error: 'Unsupported partner service principal scope: billing:read',
       details: { supportedScopes: PARTNER_SERVICE_PRINCIPAL_SCOPES },
     });
   });
@@ -77,6 +77,9 @@ describe('partner partner-service-principal scopes', () => {
     expect(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES).not.toContain(
       'contracts:write',
     );
+    expect(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES).not.toContain(
+      'tickets:write',
+    );
     expect(Object.isFrozen(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES)).toBe(true);
   });
 
@@ -86,6 +89,18 @@ describe('partner partner-service-principal scopes', () => {
       scopes: ['organizations:read', 'alerts:read'],
     });
     expect(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES).not.toContain('alerts:read');
+  });
+
+  it('accepts the ticket scopes as explicit opt-ins that never join the default delegation', () => {
+    // tickets:read exposes customer-authored ticket bodies across every
+    // reachable org; tickets:write lets a machine open and work tickets. Both
+    // must be a deliberate per-principal grant.
+    expect(validatePartnerServicePrincipalScopes(['tickets:read', 'tickets:write'])).toEqual({
+      ok: true,
+      scopes: ['tickets:read', 'tickets:write'],
+    });
+    expect(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES).not.toContain('tickets:read');
+    expect(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES).not.toContain('tickets:write');
   });
 
   it('never includes a write scope in the default delegation', () => {

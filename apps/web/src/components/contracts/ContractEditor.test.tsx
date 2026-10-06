@@ -71,3 +71,13 @@ describe('ContractEditor (create)', () => {
     });
   });
 });
+
+it('gates the persisted contract exclusion and saves through the existing handler',async()=>{
+ vi.mocked(api.getContractEstimate).mockResolvedValue(resp({data:{lines:[],periodTotal:'0.00',currencyCode:'USD'}}));
+ const detail:any={contract:{id:'contract',orgId:'org-1',name:'Contract',status:'active',currencyCode:'USD',billingTiming:'advance',intervalMonths:1,startDate:'2026-10-01',autoIssue:false,autopayExcluded:false},lines:[],periods:[],autopayEnabled:true};
+ vi.mocked(api.updateContract).mockResolvedValue(resp({data:detail.contract}));
+ const {rerender}=render(<ContractEditor detail={detail} autopayEnabled/>);
+ expect(screen.getByTestId('autopay-contract-excluded')).toBeInTheDocument();fireEvent.click(screen.getByTestId('autopay-contract-excluded'));
+ await waitFor(()=>expect(api.updateContract).toHaveBeenCalledWith('contract',{autopayExcluded:true}));
+ rerender(<ContractEditor detail={detail} autopayEnabled={false}/>);expect(screen.queryByTestId('autopay-contract-excluded')).toBeNull();
+});

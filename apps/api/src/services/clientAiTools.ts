@@ -20,6 +20,7 @@ import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import { aiMessages, aiToolExecutions } from '../db/schema';
 import type { ActiveSession } from './streamingSessionManager';
+import { claimToolUseId, sdkToolUseIdFromExtra } from './aiToolUseCorrelation';
 import { requestClientToolExecution } from './clientAiToolBridge';
 import { applyDlp, type DlpRedactionEvent } from './clientAiDlp';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
@@ -660,19 +661,17 @@ export function makeClientToolHandler(
     throw new Error(`Unknown client tool '${toolName}' for host '${host}'`);
   }
 
-  return async (args: Record<string, unknown>): Promise<ClientToolHandlerResult> => {
+  return async (args: Record<string, unknown>, extra?: unknown): Promise<ClientToolHandlerResult> => {
     // Escape any inherited AsyncLocalStorage DB context from the SDK callback
     // chain (the makeHandler precedent, aiAgentSdkTools.ts — stale-transaction hangs).
     return runOutsideDbContext(async () => {
       const session = getSession();
-      // Correlate with the model's tool_use block id: the background processor
-      // pushes ids on content_block_start (streamingSessionManager.ts:611) and
-      // the technician path drains them in createSessionPostToolUse
-      // (aiAgentSdk.ts:640). Client handlers bypass that callback, so drain here.
-      const toolUseId = session.toolUseIdQueue.shift() ?? crypto.randomUUID();
-      // Drop the paired name entry recorded at content_block_start (see the
-      // dropped-call fallback in streamingSessionManager.ts, #3094).
-      session.toolUseNames?.delete(toolUseId);
+      // Correlate with the model's tool_use block by the id the SDK sent with
+      // this call, never by queue position (#7931). Client handlers bypass
+      // createSessionPostToolUse, so they claim the id here; claiming also
+      // keeps the dropped-call fallback (#3094) from firing for this call.
+      const toolUseId =
+        claimToolUseId(session, toolName, sdkToolUseIdFromExtra(extra)) ?? crypto.randomUUID();
       const startTime = Date.now();
 
       // Server-side write-mode enforcement (pinned contract): 'readonly'

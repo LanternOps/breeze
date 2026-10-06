@@ -50,6 +50,14 @@ describe('ConnectedAppsList', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
   });
 
+  it('shows a "not enabled on this server" state on 404 (MCP OAuth disabled), not a bare request failure', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'Not Found' }, 404));
+    render(<ConnectedAppsList />);
+
+    expect(await screen.findByText(/MCP_OAUTH_ENABLED=true/)).toBeTruthy();
+    expect(screen.queryByText(/Request failed/)).toBeNull();
+  });
+
   it('renders the loading state, then the table of apps', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ clients: sampleApps }));
     render(<ConnectedAppsList />);

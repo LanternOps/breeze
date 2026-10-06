@@ -33,6 +33,16 @@ vi.mock('../db', () => {
   };
 });
 
+// #7507: cloneQuote re-resolves the tax rate for the new draft (never copies the
+// source's frozen rate). The resolver has its own suite; mock it so this file's
+// queued-result chain is not consumed by its org/partner reads.
+vi.mock('./taxRateResolver', () => ({
+  resolveOrgTaxRate: vi.fn(async () => null),
+  resolveOrgTaxRateOn: vi.fn(async () => null),
+  OrgNotVisibleForTaxError: class OrgNotVisibleForTaxError extends Error {},
+  PartnerNotVisibleForTaxError: class PartnerNotVisibleForTaxError extends Error {},
+}));
+
 vi.mock('./quoteNumbers', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./quoteNumbers')>();
   return { ...actual, allocateQuoteCounter: vi.fn() };

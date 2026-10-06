@@ -17,6 +17,7 @@ import { scriptParameterDefinitionsSchema } from '@breeze/shared';
 import { compactToolResultForChat } from './aiToolOutput';
 import { captureException } from './sentry';
 import type { PreToolUseCallback, PostToolUseCallback } from './aiAgentSdkTools';
+import { postToolUseForCall } from './aiToolUseCorrelation';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { normalizeScriptCode } from './scriptCodeNormalize';
@@ -113,12 +114,14 @@ function makeExistingHandler(
   registeredToolName: string,
   getAuth: () => AuthContext,
   onPreToolUse?: PreToolUseCallback,
-  onPostToolUse?: PostToolUseCallback,
+  onPostToolUseHook?: PostToolUseCallback,
 ) {
   const toolName = SCRIPT_BUILDER_HANDLER_BY_MCP_TOOL[registeredToolName] ?? registeredToolName;
   const exposedToolName = scriptBuilderMcpToolName(registeredToolName);
 
-  return async (args: Record<string, unknown>) => {
+  return async (args: Record<string, unknown>, extra?: unknown) => {
+    // Carries the SDK's tool_use id so the result pairs with its call (#7931).
+    const onPostToolUse = postToolUseForCall(onPostToolUseHook, extra);
     const startTime = Date.now();
     let verifiedContext: ToolExecutionContext | undefined;
 
@@ -208,9 +211,11 @@ function makeExistingHandler(
 // tool_result re-attach delivers to the editor.
 export function makeApplyHandler(
   toolName: string,
-  onPostToolUse?: PostToolUseCallback,
+  onPostToolUseHook?: PostToolUseCallback,
 ) {
-  return async (args: Record<string, unknown>) => {
+  return async (args: Record<string, unknown>, extra?: unknown) => {
+    // Carries the SDK's tool_use id so the result pairs with its call (#7931).
+    const onPostToolUse = postToolUseForCall(onPostToolUseHook, extra);
     const startTime = Date.now();
     // Scrub typographic Unicode (curly quotes, em-dashes, NBSP) the model
     // sometimes emits — it breaks script parsing on-device (PowerShell 5.1

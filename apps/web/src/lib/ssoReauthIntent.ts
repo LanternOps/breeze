@@ -23,7 +23,11 @@
 
 /**
  * `totp` / `passkey`: the two ENROLLMENT cards (#4055) — the grant that comes
- * back is `enroll_first_factor`.
+ * back is `enroll_first_factor` for an account with no factor yet, and
+ * `sso_reauth_manage_factor` for one that already holds a factor (#7369: it
+ * stands in for the password while the card still demands the existing-factor
+ * step-up). The callback picks the purpose from the factor state, not from this
+ * intent, which only decides where the user lands.
  * `recovery_codes` / `disable_mfa` / `delete_passkey` (#4045): the three
  * factor-MANAGEMENT actions of an account that already holds a factor — the
  * grant that comes back is `sso_reauth_manage_factor` and stands in for the

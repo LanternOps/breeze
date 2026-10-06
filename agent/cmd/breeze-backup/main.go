@@ -246,6 +246,8 @@ func initLogging(cfg *config.Config) func() {
 		AgentVersion: version + "-backup",
 		MinLevel:     cfg.LogShippingLevel,
 		AuthMonitor:  authstate.NewMonitor(3),
+		// Follows the agent's set_log_level override (#7416).
+		LevelOverridePath: config.LogLevelOverridePath(),
 	})
 	return logging.StopShipper
 }

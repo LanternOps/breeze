@@ -264,7 +264,19 @@ export async function resolvePartnerAccessibleOrgIds(
   partnerId: string,
   userId: string,
 ): Promise<string[]> {
-  return withSystemDbAccessContext(async () => {
+  return (await resolvePartnerAccess(partnerId, userId)).orgIds;
+}
+
+/**
+ * Same resolution as {@link resolvePartnerAccessibleOrgIds}, plus whether a
+ * partner_users membership row exists at all. A member with orgAccess 'none'
+ * still holds the partner axis; a user with no membership holds neither axis.
+ */
+export async function resolvePartnerAccess(
+  partnerId: string,
+  userId: string,
+): Promise<{ isMember: boolean; orgIds: string[] }> {
+  const result = await withSystemDbAccessContext(async () => {
     const [partnerMembership] = await db
       .select({
         orgAccess: partnerUsers.orgAccess,
@@ -276,8 +288,8 @@ export async function resolvePartnerAccessibleOrgIds(
       )
       .limit(1);
 
-    if (!partnerMembership) return [];
-    if (partnerMembership.orgAccess === 'none') return [];
+    if (!partnerMembership) return null;
+    if (partnerMembership.orgAccess === 'none') return [] as string[];
 
     if (partnerMembership.orgAccess === 'selected') {
       const selected = (partnerMembership.orgIds ?? []).filter(
@@ -326,6 +338,9 @@ export async function resolvePartnerAccessibleOrgIds(
       );
     return rows.map((r) => r.id);
   });
+  return result === null
+    ? { isMember: false, orgIds: [] }
+    : { isMember: true, orgIds: result };
 }
 
 // Exported for unit tests that exercise the partner-scope resolution path.
@@ -497,16 +512,16 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   // were passing `accessibleOrgIds: null`, which downstream code interprets
   // as "system scope, no filter" — defeating the app-layer org filter and
   // leaning entirely on RLS. See resolvePartnerAccessibleOrgIds() above.
-  const partnerAccessibleOrgIds = payload.org_id
+  const partnerAccess = payload.org_id
     ? null
-    : await filterBlockedOAuthClientOrgIds(
-        await resolvePartnerAccessibleOrgIds(payload.partner_id, payload.sub),
-        clientIdClaim,
-      );
+    : await resolvePartnerAccess(payload.partner_id, payload.sub);
+  const partnerAccessibleOrgIds = partnerAccess
+    ? await filterBlockedOAuthClientOrgIds(partnerAccess.orgIds, clientIdClaim)
+    : null;
 
   // See MCP_SKIP_AMBIENT_DB_CONTEXT_KEY's doc comment: set only by
   // mcpAuthMiddleware, only for an MCP tools/call request already known to
-  // target a tenant (BYO MCP) tool. Every DB read/write on that path manages
+  // target a tenant (BYO MCP) tool or a self-managed core action. Every DB phase manages
   // its own short context, so the ambient wrap below is skipped rather than
   // pinning a pooled connection across the tool's outbound call.
   if (c.get(MCP_SKIP_AMBIENT_DB_CONTEXT_KEY) === true) {
@@ -546,7 +561,9 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
           // [] correctly produces "no rows match" (e.g. fresh tenant with no
           // orgs yet); null would mean "no filter, see everything".
           accessibleOrgIds: partnerAccessibleOrgIds ?? [],
-          accessiblePartnerIds: [payload.partner_id],
+          // Partner axis only while the user is still a partner member —
+          // a removed member gets neither axis, matching the empty org list.
+          accessiblePartnerIds: partnerAccess?.isMember ? [payload.partner_id] : [],
           userId: payload.sub,
           // Own partner — read-visibility of partner-wide catalog rows.
           currentPartnerId: payload.partner_id,

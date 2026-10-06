@@ -24,6 +24,10 @@ const EXTRA_REQUIRED = [
   // org-erasure FK gap on reports.report_id was closed. Parent-keyed, so it
   // travels with its definition's repointed org_id.
   'report_runs',
+  // Joined ASSOCIATED_SYSTEM_SCOPED_TABLES so org erasure clears items naming
+  // the org's roles (role_id keeps NO ACTION). Review/role/user-keyed, so it
+  // travels with its parents through a merge.
+  'access_review_items',
   'partner_export_configuration_org_state', 'partner_export_device_material_state',
   'partner_export_site_material_state',
 ];
@@ -185,6 +189,8 @@ const PREDICATE_CHECK_EXCEPTIONS = new Set(['tenant_variables']);
  * silently writes the old value back — equally fatal, and quieter.
  */
 const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
+  'autopay_setup_attempts.autopay_setup_attempts_immutable_authority': 'Accepted setup authority includes immutable org_id; leave-for-erasure preserves it on the loser.',
+  'org_autopay_consents.org_autopay_consents_immutable': 'unconditional append-only RAISE; consent authority remains with the loser for erasure',
   'offline_transition_effects.offline_effect_source_guard': 'RAISEs iff immutable source org_id changes; historical intents remain with source until erasure',
   // Conditional immutability guards: RAISE iff org_id changed.
   'action_intents.action_intents_immutable_trg': 'RAISEs iff org_id changed',
@@ -238,6 +244,9 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
  * row's org_id is unchanged afterwards.
  */
 const CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID: Readonly<Record<string, string>> = {
+  org_autopay_enrollments: 'Cancel and retain source authority; proven by autopayMerge.integration.test.ts.',
+  org_payment_methods: 'Remove and retain source authority; proven by autopayMerge.integration.test.ts.',
+
   // fenceScriptProposals sets status/decision_note in the resolve phase;
   // moveScriptProposals is a documented no-op. Proven by
   // scriptProposalsLifecycle.integration.test.ts ("an org merge expires live
@@ -260,6 +269,17 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // Diagnostic access grants (2026-12-13-130000): on an org_id change, turns an
+  // active grant into revoked and a pending request into expired. Never blocks
+  // or reverts the org_id change itself; the merge fences these rows in its
+  // resolve phase first, so the repoint finds them already dead.
+  'diagnostic_access_grants.diagnostic_access_grants_fence_org_change': 'kills a live grant on org change; never reads-to-block or reverts org_id',
+  'diagnostic_access_grants.diagnostic_access_grants_expire_pending_approvals': 'BEFORE DELETE only: expires the grant\'s pending approval rows; never blocks or rewrites org_id',
+  // AI Suggested Fixes W2 (2026-12-07-100000): BEFORE INSERT OR UPDATE guard
+  // that compares only created_by / provisioned_by and RAISEs on a change
+  // outside the system scope. It never reads org_id, and org merge runs in the
+  // system scope anyway, so a repoint is never obstructed.
+  'ai_agents.ai_agents_provenance_guard': 'checks only created_by/provisioned_by changes (and passes everything in the system scope); an org_id repoint is exempt',
   // Topology M4-D2 (2026-11-06-220000): BEFORE UPDATE OF topology_site_id only;
   // RAISEs when the site pin changes. Merge repoints org_id (never the pin),
   // and the pin's composite FK to sites(id, org_id) is DEFERRABLE, so the
@@ -284,6 +304,7 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // NEW.partner_feed_xid := pg_current_xact_id(). Never reads or blocks org_id;
   // an org repoint restamps the row, which correctly re-delivers it in the feed.
   'alerts.breeze_alerts_partner_feed_xid': 'only stamps partner_feed_xid; never reads or reverts org_id',
+  'tickets.breeze_tickets_partner_feed_xid': 'only stamps partner_feed_xid; never reads or reverts org_id',
   // #6488 (2026-10-31-100700): fires on an actual org_id/device_id change and
   // only drops a complete/hydrating file_index_status to 'none', so the
   // snapshot's origin provenance is re-verified under the new org. Never
@@ -521,10 +542,13 @@ describe('Org merge policy registry contract', () => {
     for (const [table, policy] of policies) {
       if (policy.kind !== 'keep-survivor') continue;
       const indexes = await getUniqueIndexes(table);
-      const match = indexes.find((ix) => ix.whereNormalized === null && ix.nonOrgColumns.size === 0);
+      // Dual-axis settings have one row per non-null org, plus partner-owned rows.
+      // Their merge executor deletes source settings and never repoints them.
+      const expectedWhere = table === 'billing_payment_settings' ? normalizeSql('org_id IS NOT NULL') : null;
+      const match = indexes.find((ix) => ix.whereNormalized === expectedWhere && ix.nonOrgColumns.size === 0);
       expect(
         match,
-        `${table}: expected a total (non-partial) UNIQUE index on exactly (org_id); found unique indexes: ${JSON.stringify(indexes.map((i) => i.indexname))}`,
+        `${table}: expected a UNIQUE index on exactly (org_id) with predicate ${expectedWhere ?? 'none'}; found unique indexes: ${JSON.stringify(indexes.map((i) => i.indexname))}`,
       ).toBeDefined();
     }
   });

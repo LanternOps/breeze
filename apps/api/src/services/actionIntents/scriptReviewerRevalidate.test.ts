@@ -69,7 +69,7 @@ const EFFECTIVE = {
   proposingEnabled: true, unattendedEnabled: true, maxUnattendedRiskTier: 'low',
   unattendedAllowedClasses: ['services', 'processes', 'temp_files', 'dns_cache', 'printing'],
   maxUnattendedPerHour: 10, protectedResources: EMPTY_RESOURCES,
-  reviewerModel: null, source: { partnerRowId: 'p', orgRowId: 'o' },
+  source: { partnerRowId: 'p', orgRowId: 'o' },
 };
 const EVIDENCE = {
   proposalId: 'prop-1', reviewId: 'rev-1', contentDigest: 'd'.repeat(64),

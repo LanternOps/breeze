@@ -49,7 +49,7 @@ vi.mock('../../db', () => ({
   db: {},
 }));
 
-// SEC-150: the settings response now also carries Checkout-session revocation
+// The settings response now also carries Checkout-session revocation
 // health so the card can warn about links that could not be killed. This suite
 // covers the CONNECTION snapshot; the health query itself is proved against real
 // Postgres in stripeSessionRevocation.integration.test.ts.
@@ -107,6 +107,8 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: new Date('2026-08-22T00:00:00.000Z'),
+      autopayCapabilitiesCheckedAt: new Date('2026-10-01T00:00:00Z'),
+      autopayMissingPermissions: ['mandates_read'],
     });
     (getPartnerStripeAccountSnapshot as any).mockResolvedValue({
       connected: true,
@@ -128,6 +130,8 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: new Date('2026-08-22T00:00:00.000Z'),
+      autopayCapabilitiesCheckedAt: new Date('2026-10-01T00:00:00Z'),
+      autopayMissingPermissions: ['mandates_read'],
     });
     (disconnectPartnerStripe as any).mockResolvedValue(undefined);
   });
@@ -143,6 +147,8 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: '2026-08-22T00:00:00.000Z',
+      autopayCapabilitiesCheckedAt: '2026-10-01T00:00:00.000Z',
+      autopayMissingPermissions: ['mandates_read'],
       reconciliation: { state: 'pending', lastPolledAt: null, error: null },
     });
     expect(savePartnerStripeKey).toHaveBeenCalledWith({
@@ -184,7 +190,7 @@ describe('stripe-connect (API-key) routes', () => {
       stale: false,
       error: null,
       reconciliation: { state: 'pending', lastPolledAt: null, error: null },
-      // SEC-150: revocation health rides on the SAME response as the
+      // Revocation health rides on the SAME response as the
       // connection so the card can warn about links that could not be killed.
       sessionRevocation: { blocked: 0, credentialUnavailable: 0, chargedRepair: 0, pending: 0 },
     });
@@ -265,6 +271,8 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: '2026-08-22T00:00:00.000Z',
+      autopayCapabilitiesCheckedAt: '2026-10-01T00:00:00.000Z',
+      autopayMissingPermissions: ['mandates_read'],
       cacheState: 'fresh',
       stale: false,
       error: null,
@@ -280,6 +288,12 @@ describe('stripe-connect (API-key) routes', () => {
         details: { defaultCurrency: 'EUR', accountCountry: 'DE' },
       },
     );
+  });
+
+  it('POST /refresh returns persisted autopay readiness facts', async () => {
+    const response = await stripeConnectRoutes.request('/refresh', { method: 'POST' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ autopayCapabilitiesCheckedAt: '2026-10-01T00:00:00.000Z', autopayMissingPermissions: ['mandates_read'] });
   });
 
   it('POST /refresh returns the PartnerStripeError status and message', async () => {
@@ -304,7 +318,7 @@ describe('stripe-connect (API-key) routes', () => {
     const res = await stripeConnectRoutes.request('/', { method: 'DELETE' });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ status: 'disconnected' });
-    // SEC-150: the acting user rides along so a stuck revocation intent can be
+    // The acting user rides along so a stuck revocation intent can be
     // traced to whoever pulled the integration.
     expect(disconnectPartnerStripe).toHaveBeenCalledWith('partner-1', '11111111-1111-1111-1111-111111111111');
     expect(writeRouteAudit).toHaveBeenCalled();

@@ -42,7 +42,7 @@ import { createOrganization, createPartner, createUser } from '../../__tests__/i
 import { getTestDb } from '../../__tests__/integration/setup';
 import { processInboundEmail, InboundEmailProcessingRecorded } from './inboundEmailService';
 import { moveTicketOrg } from '../ticketService';
-import { fourDigitSuffix } from './fixtureNumbering';
+import { uniqueInternalNumber } from './fixtureNumbering';
 import type { NormalizedInboundEmail } from './types';
 
 // Lets one test make message-link bookkeeping fail with an ORDINARY JavaScript
@@ -147,10 +147,10 @@ beforeEach(async () => {
   // Partner B's victim ticket. Known thread key + internal number so a forged
   // reference addressed to partner A could only match it if the guards failed.
   const bThreadKey = `<thread-b-${suffix}@b.test>`;
-  // Derived via fourDigitSuffix (never Number()) — see #4495: Number() on an
-  // arbitrary base36 slice can parse as scientific notation (e.g. "4e19") and
-  // overflow tickets.internal_number varchar(20).
-  const bInternalNumber = `T-2026-${fourDigitSuffix(suffix)}`;
+  // uniqueInternalNumber (#7868): collision-free per process and varchar(20)-safe
+  // (#4495 — never Number() an arbitrary base36 slice). 4-digit derivations
+  // collided at random with other fixture numbers under the same partner.
+  const bInternalNumber = uniqueInternalNumber();
   // Fixture-level guard against a regression of #4495: tickets.internal_number
   // is varchar(20) — assert here, not just rely on the formula, so a future
   // edit to this fixture fails fast instead of flaking on an insert.
@@ -171,7 +171,7 @@ beforeEach(async () => {
 
   // A resolved partner-A ticket for the reopen case (distinct thread key).
   const aResolvedThreadKey = `<thread-a-${suffix}@a.test>`;
-  const aInternalNumber = `T-2026-${fourDigitSuffix(suffix, 1)}`;
+  const aInternalNumber = uniqueInternalNumber();
   expect(aInternalNumber.length).toBeLessThanOrEqual(20);
   const [aTicket] = await db
     .insert(tickets)
@@ -510,7 +510,7 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
 
   it('CASE 7: an enumerable subject token is bound to the exact requester, not another portal user in the same org', async () => {
     const suffix = uniqueSuffix();
-    const victimNumber = `T-2026-${fourDigitSuffix(suffix, 2)}`;
+    const victimNumber = uniqueInternalNumber();
     const [victim] = await admin()
       .insert(tickets)
       .values({
@@ -575,7 +575,7 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
 
   it('CASE 8: requester reassignment that wins the row lock invalidates the former requester before append', async () => {
     const suffix = uniqueSuffix();
-    const victimNumber = `T-2026-${fourDigitSuffix(suffix, 3)}`;
+    const victimNumber = uniqueInternalNumber();
     const [newRequester] = await admin()
       .insert(portalUsers)
       .values({
@@ -659,7 +659,7 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
       const targetOrg = await createOrganization({ partnerId: fx.partnerA.id });
       seeded.orgIds.push(targetOrg.id);
       const actor = await createUser({ partnerId: fx.partnerA.id });
-      const number = `T-2026-${fourDigitSuffix(suffix, status === 'closed' ? 5 : 4)}`;
+      const number = uniqueInternalNumber();
       const [ticket] = await admin().insert(tickets).values({
         orgId: fx.orgA.id,
         partnerId: fx.partnerA.id,
@@ -673,7 +673,7 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
         ...(status === 'resolved' ? { resolvedAt: new Date() } : { closedAt: new Date() }),
       }).returning({ id: tickets.id });
 
-      await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, targetOrg.id, { userId: actor.id }));
+      await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, targetOrg.id, { kind: 'user' as const, userId: actor.id }));
       const providerMessageId = `<move-wins-${status}-${suffix}@known.test>`;
       await withSystemDbAccessContext(() => processInboundEmail(buildEmail({
         to: `support@${fx.domainA}`,
@@ -696,7 +696,7 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
     const targetOrg = await createOrganization({ partnerId: fx.partnerA.id });
     seeded.orgIds.push(targetOrg.id);
     const actor = await createUser({ partnerId: fx.partnerA.id });
-    const number = `T-2026-${fourDigitSuffix(suffix, 6)}`;
+    const number = uniqueInternalNumber();
     const [ticket] = await admin().insert(tickets).values({
       orgId: fx.orgA.id,
       partnerId: fx.partnerA.id,
@@ -724,7 +724,7 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
       afterTicketMatchLock: async () => { locked(); await held; },
     }));
     await hasLock;
-    const move = withSystemDbAccessContext(() => moveTicketOrg(ticket.id, targetOrg.id, { userId: actor.id }));
+    const move = withSystemDbAccessContext(() => moveTicketOrg(ticket.id, targetOrg.id, { kind: 'user' as const, userId: actor.id }));
     try {
       await expect.poll(async () => {
         const rows = await admin().execute(sql`
@@ -752,7 +752,7 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
     const targetOrg = await createOrganization({ partnerId: fx.partnerA.id });
     seeded.orgIds.push(targetOrg.id);
     const actor = await createUser({ partnerId: fx.partnerA.id });
-    const number = `T-2026-${fourDigitSuffix(suffix, 7)}`;
+    const number = uniqueInternalNumber();
     const [ticket] = await admin().insert(tickets).values({
       orgId: fx.orgA.id,
       partnerId: fx.partnerA.id,
@@ -780,7 +780,7 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
       afterTicketMatchLock: async () => { locked(); await held; },
     }));
     await hasLock;
-    const move = withSystemDbAccessContext(() => moveTicketOrg(ticket.id, targetOrg.id, { userId: actor.id }));
+    const move = withSystemDbAccessContext(() => moveTicketOrg(ticket.id, targetOrg.id, { kind: 'user' as const, userId: actor.id }));
     try {
       await expect.poll(async () => {
         const rows = await admin().execute(sql`

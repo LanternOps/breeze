@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../db';
+import type { Tx } from './autopay/types';
 import { invoices } from '../db/schema';
 import { encryptSecret, decryptSecret } from './secretCrypto';
 import { columnAad, encryptedColumnRegistry } from './encryptedColumnRegistry';
@@ -102,6 +103,13 @@ function reproduceToken(row: LinkColumns): string | null {
   return token;
 }
 
+/** The invoice's live public link, or null. Never mints: safe for read-only views. */
+export function peekInvoiceLink(row: LinkColumns): { token: string; expiresAt: Date } | null {
+  if (!row.publicLinkExpiresAt || row.publicLinkExpiresAt.getTime() <= Date.now()) return null;
+  const token = reproduceToken(row);
+  return token ? { token, expiresAt: row.publicLinkExpiresAt } : null;
+}
+
 /**
  * Return the invoice's public link, minting one if absent/expired/unreadable.
  *
@@ -110,7 +118,7 @@ function reproduceToken(row: LinkColumns): string | null {
  * racing callers can't each mint — the loser re-reads and reproduces the
  * winner's token, and exactly one credential ever exists.
  */
-export async function getOrMintInvoiceLink(row: LinkColumns): Promise<InvoiceLinkResult> {
+export async function getOrMintInvoiceLink(row: LinkColumns, executor: Tx = db): Promise<InvoiceLinkResult> {
   const expired = row.publicLinkExpiresAt != null && row.publicLinkExpiresAt.getTime() <= Date.now();
   if (!expired) {
     const existing = reproduceToken(row);
@@ -132,7 +140,7 @@ export async function getOrMintInvoiceLink(row: LinkColumns): Promise<InvoiceLin
 
   const token = mintToken();
   const expiresAt = computeExpiry(row.dueDate);
-  const claimed = await db.update(invoices)
+  const claimed = await executor.update(invoices)
     .set({
       publicLinkTokenHash: hashInvoiceLinkToken(token),
       publicLinkTokenCt: encryptSecret(token, { aad: columnAad(CT_SPEC!, row.id) }),
@@ -149,7 +157,7 @@ export async function getOrMintInvoiceLink(row: LinkColumns): Promise<InvoiceLin
   if (claimed.length > 0) return { token, expiresAt, origin };
 
   // Lost the race — reproduce the winner's token.
-  const [winner] = await db.select({
+  const [winner] = await executor.select({
     id: invoices.id, dueDate: invoices.dueDate,
     publicLinkTokenHash: invoices.publicLinkTokenHash,
     publicLinkTokenCt: invoices.publicLinkTokenCt,

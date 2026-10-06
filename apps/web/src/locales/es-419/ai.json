@@ -86,7 +86,8 @@
         "prompt": "Muéstreme las entradas del registro de auditoría más recientes: ¿qué acciones se tomaron en las últimas horas?"
       }
     },
-    "unattendedRelease": "Revisado por el revisor de scripts de la IA y publicado sin una tarjeta de aprobación."
+    "unattendedRelease": "Revisado por el revisor de scripts de la IA y publicado sin una tarjeta de aprobación.",
+    "openScriptProposal": "Abrir la propuesta para ver sus ejecuciones o guardarla en la biblioteca"
   },
   "aiChatSidebar": {
     "history": "Historial",

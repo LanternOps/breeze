@@ -62,7 +62,7 @@ func InstallFileWithAttrs(base, relative, source string, mode os.FileMode, modTi
 // descriptor, W06a) through a handle this package has already pinned, so the
 // caller never has to reopen a restored entry by pathname — a pathname
 // reopen after publication is exactly the race this package exists to
-// remove (SEC-121).
+// remove.
 //
 // Access is the extra access mask the pinned handle must carry for Apply to
 // succeed (WRITE_DAC, WRITE_OWNER, ACCESS_SYSTEM_SECURITY on Windows; ignored

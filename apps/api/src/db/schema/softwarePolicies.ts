@@ -127,7 +127,7 @@ export const softwarePolicies = pgTable('software_policies', {
 
 export const softwareComplianceStatus = pgTable('software_compliance_status', {
   id: uuid('id').primaryKey().defaultRandom(),
-  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  deviceId: uuid('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),
   policyId: uuid('policy_id').notNull().references(() => softwarePolicies.id, { onDelete: 'cascade' }),
   status: varchar('status', { length: 20 }).notNull().default('compliant'),
   lastChecked: timestamp('last_checked').notNull(),

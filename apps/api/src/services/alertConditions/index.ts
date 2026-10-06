@@ -281,6 +281,24 @@ export async function evaluateConditions(
     return undefined;
   };
 
+  // #7966 — service/process watch templates reference {{serviceName}} /
+  // {{processName}}; carry the first leaf's value so the title renders.
+  const findFirstLeafString = (cond: RootCondition, key: 'serviceName' | 'processName'): string | undefined => {
+    if (isConditionGroup(cond)) {
+      for (const c of cond.conditions) {
+        const found = findFirstLeafString(c, key);
+        if (found) return found;
+      }
+      return undefined;
+    }
+    const value = (cond as unknown as Record<string, unknown>)[key];
+    return typeof value === 'string' && value ? value : undefined;
+  };
+  const serviceName = findFirstLeafString(rootCondition, 'serviceName');
+  if (serviceName) context.serviceName = serviceName;
+  const processName = findFirstLeafString(rootCondition, 'processName');
+  if (processName) context.processName = processName;
+
   const primaryThreshold = findFirstThreshold(rootCondition);
   if (primaryThreshold) {
     const normalizedMetric = primaryThreshold.metric ? normalizeMetricName(primaryThreshold.metric) : undefined;

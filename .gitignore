@@ -139,3 +139,7 @@ docker-compose.override.pam.yml
 
 # Measured acceptance/soak artifacts (topology fleet gates, ad-hoc harness runs)
 test-results/
+
+# Research eval outputs (model output + cost figures belong in the PR, not the tree)
+research-eval-report.json
+research-eval-summary.md

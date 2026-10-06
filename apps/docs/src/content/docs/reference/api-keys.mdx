@@ -168,6 +168,18 @@ curl -X DELETE https://breeze.yourdomain.com/api/v1/api-keys/KEY_UUID \
 | `expired` | The `expiresAt` timestamp has passed. Set automatically on the next authentication attempt. |
 | `revoked` | Manually disabled via the `DELETE` endpoint. Permanent. |
 
+### When a key stops working because of its creator
+
+A key minted by a person is checked against that person's account on every request (v0.121.0+):
+
+- **The key stops working** when its creator's sign-in credential is replaced or voided: a password change or reset, accepting an invite (which sets a new password), an administrator changing the account's status, or a change to the creator's MFA factors. Mint a new key afterwards. Re-enabling a disabled account does not bring back keys minted before it was disabled.
+- **The key keeps working** when its creator signs out, or after a role change, an email change or an organization merge.
+- **A role downgrade or a removed membership takes effect immediately.** The key is limited to what its creator can still do, on every request.
+
+<Aside type="note">
+  On v0.120.0, signing out also stopped the creator's keys. Keys that stopped working that way are not revived by upgrading; mint a replacement.
+</Aside>
+
 ---
 
 ## Service Principals

@@ -1161,6 +1161,7 @@
     "clearCategory": "Auswahl aufheben",
     "columnPath": "Pfad",
     "columnSize": "Größe",
+    "selectionLimit": "Ein einzelner Bereinigungslauf kann höchstens {{max}} Elemente löschen. „Alle auswählen“ füllt die Auswahl bis zu diesem Limit auf, die größten zuerst. Löschen Sie diese und führen Sie die Bereinigungsvorschau erneut aus, um den Rest zu bearbeiten.",
     "selectionSummary": "{{count}} ausgewählt · {{size}}",
     "executeSelected": "Auswahl löschen ({{count}})",
     "confirmTitle": "Bereinigungsziele endgültig löschen",
@@ -1921,6 +1922,10 @@
       "noReason": "Kein Grund vom Agent gemeldet",
       "failedAt": "Letzter Installationsversuch fehlgeschlagen: {{when}}"
     },
+    "awaitingRestart": {
+      "badge": "Installiert, Neustart erforderlich",
+      "installedAt": "Installiert am {{when}}. Bleibt bis zum Neustart des Geräts als ausstehend aufgeführt."
+    },
     "approval": {
       "approved": "Genehmigt",
       "approvedTitle": "Manuell genehmigt.",
@@ -2431,6 +2436,7 @@
       "bulkWakeSomeFailed": "Aufwecken einiger Geräte fehlgeschlagen",
       "commandQueued": "{{action}} eingereiht — wird ausgeführt, wenn {{hostname}} wieder verbunden ist",
       "commandSent": "{{action}} an {{hostname}} gesendet",
+      "commandCancelled": "{{action}} wurde nicht an {{hostname}} gesendet: Befehl abgebrochen ({{reason}})",
       "compareNeedsTwo": "Der Vergleich benötigt mindestens 2 Agent-Geräte.",
       "decommissionCancelled": "Entfernen abgebrochen",
       "decommissionFailed": "Entfernen fehlgeschlagen",
@@ -2819,7 +2825,8 @@
     "submitStepUp": "Bestätigen und verschieben",
     "submitting": "Wird ausgeführt…",
     "cancel": "Abbrechen",
-    "genericError": "Das Gerät konnte nicht verschoben werden."
+    "genericError": "Das Gerät konnte nicht verschoben werden.",
+    "timeout": "Das Verschieben dauert länger als erwartet und wird auf dem Server möglicherweise noch abgeschlossen. Warten Sie eine Minute und laden Sie die Seite dann neu, um zu prüfen, in welcher Organisation sich das Gerät befindet, bevor Sie es erneut versuchen."
   },
   "networkDeviceDetailPage": {
     "approval": {

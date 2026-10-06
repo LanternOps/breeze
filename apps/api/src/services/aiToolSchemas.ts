@@ -10,7 +10,7 @@ import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 import { fleetTimeFiltersSchema } from './timeSync/fleetFilters';
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema } from '@breeze/shared';
+import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema } from '@breeze/shared';
 import {
   backupProfileSelectionsSchema,
   proposeScriptInputSchema,
@@ -35,6 +35,7 @@ import {
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { aiPathRefusal } from './aiPathRestriction';
 import { CONTACT_ROLES } from './contacts/types';
+import { fixProblemSchema } from './fixMemory/problemSignature';
 
 // Reusable validators
 const uuid = z.string().guid();
@@ -113,6 +114,46 @@ export const executeCommandPayloadSchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).optional(),
 }).passthrough();
 
+/**
+ * Administrator-approved read-only diagnostic access (aiToolsDiagnosticAccess.ts).
+ * Shared by toolInputSchemas and the chat SDK tool() shapes. Paths are plain
+ * strings here: form, OS match, sensitive classes and grant coverage are
+ * decided by services/diagnosticAccess — the default path restriction is
+ * exactly what an approved grant lifts, so it must not be applied here.
+ */
+export const diagnosticAccessShapes = {
+  request_diagnostic_access: {
+    deviceId: uuid,
+    paths: z.array(z.object({ path: z.string().min(1).max(4096), recursive: z.boolean() }).strict()).min(1).max(20),
+    operations: z.array(z.enum(['list', 'read'])).min(1).max(2).optional(),
+    purpose: z.string().trim().min(3).max(500),
+    durationMinutes: z.number().int().min(5).max(1440).optional(),
+    sensitiveClasses: z.array(z.enum(['browser_secrets', 'credential_store', 'private_keys', 'session_tokens'])).max(4).optional(),
+  },
+  list_diagnostic_access_grants: {
+    deviceId: uuid.optional(),
+    includeInactive: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  },
+  revoke_diagnostic_access: {
+    grantId: uuid,
+    reason: z.string().max(500).optional(),
+  },
+  diagnostic_list_directory: {
+    deviceId: uuid,
+    path: z.string().min(1).max(4096),
+    offset: z.number().int().min(0).max(1_000_000).optional(),
+    limit: z.number().int().min(1).max(5000).optional(),
+  },
+  diagnostic_read_file: {
+    deviceId: uuid,
+    path: z.string().min(1).max(4096),
+    offset: z.number().int().min(0).optional(),
+    maxBytes: z.number().int().min(1).max(1_048_576).optional(),
+    encoding: z.enum(['text', 'base64']).optional(),
+  },
+};
+
 export const executeCommandShape = {
   deviceId: uuid,
   commandType: z.enum([
@@ -120,7 +161,7 @@ export const executeCommandShape = {
     'list_services', 'start_service', 'stop_service', 'restart_service',
     'file_list', 'file_read',
     'event_logs_list', 'event_logs_query',
-  ]),
+  ]).describe('The type of command to execute. Before kill_process, restate the evidence tying that PID to the problem, each claim labelled verified or inferred.'),
   payload: executeCommandPayloadSchema
     .describe('Command-specific parameters — see level/logName for event_logs_query, name for service control, pid (required) for kill_process, path for file ops.')
     .optional(),
@@ -213,6 +254,16 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     durationMinutes: z.number().int().min(1).optional(),
     subjectAdGroups: z.array(z.string().min(1).max(255)).max(200).optional(),
   }),
+
+  // Administrator-approved read-only diagnostic access (aiToolsDiagnosticAccess.ts).
+  // Paths are structural strings here; form, OS match, sensitive classes and
+  // coverage are decided by services/diagnosticAccess, never by the schema's
+  // default restriction (that is what the grant exists to lift).
+  request_diagnostic_access: z.object(diagnosticAccessShapes.request_diagnostic_access).strict(),
+  list_diagnostic_access_grants: z.object(diagnosticAccessShapes.list_diagnostic_access_grants).strict(),
+  revoke_diagnostic_access: z.object(diagnosticAccessShapes.revoke_diagnostic_access).strict(),
+  diagnostic_list_directory: z.object(diagnosticAccessShapes.diagnostic_list_directory).strict(),
+  diagnostic_read_file: z.object(diagnosticAccessShapes.diagnostic_read_file).strict(),
 
   revoke_elevation: z.object({
     elevationRequestId: uuid,
@@ -482,6 +533,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   find_proven_fixes: z.object({
     alertId: z.string().guid().optional(),
     anomalyEpisodeId: z.string().guid().optional(),
+    deviceId: z.string().guid().optional(),
+    problem: fixProblemSchema.optional(),
     limit: z.number().int().min(1).max(20).optional(),
   }),
 
@@ -536,7 +589,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // know is STRIPPED silently rather than rejected (#2814).
   manage_ai_agents: z.object({
     action: z.enum(['authorize_supervised_key']),
-    kind: z.enum(AI_AGENT_KINDS),
+    kind: z.enum(AI_AGENT_ACTING_KINDS),
     opKey: z.string().min(3).max(120),
     orgId: uuid,
   }),
@@ -1661,7 +1714,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // already taken by the unrelated network-monitor CRUD tool below
   // (query_monitors / manage_monitors, aiToolsMonitoring.ts).
   manage_monitor_definitions: z.object({
-    action: z.enum(['create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach']),
+    action: z.enum(['describe', 'create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach']),
+    kind: monitorKindSchema.optional(),
     monitorId: uuid.optional(),
     definition: z.record(z.string(), z.unknown()).optional(),
     configPolicyId: uuid.optional(),

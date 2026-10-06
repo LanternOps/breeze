@@ -37,7 +37,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('./featureConfigResolver', () => ({
-  resolvePatchConfigDetailsForDevice: vi.fn(),
+  resolvePatchConfigPolicyForDevice: vi.fn(),
 }));
 vi.mock('./configPolicyPatching', () => ({
   loadPolicyLocalPatchConfig: vi.fn(),
@@ -45,7 +45,7 @@ vi.mock('./configPolicyPatching', () => ({
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 import { db } from '../db';
-import { resolvePatchConfigDetailsForDevice } from './featureConfigResolver';
+import { resolvePatchConfigPolicyForDevice } from './featureConfigResolver';
 import { loadPolicyLocalPatchConfig } from './configPolicyPatching';
 import { captureException } from './sentry';
 import type { ApprovalEvaluationConfig } from './patchApprovalEvaluator';
@@ -107,7 +107,7 @@ const ringConfig = (o: Partial<ApprovalEvaluationConfig> = {}): ApprovalEvaluati
 
 beforeEach(() => {
   vi.mocked(db.select).mockReset();
-  vi.mocked(resolvePatchConfigDetailsForDevice).mockReset();
+  vi.mocked(resolvePatchConfigPolicyForDevice).mockReset();
   vi.mocked(loadPolicyLocalPatchConfig).mockReset();
 });
 
@@ -326,12 +326,12 @@ describe('resolvePatchInstallEligibility — the live composition', () => {
     expect(res.eligible).toEqual([]);
     expect(res.ineligible).toEqual([{ patchId: P1, reason: 'device_not_in_org' }, { patchId: P2, reason: 'device_not_in_org' }]);
     expect(res.ringId).toBeNull();
-    expect(resolvePatchConfigDetailsForDevice).not.toHaveBeenCalled();
+    expect(resolvePatchConfigPolicyForDevice).not.toHaveBeenCalled();
   });
 
   it("resolves the device's effective ring live, reads its deferral window, and excludes superseded patches", async () => {
     mockDevice(true);
-    vi.mocked(resolvePatchConfigDetailsForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
+    vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
     vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(policyLocal() as never);
     mockRingRow(30);
     mockEvaluatorReads([
@@ -352,7 +352,7 @@ describe('resolvePatchInstallEligibility — the live composition', () => {
 
   it('with no patch policy at all, only a manual partner-wide approval can admit a patch', async () => {
     mockDevice(true);
-    vi.mocked(resolvePatchConfigDetailsForDevice).mockResolvedValue(null);
+    vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue(null);
     mockEvaluatorReads([row({ patchId: P1 }), row({ patchId: P2 })], [{ patchId: P1, status: 'approved', ringId: null }]);
     const res = await resolvePatchInstallEligibility({ deviceId: DEV, orgId: ORG });
     expect(res.ringId).toBeNull();
@@ -363,7 +363,7 @@ describe('resolvePatchInstallEligibility — the live composition', () => {
 
   it('fails CLOSED when the ring vanishes between resolution and the deferral read — no ring, loudly', async () => {
     mockDevice(true);
-    vi.mocked(resolvePatchConfigDetailsForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
+    vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
     vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(policyLocal() as never);
     // The ring row read comes back empty (deleted mid-flight).
     vi.mocked(db.select).mockReturnValueOnce(chain('limit', []) as never);
@@ -381,7 +381,7 @@ describe('resolvePatchInstallEligibility — the live composition', () => {
 
   it('treats an invalid ring reference as no ring, keeping the policy sources/app rules', async () => {
     mockDevice(true);
-    vi.mocked(resolvePatchConfigDetailsForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
+    vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
     vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(policyLocal({
       ring: { classification: 'missing_target', valid: false, ringId: null, ringName: null, categoryRules: [], categories: [], excludeCategories: [], autoApprove: {} },
     }) as never);

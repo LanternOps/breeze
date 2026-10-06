@@ -384,7 +384,7 @@ describe('evaluateRevocationRecheck', () => {
   });
 });
 
-describe('renewRevocationLease fence resync fields (SEC-038 W05)', () => {
+describe('renewRevocationLease fence resync fields', () => {
   const liveRedis = () => ({
     eval: vi.fn(async () =>
       JSON.stringify({
@@ -808,10 +808,10 @@ describe('prepareRevocationLeaseForStart', () => {
   });
 });
 
-// SEC-038 W06 (#5537): the desktop-fence capability gate mirrors the #5481
+// #5537 — the desktop-fence capability gate mirrors the #5481
 // lease gate — same denial code, same upgrade message. REMOTE_DESKTOP_FENCE_REQUIRED
 // is required by default; a recognized false value is the explicit opt-out.
-describe('prepareRevocationLeaseForStart — desktop fence capability gate (SEC-038 W06)', () => {
+describe('prepareRevocationLeaseForStart — desktop fence capability gate', () => {
   const original = process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
   afterEach(() => {
     if (original === undefined) delete process.env.REMOTE_DESKTOP_FENCE_REQUIRED;

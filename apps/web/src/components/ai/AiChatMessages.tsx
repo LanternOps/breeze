@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import { shouldAutoScroll } from "./aiChatScroll";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -71,6 +71,34 @@ interface AiChatMessagesProps {
    * upgrade, so an empty map degrades to "poll only", never to a blank card.
    */
   chatRuns?: Record<string, ChatRunState>;
+}
+
+const SCRIPT_PROPOSAL_TOOLS = new Set(["run_script", "propose_script", "get_script_proposal"]);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * #7918: the proposal page (`/approvals#proposal-<id>`) shows a script
+ * proposal's runs and, once verified, offers "Save to library". In chat the
+ * approval card disappears as soon as the run is decided, so after a run —
+ * finished, failed, or cut off — nothing linked to it. The id comes from the
+ * tool call's input (`run_script`, `get_script_proposal`) or its result
+ * (`propose_script`), and must be a UUID before it goes into an href.
+ */
+export function scriptProposalHref(
+  toolName: string | undefined,
+  input: Record<string, unknown> | undefined,
+  output: unknown,
+): string | null {
+  if (!toolName || !SCRIPT_PROPOSAL_TOOLS.has(toolName)) return null;
+  let parsed = output;
+  if (typeof output === "string") {
+    try { parsed = JSON.parse(output); } catch { parsed = undefined; }
+  }
+  const fromOutput = parsed && typeof parsed === "object"
+    ? (parsed as { proposalId?: unknown }).proposalId
+    : undefined;
+  const id = input?.proposalId ?? fromOutput;
+  return typeof id === "string" && UUID_RE.test(id) ? `/approvals#proposal-${id.toLowerCase()}` : null;
 }
 
 export default function AiChatMessages({
@@ -359,15 +387,28 @@ export default function AiChatMessages({
           const matchingToolUse = messages.find(
             (m) => m.role === "tool_use" && m.toolUseId === msg.toolUseId,
           );
+          const proposalHref = scriptProposalHref(
+            msg.toolName, matchingToolUse?.toolInput, msg.toolOutput ?? msg.content,
+          );
           return (
-            <AiToolCallCard
-              key={msg.id}
-              toolName={msg.toolName ?? t("aiChatMessages.toolResult")}
-              input={matchingToolUse?.toolInput}
-              output={msg.toolOutput ?? msg.content}
-              isError={msg.isError}
-              handoff={msg.handoff}
-            />
+            <Fragment key={msg.id}>
+              <AiToolCallCard
+                toolName={msg.toolName ?? t("aiChatMessages.toolResult")}
+                input={matchingToolUse?.toolInput}
+                output={msg.toolOutput ?? msg.content}
+                isError={msg.isError}
+                handoff={msg.handoff}
+              />
+              {proposalHref && (
+                <a
+                  href={proposalHref}
+                  className="text-xs text-primary underline-offset-2 hover:underline"
+                  data-testid="ai-script-proposal-link"
+                >
+                  {t("aiChatMessages.openScriptProposal")}
+                </a>
+              )}
+            </Fragment>
           );
         }
 

@@ -13,21 +13,21 @@
     "ui-audit": "tsx ui-audit/run.ts"
   },
   "dependencies": {
-    "dotenv": "^18.0.3"
+    "dotenv": "^18.0.5"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.63.0",
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.4",
     "@types/pg": "^8.23.1",
     "@types/pngjs": "^6.0.5",
-    "pg": "^8.23.0",
+    "pg": "^8.23.1",
     "pixelmatch": "^7.2.0",
     "playwright": "^1.63.0",
     "pngjs": "^7.0.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.2",
+    "vitest": "^5.0.3",
     "werift": "^0.24.4"
   },
   "pnpm": {

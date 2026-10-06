@@ -215,7 +215,6 @@ export interface ScriptPolicyDto {
   unattendedAllowedClasses: TouchClass[];
   maxUnattendedPerHour: number;
   protectedResources: { services: string[]; paths: string[]; registryKeys: string[]; deviceTags: string[] };
-  reviewerModel: string | null;
   unattendedEnabledAt: string | null;
 }
 

@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * SEC-2026-09-05-057 web gate: the QuickBooks sub-tab entry and its panel are
+ * Web gate: the QuickBooks sub-tab entry and its panel are
  * gated on the dedicated `accounting:read` capability. Without it the sub-tab
  * button is not rendered and the panel shows the standard permission-denied
  * state (`AccessDenied`) rather than a screen of 403s. The Stripe payments

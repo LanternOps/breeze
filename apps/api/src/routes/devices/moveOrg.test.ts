@@ -639,6 +639,15 @@ describe('POST /devices/:id/move-org', () => {
         ...ALERT_CHILD_ORG_REWRITE_TABLES,
         ...DEVICE_SITE_DENORMALIZED_TABLES,
       ]);
+      // Partner API tickets: a ticket_external_refs row is pinned to ONE
+      // partner by its composite FKs, so refs of another partner's principal
+      // are deleted BEFORE the re-stamp — on a cross-partner move (system
+      // scope) the re-stamp would otherwise 23503 and abort the whole move.
+      const refDelete = statements.findIndex((s) => /DELETE FROM ticket_external_refs\b/.test(s));
+      const refRestamp = statements.findIndex((s) => /UPDATE\s+"?ticket_external_refs"?\s+SET org_id/.test(s));
+      expect(refDelete).toBeGreaterThan(-1);
+      expect(refRestamp).toBeGreaterThan(refDelete);
+      expect(statements[refDelete]).toMatch(/partner_id IS DISTINCT FROM \(SELECT partner_id FROM organizations/);
       expect(getDeviceOrgDenormalizedTables()).toContain('agent_health_observations');
       // agent_rollback_events (#4371 fixup) and peripheral_policy_delivery_
       // events (#4806 fixup): restamped by the SECURITY DEFINER breeze_
@@ -693,6 +702,46 @@ describe('POST /devices/:id/move-org', () => {
       // later 409s with no visible reason).
       expect(dissolveLinkGroupIfBelowMinimum).toHaveBeenCalledTimes(1);
       expect(vi.mocked(dissolveLinkGroupIfBelowMinimum).mock.calls[0]![1]).toBe('grp-multiboot-1');
+    });
+
+    it('skips rows the devices trigger already re-stamped in the generic loop, but not tickets (#7988)', async () => {
+      // breeze_cascade_device_org_id() (AFTER UPDATE on devices) re-stamps
+      // org_id on every breeze_device_child_orgid_tables() row before this
+      // loop runs. An unfiltered loop rewrites every telemetry row a second
+      // time, which is what pushed online-device moves past the client's
+      // 30 s timeout.
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+      });
+      expect(res.status).toBe(200);
+
+      const flat = statements.map(collapseStmt);
+      for (const table of ['device_metrics', 'agent_logs']) {
+        expect(flat).toContain(
+          `UPDATE ${table} SET org_id = ${TARGET_ORG}::uuid WHERE device_id = ${DEVICE_ID}::uuid ` +
+            `AND org_id IS DISTINCT FROM ${TARGET_ORG}::uuid`,
+        );
+      }
+
+      // tickets stays UNFILTERED: the trigger already moved tickets.org_id but
+      // not partner_id, and the RETURNING ids drive assignee revalidation. A
+      // filter here would skip every trigger-moved ticket.
+      const ticketUpdates = flat.filter((s) => s.startsWith('UPDATE tickets SET org_id'));
+      expect(ticketUpdates).toHaveLength(1);
+      expect(ticketUpdates[0]).toContain('partner_id = (SELECT partner_id FROM organizations');
+      expect(ticketUpdates[0]).toMatch(/WHERE device_id = \S+::uuid RETURNING id$/);
     });
 
     it('rewrites ticket_alert_links org_id via the alert join inside the transaction', async () => {
@@ -1388,7 +1437,7 @@ describe('POST /devices/:id/move-org', () => {
       // ordering asserted below — assert it explicitly rather than folding it
       // into the positional slice.
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, tickets_org_partner_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, tickets_org_partner_fk DEFERRED',
       );
       expect(statements.slice(1, 5)).toEqual([
         'SELECT organizations FOR share (after 0 updates)',
@@ -1459,7 +1508,13 @@ describe('POST /devices/:id/move-org', () => {
       expect(statements[9]).toBe('SELECT devices FOR update');
       expect(collapseStmt(statements[10]!)).toContain('SELECT requester_binding_id, target_binding_id FROM caller_verifications');
       expect(collapseStmt(statements[11]!)).toContain('UPDATE caller_verifications');
-      expect(statements[12]).toBe('UPDATE devices');
+      // Diagnostic access grants approved in the SOURCE org die before the flip
+      // (its trigger restamps them into the target org): pending requests
+      // expire, active grants are revoked. Other approvers' approval rows are
+      // expired post-commit in system scope (they are per-approver under RLS).
+      expect(collapseStmt(statements[12]!)).toContain('UPDATE diagnostic_access_grants SET status = \'expired\'');
+      expect(collapseStmt(statements[13]!)).toContain('UPDATE diagnostic_access_grants SET status = \'revoked\'');
+      expect(statements[14]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,
@@ -1474,7 +1529,7 @@ describe('POST /devices/:id/move-org', () => {
 
       expect(response.status).toBe(200);
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, tickets_org_partner_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, tickets_org_partner_fk DEFERRED',
       );
       expect(statements.some((s) => /SET CONSTRAINTS ALL/i.test(s))).toBe(false);
     });

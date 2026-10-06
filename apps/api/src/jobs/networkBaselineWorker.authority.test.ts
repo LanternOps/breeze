@@ -1,5 +1,5 @@
 /**
- * SEC-2026-09-05-146 — the recurring-dispatch gate.
+ * The recurring-dispatch gate.
  *
  * These controls assert the NEGATIVE space that the finding is about: when the
  * authority that armed a recurring schedule no longer resolves, the worker must
@@ -70,7 +70,7 @@ vi.mock('../services/networkBaseline', () => ({
   compareBaselineScan: vi.fn(),
   normalizeBaselineScanSchedule: vi.fn((s: unknown) => (s ?? { enabled: true, intervalHours: 4 })),
 }));
-vi.mock('./discoveryWorker', () => ({ enqueueDiscoveryScan: enqueueDiscoveryScanMock }));
+vi.mock('./discoveryWorker', () => ({ enqueueDiscoveryScanAfterCommit: enqueueDiscoveryScanMock }));
 vi.mock('../services/discoveryJobCreation', () => ({ createDiscoveryJobIfIdle: createDiscoveryJobMock }));
 vi.mock('../services/networkBaselineAuthority', async () => {
   const actual = await vi.importActual<typeof import('../services/networkBaselineAuthority')>(
@@ -120,7 +120,7 @@ describe('processExecuteScan authority gate', () => {
     selectQueue.push([BASELINE], [{ id: 'profile-1', subnets: ['10.0.0.0/24'] }]);
     resolveAuthorityMock.mockResolvedValue({ allowed: true });
     createDiscoveryJobMock.mockResolvedValue({ job: { id: 'discovery-1' }, created: true });
-    enqueueDiscoveryScanMock.mockResolvedValue(undefined);
+    enqueueDiscoveryScanMock.mockReturnValue(undefined);
 
     const result = await processExecuteScan(JOB);
 
@@ -182,7 +182,7 @@ describe('processExecuteScan authority gate', () => {
   });
 
   /**
-   * SEC-146 review F1. The recurring-authority envelope answers "may this
+   * Review F1. The recurring-authority envelope answers "may this
    * schedule keep firing with nobody watching". An interactive "Scan Now" is a
    * live request that POST /network/baselines/:id/scan already authorized
    * (org + site ceiling + devices:write). Running the recurring gate on it made
@@ -196,7 +196,7 @@ describe('processExecuteScan authority gate', () => {
   ])('an interactive (manual) dispatch runs for %s and never stamps a blocked reason', async (_label, row) => {
     selectQueue.push([row], [{ id: 'profile-1', subnets: ['10.0.0.0/24'] }]);
     createDiscoveryJobMock.mockResolvedValue({ job: { id: 'discovery-2' }, created: true });
-    enqueueDiscoveryScanMock.mockResolvedValue(undefined);
+    enqueueDiscoveryScanMock.mockReturnValue(undefined);
 
     const result = await processExecuteScan({ ...JOB, trigger: 'manual', authorityGeneration: undefined } as never);
 

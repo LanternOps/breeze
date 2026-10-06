@@ -2998,12 +2998,15 @@ ssoRoutes.get('/callback', async (c) => {
         }
 
         // #4045: the grant's PURPOSE follows the account's factor state, via
-        // the SAME predicate both redemption sites use (resolveEnrollmentStepUp
-        // refuses a protected account; resolveFactorManagementStepUp refuses an
-        // unprotected one), so the three can never drift apart. An account with
-        // no factor can only enroll one; an account holding one gets a grant
-        // that stands in for the PASSWORD leg of factor management and nothing
-        // else. Deciding here rather than at /reauth/start is safe because the
+        // the SAME predicate both redemption sites use to pick the purpose they
+        // accept (resolveEnrollmentStepUp takes enroll_first_factor only from
+        // an unprotected account and, #7369, sso_reauth_manage_factor only from
+        // a protected one; resolveFactorManagementStepUp refuses an unprotected
+        // one), so the three can never drift apart. An account with no factor
+        // can only enroll one; an account holding one gets a grant that stands
+        // in for the PASSWORD leg of factor management — adding, rotating or
+        // removing a factor, each still gated on its existing-factor proof —
+        // and nothing else. Deciding here rather than at /reauth/start is safe because the
         // grant is bound to the INITIATING epochs: a factor added or removed in
         // between bumps mfa_epoch and kills the grant whichever purpose it got.
         //

@@ -56,7 +56,10 @@ vi.mock("node:fs", () => ({
 
 const s3Mocks = vi.hoisted(() => ({
   isS3Configured: vi.fn(() => false),
-  syncDirectory: vi.fn(async () => ({ uploaded: 0, skipped: 0, errors: [] })),
+  syncDirectory: vi.fn(
+    async (_dir: string, _prefix: string): Promise<{ uploaded: number; skipped: number; errors: string[]; failedKeys: string[] }> =>
+      ({ uploaded: 0, skipped: 0, errors: [], failedKeys: [] }),
+  ),
 }));
 vi.mock("./s3Storage", () => s3Mocks);
 
@@ -481,6 +484,42 @@ describe("server-only releases", () => {
       expect(dbMocks.transaction).not.toHaveBeenCalled();
       expect(s3Mocks.syncDirectory).toHaveBeenCalledWith(expect.any(String), "agent");
       expect(s3Mocks.syncDirectory).toHaveBeenCalledWith(expect.any(String), "viewer");
+    });
+
+    it("a failed S3 upload is an alertable error (log tag + Sentry), not a fatal boot error (#7574)", async () => {
+      localEnv("0.118.0");
+      process.env.BREEZE_VERSION = "0.118.2";
+      process.env.BREEZE_BINARIES_VERSION = "0.118.0";
+      registrationRows(complete);
+      s3Mocks.isS3Configured.mockReturnValue(true);
+      s3Mocks.syncDirectory.mockImplementation(async (_dir: string, prefix: string) =>
+        prefix === "agent"
+          ? {
+              uploaded: 3,
+              skipped: 0,
+              errors: ["breeze-agent-linux-amd64: upload failed after 3 attempt(s): InternalError; previous object deleted"],
+              failedKeys: ["agent/breeze-agent-linux-amd64"],
+            }
+          : { uploaded: 0, skipped: 1, errors: [], failedKeys: [] },
+      );
+      vi.stubGlobal("fetch", vi.fn());
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      const { captureException } = await import("./sentry");
+
+      await expect(syncBinaries()).resolves.toBeUndefined();
+
+      const errors = errorSpy.mock.calls.map((c) => String(c[0]));
+      expect(
+        errors.some((m) => m.includes("S3_SYNC_UPLOAD_FAILED prefix=agent keys=agent/breeze-agent-linux-amd64")),
+      ).toBe(true);
+      expect(errors.some((m) => m.includes("S3_SYNC_UPLOAD_FAILED prefix=viewer"))).toBe(false);
+      expect(vi.mocked(captureException)).toHaveBeenCalledWith(
+        expect.any(Error),
+        undefined,
+        expect.objectContaining({ binary_s3_sync: "upload_failed", binary_s3_prefix: "agent" }),
+      );
     });
 
     it("local mode, hosted, volume behind the pairing: fails closed naming both versions and BREEZE_BINARIES_IMAGE_REF", async () => {

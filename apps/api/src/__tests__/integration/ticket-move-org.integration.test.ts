@@ -63,7 +63,7 @@ interface MoveOrgFixture {
   partner: { id: string };
   orgA: { id: string };
   orgB: { id: string };
-  actor: { userId: string };
+  actor: { kind: 'user'; userId: string };
   ticket: { id: string; orgId: string; deviceId: string | null };
   device: { id: string };
   timeEntry: { id: string };
@@ -194,7 +194,7 @@ async function seedMoveOrgFixture(): Promise<MoveOrgFixture> {
     partner,
     orgA,
     orgB,
-    actor: { userId: actor.id },
+    actor: { kind: 'user', userId: actor.id },
     ticket,
     device,
     timeEntry,
@@ -338,7 +338,7 @@ describe('moveTicketOrg — service-level integration', () => {
   it('rejects a cross-partner target org with status 400', async () => {
     const { ticket, orgOtherPartner } = await seedCrossPartnerFixture();
     const unique = uid();
-    const actor = { userId: (await createUser({
+    const actor = { kind: 'user' as const, userId: (await createUser({
       partnerId: (await createPartner()).id,
       email: `cross-actor-${unique}@example.test`,
     })).id };

@@ -1388,7 +1388,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                     if (!moveOrgTargetId) return;
                     void handleMoveOrg(moveOrgTargetId, { acceptCurrencyMismatch: true }).then((ok) => { if (ok) setMoveOrgOpen(false); });
                   }}
-                  className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+                  className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-destructive-foreground disabled:opacity-50"
                 >
                   {t('ticketWorkbench.move.moveAnyway')}
                 </button>

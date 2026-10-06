@@ -5,10 +5,14 @@
     "An entry here suppresses ONE advisory id on ONE package name in the CI",
     "dependency audit (scripts/security/check-npm-audit.sh, HIGH+CRITICAL gate).",
     "The bar for adding one is high. The advisory must have NO fixed release to",
-    "upgrade to. The package must not be reachable from production: absent from",
-    "the production dependency closure of every shipped workspace package",
+    "upgrade to. The advisory must also not be exploitable in production, by",
+    "one of two bars. Either the package is absent from the production",
+    "dependency closure of every shipped workspace package",
     "(`pnpm -r why <pkg> --prod`) and from every built artifact, with that",
-    "evidence in the PR. A public tracking issue must exist so the entry is",
+    "evidence in the PR; or present in a production closure only where",
+    "the vulnerable function is provably never called at runtime, with a",
+    "negative runtime test and a positive control, both recorded in the entry",
+    "(in its `reason`). A public tracking issue must exist so the entry is",
     "removed the moment a fixed release ships. An advisory with an available fix",
     "must be fixed by upgrading (or a pnpm override), never listed here.",
     "",
@@ -20,7 +24,7 @@
     "Entry format:",
     "  id       OSV/GHSA id exactly as osv-scanner reports it",
     "  package  npm package name exactly as osv-scanner reports it",
-    "  reason   why it is unreachable from production, and the tracking issue as #<number>",
+    "  reason   which bar applies and the evidence for it (for the second bar, the negative runtime test and positive control), and the tracking issue as #<number>",
     "  expires  YYYY-MM-DD (UTC), the last day the exception is honoured"
   ],
   "exceptions": [
@@ -29,6 +33,18 @@
       "package": "node-forge",
       "reason": "No fixed release (<=1.4.0 affected; 1.4.0 is latest). Build tooling, dev/EAS build hosts only: breeze-mobile → expo → @expo/cli / @expo/code-signing-certificates (Expo CLI, declared as an expo runtime dependency), and mkcert ← office-addin-dev-certs (Office add-in devDependency). Not shipped: 0 node-forge in the Android/iOS Hermes bundles and 0 in every production Docker deps stage (api, web, portal, m365 executors). Gate-owner ruling and re-check procedure: Tracking: #7703",
       "expires": "2026-10-31"
+    },
+    {
+      "id": "GHSA-vfj7-8cjw-p6xm",
+      "package": "braces",
+      "reason": "No fixed release as of 2026-10-04 (<=3.0.3 affected; 3.0.3 is latest; re-reviewed 2026-10-04: lockfile unchanged at braces 3.0.3, `pnpm why braces --prod` still empty for api, web, portal, viewer, helper). Build tooling only: breeze-helper devDependency tailwindcss → chokidar / fast-glob → micromatch → braces, and breeze-mobile → expo → @expo/cli → @expo/metro-file-map / metro-file-map → micromatch → braces (Metro bundler, declared as an expo runtime dependency). `pnpm why braces --prod` is empty for api, web, portal, the m365 executors, the office add-ins, viewer and helper, and no production Docker deps stage installs it. Not shipped: 0 braces/micromatch modules in the Android and iOS Hermes bundle source maps (expo export at main aea852962e). Tracking: #7862",
+      "expires": "2026-11-01"
+    },
+    {
+      "id": "GHSA-ch52-4w7c-c8xp",
+      "package": "http-cache-semantics",
+      "reason": "No fixed release as of 2026-10-04 (<=4.2.0 affected; 4.3.0, published 2026-10-04, changes only Vary matching and adds status(), the max-stale path is unchanged and the advisory lists no patched version; re-reviewed 2026-10-04: astro still 7.3.5, still no `image` config or astro:assets import in web or portal). In the web and portal production closure (astro → http-cache-semantics) and on disk in their runtime images, but no code path in the shipped build or runtime reaches the vulnerable functions. As of astro 7.3.5, its only consumer is astro/dist/assets/build/remote.js, the build-time remote-image cache reached only from core/build (astro build). Astro calls only storable()/timeToLive(), never evaluateRequest/satisfiesWithoutRevalidation (the max-stale path). Neither app configures `image` or imports astro:assets. The built web and portal servers contain 0 references, and booting them with a resolve hook loads it 0 times (remote /_image returns 403). No shared response cache uses it. Tracking: #7863",
+      "expires": "2026-11-01"
     }
   ]
 }

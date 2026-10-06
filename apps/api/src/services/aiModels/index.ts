@@ -18,8 +18,6 @@ export * from './gatewayConnections';
 export * from './residency';
 export * from './connectionSettings';
 export * from './assignments';
-export * from './legacyProjection';
-export * from './legacyReconcile';
 export { recordInvocation, type NewInvocation } from './invocationLedgerWrite';
 export {
   resolveModel,

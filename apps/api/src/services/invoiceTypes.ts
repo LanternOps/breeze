@@ -25,7 +25,7 @@ export interface InvoiceActor {
 }
 
 export type InvoiceServiceErrorCode =
-  // SEC-150: a Checkout session for this invoice is still being revoked.
+  // A Checkout session for this invoice is still being revoked.
   // 503 from a transition (reset/pay/void), 409 from a producer that was
   // asked to mint another session while the revocation is in flight.
   | 'STRIPE_REVOCATION_PENDING'
@@ -86,6 +86,7 @@ export type InvoiceServiceErrorCode =
   | 'OVERPAYMENT'
   | 'INVALID_STATE'
   | 'INVALID_AMOUNT'
+  | 'COLLECTION_IN_PROGRESS'
   | 'LINE_NOT_FOUND'
   | 'PAYMENT_NOT_FOUND'
   // The payment came from the connected accounting provider, which is its
@@ -115,7 +116,7 @@ export type InvoiceServiceErrorCode =
 export class InvoiceServiceError extends Error {
   constructor(
     message: string,
-    // 503 (SEC-150 STRIPE_REVOCATION_PENDING): the transition was REFUSED
+    // 503 (STRIPE_REVOCATION_PENDING): the transition was REFUSED
     // because Stripe has not yet confirmed an open Checkout session is dead.
     // Retryable by definition — a 4xx would tell the caller to stop trying.
     public status: 400 | 403 | 404 | 409 | 500 | 503 = 400,

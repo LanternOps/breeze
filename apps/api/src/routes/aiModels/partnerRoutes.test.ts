@@ -52,11 +52,13 @@ vi.mock('../../services/permissions', () => ({
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
-vi.mock('../../db', () => ({ db: {}, runOutsideDbContext: vi.fn(), withSystemDbAccessContext: vi.fn() }));
+vi.mock('../../db', () => ({ db: {}, runOutsideDbContext: vi.fn((fn: () => unknown) => fn()), withSystemDbAccessContext: vi.fn() }));
+vi.mock('../../services/redis', () => ({ getRedis: vi.fn(() => ({})) }));
+vi.mock('../../services/rate-limit', () => ({ rateLimiter: vi.fn() }));
 
 vi.mock('../../services/aiModels/registryCutover', () => ({ ensurePartnerCutover: vi.fn() }));
 vi.mock('../../services/aiModels/registryView', () => ({ buildPartnerModelsSnapshot: vi.fn() }));
-vi.mock('../../services/aiModels/connections', () => ({ getCompatConnection: vi.fn(), getConnection: vi.fn() }));
+vi.mock('../../services/aiModels/connections', () => ({ getConnection: vi.fn() }));
 vi.mock('../../services/aiModels/offerings', () => ({ getOffering: vi.fn() }));
 vi.mock('../../jobs/aiModelDiscoveryWorker', () => ({ enqueueConnectionSync: vi.fn(), enqueueOfferingVerification: vi.fn() }));
 vi.mock('../../services/aiModels/gatewayConnections', () => ({
@@ -83,27 +85,29 @@ vi.mock('../../services/aiModels/residency', () => ({
   setResidencyRequired: vi.fn(),
 }));
 vi.mock('../../services/llm/llmConfigResolver', () => ({ isLlmProviderCatalogEnabled: vi.fn(() => true) }));
-vi.mock('../../services/partnerLlmConfig', () => {
-  class PartnerLlmError extends Error {
+vi.mock('../../services/aiModels/connectionProbe', () => {
+  class ConnectionCheckError extends Error {
     constructor(message: string, readonly status: 400 | 409 | 500 | 503) {
       super(message);
-      this.name = 'PartnerLlmError';
+      this.name = 'ConnectionCheckError';
     }
   }
-  return {
-    PartnerLlmError,
-    savePartnerLlmKey: vi.fn(),
-    updatePartnerLlmEndpoint: vi.fn(),
-    deletePartnerLlmConfig: vi.fn(),
-  };
+  return { ConnectionCheckError };
 });
+vi.mock('../../services/aiModels/anthropicConnectionWrites', () => ({
+  hasAnthropicConnection: vi.fn(),
+  createAnthropicKeyConnection: vi.fn(),
+  rotateAnthropicKey: vi.fn(),
+  changeAnthropicEndpoint: vi.fn(),
+  deleteAnthropicConnection: vi.fn(),
+}));
 
 import { aiModelsRoutes } from './index';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
 import { ensurePartnerCutover } from '../../services/aiModels/registryCutover';
 import { buildPartnerModelsSnapshot } from '../../services/aiModels/registryView';
-import { getCompatConnection, getConnection } from '../../services/aiModels/connections';
+import { getConnection } from '../../services/aiModels/connections';
 import { getOffering } from '../../services/aiModels/offerings';
 import { enqueueConnectionSync, enqueueOfferingVerification } from '../../jobs/aiModelDiscoveryWorker';
 import { createGatewayConnection, createManualOffering, deleteGatewayConnection, updateGatewayConnection } from '../../services/aiModels/gatewayConnections';
@@ -113,8 +117,16 @@ import { clearConnectionCooldowns } from '../../services/aiModels/offeringHealth
 import { ensurePlatformOffering, listOfferingDefaultUses, setOfferingEnabled, updateOfferingDetails } from '../../services/aiModels/offeringWrites';
 import { putPartnerAssignments } from '../../services/aiModels/assignmentWrites';
 import { previewResidencyImpact, setResidencyRequired } from '../../services/aiModels/residency';
-import { deletePartnerLlmConfig, PartnerLlmError, savePartnerLlmKey, updatePartnerLlmEndpoint } from '../../services/partnerLlmConfig';
+import {
+  changeAnthropicEndpoint,
+  createAnthropicKeyConnection,
+  deleteAnthropicConnection,
+  hasAnthropicConnection,
+  rotateAnthropicKey,
+} from '../../services/aiModels/anthropicConnectionWrites';
+import { ConnectionCheckError } from '../../services/aiModels/connectionProbe';
 import { RegistryWriteError } from '../../services/aiModels/registryWriteErrors';
+import { rateLimiter } from '../../services/rate-limit';
 
 const chatRow = {
   surface: 'chat', role: 'default', defaultOfferingId: A, permittedOfferingIds: null,
@@ -152,7 +164,7 @@ const WRITE_ROUTES: Array<[method: string, path: string, body?: unknown]> = [
 ];
 
 const ALL_WRITE_SERVICE_MOCKS = [
-  savePartnerLlmKey, updatePartnerLlmEndpoint, deletePartnerLlmConfig, updateConnectionSettings,
+  createAnthropicKeyConnection, rotateAnthropicKey, changeAnthropicEndpoint, deleteAnthropicConnection, updateConnectionSettings,
   ensurePlatformOffering, setOfferingEnabled, updateOfferingDetails, putPartnerAssignments, setResidencyRequired,
   enqueueConnectionSync, enqueueOfferingVerification,
   createGatewayConnection, updateGatewayConnection, deleteGatewayConnection, createManualOffering,
@@ -175,13 +187,15 @@ beforeEach(() => {
   permissionsState.approvalsDecide = true;
   authState.value = baseAuth();
   vi.mocked(ensurePartnerCutover).mockResolvedValue(true);
+  vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 10, resetAt: new Date(Date.now() + 60_000) });
   vi.mocked(buildPartnerModelsSnapshot).mockResolvedValue({ connections: [] } as any);
-  // Connection routes bind :id to the partner's compat connection (inside the
-  // cutover gate), so the default must be the partner's own connection C.
-  vi.mocked(getCompatConnection).mockResolvedValue({ id: C, partnerId: P } as any);
-  vi.mocked(savePartnerLlmKey).mockResolvedValue({ last4: 'xxxx', model: 'm', verifiedAt: T, configVersion: 2 });
-  vi.mocked(updatePartnerLlmEndpoint).mockResolvedValue({ catalogEntryId: null, configVersion: 3, slug: null, revision: null } as any);
-  vi.mocked(deletePartnerLlmConfig).mockResolvedValue(true);
+  // The partner already has its Anthropic connection C (getConnection below
+  // resolves it, live): creating another is the R1-cap 409.
+  vi.mocked(hasAnthropicConnection).mockResolvedValue(true);
+  vi.mocked(createAnthropicKeyConnection).mockResolvedValue({ connectionId: C, last4: 'xxxx', configVersion: 1 });
+  vi.mocked(rotateAnthropicKey).mockResolvedValue({ last4: 'xxxx', configVersion: 2 });
+  vi.mocked(changeAnthropicEndpoint).mockResolvedValue({ connectionId: C, catalogEntryId: null, configVersion: 3, slug: null, revision: null });
+  vi.mocked(deleteAnthropicConnection).mockResolvedValue(true);
   vi.mocked(updateConnectionSettings).mockResolvedValue({ id: C, configVersion: 4 } as any);
   vi.mocked(ensurePlatformOffering).mockResolvedValue(offeringRow as any);
   vi.mocked(setOfferingEnabled).mockResolvedValue({ offering: offeringRow as any, inUse: [] });
@@ -206,8 +220,8 @@ beforeEach(() => {
 
 describe('/ai/models partner routes — authz matrix', () => {
   it.each(WRITE_ROUTES)('%s %s succeeds for a full partner admin with MFA (control)', async (method, path, body) => {
-    // POST /connections is a 409 when a compat connection already exists.
-    if (path === '/connections' && (body as { kind?: string }).kind === 'anthropic_byok') vi.mocked(getCompatConnection).mockResolvedValueOnce(null);
+    // POST /connections is a 409 when an Anthropic connection already exists.
+    if (path === '/connections' && (body as { kind?: string }).kind === 'anthropic_byok') vi.mocked(hasAnthropicConnection).mockResolvedValueOnce(false);
     const res = await call(method, path, body);
     expect(res.status).toBeLessThan(300);
   });
@@ -276,17 +290,29 @@ describe('/ai/models partner routes — authz matrix', () => {
 
 describe('/ai/models partner routes — behaviour', () => {
   it('404s a connection id that is not the partner’s connection (forged id)', async () => {
-    vi.mocked(getCompatConnection).mockResolvedValue({ id: 'someone-else', partnerId: P } as any);
+    vi.mocked(getConnection).mockResolvedValue({ id: C, partnerId: 'other-partner', kind: 'anthropic_byok', status: 'active' } as any);
     expect((await call('PATCH', `/connections/${C}`, { name: 'x' })).status).toBe(404);
     expect((await call('DELETE', `/connections/${C}`)).status).toBe(404);
     expect((await call('POST', `/connections/${C}/key`, { apiKey: KEY })).status).toBe(404);
+    expect((await call('POST', `/connections/${C}/endpoint`, { catalogEntryId: null })).status).toBe(404);
     expect(updateConnectionSettings).not.toHaveBeenCalled();
-    expect(deletePartnerLlmConfig).not.toHaveBeenCalled();
-    expect(savePartnerLlmKey).not.toHaveBeenCalled();
+    expect(deleteAnthropicConnection).not.toHaveBeenCalled();
+    expect(rotateAnthropicKey).not.toHaveBeenCalled();
+    expect(changeAnthropicEndpoint).not.toHaveBeenCalled();
+  });
+  it('a soft-disconnected Anthropic connection id 404s on every :id route and is never revived', async () => {
+    vi.mocked(getConnection).mockResolvedValue({ id: C, partnerId: P, kind: 'anthropic_byok', status: 'disconnected' } as any);
+    expect((await call('POST', `/connections/${C}/key`, { apiKey: KEY })).status).toBe(404);
+    expect((await call('POST', `/connections/${C}/endpoint`, { catalogEntryId: null })).status).toBe(404);
+    expect((await call('DELETE', `/connections/${C}`)).status).toBe(404);
+    expect(rotateAnthropicKey).not.toHaveBeenCalled();
+    expect(changeAnthropicEndpoint).not.toHaveBeenCalled();
+    expect(deleteAnthropicConnection).not.toHaveBeenCalled();
+    expect(clearConnectionCooldowns).not.toHaveBeenCalled();
   });
   it('a partner that is not cut over gets the recoverable 503 on every :id connection route, never a 404', async () => {
-    // Before the cutover the compat connection may not resolve yet; the cutover gate must answer first.
-    vi.mocked(getCompatConnection).mockResolvedValue(null);
+    // Before the cutover the connection may not resolve yet; the cutover gate must answer first.
+    vi.mocked(getConnection).mockResolvedValue(null);
     vi.mocked(ensurePartnerCutover).mockResolvedValue(false);
     const routes: Array<[string, string, unknown?]> = [
       ['POST', `/connections/${C}/key`, { apiKey: KEY }],
@@ -306,43 +332,32 @@ describe('/ai/models partner routes — behaviour', () => {
       expect([path, method, res.status]).toEqual([path, method, 503]);
       expect(await res.json()).toMatchObject({ code: 'registry_unavailable' });
     }
-    expect(getCompatConnection).not.toHaveBeenCalled();
-    // Any-kind ownership runs inside the cutover gate too.
+    // Ownership (every kind) runs inside the cutover gate.
     expect(getConnection).not.toHaveBeenCalled();
     expect(getOffering).not.toHaveBeenCalled();
   });
   it('404s every connection route when the partner has no connection', async () => {
-    vi.mocked(getCompatConnection).mockResolvedValue(null);
+    vi.mocked(getConnection).mockResolvedValue(null);
     expect((await call('PATCH', `/connections/${C}`, { name: 'x' })).status).toBe(404);
     expect(updateConnectionSettings).not.toHaveBeenCalled();
   });
   it('409s creating a second Anthropic connection', async () => {
     const res = await call('POST', '/connections', { kind: 'anthropic_byok', apiKey: KEY });
     expect([res.status, (await res.json()).code]).toEqual([409, 'conflict']);
-    expect(savePartnerLlmKey).not.toHaveBeenCalled();
+    expect(createAnthropicKeyConnection).not.toHaveBeenCalled();
   });
   it('creates the first connection with the partner id from auth, then applies name/geo', async () => {
-    vi.mocked(getCompatConnection).mockResolvedValueOnce(null).mockResolvedValueOnce({ id: C, partnerId: P } as any);
+    vi.mocked(hasAnthropicConnection).mockResolvedValueOnce(false);
     const res = await call('POST', '/connections', { kind: 'anthropic_byok', apiKey: KEY, name: 'Ours', inferenceGeo: 'us' });
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ id: C });
-    expect(savePartnerLlmKey).toHaveBeenCalledWith({ partnerId: P, apiKey: KEY, userId: baseAuth().user.id });
+    expect(hasAnthropicConnection).toHaveBeenCalledWith(P);
+    expect(createAnthropicKeyConnection).toHaveBeenCalledWith({ partnerId: P, apiKey: KEY, userId: baseAuth().user.id });
     expect(updateConnectionSettings).toHaveBeenCalledWith({ partnerId: P, connectionId: C, patch: { name: 'Ours', inferenceGeo: 'us' } });
     expect(JSON.stringify(vi.mocked(writeRouteAudit).mock.calls)).not.toContain(KEY);
   });
-  it('500s write_failed (captured, no audit) when the new connection cannot be read back after the key save', async () => {
-    vi.mocked(getCompatConnection).mockResolvedValueOnce(null).mockResolvedValueOnce(null);
-    const res = await call('POST', '/connections', { kind: 'anthropic_byok', apiKey: KEY, name: 'Ours' });
-    expect(res.status).toBe(500);
-    const body = await res.json();
-    expect(body.code).toBe('write_failed');
-    expect(body).not.toHaveProperty('id');
-    expect(captureException).toHaveBeenCalled();
-    expect(updateConnectionSettings).not.toHaveBeenCalled();
-    expect(writeRouteAudit).not.toHaveBeenCalled();
-  });
   it('does not call updateConnectionSettings when create carries no name/geo', async () => {
-    vi.mocked(getCompatConnection).mockResolvedValueOnce(null).mockResolvedValueOnce({ id: C, partnerId: P } as any);
+    vi.mocked(hasAnthropicConnection).mockResolvedValueOnce(false);
     expect((await call('POST', '/connections', { kind: 'anthropic_byok', apiKey: KEY })).status).toBe(201);
     expect(updateConnectionSettings).not.toHaveBeenCalled();
   });
@@ -350,9 +365,9 @@ describe('/ai/models partner routes — behaviour', () => {
     const { isLlmProviderCatalogEnabled } = await import('../../services/llm/llmConfigResolver');
     vi.mocked(isLlmProviderCatalogEnabled).mockReturnValue(false);
     expect((await call('POST', `/connections/${C}/endpoint`, { catalogEntryId: 'entry-1' })).status).toBe(404);
-    expect(updatePartnerLlmEndpoint).not.toHaveBeenCalled();
+    expect(changeAnthropicEndpoint).not.toHaveBeenCalled();
     expect((await call('POST', `/connections/${C}/endpoint`, { catalogEntryId: null })).status).toBe(200);
-    expect(updatePartnerLlmEndpoint).toHaveBeenCalledWith({ partnerId: P, catalogEntryId: null, acknowledgeDataNote: false, userId: baseAuth().user.id });
+    expect(changeAnthropicEndpoint).toHaveBeenCalledWith({ partnerId: P, connectionId: C, catalogEntryId: null, acknowledgeDataNote: false, userId: baseAuth().user.id });
     vi.mocked(isLlmProviderCatalogEnabled).mockReturnValue(true);
   });
   it('maps RegistryWriteError to its status with code + details', async () => {
@@ -371,23 +386,59 @@ describe('/ai/models partner routes — behaviour', () => {
     expect(await res.json()).toEqual({ code: 'registry_busy', error: 'Another AI configuration change is in progress. Try again in a moment.' });
     expect(captureException).not.toHaveBeenCalled();
   });
-  it('maps PartnerLlmError to its status (key rotation probe failure)', async () => {
-    vi.mocked(savePartnerLlmKey).mockRejectedValue(new PartnerLlmError('Anthropic rejected this key.', 400));
+  it('a ConnectionCheckError keeps its message and status (no code), like the retired facade', async () => {
+    vi.mocked(rotateAnthropicKey).mockRejectedValue(new ConnectionCheckError('That Anthropic API key was rejected. Check the key and try again.', 400));
     const res = await call('POST', `/connections/${C}/key`, { apiKey: KEY });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Anthropic rejected this key.' });
+    expect(await res.json()).toEqual({ error: 'That Anthropic API key was rejected. Check the key and try again.' });
     expect(clearConnectionCooldowns).not.toHaveBeenCalled();
+    expect(captureException).not.toHaveBeenCalled();
+  });
+  it('a 5xx ConnectionCheckError is captured', async () => {
+    vi.mocked(rotateAnthropicKey).mockRejectedValue(new ConnectionCheckError('Could not store the API key.', 500));
+    expect((await call('POST', `/connections/${C}/key`, { apiKey: KEY })).status).toBe(500);
+    expect(captureException).toHaveBeenCalled();
+  });
+  it('POST /connections/:id/key rotates the NAMED connection with the partner id from auth', async () => {
+    const res = await call('POST', `/connections/${C}/key`, { apiKey: KEY });
+    expect(await res.json()).toEqual({ id: C, keyLast4: 'xxxx', configVersion: 2 });
+    expect(rotateAnthropicKey).toHaveBeenCalledWith({ partnerId: P, connectionId: C, apiKey: KEY, userId: baseAuth().user.id });
+  });
+  it('POST /connections/:id/endpoint keeps the connection id across a kind switch', async () => {
+    vi.mocked(changeAnthropicEndpoint).mockResolvedValueOnce({ connectionId: C, catalogEntryId: 'e1', configVersion: 5, slug: 'gw', revision: 3 });
+    const res = await call('POST', `/connections/${C}/endpoint`, { catalogEntryId: '44444444-4444-4444-8444-444444444444', acknowledgeDataNote: true });
+    expect(await res.json()).toEqual({ id: C, catalogEntryId: 'e1', configVersion: 5 });
+    expect(changeAnthropicEndpoint).toHaveBeenCalledWith(expect.objectContaining({ connectionId: C, acknowledgeDataNote: true }));
   });
   it('W09: a successful key rotation clears that connection\'s failover cooldowns', async () => {
     const res = await call('POST', `/connections/${C}/key`, { apiKey: KEY });
     expect(res.status).toBe(200);
     expect(clearConnectionCooldowns).toHaveBeenCalledWith(P, C);
   });
-  it('W09: a cooldown clear failure never fails the rotation (cooldowns fail open)', async () => {
+  it('W09: a cooldown clear failure never fails the rotation (cooldowns fail open), and is reported', async () => {
     vi.mocked(clearConnectionCooldowns).mockRejectedValue(new Error('db down'));
     const res = await call('POST', `/connections/${C}/key`, { apiKey: KEY });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ id: C, keyLast4: 'xxxx' });
+    expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'db down' }), undefined, { service: 'aiModels', stage: 'cooldown_clear' });
+  });
+  it('W08a: an endpoint change (now in place, same id) clears that connection\'s failover cooldowns after the write', async () => {
+    const res = await call('POST', `/connections/${C}/endpoint`, { catalogEntryId: null });
+    expect(res.status).toBe(200);
+    expect(clearConnectionCooldowns).toHaveBeenCalledWith(P, C);
+    expect(vi.mocked(clearConnectionCooldowns).mock.invocationCallOrder[0]!)
+      .toBeGreaterThan(vi.mocked(changeAnthropicEndpoint).mock.invocationCallOrder[0]!);
+  });
+  it('W08a: a failed endpoint change clears nothing; a cooldown clear failure never fails the change and is reported', async () => {
+    vi.mocked(changeAnthropicEndpoint).mockRejectedValueOnce(new ConnectionCheckError('That endpoint was delisted and is no longer available for selection.', 409));
+    expect((await call('POST', `/connections/${C}/endpoint`, { catalogEntryId: null })).status).toBe(409);
+    expect(clearConnectionCooldowns).not.toHaveBeenCalled();
+
+    vi.mocked(clearConnectionCooldowns).mockRejectedValueOnce(new Error('db down'));
+    const res = await call('POST', `/connections/${C}/endpoint`, { catalogEntryId: null });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ id: C, configVersion: 3 });
+    expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'db down' }), undefined, { service: 'aiModels', stage: 'cooldown_clear' });
   });
   it('passes the disable force flag and returns the affected surfaces', async () => {
     const inUse = [{ surface: 'chat' as const, level: 'partner' as const, orgId: null }];
@@ -523,9 +574,9 @@ describe('/ai/models partner routes — refresh and verify (Task 8b)', () => {
     }));
   });
   it('POST /connections/:id/refresh 404s a forged id (and the platform connection, which has no row)', async () => {
-    vi.mocked(getCompatConnection).mockResolvedValue({ id: 'someone-else', partnerId: P } as any);
+    vi.mocked(getConnection).mockResolvedValue({ id: C, partnerId: 'other-partner', kind: 'anthropic_byok', status: 'active' } as any);
     expect((await call('POST', `/connections/${C}/refresh`)).status).toBe(404);
-    vi.mocked(getCompatConnection).mockResolvedValue(null);
+    vi.mocked(getConnection).mockResolvedValue(null);
     expect((await call('POST', `/connections/${C}/refresh`)).status).toBe(404);
     expect(enqueueConnectionSync).not.toHaveBeenCalled();
     expect(writeRouteAudit).not.toHaveBeenCalled();
@@ -540,6 +591,17 @@ describe('/ai/models partner routes — refresh and verify (Task 8b)', () => {
       orgId: null, action: 'ai_models.offering.verify_requested', resourceType: 'partner', resourceId: P,
       details: { offeringId: A, connectionId: C },
     }));
+  });
+  it('POST /offerings/:id/verify is rate limited per partner → 429 with Retry-After, nothing queued', async () => {
+    vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 120_000) });
+    const res = await call('POST', `/offerings/${A}/verify`);
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ code: 'rate_limited' });
+    expect(Number(res.headers.get('Retry-After'))).toBeGreaterThan(0);
+    expect(rateLimiter).toHaveBeenCalledWith(expect.anything(), `rl:ai-models:offering-verify:${P}`, expect.any(Number), expect.any(Number));
+    expect(getOffering).not.toHaveBeenCalled();
+    expect(enqueueConnectionSync).not.toHaveBeenCalled();
+    expect(enqueueOfferingVerification).not.toHaveBeenCalled();
   });
   it('POST /offerings/:id/verify on a platform offering is 409 (operator-verified), no enqueue', async () => {
     vi.mocked(getOffering).mockResolvedValue({ id: A, partnerId: P, connectionId: null } as any);
@@ -558,12 +620,13 @@ describe('/ai/models partner routes — refresh and verify (Task 8b)', () => {
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
   // W03 soft-disconnect: the row stays as provenance (getConnection still
-  // returns it) but the compat reader is live-only, so :id never binds to it.
+  // returns it), but ownConnection treats a disconnected row as absent, so
+  // :id never binds to it — whether or not the partner reconnected since.
   it.each([
-    ['not reconnected', null],
-    ['reconnected (a NEW live connection)', { id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', partnerId: P }],
-  ])('PATCH /connections/:id and /refresh on a disconnected id → 404 (%s), nothing written or queued', async (_l, live) => {
-    vi.mocked(getCompatConnection).mockResolvedValue(live as any);
+    ['anthropic_byok'],
+    ['catalog'],
+  ])('PATCH /connections/:id and /refresh on a disconnected %s id → 404, nothing written or queued', async (kind) => {
+    vi.mocked(getConnection).mockResolvedValue({ id: C, partnerId: P, kind, status: 'disconnected' } as any);
     expect((await call('PATCH', `/connections/${C}`, { name: 'x' })).status).toBe(404);
     expect((await call('POST', `/connections/${C}/refresh`)).status).toBe(404);
     expect(updateConnectionSettings).not.toHaveBeenCalled();
@@ -623,7 +686,7 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       const serialized = JSON.stringify(vi.mocked(writeRouteAudit).mock.calls);
       expect(serialized).not.toContain(BYO_KEY);
       expect(serialized).not.toContain('/v1');
-      expect(savePartnerLlmKey).not.toHaveBeenCalled();
+      expect(createAnthropicKeyConnection).not.toHaveBeenCalled();
     });
     it('keyless create audits hasKey false and passes no key', async () => {
       const { apiKey: _k, ...keyless } = BYO_BODY;
@@ -631,8 +694,8 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       expect(createGatewayConnection).toHaveBeenCalledWith(expect.objectContaining({ apiKey: undefined }));
       expect(audits()[0]!.details).toMatchObject({ hasKey: false });
     });
-    it('is allowed while an Anthropic connection exists (the compat 409 belongs to the anthropic_byok arm only)', async () => {
-      vi.mocked(getCompatConnection).mockResolvedValue({ id: C, partnerId: P } as any);
+    it('is allowed while an Anthropic connection exists (the R1-cap 409 belongs to the anthropic_byok arm only)', async () => {
+      vi.mocked(hasAnthropicConnection).mockResolvedValue(true);
       expect((await call('POST', '/connections', BYO_BODY)).status).toBe(201);
       expect(createGatewayConnection).toHaveBeenCalled();
     });
@@ -697,6 +760,7 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       const res = await call('PATCH', `/connections/${G}/gateway`, { apiKey: 'sk-new-abcdef12', expectedConfigVersion: 3 });
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ id: G, configVersion: 4 });
+      expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'redis down' }), undefined, { service: 'aiModels', stage: 'cooldown_clear' });
     });
     it('a URL change audits the new host only; a null key audits key cleared', async () => {
       vi.mocked(updateGatewayConnection).mockResolvedValueOnce(gatewayConn({ baseUrl: 'https://other.example.org/tenant-42/v1', configVersion: 4 }) as any);
@@ -764,12 +828,12 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
   });
 
   describe('DELETE /connections/:id', () => {
-    it('soft-disconnects a gateway connection through deleteGatewayConnection, never the compat delete', async () => {
+    it('soft-disconnects a gateway connection through deleteGatewayConnection, never the Anthropic disconnect', async () => {
       const res = await call('DELETE', `/connections/${G}`);
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ deleted: true });
       expect(deleteGatewayConnection).toHaveBeenCalledWith({ partnerId: P, connectionId: G });
-      expect(deletePartnerLlmConfig).not.toHaveBeenCalled();
+      expect(deleteAnthropicConnection).not.toHaveBeenCalled();
       expect(audits()[0]).toMatchObject({ action: 'ai_models.connection.deleted', details: { connectionId: G, kind: 'openai_compatible' } });
     });
     it('a released env connection can be disconnected (the route leaves the env rule to the service)', async () => {
@@ -778,9 +842,9 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       expect(res.status).toBe(200);
       expect(deleteGatewayConnection).toHaveBeenCalledWith({ partnerId: P, connectionId: G });
     });
-    it('the Anthropic connection still goes through the compat delete', async () => {
+    it('the Anthropic connection goes through the id-keyed Anthropic disconnect', async () => {
       expect((await call('DELETE', `/connections/${C}`)).status).toBe(200);
-      expect(deletePartnerLlmConfig).toHaveBeenCalledWith(P);
+      expect(deleteAnthropicConnection).toHaveBeenCalledWith({ partnerId: P, connectionId: C });
       expect(deleteGatewayConnection).not.toHaveBeenCalled();
     });
     it('maps connection_in_use with its details', async () => {
@@ -795,7 +859,7 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       vi.mocked(getConnection).mockResolvedValue(gatewayConn({ partnerId: 'OTHER' }) as any);
       expect((await call('DELETE', `/connections/${G}`)).status).toBe(404);
       expect(deleteGatewayConnection).not.toHaveBeenCalled();
-      expect(deletePartnerLlmConfig).not.toHaveBeenCalled();
+      expect(deleteAnthropicConnection).not.toHaveBeenCalled();
     });
   });
 
@@ -866,11 +930,11 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
     });
   });
 
-  it('compat-only routes 404 for a gateway connection id', async () => {
+  it('Anthropic-only routes 404 for a gateway connection id', async () => {
     expect((await call('POST', `/connections/${G}/key`, { apiKey: KEY })).status).toBe(404);
     expect((await call('POST', `/connections/${G}/endpoint`, { catalogEntryId: null })).status).toBe(404);
-    expect(savePartnerLlmKey).not.toHaveBeenCalled();
-    expect(updatePartnerLlmEndpoint).not.toHaveBeenCalled();
+    expect(rotateAnthropicKey).not.toHaveBeenCalled();
+    expect(changeAnthropicEndpoint).not.toHaveBeenCalled();
   });
 
   describe('POST /offerings/:id/verify on a gateway offering', () => {

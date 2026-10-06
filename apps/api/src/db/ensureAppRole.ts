@@ -107,6 +107,9 @@ export async function ensureAppRole(): Promise<boolean> {
     await client.unsafe(`
       DO $$
       BEGIN
+        IF to_regclass('public.org_autopay_consents') IS NOT NULL THEN
+          REVOKE UPDATE,DELETE,TRUNCATE ON org_autopay_consents FROM breeze_app;
+        END IF;
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='audit_logs') THEN
           REVOKE UPDATE, DELETE, TRUNCATE ON TABLE audit_logs FROM breeze_app;
           -- The append-only trigger fires per-row on UPDATE/DELETE only;
@@ -207,6 +210,22 @@ export async function ensureAppRole(): Promise<boolean> {
         -- id could be handed out twice.
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='backup_snapshot_id_tombstones') THEN
           REVOKE UPDATE, DELETE, TRUNCATE ON TABLE backup_snapshot_id_tombstones FROM breeze_app;
+        END IF;
+        -- Org-erasure backup fences: the record of what an erased org's backup
+        -- storage was. Storage GC never reclaims a fenced prefix/key, so a
+        -- rewrite or removal here would re-expose those objects to reclaim.
+        -- Append-only for the app role (services/backupErasureFence.ts).
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='backup_erasure_manifests') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE backup_erasure_manifests FROM breeze_app;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='backup_erasure_targets') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE backup_erasure_targets FROM breeze_app;
+        END IF;
+        -- Its referenced-key cache may be updated (retry state) but never
+        -- deleted: removing a resolved row is harmless (GC re-reads), but the
+        -- table is not the app's to prune.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='backup_erasure_fence_refs') THEN
+          REVOKE DELETE, TRUNCATE ON TABLE backup_erasure_fence_refs FROM breeze_app;
         END IF;
         -- #4371 — WRITER-PATH MATRIX for the six tables re-revoked below.
         --

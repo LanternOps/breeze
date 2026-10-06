@@ -64,7 +64,7 @@ describe('humanWorkService constants (recipe spec §6.5)', () => {
     // createTicket requires a TicketActor with a non-null userId, and the
     // Operator is not a users row. Precedent: DELIVERABLE_SWEEP_ACTOR
     // (services/serviceDeliverableService.ts).
-    expect(OPERATOR_TASK_ACTOR.userId).toBe('00000000-0000-0000-0000-000000000000');
+    expect(OPERATOR_TASK_ACTOR).toMatchObject({ kind: 'system', source: 'ai_operator' });
     expect(OPERATOR_TASK_ACTOR.name).toBe('AI Operator');
   });
 

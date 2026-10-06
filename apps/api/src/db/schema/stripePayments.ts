@@ -1,7 +1,7 @@
 // apps/api/src/db/schema/stripePayments.ts
 import {
   pgTable, uuid, text, varchar, boolean, numeric, jsonb, timestamp, char, pgEnum,
-  index, uniqueIndex, integer, date, bigint, foreignKey
+  index, uniqueIndex, integer, date, bigint, foreignKey, check
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { partners, organizations } from './orgs';
@@ -26,7 +26,7 @@ export const stripeFinancialEventStatusEnum = pgEnum('stripe_financial_event_sta
 ]);
 
 /**
- * Durable revocation intent for an issued Checkout session (SEC-150).
+ * Durable revocation intent for an issued Checkout session.
  *
  * `active` — payable, nothing asked of it.
  * `revocation_requested` — a transition asked for it to die; no producer may
@@ -70,10 +70,12 @@ export const stripeConnectAccounts = pgTable('stripe_connect_accounts', {
   financialEventScanUpperCreated: bigint('financial_event_scan_upper_created', { mode: 'number' }),
   financialEventLastPolledAt: timestamp('financial_event_last_polled_at', { withTimezone: true }),
   financialEventLastError: text('financial_event_last_error'),
+  autopayCapabilitiesCheckedAt: timestamp('autopay_capabilities_checked_at', { withTimezone: true }),
+  autopayMissingPermissions: text('autopay_missing_permissions').array().notNull().default(sql`'{}'::text[]`),
   status: stripeConnectStatusEnum('status').notNull().default('connected'),
   // Legacy Connect-OAuth scope (unused by the API-key path; retained until a later drop migration).
   scope: varchar('scope', { length: 50 }),
-  connectedBy: uuid('connected_by').references(() => users.id),
+  connectedBy: uuid('connected_by').references(() => users.id, { onDelete: 'set null' }),
   connectedAt: timestamp('connected_at').defaultNow().notNull(),
   disconnectedAt: timestamp('disconnected_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -138,6 +140,12 @@ export const invoiceStripePayments = pgTable('invoice_stripe_payments', {
   stripeObjectId: text('stripe_object_id').notNull(),
   stripePaymentIntentId: text('stripe_payment_intent_id'),
   amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+  feeAmount: numeric('fee_amount', { precision: 12, scale: 2 }).notNull().default('0'),
+  feeReversedAmount: numeric('fee_reversed_amount', { precision: 12, scale: 2 }).notNull().default('0.00'),
+  feeAccountingJournal: jsonb('fee_accounting_journal').$type<unknown[]>().notNull().default([]),
+  feeAccountingError: text('fee_accounting_error'),
+  paymentMethodType: text('payment_method_type').$type<'card' | 'us_bank_account'>(),
+  source: text('source').$type<'checkout' | 'autopay'>().notNull().default('checkout'),
   currency: char('currency', { length: 3 }).notNull(),
   status: stripePaymentStatusEnum('status').notNull().default('pending'),
   refundedAmountMinor: numeric('refunded_amount_minor', { precision: 20, scale: 0 }).notNull().default('0'),
@@ -146,8 +154,10 @@ export const invoiceStripePayments = pgTable('invoice_stripe_payments', {
   lastDisputeEventCreated: bigint('last_dispute_event_created', { mode: 'number' }),
   lastDisputeEventId: text('last_dispute_event_id'),
   paymentReceivedAt: date('payment_received_at'),
+  // First successful capture recorded by Breeze; survives principal reversal/deletion.
+  paymentCapturedAt: timestamp('payment_captured_at', { withTimezone: true }),
   lastEventAt: timestamp('last_event_at'),
-  // --- SEC-150 durable Checkout-session revocation intent + retry ladder ---
+  // --- Durable Checkout-session revocation intent + retry ladder ---
   revocationState: stripeSessionRevocationStateEnum('revocation_state').notNull().default('active'),
   revocationReason: text('revocation_reason'),
   revocationRequestedAt: timestamp('revocation_requested_at', { withTimezone: true }),
@@ -166,6 +176,13 @@ export const invoiceStripePayments = pgTable('invoice_stripe_payments', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (t) => [
+  index('invoice_stripe_payments_fee_outstanding_idx').on(t.id).where(sql`breeze_fee_accounting_outstanding(${t.feeAmount},${t.feeReversedAmount},${t.feeAccountingJournal})`),
+  uniqueIndex('invoice_stripe_payments_id_org_uq').on(t.id, t.orgId),
+  check('invoice_stripe_payments_fee_amount_chk', sql`${t.feeAmount} >= 0`),
+  check('invoice_stripe_payments_fee_reversed_check',sql`${t.feeReversedAmount} >= 0 AND ${t.feeReversedAmount} <= ${t.feeAmount}`),
+  check('invoice_stripe_payments_fee_journal_check',sql`jsonb_typeof(${t.feeAccountingJournal}) = 'array'`),
+  check('invoice_stripe_payments_method_type_chk', sql`${t.paymentMethodType} IN ('card','us_bank_account')`),
+  check('invoice_stripe_payments_source_chk', sql`${t.source} IN ('checkout','autopay')`),
   uniqueIndex('invoice_stripe_payments_object_uq').on(t.stripeObjectId),
   index('invoice_stripe_payments_revocation_due_idx')
     .on(t.revocationNextAttemptAt, t.id)

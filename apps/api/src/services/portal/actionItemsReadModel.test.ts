@@ -55,4 +55,12 @@ describe('actionItemsTile', () => {
       ).toContain(ORG_ID);
     }
   });
+  it('does not count unreviewed AI research suggestions toward the customer-visible number', async () => {
+    state.rows.push([{ count: 0 }], [{ count: 0 }], []);
+    await actionItemsTile(ORG_ID, new Date('2026-09-02T12:00:00Z'));
+    // wheres[1] is the remediation_suggestions count
+    const q = new PgDialect().sqlToQuery(state.wheres[1] as SQL);
+    expect(q.sql).toMatch(/"origin"\s*<>\s*\$\d+/);
+    expect(q.params).toContain('ai_research');
+  });
 });

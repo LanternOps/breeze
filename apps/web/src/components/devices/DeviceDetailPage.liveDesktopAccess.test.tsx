@@ -42,6 +42,8 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('../../lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: () => true }),
 }));
+// The active-sessions banner polls on mount; this suite counts device refetches.
+vi.mock('../remote/ActiveSessionsBanner', () => ({ default: () => null }));
 vi.mock('@/stores/aiStore', () => ({ useAiStore: () => vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));

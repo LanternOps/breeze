@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 // Central route matrix for the dedicated accounting permission family
-// (`accounting:read` / `accounting:manage`, SEC-2026-09-05-057 Option A).
+// (`accounting:read` / `accounting:manage`).
 //
 // Every interactive QuickBooks route is listed exactly once below with the
 // accounting capability it requires. The parameterized cases prove, for every
@@ -88,6 +88,10 @@ vi.mock('../../middleware/auth', () => ({
       : c.json({ error: 'Insufficient permissions' }, 403)
   ),
   withAuthDbAccessContext: async (_auth: unknown, fn: () => unknown) => fn(),
+}));
+
+vi.mock('../../services/autopay/autopayGate', () => ({
+  isAutopayEnabledForPartner: vi.fn(async () => true),
 }));
 
 vi.mock('../../db', () => ({
@@ -307,7 +311,10 @@ beforeEach(() => {
   effects.enqueueInvoice.mockResolvedValue(true);
   effects.enqueueReconcile.mockResolvedValue(true);
   effects.dbSelect.mockReturnValue({
-    from: () => ({ where: () => Promise.resolve([{ id: ENTITY_ID }]) }),
+    from: () => ({
+      where: () => Promise.resolve([{ id: ENTITY_ID }]),
+      innerJoin: () => ({ where: () => Promise.resolve([{ n: 0 }]) }),
+    }),
   });
   effects.dbUpdateReturning.mockResolvedValue([{
     status: 'connected', environment: 'production', pushMode: 'auto',

@@ -40,6 +40,7 @@ const SCAN_ROOTS = ['apps/api/src', 'ee'].map((rel) => join(REPO_ROOT, rel));
 
 /** Repo-root-relative path -> the exact number of permitted call expressions. */
 const EXPECTED_CALL_SITES: Record<string, number> = {
+  'apps/api/src/services/autopay/setupSession.ts': 1,
   'apps/api/src/services/invoiceCheckout.ts': 1,
   'apps/api/src/routes/portal/invoices.ts': 1,
 };

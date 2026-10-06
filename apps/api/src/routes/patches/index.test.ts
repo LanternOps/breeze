@@ -60,6 +60,10 @@ vi.mock('drizzle-orm', () => {
 });
 
 vi.mock('../../db', () => ({
+  // readOwnPartnerAxisRows (db/partnerAxisRead.ts) reads the ambient context to
+  // decide whether a patch_approvals read can run on the request's own
+  // connection (#7663). Default: no ambient context → the system escape.
+  getCurrentDbAccessContext: vi.fn(() => undefined),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -227,7 +231,7 @@ vi.mock('../../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { devicePatches } from '../../db/schema';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { enqueuePatchComplianceReport } from '../../jobs/patchComplianceReportWorker';
@@ -345,6 +349,7 @@ describe('patch routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(db.execute).mockResolvedValue(undefined as any);
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue(undefined);
     mockAuthState.scope = 'organization';
     mockAuthState.orgId = ACCESSIBLE_ORG_ID;
     mockAuthState.partnerId = null;
@@ -461,6 +466,18 @@ describe('patch routes', () => {
 
     expect(res.status).toBe(403);
     // Refused before any query runs.
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('denies patch detail without devices:read', async () => {
+    mockAuthState.permissions = [{ resource: 'reports', action: 'read' }];
+
+    const res = await app.request(`/patches/${PATCH_ID}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(403);
     expect(db.select).not.toHaveBeenCalled();
   });
 
@@ -1721,5 +1738,169 @@ describe('patch routes', () => {
     // org-scoped caller. Assert the system-context escape was never entered
     // (states the isolation guarantee directly, rather than counting selects).
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  // #7663: patch_approvals carries an own-partner SELECT branch (#7662), so a
+  // caller whose ambient RLS context already covers the partner must read it on
+  // the request's own connection. runOutsideDbContext + withSystemDbAccessContext
+  // checks out a SECOND pooled connection while the request transaction holds
+  // the first — the hold-and-wait pool-deadlock shape.
+  describe('patch_approvals reads stay on the request connection (#7663)', () => {
+    const PATCH_ROW = {
+      id: PATCH_ID,
+      title: 'Windows Cumulative Update',
+      description: null,
+      source: 'microsoft',
+      severity: 'critical',
+      category: 'system',
+      osTypes: ['windows'],
+      inferredOs: null,
+      releaseDate: null,
+      requiresReboot: false,
+      downloadSizeMb: null,
+      createdAt: new Date('2026-02-07T00:00:00.000Z')
+    };
+
+    function mockPatchListWithApprovals(approvals: unknown[]) {
+      let approvalWhere: unknown;
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectPatchListResult([PATCH_ROW]) as any)
+        .mockReturnValueOnce(selectWhereResult([{ count: 1 }]) as any)
+        .mockReturnValueOnce(selectSourceCountsResult() as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation((cond: unknown) => {
+              approvalWhere = cond;
+              return Promise.resolve(approvals);
+            })
+          })
+        } as any);
+      return () => approvalWhere;
+    }
+
+    it('list: a partner context covering the partner reads approvals in place', async () => {
+      mockAuthState.scope = 'partner';
+      mockAuthState.orgId = null;
+      mockAuthState.partnerId = PARTNER_ID;
+      mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
+      vi.mocked(getCurrentDbAccessContext).mockReturnValue({
+        scope: 'partner',
+        orgId: null,
+        accessibleOrgIds: [ACCESSIBLE_ORG_ID],
+        accessiblePartnerIds: [PARTNER_ID],
+        userId: USER_ID,
+        currentPartnerId: PARTNER_ID,
+      } as any);
+      const approvalWhere = mockPatchListWithApprovals([{ patchId: PATCH_ID, status: 'approved' }]);
+
+      const res = await app.request('/patches', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].approvalStatus).toBe('approved');
+      expect(approvalWhere()).toEqual({
+        op: 'and',
+        conditions: [{ op: 'eq', left: 'patchApprovals.partnerId', right: PARTNER_ID }]
+      });
+      expect(runOutsideDbContext).not.toHaveBeenCalled();
+      expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+    });
+
+    it('list: a context that cannot see the partner still takes the system escape', async () => {
+      // Fallback contract: an ambient context for ANOTHER partner (or none) must
+      // not read in place — RLS would silently return zero rows (#2822).
+      mockAuthState.scope = 'partner';
+      mockAuthState.orgId = null;
+      mockAuthState.partnerId = PARTNER_ID;
+      mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
+      vi.mocked(getCurrentDbAccessContext).mockReturnValue({
+        scope: 'partner',
+        orgId: null,
+        accessibleOrgIds: [ACCESSIBLE_ORG_ID],
+        accessiblePartnerIds: ['99999999-9999-4999-8999-999999999999'],
+        userId: USER_ID,
+        currentPartnerId: '99999999-9999-4999-8999-999999999999',
+      } as any);
+      mockPatchListWithApprovals([{ patchId: PATCH_ID, status: 'approved' }]);
+
+      const res = await app.request('/patches', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data[0].approvalStatus).toBe('approved');
+      expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+      expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    });
+
+    it('compliance: an org user on its own partner ring reads both approval sets in place', async () => {
+      // Org-scoped token: accessiblePartnerIds is [] but currentPartnerId is the
+      // org's own partner, which is exactly what the own-partner SELECT branch keys on.
+      mockAuthState.scope = 'organization';
+      mockAuthState.orgId = ACCESSIBLE_ORG_ID;
+      mockAuthState.partnerId = PARTNER_ID;
+      mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
+      vi.mocked(getCurrentDbAccessContext).mockReturnValue({
+        scope: 'organization',
+        orgId: ACCESSIBLE_ORG_ID,
+        accessibleOrgIds: [ACCESSIBLE_ORG_ID],
+        accessiblePartnerIds: [],
+        userId: USER_ID,
+        currentPartnerId: PARTNER_ID,
+      } as any);
+
+      const approvalWheres: unknown[] = [];
+      const approvalRead = (rows: unknown[]) => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation((cond: unknown) => {
+            approvalWheres.push(cond);
+            return Promise.resolve(rows);
+          })
+        })
+      });
+      const groupBy = vi.fn().mockResolvedValue([{ status: 'pending', count: 1 }]);
+      const innerJoin = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ groupBy }) });
+      const breakdownOrderBy = vi.fn().mockResolvedValue([]);
+      const breakdownInnerJoin1 = vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            groupBy: vi.fn().mockReturnValue({ having: vi.fn().mockReturnValue({ orderBy: breakdownOrderBy }) })
+          })
+        })
+      });
+      const severityInnerJoin = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ groupBy: vi.fn().mockResolvedValue([]) })
+      });
+
+      vi.mocked(db.select)
+        // ring lookup (patch_policies own-partner branch, request context)
+        .mockReturnValueOnce(selectWhereLimitResult([{ partnerId: PARTNER_ID }]) as any)
+        // org device IDs
+        .mockReturnValueOnce(selectWhereResult([{ id: DEVICE_A }]) as any)
+        // ring-approved patch scope (patch_approvals)
+        .mockReturnValueOnce(approvalRead([{ patchId: PATCH_ID }]) as any)
+        // candidatePatchRows
+        .mockReturnValueOnce(selectWhereResult([{ patchId: PATCH_ID }]) as any)
+        // approved-patch pre-fetch (patch_approvals)
+        .mockReturnValueOnce(approvalRead([{ patchId: PATCH_ID }]) as any)
+        // status counts / device breakdown / severity counts
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin: breakdownInnerJoin1 }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin: severityInnerJoin }) } as any);
+
+      const res = await app.request(`/patches/compliance?ringId=${RING_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      // Both patch_approvals reads ran, each pinned to the ring's partner.
+      expect(approvalWheres).toHaveLength(2);
+      for (const where of approvalWheres) {
+        expect((where as { conditions: unknown[] }).conditions).toContainEqual(
+          { op: 'eq', left: 'patchApprovals.partnerId', right: PARTNER_ID }
+        );
+      }
+      expect(runOutsideDbContext).not.toHaveBeenCalled();
+      expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+    });
   });
 });

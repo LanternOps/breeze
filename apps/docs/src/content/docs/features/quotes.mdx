@@ -17,6 +17,8 @@ Quotes, along with the rest of the Billing section, are only available when the 
 
 The editor is where you assemble and price a quote. Add lines from the shared **catalog picker** -- start typing to search your catalog by name or SKU -- or add a **manual line** for anything not in the catalog. The running subtotal, tax, and total update live as you edit. A **last-saved** indicator in the header shows when your changes were last persisted.
 
+The **tax rate** is not set per quote. It comes from the organization's tax settings (**Billing** tab), or your partner default tax rate when the organization has none; a tax-exempt organization gets no tax. While the quote is a draft it follows those settings -- opening or editing the draft picks up a changed rate -- and it is fixed when you **send** the quote (or accept it on the customer's behalf). Changing a rate later never alters a quote that has already been sent; clone it to get a draft at the current rate.
+
 ### Reordering, Bulk Edit, and Undo
 
 - **Drag to reorder** -- every line has a drag handle, so you can rearrange lines within and between pricing sections directly; the **⋯** menu offers the same moves for keyboard use. A sticky **Contents** outline in the side rail lets you jump between sections of a long quote, and pricing sections can be collapsed while you work.
@@ -273,13 +275,15 @@ Reuse the structure and line items of an existing proposal instead of rebuilding
 
 The clone is a fresh, editable **draft** with its own new quote number, in the same partner. It does **not** carry over the source quote's acceptance or conversion state -- you get a clean proposal to adjust and send.
 
+The clone's tax rate is the one that applies **now** (see [The Quote Editor](#the-quote-editor)), not the rate the source quote was sent with.
+
 If you retarget the clone to a **different company**, Breeze applies that company's billing details and tax rate and clears the site and bill-to override, so the new draft reflects the new customer rather than the original one.
 
 Cloning requires quote **write** permission.
 
 ## Changing the Customer on a Draft
 
-While a quote is still a **draft**, you can move it to a different customer without cloning. The editor has a **Customer** selector next to the title; switching it re-resolves the tax rate and clears the site and bill-to override -- unless the same edit supplies new values for them.
+While a quote is still a **draft**, you can move it to a different customer without cloning. The editor has a **Customer** selector next to the title; switching it re-resolves the tax rate for the new customer, clears the site, and clears the bill-to override unless the same edit supplies a new one.
 
 **Issued quotes -- ones you've already sent or that have been accepted -- are immutable**, including their customer. To point an issued quote at a different customer, use [Clone quote](#cloning-a-quote) and retarget the clone.
 

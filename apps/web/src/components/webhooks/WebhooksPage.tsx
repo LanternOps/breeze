@@ -3,7 +3,7 @@ import { usePermissions } from '../../lib/permissions';
 import { Plus, Send } from 'lucide-react';
 import WebhookList, { type Webhook, isWebhookActive } from './WebhookList';
 import WebhookForm, { type WebhookFormValues, webhookEventOptions } from './WebhookForm';
-import WebhookDeliveryHistory, { type WebhookDelivery } from './WebhookDeliveryHistory';
+import WebhookDeliveryHistory, { normalizeDelivery, type WebhookDelivery } from './WebhookDeliveryHistory';
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
@@ -80,7 +80,8 @@ export default function WebhooksPage() {
         throw new Error(stableT('longTail.webhooks.WebhooksPage.errors.fetchDeliveries'));
       }
       const data = await response.json();
-      setDeliveries(data.data ?? data.deliveries ?? []);
+      const rows: Record<string, unknown>[] = data.data ?? data.deliveries ?? [];
+      setDeliveries(rows.map(normalizeDelivery));
     } catch (err) {
       setDeliveriesError(err instanceof Error ? err.message : stableT('longTail.webhooks.WebhooksPage.errors.loadDeliveries'));
       setDeliveries([]);
@@ -165,6 +166,7 @@ export default function WebhooksPage() {
             })
           }),
         errorFallback: t('longTail.webhooks.WebhooksPage.errors.testFailed'),
+        successMessage: t('longTail.webhooks.WebhooksPage.success.testQueued'),
         onUnauthorized: handleSessionExpired,
       });
 

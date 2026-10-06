@@ -1,3 +1,4 @@
+import { autopayReasonKey, chargeBlockedKey, chargeNowAttempted, chargeNowFailureKey, chargeNowResultUnknown, chargeNowSuccessKey } from './autopayReason';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
@@ -97,6 +98,56 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   // unconditionally for anyone with read access, and the per-line "Accounting
   // view" checkbox was a separate, unpersisted control — so hiding margin on a
   // quote didn't carry over here).
+  const [chargeConfirmOpen, setChargeConfirmOpen] = useState(false);
+  const [chargePending, setChargePending] = useState(false);
+  async function startAutopayCharge() {
+    if (chargePending || !detail.autopay?.canChargeNow || !detail.autopay.chargePreview) return;
+    setChargePending(true);
+    // The charge already happened (or was attempted): a failed refetch must not read as a failed charge.
+    const reloadAfterCharge = () => Promise.allSettled([Promise.resolve(onChanged()), loadPayments()]);
+    try {
+      // The route confirms with Stripe synchronously: a lost or unreadable response can follow
+      // money moving, so it is reported as an unknown result, never "try again" (R4).
+      await runAction({ request: () => fetchWithAuth(`/invoices/${invoice.id}/autopay/charge-now`, { method: 'POST' }),
+        errorFallback: t('autopay.chargeResultUnknown'),
+        successMessage: data => t(/* i18n-dynamic */ chargeNowSuccessKey(data)),
+        friendly: (_code, _message, body) => {
+          const key = chargeNowFailureKey(body);
+          return key ? t(/* i18n-dynamic */ key) : undefined;
+        },
+        suppressErrorToast: status => status >= 500,
+        onUnauthorized: UNAUTHORIZED });
+      await reloadAfterCharge();
+    } catch (error) {
+      if (error instanceof ActionError && chargeNowResultUnknown(error)) {
+        // Network failures and unreadable bodies were already toasted with the fallback.
+        if (error.status >= 500) showToast({ message: t('autopay.chargeResultUnknown'), type: 'warning' });
+        await reloadAfterCharge();
+        return;
+      }
+      if (error instanceof ActionError && chargeNowAttempted(error.body)) await reloadAfterCharge();
+      handleActionError(error, t('autopay.chargeFailed'));
+    }
+    finally { setChargePending(false); setChargeConfirmOpen(false); }
+  }
+  const [autopaySaving, setAutopaySaving] = useState(false);
+  const setAutopayExcluded = async (excluded: boolean) => {
+    if (autopaySaving) return;
+    setAutopaySaving(true);
+    try {
+      await runAction<{status?:string}>({ request: () => fetchWithAuth(`/invoices/${invoice.id}/autopay`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ excluded }),
+      }), errorFallback: t('autopay.failed'), successMessage: result => result.status === 'pending'
+        ? t(/* i18n-dynamic */ autopayReasonKey('control_pending:exclude'),{nsSeparator:false}) : t('autopay.saved'),
+        // A payment already with Stripe cannot be recalled, so the exclusion was refused, not queued.
+        friendly: (code, _message, body) => code === 'COLLECTION_IN_PROGRESS'
+          && (body as { details?: { reason?: string } } | null)?.details?.reason === 'payment_processing'
+          ? t('autopay.excludeRefusedProcessing') : undefined });
+      await onChanged();
+    } catch (error) { handleActionError(error, t('autopay.failed')); }
+    finally { setAutopaySaving(false); }
+  };
+
   const [showMargin, toggleMargin] = useShowMargin();
   const [payments, setPayments] = useState<InvoicePayment[]>([]);
   const [paymentsError, setPaymentsError] = useState(false);
@@ -198,6 +249,10 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const canRecordPayment =
     invoice.status !== 'draft' && invoice.status !== 'void' && invoice.status !== 'paid' && Number(invoice.balance) > 0;
   const canVoid = invoice.status !== 'void' && invoice.status !== 'draft';
+  // Same statuses the collection service accepts; a paid or void invoice has nothing to charge.
+  const autopayChargeable = ['sent', 'partially_paid', 'overdue'].includes(invoice.status) && Number(invoice.balance) > 0;
+  const autopayStateText = detail.autopay ? t(/* i18n-dynamic */ `autopay.states.${detail.autopay.state}`, { defaultValue: detail.autopay.state }) : '';
+  const autopayReasonText = detail.autopay?.reason ? t(/* i18n-dynamic */ autopayReasonKey(detail.autopay.reason), {nsSeparator:false}) : '';
 
   // Deposit-aware charge amount — matches what the server's pay route charges
   // (computeChargeNow, the single source of truth), so the deposit strip never
@@ -275,7 +330,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     if (busy) return;
     setBusy(true);
     try {
-      const result = await runAction<{ providerRecordUntouched?: boolean; quickbooksRecordUntouched?: boolean }>({
+      const result = await runAction<{ providerRecordUntouched?: boolean }>({
         request: () => fetchWithAuth(`/invoices/${invoice.id}/payments/${paymentId}`, { method: 'DELETE' }),
         errorFallback: t('invoiceDetail.payments.reverseError'),
         onUnauthorized: UNAUTHORIZED,
@@ -288,7 +343,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
       const reversalProviderName = reversePayment?.source && isAccountingProviderId(reversePayment.source)
         ? ACCOUNTING_PROVIDER_NAMES[reversePayment.source]
         : syncProviderName;
-      const untouched = result.providerRecordUntouched ?? result.quickbooksRecordUntouched ?? false;
+      const untouched = result.providerRecordUntouched ?? false;
       showToast(untouched
         ? { type: 'warning', message: t('invoiceDetail.payments.reverseInProviderToo', { provider: reversalProviderName }) }
         : { type: 'success', message: t('invoiceDetail.payments.reverseSuccess') });
@@ -503,6 +558,22 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             surrounding from/terms/payments cards are flatter (border only) so the
             rail isn't a stack of equal-weight boxes (mirrors QuoteDetail). */}
         <div className="space-y-4">
+          {detail.autopay && <section className="space-y-2 rounded-lg border bg-card p-4" data-testid="autopay-invoice-panel" aria-label={t('autopay.title')} aria-busy={autopaySaving}>
+            <h3 className="font-semibold">{t('autopay.title')}</h3>
+            <p className="text-sm">{autopayStateText}</p>
+            {/* FP-18 (P-16): never repeat the state line (excluded: "Excluded by provider" once). */}
+            {autopayReasonText && autopayReasonText !== autopayStateText && <p className="text-sm text-muted-foreground">{autopayReasonText}</p>}
+            {detail.autopay.collectOn && <p className="text-sm">{t('autopay.chargeDate', { date: formatDate(detail.autopay.collectOn) })}</p>}
+            <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" data-testid="autopay-invoice-excluded"
+              checked={detail.autopay.excluded} disabled={autopaySaving || !can('invoices', 'write') || !detail.autopay.canExclude}
+              onChange={event => void setAutopayExcluded(event.target.checked)} />{t('autopay.excludeInvoice')}</label>
+            {autopayChargeable && <button type="button" data-testid="autopay-charge-now" className="rounded-md border px-3 py-2 text-sm disabled:opacity-50"
+              disabled={chargePending || !can('invoices', 'write') || !detail.autopay.canChargeNow || !detail.autopay.chargePreview}
+              onClick={() => setChargeConfirmOpen(true)}>{t('autopay.chargeNow')}</button>}
+            {autopayChargeable && !detail.autopay.canChargeNow && chargeBlockedKey(detail.autopay.chargeBlockedReason) && (
+              <p className="text-xs text-muted-foreground" data-testid="autopay-charge-blocked">
+                {t(/* i18n-dynamic */ chargeBlockedKey(detail.autopay.chargeBlockedReason)!, {nsSeparator:false})}</p>)}
+          </section>}
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-detail-summary">
             <div className="mb-3 flex items-center justify-between">
               <StatusPill
@@ -841,6 +912,24 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={chargeConfirmOpen}
+        onClose={() => { if (!chargePending) setChargeConfirmOpen(false); }}
+        onConfirm={() => void startAutopayCharge()}
+        title={t('autopay.chargeConfirmTitle')}
+        message={t('autopay.chargeConfirmMessage', {
+          amount: detail.autopay?.chargePreview ? formatMoney(detail.autopay.chargePreview.amount, detail.autopay.chargePreview.currency) : '',
+          invoice: invoice.invoiceNumber ?? invoice.id,
+          method: detail.autopay?.chargePreview?.methodLabel ?? '',
+        })}
+        confirmLabel={t('autopay.chargeNow')}
+        variant="warning"
+        isLoading={chargePending}
+        confirmDisabled={!detail.autopay?.canChargeNow || !detail.autopay.chargePreview || !can('invoices', 'write')}
+        confirmTestId="autopay-charge-confirm"
+        dialogTestId="autopay-charge-dialog"
+      />
 
       {/* Reverse-a-payment confirm dialog */}
       <ConfirmDialog

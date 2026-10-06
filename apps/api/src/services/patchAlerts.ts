@@ -24,6 +24,7 @@ import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { alertRules, alertTemplates, devices, patchJobResults, patchJobs } from '../db/schema';
 import { createAlert } from './alertService';
+import { insertBuiltInAlertRule, type BuiltInAlertRuleSource } from './builtInAlertRules';
 import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { captureException } from './sentry';
 import { sqlTimestamp } from './portal/sqlTimestamp';
@@ -80,7 +81,7 @@ type PatchAlertTemplateConfig = {
   name: string;
   severity: AlertSeverity;
   cooldownMinutes: number;
-  conditions: { source: string };
+  conditions: { source: BuiltInAlertRuleSource };
   titleTemplate: string;
   messageTemplate: string;
 };
@@ -174,24 +175,14 @@ async function ensurePatchAlertRule(
 
   const templateId = await ensureGlobalTemplate(config);
 
-  const [created] = await db
-    .insert(alertRules)
-    .values({
-      orgId,
-      templateId,
-      name: ruleName,
-      targetType: 'org',
-      targetId: orgId,
-      isActive: true,
-      overrideSettings: { source: config.conditions.source },
-    })
-    .returning({ id: alertRules.id });
-
-  if (!created) {
-    throw new Error(`[patchAlerts] failed to create rule "${ruleName}" for org ${orgId}`);
-  }
-
-  return created.id;
+  // Concurrent first fire in an org: the unique index makes the loser of the
+  // race return the winner's row instead of inserting a second one (#7650).
+  return insertBuiltInAlertRule({
+    orgId,
+    templateId,
+    name: ruleName,
+    overrideSettings: { source: config.conditions.source },
+  });
 }
 
 /** Exported for testing / reuse; the emitters call this themselves. */

@@ -86,7 +86,7 @@ describe('ticket_outbox rollback atomicity (real Postgres, hostile-ticket scenar
 
     // Seed a real ticket (own transaction, commits normally) to mutate.
     const ticket = await withDbAccessContext(partnerContext, () =>
-      createTicket({ orgId: org.id, subject: 'hostile-ticket rollback fixture', source: 'manual' }, { userId: user.id })
+      createTicket({ orgId: org.id, subject: 'hostile-ticket rollback fixture', source: 'manual' }, { kind: 'user' as const, userId: user.id })
     );
     expect(ticket.status).toBe('new');
 
@@ -114,7 +114,7 @@ describe('ticket_outbox rollback atomicity (real Postgres, hostile-ticket scenar
     let statusInsideTransaction: string | undefined;
     await expect(
       withDbAccessContext(partnerContext, async () => {
-        const updated = await changeTicketStatus(ticket.id, { status: 'open' }, {}, { userId: user.id });
+        const updated = await changeTicketStatus(ticket.id, { status: 'open' }, {}, { kind: 'user' as const, userId: user.id });
         statusInsideTransaction = updated!.status;
         throw injectedError;
       })
@@ -157,11 +157,11 @@ describe('ticket_outbox rollback atomicity (real Postgres, hostile-ticket scenar
     const { org, user, partnerContext } = await seedFixture();
 
     const ticket = await withDbAccessContext(partnerContext, () =>
-      createTicket({ orgId: org.id, subject: 'hostile-ticket control fixture', source: 'manual' }, { userId: user.id })
+      createTicket({ orgId: org.id, subject: 'hostile-ticket control fixture', source: 'manual' }, { kind: 'user' as const, userId: user.id })
     );
 
     const updated = await withDbAccessContext(partnerContext, () =>
-      changeTicketStatus(ticket.id, { status: 'open' }, {}, { userId: user.id })
+      changeTicketStatus(ticket.id, { status: 'open' }, {}, { kind: 'user' as const, userId: user.id })
     );
     expect(updated!.status).toBe('open');
 

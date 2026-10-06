@@ -22,6 +22,7 @@
 import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { ActiveSession } from './streamingSessionManager';
+import { claimToolUseId, sdkToolUseIdFromExtra } from './aiToolUseCorrelation';
 
 // ============================================
 // Declaration validation (zod)
@@ -279,6 +280,8 @@ export type ClientDeclaredToolHandlerResult = {
 export type ClientToolDispatch = (
   toolName: string,
   input: Record<string, unknown>,
+  /** The model's tool_use id as the SDK sent it with the call (#7931), if any. */
+  sdkToolUseId?: string,
 ) => Promise<ClientToolDispatchResult>;
 
 function textResult(text: string, isError = false): ClientDeclaredToolHandlerResult {
@@ -290,14 +293,29 @@ function textResult(text: string, isError = false): ClientDeclaredToolHandlerRes
  * map its result to a CallToolResult. Extracted for direct unit testing.
  */
 export function makeClientDeclaredToolHandler(toolName: string, dispatch: ClientToolDispatch) {
-  return async (args: Record<string, unknown>): Promise<ClientDeclaredToolHandlerResult> => {
-    const result = await dispatch(toolName, args ?? {});
+  return async (args: Record<string, unknown>, extra?: unknown): Promise<ClientDeclaredToolHandlerResult> => {
+    const result = await dispatch(toolName, args ?? {}, sdkToolUseIdFromExtra(extra));
     if (result.error !== undefined) {
       return textResult(result.error, true);
     }
     const text = typeof result.output === 'string' ? result.output : JSON.stringify(result.output ?? null);
     return textResult(text);
   };
+}
+
+/**
+ * The `ClientToolDispatch` the helper chat route binds to its live session:
+ * pairs the call with the model's tool_use by the SDK's own id (never by
+ * queue position, #7931), then parks it for the client's result.
+ */
+export function dispatchClientDeclaredTool(
+  session: ActiveSession,
+  toolName: string,
+  input: Record<string, unknown>,
+  sdkToolUseId?: string,
+): Promise<ClientToolDispatchResult> {
+  const toolUseId = claimToolUseId(session, toolName, sdkToolUseId) ?? crypto.randomUUID();
+  return requestClientDeclaredTool(session, toolUseId, toolName, input);
 }
 
 /** Prefixed MCP tool names (the SDK allowlist) for a set of declarations. */

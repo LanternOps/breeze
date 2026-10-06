@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 
 /**
- * SEC-2026-09-05-057 (PR review finding): the mapping workbench drives three
+ * (PR review finding): the mapping workbench drives three
  * manage-gated routes — Save income account (PATCH /accounting/:provider/settings),
  * Confirm / Create / Unlink (PUT /accounting/:provider/mappings) and Sync now
  * (POST /accounting/:provider/mappings/sync). Without `accounting:manage` a

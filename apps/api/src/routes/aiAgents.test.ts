@@ -496,7 +496,7 @@ function minimalToolCatalogDto(overrides: Partial<AgentToolCatalogDto> = {}): Ag
         ],
       },
     ],
-    presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [] },
+    presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [], research: [] },
     unreachableTools: [],
     ...overrides,
   };
@@ -3179,7 +3179,6 @@ describe('AI agents impact routes — registration order (#4193 A8)', () => {
       ...agent(),
       enabled: true,
       mode: 'supervised',
-      model: 'default',
       toolAllowlist: [],
       protectedResources: [],
       limits: AI_AGENT_LIMIT_DEFAULTS,
@@ -4197,7 +4196,6 @@ function agentRow(overrides: Record<string, unknown> = {}) {
     name: 'Triage',
     enabled: false,
     mode: 'shadow',
-    model: null,
     orgId: ORG_ID,
     partnerId: null,
     toolAllowlist: [],
@@ -4549,7 +4547,7 @@ describe('PATCH /ai-agents/:id — policy model binding (AI model registry W03)'
   it('400s with code not_permitted when the model is outside the ai_agents permitted set', async () => {
     updateAgentMock.mockRejectedValueOnce(new AgentModelNotAllowedError('This AI model is not permitted for AI agents here. Choose another model.', 'not_permitted'));
 
-    const res = await patchAgent(buildApp(), { model: 'claude-haiku-4-5' });
+    const res = await patchAgent(buildApp(), { offeringId: '0b8f1f2e-6a1c-4c55-9a39-6a7f1e1c0a02' });
 
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
@@ -4560,7 +4558,7 @@ describe('PATCH /ai-agents/:id — policy model binding (AI model registry W03)'
   it('503s with code registry_unavailable while the registry cutover is pending', async () => {
     updateAgentMock.mockRejectedValueOnce(new AgentModelNotAllowedError('AI configuration is being upgraded. Try again in a moment.', 'registry_unavailable'));
 
-    const res = await patchAgent(buildApp(), { model: 'claude-opus-5-5' });
+    const res = await patchAgent(buildApp(), { offeringId: '0b8f1f2e-6a1c-4c55-9a39-6a7f1e1c0a02' });
 
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({ code: 'registry_unavailable' });
@@ -4596,6 +4594,24 @@ describe('PATCH /ai-agents/:id — policy model binding (AI model registry W03)'
     const res = await buildApp().request(`/ai-agents/${AGENT_ID}`);
     expect(res.status).toBe(200);
     expect((await res.json()).data).toHaveProperty('offeringId', null);
+  });
+
+  // W08 (#7606): the policy model string is retired. Rejected, never stripped:
+  // a 400 naming offeringId, and nothing in the request reaches the service.
+  it('PATCH /ai/agents/:id with model (any value, including null) → 400 naming offeringId; nothing applied', async () => {
+    for (const model of ['claude-opus-5-5', null]) {
+      const res = await patchAgent(buildApp(), { name: 'Renamed', model });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toContain('offeringId');
+    }
+    expect(updateAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('the agent DTO no longer carries model, even from a row that still has the column (W08)', async () => {
+    getAgentMock.mockResolvedValueOnce({ ...agentRow(), model: 'claude-legacy' });
+    const res = await buildApp().request(`/ai-agents/${AGENT_ID}`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).not.toHaveProperty('model');
   });
 });
 
@@ -4895,9 +4911,36 @@ describe('POST /ai-agents (create)', () => {
     const body = (await res.json()) as { details: { fieldErrors: Record<string, string[]> } };
     expect(body.details.fieldErrors.mode?.[0]).toMatch(/not available for a designer agent/);
   });
+
+  it('POST /ai/agents with model (any value, including null) → 400 naming offeringId; createAgent never runs (W08, #7606)', async () => {
+    const { createAgent } = await import('../services/aiAgents/agentService');
+    for (const model of ['claude-x', null]) {
+      const res = await createAgentRequest(buildApp(), { kind: 'triage', name: 'Triage', model });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toContain('offeringId');
+    }
+    expect(vi.mocked(createAgent)).not.toHaveBeenCalled();
+  });
+
+  it('answers a site-restricted create refusal with 403 and the standard message, not a 404', async () => {
+    const { createAgent } = await import('../services/aiAgents/agentService');
+    const { AgentSiteCeilingDeniedError } = await import('../services/aiAgents/access');
+    vi.mocked(createAgent).mockRejectedValueOnce(new AgentSiteCeilingDeniedError());
+
+    const res = await createAgentRequest(buildApp(), { kind: 'triage', name: 'Triage' });
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/Site-restricted users cannot modify/);
+  });
 });
 
 describe('POST /ai-agents/preview', () => {
+  it('400s a draft carrying the retired model string, naming offeringId (W08, #7606)', async () => {
+    const res = await previewRequest(buildApp(), { kind: 'triage', model: 'claude-x' });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).toContain('offeringId');
+  });
+
   it('evaluates a draft policy against the mocked catalog', async () => {
     loadPartnerBaselineCeilingMock.mockResolvedValueOnce(null);
 

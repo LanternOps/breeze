@@ -24,7 +24,18 @@ vi.mock('../../db', () => ({
     delete: vi.fn()
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
+  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  // #7647: the ambient request context. Org-scoped, own partner = the partner
+  // resolvePartnerIdForOrg returns below, so the patch_policies /
+  // patch_approvals reads are legible in place via the own-partner SELECT
+  // branch and must NOT take the second-connection system escape.
+  getCurrentDbAccessContext: vi.fn(() => ({
+    scope: 'organization',
+    orgId: '11111111-1111-1111-1111-111111111111',
+    accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+    accessiblePartnerIds: [],
+    currentPartnerId: 'dddddddd-dddd-dddd-dddd-dddddddddddd'
+  }))
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -103,7 +114,7 @@ vi.mock('../patches/helpers', () => ({
 // #4223 deployment overlay — real SQL is covered by
 // __tests__/integration/patchInstallFailureStatus.integration.test.ts.
 vi.mock('../../services/patchInstallFailures', () => ({
-  loadPatchInstallFailures: vi.fn(async () => new Map())
+  loadDevicePatchInstallState: vi.fn(async () => ({ failures: new Map(), latestByPatch: new Map() }))
 }));
 
 vi.mock('../../services/commandQueue', () => ({
@@ -130,7 +141,7 @@ import { queueCommandForExecution } from '../../services/commandQueue';
 import { resolvePartnerIdForOrg } from '../patches/helpers';
 import { loadDevicePatchApprovalView } from '../../services/devicePatchApprovalView';
 import { captureException } from '../../services/sentry';
-import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 
 function selectWhereResult(rows: unknown[]) {
   return {
@@ -368,10 +379,89 @@ describe('device patch routes', () => {
     expect(combined.effectiveApproval.state).toBe('auto_approved');
     // Only outstanding patches carry a verdict.
     expect(body.data.patches.find((p: any) => p.id === INSTALLED).effectiveApproval).toBeNull();
-    // Evaluated for THIS device+org, through the existing system-context escape.
+    // Evaluated for THIS device+org, in the request's OWN context (#7647):
+    // neither read may open a second pooled connection.
     expect(loadDevicePatchApprovalView).toHaveBeenCalledWith(DEVICE_ID, '11111111-1111-1111-1111-111111111111');
-    expect(viewRanInSystemContext).toBe(true);
-    expect(runOutsideDbContext).toHaveBeenCalled();
+    expect(viewRanInSystemContext).toBe(false);
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  // #7647: a tab load holds at most one pooled connection. Both partner-axis
+  // reads (manual approvals + ring-aware view) run in the request context when
+  // that context can see the device-org's partner via the own-partner branch.
+  it('never escapes to a system context when the caller context covers the device partner', async () => {
+    const PID = '11111111-1111-4111-8111-111111111111';
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchStatusResult([{
+        id: 'dp-1', patchId: PID, status: 'pending', installedAt: null,
+        lastCheckedAt: '2026-02-09T10:00:00.000Z', failureCount: 0, lastError: null,
+        externalId: 'KB1', title: 'One', description: null, severity: 'critical',
+        category: 'security', source: 'microsoft', releaseDate: '2026-02-01', requiresReboot: false
+      }]) as any)
+      .mockReturnValueOnce(selectWhereOrderLimitResult([]) as any)
+      .mockReturnValueOnce(selectWhereResult([{ patchId: PID }]) as any);
+    vi.mocked(loadDevicePatchApprovalView).mockResolvedValueOnce({
+      evaluation: { available: true, ring: null },
+      byPatchId: new Map([[PID, { state: 'approved', reason: 'manual', holdUntil: null }]])
+    } as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.pending[0].approvalStatus).toBe('approved');
+    expect(body.data.pending[0].effectiveApproval).toEqual({ state: 'approved', reason: 'manual', holdUntil: null });
+    expect(loadDevicePatchApprovalView).toHaveBeenCalledTimes(1);
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  // A context that cannot see the device-org's partner (no own partner, a
+  // different partner) keeps the system escape — otherwise both reads would
+  // silently come back empty under RLS and every patch would read unapproved.
+  it('falls back to the system escape when the caller context cannot see the device partner', async () => {
+    const PID = '11111111-1111-4111-8111-111111111111';
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({
+      scope: 'organization',
+      orgId: '11111111-1111-1111-1111-111111111111',
+      accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+      accessiblePartnerIds: [],
+      currentPartnerId: null
+    } as any);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchStatusResult([{
+        id: 'dp-1', patchId: PID, status: 'pending', installedAt: null,
+        lastCheckedAt: '2026-02-09T10:00:00.000Z', failureCount: 0, lastError: null,
+        externalId: 'KB1', title: 'One', description: null, severity: 'critical',
+        category: 'security', source: 'microsoft', releaseDate: '2026-02-01', requiresReboot: false
+      }]) as any)
+      .mockReturnValueOnce(selectWhereOrderLimitResult([]) as any)
+      .mockReturnValueOnce(selectWhereResult([]) as any);
+    vi.mocked(loadDevicePatchApprovalView).mockResolvedValueOnce({
+      evaluation: { available: true, ring: null },
+      byPatchId: new Map()
+    } as any);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const res = await app.request(`/devices/${DEVICE_ID}/patches`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+      // approvals read + approval view, each through the escape
+      expect(withSystemDbAccessContext).toHaveBeenCalledTimes(2);
+      expect(runOutsideDbContext).toHaveBeenCalledTimes(2);
+    } finally {
+      warnSpy.mockRestore();
+      vi.mocked(getCurrentDbAccessContext).mockReset();
+    }
   });
 
   it('degrades to approvalEvaluation.available=false (not a 500) when the ring evaluation throws', async () => {

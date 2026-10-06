@@ -94,7 +94,7 @@ export const SENTRY_EVENT_CODES = [
   /** The FX provider returned rows the sync could not use. */
   'exchange_rate_rows_rejected',
   /**
-   * One or more durable AI budget reservations (SEC-142/143) reached their TTL
+   * One or more durable AI budget reservations reached their TTL
    * without settling, so the expiry sweep reclaimed the capacity they were
    * holding. A reservation takes the organization's ENTIRE remaining cap, so
    * each of these is a window in which that tenant could not use AI at all —
@@ -232,6 +232,13 @@ export const SENTRY_EVENT_CODES = [
   /** A rejected partner AI key could not be stamped (config moved under us). */
   'ai_partner_key_error_stamp_stale',
   /**
+   * AI model registry W08 (#7606): a partner without a registry row was
+   * bootstrapped onto the one Anthropic connection it already owned (only a
+   * deployment that skipped the W03 cutover release); its legacy model
+   * settings were never migrated.
+   */
+  'ai_registry_bootstrap_existing_connection',
+  /**
    * Every in-memory AI session was mid-turn when the LRU cap was reached, so
    * nothing could be evicted and MAX_ACTIVE_SESSIONS was exceeded. Throttled by
    * the caller; a sustained stream means real capacity exhaustion.
@@ -264,6 +271,14 @@ export const SENTRY_EVENT_CODES = [
    * failing, so this is the only signal an operator gets.
    */
   'ai_agent_onlytools_unknown_name',
+  /**
+   * An AI chat tool call reached our handler without the SDK's tool_use id
+   * (`_meta['claudecode/toolUseId']`), so its result was paired by tool name
+   * instead (#7931). Reported once per session. Expected never to fire; if it
+   * does, the SDK/CLI stopped sending the id and same-name parallel calls can
+   * be mis-paired again.
+   */
+  'ai_tool_use_id_missing',
 
   // --- backup -----------------------------------------------------------
   /** A backup result matched no job row (deleted, or invisible under RLS). */
@@ -334,7 +349,7 @@ export const SENTRY_EVENT_CODES = [
    *  but should be rare), or a caller is threading the wrong org. */
   'command_dispatch_cross_tenant_refused',
 
-  // --- remote desktop teardown (SEC-2026-09-05-038) ----------------------
+  // --- remote desktop teardown ----------------------
   /** `POST /remote/sessions/:id/end` marked the session terminal and revoked
    *  the viewer token, but the `stop_desktop` never reached the agent (the
    *  relay reported `offline`/`expired`/`owner_mismatch`/`indeterminate`).

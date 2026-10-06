@@ -1053,6 +1053,24 @@ async function syncBinaryDirsToS3(): Promise<void> {
     for (const err of result.errors) {
       console.error(`[binarySync] S3 ${s3Prefix} sync error: ${err}`);
     }
+    // #7574: agent_versions already advertises these files' checksums, so a
+    // key whose upload failed must never serve its previous object.
+    // syncDirectory tombstones it (downloads fall back to disk) and deletes
+    // the stale object best-effort; this is the alertable signal that the
+    // bandwidth offload is degraded for those files. Not fatal: the staged
+    // bytes on disk match the registered checksum, and failing boot over an
+    // S3 blip would take every API route down with it.
+    if (result.failedKeys.length > 0) {
+      console.error(
+        `[binarySync] S3_SYNC_UPLOAD_FAILED prefix=${s3Prefix} keys=${result.failedKeys.join(",")} — ` +
+          "these files are served from disk until a later sync uploads them",
+      );
+      captureException(
+        new Error(`binary S3 sync: ${result.failedKeys.length} upload(s) failed under ${s3Prefix}/`),
+        undefined,
+        { binary_s3_sync: "upload_failed", binary_s3_prefix: s3Prefix },
+      );
+    }
   }
 }
 

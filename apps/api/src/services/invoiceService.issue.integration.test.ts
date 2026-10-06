@@ -40,11 +40,25 @@ vi.mock('./accounting/accountingConnectionService', async (importOriginal) => ({
 vi.mock('./catalogEvents', () => ({ emitCatalogEvent: vi.fn().mockResolvedValue(undefined) }));
 
 import { db, withSystemDbAccessContext, withDbAccessContext, type DbAccessContext } from '../db';
-import { partners, organizations, users, timeEntries, invoices, invoiceLines } from '../db/schema';
+import { partners, organizations, users, timeEntries, invoices, invoiceLines, orgAutopayEnrollments, stripeConnectAccounts, invoiceAutopaySchedules, orgPaymentMethods, billingNoticeOutbox, orgAutopayConsents } from '../db/schema';
 import { createCatalogItem, setBundleComponents } from './catalogService';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
+import { getTestDb } from '../__tests__/integration/setup';
+import { sendInvoiceEmail } from './invoicePdf';
 import * as svc from './invoiceService';
 import type { InvoiceActor } from './invoiceTypes';
+
+async function seedRequestedEnrollment(orgId: string, partnerId: string) {
+  await withSystemDbAccessContext(async () => {
+    const [connection] = await db.insert(stripeConnectAccounts).values({
+      partnerId, stripeAccountId: `acct_requested_${orgId}`, apiKey: 'enc:synthetic',
+      keyLast4: 'test', status: 'connected', livemode: false,
+    }).returning();
+    await db.insert(orgAutopayEnrollments).values({ orgId, partnerId, status: 'requested',
+      generation: 1, requestedAt: new Date(), stripeConnectionId: connection!.id,
+      stripeAccountId: connection!.stripeAccountId });
+  });
+}
 
 const RUN = !!process.env.DATABASE_URL;
 
@@ -111,10 +125,16 @@ const dayAfter = () => new Date(Date.now() + 86400000).toISOString().slice(0, 10
 describe.runIf(RUN)('issueInvoice', () => {
   it('assembles, numbers, freezes, flips source rows to billed', async () => {
     const f = await seedFixture();
+    await seedRequestedEnrollment(f.orgId, f.partnerId);
     const { invoice } = await withDbAccessContext(ctx(f), () =>
       svc.assembleDraftFromOrg({ orgId: f.orgId, from: dayBefore(), to: dayAfter() }, actor(f)));
     // assembled draft has both entries (1.0h + 0.5h @ 100), total 150.00 pre-tax
     const issued = await withDbAccessContext(ctx(f), () => svc.issueInvoice(invoice.id, actor(f)));
+    const schedules = await withSystemDbAccessContext(() => db.select().from(invoiceAutopaySchedules)
+      .where(eq(invoiceAutopaySchedules.invoiceId, issued.id)));
+    expect(schedules).toHaveLength(1);
+    expect(schedules[0]!.ineligibleReason).toBe('not_enrolled');
+
 
     expect(issued.invoiceNumber).toMatch(/^INV-\d{4}-0001$/);
     expect(issued.status).toBe('sent');
@@ -362,4 +382,86 @@ describe.runIf(RUN)('addBundleLine allocation currency (#3775 review #7)', () =>
     await withDbAccessContext(ctx(f), () => svc.addBundleLine(eurInvoice, bundle.id, 1, actor(f)));
     expect(await childAllocations(eurInvoice)).toEqual([null, null]);
   });
+});
+
+async function seedActiveEnrollment(f: Fixture) {
+  await seedRequestedEnrollment(f.orgId, f.partnerId);
+  await withSystemDbAccessContext(async () => {
+    await db.update(partners).set({autopayEnabled: true}).where(eq(partners.id, f.partnerId));
+    await db.update(organizations).set({billingContact: {email: 'billing@example.test'}}).where(eq(organizations.id, f.orgId));
+    await db.update(stripeConnectAccounts).set({accountCountry: 'US', autopayMissingPermissions: [],
+      autopayCapabilitiesCheckedAt: new Date()}).where(eq(stripeConnectAccounts.partnerId, f.partnerId));
+    const [enrollment] = await db.update(orgAutopayEnrollments).set({status: 'active',
+      effectiveFrom: new Date('2020-01-01T00:00:00Z'), stripeCustomerId: 'cus_issue_test'})
+      .where(eq(orgAutopayEnrollments.orgId, f.orgId)).returning();
+    const [method] = await db.insert(orgPaymentMethods).values({orgId: f.orgId, enrollmentId: enrollment!.id,
+      stripePaymentMethodId: 'pm_issue_test', type: 'card', cardBrand: 'visa', cardFunding: 'credit',
+      cardLast4: '4242', status: 'active', isAutopayMethod: true}).returning();
+    // Setup completion always records the accepted terms; collection refuses without them.
+    await db.insert(orgAutopayConsents).values({orgId: f.orgId, enrollmentId: enrollment!.id, generation: enrollment!.generation,
+      paymentMethodId: method!.id, consentTextVersion: '2026-10-01.v1', consentTextHash: 'a'.repeat(64), source: 'setup_page',
+      contactEmail: 'billing@example.test', scheduleTerms: {offsetDays: 0, rule: 'later', cap: {enabled: false}},
+      feeTerms: {methodType: 'card', cardFeeBps: 0, achFeeAmount: '0.00', feeAttested: false, currency: 'USD'}});
+  });
+}
+
+it('concurrent issue freezes one eligible schedule and Send waits for its notice delivery', async () => {
+  const f = await seedFixture();
+  await seedActiveEnrollment(f);
+  const {invoice} = await withDbAccessContext(ctx(f), () => svc.assembleDraftFromOrg({orgId: f.orgId, from: dayBefore(), to: dayAfter()}, actor(f)));
+  const results = await Promise.allSettled([1, 2].map(() => withDbAccessContext(ctx(f), () => svc.issueInvoice(invoice.id, actor(f)))));
+  expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+  expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
+  const state = await withSystemDbAccessContext(async () => ({
+    schedules: await db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.invoiceId, invoice.id)),
+    notices: await db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId, invoice.id)),
+    invoice: (await db.select().from(invoices).where(eq(invoices.id, invoice.id)))[0]!,
+    lines: await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoice.id)),
+  }));
+  expect(state.schedules).toHaveLength(1);
+  expect(state.notices).toHaveLength(1);
+  expect(state.schedules[0]).toMatchObject({eligible: true, state: 'awaiting_notice', noticeOutboxId: state.notices[0]!.id,
+    termsSnapshot: {issuedAt: expect.any(String), principal: '150.00', currency: 'USD', noticeSeq: 1}});
+  const frozen = state.schedules[0]!.termsSnapshot as {issuedAt: string};
+  expect(new Date(frozen.issuedAt).getTime()).toBeLessThanOrEqual(state.invoice.updatedAt.getTime());
+  expect(frozen.issuedAt.slice(0, 10)).toBe(state.invoice.issueDate);
+  expect(state.invoice.sentAt).toBeNull();
+  expect(state.lines.map(line => line.sourceId).sort()).toEqual([...f.timeEntryIds].sort());
+  expect(await withDbAccessContext(ctx(f), () => sendInvoiceEmail(invoice.id, actor(f))))
+    .toMatchObject({emailed: false, reason: 'notice_queued'});
+  expect(await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId, invoice.id)))).toHaveLength(1);
+  // Later enrollment/config changes cannot rewrite issue-time eligibility.
+  await withSystemDbAccessContext(() => db.update(orgAutopayEnrollments).set({status: 'paused'}).where(eq(orgAutopayEnrollments.orgId, f.orgId)));
+  expect(await withSystemDbAccessContext(() => db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.invoiceId, invoice.id))))
+    .toEqual(state.schedules);
+});
+
+it('guarded source-update failure rolls back issue, number, schedule, and outbox', async () => {
+  const f = await seedFixture();
+  await seedActiveEnrollment(f);
+  const {invoice} = await withDbAccessContext(ctx(f), () => svc.assembleDraftFromOrg({orgId: f.orgId, from: dayBefore(), to: dayAfter()}, actor(f)));
+  // Owner-only test trigger makes the actual guarded UPDATE return no rows.
+  // No Drizzle mocking, and the trigger is removed even if the assertion fails.
+  await getTestDb().execute(sql`create function task_l_reject_source_flip() returns trigger language plpgsql as $$
+    begin if NEW.billing_status = 'billed' then return null; end if; return NEW; end $$`);
+  await getTestDb().execute(sql`create trigger task_l_reject_source_flip before update on time_entries
+    for each row execute function task_l_reject_source_flip()`);
+  try {
+    await expect(withDbAccessContext(ctx(f), () => svc.issueInvoice(invoice.id, actor(f))))
+      .rejects.toMatchObject({code: 'CONCURRENT_MODIFICATION'});
+  } finally {
+    await getTestDb().execute(sql`drop trigger task_l_reject_source_flip on time_entries`);
+    await getTestDb().execute(sql`drop function task_l_reject_source_flip()`);
+  }
+  await withSystemDbAccessContext(async () => {
+    expect((await db.select().from(invoices).where(eq(invoices.id, invoice.id)))[0])
+      .toMatchObject({status: 'draft', invoiceNumber: null, sentAt: null});
+    expect(await db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.invoiceId, invoice.id))).toHaveLength(0);
+    expect(await db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId, invoice.id))).toHaveLength(0);
+    const sources = await db.select().from(timeEntries).where(eq(timeEntries.orgId, f.orgId));
+    expect(sources.every(source => source.billingStatus === 'not_billed')).toBe(true);
+  });
+  const issued = await withDbAccessContext(ctx(f), () => svc.issueInvoice(invoice.id, actor(f)));
+  expect(issued.invoiceNumber).toMatch(/^INV-\d{4}-0001$/);
+  expect(await withSystemDbAccessContext(() => db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.invoiceId, invoice.id)))).toHaveLength(1);
 });

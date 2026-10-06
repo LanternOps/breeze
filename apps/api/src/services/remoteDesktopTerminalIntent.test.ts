@@ -1,5 +1,5 @@
 /**
- * Unit coverage for the terminal-intent contract (SEC-038 W03, #5534).
+ * Unit coverage for the terminal-intent contract (#5534).
  *
  * The interleaving properties — a terminal committed before a start refuses
  * the start, every writer bumping the same generation against a real row,

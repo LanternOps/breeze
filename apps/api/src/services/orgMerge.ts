@@ -1,3 +1,4 @@
+import { autopayMergeBlockerCount } from './autopay/merge';
 /**
  * Org merge engine (org-lifecycle Wave 2, Task 3).
  *
@@ -144,6 +145,16 @@ export interface MergeBlocker {
 
 /** Operator-facing refusal text; also embedded in previews and audits. Precondition: `blockers` is non-empty — every caller only invokes this once a blocks-merge table has loser rows. */
 export function buildMergeBlockedMessage(blockers: MergeBlocker[]): string {
+  const paymentBlockers = blockers.filter((b) => b.table === 'invoice_collection_attempts');
+  if (paymentBlockers.length > 0) {
+    const count = paymentBlockers.reduce((n, b) => n + b.loserRows, 0);
+    const paymentMessage = `merge blocked: ${count} payment collection attempt(s) are still in flight. Wait for settlement or cancellation before merging; changing organizations cannot cancel an in-flight bank debit.`;
+    const otherBlockers = blockers.filter((b) => b.table !== 'invoice_collection_attempts');
+    return otherBlockers.length > 0
+      ? `${paymentMessage} ${buildMergeBlockedMessage(otherBlockers)}`
+      : paymentMessage;
+  }
+
   const counts = blockers.map((b) => `${b.loserRows} ${b.table} row(s)`).join(', ');
   return (
     `merge blocked: the merged-away organization holds durable PAM lifecycle evidence (${counts}). `
@@ -171,13 +182,17 @@ export class OrgMergeBlockedError extends Error {
  * devices_pam_history_move_guard would RAISE a raw 23514 before the walk ever
  * reached pam_actuations — the typed refusal has to come first.
  */
+function mergeBlockerCount(table: string, loserOrgId: string): SQL {
+  return table === 'invoice_collection_attempts'
+    ? autopayMergeBlockerCount(loserOrgId)
+    : sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id=${uuid(loserOrgId)}`;
+}
+
 export async function collectMergeBlockers(loserOrgId: string): Promise<MergeBlocker[]> {
   const blockers: MergeBlocker[] = [];
   for (const [table, policy] of getOrgMergePolicies()) {
     if (policy.kind !== 'blocks-merge') continue;
-    const loserRows = await scalarCount(
-      sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id = ${uuid(loserOrgId)}`,
-    );
+    const loserRows = await scalarCount(mergeBlockerCount(table, loserOrgId));
     if (loserRows > 0) blockers.push({ table, loserRows });
   }
   return blockers.sort((a, b) => a.table.localeCompare(b.table));
@@ -190,8 +205,8 @@ export async function collectMergeBlockers(loserOrgId: string): Promise<MergeBlo
 /** Merging AWAY a suspended duplicate is legal; the survivor must be usable. */
 export const MERGEABLE_LOSER_STATUSES: ReadonlySet<string> = new Set(['active', 'trial', 'suspended']);
 
-/** Hops followed by `resolveMergedOrgIds` before giving up. */
-export const MERGE_CHAIN_DEPTH_CAP = 5;
+// Keep the public merge-history API without loading this engine in read-only callers.
+export { MERGE_CHAIN_DEPTH_CAP, resolveMergedOrgIds } from './orgMergeProvenance';
 
 /**
  * `summary` is keyed by table name; this one synthetic key carries the
@@ -723,6 +738,12 @@ export async function runPolicy(
         : noOpOutcome();
 
     case 'keep-survivor': {
+      if (table === 'billing_payment_settings') {
+        return phase === 'resolve'
+          ? { moved: 0, dropped: await exec(sql`DELETE FROM billing_payment_settings WHERE org_id=${uuid(loserOrgId)}`), notes: [] }
+          : noOpOutcome();
+      }
+
       const [del, repoint] = buildKeepSurvivor(table, loserOrgId, survivorOrgId) as [SQL, SQL];
       return phase === 'resolve'
         ? { moved: 0, dropped: await exec(del), notes: [] }
@@ -763,14 +784,10 @@ export async function runPolicy(
     }
 
     case 'blocks-merge': {
-      // Defense in depth only — executeOrgMerge refuses via
-      // collectMergeBlockers before the fence and again before the walk, so
-      // reaching this case with loser rows means that ordering broke.
-      if (phase === 'resolve') {
-        const rows = await scalarCount(
-          sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id = ${uuid(loserOrgId)}`,
-        );
-        if (rows > 0) throw new OrgMergeBlockedError([{ table, loserRows: rows }]);
+      const rows = await scalarCount(mergeBlockerCount(table, loserOrgId));
+      if (rows > 0) throw new OrgMergeBlockedError([{ table, loserRows: rows }]);
+      if (table === 'invoice_collection_attempts' && phase === 'move') {
+        return CUSTOM_EXECUTORS.invoice_collection_attempts!(loserOrgId, survivorOrgId);
       }
       return noOpOutcome();
     }
@@ -1135,7 +1152,7 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         const topology = await finalizeTopologyOrgMerge(loser.id, survivor.id, topologyMerge.siteIds);
 
         for (const ticket of assignedTickets) {
-          await revalidateTicketAssignee(ticket.id, { userId: input.performedBy });
+          await revalidateTicketAssignee(ticket.id, { kind: 'user' as const, userId: input.performedBy });
         }
 
         const warnings = self.buildMergeWarnings({
@@ -1186,6 +1203,8 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
   // Phase B is committed and irreversible from here — never unfence past this
   // point, whatever the stamp does.
   await self.stampTerminalShell(input, loser);
+
+
   return result;
 }
 
@@ -1360,9 +1379,15 @@ export async function previewOrgMerge(
         if (!policy) continue;
 
         if (policy.kind === 'blocks-merge') {
-          const loserRows = await scalarCount(
-            sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id = ${uuid(loserOrgId)}`,
-          );
+          const loserRows = await scalarCount(mergeBlockerCount(table, loserOrgId));
+          if (table === 'invoice_collection_attempts' && loserRows === 0) {
+            const historyRows = await scalarCount(sql`SELECT count(*)::int AS n FROM invoice_collection_attempts WHERE org_id=${uuid(loserOrgId)}`);
+            if (historyRows > 0) {
+              tables.push({ table, policy: policy.kind, loserRows: historyRows, wouldDrop: 0 });
+              totalMovableRows += historyRows;
+            }
+            continue;
+          }
           if (loserRows === 0) continue;
           tables.push({ table, policy: policy.kind, loserRows, wouldDrop: 0 });
           mergeBlockers.push({ table, loserRows });
@@ -1458,6 +1483,9 @@ async function countWouldDrop(
   loserOrgId: string,
   survivorOrgId: string,
 ): Promise<number> {
+  if (table === 'billing_payment_settings') {
+    return scalarCount(sql`SELECT count(*)::int AS n FROM billing_payment_settings WHERE org_id=${uuid(loserOrgId)}`);
+  }
   switch (policy.kind) {
     case 'keep-survivor':
       return scalarCount(buildKeepSurvivorDropCount(table, loserOrgId, survivorOrgId));
@@ -1474,63 +1502,4 @@ async function countWouldDrop(
     default:
       return 0;
   }
-}
-
-// ---------------------------------------------------------------------------
-// Merge-chain resolution (consumed by the public quote routes, Task 6)
-// ---------------------------------------------------------------------------
-
-/**
- * Walk `org_merge_events` forward from `orgId`, returning `[orgId, ...the
- * surviving orgs it was merged into]`. Used to keep a capability minted
- * against a since-merged org (a sent quote link) resolvable.
- *
- * `partnerId` is a hard filter on every hop, so a token's partner claim stays
- * the trust anchor and no chain can cross partners. Bounded by
- * `MERGE_CHAIN_DEPTH_CAP` and by a visited set, so neither a long chain nor a
- * cycle can spin.
- *
- * Scope escalation (M4) is load-bearing, not hygiene. `org_merge_events` is a
- * PARTNER-axis table: its RLS policy is `system OR
- * breeze_has_partner_access(partner_id)`, and an ORG-scoped context never
- * passes `breeze_has_partner_access` (the partner-wide-first playbook's rule —
- * org tokens carry a partnerId but RLS is stricter than the app layer). Under
- * an org-scoped ambient context every hop would return zero rows and this
- * would silently degrade to `[orgId]` — the exact behaviour it exists to
- * prevent, presented as a clean "no merge found". So the read is forced to
- * system scope the same way `tenantStatus.readAsSystem` does it: exit a
- * narrower ambient context first, then open a fresh system transaction.
- * Already-system callers (Task 6's public quote route) reuse their
- * transaction and acquire no extra connection.
- */
-export async function resolveMergedOrgIds(orgId: string, partnerId: string): Promise<string[]> {
-  const ambient = dbModule.getCurrentDbAccessContext();
-  const readAsSystem = <T,>(fn: () => Promise<T>): Promise<T> =>
-    ambient && ambient.scope !== 'system'
-      ? dbModule.runOutsideDbContext(() => dbModule.withSystemDbAccessContext(fn))
-      : dbModule.withSystemDbAccessContext(fn);
-
-  return readAsSystem(async () => {
-    const chain = [orgId];
-    const seen = new Set([orgId]);
-    let current = orgId;
-
-    for (let hop = 0; hop < MERGE_CHAIN_DEPTH_CAP; hop++) {
-      const rows = (await dbModule.db.execute(sql`
-        SELECT survivor_org_id
-          FROM org_merge_events
-         WHERE loser_org_id = ${uuid(current)}
-           AND partner_id = ${uuid(partnerId)}
-         ORDER BY created_at DESC
-         LIMIT 1`)) as unknown as Array<{ survivor_org_id: string }>;
-
-      const next = rows[0]?.survivor_org_id;
-      if (!next || seen.has(next)) break;
-      chain.push(next);
-      seen.add(next);
-      current = next;
-    }
-
-    return chain;
-  });
 }

@@ -1279,6 +1279,28 @@ describe('pushInvoiceToAccounting', () => {
       expect(pushInvoiceMock).not.toHaveBeenCalled();
     });
 
+    it('translates a code-less provider validation rejection (provider_rejected/409, #7292) to terminal dependency_not_ready/409 with the message intact', async () => {
+      setup({
+        mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null, syncStatus: 'pending' })],
+      });
+      const message = "Xero rejected the customer sync — check this organization's details in Breeze, then sync again";
+      syncMappedEntityMock.mockRejectedValueOnce(new AccountingMappingError('provider_rejected', 409, message));
+
+      let caught: AccountingInvoicePushError | undefined;
+      try {
+        await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+      } catch (err) {
+        caught = err as AccountingInvoicePushError;
+      }
+
+      // Not the retryable provider_error/502: re-sending the same payload can never succeed.
+      expect(caught?.code).toBe('dependency_not_ready');
+      expect(caught?.code).not.toBe('provider_error');
+      expect(caught?.status).toBe(409);
+      expect(caught?.message).toBe(message);
+      expect(pushInvoiceMock).not.toHaveBeenCalled();
+    });
+
     it('preserves a genuine provider_error/502 from a nested sync as provider_error — not conflated with dependency_not_ready', async () => {
       setup({
         mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null, syncStatus: 'pending' })],

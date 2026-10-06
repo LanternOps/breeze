@@ -297,7 +297,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  * Settle one draft's spend through the single billing path: the invocation
  * ledger rows, the organization usage aggregates, the reservation close and,
  * for platform funding, the prepaid credit draw-down all happen inside
- * `settleInvocation` (SEC-111/142/143). Each attempt is billed under the model
+ * `settleInvocation`. Each attempt is billed under the model
  * it requested, from the rate snapshot the resolver bound before admission.
  *
  * Best effort throughout: the pane already has its draft, and a metering
@@ -418,10 +418,10 @@ officeAddinTicketRoutes.post(
       throw err;
     }
     const binding = turnBindingFrom(resolved);
-    // Admission first (SEC-111): the configured budget AND the prepaid platform
+    // Admission first: the configured budget AND the prepaid platform
     // credit balance, answered as the established 402 before any DLP evaluation
     // or provider contact, for the funding the resolver chose. The reservation
-    // below is the separate atomic organization-cap fence (SEC-142/143) — this
+    // below is the separate atomic organization-cap fence — this
     // check does not replace it.
     const budgetDenial = await checkBudgetDetailed(input.orgId, resolved.funding);
     if (budgetDenial) {
@@ -681,6 +681,7 @@ officeAddinTicketRoutes.post(
     }
 
     const actor: TicketActor = {
+      kind: 'user',
       userId: auth.userId,
       name: auth.user.name ?? undefined,
       email: auth.user.email,
@@ -830,6 +831,7 @@ officeAddinTicketRoutes.post(
 
     const content = buildQuotedEmail(input);
     const actor: TicketActor = {
+      kind: 'user',
       userId: auth.userId,
       name: auth.user.name ?? undefined,
       email: auth.user.email,

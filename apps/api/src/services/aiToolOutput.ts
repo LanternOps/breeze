@@ -759,6 +759,29 @@ function compactSystemCleanupPayload(payload: Record<string, unknown>, stats: Co
   return output;
 }
 
+/**
+ * #7968: `compactValue` keeps only the first N keys of an object (as few as 15),
+ * and the `device` projection lists osVersion/agentVersion/status/lastSeenAt
+ * 20th-31st. Hoist the fields an operator needs first so they survive every tier.
+ */
+const DEVICE_CORE_KEYS = [
+  'id', 'hostname', 'displayName', 'osType', 'osVersion', 'status',
+  'lastSeenAt', 'agentVersion', 'siteName', 'orgId', 'siteId',
+] as const;
+
+function hoistDeviceCoreFields(parsed: Record<string, unknown>): Record<string, unknown> {
+  const device = parsed.device;
+  if (!isRecord(device)) return parsed;
+  const reordered: Record<string, unknown> = {};
+  for (const k of DEVICE_CORE_KEYS) {
+    if (k in device) reordered[k] = device[k];
+  }
+  for (const [k, v] of Object.entries(device)) {
+    if (!(k in reordered)) reordered[k] = v;
+  }
+  return { ...parsed, device: reordered };
+}
+
 function applyToolSpecificCompaction(
   toolName: string,
   parsed: unknown,
@@ -766,6 +789,10 @@ function applyToolSpecificCompaction(
   config: CompactConfig
 ): unknown {
   if (!isRecord(parsed)) return parsed;
+
+  if (toolName === 'get_device_details') {
+    return hoistDeviceCoreFields(parsed);
+  }
 
   if (toolName === 'analyze_disk_usage') {
     return compactDiskUsagePayload(parsed, stats);
@@ -986,6 +1013,10 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // active defense; query_devices/get_device_details cover the real
   // hostname/displayName exposure.
   get_device_context: new Set(['hostname', 'displayName']),
+  // Administrator-approved diagnostic reads: file contents and file/folder
+  // names come straight off the endpoint and are writable by local users.
+  diagnostic_read_file: new Set(['content']),
+  diagnostic_list_directory: new Set(['name', 'path']),
 } as const;
 
 /**
@@ -1069,7 +1100,7 @@ export function compactToolResultForChat(
   // cannot survive into a truncated `preview` further down (#2603). This is the
   // single chokepoint every aiTools*.ts result passes through, which is why the
   // fix does not need a catch-block edit in each of the ~19 leaking handlers.
-  const errorScrubbed = scrubErrorFieldsDeep(parsed);
+  const errorScrubbed = scrubErrorFieldsDeep(parsed, 0, false, { toolName });
 
   // Neutralize injection-shaped text in fields that carry raw, endpoint- or
   // vendor-sourced content before it is measured/compacted. Same chokepoint

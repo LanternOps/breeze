@@ -51,12 +51,69 @@ import {
 import { listMonitorDeviceActivity, listMonitorEpisodes } from './monitors/episodeQueries';
 import { resetMonitorEscalation } from './monitors/episodeReset';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
+import { auditPartnerScopeId } from './auditReadScope';
 import {
   createMonitorDefinitionSchema,
   updateMonitorDefinitionSchema,
   MONITOR_KINDS,
+  monitorConditionSchemas,
   type MonitorKind,
 } from '@breeze/shared';
+import { z } from 'zod';
+import { presentEndpointTarget } from '../utils/endpointDisplay';
+import { definitionReplacesCondition, resolveMonitorDefinitionInput } from './aiToolsMonitorEndpointInput';
+
+/**
+ * A network_check target may be a URL carrying credentials (userinfo, a
+ * `?token=` query, an authorizing path). Tool results show it as scheme + host
+ * plus a fingerprint, the same presentation webhook endpoints use.
+ */
+function presentNetworkCheckTarget(kind: unknown, value: unknown): unknown {
+  if (kind !== 'network_check' || !value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  if (typeof record.target !== 'string') return value;
+  const view = presentEndpointTarget(record.target);
+  return { ...record, target: view.target, targetFingerprint: view.fingerprint };
+}
+
+function presentMonitorDefinition<T extends { kind?: unknown; condition?: unknown }>(monitor: T): T {
+  return { ...monitor, condition: presentNetworkCheckTarget(monitor.kind, monitor.condition) };
+}
+
+function isMonitorKind(value: unknown): value is MonitorKind {
+  return typeof value === 'string' && (MONITOR_KINDS as readonly string[]).includes(value);
+}
+
+/**
+ * #7826 — the condition shape for a kind, derived from the SAME zod registry
+ * `createMonitorDefinitionSchema` validates with (no hand-written copy to
+ * drift). `io: 'input'` so defaulted fields read as optional.
+ */
+function describeMonitorKind(kind: MonitorKind): Record<string, unknown> {
+  const { $schema: _dropped, ...condition } = z.toJSONSchema(monitorConditionSchemas[kind], {
+    io: 'input',
+    unrepresentable: 'any',
+  }) as Record<string, unknown>;
+  return { kind, condition };
+}
+
+const KIND_LIST_HINT = `Valid kinds: ${MONITOR_KINDS.join(', ')}.`;
+
+/**
+ * Validation error for create/update that tells the model how to recover: an
+ * unknown kind lists the valid kinds; a known kind with a bad condition points
+ * at `describe` for that kind's shape.
+ */
+function definitionErrorMessage(definition: unknown, issue: string | null | undefined, isCreate: boolean): string {
+  const base = issue ?? 'Invalid monitor definition';
+  const kind = (definition as { kind?: unknown } | null | undefined)?.kind;
+  if (kind !== undefined && !isMonitorKind(kind)) {
+    return `${base}. ${KIND_LIST_HINT} Use action "describe" (with kind) for each condition shape.`;
+  }
+  if (isMonitorKind(kind)) return `${base}. Use action "describe" with kind "${kind}" for its condition shape.`;
+  // Partial updates normally carry no kind; the kind list would be noise there.
+  return isCreate ? `${base}. ${KIND_LIST_HINT} Use action "describe" for condition shapes.` : base;
+}
 
 type Handler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -101,6 +158,9 @@ function auditMonitorToolEvent(
   try {
     writeAuditEvent(requestLikeFromSnapshot({}), {
       orgId: entry.orgId,
+      // The snapshot shim carries no auth, so attribute explicitly — same rule
+      // as the HTTP route (partner-scope callers only, #7696).
+      partnerId: auditPartnerScopeId(auth),
       actorId: auth.user.id,
       actorEmail: auth.user.email,
       action: entry.action,
@@ -234,8 +294,8 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
       const attachments = await attachmentsFor(monitor.id);
 
       return JSON.stringify({
-        monitor: { ...monitor, ownerScope: ownerScopeOf(monitor) },
-        attachments,
+        monitor: { ...presentMonitorDefinition(monitor), ownerScope: ownerScopeOf(monitor) },
+        attachments: attachments.map((a) => ({ ...a, overrides: presentNetworkCheckTarget(monitor.kind, a.overrides) })),
         compiled: {
           alertTemplateId: monitor.compiledAlertTemplateId,
           alertRuleId: monitor.compiledAlertRuleId,
@@ -349,14 +409,19 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_monitor_definitions',
       description:
-        'Manage definitions, not compiled rows. Default: org scope; partner scope covers all partner orgs and requires full access. Actions: create, update, delete, enable, disable, attach, detach. Kind network_check creates a managed probe; condition.assetId binds a discovered asset.',
+        'Manage definitions, not compiled rows. Call describe (optional kind) FIRST for valid kinds and condition shapes. Default: org scope; partner scope needs full access. Actions: describe, create, update, delete, enable, disable, attach, detach. network_check = managed probe.',
       input_schema: {
         type: 'object' as const,
         properties: {
           action: {
             type: 'string',
-            enum: ['create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach'],
+            enum: ['describe', 'create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach'],
             description: 'The action to perform',
+          },
+          kind: {
+            type: 'string',
+            enum: [...MONITOR_KINDS],
+            description: 'Monitor kind (for describe: returns that kind\'s condition schema; omit to list kinds)',
           },
           monitorId: {
             type: 'string',
@@ -378,6 +443,18 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('manage_monitor_definitions', async (input, auth) => {
       const action = input.action as string;
 
+      // Read-only discovery (#7826): no write capability needed, so it sits
+      // ahead of the site-ceiling gate that guards every mutating action.
+      if (action === 'describe') {
+        if (input.kind === undefined || input.kind === null) {
+          return JSON.stringify({ kinds: [...MONITOR_KINDS], hint: 'Call describe with kind for that kind\'s condition schema.' });
+        }
+        if (!isMonitorKind(input.kind)) {
+          return JSON.stringify({ error: `Unknown monitor kind. ${KIND_LIST_HINT}` });
+        }
+        return JSON.stringify(describeMonitorKind(input.kind));
+      }
+
       // Site-ceiling gate up front, before any branch: a monitor's responses
       // compile verbatim into a managed automation that runs as SYSTEM on
       // every device an attaching org-wide policy reaches, so every action
@@ -389,32 +466,55 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
-        const parsed = createMonitorDefinitionSchema.safeParse(input.definition ?? {});
+        // Nothing is stored yet, so a displayed endpoint or masked value is refused.
+        const resolvedInput = resolveMonitorDefinitionInput(input.definition ?? {}, null);
+        if (!resolvedInput.ok) return JSON.stringify({ error: resolvedInput.error });
+        const parsed = createMonitorDefinitionSchema.safeParse(resolvedInput.definition);
         if (!parsed.success) {
           return JSON.stringify({
-            error: describeFirstZodIssue(parsed.error) ?? 'Invalid monitor definition',
+            error: definitionErrorMessage(input.definition, describeFirstZodIssue(parsed.error), true),
           });
         }
         const created = await createMonitorDefinition(parsed.data, auth);
-        return JSON.stringify({ success: true, monitor: { ...created, ownerScope: ownerScopeOf(created) } });
+        return JSON.stringify({ success: true, monitor: { ...presentMonitorDefinition(created), ownerScope: ownerScopeOf(created) } });
       }
 
       if (action === 'update' || action === 'enable' || action === 'disable') {
         if (!input.monitorId) return JSON.stringify({ error: 'monitorId is required' });
-        const patch: unknown =
+        let patch: unknown =
           action === 'enable'
             ? { enabled: true }
             : action === 'disable'
               ? { enabled: false }
               : (input.definition ?? {});
+        let keptStored: string[] = [];
+        if (action === 'update') {
+          // A condition copied from get_monitor carries the displayed target
+          // and masked header values; resolve them against the stored row.
+          let stored: Awaited<ReturnType<typeof getMonitorDefinition>> = null;
+          if (definitionReplacesCondition(patch)) {
+            stored = await getMonitorDefinition(input.monitorId as string, auth);
+            if (!stored) return JSON.stringify({ error: 'Monitor not found' });
+          }
+          const resolved = resolveMonitorDefinitionInput(patch, stored);
+          if (!resolved.ok) return JSON.stringify({ error: resolved.error });
+          patch = resolved.definition;
+          keptStored = resolved.keptStored;
+        }
         const parsed = updateMonitorDefinitionSchema.safeParse(patch);
         if (!parsed.success) {
           return JSON.stringify({
-            error: describeFirstZodIssue(parsed.error) ?? 'Invalid monitor definition',
+            error: definitionErrorMessage(patch, describeFirstZodIssue(parsed.error), false),
           });
         }
         const updated = await updateMonitorDefinition(input.monitorId as string, parsed.data, auth);
-        return JSON.stringify({ success: true, monitor: { ...updated, ownerScope: ownerScopeOf(updated) } });
+        return JSON.stringify({
+          success: true,
+          monitor: { ...presentMonitorDefinition(updated), ownerScope: ownerScopeOf(updated) },
+          ...(keptStored.length > 0
+            ? { note: `${keptStored.join(' and ')} matched the displayed value, so the stored value was kept.` }
+            : {}),
+        });
       }
 
       if (action === 'delete') {

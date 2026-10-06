@@ -1,4 +1,6 @@
 import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum, index } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { xid8 } from './columnTypes';
 import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
@@ -198,16 +200,22 @@ export const tickets = pgTable('tickets', {
   // rather than NULL. jsonb -> excludedOpen in the export policy regardless
   // of contents (CLAUDE.md: any json/jsonb/bytea column is excludedOpen).
   fieldProvenance: jsonb('field_provenance')
-    .$type<Record<string, 'user' | 'ai_agent' | 'system'>>()
+    .$type<Record<string, 'user' | 'ai_agent' | 'system' | 'service_principal'>>()
     .notNull()
-    .default({})
+    .default({}),
+  // Partner API tickets feed change stamp (2026-12-13-120000): the xid8 of
+  // the writing transaction, set by a BEFORE INSERT OR UPDATE trigger on
+  // every write (app-supplied values are overwritten). Decimal string end to
+  // end — see schema/columnTypes.ts. Existing rows keep '1', which sorts
+  // before every real transaction id, so a first full sync covers them.
+  partnerFeedXid: xid8('partner_feed_xid').notNull().default(sql`'1'::xid8`),
 });
 
 export const ticketComments = pgTable('ticket_comments', {
   id: uuid('id').primaryKey().defaultRandom(),
-  ticketId: uuid('ticket_id').notNull().references(() => tickets.id),
-  portalUserId: uuid('portal_user_id').references(() => portalUsers.id),
-  userId: uuid('user_id').references(() => users.id),
+  ticketId: uuid('ticket_id').notNull().references(() => tickets.id, { onDelete: 'cascade' }),
+  portalUserId: uuid('portal_user_id').references(() => portalUsers.id, { onDelete: 'set null' }),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
   authorName: varchar('author_name', { length: 255 }),
   authorType: varchar('author_type', { length: 50 }),
   content: text('content').notNull(),
@@ -234,6 +242,14 @@ export const ticketComments = pgTable('ticket_comments', {
   // (ticketHelpdeskSubscriber, Task 3) treats anything NOT 'user' as suspect
   // and skips admission — see the migration header for the full rationale.
   originPrincipalKind: text('origin_principal_kind').notNull().default('user'),
+  // The principal behind a machine-authored row when `origin_principal_kind`
+  // alone cannot answer "did MY integration write this?": the partner
+  // service principal id for 'service_principal' (Partner API tickets
+  // surface, 2026-12-04-101100), the AGENT id for 'ai_agent' rows (same
+  // convention as action_intents.origin_principal_id — the RUN is
+  // `agent_run_id` below), null for humans and system notes. No FK: it
+  // points at different tables by kind.
+  originPrincipalId: uuid('origin_principal_id'),
   // Loop-guard link to the agent run that authored this comment. Written by
   // addAiTriageNote() (services/ticketService.ts, P2-4a #4300) — every
   // AI-agent `comment` tool call that carries an agentRunId inserts a row

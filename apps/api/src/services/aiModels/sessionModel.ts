@@ -116,12 +116,14 @@ export async function chooseSessionModel(input: {
   });
   if (!r.ok) {
     // A cutover in progress is transient for every caller: retryable 503, never a 400.
-    if (r.reason === 'registry_unavailable') throw new LlmUnavailableError(r.message);
+    if (r.reason === 'registry_unavailable') throw new LlmUnavailableError(r.message, r.reason);
     if (requested) throw new InvalidSessionModelError(r.message, r.reason);
     if (r.reason === 'connection_unavailable' && !isPlatformLlmConfigured(process.env.ANTHROPIC_API_KEY, 'agent_sdk')) {
       throw new LlmNotConfiguredError();
     }
-    throw new LlmUnavailableError(r.message);
+    // #7793: carry the reason so a route can show the resolver's text (e.g.
+    // "cannot use tools") instead of a bare `ai_unavailable`.
+    throw new LlmUnavailableError(r.message, r.reason);
   }
   return {
     resolved: r,

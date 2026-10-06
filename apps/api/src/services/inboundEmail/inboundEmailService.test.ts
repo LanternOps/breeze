@@ -508,7 +508,7 @@ describe('processInboundEmail', () => {
       't-1',
       { status: 'open' },
       {},
-      expect.objectContaining({ principalKind: 'system', name: 'Inbound Email' })
+      expect.objectContaining({ kind: 'system', source: 'inbound_email', name: 'Inbound Email' })
     );
     const ticketUpdates = state.updates.filter((u) => u.table === 'tickets');
     expect(ticketUpdates.some((u) => 'status' in u.set || 'resolvedAt' in u.set)).toBe(false);
@@ -1319,7 +1319,7 @@ describe('processInboundEmail', () => {
     expect(comments[0]!.authorName).toBe('Jane Stored-Name');
 
     const ticketUpdates = state.updates.filter((u) => u.table === 'tickets');
-    expect(changeStatusMock).toHaveBeenCalledWith('t-1', { status: 'open' }, {}, expect.objectContaining({ principalKind: 'system' }));
+    expect(changeStatusMock).toHaveBeenCalledWith('t-1', { status: 'open' }, {}, expect.objectContaining({ kind: 'system', source: 'inbound_email' }));
     expect(ticketUpdates.some((u) => 'status' in u.set)).toBe(false);
 
     const log = inboundOf();

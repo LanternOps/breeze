@@ -153,7 +153,6 @@ function partnerPolicyRow(overrides: Partial<AiScriptPolicyRow> = {}): AiScriptP
     unattendedAllowedClasses: ['services'],
     maxUnattendedPerHour: 5,
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
-    reviewerModel: null,
     unattendedEnabledBy: null,
     unattendedEnabledAt: null,
     createdBy: USER_ID,
@@ -282,7 +281,6 @@ describe('PUT /', () => {
         unattendedAllowedClasses: [],
         maxUnattendedPerHour: 0,
         protectedResourcesEmptied: true,
-        reviewerModel: null,
         proposingEnabled: true,
       },
     }));
@@ -344,7 +342,6 @@ describe('PUT /', () => {
         unattendedAllowedClasses: ['services'],
         maxUnattendedPerHour: 5,
         protectedResourcesEmptied: false,
-        reviewerModel: null,
         proposingEnabled: true,
       },
     }));
@@ -357,14 +354,25 @@ describe('PUT /', () => {
     expect(consumeStepUpGrant).not.toHaveBeenCalled();
   });
 
-  it('strips reviewerModel (accept-and-ignore) and no longer treats it as a widening', async () => {
-    selectQueue = [[partnerPolicyRow({ unattendedAllowed: true, reviewerModel: 'old-model' })]];
-    const res = await putReq({ reviewerModel: 'anything' });
-    expect(res.status).toBe(200);
+  it('PUT /partner/ai/script-policy with reviewerModel → 400 naming the replacement; nothing is written', async () => {
+    for (const reviewerModel of ['claude-x', null]) {
+      selectQueue = [[partnerPolicyRow({ unattendedAllowed: true })]];
+      const res = await putReq({ maxUnattendedPerHour: 3, reviewerModel });
+      expect(res.status).toBe(400);
+      const text = JSON.stringify(await res.json());
+      expect(text).toContain('reviewerModel');
+      expect(text).toContain('script_reviewer');
+    }
     expect(consumeStepUpGrant).not.toHaveBeenCalled();
-    expect(writes).toHaveLength(1);
-    expect(writes[0]!.values).not.toHaveProperty('reviewerModel');
-    expect(writes[0]!.set).not.toHaveProperty('reviewerModel');
+    expect(writes).toHaveLength(0);
+    expect(auditLog).toHaveLength(0);
+  });
+
+  it('GET /partner/ai/script-policy no longer returns reviewerModel', async () => {
+    selectQueue = [[partnerPolicyRow({ reviewerModel: 'stale-model' } as unknown as Partial<AiScriptPolicyRow>)]];
+    const body = await (await getReq()).json();
+    expect(body.policy).not.toBeNull();
+    expect(body.policy).not.toHaveProperty('reviewerModel');
   });
 
   it('400s when the body carries unattendedEnabled (strict schema refuses the org grant on a partner row)', async () => {

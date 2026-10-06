@@ -976,7 +976,16 @@ describe('processReconcileConnectionJob: cursor', () => {
 // Sweep
 // ---------------------------------------------------------------------------
 
+vi.mock('../services/accounting/accountingFeePush',()=>({drainAccountingFees:vi.fn(async()=>({posted:0,failed:0}))}));
+
+
 describe('processReconcileSweep', () => {
+it('runs the independent fee debt drain on every reconcile sweep',async()=>{
+  const {drainAccountingFees}=await import('../services/accounting/accountingFeePush');
+  await processReconcileSweep();
+  expect(drainAccountingFees).toHaveBeenCalled();
+});
+
   it('enqueues one sweep job per reconcilable connection, with nothing held', async () => {
     listReconcilableConnectionsMock.mockImplementation(async () => {
       record('listReconcilableConnections');
@@ -1476,4 +1485,15 @@ describe('rate limiting (Xero W01 Task 14)', () => {
     await expect(processReconcileSweep()).resolves.toMatchObject({ deferred: 1, pendingOpsEnqueued: 1 });
     expect(enqueuePaymentDeleteMock).toHaveBeenCalledWith('m1', 'p1');
   });
+});
+
+it('A3 advances after an imported overpayment but holds the cursor for a reservation conflict', async () => {
+  reconcileChangesMock.mockResolvedValue({ ...EMPTY_CHANGESET, payments: [line({ amountMinor: 20000 })] });
+  applyReturns('applied');
+  await processReconcileConnectionJob(JOB);
+  expect(advanceReconcileCursorMock).toHaveBeenCalledOnce();
+  advanceReconcileCursorMock.mockClear();
+  applyMock.mockRejectedValueOnce(Object.assign(new Error('collection in progress'), { code: 'COLLECTION_IN_PROGRESS' }));
+  await expect(processReconcileConnectionJob(JOB)).rejects.toThrow(/failed item/);
+  expect(advanceReconcileCursorMock).not.toHaveBeenCalled();
 });

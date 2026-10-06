@@ -824,8 +824,17 @@ wait_for_docker() {
   return 1
 }
 
+# Capture the list first: piping into \`grep -q\` lets grep exit at the first
+# match, a still-writing docker compose can be killed by SIGPIPE, and pipefail turns
+# that into "no such service" (#7960). A failed query exits the helper rather
+# than reading as "absent": callers test this in an if, where set -e is off.
 service_exists() {
-  "\${compose[@]}" config --services | grep -qx "\$1"
+  local services
+  if ! services="\$("\${compose[@]}" config --services)"; then
+    echo "Failed to read Compose services from docker compose config --services." >&2
+    exit 1
+  fi
+  grep -qx -- "\$1" <<< "\${services}"
 }
 
 start_remaining_services() {

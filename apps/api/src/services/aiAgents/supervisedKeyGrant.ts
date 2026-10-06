@@ -151,14 +151,13 @@ async function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
  * turn the org's agent off, which is the opposite of what the approver
  * authorized.
  *
- * The material is `mergeAgentPolicies(partner, null, …).effective`, NOT
+ * The material is `mergeAgentPolicies(partner, null).effective`, NOT
  * `resolveEffectiveAgentSystem`: that loader additionally forces
  * `enabled: false` when the `BREEZE_AI_AGENTS_ENABLED` kill switch is off, and
  * persisting a kill-switch artifact into a policy row would outlive the switch.
- * `allowedModels` is irrelevant to this branch by construction — it only ever
- * selects between an ORG model and the partner's, and this branch runs only
- * when there is no org row — so the merge is called with `null` rather than
- * paying for an `ai_budgets` read whose value cannot change the outcome.
+ * No model is copied, and `offeringId` deliberately is not either: the org
+ * clone stays unbound so the agent keeps following the partner baseline's
+ * offering through the merge, which is what routed it before (W08, #7606).
  *
  * Two fields deliberately do NOT come from `effective`:
  *   - `instructions` stays NULL. The effective value is the RENDERED
@@ -202,7 +201,6 @@ function cloneValuesFromEffective(
   const effective: AiAgentPolicy = mergeAgentPolicies(
     normalizeAgentPolicy(partnerRow),
     null,
-    { allowedModels: null },
   ).effective;
 
   return {
@@ -212,7 +210,6 @@ function cloneValuesFromEffective(
     name: partnerRow.name,
     enabled: effective.enabled,
     mode: effective.mode,
-    model: effective.model,
     toolAllowlist: effective.toolAllowlist,
     protectedResources: effective.protectedResources,
     limits: effective.limits,

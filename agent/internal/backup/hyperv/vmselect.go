@@ -65,6 +65,43 @@ func resolveVMIDWith(run psRunner, vmName string) (string, error) {
 	return id, nil
 }
 
+// crashExportPlan is how a crash-consistent export treats a VM in a given
+// power state.
+type crashExportPlan struct {
+	// save runs Save-VM before the export to freeze memory and disk together.
+	save bool
+	// restart runs Start-VM after the export (or after a failed export) to
+	// return a saved VM to the Running state it was found in.
+	restart bool
+	// warning, when set, is reported once the export succeeds.
+	warning string
+}
+
+// planCrashExport maps a VM's power state (a Microsoft.HyperV.PowerShell.VMState
+// name) to the crash-consistent export steps. Save-VM is only valid on a
+// Running or Paused VM; an Off or Saved VM is already consistent on disk and is
+// exported as-is, and is not started afterwards (#7623). Every other state is
+// transitional or critical (storage inaccessible) and is refused rather than
+// guessed at.
+func planCrashExport(vmName, state string) (crashExportPlan, error) {
+	switch state {
+	case "Running":
+		return crashExportPlan{save: true, restart: true}, nil
+	case "Off", "Saved":
+		return crashExportPlan{}, nil
+	case "Paused":
+		// Start-VM would resume the guest, which a VM paused by its operator
+		// must not do behind their back; Saved keeps it frozen until they
+		// start it.
+		return crashExportPlan{
+			save:    true,
+			warning: fmt.Sprintf("VM %q was Paused; it was saved for the crash-consistent export and left in the Saved state (Start-VM resumes it)", vmName),
+		}, nil
+	default:
+		return crashExportPlan{}, fmt.Errorf("cannot take a crash-consistent backup of VM %q in state %q; retry when it is Running, Off, Saved or Paused", vmName, state)
+	}
+}
+
 // exportVMWith resolves vmName once and runs save/export/start against that
 // VM's ID only. It returns the VM ID and any non-fatal warnings.
 func exportVMWith(run psRunner, vmName, exportPath, consistencyType string) (string, []string, error) {
@@ -76,19 +113,42 @@ func exportVMWith(run psRunner, vmName, exportPath, consistencyType string) (str
 	if err != nil {
 		return "", nil, err
 	}
+	var plan crashExportPlan
 	if consistencyType == "crash" {
+		out, err := run("(" + sel + ").State.ToString()")
+		if err != nil {
+			return id, nil, fmt.Errorf("failed to read VM state: %w", err)
+		}
+		if plan, err = planCrashExport(vmName, lastLine(out)); err != nil {
+			return id, nil, err
+		}
+	}
+	if plan.save {
 		if _, err := run(sel + " | Save-VM"); err != nil {
 			return id, nil, fmt.Errorf("failed to save VM state: %w", err)
 		}
 	}
 	if _, err := run(sel + " | Export-VM -Path " + psQuote(exportPath)); err != nil {
+		// A Running VM was saved by this backup: bring it back even though the
+		// export failed, or the backup leaves it down.
+		if plan.restart {
+			if _, startErr := run(sel + " | Start-VM"); startErr != nil {
+				return id, nil, fmt.Errorf("%w; additionally failed to restart VM %q after the failed export: %v", err, vmName, startErr)
+			}
+		} else if plan.warning != "" {
+			// The VM's state was still changed (Paused → Saved); say so.
+			return id, nil, fmt.Errorf("%w; %s", err, plan.warning)
+		}
 		return id, nil, err
 	}
 	var warnings []string
-	if consistencyType == "crash" {
+	if plan.restart {
 		if _, err := run(sel + " | Start-VM"); err != nil {
 			warnings = append(warnings, fmt.Sprintf("failed to restart VM %q after export: %s", vmName, err.Error()))
 		}
+	}
+	if plan.warning != "" {
+		warnings = append(warnings, plan.warning)
 	}
 	return id, warnings, nil
 }

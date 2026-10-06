@@ -1261,6 +1261,109 @@ describe('GET /tunnels/:id — site-scope enforcement', () => {
   });
 });
 
+// ─── DELETE /tunnels/:id — permission, MFA and site-scope gates ───────────────
+// Closing a tunnel tears down a live remote session, so it needs the same
+// remote-access grants as opening one, and site-restricted callers may only
+// close tunnels to devices in their allowed sites.
+describe('DELETE /tunnels/:id — permission gates', () => {
+  let app: Hono;
+  const SITE_A = 'a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0';
+  const SITE_B = 'b0b0b0b0-b0b0-4b0b-8b0b-b0b0b0b0b0b0';
+  const activeSession = { ...sessionRecord, status: 'active', userId: 'other-tech-1' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
+    vi.mocked(db.insert).mockReset();
+    vi.mocked(db.insert).mockImplementation(vi.fn().mockReturnValue(makeAuditAwareInsertChain([])) as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  function expectSessionUntouched() {
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  }
+
+  it('returns 403 and leaves the session open when the caller lacks remote access', async () => {
+    const res = await app.request(`/tunnels/${SESSION_ID}`, {
+      method: 'DELETE',
+      headers: { 'x-test-scope': 'partner', 'x-test-accessible-orgs': ORG_ID, 'x-deny-permission': 'remote:access' },
+    });
+
+    expect(res.status).toBe(403);
+    expectSessionUntouched();
+  });
+
+  it('returns 403 and leaves the session open when the caller lacks devices:execute', async () => {
+    const res = await app.request(`/tunnels/${SESSION_ID}`, {
+      method: 'DELETE',
+      headers: { 'x-deny-permission': 'devices:execute' },
+    });
+
+    expect(res.status).toBe(403);
+    expectSessionUntouched();
+  });
+
+  it('returns 403 and leaves the session open when MFA is not satisfied', async () => {
+    const res = await app.request(`/tunnels/${SESSION_ID}`, {
+      method: 'DELETE',
+      headers: { 'x-test-mfa': 'false' },
+    });
+
+    expect(res.status).toBe(403);
+    expectSessionUntouched();
+  });
+
+  it('returns 403 and leaves the session open when a site-restricted caller targets an out-of-site device', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([activeSession]) as any) // session lookup
+      .mockReturnValueOnce(makeSelectChain([{ siteId: SITE_B }]) as any); // device site
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, {
+      method: 'DELETE',
+      headers: { 'x-test-scope': 'partner', 'x-test-accessible-orgs': ORG_ID, 'x-restrict-site': SITE_A },
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('closes the session for a permitted caller', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([{ ...sessionRecord, status: 'active' }]) as any) // session lookup
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any); // device lookup
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, { method: 'DELETE' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ closed: true });
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(sendCommandToAgent).toHaveBeenCalledWith('agent-abc', expect.objectContaining({ type: 'tunnel_close' }));
+  });
+
+  it('closes an in-site session for a site-restricted caller', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([activeSession]) as any) // session lookup
+      .mockReturnValueOnce(makeSelectChain([{ siteId: SITE_A }]) as any) // device site
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any); // device lookup
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, {
+      method: 'DELETE',
+      headers: { 'x-test-scope': 'partner', 'x-test-accessible-orgs': ORG_ID, 'x-restrict-site': SITE_A },
+    });
+
+    expect(res.status).toBe(200);
+    expect(db.update).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ─── GET /tunnels/:id — lazy expiry + idleSeconds (#3199) ─────────────────────
 // ProxyTunnelPage's 5s poll hits this route directly (not the list route), so
 // it needs the SAME stale-row flip + idleSeconds the list route already has
@@ -1930,8 +2033,8 @@ describe('POST /vnc-viewer/upgrade-to-webrtc', () => {
       agentId: 'agent-abc',
       userEmail: 'test@example.com',
     }]) as any);
-    // The straggler sweep now runs through the terminal-intent contract
-    // (SEC-038 W03): db.update(...).set(...).where(...).returning(...) —
+    // The straggler sweep now runs through the terminal-intent contract:
+    // db.update(...).set(...).where(...).returning(...) —
     // .returning() must resolve (no live stragglers here, so []) or the
     // update throws before createRemoteSession/evaluateCapability ever run,
     // silently stranding this test's queued mockResolvedValueOnce for a
@@ -3126,7 +3229,7 @@ describe('Audit logging — credential-minting tunnel endpoints', () => {
         }),
       }),
     } as any);
-    // db.update (terminate stragglers, through the SEC-038 W03 terminal-intent
+    // db.update (terminate stragglers, through the terminal-intent
     // contract) then db.insert (new desktop session). No live stragglers, so
     // .returning() resolves to [] — teardownDisconnectedSessions runs after
     // the system context above returns and is mocked separately below.

@@ -230,3 +230,14 @@ describe('NotificationCenter deep links (#4461)', () => {
     await waitFor(() => expect(navigateMock).not.toHaveBeenCalledWith(expect.stringContaining('undefined')));
   });
 });
+
+it('displays the translated billing notification type', async () => {
+  fetchMock.mockResolvedValue(json({notifications: [{
+    id: 'billing-1', type: 'billing', title: 'Automatic payments stopped',
+    message: 'Enrollment stopped', createdAt: '2026-09-10T00:00:00.000Z', read: true
+  }]}));
+  render(<NotificationCenter />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', {name: /notifications/i}));
+  expect(await screen.findByText('Billing')).toBeInTheDocument();
+});

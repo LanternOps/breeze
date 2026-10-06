@@ -2,7 +2,9 @@ import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../../middleware/auth';
 import { PartnerWideWriteDeniedError } from '../partnerWideAccess';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
+import { ResearchAgentEditError } from './researchAgentEdit';
 
 const state = vi.hoisted(() => ({
   currentRow: null as Record<string, unknown> | null,
@@ -136,20 +138,14 @@ vi.mock('./managedAutomation', () => ({
 vi.mock('../auditService', () => ({ createAuditLog: state.audit }));
 vi.mock('./scheduleService', () => ({ ensureDefaultPatchSchedule: state.ensureDefaultPatchSchedule }));
 vi.mock('../eventBus', () => ({ getEventBus: () => ({ publish: state.publish }) }));
-// AI model registry W03 (Task 12 Step 7A): the policy model is bound to a
-// registry offering at write time. Its own suite is agentModelBinding.test.ts.
-const bindAgentModel = vi.hoisted(() => vi.fn(async (_owner: unknown, model: string | null) => ({
-  model, offeringId: model === null ? null : 'off-default', offeringPartnerId: model === null ? null : 'p1',
-})));
-vi.mock('./agentModelBinding', () => ({ bindAgentModel }));
-// W05 (#7603): the picker's path — an offering id, judged for the WRITER.
-// Its own suite is agentOfferingBinding.test.ts.
+// W05 (#7603) / W08 (#7606): a policy binds by offering id, judged for the
+// WRITER. Its own suite is agentOfferingBinding.test.ts.
 const bindAgentOffering = vi.hoisted(() => vi.fn(async (
   _owner: unknown, offeringId: string | null, _writer?: unknown,
-): Promise<{ model: string | null; offeringId: string | null; offeringPartnerId: string | null }> => (
+): Promise<{ offeringId: string | null; offeringPartnerId: string | null }> => (
   offeringId === null
-    ? { model: null, offeringId: null, offeringPartnerId: null }
-    : { model: 'logical-opus', offeringId, offeringPartnerId: 'p1' })));
+    ? { offeringId: null, offeringPartnerId: null }
+    : { offeringId, offeringPartnerId: 'p1' })));
 vi.mock('./agentOfferingBinding', () => ({ bindAgentOffering }));
 // NOT mocked on purpose. Stubbing isSupportedAgentMode made the "rejects the
 // DB-legal act mode" test assert the STUB's opinion — adding 'act' (the wave-4
@@ -159,7 +155,6 @@ vi.mock('./effectivePolicy', () => ({
   normalizeAgentPolicy: (row: Record<string, unknown>) => ({
     enabled: row.enabled,
     mode: row.mode,
-    model: row.model,
     toolAllowlist: row.toolAllowlist,
     protectedResources: row.protectedResources,
     limits: row.limits,
@@ -214,7 +209,6 @@ const storedRow = {
   name: 'Alert triage',
   enabled: true,
   mode: 'shadow',
-  model: 'model-1',
   toolAllowlist: ['alerts:list'],
   protectedResources: {
     services: ['security-agent'],
@@ -257,7 +251,6 @@ const createInput = {
   name: 'Alert triage',
   enabled: false,
   mode: 'off',
-  model: null,
   toolAllowlist: [],
   protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
   limits: storedRow.limits,
@@ -308,6 +301,22 @@ describe('assertAgentWriteAllowed', () => {
     expect(() => assertAgentWriteAllowed(auth(), { orgId: 'o1', partnerId: null })).not.toThrow();
     expect(() => assertAgentWriteAllowed(auth(), { orgId: 'o9', partnerId: null }))
       .toThrow(AgentAccessDeniedError);
+  });
+
+  it.each([
+    ['one site', ['s1']],
+    ['zero sites', []],
+  ])('an org caller restricted to %s cannot write an org-wide agent', (_label, siteIds) => {
+    const restricted = auth({ scope: 'organization', orgId: 'o1', partnerId: null, allowedSiteIds: siteIds });
+    expect(() => assertAgentWriteAllowed(restricted, { orgId: 'o1', partnerId: null }))
+      .toThrow(SITE_CEILING_WRITE_DENIED_MESSAGE);
+    expect(() => assertAgentWriteAllowed(restricted, { orgId: 'o1', partnerId: null }))
+      .toThrow(AgentAccessDeniedError);
+  });
+
+  it('an unrestricted org caller can still write its own org agent', () => {
+    const unrestricted = auth({ scope: 'organization', orgId: 'o1', partnerId: null, allowedSiteIds: undefined });
+    expect(() => assertAgentWriteAllowed(unrestricted, { orgId: 'o1', partnerId: null })).not.toThrow();
   });
 
   it('ai_agent principal can never write', () => {
@@ -1100,121 +1109,31 @@ describe('withAgentRowLocked', () => {
   });
 });
 
-describe('policy model binding (AI model registry W03, Step 7A)', () => {
-  beforeEach(() => {
-    bindAgentModel.mockReset();
-    bindAgentModel.mockImplementation(async (_owner: unknown, model: string | null) => (
-      model === null
-        ? { model: null, offeringId: null, offeringPartnerId: null }
-        : { model, offeringId: 'off-2', offeringPartnerId: 'p1' }));
+describe('agent policy model by offering (AI model registry W05, #7603)', () => {
+  const owner = { orgId: 'o1', partnerId: null };
+
+  it('create with offeringId binds it for the writer and stores the offering, no model string (W08)', async () => {
+    state.returnedRow = storedRow;
+    await createAgent(auth(), owner, { ...createInput, offeringId: 'opus' } as never);
+    expect(bindAgentOffering).toHaveBeenCalledWith(owner, 'opus', { userId: 'u1' });
+    expect(state.insertedValues).toMatchObject({ offeringId: 'opus', offeringPartnerId: 'p1' });
+    expect(state.insertedValues).not.toHaveProperty('model');
   });
 
-  it('create with a model inserts the bound offering beside it', async () => {
+  it('create with no offering writes an unbound policy (follows the assignment)', async () => {
     state.returnedRow = storedRow;
-    await createAgent(auth(), { orgId: 'o1', partnerId: null }, { ...createInput, model: 'claude-opus-5-5' } as never);
-    expect(bindAgentModel).toHaveBeenCalledWith({ orgId: 'o1', partnerId: null }, 'claude-opus-5-5', { userId: 'u1' });
-    expect(state.insertedValues).toMatchObject({ model: 'claude-opus-5-5', offeringId: 'off-2', offeringPartnerId: 'p1' });
-  });
-
-  it('create with no model writes an unbound policy (follows the assignment)', async () => {
-    state.returnedRow = storedRow;
-    await createAgent(auth(), { orgId: 'o1', partnerId: null }, createInput as never);
-    expect(state.insertedValues).toMatchObject({ model: null, offeringId: null, offeringPartnerId: null });
+    await createAgent(auth(), owner, createInput as never);
+    expect(state.insertedValues).toMatchObject({ offeringId: null, offeringPartnerId: null });
+    expect(state.insertedValues).not.toHaveProperty('model');
   });
 
   it('a rejected binding writes nothing', async () => {
     const { AgentModelNotAllowedError } = await import('./agentModelErrors');
-    bindAgentModel.mockRejectedValue(new AgentModelNotAllowedError('nope', 'not_permitted'));
+    bindAgentOffering.mockRejectedValueOnce(new AgentModelNotAllowedError('nope', 'not_permitted'));
     state.returnedRow = storedRow;
-    await expect(createAgent(auth(), { orgId: 'o1', partnerId: null }, { ...createInput, model: 'claude-x' } as never))
+    await expect(createAgent(auth(), owner, { ...createInput, offeringId: 'opus' } as never))
       .rejects.toMatchObject({ status: 400, code: 'not_permitted' });
     expect(state.insertedValues).toBeNull();
-
-    state.currentRow = storedRow;
-    await expect(updateAgent(auth(), 'a1', { model: 'claude-x' } as never)).rejects.toMatchObject({ code: 'not_permitted' });
-    expect(state.updatedValues).toBeNull();
-  });
-
-  it('update without a model never touches the binding', async () => {
-    state.currentRow = storedRow;
-    state.returnedRow = storedRow;
-    await updateAgent(auth(), 'a1', { name: 'Renamed' } as never);
-    expect(bindAgentModel).not.toHaveBeenCalled();
-    expect(state.updatedValues).not.toHaveProperty('model');
-    expect(state.updatedValues).not.toHaveProperty('offeringId');
-  });
-
-  it('update with a changed model binds it with the ROW\'s owner, before taking the row lock', async () => {
-    state.currentRow = storedRow;
-    state.returnedRow = storedRow;
-    let lockedWhenBound: unknown = 'not-called';
-    bindAgentModel.mockImplementation(async (_owner: unknown, model: string | null) => {
-      lockedWhenBound = state.selectFor;
-      return { model, offeringId: 'off-2', offeringPartnerId: 'p1' };
-    });
-    await updateAgent(auth(), 'a1', { model: 'claude-opus-5-5' } as never);
-    expect(bindAgentModel).toHaveBeenCalledWith({ orgId: 'o1', partnerId: null }, 'claude-opus-5-5', { userId: 'u1' });
-    // The registry read (and any cutover it runs, which rebinds ai_agents rows)
-    // never happens under this agent's FOR UPDATE lock.
-    expect(lockedWhenBound).toBeUndefined();
-    expect(state.selectFor).toBe('update');
-    expect(state.updatedValues).toMatchObject({ model: 'claude-opus-5-5', offeringId: 'off-2', offeringPartnerId: 'p1' });
-  });
-
-  it('update with model null clears both columns', async () => {
-    state.currentRow = storedRow;
-    state.returnedRow = storedRow;
-    await updateAgent(auth(), 'a1', { model: null } as never);
-    expect(state.updatedValues).toMatchObject({ model: null, offeringId: null, offeringPartnerId: null });
-  });
-
-  it('re-saving the SAME, already-bound model is a no-op for the binding (an unrelated edit never 400s on it)', async () => {
-    state.currentRow = { ...storedRow, offeringId: 'off-1', offeringPartnerId: 'p1' };
-    state.returnedRow = storedRow;
-    await updateAgent(auth(), 'a1', { model: 'model-1', name: 'Renamed' } as never);
-    expect(bindAgentModel).not.toHaveBeenCalled();
-    expect(state.updatedValues).not.toHaveProperty('offeringId');
-  });
-
-  it('re-saving the same model that has NO binding yet binds it', async () => {
-    state.currentRow = { ...storedRow, offeringId: null, offeringPartnerId: null };
-    state.returnedRow = storedRow;
-    await updateAgent(auth(), 'a1', { model: 'model-1' } as never);
-    expect(bindAgentModel).toHaveBeenCalledWith({ orgId: 'o1', partnerId: null }, 'model-1', { userId: 'u1' });
-    expect(state.updatedValues).toMatchObject({ offeringId: 'off-2' });
-  });
-});
-
-describe('agent policy model by offering (AI model registry W05, #7603)', () => {
-  const owner = { orgId: 'o1', partnerId: null };
-
-  it('create with offeringId binds it for the writer and stores offering + provenance model', async () => {
-    state.returnedRow = storedRow;
-    await createAgent(auth(), owner, { ...createInput, offeringId: 'opus' } as never);
-    expect(bindAgentOffering).toHaveBeenCalledWith(owner, 'opus', { userId: 'u1' });
-    expect(bindAgentModel).not.toHaveBeenCalled();
-    expect(state.insertedValues).toMatchObject({ offeringId: 'opus', offeringPartnerId: 'p1', model: 'logical-opus' });
-  });
-
-  it('create with a model string binds it for the writer too (D11: both paths permission-checked)', async () => {
-    state.returnedRow = storedRow;
-    await createAgent(auth(), owner, { ...createInput, model: 'claude-opus-5-5' } as never);
-    expect(bindAgentModel).toHaveBeenCalledWith(owner, 'claude-opus-5-5', { userId: 'u1' });
-    expect(bindAgentOffering).not.toHaveBeenCalled();
-  });
-
-  it('offeringId together with a non-null model is a 400 invalid_model, nothing written, nothing bound', async () => {
-    state.returnedRow = storedRow;
-    await expect(createAgent(auth(), owner, { ...createInput, offeringId: 'opus', model: 'x' } as never))
-      .rejects.toMatchObject({ status: 400, code: 'invalid_model' });
-    expect(state.insertedValues).toBeNull();
-
-    state.currentRow = storedRow;
-    await expect(updateAgent(auth(), 'a1', { offeringId: 'opus', model: 'x' } as never))
-      .rejects.toMatchObject({ status: 400, code: 'invalid_model' });
-    expect(state.updatedValues).toBeNull();
-    expect(bindAgentOffering).not.toHaveBeenCalled();
-    expect(bindAgentModel).not.toHaveBeenCalled();
   });
 
   it('a permission refusal for the writer writes nothing (403 passes through)', async () => {
@@ -1226,12 +1145,13 @@ describe('agent policy model by offering (AI model registry W05, #7603)', () => 
     expect(state.updatedValues).toBeNull();
   });
 
-  it('update without offeringId or model never binds', async () => {
+  it('update without offeringId never binds', async () => {
     state.currentRow = storedRow;
     state.returnedRow = storedRow;
     await updateAgent(auth(), 'a1', { name: 'renamed' } as never);
     expect(bindAgentOffering).not.toHaveBeenCalled();
-    expect(bindAgentModel).not.toHaveBeenCalled();
+    expect(state.updatedValues).not.toHaveProperty('offeringId');
+    expect(state.updatedValues).not.toHaveProperty('model');
   });
 
   it('update binds BEFORE the row lock (no registry reads under it), then writes the binding (Codex review finding 6)', async () => {
@@ -1240,20 +1160,29 @@ describe('agent policy model by offering (AI model registry W05, #7603)', () => 
     let lockedWhenBound: unknown = 'not-called';
     bindAgentOffering.mockImplementationOnce(async (_owner: unknown, offeringId: string | null) => {
       lockedWhenBound = state.selectFor;
-      return { model: 'logical-opus', offeringId, offeringPartnerId: 'p1' };
+      return { offeringId, offeringPartnerId: 'p1' };
     });
     await updateAgent(auth(), 'a1', { offeringId: 'opus' } as never);
     expect(bindAgentOffering).toHaveBeenCalledWith(owner, 'opus', { userId: 'u1' });
     expect(lockedWhenBound).toBeUndefined();
     expect(state.selectFor).toBe('update');
-    expect(state.updatedValues).toMatchObject({ model: 'logical-opus', offeringId: 'opus', offeringPartnerId: 'p1' });
+    expect(state.updatedValues).toMatchObject({ offeringId: 'opus', offeringPartnerId: 'p1' });
+    expect(state.updatedValues).not.toHaveProperty('model');
   });
 
-  it('update with offeringId null clears the binding and the provenance model (agent follows the assignment)', async () => {
+  it('update with offeringId null clears the binding (agent follows the assignment)', async () => {
     state.currentRow = { ...storedRow, offeringId: 'opus', offeringPartnerId: 'p1' };
     state.returnedRow = storedRow;
     await updateAgent(auth(), 'a1', { offeringId: null } as never);
-    expect(state.updatedValues).toMatchObject({ model: null, offeringId: null, offeringPartnerId: null });
+    expect(state.updatedValues).toMatchObject({ offeringId: null, offeringPartnerId: null });
+  });
+
+  it('update with offeringId null on an already-unbound row is a no-op for the binding', async () => {
+    state.currentRow = { ...storedRow, offeringId: null, offeringPartnerId: null };
+    state.returnedRow = storedRow;
+    await updateAgent(auth(), 'a1', { offeringId: null, name: 'Renamed' } as never);
+    expect(bindAgentOffering).not.toHaveBeenCalled();
+    expect(state.updatedValues).not.toHaveProperty('offeringId');
   });
 
   it('re-saving the SAME offering is a no-op for the binding (an unrelated edit never 403s on it)', async () => {
@@ -1271,7 +1200,7 @@ describe('agent policy model by offering (AI model registry W05, #7603)', () => 
     bindAgentOffering.mockImplementationOnce(async (_owner: unknown, offeringId: string | null) => {
       // A concurrent org merge re-points the row before the lock is taken.
       state.currentRow = { ...storedRow, orgId: 'o2' };
-      return { model: 'logical-opus', offeringId, offeringPartnerId: 'p1' };
+      return { offeringId, offeringPartnerId: 'p1' };
     });
     await expect(updateAgent(auth({ canAccessOrg: () => true }), 'a1', { offeringId: 'opus' } as never))
       .rejects.toBeInstanceOf(AgentModelNotAllowedError);
@@ -1402,5 +1331,92 @@ describe('default patch schedule on enable', () => {
     state.returnedRow = { ...storedRow, kind: 'patch', orgId: null, partnerId: 'p1', enabled: true };
     await expect(updateAgent(auth(), 'a1', { enabled: true })).resolves.toMatchObject({ enabled: true });
     expect(state.audit).toHaveBeenCalled();
+  });
+});
+
+describe('built-in research agent edits through updateAgent (W2)', () => {
+  const research = {
+    ...storedRow, orgId: null, partnerId: 'p1', kind: 'research', mode: 'act', toolAllowlist: [],
+    actAssets: { scriptIds: [] }, recipients: { userIds: [], roleIds: [] }, createdBy: null, provisionedBy: 'system:remediation_research',
+  };
+
+  it('disabling succeeds with no act prerequisites (no recipient, no act-eligible tool)', async () => {
+    state.currentRow = research;
+    state.returnedRow = { ...research, enabled: false };
+    await updateAgent(auth(), 'a1', { enabled: false } as never);
+    expect(state.updatedValues).toMatchObject({ enabled: false });
+    expect(state.hasResolvableAgentRecipient).not.toHaveBeenCalled();
+  });
+
+  it('a research cap update succeeds', async () => {
+    state.currentRow = research;
+    state.returnedRow = research;
+    await updateAgent(auth(), 'a1', { limits: { researchDeepBudgetCentsPerRun: 40 } } as never);
+    expect(state.updatedValues).toMatchObject({ limits: expect.objectContaining({ researchDeepBudgetCentsPerRun: 40 }) });
+  });
+
+  it('anything else is a research edit refusal, never an act-prerequisite error', async () => {
+    state.currentRow = research;
+    const err = await updateAgent(auth(), 'a1', { mode: 'off', toolAllowlist: ['run_script'] } as never).catch((e) => e);
+    expect(err).toBeInstanceOf(ResearchAgentEditError);
+    expect((err as ResearchAgentEditError).fields).toEqual(['mode', 'toolAllowlist']);
+    expect(state.updatedValues).toBeNull();
+  });
+
+  it('the exemption is research-only: a triage agent in act mode still needs its prerequisites', async () => {
+    state.currentRow = { ...storedRow, toolAllowlist: ['alerts:list'] };
+    const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
+    expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+  });
+});
+
+describe('research agent creation backstop (W2)', () => {
+  const researchInput = { ...createInput, kind: 'research', mode: 'act', name: 'Fix research (built-in)' };
+
+  it('refuses a partner-level research create even though ownerScope is omitted at the schema level', async () => {
+    const err = await createAgent(auth(), { orgId: null, partnerId: 'p1' }, researchInput as never).catch((e) => e);
+    expect(err).toBeInstanceOf(ResearchAgentEditError);
+    expect((err as ResearchAgentEditError).fields).toEqual(['ownerScope']);
+    expect(state.insertedValues).toBeNull();
+  });
+
+  it('allows an org-level research override carrying materialised limit defaults, with no recipient or act tool', async () => {
+    state.returnedRow = { ...storedRow, kind: 'research' };
+    await createAgent(auth(), { orgId: 'o1', partnerId: null }, researchInput as never);
+    expect(state.insertedValues).toMatchObject({ kind: 'research', orgId: 'o1', partnerId: null, createdBy: 'u1' });
+    expect(state.hasResolvableAgentRecipient).not.toHaveBeenCalled();
+  });
+});
+
+describe('research create pinning (W2 review)', () => {
+  it('overwrites every non-editable field with the provisioned shape but keeps editable research caps', async () => {
+    state.returnedRow = { ...storedRow, kind: 'research' };
+    await createAgent(auth(), { orgId: 'o1', partnerId: null }, {
+      ...createInput, kind: 'research', mode: 'act', name: 'Org research',
+      instructions: 'x', toolAllowlist: ['run_script'],
+      triggers: { ...storedRow.triggers, alertSeverities: ['low'] },
+      limits: { ...storedRow.limits, researchDeepBudgetCentsPerRun: 40, maxActionsPerRun: 99 },
+      recipients: { userIds: ['u9'], roleIds: [] },
+    } as never);
+    const v = state.insertedValues as Record<string, unknown>;
+    expect(v.instructions).toBeNull();
+    expect(v.toolAllowlist).toEqual([]);
+    expect(v.mode).toBe('act');
+    expect((v.triggers as { alertSeverities: string[] }).alertSeverities).toEqual(['critical', 'high']);
+    expect(v.recipients).toEqual({ userIds: [], roleIds: [] });
+    const limits = v.limits as Record<string, number>;
+    expect(limits.researchDeepBudgetCentsPerRun).toBe(40);
+    expect(limits.maxActionsPerRun).not.toBe(99);
+  });
+});
+
+describe('research create pinning: offeringId (final fix F6)', () => {
+  it('pins offeringId to null on a research create (not PATCH-editable, so never user-chosen)', async () => {
+    state.returnedRow = { ...storedRow, kind: 'research' };
+    bindAgentOffering.mockClear();
+    await createAgent(auth(), { orgId: 'o1', partnerId: null }, {
+      ...createInput, kind: 'research', mode: 'act', name: 'Org research', offeringId: 'opus',
+    } as never);
+    expect(bindAgentOffering).toHaveBeenCalledWith({ orgId: 'o1', partnerId: null }, null, { userId: 'u1' });
   });
 });

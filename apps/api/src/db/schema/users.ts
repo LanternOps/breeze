@@ -67,6 +67,11 @@ export const users = pgTable('users', {
   authEpoch: integer('auth_epoch').notNull().default(1),
   mfaEpoch: integer('mfa_epoch').notNull().default(1),
   emailEpoch: integer('email_epoch').notNull().default(1),
+  // Advanced ONLY by events that change or void the user's sign-in
+  // credential (password change/reset, invite acceptance, admin status
+  // change) — never by logout or other session-only events. Human API keys
+  // bind to this, not auth_epoch (#7489). See services/authLifecycle.ts.
+  credentialEpoch: integer('credential_epoch').notNull().default(1),
   permissionsEpoch: bigint('permissions_epoch', { mode: 'number' }).notNull().default(0),
   // SR2-17: the address the user has ASKED to move to. users.email remains the
   // verified, authoritative identity (login, password reset, CF Access and SSO
@@ -120,7 +125,7 @@ export const permissions = pgTable('permissions', {
 });
 
 export const rolePermissions = pgTable('role_permissions', {
-  roleId: uuid('role_id').notNull().references(() => roles.id),
+  roleId: uuid('role_id').notNull().references(() => roles.id, { onDelete: 'cascade' }),
   permissionId: uuid('permission_id').notNull().references(() => permissions.id),
   constraints: jsonb('constraints')
 }, (t) => ({
@@ -132,7 +137,7 @@ export const rolePermissions = pgTable('role_permissions', {
 export const partnerUsers = pgTable('partner_users', {
   id: uuid('id').primaryKey().defaultRandom(),
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
-  userId: uuid('user_id').notNull().references(() => users.id),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   roleId: uuid('role_id').notNull().references(() => roles.id),
   orgAccess: orgAccessEnum('org_access').notNull().default('none'),
   orgIds: uuid('org_ids').array(),
@@ -151,7 +156,7 @@ export const organizationUsers = pgTable('organization_users', {
 
 export const sessions = pgTable('sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull().references(() => users.id),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   tokenHash: text('token_hash').notNull(),
   ipAddress: varchar('ip_address', { length: 45 }),
   userAgent: text('user_agent'),

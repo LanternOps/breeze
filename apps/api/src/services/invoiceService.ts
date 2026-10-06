@@ -1,9 +1,12 @@
+import { renoticeSchedule, getInvoiceAutopayView } from './autopay/invoiceControls';
+import { planAutopayForInvoice } from './autopay/scheduler';
+import { assertCollectionAmountAvailable, assertNoActiveCollection } from './autopay/reservation';
 import { randomUUID } from 'node:crypto';
 import { and, or, eq, desc, lt, inArray, sql, count, getTableColumns, isNull } from 'drizzle-orm';
 import { assertInTransaction, db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
-  invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
+  invoiceCollectionAttempts, invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
   catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets,
   accountingEntityMappings, accountingConnections, portalBranding, aiUsageCharges
 } from '../db/schema';
@@ -558,10 +561,12 @@ export async function removeLine(invoiceId: string, lineId: string, actor: Invoi
   });
 }
 
-export async function deleteDraftInvoice(invoiceId: string, actor: InvoiceActor) {
+/** Returns the deleted invoice's id and org so the caller can audit the delete. */
+export async function deleteDraftInvoice(invoiceId: string, actor: InvoiceActor): Promise<{ id: string; orgId: string }> {
   return db.transaction(async (tx) => {
     const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
     await tx.delete(invoices).where(eq(invoices.id, invoiceId)); // lines cascade
+    return { id: inv.id, orgId: inv.orgId };
   });
 }
 
@@ -682,16 +687,19 @@ export async function changeInvoiceCurrency(
  * re-derived so pushing the date out un-flags a premature 'overdue'.
  */
 export async function updateIssuedDueDate(invoiceId: string, dueDate: string, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId);
-  requireInvoiceAccess(actor, inv);
-  if (!['sent', 'partially_paid', 'overdue'].includes(inv.status)) {
-    throw new InvoiceServiceError('Due date can only be changed on an open issued invoice', 409, 'INVALID_STATE');
-  }
-  const oldDueDate = inv.dueDate;
-  await db.update(invoices).set({ dueDate, updatedAt: new Date() }).where(eq(invoices.id, invoiceId));
-  await recomputeInvoiceStatus(invoiceId); // overdue ↔ partially_paid/sent keys off due date
-  const updated = await getOwnedInvoiceOr404(invoiceId);
-  return { invoice: updated, audit: { orgId: inv.orgId, invoiceId, oldDueDate, newDueDate: dueDate } };
+  return db.transaction(async tx => {
+    const [inv] = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1).for('update');
+    if (!inv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+    requireInvoiceAccess(actor, inv);
+    if (!['sent', 'partially_paid', 'overdue'].includes(inv.status)) {
+      throw new InvoiceServiceError('Due date can only be changed on an open issued invoice', 409, 'INVALID_STATE');
+    }
+    await tx.update(invoices).set({ dueDate, updatedAt: new Date() }).where(eq(invoices.id, invoiceId));
+    await recomputeInvoiceStatus(invoiceId, tx);
+    await renoticeSchedule(tx, invoiceId);
+    const [updated] = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+    return { invoice: updated!, audit: { orgId: inv.orgId, invoiceId, oldDueDate: inv.dueDate, newDueDate: dueDate } };
+  });
 }
 
 export interface InvoiceAccountingSync {
@@ -854,7 +862,13 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   // Multi-currency (#3777, spec §10): surface the CACHED account currency and a
   // warn-don't-block mismatch so the detail page can flag the FX spread before
   // the partner sends a pay link. Cached columns only — no Stripe call here.
+  const [attention] = await db.select({count:sql<number>`count(*)::int`}).from(invoiceCollectionAttempts).where(and(
+    eq(invoiceCollectionAttempts.invoiceId,inv.id),eq(invoiceCollectionAttempts.orgId,inv.orgId),
+    eq(invoiceCollectionAttempts.state,'unapplied'),
+  ));
   return {
+    unappliedCount: attention?.count ?? 0,
+    autopay: await getInvoiceAutopayView(db, inv),
     invoice: displayInvoice, lines: linesWithDeviceCount, stripeConnected: connected, // accounting view (all lines)
     effectiveTaxRate,
     stripeAccountCurrency: connected ? conn.defaultCurrency ?? null : null,
@@ -1615,6 +1629,7 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
         throw new InvoiceServiceError('AI usage charges changed under the issuance lock', 500, 'CONCURRENT_MODIFICATION');
       }
     }
+    await planAutopayForInvoice(db, invoiceId);
     return inv;
   }));
 
@@ -1725,7 +1740,7 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
   if (pre.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
   if (pre.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
 
-  // SEC-150 FAIL-CLOSED, phases 1-2, BEFORE the transaction.
+  // FAIL-CLOSED, phases 1-2, BEFORE the transaction.
   //
   // Recording an alternate payment clears the balance a Stripe Checkout session
   // was minted to collect. Leaving that session payable is the worst outcome in
@@ -1760,7 +1775,8 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
     requireInvoiceAccess(actor, inv);
     if (inv.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
     if (inv.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
-    // SEC-150 phase 3, under the invoice lock so a session minted between phase
+    await assertCollectionAmountAvailable(tx, invoiceId, String(input.amount));
+    // Phase 3, under the invoice lock so a session minted between phase
     // 2 and here cannot slip through. Refuses with 503 STRIPE_REVOCATION_PENDING
     // and rolls the whole payment back; the durable intent stays and the sweep
     // retries. `tx`, never the global db — a global call would escape this
@@ -2218,7 +2234,7 @@ function chunksOf<T>(items: readonly T[], size: number): T[][] {
  * issue validation is never bypassed (owner-fixed: no conversion, snapshots rule).
  */
 export async function voidInvoice(invoiceId: string, reason: string, opts: { reissue?: boolean }, actor: InvoiceActor) {
-  // SEC-150 FAIL-CLOSED, phases 1-2, BEFORE the transaction. #5180 already
+  // FAIL-CLOSED, phases 1-2, BEFORE the transaction. #5180 already
   // refuses a void with applied payments, so a voidable invoice has no
   // legitimate open payment capability — a Checkout session that survives the
   // void can still collect money for work nobody will bill. Same three-phase
@@ -2241,6 +2257,7 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     requireInvoiceAccess(actor, inv);
     if (inv.status === 'draft') throw new InvoiceServiceError('Delete drafts instead of voiding', 409, 'INVALID_STATE');
     if (inv.status === 'void') throw new InvoiceServiceError('Already void', 409, 'INVALID_STATE');
+    await assertNoActiveCollection(db, invoiceId);
 
     // 1b. APPLIED PAYMENTS BLOCK THE VOID (#5180).
     //
@@ -2276,7 +2293,7 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
       );
     }
 
-    // SEC-150 phase 3, under the invoice lock taken above. `db` IS this
+    // Phase 3, under the invoice lock taken above. `db` IS this
     // transaction's handle inside withSystemDbAccessContext.
     await assertInvoiceSessionsRevoked(invoiceId, db);
 

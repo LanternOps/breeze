@@ -1,0 +1,9 @@
+---
+import PublicDocumentLayout from '../../layouts/PublicDocumentLayout.astro';
+import AutopayReturnPage from '../../components/portal/AutopayReturnPage';
+import BankAutopayPayment from '../../components/portal/BankAutopayPayment';
+const bank=Astro.url.searchParams.get('bank')==='1';
+---
+<PublicDocumentLayout title="Automatic payments">
+  {bank?<BankAutopayPayment returning client:load/>:<AutopayReturnPage client:load/>}
+</PublicDocumentLayout>

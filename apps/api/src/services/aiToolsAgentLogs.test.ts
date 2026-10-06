@@ -222,11 +222,22 @@ describe('aiToolsAgentLogs', () => {
       expect(parsed.error).toContain('deviceId and level are required');
     });
 
-    it('should queue command on success', async () => {
+    // #7416: the tool used to return "queued" whether or not the agent ever
+    // ran the command. It now waits for the result and reports what the
+    // agent actually applied.
+    it('reports the level the agent applied, from the command result', async () => {
       mockDeviceSelect('dev-1');
-      vi.mocked(aiQueueCommandForExecution).mockResolvedValue({
-        command: { id: 'cmd-123' },
-        error: null,
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
+        status: 'completed',
+        commandId: 'cmd-123',
+        stdout: JSON.stringify({
+          newLevel: 'debug',
+          appliedLevel: 'debug',
+          baseLevel: 'warn',
+          durationMinutes: 30,
+          expiresAt: '2026-09-30T13:00:00Z',
+          persisted: true,
+        }),
       } as any);
 
       const tool = tools.get('set_agent_log_level')!;
@@ -236,43 +247,152 @@ describe('aiToolsAgentLogs', () => {
       );
 
       const parsed = JSON.parse(result);
-      expect(parsed.status).toBe('queued');
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.status).toBe('applied');
       expect(parsed.commandId).toBe('cmd-123');
-      expect(parsed.message).toContain('debug');
-      expect(parsed.message).toContain('30 minutes');
+      expect(parsed.appliedLevel).toBe('debug');
+      expect(parsed.baseLevel).toBe('warn');
+      expect(parsed.expiresAt).toBe('2026-09-30T13:00:00Z');
+      expect(parsed.durationMinutes).toBe(30);
+      expect(parsed.persisted).toBe(true);
+      expect(parsed.warning).toBeUndefined();
+      // persisted only means the file was written; say how helpers get it.
+      expect(parsed.note).toMatch(/helper/i);
+      expect(parsed.note).toMatch(/30 seconds/);
 
-      expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
+      expect(aiExecuteCommand).toHaveBeenCalledWith(
         expect.anything(),
         'set_agent_log_level',
         'dev-1',
         'set_log_level',
         { level: 'debug', durationMinutes: 30 },
-        { userId: 'user-1' },
+        { userId: 'user-1', timeoutMs: 30000 },
       );
+      expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
     });
 
-    it('should return error from command queue', async () => {
+    it('warns when the agent applied the level but could not persist it', async () => {
       mockDeviceSelect('dev-1');
-      vi.mocked(aiQueueCommandForExecution).mockResolvedValue({
-        command: null,
-        error: 'Device offline',
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
+        status: 'completed',
+        commandId: 'cmd-9',
+        stdout: JSON.stringify({
+          newLevel: 'info', appliedLevel: 'info', baseLevel: 'warn', durationMinutes: 60,
+          expiresAt: '2026-09-30T13:00:00Z', persisted: false, persistError: 'permission denied',
+        }),
       } as any);
 
-      const tool = tools.get('set_agent_log_level')!;
-      const result = await tool.handler(
+      const result = await tools.get('set_agent_log_level')!.handler(
+        { deviceId: 'dev-1', level: 'info' },
+        makeAuth('org-1'),
+      );
+
+      const parsed = JSON.parse(result);
+      expect(parsed.appliedLevel).toBe('info');
+      expect(parsed.persisted).toBe(false);
+      expect(parsed.warning).toMatch(/restart/);
+      expect(parsed.warning).toMatch(/helper/);
+      expect(parsed.warning).toContain('permission denied');
+    });
+
+    it('flags an older agent that reports no persistence field', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
+        status: 'completed',
+        commandId: 'cmd-old',
+        stdout: JSON.stringify({ newLevel: 'debug', durationMinutes: 60 }),
+      } as any);
+
+      const result = await tools.get('set_agent_log_level')!.handler(
         { deviceId: 'dev-1', level: 'debug' },
         makeAuth('org-1'),
       );
 
       const parsed = JSON.parse(result);
-      expect(parsed.error).toBe('Device offline');
+      expect(parsed.status).toBe('applied');
+      expect(parsed.appliedLevel).toBe('debug');
+      expect(parsed.persisted).toBe(false);
+      expect(parsed.warning).toMatch(/restart/);
+    });
+
+    it('gives a reason when the agent reports a non-boolean persisted value', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
+        status: 'completed',
+        commandId: 'cmd-odd',
+        stdout: JSON.stringify({ appliedLevel: 'debug', durationMinutes: 60, persisted: 'yes' }),
+      } as any);
+
+      const parsed = JSON.parse(await tools.get('set_agent_log_level')!.handler(
+        { deviceId: 'dev-1', level: 'debug' },
+        makeAuth('org-1'),
+      ));
+      expect(parsed.persisted).toBe(false);
+      expect(parsed.warning).toMatch(/did not report whether/);
+    });
+
+    it('returns an error, not success, when the agent reports failure', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
+        status: 'failed',
+        commandId: 'cmd-f',
+        error: 'log shipper not initialized',
+      } as any);
+
+      const result = await tools.get('set_agent_log_level')!.handler(
+        { deviceId: 'dev-1', level: 'debug' },
+        makeAuth('org-1'),
+      );
+
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain('log shipper not initialized');
+      expect(parsed.commandId).toBe('cmd-f');
+      expect(parsed.status).toBeUndefined();
+    });
+
+    it('returns an unconfirmed error when the agent does not answer in time', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
+        status: 'timeout',
+        commandId: 'cmd-t',
+        error: 'Command timed out',
+      } as any);
+
+      const result = await tools.get('set_agent_log_level')!.handler(
+        { deviceId: 'dev-1', level: 'debug' },
+        makeAuth('org-1'),
+      );
+
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toMatch(/not confirm/i);
+      expect(parsed.commandId).toBe('cmd-t');
+      expect(parsed.status).toBeUndefined();
+    });
+
+    it('returns an error when a completed result carries no applied level', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
+        status: 'completed',
+        commandId: 'cmd-x',
+        stdout: '',
+      } as any);
+
+      const result = await tools.get('set_agent_log_level')!.handler(
+        { deviceId: 'dev-1', level: 'debug' },
+        makeAuth('org-1'),
+      );
+
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toBeDefined();
+      expect(parsed.commandId).toBe('cmd-x');
     });
 
     it('should default durationMinutes to 60', async () => {
       mockDeviceSelect('dev-1');
-      vi.mocked(aiQueueCommandForExecution).mockResolvedValue({
-        command: { id: 'cmd-456' },
-        error: null,
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
+        status: 'completed',
+        commandId: 'cmd-456',
+        stdout: JSON.stringify({ appliedLevel: 'info', newLevel: 'info', durationMinutes: 60, persisted: true }),
       } as any);
 
       const tool = tools.get('set_agent_log_level')!;
@@ -281,13 +401,13 @@ describe('aiToolsAgentLogs', () => {
         makeAuth('org-1'),
       );
 
-      expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
+      expect(aiExecuteCommand).toHaveBeenCalledWith(
         expect.anything(),
         'set_agent_log_level',
         'dev-1',
         'set_log_level',
         { level: 'info', durationMinutes: 60 },
-        { userId: 'user-1' },
+        { userId: 'user-1', timeoutMs: 30000 },
       );
     });
   });

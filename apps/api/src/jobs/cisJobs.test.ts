@@ -56,7 +56,7 @@ vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
-import { scheduleCisScan, shutdownCisJobs } from './cisJobs';
+import { scheduleCisRemediationWithResult, scheduleCisScan, shutdownCisJobs } from './cisJobs';
 
 describe('scheduleCisScan', () => {
   beforeEach(async () => {
@@ -96,5 +96,33 @@ describe('scheduleCisScan', () => {
 
     expect(jobId).toBe('existing-job');
     expect(addMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduleCisRemediationWithResult', () => {
+  beforeEach(async () => {
+    getJobMock.mockReset();
+    addMock.mockReset();
+    addMock.mockResolvedValue({ id: 'queue-job-1' });
+    await shutdownCisJobs();
+  });
+
+  it('replaces a finished job for a re-approved action instead of silently keeping it', async () => {
+    const removeMock = vi.fn().mockResolvedValue(undefined);
+    getJobMock.mockResolvedValue({
+      id: 'cis-remediation-action-1',
+      getState: vi.fn().mockResolvedValue('completed'),
+      remove: removeMock,
+    });
+
+    const result = await scheduleCisRemediationWithResult(['action-1']);
+
+    expect(removeMock).toHaveBeenCalledOnce();
+    expect(addMock).toHaveBeenCalledWith(
+      'remediate-action',
+      { type: 'remediate-action', actionId: 'action-1' },
+      expect.objectContaining({ jobId: 'cis-remediation-action-1' }),
+    );
+    expect(result.queuedActionIds).toEqual(['action-1']);
   });
 });

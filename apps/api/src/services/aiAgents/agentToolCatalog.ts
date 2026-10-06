@@ -127,6 +127,13 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   manage_startup_items: 'services_startup',
 
   // ---- files_disk ----
+  // Administrator-approved read-only diagnostic access. AGENT_HUMAN_ONLY_TOOLS:
+  // an AI operator agent can never hold a grant; mapped for completeness.
+  request_diagnostic_access: 'files_disk',
+  list_diagnostic_access_grants: 'files_disk',
+  revoke_diagnostic_access: 'files_disk',
+  diagnostic_list_directory: 'files_disk',
+  diagnostic_read_file: 'files_disk',
   file_operations: 'files_disk',
   disk_cleanup: 'files_disk',
   analyze_disk_usage: 'files_disk',
@@ -413,6 +420,8 @@ export const AGENT_KIND_PRESETS: Readonly<Record<AiAgentKind, readonly string[]>
   // never a mutating operation. A designer agent's toolAllowlist form still
   // exists (shared UI component) but a design run never consults it.
   designer: [],
+  // AI Suggested Fixes W2 — research is system-provisioned and read-only: zero actions.
+  research: [],
 };
 
 function isSessionOnly(name: string): boolean {
@@ -532,6 +541,7 @@ export function buildAgentToolCatalog(): AgentToolCatalogDto {
       patch: [...AGENT_KIND_PRESETS.patch],
       helpdesk: [...AGENT_KIND_PRESETS.helpdesk],
       designer: [...AGENT_KIND_PRESETS.designer],
+      research: [...AGENT_KIND_PRESETS.research],
     },
     unreachableTools: listUnreachableRegisteredTools(),
   };

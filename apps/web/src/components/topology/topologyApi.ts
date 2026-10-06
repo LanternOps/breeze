@@ -16,7 +16,7 @@ export const topologySettingsSchema = z.object({
 });
 export type TopologySettings = z.infer<typeof topologySettingsSchema>;
 export class TopologyReadError extends Error {
-  constructor(message: string, public status: number) { super(message); }
+  constructor(message: string, public status: number, public code?: string) { super(message); }
 }
 export async function topologyRead<T>(path: string, schema: z.ZodType<T>, signal?: AbortSignal): Promise<T> {
   const response = await fetchWithAuth(path, { signal });
@@ -25,7 +25,7 @@ export async function topologyRead<T>(path: string, schema: z.ZodType<T>, signal
     const message = response.status === 403 ? 'Access to this topology is denied'
       : typeof body?.code === 'string' && body.code === 'target_not_configured' ? 'Target not configured'
       : typeof body?.error === 'string' ? body.error : 'Unable to load topology';
-    throw new TopologyReadError(message, response.status);
+    throw new TopologyReadError(message, response.status, typeof body?.code === 'string' ? body.code : undefined);
   }
   return schema.parse(await response.json());
 }
@@ -57,6 +57,7 @@ export const topologyExclusionListSchema = z.object({
   items: z.array(hiddenConnectionSchema).max(200), nextCursor: z.string().nullable(),
 }).transform((body) => ({ view: body.view, graphRevision: body.graphRevision, items: body.items, cursor: body.nextCursor }));
 const site = (siteId: string) => `/topology/sites/${encodeURIComponent(siteId)}`;
+const siteOwnerSchema = z.object({ id: z.string().uuid(), orgId: z.string().uuid() });
 export const topologyApi = {
   relationship: (siteId: string, relationshipId: string, signal?: AbortSignal) =>
     topologyRead(`${site(siteId)}/relationships/${encodeURIComponent(relationshipId)}`, relationshipDetailResponseSchema, signal),
@@ -66,6 +67,8 @@ export const topologyApi = {
     topologyRead(`${site(siteId)}/exclusions?${new URLSearchParams({ view, limit: '100', ...(cursor ? { cursor } : {}) })}`, topologyExclusionListSchema, signal),
   graph: (siteId: string, query: URLSearchParams, signal?: AbortSignal) => topologyRead(`/topology/sites/${encodeURIComponent(siteId)}/graph?${query}`, graphResponseSchema, signal),
   settings: (siteId: string, signal?: AbortSignal) => topologyRead(`/topology/sites/${encodeURIComponent(siteId)}/settings`, topologySettingsSchema, signal),
+  /** Which organization owns a site (GET /orgs/sites/:id, org-access checked server-side): resolves a deep link to another org's site (#7880). */
+  siteOwner: (siteId: string, signal?: AbortSignal) => topologyRead(`/orgs/sites/${encodeURIComponent(siteId)}`, siteOwnerSchema, signal),
   /** Bounded port history (M3 Task 6). A read never polls; the server picks the bucketing. */
   interfaceHistory: (siteId: string, interfaceId: string, query: InterfaceHistoryParams, signal?: AbortSignal) =>
     topologyRead(`${site(siteId)}/interfaces/${encodeURIComponent(interfaceId)}/history?${interfaceHistoryParams(query)}`, topologyInterfaceHistoryResponseSchema, signal),

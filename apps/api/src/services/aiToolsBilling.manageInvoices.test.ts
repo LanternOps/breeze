@@ -29,7 +29,7 @@ vi.mock('./invoiceCheckout', () => ({
 }));
 
 vi.mock('./contractService', () => ({
-  getContract: vi.fn().mockResolvedValue({ contract: { id: 'contract-1' }, lines: [], periods: [] }),
+  getContract: vi.fn().mockResolvedValue({ contract: { id: 'contract-1' }, lines: [], autopayEnabled: false, periods: [] }),
   computeContractEstimate: vi.fn().mockResolvedValue({ lines: [] }),
   materializeContractLineOntoInvoice: vi.fn().mockResolvedValue({
     baseLine: { id: 'line-1' }, overageLine: null, overage: null, pricedFrom: 'contract_snapshot',
@@ -85,6 +85,7 @@ function contractRow(id = 'contract-1'): Awaited<ReturnType<typeof contractServi
     nextBillingAt: null,
     autoIssue: false,
     autoRenew: false,
+    autopayExcluded: false,
     renewalTermMonths: null,
     renewalNoticeDays: null,
     currencyCode: 'USD',
@@ -247,7 +248,7 @@ describe('manage_invoices', () => {
           catalogItemId: 'catalog-1',
         }),
       ],
-      periods: [],
+      autopayEnabled: false, periods: [],
     });
     const capturedDevices = [
       { id: 'd1', hostname: 'one', role: 'server', siteId: null },
@@ -298,7 +299,7 @@ describe('manage_invoices', () => {
   it('add_contract_line preserves an unrestricted system producer', async () => {
     const line = contractLineRow({ lineType: 'flat', manualQuantity: '1.00' });
     vi.mocked(contractService.getContract).mockResolvedValueOnce({
-      contract: contractRow(), lines: [line], periods: [],
+      contract: contractRow(), lines: [line], autopayEnabled: false, periods: [],
     });
     vi.mocked(contractService.computeContractEstimate).mockResolvedValueOnce({
       currencyCode: 'USD', periodTotal: '12.50',
@@ -361,7 +362,7 @@ describe('manage_invoices', () => {
       includedQuantity: '30.00', overageMode: 'bill', overageUnitPrice: '15.00',
     });
     vi.mocked(contractService.getContract).mockResolvedValueOnce({
-      contract: contractRow(), lines: [rereadLine], periods: [],
+      contract: contractRow(), lines: [rereadLine], autopayEnabled: false, periods: [],
     });
     vi.mocked(contractService.computeContractEstimate).mockResolvedValueOnce({
       currencyCode: 'USD', periodTotal: '390.00',
@@ -385,7 +386,7 @@ describe('manage_invoices', () => {
 
   it('add_contract_line materializes bill overage and reports its invoice line id', async () => {
     const line = contractLineRow({ includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.00' });
-    vi.mocked(contractService.getContract).mockResolvedValueOnce({ contract: contractRow(), lines: [line], periods: [] });
+    vi.mocked(contractService.getContract).mockResolvedValueOnce({ contract: contractRow(), lines: [line], autopayEnabled: false, periods: [] });
     vi.mocked(contractService.computeContractEstimate).mockResolvedValueOnce({
       currencyCode: 'USD', periodTotal: '262.00',
       lines: [{ lineId: line.id, lineType: 'per_device', quantity: 25, value: '250.00', live: true, counted: 26, included: 25, overage: 1, overageMode: 'bill', overageValue: '12.00' }],
@@ -410,7 +411,7 @@ describe('manage_invoices', () => {
 
   it('add_contract_line materializes no sibling for flag overage and reports the flag', async () => {
     const line = contractLineRow({ includedQuantity: '25.00', overageMode: 'flag', overageUnitPrice: null });
-    vi.mocked(contractService.getContract).mockResolvedValueOnce({ contract: contractRow(), lines: [line], periods: [] });
+    vi.mocked(contractService.getContract).mockResolvedValueOnce({ contract: contractRow(), lines: [line], autopayEnabled: false, periods: [] });
     vi.mocked(contractService.computeContractEstimate).mockResolvedValueOnce({
       currencyCode: 'USD', periodTotal: '250.00',
       lines: [{ lineId: line.id, lineType: 'per_device', quantity: 25, value: '250.00', live: true, counted: 26, included: 25, overage: 1, overageMode: 'flag', overageValue: '0.00' }],
@@ -442,7 +443,7 @@ describe('manage_invoices', () => {
           catalogItemId: null,
         }),
       ],
-      periods: [],
+      autopayEnabled: false, periods: [],
     });
 
     const out = await getTool().handler(

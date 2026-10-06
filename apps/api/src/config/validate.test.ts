@@ -49,7 +49,7 @@ const validEnv = {
   // never guesses its compatibility posture. Tests that assert the
   // missing/invalid throw override this.
   EVENT_PERMISSION_EPOCH_MODE: 'compat',
-  // Production-required (SEC-065): integration provider credentials are sealed
+  // Production-required: integration provider credentials are sealed
   // with AAD-bound enc:v3 ciphertext and fail closed without an active key id.
   // Supplied here so the suite's production happy-path tests don't trip it; the
   // test that asserts the throw overrides it explicitly.
@@ -118,6 +118,22 @@ describe('validateConfig', () => {
     it('refuses to boot on an unparseable value', () => {
       withEnv({ ...validEnv, APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM: 'next tuesday' }, () => {
         expect(() => validateConfig()).toThrow(/APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM/);
+      });
+    });
+  });
+
+  describe.each(['AGENT_ENROLL_RATE_LIMIT', 'AGENT_ENROLL_RATE_WINDOW_SECONDS'])('%s (#7472)', (name) => {
+    it('is valid when unset, blank, or a positive integer', () => {
+      withEnv(validEnv, () => { expect(() => validateConfig()).not.toThrow(); });
+      withEnv({ ...validEnv, [name]: '' }, () => { expect(() => validateConfig()).not.toThrow(); });
+      withEnv({ ...validEnv, [name]: '120' }, () => { expect(() => validateConfig()).not.toThrow(); });
+    });
+    it('accepts surrounding whitespace', () => {
+      withEnv({ ...validEnv, [name]: ' 10 ' }, () => { expect(() => validateConfig()).not.toThrow(); });
+    });
+    it.each(['0', '-1', 'ten', '1.5', '+5', '007', '99999999999999999999'])('refuses to boot on %s', (bad) => {
+      withEnv({ ...validEnv, [name]: bad }, () => {
+        expect(() => validateConfig()).toThrow(new RegExp(name));
       });
     });
   });

@@ -1331,7 +1331,44 @@
       "invoice_number": "Número de factura",
       "due_date": "Fecha de pago",
       "invite_url": "URL de invitación",
-      "cta_button": "Botón"
+      "cta_button": "Botón",
+      "client_name": "Client name",
+      "setup_link": "Automatic payments setup link",
+      "ach_mode_text": "Available payment methods",
+      "payment_method": "Saved payment method",
+      "schedule_text": "Payment schedule",
+      "fee_text": "Processing fee terms",
+      "stopped_by": "Who stopped automatic payments",
+      "open_invoices_text": "Open invoice summary",
+      "expires_on": "Card expiry date",
+      "update_link": "Payment method update link",
+      "amount_due": "Importe pendiente",
+      "charge_date": "Fecha de cobro",
+      "fee_amount": "Comisión de procesamiento",
+      "invoice_link": "Enlace de la factura",
+      "amount_paid": "Importe pagado",
+      "total_charged": "Total cobrado",
+      "paid_on": "Fecha de pago",
+      "balance_remaining": "Saldo pendiente",
+      "failure_text": "Detalles del error",
+      "action_link": "Enlace de la acción",
+      "action_label": "Etiqueta de la acción",
+      "days_overdue": "Días de atraso",
+      "pay_link": "Enlace de pago",
+      "charge_total": "Cargo total",
+      "attempted_amount": "Monto del pago intentado"
+    },
+    "billingPayments": "Billing & payments",
+    "supportPortal": "Support & portal",
+    "labels": {
+      "autopay_request": "Automatic payments request",
+      "autopay_enrolled": "Automatic payments confirmed",
+      "autopay_stopped": "Automatic payments stopped",
+      "autopay_paused": "Pagos automáticos pausados",
+      "autopay_resumed": "Pagos automáticos reanudados",
+      "card_expiring": "Saved card expiring",
+      "payment_receipt": "Recibo de pago en línea",
+      "payment_failed": "No se pudo completar el pago"
     }
   },
   "inboundEmail": {
@@ -2115,6 +2152,13 @@
     "failedToFetchReviewDetails": "No se pudieron recuperar los detalles de la revisión",
     "noReviewerEmailsAvailableForNotifications": "No hay correos electrónicos de revisores disponibles para notificaciones",
     "unableToLaunchEmailNotification": "No se puede iniciar la notificación por correo electrónico",
+    "reviewersEmailed": "Revisor asignado notificado por correo electrónico",
+    "assignedReviewerEmailedOnly": "Revisor asignado notificado por correo electrónico. Los demás revisores seleccionados no recibieron correo: una revisión almacena un solo revisor asignado.",
+    "fallbackToMailClient": "{{reason}} Se abrirá su cliente de correo en su lugar.",
+    "fallbackEmailNotConfigured": "El envío de correo electrónico no está configurado en este servidor.",
+    "fallbackNoReviewerEmail": "El revisor asignado no tiene una dirección de correo electrónico registrada.",
+    "fallbackSendFailed": "El servidor no pudo enviar el correo electrónico.",
+    "fallbackRequestFailed": "La solicitud de notificación falló.",
     "failedToCreateAccessReview": "No se pudo crear la revisión de acceso",
     "failedToUpdateDecision": "No se pudo actualizar la decisión",
     "failedToFetchReviewForReport": "No se pudo recuperar la revisión del informe",
@@ -2129,7 +2173,12 @@
     "sending": "Enviando...",
     "notifyReviewers": "Notificar a los revisores",
     "completing": "Completando...",
-    "completeReview": "Revisión completa"
+    "completeReview": "Revisión completa",
+    "selfDecided": "Autodecidido",
+    "selfDecidedHint": "Lo decidió el propio usuario evaluado, porque ningún otro administrador podía revisarlo (excepción de administrador único).",
+    "ownItemBlocked": "No puedes decidir sobre tu propio acceso. Otro administrador con permisos de gestión de usuarios debe revisar este elemento.",
+    "ownItemBlockedShort": "Requiere otro revisor",
+    "ownItemSelfDecisionWarning": "Eres el único administrador que puede revisar esto, así que puedes decidir sobre tu propio acceso. Se registrará como autodecisión."
   },
   "aiUsagePage": {
     "aIUsageBudget": "Uso de IA",
@@ -2291,7 +2340,8 @@
       "triage": "Investiga las alertas nuevas y propone qué hacer con ellas.",
       "patch": "Revisa los parches faltantes y propone qué instalar.",
       "helpdesk": "Toma tickets y propone respuestas y próximos pasos.",
-      "designer": "Lee toda la flota y escribe un diseño de monitoreo justificado para que un técnico lo apruebe."
+      "designer": "Lee toda la flota y escribe un diseño de monitoreo justificado para que un técnico lo apruebe.",
+      "research": "Integrado. Investiga un problema en un dispositivo cuando un técnico lo pide y sugiere soluciones seguras. Nunca ejecuta nada."
     },
     "emptyState": {
       "title": "Aún no hay agentes",
@@ -2437,7 +2487,8 @@
       "triage": "Clasificación de alertas",
       "patch": "Aplicación de parches",
       "helpdesk": "Mesa de ayuda",
-      "designer": "Diseñador de flota"
+      "designer": "Diseñador de flota",
+      "research": "Investigación de soluciones"
     },
     "modes": {
       "off": "Desactivado",
@@ -3741,6 +3792,11 @@
           "blurb": "Lee toda la flota y escribe un diseño de monitoreo justificado para que un técnico lo apruebe.",
           "runsWhen": "inicias un Diseño de flota para una organización, o según una programación trimestral",
           "recommended": "una migración desde cero, o una auditoría de configuración trimestral"
+        },
+        "research": {
+          "blurb": "Integrado. Investiga un problema en un dispositivo cuando un técnico lo pide y sugiere soluciones seguras. Nunca ejecuta nada.",
+          "runsWhen": "un técnico pide sugerencias de solución para un problema de un dispositivo",
+          "recommended": "investigación automática y de solo lectura, un problema a la vez"
         }
       },
       "kindCard": {
@@ -3768,6 +3824,36 @@
       "title": "Este agente solo lee y escribe informes",
       "body": "Un Fleet Designer nunca ejecuta nada en un dispositivo. Activado significa que puede ejecutarse y entregar sus diseños a los destinatarios que elijas.",
       "ack": "Entiendo que este agente se ejecuta sin supervisión y entrega Fleet Designs."
+    },
+    "research": {
+      "capsTitle": "Límites de investigación",
+      "builtInNote": "Integrado y solo sugiere: nunca ejecuta nada. Puede apagarlo y definir sus límites de gasto.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Investigaciones simultáneas",
+          "hint": "Cuántas investigaciones pueden estar en curso a la vez."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Investigaciones por hora",
+          "hint": "Máximo de investigaciones iniciadas en una hora."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Investigaciones automáticas por hora",
+          "hint": "Máximo de investigaciones iniciadas automáticamente por alertas altas y críticas. 0 apaga la investigación automática."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Presupuesto de investigación rápida (centavos)",
+          "hint": "Límite de gasto de una investigación rápida."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Presupuesto de investigación profunda (centavos)",
+          "hint": "Límite de gasto de una investigación profunda."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Gasto diario de investigación (centavos)",
+          "hint": "Límite total de gasto por día entre todas las ejecuciones de este agente."
+        }
+      }
     }
   },
   "apiKeyForm": {
@@ -4167,6 +4253,8 @@
     "lastUsed": "último usado",
     "actions": "Acciones",
     "requestFailed": "Solicitud fallida ({{status}})",
+    "notEnabledTitle": "Las apps conectadas no están habilitadas en este servidor",
+    "notEnabledBody": "MCP OAuth está deshabilitado en este servidor. Configure MCP_OAUTH_ENABLED=true y reinicie la API para permitir apps conectadas.",
     "revokeConfirm": "¿Revocar el acceso a {{name}}? Su token de acceso dejará de funcionar en 10 minutos.",
     "revokeFailed": "Falló la revocación ({{status}})",
     "networkError": "error de red",

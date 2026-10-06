@@ -1,7 +1,6 @@
 import { sql } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { extractRowCount } from '../db/rowCount';
 import {
   METRIC_ROLLUP_BUCKET_RETENTION_DAYS,
   metricRollupRetentionCutoffs,
@@ -42,6 +41,7 @@ import {
 
 export { METRIC_ROLLUP_BUCKET_RETENTION_DAYS };
 
+/** Unused since #7541; kept because the job still stamps it into its stored data. */
 export const DEFAULT_METRIC_ROLLUP_DELETE_BATCH_SIZE = Math.max(
   100,
   parsePositiveIntEnv('METRIC_ROLLUP_DELETE_BATCH_SIZE', 5000),
@@ -54,6 +54,11 @@ export const DEFAULT_METRIC_ROLLUP_PARTITION_MONTHS_AHEAD = Math.max(
   1,
   parsePositiveIntEnv('METRIC_ROLLUP_PARTITION_MONTHS_AHEAD', 3),
 );
+
+/** Drain-table pages moved per short transaction (8 KB pages; ~1 MB, a few
+ * thousand rollup rows). Each batch is its own transaction, so this bounds how
+ * long any one move holds its row locks, not how much is moved per run. */
+export const DEFAULT_METRIC_ROLLUP_DEFAULT_DRAIN_PAGES_PER_BATCH = 128;
 
 /** Bound on every lock wait in a maintenance step (ms). A step that cannot get
  * its locks in time rolls back and is retried on the next daily run, instead
@@ -87,6 +92,24 @@ export type MetricRollupMaintenanceFailure = {
   error: string;
 };
 
+export type MetricRollupDefaultDrainResult = {
+  /** Months metric_rollups_default held rows for when the run started. Non-empty
+   * means some month had no partition when its rows were written. */
+  blockedMonths: string[];
+  /** A drain left by an earlier run was found and resumed (no new swap). */
+  resumed: boolean;
+  /** The default was detached and replaced this run. */
+  swapped: boolean;
+  /** Month partitions the swap created for the blocked months. */
+  monthsCreated: string[];
+  /** Rows re-inserted through metric_rollups into their partitions. */
+  rowsMoved: number;
+  /** Expired rows the drain did not re-insert. */
+  rowsDiscarded: number;
+  /** No drain table is left behind (nothing to drain, or fully drained and dropped). */
+  completed: boolean;
+};
+
 export type MetricRollupMaintenanceResult = {
   ensuredPartitions: string[];
   /** Whole months dropped at the daily cutoff. */
@@ -95,8 +118,10 @@ export type MetricRollupMaintenanceResult = {
   droppedBucketPartitions: string[];
   /** Legacy flat months rewritten into per-bucket leaves. */
   compactedPartitions: string[];
-  /** Rows deleted from metric_rollups_default (normally empty; see below). */
+  /** Expired rows removed from metric_rollups_default by the drain. */
   defaultPartitionRowsDeleted: number;
+  /** The metric_rollups_default drain (#7541). */
+  defaultPartitionDrain: MetricRollupDefaultDrainResult;
   retentionDays: MetricRollupRetentionDays;
   cutoffs: { fiveMinute: string; hourly: string; daily: string };
   /** Steps that failed; the rest of the run still completed. */
@@ -340,59 +365,198 @@ export async function dropExpiredMetricRollupPartitions(
   return dropped;
 }
 
-/**
- * metric_rollups_default only catches rows for a month that had no partition
- * when they were written (a month is skipped, not created, while the default
- * holds rows for it). It is not partitioned by time, so it is the one place
- * retention is still a row DELETE. Batches run in separate short transactions
- * until the backlog is gone — there is no per-run cap any more; the cap is what
- * let the old table-wide DELETE fall permanently behind.
- */
-async function pruneDefaultPartition(
-  cutoffs: { bucketSeconds: 300 | 3600 | 86400; cutoff: Date }[],
-  batchSize: number,
-  failures: MetricRollupMaintenanceFailure[],
-): Promise<number> {
-  let deleted = 0;
-  for (const { bucketSeconds, cutoff } of cutoffs) {
-    for (;;) {
-      let batch: number | typeof LOCK_HELD;
-      try {
-        batch = await inMaintenanceStep('pruneDefault', async () => {
-          const result = await db.execute(sql`
-            WITH doomed AS (
-              SELECT ctid
-              FROM metric_rollups_default
-              WHERE bucket_seconds = ${bucketSeconds}
-                AND bucket_start < ${formatTimestampLiteral(cutoff)}::timestamp
-              LIMIT ${batchSize}
-            )
-            DELETE FROM metric_rollups_default AS mr
-            USING doomed
-            WHERE mr.ctid = doomed.ctid
-          `);
-          return extractRowCount(result);
-        });
-      } catch (error) {
-        failures.push({ step: 'prune-default', partition: 'metric_rollups_default', error: errorMessage(error) });
-        break;
-      }
-      if (batch === LOCK_HELD) {
-        failures.push({ step: 'prune-default', partition: 'metric_rollups_default', error: 'maintenance lock held by another run' });
-        break;
-      }
-      deleted += batch;
-      if (batch < batchSize) break;
-    }
+function readRow(result: unknown): Record<string, unknown> {
+  const row = Array.isArray(result) ? (result[0] as Record<string, unknown> | undefined) : undefined;
+  if (!row) throw new Error('[MetricRollupMaintenance] expected one row, got none');
+  return row;
+}
+
+function readCount(value: unknown, name: string): number {
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' || typeof value === 'bigint' ? Number(value) : NaN;
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`[MetricRollupMaintenance] ${name} is not a number: ${String(value)}`);
   }
-  return deleted;
+  return parsed;
+}
+
+/**
+ * Drain metric_rollups_default (#7541).
+ *
+ * A row lands in the default only when its month had no partition when it was
+ * written, and from then on that month cannot be created (CREATE ... PARTITION
+ * OF would have to move the row). Its writes keep landing in the default,
+ * where retention is a row DELETE whose space is never returned, and every
+ * month creation scans the whole default under ACCESS EXCLUSIVE.
+ *
+ * So instead of deleting inside it, the run swaps the default out — detach it
+ * into metric_rollups_staging, attach a fresh empty one and create the blocked
+ * months, all in one short bounded transaction — then moves the retained rows
+ * back through metric_rollups in short page-range batches (expired rows are
+ * just not moved) and drops the drained table, which returns all of its
+ * space. See migration 2026-11-14-100000-metric-rollups-default-drain.sql.
+ *
+ * Runs before `ensure`, so a month the default was blocking exists by the time
+ * ensure looks at it. A step that fails leaves the drain table in place and is
+ * recorded; the next run resumes the move before it ever swaps again.
+ */
+async function drainDefaultPartition(
+  cutoffs: { fiveMinute: Date; hourly: Date; daily: Date },
+  pagesPerBatch: number,
+  failures: MetricRollupMaintenanceFailure[],
+): Promise<MetricRollupDefaultDrainResult | typeof LOCK_HELD> {
+  const drain: MetricRollupDefaultDrainResult = {
+    blockedMonths: [],
+    resumed: false,
+    swapped: false,
+    monthsCreated: [],
+    rowsMoved: 0,
+    rowsDiscarded: 0,
+    completed: false,
+  };
+  const fail = (step: string, error: unknown) => {
+    failures.push({ step, partition: 'metric_rollups_default', error: errorMessage(error) });
+    return drain;
+  };
+
+  // The probe reads the default's months OUTSIDE the swap's lock: it is the one
+  // full scan of the default, and it runs under an ordinary ACCESS SHARE.
+  let probe: { pending: boolean; months: string[] } | typeof LOCK_HELD;
+  try {
+    probe = await inMaintenanceStep('drainProbe', async () => {
+      const row = readRow(
+        await db.execute(sql`
+          SELECT
+            public.breeze_metric_rollup_default_drain_exists() AS "pending",
+            coalesce(
+              (
+                SELECT array_agg(month ORDER BY month)
+                FROM (
+                  SELECT DISTINCT to_char(date_trunc('month', bucket_start), 'YYYY-MM-DD HH24:MI:SS') AS month
+                  FROM metric_rollups_default
+                ) months
+              ),
+              ARRAY[]::text[]
+            ) AS "months"
+        `),
+      );
+      if (typeof row.pending !== 'boolean' || !Array.isArray(row.months)) {
+        throw new Error('[MetricRollupMaintenance] drain probe returned an unexpected shape');
+      }
+      return { pending: row.pending, months: row.months.filter((m): m is string => typeof m === 'string') };
+    });
+  } catch (error) {
+    return fail('drain-default-probe', error);
+  }
+  if (probe === LOCK_HELD) return LOCK_HELD;
+
+  // Pure string mapping (no Date parsing), so an odd bucket_start can never
+  // throw here and take the rest of the run down with it.
+  drain.blockedMonths = probe.months.map((month) => {
+    const match = /^(\d{4,})-(\d{2})-/.exec(month);
+    return match ? `metric_rollups_y${match[1]}m${match[2]}` : month;
+  });
+  if (drain.blockedMonths.length > 0) {
+    console.warn(
+      `[MetricRollupMaintenance] metric_rollups_default holds rows for ${drain.blockedMonths.join(', ')}; draining it`,
+    );
+  }
+
+  if (probe.pending) {
+    drain.resumed = true;
+  } else if (probe.months.length > 0) {
+    let created: string[] | typeof LOCK_HELD;
+    try {
+      created = await inMaintenanceStep('drainSwap', async () => {
+        const row = readRow(
+          await db.execute(sql`
+            SELECT public.breeze_swap_metric_rollup_default(
+              ${`{${probe.months.map((m) => `"${m}"`).join(',')}}`}::timestamp[],
+              ${formatTimestampLiteral(cutoffs.daily)}::timestamp
+            ) AS "created"
+          `),
+        );
+        if (!Array.isArray(row.created)) {
+          throw new Error('[MetricRollupMaintenance] swap returned no created-months array');
+        }
+        return row.created.filter((name): name is string => typeof name === 'string');
+      });
+    } catch (error) {
+      return fail('drain-default-swap', error);
+    }
+    if (created === LOCK_HELD) return fail('drain-default-swap', 'maintenance lock held by another run');
+    drain.swapped = true;
+    drain.monthsCreated = created;
+  } else {
+    drain.completed = true;
+    return drain;
+  }
+
+  // Move the drain table back, one page range per short transaction.
+  for (let page: number | null = 0; page !== null; ) {
+    const fromPage: number = page;
+    let batch: { nextPage: number | null; moved: number; discarded: number } | typeof LOCK_HELD;
+    try {
+      batch = await inMaintenanceStep('drainBatch', async () => {
+        const row = readRow(
+          await db.execute(sql`
+            SELECT next_page AS "nextPage", rows_moved AS "moved", rows_discarded AS "discarded"
+            FROM public.breeze_drain_metric_rollup_default_batch(
+              ${fromPage}::bigint,
+              ${pagesPerBatch}::integer,
+              ${formatTimestampLiteral(cutoffs.fiveMinute)}::timestamp,
+              ${formatTimestampLiteral(cutoffs.hourly)}::timestamp,
+              ${formatTimestampLiteral(cutoffs.daily)}::timestamp
+            )
+          `),
+        );
+        return {
+          nextPage: row.nextPage === null ? null : readCount(row.nextPage, 'next_page'),
+          moved: readCount(row.moved, 'rows_moved'),
+          discarded: readCount(row.discarded, 'rows_discarded'),
+        };
+      });
+    } catch (error) {
+      return fail('drain-default-move', error);
+    }
+    if (batch === LOCK_HELD) return fail('drain-default-move', 'maintenance lock held by another run');
+    drain.rowsMoved += batch.moved;
+    drain.rowsDiscarded += batch.discarded;
+    if (batch.nextPage !== null && batch.nextPage <= fromPage) {
+      return fail('drain-default-move', `drain batch did not advance past page ${fromPage}`);
+    }
+    page = batch.nextPage;
+  }
+
+  let finished: boolean | typeof LOCK_HELD;
+  try {
+    finished = await inMaintenanceStep('drainFinish', async () => {
+      const row = readRow(await db.execute(sql`SELECT public.breeze_finish_metric_rollup_default_drain() AS "dropped"`));
+      if (typeof row.dropped !== 'boolean') {
+        throw new Error('[MetricRollupMaintenance] drain finish returned an unexpected shape');
+      }
+      return row.dropped;
+    });
+  } catch (error) {
+    return fail('drain-default-finish', error);
+  }
+  if (finished === LOCK_HELD) return fail('drain-default-finish', 'maintenance lock held by another run');
+  drain.completed = true;
+  console.log(
+    `[MetricRollupMaintenance] drained metric_rollups_default: moved=${drain.rowsMoved} discarded=${drain.rowsDiscarded}` +
+      ` monthsCreated=${drain.monthsCreated.join(',') || 'none'} resumed=${drain.resumed}`,
+  );
+  return drain;
 }
 
 export async function runMetricRollupMaintenance(options: {
   now?: Date;
   partitionMonthsBack?: number;
   partitionMonthsAhead?: number;
+  /** Ignored since #7541 (the default partition is drained, not row-deleted).
+   * Still accepted because stored repeatable jobs carry it. */
   deleteBatchSize?: number;
+  /** Drain-table pages moved per transaction (see drainDefaultPartition). */
+  defaultDrainPagesPerBatch?: number;
   /** Test/ops override; normalized exactly like the env settings. */
   retentionDays?: Partial<MetricRollupRetentionDays>;
 } = {}): Promise<MetricRollupMaintenanceResult> {
@@ -403,7 +567,10 @@ export async function runMetricRollupMaintenance(options: {
     ? normalizeMetricRollupRetentionDays({ ...METRIC_ROLLUP_BUCKET_RETENTION_DAYS, ...options.retentionDays })
     : METRIC_ROLLUP_BUCKET_RETENTION_DAYS;
   const cutoffs = metricRollupRetentionCutoffs(now, retentionDays);
-  const batchSize = Math.max(1, options.deleteBatchSize ?? DEFAULT_METRIC_ROLLUP_DELETE_BATCH_SIZE);
+  const drainPagesPerBatch = Math.max(
+    1,
+    Math.floor(options.defaultDrainPagesPerBatch ?? DEFAULT_METRIC_ROLLUP_DEFAULT_DRAIN_PAGES_PER_BATCH),
+  );
 
   const result: MetricRollupMaintenanceResult = {
     ensuredPartitions: [],
@@ -411,6 +578,15 @@ export async function runMetricRollupMaintenance(options: {
     droppedBucketPartitions: [],
     compactedPartitions: [],
     defaultPartitionRowsDeleted: 0,
+    defaultPartitionDrain: {
+      blockedMonths: [],
+      resumed: false,
+      swapped: false,
+      monthsCreated: [],
+      rowsMoved: 0,
+      rowsDiscarded: 0,
+      completed: false,
+    },
     retentionDays,
     cutoffs: {
       fiveMinute: cutoffs.fiveMinute.toISOString(),
@@ -446,8 +622,19 @@ export async function runMetricRollupMaintenance(options: {
     }
   }
 
-  // 1. Partitions for the write window. If another run holds the lock, skip the
+  // 0. Drain metric_rollups_default first, so the months it was blocking exist
+  //    before ensure looks at them. If another run holds the lock, skip the
   //    whole run: reporting "ran, nothing to do" would be a lie.
+  const drain = await drainDefaultPartition(cutoffs, drainPagesPerBatch, result.failures);
+  if (drain === LOCK_HELD) {
+    result.skipped = true;
+    result.reason = 'maintenance lock already held';
+    return finish();
+  }
+  result.defaultPartitionDrain = drain;
+  result.defaultPartitionRowsDeleted = drain.rowsDiscarded;
+
+  // 1. Partitions for the write window.
   let ensured: string[] | typeof LOCK_HELD;
   const skippedMonths: string[] = [];
   try {
@@ -541,17 +728,6 @@ export async function runMetricRollupMaintenance(options: {
     );
     if (compacted) result.compactedPartitions.push(compacted);
   }
-
-  // 3. The default partition (not time-partitioned; see pruneDefaultPartition).
-  result.defaultPartitionRowsDeleted = await pruneDefaultPartition(
-    [
-      { bucketSeconds: 300, cutoff: cutoffs.fiveMinute },
-      { bucketSeconds: 3600, cutoff: cutoffs.hourly },
-      { bucketSeconds: 86400, cutoff: cutoffs.daily },
-    ],
-    batchSize,
-    result.failures,
-  );
 
   return finish();
 }

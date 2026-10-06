@@ -21,7 +21,7 @@ import {
 } from '../db';
 import { captureException } from './sentry';
 import {
-  createScriptProposal, enqueueScriptReview, getScriptProposalForPrincipal,
+  createScriptProposal, enqueueScriptReview, getScriptProposalForPrincipal, selectProposalExecutions,
   waitForReviewCompletion,
 } from './scriptProposals';
 
@@ -227,7 +227,7 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
     definition: {
       name: 'get_script_proposal',
       description:
-        'Read a script proposal: its status, the static scan, the independent review verdict and findings, the human decision, any executions, and the verification result.',
+        'Read a script proposal: its status, the static scan, the independent review verdict and findings, the human decision, its runs (executionId per device, for get_script_execution), the verification result, and approvalsPath, the page where the user can review it or save it to the library.',
       input_schema: {
         type: 'object' as const,
         properties: { proposalId: { type: 'string', description: 'Proposal UUID' } },
@@ -238,6 +238,25 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
       if (!aiScriptAuthoringEnabled()) return disabled();
       const proposal = await getScriptProposalForPrincipal(auth, String(input.proposalId));
       if (!proposal) return JSON.stringify({ error: 'not_found: no such proposal in this organization' });
+      // #7918: a run that outlived its run_script call still completed on the
+      // device. Its execution id is the only way the model can read that
+      // output (get_script_execution), so every run is echoed — narrowed to
+      // the devices this caller may see, like `targetDeviceIds` below and the
+      // web detail read (scriptProposals/detail.ts). Read in the caller's own
+      // per-call context (RLS-scoped), never an escape to system scope, which
+      // would hold a second pooled connection under the first.
+      const visible = proposal.scopedDeviceIds === null ? null : new Set(proposal.scopedDeviceIds);
+      const executions = (await selectProposalExecutions(proposal.id))
+        .filter((e) => visible === null || visible.has(e.deviceId))
+        .map((e) => ({
+          executionId: e.id,
+          deviceId: e.deviceId,
+          hostname: e.hostname ?? null,
+          status: e.status,
+          exitCode: e.exitCode ?? null,
+          startedAt: e.startedAt?.toISOString() ?? null,
+          completedAt: e.completedAt?.toISOString() ?? null,
+        }));
       return JSON.stringify({
         proposalId: proposal.id,
         status: proposal.status,
@@ -258,6 +277,13 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
         intentId: proposal.intentId,
         verification: { verifiedAt: proposal.verifiedAt, result: proposal.verificationResult },
         expiresAt: proposal.expiresAt,
+        executions,
+        ...(executions.length > 0
+          ? { nextStep: 'Read a run\'s output and exit code with get_script_execution { executionId }. Do not run_script this proposal again: a proposal runs once.' }
+          : {}),
+        // The human-facing page for this proposal (review, run results, and
+        // "Save to library" once verified). Give it to the user as a link.
+        approvalsPath: `/approvals#proposal-${proposal.id}`,
       });
     },
   });

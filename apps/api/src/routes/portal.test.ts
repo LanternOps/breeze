@@ -730,7 +730,7 @@ describe('portal routes', () => {
           submittedBy: portalUser.id,
           submitterEmail: portalUser.email
         }),
-        expect.objectContaining({ userId: portalUser.id })
+        expect.objectContaining({ kind: 'portal_user', portalUserId: portalUser.id, email: portalUser.email })
       );
     });
   });

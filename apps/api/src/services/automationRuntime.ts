@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'crypto';
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { automationActionSchema, scriptParametersSchema, alertTriggerKey, buildTriggerKey, interpolateAlertTemplate, type RemediationTrigger, type DeploymentTargetConfig } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../db';
 import {
   alertRules,
   alerts,
@@ -36,6 +36,8 @@ import {
   type CreateAgentRunInput,
   type CreateAgentRunResult,
 } from './aiAgents/runService';
+import { attachProvenFixes, hasAttachableProvenFix } from './fixMemory/attach';
+import { inSystemDbContext } from './outcomeProbes';
 import { resolveAlertCategory } from './aiAgents/patchWorkClassifier';
 // Type-only: the module itself stays a lazy import in executeDeploySoftwareActions.
 import type { CreateSoftwareDeploymentResult, SoftwareInstallDeliveryReport } from './softwareDeployment';
@@ -1552,6 +1554,9 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   // AI patch agent (W01) — the patch-profile equivalents, same classification.
   max_concurrent_patch_runs: false,
   patch_rate: false,
+  max_concurrent_research_runs: false,
+  research_rate: false,
+  research_auto_cap: false,
   // Execution plane W04 — every analysis refusal is a policy, volume or spend
   // gate (or a provider outage), never a data-integrity bug. `device_not_in_org`
   // stays classified where it already is.
@@ -1568,6 +1573,9 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   // AI model registry W03: a configuration gate (the agents' model is
   // unavailable), never a data-integrity bug.
   model_unavailable: false,
+  // AI Suggested Fixes W3: memory already proves a fix; the proven suggestion
+  // is attached instead of a shadow run.
+  proven_fix_available: false,
 });
 
 // Exported for direct unit coverage of the script_executions correlation
@@ -2261,7 +2269,7 @@ async function executeAiTriageAction(
     // managedByAgentId is attribution/bookkeeping. The admission gate resolves
     // the effective triage agent for the device org; an org override wins over
     // the managed baseline, while both ids remain traceable through triggerRef.
-    result = await admit({
+    const triageAdmission: CreateAgentRunInput = {
       orgId: context.device.orgId,
       kind: 'triage',
       triggerKind: 'alert',
@@ -2273,7 +2281,56 @@ async function executeAiTriageAction(
       dedupeKey: trigger?.alertId
         ? `alert:${trigger.alertId}`
         : `event:${trigger?.eventId ?? context.runId}`,
-    });
+    };
+    // AI Suggested Fixes W3 (Q1 = C) — the triage lane ONLY, never the patch
+    // route. Admission asks this after its opt-out gates and only in shadow
+    // mode; it runs inside admission's system context and only reads. It
+    // answers "would memory attach a fix", not "is a fix proven", so a proven
+    // fix that cannot become a runnable row never suppresses the run.
+    const memoryAlertId = trigger?.alertId ?? null;
+    const memorySource = memoryAlertId
+      ? { sourceType: 'alert' as const, sourceId: memoryAlertId, orgId: context.device.orgId }
+      : null;
+    result = await admit(memorySource
+      ? { ...triageAdmission, provenFixProbe: () => hasAttachableProvenFix(memorySource) }
+      : triageAdmission);
+
+    if (!result.created && result.skipped === 'proven_fix_available' && memorySource) {
+      // Idempotent (W1 Task 17: an upsert for script rows, insert-on-conflict-
+      // do-nothing for the rest), so a redelivered alert re-attaches nothing
+      // new. Joins the dispatch loop's claim transaction when there is one,
+      // else opens one context of its own (never nested). The savepoint keeps
+      // a failed attach from aborting that claim transaction; a failure falls
+      // through to admitting the run below, like an attach that wrote nothing.
+      let attached = 0;
+      try {
+        ({ attached } = await inSystemDbContext(
+          () => withDbTransaction(() => attachProvenFixes(memorySource)),
+          'automationRuntime.aiTriage.provenFix',
+        ));
+      } catch (error) {
+        console.error('[automationRuntime] proven-fix attach failed; admitting the triage run', {
+          alertId: memoryAlertId, orgId: context.device.orgId, error,
+        });
+        captureException(error, undefined, { alertId: memorySource.sourceId, orgId: context.device.orgId, stage: 'proven_fix_attach' });
+      }
+      if (attached > 0) {
+        const message = 'ai_triage skipped: proven_fix_available (proven fix attached; shadow triage run not started)';
+        return {
+          outcome: { status: 'succeeded' },
+          log: logEntry(message, 'info', {
+            actionType: 'ai_triage', actionIndex, deviceId: context.device.id, details: { routedTo, attached },
+          }),
+        };
+      }
+      // The probe saw an attachable fix and the attach then wrote nothing
+      // (memory changed in between) or failed. An alert must never be left with neither
+      // a suggestion nor a triage run, so admit the run as before the probe.
+      console.warn('[automationRuntime] proven fix vanished between probe and attach; admitting the triage run', {
+        alertId: memoryAlertId, orgId: context.device.orgId,
+      });
+      result = await admit(triageAdmission);
+    }
   }
 
   if (result.created && result.enqueue) {
@@ -4348,7 +4405,7 @@ export async function executeConfigPolicyAutomationRun(
 
   // Load target devices.
   //
-  // SEC-118, sibling path. `targetDeviceIds` was frozen at ENQUEUE time by
+  // Sibling path. `targetDeviceIds` was frozen at ENQUEUE time by
   // automationWorker's `enqueueConfigPolicyRun`, and `admitConfigPolicyAutomationRun`
   // above validates the POLICY owner, not the devices. So this read is the only
   // place the device side of the boundary can be enforced, and without

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Bell,
+  CreditCard,
   Bot,
   FileCode,
   Monitor,
@@ -98,6 +99,11 @@ const typeConfig: Record<
     label: 'layout.notifications.types.ai',
     icon: Bot,
     className: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-200'
+  },
+  billing: {
+    label: 'nav.billing',
+    icon: CreditCard,
+    className: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-200'
   },
   unknown: {
     label: 'layout.notifications.types.unknown',

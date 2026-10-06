@@ -17,6 +17,7 @@ import {
   type DeliverableCommand,
 } from './sensitiveCommandPayload';
 import { captureException } from './sentry';
+import { prepareDiagnosticDelivery } from './diagnosticAccess/delivery';
 
 export {
   CommandDeliveryDeferredError,
@@ -79,6 +80,12 @@ export function registerDeliveryRefresher(type: string, refresher: DeliveryRefre
 export function __resetDeliveryRefreshersForTests(): void {
   for (const key of Object.keys(deliveryRefreshers)) delete deliveryRefreshers[key];
 }
+
+// Administrator-approved diagnostic reads: the signed per-command
+// authorization is minted here, at delivery, after the grant is re-checked; it
+// is never stored in the queued payload (services/diagnosticAccess/delivery.ts).
+registerDeliveryRefresher('diag_file_list', (payload, ctx) => prepareDiagnosticDelivery('list', payload, ctx));
+registerDeliveryRefresher('diag_file_read', (payload, ctx) => prepareDiagnosticDelivery('read', payload, ctx));
 
 // Uploaded installers travel as an S3 key; the one-hour presigned URL is
 // minted at delivery so an install claimed six hours later still downloads.

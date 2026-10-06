@@ -278,7 +278,7 @@ ticketRoutes.post('/tickets', zValidator('json', createTicketSchema), async (c) 
         submitterEmail: auth.user.email,
         submitterName: auth.user.name ?? auth.user.email,
       },
-      { userId: auth.user.id, name: auth.user.name ?? auth.user.email, email: auth.user.email }
+      { kind: 'portal_user', portalUserId: auth.user.id, name: auth.user.name ?? auth.user.email, email: auth.user.email }
     );
   } catch (err) {
     if (err instanceof TicketServiceError) {
@@ -557,7 +557,7 @@ ticketRoutes.patch(
     const updated = await editTicketComment(
       commentId,
       body,
-      { userId: auth.user.id, name: auth.user.name ?? auth.user.email },
+      { kind: 'portal_user' as const, portalUserId: auth.user.id, name: auth.user.name ?? auth.user.email },
       { canManageAny: true, expectedTicketId: id }
     );
 
@@ -597,7 +597,7 @@ ticketRoutes.delete(
     // Same audit_logs.actor_id FK caveat as PATCH above — no FK, portal id is safe.
     await deleteTicketComment(
       commentId,
-      { userId: auth.user.id },
+      { kind: 'portal_user' as const, portalUserId: auth.user.id },
       { canManageAny: true, expectedTicketId: id }
     );
 

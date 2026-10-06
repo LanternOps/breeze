@@ -28,9 +28,8 @@ export type PartnerAiConnectionKind = (typeof PARTNER_AI_CONNECTION_KINDS)[numbe
 
 /**
  * Shape 3 (partner axis). `api_key_encrypted` is registered row-bound under
- * the legacy `partner_llm_configs.api_key_encrypted` AAD tag (copied rows keep
- * their id). `legacy_default_model` is the /ai/provider compat projection of
- * `partner_llm_configs.default_model`; nothing routes on it; dropped in W08.
+ * the legacy 'partner_llm_configs.api_key_encrypted' AAD tag (rows copied from
+ * the retired legacy table keep their id, so every stored key still opens).
  */
 export const partnerAiConnections = pgTable('partner_ai_connections', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -51,7 +50,6 @@ export const partnerAiConnections = pgTable('partner_ai_connections', {
   connectedBy: uuid('connected_by').references(() => users.id, { onDelete: 'set null' }),
   lastDiscoveredAt: timestamp('last_discovered_at', { withTimezone: true }),
   discoveryError: text('discovery_error'),
-  legacyDefaultModel: text('legacy_default_model'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

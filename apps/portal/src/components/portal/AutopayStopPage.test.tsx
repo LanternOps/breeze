@@ -1,0 +1,146 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { apiGet, apiPost } from '@/lib/api';
+import AutopayStopPage from './AutopayStopPage';
+vi.mock('@/lib/api', () => ({ apiGet: vi.fn(), apiPost: vi.fn() }));
+afterEach(() => cleanup());
+const card = { type: 'card', cardBrand: 'visa', cardFunding: 'credit', cardLast4: '4242', status: 'active' };
+const bank = { type: 'us_bank_account', bankName: 'STRIPE TEST BANK', bankLast4: '6789', status: 'active' };
+function view(over: Record<string, unknown> = {}) {
+  return { data: { partnerName: 'Example MSP', logoUrl: null, supportEmail: 'billing@msp.example', orgName: 'Client',
+    processingWarning: 'x', enrollment: { status: 'active' }, method: card, openInvoiceCount: 2, ...over } } as never;
+}
+beforeEach(() => { vi.clearAllMocks(); vi.mocked(apiGet).mockResolvedValue(view()); });
+
+it('asks plainly, says what stopping does, and only stops on click', async () => {
+  render(<AutopayStopPage token="stop-token" />);
+  expect(await screen.findByRole('heading', { level: 1, name: 'Stop automatic payments to Example MSP?' })).toBeInTheDocument();
+  expect(screen.getByText('Visa credit card ending in 4242')).toBeInTheDocument();
+  expect(screen.getByText("Future invoices won't be charged automatically.")).toBeInTheDocument();
+  expect(screen.getByText('Your saved card will be removed.')).toBeInTheDocument();
+  expect(screen.getByText("A payment that has already started can't be stopped.")).toBeInTheDocument();
+  expect(apiGet).toHaveBeenCalledExactlyOnceWith('/autopay/public/stop-token/stop', { redirectOnUnauthorized: false });
+  expect(apiPost).not.toHaveBeenCalled();
+  expect(document.querySelector('main')).toBeNull();
+});
+
+it('stops once and replaces the question with the outcome (no lingering button, D-15)', async () => {
+  let resolve!: (value: unknown) => void;
+  vi.mocked(apiPost).mockReturnValue(new Promise(r => { resolve = r; }) as never);
+  render(<AutopayStopPage token="stop-token" />);
+  const stop = await screen.findByTestId('autopay-stop-submit');
+  fireEvent.click(stop); fireEvent.click(stop);
+  expect(stop).toHaveTextContent('Stopping…');
+  resolve({ data: { success: true } });
+  expect(await screen.findByRole('heading', { name: 'Automatic payments are off' })).toBeInTheDocument();
+  expect(apiPost).toHaveBeenCalledExactlyOnceWith('/autopay/public/stop-token/stop', {}, { redirectOnUnauthorized: false });
+  expect(screen.queryByTestId('autopay-stop-submit')).toBeNull();
+  expect(screen.getByText(/We're emailing you a confirmation, with links to your open invoices/)).toBeInTheDocument();
+});
+
+it('"Keep them on" changes nothing and says so', async () => {
+  render(<AutopayStopPage token="stop-token" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Keep them on' }));
+  expect(await screen.findByRole('heading', { name: 'Nothing changed' })).toBeInTheDocument();
+  expect(apiPost).not.toHaveBeenCalled();
+});
+
+it('a bank account: names it and warns that a started debit takes days', async () => {
+  vi.mocked(apiGet).mockResolvedValue(view({ method: bank }));
+  render(<AutopayStopPage token="stop-token" />);
+  expect(await screen.findByText('Your saved bank account will be removed.')).toBeInTheDocument();
+  expect(screen.getByText(/Bank payments that have started can take a few business days to finish/)).toBeInTheDocument();
+});
+
+it('never enrolled: nothing to stop, no stop button (D-15)', async () => {
+  vi.mocked(apiGet).mockResolvedValue(view({ enrollment: { status: 'requested' }, method: null }));
+  render(<AutopayStopPage token="stop-token" />);
+  expect(await screen.findByRole('heading', { name: "You haven't set up automatic payments" })).toBeInTheDocument();
+  expect(screen.queryByTestId('autopay-stop-submit')).toBeNull();
+});
+
+it('paused by the MSP can still be stopped', async () => {
+  vi.mocked(apiGet).mockResolvedValue(view({ enrollment: { status: 'paused' } }));
+  render(<AutopayStopPage token="stop-token" />);
+  expect(await screen.findByText(/Example MSP has already paused your automatic payments/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Keep them paused' })).toBeInTheDocument();
+});
+
+it('already off: says so, no button', async () => {
+  vi.mocked(apiGet).mockResolvedValue(view({ enrollment: { status: 'cancelled' }, method: null }));
+  render(<AutopayStopPage token="stop-token" />);
+  expect(await screen.findByRole('heading', { name: 'Automatic payments are off' })).toBeInTheDocument();
+  expect(screen.queryByTestId('autopay-stop-submit')).toBeNull();
+});
+
+it('a stop link reloaded after stopping explains itself instead of "not found"', async () => {
+  vi.mocked(apiGet).mockResolvedValue({ error: 'x', code: 'link_used', statusCode: 404, errorData: { partnerName: 'Example MSP', enrollmentStatus: 'cancelled' } } as never);
+  render(<AutopayStopPage token="stop-token" />);
+  expect(await screen.findByRole('heading', { name: 'Automatic payments are off' })).toBeInTheDocument();
+});
+
+it('a failed stop keeps the question and offers a retry', async () => {
+  vi.mocked(apiPost).mockResolvedValue({ error: 'boom', statusCode: 500 } as never);
+  render(<AutopayStopPage token="stop-token" />);
+  fireEvent.click(await screen.findByTestId('autopay-stop-submit'));
+  expect(await screen.findByRole('alert')).toHaveTextContent("We couldn't stop automatic payments");
+  await waitFor(() => expect(screen.getByTestId('autopay-stop-submit')).toBeEnabled());
+});
+
+// V-30: paused is neutral, not the success tone.
+it('"Keep them paused" marks Paused in the neutral tone', async () => {
+  vi.mocked(apiGet).mockResolvedValue(view({ enrollment: { status: 'paused' } }));
+  render(<AutopayStopPage token="stop-token" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Keep them paused' }));
+  await screen.findByRole('heading', { name: 'Nothing changed' });
+  expect(screen.getByText('Paused').closest('[data-tone]')).toHaveAttribute('data-tone', 'neutral');
+});
+// V-31: the started-bank-payment caveat is for bank accounts only.
+it.each([[card, false], [bank, true]] as const)('after stopping, the bank caveat follows the method (%j)', async (method, shown) => {
+  vi.mocked(apiGet).mockResolvedValue(view({ method }));
+  vi.mocked(apiPost).mockResolvedValue({ data: { success: true } } as never);
+  render(<AutopayStopPage token="stop-token" />);
+  fireEvent.click(await screen.findByTestId('autopay-stop-submit'));
+  await screen.findByTestId('autopay-stop-done');
+  expect(!!screen.queryByText(/If a bank payment had already started, it may still complete/)).toBe(shown);
+});
+// A network failure (the POST rejects) is the same retryable failure, never a silent no-op.
+it('a stop that never reaches the server keeps the question and says so', async () => {
+  vi.mocked(apiPost).mockRejectedValue(new TypeError('Failed to fetch'));
+  render(<AutopayStopPage token="stop-token" />);
+  fireEvent.click(await screen.findByTestId('autopay-stop-submit'));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Please try again. If it keeps happening, email Example MSP');
+  expect(screen.getByTestId('autopay-stop-submit')).toBeEnabled();
+});
+// V-20: an expired link's next step is emailing the MSP: offered once, in the card.
+it('an expired stop link offers to email the MSP once', async () => {
+  vi.mocked(apiGet).mockResolvedValue({ error: 'x', code: 'link_expired', statusCode: 404,
+    errorData: { partnerName: 'Example MSP', supportEmail: 'billing@msp.example' } } as never);
+  render(<AutopayStopPage token="stop-token" />);
+  await screen.findByRole('heading', { name: 'This link has expired' });
+  expect(screen.getAllByRole('link', { name: /Email Example MSP|billing@msp\.example/ })).toHaveLength(1);
+  expect(screen.getByRole('link', { name: 'Email Example MSP' })).toHaveAttribute('href', 'mailto:billing@msp.example');
+});
+
+// R7: a stop that already committed revokes the link, so a retry or a second tab is refused;
+// re-read and say automatic payments are off instead of "try again" forever.
+it('a stop refused because it already happened says automatic payments are off', async () => {
+  vi.mocked(apiPost).mockResolvedValue({ error: 'Automatic payments not found', statusCode: 401 } as never);
+  render(<AutopayStopPage token="stop-token" />);
+  const submit = await screen.findByTestId('autopay-stop-submit');
+  vi.mocked(apiGet).mockResolvedValue({ error: 'x', code: 'link_used', statusCode: 404,
+    errorData: { partnerName: 'Example MSP', enrollmentStatus: 'cancelled' } } as never);
+  fireEvent.click(submit);
+  expect(await screen.findByRole('heading', { name: 'Automatic payments are off' })).toBeInTheDocument();
+  expect(screen.queryByText(/couldn't stop/)).toBeNull();
+});
+it('a stop whose response was lost re-reads and shows the stop that landed', async () => {
+  vi.mocked(apiPost).mockRejectedValue(new TypeError('Failed to fetch'));
+  render(<AutopayStopPage token="stop-token" />);
+  const submit = await screen.findByTestId('autopay-stop-submit');
+  vi.mocked(apiGet).mockResolvedValue(view({ enrollment: { status: 'cancelled' }, method: null }));
+  fireEvent.click(submit);
+  expect(await screen.findByRole('heading', { name: 'Automatic payments are off' })).toBeInTheDocument();
+  expect(screen.queryByRole('alert')).toBeNull();
+});

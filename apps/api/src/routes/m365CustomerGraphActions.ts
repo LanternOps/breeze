@@ -20,9 +20,12 @@ import {
   type M365ConnectionSnapshot,
 } from '../services/m365ControlPlane/connectionService';
 import {
+  cancelCustomerGraphActionsTenantConfirmation,
+  continueCustomerGraphActionsConsent,
   disconnectCustomerGraphActionsConnection,
   initiateCustomerGraphActionsConsent,
   listCustomerGraphActionsConnections,
+  readPendingCustomerGraphActionsTenantConfirmation,
   retestCustomerGraphActionsConnection,
 } from '../services/m365ControlPlane/writeActionConnectionService';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
@@ -253,13 +256,10 @@ m365CustomerGraphActionsRoutes.post(
         orgId: resolved.orgId,
         actorId: c.get('auth').user.id,
       });
-      c.header('Set-Cookie', buildM365ActionsConsentBindingCookie({
-        phase: 'admin_consent',
-        rawState: initiated.rawState,
-        connectionId: initiated.connection.id,
-        consentAttemptId: initiated.connection.consentAttemptId,
-        tenantHint: null,
-      }), { append: true });
+      // Identity-first (#7910): the service returns the identity-phase
+      // binding (tenant pinned for a bound row / upgrade, null for
+      // /organizations); the route only signs it into the cookie.
+      c.header('Set-Cookie', buildM365ActionsConsentBindingCookie(initiated.binding), { append: true });
       const auth = c.get('auth');
       recordM365CustomerGraphActionsEvent(c, {
         event: 'm365.customer_graph_actions.consent_initiated',
@@ -273,7 +273,116 @@ m365CustomerGraphActionsRoutes.post(
         actorId: auth.user.id,
         actorEmail: auth.user.email,
       });
-      return c.json({ adminConsentUrl: initiated.consentUrl });
+      // Key kept for the W2 web cards (they validate only the Microsoft host).
+      return c.json({ adminConsentUrl: initiated.authorizationUrl });
+    } catch (error) {
+      return lifecycleFailure(c, error);
+    }
+  },
+);
+
+/**
+ * Confirm-tenant interstitial (#7913 W03) — the actions twin of the read
+ * routes (see m365CustomerGraphRead.ts for the full contract). Sets only the
+ * actions binding cookie; the tenant only ever comes from the parked
+ * server-side session.
+ */
+function confirmTenantGate(c: Context): { orgId: string } | Response {
+  if (!canMutateOrgWideGovernance(c.get('auth'))) {
+    return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+  }
+  const resolved = mutationOrg(c);
+  if (resolved instanceof Response) return resolved;
+  if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
+  if (!isM365CustomerGraphActionsOnboardingEnabledForOrg(resolved.orgId)) {
+    return c.json({ error: 'Connection not found' }, 404);
+  }
+  return resolved;
+}
+
+m365CustomerGraphActionsRoutes.get(
+  '/connections/consent/pending',
+  requireOrgsWrite,
+  requireMfa(),
+  async (c) => {
+    const resolved = confirmTenantGate(c);
+    if (resolved instanceof Response) return resolved;
+    const pending = await readPendingCustomerGraphActionsTenantConfirmation({
+      orgId: resolved.orgId,
+      actorId: c.get('auth').user.id,
+    });
+    if (!pending) return c.json({ error: 'Connection not found' }, 404);
+    return c.json({
+      tenantId: pending.tenantId,
+      administratorUsername: pending.administratorUsername,
+      expiresAt: pending.expiresAt.toISOString(),
+    });
+  },
+);
+
+m365CustomerGraphActionsRoutes.post(
+  '/connections/consent/continue',
+  requireOrgsWrite,
+  requireMfa(),
+  async (c) => {
+    const resolved = confirmTenantGate(c);
+    if (resolved instanceof Response) return resolved;
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(resolved.orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
+    const auth = c.get('auth');
+    try {
+      const continued = await continueCustomerGraphActionsConsent({
+        orgId: resolved.orgId,
+        actorId: auth.user.id,
+      });
+      c.header('Set-Cookie', buildM365ActionsConsentBindingCookie(continued.binding), { append: true });
+      recordM365CustomerGraphActionsEvent(c, {
+        event: 'm365.customer_graph_actions.tenant_confirmed',
+        orgId: resolved.orgId,
+        connectionId: continued.connection.id,
+        profile: PROFILE_ID,
+        consentAttemptId: continued.connection.consentAttemptId,
+        manifestVersion: profileManifest.version,
+        outcome: 'tenant_confirmed',
+        correlationId: randomUUID(),
+        verifiedTenantId: continued.verifiedTenantId,
+        verifiedAdministratorObjectId: continued.verifiedAdministratorObjectId,
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+      });
+      return c.json({ adminConsentUrl: continued.consentUrl });
+    } catch (error) {
+      return lifecycleFailure(c, error);
+    }
+  },
+);
+
+m365CustomerGraphActionsRoutes.post(
+  '/connections/consent/cancel',
+  requireOrgsWrite,
+  requireMfa(),
+  async (c) => {
+    const resolved = confirmTenantGate(c);
+    if (resolved instanceof Response) return resolved;
+    const auth = c.get('auth');
+    try {
+      const connection = await cancelCustomerGraphActionsTenantConfirmation({
+        orgId: resolved.orgId,
+        actorId: auth.user.id,
+      });
+      recordM365CustomerGraphActionsEvent(c, {
+        event: 'm365.customer_graph_actions.verification_failed',
+        orgId: resolved.orgId,
+        connectionId: connection.id,
+        profile: PROFILE_ID,
+        consentAttemptId: connection.consentAttemptId,
+        manifestVersion: profileManifest.version,
+        outcome: 'consent_cancelled',
+        correlationId: randomUUID(),
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+      });
+      return c.json({ connection: toConnectionDto(connection) });
     } catch (error) {
       return lifecycleFailure(c, error);
     }

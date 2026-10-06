@@ -42,6 +42,15 @@ import {
 } from '../actionIntents/intentTargetScope';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { devices } from '../../db/schema/devices';
+import { organizations } from '../../db/schema/orgs';
+import { diagnosticAccessGrants } from '../../db/schema/diagnosticAccess';
+import {
+  auditDiagnosticDecision,
+  decideDiagnosticGrantInTx,
+  isEligibleApprover as isEligibleDiagnosticApprover,
+  resolveEligibleApprovers as resolveDiagnosticApprovers,
+  type GrantRow as DiagnosticGrantRow,
+} from '../diagnosticAccess/grants';
 import { checkToolPermission } from '../aiGuardrails';
 import { loadPartnerPolicy, isEnforcing } from '../authenticatorPolicy';
 import { getUserPermissions, hasPermission, userCanDecideApprovals, canAccessOrg } from '../permissions';
@@ -57,6 +66,9 @@ import {
   isFreshApproverFactor,
   requiresFreshApproverFactor,
 } from '../actionIntents/freshApproverFactor';
+
+/** Thrown inside the decide transaction to roll it back when a diagnostic grant is no longer pending. */
+class DiagnosticGrantNotPendingError extends Error {}
 
 /**
  * The approvals DECIDE core (P2-2 #4189), lifted verbatim out of
@@ -595,6 +607,69 @@ export async function decideApprovalRequest(
       !hasPermission(deciderPerms, 'pam', 'approve')
     ) {
       return { httpStatus: 403, body: { error: 'pam_approve_required' } };
+    }
+  }
+
+  // Diagnostic read grants (services/diagnosticAccess): the row was fanned out
+  // to every eligible approver at REQUEST time; eligibility is re-proved LIVE
+  // here for both approve and deny (same rule as the PAM branch above): active
+  // account with devices:execute + approvals:decide for the device's org, and
+  // access to the device's site. A Site-A administrator cannot decide a
+  // Site-B grant, even if the device moved after the request.
+  let diagnosticSelfApprove = false;
+  if (existing.diagnosticAccessGrantId && !existing.intentId) {
+    const target = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const [row] = await db
+          .select({
+            orgId: diagnosticAccessGrants.orgId,
+            status: diagnosticAccessGrants.status,
+            deviceOrgId: devices.orgId,
+            siteId: devices.siteId,
+            partnerId: organizations.partnerId,
+            requestedByUserId: diagnosticAccessGrants.requestedByUserId,
+          })
+          .from(diagnosticAccessGrants)
+          .innerJoin(devices, eq(devices.id, diagnosticAccessGrants.deviceId))
+          .innerJoin(organizations, eq(organizations.id, diagnosticAccessGrants.orgId))
+          .where(eq(diagnosticAccessGrants.id, existing.diagnosticAccessGrantId as string));
+        return row ?? null;
+      }),
+    );
+    if (!target) return { httpStatus: 404, body: { error: 'diagnostic_access_grant_not_found' } };
+    if (target.deviceOrgId !== target.orgId) {
+      return { httpStatus: 409, body: { error: 'diagnostic_access_device_moved', finalStatus: 'expired' } };
+    }
+    if (target.status !== 'pending_approval') {
+      return { httpStatus: 409, body: { error: `Already ${target.status}`, finalStatus: 'expired' } };
+    }
+    const eligible = await isEligibleDiagnosticApprover(
+      userId,
+      { orgId: target.orgId, siteId: target.siteId },
+      target.partnerId ?? null,
+    );
+    if (!eligible) {
+      return { httpStatus: 403, body: { error: 'diagnostic_access_approver_required' } };
+    }
+    // Self-approval: allowed only for a genuine sole operator, re-derived
+    // live with the same filter the fan-out used. A deny is always allowed.
+    // The requester must be IN the live population and alone in it; an empty
+    // or disagreeing resolution refuses rather than admits.
+    if (status === 'approved' && target.requestedByUserId === userId) {
+      const eligibleNow = await resolveDiagnosticApprovers(
+        { orgId: target.orgId, siteId: target.siteId },
+        target.partnerId ?? null,
+      );
+      diagnosticSelfApprove = true;
+      if (!eligibleNow.includes(userId) || eligibleNow.some((id) => id !== userId)) {
+        return {
+          httpStatus: 403,
+          body: {
+            error: 'self_approval_forbidden',
+            message: 'This request needs an approver other than the person who requested it.',
+          },
+        };
+      }
     }
   }
 
@@ -1212,6 +1287,13 @@ export async function decideApprovalRequest(
     }
   }
 
+  // A sole operator approving their OWN diagnostic grant needs >= L3, the same
+  // floor as a sole-operator intent, whatever the partner policy or batch
+  // path. Deny is never gated.
+  if (diagnosticSelfApprove && (assurance.decidedAssuranceLevel ?? 0) < 3) {
+    return { httpStatus: 403, body: { error: 'step_up_required', requiredLevel: 3 } };
+  }
+
   // Topology M4-D3 (#6000): a tool listed in FRESH_APPROVER_FACTOR_TOOLS is
   // approved only with a hardware-backed factor assertion (>= L3) made for
   // THIS decision — not a supervised session tap, not a reused step-up grant.
@@ -1277,6 +1359,7 @@ export async function decideApprovalRequest(
       };
 
   let writeResult: DecideWriteResult;
+  let decidedDiagnosticGrant: DiagnosticGrantRow | null = null;
   try {
     writeResult = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>
@@ -1300,6 +1383,43 @@ export async function decideApprovalRequest(
               .from(actionIntents)
               .where(eq(actionIntents.id, existing.intentId))
               .for('update');
+          }
+
+          // #7526: the same rule for a PAM elevation — lock the elevation
+          // before any approval_requests row. This transaction used to take
+          // its own approval row first and the elevation second, then the
+          // sibling rows, so two approvers deciding the same elevation at
+          // once each held their own row while waiting for the elevation, and
+          // the winner then waited for the loser's row in the sibling expiry
+          // below: Postgres aborted one with 40P01 (a 500). Elevation first,
+          // then approval rows, is the order every path that touches both
+          // uses (the web console's respond route decides the elevation and
+          // expires the approval rows only after it commits). `no key update`
+          // is the strength the elevation UPDATE below takes anyway, so the
+          // fan-out's approval_requests inserts (an FK key-share lock on the
+          // elevation) are not held up by it.
+          if (existing.elevationRequestId) {
+            const [elevation] = await tx
+              .select({ status: elevationRequests.status })
+              .from(elevationRequests)
+              .where(eq(elevationRequests.id, existing.elevationRequestId))
+              .for('no key update');
+            if (elevation?.status !== 'pending') {
+              // The elevation was already decided or closed elsewhere (the
+              // web console, another approver, the stale-request expirer).
+              // This row can no longer decide anything: store it as expired,
+              // as the sibling expiry would have, never as this approver's
+              // approve or deny, and report the lost race.
+              await tx
+                .update(approvalRequests)
+                .set({ status: 'expired', decidedAt: new Date() })
+                .where(and(
+                  eq(approvalRequests.id, id),
+                  eq(approvalRequests.userId, userId),
+                  eq(approvalRequests.status, 'pending'),
+                ));
+              return { lostRace: true };
+            }
           }
 
           if (proposalIdForDecision && acknowledgedPatterns.length > 0) {
@@ -1392,77 +1512,103 @@ export async function decideApprovalRequest(
                 subjectUsername: elevationRequests.subjectUsername,
               });
 
-            if (elevationRows.length > 0) {
-              const elevation = elevationRows[0]!;
-              await tx.insert(elevationAudit).values({
-                orgId: elevation.orgId,
-                elevationRequestId: elevation.id,
-                eventType: status === 'approved' ? 'approved' : 'denied',
-                actor: 'technician',
-                actorUserId: userId,
-                details: {
-                  source: 'mobile_approval',
-                  approval_request_id: updated.id,
-                  ...(status === 'denied' && reason ? { reason } : {}),
-                  // Inline literal, not a helper spread: the elevation_audit
-                  // writer inventory (pamAuditExport) reads these keys statically.
-                  ...(assurance.graceDowngrade
-                    ? { assurance_downgraded_grace: true, required_assurance_level: assurance.requiredLevel }
-                    : {}),
-                },
-                occurredAt: now,
-              });
-              const actuation = await createPamDecisionIntent(tx, {
-                request: {
-                  id: elevation.id,
-                  orgId: elevation.orgId,
-                  deviceId: elevation.deviceId,
-                  targetExecutablePath: elevation.targetExecutablePath ?? '',
-                  targetExecutableHash: elevation.targetExecutableHash,
-                  subjectUsername: elevation.subjectUsername,
-                },
-                requestRevision: elevation.revision,
-                decision: status,
-                expiresAt,
-              });
-              enforcementStatus = actuation.refusalReason
-                ? 'refused'
-                : actuation.desiredState === 'active'
-                  ? 'pending_dispatch'
-                  : 'cleanup_pending';
-              refusalReason = actuation.refusalReason ?? null;
-
-              // The approve was refused and the elevation is now denied, so
-              // this row must not read as approved to anyone who reads it (the
-              // mobile app and the inbox's Recent panel read `status`). Same
-              // transaction, and the CAS above already holds this row's lock.
-              // decided_* keep recording the approver's approve;
-              // refusal_reason is what marks it as refused rather than denied
-              // by the approver.
-              if (refusalReason && status === 'approved') {
-                const [refused] = await tx
-                  .update(approvalRequests)
-                  .set({ status: 'denied', refusalReason })
-                  .where(and(eq(approvalRequests.id, updated.id), eq(approvalRequests.status, 'approved')))
-                  .returning();
-                if (!refused) {
-                  // Unreachable: this transaction wrote 'approved' to the row
-                  // and holds its lock. Roll back rather than commit an
-                  // approval row that reads as approved.
-                  throw new Error(`refused approve could not be stored on approval ${updated.id}`);
-                }
-                updated = refused;
-              }
-
-              await tx
-                .update(approvalRequests)
-                .set({ status: 'expired', decidedAt: now })
-                .where(and(
-                  eq(approvalRequests.elevationRequestId, elevation.id),
-                  eq(approvalRequests.status, 'pending'),
-                  ne(approvalRequests.id, updated.id),
-                ));
+            const elevation = elevationRows[0];
+            if (!elevation) {
+              // Unreachable: this transaction locked the elevation above and
+              // saw it pending. Roll back rather than commit an approval row
+              // that says this approver decided an elevation they did not.
+              throw new Error(
+                `elevation ${updated.elevationRequestId} was pending under this transaction's lock but its decision matched no row`,
+              );
             }
+            await tx.insert(elevationAudit).values({
+              orgId: elevation.orgId,
+              elevationRequestId: elevation.id,
+              eventType: status === 'approved' ? 'approved' : 'denied',
+              actor: 'technician',
+              actorUserId: userId,
+              details: {
+                source: 'mobile_approval',
+                approval_request_id: updated.id,
+                ...(status === 'denied' && reason ? { reason } : {}),
+                // Inline literal, not a helper spread: the elevation_audit
+                // writer inventory (pamAuditExport) reads these keys statically.
+                ...(assurance.graceDowngrade
+                  ? { assurance_downgraded_grace: true, required_assurance_level: assurance.requiredLevel }
+                  : {}),
+              },
+              occurredAt: now,
+            });
+            const actuation = await createPamDecisionIntent(tx, {
+              request: {
+                id: elevation.id,
+                orgId: elevation.orgId,
+                deviceId: elevation.deviceId,
+                targetExecutablePath: elevation.targetExecutablePath ?? '',
+                targetExecutableHash: elevation.targetExecutableHash,
+                subjectUsername: elevation.subjectUsername,
+              },
+              requestRevision: elevation.revision,
+              decision: status,
+              expiresAt,
+            });
+            enforcementStatus = actuation.refusalReason
+              ? 'refused'
+              : actuation.desiredState === 'active'
+                ? 'pending_dispatch'
+                : 'cleanup_pending';
+            refusalReason = actuation.refusalReason ?? null;
+
+            // The approve was refused and the elevation is now denied, so
+            // this row must not read as approved to anyone who reads it (the
+            // mobile app and the inbox's Recent panel read `status`). Same
+            // transaction, and the CAS above already holds this row's lock.
+            // decided_* keep recording the approver's approve;
+            // refusal_reason is what marks it as refused rather than denied
+            // by the approver.
+            if (refusalReason && status === 'approved') {
+              const [refused] = await tx
+                .update(approvalRequests)
+                .set({ status: 'denied', refusalReason })
+                .where(and(eq(approvalRequests.id, updated.id), eq(approvalRequests.status, 'approved')))
+                .returning();
+              if (!refused) {
+                // Unreachable: this transaction wrote 'approved' to the row
+                // and holds its lock. Roll back rather than commit an
+                // approval row that reads as approved.
+                throw new Error(`refused approve could not be stored on approval ${updated.id}`);
+              }
+              updated = refused;
+            }
+
+            await tx
+              .update(approvalRequests)
+              .set({ status: 'expired', decidedAt: now })
+              .where(and(
+                eq(approvalRequests.elevationRequestId, elevation.id),
+                eq(approvalRequests.status, 'pending'),
+                ne(approvalRequests.id, updated.id),
+              ));
+          }
+
+          // Diagnostic read grant: activate (or deny) it in THIS transaction,
+          // first-wins against the other approvers and the request TTL. If the
+          // grant is no longer pending (revoked, lapsed, decided elsewhere) the
+          // whole decision rolls back rather than record an approval that
+          // activated nothing.
+          if (updated.diagnosticAccessGrantId) {
+            const decided = await decideDiagnosticGrantInTx(tx as unknown as typeof db, {
+              grantId: updated.diagnosticAccessGrantId,
+              approvalRequestId: updated.id,
+              deciderUserId: userId,
+              status,
+              reason: reason ?? null,
+              decidedAssuranceLevel: assurance.decidedAssuranceLevel ?? null,
+              decidedVia: assurance.decidedVia ?? null,
+              now: new Date(),
+            });
+            if (!decided) throw new DiagnosticGrantNotPendingError();
+            decidedDiagnosticGrant = decided;
           }
 
           // If this approval row was created by the AI agent SDK (Breeze AI /
@@ -1605,8 +1751,19 @@ export async function decideApprovalRequest(
       ),
     );
   } catch (err) {
+    if (err instanceof DiagnosticGrantNotPendingError) {
+      return { httpStatus: 409, body: { error: 'diagnostic_access_no_longer_pending', finalStatus: 'expired' } };
+    }
     console.error('[approvals] decide transaction failed (rolled back):', err);
     return { httpStatus: 500, body: { error: 'decide_failed', retryable: true } };
+  }
+
+  if (decidedDiagnosticGrant) {
+    try {
+      await auditDiagnosticDecision(decidedDiagnosticGrant, userId, id);
+    } catch (auditErr) {
+      console.error('[approvals] diagnostic access decision audit failed:', auditErr);
+    }
   }
 
   if (writeResult.lostRace) {

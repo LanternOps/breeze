@@ -44,7 +44,7 @@ import { db } from '../db';
 import { aiSessions, aiMessages } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { PERMISSIONS } from '../services/permissions';
-import { LlmUnavailableError } from '../services/llm/llmUnavailableError';
+import { LlmUnavailableError, llmUnavailableBody } from '../services/llm/llmUnavailableError';
 import { AI_NOT_CONFIGURED_BODY, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import { readOrgPartnerId } from '../services/aiModels/candidateLoader';
 import { chooseSessionModel, type SessionModelChoice } from '../services/aiModels/sessionModel';
@@ -108,7 +108,7 @@ scriptAiRoutes.post(
       choice = await chooseSessionModel({ partnerId, orgId, userId: auth.user.id, surface: 'script_builder' });
     } catch (err) {
       if (err instanceof LlmNotConfiguredError) return c.json(AI_NOT_CONFIGURED_BODY, 503);
-      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+      if (err instanceof LlmUnavailableError) return c.json(llmUnavailableBody(err), 503);
       captureException(err, c);
       return c.json({ error: 'AI configuration could not be loaded. Try again.' }, 503);
     }
@@ -292,8 +292,10 @@ scriptAiRoutes.post(
     // was resolved (wire id included) in preflight; the LlmUnavailableError
     // catch is a last-resort guard with ai.ts's shape, never a 500.
     type ActiveScriptSession = Awaited<ReturnType<typeof streamingSessionManager.getOrCreate>>;
+    const subscriptionId = crypto.randomUUID();
+    let subscribedSession: ActiveScriptSession | null = null;
     const dispatch = await inRequestDb(async (): Promise<
-      | { kind: 'dispatched'; activeSession: ActiveScriptSession }
+      | { kind: 'dispatched'; activeSession: ActiveScriptSession; events: ReturnType<ActiveScriptSession['eventBus']['subscribe']> }
       | { kind: 'refused'; response: Response }
       | { kind: 'failed'; error: unknown }
     > => {
@@ -323,7 +325,7 @@ scriptAiRoutes.post(
         );
       } catch (err) {
         if (err instanceof LlmUnavailableError) {
-          return { kind: 'refused', response: c.json({ error: 'ai_unavailable' }, 503) };
+          return { kind: 'refused', response: c.json(llmUnavailableBody(err), 503) };
         }
         return { kind: 'failed', error: err };
       }
@@ -370,9 +372,19 @@ scriptAiRoutes.post(
       }
 
       // Push message to the streaming input and start turn timeout
+      // Subscribe BEFORE the turn is pushed: the session event bus has no
+      // replay, and a fast transport can publish the turn's events (even its
+      // error and done) before the SSE callback below would run (#7783).
+      const events = activeSession.eventBus.subscribe(subscriptionId);
+      subscribedSession = activeSession;
       activeSession.inputController.pushMessage(sanitizedContent);
       streamingSessionManager.startTurnTimeout(activeSession);
-      return { kind: 'dispatched', activeSession };
+      return { kind: 'dispatched', activeSession, events };
+    }).catch((err: unknown) => {
+      // The dispatch context failed after subscribing (e.g. its commit): drop
+      // the subscription so the bus doesn't keep a dead queue.
+      subscribedSession?.eventBus.unsubscribe(subscriptionId);
+      throw err;
     });
     if (dispatch.kind !== 'dispatched') {
       // Released only after the dispatch context has closed, so the release's
@@ -381,13 +393,9 @@ scriptAiRoutes.post(
       if (dispatch.kind === 'failed') throw dispatch.error;
       return dispatch.response;
     }
-    const { activeSession } = dispatch;
-
-    const subscriptionId = crypto.randomUUID();
+    const { activeSession, events } = dispatch;
 
     return streamSSE(c, async (stream) => {
-      const events = activeSession.eventBus.subscribe(subscriptionId);
-
       try {
         for await (const event of events) {
           await stream.writeSSE({

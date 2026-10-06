@@ -53,6 +53,12 @@ Weavestream delegation. They must be granted explicitly, per principal:
 | `sites:write` | Create sites within an accessible organization |
 | `enrollment-keys:write` | Mint device-join enrollment credentials |
 | `contracts:write` | Create a contract, update header fields, add/patch/remove lines, and GET one contract to confirm contents. Does not grant activate/pause/cancel, documents, or the human JWT `/api/v1/contracts` surface. Line removal is contents, not tenancy deletion. |
+| `tickets:write` | Create, update, change status, assign and comment on tickets in any accessible organization (the `/api/v1/partner-api/tickets` surface). Does not grant delete, restore, move-org, bulk actions, attachments, time entries, AI drafts or the mailbox — those stay human, MFA-gated actions on the main API. The principal acts as **itself**: comments and audit rows name the principal, never a person. |
+
+`tickets:read` is a further **opt-in read** scope, like `alerts:read`: ticket
+subjects, descriptions and comments are customer-authored data across every
+organization the principal can reach, so it is never part of any default scope
+set either.
 
 `enrollment-keys:write` is the most sensitive write scope, because the
 credentials it mints let a machine join the tenant. A principal holding it must
@@ -114,6 +120,10 @@ or user management.
 | `GET /api/v1/partner-api/custom-fields` | `custom-fields:read` |
 | `GET /api/v1/partner-api/custom-field-values` | `custom-fields:read` |
 | `GET /api/v1/partner-api/alerts` | `alerts:read` (opt-in) |
+| `GET /api/v1/partner-api/tickets` | `tickets:read` (opt-in) |
+| `GET /api/v1/partner-api/tickets/ids` | `tickets:read` (opt-in) |
+| `GET /api/v1/partner-api/tickets/<ticket-uuid>` | `tickets:read` (opt-in) |
+| `GET /api/v1/partner-api/tickets/<ticket-uuid>/comments` | `tickets:read` (opt-in) |
 | `POST /api/v1/partner-api/organizations` | `organizations:write` |
 | `POST /api/v1/partner-api/sites` | `sites:write` |
 | `POST /api/v1/partner-api/enrollment-keys` | `enrollment-keys:write` |
@@ -513,3 +523,81 @@ Guarantees and limits:
 - Checkpoints and cursors are signed, bound to the partner, filters and
   organization set, and cursors expire after 24 hours.
 
+## Tickets feed (`tickets:read`)
+
+`GET /api/v1/partner-api/tickets` is a read-only, **coalesced latest-state**
+feed of tickets across every organization the principal can reach, with the
+same sync contract as the alerts feed above (`cursor` while `hasMore`, then
+persist `checkpoint` and pass it as `since`; `409
+partner_tickets_resync_required` means start again without `since`). Delivery
+is at-least-once across resyncs: treat every item as an upsert keyed by `id`.
+Three companion routes:
+
+| Route | Returns |
+|---|---|
+| `GET /partner-api/tickets/ids` | `{ schemaVersion, data: [{ id, orgId, changeVersion }], nextCursor, hasMore }` — every **live** ticket in the accessible set, keyset-paged by `id`; `orgId` narrows it. A mirror diffs it on a schedule (daily is enough) and drops anything it holds that is absent — the only way to observe a ticket that moved to an organization outside the principal's set |
+| `GET /partner-api/tickets/<ticket-uuid>` | `{ schemaVersion, data }` — one ticket record, or `404 partner_ticket_not_found` for a ticket that is soft-deleted, in another partner, or in an organization the principal cannot reach |
+| `GET /partner-api/tickets/<ticket-uuid>/comments` | `{ schemaVersion, ticketId, data, nextCursor, hasMore }` — the ticket's comments and feed entries (status changes, assignments, system notes) in creation order, keyset-paged with a signed `cursor`; `since` (offset ISO timestamp) returns only comments created strictly after that instant |
+
+`tickets:read` is an opt-in scope: ticket subjects, descriptions and
+comments are customer-authored data, so it is never part of the default
+delegation and must be requested explicitly. Nothing is written through it.
+
+Feed query parameters (all optional): `orgId`, `status` and `priority`
+(comma lists of the core values `new`, `open`, `pending`, `on_hold`,
+`resolved`, `closed` / `low`, `normal`, `high`, `urgent`), `assigneeId`,
+`externalId` (exact match on **this principal's** correlation key; keys are
+namespaced by service principal, so another integration's ids never match),
+`limit` (1-500, default 100), and exactly one of `since` or `cursor`.
+
+Each feed item is one of two shapes:
+
+- a **record**: ids for status (`statusId` is the partner's custom status
+  row, `status` the core value), category, assignee, device and requester
+  (`requester.contactId` / `requester.portalUserId`, plus the name/email
+  snapshot taken at creation), `tags`, `externalTicketId` /
+  `externalTicketUrl` (this principal's ref), SLA targets and stamps,
+  `source`, `workKind`, `changeVersion` and `revision`. Free text
+  (`description`, `resolutionNote`, `pendingReason`) is capped at 12,000
+  characters with a trailing `…`. Raw `custom_fields`, `field_provenance`,
+  attachments and time entries are not exported.
+- a **tombstone** `{ id, orgId, removed: true, reason: "deleted", deletedAt,
+  changeVersion }` for a ticket that was soft-deleted while still in an
+  accessible organization. A restore delivers the record again with a higher
+  `changeVersion`.
+
+Removals, precisely:
+
+| The ticket… | The consumer sees |
+|---|---|
+| is soft-deleted | a tombstone on the feed |
+| is restored | the record again |
+| moves into the org set, or between two orgs in the set | the record with its new `orgId` |
+| moves **out** of the org set | nothing on the feed (its new organization is not readable, and a tombstone would disclose ids the consumer may never have seen); `GET /tickets/ids` no longer lists it |
+| its organization leaves or joins the principal's set | `409 partner_tickets_resync_required` |
+
+Guarantees and limits, in addition to the alerts feed's:
+
+- Change tracking uses the writing transaction id bounded by the reading
+  snapshot's xmin, so a ticket whose transaction commits late is never
+  skipped behind a checkpoint you already hold. Every comment write — new,
+  edited, deleted, from the portal, inbound email, AI, staff or this API —
+  re-stamps the parent ticket, so comment-only activity re-delivers the
+  ticket (with a new `changeVersion`); fetch its comments to see what
+  changed. `updatedAt` is untouched by comments.
+- Comments carry `originPrincipalKind` (`user`, `ai_agent`, `system`,
+  `service_principal`) and `originPrincipalId`: compare the latter to your
+  own principal id to skip exactly the comments your integration wrote, even
+  when several integrations share one partner. An edited comment carries
+  `editedAt` and a changed `revision`; a deleted one is returned in its
+  creation-order slot as `{ id, ticketId, orgId, removed: true, deletedAt,
+  createdAt }` with no content. Re-read the (bounded) list whenever the
+  ticket is re-delivered and you converge exactly.
+- Filters apply to the ticket's current row, so a filtered feed does not
+  report a ticket leaving the filter.
+- A ticket (or comment) whose text contains a detected secret is withheld and
+  listed in `blocked` (`GET /tickets/<id>` answers `422
+  partner_export_record_blocked`). It reappears only when written again.
+- Checkpoints, cursors and comment cursors are signed, bound to the partner
+  (and to the filters, organization set, or ticket they were minted for),
+  and expire after 24 hours.

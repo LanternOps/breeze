@@ -1,13 +1,18 @@
+import { InvoicePaymentPanel } from './autopay/InvoicePaymentPanel';
+import { runAction } from '@/lib/runAction';
+import { invoiceAutopayInput } from '@/lib/api';
 import { withBase } from '@/lib/basePath';
-import { useEffect, useState, Fragment } from 'react';
-import { ArrowLeft, AlertCircle, Download, CreditCard } from 'lucide-react';
-import { type BrandingConfig, type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi, lineWorkedVsBilledNote } from '@/lib/api';
-import { groupInvoiceLinesByTicket } from '@/lib/invoiceLineGroups';
-import { money, shortDate } from '@/lib/format';
+import { useEffect, useState } from 'react';
+import { ArrowLeft, AlertCircle, Download } from 'lucide-react';
+import { type BrandingConfig, type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi } from '@/lib/api';
+import { longDate } from '@/lib/format';
 import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { DocumentPaper, DocumentHeader, DocumentTerms, DocumentTermsCollapsible, type DocSeller } from './documentShell';
-import { BTN_PRIMARY, BTN_SECONDARY } from './ui';
+import { InvoiceLineTable, InvoiceTotals } from './invoicePaper';
+import { INVOICE_GRID, RAIL } from './autopay/InvoicePaymentPanel';
+import { BTN_PRIMARY, BTN_SECONDARY, Notice } from './ui';
+import { cn } from '@/lib/utils';
 
 // Invoice statuses that can be paid online (mirrors the API's PAYABLE set).
 const PAYABLE_STATUSES: ReadonlySet<InvoiceStatus> = new Set(['sent', 'partially_paid', 'overdue']);
@@ -30,12 +35,6 @@ interface DocBranding {
 /** Per-line tax amount for the Tax column: taxable lines get lineTotal × rate
  *  rounded to cents; non-taxable lines / a non-positive rate return null (shown
  *  as '—'). The header Tax stays invoice.taxTotal (authoritative). */
-function lineTax(lineTotal: string | number, taxable: boolean, rate: number): number | null {
-  if (!taxable || !(rate > 0)) return null;
-  const cents = Math.round(Number(lineTotal) * 100);
-  if (!Number.isFinite(cents)) return null;
-  return Math.round(cents * rate) / 100;
-}
 
 export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailViewProps) {
   // Partner branding for the document shell. Invoices used to render unbranded
@@ -99,28 +98,17 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
     const invoiceId = detail.invoice.id;
     let cancelled = false;
     setSettleState('settling');
-    void portalApi.settleInvoice(invoiceId, sessionId)
-      .then((res) => {
-        if (cancelled) return;
-        if (res.data?.settled) {
-          // Reload WITHOUT the return params (replace, not push) so the page re-fetches
-          // fresh server data showing Paid — and a manual refresh won't re-trigger settle.
-          window.location.replace(withBase(`/invoices/${invoiceId}`));
-        } else if (res.error) {
-          // A failed settle call is not "still confirming": say so, and log it.
-          console.error('[portal] settle failed', { invoiceId, sessionId, statusCode: res.statusCode, error: res.error });
-          setSettleState('failed');
-        } else {
-          // A genuine {settled:false}: async payment method — the reconcile sweep
-          // will catch it. Tell the customer rather than silently leaving it "Sent".
-          setSettleState('pending');
-        }
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        console.error('[portal] settle request threw', { invoiceId, sessionId, err });
-        setSettleState('failed');
-      });
+    void runAction<{ settled: boolean; invoiceId?: string }>({
+      request: () => portalApi.settleInvoice(invoiceId, sessionId),
+      onOutcome: (message, error) => {
+        if (!cancelled && error) { setPayError(message); setSettleState('failed'); }
+      },
+      successMessage: 'Payment checked.', errorFallback: 'Could not confirm payment. Please try again.',
+    }).then(result => {
+      if (cancelled) return;
+      if (result?.settled) window.location.replace(withBase(`/invoices/${invoiceId}`));
+      else if (result) setSettleState('pending');
+    });
     return () => { cancelled = true; };
   }, [detail]);
 
@@ -146,7 +134,8 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
 
   const { invoice, lines } = detail;
   const currency = invoice.currencyCode;
-  const canPay = PAYABLE_STATUSES.has(invoice.status) && Number(invoice.balance) > 0;
+  const canPay = PAYABLE_STATUSES.has(invoice.status) && Number(invoice.balance) > 0
+    && detail.onlinePaymentAvailable !== false; // #7509
   // Deposit-aware charge amount — matches what the server's pay route charges (Task 8),
   // so the button label and the deposit strip never diverge from the actual charge.
   const hasDeposit = invoice.depositDue != null;
@@ -155,9 +144,9 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
     amountPaid: invoice.amountPaid,
     balance: invoice.balance,
   }, invoice.currencyCode);
-  const payLabel = chargeNow.isDeposit
-    ? `Pay deposit ${money(chargeNow.amount, currency)}`
-    : `Pay ${money(chargeNow.amount, currency)}`;
+  // #7824: the server reservation. Once the customer releases a payment waiting on
+  // their bank, the panel clears it locally and the Pay button is the way to pay.
+  const collectionInProgress = detail.collectionInProgress ?? null;
   // Per-line Tax column only when this invoice carries tax (mirrors the Tax row).
   const taxRate = invoice.taxRate ? Number(invoice.taxRate) : 0;
   const showTax = Number(invoice.taxTotal) > 0;
@@ -165,33 +154,22 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
 
   const seller = (invoice.sellerSnapshot ?? null) as DocSeller | null;
   const headerDates = [
-    { label: 'Issued', value: shortDate(invoice.issueDate) },
-    { label: 'Due', value: shortDate(invoice.dueDate) },
+    { label: 'Issued', value: longDate(invoice.issueDate) || '—' },
+    { label: 'Due', value: longDate(invoice.dueDate) || '—' },
   ];
 
-  const payInvoice = async () => {
-    if (paying) return;
-    setPaying(true);
-    setPayError(null);
-    const result = await portalApi.payInvoice(invoice.id);
-    if (result.data?.url) {
-      window.location.href = result.data.url;
-      return; // keep the button disabled while the browser navigates to Checkout
-    }
-    if (!result.error) {
-      // A 200 without a Checkout URL is a contract error, not a customer condition.
-      console.error('[portal] pay returned no checkout url', { invoiceId: invoice.id, statusCode: result.statusCode });
-    }
-    if (result.statusCode === 409) {
-      // Terminal condition (online payment unavailable / invoice not payable). Show the
-      // server's reason verbatim — "Please try again" would mislead since a retry won't help.
-      setPayError(result.error || 'Online payment is not available for this invoice.');
-      setPayTerminal(true);
-    } else {
-      setPayError(result.error || 'Could not start the payment. Please try again.');
-      setPayTerminal(false);
-    }
-    setPaying(false);
+  const payInvoice = async (saveForAutopay: boolean) => {
+    if (paying) return; setPaying(true); setPayError(null);
+    const result = await runAction({
+      request: async () => {
+        const response = await portalApi.payInvoice(invoice.id, {}, invoiceAutopayInput(saveForAutopay, detail.autopay));
+        setPayTerminal(response.statusCode === 409); return response;
+      },
+      onOutcome: (message, error) => { if (error) setPayError(message); },
+      successMessage: 'Opening secure checkout…', errorFallback: 'Could not start payment. Please try again.',
+      validate: value => typeof value.url === 'string' && value.url.startsWith('https://checkout.stripe.com/'),
+    });
+    if (result && typeof result.url === 'string') window.location.href = result.url; else setPaying(false);
   };
 
   const downloadPdf = async () => {
@@ -225,71 +203,63 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
     }
   };
 
-  return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <a href={withBase("/invoices")} className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground">
-          <ArrowLeft className="h-4 w-4" />
-          Back to invoices
-        </a>
-        <div className="flex flex-wrap items-center gap-2">
-          {canPay && (
-            <button
-              type="button"
-              onClick={() => void payInvoice()}
-              disabled={paying}
-              data-testid="invoice-pay-button"
-              className={BTN_PRIMARY}
-            >
-              <CreditCard className="h-4 w-4" />
-              {paying ? 'Opening secure checkout' : payLabel}
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => void downloadPdf()}
-            disabled={downloading}
-            className={canPay ? BTN_SECONDARY : BTN_PRIMARY}
-          >
-            <Download className="h-4 w-4" />
-            {downloading ? 'Preparing' : 'Download PDF'}
-          </button>
-        </div>
-      </div>
-
-      {settleState === 'settling' && (
-        <div role="status" className="rounded-md bg-warning/10 p-3 text-sm font-medium text-warning-on-tint" data-testid="invoice-settle-confirming">
-          Confirming your payment…
-        </div>
-      )}
+  const notices = (
+    <>
+      {settleState === 'settling' && <Notice tone="primary" title="Confirming your payment…" data-testid="invoice-settle-confirming" />}
       {settleState === 'failed' && (
-        <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm font-medium text-destructive-on-tint" data-testid="invoice-settle-failed">
-          We couldn't confirm your payment just now. If your card was charged, it will be applied shortly — and your IT team can confirm it for you.
-        </div>
+        <Notice tone="destructive" title="We couldn't confirm your payment just now." data-testid="invoice-settle-failed">
+          <p>{`If your card was charged, it will be applied shortly, and ${branding?.partnerName ?? 'your IT team'} can confirm it for you.`}</p>
+        </Notice>
       )}
       {settleState === 'pending' && (
-        <div role="status" className="rounded-md bg-warning/10 p-3 text-sm font-medium text-warning-on-tint" data-testid="invoice-settle-pending">
-          Thanks! We're still confirming your payment — this can take a moment. Refresh shortly to see it applied.
-        </div>
+        <Notice tone="primary" title="Thanks! We're still confirming your payment." data-testid="invoice-settle-pending">
+          <p>This can take a moment. Refresh shortly to see it applied.</p>
+        </Notice>
       )}
+      {invoice.status === 'paid' && !detail.autopayStatus && <Notice tone="success" title="Paid. Thank you." />}
       {payError && (
-        <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint" data-testid="invoice-pay-error">
-          <p className="font-medium">{payError}</p>
+        <Notice tone="destructive" title={payError} data-testid="invoice-pay-error">
           {/* A terminal 409 leaves a dead button; the customer still has a bill.
               Name the next step so the page does not end on a refusal. */}
           {payTerminal && (
-            <p className="mt-1 text-foreground/80" data-testid="invoice-pay-next-step">
+            <p data-testid="invoice-pay-next-step">
               {branding?.partnerName
-                ? `Ask ${branding.partnerName} how to pay this invoice — they can take payment another way.`
-                : 'Ask your IT team how to pay this invoice — they can take payment another way.'}
+                ? `Ask ${branding.partnerName} how to pay this invoice. They can take payment another way.`
+                : 'Ask your IT team how to pay this invoice. They can take payment another way.'}
             </p>
           )}
-        </div>
+        </Notice>
       )}
-      {downloadError && (
-        <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm font-medium text-destructive-on-tint">{downloadError}</div>
-      )}
+      {downloadError && <Notice tone="destructive" title={downloadError} />}
+    </>
+  );
 
+  return (
+    <div className="space-y-5">
+      <a href={withBase("/invoices")} className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground">
+        <ArrowLeft className="h-4 w-4" />
+        Back to invoices
+      </a>
+      <div className={cn('grid gap-5', INVOICE_GRID)}>
+      {/* The panel comes first on phones; at lg it sits beside the invoice (D-4). */}
+      <div className={RAIL}>
+        <InvoicePaymentPanel portal
+          currency={currency} balance={invoice.balance} dueDate={invoice.dueDate} status={invoice.status}
+          canPay={canPay} onlinePaymentUnavailable={detail.onlinePaymentAvailable === false && PAYABLE_STATUSES.has(invoice.status)}
+          charge={chargeNow} autopayStatus={detail.autopayStatus ?? null} autopayEnrolled={detail.autopayEnrolled === true}
+          saveOffer={detail.autopay} bankTarget={{ invoiceId: invoice.id }} bankOffer={detail.bankAutopay}
+          collectionInProgress={collectionInProgress} partnerName={branding?.partnerName}
+          paying={paying} onPay={save => void payInvoice(save)} payTestId="invoice-pay-button" processingTestId="invoice-collection-processing"
+          release={() => portalApi.releaseAutopayConfirmation(invoice.id)} notices={notices}
+          download={(
+            <button type="button" onClick={() => void downloadPdf()} disabled={downloading} className={cn(canPay ? BTN_SECONDARY : BTN_PRIMARY, 'w-full')}>
+              <Download className="h-4 w-4" aria-hidden="true" />
+              {downloading ? 'Preparing…' : 'Download PDF'}
+            </button>
+          )}
+        />
+      </div>
+      <div className="min-w-0 lg:col-start-1 lg:row-start-1">
       <DocumentPaper testId="invoice-document" primaryColor={branding?.primaryColor}>
         <DocumentHeader
           logoUrl={branding?.logoUrl}
@@ -304,103 +274,20 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
           preparedForName={invoice.billToName ?? undefined}
         />
 
-        <div className="overflow-hidden rounded-lg border bg-card">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[28rem] text-sm">
-              <thead>
-                <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-2.5 text-left font-medium sm:px-5">Description</th>
-                  <th className="px-2 py-2.5 text-right font-medium">Qty</th>
-                  <th className="px-2 py-2.5 text-right font-medium">Price</th>
-                  {showTax && <th className="px-2 py-2.5 text-right font-medium">Tax</th>}
-                  <th className="px-4 py-2.5 text-right font-medium sm:px-5">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {groupInvoiceLinesByTicket(lines).map((group) => (
-                    <Fragment key={group.key}>
-                      {group.ticketNumber && (
-                        <tr className="border-b bg-muted/30">
-                          <td colSpan={showTax ? 5 : 4} className="px-4 py-2 sm:px-5">
-                            <div className="flex flex-wrap items-center gap-2 text-xs">
-                              <span className="font-semibold text-foreground">
-                                {`Ticket #${group.ticketNumber}`}
-                              </span>
-                              {group.ticketCategory && (
-                                <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground font-medium">
-                                  {group.ticketCategory}
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                      {group.lines.map((l) => {
-                        const index = lines.indexOf(l);
-                        const tax = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
-                        const title = (l.name ?? l.description ?? '').trim() || '—';
-                        const blurb = l.name ? (l.description ?? '').trim() : '';
-                        // #6467: worked-vs-billed disclosure (§3.5), sourced from
-                        // structured data — never from `description`.
-                        const note = lineWorkedVsBilledNote(l);
-                        return (
-                          <tr key={`${title}-${index}`} className="border-b align-top last:border-0">
-                            <td className="px-4 py-3 text-foreground sm:px-5">
-                              {title}
-                              {blurb && <div className="mt-0.5 text-xs text-muted-foreground">{blurb}</div>}
-                              {note && <div className="mt-0.5 text-xs text-muted-foreground" data-testid={`invoice-line-worked-vs-billed-${index}`}>{note}</div>}
-                              {l.ticketNumber && (
-                                <div
-                                  className="mt-0.5 text-xs text-muted-foreground"
-                                  data-testid={`invoice-line-ticket-${index}`}
-                                >
-                                  Ticket #{l.ticketNumber}
-                                </div>
-                              )}
-                            </td>
-                            <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>
-                            <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{money(l.unitPrice, currency)}</td>
-                            {showTax && <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{tax === null ? '—' : money(tax, currency)}</td>}
-                            <td className="whitespace-nowrap px-4 py-3 text-right font-medium tabular-nums text-foreground sm:px-5">{money(l.lineTotal, currency)}</td>
-                          </tr>
-                        );
-                      })}
-                    </Fragment>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <InvoiceLineTable lines={lines} currency={currency} taxRate={taxRate} showTax={showTax} showLineTicket />
 
-        <section className="flex justify-end">
-          <div className="w-full max-w-xs space-y-2.5">
-            <div className="flex justify-between text-sm"><span className="text-muted-foreground">Subtotal</span><span className="tabular-nums text-foreground">{money(invoice.subtotal, currency)}</span></div>
-            <div className="flex justify-between text-sm"><span className="text-muted-foreground">Tax{taxPct ? ` (${taxPct}%)` : ''}</span><span className="tabular-nums text-foreground">{money(invoice.taxTotal, currency)}</span></div>
-            <div className="flex justify-between border-t pt-2.5 text-sm"><span className="font-medium text-foreground">Total</span><span className="font-medium tabular-nums text-foreground">{money(invoice.total, currency)}</span></div>
-            {Number(invoice.amountPaid) > 0 && (
-              <div className="flex justify-between text-sm"><span className="text-muted-foreground">Paid</span><span className="tabular-nums text-foreground">−{money(invoice.amountPaid, currency)}</span></div>
-            )}
-            <div className="doc-accent-border flex items-baseline justify-between border-t pt-3">
-              <span className="text-sm font-semibold text-foreground">Balance due</span>
-              <span className="doc-accent-text font-display text-2xl font-semibold tabular-nums" data-testid="invoice-balance-due">{money(invoice.balance, currency)}</span>
-            </div>
-            {hasDeposit && (
-              <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground" data-testid="invoice-deposit-strip">
-                {chargeNow.isDeposit ? (
-                  <>Deposit of <strong className="text-foreground">{money(invoice.depositDue!, currency)}</strong> due — {money(invoice.amountPaid, currency)} of {money(invoice.total, currency)} paid.</>
-                ) : (
-                  <>Deposit paid — remaining balance {money(invoice.balance, currency)}.</>
-                )}
-              </div>
-            )}
-          </div>
-        </section>
+        <InvoiceTotals currency={currency} subtotal={invoice.subtotal} taxTotal={invoice.taxTotal} taxPct={taxPct}
+          total={invoice.total} amountPaid={invoice.amountPaid} balance={invoice.balance} paid={invoice.status === 'paid'}
+          deposit={hasDeposit ? { due: invoice.depositDue!, isDeposit: chargeNow.isDeposit } : null}
+          testIds={{ balance: 'invoice-balance-due', deposit: 'invoice-deposit-strip' }} />
 
         {invoice.notes && <DocumentTerms label="Notes">{invoice.notes}</DocumentTerms>}
         {invoice.termsAndConditions && (
           <DocumentTermsCollapsible text={invoice.termsAndConditions} testId="invoice-terms-conditions" />
         )}
       </DocumentPaper>
+      </div>
+      </div>
     </div>
   );
 }

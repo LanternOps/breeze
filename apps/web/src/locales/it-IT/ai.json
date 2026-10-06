@@ -86,7 +86,8 @@
         "prompt": "Mostrami le voci del registro di controllo più recenti — quali azioni sono state eseguite nelle ultime ore?"
       }
     },
-    "unattendedRelease": "Verificato dal revisore di script dell'IA e rilasciato senza una scheda di approvazione."
+    "unattendedRelease": "Verificato dal revisore di script dell'IA e rilasciato senza una scheda di approvazione.",
+    "openScriptProposal": "Apri la proposta per vederne le esecuzioni o salvarla nella libreria"
   },
   "aiChatSidebar": {
     "history": "Cronologia",
