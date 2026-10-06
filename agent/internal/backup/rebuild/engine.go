@@ -234,7 +234,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		if errors.As(err, &ref) {
 			pr.Status, pr.Message, pr.CompletedAt = PhaseRefused, ref.Reason, time.Now().UTC()
 			r.result.Phases = append(r.result.Phases, pr)
-			r.result.Status, r.result.Refusal = "refused", ref.Reason
+			r.result.Status, r.result.Refusal, r.result.RefusalCode = "refused", ref.Reason, ref.Code
 			r.result.Warnings = r.warnings
 			r.result.DurationMs = time.Since(start).Milliseconds()
 			return r.result, err
@@ -280,7 +280,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			if errors.As(err, &ref) {
 				pr.Status, pr.Message = PhaseRefused, ref.Reason
 				r.result.Phases = append(r.result.Phases, pr)
-				r.result.Status, r.result.Refusal = "refused", ref.Reason
+				r.result.Status, r.result.Refusal, r.result.RefusalCode = "refused", ref.Reason, ref.Code
 				r.result.Warnings = r.warnings
 				r.result.DurationMs = time.Since(start).Milliseconds()
 				return r.result, err

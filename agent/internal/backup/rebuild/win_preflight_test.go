@@ -94,6 +94,38 @@ func TestWinPreflight_RefusesDiskWithWindowsTreeUnlessForced(t *testing.T) {
 	}
 }
 
+// W07a: the disk-has-Windows refusal carries a typed code so the recovery
+// console can offer an explicit OVERWRITE instead of dead-ending.
+func TestWinPreflight_DiskHasWindowsCarriesCode(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, sys := winFakeOptions(t, dir)
+	opts.Target = Target{Kind: TargetDisk, Path: `\\.\PhysicalDrive1`}
+	opts.DryRun = true
+	sys.inWinPE = true
+	sys.diskInfo[1] = WinDiskInfo{SizeBytes: 80 * GiB}
+	sys.volumes = append(sys.volumes, fakeVolume{guidPath: `\\?\Volume{existing}\`, diskNumber: 1, partitionNumber: 1})
+	sys.hasWindowsTree[`\\?\Volume{existing}\`] = true
+
+	res, err := Run(context.Background(), opts)
+	var ref *RefusalError
+	if !errors.As(err, &ref) || ref.Code != RefusalCodeDiskHasWindows {
+		t.Fatalf("err = %v", err)
+	}
+	if res == nil || res.Status != "refused" || res.RefusalCode != RefusalCodeDiskHasWindows {
+		t.Fatalf("result = %+v", res)
+	}
+
+	// Every other refusal stays untyped.
+	opts.Target = Target{Kind: TargetDisk, Path: `\\.\PhysicalDrive1`}
+	sys.hasWindowsTree[`\\?\Volume{existing}\`] = false
+	sys.inWinPE = false
+	res, err = Run(context.Background(), opts)
+	if err == nil || res == nil || res.Status != "refused" || res.RefusalCode != "" {
+		t.Fatalf("non-windows-tree refusal must carry no code: res=%+v err=%v", res, err)
+	}
+}
+
 // R10: vhdx free space below the minimum is refused before any write.
 func TestWinPreflight_RefusesVhdxBelowFreeSpace(t *testing.T) {
 	withHostPlatformWindows(t)
