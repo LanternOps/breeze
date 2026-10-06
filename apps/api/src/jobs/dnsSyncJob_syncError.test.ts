@@ -270,4 +270,24 @@ describe('SsrfBlockedError is a configuration condition, not a job failure (#802
     const update = setCalls.find((p) => p.syncStatus === 'error');
     expect(String(update!.syncError)).toMatch(/private\/blocked address/i);
   });
+
+  it('still throws SsrfBlockedError when the status write itself fails (condition must not be lost)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { SsrfBlockedError } = await import('../services/urlSafety');
+    mockDb.select.mockReturnValue(
+      selectReturning([
+        { id: 'int-4', orgId: 'org-1', provider: 'pihole', apiKey: 'k', apiSecret: null, isActive: true, config: {}, lastSync: null },
+      ]),
+    );
+    createDnsProviderMock.mockReturnValue({
+      syncEvents: vi.fn().mockRejectedValue(new SsrfBlockedError('blocked', { hostname: 'pihole.lan' })),
+    });
+    mockDb.update.mockImplementation(() => ({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockRejectedValue(new Error('db down')) }),
+    }));
+
+    await expect(
+      processSyncIntegration({ type: 'sync-integration', integrationId: 'int-4' }),
+    ).rejects.toBeInstanceOf(SsrfBlockedError);
+  });
 });
