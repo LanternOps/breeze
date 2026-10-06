@@ -378,6 +378,14 @@ for (const [area, jobs] of Object.entries(AREA_JOBS)) {
   }
 }
 
+// check-migrations (#7032): gated on code AND api, so it is outside AREA_JOBS, but
+// an api change must still REQUIRE it green. It used to be asserted only when
+// app=false, so a red migration-naming/replay/immutability guard passed CI Success
+// on every API PR.
+test('ci-success asserts check-migrations with the three-branch API_CHANGED pattern (#7032)', () => {
+  assert.match(summary, triState('API_CHANGED', 'CHECK_MIGRATIONS_RESULT'));
+});
+
 // Execute the real summary shell.
 const summaryScript = summary.split('        run: |\n')[1]
   .split('\n').filter((line) => line.startsWith('          '))
@@ -421,7 +429,7 @@ for (const [label, env, passes] of [
   ['every area changed, all green', onlyAreas(AREAS), true],
   ['every area changed, all green, merge queue', onlyAreas(AREAS, { isPr: 'false' }), true],
   ['api-only: check-migrations ran although api=false?', { ...onlyAreas(['web']), CHECK_MIGRATIONS_RESULT: 'success' }, false],
-  ['api changed: check-migrations red stays non-blocking for an application PR', { ...onlyAreas(['api']), CHECK_MIGRATIONS_RESULT: 'failure' }, true],
+  ['api changed: check-migrations red blocks an application PR (#7032)', { ...onlyAreas(['api']), CHECK_MIGRATIONS_RESULT: 'failure' }, false],
 ]) {
   test(`CI Success (areas): ${label}`, () => {
     const r = runSummary(env);
