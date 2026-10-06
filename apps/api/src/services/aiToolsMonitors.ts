@@ -105,13 +105,13 @@ function describeMonitorKind(kind: MonitorKind): Record<string, unknown> {
  */
 const EVENT_LOG_COLLECTION_GUIDANCE =
   'What the Windows agent collects for event_log: application = Application log error/critical only; ' +
-  'system = System log error/critical (disk, driver and WHEA errors, collected only when the event_log feature\'s hardware category is enabled) plus unexpected-shutdown events; ' +
-  'security = Security log warning and above; ' +
-  'hardware = a category="hardware" condition never matches a Windows device, because the agent stores its hardware errors under category "system".';
+  'system = System log error/critical from providers other than the hardware ones, plus unexpected-shutdown events; ' +
+  'hardware = System log error/critical from disk, NTFS, volume/storage-controller, WHEA machine-check and thermal providers; ' +
+  'security = Security log warning and above.';
 
 const EVENT_LOG_APP_PRESENCE_HINT =
   'Information-level events can never match (the lowest level is "warning"), so an event_log monitor cannot detect software installs or uninstalls (MsiInstaller events are Information). ' +
-  'To detect a missing or removed app, use a configuration policy compliance rule with featureType "compliance" and { type: "required_software", softwareName } instead.';
+  'To detect a missing or removed app, use a configuration policy compliance rule with featureType "compliance" and { type: "required_software", softwareName } instead';
 
 const EVENT_LOG_LEVELS: readonly string[] = ['warning', 'error', 'critical'];
 
@@ -142,7 +142,11 @@ function involvesBadEventLog(definition: unknown): boolean {
   );
 }
 
-/** Append the app-presence hint when an event_log level/type was rejected. */
+/**
+ * Append the app-presence hint when an event_log level/type was rejected. The
+ * hint keys off input shape, not zod's first issue; that is safe because the
+ * event_log schema is strict, so a `type` key or bad level is itself a rejection.
+ */
 function withEventLogHint(definition: unknown, message: string): string {
   return involvesBadEventLog(definition) ? `${message}. ${EVENT_LOG_APP_PRESENCE_HINT}` : message;
 }
@@ -505,7 +509,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
         const described = describeMonitorKind(input.kind);
         return JSON.stringify(
           input.kind === 'event_log'
-            ? { ...described, guidance: `${EVENT_LOG_COLLECTION_GUIDANCE} ${EVENT_LOG_APP_PRESENCE_HINT}` }
+            ? { ...described, guidance: `${EVENT_LOG_COLLECTION_GUIDANCE} ${EVENT_LOG_APP_PRESENCE_HINT}.` }
             : described,
         );
       }

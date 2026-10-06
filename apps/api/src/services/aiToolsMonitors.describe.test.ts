@@ -188,9 +188,26 @@ describe('manage_monitor_definitions discoverability (#7826)', () => {
 
     it('describe event_log carries the per-category collection guidance', async () => {
       const r = await call({ action: 'describe', kind: 'event_log' });
-      const text = JSON.stringify(r);
-      expect(text).toContain('required_software');
-      expect(text).toContain('Application log error/critical only');
+      expect(r.guidance).toContain('required_software');
+      expect(r.guidance).toContain('Application log error/critical only');
+      expect(r.guidance).toContain('WHEA');
+      const cpu = await call({ action: 'describe', kind: 'cpu' });
+      expect(cpu.guidance).toBeUndefined();
+    });
+
+    it('error text reads cleanly (no doubled period)', async () => {
+      const r = await call({ action: 'create', definition: eventLog({ category: 'application', level: 'information' }) });
+      expect(r.error).not.toContain('..');
+      expect(r.error).toContain('Use action "describe"');
+    });
+
+    it('no hint when level and category are valid but another field is rejected', async () => {
+      const r = await call({
+        action: 'create',
+        definition: eventLog({ category: 'application', level: 'warning', windowMinutes: 99999 }),
+      });
+      expect(r.error).toBeTruthy();
+      expect(r.error).not.toContain('required_software');
     });
   });
 });
