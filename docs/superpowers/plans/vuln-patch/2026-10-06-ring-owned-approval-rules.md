@@ -15,7 +15,7 @@
 | Wave | PR scope | Depends on | Migration | Blast radius | Impl / review tier |
 |---|---|---|---|---|---|
 | **W01** Expand | shared `ringAppRulesSchema`; `patch_policies.app_rules` column; resolver + eligibility dual-read; snapshot/executor `ringAppRules`; ring GET returns `appRules` (read-only) | — | DDL: add column + CHECK | Medium (approval evaluator; no behaviour change because the column is empty) | Sonnet / Sonnet |
-| **W02** Backfill + cutover | backfill migration; reads ring-only; snapshot dual-writes `apps` + `ringAppRules`; ring route + `manage_update_rings` write `appRules`; policy writes reject edited `apps`/`autoApprove`; `setup_auto_approval` retarget; AI shape/prompt sweep | W01 merged | Data: create/clone rings, relink links, copy ring approvals | **High** (data migration, live approval rules, AI write tool) | Opus / Opus (+ Codex `medium` second opinion on the SQL) |
+| **W02** Backfill + cutover | backfill migration; reads ring-only; snapshot dual-writes `apps` + `ringAppRules`; ring route + `manage_update_rings` write `appRules`; policy writes reject edited `apps`/`autoApprove`; invalid-ring policies fail closed; `setup_auto_approval` cleanup; AI shape/prompt sweep | W01 merged | Data: create/clone rings, relink links, copy ring approvals | **High** (data migration, live approval rules, AI write tool) | Opus / Opus (+ Codex `medium` second opinion on the SQL) |
 | **W03** Web | ring form "Application rules"; ring list badge; PatchTab strip; device effective-config tab | W02 merged; **must ship in the same release as W02** | none | Low–medium (UI) | Sonnet / Sonnet |
 | **W04** Contract | drop `auto_approve`, `auto_approve_severities`; re-create the partner export projection; strip inline keys; remove `policyAutoApprove`; stop writing snapshot `apps` | W02 + W03 **released** (one release later) | DDL drop + function replace + data strip | Medium (public partner-API export shape, exact-membership parity test) | Sonnet / Opus |
 
@@ -53,10 +53,13 @@ BEGIN READ ONLY;
 SELECT set_config('breeze.scope','system',true);
 WITH l AS (
   SELECT l.id, l.feature_policy_id AS ring_ref,
+         COALESCE(cp.partner_id, o.partner_id) AS partner_id,
          jsonb_typeof(l.inline_settings->'apps') = 'array'
            AND jsonb_array_length(l.inline_settings->'apps') > 0 AS has_apps,
          COALESCE((s.auto_approve), (l.inline_settings->>'autoApprove')::boolean, false) AS policy_auto
   FROM config_policy_feature_links l
+  JOIN configuration_policies cp ON cp.id = l.config_policy_id
+  LEFT JOIN organizations o ON o.id = cp.org_id
   LEFT JOIN config_policy_patch_settings s ON s.feature_link_id = l.id
   WHERE l.feature_type = 'patch'
 )
@@ -65,8 +68,12 @@ SELECT
   count(*) FILTER (WHERE has_apps AND ring_ref IS NOT NULL)                     AS ring_linked_with_apps,
   count(DISTINCT ring_ref) FILTER (WHERE has_apps AND ring_ref IS NOT NULL)     AS rings_touched,
   count(*) FILTER (WHERE policy_auto AND ring_ref IS NULL)                      AS ringless_policy_auto_on,
+  count(*) FILTER (WHERE ring_ref IS NOT NULL AND NOT EXISTS
+     (SELECT 1 FROM patch_policies p
+       WHERE p.id = l.ring_ref AND p.kind = 'ring' AND p.partner_id = l.partner_id))   AS case_d_invalid_ref_all,
   count(*) FILTER (WHERE has_apps AND ring_ref IS NOT NULL AND NOT EXISTS
-     (SELECT 1 FROM patch_policies p WHERE p.id = l.ring_ref AND p.kind = 'ring')) AS case_d_invalid_ref
+     (SELECT 1 FROM patch_policies p
+       WHERE p.id = l.ring_ref AND p.kind = 'ring' AND p.partner_id = l.partner_id))   AS case_d_invalid_ref_with_apps
 FROM l;
 ROLLBACK;
 ```
@@ -147,7 +154,7 @@ export const ringAppRulesSchema = z.array(policyAppRuleSchema).max(200).superRef
 export type RingAppRules = z.infer<typeof ringAppRulesSchema>;
 ```
 
-Check `isThirdPartyPatchSource` in `patchApprovalEvaluator.ts:176-179`. If its bucket includes more than `third_party`/`custom`, mirror that set here exactly. Then make `appRuleKey` in the evaluator delegate to `canonicalAppRuleKey`, so there is only one implementation. Run the evaluator tests afterwards (`npx vitest run src/services/patchApprovalEvaluator.test.ts`).
+Check `isThirdPartyPatchSource` in `patchApprovalEvaluator.ts:228-230`. If its bucket includes more than `third_party`/`custom`, mirror that set here exactly. Then make `appRuleKey` in the evaluator delegate to `canonicalAppRuleKey`, so there is only one implementation. Run the evaluator tests afterwards (`npx vitest run src/services/patchApprovalEvaluator.test.ts`).
 
 - [ ] **Step 4: Run and confirm the tests pass**, then rebuild shared (`pnpm --filter @breeze/shared build`) so the API sees the export.
 
@@ -189,7 +196,7 @@ END $$;
 ### Task 1.3: Resolver carries `appRules`; eligibility dual-reads
 
 **Files:**
-- Modify: `apps/api/src/services/configPolicyPatching.ts:40-50` (`PatchRingResolution`), `:186-292` (every return of `resolvePatchPolicyReference`)
+- Modify: `apps/api/src/services/configPolicyPatching.ts:40-50` (`PatchRingResolution`), `:188-291` (every return of `resolvePatchPolicyReference`)
 - Modify: `apps/api/src/services/patchApprovalEvaluator.ts:64-102` (`ApprovalEvaluationConfig`), plus a new `evaluateAppRuleSets`
 - Modify: `apps/api/src/services/patchEligibility.ts:236-262` and `:414-475`
 - Test: `apps/api/src/services/configPolicyPatching.test.ts`, `patchApprovalEvaluator.test.ts`, `patchEligibility.test.ts`
@@ -316,8 +323,9 @@ Branch off `origin/main` after W01 merges. Run the pre-W02 survey first.
   - **A′**: partner-wide policy (`org_id NULL`, `partner_id = P`) with no ring and with apps. Expect: a new ring under P.
   - **B**: ring R1 linked by two policies with the same set (in a different order and different case). Expect: `R1.app_rules` = the canonical set, and no clone.
   - **C**: ring R2 linked by P1 (no apps), P2 (`block X`) and P3 (`pin Y 1.0`). R2 has a ring-scoped `patch_approvals` row (approved). Expect: `R2.app_rules = []`; two clones, each with R2's columns copied (`auto_approve`, `category_rules`, `categories`, `exclude_categories`, `deferral_days`, `ring_order`, `enabled`); P2 and P3 relinked to their clones; the approval row copied to each clone (same `partner_id`, `patch_id`, `status`).
-  - **D**: link pointing at a non-existent uuid with apps. Expect: untouched.
-  - **Salvage parity**: a link whose `apps` holds one valid block, one pin without a version, one entry with `source:'winget'`, and a duplicate of the valid block with different case. Expect: the SQL result equals `normalizeStoredInlineSettingsWithSalvage(inline, ctx).apps` imported from `services/configPolicyPatching.ts` (export it if it is not exported). Compare by canonical key, action, and pinnedVersion.
+  - **D**: link pointing at a non-existent uuid with apps, and a link pointing at another partner's ring. Expect: both untouched (Task 2.2 makes invalid-ring policies fail closed — Open Decision 8).
+  - **R already carries rules that differ from a linker's**: pre-set `R3.app_rules = [block Z]`, link a policy with `[block X]`. Expect: the migration **raises an exception** (aborts) rather than skipping — a skip would silently drop that policy's rules at cutover.
+  - **Salvage parity** (`configPolicyPatching.ts:139-170` — **first valid entry wins** per canonical key, invalid entries dropped whole, cap 200 unique valid entries): a link whose `apps` holds `[block third_party Foo.App, pin custom foo.app 1.0]` (first-wins must keep the **block**), a pin without a version, `source:'winget'`, an entry with a 300-char `displayName` (whole entry dropped), an entry with numeric `packageId` (dropped), and a 205-entry list (only the first 200 unique valid survive). Expect: the SQL result equals `normalizeStoredInlineSettingsWithSalvage(inline, ctx).apps` imported from `services/configPolicyPatching.ts` (export it if it is not exported). Compare by canonical key, action, and pinnedVersion.
   - **Idempotency**: run the file a second time. Expect: ring count, link targets and approval count all unchanged.
   - **policy auto-approve is not converted**: a ring-less link with `auto_approve = true` and no apps → no ring created.
   - **Runs under FORCE RLS**: execute it as the migration role, not as a superuser that bypasses RLS. Use the same connection the other replay suites use.
@@ -335,8 +343,11 @@ Branch off `origin/main` after W01 merges. Run the pre-W02 survey first.
 -- auto-approve is NOT converted (it has not been consulted by the evaluator
 -- since 2026-08; converting would start auto-approving). The policy-side
 -- inline `apps` key is left in place until the W04 contract migration.
--- Idempotent: a link is processed only while its normalised rules differ from
--- its ring's app_rules.
+-- Idempotent: only links whose normalised rules differ from their resolved
+-- ring's app_rules are processed (step 0 filter), so a re-run after success
+-- finds nothing. A ring that already carries DIFFERENT non-empty rules aborts
+-- the migration (no writer exists before W02, so this means a partial or
+-- out-of-order apply that must be looked at, not skipped).
 SELECT set_config('breeze.scope', 'system', true);
 
 DO $$
@@ -361,35 +372,44 @@ BEGIN
       AND jsonb_typeof(l.inline_settings->'apps') = 'array'
       AND jsonb_array_length(l.inline_settings->'apps') > 0
   ), entries AS (
-    -- Mirror policyAppRuleSchema: source enum, packageId 1..256, action enum,
-    -- pinnedVersion 1..64 required for pin, displayName <= 255 (else dropped field).
+    -- Mirror policyAppRuleSchema exactly (validators/index.ts:602-616): an entry
+    -- failing ANY field check is dropped whole, as salvage does.
     SELECT s.link_id, e.ord,
            CASE WHEN e.v->>'source' IN ('third_party','custom') THEN 'third_party' END
              || '|' || lower(e.v->>'packageId') AS k,
            jsonb_strip_nulls(jsonb_build_object(
              'source', e.v->>'source',
              'packageId', e.v->>'packageId',
-             'displayName', CASE WHEN jsonb_typeof(e.v->'displayName') = 'string'
-                                  AND length(e.v->>'displayName') <= 255 THEN e.v->>'displayName' END,
+             'displayName', e.v->>'displayName',
              'action', e.v->>'action',
-             'pinnedVersion', CASE WHEN e.v->>'action' = 'pin' THEN e.v->>'pinnedVersion' END
+             'pinnedVersion', e.v->>'pinnedVersion'
            )) AS entry
     FROM src s
     CROSS JOIN LATERAL jsonb_array_elements(s.raw) WITH ORDINALITY AS e(v, ord)
     WHERE jsonb_typeof(e.v) = 'object'
-      AND e.v->>'source' IN ('third_party','custom')
-      AND length(COALESCE(e.v->>'packageId','')) BETWEEN 1 AND 256
-      AND e.v->>'action' IN ('block','pin')
-      AND (e.v->>'action' = 'block'
-           OR length(COALESCE(e.v->>'pinnedVersion','')) BETWEEN 1 AND 64)
+      AND jsonb_typeof(e.v->'source') = 'string' AND e.v->>'source' IN ('third_party','custom')
+      AND jsonb_typeof(e.v->'packageId') = 'string' AND length(e.v->>'packageId') BETWEEN 1 AND 256
+      AND jsonb_typeof(e.v->'action') = 'string' AND e.v->>'action' IN ('block','pin')
+      AND (e.v->'displayName' IS NULL
+           OR (jsonb_typeof(e.v->'displayName') = 'string' AND length(e.v->>'displayName') <= 255))
+      AND (e.v->'pinnedVersion' IS NULL
+           OR (jsonb_typeof(e.v->'pinnedVersion') = 'string' AND length(e.v->>'pinnedVersion') BETWEEN 1 AND 64))
+      AND (e.v->>'action' = 'block' OR e.v->'pinnedVersion' IS NOT NULL)
   ), dedup AS (
-    SELECT DISTINCT ON (link_id, k) link_id, k, entry
-    FROM entries ORDER BY link_id, k, ord DESC          -- last entry wins (buildAppRuleMap)
+    -- FIRST valid entry wins per canonical key (salvage: seenAppKeys → continue).
+    SELECT DISTINCT ON (link_id, k) link_id, k, ord, entry
+    FROM entries ORDER BY link_id, k, ord ASC
+  ), capped AS (
+    -- Salvage keeps the first 200 unique valid entries in document order.
+    SELECT * FROM (
+      SELECT d.*, row_number() OVER (PARTITION BY link_id ORDER BY ord) AS rn FROM dedup d
+    ) x WHERE rn <= 200
   ), norm AS (
     SELECT link_id,
            jsonb_agg(entry ORDER BY k) AS apps,
-           jsonb_agg(jsonb_build_array(k, entry->>'action', entry->>'pinnedVersion') ORDER BY k) AS apps_key
-    FROM dedup GROUP BY link_id
+           jsonb_agg(jsonb_build_array(k, entry->>'action',
+             CASE WHEN entry->>'action' = 'pin' THEN entry->>'pinnedVersion' END) ORDER BY k) AS apps_key
+    FROM capped GROUP BY link_id
   )
   SELECT s.link_id, s.policy_name, s.partner_id, s.ring_ref, n.apps, n.apps_key,
          (p.id IS NOT NULL) AS ring_valid
@@ -398,15 +418,18 @@ BEGIN
   LEFT JOIN patch_policies p
     ON p.id = s.ring_ref AND p.kind = 'ring' AND p.partner_id = s.partner_id;
   -- Steps that follow (each with GET DIAGNOSTICS + RAISE WARNING, even when 0):
-  --  0. Report and skip rows with partner_id NULL, and rows with ring_ref NOT NULL AND NOT ring_valid (case D).
+  --  0. Report and skip rows with partner_id NULL, and rows with ring_ref NOT NULL AND NOT ring_valid
+  --     (case D — handled at read time by Task 2.2, Open Decision 8). Then DELETE from the temp table
+  --     every row whose ring_valid ring already has app_rules equal to the row's apps (compare the
+  --     canonical apps_key computed the same way from p.app_rules) — this is the idempotency filter.
+  --     If any remaining row's valid ring has app_rules <> '[]', RAISE EXCEPTION naming the ring id.
   --  1. Case A: FOR g IN ring-less rows LOOP INSERT INTO patch_policies
   --       (partner_id, kind, name, auto_approve, app_rules) VALUES
   --       (g.partner_id, 'ring', left(g.policy_name || ' — app rules', 255), '{}'::jsonb, g.apps)
   --       RETURNING id INTO new_ring; UPDATE config_policy_feature_links SET feature_policy_id = new_ring,
   --       updated_at = now() WHERE id = g.link_id; END LOOP.
-  --  2. Rings: build pg_temp.ring_groups over ALL patch links to each valid ring (links without
-  --     apps carry apps_key '[]'), skipping any ring whose current app_rules <> '[]'
-  --     (RAISE WARNING the count, then skip). Per ring, keep_key = '[]' if any linker has no
+  --  2. Rings: for each ring still referenced by a remaining row, build pg_temp.ring_groups over ALL
+  --     patch links to that ring (links without apps carry apps_key '[]'). Per ring, keep_key = '[]' if any linker has no
   --     rules, else the key with the most linkers (tie → min(link_id::text)).
   --     UPDATE patch_policies SET app_rules = <apps for keep_key>, updated_at = now()
   --       WHERE keep_key <> '[]' AND app_rules = '[]'.
@@ -431,10 +454,11 @@ Write steps 0–4 out in full PL/pgSQL in the file. The comment block above is t
 
 **Files:**
 - Modify: `apps/api/src/services/patchEligibility.ts` (drop `ringConfig.apps` from `appRuleMaps`; `resolveDevicePatchEvaluation` stops populating `apps` from settings)
-- Modify: `apps/api/src/services/devicePatchApprovalView.ts`, `apps/api/src/services/aiAgents/patchEvidence.ts`, `apps/api/src/services/patchJobService.ts:81` (the `apps` consumers found by `grep -rn "settings.apps\|\.apps\b" apps/api/src/services apps/api/src/routes/configurationPolicies`)
+- Modify: the policy-`apps` consumers — `patchEligibility.ts:441-444`, `routes/configurationPolicies/patchJobs.ts:464-468` (preview payload), `configPolicyPatching.ts:345` (keep loading for the W02 write guard only); re-run `grep -rn "settings.apps\|\.apps\b" apps/api/src/services apps/api/src/routes/configurationPolicies apps/api/src/jobs` and handle every hit
+- Modify: `patchEligibility.ts` — **invalid ring reference fails closed** (Open Decision 8): when the loaded `ring.valid === false` (classification `legacy_patch_policy` / `config_policy_uuid` / `missing_target`, i.e. NOT the `null` no-ring case), deny every candidate with a new `PatchIneligibleReason` `'ring_reference_invalid'` instead of evaluating with `ringId: null`. The scheduler already refuses these policies (`patchSchedulerWorker.ts:767`); this makes install proposals and the device view agree, and means no app rule can be lost for them at cutover. Add the reason to `devicePatchApprovalView.ts` and the web label map (`DevicePatchStatusTab.tsx` near `:396`).
 - Test: `patchEligibility.test.ts`, `devicePatchApprovalView.test.ts`, `patchJobService.test.ts`
 
-- [ ] **Step 1: Failing test**: a policy whose inline `apps` blocks Firefox, linked to a ring with `appRules: []` → Firefox is **eligible**. This is the cutover: policy rules no longer apply. Keep the W01 test that a ring block is enforced.
+- [ ] **Step 1: Failing tests**: (a) a policy whose inline `apps` blocks Firefox, linked to a ring with `appRules: []` → Firefox is **eligible** (cutover: policy rules no longer apply); keep the W01 test that a ring block is enforced. (b) a policy whose link points at a missing ring, with a manually approved patch → denied `ring_reference_invalid`. (c) a policy with **no** ring and a manual approval → still approved `manual` (no-ring path unchanged).
 - [ ] **Steps 2–4**: run the tests and confirm they fail, implement, then run the tests and confirm they pass.
 - [ ] **Step 5: Commit** `refactor(api): app rules resolve from the update ring only (#1317)`
 
@@ -454,7 +478,7 @@ Write steps 0–4 out in full PL/pgSQL in the file. The comment block above is t
 - Modify: `apps/api/src/services/aiAgentSdkTools.ts:2715-2733` (`appRules: z.array(z.object({ source: z.enum(['third_party','custom']), packageId: z.string().min(1).max(256), action: z.enum(['block','pin']), pinnedVersion: z.string().min(1).max(64).optional(), displayName: z.string().max(255).optional() })).max(200).optional()`. Do not use `z.undefined()` anywhere: the model would get zero tools)
 - Modify: `apps/api/src/services/configurationPolicy.ts` (`addFeatureLink` `:1730`, `updateFeatureLink` `:1850`: for `featureType === 'patch'` call the new `assertNoPolicyApprovalEdits(storedInline, incomingInline)`)
 - Create: the `assertNoPolicyApprovalEdits` helper in `apps/api/src/services/configPolicyPatching.ts`
-- Modify: `apps/api/src/services/aiToolsFleet.ts` (`setup_auto_approval`, around `:1630-1710`), `apps/api/src/services/aiToolSchemasFleet.ts`, `apps/api/src/services/aiToolsConfigPolicy.ts:229` (patch inline shape), `apps/api/src/services/aiAgentSystemPrompt.ts:40`, and `mcpGuidance.ts` if it describes patch inline settings
+- Modify: `apps/api/src/services/aiToolsFleet.ts` (`setup_auto_approval`: the action is already disabled at `:1159-1163`; its body `:1619-1710` is unreachable), `apps/api/src/services/aiToolSchemasFleet.ts`, `apps/api/src/services/aiToolsConfigPolicy.ts:229` (patch inline shape), `apps/api/src/services/aiAgentSystemPrompt.ts:40`, and `mcpGuidance.ts` if it describes patch inline settings
 - Test: `updateRings_list_create.test.ts`, `updateRings_detail_update_delete.test.ts`, `aiToolsPolicyPrereqs.test.ts`, `configurationPolicy.test.ts`, `aiToolSchemasFleet.test.ts`, plus a `setup_auto_approval` test next to the existing `aiToolsFleet` tests
 
 **Interfaces:**
@@ -464,10 +488,10 @@ Write steps 0–4 out in full PL/pgSQL in the file. The comment block above is t
   - ring create/update persist `appRules` and reject duplicates (400).
   - `manage_update_rings create` with a duplicate → error string; with a valid list → persisted.
   - `updateFeatureLink` (patch) with an added app rule → 400 `APPROVAL_RULES_MOVED_TO_RING`; with the unchanged stored list → OK; with `autoApprove: true` newly set → 400.
-  - `setup_auto_approval`, under the retarget chosen in Open Decision 2 (recommended: create or reuse a partner ring named `"Auto-approve: <severities>"` with `autoApprove { enabled: true, severities }`, then link it), no longer writes `config_policy_patch_settings.auto_approve = true`. It returns the ring id. An org-scoped caller without partner-wide permission gets the error from `PARTNER_WIDE_WRITE_DENIED_MESSAGE`.
+  - `setup_auto_approval` (Open Decision 2, recommended A): the action stays disabled, its unreachable body and the `autoApprove`/`autoApproveSeverities` input fields in `aiToolSchemasFleet.ts` are removed, and the disabled-action error now says auto-approval is configured on an Update Ring (`manage_update_rings`) linked via `manage_policy_feature_link` — today it steers the model to set auto-approval on the policy, which has no effect.
   - The `manage_policy_feature_link` schema description no longer lists `apps` / `autoApprove*` for patch.
-- [ ] **Steps 2–4**: run the tests and confirm they fail, implement, then confirm they pass. Also run `src/services/aiGuardrails.test.ts`. `manage_update_rings` writes are already action-level escalated (`aiGuardrails.ts:285,349`), so do not lower that.
-- [ ] **Step 5: Commit**, then open the W02 PR with the survey output and these release notes: *"Per-app block/pin rules moved from configuration policies to Update Rings. Policies that had rules but no ring now link to a new ring named '<policy> — app rules' that auto-approves nothing. Rings shared by policies with different rules were split. Policy-level auto-approve settings (unused since 2026-08) are no longer accepted; configure auto-approval on the Update Ring."* Run `/pr-review-toolkit:review-pr` with an Opus reviewer, plus the full API unit suite and the integration shard locally (`vitest.integration.config.ts`) before marking ready.
+- [ ] **Steps 2–4**: run the tests and confirm they fail, implement, then confirm they pass. Also run `src/services/aiGuardrails.test.ts`. `manage_update_rings` writes are already action-level escalated (`aiGuardrails.ts:382,591`), so do not lower that.
+- [ ] **Step 5: Commit**, then open the W02 PR with the survey output and these release notes: *"Per-app block/pin rules moved from configuration policies to Update Rings. Policies that had rules but no ring now link to a new ring named '<policy> — app rules' that auto-approves nothing. Rings shared by policies with different rules were split; the split rings start with a copy of the original ring's approvals, and later approvals must be made on each ring. Policy-level auto-approve settings (unused since 2026-08) are no longer accepted; configure auto-approval on the Update Ring."* Run `/pr-review-toolkit:review-pr` with an Opus reviewer, plus the full API unit suite and the integration shard locally (`vitest.integration.config.ts`) before marking ready.
 
 ---
 
@@ -481,7 +505,7 @@ Write steps 0–4 out in full PL/pgSQL in the file. The comment block above is t
 - Test: `UpdateRingForm.test.tsx`, `RingAppRulesSection.test.tsx`, `patchHelpers.test.ts`, `UpdateRingList` test
 
 - [ ] **Step 1: Failing tests**: adding a block rule includes `appRules: [{…}]` in the submit payload; an edited ring loads stored rules; the list shows the `2 app rules` badge (`data-testid="ring-app-rules-badge"`); `normalizeRing({ appRules: 'x' })` gives `appRules: []`.
-- [ ] **Step 2: Picker check**: `GET /patches/app-options` is org-scoped (`routes/patches/appOptions.ts:36-39`). In partner "All orgs" mode, verify what it returns. If it returns 400/empty, keep manual entry as the visible path and file the follow-up from Open Decision 5. Do not widen the endpoint in this wave.
+- [ ] **Step 2: Picker check**: `GET /patches/app-options` already accepts partner scope (`routes/patches/appOptions.ts:39` `requireScope('organization','partner','system')`, partner filter `:76-86`, optional `orgId` narrows). Call it from the ring form without `orgId` and verify it returns catalog + partner-observed apps in "All orgs" mode; keep the manual-entry fallback.
 - [ ] **Steps 3–5**: implement, run `cd apps/web && npx vitest run src/components/patches src/lib/__tests__/no-silent-mutations.test.ts`, then commit.
 
 ### Task 3.2: Patch tab + device view cleanup
@@ -502,7 +526,7 @@ Write steps 0–4 out in full PL/pgSQL in the file. The comment block above is t
 
 **Files:**
 - Create: `apps/api/migrations/<W04 name>.sql`
-- Modify: `apps/api/src/db/schema/configurationPolicies.ts` (remove `autoApprove`, `autoApproveSeverities`), `services/configurationPolicy.ts:842-860` (insert), `services/configPolicyPatching.ts` (loader `:331-358`, `backfillMissingPatchSettings` `:386-420`), `routes/partnerApi/configuration.ts:47-61,134-139`
+- Modify: `apps/api/src/db/schema/configurationPolicies.ts` (remove `autoApprove`, `autoApproveSeverities`), `services/configurationPolicy.ts:842-860` (insert), `services/configPolicyPatching.ts` (loader `:331-358`, `backfillMissingPatchSettings` `:386-440`), `routes/partnerApi/configuration.ts:47-61,134-139`
 - Test: `apps/api/src/__tests__/integration/patchCanonicalExportParity.integration.test.ts`, `partnerApiConfigurationWatermark.integration.test.ts`, `routes/partnerApi/configuration.test.ts`
 
 - [ ] **Step 1: Update the parity/watermark tests to expect the projection without `autoApprove`/`autoApproveSeverities`.** Confirm they fail against the current function.
@@ -513,7 +537,7 @@ Write steps 0–4 out in full PL/pgSQL in the file. The comment block above is t
 
 ### Task 4.2: Remove `policyAutoApprove` + legacy schema fields
 
-**Files:** `packages/shared/src/validators/index.ts` (`patchInlineSettingsSchema`: remove the four fields and the auto-approve `superRefine` branch; keep `policyAppRuleSchema`, which the ring uses), `patchApprovalEvaluator.ts:88-95,114` (remove `policyAutoApprove` and the unused `'policy_auto_approve'` reason, keeping it in any audit display mapping for historical rows), `patchEligibility.ts`, `patchJobSnapshot.ts` (stop writing `policyAutoApprove` and `apps`), `patchJobExecutor.ts` (stop parsing `policyAutoApprove`; keep parsing `apps` from old snapshots), `routes/configurationPolicies/patchJobs.ts:466-467`, `assertNoPolicyApprovalEdits` (delete it: the fields no longer exist, so zod strips them), plus web `apiError.test.ts` and `PatchTab.test.tsx` fixtures.
+**Files:** `packages/shared/src/validators/index.ts` (`patchInlineSettingsSchema`: remove the four fields and the auto-approve `superRefine` branch; keep `policyAppRuleSchema`, which the ring uses), `patchApprovalEvaluator.ts:88-95,114` (remove `policyAutoApprove` and the unused `'policy_auto_approve'` reason, keeping it in any audit display mapping for historical rows), `patchEligibility.ts`, `patchJobSnapshot.ts` (stop writing `policyAutoApprove` and `apps`), `patchJobExecutor.ts` (stop parsing `policyAutoApprove`; keep parsing `apps` from old snapshots), `routes/configurationPolicies/patchJobs.ts:464-468`, `assertNoPolicyApprovalEdits` (delete it: the fields no longer exist, so zod strips them), plus web `apiError.test.ts` and `PatchTab.test.tsx` fixtures.
 
 - [ ] **Step 1: Failing tests**: the snapshot has no `policyAutoApprove` and no `apps`; a `patchInlineSettingsSchema.parse` of a payload carrying `apps` strips it; an executor given an old snapshot with `apps: [block X]` and no `ringAppRules` still blocks X.
 - [ ] **Steps 2–5**: run the tests and confirm they fail, implement, then confirm they pass (shared validators, evaluator, eligibility, snapshot, executor, patchJobs, configurationPolicy, partnerApi tests) with `tsc --noEmit` for api, web and shared. Commit and open the PR. Update `apps/docs` patching pages through `/update-breeze-docs`.
@@ -527,10 +551,10 @@ Write steps 0–4 out in full PL/pgSQL in the file. The comment block above is t
    - **B — Create a disabled ring pre-filled from them.** Pro: one click to enable. Con: clutters the ring list with ambiguous rings.
    - **C — Create an enabled ring.** Pro: honours the original intent. Con: starts auto-approving patches the day it deploys, which is a behaviour change.
    **Recommend A.** No deploy step should widen what installs.
-2. **`setup_auto_approval` AI tool.** Today it writes a dead policy field and reports success.
-   - **A — Retarget to create or reuse a ring and link it (recommended).** It needs partner-wide permission and stays approval-gated.
-   - **B — Remove the tool and route the model to `manage_update_rings` + `manage_policy_feature_link`.**
-   **Recommend A.** It keeps the one-call UX the tool exists for.
+2. **`setup_auto_approval` AI tool.** The action is already disabled (`aiToolsFleet.ts:1159-1163`), but its error message points the model at policy-level auto-approval, and its schema and unreachable body still describe `autoApprove`/`autoApproveSeverities`.
+   - **A — Keep it disabled; delete the dead body and schema fields; reword the error to point to Update Rings (recommended).** Pro: no new write path. Con: no one-call setup.
+   - **B — Re-enable it on rings (create/reuse a ring, link it).** Pro: one-call UX. Con: a new arming write path needing its own guardrail review.
+   **Recommend A.** `manage_update_rings` + `manage_policy_feature_link` already cover it.
 3. **Org-scoped users lose app-rule authoring.** Rings are partner-level, per the 06-21 design.
    - **A — Accept (recommended).** It is consistent with ring/approval management already being partner-only.
    - **B — Add org-owned rings.** That is a new tenancy shape on `patch_policies` and a large change.
@@ -540,10 +564,7 @@ Write steps 0–4 out in full PL/pgSQL in the file. The comment block above is t
    - **B — Reject any presence.** Stale tabs fail every save until they are refreshed.
    - **C — Strip silently.** This is a silent no-op on a user's edit, which the `runAction` rules forbid.
    **Recommend A.**
-5. **App picker in partner "All orgs" ring editing.** `/patches/app-options` is org-scoped.
-   - **A — Ship with manual entry plus the catalog where it resolves; file a follow-up to make the picker partner-wide (recommended).**
-   - **B — Widen the endpoint in W03.**
-   **Recommend A.** It keeps W03 UI-only.
+5. **App picker** — *resolved, no decision needed*: `/patches/app-options` already accepts partner scope (`routes/patches/appOptions.ts:39,76-86`).
 6. **Partner-API export shape (W04).** `autoApprove`/`autoApproveSeverities`/`autoApproveDeferralDays`/`apps` disappear from exported patch settings.
    - **A — Remove them and note it in the release notes (recommended).** The values have been inert or relocated.
    - **B — Keep the constant keys `false`/`[]` for one more release.**
@@ -552,3 +573,7 @@ Write steps 0–4 out in full PL/pgSQL in the file. The comment block above is t
    - **A — Clone (recommended; as specified).** Exact preservation, at the cost of extra rings.
    - **B — Union onto the shared ring.** No new rings, but policies that had fewer rules gain blocks.
    **Recommend A.** Decide after the pre-W02 survey; if case C is 0 in both regions, the choice is moot.
+8. **Policies whose patch link points at an invalid ring reference (case D).** Today the scheduler skips them, but install proposals and the device view still evaluate them with policy app rules.
+   - **A — Fail closed at cutover: deny everything with `ring_reference_invalid` (recommended).** Pro: matches the scheduler, no rule can be lost; Con: manual-approval proposals for those policies stop until the link is fixed.
+   - **B — Keep reading policy `apps` for invalid-ring links until W04.** Con: W04 strips the inline key, so the problem only moves.
+   **Recommend A.** The survey's `case_d_invalid_ref_all` sizes the impact; include it in the W02 release notes.

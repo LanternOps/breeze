@@ -49,9 +49,9 @@ write both → cut reads over → drop the old field.
    (`patchInlineSettingsSchema`, `validators/index.ts:732-768`), loaded, snapshotted as
    `policyAutoApprove`, exported through the partner API (`routes/partnerApi/configuration.ts:47-61`,
    and the SQL projection in `migrations/2026-10-13-100300-patch-offline-behavior-export-projection.sql:64-65`),
-   and **written by the `setup_auto_approval` AI tool** (`services/aiToolsFleet.ts`, which defaults
-   `autoApprove: true` with `['critical','important']`) — a tool that today reports success for a setting
-   the evaluator ignores.
+   and still described by the `setup_auto_approval` AI tool: the action is disabled
+   (`services/aiToolsFleet.ts:1159-1163`) but its error message steers the model to configure
+   auto-approval on the policy, and its schema and unreachable body still carry `autoApprove*`.
 3. **No ring-side app-rule surface**: no column, no route field, no AI-tool field, no UI.
 
 ## Design
@@ -90,19 +90,19 @@ write both → cut reads over → drop the old field.
 
 For every authored `config_policy_feature_links` row with `feature_type = 'patch'` and a non-empty
 `inline_settings->'apps'`, normalise the list exactly as the runtime does
-(`normalizeStoredInlineSettingsWithSalvage`: drop entries `policyAppRuleSchema` rejects, last entry wins
-per canonical key), then:
+(`normalizeStoredInlineSettingsWithSalvage`, `configPolicyPatching.ts:139-170`: drop whole entries
+`policyAppRuleSchema` rejects, **first** valid entry wins per canonical key, keep the first 200), then:
 
 | Link state | Action |
 |---|---|
 | **A. No ring** (`feature_policy_id IS NULL`) | Create a ring (partner = the policy's `partner_id`, else its org's partner) named `"<policy name> — app rules"`, `auto_approve = '{}'` (approves nothing), every other column at its default, `app_rules` = the list; set the link's `feature_policy_id` to it. Behaviour is unchanged: manual approvals still apply, auto-approve still approves nothing, schedule is policy-side, the ring's empty category filters filter nothing, and the patch scheduler does not read ring scheduling fields (`patchSchedulerWorker.ts` reads only `settings.schedule*`). |
 | **B. Ring R, every link to R carries the same rule set** | `R.app_rules` = that set. |
 | **C. Ring R shared by links with different sets** | R keeps the set of links with **no** rules if any exist (so they are unaffected), else the most common set. Every other distinct set gets a **clone** of R (all columns copied, name `"<R name> — <policy name>"`), R's ring-scoped `patch_approvals` copied to the clone, and those links relinked. Every linked policy keeps exactly the rules it has today. |
-| **D. Link points at an invalid ring reference** | Skip; `RAISE WARNING` the count (the scheduler already skips such policies). |
-| **R already has non-empty `app_rules`** | Skip that ring's links; `RAISE WARNING` (only possible if a ring writer ran before the backfill — W01 adds no writer). |
+| **D. Link points at an invalid ring reference** (missing, non-ring, or another partner's) | Skip; `RAISE WARNING` the count. At cutover these policies fail closed — every candidate is denied `ring_reference_invalid`, matching the scheduler, which already skips them (`patchSchedulerWorker.ts:767`). Open Decision 8. |
+| **R already has non-empty `app_rules` that differ from a linker's set** | `RAISE EXCEPTION` (abort). Only possible after a partial or out-of-order apply — W01 adds no writer — and skipping would silently drop that policy's rules at cutover. |
 
-Idempotent without marker keys: a link is processed only when its normalised rules differ from its
-resolved ring's `app_rules`, so a second run finds nothing to do. The policy-side `apps` key is left in
+Idempotent without marker keys: before any write, links whose resolved ring already carries exactly their
+normalised rules are dropped from the work set, so a second run finds nothing to do. The policy-side `apps` key is left in
 place until W04 so pre-W02 instances keep enforcing during the rolling deploy. Every write reports its
 row count via `GET DIAGNOSTICS … RAISE WARNING`, and the file elects `breeze.scope = 'system'` before
 any write.
@@ -120,7 +120,8 @@ that are approved manually today. The migration only reports the count of ring-l
 - From W02, config-policy patch writes reject a **changed** `apps` list or `autoApprove: true` with a
   400 whose message names the Update Ring as the new home; an unchanged round-trip from an old client
   is accepted and ignored (see Open Decision 4).
-- `setup_auto_approval` is retargeted to create or update an Update Ring and link it (Open Decision 2).
+- `setup_auto_approval` stays disabled; its dead body and `autoApprove*` schema fields are removed and its
+  error points to Update Rings (Open Decision 2).
 - `manage_policy_feature_link` / the `aiToolsConfigPolicy.ts` patch shape stop advertising `apps` and
   `autoApprove*`.
 
@@ -160,5 +161,6 @@ that rings are partner-admin only). See Open Decision 3.
 
 - An allowlist mode for app rules, exact-version installs, and deadline/grace enforcement (unchanged from
   earlier specs).
-- Making the `/patches/app-options` picker partner-wide; it stays as is, and the ring form keeps the
-  manual `(source, packageId)` entry fallback (Open Decision 5).
+- Changes to the `/patches/app-options` picker — it already accepts partner scope
+  (`routes/patches/appOptions.ts:39,76-86`); the ring form calls it without `orgId` and keeps the manual entry
+  fallback.
