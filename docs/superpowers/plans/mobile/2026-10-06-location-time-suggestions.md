@@ -40,6 +40,18 @@ Evidence labels: **[verified]** = read on `origin/main` @ `9b9f3fc28d` in this w
 | Bottom sheet component | No sheet library; W06 precedent is an RN `Modal` (`screens/time/SuggestionConfirmSheet.tsx`) [verified] | ArrivalSheet is a `Modal` (OD-6). |
 | Newest migration | `2026-12-13-110200-org-erasure-fk-child-actions.sql` [verified `ls apps/api/migrations | sort | tail`] | New files: `2026-12-14-100000-…`, `2026-12-14-100100-…` (bump if main moves). |
 
+### Spec deviations (each also in Open Decisions or the premise table)
+
+| Spec | Plan | Why |
+|---|---|---|
+| §3 mobile caches `GET /orgs/sites` | new `GET /time-entries/location-sites` | OD-1 |
+| §2.4 `endedAt` on `/stop` in W1 | deferred to W3 | OD-2 |
+| §2.4 client `source` `'location'`/`'timer'` | same, plus `POST /` accepts `'location'` | offline replay (premise table), OD-3 |
+| §2.4 `orgId` on `/start` only | also on `POST /time-entries`; both via `resolveAndLockOrgLink` + a hidden/deleted-org guard | offline replay |
+| §4 drop coordinate-less sites at cache time | cache keeps them (`latitude:null`); the matcher drops them, the pin button needs them | Task 14 |
+| §2.2 `site_id` informational | plus a read-side org-equality rule after org moves | OD-5 |
+| §2.1/§3 site create + PATCH accept location | PATCH stamps `manual`; create does **not** accept location fields | Task 6 |
+
 ---
 
 ## Wave table
@@ -93,7 +105,7 @@ W2 requests **foreground ("While Using") permission only**. No `Always`, no `UIB
    - *Allow While Using* → feature active.
    - *Allow Once* → active for this launch; next launch `getForegroundPermissionsAsync()` returns `undetermined` again — the explainer is NOT re-shown automatically (OD-7 default: re-ask only from Settings → Location suggestions row).
    - *Don't Allow* → `denied`, `canAskAgain:false`. App never re-prompts; Settings row shows "Location is off for Breeze — open iOS Settings" → `Linking.openSettings()`.
-   - *Precise off* (approximate, ~1–3 km accuracy) → every read exceeds the 500 m accuracy cutoff, so no prompt ever fires; Settings row shows "Precise location is off — suggestions need it" (detect via `accuracy` on the permission response `ios.accuracy === 'reduced'`).
+   - *Precise off* (approximate, ~1–3 km accuracy) → every read exceeds the 500 m accuracy cutoff, so no prompt ever fires. expo-location's permission response has **no** iOS accuracy field (`ios` carries only `scope`), so iOS reduced precision is detected from the fix: a granted permission whose reads are repeatedly `coords.accuracy > 500` sets the Settings row to "Precise location is off — suggestions need it".
 3. **Not now** → store `breeze.location.explainerDismissedAt`; re-offer after 30 days at most.
 
 **Android** (API 31+)
@@ -150,6 +162,8 @@ W2 requests **foreground ("While Using") permission only**. No `Always`, no `UIB
 | `apps/mobile/src/screens/time/ArrivalSheet.tsx` + `arrivalSheetLogic.ts` (+ test) | Create | sheet UI + pure step logic |
 | `apps/mobile/src/screens/time/useArrivalPrompt.ts` | Create | AppState/focus triggers, debounce, orchestration |
 | `apps/mobile/src/screens/time/SitePinButton.tsx` + `sitePinLogic.ts` (+ test) | Create | "Save my current location as …" |
+| `apps/mobile/src/services/siteLocationApi.ts` | Create | `POST /orgs/sites/:id/location` client |
+| `apps/mobile/src/store/timeSlice.ts` | Modify | running timer carries `orgId/siteId/source` |
 | `apps/mobile/src/navigation/MainNavigator.tsx:238` | Modify | mount `useArrivalPrompt` + `ArrivalSheet` beside `TimerBar` |
 | `apps/mobile/src/screens/tickets/TicketDetailScreen.tsx`, `screens/time/TimesheetScreen.tsx` | Modify | mount `SitePinButton` |
 | `apps/mobile/src/lib/analytics.ts` callers | — | four events, no customer data |
@@ -185,7 +199,7 @@ describe('site location columns migration', () => {
       WHERE table_name = 'sites' AND column_name IN
         ('latitude','longitude','geofence_radius_m','location_source','location_set_by','location_set_at')
       ORDER BY column_name`));
-    expect(rows).toEqual([
+    expect([...rows]).toEqual([
       { column_name: 'geofence_radius_m', data_type: 'integer', numeric_precision: 32, numeric_scale: 0, is_nullable: 'YES' },
       { column_name: 'latitude', data_type: 'numeric', numeric_precision: 9, numeric_scale: 6, is_nullable: 'YES' },
       { column_name: 'location_set_at', data_type: 'timestamp with time zone', numeric_precision: null, numeric_scale: null, is_nullable: 'YES' },
@@ -199,15 +213,17 @@ describe('site location columns migration', () => {
     ['lat without lng', sql`UPDATE sites SET latitude = 1, longitude = NULL WHERE id = (SELECT id FROM sites LIMIT 1)`, 'sites_location_pair_chk'],
     ['radius below 50', sql`UPDATE sites SET geofence_radius_m = 49 WHERE id = (SELECT id FROM sites LIMIT 1)`, 'sites_geofence_radius_chk'],
     ['radius above 1000', sql`UPDATE sites SET geofence_radius_m = 1001 WHERE id = (SELECT id FROM sites LIMIT 1)`, 'sites_geofence_radius_chk'],
+    ['latitude 91', sql`UPDATE sites SET latitude = 91, longitude = 0 WHERE id = (SELECT id FROM sites LIMIT 1)`, 'sites_location_range_chk'],
     ['unknown source', sql`UPDATE sites SET location_source = 'gps' WHERE id = (SELECT id FROM sites LIMIT 1)`, 'sites_location_source_chk'],
   ])('rejects %s', async (_label, stmt, constraint) => {
-    await expect(withSystemDbAccessContext(() => db.execute(stmt))).rejects.toThrow(constraint);
+    await expect(withSystemDbAccessContext(() => db.execute(stmt)))
+      .rejects.toMatchObject({ cause: { code: '23514', constraint_name: constraint } }); // precedent: actionIntentsImmutabilityTrigger.integration.test.ts:414
   });
 
   it('adds time_entries.site_id → sites ON DELETE SET NULL', async () => {
     const rows = await withSystemDbAccessContext(() => db.execute(sql`
       SELECT confdeltype FROM pg_constraint WHERE conname = 'time_entries_site_id_fkey'`));
-    expect(rows).toEqual([{ confdeltype: 'n' }]);
+    expect(rows[0]).toMatchObject({ confdeltype: 'n' });
   });
 });
 ```
@@ -222,6 +238,7 @@ Expected: FAIL — `column_name` rows empty, constraint names not found.
 - [ ] **Step 3: Write the migration**
 
 ```sql
+-- @no-transaction
 -- #4186 W1: site pin columns + time-entry site link (location-aware time suggestions).
 -- The only coordinate stored server-side is a deliberately pinned SITE location;
 -- no technician position is ever written. All columns nullable; existing rows untouched.
@@ -229,7 +246,12 @@ ALTER TABLE sites ADD COLUMN IF NOT EXISTS latitude numeric(9,6);
 ALTER TABLE sites ADD COLUMN IF NOT EXISTS longitude numeric(9,6);
 ALTER TABLE sites ADD COLUMN IF NOT EXISTS geofence_radius_m integer;
 ALTER TABLE sites ADD COLUMN IF NOT EXISTS location_source varchar(16);
-ALTER TABLE sites ADD COLUMN IF NOT EXISTS location_set_by uuid REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS location_set_by uuid;
+DO $$ BEGIN
+  ALTER TABLE sites ADD CONSTRAINT sites_location_set_by_fkey
+    FOREIGN KEY (location_set_by) REFERENCES users(id) ON DELETE SET NULL NOT VALID;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+ALTER TABLE sites VALIDATE CONSTRAINT sites_location_set_by_fkey;
 ALTER TABLE sites ADD COLUMN IF NOT EXISTS location_set_at timestamptz;
 
 ALTER TABLE sites DROP CONSTRAINT IF EXISTS sites_location_pair_chk;
@@ -249,12 +271,13 @@ ALTER TABLE sites ADD CONSTRAINT sites_location_source_chk
 ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS site_id uuid;
 DO $$ BEGIN
   ALTER TABLE time_entries ADD CONSTRAINT time_entries_site_id_fkey
-    FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE SET NULL;
+    FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE SET NULL NOT VALID;
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+ALTER TABLE time_entries VALIDATE CONSTRAINT time_entries_site_id_fkey;
 CREATE INDEX IF NOT EXISTS time_entries_site_id_idx ON time_entries (site_id) WHERE site_id IS NOT NULL;
 ```
 
-`location_set_by ON DELETE SET NULL`: a user delete must not block on a site pin. Check the users-erasure path (`grep -n "location_set_by\|SET NULL" apps/api/src/services/tenantCascade.ts` — user-reference columns are normally nulled by FK action, not listed) [inferred]. No `UPDATE`/`INSERT` in this file, so no `breeze.scope` elevation.
+**Locking:** an FK added inline takes SHARE ROW EXCLUSIVE on `users`, and a validated FK on `time_entries.site_id` scans `time_entries` inside autoMigrate's transaction. Follow the newest migration's pattern (`2026-12-13-110200-org-erasure-fk-child-actions.sql`, `-- @no-transaction`): plain columns first, then both FKs `NOT VALID`, then `VALIDATE CONSTRAINT` in separate statements. Re-read `apps/api/migrations/README.md` for the `@no-transaction` rules (each statement stands alone and must be idempotent) before writing it. `location_set_by ON DELETE SET NULL`: a user delete must not block on a site pin. Check the users-erasure path (`grep -n "location_set_by\|SET NULL" apps/api/src/services/tenantCascade.ts` — user-reference columns are normally nulled by FK action, not listed) [inferred]. No `UPDATE`/`INSERT` in this file, so no `breeze.scope` elevation.
 
 - [ ] **Step 4: Drizzle columns**
 
@@ -473,7 +496,7 @@ update the doc comment (it now owns both blocks), and add `readTimeTrackingLocat
 - Test: `apps/api/src/services/timeEntryService.test.ts` (or the existing service test file — `ls apps/api/src/services/timeEntryService*.test.ts`), `apps/api/src/routes/timeEntries/timeEntries.test.ts`, new `apps/api/src/__tests__/integration/timeEntryLocationStart.integration.test.ts`
 
 **Interfaces:**
-- Consumes: `resolveAndLockOrgLink(orgId, actor)` (`timeEntryService.ts:626`); `PERMISSIONS`; `UserPermissions.allowedSiteIds`.
+- Consumes: `resolveAndLockOrgLink(orgId, actor)` (`timeEntryService.ts:626`); `isHiddenOrgType` (`services/unassignedPool/visibility.ts:24`); `organizations.deletedAt` (`schema/orgs.ts`); `PERMISSIONS`; `UserPermissions.allowedSiteIds` (populated for organization-scope users only, `services/permissions.ts:271` — on these partner/system-scope routes it is defence-in-depth; tests that mock it prove the code path, not a reachable partner case).
 - Produces:
   - shared `clientTimeEntrySourceSchema = z.enum(['timer','location'])`
   - `startTimerSchema` + `{ orgId?: string; siteId?: string; source?: 'timer'|'location' }` (refine: `siteId` requires `orgId` or `ticketId`)
@@ -509,6 +532,7 @@ describe('startTimer with orgId', () => {
   it('stamps org, site and source=location for a ticketless site visit', async () => { /* expect insert values { orgId: ORG, siteId: SITE, ticketId: null, source: 'location' } and the org currency */ });
   it('ticket org wins; mismatched orgId is 422 ORG_MISMATCH', async () => { /* ticket in ORG_A, input.orgId ORG_B */ });
   it('orgId outside accessibleOrgIds is 403 ORG_DENIED', async () => {});
+  it('hidden org (isHiddenOrgType) or soft-deleted org is 403 ORG_DENIED', async () => {});
   it('siteId in another org is 422 SITE_ORG_MISMATCH', async () => {});
   it('siteId outside allowedSiteIds is 403 SITE_DENIED', async () => {});
   it('no orgId, no ticketId keeps today\'s behaviour (org null, source timer)', async () => {});
@@ -566,6 +590,15 @@ async function resolveLocationLink(
     return { orgLink: null, siteId: input.siteId ?? null };
   }
   if (!input.orgId) return { orgLink: null, siteId: null };
+  // Client-supplied org: reject hidden (quick_support / unassigned pool) and
+  // soft-deleted orgs. Done HERE, not in resolveAndLockOrgLink — remote-session
+  // callers legitimately link hidden orgs. Unlocked read; the SHARE lock below
+  // is still this transaction's first lock.
+  const [o] = await db.select({ type: organizations.type, deletedAt: organizations.deletedAt })
+    .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
+  if (!o || isHiddenOrgType(o.type) || o.deletedAt) {
+    throw new TimeEntryServiceError('Access to this organization denied', 403, 'ORG_DENIED');
+  }
   const orgLink = await resolveAndLockOrgLink(input.orgId, actor);
   if (input.siteId) await assertSiteInOrg(input.siteId, orgLink.orgId, actor.allowedSiteIds);
   return { orgLink, siteId: input.siteId ?? null };
@@ -653,7 +686,7 @@ export async function listLocationSites(scope: { accessibleOrgIds: string[] | nu
 }
 ```
 
-Runs in the request DB context (RLS-backed; never `withSystemDbAccessContext`). The org filter excludes non-active orgs if `organizations` carries a status column used by `GET /orgs/organizations` — mirror that predicate (`grep -n "status" apps/api/src/routes/orgs.ts | grep -i organizations | head`) [not-checked].
+Runs in the request DB context (RLS-backed; never `withSystemDbAccessContext`). Add `isNull(organizations.deletedAt)` to `conds` (soft-deleted orgs are filtered the same way at `routes/orgs.ts:1650`); hidden orgs are already excluded by `notInHiddenOrgCondition`. Integration test: a soft-deleted org's sites are absent.
 
 Route (`locationSites.ts`): gates `requireScope('partner','system')` + `TIME_ENTRIES_READ`; reads `getLocationSuggestionSettings(auth.partnerId)`; returns the disabled shape early; `canSetLocation = hasPermission(perms, 'sites', 'set_location')`; `canReadSites = hasPermission(perms, 'sites', 'read')`; calls `listLocationSites` only if `canReadSites`.
 
@@ -734,7 +767,7 @@ siteLocationRoutes.post('/sites/:id/location',
 
 `pinSiteLocation` sets `latitude, longitude, geofenceRadiusM (only when provided), locationSource:'technician', locationSetBy: userId, locationSetAt: new Date(), updatedAt: new Date()` and returns the selected fields.
 
-PATCH: `siteBaseSchema` gains `.merge(siteLocationFieldsSchema)` semantics (zod `refine` objects cannot `.merge` — add the three fields to `siteBaseSchema` and put the pair refine on `createSiteSchema` / `updateSiteSchema` with `superRefine`). In the handler, when `data.latitude !== undefined`: if non-null stamp `locationSource:'manual', locationSetBy: auth.user.id, locationSetAt: new Date()`; if null also null those three.
+PATCH: add the three location fields to `updateSiteSchema` only (pair rule as `superRefine`); `createSiteSchema` stays without them so `POST /orgs/sites` cannot write an unstamped pin. Test: a create body carrying `latitude` writes no location column. In the handler, when `data.latitude !== undefined`: if non-null stamp `locationSource:'manual', locationSetBy: auth.user.id, locationSetAt: new Date()`; if null also null those three.
 
 - [ ] **Step 4: Run — PASS.** Plus existing `orgs` site tests.
 - [ ] **Step 5: Commit** `feat(api): pin a site location from the field (#4186)`; docs: `reference/organizations-and-sites.mdx` "Site location" subsection.
@@ -767,7 +800,7 @@ PATCH: `siteBaseSchema` gains `.merge(siteLocationFieldsSchema)` semantics (zod 
 - [ ] `apps/docs/src/content/docs/features/mobile.mdx`: "Arrival suggestions (coming in the next app release)" stub is **not** added in W1 — docs land with W2. W1 docs = Tasks 2/6 reference updates only.
 - [ ] Run locally against `pnpm test-stack up`: `DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage`; integration files from Tasks 1, 2, 4, 5 + `tenantCascade`, `tenant-export-policy`, `tenantExportErasureRoundtrip`, `orgMergeRegistry`, `orgLifecycleFoundations` (merge contract — `time_entries.site_id` is a plain FK, not composite, so it is unaffected [inferred], run it anyway). Full API unit suite once (`cd apps/api && npx vitest run`, batches if the host is loaded) — `orgMerge.test.ts` only reds in the full run.
 - [ ] `pnpm test-stack down`.
-- [ ] PR body: settings rule-9 block; "Spec deviations" list from this plan (OD-1, OD-2, the `POST /` extension); no security-impact wording.
+- [ ] PR body: settings rule-9 block; the "Spec deviations" table from this plan; no security-impact wording.
 - [ ] `/pr-review-toolkit:review-pr` (Sonnet reviewers), one round.
 
 ---
@@ -787,15 +820,18 @@ PATCH: `siteBaseSchema` gains `.merge(siteLocationFieldsSchema)` semantics (zod 
 export type LocationPermissionState =
   | 'undetermined' | 'granted' | 'granted-approximate' | 'denied-can-ask' | 'denied-blocked' | 'services-off';
 export function toLocationPermissionState(
-  perm: { status: 'granted'|'denied'|'undetermined'; canAskAgain: boolean; ios?: { accuracy?: 'full'|'reduced' }; android?: { accuracy?: 'fine'|'coarse'|'none' } },
+  perm: { status: 'granted'|'denied'|'undetermined'; canAskAgain: boolean; ios?: { scope: 'whenInUse'|'always'|'none' }; android?: { accuracy: 'fine'|'coarse'|'none' } },
   servicesEnabled: boolean,
+  // iOS has no accuracy field on the permission response; the caller passes true
+  // after two consecutive granted reads with coords.accuracy > MAX_FIX_ACCURACY_M.
+  observedReducedPrecision: boolean,
 ): LocationPermissionState;
 export function canReadForArrival(s: LocationPermissionState): boolean; // only 'granted'
 ```
 
-- [ ] **Step 1: Failing table test** covering every row of the "OS permission flows" section: `services-off` wins over all; `granted + ios reduced` → `granted-approximate`; `granted + android coarse` → `granted-approximate`; `denied + canAskAgain:false` → `denied-blocked`; `denied + canAskAgain:true` → `denied-can-ask`; `canReadForArrival` true only for `granted`.
+- [ ] **Step 1: Failing table test** covering every row of the "OS permission flows" section: `services-off` wins over all; `granted + observedReducedPrecision` → `granted-approximate` (iOS path); `granted + android.accuracy 'coarse'` → `granted-approximate`; `denied + canAskAgain:false` → `denied-blocked`; `denied + canAskAgain:true` → `denied-can-ask`; `canReadForArrival` true only for `granted`.
 - [ ] **Step 2:** FAIL. **Step 3:** implement (pure; no `expo-location` import in this file so the node test env needs no native stub).
-- [ ] **Step 4: app.json**
+- [ ] **Step 4: app.json** — **merge** into the existing arrays/objects (`android.permissions` already holds `USE_BIOMETRIC`, `USE_FINGERPRINT`, `RECEIVE_BOOT_COMPLETED`, `VIBRATE`, `CAMERA`; `plugins` and `ios.infoPlist` already have entries). Do not paste over them.
 
 ```json
 "ios": { "infoPlist": {
@@ -863,7 +899,8 @@ describe('matchCandidates', () => {
 describe('decideArrival', () => {
   it('flag off → none/flag-off (checked first)', () => {});
   it('timer running → none/timer-running even with candidates', () => {});
-  it('accuracy 501 → poor-accuracy; accuracy null → poor-accuracy', () => {});
+  it('accuracy 500 → evaluated; 501 → poor-accuracy; accuracy null → poor-accuracy', () => {});
+  it('accuracy 450 with two sites inside 450 m → picker with both, never a single-site prompt', () => {});
   it('one candidate → prompt with that one', () => {});
   it('two candidates 5 m apart → prompt with both, never auto-picked', () => {});
   it('dismissed 3h59m ago → suppressed; 4h01m → shown', () => {});
@@ -889,7 +926,7 @@ describe('decideStillHere', () => {
 
 **Files:**
 - Create: `apps/mobile/src/services/locationSites.ts` (+ test), `arrivalMemory.ts` (+ test)
-- Modify: `apps/mobile/src/services/localTimer.ts:16-40`, `services/timeEntries.ts:173-215`, `screens/tickets/timerActions.ts` (+ `timerActions.test.ts`), the stop→`create` mapping (find with `grep -n "kind: 'create'" apps/mobile/src -r`)
+- Modify: `apps/mobile/src/services/localTimer.ts:16-40`, `services/timeEntries.ts:134-215` (`RunningTimer`/`TimeEntry` types + `narrowRunningTimer`/`narrowTimeEntry` gain `orgId`, `siteId`, `source`), `store/timeSlice.ts` (adopting a `LocalTimer` seeds the same three fields), `screens/tickets/timerActions.ts` (+ `timerActions.test.ts`), the stop→`create` mapping (find with `grep -n "kind: 'create'" apps/mobile/src -r`)
 
 **Interfaces:**
 - Consumes: `coreRequest` (`services/api.ts`); AsyncStorage stub `src/testing/asyncStorageStub.ts`.
@@ -924,7 +961,8 @@ export async function startForSite(
 - [ ] **Step 1: Failing tests**
   - `getLocationSites`: no cache → fetches; fresh cache (<24 h) → no fetch; stale → fetch; fetch fails with stale cache → returns stale; 403 → returns `null` and clears cache; `enabled:false` response cached (so a disabled partner is not re-fetched every foreground); `logout` reset clears the key (add the key to the logout-clear list — `grep -rn "localTimer.v1\|removeItem" apps/mobile/src/store | head` to find it).
   - `arrivalMemory`: round-trip; prune > 24 h; corrupted JSON → empty memory, no throw.
-  - `startForSite`: sends `{ ticketId?, orgId, siteId, source:'location' }`; offline → local timer carries `orgId/siteId/source`; `ENTRY_RUNNING` → existing `already-running` outcome; `ORG_DENIED`/403 → `{ ok:false, reason:'forbidden' }` (same mapping as `startForTicket`) **and** calls `invalidateLocationSites()` via an injected dep.
+  - `startForSite`: sends `{ ticketId?, orgId, siteId, source:'location' }`; offline → local timer carries `orgId/siteId/source`; `ENTRY_RUNNING` → existing `already-running` outcome; `ORG_DENIED`/`SITE_DENIED` (403) and `SITE_ORG_MISMATCH` (422) → `{ ok:false, reason:'forbidden' }` **and** call `invalidateLocationSites()` via an injected dep (otherwise a deleted or moved site re-prompts on every foreground for 24 h).
+  - `narrowRunningTimer` / `narrowTimeEntry` keep `orgId`, `siteId`, `source` from the server row (null when absent); adopting a local location timer into `timeSlice.running` carries them — Task 15's stop prompt reads `running.source/siteId` after an app restart, when the only source is `GET /time-entries/running`. Server side: confirm Task 7's select-list change also feeds `getRunningTimer` (`grep -n "export async function getRunningTimer" apps/api/src/services/timeEntryService.ts`).
   - stop of a local location timer queues `create` with `orgId`, `siteId`, `source:'location'` (and with `ticketId` when present); a legacy `LocalTimer` with none of the three keys produces today's `create` byte-for-byte.
 - [ ] **Step 2:** FAIL. **Step 3:** implement — `startForSite` reuses `startForTicket`'s body: refactor the body into `startWith(target: { ticketId: string | null; orgId?: string; siteId?: string; source?: 'location' }, deps, options)` and make both exported functions thin wrappers (keeps one copy of the persist-before-network ordering). **Step 4:** PASS + existing `timerActions.test.ts`, `timeEntryQueue.test.ts`, `timerReconcile.test.ts`. **Step 5:** commit `feat(mobile): site-aware timer start and location sites cache (#4186)`.
 
