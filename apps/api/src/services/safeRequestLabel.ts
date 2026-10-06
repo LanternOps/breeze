@@ -5,6 +5,8 @@ declare module 'hono' {
   interface ContextVariableMap {
     /** Set by `requestPathLogger`; read back via `requestCorrelationId`. */
     requestCorrelationId: string;
+    /** Stable snake_case code set by a middleware that short-circuits a request before routing; logged by `requestPathLogger`. */
+    rejectReason: string;
   }
 }
 
