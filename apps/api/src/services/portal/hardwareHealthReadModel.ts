@@ -176,17 +176,14 @@ export async function hardwareHealthDeviceDetail(orgId: string, deviceId: string
       .select({
         componentKey: deviceHardwareComponents.componentKey,
         componentType: deviceHardwareComponents.componentType,
-        parentKey: deviceHardwareComponents.parentKey,
         name: deviceHardwareComponents.name,
         model: deviceHardwareComponents.model,
         sizeBytes: deviceHardwareComponents.sizeBytes,
         health: deviceHardwareComponents.health,
         state: deviceHardwareComponents.state,
-        stateDetail: deviceHardwareComponents.stateDetail,
         progressPercent: deviceHardwareComponents.progressPercent,
         temperatureC: deviceHardwareComponents.temperatureC,
         predictiveFailure: deviceHardwareComponents.predictiveFailure,
-        lastSeenAt: deviceHardwareComponents.lastSeenAt,
         // Read only to drop stale rows in code (defense in depth); never emitted.
         stale: deviceHardwareComponents.stale,
       })
@@ -200,7 +197,6 @@ export async function hardwareHealthDeviceDetail(orgId: string, deviceId: string
       .orderBy(asc(deviceHardwareComponents.componentType), asc(deviceHardwareComponents.name)),
     db
       .select({
-        componentKey: deviceHardwareEvents.componentKey,
         componentType: deviceHardwareEvents.componentType,
         eventType: deviceHardwareEvents.eventType,
         fromHealth: deviceHardwareEvents.fromHealth,
@@ -226,7 +222,6 @@ export async function hardwareHealthDeviceDetail(orgId: string, deviceId: string
         freeGb: deviceDisks.freeGb,
         usedPercent: deviceDisks.usedPercent,
         health: deviceDisks.health,
-        updatedAt: deviceDisks.updatedAt,
       })
       .from(deviceDisks)
       .where(and(eq(deviceDisks.orgId, orgId), eq(deviceDisks.deviceId, deviceId)))
@@ -263,24 +258,21 @@ export async function hardwareHealthDeviceDetail(orgId: string, deviceId: string
     counts,
     lastCollectedAt: iso(collectedRows[0]?.lastCollectedAt),
     components: components.map((row) => ({
-      componentKey: row.componentKey,
       componentType: row.componentType,
-      parentKey: row.parentKey,
-      name: row.name,
+      // The agent falls back to the component key (it embeds the disk serial and the
+      // collector prefix) when a component has no name; never show it.
+      name: row.name === row.componentKey ? null : row.name,
       model: row.model,
       sizeBytes: row.sizeBytes,
       health: row.health,
       state: row.state,
-      stateDetail: row.stateDetail,
       progressPercent: row.progressPercent,
       temperatureC: row.temperatureC,
       predictiveFailure: row.predictiveFailure,
-      lastSeenAt: iso(row.lastSeenAt),
     })),
     events: eventRows
       .filter(isCustomerComponent)
       .map((row) => ({
-        componentKey: row.componentKey,
         componentType: row.componentType,
         eventType: row.eventType,
         fromHealth: row.fromHealth,
@@ -297,7 +289,6 @@ export async function hardwareHealthDeviceDetail(orgId: string, deviceId: string
       freeGb: row.freeGb,
       usedPercent: row.usedPercent,
       health: row.health,
-      updatedAt: iso(row.updatedAt),
     })),
     battery: battery
       ? {

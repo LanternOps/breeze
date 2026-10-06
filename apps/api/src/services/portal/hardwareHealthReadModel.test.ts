@@ -138,6 +138,25 @@ describe('hardwareHealthDeviceDetail', () => {
     mocks.data.collectedOne = [{ lastCollectedAt: new Date('2026-10-02T11:58:00.000Z') }];
   }
 
+  it('never exposes component keys, disk serials or raw tool text', async () => {
+    seed();
+    mocks.data.components = [
+      ...(mocks.data.components ?? []),
+      leak({
+        componentKey: 'smart:SER123', componentType: 'physical_disk', parentKey: 'storcli:c0',
+        name: 'smart:SER123', model: 'ST2000', sizeBytes: 2000, health: 'ok', state: 'online',
+        stateDetail: 'raw vendor output SER123', progressPercent: null, temperatureC: 35,
+        predictiveFailure: false, lastSeenAt: new Date('2026-10-02T11:59:00.000Z'),
+      }),
+    ];
+    const dto = await hardwareHealthDeviceDetail(ORG, DEVICE, NOW);
+    const json = JSON.stringify(dto);
+    for (const leaked of ['SER123', 'smart:', 'storcli', 'raw vendor output']) {
+      expect(json).not.toContain(leaked);
+    }
+    expect(dto!.components.find((c) => c.model === 'ST2000')!.name).toBeNull();
+  });
+
   it('returns null when the device is not in the organization', async () => {
     mocks.data.device = [];
     expect(await hardwareHealthDeviceDetail(ORG, DEVICE, NOW)).toBeNull();
@@ -149,10 +168,10 @@ describe('hardwareHealthDeviceDetail', () => {
     seed();
     const dto = await hardwareHealthDeviceDetail(ORG, DEVICE, NOW);
     expect(dto).not.toBeNull();
-    expect(dto!.components.map((c) => c.componentKey)).toEqual(['pd0', 'vd0']);
+    expect(dto!.components.map((c) => c.name)).toEqual(['Disk 0', 'VD 0']);
     expect(dto!.health).toBe('warning');
     expect(dto!.counts).toEqual({ ok: 1, warning: 1, critical: 0, unknown: 0 });
-    expect(dto!.events.map((e) => e.componentKey)).toEqual(['pd0']);
+    expect(dto!.events.map((e) => e.componentType)).toEqual(['physical_disk']);
     expect(dto!.dataStatus).toBe('ok');
     expect(dto!.asOf).toBe(NOW.toISOString());
   });
@@ -170,16 +189,15 @@ describe('hardwareHealthDeviceDetail', () => {
         'health', 'components', 'lastCollectedAt'].sort(),
     );
     expect(Object.keys(dto!.components[0]!).sort()).toEqual(
-      ['componentKey', 'componentType', 'health', 'lastSeenAt', 'model', 'name',
-        'parentKey', 'predictiveFailure', 'progressPercent', 'sizeBytes', 'state',
-        'stateDetail', 'temperatureC'].sort(),
+      ['componentType', 'health', 'model', 'name', 'predictiveFailure',
+        'progressPercent', 'sizeBytes', 'state', 'temperatureC'].sort(),
     );
     expect(Object.keys(dto!.events[0]!).sort()).toEqual(
-      ['componentKey', 'componentType', 'eventType', 'fromHealth', 'fromState',
-        'occurredAt', 'toHealth', 'toState'].sort(),
+      ['componentType', 'eventType', 'fromHealth', 'fromState', 'occurredAt',
+        'toHealth', 'toState'].sort(),
     );
     expect(Object.keys(dto!.disks[0]!).sort()).toEqual(
-      ['freeGb', 'fsType', 'health', 'mountPoint', 'totalGb', 'updatedAt', 'usedGb',
+      ['freeGb', 'fsType', 'health', 'mountPoint', 'totalGb', 'usedGb',
         'usedPercent'].sort(),
     );
     expect(Object.keys(dto!.device).sort()).toEqual(
