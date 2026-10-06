@@ -4440,6 +4440,8 @@ jobs:
              { [[ "${API_CHANGED}" != "true" ]] && [[ "${API_CHANGED}" != "false" ]]; } || \
              { [[ "${API_CHANGED}" == "false" ]] && [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "skipped" ]]; } || \
              [[ "${AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT}" != "success" ]] || \
+             { [[ "${API_CHANGED}" == "true" ]] && [[ "${CHECK_MIGRATIONS_RESULT}" != "success" ]]; } || \
+             { [[ "${API_CHANGED}" != "true" ]] && [[ "${API_CHANGED}" != "false" ]]; } || \
              { [[ "${API_CHANGED}" == "false" ]] && [[ "${CHECK_MIGRATIONS_RESULT}" != "skipped" ]]; } || \
              { [[ "${STACK_CHANGED}" == "false" ]] && [[ "${BUILD_SMOKE_IMAGES_RESULT}" != "skipped" ]]; } || \
              { [[ "${STACK_CHANGED}" == "false" ]] && [[ "${SMOKE_TEST_RESULT}" != "skipped" ]]; } || \
