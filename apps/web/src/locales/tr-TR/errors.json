@@ -29,5 +29,6 @@
   "ASSIGNEE_PARTNER_MISMATCH": "The assignee must belong to the same partner as the ticket",
   "tool_source_unavailable": "Bu aracın kaynağı şu anda kullanılamıyor",
   "ai_not_configured": "Yapay zekâ bu sunucuda yapılandırılmamış. Bir yöneticinin bir model sağlayıcı anahtarı eklemesi gerekiyor.",
-  "ACCESS_REVIEW_SELF_DECISION": "Kendi erişiminiz hakkında karar veremezsiniz — bu öğeyi başka bir yönetici incelemelidir"
+  "ACCESS_REVIEW_SELF_DECISION": "Kendi erişiminiz hakkında karar veremezsiniz — bu öğeyi başka bir yönetici incelemelidir",
+  "NO_UPDATES_PROVIDED": "No changes were provided"
 }

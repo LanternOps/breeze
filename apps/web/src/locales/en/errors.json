@@ -29,5 +29,6 @@
   "ASSIGNEE_PARTNER_MISMATCH": "The assignee must belong to the same partner as the ticket",
   "tool_source_unavailable": "This tool's source is currently unavailable",
   "ai_not_configured": "AI isn't configured on this server. An administrator needs to add a model provider key.",
-  "ACCESS_REVIEW_SELF_DECISION": "You can't decide on your own access — another administrator must review this item"
+  "ACCESS_REVIEW_SELF_DECISION": "You can't decide on your own access — another administrator must review this item",
+  "NO_UPDATES_PROVIDED": "No changes were provided"
 }

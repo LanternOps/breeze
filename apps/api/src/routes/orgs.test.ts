@@ -635,7 +635,7 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ error: 'That partner identifier is already in use' });
+      expect(await res.json()).toEqual({ error: 'That partner identifier is already in use', code: 'CONFLICT' });
       expect(db.transaction).not.toHaveBeenCalled();
     });
 
@@ -949,7 +949,7 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ error: 'That partner identifier is already in use' });
+      expect(await res.json()).toEqual({ error: 'That partner identifier is already in use', code: 'CONFLICT' });
       expect(db.update).not.toHaveBeenCalled();
     });
 
@@ -3775,7 +3775,7 @@ describe('org routes', () => {
       const res = await app.request('/orgs/organizations/99999999-9999-9999-9999-999999999999');
 
       expect(res.status).toBe(404);
-      expect(await res.json()).toEqual({ error: 'Organization not found' });
+      expect(await res.json()).toEqual({ error: 'Organization not found', code: 'NOT_FOUND' });
       // The org row is never queried in the caller's own context. Since Wave 4
       // the handler does probe for an ARCHIVED org first — that probe is
       // hard-pinned to the caller's own partner and returns null here, so the
@@ -3910,7 +3910,7 @@ describe('org routes', () => {
       const res = await app.request('/orgs/organizations/not-a-uuid');
 
       expect(res.status).toBe(404);
-      expect(await res.json()).toEqual({ error: 'Organization not found' });
+      expect(await res.json()).toEqual({ error: 'Organization not found', code: 'NOT_FOUND' });
       expect(loadArchivedOrg).not.toHaveBeenCalled();
       expect(db.select).not.toHaveBeenCalled();
     });
@@ -4823,7 +4823,7 @@ describe('org routes', () => {
         const res = await patchOrg('org-draining', { status: 'active' });
 
         expect(res.status).toBe(404);
-        expect(await res.json()).toEqual({ error: 'Organization not found' });
+        expect(await res.json()).toEqual({ error: 'Organization not found', code: 'NOT_FOUND' });
         expect(db.update).not.toHaveBeenCalled();
         expect(restoreOrganizationTenantAccess).not.toHaveBeenCalled();
       });
@@ -4913,7 +4913,7 @@ describe('org routes', () => {
         const res = await app.request(`/orgs/organizations/${suspendedOrgId}`);
 
         expect(res.status).toBe(404);
-        expect(await res.json()).toEqual({ error: 'Organization not found' });
+        expect(await res.json()).toEqual({ error: 'Organization not found', code: 'NOT_FOUND' });
         expect(db.select).not.toHaveBeenCalled();
         // Wave 4's archived probe is the only extra lookup, and it is scoped to
         // ARCHIVED orgs of the caller's own partner — a SUSPENDED org resolves
@@ -8100,7 +8100,7 @@ describe('org routes', () => {
         });
 
         expect(res.status).toBe(403);
-        expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+        expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: 'ACCESS_DENIED' });
         expect(orgImportMocks.previewOrgImport).not.toHaveBeenCalled();
         expect(orgImportMocks.commitOrgImport).not.toHaveBeenCalled();
       },

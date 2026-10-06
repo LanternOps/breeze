@@ -29,5 +29,6 @@
   "ASSIGNEE_PARTNER_MISMATCH": "The assignee must belong to the same partner as the ticket",
   "tool_source_unavailable": "La source de cet outil est actuellement indisponible",
   "ai_not_configured": "L'IA n'est pas configurée sur ce serveur. Un administrateur doit ajouter une clé de fournisseur de modèles.",
-  "ACCESS_REVIEW_SELF_DECISION": "Vous ne pouvez pas statuer sur votre propre accès : un autre administrateur doit examiner cet élément"
+  "ACCESS_REVIEW_SELF_DECISION": "Vous ne pouvez pas statuer sur votre propre accès : un autre administrateur doit examiner cet élément",
+  "NO_UPDATES_PROVIDED": "No changes were provided"
 }
