@@ -433,3 +433,92 @@ func TestAgentDirGuardHoldsWhenJunctionIsRepointedAfterPathCheck(t *testing.T) {
 	}
 	pointAt(benign)
 }
+
+// A restore never writes through whatever now occupies the original path: a
+// dangling link there must not redirect the restored content, and an
+// existing file must not be replaced.
+func TestTrashRestoreRefusesOccupiedDestination(t *testing.T) {
+	fx := newProtectedFixture(t)
+	work := filepath.Join(fx.base, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(work, "doc.txt")
+	trashOne := func() string {
+		t.Helper()
+		if err := os.WriteFile(original, []byte("trashed"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		del := DeleteFile(map[string]any{"path": original})
+		if del.Status != "completed" {
+			t.Fatalf("trash: %q", del.Error)
+		}
+		id, _ := resultField(t, del, "trashId").(string)
+		return id
+	}
+
+	// Dangling file symlink at the original path.
+	id := trashOne()
+	redirected := filepath.Join(fx.base, "redirected.txt")
+	if err := os.Symlink(redirected, original); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	res := TrashRestore(map[string]any{"trashId": id})
+	if res.Status != "failed" {
+		t.Errorf("restore onto a dangling link: expected a refusal, got %q", res.Stdout)
+	}
+	if _, err := os.Lstat(redirected); err == nil {
+		t.Errorf("restore wrote through the dangling link to %s", redirected)
+	}
+	if fi, err := os.Lstat(original); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the link at the original path was replaced: %v", err)
+	}
+	_ = os.Remove(original)
+
+	// Existing file at the original path.
+	id = trashOne()
+	if err := os.WriteFile(original, []byte("occupant"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res = TrashRestore(map[string]any{"trashId": id})
+	if res.Status != "failed" {
+		t.Errorf("restore onto an existing file: expected a refusal, got %q", res.Stdout)
+	}
+	if got, _ := os.ReadFile(original); string(got) != "occupant" {
+		t.Errorf("restore replaced the existing file: %q", got)
+	}
+}
+
+// A volume mounted into a folder (no drive letter) must stay usable. Set
+// BREEZE_TEST_FOLDER_MOUNT to a directory that is the mount point of another
+// volume to run this; it is skipped otherwise.
+func TestFileOpsOnFolderMountedVolume(t *testing.T) {
+	mount := os.Getenv("BREEZE_TEST_FOLDER_MOUNT")
+	if mount == "" {
+		t.Skip("BREEZE_TEST_FOLDER_MOUNT not set")
+	}
+	newProtectedFixture(t)
+	f, err := os.Open(mount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dos, dosErr := finalPathOfFile(f)
+	_ = f.Close()
+	t.Logf("VOLUME_NAME_DOS final path of the mount: %q, err=%v", dos, dosErr)
+
+	p := filepath.Join(mount, "folder-mount-probe.txt")
+	t.Cleanup(func() { _ = os.Remove(p) })
+	for _, step := range []struct {
+		name string
+		res  CommandResult
+	}{
+		{"WriteFile", WriteFile(map[string]any{"path": p, "content": "probe"})},
+		{"ReadFile", ReadFile(map[string]any{"path": p})},
+		{"ListFiles", ListFiles(map[string]any{"path": mount})},
+		{"DeleteFile", DeleteFile(map[string]any{"path": p, "permanent": true})},
+	} {
+		if step.res.Status != "completed" {
+			t.Errorf("%s on folder-mounted volume: %q", step.name, step.res.Error)
+		}
+	}
+}

@@ -19,9 +19,15 @@ func finalPathOfFile(f *os.File) (string, error) {
 
 // finalPathOfHandle is finalPathOfFile for a raw handle.
 func finalPathOfHandle(h windows.Handle) (string, error) {
+	return finalPathOfHandleFlags(h, 0 /* VOLUME_NAME_DOS */)
+}
+
+// finalPathOfHandleFlags is finalPathOfHandle with explicit
+// GetFinalPathNameByHandle flags (VOLUME_NAME_DOS = 0, VOLUME_NAME_GUID, ...).
+func finalPathOfHandleFlags(h windows.Handle, flags uint32) (string, error) {
 	buf := make([]uint16, 1024)
 	for {
-		n, err := windows.GetFinalPathNameByHandle(h, &buf[0], uint32(len(buf)), 0 /* VOLUME_NAME_DOS */)
+		n, err := windows.GetFinalPathNameByHandle(h, &buf[0], uint32(len(buf)), flags)
 		if err != nil {
 			return "", err
 		}

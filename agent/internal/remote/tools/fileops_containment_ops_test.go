@@ -624,24 +624,24 @@ func TestTrashRestoreAllowsBenignDestination(t *testing.T) {
 	}
 }
 
-// TestCopyDirSkipSensitiveContract pins the copyDir boolean, which is the one
+// TestCopyDirSkipSensitiveContract pins the copyDir mode, which is the one
 // place in #3397 where getting the polarity backwards causes DATA LOSS rather
 // than a leak:
-//   - true  (operator-facing CopyFile): sensitive entries are omitted, so
+//   - copyOperator (operator-facing CopyFile): sensitive entries are omitted, so
 //     copying a parent directory cannot launder credential stores into a
 //     readable location.
-//   - false (the fallback half of a MOVE — DeleteFile→trash, TrashRestore):
+//   - copyIntoTrash (the fallback half of a MOVE — DeleteFile→trash, TrashRestore):
 //     every entry is preserved, because the source is deleted afterwards and an
 //     omitted entry would be destroyed rather than protected.
 func TestCopyDirSkipSensitiveContract(t *testing.T) {
 	cases := []struct {
 		name           string
-		skipSensitive  bool
+		how            copyMode
 		wantSensitive  bool
 		wantBenignKept bool
 	}{
-		{name: "CopyFile semantics omit credential stores", skipSensitive: true, wantSensitive: false, wantBenignKept: true},
-		{name: "move semantics preserve everything", skipSensitive: false, wantSensitive: true, wantBenignKept: true},
+		{name: "CopyFile semantics omit credential stores", how: copyOperator, wantSensitive: false, wantBenignKept: true},
+		{name: "move semantics preserve everything", how: copyIntoTrash, wantSensitive: true, wantBenignKept: true},
 	}
 
 	for _, tc := range cases {
@@ -653,7 +653,7 @@ func TestCopyDirSkipSensitiveContract(t *testing.T) {
 			makeSensitiveDir(t, src)  // <src>/etc/ssl/private/server.key
 			makeBenignFile(t, src)    // <src>/docs/notes.txt
 
-			if err := copyDir(src, dst, tc.skipSensitive); err != nil {
+			if err := copyDir(src, dst, tc.how); err != nil {
 				t.Fatalf("copyDir: %v", err)
 			}
 

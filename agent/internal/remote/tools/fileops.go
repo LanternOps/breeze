@@ -521,7 +521,7 @@ func afterPathCheck(path string) {
 // junction, symlink, mount point, short name and alias, and it cannot be raced
 // because the caller goes on to use this same handle.
 func checkOpenedForContainment(verb, displayPath string, f *os.File) error {
-	final, err := finalPathOfFile(f)
+	final, err := containmentFinalPathOfFile(f)
 	if err != nil {
 		if handleCheckMandatory {
 			return containmentDeniedf("%s denied: cannot determine where %s resolves: %v", verb, displayPath, err)
@@ -559,7 +559,13 @@ func openForWriteChecked(verb, cleanPath string, perm os.FileMode) (*os.File, er
 	if !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
+	return createExclusiveChecked(verb, cleanPath, perm)
+}
 
+// createExclusiveChecked creates cleanPath, which must not exist (not even as
+// a dangling link), relative to a handle on its parent directory whose final
+// path has been cleared against the deny-list.
+func createExclusiveChecked(verb, cleanPath string, perm os.FileMode) (*os.File, error) {
 	parent := filepath.Dir(cleanPath)
 	name := filepath.Base(cleanPath)
 	root, err := os.OpenRoot(parent)
@@ -571,7 +577,7 @@ func openForWriteChecked(verb, cleanPath string, perm os.FileMode) (*os.File, er
 	if err != nil {
 		return nil, err
 	}
-	final, ferr := finalPathOfFile(dir)
+	final, ferr := containmentFinalPathOfFile(dir)
 	_ = dir.Close()
 	if ferr != nil {
 		if handleCheckMandatory {
@@ -1545,12 +1551,19 @@ func DeleteFile(payload map[string]any) CommandResult {
 	contentPath := filepath.Join(trashItemDir, "content")
 	if err := entry.renameTo(contentPath, false, false); err != nil {
 		entry.close()
-		// Rename may fail across devices; fall back to copy + remove
+		// Only a move across volumes falls back to copy + remove. Any other
+		// failure (a lock, a permission problem, a name collision) is
+		// reported: retrying it as a by-path copy would act on whatever the
+		// path names by then rather than on the entry that was cleared.
+		if !isCrossDeviceError(err) {
+			_ = os.RemoveAll(trashItemDir)
+			return NewErrorResult(fmt.Errorf("failed to move to trash: %w", err), time.Since(start).Milliseconds())
+		}
 		if info.IsDir() {
-			// skipSensitive=false: this is the fallback half of a MOVE — the
+			// copyIntoTrash: this is the fallback half of a MOVE — the
 			// source is removed below, so an omitted entry would be destroyed.
 			// The sensitive-source gate ran at the top of DeleteFile.
-			if cpErr := copyDir(cleanPath, contentPath, false); cpErr != nil {
+			if cpErr := copyDir(cleanPath, contentPath, copyIntoTrash); cpErr != nil {
 				// Clean up the trash item dir on failure
 				os.RemoveAll(trashItemDir)
 				return NewErrorResult(fmt.Errorf("failed to move directory to trash: %w", cpErr), time.Since(start).Milliseconds())
@@ -1559,7 +1572,7 @@ func DeleteFile(payload map[string]any) CommandResult {
 				return NewErrorResult(fmt.Errorf("copied to trash but failed to remove original: %w", err), time.Since(start).Milliseconds())
 			}
 		} else {
-			if cpErr := copyFile(cleanPath, contentPath, info.Mode()); cpErr != nil {
+			if cpErr := copyFile(cleanPath, contentPath, info.Mode(), copyIntoTrash); cpErr != nil {
 				os.RemoveAll(trashItemDir)
 				return NewErrorResult(fmt.Errorf("failed to move file to trash: %w", cpErr), time.Since(start).Milliseconds())
 			}
@@ -1662,8 +1675,10 @@ func TrashRestore(payload map[string]any) CommandResult {
 		return NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
-	// Check if something already exists at the original path to prevent silent overwrite
-	if _, existErr := os.Stat(cleanOriginal); existErr == nil {
+	// Check if something already exists at the original path to prevent
+	// silent overwrite. Lstat, so a dangling link there counts as occupied
+	// rather than as a place to write through.
+	if _, existErr := os.Lstat(cleanOriginal); existErr == nil {
 		return NewErrorResult(fmt.Errorf("cannot restore: path already exists: %s", cleanOriginal), time.Since(start).Milliseconds())
 	}
 
@@ -1684,20 +1699,26 @@ func TrashRestore(payload map[string]any) CommandResult {
 	if isContainmentDenied(renameErr) {
 		return NewErrorResult(renameErr, time.Since(start).Milliseconds())
 	}
+	if renameErr != nil && !isCrossDeviceError(renameErr) {
+		// Not a cross-volume move (e.g. the destination appeared since the
+		// check above): report it. A by-path copy here would write through
+		// whatever now occupies the destination.
+		return NewErrorResult(fmt.Errorf("failed to restore: %w", renameErr), time.Since(start).Milliseconds())
+	}
 	if renameErr != nil {
-		// Rename may fail across devices; fall back to copy + remove
+		// Cross-volume: fall back to copy + remove. Every file is created
+		// exclusively and cleared against the deny-list (copyRestore).
 		info, statErr := os.Stat(contentPath)
 		if statErr != nil {
 			return NewErrorResult(fmt.Errorf("failed to stat trash content: %w", statErr), time.Since(start).Milliseconds())
 		}
 		if info.IsDir() {
-			// skipSensitive=false: MOVE semantics, see DeleteFile above. The
-			// restore destination is gated at the top of TrashRestore.
-			if cpErr := copyDir(contentPath, cleanOriginal, false); cpErr != nil {
+			// MOVE semantics (nothing omitted), see DeleteFile above.
+			if cpErr := copyDir(contentPath, cleanOriginal, copyRestore); cpErr != nil {
 				return NewErrorResult(fmt.Errorf("failed to restore directory: %w", cpErr), time.Since(start).Milliseconds())
 			}
 		} else {
-			if cpErr := copyFile(contentPath, cleanOriginal, info.Mode()); cpErr != nil {
+			if cpErr := copyFile(contentPath, cleanOriginal, info.Mode(), copyRestore); cpErr != nil {
 				return NewErrorResult(fmt.Errorf("failed to restore file: %w", cpErr), time.Since(start).Milliseconds())
 			}
 		}
@@ -1979,7 +2000,7 @@ func CopyFile(payload map[string]any) CommandResult {
 		if strings.HasPrefix(cleanDst, cleanSrc+string(filepath.Separator)) || cleanDst == cleanSrc {
 			return NewErrorResult(fmt.Errorf("cannot copy directory into itself: %s -> %s", cleanSrc, cleanDst), time.Since(start).Milliseconds())
 		}
-		if err := copyDir(cleanSrc, cleanDst, true); err != nil {
+		if err := copyDir(cleanSrc, cleanDst, copyOperator); err != nil {
 			return NewErrorResult(fmt.Errorf("failed to copy directory: %w", err), time.Since(start).Milliseconds())
 		}
 	} else {
@@ -1989,7 +2010,7 @@ func CopyFile(payload map[string]any) CommandResult {
 			return NewErrorResult(fmt.Errorf("failed to create destination directory: %w", err), time.Since(start).Milliseconds())
 		}
 		afterPathCheck(cleanSrc)
-		if err := copyFileContained(cleanSrc, cleanDst, info.Mode()); err != nil {
+		if err := copyFile(cleanSrc, cleanDst, info.Mode(), copyOperator); err != nil {
 			if isContainmentDenied(err) {
 				return NewErrorResult(err, time.Since(start).Milliseconds())
 			}
@@ -2004,22 +2025,28 @@ func CopyFile(payload map[string]any) CommandResult {
 	}, time.Since(start).Milliseconds())
 }
 
+// copyMode says which kind of copy copyFile/copyDir perform.
+type copyMode int
+
+const (
+	// copyOperator is an operator-requested copy: deny-listed entries are
+	// omitted, the source is cleared on the handle it is read from, and the
+	// destination is opened through openForWriteChecked (an existing file
+	// is overwritten, as before).
+	copyOperator copyMode = iota
+	// copyIntoTrash is the cross-volume fallback of a move into the agent's
+	// own trash. Nothing is omitted (the source is removed afterwards) and
+	// every destination file is created exclusively, so nothing already at
+	// the destination — including a dangling link — is written through.
+	copyIntoTrash
+	// copyRestore is the cross-volume fallback of a restore. Like
+	// copyIntoTrash, plus each destination is cleared against the deny-list
+	// on the handle of its parent directory.
+	copyRestore
+)
+
 // copyFile copies a single file from src to dst, preserving the given file mode.
-// It is the move-fallback copy (trash and restore), whose endpoints were
-// cleared by the caller; operator copies use copyFileContained.
-func copyFile(src, dst string, mode os.FileMode) error {
-	return copyFileWith(src, dst, mode, false)
-}
-
-// copyFileContained is copyFile for an operator-requested copy: the source is
-// cleared on the handle it is read from, and the destination is created
-// through openForWriteChecked, so neither end can be redirected between its
-// check and its use.
-func copyFileContained(src, dst string, mode os.FileMode) error {
-	return copyFileWith(src, dst, mode, true)
-}
-
-func copyFileWith(src, dst string, mode os.FileMode, contained bool) error {
+func copyFile(src, dst string, mode os.FileMode, how copyMode) error {
 	srcFile, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("open source: %w", err)
@@ -2027,22 +2054,22 @@ func copyFileWith(src, dst string, mode os.FileMode, contained bool) error {
 	defer srcFile.Close()
 
 	var dstFile *os.File
-	if contained {
+	switch how {
+	case copyOperator:
 		if err := checkOpenedForContainment("copy", src, srcFile); err != nil {
 			return err
 		}
 		dstFile, err = openForWriteChecked("write", dst, mode)
-		if err != nil {
-			if isContainmentDenied(err) {
-				return err
-			}
-			return fmt.Errorf("create destination: %w", err)
+	case copyRestore:
+		dstFile, err = createExclusiveChecked("write", dst, mode)
+	default:
+		dstFile, err = os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	}
+	if err != nil {
+		if isContainmentDenied(err) {
+			return err
 		}
-	} else {
-		dstFile, err = os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-		if err != nil {
-			return fmt.Errorf("create destination: %w", err)
-		}
+		return fmt.Errorf("create destination: %w", err)
 	}
 
 	if _, err := io.Copy(dstFile, srcFile); err != nil {
@@ -2065,19 +2092,19 @@ func copyFileWith(src, dst string, mode os.FileMode, contained bool) error {
 // copyDir recursively copies a directory tree from src to dst.
 // Symlinks are skipped to prevent security boundary escapes.
 //
-// skipSensitive controls whether entries matching the read-containment
-// deny-list are omitted from the copy. Pass true for the operator-facing
-// CopyFile: gating only the copy ROOT is not enough, because copying a parent
+// how is a copyMode. copyOperator omits entries matching the read-containment
+// deny-list: gating only the copy ROOT is not enough, because copying a parent
 // directory (`/Users/alice` → `/tmp/x`) would relocate every credential store
 // beneath it to a path the deny-list no longer recognises, and a plain ReadFile
 // of the copy would then hand it over (#3397).
 //
-// Pass false wherever copyDir is the fallback half of a MOVE (DeleteFile →
+// copyIntoTrash and copyRestore are the fallback half of a MOVE (DeleteFile →
 // trash, TrashRestore): those call sites delete the source afterwards, so
 // silently omitting an entry would destroy it. Those operations gate their own
 // source path up front instead, which is the containment check that applies to
 // a move.
-func copyDir(src, dst string, skipSensitive bool) error {
+func copyDir(src, dst string, how copyMode) error {
+	skipSensitive := how == copyOperator
 	var sensitive func(string) bool
 	if skipSensitive {
 		sensitive = treeEntrySensitivity(src)
@@ -2121,13 +2148,13 @@ func copyDir(src, dst string, skipSensitive bool) error {
 		}
 
 		if skipSensitive {
-			err := copyFileContained(path, targetPath, info.Mode())
+			err := copyFile(path, targetPath, info.Mode(), copyOperator)
 			if isContainmentDenied(err) {
 				// Same treatment as a deny-listed path above: omitted.
 				return nil
 			}
 			return err
 		}
-		return copyFile(path, targetPath, info.Mode())
+		return copyFile(path, targetPath, info.Mode(), how)
 	})
 }

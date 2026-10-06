@@ -3,8 +3,10 @@
 package tools
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // resolveForContainment resolves cleanPath through any symlinks, returning
@@ -85,3 +87,10 @@ func (e *pinnedEntry) removeAll() error { return os.RemoveAll(e.path) }
 // check as an extra layer on top of the path check, and skip it when the
 // kernel cannot name the descriptor (e.g. /proc not mounted).
 const handleCheckMandatory = false
+
+// containmentFinalPathOfFile is where the kernel says an open descriptor is.
+func containmentFinalPathOfFile(f *os.File) (string, error) { return finalPathOfFile(f) }
+
+// isCrossDeviceError reports a rename that failed only because source and
+// destination are on different filesystems.
+func isCrossDeviceError(err error) bool { return errors.Is(err, syscall.EXDEV) }

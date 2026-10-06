@@ -39,6 +39,105 @@ func openFollowing(p string, access uint32) (windows.Handle, error) {
 		windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
 }
 
+// volumeNameGUID is GetFinalPathNameByHandle's VOLUME_NAME_GUID flag.
+const volumeNameGUID = 0x1
+
+// containmentFinalPath is the path the deny-list is applied to for an open
+// handle. Normally that is the drive-letter (VOLUME_NAME_DOS) final path.
+// Some drivers (RAM disks, encrypted containers, VM shared folders) cannot
+// produce one; refusing every handle on such a volume would make it
+// unusable, so the volume-GUID form is used instead, but only when the
+// handle's volume is known to differ from every volume the agent's own
+// directory could be on (allowOnUnnamedVolume). The GUID form still carries
+// the path below the volume root, so the name-based rules (credential file
+// names, .ssh, ...) keep applying to it.
+func containmentFinalPath(h windows.Handle) (string, error) {
+	p, err := finalPathOfHandle(h)
+	if err == nil {
+		return p, nil
+	}
+	guid, gerr := finalPathOfHandleFlags(h, volumeNameGUID)
+	if gerr != nil {
+		return "", err
+	}
+	var info windows.ByHandleFileInformation
+	volumeKnown := windows.GetFileInformationByHandle(h, &info) == nil
+	protected, protectedKnown := protectedVolumeSerials()
+	if !allowOnUnnamedVolume(info.VolumeSerialNumber, volumeKnown, protected, protectedKnown) {
+		return "", fmt.Errorf("%w (the volume has no drive-letter path and may hold the agent directory)", err)
+	}
+	return guid, nil
+}
+
+func containmentFinalPathOfFile(f *os.File) (string, error) {
+	return containmentFinalPath(windows.Handle(f.Fd()))
+}
+
+// protectedVolumeSerials returns the serial numbers of the volumes holding
+// the agent's configured directory and the default install locations (the
+// system drive and ProgramData). known is false if any of them could not be
+// determined.
+func protectedVolumeSerials() (serials []uint32, known bool) {
+	candidates := []string{agentConfigDirFunc(), os.Getenv("ProgramData")}
+	if sd := os.Getenv("SystemDrive"); sd != "" {
+		candidates = append(candidates, sd+`\`)
+	}
+	known = true
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		serial, ok := volumeSerialOfNearestExisting(filepath.Clean(c))
+		if !ok {
+			known = false
+			continue
+		}
+		serials = append(serials, serial)
+	}
+	return serials, known
+}
+
+func volumeSerialOfNearestExisting(p string) (uint32, bool) {
+	current := p
+	for {
+		if h, err := openFollowing(current, windows.FILE_READ_ATTRIBUTES); err == nil {
+			var info windows.ByHandleFileInformation
+			ierr := windows.GetFileInformationByHandle(h, &info)
+			_ = windows.CloseHandle(h)
+			return info.VolumeSerialNumber, ierr == nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return 0, false
+		}
+		current = parent
+	}
+}
+
+// isCrossDeviceError reports a rename that failed only because source and
+// destination are on different volumes.
+func isCrossDeviceError(err error) bool {
+	return errors.Is(err, windows.STATUS_NOT_SAME_DEVICE) || errors.Is(err, windows.ERROR_NOT_SAME_DEVICE)
+}
+
+// fileAttributeTagInfo mirrors FILE_ATTRIBUTE_TAG_INFO.
+type fileAttributeTagInfo struct {
+	FileAttributes uint32
+	ReparseTag     uint32
+}
+
+// isLinkHandle reports whether the open entry is a link to another name
+// (symlink, junction, mount point), as opposed to a regular entry or a
+// reparse point that is not a name surrogate (e.g. a cloud placeholder).
+func isLinkHandle(h windows.Handle) (bool, error) {
+	var info fileAttributeTagInfo
+	if err := windows.GetFileInformationByHandleEx(h, windows.FileAttributeTagInfo,
+		(*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
+		return false, err
+	}
+	return info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 && isLinkReparseTag(info.ReparseTag), nil
+}
+
 // resolveForContainment returns where cleanPath really lands. The nearest
 // ancestor that can be opened is opened (following junctions, symlinks and
 // mount points, and accepting short names, trailing dots and stream syntax as
@@ -54,7 +153,7 @@ func resolveForContainment(cleanPath string) (string, bool) {
 	remainder := ""
 	for {
 		if h, err := openFollowing(current, windows.FILE_READ_ATTRIBUTES); err == nil {
-			resolved, ferr := finalPathOfHandle(h)
+			resolved, ferr := containmentFinalPath(h)
 			_ = windows.CloseHandle(h)
 			if ferr == nil {
 				if remainder != "" {
@@ -102,7 +201,7 @@ func pinEntry(verb, cleanPath string, check bool) (*pinnedEntry, error) {
 	if !check {
 		return &pinnedEntry{h: h, path: cleanPath}, nil
 	}
-	final, err := finalPathOfHandle(h)
+	final, err := containmentFinalPath(h)
 	if err != nil {
 		_ = windows.CloseHandle(h)
 		return nil, containmentDeniedf("%s denied: cannot determine where %s resolves: %v", verb, cleanPath, err)
@@ -135,7 +234,7 @@ func (e *pinnedEntry) renameTo(newPath string, replace, checkDest bool) error {
 	}
 	defer func() { _ = windows.CloseHandle(parent) }()
 	if checkDest {
-		final, err := finalPathOfHandle(parent)
+		final, err := containmentFinalPath(parent)
 		if err != nil {
 			return containmentDeniedf("write denied: cannot determine where %s resolves: %v", parentPath, err)
 		}
@@ -248,8 +347,13 @@ func (e *pinnedEntry) removeAll() error {
 	if err := windows.GetFileInformationByHandle(e.h, &pinned); err != nil {
 		return &os.PathError{Op: "remove", Path: e.path, Err: err}
 	}
-	if pinned.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 ||
-		pinned.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+	link, err := isLinkHandle(e.h)
+	if err != nil {
+		return &os.PathError{Op: "remove", Path: e.path, Err: err}
+	}
+	// A link is removed as a link. Any other reparse point (a cloud-files
+	// placeholder folder, for one) is a real directory and is emptied first.
+	if pinned.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 || link {
 		return e.remove()
 	}
 	e.close()
