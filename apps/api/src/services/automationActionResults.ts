@@ -400,6 +400,28 @@ async function reconcileInCurrentContext(
   }).from(automationRuns).where(eq(automationRuns.id, runId)).limit(1).for('update');
   if (!run) return [];
 
+  if (run.status === 'cancelled') {
+    // #8104 — a device whose `pending` result row was seeded but whose action
+    // rows never were (the cancel committed between the two seeds) can never
+    // gain an action row now: `seedAutomationActionResults` refuses to insert
+    // for a cancelled run. Nothing else would ever close it, and a `pending`
+    // device row keeps the run aggregate `running`, so the cancelled run would
+    // never get its completed_at. Settle it here, under the run lock.
+    await db.update(automationRunDeviceResults).set({
+      status: 'cancelled',
+      completedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(and(
+      eq(automationRunDeviceResults.runId, runId),
+      eq(automationRunDeviceResults.status, 'pending'),
+      sql`NOT EXISTS (
+        SELECT 1 FROM automation_action_results aar
+        WHERE aar.run_id = ${automationRunDeviceResults.runId}
+          AND aar.device_id = ${automationRunDeviceResults.deviceId}
+      )`,
+    ));
+  }
+
   const actionRows = await db.select({
     id: automationActionResults.id,
     deviceId: automationActionResults.deviceId,

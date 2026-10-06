@@ -21,11 +21,12 @@ import './setup';
 
 import { randomUUID } from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   automationActionResults,
+  automationRunDeviceResults,
   automationRuns,
   automations,
   deviceCommands,
@@ -187,15 +188,23 @@ describe('automation replay idempotency — real PostgreSQL (#3189)', () => {
     expect(commands).toHaveLength(ledger.filter((row) => row.status === 'queued').length);
   });
 
-  runDb('a cancel committing between the pre-seed fence and a device seed strands no pending action (#8104)', async () => {
+  afterEach(() => {
+    seedHook.beforeSeed = null;
+  });
+
+  it.each([
+    { seedsBeforeCancel: 0, label: 'before the first device seed' },
+    { seedsBeforeCancel: 1, label: 'between two device seeds' },
+  ])('a cancel committing $label strands no pending action or device (#8104)', async ({ seedsBeforeCancel }) => {
+    if (!process.env.DATABASE_URL) return;
     const f = await fixture(3);
 
-    // Device 1 is seeded before the cancel; the cancel then commits (on its
-    // own connection, as the route would) before device 2 is seeded. This is
-    // the window the 15 ms race above only sometimes lands in.
+    // The cancel commits (on its own connection, as the route would) after the
+    // runtime's pre-seed fence check passed and right before device N+1's
+    // ledger seed — the window the 15 ms race above only sometimes lands in.
     let cancel: Awaited<ReturnType<typeof cancelAutomationRun>> | undefined;
     seedHook.beforeSeed = {
-      remaining: 2,
+      remaining: seedsBeforeCancel + 1,
       run: async () => {
         cancel = await runOutsideDbContext(() =>
           cancelAutomationRun({ runId: f.run.id, actorId: null, actorLabel: 'replay-integration' }));
@@ -208,10 +217,27 @@ describe('automation replay idempotency — real PostgreSQL (#3189)', () => {
     expect(cancel?.kind).toBe('cancelled');
     expect(outcome.status).toBe('cancelled');
     const ledger = await ledgerFor(f.run.id);
+    // Only the devices seeded before the cancel have rows (2 actions each);
+    // the cancel's own sweep terminalised them and no later seed inserted.
+    expect(ledger).toHaveLength(seedsBeforeCancel * 2);
+    expect(new Set(ledger.map((row) => row.deviceId)).size).toBe(seedsBeforeCancel);
     for (const row of ledger) {
       expect(row.status).toBe('cancelled');
     }
     expect(await commandsFor(f.deviceIds)).toHaveLength(0);
+    // Every device row was seeded `pending` up front; the ones with no action
+    // rows must still close, or the run aggregate stays `running` forever.
+    const deviceRows = await getTestDb()
+      .select({ status: automationRunDeviceResults.status })
+      .from(automationRunDeviceResults)
+      .where(eq(automationRunDeviceResults.runId, f.run.id));
+    expect(deviceRows.map((row) => row.status)).toEqual(['cancelled', 'cancelled', 'cancelled']);
+    const [runRow] = await getTestDb()
+      .select({ status: automationRuns.status, completedAt: automationRuns.completedAt })
+      .from(automationRuns)
+      .where(eq(automationRuns.id, f.run.id));
+    expect(runRow!.status).toBe('cancelled');
+    expect(runRow!.completedAt).not.toBeNull();
   });
 
   runDb('two trigger attempts for one schedule slot yield one run; manual runs are never deduplicated', async () => {

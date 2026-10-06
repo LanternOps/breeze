@@ -109,6 +109,33 @@ describe('automation action results', () => {
     })).rejects.toThrow(/organization mismatch/i);
   });
 
+  runDb('refuses to seed a cancelled run and settles its action-less device rows on reconcile (#8104)', async () => {
+    const f = await fixture();
+    await getTestDb().update(automationRuns).set({ status: 'cancelled' }).where(eq(automationRuns.id, f.run.id));
+
+    await expect(seedAutomationActionResults({ runId: f.run.id, device: f.deviceA, actions: f.actions }))
+      .resolves.toBe('run_cancelled');
+    const rows = await getTestDb().execute(sql`
+      SELECT id FROM automation_action_results WHERE run_id = ${f.run.id}::uuid
+    `);
+    expect(rows).toHaveLength(0);
+
+    // The device row was seeded `pending`, but no action row can ever join it
+    // now; reconcile must close it rather than leave the run aggregate open.
+    await reconcileAutomationRun(f.run.id);
+    const [device] = await getTestDb().select({ status: automationRunDeviceResults.status })
+      .from(automationRunDeviceResults).where(eq(automationRunDeviceResults.runId, f.run.id));
+    expect(device!.status).toBe('cancelled');
+  });
+
+  runDb('seeds a live run and refuses a run that does not exist', async () => {
+    const f = await fixture(1);
+    await expect(seedAutomationActionResults({ runId: f.run.id, device: f.deviceA, actions: f.actions }))
+      .resolves.toBe('seeded');
+    await expect(seedAutomationActionResults({ runId: randomUUID(), device: f.deviceA, actions: f.actions }))
+      .rejects.toThrow(/not found/i);
+  });
+
   runDb('hides foreign rows and denies forged INSERT, UPDATE, and DELETE under forced RLS', async () => {
     const f = await fixture(1);
     await seedAutomationActionResults({ runId: f.run.id, device: f.deviceA, actions: f.actions });
