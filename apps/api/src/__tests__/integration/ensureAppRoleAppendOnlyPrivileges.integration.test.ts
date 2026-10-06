@@ -89,7 +89,7 @@ describe('ensureAppRole append-only re-revoke — runtime privilege check (#4371
   it.each([
     'automation_action_results',
     'device_software_inventory_state',
-    // SEC-142/143: ordinary mutable accounting state (settle/expire both
+    // AI budget reservations: ordinary mutable accounting state (settle/expire both
     // UPDATE it, org erasure DELETEs it), so only TRUNCATE is revoked —
     // ensureAppRole.ts revokes it from breeze_app AND PUBLIC.
     'ai_budget_reservations',

@@ -34,7 +34,7 @@ export function contractActorPermissionEvidence(
  * HTTP routes use `contractActorFrom()`, which reads the permissions the auth
  * middleware already resolved. AI tool handlers only receive an `AuthContext`,
  * so they must resolve the caller's permissions themselves rather than assume
- * them — see SEC-2026-09-05-145.
+ * them.
  */
 export async function resolveContractActorFromAuth(auth: AuthContext): Promise<ContractActor> {
   const userPerms = auth.user.id

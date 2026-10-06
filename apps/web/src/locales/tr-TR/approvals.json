@@ -120,5 +120,32 @@
     "activeBody": "{{date}} tarihinden bu yana platform varsayılanı, yüksek ve kritik riskli istekleri onaylamak için kayıtlı bir onay cihazı gerektiriyor, çünkü iş ortağı hesabınız için bir onay güvenliği seçimi kaydedilmedi. Bu onayların cihazınızı istemesinin nedeni budur.",
     "settingsLink": "Onay güvenliğini gözden geçir",
     "registerLink": "Bir onay cihazı kaydet"
+  },
+  "diagnosticAccess": {
+    "title": "Salt okunur tanılama erişimi",
+    "organization": "Kuruluş",
+    "device": "Cihaz",
+    "access": "Erişim",
+    "readOnlyOps": "Salt okunur: {{operations}}. Yazma, silme, yeniden adlandırma, betik veya kayıt defteri değişikliği yok.",
+    "duration": "Süre",
+    "durationValue": "Onaydan itibaren {{minutes}} dakika",
+    "purpose": "Amaç",
+    "requestedBy": "Talep eden",
+    "principalUser": "Breeze yapay zekâ sohbeti",
+    "principalApiKey": "MCP API anahtarı",
+    "principalOauth": "MCP OAuth bağlantısı",
+    "paths": "Yollar",
+    "recursive": "Tüm alt ağaç",
+    "thisFolderOnly": "Bu klasör ve doğrudan içindeki dosyalar",
+    "sensitiveHeading": "Açıkça istenen hassas depolar",
+    "noSensitive": "Tarayıcı parolaları ve çerezleri, kimlik bilgisi depoları, özel anahtarlar ve kayıtlı belirteçlerin bilinen konumları bu yolların içinde bile hariç tutulur. Bu sabit bir listedir; bu yollardaki diğer her şey okunabilir.",
+    "opList": "listeleme",
+    "opRead": "okuma",
+    "classes": {
+      "browser_secrets": "Tarayıcı parolaları, çerezleri ve anahtarları",
+      "credential_store": "İşletim sistemi kimlik bilgisi depoları",
+      "private_keys": "Özel anahtarlar (SSH, GnuPG, TLS)",
+      "session_tokens": "Kayıtlı oturum belirteçleri ve bulut kimlik bilgileri"
+    }
   }
 }

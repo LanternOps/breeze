@@ -99,6 +99,8 @@ const DEVICE_WAIT_TOOLS: Readonly<Record<string, WaitEntry>> = {
     why: 'one aiExecuteCommand with timeoutMs 15000, only when triggerCollection is set',
   },
   file_operations: { file: 'aiToolsFilesystem.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
+  diagnostic_list_directory: { file: 'aiToolsDiagnosticAccess.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
+  diagnostic_read_file: { file: 'aiToolsDiagnosticAccess.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
 };
 
 /**

@@ -26,6 +26,8 @@ import {
   backupJobs,
   backupSnapshotAttestations,
   backupSnapshots,
+  backupVerifications,
+  deviceCommands,
   devices,
   sites,
 } from '../../db/schema';
@@ -49,7 +51,7 @@ type Fixture = {
   storageIdentity: string; jobId: string; snapshotId: string;
 };
 
-async function seed(opts: { provider?: 's3' | 'local'; integrity?: number } = {}): Promise<Fixture> {
+async function seed(opts: { provider?: 's3' | 'local'; integrity?: number | null } = {}): Promise<Fixture> {
   const unique = uid();
   const partner = await createPartner();
   const org = await createOrganization({ partnerId: partner.id });
@@ -63,7 +65,7 @@ async function seed(opts: { provider?: 's3' | 'local'; integrity?: number } = {}
     const [device] = await db.insert(devices).values({
       orgId: org.id, siteId: site!.id, agentId, hostname: `att-${unique}`, osType: 'windows', osVersion: '11',
       architecture: 'x86_64', agentVersion: '0.0.0-test', status: 'online',
-      backupIntegrityProtocolVersion: opts.integrity ?? 1,
+      backupIntegrityProtocolVersion: opts.integrity === undefined ? 1 : opts.integrity,
     }).returning({ id: devices.id });
     const [config] = await db.insert(backupConfigs).values({
       orgId: org.id, name: `ATT ${unique}`, type: 'file', provider, providerConfig,
@@ -204,6 +206,12 @@ describe('recording from agent results', () => {
     const older = await seed({ integrity: 0 });
     await agentResult(older, undefined);
     expect((await snapshotRow(older))!.integrityStatus).toBe('unattested_legacy');
+  });
+
+  runDb('a helper that has not reported its integrity protocol is not filed as an older one', async () => {
+    const unreported = await seed({ integrity: null });
+    await agentResult(unreported, undefined);
+    expect((await snapshotRow(unreported))!.integrityStatus).toBe('unattested');
   });
 
   runDb('a statement that does not bind fails the snapshot, and a later valid one cannot replace that', async () => {
@@ -374,6 +382,47 @@ describe('server-side verification', () => {
     const result = await verifySnapshotAttestation(snap!.id, storage({ [`snapshots/${f.snapshotId}/manifest.json`]: altered }));
     expect(result).toEqual({ outcome: 'mismatch', reason: 'manifest_digest_mismatch' });
     expect((await snapshotRow(f))!.integrityStatus).toBe('attestation_failed');
+  });
+
+  runDb('a mismatch settles the verifications waiting on the snapshot and withdraws their queued commands', async () => {
+    const f = await seed();
+    const manifest = manifestBytes(f.snapshotId);
+    await agentResult(f, { statement: statementFor(f, manifest) });
+    const snap = await snapshotRow(f);
+    const { verificationId, commandId, doneId } = await withSystemDbAccessContext(async () => {
+      const [command] = await db.insert(deviceCommands).values({
+        deviceId: f.deviceId, type: 'backup_verify', payload: { snapshotId: f.snapshotId }, status: 'pending',
+      }).returning({ id: deviceCommands.id });
+      const [waiting] = await db.insert(backupVerifications).values({
+        orgId: f.orgId, deviceId: f.deviceId, backupJobId: f.jobId, snapshotId: snap!.id,
+        verificationType: 'integrity', status: 'pending', startedAt: new Date(),
+        details: { source: 'post-backup-integrity-check', commandId: command!.id },
+      }).returning({ id: backupVerifications.id });
+      const [done] = await db.insert(backupVerifications).values({
+        orgId: f.orgId, deviceId: f.deviceId, backupJobId: f.jobId, snapshotId: snap!.id,
+        verificationType: 'integrity', status: 'passed', startedAt: new Date(), completedAt: new Date(),
+      }).returning({ id: backupVerifications.id });
+      return { verificationId: waiting!.id, commandId: command!.id, doneId: done!.id };
+    });
+
+    const altered = Buffer.from(manifest);
+    altered[altered.length - 2] = altered[altered.length - 2]! ^ 1;
+    await verifySnapshotAttestation(snap!.id, storage({ [`snapshots/${f.snapshotId}/manifest.json`]: altered }));
+
+    const [verification, done, command] = await withSystemDbAccessContext(async () => [
+      (await db.select().from(backupVerifications).where(eq(backupVerifications.id, verificationId)))[0],
+      (await db.select().from(backupVerifications).where(eq(backupVerifications.id, doneId)))[0],
+      (await db.select().from(deviceCommands).where(eq(deviceCommands.id, commandId)))[0],
+    ] as const);
+    expect(verification).toMatchObject({ status: 'failed' });
+    expect(verification!.completedAt).not.toBeNull();
+    expect(verification!.details).toMatchObject({
+      source: 'post-backup-integrity-check',
+      commandId,
+      reason: 'This backup did not match its integrity record and cannot be read from storage.',
+    });
+    expect(done).toMatchObject({ status: 'passed' });
+    expect(command).toMatchObject({ status: 'cancelled' });
   });
 
   runDb('a storage failure leaves the row pending', async () => {

@@ -35,6 +35,7 @@ var allCommandTypes = []string{
 	tools.CmdFileList, tools.CmdFileRead, tools.CmdFileWrite,
 	tools.CmdFileDelete, tools.CmdFileMkdir, tools.CmdFileRename,
 	tools.CmdFileCopy, tools.CmdFileListDrives,
+	tools.CmdDiagFileList, tools.CmdDiagFileRead,
 	tools.CmdFileTrashList, tools.CmdFileTrashRestore, tools.CmdFileTrashPurge,
 	tools.CmdFilesystemAnalysis,
 	tools.CmdSystemCleanupList, tools.CmdSystemCleanupRun,

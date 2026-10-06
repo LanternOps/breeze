@@ -1,5 +1,5 @@
 /**
- * #5611 — the two SEC-150 follow-ups that live in this module.
+ * #5611 — the two Checkout-session revocation follow-ups that live in this module.
  *
  * 1. `assertNoPendingRevocation` (the producer gate) must elect system scope the
  *    same way every other entry point here does: `runOutsideDbContext` FIRST,

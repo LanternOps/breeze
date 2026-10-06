@@ -164,7 +164,7 @@ describe('desktop finalization operator routes', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           expectedFinalizationId: FINALIZATION_ID,
-          changeTicket: 'SEC-1234',
+          changeTicket: 'CHG-1234',
           operatorUserId: 'attacker',
         }),
       },

@@ -1,4 +1,6 @@
 import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum, index } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { xid8 } from './columnTypes';
 import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
@@ -196,7 +198,13 @@ export const tickets = pgTable('tickets', {
   fieldProvenance: jsonb('field_provenance')
     .$type<Record<string, 'user' | 'ai_agent' | 'system' | 'service_principal'>>()
     .notNull()
-    .default({})
+    .default({}),
+  // Partner API tickets feed change stamp (2026-12-13-120000): the xid8 of
+  // the writing transaction, set by a BEFORE INSERT OR UPDATE trigger on
+  // every write (app-supplied values are overwritten). Decimal string end to
+  // end — see schema/columnTypes.ts. Existing rows keep '1', which sorts
+  // before every real transaction id, so a first full sync covers them.
+  partnerFeedXid: xid8('partner_feed_xid').notNull().default(sql`'1'::xid8`),
 });
 
 export const ticketComments = pgTable('ticket_comments', {

@@ -39,7 +39,7 @@ import type { InvoiceActor } from '../../services/invoiceTypes';
 interface Fixture { partnerId: string; orgId: string; userId: string }
 
 // createInvoicePayLink re-checks the durable stripe_connect_accounts row inside the
-// mapping transaction (SEC-151): the account the mock reports must exist for the seeded
+// mapping transaction: the account the mock reports must exist for the seeded
 // partner, and stripe_account_id is globally unique, so each partner gets its own id.
 let currentAccountId = 'acct_test';
 
@@ -100,7 +100,7 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     expect(call[0].line_items[0].price_data.unit_amount).toBe(10000);
     // #2245 deposit invoicing: the idempotency key now carries a _dep/_bal
     // suffix. A plain payable (non-deposit) invoice charges the balance → `_bal`.
-    // SEC-150 appends the hour quantum of the requested `expires_at`, because
+    // Appends the hour quantum of the requested `expires_at`, because
     // Stripe refuses an idempotent replay whose parameters moved — asserted
     // through checkoutSessionExpiry() so a drift between the two would fail here
     // rather than as an idempotency_key_in_use in production. FP-20 added the

@@ -233,7 +233,7 @@ export function resolveActorName(row: DbRow, details?: Record<string, unknown> |
  * #6577: `details` as it may be serialised to a client. Rows written before the
  * write-side sanitiser (auditEvents.ts → sanitizeAuditPayload), and rows from
  * direct createAuditLog writers, can hold raw credentials; every read path below
- * redacts with the same helper the AI admin history reads use (#5570, SEC-050).
+ * redacts with the same helper the AI admin history reads use (#5570).
  * Idempotent for already-sanitised rows. Internal lookups (actor name, session
  * link) keep reading the raw value — they never echo a secret-named key.
  */

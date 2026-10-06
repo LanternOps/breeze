@@ -1377,6 +1377,9 @@ describe('processDispatchBackup — approval_generation mismatch (site-ceiling g
       let rows: unknown[];
       if (keys.length === 0) {
         rows = [configRow];
+      } else if (keys.length === 1 && keys[0] === 'approvalGeneration') {
+        // The same generation re-read immediately before each send.
+        rows = [{ approvalGeneration: configRow.approvalGeneration }];
       } else if (keys.length === 1 && keys[0] === 'status') {
         rows = [];
       } else if (keys[0] === 'agentId') {

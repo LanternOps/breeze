@@ -232,7 +232,7 @@ function mockUpdateNoReturn() {
 }
 
 // select().from().where().limit().for('update') — the row-locked read
-// commitDesktopStreamStartIntent issues (SEC-038 W02, real impl in
+// commitDesktopStreamStartIntent issues (real impl in
 // remoteDesktopStartIntent.ts, not mocked in this file).
 function mockSelectLimitForChain(result: unknown) {
   return {
@@ -281,7 +281,7 @@ function captureWsHandlers(
  * Uses a unique user ID each time to avoid the in-memory rate limiter.
  */
 function setupSuccessfulValidation(options: {
-  /** Phase the row-locked start-intent read reports (SEC-038 W02). */
+  /** Phase the row-locked start-intent read reports. */
   lockedPhase?: 'none' | 'pending' | 'confirmed';
   /** Phase the pre-publication re-read reports. */
   recheckPhase?: 'none' | 'pending' | 'confirmed';
@@ -355,7 +355,7 @@ function setupSuccessfulValidation(options: {
         })
       })
     } as any)
-    // commitDesktopStreamStartIntent: row-locked read (SEC-038 W02)
+    // commitDesktopStreamStartIntent: row-locked read
     .mockReturnValueOnce(mockSelectLimitForChain([{
       status: session.status,
       terminationPhase: lockedPhase,
@@ -849,7 +849,7 @@ describe('desktopWs', () => {
       );
     });
 
-    // SEC-038 W02. A start refused by the fence must TELL the viewer why: a
+    // A start refused by the fence must TELL the viewer why: a
     // socket that just drops is indistinguishable from a network blip, leaving
     // the client with nothing to render and nothing to branch on.
     it('tells the viewer the reason when the start intent is refused as terminal', async () => {

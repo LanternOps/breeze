@@ -8,7 +8,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
-// SEC-038 W05 — the helper half of the remote-desktop start fence.
+// The helper half of the remote-desktop start fence.
 //
 // The service already refuses a start that is not strictly newer than
 // everything it has seen, and refuses every start after a terminal. The helper

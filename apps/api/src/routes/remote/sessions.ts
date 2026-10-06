@@ -262,7 +262,7 @@ sessionRoutes.post(
     }
 
     // Fail fast on an agent that cannot hold a revocation lease or (behind
-    // REMOTE_DESKTOP_FENCE_REQUIRED, SEC-038 W06) does not keep the durable
+    // REMOTE_DESKTOP_FENCE_REQUIRED) does not keep the durable
     // start fence. The three desktop-start dispatch sites gate on this too
     // (that is the authoritative fail-closed check); doing it here as well
     // means the operator gets the "agent update required" answer on the click
@@ -760,7 +760,7 @@ sessionRoutes.get(
       userId: session.userId,
       type: session.type,
       status: session.status,
-      // SEC-038 W06: 'pending' = a terminal decision committed server-side but
+      // 'pending' = a terminal decision committed server-side but
       // the agent has not yet acknowledged the stop. The web UI must not
       // render such a session as connected.
       terminationPhase: session.terminationPhase ?? 'none',
@@ -1081,7 +1081,7 @@ sessionRoutes.post(
     const startCommandId = createDesktopStartCommandId(sessionId);
 
     // Publish the offer, prompt mode and one-off command identity together,
-    // under a row lock that also bumps the start generation (SEC-038 W02).
+    // under a row lock that also bumps the start generation.
     // A later re-offer replaces the identity, so an answer from the superseded
     // agent command cannot win the result compare-and-set; the generation is
     // what orders this start against a terminal decision.
@@ -1367,7 +1367,7 @@ sessionRoutes.post(
     // already-terminal case loses the write and is reported, not silently
     // clobbered.
     //
-    // Through the terminal-intent contract (SEC-038 W03): the same guarded
+    // Through the terminal-intent contract: the same guarded
     // UPDATE also bumps the generation every start bumps, records it as the
     // terminal one, and moves the phase to 'pending' until the agent's stop
     // result lands. The live-status guard is the contract's own.
@@ -1500,7 +1500,7 @@ sessionRoutes.post(
     // Still 200, not 202: callers that treat 200 as "ended" keep working. The
     // phase is additive — 'pending' until the agent acknowledges the stop,
     // 'confirmed' after — and the generation is a decimal string, never a
-    // JSON number (SEC-038 W03).
+    // JSON number.
     return c.json({
       id: updated.id,
       status: updated.status,

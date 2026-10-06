@@ -950,7 +950,7 @@ export function mlFeatureGloballyDisabled(flag: string): boolean {
 export type StripeSessionRevocationMode = 'enforce' | 'observe';
 
 /**
- * Enforcement gate for fail-closed Checkout-session revocation (SEC-150).
+ * Enforcement gate for fail-closed Checkout-session revocation.
  *
  * `enforce` (default): a transition that could not prove every open Checkout
  * session for the invoice is non-payable is REFUSED (503

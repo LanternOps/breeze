@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Eye, Globe, Image, Palette, Save, Wand2, X } from 'lucide-react';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
+import { MAX_LOGO_BYTES, LOGO_ACCEPT, resizeToDataUrl } from '@/lib/logoDataUrl';
 import { resolveUiColorToken, sanitizeHexColor } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
@@ -86,16 +87,6 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
   const primaryToken = resolveUiColorToken(resolvedPrimaryColor, defaultBranding.primaryColor || '#2563eb');
   const secondaryToken = resolveUiColorToken(resolvedSecondaryColor, defaultBranding.secondaryColor || '#14b8a6');
 
-  useEffect(() => {
-    if (!logoPreview || !logoPreview.startsWith('blob:')) {
-      return;
-    }
-
-    return () => {
-      URL.revokeObjectURL(logoPreview);
-    };
-  }, [logoPreview]);
-
   // customCss lives in portal_branding (#5952), not organizations.settings —
   // load its current persisted value independently of the `branding` prop.
   // A missing/null value keeps the seeded placeholder rather than blanking
@@ -138,15 +129,31 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
     onDirty?.();
   };
 
-  const handleLogoChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+  // The logo is persisted inline (organizations.settings.branding.logoUrl, 400 KB
+  // cap) — there is no upload endpoint. Encode the file to a data URI; a blob:
+  // URL only resolves in this tab and breaks on reload (#8017).
+  const handleLogoChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const input = event.target;
+    const file = input.files?.[0];
     if (!file) {
       return;
     }
 
-    setLogoPreview(URL.createObjectURL(file));
-    setLogoName(file.name);
-    markDirty();
+    try {
+      const dataUrl = await resizeToDataUrl(file);
+      if (dataUrl.length > MAX_LOGO_BYTES) {
+        showToast({ message: t('partnerBranding.imageTooLarge'), type: 'error' });
+        input.value = '';
+        return;
+      }
+      setLogoPreview(dataUrl);
+      setLogoName(file.name);
+      markDirty();
+    } catch (err) {
+      console.error('[OrgBrandingEditor] Logo file processing failed:', err);
+      showToast({ message: t('partnerBranding.readError'), type: 'error' });
+      input.value = '';
+    }
   };
 
   const handlePreview = () => {
@@ -268,7 +275,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
                 ) : null}
               </div>
               <label className={`ml-auto inline-flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium transition hover:bg-muted ${isLocked('logoUrl') ? 'opacity-60 pointer-events-none' : ''}`}>
-                <input type="file" accept="image/*" className="hidden" disabled={isLocked('logoUrl')} onChange={handleLogoChange} />
+                <input type="file" accept={LOGO_ACCEPT} className="hidden" disabled={isLocked('logoUrl')} onChange={handleLogoChange} />
                 {t('common:actions.upload')}
               </label>
               {isLocked('logoUrl') && (

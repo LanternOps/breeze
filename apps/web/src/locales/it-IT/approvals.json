@@ -120,5 +120,32 @@
     "activeBody": "Dal {{date}}, il predefinito della piattaforma richiede un dispositivo approvatore registrato per approvare richieste a rischio alto e critico, perché per il tuo account partner non è stata salvata alcuna scelta di sicurezza delle approvazioni. Per questo queste approvazioni chiedono il tuo dispositivo.",
     "settingsLink": "Rivedi la sicurezza delle approvazioni",
     "registerLink": "Registra un dispositivo approvatore"
+  },
+  "diagnosticAccess": {
+    "title": "Accesso diagnostico in sola lettura",
+    "organization": "Organizzazione",
+    "device": "Dispositivo",
+    "access": "Accesso",
+    "readOnlyOps": "Sola lettura: {{operations}}. Nessuna scrittura, eliminazione, rinomina, script o modifica del registro.",
+    "duration": "Durata",
+    "durationValue": "{{minutes}} minuti dall'approvazione",
+    "purpose": "Scopo",
+    "requestedBy": "Richiesto da",
+    "principalUser": "Chat IA di Breeze",
+    "principalApiKey": "Chiave API MCP",
+    "principalOauth": "Connessione OAuth MCP",
+    "paths": "Percorsi",
+    "recursive": "Intero sottoalbero",
+    "thisFolderOnly": "Questa cartella e i file che contiene direttamente",
+    "sensitiveHeading": "Archivi sensibili richiesti esplicitamente",
+    "noSensitive": "Le posizioni note di password e cookie del browser, archivi di credenziali, chiavi private e token salvati vengono trattenute, anche all'interno di questi percorsi. È un elenco fisso; tutto il resto all'interno di questi percorsi è leggibile.",
+    "opList": "elencare",
+    "opRead": "leggere",
+    "classes": {
+      "browser_secrets": "Password, cookie del browser e relative chiavi",
+      "credential_store": "Archivi di credenziali del sistema operativo",
+      "private_keys": "Chiavi private (SSH, GnuPG, TLS)",
+      "session_tokens": "Token di sessione e credenziali cloud salvati"
+    }
   }
 }

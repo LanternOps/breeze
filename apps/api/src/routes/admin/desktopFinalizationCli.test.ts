@@ -29,7 +29,7 @@ describe('desktop finalization reconciliation CLI', () => {
       '--api-base-url', 'https://breeze.example.com/api/v1',
       '--session-id', SESSION_ID,
       '--expected-finalization-id', FINALIZATION_ID,
-      '--change-ticket', 'SEC-1234',
+      '--change-ticket', 'CHG-1234',
     ], {
       BREEZE_OPERATOR_ACCESS_TOKEN: 'secret-token',
     });
@@ -43,7 +43,7 @@ describe('desktop finalization reconciliation CLI', () => {
     });
     expect(JSON.parse(String(request.init.body))).toEqual({
       expectedFinalizationId: FINALIZATION_ID,
-      changeTicket: 'SEC-1234',
+      changeTicket: 'CHG-1234',
     });
   });
 
@@ -127,7 +127,7 @@ describe('desktop finalization reconciliation CLI', () => {
       '--api-base-url', 'https://breeze.example.com/api/v1',
       '--session-id', SESSION_ID,
       '--expected-finalization-id', FINALIZATION_ID,
-      '--change-ticket', 'SEC-1234',
+      '--change-ticket', 'CHG-1234',
     ])).resolves.toBe(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
