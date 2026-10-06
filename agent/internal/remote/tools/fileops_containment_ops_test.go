@@ -624,53 +624,80 @@ func TestTrashRestoreAllowsBenignDestination(t *testing.T) {
 	}
 }
 
-// TestCopyDirSkipSensitiveContract pins the copyDir mode, which is the one
-// place in #3397 where getting the polarity backwards causes DATA LOSS rather
-// than a leak:
-//   - copyOperator (operator-facing CopyFile): sensitive entries are omitted, so
-//     copying a parent directory cannot launder credential stores into a
-//     readable location.
-//   - copyIntoTrash (the fallback half of a MOVE — DeleteFile→trash, TrashRestore):
-//     every entry is preserved, because the source is deleted afterwards and an
-//     omitted entry would be destroyed rather than protected.
+// TestCopyDirSkipSensitiveContract pins each copyDir mode, the place in #3397
+// where getting the polarity wrong leaks or destroys data. A credential store
+// nested in the tree is handled differently per mode:
+//   - copyOperator (operator-facing CopyFile): the store is OMITTED (skipped),
+//     so copying a benign parent cannot launder it into a readable location;
+//     benign content is still copied.
+//   - copyIntoTrash (cross-volume fallback of a move to trash): the source is
+//     re-checked on the handle it is opened from, so the operation ABORTS with
+//     a containment denial rather than copying the store into the trash
+//     (restorable elsewhere). DeleteFile's enforceTreeContainment already
+//     refuses a directory holding a credential store before the move is
+//     attempted, so a real trash move never reaches this.
+//   - copyRestore (cross-volume fallback of a restore): each destination is
+//     cleared, so restoring onto a credential path ABORTS. TrashRestore gates
+//     the destination up front, so a real restore never reaches this.
 func TestCopyDirSkipSensitiveContract(t *testing.T) {
-	cases := []struct {
-		name           string
-		how            copyMode
-		wantSensitive  bool
-		wantBenignKept bool
-	}{
-		{name: "CopyFile semantics omit credential stores", how: copyOperator, wantSensitive: false, wantBenignKept: true},
-		{name: "move semantics preserve everything", how: copyIntoTrash, wantSensitive: true, wantBenignKept: true},
-	}
+	t.Run("CopyFile omits credential stores and keeps benign content", func(t *testing.T) {
+		src := t.TempDir()
+		dst := filepath.Join(t.TempDir(), "copy")
+		makeSensitiveFile(t, src)
+		makeSensitiveDir(t, src)
+		makeBenignFile(t, src)
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		if err := copyDir(src, dst, copyOperator); err != nil {
+			t.Fatalf("copyDir: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(dst, "etc", "shadow")); err == nil {
+			t.Fatal("shadow was copied, want omitted")
+		}
+		if _, err := os.Stat(filepath.Join(dst, "etc", "ssl", "private", "server.key")); err == nil {
+			t.Fatal("private key was copied, want omitted")
+		}
+		if _, err := os.Stat(filepath.Join(dst, "docs", "notes.txt")); err != nil {
+			t.Fatalf("benign file not copied: %v", err)
+		}
+	})
+
+	for _, how := range []struct {
+		name string
+		mode copyMode
+	}{
+		{"move-to-trash refuses a credential store in the source", copyIntoTrash},
+		{"restore refuses a credential store at the destination", copyRestore},
+	} {
+		t.Run(how.name, func(t *testing.T) {
 			src := t.TempDir()
 			dst := filepath.Join(t.TempDir(), "copy")
-
-			makeSensitiveFile(t, src) // <src>/etc/shadow
-			makeSensitiveDir(t, src)  // <src>/etc/ssl/private/server.key
-			makeBenignFile(t, src)    // <src>/docs/notes.txt
-
-			if err := copyDir(src, dst, tc.how); err != nil {
-				t.Fatalf("copyDir: %v", err)
-			}
-
-			_, shadowErr := os.Stat(filepath.Join(dst, "etc", "shadow"))
-			_, keyErr := os.Stat(filepath.Join(dst, "etc", "ssl", "private", "server.key"))
-			if got := shadowErr == nil; got != tc.wantSensitive {
-				t.Fatalf("copied shadow = %v, want %v", got, tc.wantSensitive)
-			}
-			if got := keyErr == nil; got != tc.wantSensitive {
-				t.Fatalf("copied private key = %v, want %v", got, tc.wantSensitive)
-			}
-
-			if _, err := os.Stat(filepath.Join(dst, "docs", "notes.txt")); (err == nil) != tc.wantBenignKept {
-				t.Fatalf("benign file present = %v, want %v", err == nil, tc.wantBenignKept)
+			makeSensitiveFile(t, src)
+			makeBenignFile(t, src)
+			if err := copyDir(src, dst, how.mode); !isContainmentDenied(err) {
+				t.Fatalf("copyDir(%v): expected a containment denial, got %v", how.mode, err)
 			}
 		})
 	}
+
+	t.Run("move and restore preserve an all-benign tree", func(t *testing.T) {
+		for _, mode := range []copyMode{copyIntoTrash, copyRestore} {
+			src := t.TempDir()
+			dst := filepath.Join(t.TempDir(), "copy")
+			makeBenignFile(t, src) // <src>/docs/notes.txt
+			if err := os.WriteFile(filepath.Join(src, "root.txt"), []byte("root"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := copyDir(src, dst, mode); err != nil {
+				t.Fatalf("copyDir(%v): %v", mode, err)
+			}
+			if _, err := os.Stat(filepath.Join(dst, "docs", "notes.txt")); err != nil {
+				t.Fatalf("mode %v dropped a benign nested file: %v", mode, err)
+			}
+			if _, err := os.Stat(filepath.Join(dst, "root.txt")); err != nil {
+				t.Fatalf("mode %v dropped a benign root file: %v", mode, err)
+			}
+		}
+	})
 }
 
 // TestCopyFileDoesNotLaunderNestedCredentialStores is the end-to-end proof for

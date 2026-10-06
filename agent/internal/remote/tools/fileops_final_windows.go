@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -65,6 +66,13 @@ func containmentFinalPath(h windows.Handle) (string, error) {
 	protected, protectedKnown := protectedVolumeSerials()
 	if !allowOnUnnamedVolume(info.VolumeSerialNumber, volumeKnown, protected, protectedKnown) {
 		return "", fmt.Errorf("%w (the volume has no drive-letter path and may hold the agent directory)", err)
+	}
+	// finalPathOfHandleFlags strips the \\?\ prefix, which leaves a volume
+	// GUID path (Volume{…}\…) RELATIVE — the deny-list would then resolve it
+	// under the process CWD. Re-root it so the name-based rules match the
+	// real tail rather than a CWD-joined one.
+	if !strings.HasPrefix(guid, `\`) {
+		guid = `\` + guid
 	}
 	return guid, nil
 }
@@ -136,6 +144,23 @@ func isLinkHandle(h windows.Handle) (bool, error) {
 		return false, err
 	}
 	return info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 && isLinkReparseTag(info.ReparseTag), nil
+}
+
+// openForReadShared opens p for reading, following reparse points, with
+// FILE_SHARE_DELETE so the read coexists with the pinned delete handle the
+// move-to-trash fallback keeps open on the same file. The caller re-checks
+// the opened object against the deny-list (checkOpenedForContainment).
+func openForReadShared(p string) (*os.File, error) {
+	name, err := windows.UTF16PtrFromString(p)
+	if err != nil {
+		return nil, err
+	}
+	h, err := windows.CreateFile(name, windows.GENERIC_READ, shareAll, nil, windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: p, Err: err}
+	}
+	return os.NewFile(uintptr(h), p), nil
 }
 
 // resolveForContainment returns where cleanPath really lands. The nearest

@@ -91,6 +91,11 @@ const handleCheckMandatory = false
 // containmentFinalPathOfFile is where the kernel says an open descriptor is.
 func containmentFinalPathOfFile(f *os.File) (string, error) { return finalPathOfFile(f) }
 
+// openForReadShared opens p for reading. On Unix this is a plain open; the
+// Windows build adds FILE_SHARE_DELETE so a concurrent delete handle on the
+// same file does not block the read.
+func openForReadShared(p string) (*os.File, error) { return os.Open(p) }
+
 // isCrossDeviceError reports a rename that failed only because source and
 // destination are on different filesystems.
 func isCrossDeviceError(err error) bool { return errors.Is(err, syscall.EXDEV) }

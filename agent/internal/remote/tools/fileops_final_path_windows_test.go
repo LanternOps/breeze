@@ -489,6 +489,99 @@ func TestTrashRestoreRefusesOccupiedDestination(t *testing.T) {
 	}
 }
 
+// The cross-volume move-to-trash fallback (trash on the system drive, the
+// deleted file on another volume) must not copy a swapped-in protected file
+// into the trash, and must delete only the entry it pinned. Set
+// BREEZE_TEST_SECOND_VOLUME to a writable directory on a different volume
+// (e.g. a mounted VHD with its own drive letter) to run this.
+func TestCrossVolumeTrashFallbackHoldsGuard(t *testing.T) {
+	vol := os.Getenv("BREEZE_TEST_SECOND_VOLUME")
+	if vol == "" {
+		t.Skip("BREEZE_TEST_SECOND_VOLUME not set")
+	}
+	var suffix [6]byte
+	_, _ = rand.Read(suffix[:])
+	tag := hex.EncodeToString(suffix[:])
+
+	protected := filepath.Join(vol, "ProtectedAgentRoot-"+tag)
+	benign := filepath.Join(vol, "benign-"+tag)
+	for _, d := range []string{protected, benign} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(protected); _ = os.RemoveAll(benign) })
+	if err := os.WriteFile(filepath.Join(protected, "secret.txt"), []byte(protectedSecret), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(protected, "target.txt"), []byte(protectedSecret), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	injectAgentConfigDir(t, protected) // trash dir -> a system-drive temp dir
+
+	// Positive control: a benign cross-volume delete round-trips.
+	plain := filepath.Join(benign, "plain.txt")
+	if err := os.WriteFile(plain, []byte("plain"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	del := DeleteFile(map[string]any{"path": plain})
+	if del.Status != "completed" {
+		t.Fatalf("cross-volume trash of a benign file: %q", del.Error)
+	}
+	if _, err := os.Lstat(plain); !os.IsNotExist(err) {
+		t.Fatalf("benign original not removed: %v", err)
+	}
+	if id, _ := resultField(t, del, "trashId").(string); id != "" {
+		if r := TrashRestore(map[string]any{"trashId": id}); r.Status != "completed" {
+			t.Fatalf("cross-volume restore: %q", r.Error)
+		}
+		if got, _ := os.ReadFile(plain); string(got) != "plain" {
+			t.Fatalf("restored content = %q", got)
+		}
+	}
+
+	// Swap: between the pin and the fallback copy, re-point the parent
+	// junction at the protected root so the source now names a protected file.
+	link := filepath.Join(benign, "flip")
+	realParent := filepath.Join(benign, "real")
+	if err := os.MkdirAll(realParent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realParent, "target.txt"), []byte("benign"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mklinkForTest(t, "/J", link, realParent)
+	t.Cleanup(func() { testHookBeforeTrashCopy = nil })
+	testHookBeforeTrashCopy = func(string) {
+		testHookBeforeTrashCopy = nil
+		_ = os.Remove(link)
+		if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, protected).CombinedOutput(); err != nil {
+			t.Fatalf("re-point: %v (%s)", err, out)
+		}
+	}
+
+	res := DeleteFile(map[string]any{"path": filepath.Join(link, "target.txt")})
+	if res.Status != "failed" {
+		t.Errorf("expected the swapped move-to-trash to be refused, got %q", res.Stdout)
+	}
+	if got, err := os.ReadFile(filepath.Join(protected, "target.txt")); err != nil || string(got) != protectedSecret {
+		t.Fatalf("the protected file was removed or changed: %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(protected, "secret.txt")); err != nil || string(got) != protectedSecret {
+		t.Fatalf("a protected sibling changed: %q, %v", got, err)
+	}
+	// Nothing protected should have been laundered into the trash.
+	trash, _ := getTrashDirFunc()
+	_ = filepath.Walk(trash, func(p string, info os.FileInfo, _ error) error {
+		if info != nil && !info.IsDir() {
+			if b, _ := os.ReadFile(p); string(b) == protectedSecret {
+				t.Fatalf("protected content was copied into the trash at %s", p)
+			}
+		}
+		return nil
+	})
+}
+
 // A volume mounted into a folder (no drive letter) must stay usable. Set
 // BREEZE_TEST_FOLDER_MOUNT to a directory that is the mount point of another
 // volume to run this; it is skipped otherwise.

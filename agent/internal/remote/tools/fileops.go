@@ -515,6 +515,18 @@ func afterPathCheck(path string) {
 	}
 }
 
+// testHookBeforeTrashCopy, when set by a test, runs just before the
+// cross-volume move-to-trash fallback copies the source — the window a swap
+// of the source path or its parent would exploit to launder a protected file
+// into the trash and delete whatever took its place.
+var testHookBeforeTrashCopy func(path string)
+
+func beforeTrashCopy(path string) {
+	if testHookBeforeTrashCopy != nil {
+		testHookBeforeTrashCopy(path)
+	}
+}
+
 // checkOpenedForContainment applies the deny-list to the object an open
 // handle actually refers to. The path-level checks reason about a string; this
 // one asks the kernel where the handle landed, so it sees through every
@@ -1550,7 +1562,6 @@ func DeleteFile(payload map[string]any) CommandResult {
 	// Move content into trash item dir
 	contentPath := filepath.Join(trashItemDir, "content")
 	if err := entry.renameTo(contentPath, false, false); err != nil {
-		entry.close()
 		// Only a move across volumes falls back to copy + remove. Any other
 		// failure (a lock, a permission problem, a name collision) is
 		// reported: retrying it as a by-path copy would act on whatever the
@@ -1559,24 +1570,36 @@ func DeleteFile(payload map[string]any) CommandResult {
 			_ = os.RemoveAll(trashItemDir)
 			return NewErrorResult(fmt.Errorf("failed to move to trash: %w", err), time.Since(start).Milliseconds())
 		}
+		// The pinned handle stays open through the fallback: the copy's
+		// source is re-checked on the handle it is opened from (copyIntoTrash
+		// applies the same opened-handle deny-list check as an operator copy),
+		// and the original is removed through the pinned handle (identity-
+		// checked), never by a path that could have been swapped since the
+		// deny-list check at the top of DeleteFile.
+		beforeTrashCopy(cleanPath)
 		if info.IsDir() {
 			// copyIntoTrash: this is the fallback half of a MOVE — the
 			// source is removed below, so an omitted entry would be destroyed.
-			// The sensitive-source gate ran at the top of DeleteFile.
 			if cpErr := copyDir(cleanPath, contentPath, copyIntoTrash); cpErr != nil {
 				// Clean up the trash item dir on failure
-				os.RemoveAll(trashItemDir)
+				_ = os.RemoveAll(trashItemDir)
+				if isContainmentDenied(cpErr) {
+					return NewErrorResult(cpErr, time.Since(start).Milliseconds())
+				}
 				return NewErrorResult(fmt.Errorf("failed to move directory to trash: %w", cpErr), time.Since(start).Milliseconds())
 			}
-			if err := os.RemoveAll(cleanPath); err != nil {
+			if err := entry.removeAll(); err != nil {
 				return NewErrorResult(fmt.Errorf("copied to trash but failed to remove original: %w", err), time.Since(start).Milliseconds())
 			}
 		} else {
 			if cpErr := copyFile(cleanPath, contentPath, info.Mode(), copyIntoTrash); cpErr != nil {
-				os.RemoveAll(trashItemDir)
+				_ = os.RemoveAll(trashItemDir)
+				if isContainmentDenied(cpErr) {
+					return NewErrorResult(cpErr, time.Since(start).Milliseconds())
+				}
 				return NewErrorResult(fmt.Errorf("failed to move file to trash: %w", cpErr), time.Since(start).Milliseconds())
 			}
-			if err := os.Remove(cleanPath); err != nil {
+			if err := entry.remove(); err != nil {
 				return NewErrorResult(fmt.Errorf("copied to trash but failed to remove original: %w", err), time.Since(start).Milliseconds())
 			}
 		}
@@ -2047,18 +2070,28 @@ const (
 
 // copyFile copies a single file from src to dst, preserving the given file mode.
 func copyFile(src, dst string, mode os.FileMode, how copyMode) error {
-	srcFile, err := os.Open(src)
+	// openForReadShared opens with FILE_SHARE_DELETE on Windows, so reading
+	// the source coexists with the pinned delete handle the move-to-trash
+	// fallback holds open; on Unix it is a plain open.
+	srcFile, err := openForReadShared(src)
 	if err != nil {
 		return fmt.Errorf("open source: %w", err)
 	}
-	defer srcFile.Close()
+	defer func() { _ = srcFile.Close() }()
+
+	// An operator copy and a move-into-trash both re-check the object the
+	// source handle actually opened, so a file swapped in after the path-level
+	// deny-list check (e.g. a credential store relinked under an innocuous
+	// name) is caught on the handle the copy reads from, not on its name.
+	if how == copyOperator || how == copyIntoTrash {
+		if err := checkOpenedForContainment("copy", src, srcFile); err != nil {
+			return err
+		}
+	}
 
 	var dstFile *os.File
 	switch how {
 	case copyOperator:
-		if err := checkOpenedForContainment("copy", src, srcFile); err != nil {
-			return err
-		}
 		dstFile, err = openForWriteChecked("write", dst, mode)
 	case copyRestore:
 		dstFile, err = createExclusiveChecked("write", dst, mode)
