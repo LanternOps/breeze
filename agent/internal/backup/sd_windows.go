@@ -146,7 +146,7 @@ func (p preparedSD) applyToHandle(h windows.Handle) error {
 
 // securityApplier returns the securefs hook that sets sd on the handle
 // securefs has pinned: the restore's temporary before publication, or a
-// directory reached by the no-follow walk (SEC-121 — the restore never
+// directory reached by the no-follow walk (the restore never
 // reopens a published entry by pathname). nil, nil for an empty sd.
 func securityApplier(sd []byte) (*securefs.SecurityApplier, error) {
 	if len(sd) == 0 {

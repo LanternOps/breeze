@@ -144,6 +144,13 @@ const (
 	CmdFilesystemAnalysis = "filesystem_analysis"
 	CmdFileListDrives     = "file_list_drives"
 
+	// Administrator-approved diagnostic reads (diagaccess_*.go). Separate
+	// command types so an authorization can never be dropped silently into the
+	// legacy file_list/file_read path, and so an agent that predates them
+	// refuses the command as unknown instead of reading without one.
+	CmdDiagFileList = "diag_file_list"
+	CmdDiagFileRead = "diag_file_read"
+
 	// OS-native disk cleanup (Disk Cleanup v2 §7). A SECOND cleanup engine
 	// beside filesystem_analysis / file_delete: opaque, non-itemised platform
 	// maintenance (cleanmgr handlers, DISM component cleanup, Time Machine

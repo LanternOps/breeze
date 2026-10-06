@@ -81,7 +81,7 @@ func validateDesktopStartRequest(req *ipc.DesktopStartRequest) error {
 	if req.Offer == "" {
 		return fmt.Errorf("offer is required")
 	}
-	// SEC-038: reject a generation we could not compare before anything else
+	// Reject a generation we could not compare before anything else
 	// looks at the request. Empty is fine (older service); malformed is not.
 	if req.StartGeneration != "" {
 		if _, err := parseHelperGeneration(req.StartGeneration); err != nil {

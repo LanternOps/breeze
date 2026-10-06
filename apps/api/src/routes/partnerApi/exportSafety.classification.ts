@@ -54,6 +54,11 @@ export const RESOURCE_CLASSIFICATION: Record<PartnerExportResource, ResourceClas
       message: 'customer-authored',
     },
   },
+  // Tickets (and their comments, which are inspected under this resource):
+  // subject, description, notes and comment bodies are typed by people, and a
+  // pasted credential in a support ticket is the canonical "customer-authored
+  // secret". Everything is scanned.
+  tickets: { default: 'customer-authored' },
 };
 
 export function normalizeClassificationPath(path: string): string {

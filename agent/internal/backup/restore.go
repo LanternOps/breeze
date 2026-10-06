@@ -251,124 +251,27 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		progressFn("starting", 0, total, fmt.Sprintf("restoring %d files", total))
 	}
 
-	// 5. Restore each file
-	for i, file := range files {
-		if checkCancelled() {
-			return result, nil
-		}
-
-		current := int64(i + 1)
-		displayPath := restoreSourcePath(file)
-		relativeTarget, relErr := restoreRelativePath(displayPath)
-		if relErr != nil {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("invalid restore path %s: %v", displayPath, relErr))
-			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, displayPath)
-			continue
-		}
-		targetPath := filepath.Join(targetBase, relativeTarget)
-		if blocked := blockedBeneath(relativeTarget); blocked != "" {
-			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, displayPath)
-			result.Warnings = append(result.Warnings, fmt.Sprintf("not restored %s: its directory could not be restricted", displayPath))
-			continue
-		}
-
-		// Skip already-completed files (resume). In attested mode the file
-		// on disk must still hold exactly the attested bytes: a size match
-		// alone would keep content that changed since the earlier run.
-		if resume.completed(file.BackupPath) {
-			if resumedFileIntact(targetBase, relativeTarget, file, cfg.Integrity) {
-				result.FilesRestored++
-				result.BytesRestored += file.Size
-				if progressFn != nil {
-					progressFn("restoring", current, total,
-						fmt.Sprintf("skipped (resumed): %s", displayPath))
-				}
-				continue
-			}
-			resume.forget(file.BackupPath)
-		}
-
-		// Download to staging, then check the staged bytes against the
-		// manifest BEFORE declaring the file restored (downloadAndCheckStaged).
-		stagingFile := filepath.Join(stagingDir, stagingFileName(file.BackupPath))
-		check, dlWarnings, dlErr := downloadAndCheckStaged(ctx, provider, file, stagingFile, cfg.Integrity)
-		if dlErr != nil {
-			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, displayPath)
-			_ = os.Remove(stagingFile)
-			if result.Code == "" {
-				result.Code = integrityResultCode(cfg.Integrity, dlErr)
-			}
-			if w := storedBytesFailureWarning(displayPath, file, dlErr, cfg.Integrity); w != "" {
-				result.Warnings = append(result.Warnings, w)
-			}
-			slog.Warn("restored file failed its download or content check",
-				"backupPath", file.BackupPath, "target", targetPath, "error", dlErr.Error())
-			continue
-		}
-		result.Warnings = append(result.Warnings, dlWarnings...)
-		if check.Warning != "" {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("restored %s: %s", displayPath, check.Warning))
-			slog.Warn("restored volatile file differs from its manifest entry (advisory, not a failure)", "target", targetPath)
-		}
-		if checkCancelled() {
-			_ = os.Remove(stagingFile)
-			return result, nil
-		}
-
-		// No pathname containment check, MkdirAll or moveFile here: the
-		// publication below walks the target hierarchy with directory
-		// descriptors/handles and refuses a symlink or reparse point at every
-		// component. That subsumes both the lexical containment check and
-		// EnsureNoSymlinkAncestor (which only lstat's, and so is decided
-		// before the write rather than during it), including the RESUMED case
-		// where an earlier pass recreated an ancestor as a symlink.
-
-		// Publish only verified bytes. Linux, macOS and Windows pin the
-		// target hierarchy with directory descriptors/handles and never follow
-		// a destination symlink/reparse point. Mode (full ModeBits when the
-		// manifest carries them, else the perm-only Mode), owner, mtime,
-		// Windows attributes and the captured NTFS security descriptor (W06a)
-		// are all applied to the pinned temporary's handle BEFORE the atomic
-		// replace, so #5520's fidelity is preserved without any
-		// post-publication pathname chmod/chown/chtimes/SetSecurity — the
-		// exact operations this boundary (SEC-121) exists to remove.
-		mode := os.FileMode(file.Mode).Perm()
-		if file.ModeBits != 0 {
-			mode = os.FileMode(file.ModeBits)
-		}
-		// A descriptor naming principals this machine does not recognise, or
-		// one that cannot be read, is replaced by the restrictive quarantine
-		// descriptor (restore_sd.go).
-		secPlan := secDescs.entryPlan(file)
-		installWarnings, err := securefs.InstallFileWithSecurity(targetBase, relativeTarget, stagingFile, mode, file.ModTime, entryOwner(file, applyOwnership), file.WinAttrs, secPlan.applier)
-		if err != nil {
-			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, displayPath)
-			result.Warnings = append(result.Warnings, fmt.Sprintf("could not restore %s: %v", displayPath, err))
-			_ = os.Remove(stagingFile)
-			slog.Warn("failed to install restored file", "target", targetPath, "error", err.Error())
-			continue
-		}
-		for _, warning := range installWarnings {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("restored %s with reduced fidelity: %v", displayPath, warning))
-		}
-		secDescs.record(result, displayPath, secPlan)
-		if !applyOwnership && (file.Owner != nil || file.ModeBits&uint32(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0) {
-			warnOwnership()
-		}
-
-		result.FilesRestored++
-		result.BytesRestored += file.Size
-		// One journal append per file — not a rewrite of the whole state.
-		resume.markCompleted(file.BackupPath, file.Size)
-
-		if progressFn != nil {
-			progressFn("restoring", current, total,
-				fmt.Sprintf("restored: %s", displayPath))
-		}
+	// 5. Restore each file: downloads and verification run concurrently;
+	// install, resume journaling, counters and progress stay in manifest
+	// order on this goroutine (restore_content.go, #5623).
+	content := &contentRestorer{
+		provider:       provider,
+		files:          files,
+		targetBase:     targetBase,
+		stagingDir:     stagingDir,
+		total:          total,
+		result:         result,
+		resume:         resume,
+		secDescs:       secDescs,
+		applyOwnership: applyOwnership,
+		warnOwnership:  warnOwnership,
+		progressFn:     progressFn,
+		checkCancelled: checkCancelled,
+		integrity:      cfg.Integrity,
+		blockedBeneath: blockedBeneath,
+	}
+	if content.run(ctx) {
+		return result, nil
 	}
 
 	// Pass 2: symlinks (parents exist now, from the file pass above). Pass
@@ -495,7 +398,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	// stand between the restore and a child it has yet to update. Each
 	// directory is reached by securefs's pinned, reparse-refusing walk from
 	// the volume root and the descriptor is set on THAT handle — never on a
-	// joined pathname a swapped-in junction could redirect (SEC-121).
+	// joined pathname a swapped-in junction could redirect.
 	sort.SliceStable(dirSecurity, func(i, j int) bool {
 		return strings.Count(dirSecurity[i].relative, string(filepath.Separator)) > strings.Count(dirSecurity[j].relative, string(filepath.Separator))
 	})

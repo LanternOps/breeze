@@ -121,6 +121,8 @@ export function relaxExistingCsp(
   return directives.join('; ');
 }
 
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
 export const onRequest = defineMiddleware(async (context, next) => {
   // Explicit cookie wins; Accept-Language is a per-request fallback only — it
   // is never written back into the cookie (that would let browser detection
@@ -132,6 +134,16 @@ export const onRequest = defineMiddleware(async (context, next) => {
 
   const response = await next();
   const headers = new Headers(response.headers);
+
+  // Redirects must never be stored by the browser (#7985). A 301 with no
+  // Cache-Control is cached indefinitely, so when an alias later changes
+  // direction (`/settings/ticketing` was a 301 to the Partner hub, then became
+  // the real page) cached browsers loop without ever asking the server again.
+  // 304 is not a redirect and keeps its validators untouched.
+  if (REDIRECT_STATUSES.has(response.status)) {
+    headers.set('Cache-Control', 'no-store');
+  }
+
   const strictDevCsp = import.meta.env.DEV && readFlag('CSP_STRICT_DEV');
 
   // Default dev behavior: do not enforce CSP so Vite/HMR styles and scripts work.

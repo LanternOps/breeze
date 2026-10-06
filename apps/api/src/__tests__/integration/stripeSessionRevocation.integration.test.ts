@@ -1,5 +1,5 @@
 /**
- * SEC-2026-09-05-150 — fail-closed Checkout-session revocation, against real Postgres.
+ * Fail-closed Checkout-session revocation, against real Postgres.
  *
  * The finding: a Stripe Checkout session stays PROVIDER-PAYABLE after Breeze
  * resets the invoice's public link, records an alternate payment, voids the
@@ -221,7 +221,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 // Provider-response state machine
 // ---------------------------------------------------------------------------
-describe('SEC-150 provider-response state machine', () => {
+describe('provider-response state machine', () => {
   runDb('an open session that Stripe expires becomes revoked', async () => {
     const fx = await seedFixture();
     expireMock.mockResolvedValue({ id: fx.sessionId, status: 'expired' });
@@ -341,7 +341,7 @@ describe('SEC-150 provider-response state machine', () => {
 // ---------------------------------------------------------------------------
 // Transition matrix — every fail-closed caller
 // ---------------------------------------------------------------------------
-describe('SEC-150 fail-closed transitions', () => {
+describe('fail-closed transitions', () => {
   runDb('recordPayment revokes the open session BEFORE the payment lands', async () => {
     const fx = await seedFixture();
     expireMock.mockResolvedValue({ id: fx.sessionId, status: 'expired' });
@@ -418,7 +418,7 @@ describe('SEC-150 fail-closed transitions', () => {
 // ---------------------------------------------------------------------------
 // Producers
 // ---------------------------------------------------------------------------
-describe('SEC-150 producer gate', () => {
+describe('producer gate', () => {
   runDb('createInvoicePayLink refuses to mint a session while a revocation is in flight', async () => {
     const fx = await seedFixture();
     expireMock.mockRejectedValue(stripeError('StripeAPIError')); // leaves intent pending
@@ -461,7 +461,7 @@ describe('SEC-150 producer gate', () => {
 // ---------------------------------------------------------------------------
 // Settlement: sibling sessions
 // ---------------------------------------------------------------------------
-describe('SEC-150 sibling revocation after a capture', () => {
+describe('sibling revocation after a capture', () => {
   runDb('a capture stamps intent on the OTHER open sessions without calling Stripe from the settle path', async () => {
     const fx = await seedFixture();
     const siblingId = `${fx.sessionId}_sib`;
@@ -525,7 +525,7 @@ describe('SEC-150 sibling revocation after a capture', () => {
 // ---------------------------------------------------------------------------
 // Credential lifecycle: rotation, disconnect, archive retry, erasure
 // ---------------------------------------------------------------------------
-describe('SEC-150 credential transitions', () => {
+describe('credential transitions', () => {
   runDb('a key rotation expires the open session with the OUTGOING key first', async () => {
     const fx = await seedFixture();
     expireMock.mockImplementation((_key: string, id: string) => {
@@ -664,7 +664,7 @@ describe('SEC-150 credential transitions', () => {
 // ---------------------------------------------------------------------------
 // Operator override
 // ---------------------------------------------------------------------------
-describe('SEC-150 operator abandon', () => {
+describe('operator abandon', () => {
   runDb('abandoning unblocks the void, is audited, and is excluded from the partner banner', async () => {
     const fx = await seedFixture();
     expireMock.mockRejectedValue(stripeError('StripeAuthenticationError'));
@@ -721,7 +721,7 @@ describe('SEC-150 operator abandon', () => {
 // ---------------------------------------------------------------------------
 // Concurrency — real row locks
 // ---------------------------------------------------------------------------
-describe('SEC-150 concurrency (real Postgres locks)', () => {
+describe('concurrency (real Postgres locks)', () => {
   runDb('create-vs-revoke: no session survives payable when a pay link races a void', async () => {
     const fx = await seedFixture();
     expireMock.mockImplementation((_key: string, id: string) =>
@@ -779,7 +779,7 @@ describe('SEC-150 concurrency (real Postgres locks)', () => {
 // ---------------------------------------------------------------------------
 // Worker: due selection, DB clock, fairness
 // ---------------------------------------------------------------------------
-describe('SEC-150 revocation sweep', () => {
+describe('revocation sweep', () => {
   runDb('eligibility uses the DATABASE clock, not the worker host clock', async () => {
     const fx = await seedFixture();
     await withSystemDbAccessContext(() => db.update(invoiceStripePayments).set({
@@ -842,7 +842,7 @@ describe('SEC-150 revocation sweep', () => {
 // ---------------------------------------------------------------------------
 // Superseded-credential retention
 // ---------------------------------------------------------------------------
-describe('SEC-150 superseded-credential retention', () => {
+describe('superseded-credential retention', () => {
   async function archiveWith(fx: Fixture, opts: { eraseAfter: Date; hardCap: Date }) {
     return withSystemDbAccessContext(async () => {
       const [row] = await db.insert(stripeConnectCredentials).values({
@@ -937,7 +937,7 @@ describe('SEC-150 superseded-credential retention', () => {
 // ---------------------------------------------------------------------------
 // Legacy inventory
 // ---------------------------------------------------------------------------
-describe('SEC-150 legacy inventory', () => {
+describe('legacy inventory', () => {
   runDb('a legacy_unbounded row is revoked on first touch like any open session', async () => {
     const fx = await seedFixture();
     await withSystemDbAccessContext(() => db.update(invoiceStripePayments)
@@ -981,7 +981,7 @@ function partnerCtx(partnerId: string): DbAccessContext {
   return { scope: 'partner', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: [partnerId], userId: null };
 }
 
-describe('SEC-150 regressions', () => {
+describe('regressions', () => {
   runDb('revocation works from an ORGANIZATION-scoped caller — the credential read must escape the ambient scope', async () => {
     const fx = await seedFixture();
     expireMock.mockResolvedValue({ status: 'expired' });

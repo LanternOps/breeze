@@ -659,6 +659,74 @@ describe('bare-metal recoveries routes', () => {
       }));
     });
 
+    it('W07: media platform mismatch — 409 media_platform_mismatch BEFORE the code is claimed', async () => {
+      const code = 'ABCDEFGHJ';
+      selectMock.mockReturnValueOnce(chainMock([{
+        id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, identity: 'original',
+        platform: 'linux',
+        status: 'created', codeHash: hashRecoveryCode(code), codeExpiresAt: new Date(Date.now() + 60_000),
+        codeUsedAt: null, nonceHash: 'x'.repeat(64), createdBy: 'user-123',
+      }]));
+
+      const res = await publicApp.request('/backup/bmr/recover/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'abc-def-ghj', mediaPlatform: 'windows' }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe('media_platform_mismatch');
+      expect(body.message).toContain('The recovery code was not used');
+      expect(body.details).toMatchObject({ recoveryPlatform: 'linux', mediaPlatform: 'windows' });
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(transactionMock).not.toHaveBeenCalled();
+      expect(selectMock).toHaveBeenCalledTimes(1);
+      expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'bmr.recovery.exchange',
+        result: 'failure',
+        details: expect.objectContaining({ reason: 'media_platform_mismatch' }),
+      }));
+    });
+
+    it('W07: an unknown mediaPlatform value is rejected by the schema (400)', async () => {
+      const res = await publicApp.request('/backup/bmr/recover/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'abc-def-ghj', mediaPlatform: 'darwin' }),
+      });
+      expect(res.status).toBe(400);
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['mediaPlatform omitted (old media)', 'linux', undefined],
+      ['rec.platform null (legacy row)', null, 'windows'],
+      ['matching platform', 'windows', 'windows'],
+    ])('W07: %s — platform gate does not fire', async (_name, recPlatform, mediaPlatform) => {
+      const code = 'ABCDEFGHJ';
+      // Only the code lookup is mocked; whatever negotiation does afterwards
+      // is irrelevant — we assert the platform gate did not refuse.
+      selectMock.mockReturnValueOnce(chainMock([{
+        id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: null, identity: 'original',
+        platform: recPlatform,
+        status: 'created', codeHash: hashRecoveryCode(code), codeExpiresAt: new Date(Date.now() + 60_000),
+        codeUsedAt: null, nonceHash: 'x'.repeat(64), createdBy: 'user-123',
+      }]));
+      const res = await publicApp.request('/backup/bmr/recover/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'abc-def-ghj', ...(mediaPlatform ? { mediaPlatform } : {}) }),
+      });
+      const body = await res.json().catch(() => ({}));
+      expect(body.error).not.toBe('media_platform_mismatch');
+      expect(writeAuditEventMock).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        details: expect.objectContaining({ reason: 'media_platform_mismatch' }),
+      }));
+    });
+
     it('#5629: a "dev" helper build is below any floor and is refused before the claim', async () => {
       const code = 'ABCDEFGHJ';
       selectMock.mockReturnValueOnce(chainMock([{

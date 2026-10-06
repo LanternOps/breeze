@@ -17,7 +17,7 @@ import { isEncryptedSecret } from '../../services/secretCrypto';
 const { accountsRetrieveMock, eventsListMock, sessionsExpireMock } = vi.hoisted(() => ({
   accountsRetrieveMock: vi.fn(),
   eventsListMock: vi.fn().mockResolvedValue({ data: [], has_more: false }),
-  // SEC-150: savePartnerStripeKey now also probes Checkout WRITE access —
+  // savePartnerStripeKey now also probes Checkout WRITE access —
   // a key that can create sessions but not expire them would collect money it
   // can never be told to stop collecting. `resource_missing` on a bogus
   // session id is the "you have the permission" answer.

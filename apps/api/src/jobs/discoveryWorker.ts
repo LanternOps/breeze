@@ -1067,7 +1067,7 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
           orgId: data.orgId,
           siteId: data.siteId,
           subnet,
-          // SEC-2026-09-05-146: this baseline is created by the system on the
+          // This baseline is created by the system on the
           // back of a scan, so there is no principal whose revocation could ever
           // stop a recurring schedule on it. Leaving scan_schedule NULL was not
           // neutral: normalizeBaselineScanSchedule reads NULL back as
@@ -1353,8 +1353,9 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
             if (linked.length) {
               autoLinkedDeviceId = match.deviceId;
 
-              // Mirror the asset's type onto the linked device (discovery > auto,
-              // but never > manual).
+              // Mirror the asset's type onto the linked device — but only onto a
+              // role discovery itself owns or that nobody has set yet; never over
+              // an agent-detected, manual or Fleet Design role (#7971).
               //
               // The value is read back OUT OF THE ASSET ROW inside this statement
               // rather than taken from `classification`. The asset write above is
@@ -1381,10 +1382,19 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
                   })
                   .where(and(
                     eq(devices.id, match.deviceId),
-                    // Neither a technician's ('manual') nor a Fleet Design
-                    // correction the technician approved ('ai', W03 #5653) is
-                    // overwritten by a discovery guess.
-                    sql`coalesce(${devices.deviceRoleSource}, 'auto') not in ('manual', 'ai')`,
+                    // A positive allowlist, not a deny-list (#7971): discovery
+                    // may overwrite only its own earlier write, or an agent-
+                    // sourced row that still carries no role. An agent-detected
+                    // role ('auto' + a real value, e.g. OS-derived 'server')
+                    // outranks a port-scan guess — the classifier calls any
+                    // RDP/SMB host without SSH a 'workstation', and a demotion
+                    // sticks because the heartbeat stops re-applying the agent
+                    // role once the source is no longer 'auto'. A technician's
+                    // ('manual') or Fleet Design ('ai', W03 #5653) role, and any
+                    // source added later, is excluded by construction.
+                    sql`(coalesce(${devices.deviceRoleSource}, 'auto') = 'discovery'
+                      or (coalesce(${devices.deviceRoleSource}, 'auto') = 'auto'
+                        and coalesce(${devices.deviceRole}, 'unknown') = 'unknown'))`,
                     // D14: never propagate a BMC association's classification
                     // onto the host device — the SQL guard is load-bearing,
                     // not just the JS-side branch above.

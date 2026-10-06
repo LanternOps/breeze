@@ -28,9 +28,9 @@
 import { Worker, type Job } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { organizations, partners, tickets, ticketComments } from '../db/schema';
+import { organizations, partners, tickets, ticketComments, devices, ticketStatuses } from '../db/schema';
 import { getEmailService } from '../services/email';
-import { escapeHtml } from '../services/emailLayout';
+import { escapeHtml, renderButton, renderLayout, renderParagraph } from '../services/emailLayout';
 import { renderPartnerEmail, type PartnerEmailCustom } from '../services/emailTemplates/renderPartnerEmail';
 import { resolveCommentNotificationPortalHref } from '../services/inboundEmail/commentNotificationPortalHref';
 import { buildThreadingHeaders, partnerInboundAddress, ticketThreadAnchor } from '../services/inboundEmail/outboundThreading';
@@ -105,6 +105,81 @@ async function getTicket(ticketId: string) {
 async function getOrgName(orgId: string): Promise<string> {
   const rows = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
   return rows?.[0]?.name ?? '';
+}
+
+function dashboardBaseUrl(): string {
+  return (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/+$/, '');
+}
+
+// Both lookups run in system scope, so they bind the row to the ticket's own
+// tenant explicitly: a stale or foreign id yields no name rather than another
+// tenant's data.
+export async function getDeviceName(deviceId: string | null | undefined, orgId: string): Promise<string | null> {
+  if (!deviceId) return null;
+  const rows = await db.select({ displayName: devices.displayName, hostname: devices.hostname })
+    .from(devices).where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId))).limit(1);
+  const d = rows[0];
+  if (!d) return null;
+  // Same normalization as the device pickers: a blank display name falls back to the hostname.
+  return d.displayName?.trim() || d.hostname || null;
+}
+
+/** The partner's configured status name (custom statuses), else null. */
+export async function getStatusName(statusId: string | null | undefined, partnerId: string): Promise<string | null> {
+  if (!statusId) return null;
+  const rows = await db.select({ name: ticketStatuses.name }).from(ticketStatuses)
+    .where(and(eq(ticketStatuses.id, statusId), eq(ticketStatuses.partnerId, partnerId))).limit(1);
+  return rows[0]?.name ?? null;
+}
+
+function priorityChip(p: string | null | undefined): string {
+  const v = (p ?? 'normal').toLowerCase();
+  const color = v === 'urgent' || v === 'high' ? '#b42318' : v === 'low' ? '#6b7280' : '#1a7f37';
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:4px;background:${color};color:#ffffff;font-size:12px;font-weight:600;text-transform:uppercase;">${escapeHtml(v)}</span>`;
+}
+
+/** Assignee notification email: facts table, the ticket body (escaped, capped)
+ *  and an open-in-dashboard button, inside the shared transactional layout
+ *  (services/emailLayout.ts). Staff-only; the content is the ticket the
+ *  assignee can already open. renderLayout escapes title, preheader and
+ *  heading itself, so those are passed raw. */
+export function buildAssigneeEmailHtml(
+  t: { id: string; subject: string; description?: string | null; priority?: string | null; status?: string | null; statusName?: string | null; submitterName?: string | null; submitterEmail?: string | null },
+  label: string,
+  orgName: string,
+  deviceName: string | null,
+): string {
+  const url = `${dashboardBaseUrl()}/tickets/${t.id}`;
+  // The first 1,200 code points, so an emoji at the boundary is kept whole.
+  // Pre-cutting at 2,400 code units bounds the work; 2,400 units always hold at
+  // least 1,200 complete code points, so that pre-cut can never reach the result.
+  const excerpt = Array.from((t.description ?? '').slice(0, 2400)).slice(0, 1200).join('');
+  const bodyHtml = escapeHtml(excerpt).replace(/\n/g, '<br>');
+  const requester = [t.submitterName, t.submitterEmail].filter(Boolean).map(String).join(' ').trim();
+  const row = (k: string, v: string) =>
+    v ? `<tr><td style="padding:4px 12px 4px 0;color:#6b7280;font-size:13px;white-space:nowrap;vertical-align:top;">${k}</td><td style="padding:4px 0;color:#111111;font-size:13px;">${v}</td></tr>` : '';
+  const body = [
+    `<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 14px;">`,
+    row('Ticket', escapeHtml(label)),
+    row('Client', escapeHtml(orgName)),
+    row('Priority', priorityChip(t.priority)),
+    row('Status', escapeHtml(String(t.statusName ?? t.status ?? ''))),
+    row('From', escapeHtml(requester)),
+    deviceName ? row('Device', escapeHtml(deviceName)) : '',
+    `</table>`,
+    bodyHtml
+      ? `<div style="border-left:3px solid #d1d5db;padding:8px 12px;margin:0 0 16px;color:#374151;font-size:14px;line-height:1.5;background:#f9fafb;">${bodyHtml}</div>`
+      : '',
+    renderButton('Open ticket', url),
+    renderParagraph(escapeHtml(url), { muted: true, marginTop: 12 }),
+  ].join('');
+  const heading = `Assigned to you: ${t.subject}`;
+  return renderLayout({
+    title: `[${label}] ${heading}`,
+    preheader: `Ticket ${label} has been assigned to you.`,
+    heading,
+    body,
+  });
 }
 
 const EMAIL_ONLY_HINT = 'If you do not have a portal account, reply to this email instead.';
@@ -286,6 +361,12 @@ async function collectAssigneeNotification(
   if (!partnerId || !assertSamePartner(assignee, partnerId, { ticketId: ticket.id })) return none;
   if (!(await isEligibleTicketRecipient(assignee, partnerId, ticket.orgId, ticket.deviceId))) return none;
 
+  // The email's name lookups run BEFORE the dedupe anchor: if one throws, no
+  // row has been written yet, so the BullMQ retry can still send.
+  const orgName = await getOrgName(ticket.orgId);
+  const deviceName = await getDeviceName(ticket.deviceId, ticket.orgId);
+  const statusName = await getStatusName(ticket.statusId, partnerId);
+
   // Idempotency anchor (D2): null = replay -> nothing else happens.
   const id = await createNotification({
     userId: assigneeId,
@@ -303,7 +384,7 @@ async function collectAssigneeNotification(
     ? [{
         to: assignee.email,
         subject: stripHeaderBreaks(`[${label}] Assigned to you: ${ticket.subject}`),
-        html: `<p>You have been assigned ticket <strong>${escapeHtml(label)}</strong>: ${escapeHtml(ticket.subject)}</p>`,
+        html: buildAssigneeEmailHtml({ ...ticket, statusName }, String(label), orgName, deviceName),
         bestEffort: true,
         purpose: 'ticket.staff_notification',
       }]
@@ -318,7 +399,7 @@ async function collectAssigneeNotification(
         ticketId: ticket.id,
         reason: 'assigned',
         internalNumber: ticket.internalNumber ?? null,
-        orgName: await getOrgName(ticket.orgId),
+        orgName,
       }),
     });
   }

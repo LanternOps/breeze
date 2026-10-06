@@ -104,7 +104,7 @@ async function seedConvertedQuote() {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     // createInvoicePayLink / the quote checkout producer re-check the durable
-    // stripe_connect_accounts row inside the mapping transaction (SEC-151):
+    // stripe_connect_accounts row inside the mapping transaction:
     // the account the mock reports must exist for this partner, and
     // stripe_account_id is globally unique, so each seeded partner gets its own.
     currentAccountId = `acct_pquote_${Math.random().toString(36).slice(2, 10)}`;

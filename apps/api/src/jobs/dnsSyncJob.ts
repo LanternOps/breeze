@@ -23,6 +23,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { decryptForColumn } from '../services/secretCrypto';
 import { captureException } from '../services/sentry';
 import { redactLogMessage } from '../services/logRedaction';
+import { SsrfBlockedError } from '../services/urlSafety';
 import { publishEvent, EVENT_TYPES } from '../services/eventBus';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -89,6 +90,10 @@ export function getDnsSyncQueue(): Queue<DnsSyncJobData> {
   return dnsSyncQueue;
 }
 
+/** Tenant-visible message for an integration host the SSRF guard blocked (#8023). */
+export const SSRF_BLOCKED_SYNC_ERROR =
+  'Host resolves to a private/blocked address — not reachable from the hosted service.';
+
 /** Max length persisted to a tenant-visible sync-error column. */
 const SYNC_ERROR_MAX_LENGTH = 2000;
 
@@ -107,6 +112,9 @@ const SYNC_ERROR_MAX_LENGTH = 2000;
  * Pi-hole error could echo back the `?auth=<apiKey>` secret).
  */
 export function tenantVisibleSyncError(error: unknown): string {
+  // #8023: an SSRF block is a configuration condition. Show an actionable
+  // message; never echo the resolved IPs (internal-address oracle).
+  if (error instanceof SsrfBlockedError) return SSRF_BLOCKED_SYNC_ERROR;
   const message =
     error instanceof DnsProviderHttpError
       ? error.message // "HTTP <status> <statusText>", body-free by construction
@@ -744,7 +752,8 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
     // oracle) — neither may land in dnsFilterIntegrations.lastSyncError.
     // Record on a FRESH transaction so it survives Phase 3's rollback. Guard the
     // write itself so a failure to record the status can't mask the original
-    // sync error (which is re-thrown below regardless).
+    // sync error (which is re-thrown below, except a recorded SsrfBlockedError — #8023).
+    let recorded = false;
     try {
       await dbModule.runOutsideDbContext(() =>
         runWithSystemDbAccess(() =>
@@ -758,9 +767,17 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
             .where(eq(dnsFilterIntegrations.id, integration.id))
         )
       );
+      recorded = true;
     } catch (dbErr) {
       console.error(`[DnsSyncJob] Failed to record sync error for integration ${integration.id}:`, dbErr);
       captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)));
+    }
+    // #8023: a blocked host is user-visible configuration state (recorded
+    // above), not a job failure — don't fail the job / report to Sentry.
+    // Only when the status write succeeded; otherwise fall through and throw
+    // so the condition isn't lost.
+    if (error instanceof SsrfBlockedError && recorded) {
+      return { integrationId: integration.id, fetched: 0, inserted: 0 };
     }
     throw error;
   }
@@ -852,8 +869,9 @@ export async function processPolicySync(data: SyncPolicyJobData): Promise<{
     // SERVER-SIDE log only; the tenant-visible column gets a body-free message.
     // Record on a FRESH transaction so it survives any Phase 3 rollback. Guard
     // the write itself so a failure to record the status can't mask the original
-    // sync error (which is re-thrown below regardless).
+    // sync error (which is re-thrown below, except a recorded SsrfBlockedError — #8023).
     logSyncFailureServerSide({ policyId: row.policy.id, orgId: row.integration.orgId }, error);
+    let recorded = false;
     try {
       await dbModule.runOutsideDbContext(() =>
         runWithSystemDbAccess(() =>
@@ -867,9 +885,14 @@ export async function processPolicySync(data: SyncPolicyJobData): Promise<{
             .where(eq(dnsPolicies.id, row.policy.id))
         )
       );
+      recorded = true;
     } catch (dbErr) {
       console.error(`[DnsSyncJob] Failed to record sync error for policy ${row.policy.id}:`, dbErr);
       captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)));
+    }
+    // #8023: see processSyncIntegration — config condition, not a job failure.
+    if (error instanceof SsrfBlockedError && recorded) {
+      return { policyId: row.policy.id, added: 0, removed: 0 };
     }
     throw error;
   }

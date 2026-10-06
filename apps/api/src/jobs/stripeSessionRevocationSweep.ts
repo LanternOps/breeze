@@ -16,7 +16,7 @@ import {
 import { attachWorkerObservability } from './workerObservability';
 
 /**
- * Durable drain for Checkout-session revocation intent (SEC-150).
+ * Durable drain for Checkout-session revocation intent.
  *
  * Phase 1 of a transition commits `revocation_requested` and phase 2 tries
  * Stripe inside the request's 12-second budget. Everything the request could not

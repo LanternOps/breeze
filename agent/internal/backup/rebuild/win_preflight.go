@@ -88,7 +88,7 @@ func winPreflight(ctx context.Context, r *run) error {
 					return err
 				}
 				if has {
-					return &RefusalError{Reason: fmt.Sprintf("target disk %d contains a Windows installation; pass --force-disk to overwrite it", diskNumber)}
+					return &RefusalError{Reason: fmt.Sprintf("target disk %d contains a Windows installation; pass --force-disk to overwrite it", diskNumber), Code: RefusalCodeDiskHasWindows}
 				}
 			}
 		}
@@ -134,6 +134,15 @@ func winPreflight(ctx context.Context, r *run) error {
 		}
 		if dc.IsDC {
 			return &RefusalError{Reason: fmt.Sprintf("source is a domain controller (%s); pass --allow-domain-controller and read the DC recovery guidance", dc.Evidence)}
+		}
+	}
+	if r.opts.Target.Kind == TargetDisk {
+		ref, err := r.checkGuestBuild()
+		if err != nil {
+			return err
+		}
+		if ref != nil {
+			return ref
 		}
 	}
 	r.progress(PhasePreflight, "verified", 3, 3)

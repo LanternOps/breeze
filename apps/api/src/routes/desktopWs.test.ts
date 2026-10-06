@@ -240,7 +240,7 @@ function mockUpdateReturning(updatedRow: unknown) {
 /**
  * Rigs the two real db.select calls commitDesktopStreamStartIntent's twin,
  * commitDesktopStartIntent, and assertDesktopStartIntentCurrent make
- * (remoteDesktopStartIntent.ts — SEC-038 W02, not mocked in this file): the
+ * (remoteDesktopStartIntent.ts, not mocked in this file): the
  * row-locked read, then the pre-send re-read. Layered as mockReturnValueOnce
  * on top of mockViewerSelect's persistent (and, for this route, unused —
  * authorizeLiveRemoteSessionAccess is mocked directly) db.select rig, so it
@@ -675,7 +675,7 @@ describe('GET /:id/viewer/session failure diagnostics', () => {
     expect(sendCommandToAgent).not.toHaveBeenCalled();
   });
 
-  // SEC-038 W06 (#5537): a server-side End whose stop_desktop has not yet been
+  // #5537 — a server-side End whose stop_desktop has not yet been
   // acknowledged by the agent leaves the row terminal with
   // terminationPhase='pending'. The viewer's answer poll must see the phase
   // and must never be handed a stale answer it could connect with.

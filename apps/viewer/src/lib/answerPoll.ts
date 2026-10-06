@@ -1,5 +1,5 @@
 /**
- * Answer-poll classification (SEC-038 W06, #5537).
+ * Answer-poll classification (#5537).
  *
  * `GET /desktop-ws/:id/viewer/session` is polled until the agent's WebRTC
  * answer lands. A server-side End (operator End, teardown sweep, lease

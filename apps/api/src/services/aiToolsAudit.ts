@@ -13,6 +13,7 @@ import { devices, auditLogs, deviceChangeLog } from '../db/schema';
 import { eq, ne, or, and, not, isNull, desc, sql, gte, lte, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { auditLogReadCondition } from './auditReadScope';
 import {
   resolveSiteAllowedDeviceIds,
   resolveSiteDevicePartition,
@@ -107,7 +108,9 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
         });
 
       const conditions: SQL[] = [];
-      const orgCondition = auth.orgCondition(auditLogs.orgId);
+      // Same tenancy predicate as the Audit Trail routes: accessible orgs, plus
+      // the caller's own partner-scoped rows for partner scope only (#7696).
+      const orgCondition = auditLogReadCondition(auth);
       if (orgCondition) conditions.push(orgCondition);
 
       if (input.action) conditions.push(eq(auditLogs.action, input.action as string));

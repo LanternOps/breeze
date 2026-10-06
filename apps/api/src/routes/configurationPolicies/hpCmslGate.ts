@@ -47,8 +47,8 @@ export function checkHpCmslWriteAllowed(
     };
   }
 
-  // Every door this gate guards already runs requireMfa() route-level
-  // (SEC-107), so this is a belt: the helper states the WHOLE D4 requirement
+  // Every door this gate guards already runs requireMfa() route-level,
+  // so this is a belt: the helper states the WHOLE D4 requirement
   // itself and stays correct if a route's middleware chain is ever reshaped.
   // Session-claim strength; the body shape is requireMfa()'s so callers branch
   // on `code` exactly as they do for every other MFA refusal.

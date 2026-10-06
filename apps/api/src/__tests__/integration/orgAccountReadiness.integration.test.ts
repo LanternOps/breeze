@@ -358,7 +358,7 @@ describe('GET /orgs/account-readiness', () => {
     // the reason the path lives at /orgs/account-readiness.
     const shadowed = await client.get(`/orgs/organizations/account-readiness?orgIds=${orgA}`);
     expect(shadowed.status).toBe(404);
-    expect(await shadowed.json()).toEqual({ error: 'Organization not found' });
+    expect(await shadowed.json()).toEqual({ error: 'Organization not found', code: 'NOT_FOUND' });
   });
 
   runDb('a partner-level assignment of an ACTIVE policy marks every org of that partner only', async () => {

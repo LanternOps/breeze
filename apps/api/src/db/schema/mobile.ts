@@ -8,7 +8,7 @@ export const mobileDeviceStatusEnum = pgEnum('mobile_device_status', ['active', 
 
 export const mobileDevices = pgTable('mobile_devices', {
   id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull().references(() => users.id),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   deviceId: varchar('device_id', { length: 255 }).notNull().unique(),
   platform: devicePlatformEnum('platform').notNull(),
   model: varchar('model', { length: 255 }),
@@ -36,8 +36,8 @@ export const mobileDevices = pgTable('mobile_devices', {
 
 export const pushNotifications = pgTable('push_notifications', {
   id: uuid('id').primaryKey().defaultRandom(),
-  mobileDeviceId: uuid('mobile_device_id').notNull().references(() => mobileDevices.id),
-  userId: uuid('user_id').notNull().references(() => users.id),
+  mobileDeviceId: uuid('mobile_device_id').notNull().references(() => mobileDevices.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   title: varchar('title', { length: 255 }).notNull(),
   body: text('body'),
   data: jsonb('data'),
@@ -55,8 +55,8 @@ export const pushNotifications = pgTable('push_notifications', {
 
 export const mobileSessions = pgTable('mobile_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull().references(() => users.id),
-  mobileDeviceId: uuid('mobile_device_id').notNull().references(() => mobileDevices.id),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  mobileDeviceId: uuid('mobile_device_id').notNull().references(() => mobileDevices.id, { onDelete: 'cascade' }),
   refreshToken: text('refresh_token').notNull(),
   expiresAt: timestamp('expires_at').notNull(),
   lastUsedAt: timestamp('last_used_at'),

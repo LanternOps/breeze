@@ -252,7 +252,7 @@ export const networkKnownGuests = pgTable('network_known_guests', {
   macAddress: varchar('mac_address', { length: 17 }).notNull(),
   label: varchar('label', { length: 255 }).notNull(),
   notes: text('notes'),
-  addedBy: uuid('added_by').references(() => users.id),
+  addedBy: uuid('added_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
@@ -275,7 +275,7 @@ export const networkBaselines = pgTable('network_baselines', {
     changed: true,
     rogueDevice: false
   }),
-  // SEC-2026-09-05-146 — creator-bound versioned authority envelope. A recurring
+  // Creator-bound versioned authority envelope. A recurring
   // scan_schedule is an effect that keeps firing long after the request that
   // armed it; without a durable record of WHO armed it the scheduler cannot tell
   // whether that authority still exists. Every arming path (REST create/update,

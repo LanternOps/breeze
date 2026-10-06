@@ -169,7 +169,7 @@ export const analyticsDashboards = pgTable('analytics_dashboards', {
 
 export const dashboardWidgets = pgTable('dashboard_widgets', {
   id: uuid('id').primaryKey().defaultRandom(),
-  dashboardId: uuid('dashboard_id').notNull().references(() => analyticsDashboards.id),
+  dashboardId: uuid('dashboard_id').notNull().references(() => analyticsDashboards.id, { onDelete: 'cascade' }),
   widgetType: varchar('widget_type', { length: 100 }).notNull(),
   title: varchar('title', { length: 255 }).notNull(),
   dataSource: jsonb('data_source').notNull().default({}),

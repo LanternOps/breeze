@@ -144,3 +144,46 @@ describe('locale cookie -> context.locals.locale', () => {
     expect(context.locals.locale).toBeUndefined();
   });
 });
+
+// #7985: `/settings/ticketing` used to be a 301 alias to `/settings/partner#ticketing`
+// (v0.80 - v0.114). When it became the real page again, browsers that had cached
+// the permanent redirect kept bouncing to the Partner hub, whose Ticketing tab
+// links straight back to `/settings/ticketing`: a loop the server never sees.
+// Redirects must never be stored by the browser, so a later change of direction
+// takes effect on the next request.
+describe('redirect responses are never cacheable (#7985)', () => {
+  // onRequest is typed `void | Response`; this middleware always returns one.
+  const run = async (upstream: Response): Promise<Response> => {
+    const result = await onRequest(makeContext(undefined) as any, async () => upstream);
+    if (!(result instanceof Response)) throw new Error('middleware returned no Response');
+    return result;
+  };
+
+  for (const status of [301, 302, 303, 307, 308]) {
+    it(`onRequest marks a ${status} redirect Cache-Control: no-store and keeps status + Location`, async () => {
+      const response = await run(new Response(null, { status, headers: { Location: '/settings/partner#ticketing' } }));
+      expect(response.status).toBe(status);
+      expect(response.headers.get('Location')).toBe('/settings/partner#ticketing');
+      expect(response.headers.get('Cache-Control')).toBe('no-store');
+    });
+  }
+
+  it('onRequest overrides a cacheable Cache-Control on a redirect', async () => {
+    const response = await run(new Response(null, { status: 301, headers: { Location: '/x', 'Cache-Control': 'public, max-age=31536000' } }));
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('onRequest leaves non-redirect responses (200, 304) without an added Cache-Control', async () => {
+    const ok = await run(new Response('ok'));
+    expect(ok.headers.get('Cache-Control')).toBeNull();
+
+    const notModified = await run(new Response(null, { status: 304, headers: { ETag: '"abc"' } }));
+    expect(notModified.status).toBe(304);
+    expect(notModified.headers.get('Cache-Control')).toBeNull();
+  });
+
+  it('onRequest keeps a route-chosen Cache-Control on a non-redirect response', async () => {
+    const response = await run(new Response('ok', { headers: { 'Cache-Control': 'private, max-age=60' } }));
+    expect(response.headers.get('Cache-Control')).toBe('private, max-age=60');
+  });
+});

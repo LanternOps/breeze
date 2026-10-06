@@ -297,7 +297,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
       return c.json(result);
     }catch(error){if(error instanceof InvoiceServiceError)return c.json({error:error.message,code:error.code},error.status);throw error;}
   }
-  // SEC-150 producer gate — twin of createInvoicePayLink's. A session minted
+  // Producer gate — twin of createInvoicePayLink's. A session minted
   // while a revocation is in flight would not be covered by that revocation, so
   // the customer is asked to retry rather than handed a link nobody can kill.
   // Elects its own system scope — never wrap it in a bare context here (#5611).
@@ -385,7 +385,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   try {
     session = await runOutsideDbContext(() => stripe.checkout.sessions.create({
     mode: 'payment',
-    // SEC-150 defence in depth: an explicit provider-side death clock, so an
+    // Defence in depth: an explicit provider-side death clock, so an
     // unrevoked session cannot outlive the day even if every local control fails.
     expires_at: providerExpiresAtEpoch,
     // v1 is card-only. Restricting payment_method_types keeps the recorded
@@ -431,7 +431,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     // 50%-deposit invoice has the SAME chargeMinor for the deposit and the later
     // balance charge (different product name but equal amount), so the amount alone
     // can't disambiguate — the explicit dep/bal discriminator does.
-    // `_e<quantum>` (SEC-150): `expires_at` is part of the request and Stripe
+    // `_e<quantum>`: `expires_at` is part of the request and Stripe
     // refuses an idempotent replay whose parameters moved, so the hour quantum
     // is folded into the key — see checkoutSessionExpiry().
     // `_pd`: the request carries a PaymentIntent description (see services/invoiceCheckout.ts).
@@ -466,7 +466,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     if (!currentConnection) {
       return false;
     }
-    // SEC-150: a transition may have recorded revocation intent while the Stripe
+    // A transition may have recorded revocation intent while the Stripe
     // round-trip was in flight. Never refuse before the mapping is written — a
     // session on Stripe with no mapping row is an orphan no revocation can find,
     // strictly worse than the race being closed. Commit, then revoke and refuse.

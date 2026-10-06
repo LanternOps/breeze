@@ -5,12 +5,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // exercised here. safeFetch (the SSRF wrapper) and sniffImageMime are mocked;
 // db is unused by fetchImageFromUrl but imported by the module, so it's stubbed.
 const safeFetch = vi.fn();
-vi.mock('./urlSafety', () => ({ safeFetch: (...a: unknown[]) => safeFetch(...a) }));
+vi.mock('./urlSafety', async (importActual) => {
+  const actual = await importActual<typeof import('./urlSafety')>();
+  return { ResponseTooLargeError: actual.ResponseTooLargeError, safeFetch: (...a: unknown[]) => safeFetch(...a) };
+});
 const sniffImageMime = vi.fn();
 vi.mock('./avatarStorage', () => ({ sniffImageMime: (...a: unknown[]) => sniffImageMime(...a) }));
 vi.mock('../db', () => ({ db: {} }));
 
 import { fetchImageFromUrl, MAX_CATALOG_IMAGE_SIZE_BYTES, CATALOG_IMAGE_WEBP_REJECTED_MESSAGE } from './catalogImageStorage';
+import { ResponseTooLargeError } from './urlSafety';
 
 function fakeRes(opts: { ok?: boolean; status?: number; headers?: Record<string, string>; body?: Uint8Array }) {
   const { ok = true, status = 200, headers = {}, body = new Uint8Array([1, 2, 3]) } = opts;
@@ -31,7 +35,13 @@ describe('fetchImageFromUrl', () => {
     const out = await fetchImageFromUrl('https://example.test/a.png');
     expect(out.mime).toBe('image/png');
     expect(out.buffer.length).toBe(4);
-    expect(safeFetch).toHaveBeenCalledWith('https://example.test/a.png', { timeoutMs: 10_000 });
+    expect(safeFetch).toHaveBeenCalledWith('https://example.test/a.png', { timeoutMs: 10_000, maxBytes: MAX_CATALOG_IMAGE_SIZE_BYTES });
+  });
+
+  it('caps the body while it streams, so an oversized download is cut off rather than buffered', async () => {
+    safeFetch.mockRejectedValue(new ResponseTooLargeError(MAX_CATALOG_IMAGE_SIZE_BYTES));
+    await expect(fetchImageFromUrl('https://x.test')).rejects.toThrow('Image too large (max 5 MB)');
+    expect(safeFetch).toHaveBeenCalledWith('https://x.test', expect.objectContaining({ maxBytes: MAX_CATALOG_IMAGE_SIZE_BYTES }));
   });
 
   it('throws on a non-OK response (and never sniffs)', async () => {

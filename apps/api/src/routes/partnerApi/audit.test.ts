@@ -93,6 +93,7 @@ describe('partner export audit middleware', () => {
     const event = auditedEvent();
     expect(event).toMatchObject({
       orgId: null,
+      partnerId: PARTNER_ID,
       actorType: 'api_key',
       actorId: KEY_ID,
       action: 'partner_api.export',

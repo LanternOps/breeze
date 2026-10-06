@@ -44,7 +44,7 @@ function ctxFor(orgId: string, partnerId: string): DbAccessContext { return { sc
 function qActor(orgId: string, partnerId: string): QuoteActor { return { userId: null, partnerId, accessibleOrgIds: [orgId] }; }
 function iActor(orgId: string, partnerId: string): InvoiceActor { return { userId: null, partnerId, accessibleOrgIds: [orgId] }; }
 // createInvoicePayLink re-checks the durable stripe_connect_accounts row inside the
-// mapping transaction (SEC-151): the account the mock reports must exist for the seeded
+// mapping transaction: the account the mock reports must exist for the seeded
 // partner, and stripe_account_id is globally unique, so each partner gets its own id.
 let currentAccountId = 'acct_test';
 

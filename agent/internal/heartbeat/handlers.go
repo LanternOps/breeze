@@ -76,6 +76,8 @@ var handlerRegistry = map[string]CommandHandler{
 	// File operations
 	tools.CmdFileList:           handleFileList,
 	tools.CmdFileRead:           handleFileRead,
+	tools.CmdDiagFileList:       handleDiagFileList,
+	tools.CmdDiagFileRead:       handleDiagFileRead,
 	tools.CmdFileWrite:          handleFileWrite,
 	tools.CmdFileDelete:         handleFileDelete,
 	tools.CmdFileMkdir:          handleFileMkdir,
@@ -119,6 +121,19 @@ func (h *Heartbeat) dispatchCommand(cmd Command) (tools.CommandResult, bool) {
 		return tools.CommandResult{}, false
 	}
 	start := time.Now()
+	// A diagnostic read authorization is only ever honoured by diag_file_list
+	// and diag_file_read. Any other command carrying one is refused before its handler
+	// runs, so a read-only grant can never ride along on a write, delete,
+	// rename, script or registry command (which would ignore it anyway —
+	// refusing makes the misuse visible instead of silently accepted).
+	if _, present := cmd.Payload[tools.DiagnosticAuthorizationPayloadKey]; present &&
+		cmd.Type != tools.CmdDiagFileList && cmd.Type != tools.CmdDiagFileRead {
+		result := tools.NewErrorResult(&tools.DiagError{
+			Code: tools.DiagErrWriteNotPermitted,
+			Msg:  "a diagnostic read authorization cannot be used with " + cmd.Type,
+		}, time.Since(start).Milliseconds())
+		return result, true
+	}
 	result := handler(h, cmd)
 	// Only override DurationMs if the handler did not set it.
 	// Handlers that measure their own duration set a positive value.
@@ -374,6 +389,14 @@ func handleFileList(_ *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleFileRead(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.ReadFile(cmd.Payload)
+}
+
+func handleDiagFileList(h *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.DiagnosticListFiles(cmd.ID, cmd.Payload, h.diagnosticGrantEnv())
+}
+
+func handleDiagFileRead(h *Heartbeat, cmd Command) tools.CommandResult {
+	return tools.DiagnosticReadFile(cmd.ID, cmd.Payload, h.diagnosticGrantEnv())
 }
 
 func handleFileWrite(_ *Heartbeat, cmd Command) tools.CommandResult {

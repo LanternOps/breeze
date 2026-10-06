@@ -129,7 +129,7 @@ const requireImportPermissions = partnerScopedPermission(
 );
 
 /**
- * Dedicated accounting capabilities (SEC-2026-09-05-057). Before these, every
+ * Dedicated accounting capabilities. Before these, every
  * interactive QuickBooks route gated on partner authority alone, so any
  * full-partner member — however low their role — could read the shared
  * provider realm and, with MFA, drive realm lifecycle and settings mutations.

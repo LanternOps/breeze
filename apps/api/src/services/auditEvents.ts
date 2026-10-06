@@ -1,6 +1,7 @@
 import { createAuditLogAsync, type InitiatedByType } from './auditService';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { sanitizeAuditPayload } from './auditPayloadSanitizer';
+import * as dbModule from '../db';
 
 export const ANONYMOUS_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -32,6 +33,15 @@ export function requestLikeFromSnapshot(snapshot: { ip?: string; userAgent?: str
 
 export interface AuditEventInput {
   orgId: string | null | undefined;
+  /**
+   * Partner attribution for a partner-scoped (org_id NULL) event (#7696) — what
+   * makes the row visible in that partner's Audit Trail. Ignored (persisted as
+   * NULL) whenever `orgId` is set: org rows stay on the org axis. When omitted
+   * (`undefined`) on a NULL-org event, it is derived from a partner-scope
+   * request's auth (see `derivePartnerAttribution`); pass `null` explicitly for
+   * a NULL-org event that is platform-wide even though a partner user caused it.
+   */
+  partnerId?: string | null;
   action: string;
   resourceType: string;
   resourceId?: string | null;
@@ -57,6 +67,72 @@ export interface AuditEventInput {
 
 function isUuid(value: string | null | undefined): value is string {
   return typeof value === 'string' && UUID_PATTERN.test(value);
+}
+
+type PartnerScopeAuth = { scope?: unknown; partnerId?: unknown };
+
+function readRequestAuth(c: RequestLike): PartnerScopeAuth | undefined {
+  // RequestLike is structural: route callers pass the Hono context (which has
+  // `get`), services pass a `requestLikeFromSnapshot` shim (which does not).
+  const get = (c as { get?: (key: string) => unknown }).get;
+  if (typeof get !== 'function') return undefined;
+  try {
+    const auth = get.call(c, 'auth');
+    return auth && typeof auth === 'object' ? (auth as PartnerScopeAuth) : undefined;
+  } catch (err) {
+    console.warn('[audit] could not read request auth for partner attribution:', err);
+    return undefined;
+  }
+}
+
+/**
+ * The ambient RLS context's partner, for partner scope only. AI tools and
+ * services audit through `requestLikeFromSnapshot` (no auth on it) but run
+ * inside `withDbAccessContext(dbAccessContextFromAuth(auth))`, so this is the
+ * same partner the caller's reads are scoped to.
+ */
+function ambientPartnerScopeId(): string | null {
+  let ctx: ReturnType<typeof dbModule.getCurrentDbAccessContext>;
+  try {
+    ctx = dbModule.getCurrentDbAccessContext();
+  } catch {
+    // Unit tests that mock '../db' without this export.
+    return null;
+  }
+  if (ctx?.scope !== 'partner') return null;
+  const ids = ctx.accessiblePartnerIds;
+  return Array.isArray(ids) && ids.length === 1 && isUuid(ids[0]) ? ids[0]! : null;
+}
+
+/**
+ * The partner_id to persist for this event (#7696).
+ *
+ * - Org rows never carry one (the DB CHECK
+ *   audit_logs_partner_only_without_org_chk enforces the same invariant).
+ * - An explicit `event.partnerId` (including `null`) wins.
+ * - Otherwise a NULL-org event written from a PARTNER-scope request is
+ *   attributed to the caller's partner. Gated on scope, not on `partnerId`
+ *   alone: organization-scope tokens carry their MSP's partnerId too, and a
+ *   NULL-org row an org user causes must not land in the MSP's trail.
+ * - With no request auth on `c` (a snapshot shim), the ambient partner-scope
+ *   DB access context is used instead, under the same scope gate.
+ */
+export function derivePartnerAttribution(c: RequestLike, event: Pick<AuditEventInput, 'orgId' | 'partnerId'>): string | null {
+  if (event.orgId) return null;
+  if (event.partnerId !== undefined) {
+    if (event.partnerId !== null && !isUuid(event.partnerId)) {
+      console.warn('[audit] ignoring non-uuid partnerId for partner attribution', { partnerId: event.partnerId });
+      return null;
+    }
+    return event.partnerId;
+  }
+  const auth = readRequestAuth(c);
+  if (auth) {
+    return auth.scope === 'partner' && typeof auth.partnerId === 'string' && isUuid(auth.partnerId)
+      ? auth.partnerId
+      : null;
+  }
+  return ambientPartnerScopeId();
 }
 
 export function writeAuditEventAsync(c: RequestLike, event: AuditEventInput): Promise<void> {
@@ -101,6 +177,9 @@ export function writeAuditEventAsync(c: RequestLike, event: AuditEventInput): Pr
 
   return createAuditLogAsync({
     orgId: event.orgId ?? undefined,
+    // Resolved now, not at persist time: a failed write is replayed from the
+    // retry queue long after the request (and its auth) is gone.
+    partnerId: derivePartnerAttribution(c, event),
     actorType: resolvedActorType,
     actorId,
     actorEmail: event.actorEmail ?? undefined,
@@ -128,6 +207,8 @@ export function writeAuditEvent(c: RequestLike, event: AuditEventInput): void {
  */
 export interface RouteAuditInput {
   orgId: string | null | undefined;
+  /** See AuditEventInput.partnerId. */
+  partnerId?: string | null;
   action: string;
   resourceType: string;
   resourceId?: string | null;

@@ -248,7 +248,7 @@ export const devices = pgTable('devices', {
   // Non-sticky, same contract as the versions above: rewritten every beat so a
   // downgrade clears the claim.
   revocationLeaseProtocolVersion: integer('revocation_lease_protocol_version').notNull().default(0),
-  // SEC-038 W06 desktop start/terminal fence capability. 1 = this agent build
+  // Desktop start/terminal fence capability. 1 = this agent build
   // keeps the durable per-session generation fence (W04/W05) and refuses stale
   // or post-terminal starts. 0 (default, and every agent that omits the field)
   // means unfenced; behind REMOTE_DESKTOP_FENCE_REQUIRED the three
@@ -576,7 +576,7 @@ export const deviceProcessSamples = pgTable('device_process_samples', {
 
 export const deviceSoftware = pgTable('device_software', {
   id: uuid('id').primaryKey().defaultRandom(),
-  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  deviceId: uuid('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 500 }).notNull(),
   version: varchar('version', { length: 100 }),
   publisher: varchar('publisher', { length: 255 }),

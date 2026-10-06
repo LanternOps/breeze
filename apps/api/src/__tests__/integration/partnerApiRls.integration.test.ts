@@ -29,10 +29,12 @@ import {
   partnerServicePrincipals,
   sites,
   softwareInventory,
+  tickets,
 } from '../../db/schema';
 import { partnerApiAuthMiddleware } from '../../middleware/partnerApiAuth';
 import { partnerAlertRoutes } from '../../routes/partnerApi/alerts';
-import { partnerAlertFeedEnvelopeSchema } from '../../routes/partnerApi/schemas';
+import { partnerTicketRoutes } from '../../routes/partnerApi/tickets';
+import { partnerAlertFeedEnvelopeSchema, partnerTicketFeedEnvelopeSchema } from '../../routes/partnerApi/schemas';
 import { partnerConfigurationRoutes } from '../../routes/partnerApi/configuration';
 import {
   decodePartnerExportCursor,
@@ -83,6 +85,7 @@ const ALL_SCOPES = [
   'backup-configuration:read',
   'custom-fields:read',
   'alerts:read',
+  'tickets:read',
 ] as const;
 
 const EXPECTED_COUNTS: Record<PartnerExportResource, number> = {
@@ -100,6 +103,7 @@ const EXPECTED_COUNTS: Record<PartnerExportResource, number> = {
   'custom-fields': 4,
   'custom-field-values': 4,
   alerts: 2,
+  tickets: 2,
 };
 
 interface ExportRecord {
@@ -1081,6 +1085,16 @@ async function seedPartnerOrg(seed: SeededPartner, label: 'A' | 'B', index: numb
     title: `${label}-alert-${index}`,
     message: `${label}-alert-message-${index}`,
   });
+  await admin.insert(tickets).values({
+    orgId: org.id,
+    partnerId: seed.partner.id,
+    deviceId: device.id,
+    ticketNumber: `${label}-T-${index}-${crypto.randomUUID().slice(0, 6)}`,
+    subject: `${label}-ticket-${index}`,
+    description: `${label}-ticket-description-${index}`,
+    source: 'manual',
+    priority: 'normal',
+  });
   // #3257 W05 — the datum is the ROW in device_custom_field_values;
   // devices.custom_fields is the projection its triggers rebuild. Seeding the
   // jsonb literal here instead would be invisible to /custom-field-values (which
@@ -1188,6 +1202,7 @@ function actualPartnerApiApp(observedRoles: Array<{ who: string; bypass: boolean
   app.route('/', partnerConfigurationRoutes);
   app.route('/', partnerProvisioningRoutes);
   app.route('/', partnerAlertRoutes);
+  app.route('/', partnerTicketRoutes);
   return app;
 }
 
@@ -1202,9 +1217,9 @@ async function walkResource(app: Hono, rawKey: string, resource: PartnerExportRe
     const envelope = await getEnvelope(app, rawKey, `/${resource}?${query}`);
     expect(envelope.schemaVersion).toBe('1');
     expect(envelope.hasMore).toBe(envelope.nextCursor !== null);
-    if (resource === 'alerts') {
-      // The alerts feed has its own xid8 checkpoint contract, not snapshotAt.
-      const feed = partnerAlertFeedEnvelopeSchema.parse(envelope);
+    if (resource === 'alerts' || resource === 'tickets') {
+      // The xid8 feeds have their own checkpoint contract, not snapshotAt.
+      const feed = (resource === 'alerts' ? partnerAlertFeedEnvelopeSchema : partnerTicketFeedEnvelopeSchema).parse(envelope);
       expect(feed.mode).toBe('full');
       expect(feed.checkpoint === null).toBe(feed.hasMore);
       expect(envelope).not.toHaveProperty('snapshotAt');
@@ -1217,7 +1232,7 @@ async function walkResource(app: Hono, rawKey: string, resource: PartnerExportRe
     pages += 1;
     expect(pages).toBeLessThan(20);
   } while (cursor);
-  expect(snapshots.size).toBe(resource === 'alerts' ? 0 : 1);
+  expect(snapshots.size).toBe(resource === 'alerts' || resource === 'tickets' ? 0 : 1);
   return { records, pages };
 }
 

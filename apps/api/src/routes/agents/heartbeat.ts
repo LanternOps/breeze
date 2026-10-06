@@ -274,7 +274,7 @@ export function normalizeRevocationLeaseProtocolVersion(value: unknown): 0 | 1 {
 }
 
 /**
- * SEC-038 W06: normalize the only desktop start/terminal fence protocol
+ * Normalize the only desktop start/terminal fence protocol
  * version implemented here. Same tolerance contract as the lease version —
  * absent, malformed, or a future version this server does not speak is 0, and
  * behind REMOTE_DESKTOP_FENCE_REQUIRED every desktop-start dispatch site
@@ -973,7 +973,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     revocationLeaseProtocolVersion: normalizeRevocationLeaseProtocolVersion(
       data.securityCapabilities?.revocationLeaseProtocolVersion,
     ),
-    // SEC-038 W06 desktop fence capability, same non-sticky contract.
+    // Desktop fence capability, same non-sticky contract.
     desktopFenceProtocolVersion: normalizeDesktopFenceProtocolVersion(
       data.securityCapabilities?.desktopFenceProtocolVersion,
     ),

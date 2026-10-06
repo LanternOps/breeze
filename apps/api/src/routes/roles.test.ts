@@ -1040,6 +1040,55 @@ describe('role routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
     });
+
+    it('returns 409 when access reviews still reference the role, instead of a 500', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  id: 'role-2',
+                  isSystem: false,
+                  scope: 'partner',
+                  partnerId: 'partner-123',
+                  orgId: null
+                }
+              ])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 0 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 0 }])
+          })
+        } as any);
+
+      // Shape of a postgres.js FK violation wrapped by Drizzle.
+      const fkError = Object.assign(new Error('Failed query: delete from "roles"'), {
+        cause: Object.assign(new Error('update or delete on table "roles" violates foreign key constraint'), {
+          code: '23503',
+          constraint_name: 'access_review_items_role_id_roles_id_fk',
+        }),
+      });
+      vi.mocked(db.transaction).mockImplementation(async () => {
+        throw fkError;
+      });
+
+      const res = await app.request('/roles/role-2', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe('Role is referenced by access reviews');
+    });
   });
 
   // Regression guard for issue #801: every entry in ASSIGNABLE_PERMISSIONS must

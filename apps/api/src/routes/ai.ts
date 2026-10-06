@@ -1651,7 +1651,7 @@ aiRoutes.get(
 
     // #6577: rows written before the write-side sanitiser, and rows from
     // direct createAuditLog writers, can hold raw tool input / credentials in
-    // details. Redact on read, as the #5570 (SEC-050) history reads do.
+    // details. Redact on read, as the #5570 history reads do.
     return c.json({
       data: events.map((event) => ({
         ...event,

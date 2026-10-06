@@ -94,7 +94,7 @@ export const SENTRY_EVENT_CODES = [
   /** The FX provider returned rows the sync could not use. */
   'exchange_rate_rows_rejected',
   /**
-   * One or more durable AI budget reservations (SEC-142/143) reached their TTL
+   * One or more durable AI budget reservations reached their TTL
    * without settling, so the expiry sweep reclaimed the capacity they were
    * holding. A reservation takes the organization's ENTIRE remaining cap, so
    * each of these is a window in which that tenant could not use AI at all —
@@ -349,7 +349,7 @@ export const SENTRY_EVENT_CODES = [
    *  but should be rare), or a caller is threading the wrong org. */
   'command_dispatch_cross_tenant_refused',
 
-  // --- remote desktop teardown (SEC-2026-09-05-038) ----------------------
+  // --- remote desktop teardown ----------------------
   /** `POST /remote/sessions/:id/end` marked the session terminal and revoked
    *  the viewer token, but the `stop_desktop` never reached the agent (the
    *  relay reported `offline`/`expired`/`owner_mismatch`/`indeterminate`).

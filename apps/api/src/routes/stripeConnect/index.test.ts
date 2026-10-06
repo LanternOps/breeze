@@ -49,7 +49,7 @@ vi.mock('../../db', () => ({
   db: {},
 }));
 
-// SEC-150: the settings response now also carries Checkout-session revocation
+// The settings response now also carries Checkout-session revocation
 // health so the card can warn about links that could not be killed. This suite
 // covers the CONNECTION snapshot; the health query itself is proved against real
 // Postgres in stripeSessionRevocation.integration.test.ts.
@@ -190,7 +190,7 @@ describe('stripe-connect (API-key) routes', () => {
       stale: false,
       error: null,
       reconciliation: { state: 'pending', lastPolledAt: null, error: null },
-      // SEC-150: revocation health rides on the SAME response as the
+      // Revocation health rides on the SAME response as the
       // connection so the card can warn about links that could not be killed.
       sessionRevocation: { blocked: 0, credentialUnavailable: 0, chargedRepair: 0, pending: 0 },
     });
@@ -318,7 +318,7 @@ describe('stripe-connect (API-key) routes', () => {
     const res = await stripeConnectRoutes.request('/', { method: 'DELETE' });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ status: 'disconnected' });
-    // SEC-150: the acting user rides along so a stuck revocation intent can be
+    // The acting user rides along so a stuck revocation intent can be
     // traced to whoever pulled the integration.
     expect(disconnectPartnerStripe).toHaveBeenCalledWith('partner-1', '11111111-1111-1111-1111-111111111111');
     expect(writeRouteAudit).toHaveBeenCalled();

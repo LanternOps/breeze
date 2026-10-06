@@ -1,5 +1,5 @@
 /**
- * SEC-150: the provider-response classification table, in isolation.
+ * The provider-response classification table, in isolation.
  *
  * The whole fail-closed contract rests on this function telling three things
  * apart that all arrive as "the expire call threw":
