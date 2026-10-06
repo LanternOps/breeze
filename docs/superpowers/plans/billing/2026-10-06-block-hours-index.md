@@ -103,7 +103,7 @@ landed, rename to sort after it, keeping relative order.
 | Wave | File | Content |
 |---|---|---|
 | W01 | `2026-12-14-100000-contract-line-type-hour-block.sql` | `ALTER TYPE public.contract_line_type ADD VALUE IF NOT EXISTS 'hour_block';` — alone, because a value added by `ADD VALUE` cannot be referenced in the same transaction and `autoMigrate` wraps each file in one |
-| W01 | `2026-12-14-100100-contract-lines-hour-block.sql` | 4 `ADD COLUMN IF NOT EXISTS` (C2); `contract_lines_allowance_chk` DROP + re-ADD with `hour_block` in the type list and exempt from integrality; new `contract_lines_hour_block_chk`; partial unique `contract_lines_one_live_hour_block_per_org_uq` |
+| W01 | `2026-12-14-100100-contract-lines-hour-block.sql` | 5 `ADD COLUMN IF NOT EXISTS` (C2); `contract_lines_allowance_chk` DROP + re-ADD with `hour_block` in the type list and exempt from integrality; new `contract_lines_hour_block_chk`; partial unique `contract_lines_one_live_hour_block_per_org_uq` |
 | W01 | `2026-12-14-100200-contract-hour-periods.sql` | table + indexes + 3 composite deferrable FKs + RLS (Shape 1) |
 | W01 | `2026-12-14-100300-time-entries-contract-line.sql` | `time_entries.contract_line_id` + composite deferrable FK + NULL-org CHECK + partial index |
 | W04 | `2026-12-14-130000-portal-branding-enable-hour-block.sql` | `portal_branding.enable_hour_block boolean NOT NULL DEFAULT false` |
@@ -210,7 +210,7 @@ Server-written only: no Zod schema in `@breeze/shared` accepts `contractLineId`.
 |---|---|---|
 | `CORE_ORG_CASCADE_DELETE_ORDER` | `services/tenantCascade.ts:486-490` | `'contract_hour_periods'` between `'contract_documents'` and `'contract_lines'` (`localeCompare` order) |
 | `CORE_TENANT_EXPORT_POLICY` | `services/tenantExportPolicyRegistry.ts` | new `contract_hour_periods` row, `tablePolicy('org_id', …)`, every column `included` (no json/jsonb/bytea); `contract_lines` row (`:322`) gains the five C2 columns in `included`; `time_entries` row gains `contract_line_id` in `included` |
-| `REPOINT_TABLES` | `services/orgMergeRegistry.ts:731` | `"contract_hour_periods"` (alphabetical, beside `"contract_documents"`) |
+| `REPOINT_TABLES` | `services/orgMergeRegistry.ts:731` (declaration; entries `:833-834`) | `"contract_hour_periods"` between `"contract_documents"` and `"contract_lines"` |
 | `rls-coverage.integration.test.ts` | — | none (Shape 1 auto-discovered) |
 | `CORE_DEVICE_CASCADE_DELETE_TABLES` / `CUSTOM_ORG_REWRITE_TABLES` / ticket lists | — | none (no `device_id`, no `ticket_id`) |
 | W04: `CORE_TENANT_EXPORT_POLICY` `portal_branding` row | same file | `enable_hour_block` in `included` |
@@ -416,6 +416,19 @@ retiring the current block first.
 - **A — Accept for slice 1** (documented in the editor error copy).
 - **B — Exempt draft contracts** (index on a denormalized `contract_status` copy). Con: a trigger-kept copy of contract status on every line.
 - **Recommend A.** *Implemented default: A.*
+
+**14. Org merge when both orgs have a live block.** `contract_lines` is a plain repoint
+(`orgMergeRegistry.ts:834`) and `contract_lines_one_live_hour_block_per_org_uq` is unique on
+`(org_id)`, so merging two orgs that each carry a live block fails with 23505 mid-merge. (The ledger
+and `time_entries` FKs are deferrable and repoint cleanly; this is only the live-block index.)
+- **A — Merge preflight refuses** with a clear error ("both organizations have a live block of
+  hours; retire one first") before any repoint. Pro: no silent billing change; reversible. Con: one
+  manual step for the operator.
+- **B — Custom merge policy retires the source org's live block** during the merge. Pro: no extra
+  step. Con: silently ends a paid entitlement the customer may still be drawing on.
+- **Recommend A.** *Implemented default: A, owned by W03* (must land before the feature opens), as a
+  check in the merge engine's preflight beside the existing ones, with an `orgMerge.test.ts` case and an
+  `orgMergeRegistry.integration.test.ts` case.
 
 ## Review Focus (program-level — the failure modes most likely to bite, each pinned by a named wave test)
 
