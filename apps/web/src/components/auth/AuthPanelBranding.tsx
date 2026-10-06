@@ -16,19 +16,19 @@ import '../../lib/i18n';
  * branding payload is present it swaps in the partner logo/accent/headline and
  * DROPS the Breeze marketing copy.
  */
-export default function AuthPanelBranding({ tagline }: { tagline: string }) {
+export default function AuthPanelBranding({ tagline, partnerSlug }: { tagline: string; partnerSlug?: string }) {
   const { t } = useTranslation('auth');
   const [branding, setBranding] = useState<LoginContextBranding | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    getLoginContext().then((ctx) => {
+    getLoginContext(partnerSlug).then((ctx) => {
       if (!cancelled && ctx.branding) setBranding(ctx.branding);
     });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [partnerSlug]);
 
   const panelStyle = branding?.accentColor ? { backgroundColor: branding.accentColor } : undefined;
   const safeLogo = branding?.logoUrl ? sanitizeImageSrc(branding.logoUrl) : null;

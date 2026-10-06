@@ -59,4 +59,12 @@ describe('AuthPanelBranding', () => {
     const panel = container.firstElementChild as HTMLElement;
     expect(panel.style.backgroundColor).toBe('rgb(17, 34, 51)');
   });
+
+  it('asks for the slug-scoped context when rendered for a partner slug (#4017)', async () => {
+    resolveWith({ branding: null, partnerSso: null });
+
+    render(<AuthPanelBranding tagline="t" partnerSlug="acme-msp" />);
+
+    await waitFor(() => expect(mockedGetLoginContext).toHaveBeenCalledWith('acme-msp'));
+  });
 });

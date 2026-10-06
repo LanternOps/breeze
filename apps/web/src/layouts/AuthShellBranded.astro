@@ -9,6 +9,8 @@ interface Props {
   titleKey?: string;
   description?: string;
   tagline?: string;
+  /** Set by /login/<partner-slug> (#4017) so the panel shows that partner's branding. */
+  partnerSlug?: string;
 }
 
 const {
@@ -16,6 +18,7 @@ const {
   titleKey,
   description = tServer(Astro.locals.locale, 'layout.metaDescription'),
   tagline = tServer(Astro.locals.locale, 'authShell.tagline'),
+  partnerSlug,
 } = Astro.props;
 const pageTitle = titleKey ? tServer(Astro.locals.locale, titleKey) : title;
 ---
@@ -40,7 +43,7 @@ const pageTitle = titleKey ? tServer(Astro.locals.locale, titleKey) : title;
     <div class="flex min-h-screen">
 
       <!-- Left branded panel (partner-aware island) -->
-      <AuthPanelBranding tagline={tagline} client:load />
+      <AuthPanelBranding tagline={tagline} partnerSlug={partnerSlug} client:load />
 
       <!-- Right form panel -->
       <div class="flex flex-1 items-center justify-center px-6 py-12 sm:px-12">
