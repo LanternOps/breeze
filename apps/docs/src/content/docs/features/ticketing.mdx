@@ -284,7 +284,7 @@ How it behaves once connected:
 - If the service account loses access, the mailbox moves to **Re-auth required** and polling pauses until you reconnect it.
 - Labelling is best effort and happens shortly after the ticket is created, separately from it. If Gmail is briefly unavailable or rate limited, Breeze tries the same message again for a few minutes.
 - If labelling fails (for example because the grant lacks `gmail.modify`), the ticket is still created, the mail stays in the inbox, and the card shows why under the mailbox. The message clears after the next successful label or when you change the setting.
-- In rare cases, such as a brief outage of Breeze's job queue right after the ticket is created, a message can be left unlabelled in the inbox. When Breeze can detect this, the card says so.
+- In rare cases, such as a brief outage of Breeze's job queue right after the ticket is created, a message can be left unlabelled in the inbox. When Breeze can detect this, the card says so, and that notice stays until you save the setting or reconnect the mailbox.
 
 ## Categories and SLAs
 

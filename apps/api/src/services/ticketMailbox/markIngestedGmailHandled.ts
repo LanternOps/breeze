@@ -407,7 +407,10 @@ export async function markIngestedGmailHandled(
         archive: ctx.archive,
         labelCacheTtlMs: HANDLED_LABEL_CACHE_TTL_MS,
       });
-      if (ctx.priorError) await clearFailure(ctx.priorError, ctx.priorErrorAt);
+      // not_queued is about OTHER messages that were never queued; this one's
+      // success says nothing about them, so it stays until the setting is saved
+      // or the mailbox reconnects (both reset it).
+      if (ctx.priorError && ctx.priorError !== 'not_queued') await clearFailure(ctx.priorError, ctx.priorErrorAt);
       return 'marked';
     } catch (err) {
       const code = handledErrorCode(err);

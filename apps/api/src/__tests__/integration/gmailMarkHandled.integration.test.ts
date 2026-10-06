@@ -286,6 +286,19 @@ describe('markIngestedGmailHandled (post-ticket, real DB)', () => {
     expect(cleared.gmailHandledErrorAt).toBeNull();
   });
 
+  it('a success for one message does not clear not_queued recorded for another; saving the setting does', async () => {
+    const { email, generation, connId, partnerId } = await seed('created');
+    // Another message could not be queued.
+    await withSystemDbAccessContext(() => db.update(ticketMailboxConnections)
+      .set({ gmailHandledError: 'not_queued', gmailHandledErrorAt: new Date(Date.now() - 60_000) })
+      .where(eq(ticketMailboxConnections.id, connId)));
+    expect(await markIngestedGmailHandled(email, generation, deps)).toBe('marked');
+    expect((await readConn(connId)).gmailHandledError).toBe('not_queued');
+
+    await withSystemDbAccessContext(() => updateGmailHandling(connId, partnerId, { label: 'Handled', archive: true }));
+    expect((await readConn(connId)).gmailHandledError).toBeNull();
+  });
+
   it('a success never erases a newer failure recorded by a concurrent attempt', async () => {
     const { email, generation, connId } = await seed('created');
     await withSystemDbAccessContext(() => db.update(ticketMailboxConnections)
