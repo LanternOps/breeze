@@ -36,6 +36,9 @@ export function resizeToDataUrl(file: File): Promise<string> {
         // Never upscale: a limit at or above the native size encodes once at
         // native size, and smaller limits only apply if that is too large.
         const longSide = Math.max(img.width, img.height);
+        // A zero-size canvas encodes to the literal "data:,", which would pass
+        // the size cap and persist as an unusable logo.
+        if (!longSide) throw new Error('Image has no dimensions');
         const sides = [...new Set(LOGO_MAX_SIDES.map((max) => Math.min(max, longSide)))];
         let dataUrl = '';
         for (const side of sides) {

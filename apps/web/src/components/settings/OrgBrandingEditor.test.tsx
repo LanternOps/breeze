@@ -294,6 +294,18 @@ describe('OrgBrandingEditor logo upload (#8017)', () => {
     expect(onSave.mock.calls[0][0].logoUrl).toBe(DATA_URL);
   });
 
+  it('toasts and keeps the previous logo when the image cannot be decoded', async () => {
+    resizeToDataUrl.mockRejectedValue(new Error('Invalid image file'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onSave = vi.fn();
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" branding={{ logoUrl: 'https://cdn.example.com/old.png' }} onSave={onSave} />);
+    pickLogo(container);
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    fireEvent.click(screen.getByRole('button', { name: 'Save branding' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    expect(onSave.mock.calls[0][0].logoUrl).toBe('https://cdn.example.com/old.png');
+  });
+
   it('rejects an oversized logo and keeps the previous logo', async () => {
     resizeToDataUrl.mockResolvedValue('data:image/png;base64,' + 'A'.repeat(400_001));
     const onSave = vi.fn();
