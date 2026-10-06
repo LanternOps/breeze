@@ -187,6 +187,42 @@ describe('ScriptAuthoringPage', () => {
     });
   });
 
+  it('binds the enable grant to the exact values the PUT saves, so the server digest matches (#7873)', async () => {
+    mockRoutes({ usersMe: { mfaMethod: null }, passkeys: { passkeys: [{ id: 'pk-1' }] } });
+    const { getByTestId } = renderPage();
+    await waitFor(() => expect(getByTestId('script-authoring-org-card')).toBeInTheDocument());
+
+    fireEvent.click(getByTestId('script-unattended-enabled'));
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/users/me'));
+    fireEvent.click(getByTestId('script-authoring-save'));
+
+    let putBody: Record<string, any> | undefined;
+    await waitFor(() => {
+      const putCall = fetchWithAuth.mock.calls.find(
+        ([url, init]) => url === '/ai/script-policy' && (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(putCall).toBeDefined();
+      putBody = JSON.parse(String((putCall![1] as RequestInit).body));
+    });
+
+    // The server's enable branch hashes the FULL effective values being saved
+    // into the grant digest; a grant minted without them never matches.
+    expect(mintStepUpGrant).toHaveBeenCalledTimes(1);
+    const { resource } = mintStepUpGrant.mock.calls[0]![0] as { resource: Record<string, unknown> };
+    const pr = putBody!.protectedResources as Record<string, string[]>;
+    expect(resource).toEqual({
+      orgId: 'org-1',
+      unattendedEnabled: true,
+      widening: {
+        maxUnattendedRiskTier: putBody!.maxUnattendedRiskTier,
+        unattendedAllowedClasses: putBody!.unattendedAllowedClasses,
+        maxUnattendedPerHour: putBody!.maxUnattendedPerHour,
+        protectedResourcesEmptied: Object.values(pr).every((list) => list.length === 0),
+        proposingEnabled: putBody!.proposingEnabled,
+      },
+    });
+  });
+
   it('does not mint a grant when turning the lane off', async () => {
     mockRoutes({
       org: orgGetBody({ policy: {
