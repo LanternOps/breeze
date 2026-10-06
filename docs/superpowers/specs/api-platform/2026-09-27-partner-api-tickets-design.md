@@ -467,6 +467,13 @@ partner-wide `PARTNER_API_TICKET_WRITE_PARTNER_RATE_LIMIT_PER_HOUR` (default 600
   comment writer or policy must add its case there.
 - **The xid8 column restamps on every ticket UPDATE**, including the org movers' and org merge's.
   That is intended (the move re-delivers the ticket), and the trigger is classified merge-benign.
+- **`tickets.xmin` is no longer an optimistic-concurrency marker.** Because the restamp (§5.2)
+  rewrites the ticket row, a comment write bumps the parent's `xmin`, and any check that read
+  `xmin` as a row version would fail on an unrelated concurrent comment. `moveTicketOrg` hit
+  exactly this (`timeEntryRace` "(a) create vs move", wave 2) and now compares
+  `md5(to_jsonb(row) - 'partner_feed_xid')`, the row's content minus the feed stamp, which still
+  rejects every other concurrent change including one to `updated_at`. Nothing else on `tickets`
+  reads `xmin`; a future row-version check must use the content hash, not `xmin`.
 - **Cross-partner device moves drop integration state.** Refs and idempotency claims of the old
   partner's principals are deleted (§4.2, §6). The old integration sees the ticket disappear from
   `GET /tickets/ids`; its external id becomes reusable.
