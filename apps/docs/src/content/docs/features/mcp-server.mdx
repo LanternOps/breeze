@@ -128,7 +128,7 @@ An organization API key reaches one organization, and an OAuth grant is tied to 
 - A partner service principal cannot create approval intents or queue cloud-to-cloud restores (those need a re-authorizable principal); such calls are refused.
 - Revoking the key, disabling the principal, letting either expire, or a source-CIDR mismatch denies the next request. Nothing is cached.
 - Tier 3 stays approval-only unless the operator names the principal in `MCP_UNATTENDED_TIER3_PRINCIPALS` as `partner_sp:<principal id>`. The entry names the principal, not a key, so rotating keys keeps it. It applies in every organization the principal reaches.
-- Every authenticated request is audited with the key id as actor (requests refused at authentication are not) and `principalType: "partner_service_principal"` plus the principal id in the details.
+- Every JSON-RPC request (initialize, tools/list, tools/call and so on) and every tool call is audited with the key id as actor (requests refused at authentication, and the SSE stream open/close transport requests, are not) and `principalType: "partner_service_principal"` plus the principal id in the details.
 - It is an API-key-class machine caller everywhere else too: actions that require an interactive user session (for example authoring maintenance links) are refused, and its Tier 3 execution ledger names the principal and opens no user-owned session.
 
 ---
