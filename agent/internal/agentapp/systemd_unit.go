@@ -2,8 +2,11 @@ package agentapp
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/branding"
 )
 
 // currentUnitVersion is the breeze-unit-version this binary ships. Bump it
@@ -149,4 +152,17 @@ func reconcileTransientArgs(pid int, binPath string) []string {
 		fmt.Sprintf("--unit=breeze-unit-reconcile-%d", pid),
 		binPath, "service", "reconcile-unit",
 	}
+}
+
+// currentLinuxUnit returns the unit written to disk: the embedded linuxUnit,
+// with only its Description= line replaced when the build carries a brand
+// (see internal/branding). A brand that is not valid falls back to the
+// embedded unit and prints a warning. linuxUnit itself never changes, so
+// TestStaticUnitMatchesEmbedded keeps holding.
+func currentLinuxUnit() string {
+	unit, err := branding.UnitWithDescription(linuxUnit, branding.AgentServiceDescription)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: ignoring the branded service description: %v\n", err)
+	}
+	return unit
 }
