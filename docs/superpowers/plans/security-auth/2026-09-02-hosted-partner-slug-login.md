@@ -10,6 +10,16 @@
 
 **Spec:** GitHub issue [LanternOps/breeze#4017](https://github.com/LanternOps/breeze/issues/4017) (this plan doc doubles as the spec — the issue's own "Sketch" section is the design; no separate spec doc was written for this `effort:m` slice).
 
+## Implementation Notes (2026-10-05, as shipped)
+
+Implemented in one PR rather than two waves. Where the shipped code differs from the tasks below, the code wins:
+
+- **Slug case:** the premise that partner slugs are lowercase at every write path is wrong — the platform-admin partner create/update route (`routes/orgs.ts`) stores the slug as given, and the `UNIQUE` on `partners.slug` is case-sensitive. The route matches `lower(slug)` and, when two slugs differ only by case, takes the exact-case row or nothing.
+- **Inactive partners:** only `status = 'active'` and `deleted_at IS NULL` partners resolve; suspended/churned/pending/offboarding/deleted slugs get the null shape.
+- **Uniform responses:** every response on the slug route waits on the shared `authResponseFloorPromise()` and carries `Cache-Control: no-store` (the plan used `public, max-age=60` on success, which made success and degraded responses distinguishable by header).
+- **Layout:** `AuthShellBranded` now takes `titleKey` (i18n); the new page passes `titleKey="titles.login"`.
+- **Discoverability:** the Login Branding settings card shows the partner's `/login/<slug>` URL (the slug was not visible anywhere in the UI).
+
 ## Global Constraints
 
 - Partner-slug lookups only ever return branding/SSO fields — the two-entry-point contract (this route and the existing singleton) must always describe the *same* oldest-active provider for a given partner (memory: `sso_effective_login_provider_oldest_active` — SAML at that position 400s rather than falling through; this plan does not change that, it only adds a second way to reach the same pick).
