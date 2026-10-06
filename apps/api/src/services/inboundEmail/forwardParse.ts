@@ -12,11 +12,11 @@
  * extracted address for authentication — the caller uses the DOMAIN only to pick
  * an internal org bucket, gated on the OUTER message already being verified.
  *
- * Parses a provider-supplied text/plain body only; the caller never passes text derived from
- * HTML, so HTML-only mail routes normally. In practice that makes it a Gmail
- * feature: the Microsoft 365 mailbox path receives HTML bodies (Graph is not
- * asked for text), and modern Outlook marks a forward with an underscore rule
- * rather than "-----Original Message-----", which is not recognized. A
+ * Parses a provider-supplied text/plain body only, and the caller runs it only
+ * for mail from a connected Gmail mailbox; HTML-only mail routes normally. The
+ * native Mailgun address and Microsoft 365 mailboxes never reach it, and modern
+ * Outlook marks a forward with an underscore rule rather than "-----Original
+ * Message-----", which is not recognized. A
  * forward is recognized ONLY by an exact forward-marker line (Gmail
  * "---------- Forwarded message ---------" or Outlook "-----Original
  * Message-----") whose very next line starts a header block containing a From:

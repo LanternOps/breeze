@@ -65,7 +65,6 @@ export function normalizeGraphMessage(
     fromName: msg.from?.emailAddress?.name,
     subject: msg.subject ?? '',
     text,
-    forwardScanText: contentType === 'text' ? (msg.body?.content || undefined) : undefined,
     html,
     messageId: msg.internetMessageId,
     inReplyTo: header(msg.internetMessageHeaders, 'In-Reply-To'),

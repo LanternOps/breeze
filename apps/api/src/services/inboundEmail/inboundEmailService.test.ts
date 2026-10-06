@@ -2054,6 +2054,19 @@ describe('processInboundEmail — inbound attachments (#6688)', () => {
 });
 
 describe('staff-forward intake', () => {
+  // Staff-forward routing runs only for connected Gmail mailboxes.
+  const gmail = (o: Partial<NormalizedInboundEmail> = {}) => email({ provider: 'gmail', resolvedPartnerId: 'p-1', ...o });
+  // Mailbox providers (gmail, m365) are processed only under their mailbox
+  // generation; the native Mailgun address takes none.
+  const ingest = (n: NormalizedInboundEmail) => processInboundEmail(n, n.provider === 'gmail' || n.provider === 'm365'
+    ? {
+      provider: n.provider,
+      connectionId: '44444444-4444-4444-8444-444444444444',
+      partnerId: 'p-1',
+      tenantId: n.provider === 'm365' ? '11111111-1111-4111-8111-111111111111' : null,
+      consentAttemptId: '66666666-6666-4666-8666-666666666666',
+    }
+    : undefined);
   const forwardBody = [
     'Can you look at this?',
     '',
@@ -2069,6 +2082,7 @@ describe('staff-forward intake', () => {
     state.selectRows['ticket_email_inbound'] = [];
     state.selectRows['tickets'] = [];
     state.selectRows['portal_users'] = [];
+    state.selectRows['ticket_mailbox_connections'] = [{ id: '44444444-4444-4444-8444-444444444444' }];
     // The outer sender is partner-level staff of this partner with access to
     // every org. The users/partner_users join is served from the 'users' key.
     state.selectRows['users'] = [{ orgAccess: 'all', orgIds: null }];
@@ -2085,7 +2099,7 @@ describe('staff-forward intake', () => {
     resolveOrgMock.mockImplementation(async (addr: string) =>
       addr.endsWith('@client.example') ? { orgId: 'o-client', autoCreateContact: true } : { orgId: 'o-msp', autoCreateContact: true });
 
-    await processInboundEmail(email({ from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody }));
+    await ingest(gmail({ from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody }));
 
     expect(createTicketMock).toHaveBeenCalledTimes(1);
     const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
@@ -2104,9 +2118,9 @@ describe('staff-forward intake', () => {
 
     // A normalized message with no text and no forwardScanText (the provider
     // normalizers' HTML-only shapes are covered in their own suites).
-    await processInboundEmail(email({ from: 'tech@msp.example', text: '', html }));
+    await ingest(gmail({ from: 'tech@msp.example', text: '', html }));
     // Gmail/Graph shape, or an older producer: text present, no forwardScanText.
-    await processInboundEmail(email({ from: 'tech@msp.example', text: forwardBody, html, providerMessageId: 'pm-2', messageId: '<pm-2@msp.example>' }));
+    await ingest(gmail({ from: 'tech@msp.example', text: forwardBody, html, providerMessageId: 'pm-2', messageId: '<pm-2@msp.example>' }));
 
     expect(createTicketMock).toHaveBeenCalledTimes(2);
     for (const call of createTicketMock.mock.calls) {
@@ -2121,7 +2135,7 @@ describe('staff-forward intake', () => {
     resolveOrgMock.mockImplementation(async (addr: string) =>
       addr.endsWith('@client.example') ? { orgId: 'o-client', autoCreateContact: true } : null);
 
-    await processInboundEmail(email({ from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody }));
+    await ingest(gmail({ from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody }));
 
     const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(input.orgId).toBe('o-client');
@@ -2135,7 +2149,7 @@ describe('staff-forward intake', () => {
     resolveOrgMock.mockImplementation(async (addr: string) =>
       addr.endsWith('@client.example') ? { orgId: 'o-client', autoCreateContact: false } : { orgId: 'o-other', autoCreateContact: false });
 
-    await processInboundEmail(email({ from: 'someone@other.example', text: forwardBody, forwardScanText: forwardBody }));
+    await ingest(gmail({ from: 'someone@other.example', text: forwardBody, forwardScanText: forwardBody }));
 
     const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(input.orgId).toBe('o-other');
@@ -2147,7 +2161,7 @@ describe('staff-forward intake', () => {
     resolveOrgMock.mockImplementation(async (addr: string) =>
       addr.endsWith('@client.example') ? { orgId: 'o-client', autoCreateContact: false } : { orgId: 'o-msp', autoCreateContact: false });
 
-    await processInboundEmail(email({ from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody }));
+    await ingest(gmail({ from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody }));
 
     const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(input.orgId).toBe('o-msp');
@@ -2158,7 +2172,7 @@ describe('staff-forward intake', () => {
     resolveOrgMock.mockResolvedValue({ orgId: 'o-msp', autoCreateContact: false });
     const internal = forwardBody.replace('jane@client.example', 'colleague@msp.example');
 
-    await processInboundEmail(email({ from: 'tech@msp.example', text: internal, forwardScanText: internal }));
+    await ingest(gmail({ from: 'tech@msp.example', text: internal, forwardScanText: internal }));
 
     expect(resolveOrgMock).not.toHaveBeenCalledWith('colleague@msp.example', expect.anything());
     expect(String(inboundOf()[0]!.error ?? '')).not.toContain('staff-forward');
@@ -2172,7 +2186,7 @@ describe('staff-forward intake', () => {
     resolveOrgMock.mockImplementation(async (addr: string) =>
       addr.endsWith('@client.example') ? { orgId: 'o-client', autoCreateContact: false } : { orgId: 'o-msp', autoCreateContact: false });
 
-    await processInboundEmail(email({ from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody }));
+    await ingest(gmail({ from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody }));
 
     expect((createTicketMock.mock.calls[0]![0] as Record<string, unknown>).orgId).toBe('o-msp');
     expect(resolveOrgMock).not.toHaveBeenCalledWith('jane@client.example', expect.anything());
@@ -2181,7 +2195,7 @@ describe('staff-forward intake', () => {
   it('never applies to a staff forward that fails sender authentication (quarantined first)', async () => {
     resolveOrgMock.mockResolvedValue({ orgId: 'o-client', autoCreateContact: false });
 
-    await processInboundEmail(email({
+    await ingest(gmail({
       from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody,
       senderAuth: { spf: 'fail', dkim: 'fail', dmarc: 'fail', verified: false },
     }));
@@ -2198,7 +2212,7 @@ describe('staff-forward intake', () => {
     }];
     state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
 
-    await processInboundEmail(email({
+    await ingest(gmail({
       from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody,
       inReplyTo: '<msg-1@tickets.example.com>',
     }));
@@ -2212,7 +2226,7 @@ describe('staff-forward intake', () => {
     resolveOrgMock.mockImplementation(async (addr: string) =>
       addr.endsWith('@msp.example') ? { orgId: 'o-msp', autoCreateContact: false } : null);
 
-    await processInboundEmail(email({ from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody }));
+    await ingest(gmail({ from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody }));
 
     const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(input.orgId).toBe('o-msp');
@@ -2225,20 +2239,35 @@ describe('staff-forward intake', () => {
 
     // Limited to other orgs: routes normally by the forwarder.
     state.selectRows['users'] = [{ orgAccess: 'selected', orgIds: ['o-other'] }];
-    await processInboundEmail(email({ from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody }));
+    await ingest(gmail({ from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody }));
     // No org access at all: routes normally.
     state.selectRows['users'] = [{ orgAccess: 'none', orgIds: null }];
-    await processInboundEmail(email({
+    await ingest(gmail({
       from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody,
       providerMessageId: 'pm-none', messageId: '<pm-none@msp.example>',
     }));
     // Selected orgs that include the target org: re-routed.
     state.selectRows['users'] = [{ orgAccess: 'selected', orgIds: ['o-client'] }];
-    await processInboundEmail(email({
+    await ingest(gmail({
       from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody,
       providerMessageId: 'pm-sel', messageId: '<pm-sel@msp.example>',
     }));
 
     expect(createTicketMock.mock.calls.map((c) => (c[0] as Record<string, unknown>).orgId)).toEqual(['o-msp', 'o-msp', 'o-client']);
+  });
+
+  it('never applies to Mailgun or Microsoft 365 mail, even with a forward marker in a plain body', async () => {
+    state.selectRows['organizations'] = [{ id: 'o-msp' }];
+    resolveOrgMock.mockImplementation(async (addr: string) =>
+      addr.endsWith('@client.example') ? { orgId: 'o-client', autoCreateContact: false } : { orgId: 'o-msp', autoCreateContact: false });
+
+    await ingest(email({ provider: 'mailgun', from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody }));
+    await ingest(email({
+      provider: 'm365', resolvedPartnerId: 'p-1', from: 'tech@msp.example', text: forwardBody, forwardScanText: forwardBody,
+      providerMessageId: 'pm-m365', messageId: '<pm-m365@msp.example>',
+    }));
+
+    expect(createTicketMock.mock.calls.map((c) => (c[0] as Record<string, unknown>).orgId)).toEqual(['o-msp', 'o-msp']);
+    expect(resolveOrgMock).not.toHaveBeenCalledWith('jane@client.example', expect.anything());
   });
 });

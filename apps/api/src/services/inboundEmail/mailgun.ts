@@ -1,6 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { HonoRequest } from 'hono';
-import { parseMailboxes, parseSingleMailbox } from './addressParse';
+import { parseMailboxes } from './addressParse';
 import { getConfig } from '../../config/validate';
 import { BREEZE_OUTBOUND_HEADER } from '../emailDomains/outboundMarker';
 import type {
@@ -38,13 +38,7 @@ export class MailgunInboundProvider implements InboundEmailProvider {
   async parse(req: HonoRequest): Promise<NormalizedInboundEmail> {
     const b = (await req.parseBody()) as Record<string, string>;
     const from = extractEmail(b.sender || b.from || '');
-    // The visible From is compared as its RFC 5322 mailbox: an address inside a
-    // quoted display name or comment is not the sender (see addressParse.ts).
-    // A missing or null envelope sender, or a From that is not exactly one
-    // mailbox, proves nothing, so it never matches.
-    const visibleFrom = parseSingleMailbox(b.from);
-    const envelopeSender = b.sender ? parseSingleMailbox(b.sender)?.address ?? '' : '';
-    const envelopeMatchesFrom = envelopeSender !== '' && visibleFrom !== null && envelopeSender === visibleFrom.address;
+    // Display name of the visible From's RFC 5322 mailbox (see addressParse.ts).
     const fromName = parseMailboxes(b.from)[0]?.name ?? '';
     const refs = (b['References'] || '').trim();
     // When no Message-Id is present, fall back to a content hash that is STABLE
@@ -73,20 +67,9 @@ export class MailgunInboundProvider implements InboundEmailProvider {
       fromName: fromName || undefined,
       subject: b.subject || '',
       text: b['stripped-text'] || b['body-plain'] || '',
-      // Staff-forward detection needs the forwarded block, which stripped-text
-      // removes as quoted content; body-plain keeps it. `from` above is the
-      // envelope sender when Mailgun supplies one, so scan only when it is also
-      // the visible From address: the staff check then applies to the address
-      // the message shows, as it does for Gmail and Microsoft 365.
-      // Mailgun synthesizes body-plain from the HTML when a message has no
-      // text/plain part, and its fields do not say which happened. So scan only
-      // when the top-level Content-Type itself promises a plain part: text/plain,
-      // or multipart/alternative (a plain/HTML pair). Anything else, including
-      // multipart/mixed or /related (attachments, inline images) and an absent
-      // or unparseable header, fails closed and routes normally.
-      forwardScanText: envelopeMatchesFrom && mayCarryPlainPart(parseHeader(b['message-headers'], 'Content-Type'))
-        ? (b['body-plain'] || undefined)
-        : undefined,
+      // No forwardScanText: staff-forward routing runs only for connected Gmail
+      // mailboxes. Mailgun's body-plain may be Mailgun's own text rendering of
+      // an HTML-only message, and its fields do not say which.
       html: b['body-html'] || undefined,
       messageId: b['Message-Id'] || undefined,
       inReplyTo: b['In-Reply-To'] || undefined,
@@ -233,14 +216,6 @@ function normalizeVerdict(raw: string | undefined): SenderAuthVerdict {
 // RFC 5322 mailbox; an unparseable value falls back to itself, lower-cased.
 function extractEmail(s: string): string {
   return parseMailboxes(s)[0]?.address ?? s.trim().toLowerCase();
-}
-
-// Whether this top-level Content-Type promises a sender-written text/plain body:
-// text/plain itself, or multipart/alternative. Every other type, and an unknown
-// one, does not (see the forwardScanText note in parse()).
-function mayCarryPlainPart(contentType: string | undefined): boolean {
-  const type = (contentType ?? '').split(';')[0]!.trim().toLowerCase();
-  return type === 'text/plain' || type === 'multipart/alternative';
 }
 
 function parseHeader(headersJson: string | undefined, name: string): string | undefined {

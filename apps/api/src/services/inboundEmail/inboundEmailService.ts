@@ -512,6 +512,9 @@ export async function processInboundEmail(
     // Gates, all required:
     //  - the partner turned it on (settings.ticketing.inbound.staffForwardRouting,
     //    default off);
+    //  - the message came from a connected Gmail mailbox (provider 'gmail'). The
+    //    native Mailgun address and Microsoft 365 mailboxes never route this way:
+    //    neither gives a body known to be the sender's own text/plain part;
     //  - the outer message already passed the sender-auth gate above, so an
     //    external sender cannot reach this branch with a forged forwarded block;
     //  - the outer sender is partner-level staff of THIS partner (see
@@ -525,7 +528,9 @@ export async function processInboundEmail(
     // forwarder's own domain (then the message is handled exactly as it would be
     // with this setting off). Only a provider-supplied, unstripped text/plain
     // body is scanned (forwardScanText): mail without one routes normally.
-    const forwardedFrom = policy.staffForwardRouting ? extractForwardedSender(n.forwardScanText) : null;
+    const forwardedFrom = policy.staffForwardRouting && n.provider === 'gmail'
+      ? extractForwardedSender(n.forwardScanText)
+      : null;
     const fwdDomain = domainOf(forwardedFrom);
     if (forwardedFrom && fwdDomain && fwdDomain !== senderDomain(n.from)) {
       const staffAccess = await loadPartnerStaffAccess(n.from, partnerId);

@@ -52,11 +52,10 @@ export interface NormalizedInboundEmail {
   subject: string;
   text: string;          // plain body
   /** The message's provider-supplied text/plain body, unstripped, for staff-forward
-   *  detection only. Absent when the message had no text/plain part (its `text`
-   *  was derived from HTML or a preview) or when the producer predates this
-   *  field; detection then does not run (fail closed). Mailgun synthesizes
-   *  body-plain from HTML, so its normalizer sets this only when the top-level
-   *  Content-Type is text/plain or multipart/alternative. */
+   *  detection only. Set only by the Gmail normalizer, and only when the message
+   *  has a real text/plain part and a single From mailbox. Absent otherwise, or
+   *  when the producer predates this field; detection then does not run (fail
+   *  closed). Staff-forward routing also requires provider 'gmail'. */
   forwardScanText?: string;
   html?: string;         // retained raw, not rendered in v1
   messageId?: string;

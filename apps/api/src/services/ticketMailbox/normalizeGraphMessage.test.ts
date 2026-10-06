@@ -35,9 +35,9 @@ describe('normalizeGraphMessage', () => {
     expect(n.html).toBe('<p>help</p>');
   });
 
-  it('exposes a text body, never an HTML body, for staff-forward detection', () => {
+  it('never exposes forwardScanText (staff-forward routing is Gmail-mailbox only)', () => {
     expect(normalizeGraphMessage(msg, 'p', 'support@a.com').forwardScanText).toBeUndefined();
-    expect(normalizeGraphMessage({ ...msg, body: { contentType: 'text', content: 'help' } }, 'p', 'support@a.com').forwardScanText).toBe('help');
+    expect(normalizeGraphMessage({ ...msg, body: { contentType: 'text', content: 'help' } }, 'p', 'support@a.com').forwardScanText).toBeUndefined();
   });
 
   it('carries Graph hasAttachments through so the inbound worker knows to fetch them (#6688)', () => {
