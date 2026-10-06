@@ -1,6 +1,6 @@
 /**
  * Feed-only invalidation, per comment writer (Partner API tickets, design doc
- * §5.2; migration 2026-12-13-110000).
+ * §5.2; migration 2026-12-13-120000).
  *
  * `breeze_ticket_comments_touch_parent_feed` restamps the parent ticket's
  * `partner_feed_xid` whenever a comment is inserted, edited or soft-deleted.

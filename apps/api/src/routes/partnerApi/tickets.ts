@@ -42,8 +42,8 @@ import {
  *   GET /tickets/:id/comments   — the ticket's comments, creation order
  *
  * Change tracking: every write to `tickets` is stamped with its transaction
- * id (`partner_feed_xid`, migrations/2026-12-13-110000), exactly as the
- * alerts feed, and a SECURITY DEFINER trigger on `ticket_comments` restamps
+ * id (`partner_feed_xid`, migrations/2026-12-13-120000), exactly as the
+ * alerts feed, and a SECURITY INVOKER trigger on `ticket_comments` restamps
  * the parent for every comment write (new, edited, deleted, from any path).
  * A traversal reads the fixed window [lower, horizon) where `horizon` is the
  * request snapshot's xmin: every transaction below it has committed or

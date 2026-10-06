@@ -199,7 +199,7 @@ export const tickets = pgTable('tickets', {
     .$type<Record<string, 'user' | 'ai_agent' | 'system' | 'service_principal'>>()
     .notNull()
     .default({}),
-  // Partner API tickets feed change stamp (2026-12-13-110000): the xid8 of
+  // Partner API tickets feed change stamp (2026-12-13-120000): the xid8 of
   // the writing transaction, set by a BEFORE INSERT OR UPDATE trigger on
   // every write (app-supplied values are overwritten). Decimal string end to
   // end — see schema/columnTypes.ts. Existing rows keep '1', which sorts
