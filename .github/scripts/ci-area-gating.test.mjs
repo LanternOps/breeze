@@ -430,6 +430,8 @@ for (const [label, env, passes] of [
   ['every area changed, all green, merge queue', onlyAreas(AREAS, { isPr: 'false' }), true],
   ['api-only: check-migrations ran although api=false?', { ...onlyAreas(['web']), CHECK_MIGRATIONS_RESULT: 'success' }, false],
   ['api changed: check-migrations red blocks an application PR (#7032)', { ...onlyAreas(['api']), CHECK_MIGRATIONS_RESULT: 'failure' }, false],
+  ['api changed: check-migrations skipped (job vanished) blocks (#7032)', { ...onlyAreas(['api']), CHECK_MIGRATIONS_RESULT: 'skipped' }, false],
+  ['api changed: check-migrations red blocks a merge-queue entry (#7032)', { ...onlyAreas(['api'], { isPr: 'false' }), CHECK_MIGRATIONS_RESULT: 'failure' }, false],
 ]) {
   test(`CI Success (areas): ${label}`, () => {
     const r = runSummary(env);
