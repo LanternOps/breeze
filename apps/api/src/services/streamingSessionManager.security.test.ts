@@ -30,6 +30,7 @@ describe('Claude SDK process hardening', () => {
       HOME: '/Users/dev',
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: '0',
+      CLAUDE_CODE_THINKING_DISPLAY_UPDATES: '1',
     };
     const PARTNER_BASE = {
       source: 'partner' as const,
@@ -82,6 +83,7 @@ describe('Claude SDK process hardening', () => {
       const env = build();
       expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
       expect(env.CLAUDE_CODE_DISABLE_CLAUDE_MDS).toBe('1');
+      expect(env.CLAUDE_CODE_THINKING_DISPLAY_UPDATES).toBe('0');
     });
   });
 
@@ -101,6 +103,7 @@ describe('Claude SDK process hardening', () => {
       CI: 'true',
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
+      CLAUDE_CODE_THINKING_DISPLAY_UPDATES: '0',
       ANTHROPIC_API_KEY: 'sk-ant-test-key',
       ANTHROPIC_AUTH_TOKEN: 'platform-auth-token',
       CLAUDE_CODE_OAUTH_TOKEN: 'platform-oauth-token',
@@ -183,6 +186,7 @@ describe('Claude SDK process hardening', () => {
       CI: 'true',
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
+      CLAUDE_CODE_THINKING_DISPLAY_UPDATES: '0',
       CLAUDE_AGENT_SDK_CLIENT_APP: 'breeze-api/ai-agent',
       ANTHROPIC_API_KEY: 'partner-api-key',
       ANTHROPIC_MODEL: 'forwarded-model',

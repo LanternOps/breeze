@@ -322,6 +322,7 @@ describe('buildClaudeSdkChildEnv — catalog endpoints', () => {
       CI: 'true',
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
+      CLAUDE_CODE_THINKING_DISPLAY_UPDATES: '0',
       CLAUDE_AGENT_SDK_CLIENT_APP: 'breeze-api/ai-agent',
       PATH: '/usr/bin',
       HOME: '/srv/breeze',
@@ -368,6 +369,7 @@ describe('buildClaudeSdkChildEnv — catalog endpoints', () => {
       CI: 'true',
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
+      CLAUDE_CODE_THINKING_DISPLAY_UPDATES: '0',
       CLAUDE_AGENT_SDK_CLIENT_APP: 'breeze-api/ai-agent',
       ANTHROPIC_API_KEY: 'platform-api-key',
       ANTHROPIC_AUTH_TOKEN: 'platform-auth-token',
@@ -401,6 +403,7 @@ describe('buildClaudeSdkChildEnv — catalog endpoints', () => {
       CI: 'true',
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
+      CLAUDE_CODE_THINKING_DISPLAY_UPDATES: '0',
       CLAUDE_AGENT_SDK_CLIENT_APP: 'breeze-api/ai-agent',
       ANTHROPIC_API_KEY: 'partner-key',
       PATH: '/usr/bin',
@@ -464,6 +467,7 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
       // #7444: the guards survive the tool-search env merge at the spawn site.
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
+      CLAUDE_CODE_THINKING_DISPLAY_UPDATES: '0',
     }));
     // The wire model id from the revision's map, not the platform-logical id;
     // thinking/effort are the resolver's wire params (W03), nothing derived here.

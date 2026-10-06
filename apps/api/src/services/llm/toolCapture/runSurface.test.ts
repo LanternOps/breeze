@@ -20,6 +20,7 @@ import { buildHelperSystemPrompt } from '../../helperAiAgent';
 import { getHelperAllowedTools } from '../../helperToolFilter';
 import { buildAgentRunSystemPrompt } from '../../aiAgents/runnerPrompt';
 import { HELPER_CAPTURE_FIXTURE, AGENT_CAPTURE_FIXTURE } from './promptFixtures';
+import { SDK_CHILD_HOST_CONTEXT_GUARDS } from '../sdkChildEnvGuards';
 
 /** An async generator standing in for the SDK's `query()` return value. */
 async function* messages(items: unknown[]): AsyncGenerator<unknown> {
@@ -160,7 +161,7 @@ describe('runSurfaceCapture', () => {
       options: expect.objectContaining({
         // Empty env = first-party host: chat searches, exactly as production.
         tools: ['ToolSearch'],
-        env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', ENABLE_TOOL_SEARCH: 'true' },
+        env: { ...SDK_CHILD_HOST_CONTEXT_GUARDS, ENABLE_TOOL_SEARCH: 'true' },
         allowedTools: [...CAPTURE_SURFACES.chat.allowedTools],
         mcpServers: { [CAPTURE_SURFACES.chat.mcpServerName]: expect.anything() },
         includePartialMessages: CAPTURE_SURFACES.chat.includePartialMessages,
@@ -246,11 +247,14 @@ describe('runSurfaceCapture', () => {
     // HOME is forwarded to the child (buildClaudeSdkChildEnv), so without this
     // the CLI prepends the operator's MEMORY.md to every captured first message
     // (measured: +9.7k tokens per request on a dev machine, #7429).
-    expect(CAPTURE_CHILD_ENV_ISOLATION).toEqual({ CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' });
+    expect(CAPTURE_CHILD_ENV_ISOLATION).toEqual(SDK_CHILD_HOST_CONTEXT_GUARDS);
     queryMock.mockReturnValueOnce(messages([]));
     await runSurfaceCapture({ ...baseOpts, env: { HOME: '/home/someone', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0' } });
     const env = queryMock.mock.lastCall![0].options.env;
     expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+    expect(env.CLAUDE_CODE_DISABLE_CLAUDE_MDS).toBe('1');
+    // Agent SDK 0.3.288: forced even when the caller's env lacks it, like production chat.
+    expect(env.CLAUDE_CODE_THINKING_DISPLAY_UPDATES).toBe('0');
     expect(env.HOME).toBe('/home/someone');
   });
 
