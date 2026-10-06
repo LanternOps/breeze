@@ -315,7 +315,23 @@ describe('GET /auth/login-context/partner/:slug (#4017)', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
   });
 
-  it('awaits the shared auth response floor before answering', async () => {
+  it.each([
+    ['null result', (): void => undefined, 200],
+    ['known partner', (): void => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectChain([{ id: PARTNER_UUID, slug: 'ghost-partner' }]) as any)
+        .mockReturnValueOnce(selectChain([]) as any)
+        .mockReturnValueOnce(selectChain([{ name: 'Okta', enforceSSO: false }]) as any);
+    }, 200],
+    ['rate-limited', (): void => {
+      vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() } as any);
+    }, 429],
+    ['DB failure', (): void => {
+      vi.mocked(withSystemDbAccessContext).mockRejectedValueOnce(new Error('connection reset'));
+      vi.spyOn(console, 'error').mockImplementationOnce(() => undefined);
+    }, 200],
+  ] as const)('awaits the shared auth response floor before answering (%s)', async (_label, arrange, status) => {
+    arrange();
     let release!: () => void;
     vi.mocked(authResponseFloorPromise).mockReturnValueOnce(new Promise<void>((r) => { release = r; }));
 
@@ -325,7 +341,9 @@ describe('GET /auth/login-context/partner/:slug (#4017)', () => {
     expect(settled).toBe(false);
 
     release();
-    expect((await pending).status).toBe(200);
+    const res = await pending;
+    expect(res.status).toBe(status);
+    expect(res.headers.get('cache-control')).toBe('no-store');
   });
 
   it('matches case-insensitively and prefers the exact-case row when two slugs differ only by case', async () => {
@@ -359,6 +377,16 @@ describe('GET /auth/login-context/partner/:slug (#4017)', () => {
     expect(res.status).toBe(429);
     expect(db.select).not.toHaveBeenCalled();
     expect(rateLimiter).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('login-context:slug:'), 30, 60);
+  });
+
+  it('keys the rate limit on the client only, never on the slug', async () => {
+    await getSlugContext('first-slug');
+    await getSlugContext('second-slug');
+
+    const keys = vi.mocked(rateLimiter).mock.calls.map((call) => call[1] as string);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[0]).not.toContain('slug:first');
   });
 
   it('calls rateLimiter even when Redis is unavailable (fail-closed)', async () => {

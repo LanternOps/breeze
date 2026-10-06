@@ -159,7 +159,8 @@ loginContextRoutes.get('/login-context/partner/:slug', zValidator('param', slugP
         .select({ id: partners.id, slug: partners.slug })
         .from(partners)
         .where(and(
-          sql`lower(${partners.slug}) = ${slug.toLowerCase()}`,
+          // lower() on both sides so Postgres alone defines the case folding.
+          sql`lower(${partners.slug}) = lower(${slug})`,
           eq(partners.status, 'active'),
           isNull(partners.deletedAt)
         ))

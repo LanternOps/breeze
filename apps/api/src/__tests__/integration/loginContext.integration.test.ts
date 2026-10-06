@@ -198,6 +198,23 @@ describe('GET /auth/login-context/partner/:slug — real-DB e2e (#4017)', () => 
     expect(body.partnerSso?.providerName).toBe('Case IdP');
   });
 
+  it('resolves each of several case-variant slugs to its own partner, and refuses to guess for a spelling matching none exactly', async () => {
+    const app = buildApp();
+    const variants = ['variant-msp-4017', 'VARIANT-MSP-4017', 'Variant-Msp-4017'];
+    for (const slug of variants) {
+      const partner = await createPartner({ slug });
+      await createPartnerAxisProvider(partner.id, { status: 'active', name: `IdP for ${slug}` });
+    }
+
+    for (const slug of variants) {
+      const body = await (await app.request(`/auth/login-context/partner/${slug}`)).json();
+      expect(body.partnerSso?.providerName).toBe(`IdP for ${slug}`);
+    }
+
+    const ambiguous = await (await app.request('/auth/login-context/partner/vArIaNt-MsP-4017')).json();
+    expect(ambiguous).toEqual({ branding: null, partnerSso: null });
+  });
+
   it('picks the OLDEST active provider, the same one the partner SSO entry route starts', async () => {
     const app = buildApp();
     const partner = await createPartner({ slug: 'multi-provider-4017' });
