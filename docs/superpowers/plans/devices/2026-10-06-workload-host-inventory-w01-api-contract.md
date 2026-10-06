@@ -90,7 +90,7 @@ Task numbers are the owning task. Line numbers were verified against this checko
 
 - `src/routes/agents/workloads.ts`, `workloads.test.ts`, `workloads.mounted.test.ts` (T6, create); `src/routes/agents/index.ts:19,88` (T6, modify).
 - `src/middleware/bodyLimit.ts:37,208`, `bodyLimit.test.ts:250,366` (T6, modify).
-- `src/routes/agents/parkedRouteClassification.test.ts:69`, `src/__tests__/writeRoutePermissionGate.contract.test.ts:130`, `src/__tests__/parkedFanout.contract.test.ts:299`, `src/services/mcpCoverage.ts:227,408` (T6/T7, modify) — the registries every new route or service file must join.
+- `src/routes/agents/parkedRouteClassification.test.ts:69`, `src/__tests__/writeRoutePermissionGate.contract.test.ts:139`, `src/__tests__/parkedFanout.contract.test.ts:299`, `src/services/mcpCoverage.ts:227,408` (T6/T7, modify) — the registries every new route or service file must join.
 - `src/routes/devices/workloads.ts`, `workloads.test.ts` (T7, create); `src/routes/devices/index.ts:18,164` (T7, modify).
 - `src/routes/agents/helpers.ts:70,2243` (T5, modify); `src/routes/agents/heartbeat.ts:42,297,983,2237-2371` (T5, modify); `src/routes/agents/schemas.ts:377` (T5, modify); `src/routes/agents/heartbeat.test.ts:181,3195` (T5, modify).
 - `src/services/configurationPolicy.ts:16,65,895,1172,1223,1406,3134`, `src/routes/configurationPolicies/featureLinks.ts:17,380,654`, `src/services/policyBaselineDefaults.ts:17,64,114`, `src/services/aiToolsConfigPolicy.ts:248` (T4, modify); `apps/docs/src/content/docs/features/ai-tools.mdx:144` (T4, modify — the docs test pins every reference string).
@@ -4838,7 +4838,7 @@ Accepted deviations that W01 leaves in place on purpose; each is owned by the wa
 - **W04 — MCP coverage mapping.** `apps/api/src/services/mcpCoverage.ts` maps `'devices/workloads.ts'` to `{ tools: ['get_device_details'] }` only because the coverage gate allows no new `gap` entry. W04 adds `query_device_workloads` and **replaces** this entry.
 - **W04 — temporary web exclusions.** `workload_inventory` is in `EDITOR_EXCLUDED_FEATURE_TYPES` (`featureTabs/types.ts`) and `EFFECTIVE_CONFIG_EXCLUDED_FEATURE_TYPES` (`DeviceEffectiveConfigTab.tsx`), and the `featureTypeParity.test.ts` assertion was updated to expect `['workload_inventory']`. W04 ships the editor tab and effective-config row, **removes both exclusions** and restores that assertion to `[]`.
 - **W02 — wire contract.** The agent reads `configUpdate.workload_inventory_settings` with exactly the keys `enabled, docker_enabled, podman_enabled, hyperv_enabled, proxmox_enabled, interval_minutes`, and sends `securityCapabilities.workloadInventoryProtocolVersion = 1`. It keeps the payload under the 1.75 MB byte budget in spec §5.4 (route limit 2 MB; no API change).
-- **Plan index.** The migration table should list `devices.workload_inventory_protocol_version` in `2026-12-15-100000-device-workloads.sql`.
+- **Plan index.** Done — the index migration table lists `devices.workload_inventory_protocol_version`.
 
 ## Contract issues
 

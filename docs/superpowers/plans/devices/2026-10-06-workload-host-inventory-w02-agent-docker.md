@@ -29,7 +29,7 @@ Exact values; every task conforms.
 - **String bounds (bytes, clipped on a rune boundary agent-side so one value can never fail a whole report):** workloadId 128, name 255, rawState 40, imageRef 512, imageRepository 400, imageTag 128, imageDigest 80, imageId 80, guestOs 128, composeProject 128, composeService 128, composeWorkingDir 512, restartPolicy 30, runtimeVersion 64, error 500.
 - **State mapping:** `running`→running, `paused`→paused, `restarting`→restarting, `exited|created|dead|stopped|configured|initialized`→stopped, anything else→other; `rawState` is the engine's own string.
 - **Image normalization (pure, table-tested):** `nginx` → `docker.io/library/nginx` + `latest`; `user/app:1` → `docker.io/user/app` + `1`; `ghcr.io/o/r:t` → `ghcr.io/o/r` + `t`; first path component is a registry only if it contains `.` or `:` or equals `localhost`; `repo@sha256:…` → no tag; `repo:tag@sha256:…` → tag kept; a bare image id yields no repository. `imageDigest` is the `RepoDigests` entry whose normalized repository equals the container's normalized repository (digest part only), else `null`.
-- **Schedule (§5.3):** own worker, first run 60-120 s after `Start()` (deterministic per agent id), interval from settings 15-1440 min (default 60) with ±10% jitter, send when the canonical hash changed or 6 h elapsed since the last accepted send, retry a failed send after at most 10 min, hash advances only after a 2xx.
+- **Schedule (§5.3):** own worker, first run 60-120 s after `Start()` (deterministic per agent id; a settings delivery before it fires is coalesced into that first run and never starts a collection early), interval from settings 15-1440 min (default 60) with ±10% jitter, send when the canonical hash changed or 6 h elapsed since the last accepted send, retry a failed send after at most 10 min, hash advances only after a 2xx.
 - **Settings (§7.2):** heartbeat `configUpdate` key `workload_inventory_settings` (also `workloadInventorySettings`) = `{ enabled, docker_enabled, podman_enabled, hyperv_enabled, proxmox_enabled, interval_minutes }` (snake_case on the wire; the agent also accepts camelCase); `enabled` and a 15-1440 integer interval are required; a missing per-runtime flag defaults to `true`; an invalid payload is ignored entirely. Initial in-memory default `Enabled: false`. The apply call sits above the policy-probe early return in `applyConfigUpdate`.
 - **Capability:** `SecurityCapabilities.WorkloadInventoryProtocolVersion int \`json:"workloadInventoryProtocolVersion,omitempty"\`` = `1`, declared unconditionally in `compiledSecurityCapabilities`.
 - No new Go module dependency; no API, migration, shared-validator or web change; no change to `agent/internal/collectors/inventory.go:118` (the `docker*` interface skip stays).
@@ -45,10 +45,11 @@ Each failure mode below is pinned by a named test in the owning task. Review the
 3. **A failed send does not advance the hash.** 503 and 400 leave `lastHash` empty and the next cycle sends again; a 2xx advances it and the unchanged report is then not resent. Pinned by Task 7 (`TestWorkloadsFailedSendDoesNotAdvanceHash`, `TestWorkloadsCycleIsChangeOnlyWithKeepalive`).
 4. **A settings change during a collection discards the result.** A report built under stale settings is never sent; the cycle re-runs immediately under the new settings. Pinned by Task 7 (`TestWorkloadsSettingsChangeMidCollectionDiscardsResult`).
 5. **Socket missing, permission denied and daemon down are three different states.** Missing socket → `absent`; access denied → `present` + `permission_denied`; connection refused or non-200 `/_ping` → `present` + `unavailable`; timeout or surprise → `unknown` (the server keeps the previous membership). Pinned by Task 4 (`TestDockerDetectMapsFailuresToDistinctStates`, `TestDockerDetectHTTPStatusMapping`, `TestDockerCollectReportsDetectionFailuresWithoutRequests`) and Task 6 (`TestCollectorMapsDetectionStates`).
-9. **Detection never starts a stopped daemon.** With a stopped dockerd (no pid file, garbage, stale or reused pid) or no `podman system service` process, `Detect` and `Collect` make zero dial calls (the injected dialer fails the test if called) and report `present` + `unavailable` / `daemon not running`; a missing socket is `absent` without dialing; a `docker.sock` linked to Podman's socket is `absent` without dialing. Pinned by Task 4 (`TestDockerNeverConnectsUnlessDaemonIsAlreadyRunning`, `TestDockerSocketMissingIsAbsentWithoutConnecting`, `TestDockerSocketLinkedToPodmanIsAbsentWithoutConnecting`, `TestPodmanNeverConnectsWithoutARunningServiceProcess`, `TestCollectorReportsStoppedDaemonWithoutDialing`).
-6. **A failed or truncated collection never looks like an empty host.** Non-`ok` collections carry no workloads; a cap, an images-list failure or a trimmed payload sets `complete: false`; duplicates and oversize values cannot make the server reject the whole report. Pinned by Task 4 (`TestDockerCollectFailureModes`, `TestDockerCapOrdersRunningFirstAndMarksIncomplete`), Task 6 (`TestFailedCollectionNeverCarriesWorkloads`, `TestCollectorBoundsDriverOutput`, `TestFitPayloadKeepsReportUnderTheBodyLimit`) and Task 1 (`TestBoundClipsOnRuneBoundaryAndDropsEmpty`).
+9. **Detection never starts a stopped daemon.** With a stopped dockerd (no pid file, garbage, stale or reused pid) or no `podman system service` process, `Detect` and `Collect` make zero dial calls (the injected dialer fails the test if called) and report `present` + `unavailable` / `daemon not running`; a missing socket is `absent` without dialing; a `docker.sock` linked to Podman's socket is `absent` without dialing. Pinned by Task 4 (`TestDockerNeverConnectsUnlessDaemonIsAlreadyRunning`, `TestDockerSocketMissingIsAbsentWithoutConnecting`, `TestDockerSocketLinkedToPodmanIsAbsentWithoutConnecting`, `TestPodmanNeverConnectsWithoutARunningServiceProcess`) and Task 6 (`TestCollectorReportsStoppedDaemonWithoutDialing`, which checks the enabled path reports `unavailable` and the disabled path reports `disabled`, both without dialing).
+6. **A failed or truncated collection never looks like an empty host.** Non-`ok` collections carry no workloads; a cap, an images-list failure or a trimmed payload sets `complete: false`; duplicates and oversize values cannot make the server reject the whole report. Pinned by Task 4 (`TestDockerCollectFailureModes`, `TestDockerCapOrdersRunningFirstAndMarksIncomplete`), Task 6 (`TestFailedCollectionNeverCarriesWorkloads`, `TestCollectorBoundsDriverOutput` (which also feeds explicit duplicate ids and asserts the report has unique ids with the first occurrence kept), `TestFitPayloadKeepsReportUnderTheBodyLimit`) and Task 1 (`TestBoundClipsOnRuneBoundaryAndDropsEmpty`).
 7. **Off by default, and reachable.** The default settings enumerate nothing, and the settings key is dispatched even when a heartbeat carries no other config. Pinned by Task 1 (`TestSettingsRuntimeEnabled`), Task 6 (`TestCollectorDetectsAlwaysButCollectsOnlyWhenEnabled`) and Task 7 (`TestApplyConfigUpdateDispatchesWorkloadSettings`, `TestWorkloadsDisabledStateIsStillReported`).
 8. **Shutdown drains.** An in-flight upload is cancelled by `stopWorkloads` and the worker goroutine is tracked by `inventoryWg`. Pinned by Task 7 (`TestWorkloadsStopCancelsInFlightUpload`, `TestWorkloadsLoopIsTrackedAndStops`).
+10. **The first-run delay is not defeated by a settings delivery.** The heartbeat that delivers `workload_inventory_settings` wakes the worker, and a naive loop would collect immediately on the boot path. The wake is ignored until the first-delay timer fires, then applies from the first run; later changes wake the worker at once. Pinned by Task 7 (`TestWorkloadsSettingsWakeDoesNotSkipTheFirstRunDelay`).
 
 ## File Structure
 
@@ -1254,7 +1255,7 @@ Fixture shape (all values fake): five containers — `shop-web-1` (compose proje
 }
 ```
 
-- [ ] **Step 2: Write the failing driver tests.** They run a real `net/http` server behind a custom `DialFunc` and record every request line the engine sees. The liveness tests use a fake pid file, a fake proc directory and a dialer that fails the test if it is ever called, and drive the stopped-daemon path through the real `Collector` as well.
+- [ ] **Step 2: Write the failing driver tests.** They run a real `net/http` server behind a custom `DialFunc` and record every request line the engine sees. The liveness tests use a fake pid file, a fake proc directory and a dialer that fails the test if it is ever called. (The same stopped-daemon path is driven through the real `Collector` in Task 6, `TestCollectorReportsStoppedDaemonWithoutDialing`; it lives there because it needs the Task 6 symbols, so Tasks 4, 5 and 8 compile and pass on their own.)
 
 ```go
 // agent/internal/collectors/workloads/docker_test.go
@@ -1843,29 +1844,12 @@ func TestLivenessFromService(t *testing.T) {
 		}
 	}
 }
-
-// End to end through the collector: a stopped daemon is reported as present +
-// unavailable when enumeration is on, as disabled when it is off, and neither
-// path dials.
-func TestCollectorReportsStoppedDaemonWithoutDialing(t *testing.T) {
-	h := newDockerHost(t)
-	c := New([]Driver{h.driver(noDial(t))}, WithClock(fixedNow))
-
-	on := c.Collect(context.Background(), enabled()).Runtimes[0]
-	if on.Detection != DetectionPresent || on.Collection != CollectionUnavailable || on.Error == nil || *on.Error != "daemon not running" || len(on.Workloads) != 0 || on.RuntimeVersion != nil {
-		t.Fatalf("enabled = %+v", on)
-	}
-	off := c.Collect(context.Background(), DefaultSettings()).Runtimes[0]
-	if off.Detection != DetectionPresent || off.Collection != CollectionDisabled {
-		t.Fatalf("disabled = %+v", off)
-	}
-}
 ```
 
 - [ ] **Step 3: Run and watch it fail.**
 
 ```bash
-cd agent && go test -race ./internal/collectors/workloads/... -run 'TestDocker|TestEngine|TestPodman|TestIsPodman|TestLiveness|TestCollectorReportsStopped'
+cd agent && go test -race ./internal/collectors/workloads/... -run 'TestDocker|TestEngine|TestPodman|TestIsPodman|TestLiveness'
 ```
 
 Expected: FAIL, build error `undefined: newEngineDriver` / `undefined: apiContainer` / `undefined: pidFileLiveness`.
@@ -2493,11 +2477,11 @@ func podmanLiveness() func(context.Context) liveness { return nil }
 - [ ] **Step 5: Run.**
 
 ```bash
-cd agent && go test -race ./internal/collectors/workloads/... -run 'TestDocker|TestEngine|TestPodman|TestIsPodman|TestLiveness|TestCollectorReportsStopped'
+cd agent && go test -race ./internal/collectors/workloads/... -run 'TestDocker|TestEngine|TestPodman|TestIsPodman|TestLiveness'
 cd agent && GOOS=windows GOARCH=amd64 go vet ./internal/collectors/workloads/
 ```
 
-Expected: PASS (20 tests) and a silent Windows vet (it compiles `liveness_windows.go`). The fixture test also asserts the four requests issued are exactly `GET /_ping`, `GET /version`, `GET /containers/json?all=1`, `GET /images/json`.
+Expected: PASS (19 tests) and a silent Windows vet (it compiles `liveness_windows.go`). The fixture test also asserts the four requests issued are exactly `GET /_ping`, `GET /version`, `GET /containers/json?all=1`, `GET /images/json`.
 
 - [ ] **Step 6: Confirm the neighbouring collector is untouched.**
 
@@ -2797,7 +2781,7 @@ func (r *Report) Hash() string                                       // sha256 h
 func (r *Report) fitPayload(maxBytes int)
 ```
 
-Behavior pinned by the tests: `Detect` always runs; `Collect` runs only for enabled runtimes (`disabled` otherwise, with the detected version kept); `absent` → `collection: "unavailable"`, `complete: true`, no version; `unknown` → `unavailable`, `complete: false`, the reason as `error`; a panic in either call (via `collectors.Guard`) degrades only that runtime (`unknown`/`panic` or `error`/`panic`); each driver gets its own 30 s context; a non-`ok` collection carries no workloads; driver output is re-bounded (cap, string clipping, newline stripping, invalid collection state coerced to `error`); the hash covers detection, collection, completeness, version, counts and the error code, so any status change is a hash change; the byte budget matches spec §5.4 (`MaxPayloadBytes = 1_750_000`, tail of the priority order dropped from the largest runtime, that runtime marked `complete=false`, `observedCount` untouched; `TestFitPayloadKeepsReportUnderTheBodyLimit`).
+Behavior pinned by the tests: `Detect` always runs; `Collect` runs only for enabled runtimes (`disabled` otherwise, with the detected version kept); `absent` → `collection: "unavailable"`, `complete: true`, no version; `unknown` → `unavailable`, `complete: false`, the reason as `error`; a panic in either call (via `collectors.Guard`) degrades only that runtime (`unknown`/`panic` or `error`/`panic`); each driver gets its own 30 s context; a non-`ok` collection carries no workloads; driver output is re-bounded (cap, string clipping, newline stripping, invalid collection state coerced to `error`); workloads are de-duplicated by `workloadId` (first occurrence wins, in the driver's priority order, before the 1000 cap is applied) because the API rejects a whole report that repeats an id within a runtime; a stopped daemon is reported as `present` + `unavailable` / `daemon not running` (or `disabled` when enumeration is off) without a dial; the hash covers detection, collection, completeness, version, counts and the error code, so any status change is a hash change; the byte budget matches spec §5.4 (`MaxPayloadBytes = 1_750_000`, tail of the priority order dropped from the largest runtime, that runtime marked `complete=false`, `observedCount` untouched; `TestFitPayloadKeepsReportUnderTheBodyLimit`).
 
 - [ ] **Step 1: Write the failing tests.**
 
@@ -2808,6 +2792,7 @@ package workloads
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -2956,23 +2941,38 @@ func TestCollectorReturnsNilWithoutDriversOrWhenCancelled(t *testing.T) {
 func TestCollectorBoundsDriverOutput(t *testing.T) {
 	long := wl("id")
 	long.Name = strings.Repeat("n", 1000)
-	many := make([]Workload, 0, MaxWorkloadsPerRuntime+5)
+	many := make([]Workload, 0, MaxWorkloadsPerRuntime+10)
 	for i := 0; i < MaxWorkloadsPerRuntime+5; i++ {
-		many = append(many, wl(string(rune('a'+i%26))+strings.Repeat("x", i%7)))
+		many = append(many, wl(fmt.Sprintf("w%04d", i)))
 	}
+	// Explicit duplicates: the API rejects a whole report that repeats a
+	// workloadId, so the first occurrence (priority order) must win.
+	dupFirst, dupSecond := wl("w0000"), wl("w0001")
+	dupFirst.Name, dupSecond.Name = "later-duplicate-0", "later-duplicate-1"
+	many = append(many, dupFirst, dupSecond, many[10])
 	d := &stubDriver{
 		rt:     RuntimeDocker,
 		detect: func(context.Context) Detection { return Detection{State: DetectionPresent} },
 		collect: func(context.Context, Detection) Result {
-			return Result{Collection: CollectionOK, Complete: true, Workloads: append(many, long), Error: "line1\nline2"}
+			return Result{Collection: CollectionOK, Complete: true, Workloads: append(append([]Workload(nil), many...), long), Error: "line1\nline2"}
 		},
 	}
 	r := New([]Driver{d}, WithClock(fixedNow)).Collect(context.Background(), enabled()).Runtimes[0]
 	if len(r.Workloads) != MaxWorkloadsPerRuntime || r.Complete {
 		t.Fatalf("cap not enforced: len=%d complete=%v", len(r.Workloads), r.Complete)
 	}
-	if r.ObservedCount < len(many) || *r.Error != "line1 line2" {
+	if r.ObservedCount < MaxWorkloadsPerRuntime+5 || *r.Error != "line1 line2" {
 		t.Fatalf("observed=%d error=%q", r.ObservedCount, *r.Error)
+	}
+	seen := map[string]bool{}
+	for _, w := range r.Workloads {
+		if seen[w.WorkloadID] {
+			t.Fatalf("duplicate workloadId %q reached the report", w.WorkloadID)
+		}
+		seen[w.WorkloadID] = true
+		if strings.HasPrefix(w.Name, "later-duplicate") {
+			t.Fatalf("a later duplicate replaced the first occurrence of %q", w.WorkloadID)
+		}
 	}
 	d.collect = func(context.Context, Detection) Result { return Result{Collection: "weird"} }
 	if r := New([]Driver{d}, WithClock(fixedNow)).Collect(context.Background(), enabled()).Runtimes[0]; r.Collection != CollectionError {
@@ -3056,6 +3056,23 @@ func TestHashIgnoresCollectedAtAndOrderButNotContent(t *testing.T) {
 	// Hash must not reorder the caller's slices.
 	if base.Runtimes[0].Runtime != RuntimePodman {
 		t.Fatal("Hash mutated the report")
+	}
+}
+
+// End to end through the collector: a stopped daemon is reported as present +
+// unavailable when enumeration is on, as disabled when it is off, and neither
+// path dials.
+func TestCollectorReportsStoppedDaemonWithoutDialing(t *testing.T) {
+	h := newDockerHost(t)
+	c := New([]Driver{h.driver(noDial(t))}, WithClock(fixedNow))
+
+	on := c.Collect(context.Background(), enabled()).Runtimes[0]
+	if on.Detection != DetectionPresent || on.Collection != CollectionUnavailable || on.Error == nil || *on.Error != "daemon not running" || len(on.Workloads) != 0 || on.RuntimeVersion != nil {
+		t.Fatalf("enabled = %+v", on)
+	}
+	off := c.Collect(context.Background(), DefaultSettings()).Runtimes[0]
+	if off.Detection != DetectionPresent || off.Collection != CollectionDisabled {
+		t.Fatalf("disabled = %+v", off)
 	}
 }
 ```
@@ -3207,7 +3224,7 @@ func fillFromResult(rep *RuntimeReport, res Result) {
 		// a failed driver from ever looking like an empty host.
 		return
 	}
-	ws := res.Workloads
+	ws := dedupeWorkloads(res.Workloads)
 	rep.ObservedCount = res.ObservedCount
 	if rep.ObservedCount < len(ws) {
 		rep.ObservedCount = len(ws)
@@ -3220,6 +3237,22 @@ func fillFromResult(rep *RuntimeReport, res Result) {
 	for i := range rep.Workloads {
 		rep.Workloads[i].Bound()
 	}
+}
+
+// dedupeWorkloads keeps the first occurrence of each workloadId. Drivers return
+// workloads in priority order, so the first one is the one worth reporting; the
+// API rejects a whole report that repeats an id within a runtime.
+func dedupeWorkloads(ws []Workload) []Workload {
+	seen := make(map[string]struct{}, len(ws))
+	out := make([]Workload, 0, len(ws))
+	for _, w := range ws {
+		if _, dup := seen[w.WorkloadID]; dup {
+			continue
+		}
+		seen[w.WorkloadID] = struct{}{}
+		out = append(out, w)
+	}
+	return out
 }
 
 func sanitizeError(s string) string {
@@ -3282,7 +3315,7 @@ func (r *Report) Hash() string {
 cd agent && go test -race ./internal/collectors/workloads/... -run 'TestCollector|TestFailedCollection|TestFitPayload|TestHash'
 ```
 
-Expected: PASS (9 tests). Two `recovered panic` log lines are expected output of the panic tests.
+Expected: PASS (10 tests). Two `recovered panic` log lines are expected output of the panic tests.
 
 - [ ] **Step 5: Commit.**
 
@@ -3327,6 +3360,7 @@ Design notes for the reviewer:
 - The parser accepts the wire's snake_case keys (`enabled`, `docker_enabled`, `podman_enabled`, `hyperv_enabled`, `proxmox_enabled`, `interval_minutes`) and camelCase equivalents; `TestParseWorkloadSettings` and `TestApplyConfigUpdateDispatchesWorkloadSettings` exercise both.
 - One goroutine owns `lastHash`/`lastSent`, so the hash needs no lock; `settings`, `generation`, `started` and `stopping` are protected by `Heartbeat.mu`, the same rule the time-sync worker uses.
 - `workloadsCycle` reads `generation` before collecting and compares after. A mismatch discards the report and returns `0` (immediate re-run). A report made under stale settings is never hashed or sent.
+- `runWorkloads` ignores `wake` until the first-delay timer has fired (`firstDone`), so settings delivered before the first run are simply what the first run reads; afterwards a wake runs a cycle immediately. `workloadsRuntime.firstDelay` is a test-only override of the 60-120 s default.
 - A `wake` token that predates a cycle is drained at the start of that cycle, because the cycle already uses the settings the token announced.
 - A failed send returns `min(next, 10 min)`; the hash and `lastSent` stay untouched.
 
@@ -3657,6 +3691,46 @@ func TestWorkloadsLoopIsTrackedAndStops(t *testing.T) {
 	}
 }
 
+// A settings delivery must not defeat the first-run delay: it is coalesced into
+// the first run, and only later changes wake the worker immediately.
+func TestWorkloadsSettingsWakeDoesNotSkipTheFirstRunDelay(t *testing.T) {
+	col := fixedCollector("a")
+	h, r, _ := newWorkloadsHeartbeat(t, col)
+	r.firstDelay = 400 * time.Millisecond
+	h.startWorkloads()
+	t.Cleanup(func() {
+		h.stopWorkloads()
+		h.inventoryWg.Wait()
+	})
+	calls := func() int { col.mu.Lock(); defer col.mu.Unlock(); return col.calls }
+
+	h.applyWorkloadInventoryConfig(map[string]any{"enabled": true, "interval_minutes": 60.0})
+	time.Sleep(150 * time.Millisecond)
+	if n := calls(); n != 0 {
+		t.Fatalf("settings delivery started a collection %d times before the first-run delay", n)
+	}
+	waitUntilWorkloads(t, "first run after the delay", func() bool { return calls() == 1 })
+	if !r.settings.Enabled {
+		t.Fatal("first run must see the settings delivered before it")
+	}
+
+	// After the first run a change wakes the worker straight away (interval is 60 min).
+	h.applyWorkloadInventoryConfig(map[string]any{"enabled": true, "docker_enabled": false, "interval_minutes": 60.0})
+	waitUntilWorkloads(t, "immediate run after a later settings change", func() bool { return calls() >= 2 })
+}
+
+func waitUntilWorkloads(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
 func TestWorkloadsWithoutRuntimeIsInert(t *testing.T) {
 	h := &Heartbeat{} // an OS with no drivers never builds the runtime
 	h.startWorkloads()
@@ -3758,6 +3832,9 @@ type workloadsRuntime struct {
 
 	lastHash string    // worker only; advanced only after a 2xx
 	lastSent time.Time // worker only
+
+	// firstDelay overrides workloadsFirstDelay (tests only; zero means default).
+	firstDelay time.Duration
 }
 
 // workloadsUpload carries the worker's context to sendInventoryData while
@@ -3922,15 +3999,29 @@ func (h *Heartbeat) stopWorkloads() {
 	}
 }
 
+// runWorkloads is the worker loop. The first cycle waits out the first-run delay
+// (60-120 s) no matter what: a settings delivery before that point only updates
+// the settings the first cycle will read, so a heartbeat that carries config
+// does not pull the first collection onto the boot path. After the first cycle a
+// settings change wakes the loop immediately.
 func (h *Heartbeat) runWorkloads(r *workloadsRuntime) {
-	timer := time.NewTimer(workloadsFirstDelay(h.config.AgentID))
+	delay := r.firstDelay
+	if delay <= 0 {
+		delay = workloadsFirstDelay(h.config.AgentID)
+	}
+	timer := time.NewTimer(delay)
 	defer timer.Stop()
+	firstDone := false
 	for {
 		select {
 		case <-r.ctx.Done():
 			return
 		case <-timer.C:
+			firstDone = true
 		case <-r.wake:
+			if !firstDone {
+				continue // coalesced into the first run
+			}
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
@@ -4078,15 +4169,16 @@ cd agent && go test -race ./internal/heartbeat/ -run 'Workload'
 cd agent && go test -race ./internal/heartbeat/...
 ```
 
-Expected: PASS for both (14 workload tests). The full package run takes several minutes and catches any struct-literal or capability-contract test the new field disturbs.
+Expected: PASS for both (15 workload tests). The full package run takes several minutes and catches any struct-literal or capability-contract test the new field disturbs.
 
-- [ ] **Step 6: Prove the pinned behaviors can fail.** Two throwaway mutations, reverted immediately:
+- [ ] **Step 6: Prove the pinned behaviors can fail.** Three throwaway mutations, reverted immediately:
 
 1. In `workloadsCycle`, move `r.lastHash, r.lastSent = hash, now` above the `sendInventoryData` call → `TestWorkloadsFailedSendDoesNotAdvanceHash` must FAIL.
 2. In `workloadsCycle`, delete the `if changed { ... return 0 }` block → `TestWorkloadsSettingsChangeMidCollectionDiscardsResult` must FAIL.
+3. In `runWorkloads`, replace `continue // coalesced into the first run` with `_ = firstDone` → `TestWorkloadsSettingsWakeDoesNotSkipTheFirstRunDelay` must FAIL ("settings delivery started a collection 1 times before the first-run delay").
 
 ```bash
-cd agent && go test -race ./internal/heartbeat/ -run 'TestWorkloadsFailedSendDoesNotAdvanceHash|TestWorkloadsSettingsChangeMidCollectionDiscardsResult'
+cd agent && go test -race ./internal/heartbeat/ -run 'TestWorkloadsFailedSendDoesNotAdvanceHash|TestWorkloadsSettingsChangeMidCollectionDiscardsResult|TestWorkloadsSettingsWakeDoesNotSkipTheFirstRunDelay'
 ```
 
 Expected with a mutation applied: FAIL. After reverting: PASS. Do not commit a mutation.

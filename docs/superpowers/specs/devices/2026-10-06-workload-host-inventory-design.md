@@ -14,9 +14,8 @@ Three asks converge on an abstraction Breeze lacks: a device that **hosts** work
 of what runs on it.
 
 - #3813 asks for Docker container inventory and image staleness. Today a host running twenty
-  containers looks like a host running `dockerd` and nothing else. The only Docker reference in the
-  agent collectors skips `docker*` interfaces during network inventory
-  (`agent/internal/collectors/inventory.go:118`).
+  containers looks like a host running `dockerd` and nothing else. The agent collectors mention Docker only to skip
+  `docker*` interfaces (`agent/internal/collectors/inventory.go:118`, `metrics.go:382`).
 - Hyper-V inventory exists, but only as backup plumbing. `hyperv_vms`
   (`apps/api/src/db/schema/hypervVms.ts:17`) has exactly one writer, the operator-triggered
   `POST /backup/hyperv/discover` (`apps/api/src/routes/backup/hyperv.ts:208-273`), which sends the
@@ -167,7 +166,7 @@ Constraints and indexes:
 | `observed_count` | integer | workloads the driver saw (before the cap) |
 | `reported_count` | integer | workloads in the payload |
 | `last_error` | varchar(500) | sanitized, agent-side truncated |
-| `collected_at` | timestamp NOT NULL | the agent's snapshot time (ordering guard, §6.3) |
+| `collected_at` | timestamp NOT NULL | effective snapshot time `min(collectedAt, receivedAt)` (ordering guard, §6.2) |
 | `last_attempt_at` | timestamp NOT NULL | server receive time of the latest accepted report |
 | `last_success_at` | timestamp | latest report with `collection = ok` |
 | `updated_at` | timestamp NOT NULL | |
@@ -244,13 +243,13 @@ Drivers register per OS with build tags (`drivers_linux.go`, `drivers_windows.go
 |---|---|---|---|
 | `docker` | Linux, Windows | socket `/var/run/docker.sock` (Linux) or pipe `//./pipe/docker_engine` (Windows, `go-winio` already in `agent/go.mod:11`) exists → `present`. The agent connects (`GET /_ping` + `GET /version`) **only when the daemon is already running** (Linux: live pid in `/var/run/docker.pid`; Windows: `docker` service running). A stopped daemon behind systemd socket activation would otherwise be started by the connect; that case reports `collection = unavailable` without connecting | `GET /containers/json?all=1`, `GET /images/json` (for repo digests) |
 | `podman` | Linux | `/run/podman/podman.sock` exists → `present`; connect only when a `podman system service` process is already running (scan `/proc/*/cmdline`), because `podman.socket` is socket-activated by default | same Docker-compatible endpoints; otherwise `collection = unavailable` |
-| `hyperv` | Windows | `vmms` service exists (Hyper-V role), else `absent` | `Get-VM | Select-Object Name,Id,State,ProcessorCount,MemoryAssigned,MemoryStartup,Uptime,Generation | ConvertTo-Json -Compress` via a timeout-bounded runner. A new, minimal function — **not** `backup/hyperv.DiscoverVMs` wholesale, which also reads Notes, disks and checkpoints (`agent/internal/backup/hyperv/discovery.go:42-148`) |
+| `hyperv` | Windows | `vmms` service exists (Hyper-V role), else `absent` | `Get-VM | Select-Object Name,Id,State,ProcessorCount,MemoryAssigned,MemoryStartup,Uptime | ConvertTo-Json -Compress` via a timeout-bounded runner. A new, minimal function — **not** `backup/hyperv.DiscoverVMs` wholesale, which also reads Notes, disks and checkpoints (`agent/internal/backup/hyperv/discovery.go:42-148`) |
 | `proxmox` | Linux | `/usr/bin/pvesh` exists and `/etc/pve` is mounted | `pvesh get /nodes/<local node>/qemu --output-format json` and `/lxc`; local node from `hostname` matched against `pvesh get /nodes` |
 | `containerd` | Linux | `/run/containerd/containerd.sock` exists and no `docker` present on the same host | none in v1 (`unsupported`) — OD-5 |
 
 All external commands run through a copy of the `hwhealth` runner pattern
 (`agent/internal/collectors/hwhealth/runner.go:40`: context timeout, capped stdout/stderr, `WaitDelay`),
-30 s per driver. Docker on a host with both Docker and Podman reports both runtimes.
+30 s each for `Detect` and `Collect` per driver (25 s per HTTP request). Docker on a host with both Docker and Podman reports both runtimes.
 
 ### 5.2 GET-only Docker transport
 
@@ -280,7 +279,7 @@ returns an error for any method other than `GET` or `HEAD` and any path outside 
 ### 5.4 Field allowlist
 
 Collected for containers, from `GET /containers/json?all=1` only (no `inspect` call): id, first
-name, `State`, `Status`, `Image` (as created), `ImageID`, `Created`, and the three compose labels.
+name, `State`, `Image` (as created), `ImageID`, `Created`, and the three compose labels.
 The list response carries only a relative `Status` ("Up 3 hours"), so `started_at` is null for
 containers in v1 (VMs report it). Restart policy is
 not in the list response, so `restart_policy` is null for containers in v1 (§15). For images:
@@ -337,12 +336,12 @@ workloadsReportSchema = z.object({
     runtimeVersion: z.string().max(64).nullable(),
     observedCount: z.number().int().min(0).max(1_000_000),
     error: z.string().max(500).nullable(),
-    workloads: z.array(workloadSchema).max(1000),
+    workloads: z.array(workloadReportItemSchema).max(1000),
   }).strict()).max(5),
 }).strict();
 ```
 
-`workloadSchema` is `.strict()` with exactly the agent-supplied subset of the §4.1 columns
+`workloadReportItemSchema` is `.strict()` with exactly the agent-supplied subset of the §4.1 columns
 (camelCase; not `id`, `device_id`, `org_id`, `first_seen_at`, `last_seen_at`, `updated_at`), every
 string bounded; datetimes accept an offset. Duplicate `runtime` entries or duplicate `workloadId`
 within a runtime → 400. Any workload under `containerd` → 400 (detect-only in v1).
@@ -406,7 +405,7 @@ decompose/assemble (`:886-895`, `:1169-1172`, `:1220-1223`, `:1391-1406`), route
 ### 7.2 Delivery
 
 Heartbeat `configUpdate.workload_inventory_settings` built by `buildWorkloadInventoryConfigUpdate`
-next to `buildTimeSyncConfigUpdate` (`apps/api/src/routes/agents/helpers.ts:2243`) and merged at
+next to `buildTimeSyncConfigUpdate` (`apps/api/src/routes/agents/helpers.ts:2242`) and merged at
 `heartbeat.ts:2367-2372`. Semantics (as hardware monitoring / time sync):
 
 - No assigned policy → explicit defaults `{ enabled: false, ... }` (so removing a policy turns
@@ -512,7 +511,7 @@ once. Integration is per OD-2; the recommended option touches every compute site
 
 Severity- or source-filtered views exclude the term (it has neither). Unknowns never enter the
 denominator and are shown as "N images not checked" so coverage is visible; unknown image coverage
-never suppresses a known OS-patch breach (`services/alertConditions/handlers/patchCompliance.ts:57`).
+never suppresses a known OS-patch breach — a new W06 requirement; the existing handler's data-gap handling (`services/alertConditions/handlers/patchCompliance.ts` ~57) must not start treating unchecked images as a gap.
 
 ### 10.2 Monitor kind `container_image_currency`
 
