@@ -94,8 +94,9 @@ func AllSignatures() []Signature {
 			OS: []string{"windows", "darwin"},
 			Checks: []Check{
 				{Type: CheckServiceRunning, Value: "Windows Agent Service", OS: "windows"},
-				{Type: CheckProcessRunning, Value: "agent.exe", OS: "windows"},
-				{Type: CheckProcessRunning, Value: "agent", OS: "darwin"},
+				// No process checks: "agent.exe" / "agent" are generic names and
+				// process matching has no path check (#8084). Detect by service,
+				// install path and launch daemon only.
 				{Type: CheckFileExists, Value: `C:\Program Files (x86)\N-able Technologies\Windows Agent\bin\agent.exe`, OS: "windows"},
 				{Type: CheckLaunchDaemon, Value: "com.n-able.agent", OS: "darwin"},
 			},
