@@ -2596,12 +2596,17 @@ async function seedDeviceAutomationActions(
   actions: readonly AutomationAction[],
   trigger: RemediationTrigger,
 ): Promise<void> {
-  await withAutomationRuntimeDb(() => seedAutomationActionResults({
+  const seeded = await withAutomationRuntimeDb(() => seedAutomationActionResults({
     trigger,
     runId,
     device,
     actions: actions.map((action, actionIndex) => ({ actionIndex, actionType: action.type })),
   }));
+  // #8104 — the run was cancelled after the pre-seed fence check. Nothing was
+  // inserted for this device, and every row seeded before the cancel committed
+  // was terminalised by the cancel itself, so stop the run the same way the
+  // fence does. Both runners' callers treat RunCancelledError as "stop, quietly".
+  if (seeded === 'run_cancelled') throw new RunCancelledError(runId);
 }
 
 async function sendOnFailureNotifications(
@@ -4466,8 +4471,15 @@ export async function executeConfigPolicyAutomationRun(
 
   await withAutomationRuntimeDb(() => seedAutomationDeviceResults(run.id, deviceRows));
   const remediationTrigger = automationRemediationTrigger({ configPolicyId });
-  for (const device of deviceRows) {
-    await seedDeviceAutomationActions(run.id, device, actions, remediationTrigger);
+  try {
+    for (const device of deviceRows) {
+      await seedDeviceAutomationActions(run.id, device, actions, remediationTrigger);
+    }
+  } catch (err) {
+    // #8104 — cancelled after the fence check above; this runner has no outer
+    // RunCancelledError handler, so return exactly what the fence would.
+    if (!isRunCancelledError(err)) throw err;
+    return { runId: run.id, status: 'cancelled', devicesSucceeded: 0, devicesFailed: 0 };
   }
   await withAutomationRuntimeDb(() => recordPreRunDeniedDeviceResults(
     run.id,
