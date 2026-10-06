@@ -1,9 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import M365CustomerGraphActionsCard from "./M365CustomerGraphActionsCard";
+import M365CustomerGraphActionsCard, { M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_RESULTS } from "./M365CustomerGraphActionsCard";
 import { fetchWithAuth } from "../../stores/auth";
 import { runAction } from "../../lib/runAction";
-import { navigateTo } from "@/lib/navigation";
+import { navigateTo, navigateToMicrosoftLogin } from "@/lib/navigation";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 
 const state = vi.hoisted(() => ({
@@ -81,7 +81,7 @@ vi.mock("../../lib/runAction", () => ({
   handleActionError: vi.fn(),
 }));
 
-vi.mock("@/lib/navigation", () => ({ navigateTo: vi.fn() }));
+vi.mock("@/lib/navigation", () => ({ navigateTo: vi.fn(), navigateToMicrosoftLogin: vi.fn() }));
 
 vi.mock("@/lib/dateTimeFormat", () => ({
   formatDateTime: vi.fn((value: string) => `formatted ${value}`),
@@ -90,6 +90,7 @@ vi.mock("@/lib/dateTimeFormat", () => ({
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const runActionMock = vi.mocked(runAction);
 const navigateToMock = vi.mocked(navigateTo);
+const navigateToMicrosoftLoginMock = vi.mocked(navigateToMicrosoftLogin);
 const formatDateTimeMock = vi.mocked(formatDateTime);
 
 const ORG_A = "11111111-1111-4111-8111-111111111111";
@@ -476,6 +477,11 @@ describe("M365CustomerGraphActionsCard", () => {
       expect(preflight).toHaveTextContent(
         "To revoke access later, disconnect here or remove the Breeze enterprise application in Microsoft Entra.",
       );
+      // Identity-first (W03): the pre-flight walks through all four steps.
+      expect(preflight).toHaveTextContent("Breeze verifies who you are and which tenant you belong to.");
+      expect(preflight).toHaveTextContent("Confirm in Breeze that this is the customer's tenant, not your own.");
+      expect(preflight).toHaveTextContent("Approve Breeze's permissions for that tenant on Microsoft's consent screen.");
+      expect(preflight).toHaveTextContent("Breeze checks its access to that tenant before connecting it.");
     });
 
     it("continues to the existing consent request only from the pre-flight", async () => {
@@ -556,5 +562,84 @@ describe("M365CustomerGraphActionsCard", () => {
 
     view.rerender(<M365CustomerGraphActionsCard readConnected />);
     expect(screen.queryByTestId("m365-actions-read-note")).not.toBeInTheDocument();
+  });
+});
+
+describe("M365CustomerGraphActionsCard — identity-first consent (W03)", () => {
+  it("accepts confirm-tenant as a callback result so the page passes it through", () => {
+    expect(M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_RESULTS).toContain("confirm-tenant");
+  });
+
+  const TENANT = "99999999-9999-4999-8999-999999999999";
+  const CONSENT_URL = `https://login.microsoftonline.com/${TENANT}/oauth2/authorize?state=fresh`;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.currentOrgId = ORG_A;
+    state.jwtScope = "partner";
+    state.jwtOrgId = null;
+    state.canWrite = true;
+    state.successMessages = [];
+    state.errorMessages = [];
+  });
+
+  function route(map: Record<string, Response>) {
+    fetchWithAuthMock.mockImplementation((async (url: string, init?: RequestInit) => {
+      const key = `${init?.method ?? "GET"} ${url}`;
+      const found = map[key];
+      if (!found) throw new Error(`unexpected ${key}`);
+      return found;
+    }) as typeof fetchWithAuth);
+  }
+
+  it("on #m365/customer-graph-actions/confirm-tenant shows the verified tenant and continues via runAction", async () => {
+    route({
+      [`GET /m365/customer-graph-actions/connections?orgId=${ORG_A}`]: makeResponse(envelope({ connection: null })),
+      [`GET /m365/customer-graph-actions/connections/consent/pending?orgId=${ORG_A}`]: makeResponse({
+        tenantId: TENANT, administratorUsername: "admin@customer.example", expiresAt: "2026-10-03T12:10:00.000Z",
+      }),
+      [`POST /m365/customer-graph-actions/connections/consent/continue?orgId=${ORG_A}`]: makeResponse({ adminConsentUrl: CONSENT_URL }),
+    });
+
+    render(<M365CustomerGraphActionsCard callbackResult="confirm-tenant" />);
+
+    const panel = await screen.findByTestId("m365-actions-confirm-tenant");
+    await waitFor(() => expect(panel).toHaveTextContent(TENANT));
+    expect(panel).toHaveTextContent("admin@customer.example");
+    // The interstitial is not an error: no error-callback copy for it.
+    expect(screen.queryByText(/errors\.confirm-tenant/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Continue to Microsoft consent" }));
+    await waitFor(() => expect(navigateToMicrosoftLoginMock).toHaveBeenCalledWith(CONSENT_URL));
+    expect(runActionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("confirm-tenant with no pending confirmation shows the expired copy", async () => {
+    route({
+      [`GET /m365/customer-graph-actions/connections?orgId=${ORG_A}`]: makeResponse(envelope({ connection: null })),
+      [`GET /m365/customer-graph-actions/connections/consent/pending?orgId=${ORG_A}`]: makeResponse({ error: "Connection not found" }, false, 404),
+    });
+
+    render(<M365CustomerGraphActionsCard callbackResult="confirm-tenant" />);
+
+    expect(await screen.findByText("This confirmation expired or was already used. Start consent again.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue to Microsoft consent" })).not.toBeInTheDocument();
+  });
+
+  it("cancel on the confirm screen reloads the card and shows the cancelled state", async () => {
+    route({
+      [`GET /m365/customer-graph-actions/connections?orgId=${ORG_A}`]: makeResponse(envelope({ connection: null })),
+      [`GET /m365/customer-graph-actions/connections/consent/pending?orgId=${ORG_A}`]: makeResponse({
+        tenantId: TENANT, administratorUsername: null, expiresAt: "2026-10-03T12:10:00.000Z",
+      }),
+      [`POST /m365/customer-graph-actions/connections/consent/cancel?orgId=${ORG_A}`]: makeResponse({ connection: {} }),
+    });
+
+    render(<M365CustomerGraphActionsCard callbackResult="confirm-tenant" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel, wrong tenant" }));
+    expect(await screen.findByText(/Cancelled\. Nothing was connected\./)).toBeInTheDocument();
+    expect(navigateToMicrosoftLoginMock).not.toHaveBeenCalled();
+    const listCalls = fetchWithAuthMock.mock.calls.filter(([url]) => String(url).startsWith("/m365/customer-graph-actions/connections?orgId="));
+    expect(listCalls.length).toBeGreaterThanOrEqual(2);
   });
 });

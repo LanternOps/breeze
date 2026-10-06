@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, getCurrentDbAccessContext, runAfterDbContextExit } from '../db';
 import { deploymentResults, deviceFilesystemCleanupRuns } from '../db/schema';
 import { applyAutomationActionTerminal } from './automationActionResults';
 import { captureException } from './sentry';
@@ -195,23 +195,37 @@ export async function propagateCancelledDeviceCommand(params: {
     );
 
   // An automation action that dispatched this command is waiting on it too, and
-  // like the batch counters it is only ever advanced by a terminal event. Runs
-  // on its OWN connection (`inDeliberateSystemContext`), so it deliberately does
-  // not join the caller's transaction — and its failure must never abort a
-  // cancel that has already committed the important writes.
-  try {
-    await applyAutomationActionTerminal({
-      source: 'cancellation',
-      commandId,
-      terminalStatus: 'cancelled',
-      error: errorMessage,
-      completedAt,
-    });
-  } catch (err) {
-    console.error(
-      '[commandCancelPropagation] failed to terminalise the automation action for a cancelled command',
-      { commandId, type, error: err instanceof Error ? err.message : String(err) },
-    );
-    captureException(err instanceof Error ? err : new Error(String(err)));
+  // like the batch counters it is only ever advanced by a terminal event. It
+  // runs in its own system context (`inDeliberateSystemContext`), so it
+  // deliberately does not join the caller's transaction — and its failure must
+  // never abort a cancel that has already committed the important writes.
+  //
+  // From inside a tenant-scoped transaction (the heartbeat claim, a user
+  // cancel) that system context is a SECOND pooled connection opened while the
+  // caller still holds its first; under concurrent heartbeats that deadlocks
+  // the pool (#1105). So there it waits until the caller's transaction has
+  // settled. A system-scoped caller joins its own transaction inline, as before.
+  const terminaliseAutomationAction = async () => {
+    try {
+      await applyAutomationActionTerminal({
+        source: 'cancellation',
+        commandId,
+        terminalStatus: 'cancelled',
+        error: errorMessage,
+        completedAt,
+      });
+    } catch (err) {
+      console.error(
+        '[commandCancelPropagation] failed to terminalise the automation action for a cancelled command',
+        { commandId, type, error: err instanceof Error ? err.message : String(err) },
+      );
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  };
+  const scope = getCurrentDbAccessContext()?.scope;
+  if (scope !== undefined && scope !== 'system') {
+    runAfterDbContextExit('commandCancelPropagation.automationActionTerminal', terminaliseAutomationAction);
+    return;
   }
+  await terminaliseAutomationAction();
 }

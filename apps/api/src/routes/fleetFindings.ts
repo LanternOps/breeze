@@ -330,6 +330,9 @@ fleetFindingsRoutes.patch(
   '/:id',
   requireScope('organization', 'partner', 'system'),
   requireFindingsWrite,
+  // A lifecycle transition changes shared state for every member device of
+  // the finding, so it is gated like the other mutating fleet action.
+  requireMfa(),
   zValidator('param', findingIdParamSchema),
   zValidator('json', patchBodySchema),
   async (c) => {

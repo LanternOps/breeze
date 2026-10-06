@@ -21,6 +21,9 @@ export const M365_CUSTOMER_GRAPH_READ_EVENTS = [
   // #7910 identity-first consent: the administrator's identity was verified
   // (phase 1). Records WHO signed in — not that they granted consent.
   'm365.customer_graph_read.admin_identity_verified',
+  // #7913 W03: the Breeze user confirmed the verified tenant on the
+  // confirm-tenant interstitial, before Microsoft's consent screen.
+  'm365.customer_graph_read.tenant_confirmed',
 ] as const;
 
 export type M365CustomerGraphReadEvent = typeof M365_CUSTOMER_GRAPH_READ_EVENTS[number];
@@ -53,6 +56,8 @@ export const M365_CUSTOMER_GRAPH_READ_OUTCOMES = [
   // #7910 identity-first consent, appended (order pinned by metrics.test.ts).
   'identity_verified',
   'application_verification_started',
+  // #7913 W03: the operator confirmed the verified tenant (appended last).
+  'tenant_confirmed',
 ] as const;
 
 export type M365CustomerGraphReadOutcome = typeof M365_CUSTOMER_GRAPH_READ_OUTCOMES[number];
@@ -70,6 +75,7 @@ const SUCCESS_OUTCOMES: readonly M365CustomerGraphReadOutcome[] = [
   'revoked',
   'identity_verified',
   'application_verification_started',
+  'tenant_confirmed',
 ];
 
 interface M365ConsentMetricsRecorder<Event extends string, Outcome extends string> {
@@ -228,6 +234,8 @@ export const M365_CUSTOMER_GRAPH_ACTIONS_EVENTS = [
   'm365.customer_graph_actions.disconnected',
   // #7910 identity-first consent, appended last.
   'm365.customer_graph_actions.admin_identity_verified',
+  // #7913 W03 confirm-tenant interstitial, appended last.
+  'm365.customer_graph_actions.tenant_confirmed',
 ] as const;
 
 export type M365CustomerGraphActionsEvent = typeof M365_CUSTOMER_GRAPH_ACTIONS_EVENTS[number];

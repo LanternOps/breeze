@@ -1,3 +1,4 @@
+import { clientNameFor } from './billingEmail';
 import { isCollectionProgrammingError, reportCollectionError } from './collectionErrors';
 import { db, withSystemDbAccessContext } from '../../db';
 import { assertNoHeldDbContextForStripe } from '../stripeSettle';
@@ -13,12 +14,27 @@ import { enqueueBillingNotice } from './noticeOutbox';
 import { renderBillingNotice } from './renderBillingNotice';
 import { enqueueAutopayStaffNotifications, type AutopayStaffNotice } from './staffNotifications';
 import type { Tx } from './types';
+import { noticeChargeNotMade } from './notChargedNotice';
 
 // Controls may fence new collections, but terminal schedule outcomes are history.
 const CONTROL_SCHEDULE_STATES: Array<(typeof invoiceAutopaySchedules.$inferSelect)['state']> =
   ['awaiting_notice', 'scheduled', 'collecting', 'retry_scheduled', 'action_required'];
 export function isControllableSchedule(state: (typeof invoiceAutopaySchedules.$inferSelect)['state']): boolean {
   return CONTROL_SCHEDULE_STATES.includes(state);
+}
+
+/** Spec 6.6: once an attempt has been sent to Stripe for confirmation it cannot be
+ * recalled (a processing ACH debit always completes or returns), so a client skip
+ * or an MSP exclusion is refused rather than promised. Reserved/created attempts are fenced before
+ * confirmation and requires_action PaymentIntents can still be cancelled. */
+const UNSTOPPABLE_ATTEMPT_STATES = ['confirming', 'processing'] as const;
+export const SKIP_PROCESSING_MESSAGE = "A payment for this invoice is already processing and can't be stopped. You'll get a receipt when it completes.";
+const EXCLUDE_PROCESSING_MESSAGE = "A payment for this invoice is already processing and can't be stopped. Exclude the invoice after the payment completes or fails.";
+export async function hasUnstoppableCollection(tx: Tx, invoiceId: string): Promise<boolean> {
+  const rows = await tx.select({ state: invoiceCollectionAttempts.state }).from(invoiceCollectionAttempts)
+    .where(and(eq(invoiceCollectionAttempts.invoiceId, invoiceId),
+      inArray(invoiceCollectionAttempts.state, [...UNSTOPPABLE_ATTEMPT_STATES])));
+  return rows.some(row => (UNSTOPPABLE_ATTEMPT_STATES as readonly string[]).includes(row.state));
 }
 
 export type InvoiceControl = 'skip' | 'exclude';
@@ -34,8 +50,10 @@ export async function lockInvoicesForEnrollmentStop(tx: Tx, orgId: string): Prom
     .orderBy(invoices.id).for('update');
 }
 
-/** Caller holds invoice and enrollment locks; never release an unresolved reservation. */
-export async function stopEnrollmentSchedules(tx: Tx, enrollmentId: string): Promise<string[]> {
+/** Caller holds invoice and enrollment locks; never release an unresolved reservation.
+ * Returns the invoices a payment still holds: `processing` ones complete (spec 6.6),
+ * `cancelling` ones can still be stopped. An invoice is listed under each that applies. */
+export async function stopEnrollmentSchedules(tx: Tx, enrollmentId: string): Promise<{ processing: string[]; cancelling: string[] }> {
   const schedules = await tx.select().from(invoiceAutopaySchedules)
     .where(and(eq(invoiceAutopaySchedules.enrollmentId, enrollmentId),
       inArray(invoiceAutopaySchedules.state, CONTROL_SCHEDULE_STATES))).for('update');
@@ -53,12 +71,15 @@ export async function stopEnrollmentSchedules(tx: Tx, enrollmentId: string): Pro
     ));
   }
   // Invoice-bound bank collections can reserve without ever having a schedule.
-  const pending = await tx.select({ id: invoices.id, number: invoices.invoiceNumber }).from(invoiceCollectionAttempts)
+  const pending = await tx.select({ id: invoices.id, number: invoices.invoiceNumber, state: invoiceCollectionAttempts.state }).from(invoiceCollectionAttempts)
     .innerJoin(orgPaymentMethods, eq(orgPaymentMethods.id, invoiceCollectionAttempts.paymentMethodId))
     .innerJoin(invoices, eq(invoices.id, invoiceCollectionAttempts.invoiceId))
     .where(and(eq(orgPaymentMethods.enrollmentId, enrollmentId),
       inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES])));
-  return [...new Set(pending.map(invoice => invoice.number ?? invoice.id))];
+  const numbers = (unstoppable: boolean) => [...new Set(pending
+    .filter(row => (UNSTOPPABLE_ATTEMPT_STATES as readonly string[]).includes(row.state) === unstoppable)
+    .map(invoice => invoice.number ?? invoice.id))];
+  return { processing: numbers(true), cancelling: numbers(false) };
 }
 
 /** Shared by all collection producers, including confirmation of an existing PI. */
@@ -101,6 +122,11 @@ export async function requestInvoiceControl(tx: Tx, input: {
   if (input.kind === 'skip' && (!schedule?.enrollmentId || !['awaiting_notice', 'scheduled', 'retry_scheduled', 'collecting', 'action_required'].includes(schedule.state))) {
     throw new InvoiceServiceError('Invoice cannot be skipped', 409, 'INVALID_STATE');
   }
+  // Neither control may promise to stop money it cannot stop. Refuse before any fence is written.
+  if (await hasUnstoppableCollection(tx, invoice.id)) {
+    throw new InvoiceServiceError(input.kind === 'skip' ? SKIP_PROCESSING_MESSAGE : EXCLUDE_PROCESSING_MESSAGE,
+      409, 'COLLECTION_IN_PROGRESS', { reason: 'payment_processing' });
+  }
   const now = new Date();
   if (input.kind === 'exclude' && !invoice.autopayExcluded) {
     await tx.update(invoices).set({ autopayExcluded: true, updatedAt: now }).where(eq(invoices.id, invoice.id));
@@ -141,9 +167,14 @@ export async function finalizeInvoiceControl(tx: Tx, invoice: typeof invoices.$i
   if (!isControllableSchedule(schedule.state)) return { status: kind === 'skip' ? 'skipped' : 'excluded' };
   await tx.update(invoiceAutopaySchedules).set({ state, nextAttemptAt: null, stateReason: kind })
     .where(eq(invoiceAutopaySchedules.id, schedule.id));
-  if (kind === 'exclude') return { status: 'excluded' };
+  if (kind === 'exclude') {
+    // D-19: a charge the client was already told about will not happen (one shared notice shape).
+    await noticeChargeNotMade(tx, { invoiceId: invoice.id, reason: 'exclude' });
+    return { status: 'excluded' };
+  }
   await enqueueSkippedInvoiceConfirmation(tx, invoice);
-  const staffNotice: AutopayStaffNotice = { orgId: invoice.orgId, partnerId: invoice.partnerId,
+  // F-6: name the invoice (its number and link), like every invoice-scoped staff notice.
+  const staffNotice: AutopayStaffNotice = { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
     event: 'autopay.skipped', dedupeKey: `autopay:${invoice.id}:skipped`,
     message: 'The client skipped automatic payment for this invoice.' };
   await enqueueAutopayStaffNotifications(tx, staffNotice);
@@ -157,16 +188,15 @@ async function enqueueSkippedInvoiceConfirmation(tx: Tx, invoice: typeof invoice
   const recipient = resolveBillingEmail(org.billingContact);
   if (!recipient) return;
   const link = await getOrMintInvoiceLink(invoice, tx);
+  // A reminder-kind confirmation with locked wording (partner reminder copy would be untrue).
   const rendered = await renderBillingNotice('payment_reminder', { partnerId: invoice.partnerId, orgId: invoice.orgId,
     mandatory: {}, frozen: { amount: invoice.balance, currency: invoice.currencyCode, dueDate: invoice.dueDate },
     data: { invoiceNumber: invoice.invoiceNumber, balance: invoice.balance, currency: invoice.currencyCode,
       dueDate: invoice.dueDate, daysOverdue: 0, payLink: buildPublicInvoiceUrl(link.token),
-      partnerName: partner.name, orgName: org.name, partnerSettings: partner.settings } }, tx);
-  const prefix = 'Automatic payment has been skipped for this invoice. You can pay using the invoice link.';
+      partnerName: partner.name, orgName: org.name, clientName: clientNameFor(org.billingContact, org.name),
+      partnerSettings: partner.settings, variant: 'skipped' } }, tx);
   await enqueueBillingNotice(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
-    kind: 'payment_reminder', seq: 0, dedupeKey: `invoice:${invoice.id}:skip:1`, toEmail: recipient,
-    rendered: { ...rendered, subject: `Automatic payment skipped — ${invoice.invoiceNumber}`,
-      html: `<p>${prefix}</p>${rendered.html}`, text: `${prefix}\n\n${rendered.text}` } });
+    kind: 'payment_reminder', seq: 0, dedupeKey: `invoice:${invoice.id}:skip:1`, toEmail: recipient, rendered });
 }
 
 /** Recover fences using the same mapping-bound, outside-transaction provider path

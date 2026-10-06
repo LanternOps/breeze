@@ -84,6 +84,14 @@ function nextRows(table: string): unknown[] {
   throw new Error(`No queued rows for table ${table}`);
 }
 
+// AI Suggested Fixes W3 — loadRunContext's proven-fix lookup. Mocked so it never
+// consumes this file's queued db rows; returns null (no memory) by default.
+const loadProvenFixesForRun = vi.hoisted(() => vi.fn(async (): Promise<unknown> => null));
+vi.mock('../fixMemory/runMemory', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../fixMemory/runMemory')>()),
+  loadProvenFixesForRun,
+}));
+
 vi.mock('../../db', () => {
   const makeSelect = () => ({
     from: vi.fn((table: unknown) => {

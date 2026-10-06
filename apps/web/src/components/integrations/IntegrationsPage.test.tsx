@@ -80,6 +80,7 @@ vi.mock("./M365CustomerGraphReadCard", () => ({
     "manifest_stale",
     "organization_probe_failed",
     "executor_unavailable",
+    "confirm-tenant",
   ],
   default: ({
     callbackResult,
@@ -116,6 +117,7 @@ vi.mock("./M365CustomerGraphActionsCard", () => ({
     "manifest_stale",
     "organization_probe_failed",
     "executor_unavailable",
+    "confirm-tenant",
   ],
   default: ({
     callbackResult,
@@ -211,6 +213,8 @@ const PUBLIC_RESULTS = [
   "manifest_stale",
   "organization_probe_failed",
   "executor_unavailable",
+  // W03: the identity callback parks at the confirm-tenant interstitial.
+  "confirm-tenant",
 ] as const;
 
 describe("IntegrationsPage — M365 coexistence", () => {
@@ -408,6 +412,17 @@ describe("IntegrationsPage — Customer Graph Read callback fragment", () => {
       "data-callback-result",
       "active",
     );
+  });
+
+  it("captures the actions confirm-tenant interstitial and consumes the fragment", () => {
+    window.history.replaceState({}, "", "/integrations?org=org-1#m365/customer-graph-actions/confirm-tenant");
+    render(<IntegrationsPage />);
+
+    expect(screen.getByTestId("stub-customer-graph-actions")).toHaveAttribute(
+      "data-callback-result",
+      "confirm-tenant",
+    );
+    expect(window.location.hash).toBe("#m365");
   });
 
   it("uses the JWT organization fallback only for an organization-scoped session", () => {

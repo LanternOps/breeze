@@ -50,7 +50,7 @@ vi.mock('./signatureLoader', () => sigMock);
 import {
   clearOrgErasureRequest, fillOutcomeSignature, groupContributions, identityLockKey, markFixMemoryStaleForOrgErasure,
   markOwnerDriftStale, markPartnerFixMemoryStale, recomputeForOutcome, recomputeIdentity, rebuildFixMemory,
-  stalePartnerIds, transitionOutcome, type ContributingRow,
+  retireFixMemory, stalePartnerIds, transitionOutcome, type ContributingRow,
 } from './store';
 
 /** Flattens a Drizzle SQL object without a dialect: literal text plus bound primitive params. */
@@ -409,8 +409,49 @@ describe('system-scope guard — every fix_memory writer requires an open system
     expect(calls).toHaveLength(0);
   });
 
+  it('retireFixMemory is the documented exception: caller-facing, runs under a request context, but needs SOME context', async () => {
+    dbAccessContextMock.mockReturnValue(undefined as never);
+    await expect(retireFixMemory({ id: 'm-1', userId: 'u-1' })).rejects.toThrow(/open DB access context/);
+    expect(calls).toHaveLength(0);
+    outsideSystem(); // an organization-scoped request context is accepted
+    selectRows.push([{ id: 'm-1', partnerId: 'p-1', orgId: null, signatureVersion: 1, signatureKey: 'k', osType: 'windows', fixIdentity: 'x', status: 'active' }]);
+    updateReturning.push([{ id: 'm-1' }]);
+    await expect(retireFixMemory({ id: 'm-1', userId: 'u-1' })).resolves.toBe('retired');
+  });
+
   it('the ambient scope is CHECKED, not merely a truthy context — reports "none" when unset', async () => {
     dbAccessContextMock.mockReturnValue(undefined as never);
     await expect(recomputeForOutcome('o-1')).rejects.toThrow(/ambient scope: none/);
+  });
+});
+
+describe('retireFixMemory (W2 Task 18)', () => {
+  const memRow = (status: string) => ({ id: 'm-1', partnerId: 'p-1', orgId: null, signatureVersion: 1, signatureKey: 'k', osType: 'windows', fixIdentity: 'builtin:reboot', status });
+  beforeEach(() => { dbAccessContextMock.mockReturnValue({ scope: 'organization' }); });
+
+  it('takes the identity lock before the update, then retires once', async () => {
+    selectRows.push([memRow('active')]);
+    updateReturning.push([{ id: 'm-1' }]);
+    await expect(retireFixMemory({ id: 'm-1', userId: 'u-1' })).resolves.toBe('retired');
+    expect(calls).toEqual(['select', 'execute', 'update']);
+    expect(flatten(executeMock.mock.calls.at(-1)![0]).params).toContain(
+      identityLockKey({ partnerId: 'p-1', signatureVersion: 1, signatureKey: 'k', osType: 'windows', fixIdentity: 'builtin:reboot' }));
+    const u = updates.at(-1)!;
+    expect(u.set).toMatchObject({ status: 'retired', retiredBy: 'u-1' });
+  });
+
+  it('is idempotent and honest about missing rows', async () => {
+    selectRows.push([memRow('retired')]);
+    updateReturning.push([]);
+    await expect(retireFixMemory({ id: 'm-1', userId: 'u-1' })).resolves.toBe('already_retired');
+    selectRows.push([]);
+    await expect(retireFixMemory({ id: 'nope', userId: 'u-1' })).resolves.toBe('not_found');
+  });
+
+  it('resolves the partner of an org-private row for the lock key', async () => {
+    selectRows.push([{ ...memRow('active'), partnerId: null, orgId: 'org-1' }], [{ partnerId: 'p-9' }]);
+    updateReturning.push([{ id: 'm-1' }]);
+    await retireFixMemory({ id: 'm-1', userId: 'u-1' });
+    expect(flatten(executeMock.mock.calls.at(-1)![0]).params.join(' ')).toContain('fix_memory:p-9:');
   });
 });

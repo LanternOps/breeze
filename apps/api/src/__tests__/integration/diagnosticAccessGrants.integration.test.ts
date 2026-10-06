@@ -1,6 +1,6 @@
 /**
  * Real-PostgreSQL proof for administrator-approved diagnostic access grants
- * (migration 2026-12-07-120000-diagnostic-access-grants.sql,
+ * (migration 2026-12-13-130000-diagnostic-access-grants.sql,
  * services/diagnosticAccess/*).
  *
  * Covers, against the live schema as the non-bypass `breeze_app` role:

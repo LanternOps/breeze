@@ -1354,7 +1354,9 @@
       "action_link": "Link dell’azione",
       "action_label": "Etichetta dell’azione",
       "days_overdue": "Giorni di ritardo",
-      "pay_link": "Link di pagamento"
+      "pay_link": "Link di pagamento",
+      "charge_total": "Addebito totale",
+      "attempted_amount": "Importo del pagamento tentato"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -2167,7 +2169,12 @@
     "sending": "Invio in corso...",
     "notifyReviewers": "Notifica revisori",
     "completing": "Completamento in corso...",
-    "completeReview": "Completa revisione"
+    "completeReview": "Completa revisione",
+    "selfDecided": "Autodeciso",
+    "selfDecidedHint": "Deciso dall'utente stesso, perché nessun altro amministratore poteva esaminarlo (eccezione per amministratore unico).",
+    "ownItemBlocked": "Non puoi decidere sul tuo accesso. Un altro amministratore con permessi di gestione utenti deve esaminare questo elemento.",
+    "ownItemBlockedShort": "Serve un altro revisore",
+    "ownItemSelfDecisionWarning": "Sei l'unico amministratore che può esaminarlo, quindi puoi decidere sul tuo accesso. Verrà registrato come autodecisione."
   },
   "aiUsagePage": {
     "aIUsageBudget": "Utilizzo AI",
@@ -2329,7 +2336,8 @@
       "triage": "Analizza i nuovi avvisi e propone cosa fare.",
       "patch": "Esamina le patch mancanti e propone cosa installare.",
       "helpdesk": "Prende in carico i ticket e propone risposte e prossimi passi.",
-      "designer": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico."
+      "designer": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico.",
+      "research": "Integrato. Analizza un problema su un dispositivo su richiesta di un tecnico e suggerisce correzioni sicure. Non esegue mai nulla."
     },
     "emptyState": {
       "title": "Nessun agente per ora",
@@ -2475,7 +2483,8 @@
       "triage": "Triage degli avvisi",
       "patch": "Gestione delle patch",
       "helpdesk": "Assistenza",
-      "designer": "Progettista della flotta"
+      "designer": "Progettista della flotta",
+      "research": "Ricerca correzioni"
     },
     "modes": {
       "off": "Disattivato",
@@ -3779,6 +3788,11 @@
           "blurb": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico.",
           "runsWhen": "avvii una Progettazione della flotta per un'organizzazione, oppure in base a una pianificazione trimestrale",
           "recommended": "una migrazione da zero, oppure un audit di configurazione trimestrale"
+        },
+        "research": {
+          "blurb": "Integrato. Analizza un problema su un dispositivo su richiesta di un tecnico e suggerisce correzioni sicure. Non esegue mai nulla.",
+          "runsWhen": "un tecnico richiede suggerimenti di correzione per un problema di un dispositivo",
+          "recommended": "ricerca automatica in sola lettura, un problema alla volta"
         }
       },
       "kindCard": {
@@ -3806,6 +3820,36 @@
       "title": "Questo agente legge e scrive soltanto report",
       "body": "Un Fleet Designer non esegue mai nulla su un dispositivo. Attivo significa che può essere eseguito e consegnare i suoi design ai destinatari che scegli.",
       "ack": "Capisco che questo agente viene eseguito senza supervisione e consegna Fleet Design."
+    },
+    "research": {
+      "capsTitle": "Limiti di ricerca",
+      "builtInNote": "Integrato e solo suggerimenti: non esegue mai nulla. Puoi disattivarlo e impostare i suoi limiti di spesa.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Ricerche simultanee",
+          "hint": "Quante ricerche possono essere in corso contemporaneamente."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Ricerche all'ora",
+          "hint": "Massimo di ricerche avviate in un'ora."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Ricerche automatiche all'ora",
+          "hint": "Massimo di ricerche avviate automaticamente da avvisi alti e critici. 0 disattiva la ricerca automatica."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Budget ricerca rapida (centesimi)",
+          "hint": "Limite di spesa per una ricerca rapida."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Budget ricerca approfondita (centesimi)",
+          "hint": "Limite di spesa per una ricerca approfondita."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Spesa giornaliera di ricerca (centesimi)",
+          "hint": "Limite di spesa totale al giorno per tutte le esecuzioni di questo agente."
+        }
+      }
     }
   },
   "apiKeyForm": {

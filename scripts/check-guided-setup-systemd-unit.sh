@@ -84,6 +84,84 @@ if ! bash -n "${HELPER}"; then
   fail=1
 fi
 
+# --- 3. service_exists must survive SIGPIPE under pipefail (#7960) ---------
+# The helper runs under `set -euo pipefail`. If service_exists pipes
+# `docker compose config --services` into `grep -q`, grep exits at the first
+# match and the still-writing producer dies of SIGPIPE; pipefail turns that into
+# a false "no such service", and caddy is never recreated after a reboot.
+# Exercise the rendered function against a stub docker that keeps writing after
+# the matching line, far past a pipe buffer, so the race is deterministic.
+STUB_BIN="${TMP_DIR}/stub-bin"
+mkdir -p "${STUB_BIN}"
+STUB_CALLS="${TMP_DIR}/stub-docker-calls"
+cat >"${STUB_BIN}/docker" <<'STUB'
+#!/usr/bin/env bash
+# Answer only the exact query service_exists must make:
+#   docker compose [-f FILE]... --env-file FILE config --services
+printf '%s\n' "$*" >>"${STUB_CALLS:?}"
+[[ "${STUB_FAIL:-0}" == 1 ]] && { echo "stub docker: injected failure" >&2; exit 1; }
+[[ "${1:-}" == compose ]] || { echo "stub docker: unexpected subcommand: $*" >&2; exit 2; }
+shift
+saw_file=0
+saw_env=0
+while [[ $# -gt 2 ]]; do
+  case "$1" in
+    -f) [[ $# -gt 3 ]] || break; saw_file=1; shift 2 ;;
+    --env-file) [[ $# -gt 3 ]] || break; saw_env=1; shift 2 ;;
+    *) echo "stub docker: unexpected compose argument: $1" >&2; exit 2 ;;
+  esac
+done
+[[ "${saw_file}" -eq 1 && "${saw_env}" -eq 1 && "$*" == "config --services" ]] \
+  || { echo "stub docker: unexpected compose query: $*" >&2; exit 2; }
+# STUB_SERVICE is a per-run name the function cannot know in advance; it is
+# listed early (so grep matches before the producer finishes) and caddy last.
+printf 'api\n%s\n' "${STUB_SERVICE:?}"
+i=0
+while [ "${i}" -lt 20000 ]; do printf 'coturn-%s\n' "${i}"; i=$((i + 1)); done
+printf 'caddy\n'
+STUB
+chmod +x "${STUB_BIN}/docker"
+
+service_exists_fn="$(awk '/^service_exists\(\) \{$/,/^\}$/' "${HELPER}")"
+# The helper's own compose=( ... ) array, so the stub sees the real -f/--env-file arguments.
+compose_decl="$(awk '/^compose=\($/,/^\)$/' "${HELPER}")"
+if [[ -z "${service_exists_fn}" || -z "${compose_decl}" ]]; then
+  echo "ERROR: rendered boot helper has no service_exists() function or compose=( ) array" >&2
+  fail=1
+else
+  probe() {
+    : >"${STUB_CALLS}"
+    STUB_SERVICE="${STUB_SERVICE}" STUB_CALLS="${STUB_CALLS}" PATH="${STUB_BIN}:${PATH}" \
+      bash -c 'set -euo pipefail; eval "$1"; eval "$2"; service_exists "$3"' _ "${compose_decl}" "${service_exists_fn}" "$1"
+  }
+  STUB_SERVICE="probe-svc-${RANDOM}${RANDOM}"
+  if ! probe "${STUB_SERVICE}"; then
+    echo "ERROR: service_exists returned false for a service listed early in compose output (SIGPIPE under pipefail, #7960)." >&2
+    fail=1
+  fi
+  if ! probe caddy; then
+    echo "ERROR: service_exists caddy returned false while the service list contains caddy." >&2
+    fail=1
+  fi
+  if [[ ! -s "${STUB_CALLS}" ]]; then
+    echo "ERROR: service_exists never queried docker compose config --services." >&2
+    fail=1
+  fi
+  if probe not-a-service; then
+    echo "ERROR: service_exists returned true for a service that is not in the list." >&2
+    fail=1
+  fi
+  # A failed compose query must stop the helper, not read as "absent": the
+  # helper calls service_exists inside an if, where set -e does not apply.
+  query_failure_out="$(STUB_FAIL=1 STUB_SERVICE=unused STUB_CALLS="${STUB_CALLS}" PATH="${STUB_BIN}:${PATH}" \
+    bash -c 'set -euo pipefail; eval "$1"; eval "$2"; if service_exists caddy; then :; fi; echo continued' \
+    _ "${compose_decl}" "${service_exists_fn}" 2>/dev/null || true)"
+  if [[ "${query_failure_out}" == *continued* ]]; then
+    echo "ERROR: service_exists treated a failed docker compose query as a missing service; the helper kept going." >&2
+    fail=1
+  fi
+fi
+
 # The rendered WorkingDirectory must be the raw absolute path (specifier-escaped).
 expected_wd="WorkingDirectory=${WORK//%/%%}"
 if ! grep -qxF "${expected_wd}" "${UNIT}"; then

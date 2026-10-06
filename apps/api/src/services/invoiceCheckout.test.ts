@@ -7,7 +7,8 @@ vi.mock('./autopay/payAndSave', async importOriginal => {
 });
 
 const reservation = vi.hoisted(() => ({ assert: vi.fn(), lock: vi.fn(), invoice: null as Record<string, unknown> | null }));
-vi.mock('./autopay/reservation', () => ({ assertNoActiveCollection: reservation.assert, lockInvoiceForCollection: reservation.lock }));
+// holdsClientMoney (unapplied money, B1-2) is proven on real Postgres in charging.integration.test.ts.
+vi.mock('./autopay/reservation', () => ({ assertNoActiveCollection: reservation.assert, holdsClientMoney: async () => false, lockInvoiceForCollection: reservation.lock }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { isSelfManagedDbContextRoute } from '../middleware/selfManagedDbContextRoutes';
 
@@ -38,7 +39,7 @@ vi.mock('./stripeSessionRevocation', () => ({
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    for (const m of ['select', 'from', 'where', 'limit', 'for', 'update', 'set']) chain[m] = vi.fn(() => chain);
+    for (const m of ['select', 'from', 'leftJoin', 'where', 'limit', 'for', 'update', 'set']) chain[m] = vi.fn(() => chain);
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = dbResults.shift() ?? [];
       const first = rows[0];
@@ -112,7 +113,8 @@ const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
  * `idempotency_key_in_use` error in production that a literal would hide.
  */
 function expectedIdempotencyKey(base: string): string {
-  return `${base}_e${checkoutSessionExpiry().quantum}`;
+  // _pd: the request carries a PaymentIntent description (FP-20); a new key keeps an in-hour replay identical.
+  return `${base}_e${checkoutSessionExpiry().quantum}_pd`;
 }
 
 describe('createInvoicePayLink', () => {
@@ -123,7 +125,7 @@ it('checked card payments retain card-only Checkout and a stable save-enabled re
   sessionsCreateMock.mockResolvedValue({ id: 'cs_saved', url: 'https://checkout.stripe.com/c/cs_saved', payment_intent: 'pi_saved' });
   for (let replay = 0; replay < 2; replay++) {
     dbResults.push([{ id: INV_ID, orgId: ORG_ID, partnerId: actor.partnerId, status: 'sent',
-      balance: '100.00', depositDue: null, amountPaid: '0.00', currencyCode: 'USD', invoiceNumber: 'INV-SAVE' }],
+      balance: '100.00', depositDue: null, amountPaid: '0.00', currencyCode: 'USD', invoiceNumber: 'INV-SAVE', partnerName: 'Example MSP' }],
       [{ id: '44444444-4444-4444-8444-444444444444' }], []);
     if(replay)dbResults.push([{invoiceId:INV_ID,stripeAccountId:'acct_9'}]);
     await createInvoicePayLink(INV_ID, actor, {
@@ -134,8 +136,11 @@ it('checked card payments retain card-only Checkout and a stable save-enabled re
   for (const [params, options] of sessionsCreateMock.mock.calls) {
     expect(params).toMatchObject({ mode: 'payment', payment_method_types: ['card'], customer: 'cus_saved',
       metadata: { autopay_setup_attempt_id: captureId },
-      payment_intent_data: { setup_future_usage: 'off_session', metadata: { autopay_setup_attempt_id: captureId } } });
+      payment_intent_data: { setup_future_usage: 'off_session', metadata: { autopay_setup_attempt_id: captureId } },
+      wallet_options: { link: { display: 'never' } } });
     expect(options.idempotencyKey).toBe(expectedIdempotencyKey(`inv_${INV_ID}_10000_bal_save_${captureId}`));
+    // FP-20: pay-link PaymentIntents carry a description, as autopay ones do.
+    expect(params.payment_intent_data).toMatchObject({ description: 'Invoice INV-SAVE · Example MSP' });
   }
   expect(prepareSaveMock.mock.calls[0]?.[3]).toBe(prepareSaveMock.mock.calls[1]?.[3]);
 });
@@ -187,6 +192,8 @@ it('refuses a reserved invoice before calling Stripe', async () => {
 
     const result = await createInvoicePayLink(INV_ID, actor);
     expect(result).toEqual({ url: 'https://checkout.stripe.com/c/cs_1' });
+    // An ordinary pay link saves nothing, so its wallet choices are left to Stripe.
+    expect(sessionsCreateMock.mock.calls[0]![0]).not.toHaveProperty('wallet_options');
 
     expect(sessionsCreateMock).toHaveBeenCalledWith(
       expect.objectContaining({

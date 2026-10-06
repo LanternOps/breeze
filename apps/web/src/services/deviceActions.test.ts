@@ -6,7 +6,7 @@ vi.mock('@/stores/auth', () => ({
 }));
 
 import { fetchWithAuth } from '@/stores/auth';
-import { sendDeviceCommand } from './deviceActions';
+import { moveDeviceOrg, MOVE_DEVICE_ORG_TIMEOUT_MS, sendDeviceCommand } from './deviceActions';
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -276,5 +276,46 @@ describe('fetchPurgeRun', () => {
     fetchMock.mockResolvedValue(makeJsonResponse({ error: 'Purge run not found' }, false, 404));
 
     await expect(fetchPurgeRun('job-1')).rejects.toThrow('Purge run not found');
+  });
+});
+
+describe('moveDeviceOrg timeout (#7988)', () => {
+  it("gives the move its own long ceiling instead of fetchWithAuth's 30s default", async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      fetchMock.mockImplementation((_path, init) => {
+        signal = init?.signal ?? undefined;
+        return new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal!.reason));
+        });
+      });
+
+      const settled = moveDeviceOrg('d1', { orgId: 'o2', siteId: 's2' } as never).catch((err: unknown) => err);
+
+      // A caller-supplied signal is what replaces fetchWithAuth's 30s default.
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect(MOVE_DEVICE_ORG_TIMEOUT_MS).toBeGreaterThanOrEqual(120_000);
+
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(signal!.aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(MOVE_DEVICE_ORG_TIMEOUT_MS);
+      expect(signal!.aborted).toBe(true);
+      expect(((await settled) as DOMException).name).toBe('TimeoutError');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('releases the timer once the move settles', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockResolvedValue(makeJsonResponse({ success: true, device: null }));
+      await expect(moveDeviceOrg('d1', { orgId: 'o2', siteId: 's2' } as never)).resolves.toEqual({ success: true, device: null });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

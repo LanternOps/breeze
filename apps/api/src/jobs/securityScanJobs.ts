@@ -13,12 +13,16 @@ import { attachWorkerObservability } from './workerObservability';
 import { securityScanQueueJobDataSchema, type SecurityScanQueueJobData } from './queueSchemas';
 import {
   resolveAllSecurityScanScheduledDevices,
-  resolveSecurityScanSettingsForDevice,
+  resolveSecurityScanPolicyForDevice,
   resolvePartnerTimezoneForOrg,
   type SecurityScanSchedulable,
 } from '../services/featureConfigResolver';
 import { securityScanCron, type SecurityScanSettings } from '@breeze/shared';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import {
+  resolveSecurityScanQuarantineAuthority,
+  type QuarantineSuppressedReason,
+} from '../services/securityScanQuarantineAuthority';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -175,12 +179,28 @@ export async function processDispatchScan(data: DispatchScanJobData): Promise<{
     return { dispatched: false, commandId: null };
   }
 
-  const settings = await resolveSecurityScanSettingsForDevice(scan.deviceId);
+  const resolved = await resolveSecurityScanPolicyForDevice(scan.deviceId);
+  let settings = resolved?.settings ?? null;
+  // Auto-quarantine is a device-execution effect: it rides on the stored
+  // authority of whoever enabled it on the policy (devices:execute + MFA),
+  // re-resolved live. Without it the scan still runs, detect-only, and the row
+  // records why. Scans with auto-quarantine off never consult the authority.
+  let autoQuarantineSuppressedReason: QuarantineSuppressedReason | null = null;
+  if (resolved && settings?.autoQuarantine) {
+    const decision = await resolveSecurityScanQuarantineAuthority(resolved.featureLinkId, scan.deviceId);
+    if (!decision.allowed) {
+      settings = { ...settings, autoQuarantine: false };
+      autoQuarantineSuppressedReason = decision.reason;
+      console.warn(
+        `[SecurityScanJobs] scan ${scan.id}: auto-quarantine suppressed (${decision.reason}); dispatching detect-only`,
+      );
+    }
+  }
   const payload = buildSecurityScanPayload(scan.id, scan.scanType, settings);
 
   // Claim before dispatching: two workers must never both queue a command.
   const claimed = await db.update(securityScans)
-    .set({ status: 'running', startedAt: new Date() })
+    .set({ status: 'running', startedAt: new Date(), autoQuarantineSuppressedReason })
     .where(and(eq(securityScans.id, scan.id), eq(securityScans.status, 'queued')))
     .returning({ id: securityScans.id });
   if (claimed.length !== 1) return { dispatched: false, commandId: null };

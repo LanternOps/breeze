@@ -2,7 +2,7 @@ import { autopayFeeTermsSchema, type AutopayTerms } from '@breeze/shared';
 import { and, desc, eq } from 'drizzle-orm';
 import { orgAutopayConsents } from '../../db/schema';
 import type { Tx } from './types';
-import { enqueueAutopayStaffNotifications } from './staffNotifications';
+import { enqueueAutopayStaffAttention } from './staffNotifications';
 import {fromMinorUnits,toMinorUnits} from '../stripeMoney';
 import type {FeeQuote} from './processingFee';
 
@@ -17,6 +17,16 @@ export function clampNoticedFee(quote:FeeQuote,currency:string,noticedFee?:strin
   return fromMinorUnits(noticedFee===undefined?current:Math.min(current,valid(noticedFee)),currency);
 }
 
+export type AutopayConsentKey = { orgId: string; enrollmentId: string; generation: number; methodId: string };
+/** The latest consent accepted for this exact authority (enrollment generation + method). */
+export async function latestAutopayConsent(tx: Tx, key: AutopayConsentKey) {
+  const [consent] = await tx.select().from(orgAutopayConsents).where(and(
+    eq(orgAutopayConsents.orgId, key.orgId), eq(orgAutopayConsents.enrollmentId, key.enrollmentId),
+    eq(orgAutopayConsents.generation, key.generation), eq(orgAutopayConsents.paymentMethodId, key.methodId),
+  )).orderBy(desc(orgAutopayConsents.createdAt), desc(orgAutopayConsents.id)).limit(1);
+  return consent;
+}
+
 /** Only the latest acceptance for this exact authority can limit recurring fees.
  * The accepted percentage/flat amount is the maximum; evaluate it on this payment's
  * principal, then apply today's legal quote. Missing authority never permits a charge.
@@ -25,12 +35,9 @@ export async function acceptedCollectionFee(tx: Tx, input: {
   orgId: string; partnerId: string; enrollmentId: string; generation: number; methodId: string;
   methodType: 'card' | 'us_bank_account'; principal: string; currency: string; quote: FeeQuote;
 }): Promise<FeeQuote | null> {
-  const [consent] = await tx.select().from(orgAutopayConsents).where(and(
-    eq(orgAutopayConsents.orgId, input.orgId), eq(orgAutopayConsents.enrollmentId, input.enrollmentId),
-    eq(orgAutopayConsents.generation, input.generation), eq(orgAutopayConsents.paymentMethodId, input.methodId),
-  )).orderBy(desc(orgAutopayConsents.createdAt), desc(orgAutopayConsents.id)).limit(1);
+  const consent = await latestAutopayConsent(tx, input);
   const missingConsent=async()=>{
-    await enqueueAutopayStaffNotifications(tx,{orgId:input.orgId,partnerId:input.partnerId,partnerOnly:true,
+    await enqueueAutopayStaffAttention(tx,{orgId:input.orgId,partnerId:input.partnerId,partnerOnly:true,
       event:'autopay.needs_attention',dedupeKey:`autopay:consent_required:${input.enrollmentId}:${input.generation}:${input.methodId}`,
       message:'Automatic payment authorization is missing for the saved method. Request updated authorization before collecting.'});
     return null;
@@ -42,7 +49,7 @@ export async function acceptedCollectionFee(tx: Tx, input: {
   const none: FeeQuote = { feeAmount:'0.00', kind:'none', appliedBps:null, reason:'disabled' };
   if (!terms || !/^(?:0|[1-9]\d?)\.\d{2}$/.test(terms.achFeeAmount)
     || toMinorUnits(terms.achFeeAmount, 'USD') > 2500) {
-    await enqueueAutopayStaffNotifications(tx, {orgId:input.orgId, partnerId:input.partnerId,
+    await enqueueAutopayStaffAttention(tx, {orgId:input.orgId, partnerId:input.partnerId,
       partnerOnly:true, event:'autopay.needs_attention',
       dedupeKey:`autopay:invalid_fee_terms:${consent.id}`,
       message:'Accepted automatic payment fee terms are invalid. No processing fee will be charged; request updated authorization.'});

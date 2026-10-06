@@ -21,7 +21,7 @@ import type { BreezeEvent } from '../eventBus';
 import { probeTelemetryFreshness, readAlertRecovery } from '../outcomeProbes';
 import {
   advanceOutcome, decideAwaitingRecovery, decideHolding, decidePending, handleFixOutcomeEvent, readingFromAlert,
-  readingFromEpisode, recurrencePrefilter,
+  readingFromCleanupRun, readingFromCommand, readingFromEpisode, recurrencePrefilter,
 } from './outcomeWatcher';
 
 const T0 = new Date('2026-11-01T00:00:00Z');
@@ -320,5 +320,62 @@ describe('holding -> verified re-checks the source (Review Focus 3 — fix round
 
     expect(result).toBe('verified');
     expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'verified', reason: 'held_with_fresh_telemetry' });
+  });
+});
+
+describe('built-in pending readings (W2 Task 15)', () => {
+  it.each([
+    ['completed', { status: 'completed', exitCode: 0 }],
+    ['failed', { status: 'failed', exitCode: null }],
+    ['timeout', { status: 'timeout', exitCode: null }],
+    ['cancelled', { status: 'cancelled', exitCode: null }],
+    ['sent', { status: 'running', exitCode: null }],
+    [null, null],
+  ])('command %s', (status, reading) => expect(readingFromCommand(status)).toEqual(reading));
+
+  it.each([
+    ['executed', null, { status: 'completed', exitCode: 0 }],
+    ['failed', 'boom', { status: 'failed', exitCode: null }],
+    ['running', null, { status: 'running', exitCode: null }],
+    [null, null, null],
+  ])('cleanup run %s', (status, error, reading) => expect(readingFromCleanupRun(status, error)).toEqual(reading));
+
+  it.each([
+    ['failed', { result: { clock: 'delivery' }, executedAt: null }, true],
+    ['timeout', { result: { clock: 'delivery' }, executedAt: new Date() }, true],
+    ['failed', { result: { error: 'x' }, executedAt: null }, true],
+    ['failed', { result: { error: 'x' }, executedAt: new Date() }, false],
+    ['timeout', { result: null, executedAt: new Date() }, false],
+  ] as const)('command %s with %o: neverDelivered=%s', (status, detail, never) => {
+    const r = readingFromCommand(status, detail);
+    expect(r?.neverDelivered === true).toBe(never);
+    expect(r?.status).toBe(status);
+  });
+
+  it.each([
+    ['agent_update_required', true],
+    ['Failed to queue the cleanup run', true],
+    ['boom', false],
+    [null, false],
+  ])('failed cleanup run with error %s: neverDelivered=%s', (error, never) => {
+    expect(readingFromCleanupRun('failed', error)?.neverDelivered === true).toBe(never);
+  });
+
+  it('a never-delivered built-in decides inconclusive, not failed', () => {
+    expect(decidePending({ script: { status: 'failed', exitCode: null, neverDelivered: true }, deadlineAt: at(24), now: at(1) }))
+      .toEqual({ to: 'inconclusive', reason: 'script_never_delivered' });
+  });
+
+  it('a pending built-in attempt reads its command, not a script execution', async () => {
+    transitionMock.mockReset();
+    transitionMock.mockResolvedValue(true);
+    const row = {
+      id: 'o-1', state: 'pending', deviceId: 'd-1', orgId: 'org-1', actionCommandId: 'cmd-1', actionCleanupRunId: null,
+      scriptExecutionId: null, deadlineAt: at(24), createdAt: at(0), alertId: null,
+    };
+    // 1: the outcome row, 2: deviceLeftOrg, 3: the device_commands status
+    rows.push([row], [{ orgId: 'org-1' }], [{ status: 'completed' }]);
+    await advanceOutcome('o-1');
+    expect(transitionMock.mock.calls[0]![1]).toMatchObject({ to: 'awaiting_recovery', reason: 'script_succeeded' });
   });
 });

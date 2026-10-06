@@ -234,6 +234,52 @@ describe('get_monitor', () => {
   });
 });
 
+describe('get_monitor network_check endpoint display', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('shows a URL target as scheme + host with a fingerprint, in the definition and overrides', async () => {
+    const secretUrl = 'https://ops:hunter2@status.example.com/hooks/T1/B1/abc123?token=xyz789';
+    let selectCall = 0;
+    mockDb.select.mockImplementation(() => {
+      selectCall++;
+      if (selectCall === 1) {
+        return {
+          from: () => ({
+            where: () => ({
+              limit: () => Promise.resolve([{
+                id: 'm1', name: 'Status page', kind: 'network_check', orgId: ORG, partnerId: null,
+                condition: { checkType: 'http_check', target: secretUrl, method: 'GET' },
+                compiledAlertTemplateId: null, compiledAlertRuleId: null, compiledAutomationId: null,
+              }]),
+            }),
+          }),
+        };
+      }
+      return {
+        from: () => ({
+          innerJoin: () => ({
+            innerJoin: () => ({
+              where: () => Promise.resolve([
+                { id: 'att1', configPolicyId: 'p1', policyName: 'Policy A', enabled: true, overrides: { target: secretUrl } },
+              ]),
+            }),
+          }),
+        }),
+      };
+    });
+
+    const result = await call('get_monitor', { monitorId: 'm1' });
+    const serialized = JSON.stringify(result);
+    for (const fragment of ['hunter2', '/hooks/', 'abc123', 'xyz789']) {
+      expect(serialized).not.toContain(fragment);
+    }
+    expect(result.monitor.condition.target).toBe('https://status.example.com');
+    expect(result.monitor.condition.targetFingerprint).toMatch(/^[0-9a-f]{6}$/);
+    expect(result.monitor.condition.method).toBe('GET');
+    expect(result.attachments[0].overrides.target).toBe('https://status.example.com');
+  });
+});
+
 describe('manage_monitor_definitions create', () => {
   beforeEach(() => vi.clearAllMocks());
 

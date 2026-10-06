@@ -420,6 +420,8 @@ export const AGENT_KIND_PRESETS: Readonly<Record<AiAgentKind, readonly string[]>
   // never a mutating operation. A designer agent's toolAllowlist form still
   // exists (shared UI component) but a design run never consults it.
   designer: [],
+  // AI Suggested Fixes W2 — research is system-provisioned and read-only: zero actions.
+  research: [],
 };
 
 function isSessionOnly(name: string): boolean {
@@ -539,6 +541,7 @@ export function buildAgentToolCatalog(): AgentToolCatalogDto {
       patch: [...AGENT_KIND_PRESETS.patch],
       helpdesk: [...AGENT_KIND_PRESETS.helpdesk],
       designer: [...AGENT_KIND_PRESETS.designer],
+      research: [...AGENT_KIND_PRESETS.research],
     },
     unreachableTools: listUnreachableRegisteredTools(),
   };

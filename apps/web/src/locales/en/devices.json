@@ -2440,6 +2440,7 @@
       "bulkWakeSomeFailed": "Bulk Wake Some Failed",
       "commandQueued": "{{action}} queued — will run when {{hostname}} reconnects",
       "commandSent": "{{action}} sent to {{hostname}}",
+      "commandCancelled": "{{action}} was not sent to {{hostname}}: the command was cancelled ({{reason}})",
       "compareNeedsTwo": "Comparison needs at least 2 agent devices.",
       "decommissionCancelled": "Removal Cancelled",
       "decommissionFailed": "Remove Failed",
@@ -2824,7 +2825,8 @@
     "submitStepUp": "Verify and move",
     "submitting": "Working…",
     "cancel": "Cancel",
-    "genericError": "Failed to move the device."
+    "genericError": "Failed to move the device.",
+    "timeout": "The move is taking longer than expected and may still be completing on the server. Wait a minute, then refresh the page to check which organization the device is in before trying again."
   },
   "networkDeviceDetailPage": {
     "approval": {

@@ -41,7 +41,7 @@
  *    principal outright, so a model cannot reach this tool at all.
  */
 
-import { AI_AGENT_KINDS, AI_AGENT_RUN_STATUSES, type AiAgentKind, type AiAgentRunStatus } from '@breeze/shared';
+import { AI_AGENT_ACTING_KINDS, AI_AGENT_RUN_STATUSES, type AiAgentKind, type AiAgentRunStatus } from '@breeze/shared';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
@@ -253,7 +253,7 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
           },
           kind: {
             type: 'string',
-            enum: [...AI_AGENT_KINDS],
+            enum: [...AI_AGENT_ACTING_KINDS],
             description: 'Which agent to grant the key to (triage, patch, helpdesk)',
           },
           opKey: {

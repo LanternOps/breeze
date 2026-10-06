@@ -178,6 +178,7 @@ import { devPushRoutes } from './routes/devPush';
 import { helperRoutes } from './routes/helper';
 import { playbookRoutes } from './routes/playbooks';
 import { remediationSuggestionRoutes } from './routes/remediationSuggestions';
+import { fixMemoryRoutes } from './routes/fixMemory';
 import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
 import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './services/monitors/conversion/retirementSweep';
@@ -187,6 +188,7 @@ import { reportableCutoverError } from './services/aiModels/registryCutover';
 import { runEnvOpenAiBootstrapAtBoot } from './services/aiModels/envOpenAiBootstrap';
 import { registerGatewayConnectionCheck } from './services/aiModels/gatewayConnectionState';
 import { sealUnsealedBackupProviderConfigs } from './services/backupProviderConfigBackfill';
+import { hashLegacyInstallerBootstrapTokens } from './services/installerBootstrapTokenHashBackfill';
 import { safeErrorMessage } from './services/aiModels/safeDbError';
 import { baselineCredentialHistory } from './services/backupStorageCredentialHistory';
 import { runStartupTaskWithRetry } from './services/startupTaskRetry';
@@ -682,12 +684,25 @@ api.use('*', async (c, next) => {
     return;
   }
 
+  const auth = c.get('auth') as {
+    user?: { id?: string; email?: string };
+    orgId?: string | null;
+    scope?: string;
+    partnerId?: string | null;
+  } | undefined;
+
+  // A write that names no org the caller can reach — partner-level config
+  // (catalog, price books, templates, integrations) or a body-targeted route —
+  // is still recorded when a signed-in user made it: as a partner-level row
+  // (org_id NULL) rather than under a guessed org. Partner-scope callers are
+  // attributed to their own partner. Unattributable requests (no user) are
+  // still skipped.
   const orgId = await resolveFallbackOrgId(c, path);
-  if (!orgId) {
+  if (!orgId && !auth?.user?.id) {
     return;
   }
+  const partnerId = !orgId && auth?.scope === 'partner' && auth.partnerId ? auth.partnerId : undefined;
 
-  const auth = c.get('auth') as { user?: { id?: string; email?: string }; orgId?: string | null } | undefined;
   const status = c.res.status;
 
   let result: 'success' | 'denied' | 'failure';
@@ -709,13 +724,13 @@ api.use('*', async (c, next) => {
   }
 
   writeAuditEvent(c, {
-    orgId,
+    orgId: orgId ?? null,
     actorType,
     actorId: auth?.user?.id ?? undefined,
     actorEmail: auth?.user?.email,
     action: buildFallbackAction(method, path),
     resourceType: getResourceTypeFromPath(path),
-    details: { path, method, statusCode: status, fallback: true },
+    details: { path, method, statusCode: status, fallback: true, ...(partnerId ? { partnerId } : {}) },
     result
   });
 });
@@ -1002,6 +1017,7 @@ api.route('/dev', devPushRoutes);
 api.route('/helper', helperRoutes);
 api.route('/playbooks', playbookRoutes);
 api.route('/remediation-suggestions', remediationSuggestionRoutes);
+api.route('/fix-memory', fixMemoryRoutes);
 api.route('/changes', changesRoutes);
 api.route('/dns-security', dnsSecurityRoutes);
 api.route('/s1', sentinelOneRoutes);
@@ -1917,6 +1933,32 @@ async function bootstrap(): Promise<void> {
     .catch((err) => {
       console.error('[startup] Sealing stored backup destination credentials failed:', err);
       captureException(err, undefined, { area: 'backup_provider_config_backfill' });
+    });
+
+  // Installer bootstrap tokens are stored as a keyed hash on issue; this hashes
+  // the plaintext rows issued before that. Detached and idempotent like the
+  // sweeps above — redemption matches both forms. A missing
+  // ENROLLMENT_KEY_PEPPER rejects the whole sweep here (logged + reported),
+  // never the boot.
+  void hashLegacyInstallerBootstrapTokens()
+    .then((stats) => {
+      if (stats.scanned > 0) {
+        console.log(
+          `[startup] Installer bootstrap tokens hashed: ${stats.hashed}/${stats.scanned} token(s) `
+            + `(${stats.contended} changed concurrently, ${stats.failed} failed)`,
+        );
+      }
+      if (stats.failed > 0 || stats.contended > 0) {
+        captureException(
+          new Error(`installer bootstrap token hashing left ${stats.failed} failed and ${stats.contended} contended token(s)`),
+          undefined,
+          { area: 'installer_bootstrap_token_hash_backfill' },
+        );
+      }
+    })
+    .catch((err) => {
+      console.error('[startup] Hashing stored installer bootstrap tokens failed:', err);
+      captureException(err, undefined, { area: 'installer_bootstrap_token_hash_backfill' });
     });
 
   // W06 (#7604, D6): MCP_LLM_PROVIDER=openai-compatible → one env-managed

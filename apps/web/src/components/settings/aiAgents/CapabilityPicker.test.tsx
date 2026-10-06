@@ -37,7 +37,7 @@ const catalog: AgentToolCatalogDto = {
       operations: [{ key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false, actRequiresAuthorizedScripts: false }],
     },
   ],
-  presets: { triage: ['manage_services:restart'], patch: ['run_script'], helpdesk: [], designer: [] },
+  presets: { triage: ['manage_services:restart'], patch: ['run_script'], helpdesk: [], designer: [], research: [] },
   unreachableTools: ['manage_ai_agents'],
 };
 
@@ -250,7 +250,7 @@ describe('CapabilityPicker', () => {
     // partial-ceiling case.
     const twoKeyPresetCatalog: AgentToolCatalogDto = {
       ...catalog,
-      presets: { triage: ['manage_services:restart', 'manage_services:stop'], patch: [], helpdesk: [], designer: [] },
+      presets: { triage: ['manage_services:restart', 'manage_services:stop'], patch: [], helpdesk: [], designer: [], research: [] },
     };
     const ceiling: AgentCeilingDto = { toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [], scriptIds: [] };
 

@@ -1137,9 +1137,15 @@ tunnelRoutes.get(
 );
 
 // DELETE /tunnels/:id — Close a tunnel (ownership enforced)
+// Closing tears down a live remote session, so it takes the same grants as
+// opening one (POST /tunnels). requirePermission also populates `permissions`,
+// which the site-scope check below relies on.
 tunnelRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requirePermission(PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action),
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -1161,6 +1167,13 @@ tunnelRoutes.delete(
 
     if (!session) {
       return c.json({ error: 'Tunnel session not found' }, 404);
+    }
+
+    // Site-scope (app-layer-only) re-enforcement, same rule as GET /tunnels/:id:
+    // a site-restricted caller may not close a tunnel to an out-of-site device.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (await isTunnelDeviceSiteDenied(session.deviceId, perms)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     // Get device to find agent

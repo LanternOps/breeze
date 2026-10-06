@@ -11,6 +11,7 @@ import { accountingConnections, accountingEntityMappings, invoicePayments, invoi
 import {
   authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext,
 } from '../../middleware/auth';
+import { markPermissionGate, permissionGateLabel } from '../../middleware/permissionGate';
 import { PERMISSIONS } from '../../services/permissions';
 import {
   AccountingConnectionError,
@@ -98,7 +99,7 @@ const requireSiteWrite = requirePermission(PERMISSIONS.SITES_WRITE.resource, PER
  * separate route-contract/availability residual rather than an authz bypass.
  */
 function partnerScopedPermission(...guards: MiddlewareHandler[]): MiddlewareHandler {
-  return async (c, next) => {
+  const composed: MiddlewareHandler = async (c, next) => {
     if (c.get('auth')?.scope === 'system') return next();
     // Run the guards in order, propagating whatever a denying guard returns
     // (its 403 Response) instead of falling through to the handler.
@@ -109,6 +110,10 @@ function partnerScopedPermission(...guards: MiddlewareHandler[]): MiddlewareHand
     };
     return run(0);
   };
+  // The composition enforces the wrapped permission grants, so it is itself a
+  // permission gate for the write-route contract test.
+  const labels = guards.map(permissionGateLabel).filter((label): label is string => label !== undefined);
+  return labels.length > 0 ? markPermissionGate(composed, labels.join('+')) : composed;
 }
 
 // NOTE: the accounting:read guard is folded INTO this composition rather than

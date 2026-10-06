@@ -78,7 +78,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'services/aiToolsVault.ts': { guards: 4, reason: 'device lookup carries the parked-device predicate' },
   'services/backupProviders/alerts.ts': { guards: 1, reason: 'device lookup carries the parked-device predicate' },
   'services/backupProviders/deviceMatching.ts': { guards: 1, reason: 'device lookup carries the parked-device predicate' },
-  'services/commandDispatch.ts': { guards: 2, reason: 'device lookup carries the parked-device predicate' },
+  'services/commandDispatch.ts': { guards: 1, reason: '1 guarded site: the narrowed (parked) batch claim reads the org type and cancels refused rows. The single-row push claim hands the org type to partitionClaimable (commandClaimEligibility.ts), which carries the parked cancel for both legs and is pinned by parkedCommandDelivery.contract.test.ts' },
   'services/commandQueue.ts': { guards: 1, reason: 'device lookup carries the parked-device predicate' },
   'services/dispatchDeviceCommand.ts': { guards: 1, reason: '1 guarded site: prepareDeviceCommand checks isParkedDevice before persisting a command' },
   'services/monitors/conversion/convert.ts': { guards: 2, reason: 'device lookup carries the parked-device predicate' },

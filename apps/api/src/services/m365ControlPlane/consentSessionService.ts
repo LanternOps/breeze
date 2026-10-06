@@ -162,7 +162,7 @@ export async function createIdentitySessionInTransaction(
 }
 
 /**
- * Post-identity phase (admin consent; W03 adds tenant confirmation). Carries
+ * Post-identity phase (admin consent, or the W03 confirm-tenant park). Carries
  * the verified identity server-side under a NEW one-use state. Holds nothing
  * PKCE-shaped: the consent phase's authorization code is never redeemed.
  */
@@ -230,6 +230,56 @@ export async function consumeConsentSessionInTransaction(
     eq(m365ConsentSessions.profile, input.profile),
     eq(m365ConsentSessions.consentAttemptId, input.consentAttemptId),
   )).returning();
+  return rows[0] ?? null;
+}
+
+/**
+ * The parked confirm-tenant session (#7913 W03) of exactly one attempt and
+ * one Breeze user. The browser never holds this session's state — the
+ * identity callback cleared the cookie and redirected to the card — so it is
+ * located by (connection, org, profile, CURRENT attempt, user) instead. A
+ * re-initiate rotates the attempt and deletes the old attempt's sessions, so
+ * at most one can match. First-time (initial) flows only: a pinned reconnect
+ * or upgrade never parks.
+ */
+export interface TenantConfirmationSessionLookup extends ConsentSessionAttemptInput {
+  userId: string;
+}
+
+function tenantConfirmationPredicate(input: TenantConfirmationSessionLookup) {
+  return and(
+    eq(m365ConsentSessions.phase, 'tenant_confirmation'),
+    eq(m365ConsentSessions.flowVersion, 2),
+    eq(m365ConsentSessions.purpose, 'initial'),
+    gt(m365ConsentSessions.expiresAt, sql`now()`),
+    eq(m365ConsentSessions.connectionId, input.connectionId),
+    eq(m365ConsentSessions.orgId, input.orgId),
+    eq(m365ConsentSessions.profile, input.profile),
+    eq(m365ConsentSessions.consentAttemptId, input.consentAttemptId),
+    eq(m365ConsentSessions.userId, input.userId),
+  );
+}
+
+/** Non-consuming read of the parked session, in the caller's system transaction. */
+export async function readTenantConfirmationSessionInTransaction(
+  input: TenantConfirmationSessionLookup,
+): Promise<M365ConsentSession | null> {
+  const rows = await db.select().from(m365ConsentSessions)
+    .where(tenantConfirmationPredicate(input))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * One-use consume of the parked session (DELETE … RETURNING), in the caller's
+ * system transaction: a second confirm or cancel finds nothing.
+ */
+export async function consumeTenantConfirmationSessionInTransaction(
+  input: TenantConfirmationSessionLookup,
+): Promise<M365ConsentSession | null> {
+  const rows = await db.delete(m365ConsentSessions)
+    .where(tenantConfirmationPredicate(input))
+    .returning();
   return rows[0] ?? null;
 }
 

@@ -2488,6 +2488,63 @@ describe('org routes', () => {
       expect(written.defaultProviderId).toBe('mesh');
       expect(written.providers.map((p: any) => p.id)).toEqual(['rustdesk', 'mesh']);
     });
+
+    // A kept (masked) launcher password must not follow the launcher to a new
+    // URL host: the same origin binding the log-forwarding credentials have.
+    describe('launcher password bound to the urlTemplate host', () => {
+      const storedTemplate = 'https://acme.screenconnect.com/Host#Access///{id}/Join';
+      function mockStoredPartner() {
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+              limit: vi.fn().mockResolvedValue([{
+                id: 'partner-123',
+                name: 'P',
+                settings: { remoteAccessProviders: { providers: [provider('sc', { urlTemplate: storedTemplate, password: 'stored-pw' })] } },
+              }]),
+            }),
+          }),
+        } as any);
+      }
+
+      it('rejects a masked password submitted with a changed launcher host', async () => {
+        mockStoredPartner();
+        const setSpy = vi.fn();
+        vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+        const res = await patchMe({ settings: { remoteAccessProviders: {
+          providers: [provider('sc', { urlTemplate: 'https://other.example.com/Host#Access///{id}/Join', password: '********' })],
+        } } });
+
+        expect(res.status).toBe(400);
+        expect(JSON.stringify(await res.json())).toContain('re-enter');
+        expect(setSpy).not.toHaveBeenCalled();
+      });
+
+      it('keeps the stored password when the launcher host is unchanged', async () => {
+        mockStoredPartner();
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchMe({ settings: { remoteAccessProviders: {
+          providers: [provider('sc', { urlTemplate: `${storedTemplate}?v=2`, password: '********' })],
+        } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.remoteAccessProviders.providers[0].password).not.toBe('********');
+      });
+
+      it('accepts a changed launcher host when the password is re-entered', async () => {
+        mockStoredPartner();
+        mockUpdateCapture();
+
+        const res = await patchMe({ settings: { remoteAccessProviders: {
+          providers: [provider('sc', { urlTemplate: 'https://other.example.com/Host#Access///{id}/Join', password: 'new-pw' })],
+        } } });
+
+        expect(res.status).toBe(200);
+      });
+    });
   });
 
   describe('DELETE /orgs/partners/:id', () => {

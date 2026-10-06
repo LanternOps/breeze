@@ -59,6 +59,25 @@ import {
   type MonitorKind,
 } from '@breeze/shared';
 import { z } from 'zod';
+import { presentEndpointTarget } from '../utils/endpointDisplay';
+import { definitionReplacesCondition, resolveMonitorDefinitionInput } from './aiToolsMonitorEndpointInput';
+
+/**
+ * A network_check target may be a URL carrying credentials (userinfo, a
+ * `?token=` query, an authorizing path). Tool results show it as scheme + host
+ * plus a fingerprint, the same presentation webhook endpoints use.
+ */
+function presentNetworkCheckTarget(kind: unknown, value: unknown): unknown {
+  if (kind !== 'network_check' || !value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  if (typeof record.target !== 'string') return value;
+  const view = presentEndpointTarget(record.target);
+  return { ...record, target: view.target, targetFingerprint: view.fingerprint };
+}
+
+function presentMonitorDefinition<T extends { kind?: unknown; condition?: unknown }>(monitor: T): T {
+  return { ...monitor, condition: presentNetworkCheckTarget(monitor.kind, monitor.condition) };
+}
 
 function isMonitorKind(value: unknown): value is MonitorKind {
   return typeof value === 'string' && (MONITOR_KINDS as readonly string[]).includes(value);
@@ -271,8 +290,8 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
       const attachments = await attachmentsFor(monitor.id);
 
       return JSON.stringify({
-        monitor: { ...monitor, ownerScope: ownerScopeOf(monitor) },
-        attachments,
+        monitor: { ...presentMonitorDefinition(monitor), ownerScope: ownerScopeOf(monitor) },
+        attachments: attachments.map((a) => ({ ...a, overrides: presentNetworkCheckTarget(monitor.kind, a.overrides) })),
         compiled: {
           alertTemplateId: monitor.compiledAlertTemplateId,
           alertRuleId: monitor.compiledAlertRuleId,
@@ -443,24 +462,41 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
-        const parsed = createMonitorDefinitionSchema.safeParse(input.definition ?? {});
+        // Nothing is stored yet, so a displayed endpoint or masked value is refused.
+        const resolvedInput = resolveMonitorDefinitionInput(input.definition ?? {}, null);
+        if (!resolvedInput.ok) return JSON.stringify({ error: resolvedInput.error });
+        const parsed = createMonitorDefinitionSchema.safeParse(resolvedInput.definition);
         if (!parsed.success) {
           return JSON.stringify({
             error: definitionErrorMessage(input.definition, describeFirstZodIssue(parsed.error), true),
           });
         }
         const created = await createMonitorDefinition(parsed.data, auth);
-        return JSON.stringify({ success: true, monitor: { ...created, ownerScope: ownerScopeOf(created) } });
+        return JSON.stringify({ success: true, monitor: { ...presentMonitorDefinition(created), ownerScope: ownerScopeOf(created) } });
       }
 
       if (action === 'update' || action === 'enable' || action === 'disable') {
         if (!input.monitorId) return JSON.stringify({ error: 'monitorId is required' });
-        const patch: unknown =
+        let patch: unknown =
           action === 'enable'
             ? { enabled: true }
             : action === 'disable'
               ? { enabled: false }
               : (input.definition ?? {});
+        let keptStored: string[] = [];
+        if (action === 'update') {
+          // A condition copied from get_monitor carries the displayed target
+          // and masked header values; resolve them against the stored row.
+          let stored: Awaited<ReturnType<typeof getMonitorDefinition>> = null;
+          if (definitionReplacesCondition(patch)) {
+            stored = await getMonitorDefinition(input.monitorId as string, auth);
+            if (!stored) return JSON.stringify({ error: 'Monitor not found' });
+          }
+          const resolved = resolveMonitorDefinitionInput(patch, stored);
+          if (!resolved.ok) return JSON.stringify({ error: resolved.error });
+          patch = resolved.definition;
+          keptStored = resolved.keptStored;
+        }
         const parsed = updateMonitorDefinitionSchema.safeParse(patch);
         if (!parsed.success) {
           return JSON.stringify({
@@ -468,7 +504,13 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
           });
         }
         const updated = await updateMonitorDefinition(input.monitorId as string, parsed.data, auth);
-        return JSON.stringify({ success: true, monitor: { ...updated, ownerScope: ownerScopeOf(updated) } });
+        return JSON.stringify({
+          success: true,
+          monitor: { ...presentMonitorDefinition(updated), ownerScope: ownerScopeOf(updated) },
+          ...(keptStored.length > 0
+            ? { note: `${keptStored.join(' and ')} matched the displayed value, so the stored value was kept.` }
+            : {}),
+        });
       }
 
       if (action === 'delete') {

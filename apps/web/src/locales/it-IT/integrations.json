@@ -92,7 +92,7 @@
       "conditional_access_blocked": "Microsoft ha bloccato questo accesso: i criteri di accesso condizionale del tenant lo hanno interrotto (ad esempio un controllo del dispositivo). Riprova da un browser considerato attendibile dal tenant oppure rivolgiti all'amministratore del tenant.",
       "consent_provider_error": "Microsoft ha restituito un errore durante l'accesso. Riprova; se si ripete, controlla i log di accesso del tenant.",
       "admin_role_required": "Un Global Administrator o Privileged Role Administrator deve concedere il consenso.",
-      "tenant_mismatch": "Microsoft ha restituito un tenant diverso. Avvia di nuovo il consenso per questa organizzazione.",
+      "tenant_mismatch": "L'amministratore con cui hai effettuato l'accesso appartiene a un tenant Microsoft diverso da quello di questa connessione. Accedi con un amministratore del tenant collegato.",
       "tenant_already_bound": "Questo tenant Microsoft è già connesso a un'altra organizzazione.",
       "credential_unavailable": "La credenziale della connessione non è disponibile. Contatta un amministratore Breeze.",
       "identity_token_invalid": "Verifica dell'identità dell'amministratore Microsoft non riuscita.",
@@ -176,7 +176,7 @@
       "conditional_access_blocked": "Microsoft ha bloccato questo accesso: i criteri di accesso condizionale del tenant lo hanno interrotto (ad esempio un controllo del dispositivo). Riprova da un browser considerato attendibile dal tenant oppure rivolgiti all'amministratore del tenant.",
       "consent_provider_error": "Microsoft ha restituito un errore durante l'accesso. Riprova; se si ripete, controlla i log di accesso del tenant.",
       "admin_role_required": "Un Global Administrator o Privileged Role Administrator deve concedere il consenso.",
-      "tenant_mismatch": "Microsoft ha restituito un tenant diverso. Avvia di nuovo il consenso per questa organizzazione.",
+      "tenant_mismatch": "L'amministratore con cui hai effettuato l'accesso appartiene a un tenant Microsoft diverso da quello di questa connessione. Accedi con un amministratore del tenant collegato.",
       "tenant_already_bound": "Questo tenant Microsoft è già connesso a un'altra organizzazione.",
       "credential_unavailable": "La credenziale della connessione non è disponibile. Contatta un amministratore Breeze.",
       "identity_token_invalid": "Verifica dell'identità dell'amministratore Microsoft non riuscita.",
@@ -201,6 +201,30 @@
       "revoke": "Per revocare l'accesso in seguito, disconnetti qui o rimuovi l'applicazione aziendale Breeze in Microsoft Entra.",
       "continue": "Continua su Microsoft",
       "defaultTarget": "il tenant Microsoft 365 di questa organizzazione"
+    }
+  },
+  "m365ConfirmTenant": {
+    "title": "Conferma il tenant Microsoft",
+    "loading": "Caricamento del tenant a cui hai effettuato l'accesso…",
+    "signedInAs": "Hai effettuato l'accesso come {{username}} nel tenant Microsoft {{tenantId}}.",
+    "signedInTo": "Hai effettuato l'accesso al tenant Microsoft {{tenantId}}.",
+    "tenantIdLabel": "ID tenant",
+    "usernameLabel": "Accesso effettuato come",
+    "requestFor": "Breeze richiederà l'accesso a QUESTO tenant per {{orgName}}.",
+    "requestForThisOrg": "Breeze richiederà l'accesso a QUESTO tenant per questa organizzazione.",
+    "mspWarning": "Se questo è il tenant del tuo MSP e non quello del cliente, annulla e accedi con l'account amministratore del cliente. Un account guest accede sempre al proprio tenant di origine.",
+    "continue": "Continua al consenso Microsoft",
+    "cancel": "Annulla, tenant errato",
+    "continueFailed": "Impossibile avviare il consenso Microsoft.",
+    "cancelFailed": "Impossibile annullare l'accesso.",
+    "cancelled": "Annullato. Non è stato collegato nulla. Avvia di nuovo il consenso e accedi con l'account amministratore del cliente.",
+    "expired": "Questa conferma è scaduta o è già stata usata. Avvia di nuovo il consenso.",
+    "steps": {
+      "title": "Come funziona il collegamento",
+      "identity": "Accedi a Microsoft come Global Administrator o Privileged Role Administrator del tenant del cliente. Breeze verifica chi sei e a quale tenant appartieni.",
+      "confirm": "Conferma in Breeze che questo è il tenant del cliente e non il tuo.",
+      "consent": "Approva le autorizzazioni di Breeze per quel tenant nella schermata di consenso di Microsoft.",
+      "verify": "Breeze verifica il proprio accesso a quel tenant prima di collegarlo."
     }
   },
   "m365TenantPanel": {

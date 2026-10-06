@@ -4,7 +4,7 @@ import type { Tx } from './types';
 const { encrypt } = vi.hoisted(() => ({ encrypt: vi.fn((v: string, o: { aad: string }) => `sealed:${o.aad}:${v}`) }));
 vi.mock('../secretCrypto', () => ({ encryptSecret: encrypt }));
 vi.mock('../portalUrl', () => ({ portalBase: () => 'https://portal.example.test/portal' }));
-import { mintBillingLinkToken, resolveBillingLinkToken, revokeBillingLinkTokens, buildBillingLinkUrl } from './linkTokens';
+import { mintBillingLinkToken, resolveBillingLinkToken, revokeBillingLinkTokens, buildBillingLinkUrl, inspectBillingLinkToken } from './linkTokens';
 
 function fakeDb(rows: unknown[] = []) {
   const writes: unknown[] = [];
@@ -65,5 +65,27 @@ describe('billing links', () => {
     ['enroll', ''], ['skip_invoice', '/skip'], ['stop_autopay', '/stop'], ['confirm_payment', '/confirm'],
   ] as const)('builds %s on the portal base', (purpose, suffix) => {
     expect(buildBillingLinkUrl(purpose, 'a/b')).toBe(`https://portal.example.test/portal/autopay/a%2Fb${suffix}`);
+  });
+});
+
+describe('inspectBillingLinkToken says why a matched link is unusable', () => {
+  const live = { purpose: 'enroll', expiresAt: new Date(Date.now() + 100000), revokedAt: null, consumedAt: null };
+  it.each([
+    ['ok', live, null],
+    ['expired', { ...live, expiresAt: new Date(0) }, 'expired'],
+    ['revoked', { ...live, revokedAt: new Date() }, 'revoked'],
+    ['consumed', { ...live, consumedAt: new Date() }, 'consumed'],
+  ] as const)('%s', async (_label, row, failure) => {
+    expect(await inspectBillingLinkToken(fakeDb([row]).tx, 'A'.repeat(43), 'enroll')).toEqual({ row, failure });
+  });
+  it('a consumed stop or skip link is still usable (reusable by design)', async () => {
+    const row = { ...live, purpose: 'stop_autopay', consumedAt: new Date() };
+    expect(await inspectBillingLinkToken(fakeDb([row]).tx, 'A'.repeat(43), 'stop_autopay')).toEqual({ row, failure: null });
+  });
+  it('an unknown, malformed or wrong-purpose token matches nothing', async () => {
+    expect(await inspectBillingLinkToken(fakeDb().tx, 'A'.repeat(43), 'enroll')).toEqual({ row: null, failure: 'invalid' });
+    expect(await inspectBillingLinkToken(fakeDb([live]).tx, 'bad token', 'enroll')).toEqual({ row: null, failure: 'invalid' });
+    expect(await inspectBillingLinkToken(fakeDb([{ ...live, purpose: 'skip_invoice' }]).tx, 'A'.repeat(43), 'enroll'))
+      .toEqual({ row: null, failure: 'invalid' });
   });
 });

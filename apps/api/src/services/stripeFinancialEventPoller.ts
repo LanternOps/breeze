@@ -142,8 +142,14 @@ async function readConnection(partnerId: string): Promise<PollConnection | null>
 }
 
 export async function pollPartnerStripeFinancialEvents(partnerId: string, now = new Date()): Promise<number> {
+  return (await pollPartner(partnerId, now)).ingested;
+}
+
+/** Ingestion applies a financial event at once when its payment is already mapped, so
+ * the sweep's applied count includes these, not only later replays (#7897). */
+async function pollPartner(partnerId: string, now: Date): Promise<{ ingested: number; applied: number }> {
   const connection = await readConnection(partnerId);
-  if (!connection) return 0;
+  if (!connection) return { ingested: 0, applied: 0 };
   const { stripe, stripeAccountId } = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId, {
     reconciliationAccountId: connection.stripeAccountId, reason: 'financial_event_poll',
   }));
@@ -162,6 +168,7 @@ export async function pollPartnerStripeFinancialEvents(partnerId: string, now = 
   }));
 
   let ingested = 0;
+  let applied = 0;
   // Stripe lists newest-first. Applying this page oldest-first reduces stale
   // work; persisted provider timestamps/high-water marks remain authoritative
   // across page boundaries and webhook redelivery.
@@ -192,7 +199,7 @@ export async function pollPartnerStripeFinancialEvents(partnerId: string, now = 
       event, partnerId, stripeAccountId, stripe,
     });
     if (!normalized) continue;
-    await ingestStripeFinancialEvent(normalized);
+    if ((await ingestStripeFinancialEvent(normalized))?.state === 'applied') applied += 1;
     ingested += 1;
   }
 
@@ -239,7 +246,7 @@ export async function pollPartnerStripeFinancialEvents(partnerId: string, now = 
   if (page.data.some(event => event.type.startsWith('payment_intent.'))) {
     await reconcilePendingControls();
   }
-  return ingested;
+  return { ingested, applied };
 }
 
 export async function pollStripeFinancialEvents(): Promise<{ accounts: number; events: number; applied: number }> {
@@ -250,9 +257,12 @@ export async function pollStripeFinancialEvents(): Promise<{ accounts: number; e
     .limit(ACCOUNTS_PER_RUN));
 
   let events = 0;
+  let applied = 0;
   for (const account of accounts) {
     try {
-      events += await pollPartnerStripeFinancialEvents(account.partnerId);
+      const polled = await pollPartner(account.partnerId, new Date());
+      events += polled.ingested;
+      applied += polled.applied;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const stripeType = (err as { type?: string } | null)?.type;
@@ -269,7 +279,7 @@ export async function pollStripeFinancialEvents(): Promise<{ accounts: number; e
       }).where(eq(stripeConnectAccounts.partnerId, account.partnerId)));
     }
   }
-  const applied = await processPendingStripeFinancialEvents(PAGE_SIZE);
-  await replayAutopayStripeEvents();
+  applied += await processPendingStripeFinancialEvents(PAGE_SIZE);
+  applied += await replayAutopayStripeEvents();
   return { accounts: accounts.length, events, applied };
 }

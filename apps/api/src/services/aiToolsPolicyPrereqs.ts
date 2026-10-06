@@ -987,8 +987,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         const oc = orgWhere(auth, backupConfigs.orgId);
         if (oc) conditions.push(oc);
 
-        // The row's encryption key is key material: it is never returned to the model.
-        const [config] = (await db.select().from(backupConfigs).where(and(...conditions)).limit(1)).map(({ encryptionKey: _encryptionKey, ...row }) => row);
+        const [config] = await db.select().from(backupConfigs).where(and(...conditions)).limit(1);
         if (!config) return JSON.stringify({ error: 'Backup config not found or access denied' });
         // Redact sensitive provider config fields
         const safeConfig = { ...config, providerConfig: config.providerConfig ? redactProviderConfig(config.providerConfig) : null };

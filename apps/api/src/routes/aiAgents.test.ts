@@ -496,7 +496,7 @@ function minimalToolCatalogDto(overrides: Partial<AgentToolCatalogDto> = {}): Ag
         ],
       },
     ],
-    presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [] },
+    presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [], research: [] },
     unreachableTools: [],
     ...overrides,
   };
@@ -4920,6 +4920,17 @@ describe('POST /ai-agents (create)', () => {
       expect(JSON.stringify(await res.json())).toContain('offeringId');
     }
     expect(vi.mocked(createAgent)).not.toHaveBeenCalled();
+  });
+
+  it('answers a site-restricted create refusal with 403 and the standard message, not a 404', async () => {
+    const { createAgent } = await import('../services/aiAgents/agentService');
+    const { AgentSiteCeilingDeniedError } = await import('../services/aiAgents/access');
+    vi.mocked(createAgent).mockRejectedValueOnce(new AgentSiteCeilingDeniedError());
+
+    const res = await createAgentRequest(buildApp(), { kind: 'triage', name: 'Triage' });
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/Site-restricted users cannot modify/);
   });
 });
 

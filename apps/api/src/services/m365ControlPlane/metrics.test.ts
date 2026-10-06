@@ -38,8 +38,10 @@ describe('M365 customer Graph read observability', () => {
       'm365.customer_graph_read.disconnected',
       // W05, appended.
       'm365.customer_graph_read.sync_requested',
-      // #7910 identity-first consent, appended last.
+      // #7910 identity-first consent, appended.
       'm365.customer_graph_read.admin_identity_verified',
+      // #7913 W03 confirm-tenant interstitial, appended last.
+      'm365.customer_graph_read.tenant_confirmed',
     ]);
     expect(M365_CUSTOMER_GRAPH_ACTIONS_EVENTS).toEqual([
       'm365.customer_graph_actions.consent_initiated',
@@ -49,8 +51,10 @@ describe('M365 customer Graph read observability', () => {
       'm365.customer_graph_actions.grant_drift_detected',
       'm365.customer_graph_actions.retested',
       'm365.customer_graph_actions.disconnected',
-      // #7910 identity-first consent, appended last.
+      // #7910 identity-first consent, appended.
       'm365.customer_graph_actions.admin_identity_verified',
+      // #7913 W03 confirm-tenant interstitial, appended last.
+      'm365.customer_graph_actions.tenant_confirmed',
     ]);
     expect(M365_CUSTOMER_GRAPH_READ_OUTCOMES).toEqual([
       'initiated',
@@ -75,9 +79,11 @@ describe('M365 customer Graph read observability', () => {
       'executor_unavailable',
       'conditional_access_blocked',
       'consent_provider_error',
-      // #7910 identity-first consent, appended last.
+      // #7910 identity-first consent, appended.
       'identity_verified',
       'application_verification_started',
+      // #7913 W03: the operator confirmed the verified tenant, appended last.
+      'tenant_confirmed',
     ]);
     expect(new Set(M365_CUSTOMER_GRAPH_READ_OUTCOMES).size)
       .toBe(M365_CUSTOMER_GRAPH_READ_OUTCOMES.length);

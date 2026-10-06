@@ -417,6 +417,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'extensionsWeb.ts': { exempt: 'internal_plumbing', note: 'Extension frontend registry and signed static asset delivery.' },
   'externalServices.ts': { exempt: 'breeze_account', note: 'The partner\'s Breeze billing portal and support forward.' },
   'filters.ts': { tools: ['manage_saved_filters'] },
+  'fixMemory.ts': { tools: ['find_proven_fixes'] },
   'fleetDesign.ts': { gap: '#6780' },
   'fleetFindings.ts': { tools: ['get_fleet_findings'] },
   'google.ts': { exempt: 'vendor_console_admin' },

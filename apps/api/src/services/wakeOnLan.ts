@@ -10,6 +10,7 @@ import {
 } from '../db/schema';
 import { CommandTypes } from './commandQueue';
 import { claimPendingCommandForDelivery, releaseClaimedCommandDelivery } from './commandDispatch';
+import { cancelledCommandError } from './commandCancelMessage';
 import { isAgentConnected, sendCommandToAgent } from '../routes/agentWs';
 import { isParkedDevice, PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE } from './unassignedPool/deliveryEligibility';
 import { markRequestAuditWritten } from './auditRequestTracking';
@@ -22,6 +23,11 @@ export type WakeFailureCode =
   | 'NO_RELAY'
   | 'RELAY_OVERRIDE_INVALID'
   | 'WS_SEND_FAILED'
+  /**
+   * The push's claim-time eligibility check (the same one the heartbeat claim
+   * runs) refused and cancelled the wake command; it will not be sent.
+   */
+  | 'COMMAND_CANCELLED'
   /** Target or relay is parked in a holding org: lifecycle removal only. */
   | 'DEVICE_PENDING_ASSIGNMENT';
 
@@ -448,7 +454,10 @@ export async function dispatchWake(
   markRequestAuditWritten();
 
   const claimed = await claimPendingCommandForDelivery(command.id);
-  if (!claimed) {
+  if (claimed.status === 'cancelled') {
+    return { ok: false, code: 'COMMAND_CANCELLED', message: cancelledCommandError(claimed.reason) };
+  }
+  if (claimed.status !== 'claimed') {
     return { ok: false, code: 'WS_SEND_FAILED', message: 'Failed to claim wake command for dispatch.' };
   }
 

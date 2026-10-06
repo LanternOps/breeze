@@ -397,6 +397,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   REMOTE_WS_REDIS_TOPOLOGY: 'remote access topology assertion',
   // REMOVED_*
   REMOVED_DEVICE_PURGE_MAX_PER_ORG_PER_RUN: 'worker throughput knob',
+  // RESEARCH_*
+  RESEARCH_EVAL_ALLOW_REMOTE_DB: 'dev script safety override (services/llm/__scripts__)',
+  RESEARCH_EVAL_ALLOW_WRITES: 'dev script safety gate (services/llm/__scripts__)',
   // REQUIRE_*
   REQUIRE_DB_ON_STARTUP: 'boot strictness flag',
   REQUIRE_REDIS_ON_STARTUP: 'boot strictness flag',

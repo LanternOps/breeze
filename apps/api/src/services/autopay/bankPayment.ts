@@ -1,3 +1,4 @@
+import { formatMoney, formatPaymentMethod } from '@breeze/shared';
 import {payAndSaveSchema} from './payAndSave';
 import {z} from 'zod';
 import {organizations} from '../../db/schema';
@@ -12,10 +13,10 @@ import {mintBillingLinkToken} from './linkTokens';
 import {createAutopaySetupSession} from './enrollmentService';
 import {withBankSetupTerms} from './clientPaymentAuthority';
 import {autopayConsentSnapshotSchema} from './types';
-import {readInFlightCollection} from './reservation';
+import {holdsClientMoney} from './reservation';
 import {collectionFenced} from './collectionControl';
 import {invoiceAutopaySchedules} from '../../db/schema';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, runOutsideDbContext } from '../../db';
 import { invoices, billingLinkTokens, orgAutopayEnrollments } from '../../db/schema';
 import { assertNoHeldDbContextForStripe } from '../stripeSettle';
@@ -37,6 +38,13 @@ export const invoicePaySchema=z.preprocess(value=>{
   return value;
 },z.discriminatedUnion('methodType',[bankPaySchema,
   payAndSaveSchema.safeExtend({methodType:z.literal('card').optional()})]));
+/** The one-time part of a pay-by-bank authorization, shown before the recurring text.
+ * Not part of the hashed disclosure (the amounts are bound structurally in bankPayment). */
+export function bankPaymentAuthorization(principal:string,fee:string,invoiceNumber:string|null):string{
+  const total=fromMinorUnits(toMinorUnits(principal,'USD')+toMinorUnits(fee,'USD'),'USD');
+  const usd=(value:string)=>formatMoney(value,'USD','en-US');
+  return `I authorize a one-time bank payment of ${usd(principal)} plus a ${usd(fee)} processing fee (${usd(total)} in total) for ${invoiceNumber?`invoice ${invoiceNumber}`:'this invoice'}.`;
+}
 export async function getBankAutopayOffer(invoiceId:string,orgId:string):Promise<BankAutopayOffer|null>{
   return withSystemDbAccessContext(async()=>{
     const [invoice]=await db.select().from(invoices).where(and(eq(invoices.id,invoiceId),eq(invoices.orgId,orgId))).limit(1);
@@ -51,26 +59,44 @@ export async function getBankAutopayOffer(invoiceId:string,orgId:string):Promise
     const settings=await resolveBillingPaymentSettings(db,{partnerId:invoice.partnerId,orgId});
     const disclosure=await buildAutopayDisclosure(db,orgId,'us_bank_account');
     if(disclosure.achMode==='card_only')return null;
-    if((await readInFlightCollection(db,invoice.id)).inProgress)return null;
+    if(await holdsClientMoney(db,invoice.id))return null;
     const [schedule]=await db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.invoiceId,invoice.id)).limit(1);
     if(collectionFenced({schedule,invoice,enrollment}, {allowRequestedEnrollment:true}))return null;
     const quote=quoteProcessingFee({methodType:'us_bank_account',cardFunding:null,principal:invoice.balance,currency:'USD',
       stripeAccountCountry:ready.accountCountry,orgBillingCountry:org.billingAddressCountry,orgBillingRegion:org.billingAddressRegion,
       cardFeeBps:settings.cardFeeBps.value,achFeeAmount:settings.achFeeAmount.value,feeAttested:settings.feeAttested});
     const method=await getAutopayMethod(db,orgId);
+    // G3: bank pay makes the new account the autopay method at once (it is exempt from F-1's
+    // keep-working rule), so it is never offered over a working method while automatic payments
+    // are active. The one exception is the bank this invoice's own bank payment saved: the
+    // return page reads this offer to finish that payment.
+    if(enrollment.status==='active'&&method?.status==='active'){
+      const [own]=method.type==='us_bank_account'&&method.stripeSetupIntentId?await db.select({id:autopaySetupAttempts.id}).from(autopaySetupAttempts).where(and(
+        eq(autopaySetupAttempts.orgId,orgId),eq(autopaySetupAttempts.enrollmentId,enrollment.id),eq(autopaySetupAttempts.setupIntentId,method.stripeSetupIntentId),
+        sql`${autopaySetupAttempts.consentSnapshot}->'bankPayment'->>'invoiceId' = ${invoice.id}`)).limit(1):[];
+      if(!own)return null;
+    }
     if(!available&&method?.status!=='pending_verification')return null;
     return {available,principal:invoice.balance,fee:quote.feeAmount,currency:'USD' as const,disclosureHash:disclosure.hash,
-      consentText:`I authorize a bank payment of USD ${invoice.balance}, plus a processing fee of USD ${quote.feeAmount}, for this invoice. ${disclosure.text}`,
-      methodStatus:method?.type==='us_bank_account'&&(method.status==='active'||method.status==='pending_verification')?method.status:null};
+      consentText:bankPaymentAuthorization(invoice.balance,quote.feeAmount,invoice.invoiceNumber)+` ${disclosure.text}`,
+      ...(method?.type==='us_bank_account'&&(method.status==='active'||method.status==='pending_verification')
+        ?{methodStatus:method.status,methodLabel:formatPaymentMethod(method)}:{methodStatus:null,methodLabel:null})};
   });
 }
+/** Invoice-bound bank-pay authority. Stripe microdeposits take 1-2 business days to
+ * arrive and then time out after 10 days unverified (Stripe ACH docs, error
+ * payment_method_microdeposit_verification_timeout), so the client needs about two
+ * weeks to verify and come back to pay. A long lifetime cannot charge different
+ * terms: the accepted principal and fee are re-checked at collection and the token
+ * is consumed once. */
+export const BANK_PAYMENT_AUTHORITY_TTL_DAYS=14;
 export async function startInvoiceBankSetup(input:{invoiceId:string;orgId:string;terms:z.infer<typeof bankPaySchema>;
   returnTo:'public'|'portal';ip:string|null;userAgent:string|null}){
   assertNoHeldDbContextForStripe('startInvoiceBankSetup');
   const offer=await getBankAutopayOffer(input.invoiceId,input.orgId);
   if(!offer?.available||offer.principal!==input.terms.principal||offer.fee!==input.terms.fee
     ||offer.currency!==input.terms.currency||offer.disclosureHash!==input.terms.disclosureHash){
-    throw new InvoiceServiceError('The terms changed. Review them and try again.',409,'INVALID_STATE');
+    throw new InvoiceServiceError('The terms changed. Review them and try again.',409,'INVALID_STATE',{reason:'terms_changed'});
   }
   const authority=await withSystemDbAccessContext(async()=>{
     const [enrollment]=await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId,input.orgId)).limit(1).for('update');
@@ -79,7 +105,7 @@ export async function startInvoiceBankSetup(input:{invoiceId:string;orgId:string
     const contactEmail=resolveBillingEmail(org.billingContact);
     if(!contactEmail)throw new InvoiceServiceError('A billing contact is required',409,'INVALID_STATE');
     const token=await mintBillingLinkToken(db,{orgId:org.id,invoiceId:input.invoiceId,enrollmentId:enrollment.id,
-      generation:enrollment.generation,purpose:'enroll',ttlDays:1});
+      generation:enrollment.generation,purpose:'enroll',ttlDays:BANK_PAYMENT_AUTHORITY_TTL_DAYS});
     return {tokenId:token.id,contactEmail};
   });
   return withBankSetupTerms({invoiceId:input.invoiceId,orgId:input.orgId,principal:offer.principal,fee:offer.fee,
@@ -106,19 +132,25 @@ export async function collectAfterBankSetup(input: { invoiceId: string; orgId: s
   const captured=await runOutsideDbContext(()=>stripe.setupIntents.retrieve(setupIntentId));
   if(captured.id!==setupIntentId||captured.status!=='succeeded')
     throw new InvoiceServiceError('Bank payment consent unavailable',409,'INVALID_STATE');
-  const authority = await withSystemDbAccessContext(async () => {
+  const checked = await withSystemDbAccessContext(async () => {
     const [token] = await db.select().from(billingLinkTokens).where(eq(billingLinkTokens.id, session.metadata!.token_id!)).limit(1);
     const [enrollment] = await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId, invoice.orgId)).limit(1);
     const method = await getAutopayMethod(db, invoice.orgId);
     if (!token || token.invoiceId !== invoice.id || token.orgId !== invoice.orgId
-      || token.purpose!=='enroll'||!enrollment||token.enrollmentId!==enrollment.id||enrollment.status!=='active'
-      || token.generation !== enrollment?.generation || token.consumedAt || token.revokedAt
-      || token.expiresAt <= new Date() || enrollment.stripeAccountId !== stripeAccountId
+      || token.purpose!=='enroll') throw new InvoiceServiceError('Bank authorization unavailable',409,'INVALID_STATE');
+    // Normal ways a genuine authority stops being usable are reported so the page can
+    // offer the right next step (restart setup, or check the payment already started).
+    if (token.consumedAt) return { unavailable: 'bank_authorization_used' as const };
+    if (token.revokedAt || token.expiresAt <= new Date()) return { unavailable: 'bank_authorization_expired' as const };
+    if (!enrollment||token.enrollmentId!==enrollment.id||enrollment.status!=='active'
+      || token.generation !== enrollment.generation || enrollment.stripeAccountId !== stripeAccountId
       || String(enrollment.generation) !== session.metadata!.generation
-      || method?.type !== 'us_bank_account' || method.status !== 'active') throw new InvoiceServiceError('Bank authorization unavailable',409,'INVALID_STATE');
+      || method?.type !== 'us_bank_account' || method.status !== 'active') return { unavailable: 'bank_authorization_changed' as const };
     const [setup]=await db.select().from(autopaySetupAttempts).where(and(
       eq(autopaySetupAttempts.checkoutSessionId,session.id),eq(autopaySetupAttempts.orgId,invoice.orgId),
       eq(autopaySetupAttempts.stripeAccountId,stripeAccountId),eq(autopaySetupAttempts.tokenId,token.id))).limit(1);
+    // A later setup replaced the method this authorization captured.
+    if (setup?.setupIntentId && method.stripeSetupIntentId !== setup.setupIntentId) return { unavailable: 'bank_authorization_changed' as const };
     const parsed=autopayConsentSnapshotSchema.safeParse(setup?.consentSnapshot);
     const accepted=parsed.success?parsed.data.bankPayment:null;
     if(!accepted||accepted.invoiceId!==invoice.id||accepted.orgId!==invoice.orgId||accepted.currency!==invoice.currencyCode||setup?.generation!==enrollment.generation
@@ -140,11 +172,12 @@ export async function collectAfterBankSetup(input: { invoiceId: string; orgId: s
       || session.metadata!.currency !== invoice.currencyCode) throw new InvoiceServiceError('Invalid authorized amount',409,'INVALID_STATE');
     const [org]=await db.select().from(organizations).where(eq(organizations.id,invoice.orgId)).limit(1);
     if(!org||org.deletedAt||!['active','trial'].includes(org.status))throw new InvoiceServiceError('Organization unavailable',404,'INVALID_STATE');
-    return { tokenId: token.id, invoiceId: invoice.id, generation: enrollment.generation,
+    return { authority: { tokenId: token.id, invoiceId: invoice.id, generation: enrollment.generation,
       capture:{setupAttemptId:setup.id,stripePaymentMethodId:method.stripePaymentMethodId,setupIntentId:setup.setupIntentId!,
         stripeAccountId:enrollment.stripeAccountId!,stripeCustomerId:enrollment.stripeCustomerId!},
       methodId: method.id, principal: fromMinorUnits(principalMinor, invoice.currencyCode),
-      fee: fromMinorUnits(feeMinor, invoice.currencyCode), currency: invoice.currencyCode };
+      fee: fromMinorUnits(feeMinor, invoice.currencyCode), currency: invoice.currencyCode } };
   });
-  return withClientPaymentAuthority(authority, () => attemptCollection({ invoiceId: invoice.id, initiatedBy: 'client_on_session' }));
+  if ('unavailable' in checked) return { attemptId: null, outcome: 'refused' as const, reason: checked.unavailable };
+  return withClientPaymentAuthority(checked.authority, () => attemptCollection({ invoiceId: invoice.id, initiatedBy: 'client_on_session' }));
 }

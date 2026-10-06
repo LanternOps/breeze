@@ -1304,6 +1304,19 @@ export default function DevicesPage() {
           // "wait for it to reconnect" story `queued_offline` tells; treat it
           // as sent, same as 'delivered', or an online device gets told it's
           // offline.
+          // 'cancelled' — the server refused it before delivery (e.g. the
+          // requester's access changed); it will never run, so never "sent".
+          if (result.delivery === 'cancelled') {
+            showToast({
+              type: 'error',
+              message: t('devicesPage.toasts.commandCancelled', {
+                action: label,
+                hostname: device.hostname,
+                reason: result.cancelReason ?? 'unknown',
+              }),
+            });
+            break;
+          }
           showToast({
             type: 'success',
             message: result.delivery !== 'queued_offline'

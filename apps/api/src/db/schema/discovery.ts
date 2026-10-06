@@ -252,7 +252,7 @@ export const networkKnownGuests = pgTable('network_known_guests', {
   macAddress: varchar('mac_address', { length: 17 }).notNull(),
   label: varchar('label', { length: 255 }).notNull(),
   notes: text('notes'),
-  addedBy: uuid('added_by').references(() => users.id),
+  addedBy: uuid('added_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({

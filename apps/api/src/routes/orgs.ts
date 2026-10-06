@@ -24,6 +24,7 @@ import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
 // on the mock") before a single test runs.
 import { psaConnections } from '../db/schema/integrations';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
+import { markPermissionGate } from '../middleware/permissionGate';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
 import { getAiApprovalTimeout } from '../services/aiApprovalTimeout';
@@ -59,6 +60,8 @@ import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry'
 import {
   LOG_FORWARDING_ORIGIN_CHANGE_MESSAGE,
   LOG_FORWARDING_SECRET_DESTINATIONS,
+  REMOTE_ACCESS_LAUNCHER_ORIGIN_CHANGE_MESSAGE,
+  REMOTE_ACCESS_LAUNCHER_SECRET_DESTINATIONS,
   SettingsSecretInputError,
   maskSettingsSecrets,
   restoreMaskedSettingsSecrets,
@@ -436,9 +439,9 @@ async function ensureOrgAccess(
 /**
  * Resolve an incoming `settings` value (organization, partner or site) against
  * the stored one before it is sealed and written: masked markers and omitted
- * secret keys keep the stored secret, and a log-forwarding destination may not
- * move to a new origin while a stored credential is kept rather than
- * re-entered. `stored` is undefined on create, where there is nothing to keep.
+ * secret keys keep the stored secret, and a log-forwarding destination or a
+ * remote-access launcher may not move to a new origin while a stored
+ * credential is kept rather than re-entered. `stored` is undefined on create, where there is nothing to keep.
  */
 function resolveIncomingSettingsSecrets(
   incoming: unknown,
@@ -446,6 +449,9 @@ function resolveIncomingSettingsSecrets(
 ): { ok: true; settings: unknown } | { ok: false; error: string } {
   if (settingsSecretWouldFollowNewOrigin(incoming, stored, LOG_FORWARDING_SECRET_DESTINATIONS, isMaskedIntegrationSecret)) {
     return { ok: false, error: LOG_FORWARDING_ORIGIN_CHANGE_MESSAGE };
+  }
+  if (settingsSecretWouldFollowNewOrigin(incoming, stored, REMOTE_ACCESS_LAUNCHER_SECRET_DESTINATIONS, isMaskedIntegrationSecret)) {
+    return { ok: false, error: REMOTE_ACCESS_LAUNCHER_ORIGIN_CHANGE_MESSAGE };
   }
   try {
     return { ok: true, settings: restoreMaskedSettingsSecrets(incoming, stored) };
@@ -2404,13 +2410,13 @@ async function readOrgLifecycleStatus(orgId: string): Promise<string | null> {
 // and platformAdminMiddleware (/admin/*) already treats that flag as the
 // grant, so this mirrors the established authority model. Applied ONLY to the
 // org update route, not globally.
-const requireOrgWriteOrPlatformAdmin = async (c: Context, next: Next) => {
+const requireOrgWriteOrPlatformAdmin = markPermissionGate(async (c: Context, next: Next) => {
   const auth = c.get('auth') as AuthContext | undefined;
   if (auth?.scope === 'system' && auth.user?.isPlatformAdmin === true) {
     return next();
   }
   return requireOrgWrite(c, next);
-};
+}, 'orgs:write|platform-admin');
 
 const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPlatformAdmin, requireMfa(), zValidator('json', updateOrganizationSchema), async (c: any) => {
   const auth = c.get('auth') as AuthContext;

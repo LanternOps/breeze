@@ -3,14 +3,23 @@ import { toMinorUnits } from '../stripeMoney';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { billingNoticeOutbox, billingLinkTokens, invoiceCollectionAttempts, invoiceAutopaySchedules,
-  orgAutopayEnrollments, invoices } from '../../db/schema';
+  orgAutopayEnrollments, orgPaymentMethods, invoices } from '../../db/schema';
 import { resolveBillingLinkToken } from './linkTokens';
 import { loadAttemptForReconciliation, resumeCollectionAttempt } from './collectionEngine';
-import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../invoiceLinkToken';
+import { getOrMintInvoiceLink, buildPublicInvoiceUrl, peekInvoiceLink } from '../invoiceLinkToken';
+import { loadAutopayBranding } from './customerBranding';
 import { assertNoHeldDbContextForStripe } from '../stripeSettle';
 import { InvoiceServiceError } from '../invoiceTypes';
+import { formatPaymentMethod, type AutopayConfirmationRelease, type AutopayConfirmView } from '@breeze/shared';
 
 const unavailable = () => new InvoiceServiceError('Link unavailable', 404, 'INVALID_STATE');
+
+/** The newest attempt is the only one a customer may recover; older attempts are history. */
+async function latestAttempt(invoiceId: string) {
+  const [latest] = await db.select().from(invoiceCollectionAttempts).where(eq(invoiceCollectionAttempts.invoiceId, invoiceId))
+    .orderBy(desc(invoiceCollectionAttempts.createdAt), desc(invoiceCollectionAttempts.attemptNo)).limit(1);
+  return latest;
+}
 
 /** Only the notice's exact attempt and current token generation may recover money. */
 async function resolveConfirmation(token: string, lock = false) {
@@ -35,8 +44,7 @@ async function resolveConfirmation(token: string, lock = false) {
     eq(invoiceCollectionAttempts.orgId, invoice.orgId),
   )).limit(1);
   if (!attempt || !attempt.stripePaymentIntentId || !['requires_action','processing','succeeded','canceled','unapplied'].includes(attempt.state) || attempt.id !== frozen.attemptId || attempt.invoiceId !== invoice.id || attempt.orgId !== invoice.orgId) throw unavailable();
-  const [latest] = await db.select().from(invoiceCollectionAttempts).where(eq(invoiceCollectionAttempts.invoiceId, invoice.id))
-    .orderBy(desc(invoiceCollectionAttempts.createdAt), desc(invoiceCollectionAttempts.attemptNo)).limit(1);
+  const latest = await latestAttempt(invoice.id);
   if (latest?.id !== attempt.id) throw unavailable();
   let fenced = collectionFenced({ invoice, enrollment })
     || !['sent', 'partially_paid', 'overdue'].includes(invoice.status)
@@ -56,26 +64,46 @@ async function resolveConfirmation(token: string, lock = false) {
   return { link, invoice, attempt, fenced };
 }
 
-export async function getConfirmPaymentView(token: string) {
+/** The confirm page's view: the attempt's state and amount, the invoice and method it
+ * belongs to, and the MSP asking. Read-only: never mints a link or touches Stripe. */
+export async function getConfirmPaymentView(token: string): Promise<AutopayConfirmView> {
   return withSystemDbAccessContext(async () => {
-    const { attempt, fenced } = await resolveConfirmation(token);
-    return { state: attempt.state === 'canceled' || fenced ? 'not_needed' : attempt.state, amount: attempt.principalAmount, currency: attempt.currency };
+    const { invoice, attempt, fenced } = await resolveConfirmation(token);
+    const [method] = attempt.paymentMethodId ? await db.select().from(orgPaymentMethods).where(and(
+      eq(orgPaymentMethods.id, attempt.paymentMethodId), eq(orgPaymentMethods.orgId, invoice.orgId))).limit(1) : [];
+    const live = peekInvoiceLink(invoice);
+    return { state: attempt.state === 'canceled' || fenced ? 'not_needed' : attempt.state, amount: attempt.principalAmount, fee: attempt.feeAmount ?? '0.00', currency: attempt.currency,
+      invoiceNumber: invoice.invoiceNumber ?? null, invoiceStatus: invoice.status, balance: invoice.balance, methodLabel: method && method.orgId === invoice.orgId ? formatPaymentMethod(method) : null,
+      ...await loadAutopayBranding(db, { orgId: invoice.orgId, partnerId: invoice.partnerId }),
+      invoiceUrl: live ? buildPublicInvoiceUrl(live.token) : null };
   });
+}
+
+/** Cancel-only recovery of the exact off-session PaymentIntent, then report what
+ * Stripe actually did. Shared by the emailed confirm link and the invoice pages.
+ * Uses original account/retained credentials, validates provider bindings, and
+ * atomically finalizes the schedule with the reservation after verified cancel.
+ * This is recovery of an existing PI; it deliberately has no rollout gate.
+ */
+async function cancelForOnSessionPayment(attemptId: string)
+  : Promise<{ state: 'processing' } | { state: 'succeeded'; paid: boolean } | { state: 'canceled' }> {
+  await resumeCollectionAttempt(attemptId, true);
+  const current = await loadAttemptForReconciliation(attemptId);
+  if (current.attempt.state === 'processing') return { state: 'processing' };
+  // R5: reasons the pages branch on (never the English message).
+  if (current.attempt.state === 'unapplied') throw new InvoiceServiceError('Payment received but needs billing review', 409, 'INVALID_STATE', { reason: 'needs_review' });
+  if (current.attempt.state === 'succeeded') return { state: 'succeeded', paid: !!current.mapping.invoicePaymentId };
+  if (current.attempt.state !== 'canceled') throw new InvoiceServiceError('Payment is still processing', 409, 'INVALID_STATE', { reason: 'processing' });
+  return { state: 'canceled' };
 }
 
 export async function confirmInvoicePayment(token: string): Promise<{ url?: string; processing?: boolean; paid?: boolean; notNeeded?: boolean }> {
   assertNoHeldDbContextForStripe('confirmInvoicePayment');
   const binding = await withSystemDbAccessContext(() => resolveConfirmation(token));
   if (binding.attempt.state === 'canceled' || binding.fenced) return { notNeeded: true };
-  // Uses original account/retained credentials, validates provider bindings, and
-  // atomically finalizes the schedule with the reservation after verified cancel.
-  // This is recovery of an existing PI; it deliberately has no rollout gate.
-  await resumeCollectionAttempt(binding.attempt.id, true);
-  const current = await loadAttemptForReconciliation(binding.attempt.id);
-  if (current.attempt.state === 'processing') return { processing: true };
-  if (current.attempt.state === 'unapplied') throw new InvoiceServiceError('Payment received but needs billing review', 409, 'INVALID_STATE');
-  if (current.attempt.state === 'succeeded') return { paid: !!current.mapping.invoicePaymentId };
-  if (current.attempt.state !== 'canceled') throw new InvoiceServiceError('Payment is still processing', 409, 'INVALID_STATE');
+  const observed = await cancelForOnSessionPayment(binding.attempt.id);
+  if (observed.state === 'processing') return { processing: true };
+  if (observed.state === 'succeeded') return { paid: observed.paid };
   return withSystemDbAccessContext(async () => {
     const fresh = await resolveConfirmation(token, true);
     if (fresh.attempt.id !== binding.attempt.id || fresh.attempt.state !== 'canceled') throw unavailable();
@@ -88,4 +116,29 @@ export async function confirmInvoicePayment(token: string): Promise<{ url?: stri
     const link = await getOrMintInvoiceLink(fresh.invoice);
     return { url: buildPublicInvoiceUrl(link.token) };
   });
+}
+
+/** Invoice-page exit (public link or portal session; the caller has authorized
+ * the invoice for this org). While the newest attempt waits on bank
+ * authentication, cancel that off-session PaymentIntent so the reservation is
+ * released and the client can pay on-session. Cancelling an unauthenticated
+ * PaymentIntent cannot move money, so no confirm token is required here.
+ */
+export async function releaseInvoiceConfirmation(input: { invoiceId: string; orgId: string }): Promise<AutopayConfirmationRelease> {
+  assertNoHeldDbContextForStripe('releaseInvoiceConfirmation');
+  const attempt = await withSystemDbAccessContext(async () => {
+    const [invoice] = await db.select().from(invoices)
+      .where(and(eq(invoices.id, input.invoiceId), eq(invoices.orgId, input.orgId))).limit(1);
+    if (!invoice || invoice.id !== input.invoiceId || invoice.orgId !== input.orgId) {
+      throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+    }
+    const latest = await latestAttempt(invoice.id);
+    return latest && latest.invoiceId === invoice.id && latest.orgId === invoice.orgId
+      && latest.state === 'requires_action' && latest.stripePaymentIntentId ? latest : null;
+  });
+  if (!attempt) return { outcome: 'not_needed' };
+  const observed = await cancelForOnSessionPayment(attempt.id);
+  if (observed.state === 'processing') return { outcome: 'processing' };
+  if (observed.state === 'succeeded') return { outcome: 'paid' };
+  return { outcome: 'released' };
 }

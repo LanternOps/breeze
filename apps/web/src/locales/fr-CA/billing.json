@@ -2494,6 +2494,7 @@
     "requestedCount_other": "Demandes envoyées à {{count}} clients.",
     "chargeDate": "Prélèvement vers le {{date}}",
     "excludeInvoice": "Exclure cette facture des paiements automatiques",
+    "excludeRefusedProcessing": "Le paiement de cette facture est déjà en cours de traitement et ne peut pas être arrêté. Vous pourrez exclure la facture une fois le paiement réussi ou échoué.",
     "excludeContract": "Exclure les factures comprenant ce contrat",
     "failed": "Impossible de mettre à jour le paiement automatique. Veuillez réessayer.",
     "states": {
@@ -2521,12 +2522,17 @@
       "enrolled_after_issue": "Inscrit après l’émission de la facture",
       "method_not_usable": "Mode de paiement indisponible",
       "over_cap": "Limite de paiement automatique dépassée",
+      "above_authorized_cap": "Au-dessus de la limite autorisée par le client",
+      "issued_before_authorization": "Émise avant l'autorisation mise à jour du client : à percevoir manuellement",
       "cap_currency_mismatch": "La devise de la limite ne correspond pas",
       "ach_currency_unsupported": "Devise non prise en charge pour les paiements bancaires",
       "excluded_contract": "Contrat exclu",
       "excluded_invoice": "Facture exclue",
       "charging_disabled": "Prélèvement automatique désactivé",
       "stripe_unavailable": "Stripe indisponible",
+      "bank_unverified": "Non prélevée : le compte bancaire du client n'a pas été vérifié à temps. À percevoir manuellement",
+      "charging_on_hold": "Non prélevée : les paiements automatiques sont restés désactivés. À percevoir manuellement",
+      "service_unavailable": "Non prélevée : Stripe est resté inaccessible. À percevoir manuellement",
       "control_pending:skip": "Demande d’omission reçue; arrêt du paiement en attente",
       "control_pending:exclude": "Exclusion demandée; arrêt du paiement en attente",
       "control_pending:stop": "Arrêt demandé; arrêt du paiement en attente",
@@ -2541,6 +2547,7 @@
     },
     "noticeTemplate": "Facture avec avis de paiement automatique",
     "chargeFailed": "Impossible de lancer le paiement. Réessayez.",
+    "chargeResultUnknown": "Nous n’avons pas pu confirmer ce qu’il est advenu de ce paiement. Actualisation de la facture pour afficher son état actuel.",
     "chargeStarted": "Tentative de paiement lancée",
     "chargeNow": "Prélever maintenant",
     "noCharge": "Aucun prélèvement",
@@ -2557,7 +2564,10 @@
       "failed": "Échec du paiement",
       "requires_action": "Confirmation requise",
       "canceled": "Annulé",
-      "unapplied": "Rapprochement du paiement requis"
+      "unapplied": "Rapprochement du paiement requis",
+      "returned": "Retourné",
+      "refunded": "Remboursé",
+      "disputed": "Contesté"
     },
     "fees": {
       "title": "Frais de traitement",
@@ -2566,14 +2576,66 @@
       "inactive": "Les frais de carte restent inactifs tant que votre administrateur partenaire n’a pas confirmé les deux déclarations ci-dessous.",
       "notified": "J’ai avisé mon acquéreur (Stripe) et les réseaux de cartes il y a au moins 30 jours",
       "cost": "Ces frais ne dépassent pas mon coût d’acceptation des cartes",
-      "rules": "Cartes de crédit uniquement. Aucuns frais de carte en CA, CT, ME ou MA; plafond de 2 % au Colorado. Les frais s’appliquent uniquement aux paiements automatiques américains admissibles en USD. Un champ vide reprend la valeur héritée; zéro exempte ce client. Les liens de paiement ponctuel sont sans frais.",
+      "rules": "Cartes de crédit uniquement. Aucuns frais de carte en CA, CT, ME ou MA; plafond de 2 % au Colorado. Les frais s’appliquent uniquement aux paiements automatiques américains admissibles en USD. Les liens de paiement ponctuel sont sans frais.",
       "legal": "Breeze ne fournit pas de conseils juridiques. Vous êtes responsable de l’admissibilité des suppléments, des avis et du traitement fiscal.",
-      "lowerAuthorization": "Clients ayant autorisé des frais inférieurs : {{count}}. Leur autorisation actuelle reste en vigueur jusqu’à l’acceptation des nouvelles conditions.",
+      "lowerAuthorization": "Clients ayant autorisé des conditions inférieures : {{count}}. Leur autorisation actuelle reste en vigueur jusqu’à l’acceptation des nouvelles conditions.",
       "authorizedCard": "Autorisé : {{accepted}} points de base; configuré : {{configured}}",
       "authorizedAch": "Autorisé : USD {{accepted}}; configuré : USD {{configured}}",
+      "authorizedCap": "Plafond autorisé : {{accepted}}; configuré : {{configured}}",
+      "noCap": "aucun plafond",
       "requestAuthorization": "Demander une nouvelle autorisation",
       "requestFailed": "Impossible de demander une nouvelle autorisation. Vérifiez le contact de facturation et la disponibilité de Stripe.",
-      "requested": "Nouvelle autorisation demandée. L’autorisation actuelle reste en vigueur."
+      "requested": "Nouvelle autorisation demandée. L’autorisation actuelle reste en vigueur.",
+      "attestationOnFile": "Attestation au dossier : {{name}} a confirmé les deux déclarations le {{date}}.",
+      "attestationOnFileUnknown": "Attestation au dossier : les deux déclarations ont été confirmées le {{date}}.",
+      "reattestHelp": "Pour attester de nouveau, cochez les deux déclarations puis enregistrez. Une nouvelle attestation est alors consignée à votre nom avec la date du jour et remplace celle au dossier. Les frais autorisés par vos clients ne changent pas.",
+      "authorizedCardNone": "Aucune autorisation au dossier; configuré : {{configured}} points de base",
+      "authorizedAchNone": "Aucune autorisation au dossier; configuré : USD {{configured}}",
+      "lowerAuthorizationOrg": "Ce client n’a pas autorisé les conditions configurées. Toute autorisation existante reste en vigueur jusqu’à l’acceptation des nouvelles conditions.",
+      "blankPartner": "Un champ vide applique la valeur par défaut de Breeze (aucuns frais). Pour exempter un client, inscrivez 0 comme frais dans sa page Facturation.",
+      "blankOrg": "Un champ vide reprend la valeur par défaut du partenaire. Inscrivez 0 pour exempter ce client.",
+      "inactiveOrg": "Les frais de carte restent inactifs tant qu’un administrateur partenaire n’a pas confirmé les deux déclarations sur les frais dans l’onglet Payments des paramètres de facturation du partenaire.",
+      "missingAuthorization": "Aucune autorisation au dossier : {{count}}. Les paiements automatiques ne peuvent pas prélever ces clients tant qu’ils n’ont pas autorisé leur mode de paiement enregistré.",
+      "missingAuthorizationOrg": "Ce client n’a aucune autorisation au dossier pour son mode de paiement enregistré. Les paiements automatiques ne peuvent pas le prélever tant qu’il ne l’a pas autorisé.",
+      "requestMissingAuthorization": "Demander une autorisation"
+    },
+    "enrollmentTitle": "Inscription au paiement automatique",
+    "requestSentTo": "Demande envoyée à {{email}}.",
+    "result": {
+      "paused": "Paiements automatiques suspendus.",
+      "resumed": "Paiements automatiques repris.",
+      "turnedOff": "Paiements automatiques désactivés."
+    },
+    "needsAttention": {
+      "method_unusable": "Le mode de paiement enregistré ne peut pas être prélevé.",
+      "stripe_account_changed": "Le compte Stripe connecté a changé après l’inscription de ce client.",
+      "key_missing_permissions": "Il manque à la clé Stripe des autorisations nécessaires aux paiements automatiques.",
+      "verification_failed": "La vérification du compte bancaire a échoué."
+    },
+    "chargeOutcome": {
+      "succeeded": "Paiement reçu.",
+      "processing": "Paiement transmis. Il est en cours de traitement; la facture sera mise à jour une fois le paiement réglé.",
+      "requiresAction": "La banque du client exige qu’il confirme ce paiement. Si un contact de facturation est au dossier, il reçoit par courriel un lien pour le confirmer.",
+      "declined": "Le paiement n’a pas abouti.",
+      "cardDeclined": "La carte a été refusée.",
+      "expiredCard": "La carte est expirée. Demandez au client de mettre à jour son mode de paiement.",
+      "insufficientFunds": "Le paiement a été refusé pour fonds insuffisants.",
+      "canceled": "Le paiement a été annulé avant d’aboutir.",
+      "unapplied": "Le paiement a été encaissé, mais doit être rapproché. Vérifiez-le avant de prélever de nouveau."
+    },
+    "chargeRefused": {
+      "notice_lead": "Le délai de préavis du client n’est pas encore écoulé. La facture pourra être prélevée ensuite.",
+      "no_eligible_notice": "Cette facture n’a pas d’avis de paiement automatique; elle ne peut donc pas être prélevée automatiquement.",
+      "renotice_required": "L’avis de paiement doit être renvoyé avant que cette facture puisse être prélevée.",
+      "collection_in_progress": "Un paiement est déjà en cours pour cette facture.",
+      "checkout_session_unrevoked": "Le client est peut-être en train de payer cette facture en ligne. Réessayez dans quelques minutes.",
+      "retry_not_due": "La prochaine tentative n’est pas encore due.",
+      "not_payable": "Cette facture n’est pas ouverte au paiement.",
+      "nothing_to_pay": "Il ne reste rien à payer sur cette facture.",
+      "enrollment_inactive": "Les paiements automatiques ne sont pas actifs pour ce client.",
+      "schedule_inactive": "Cette facture n’est plus prévue pour un paiement automatique.",
+      "generic": "Le paiement automatique n’a pas pu être lancé. Actualisez la facture pour voir son état actuel.",
+      "excluded_contract": "Le contrat de cette facture est exclu des paiements automatiques, donc rien n'a été prélevé. Si le client avait été avisé de ce paiement, il a reçu un courriel indiquant qu'il n'aura pas lieu."
     }
   },
   "reminders": {
@@ -2594,7 +2656,7 @@
     "sources": {
       "org": "organisation",
       "partner": "valeur par défaut du partenaire",
-      "default": "valeur par défaut du système"
+      "default": "valeur par défaut de Breeze"
     },
     "save": "Enregistrer les paramètres de paiement",
     "saving": "Enregistrement…",

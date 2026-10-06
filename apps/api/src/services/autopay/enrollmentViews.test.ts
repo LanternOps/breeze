@@ -35,3 +35,14 @@ it('uses the full 24-hour enqueue age and surfaces missing contacts immediately'
  const [row]=await listAutopayEnrollments({partnerId:'partner',userId:null,accessibleOrgIds:['org']});
  expect(row!.awaitingNotice).toMatchObject({count:2,invoiceId:'old',reason:'delivery_failed'});
 });
+
+// FP-19: a succeeded last charge that was returned, refunded or disputed is not "Payment received".
+it.each([
+  ['disputed', 'us_bank_account', 'returned'], ['partially_disputed', 'us_bank_account', 'returned'], ['disputed', 'card', 'disputed'],
+  ['refunded', 'card', 'refunded'], ['partially_refunded', 'us_bank_account', 'refunded'], ['succeeded', 'card', 'succeeded'],
+] as const)('a succeeded last charge whose payment is %s (%s) reads %s', async (paymentStatus, methodType, state) => {
+  h.rows.push([{ org: { id: 'org', partnerId: 'partner', name: 'Example' }, enrollment: null }],
+    [{ orgId: 'org', state: 'succeeded', createdAt: new Date('2026-01-01'), principalAmount: '100.00', currency: 'USD', paymentStatus, paymentMethodType: methodType }], []);
+  const rows = await listAutopayEnrollments({ partnerId: 'partner', userId: null, accessibleOrgIds: ['org'] });
+  expect(rows[0]!.lastCharge).toEqual({ state, principalAmount: '100.00', currency: 'USD', createdAt: '2026-01-01T00:00:00.000Z' });
+});

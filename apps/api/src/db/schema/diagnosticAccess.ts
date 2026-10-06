@@ -6,7 +6,7 @@ import { devices } from './devices';
 
 /**
  * Administrator-approved, READ-ONLY diagnostic file access on one device
- * (migration 2026-12-07-120000-diagnostic-access-grants.sql).
+ * (migration 2026-12-13-130000-diagnostic-access-grants.sql).
  *
  * pending_approval -> active | denied | expired; active -> revoked | expired.
  * Requests are created by the `request_diagnostic_access` tool and decided

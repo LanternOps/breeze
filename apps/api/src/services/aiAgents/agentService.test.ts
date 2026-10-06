@@ -2,7 +2,9 @@ import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../../middleware/auth';
 import { PartnerWideWriteDeniedError } from '../partnerWideAccess';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
+import { ResearchAgentEditError } from './researchAgentEdit';
 
 const state = vi.hoisted(() => ({
   currentRow: null as Record<string, unknown> | null,
@@ -299,6 +301,22 @@ describe('assertAgentWriteAllowed', () => {
     expect(() => assertAgentWriteAllowed(auth(), { orgId: 'o1', partnerId: null })).not.toThrow();
     expect(() => assertAgentWriteAllowed(auth(), { orgId: 'o9', partnerId: null }))
       .toThrow(AgentAccessDeniedError);
+  });
+
+  it.each([
+    ['one site', ['s1']],
+    ['zero sites', []],
+  ])('an org caller restricted to %s cannot write an org-wide agent', (_label, siteIds) => {
+    const restricted = auth({ scope: 'organization', orgId: 'o1', partnerId: null, allowedSiteIds: siteIds });
+    expect(() => assertAgentWriteAllowed(restricted, { orgId: 'o1', partnerId: null }))
+      .toThrow(SITE_CEILING_WRITE_DENIED_MESSAGE);
+    expect(() => assertAgentWriteAllowed(restricted, { orgId: 'o1', partnerId: null }))
+      .toThrow(AgentAccessDeniedError);
+  });
+
+  it('an unrestricted org caller can still write its own org agent', () => {
+    const unrestricted = auth({ scope: 'organization', orgId: 'o1', partnerId: null, allowedSiteIds: undefined });
+    expect(() => assertAgentWriteAllowed(unrestricted, { orgId: 'o1', partnerId: null })).not.toThrow();
   });
 
   it('ai_agent principal can never write', () => {
@@ -1313,5 +1331,92 @@ describe('default patch schedule on enable', () => {
     state.returnedRow = { ...storedRow, kind: 'patch', orgId: null, partnerId: 'p1', enabled: true };
     await expect(updateAgent(auth(), 'a1', { enabled: true })).resolves.toMatchObject({ enabled: true });
     expect(state.audit).toHaveBeenCalled();
+  });
+});
+
+describe('built-in research agent edits through updateAgent (W2)', () => {
+  const research = {
+    ...storedRow, orgId: null, partnerId: 'p1', kind: 'research', mode: 'act', toolAllowlist: [],
+    actAssets: { scriptIds: [] }, recipients: { userIds: [], roleIds: [] }, createdBy: null, provisionedBy: 'system:remediation_research',
+  };
+
+  it('disabling succeeds with no act prerequisites (no recipient, no act-eligible tool)', async () => {
+    state.currentRow = research;
+    state.returnedRow = { ...research, enabled: false };
+    await updateAgent(auth(), 'a1', { enabled: false } as never);
+    expect(state.updatedValues).toMatchObject({ enabled: false });
+    expect(state.hasResolvableAgentRecipient).not.toHaveBeenCalled();
+  });
+
+  it('a research cap update succeeds', async () => {
+    state.currentRow = research;
+    state.returnedRow = research;
+    await updateAgent(auth(), 'a1', { limits: { researchDeepBudgetCentsPerRun: 40 } } as never);
+    expect(state.updatedValues).toMatchObject({ limits: expect.objectContaining({ researchDeepBudgetCentsPerRun: 40 }) });
+  });
+
+  it('anything else is a research edit refusal, never an act-prerequisite error', async () => {
+    state.currentRow = research;
+    const err = await updateAgent(auth(), 'a1', { mode: 'off', toolAllowlist: ['run_script'] } as never).catch((e) => e);
+    expect(err).toBeInstanceOf(ResearchAgentEditError);
+    expect((err as ResearchAgentEditError).fields).toEqual(['mode', 'toolAllowlist']);
+    expect(state.updatedValues).toBeNull();
+  });
+
+  it('the exemption is research-only: a triage agent in act mode still needs its prerequisites', async () => {
+    state.currentRow = { ...storedRow, toolAllowlist: ['alerts:list'] };
+    const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
+    expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+  });
+});
+
+describe('research agent creation backstop (W2)', () => {
+  const researchInput = { ...createInput, kind: 'research', mode: 'act', name: 'Fix research (built-in)' };
+
+  it('refuses a partner-level research create even though ownerScope is omitted at the schema level', async () => {
+    const err = await createAgent(auth(), { orgId: null, partnerId: 'p1' }, researchInput as never).catch((e) => e);
+    expect(err).toBeInstanceOf(ResearchAgentEditError);
+    expect((err as ResearchAgentEditError).fields).toEqual(['ownerScope']);
+    expect(state.insertedValues).toBeNull();
+  });
+
+  it('allows an org-level research override carrying materialised limit defaults, with no recipient or act tool', async () => {
+    state.returnedRow = { ...storedRow, kind: 'research' };
+    await createAgent(auth(), { orgId: 'o1', partnerId: null }, researchInput as never);
+    expect(state.insertedValues).toMatchObject({ kind: 'research', orgId: 'o1', partnerId: null, createdBy: 'u1' });
+    expect(state.hasResolvableAgentRecipient).not.toHaveBeenCalled();
+  });
+});
+
+describe('research create pinning (W2 review)', () => {
+  it('overwrites every non-editable field with the provisioned shape but keeps editable research caps', async () => {
+    state.returnedRow = { ...storedRow, kind: 'research' };
+    await createAgent(auth(), { orgId: 'o1', partnerId: null }, {
+      ...createInput, kind: 'research', mode: 'act', name: 'Org research',
+      instructions: 'x', toolAllowlist: ['run_script'],
+      triggers: { ...storedRow.triggers, alertSeverities: ['low'] },
+      limits: { ...storedRow.limits, researchDeepBudgetCentsPerRun: 40, maxActionsPerRun: 99 },
+      recipients: { userIds: ['u9'], roleIds: [] },
+    } as never);
+    const v = state.insertedValues as Record<string, unknown>;
+    expect(v.instructions).toBeNull();
+    expect(v.toolAllowlist).toEqual([]);
+    expect(v.mode).toBe('act');
+    expect((v.triggers as { alertSeverities: string[] }).alertSeverities).toEqual(['critical', 'high']);
+    expect(v.recipients).toEqual({ userIds: [], roleIds: [] });
+    const limits = v.limits as Record<string, number>;
+    expect(limits.researchDeepBudgetCentsPerRun).toBe(40);
+    expect(limits.maxActionsPerRun).not.toBe(99);
+  });
+});
+
+describe('research create pinning: offeringId (final fix F6)', () => {
+  it('pins offeringId to null on a research create (not PATCH-editable, so never user-chosen)', async () => {
+    state.returnedRow = { ...storedRow, kind: 'research' };
+    bindAgentOffering.mockClear();
+    await createAgent(auth(), { orgId: 'o1', partnerId: null }, {
+      ...createInput, kind: 'research', mode: 'act', name: 'Org research', offeringId: 'opus',
+    } as never);
+    expect(bindAgentOffering).toHaveBeenCalledWith({ orgId: 'o1', partnerId: null }, null, { userId: 'u1' });
   });
 });

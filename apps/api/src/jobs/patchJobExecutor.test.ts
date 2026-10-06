@@ -1776,6 +1776,23 @@ describe('per-patch patch_job_results status is not collapsed to the batch statu
     vi.restoreAllMocks();
   });
 
+  it('stops polling when the command is cancelled mid-poll and records the device skipped with the reason', async () => {
+    const insertedRows: any[] = [];
+
+    const result: any = await runDeviceExecution({
+      approvedPatches: THREE_PATCHES,
+      command: {
+        status: 'cancelled',
+        result: { status: 'cancelled', reason: 'device_moved_org', cancelledBy: 'claim_eligibility' },
+      },
+      insertedRows,
+    });
+
+    expect(insertedRows).toHaveLength(3);
+    expect(insertedRows.every((r: any) => r.status === 'skipped' && r.errorMessage === 'device_moved_org')).toBe(true);
+    expect(result).toMatchObject({ success: false, applied: true });
+  });
+
   it('records a mixed batch (one failed, two installed) with per-patch status, not all-failed', async () => {
     const insertedRows: any[] = [];
 
@@ -2095,6 +2112,33 @@ describe('offline devices are queued instead of skipped (#5128 W3)', () => {
     // One counter write: pending -1 / queued +1. Nothing else moved.
     expect(updateSets).toHaveLength(1);
     expect(Object.keys(updateSets[0]).sort()).toEqual(['devicesPending', 'devicesQueued']);
+  });
+
+  it('a push the claim cancels closes the device as skipped with the reason, without the 30-minute poll', async () => {
+    vi.useFakeTimers();
+    try {
+      primeDeviceExecution({ offlineBehavior: 'queue', scheduleNextOccurrenceAt: null });
+      // The finalizer's idempotency read (no rows yet on the synchronous path).
+      vi.mocked(db.select).mockImplementationOnce(() => createWhereSelectChain([]) as any);
+      vi.mocked(dispatchDeviceCommand).mockResolvedValueOnce({
+        ok: true,
+        command: { id: 'cmd-cancelled', status: 'cancelled' },
+        delivery: 'cancelled',
+        cancelReason: 'requester_inactive',
+        deliverBy: null,
+      } as any);
+
+      // No timer is advanced: a task that polled would never settle here.
+      const result: any = await runPrepared();
+
+      expect(result).toMatchObject({ kind: 'cancelled', commandId: 'cmd-cancelled', reason: 'requester_inactive' });
+      expect(insertedRows).toHaveLength(2);
+      expect(insertedRows.every((r) => r.status === 'skipped' && r.errorMessage === 'requester_inactive')).toBe(true);
+      // The device leaves devices_pending (skips count toward completed).
+      expect(updateSets.some((s) => 'devicesPending' in s && 'devicesCompleted' in s)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not poll for a result — the BullMQ task ends immediately', async () => {

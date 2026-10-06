@@ -1,5 +1,5 @@
-import { beforeEach, expect, it, vi } from 'vitest';
-import { act, renderHook, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, renderHook, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { I18nextProvider } from 'react-i18next';
 import { i18n } from '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
@@ -249,7 +249,7 @@ it('shows clients with lower authorization after Save and requests updated autho
   if(init?.method==='PUT')saved=true;
   return Response.json({autopayEnabled:true,values,inherited,effective:inherited,feeAuthorizationGaps:saved?[gap]:[]});
  });
- mount();fireEvent.click(await screen.findByTestId('autopay-settings-save'));
+ render(<I18nextProvider i18n={i18n}><PaymentsSettingsTab /></I18nextProvider>);fireEvent.click(await screen.findByTestId('autopay-settings-save'));
  expect(await screen.findByTestId('autopay-fee-authorization-gaps')).toHaveTextContent('Example client');
  fireEvent.click(screen.getByTestId(`autopay-reauthorize-${orgId}`));
  await waitFor(()=>expect(vi.mocked(fetchWithAuth).mock.calls.some(([,init])=>init?.method==='POST')).toBe(true));
@@ -280,4 +280,144 @@ it('does not carry partner affirmations across organization scope changes',async
 it.each(['25.01','-0.01','1e1','1.001','01.00'])('disables Save for invalid ACH fee %s',async value=>{
  mount();fireEvent.change(await screen.findByTestId('autopay-ach-fee'),{target:{value}});
  expect(screen.getByTestId('autopay-settings-save')).toBeDisabled();
+});
+
+describe('fee attestation and authorization display (#7897)', () => {
+  const partnerView = (extra: Record<string, unknown>) => ({ autopayEnabled: true, values, inherited,
+    effective: { ...inherited, feeAttested: true }, ...extra });
+  function mountPartner(view: Record<string, unknown>) {
+    vi.mocked(fetchWithAuth).mockImplementation(async () => Response.json(view));
+    return render(<I18nextProvider i18n={i18n}><PaymentsSettingsTab /></I18nextProvider>);
+  }
+  it('shows the attestation on file with who and when, and what re-attesting does', async () => {
+    mountPartner(partnerView({ feeAttestation: { attestedAt: '2026-10-05T12:00:00.000Z', attestedByName: 'Pat Partner' } }));
+    const onFile = await screen.findByTestId('autopay-fee-attestation');
+    expect(onFile).toHaveTextContent('Pat Partner');
+    expect(onFile).toHaveTextContent(/Oct 5, 2026/);
+    expect(onFile).not.toHaveTextContent('2026-10-05T');
+    expect(screen.getByTestId('autopay-fee-reattest-help')).toHaveTextContent(/replac/i);
+    expect(screen.queryByTestId('autopay-fee-inactive')).toBeNull();
+  });
+  it('still shows the attestation date when the attesting user is no longer readable', async () => {
+    mountPartner(partnerView({ feeAttestation: { attestedAt: '2026-10-05T12:00:00.000Z', attestedByName: null } }));
+    expect(await screen.findByTestId('autopay-fee-attestation')).toHaveTextContent(/Oct 5, 2026/);
+  });
+  it('shows no attestation record when none is on file', async () => {
+    mountPartner({ ...partnerView({ feeAttestation: null }), effective: { ...inherited, feeAttested: false } });
+    expect(await screen.findByTestId('autopay-fee-inactive')).toBeInTheDocument();
+    expect(screen.queryByTestId('autopay-fee-attestation')).toBeNull();
+    expect(screen.queryByTestId('autopay-fee-reattest-help')).toBeNull();
+  });
+  it('shows a missing consent as no authorization on file, distinct from a real zero', async () => {
+    const gap = { orgName: 'No consent', methodType: 'card', authorizedCardFeeBps: null, authorizedAchFeeAmount: null, cardFeeBps: 300, achFeeAmount: '0.00' };
+    mountPartner(partnerView({ feeAuthorizationGaps: [
+      { ...gap, orgId: '11111111-1111-4111-8111-111111111111' },
+      { ...gap, orgId: '22222222-2222-4222-8222-222222222222', orgName: 'Bank none', methodType: 'us_bank_account', achFeeAmount: '1.00' },
+      { ...gap, orgId: '33333333-3333-4333-8333-333333333333', orgName: 'Real zero', authorizedCardFeeBps: 0, authorizedAchFeeAmount: '0.00' },
+    ] }));
+    // No authorization on file is its own group: those clients cannot be charged at all.
+    const missing = within(await screen.findByTestId('autopay-fee-authorization-missing')).getAllByRole('listitem');
+    expect(missing).toHaveLength(2);
+    expect(missing[0]).toHaveTextContent('No consent');
+    expect(missing[0]).not.toHaveTextContent('0 basis points;');
+    expect(missing[1]).toHaveTextContent('Bank none');
+    expect(missing[1]).not.toHaveTextContent('USD null');
+    const lower = within(screen.getByTestId('autopay-fee-authorization-gaps')).getAllByRole('listitem');
+    expect(lower).toHaveLength(1);
+    expect(lower[0]).toHaveTextContent('Real zero');
+    expect(lower[0]).toHaveTextContent('Authorized: 0 basis points');
+  });
+  it('lists a client whose accepted cap is narrower, showing only the cap when the fee matches (2a-1)', async () => {
+    const orgId = '44444444-4444-4444-8444-444444444444';
+    const capped = { orgId, orgName: 'Capped client', methodType: 'card', authorizedCardFeeBps: 300, authorizedAchFeeAmount: '0.00',
+      cardFeeBps: 300, achFeeAmount: '0.00', capGap: { authorized: { enabled: true, amount: '100.00', currency: 'USD' },
+        configured: { enabled: true, amount: '500.00', currency: 'USD' } } };
+    mountPartner(partnerView({ feeAuthorizationGaps: [capped,
+      { ...capped, orgId: '55555555-5555-4555-8555-555555555555', orgName: 'Cap removed', capGap: { ...capped.capGap, configured: { enabled: false } } }] }));
+    const group = await screen.findByTestId('autopay-fee-authorization-gaps');
+    expect(group).toHaveTextContent('lower authorized terms: 2');
+    const [first, second] = within(group).getAllByRole('listitem');
+    expect(first).toHaveTextContent('Capped client');
+    expect(first).toHaveTextContent('Authorized limit: USD 100.00; configured: USD 500.00');
+    expect(first).not.toHaveTextContent('basis points');
+    expect(second).toHaveTextContent('Authorized limit: USD 100.00; configured: no limit');
+    expect(within(group).getByTestId(`autopay-reauthorize-${orgId}`)).toBeInTheDocument();
+  });
+  it('labels the no-authorization group and offers to request authorization', async () => {
+    const orgId = '11111111-1111-4111-8111-111111111111';
+    mountPartner(partnerView({ feeAuthorizationGaps: [{ orgId, orgName: 'No consent', methodType: 'card',
+      authorizedCardFeeBps: null, authorizedAchFeeAmount: null, cardFeeBps: 0, achFeeAmount: '0.00' }] }));
+    const group = await screen.findByTestId('autopay-fee-authorization-missing');
+    expect(group).toHaveTextContent('No authorization on file: 1');
+    expect(group).toHaveTextContent("can't charge");
+    expect(within(group).getByTestId(`autopay-reauthorize-${orgId}`)).toHaveTextContent('Request authorization');
+    expect(screen.queryByTestId('autopay-fee-authorization-gaps')).toBeNull();
+  });
+  it('words the no-authorization group for the one client on an organization page', async () => {
+    vi.mocked(fetchWithAuth).mockImplementation(async () => Response.json(partnerView({ feeAuthorizationGaps: [{
+      orgId: '11111111-1111-4111-8111-111111111111', orgName: 'Example client', methodType: 'card',
+      authorizedCardFeeBps: null, authorizedAchFeeAmount: null, cardFeeBps: 0, achFeeAmount: '0.00' }] })));
+    mount();
+    const group = await screen.findByTestId('autopay-fee-authorization-missing');
+    expect(group).toHaveTextContent('This client has no authorization on file');
+    expect(group).not.toHaveTextContent('Example client');
+  });
+  it('points the org page to where card fees are affirmed instead of statements below', async () => {
+    vi.mocked(fetchWithAuth).mockImplementation(async () => Response.json({ ...partnerView({}), effective: { ...inherited, feeAttested: false } }));
+    mount();
+    const inactive = await screen.findByTestId('autopay-fee-inactive');
+    expect(inactive).not.toHaveTextContent('below');
+    expect(inactive).toHaveTextContent('Payments tab of the partner Billing settings');
+    cleanup();
+    mountPartner({ ...partnerView({}), effective: { ...inherited, feeAttested: false } });
+    expect(await screen.findByTestId('autopay-fee-inactive')).toHaveTextContent('both statements below');
+  });
+  it('hides the lower-authorization block when no client has a lower authorization', async () => {
+    mountPartner(partnerView({ feeAuthorizationGaps: [] }));
+    await screen.findByTestId('autopay-fees');
+    expect(screen.queryByTestId('autopay-fee-authorization-gaps')).toBeNull();
+  });
+  it('words the lower-authorization block for the one client on an organization page', async () => {
+    vi.mocked(fetchWithAuth).mockImplementation(async () => Response.json(partnerView({ feeAuthorizationGaps: [{
+      orgId: '11111111-1111-4111-8111-111111111111', orgName: 'Example client', methodType: 'card',
+      authorizedCardFeeBps: 100, authorizedAchFeeAmount: '0.00', cardFeeBps: 300, achFeeAmount: '0.00' }] })));
+    mount();
+    const block = await screen.findByTestId('autopay-fee-authorization-gaps');
+    expect(block).toHaveTextContent('This client has not authorized the configured terms');
+    expect(block).not.toHaveTextContent('Clients with lower authorized terms');
+  });
+  it('explains blank and zero fees for the scope being edited', async () => {
+    mountPartner(partnerView({}));
+    const fees = await screen.findByTestId('autopay-fees');
+    expect(screen.getByTestId('autopay-fee-blank-help')).toHaveTextContent('Blank uses the Breeze default (no fee). To exempt one client');
+    expect(fees).not.toHaveTextContent('zero exempts this customer');
+    cleanup();
+    vi.mocked(fetchWithAuth).mockImplementation(async () => Response.json(partnerView({})));
+    mount();
+    await screen.findByTestId('autopay-fees');
+    expect(screen.getByTestId('autopay-fee-blank-help')).toHaveTextContent('Blank uses the partner default. Enter 0 to exempt this client.');
+  });
+});
+
+describe('automatic payment controls at narrow widths (#7897)', () => {
+  it('lets both fieldsets shrink below their content width and renders the bank paragraph once', async () => {
+    mount();
+    const fields = await screen.findByTestId('autopay-settings-fields');
+    // A fieldset defaults to min-inline-size: min-content, so long select options widen the page.
+    expect(fields).toHaveClass('min-w-0');
+    expect(screen.getByTestId('autopay-fees')).toHaveClass('min-w-0');
+    for (const id of ['autopay-offset-rule', 'autopay-cap-enabled', 'autopay-ach-mode']) {
+      expect(screen.getByTestId(id)).toHaveClass('w-full');
+    }
+    expect(screen.getAllByText(i18n.t('billing:autopay.achRisk'))).toHaveLength(1);
+  });
+  it('captions an explicit choice as an override, not as inherited', async () => {
+    mount();
+    const select = await screen.findByTestId('autopay-cap-enabled');
+    const caption = () => select.parentElement!.querySelector('[data-testid="autopay-cap-enabled-caption"]')!;
+    expect(caption()).toHaveTextContent('Inherits from Partner default');
+    fireEvent.change(select, { target: { value: 'false' } });
+    expect(caption()).toHaveTextContent('Overrides Partner default (Limit enabled)');
+    expect(caption()).not.toHaveTextContent('inherited from');
+  });
 });

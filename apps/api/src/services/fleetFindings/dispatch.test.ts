@@ -272,6 +272,7 @@ const SCRIPT_1 = 'c1111111-1111-4111-8111-111111111111';
 interface AuthOverrides {
   accessibleOrgIds?: string[] | null;
   allowedSiteIds?: string[];
+  allowedDeviceIds?: string[];
 }
 
 function makeAuth(overrides: AuthOverrides = {}): any {
@@ -284,6 +285,7 @@ function makeAuth(overrides: AuthOverrides = {}): any {
     canAccessOrg: (id: string) => accessibleOrgIds === null || accessibleOrgIds.includes(id),
     orgCondition: () => undefined,
     allowedSiteIds: overrides.allowedSiteIds,
+    allowedDeviceIds: overrides.allowedDeviceIds,
   };
 }
 
@@ -755,7 +757,7 @@ describe('createRemediationRun — device revalidation matrix', () => {
     expect(result.skipped).toEqual([{ deviceId: DEVICE_1, reason: 'not_member' }]);
   });
 
-  it('skips a member device outside the caller\'s allowedSiteIds (site_denied)', async () => {
+  it('does not distinguish a member in a hidden site from a non-member', async () => {
     getFleetFindingMock.mockResolvedValue(findingDetail());
     h.selectQueue.push([{ deviceId: DEVICE_1 }]);
     h.selectQueue.push([deviceRow({ siteId: SITE_2 })]);
@@ -769,7 +771,7 @@ describe('createRemediationRun — device revalidation matrix', () => {
     };
     const result = await createRemediationRun(makeAuth({ allowedSiteIds: [SITE_1] }), FINDING_1, req);
 
-    expect(result.skipped).toEqual([{ deviceId: DEVICE_1, reason: 'site_denied' }]);
+    expect(result.skipped).toEqual([{ deviceId: DEVICE_1, reason: 'not_member' }]);
   });
 
   it('skips a decommissioned device (decommissioned)', async () => {
@@ -836,7 +838,7 @@ describe('createRemediationRun — device revalidation matrix', () => {
   });
 
   it('defaults to all current members when deviceIds is absent', async () => {
-    getFleetFindingMock.mockResolvedValue(findingDetail());
+    getFleetFindingMock.mockResolvedValue(findingDetail({ members: [{ deviceId: DEVICE_1 }, { deviceId: DEVICE_2 }] }));
     h.selectQueue.push([{ deviceId: DEVICE_1 }, { deviceId: DEVICE_2 }]); // membership
     h.selectQueue.push([deviceRow({ id: DEVICE_1 }), deviceRow({ id: DEVICE_2, hostname: 'WS-02' })]);
     h.insertReturningQueue.push([{ id: RUN_1 }]);
@@ -846,6 +848,70 @@ describe('createRemediationRun — device revalidation matrix', () => {
 
     expect(result.targetCount).toBe(2);
     expect(result.skipped).toEqual([]);
+  });
+
+  it('a site-restricted run without deviceIds expands only to the members visible to the caller', async () => {
+    // getFleetFinding() already narrows `members` to the caller's scope.
+    getFleetFindingMock.mockResolvedValue(findingDetail({ members: [{ deviceId: DEVICE_1, siteId: SITE_1 }] }));
+    h.selectQueue.push([{ deviceId: DEVICE_1 }, { deviceId: DEVICE_2 }]); // raw membership includes a hidden-site member
+    h.selectQueue.push([deviceRow({ id: DEVICE_1, siteId: SITE_1 }), deviceRow({ id: DEVICE_2, siteId: SITE_2, hostname: 'HIDDEN-WS' })]);
+    h.insertReturningQueue.push([{ id: RUN_1 }]);
+
+    const req: RemediateRequest = { actionKind: 'command', commandType: 'reboot', parameters: {} };
+    const result = await createRemediationRun(makeAuth({ allowedSiteIds: [SITE_1] }), FINDING_1, req);
+
+    expect(result).toEqual({ runId: RUN_1, orgId: ORG_1, targetCount: 1, skipped: [] });
+    const insertedTargetRows = h.capturedInserts[1]!.values as Array<Record<string, unknown>>;
+    expect(insertedTargetRows).toHaveLength(1);
+    expect(insertedTargetRows[0]).toEqual(expect.objectContaining({ targetDeviceUuid: DEVICE_1, siteIdSnapshot: SITE_1 }));
+    expect(JSON.stringify(h.capturedInserts)).not.toContain(DEVICE_2);
+    expect(JSON.stringify(h.capturedInserts)).not.toContain('HIDDEN-WS');
+  });
+
+  it('an explicitly requested hidden-site device is skipped without recording its hostname or site', async () => {
+    getFleetFindingMock.mockResolvedValue(findingDetail({ members: [{ deviceId: DEVICE_1, siteId: SITE_1 }] }));
+    h.selectQueue.push([{ deviceId: DEVICE_2 }]);
+    h.selectQueue.push([deviceRow({ id: DEVICE_2, siteId: SITE_2, hostname: 'HIDDEN-WS' })]);
+    h.insertReturningQueue.push([{ id: RUN_1 }]);
+
+    const req: RemediateRequest = {
+      actionKind: 'command',
+      commandType: 'reboot',
+      parameters: {},
+      deviceIds: [DEVICE_2],
+    };
+    const result = await createRemediationRun(makeAuth({ allowedSiteIds: [SITE_1] }), FINDING_1, req);
+
+    expect(result.skipped).toEqual([{ deviceId: DEVICE_2, reason: 'not_member' }]);
+    const insertedTargetRows = h.capturedInserts[1]!.values as Array<Record<string, unknown>>;
+    expect(insertedTargetRows).toEqual([
+      expect.objectContaining({
+        targetDeviceUuid: DEVICE_2,
+        hostnameSnapshot: null,
+        siteIdSnapshot: null,
+        skipReason: 'not_member',
+      }),
+    ]);
+    expect(JSON.stringify(h.capturedInserts)).not.toContain('HIDDEN-WS');
+    expect(JSON.stringify(h.capturedInserts)).not.toContain(SITE_2);
+  });
+
+  it('an exact-device caller cannot target a member outside its device list', async () => {
+    getFleetFindingMock.mockResolvedValue(findingDetail({ members: [{ deviceId: DEVICE_1 }] }));
+    h.selectQueue.push([{ deviceId: DEVICE_1 }, { deviceId: DEVICE_2 }]);
+    h.selectQueue.push([deviceRow({ id: DEVICE_2, hostname: 'SIBLING-WS' })]);
+    h.insertReturningQueue.push([{ id: RUN_1 }]);
+
+    const req: RemediateRequest = {
+      actionKind: 'command',
+      commandType: 'reboot',
+      parameters: {},
+      deviceIds: [DEVICE_2],
+    };
+    const result = await createRemediationRun(makeAuth({ allowedDeviceIds: [DEVICE_1] }), FINDING_1, req);
+
+    expect(result.skipped).toEqual([{ deviceId: DEVICE_2, reason: 'not_member' }]);
+    expect(JSON.stringify(h.capturedInserts)).not.toContain('SIBLING-WS');
   });
 
   it('regression: an explicit empty deviceIds array means "remediate zero devices", NOT "fall back to full membership"', async () => {

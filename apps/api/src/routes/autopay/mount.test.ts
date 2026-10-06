@@ -21,7 +21,8 @@ vi.mock('../../services/autopay/invoiceControls', () => ({
   getSkipInvoiceView: h.view,
 }));
 vi.mock('../../services/autopay/staffNotifications', () => ({ sendAutopayStaffEmail: h.email }));
-vi.mock('../../services/autopay/customerViews', () => ({ resolveAutopayLinkIdentity: h.identity }));
+vi.mock('../../services/autopay/customerViews', () => ({ resolveAutopayLinkIdentity: h.identity,
+  describeAutopayLinkFailure: async () => ({ error: 'This link is not valid.', code: 'link_invalid' }) }));
 vi.mock('../../services/autopay/enrollmentService', () => ({}));
 vi.mock('../../services/autopay/enrollmentLifecycle', () => ({}));
 vi.mock('../../services/autopay/consentText', () => ({}));
@@ -222,6 +223,27 @@ it('never reveals provider or database errors', async () => {
   expect(JSON.stringify(await res.json())).not.toContain('secret');
 });
 
+// The skip page must tell a payment that cannot be stopped (a receipt follows) apart
+// from a skip refused because another change is pending, e.g. an MSP exclusion.
+it('carries the processing reason on a refused skip and on the staff exclusion, and none on a pending-control refusal', async () => {
+  const processing = () => new InvoiceServiceError('A payment for this invoice is already processing', 409,
+    'COLLECTION_IN_PROGRESS', { reason: 'payment_processing' });
+  const post = () => app.request('/api/v1/autopay/public/token/skip', { method: 'POST', headers, body: '{}' });
+  h.skip.mockRejectedValueOnce(processing());
+  let res = await post();
+  expect(res.status).toBe(409);
+  expect(await res.json()).toEqual({ error: 'A payment for this invoice is already processing',
+    code: 'COLLECTION_IN_PROGRESS', details: { reason: 'payment_processing' } });
+  h.skip.mockRejectedValueOnce(new InvoiceServiceError('Another payment control is pending', 409, 'COLLECTION_IN_PROGRESS'));
+  res = await post();
+  expect(res.status).toBe(409);
+  expect(await res.json()).toEqual({ error: 'Another payment control is pending', code: 'COLLECTION_IN_PROGRESS' });
+  h.exclude.mockRejectedValueOnce(processing());
+  res = await request();
+  expect(res.status).toBe(409);
+  expect(await res.json()).toMatchObject({ code: 'COLLECTION_IN_PROGRESS', details: { reason: 'payment_processing' } });
+});
+
 it('normalizes the environment before loading the charging router dependency graph', () => {
   const source = readFileSync(new URL('../../index.ts', import.meta.url), 'utf8');
   const normalization = source.indexOf("import './config/normalizeNodeEnv'");
@@ -239,6 +261,13 @@ it('confirmation recovery is scanner safe and available with rollout disabled',a
  const post=await app.request(url,{method:'POST',headers:{...headers,'x-disabled':'1'},body:'{}'});
  expect(post.status).toBe(200);expect(await post.json()).toEqual({processing:true});
  expect(h.identity).toHaveBeenCalledWith('token','confirm_payment');
+});
+// R5: the page classifies a refusal by its code and reason, so the route passes them through.
+it('a refused confirmation carries its code and reason',async()=>{
+ h.confirm.mockRejectedValueOnce(new InvoiceServiceError('Payment received but needs billing review',409,'INVALID_STATE',{reason:'needs_review'}));
+ const res=await app.request('/api/v1/autopay/public/token/confirm',{method:'POST',headers,body:'{}'});
+ expect(res.status).toBe(409);
+ expect(await res.json()).toMatchObject({code:'INVALID_STATE',details:{reason:'needs_review'}});
 });
 it('confirm rejects missing authority, stale binding, cross-origin and invalid JSON',async()=>{
  const url='/api/v1/autopay/public/token/confirm';
@@ -278,5 +307,10 @@ it.each([null,{id:'schedule',eligible:true,state:'scheduled',noticeSentAt:new Da
 });
 it('Charge now returns a stale-state service refusal as 409',async()=>{
  chargeRows();h.collect.mockResolvedValue({outcome:'deferred',reason:'retry_not_due',attemptId:null});
- const response=await charge();expect(response.status).toBe(409);expect(await response.json()).toEqual({error:'retry_not_due',code:'retry_not_due'});
+ const response=await charge();expect(response.status).toBe(409);expect(await response.json()).toEqual({error:'retry_not_due',code:'retry_not_due',outcome:'deferred'});
+});
+it('Charge now tells staff whether a payment was attempted, not only the provider code',async()=>{
+ chargeRows();h.collect.mockResolvedValue({outcome:'requires_action',state:'requires_action',reason:'authentication_required',attemptId:'attempt',failureClass:'auth_required'});
+ const response=await charge();expect(response.status).toBe(409);
+ expect(await response.json()).toEqual({error:'authentication_required',code:'authentication_required',outcome:'requires_action'});
 });

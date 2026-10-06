@@ -6,7 +6,9 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
 import RemindersSettingsSection, { reminderDraft, reminderPatch, reminderDraftInvalid, type ReminderDraft } from './RemindersSettingsSection';
 import InheritedField from '../shared/InheritedField';
-import type {PaymentValues,PaymentSettingsView} from '@breeze/shared';
+import { formatDateTime } from '../../lib/dateTimeFormat';
+import { autopayButton } from './autopayUi';
+import type {FeeAuthorizationGap,PaymentValues,PaymentSettingsView} from '@breeze/shared';
 export type {PaymentValues,PaymentSettingsView} from '@breeze/shared';
 export type FeeAffirmations = { notified: boolean; cost: boolean };
 export function feeValuesInvalid(v: Pick<PaymentValues, 'cardFeeBps' | 'achFeeAmount'>): boolean {
@@ -14,9 +16,9 @@ export function feeValuesInvalid(v: Pick<PaymentValues, 'cardFeeBps' | 'achFeeAm
     || (v.achFeeAmount !== null && (!/^(0|[1-9]\d?)\.\d{2}$/.test(v.achFeeAmount)
       || BigInt(v.achFeeAmount.replace('.', '')) > 2500n));
 }
-export function FeeFields({ view, setValues, disabled, affirmations, setAffirmations }: {
+export function FeeFields({ view, setValues, disabled, scope, affirmations, setAffirmations }: {
   view: PaymentSettingsView; setValues: (patch: Partial<PaymentValues>) => void; disabled: boolean;
-  affirmations?: FeeAffirmations; setAffirmations?: (value: FeeAffirmations) => void;
+  scope: 'partner' | 'org'; affirmations?: FeeAffirmations; setAffirmations?: (value: FeeAffirmations) => void;
 }) {
   const { t } = useTranslation('billing');
   const [requesting, setRequesting] = useState(false);
@@ -38,35 +40,75 @@ export function FeeFields({ view, setValues, disabled, affirmations, setAffirmat
   if (!view.autopayEnabled) return null;
   const bps = view.values.cardFeeBps ?? view.inherited.cardFeeBps.value;
   const percent = Number.isInteger(bps) ? `${Math.trunc(bps / 100)}.${String(bps % 100).padStart(2, '0')}%` : '—';
-  return <fieldset disabled={disabled} data-testid="autopay-fees" className="space-y-4 border-t pt-4">
-    <legend className="font-semibold">{t('autopay.fees.title')}</legend>
+  // The attestation lives on the partner row only, so only the partner view shows it.
+  const attestation = scope === 'partner' ? view.feeAttestation ?? null : null;
+  const attestedOn = attestation ? formatDateTime(attestation.attestedAt, { dateStyle: 'medium', timeStyle: 'short' }) : '';
+  const gaps = view.feeAuthorizationGaps ?? [];
+  // null = no authorization on file, which must not read like an authorized 0. Such a client
+  // cannot be charged at all (consent_required), so it is its own group, not a "lower fee".
+  const unauthorized = (client: FeeAuthorizationGap) => client.methodType === 'card'
+    ? client.authorizedCardFeeBps === null : client.authorizedAchFeeAmount === null;
+  const missing = gaps.filter(unauthorized);
+  const lower = gaps.filter(client => !unauthorized(client));
+  const feeText = (client: FeeAuthorizationGap) => client.methodType === 'card'
+    ? client.authorizedCardFeeBps === null
+      ? t('autopay.fees.authorizedCardNone', { configured: client.cardFeeBps })
+      : t('autopay.fees.authorizedCard', { accepted: client.authorizedCardFeeBps, configured: client.cardFeeBps })
+    : client.authorizedAchFeeAmount === null
+      ? t('autopay.fees.authorizedAchNone', { configured: client.achFeeAmount })
+      : t('autopay.fees.authorizedAch', { accepted: client.authorizedAchFeeAmount, configured: client.achFeeAmount });
+  // A client is listed for a lower fee, a narrower accepted cap (2a-1), or both: name only what differs.
+  const feeLower = (client: FeeAuthorizationGap) => unauthorized(client) || (client.methodType === 'card'
+    ? client.authorizedCardFeeBps! < client.cardFeeBps
+    : BigInt(client.authorizedAchFeeAmount!.replace('.', '')) < BigInt(client.achFeeAmount.replace('.', '')));
+  const capText = ({ capGap }: FeeAuthorizationGap) => capGap ? t('autopay.fees.authorizedCap', {
+    accepted: `${capGap.authorized.currency} ${capGap.authorized.amount}`,
+    configured: capGap.configured.enabled ? `${capGap.configured.currency} ${capGap.configured.amount}` : t('autopay.fees.noCap') }) : '';
+  const gapText = (client: FeeAuthorizationGap) => [feeLower(client) || !client.capGap ? feeText(client) : '', capText(client)]
+    .filter(Boolean).join('. ');
+  const gapRow = (client: FeeAuthorizationGap, action: string) => <li key={client.orgId} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+    <span className="min-w-0 break-words">{scope === 'org' ? gapText(client) : <>{client.orgName} — {gapText(client)}</>}</span>
+    <button type="button" data-testid={`autopay-reauthorize-${client.orgId}`} disabled={disabled || requesting}
+      className={autopayButton.secondary} onClick={() => void requestAuthorization(client.orgId)}>{action}</button>
+  </li>;
+  return <fieldset disabled={disabled} data-testid="autopay-fees" className="min-w-0 space-y-4 border-t pt-4">
+    <legend className="pr-2 font-semibold">{t('autopay.fees.title')}</legend>
     <InheritedField id="autopay-card-fee-bps" data-testid="autopay-card-fee-bps"
       label={t('autopay.fees.cardBps')} value={view.values.cardFeeBps === null ? '' : String(view.values.cardFeeBps)}
       onChange={value => setValues({ cardFeeBps: value === '' ? null : Number(value) })}
       inheritedValue={String(view.inherited.cardFeeBps.value)}
       inheritedSource={t(/* i18n-dynamic */ `autopay.source.${view.inherited.cardFeeBps.source}`)} type="number" min={0} max={300} step="1" />
-    <p data-testid="autopay-fee-percent">{percent}</p>
+    <p data-testid="autopay-fee-percent" className="text-sm text-muted-foreground">{percent}</p>
     <InheritedField id="autopay-ach-fee" data-testid="autopay-ach-fee" label={t('autopay.fees.ach')}
       value={view.values.achFeeAmount ?? ''} onChange={value => setValues({ achFeeAmount: value === '' ? null : value })}
       inheritedValue={view.inherited.achFeeAmount.value} inheritedSource={t(/* i18n-dynamic */ `autopay.source.${view.inherited.achFeeAmount.source}`)} />
-    {!view.effective.feeAttested && <p data-testid="autopay-fee-inactive">{t('autopay.fees.inactive')}</p>}
-    {affirmations && setAffirmations && <>
-      <label className="flex gap-2"><input type="checkbox" data-testid="autopay-attest-notified" checked={affirmations.notified}
-        onChange={event => setAffirmations({ ...affirmations, notified: event.target.checked })} />{t('autopay.fees.notified')}</label>
-      <label className="flex gap-2"><input type="checkbox" data-testid="autopay-attest-cost" checked={affirmations.cost}
-        onChange={event => setAffirmations({ ...affirmations, cost: event.target.checked })} />{t('autopay.fees.cost')}</label>
-    </>}
-    {view.feeAuthorizationGaps !== undefined && <div data-testid="autopay-fee-authorization-gaps" className="space-y-3">
-      <p>{t('autopay.fees.lowerAuthorization', { count: view.feeAuthorizationGaps.length })}</p>
-      <ul className="space-y-3">{view.feeAuthorizationGaps.map(client => <li key={client.orgId} className="flex flex-wrap items-center justify-between gap-2">
-        <span>{client.orgName} — {client.methodType === 'card'
-          ? t('autopay.fees.authorizedCard', { accepted: client.authorizedCardFeeBps, configured: client.cardFeeBps })
-          : t('autopay.fees.authorizedAch', { accepted: client.authorizedAchFeeAmount, configured: client.achFeeAmount })}</span>
-        <button type="button" data-testid={`autopay-reauthorize-${client.orgId}`} disabled={disabled || requesting}
-          onClick={() => void requestAuthorization(client.orgId)}>{t('autopay.fees.requestAuthorization')}</button>
-      </li>)}</ul>
+    <p className="text-xs text-muted-foreground" data-testid="autopay-fee-blank-help">
+      {scope === 'org' ? t('autopay.fees.blankOrg') : t('autopay.fees.blankPartner')}</p>
+    {/* The affirmations render below only on the partner page; the org page points there. */}
+    {!view.effective.feeAttested && <p data-testid="autopay-fee-inactive" className="text-sm text-amber-800 dark:text-amber-200">
+      {scope === 'org' ? t('autopay.fees.inactiveOrg') : t('autopay.fees.inactive')}</p>}
+    {attestation && <div className="space-y-1 rounded-md border bg-muted/40 px-3 py-2">
+      <p data-testid="autopay-fee-attestation" className="text-sm">{attestation.attestedByName
+        ? t('autopay.fees.attestationOnFile', { name: attestation.attestedByName, date: attestedOn })
+        : t('autopay.fees.attestationOnFileUnknown', { date: attestedOn })}</p>
+      {affirmations && <p data-testid="autopay-fee-reattest-help" className="text-xs text-muted-foreground">{t('autopay.fees.reattestHelp')}</p>}
     </div>}
-    <p>{t('autopay.fees.rules')}</p><p>{t('autopay.fees.legal')}</p><p>{t('autopay.achRisk')}</p>
+    {affirmations && setAffirmations && <div className="space-y-2">
+      <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-0.5 shrink-0" data-testid="autopay-attest-notified" checked={affirmations.notified}
+        onChange={event => setAffirmations({ ...affirmations, notified: event.target.checked })} /><span className="min-w-0">{t('autopay.fees.notified')}</span></label>
+      <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-0.5 shrink-0" data-testid="autopay-attest-cost" checked={affirmations.cost}
+        onChange={event => setAffirmations({ ...affirmations, cost: event.target.checked })} /><span className="min-w-0">{t('autopay.fees.cost')}</span></label>
+    </div>}
+    {missing.length > 0 && <div data-testid="autopay-fee-authorization-missing" className="space-y-3">
+      <p className="text-sm">{scope === 'org' ? t('autopay.fees.missingAuthorizationOrg') : t('autopay.fees.missingAuthorization', { count: missing.length })}</p>
+      <ul className="space-y-3">{missing.map(client => gapRow(client, t('autopay.fees.requestMissingAuthorization')))}</ul>
+    </div>}
+    {lower.length > 0 && <div data-testid="autopay-fee-authorization-gaps" className="space-y-3">
+      <p className="text-sm">{scope === 'org' ? t('autopay.fees.lowerAuthorizationOrg') : t('autopay.fees.lowerAuthorization', { count: lower.length })}</p>
+      <ul className="space-y-3">{lower.map(client => gapRow(client, t('autopay.fees.requestAuthorization')))}</ul>
+    </div>}
+    <p className="text-xs text-muted-foreground">{t('autopay.fees.rules')}</p>
+    <p className="text-xs text-muted-foreground">{t('autopay.fees.legal')}</p>
   </fieldset>;
 }
 
@@ -149,16 +191,22 @@ export function PaymentFields({ view, setValues, disabled = false }: {
   const v = view.values; const inherited = view.inherited;
   const source = (s: string) => t(/* i18n-dynamic */ `autopay.source.${s}`);
   const cap = inherited.autopayCap.value;
+  // w-full lets a select with a long option shrink to the column instead of widening the page.
   const choice = (id: string, value: string, inheritedValue: string, inheritedSource: string,
-    options: string[], onChange: (value: string) => void) => <label className="block space-y-1" key={id}>
-    <span>{t(/* i18n-dynamic */ `autopay.${id}`)}</span>
-    <select data-testid={`autopay-${id}`} value={value} onChange={e => onChange(e.target.value)}>
+    options: string[], onChange: (value: string) => void) => <div key={id}>
+    <label htmlFor={`autopay-${id}-select`} className="text-sm font-medium">{t(/* i18n-dynamic */ `autopay.${id}`)}</label>
+    <select id={`autopay-${id}-select`} data-testid={`autopay-${id}`} value={value} onChange={e => onChange(e.target.value)}
+      className="mt-1 block w-full min-w-0 rounded-md border bg-background px-3 py-2 text-sm disabled:opacity-50">
       <option value="">{t('autopay.inherit', { value: inheritedValue, source: source(inheritedSource) })}</option>
       {options.map(option => <option key={option} value={option}>{t(/* i18n-dynamic */ `autopay.option.${option}`)}</option>)}
     </select>
-    <span className="block text-xs text-muted-foreground">{t('autopay.inherit', { value: inheritedValue, source: source(inheritedSource) })}</span>
-  </label>;
-  return <fieldset disabled={disabled} className="space-y-4" data-testid="autopay-settings-fields">
+    {/* Same caption contract as InheritedField: an explicit choice reads as an override. */}
+    <p data-testid={`autopay-${id}-caption`} className="mt-1 text-xs text-muted-foreground">{value === ''
+      ? t('common:inheritedField.inheritsFrom', { source: source(inheritedSource) })
+      : t('common:inheritedField.overridingWithValue', { source: source(inheritedSource), value: inheritedValue })}</p>
+  </div>;
+  // A fieldset defaults to min-inline-size: min-content; min-w-0 lets it shrink at 390 px.
+  return <fieldset disabled={disabled} className="min-w-0 space-y-4" data-testid="autopay-settings-fields">
     <InheritedField id="autopay-offset-days" data-testid="autopay-offset-days" label={t('autopay.offset-days')}
       value={v.autopayOffsetDays === null ? '' : String(v.autopayOffsetDays)}
       onChange={value => setValues({ autopayOffsetDays: value === '' ? null : Number(value) })}
@@ -167,17 +215,17 @@ export function PaymentFields({ view, setValues, disabled = false }: {
       ['earlier', 'later'], value => setValues({ autopayOffsetRule: value === '' ? null : value as 'earlier' | 'later' }))}
     {choice('cap-enabled', v.autopayCapEnabled === null ? '' : String(v.autopayCapEnabled), t(/* i18n-dynamic */ `autopay.option.${String(cap.enabled)}`), inherited.autopayCap.source,
       ['false', 'true'], value => setValues({ autopayCapEnabled: value === '' ? null : value === 'true', autopayCapAmount: null, autopayCapCurrency: null }))}
-    {v.autopayCapEnabled === true && <>
+    {v.autopayCapEnabled === true && <div className="grid gap-4 sm:grid-cols-2">
       <InheritedField id="autopay-cap-amount" data-testid="autopay-cap-amount" label={t('autopay.cap-amount')}
         value={v.autopayCapAmount ?? ''} onChange={value => setValues({ autopayCapAmount: value || null })}
         inheritedValue={cap.enabled ? cap.amount : null} inheritedSource={source(inherited.autopayCap.source)} />
       <InheritedField id="autopay-cap-currency" data-testid="autopay-cap-currency" label={t('autopay.cap-currency')}
         value={v.autopayCapCurrency ?? ''} onChange={value => setValues({ autopayCapCurrency: value.trim().toUpperCase() || null })}
         inheritedValue={cap.enabled ? cap.currency : null} inheritedSource={source(inherited.autopayCap.source)} />
-    </>}
+    </div>}
     {choice('ach-mode', v.achMode ?? '', t(/* i18n-dynamic */ `autopay.option.${inherited.achMode.value}`), inherited.achMode.source,
       ['ach_preferred', 'ach_only'], value => setValues({ achMode: value === '' ? null : value as 'ach_preferred' | 'ach_only' }))}
-    <p>{t('autopay.achRisk')}</p>
+    <p className="text-sm text-muted-foreground">{t('autopay.achRisk')}</p>
   </fieldset>;
 }
 export default function PaymentsSettingsTab({ orgId }: { orgId?: string }) {
@@ -189,16 +237,17 @@ export default function PaymentsSettingsTab({ orgId }: { orgId?: string }) {
   return <div className="space-y-6" data-testid="autopay-payments-shell">
     <RemindersSettingsSection scope={orgId ? 'org' : 'partner'} value={model.reminders}
       inherited={model.view.inherited} onChange={model.setReminders} disabled={!canManage || model.saving} />
-    {model.view.autopayEnabled && <section data-testid="autopay-settings-section" className="space-y-4">
-      <h2>{t('autopay.title')}</h2>
+    {model.view.autopayEnabled && <section data-testid="autopay-settings-section" className="min-w-0 space-y-4 rounded-lg border bg-card p-6">
+      <h2 className="text-lg font-semibold">{t('autopay.title')}</h2>
       <PaymentFields view={model.view} setValues={model.setValues} disabled={!canManage || model.saving} />
-      <FeeFields view={model.view} setValues={model.setValues} disabled={!canManage || model.saving}
+      <FeeFields view={model.view} setValues={model.setValues} disabled={!canManage || model.saving} scope={orgId ? 'org' : 'partner'}
         affirmations={orgId ? undefined : model.affirmations} setAffirmations={orgId ? undefined : model.setAffirmations} />
     </section>}
-    {model.invalid && <p role="alert">{t('autopay.invalid')}</p>}
-    {canManage && <button data-testid="autopay-settings-save" disabled={model.invalid || model.saving}
+    {model.invalid && <p role="alert" className="text-sm text-destructive">{t('autopay.invalid')}</p>}
+    {canManage && <div className="flex justify-end"><button type="button" data-testid="autopay-settings-save" disabled={model.invalid || model.saving}
+      className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
       onClick={() => void model.save().catch(e => handleActionError(e, t('reminders.saveFailed')))}>
       {model.saving ? t('reminders.saving') : t('reminders.save')}
-    </button>}
+    </button></div>}
   </div>;
 }

@@ -25,6 +25,9 @@ describe('isSelfManagedDbContextRoute', () => {
     // under the portal request transaction.
     ['POST', '/api/v1/portal/invoices/def-456/settle'],
     ['POST', '/api/v1/portal/invoices/def-456/settle/'],
+    // Invoice-page exit from an off-session 3DS payment cancels the PaymentIntent in Stripe.
+    ['POST', '/api/v1/portal/invoices/def-456/autopay-confirmation'],
+    ['POST', '/api/v1/invoices/public/tok-789/autopay-confirmation'],
     ['POST', '/api/v1/portal/quotes/def-456/pay/'],
     ['post', '/api/v1/portal/quotes/def-456/pay'], // method is case-insensitive
     ['GET', '/api/v1/portal/network/overview'],
@@ -512,7 +515,20 @@ it('self-manages POST /remediation-suggestions/:id/execute and no sibling route'
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/abc-123/execute/')).toBe(true);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/abc-123/elevation-request')).toBe(false);
   expect(isSelfManagedDbContextRoute('PATCH', '/api/v1/remediation-suggestions/abc-123')).toBe(false);
-  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/generate')).toBe(false);
+});
+
+// PR #7939 fix pass A2 — Generate and Research call requestResearch, which
+// provisions the research agent and admits a run in their own system
+// transactions; it refuses to run under a held request transaction. Their GET
+// siblings do no system work and keep the ambient tx.
+it('self-manages the two research-starting remediation POSTs and no sibling route', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/generate')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/research')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/research/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/remediation-suggestions/research')).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/remediation-suggestions/memory')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/abc-123/done')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/generate/extra')).toBe(false);
 });
 
 // #3127 — the four chat message-send routes may settle a turn blocked on

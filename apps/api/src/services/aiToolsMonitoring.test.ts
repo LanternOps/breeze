@@ -336,3 +336,68 @@ describe('manage_monitors — site-axis enforcement', () => {
     });
   });
 });
+
+describe('monitor endpoints in tool results', () => {
+  const SECRET_URL = 'https://ops:hunter2@status.example.com/hooks/T1/B1/abc123?token=xyz789';
+
+  function assertNoEndpointSecrets(serialized: string) {
+    for (const fragment of ['hunter2', 'ops:', '/hooks/', 'abc123', 'token=', 'xyz789']) {
+      expect(serialized).not.toContain(fragment);
+    }
+  }
+
+  function resultsWith(rows: unknown[]) {
+    return {
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) }),
+      }),
+    } as any;
+  }
+
+  it('query_monitors shows a URL target as scheme + host with a fingerprint', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(monitorListLookup([
+      { ...monitorNoAsset, monitorType: 'http_check', target: SECRET_URL },
+      { ...monitorNoAsset, id: 'm2', monitorType: 'icmp_ping', target: '10.0.0.1' },
+    ]));
+
+    const raw = await buildQueryMonitors()({}, makeUnrestrictedAuth());
+    assertNoEndpointSecrets(raw);
+    const out = JSON.parse(raw);
+    expect(out.monitors[0].target).toBe('https://status.example.com');
+    expect(out.monitors[0].targetFingerprint).toMatch(/^[0-9a-f]{6}$/);
+    expect(out.monitors[1].target).toBe('10.0.0.1');
+    expect(out.monitors[1].targetFingerprint).toBeNull();
+  });
+
+  it('manage_monitors get shows target, config.url, lastError and result errors without path, query or userinfo', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(monitorLookup({
+        ...monitorNoAsset,
+        monitorType: 'http_check',
+        target: SECRET_URL,
+        config: { url: SECRET_URL, method: 'GET' },
+        lastError: `Get "${SECRET_URL}": dial tcp 1.2.3.4:443: i/o timeout`,
+      } as any))
+      .mockReturnValueOnce(resultsWith([
+        {
+          id: 'r1', status: 'offline', responseMs: 10, statusCode: null,
+          error: `Get "${SECRET_URL}": context deadline exceeded`,
+          details: { sslState: 'handshake_failed', sslRequestedUrl: SECRET_URL, sslObservedHost: 'status.example.com' },
+          timestamp: new Date(),
+        },
+      ]))
+      .mockReturnValueOnce(rulesLookup());
+
+    const raw = await buildManageMonitors()({ action: 'get', monitorId: MONITOR_ID }, makeUnrestrictedAuth());
+    assertNoEndpointSecrets(raw);
+    const out = JSON.parse(raw);
+    expect(out.monitor.target).toBe('https://status.example.com');
+    expect(out.monitor.targetFingerprint).toMatch(/^[0-9a-f]{6}$/);
+    expect(out.monitor.config.url).toBe('https://status.example.com');
+    expect(out.monitor.config.method).toBe('GET');
+    expect(out.monitor.lastError).toBe('Get "https://status.example.com": dial tcp 1.2.3.4:443: i/o timeout');
+    expect(out.recentResults[0].error).toBe('Get "https://status.example.com": context deadline exceeded');
+    expect(out.recentResults[0].details.sslRequestedUrl).toBe('https://status.example.com');
+    expect(out.recentResults[0].details.sslObservedHost).toBe('status.example.com');
+  });
+});

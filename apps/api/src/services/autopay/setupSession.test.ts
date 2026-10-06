@@ -1,5 +1,5 @@
 import {beforeEach,describe,expect,it,vi} from 'vitest';
-const mock=vi.hoisted(()=>({client:vi.fn(),create:vi.fn(),list:vi.fn(),customer:vi.fn(),gate:vi.fn(),ready:vi.fn(),disclosure:vi.fn(),held:false,depth:0,rows:[] as unknown[][],calls:[] as Array<{op:string,value:unknown}>}));
+const mock=vi.hoisted(()=>({client:vi.fn(),create:vi.fn(),list:vi.fn(),customer:vi.fn(),retrieve:vi.fn(),updateCustomer:vi.fn(),gate:vi.fn(),ready:vi.fn(),disclosure:vi.fn(),held:false,depth:0,rows:[] as unknown[][],calls:[] as Array<{op:string,value:unknown}>}));
 vi.mock('../partnerStripe',()=>({getPartnerStripeClient:mock.client}));
 vi.mock('../../db',()=>{
  const chain:Record<string,unknown>={};
@@ -32,12 +32,38 @@ beforeEach(()=>{
  mock.gate.mockResolvedValue(true);
  mock.ready.mockResolvedValue({ready:true,stripeAccountId:'acct_one',accountCountry:'US'});
  mock.disclosure.mockResolvedValue({hash:'hash',achMode:'ach_preferred'});
- mock.client.mockResolvedValue({stripeAccountId:'acct_one',stripe:{customers:{list:mock.list,create:mock.customer},checkout:{sessions:{create:mock.create}}}});
+ mock.client.mockResolvedValue({stripeAccountId:'acct_one',stripe:{customers:{list:mock.list,create:mock.customer,retrieve:mock.retrieve,update:mock.updateCustomer},checkout:{sessions:{create:mock.create}}}});
+ mock.retrieve.mockResolvedValue({id:'cus_one',email:null});mock.updateCustomer.mockResolvedValue({id:'cus_one'});
+});
+// FP-15: Stripe's setup Checkout leaves Email blank and required when the Customer has none.
+describe('Customer email on setup Checkout',()=>{
+ const stripe=()=>({customers:{retrieve:mock.retrieve,update:mock.updateCustomer},checkout:{sessions:{create:mock.create}}});
+ beforeEach(()=>{mock.create.mockResolvedValue({id:'cs_setup',url:'https://checkout.stripe.com/test'});mock.client.mockResolvedValue({stripeAccountId:'acct_one',stripe:stripe()});});
+ it.each(['card','us_bank_account'] as const)('fills a blank Customer email with the contact before %s Checkout',async methodType=>{
+  mock.retrieve.mockResolvedValue({id:'cus_one',email:null});
+  await createHostedAutopaySession({...attempt,methodType},'public');
+  expect(mock.updateCustomer).toHaveBeenCalledWith('cus_one',{email:'billing@example.test'});
+  expect(mock.updateCustomer.mock.invocationCallOrder[0]!).toBeLessThan(mock.create.mock.invocationCallOrder[0]!);
+ });
+ it('never overwrites an email already on the Customer',async()=>{
+  mock.retrieve.mockResolvedValue({id:'cus_one',email:'client-typed@example.test'});
+  await createHostedAutopaySession({...attempt,methodType:'us_bank_account'},'public');
+  expect(mock.updateCustomer).not.toHaveBeenCalled();
+  expect(mock.create).toHaveBeenCalled();
+ });
+ it('skips a missing contact and still opens Checkout when Stripe refuses the prefill',async()=>{
+  await createHostedAutopaySession({...attempt,methodType:'card',consentSnapshot:{...consentSnapshot,contactEmail:''}},'public');
+  expect(mock.retrieve).not.toHaveBeenCalled();
+  vi.spyOn(console,'warn').mockImplementation(()=>{});
+  mock.retrieve.mockRejectedValue(new Error('permission denied'));
+  await createHostedAutopaySession({...attempt,methodType:'us_bank_account'},'public');
+  expect(mock.create).toHaveBeenCalledTimes(2);
+ });
 });
 describe('Stripe setup boundary',()=>{
  it('pins one method, automatic bank verification and authority metadata',async()=>{
   mock.create.mockResolvedValue({id:'cs_setup',url:'https://checkout.stripe.com/test'});
-  mock.client.mockResolvedValue({stripeAccountId:'acct_one',stripe:{checkout:{sessions:{create:mock.create}}}});
+  mock.client.mockResolvedValue({stripeAccountId:'acct_one',stripe:{customers:{retrieve:mock.retrieve,update:mock.updateCustomer},checkout:{sessions:{create:mock.create}}}});
   await createHostedAutopaySession({consentSnapshot,partnerId:'p',stripeAccountId:'acct_one',stripeCustomerId:'cus_one',
    id:'attempt',orgId:'org',enrollmentId:'enroll',generation:7,tokenId:'token',methodType:'us_bank_account'},'public');
   expect(mock.create).toHaveBeenCalledWith(expect.objectContaining({mode:'setup',customer:'cus_one',
@@ -45,8 +71,15 @@ describe('Stripe setup boundary',()=>{
    metadata:expect.objectContaining({org_id:'org',enrollment_id:'enroll',generation:'7',token_id:'token',setup_attempt_id:'attempt'})}),
    {idempotencyKey:'autopay_setup_attempt'});
  });
+ it.each(['card','us_bank_account'] as const)('never offers the Link wallet on %s setup Checkout',async methodType=>{
+  mock.create.mockResolvedValue({id:'cs_setup',url:'https://checkout.stripe.com/test'});
+  mock.client.mockResolvedValue({stripeAccountId:'acct_one',stripe:{customers:{retrieve:mock.retrieve,update:mock.updateCustomer},checkout:{sessions:{create:mock.create}}}});
+  await createHostedAutopaySession({consentSnapshot,partnerId:'p',stripeAccountId:'acct_one',stripeCustomerId:'cus_one',
+   id:'attempt',orgId:'org',enrollmentId:'enroll',generation:7,tokenId:'token',methodType},'portal');
+  expect(mock.create.mock.calls[0]![0]).toMatchObject({payment_method_types:[methodType],wallet_options:{link:{display:'never'}}});
+ });
  it('refuses the wrong account before a provider mutation',async()=>{
-  mock.create.mockClear();mock.client.mockResolvedValue({stripeAccountId:'acct_other',stripe:{checkout:{sessions:{create:mock.create}}}});
+  mock.create.mockClear();mock.client.mockResolvedValue({stripeAccountId:'acct_other',stripe:{customers:{retrieve:mock.retrieve,update:mock.updateCustomer},checkout:{sessions:{create:mock.create}}}});
   await expect(createHostedAutopaySession({consentSnapshot,partnerId:'p',stripeAccountId:'acct_one',stripeCustomerId:'cus_one',
    id:'a',orgId:'o',enrollmentId:'e',generation:1,tokenId:null,methodType:'card'},'portal')).rejects.toThrow(/account/);
   expect(mock.create).not.toHaveBeenCalled();
@@ -136,6 +169,14 @@ it('derives invoice bank metadata on both provider objects exclusively from dura
  const metadata={invoice_id:bankPayment.invoiceId,principal_minor:'10000',fee_minor:'250',currency:'USD'};
  expect(sent.metadata).toMatchObject(metadata);expect(sent.setup_intent_data.metadata).toMatchObject(metadata);
  expect(sent.success_url).toContain('&target=public&bank=1');
+ // Stripe "Back" from a bank payment returns to the bank return page, which leads back
+ // to the invoice the client was paying (public or portal), not to a setup page.
+ expect(sent.cancel_url).toMatch(/\/autopay\/return\?cancelled=1&bank=1$/);
+});
+it.each(['public','portal'] as const)('a %s invoice bank payment cancels back to the bank return page',async returnTo=>{
+ const bankPayment={invoiceId:'10000000-0000-4000-8000-000000000001',orgId:'20000000-0000-4000-8000-000000000001',principal:'100.00',fee:'2.50',currency:'USD',disclosureHash:'a'.repeat(64)};
+ await createHostedAutopaySession({...attempt,methodType:'us_bank_account',consentSnapshot:{...consentSnapshot,bankPayment}},returnTo);
+ expect(mock.create.mock.calls[0]![0].cancel_url).toMatch(/\/autopay\/return\?cancelled=1&bank=1$/);
 });
 
 it('prepares new same-generation authorization while paused without resuming',async()=>{

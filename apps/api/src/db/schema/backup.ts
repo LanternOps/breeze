@@ -170,7 +170,6 @@ export const backupConfigs = pgTable(
     providerCapabilitiesCheckedAt: timestamp('provider_capabilities_checked_at'),
     compression: boolean('compression').notNull().default(true),
     encryption: boolean('encryption').notNull().default(false),
-    encryptionKey: text('encryption_key'),
     isActive: boolean('is_active').notNull().default(true),
     // The org's default destination. Partner-wide config policies cannot pin
     // one org's credentials, so their backup links resolve to the device

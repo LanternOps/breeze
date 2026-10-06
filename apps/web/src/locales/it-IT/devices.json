@@ -2439,6 +2439,7 @@
       "bulkWakeSomeFailed": "Riattivazione in blocco parzialmente non riuscita",
       "commandQueued": "{{action}} in coda — verrà eseguito quando {{hostname}} si riconnette",
       "commandSent": "{{action}} inviato a {{hostname}}",
+      "commandCancelled": "{{action}} non è stato inviato a {{hostname}}: comando annullato ({{reason}})",
       "compareNeedsTwo": "Il confronto richiede almeno 2 dispositivi con agente.",
       "decommissionCancelled": "Rimozione annullata",
       "decommissionFailed": "Rimozione non riuscita",
@@ -2824,7 +2825,8 @@
     "submitStepUp": "Verifica e sposta",
     "submitting": "In corso…",
     "cancel": "Annulla",
-    "genericError": "Impossibile spostare il dispositivo."
+    "genericError": "Impossibile spostare il dispositivo.",
+    "timeout": "Lo spostamento sta richiedendo più tempo del previsto e potrebbe essere ancora in corso sul server. Attendi un minuto, quindi aggiorna la pagina per verificare in quale organizzazione si trova il dispositivo prima di riprovare."
   },
   "networkDeviceDetailPage": {
     "approval": {

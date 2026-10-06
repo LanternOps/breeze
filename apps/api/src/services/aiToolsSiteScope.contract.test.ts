@@ -200,6 +200,13 @@ const SITE_TABLE_EXCEPTIONS: readonly string[] = [
   'aiToolsBackup.ts:backupJobs#0',
   'aiToolsBackup.ts:restoreJobs#0',
   'aiToolsBackupVm.ts:restoreJobs#0',
+  // `list_configuration_policies`: reads only (configPolicyId, featureType) of
+  // the feature links under policy ids already narrowed by
+  // `policyAccessCondition(auth)`. The table's only site column is
+  // `execution_authority_site_ids` — the stored site ceiling of the user who
+  // approved auto-quarantine, not a site the row belongs to — and it is not
+  // selected.
+  'aiToolsConfigPolicy.ts:configPolicyFeatureLinks#0',
   // `query_psa_status`: counts ticket mappings under a PSA connection id the
   // same handler already authorised. PSA connections are org- or
   // partner-owned and carry no site attribution.

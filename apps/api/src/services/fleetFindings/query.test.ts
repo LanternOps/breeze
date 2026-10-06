@@ -26,6 +26,7 @@ const h = vi.hoisted(() => {
     chain.leftJoin = pass;
     chain.where = pass;
     chain.orderBy = pass;
+    chain.groupBy = pass;
     chain.limit = pass;
     chain.offset = pass;
     chain.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
@@ -40,7 +41,7 @@ const h = vi.hoisted(() => {
 vi.mock('../../db', () => ({ db: { select: h.mockSelect } }));
 
 vi.mock('../../db/schema', () => ({
-  devices: { id: 'd.id', siteId: 'd.siteId', hostname: 'd.hostname', displayName: 'd.displayName' },
+  devices: { id: 'd.id', orgId: 'd.orgId', siteId: 'd.siteId', hostname: 'd.hostname', displayName: 'd.displayName' },
   organizations: { id: 'o.id', name: 'o.name' },
 }));
 
@@ -48,7 +49,12 @@ vi.mock('../../db/schema/fleetFindings', () => ({
   fleetFindings: { id: 'ff.id', orgId: 'ff.orgId' },
   fleetFindingDevices: { findingId: 'ffd.findingId', deviceId: 'ffd.deviceId' },
   fleetRemediationRuns: { id: 'frr.id', orgId: 'frr.orgId', createdAt: 'frr.createdAt' },
-  fleetRemediationRunTargets: { runId: 'frt.runId' },
+  fleetRemediationRunTargets: {
+    runId: 'frt.runId', targetDeviceUuid: 'frt.targetDeviceUuid', hostnameSnapshot: 'frt.hostnameSnapshot',
+    siteIdSnapshot: 'frt.siteIdSnapshot', status: 'frt.status', skipReason: 'frt.skipReason',
+    deviceCommandId: 'frt.deviceCommandId', resultSummary: 'frt.resultSummary',
+    queuedAt: 'frt.queuedAt', completedAt: 'frt.completedAt',
+  },
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -56,6 +62,7 @@ vi.mock('drizzle-orm', () => ({
   eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
   inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
   desc: (column: unknown) => ({ op: 'desc', column }),
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', strings, values }),
 }));
 
 import { getRemediationRun } from './query';
@@ -165,20 +172,26 @@ describe('getRemediationRun — site-axis fail-closed', () => {
 
     expect(run).not.toBeNull();
     expect(run!.id).toBe(RUN_1);
-    // Run-level counts are the TRUE totals; only the target list narrows.
-    expect(run!.targetCount).toBe(2);
+    // Counts are projected from the same in-scope target set: the run's
+    // global totals would reveal that it also touched devices in a hidden site.
+    expect(run!.targetCount).toBe(1);
+    expect(run!.succeededCount).toBe(1);
+    expect(run!.failedCount).toBe(0);
+    expect(run!.skippedCount).toBe(0);
     expect(run!.targets).toHaveLength(1);
     expect(run!.targets[0]!.deviceId).toBe(DEVICE_1);
   });
 
-  it('returns every target for an unrestricted caller (allowedSiteIds undefined)', async () => {
-    h.selectQueue.push([runRow()]);
+  it('returns every target and the stored counts for an unrestricted caller (allowedSiteIds undefined)', async () => {
+    h.selectQueue.push([runRow({ targetCount: 5, succeededCount: 4, skippedCount: 1 })]);
     h.selectQueue.push([targetRow(DEVICE_1, SITE_1), targetRow(DEVICE_2, SITE_2)]);
 
     const run = await getRemediationRun(makeAuth(), RUN_1);
 
     expect(run).not.toBeNull();
     expect(run!.targets).toHaveLength(2);
+    expect(run!.targetCount).toBe(5);
+    expect(run!.succeededCount).toBe(4);
   });
 
   it('returns a target-less run for an unrestricted caller (not a 404 — nothing is being hidden)', async () => {

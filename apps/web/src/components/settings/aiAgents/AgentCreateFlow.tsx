@@ -33,6 +33,9 @@ export interface AgentCreateFlowProps {
 
 const STEP_KEYS = ['purpose', 'does', 'safety', 'review'] as const;
 type StepKey = (typeof STEP_KEYS)[number];
+// AI Suggested Fixes W2: a research draft (an org override of the built-in
+// agent) has only a name and caps, so the flow collapses to two steps.
+const RESEARCH_STEP_KEYS = ['purpose', 'review'] as const satisfies readonly StepKey[];
 /** `AgentSummaryCard`'s `onEdit` names three of the four steps — "review" has
  *  no row that could ever link back to itself. */
 type EditSection = 'purpose' | 'does' | 'safety';
@@ -79,6 +82,9 @@ export default function AgentCreateFlow({
   const patch = useCallback((values: Partial<Draft>) => setDraft((current) => ({ ...current, ...values })), []);
 
   const [step, setStep] = useState(0);
+  const isResearch = draft.kind === 'research';
+  const stepKeys: readonly StepKey[] = isResearch ? RESEARCH_STEP_KEYS : STEP_KEYS;
+  const stepKey = stepKeys[Math.min(step, stepKeys.length - 1)]!;
   // Furthest step the operator has reached — every step up to it stays
   // reachable from the stepper (an "Edit" link from Review sends them back;
   // returning should not cost three Next clicks — #5048 QA).
@@ -91,7 +97,7 @@ export default function AgentCreateFlow({
   // Create has no existing agent, so entering act is simply "mode is act" —
   // there is no prior mode to compare against (mirrors AiAgentForm's
   // `initialMode` always being 'off' on create).
-  const enteringActMode = draft.mode === 'act';
+  const enteringActMode = draft.mode === 'act' && draft.kind !== 'research';
   const actKeysWillBeOmitted =
     draft.ownerScope !== 'organization' && draft.mode !== 'act' && draft.supervisedActionKeys.length > 0;
   const actSupported = SUPPORTED_AGENT_MODES.includes('act');
@@ -125,14 +131,14 @@ export default function AgentCreateFlow({
       problems.push(t('aiAgentsPage.issues.name'));
       setForceNameError(true);
     }
-    if (index === 1 && ALERT_SEVERITY_KINDS.has(draft.kind) && draft.severities.length === 0) {
+    if (stepKeys[index] === 'does' && ALERT_SEVERITY_KINDS.has(draft.kind) && draft.severities.length === 0) {
       problems.push(t('aiAgentsPage.issues.severities'));
     }
     return problems;
   };
 
   const goToStep = (target: number) => {
-    const clamped = Math.max(0, Math.min(STEP_KEYS.length - 1, target));
+    const clamped = Math.max(0, Math.min(stepKeys.length - 1, target));
     if (clamped > step) {
       // Validate every step being left behind, not just the current one: a
       // step edited earlier and then backed out of is only ever re-checked
@@ -158,7 +164,7 @@ export default function AgentCreateFlow({
 
   const goBack = () => goToStep(step - 1);
   const goNext = () => goToStep(step + 1);
-  const goToSection = (section: EditSection) => goToStep(STEP_KEYS.indexOf(section));
+  const goToSection = (section: EditSection) => goToStep(stepKeys.indexOf(section));
 
   // Mirrors AiAgentForm.tsx's Save disable condition: an act-mode transition
   // needs the acknowledgement before the operator can move past this step —
@@ -224,7 +230,7 @@ export default function AgentCreateFlow({
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-y-auto p-5 md:grid-cols-[220px_minmax(0,1fr)]">
         <SetupStepper
-          steps={STEP_KEYS.map((key) => ({ label: stepLabel(key), description: stepDescription(key) }))}
+          steps={stepKeys.map((key) => ({ label: stepLabel(key), description: stepDescription(key) }))}
           currentStep={step}
           onStepClick={goToStep}
           reachableStep={reachableStep}
@@ -244,7 +250,7 @@ export default function AgentCreateFlow({
             </ul>
           )}
 
-          {step === 0 && (
+          {stepKey === 'purpose' && (
             <PurposeStep
               draft={draft}
               patch={patch}
@@ -259,7 +265,7 @@ export default function AgentCreateFlow({
               forceNameError={forceNameError}
             />
           )}
-          {step === 1 && (
+          {stepKey === 'does' && (
             <WhatItDoesStep
               draft={draft}
               patch={patch}
@@ -274,7 +280,7 @@ export default function AgentCreateFlow({
               authorizedScriptCount={!ceilingResolved || ceilingFailed ? 0 : authorizedScriptCountFor(draft, ceiling)}
             />
           )}
-          {step === 2 && (
+          {stepKey === 'safety' && (
             <SafetyStep
               draft={draft}
               patch={patch}
@@ -288,7 +294,7 @@ export default function AgentCreateFlow({
               policyKeysFailed={policyKeysFailed}
             />
           )}
-          {step === 3 && (
+          {stepKey === 'review' && (
             <ReviewStep draft={draft} patch={patch} orgId={orgScope.orgId} orgName={orgName} roles={roles} onEdit={goToSection} />
           )}
         </div>
@@ -307,7 +313,7 @@ export default function AgentCreateFlow({
             </button>
           )}
         </div>
-        {step < STEP_KEYS.length - 1 ? (
+        {step < stepKeys.length - 1 ? (
           <button
             type="button"
             onClick={goNext}
@@ -315,7 +321,7 @@ export default function AgentCreateFlow({
             className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60"
             data-testid="agent-create-flow-next"
           >
-            {t('aiAgentsPage.flow.next', { step: stepLabel(STEP_KEYS[step + 1]!) })}
+            {t('aiAgentsPage.flow.next', { step: stepLabel(stepKeys[step + 1]!) })}
           </button>
         ) : (
           <button

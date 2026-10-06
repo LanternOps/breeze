@@ -106,6 +106,11 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // SECOND pooled connection for that (the #6671 double-hold) while the first
   // sat idle-in-transaction across the Stripe round-trip.
   { method: 'POST', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/settle\/?$/ },
+  // Invoice-page exit from an off-session 3DS autopay payment (portal + public
+  // link): releaseInvoiceConfirmation cancels the PaymentIntent in Stripe and
+  // asserts no DB context is held across that call.
+  { method: 'POST', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/autopay-confirmation\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/invoices\/public\/[^/]+\/autopay-confirmation\/?$/ },
   // #6175 Network Visibility overview. Portal auth has already resolved the
   // owning partner, so the handler opens one org-scoped context with
   // currentPartnerId populated for SELECT-only partner-wide network_monitors
@@ -288,6 +293,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // they had under the request tx.
   { method: 'POST', pattern: /^\/api\/v1\/mobile\/devices\/[^/]+\/actions\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/remediation-suggestions\/[^/]+\/execute\/?$/ },
+  // PR #7939 (AI Suggested Fixes W2) — Generate and Research call
+  // requestResearch, which provisions the research agent and admits a run in
+  // their own system transactions and enqueues the BullMQ job after that
+  // admission commits. Under the ambient request transaction each click pinned
+  // a second (and third) pooled connection (#2417 / #6671). requestResearch now
+  // refuses a held context; the handlers run their reads in short
+  // withAuthDbAccessContext phases and call it with none held.
+  { method: 'POST', pattern: /^\/api\/v1\/remediation-suggestions\/(?:generate|research)\/?$/ },
   // #7347 — manual automation trigger (both spellings). The handler inserts the
   // automation_runs row and enqueues `execute-run`, which the automation worker
   // loads on its own connection. Under the ambient request transaction a fast

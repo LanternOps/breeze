@@ -70,6 +70,7 @@ vi.mock('../../services/auditEvents', () => ({
 }));
 
 import { ticketResponseTemplateRoutes } from './ticketResponseTemplates';
+import { ERROR_CODES } from '@breeze/shared';
 
 const TEMPLATE_ID = '3f2f1d8e-1111-4222-8333-444455556666';
 
@@ -262,7 +263,7 @@ describe('GET /ticket-response-templates', () => {
     authRef.current = { ...DEFAULT_AUTH, partnerId: null, canAccessOrg: () => true };
     const res = await makeApp().request('/ticket-response-templates');
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Partner context required' });
+    expect(await res.json()).toEqual({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED });
   });
 });
 
@@ -353,7 +354,7 @@ describe('PATCH /ticket-response-templates/:id', () => {
     storeRef.current = [{ id: TEMPLATE_ID, partnerId: 'partner-2', name: 'Other', body: 'Body', isActive: true }];
     const res = await jsonRequest('PATCH', `/ticket-response-templates/${TEMPLATE_ID}`, { name: 'New' });
     expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'Template not found' });
+    expect(await res.json()).toEqual({ error: 'Template not found', code: ERROR_CODES.NOT_FOUND });
   });
 });
 
@@ -375,7 +376,7 @@ describe('DELETE /ticket-response-templates/:id', () => {
     storeRef.current = [{ id: TEMPLATE_ID, partnerId: 'partner-2', name: 'Other', body: 'Body', isActive: true }];
     const res = await makeApp().request(`/ticket-response-templates/${TEMPLATE_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'Template not found' });
+    expect(await res.json()).toEqual({ error: 'Template not found', code: ERROR_CODES.NOT_FOUND });
     expect(storeRef.current).toEqual([{ id: TEMPLATE_ID, partnerId: 'partner-2', name: 'Other', body: 'Body', isActive: true }]);
   });
 });

@@ -23,7 +23,7 @@ it('requires consent, an unchanged disclosure, decimal amounts, and a session fo
 });
 
 const bank=vi.hoisted(()=>({rows:[] as unknown[][],disclosure:vi.fn(),quote:vi.fn(),session:vi.fn(),intent:vi.fn()}));
-vi.mock('../../db',()=>({db:{select:()=>({from:()=>({where:()=>({limit:async()=>bank.rows.shift()})})})},
+vi.mock('../../db',()=>({db:{select:()=>({from:()=>({where:()=>({limit:()=>{const rows=Promise.resolve(bank.rows.shift());return Object.assign(rows,{for:()=>rows});}})})})},
   withSystemDbAccessContext:async(fn:()=>Promise<unknown>)=>fn(),runOutsideDbContext:async(fn:()=>Promise<unknown>)=>fn()}));
 vi.mock('./autopayGate',()=>({isAutopayEnabledForPartner:vi.fn(async()=>true)}));
 vi.mock('./stripeCapabilities',()=>({getAutopayStripeReadiness:vi.fn(async()=>({ready:true,accountCountry:'US',stripeAccountId:'acct_test'}))}));
@@ -46,19 +46,29 @@ it.each(['card_only','ach_preferred','ach_only'] as const)('admits bank pay usin
   else {expect(offer).toMatchObject({available:true,fee:'0.00',disclosureHash:'a'.repeat(64)});}
 });
 
+it('the one-time authorization names the invoice, the amount, the fee and the total in plain money',async()=>{
+  vi.clearAllMocks();
+  bank.rows=[[{id:'invoice',orgId:'org',partnerId:'partner',currencyCode:'USD',status:'sent',balance:'200.00',invoiceNumber:'INV-2026-0006'}],
+    [{status:'requested',stripeAccountId:'acct_test'}],[{id:'org',status:'active',deletedAt:null,currencyCode:'USD'}],[]];
+  bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64),text:'I authorize Example MSP to save this US bank account.'});
+  bank.quote.mockReturnValue({feeAmount:'1.00'});
+  const offer=await getBankAutopayOffer('invoice','org');
+  expect(offer?.consentText).toBe('I authorize a one-time bank payment of $200.00 plus a $1.00 processing fee ($201.00 in total) for invoice INV-2026-0006. I authorize Example MSP to save this US bank account.');
+});
+
 vi.mock('../invoicePdf',()=>({resolveBillingEmail:vi.fn()}));
 vi.mock('../partnerStripe',()=>({getPartnerStripeClient:vi.fn()}));
 vi.mock('../stripeSettle',()=>({assertNoHeldDbContextForStripe:vi.fn()}));
 vi.mock('./linkTokens',()=>({mintBillingLinkToken:vi.fn()}));
 vi.mock('./collectionEngine',()=>({attemptCollection:vi.fn()}));
-vi.mock('./reservation',()=>({readInFlightCollection:vi.fn(async()=>({inProgress:false}))}));
+vi.mock('./reservation',()=>({holdsClientMoney:vi.fn(async()=>false)}));
 
 import {collectAfterBankSetup,invoicePaySchema,startInvoiceBankSetup} from './bankPayment';
 import {getPartnerStripeClient} from '../partnerStripe';
 import {completeAutopaySetup,createAutopaySetupSession} from './enrollmentService';
 import {getAutopayMethod} from './paymentMethods';
 import {attemptCollection} from './collectionEngine';
-import {readInFlightCollection} from './reservation';
+import {holdsClientMoney} from './reservation';
 const invoice={id:'10000000-0000-4000-8000-000000000001',orgId:'20000000-0000-4000-8000-000000000001',partnerId:'partner',currencyCode:'USD',status:'sent',balance:'100.00'};
 const accepted={invoiceId:invoice.id,orgId:invoice.orgId,principal:'100.00',fee:'0.00',currency:'USD',disclosureHash:'a'.repeat(64)};
 const token={id:'token',invoiceId:invoice.id,orgId:invoice.orgId,enrollmentId:'enrollment',generation:1,purpose:'enroll',consumedAt:null,revokedAt:null,expiresAt:new Date('2099-01-01')};
@@ -91,7 +101,7 @@ it.each(['pending_verification','in_progress','abandoned'] as const)('never coll
  completionFixture();vi.mocked(completeAutopaySetup).mockResolvedValue({outcome,orgId:invoice.orgId});
  expect(await collect()).toMatchObject({outcome:'deferred',reason:outcome});expect(attemptCollection).not.toHaveBeenCalled();
 });
-it.each(['invoice','org','account','generation','method','setupIntent','principal','fee','currency','consumed','revoked','purpose','expired'])(
+it.each(['invoice','org','setupIntent','principal','fee','currency','purpose'])(
  'refuses mismatched %s before reserving',async mismatch=>{
  completionFixture();
  if(mismatch==='invoice'||mismatch==='org')bank.session.mockResolvedValue({...session,metadata:{...session.metadata,[mismatch+'_id']:'other'}});
@@ -111,16 +121,17 @@ it('never lets invalid bank consent fall through the ordinary card branch',()=>{
  expect(invoicePaySchema.safeParse({methodType:'us_bank_account'}).success).toBe(false);
  expect(invoicePaySchema.safeParse({saveForAutopay:true}).success).toBe(false);
 });
-it('does not offer bank payment while money is reserved',async()=>{
+it('does not offer bank payment while money is reserved or unapplied',async()=>{
  completionFixture();bank.rows=[[invoice],[enrollment],[{id:invoice.orgId,status:'active'}]];
  bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64)});
- vi.mocked(readInFlightCollection).mockResolvedValueOnce({inProgress:true,amount:'100.00'});
+ vi.mocked(holdsClientMoney).mockResolvedValueOnce(true);
  expect(await getBankAutopayOffer(invoice.id,invoice.orgId)).toBeNull();expect(attemptCollection).not.toHaveBeenCalled();
 });
 it('requires fresh displayed terms when the balance changed before setup',async()=>{
- completionFixture();bank.rows=[[{...invoice,balance:'90.00'}],[enrollment],[{id:invoice.orgId,status:'active'}],[]];
+ // The active bank is the one this invoice's own bank payment saved (restarting it), so G3 still offers it.
+ completionFixture();bank.rows=[[{...invoice,balance:'90.00'}],[enrollment],[{id:invoice.orgId,status:'active'}],[],[{id:'setup'}]];
  bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64)});bank.quote.mockReturnValue({feeAmount:'0.00'});
- await expect(startInvoiceBankSetup({invoiceId:invoice.id,orgId:invoice.orgId,terms:{...accepted,methodType:'us_bank_account',phase:'setup',consentAccepted:true,currency:'USD'},returnTo:'public',ip:null,userAgent:null})).rejects.toMatchObject({status:409});
+ await expect(startInvoiceBankSetup({invoiceId:invoice.id,orgId:invoice.orgId,terms:{...accepted,methodType:'us_bank_account',phase:'setup',consentAccepted:true,currency:'USD'},returnTo:'public',ip:null,userAgent:null})).rejects.toMatchObject({status:409,details:{reason:'terms_changed'}});
  expect(createAutopaySetupSession).not.toHaveBeenCalled();
 });
 
@@ -139,4 +150,60 @@ it('retains pending bank verification after another payment closes the invoice',
  [{status:'active',stripeAccountId:'acct_test'}],[{id:'org',status:'active',deletedAt:null}],[]];
  bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64),text:'Accepted bank terms'});bank.quote.mockReturnValue({feeAmount:'0.00'});
  expect(await getBankAutopayOffer('invoice','org')).toMatchObject({available:false,methodStatus:'pending_verification'});
+});
+
+// Microdeposits take 1-2 business days to arrive and Stripe allows 10 days to verify
+// them, so the invoice-bound authority must outlive that window.
+import {mintBillingLinkToken} from './linkTokens';
+import {resolveBillingEmail} from '../invoicePdf';
+it('mints the invoice-bound bank authority to outlive microdeposit verification',async()=>{
+ completionFixture();bank.rows=[[invoice],[enrollment],[{id:invoice.orgId,status:'active',deletedAt:null}],[],[{id:'setup'}],[enrollment],[{id:invoice.orgId,billingContact:{email:'billing@example.test'}}]];
+ bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64),text:'Accepted bank terms'});bank.quote.mockReturnValue({feeAmount:'0.00'});
+ vi.mocked(resolveBillingEmail).mockReturnValue('billing@example.test');
+ vi.mocked(mintBillingLinkToken).mockResolvedValue({id:'token',token:'secret'});
+ await startInvoiceBankSetup({invoiceId:invoice.id,orgId:invoice.orgId,terms:{...accepted,methodType:'us_bank_account',phase:'setup',consentAccepted:true,currency:'USD'},returnTo:'public',ip:null,userAgent:null});
+ expect(mintBillingLinkToken).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({purpose:'enroll',invoiceId:invoice.id,ttlDays:14}));
+});
+// An unavailable authority is a structured outcome the page can act on, not a dead end.
+it.each([
+ ['expired',()=>{bank.rows[1]=[{...token,expiresAt:new Date(0)}];},'bank_authorization_expired'],
+ ['revoked',()=>{bank.rows[1]=[{...token,revokedAt:new Date()}];},'bank_authorization_expired'],
+ ['consumed',()=>{bank.rows[1]=[{...token,consumedAt:new Date()}];},'bank_authorization_used'],
+ ['generation',()=>{bank.rows[2]=[{...enrollment,generation:2}];},'bank_authorization_changed'],
+ ['account',()=>{bank.rows[2]=[{...enrollment,stripeAccountId:'acct_other'}];},'bank_authorization_changed'],
+ ['method',()=>{vi.mocked(getAutopayMethod).mockResolvedValue({...method,id:'replacement',stripePaymentMethodId:'pm_B',stripeSetupIntentId:'seti_B'} as never);},'bank_authorization_changed'],
+] as const)('returns a structured %s authority without reserving',async(_case,change,reason)=>{
+ completionFixture();change();
+ expect(await collect()).toEqual({attemptId:null,outcome:'refused',reason});
+ expect(attemptCollection).not.toHaveBeenCalled();
+});
+
+// V-8: the bank-return page says which account will be debited (the bank this invoice's own
+// bank payment just saved, so the G3 refusal below does not apply).
+it('names the saved bank account the payment will come from',async()=>{
+ vi.mocked(getAutopayMethod).mockResolvedValueOnce({type:'us_bank_account',status:'active',bankLast4:'6789',stripeSetupIntentId:'seti_bank'} as any);
+ bank.rows=[[{id:'invoice',orgId:'org',partnerId:'partner',currencyCode:'USD',status:'sent',balance:'140.00'}],
+ [{id:'enrollment',status:'active',stripeAccountId:'acct_test'}],[{id:'org',status:'active',deletedAt:null}],[],[{id:'setup'}]];
+ bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64),text:'Accepted bank terms'});bank.quote.mockReturnValue({feeAmount:'1.00'});
+ expect(await getBankAutopayOffer('invoice','org')).toMatchObject({available:true,methodStatus:'active',methodLabel:'Bank account ending in 6789'});
+});
+it('names no account when the saved method is a card (automatic payments not yet active)',async()=>{
+ vi.mocked(getAutopayMethod).mockResolvedValueOnce({type:'card',status:'active',cardLast4:'4242'} as any);
+ bank.rows=[[{id:'invoice',orgId:'org',partnerId:'partner',currencyCode:'USD',status:'sent',balance:'140.00'}],
+ [{status:'requested',stripeAccountId:'acct_test'}],[{id:'org',status:'active',deletedAt:null}],[]];
+ bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64),text:'Accepted bank terms'});bank.quote.mockReturnValue({feeAmount:'1.00'});
+ expect(await getBankAutopayOffer('invoice','org')).toMatchObject({methodStatus:null,methodLabel:null});
+});
+// G3: bank pay makes the new account the autopay method at once (it is exempt from F-1's
+// keep-working rule), so the API never offers it over a working method on active automatic
+// payments; only the bank this invoice's own bank payment saved is still offered (the return page).
+it.each([
+ ['a working card',{type:'card',status:'active',cardLast4:'4242'},[]],
+ ['a working bank saved some other way',{type:'us_bank_account',status:'active',bankLast4:'1111',stripeSetupIntentId:'seti_other'},[]],
+] as const)('refuses bank pay over %s on active automatic payments (G3)',async(_label,method,setup)=>{
+ vi.mocked(getAutopayMethod).mockResolvedValueOnce(method as any);
+ bank.rows=[[{id:'invoice',orgId:'org',partnerId:'partner',currencyCode:'USD',status:'sent',balance:'140.00'}],
+ [{id:'enrollment',status:'active',stripeAccountId:'acct_test'}],[{id:'org',status:'active',deletedAt:null}],[],[...setup]];
+ bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64),text:'Accepted bank terms'});bank.quote.mockReturnValue({feeAmount:'1.00'});
+ expect(await getBankAutopayOffer('invoice','org')).toBeNull();
 });

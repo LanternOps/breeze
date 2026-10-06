@@ -2,8 +2,10 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { fetchWithAuth } from '../../stores/auth';
 import OrgAutopayCard from './OrgAutopayCard';
+const h = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+vi.mock('../shared/Toast', () => ({ showToast: h.toast }));
 it('requires an override when billing contact is absent and sends it only for this request', async () => {
   vi.mocked(fetchWithAuth).mockImplementation(async (_url, init) => Response.json(init?.method
     ? { requested: ['11111111-1111-4111-8111-111111111111'], skipped: [] }
@@ -139,4 +141,53 @@ it('shows readable warning for skipped requests',async()=>{
  render(<OrgAutopayCard orgId={orgA}/>);fireEvent.click(await screen.findByTestId('autopay-request'));
  const result=await screen.findByTestId('autopay-org-result');expect(result).toHaveAttribute('role','alert');
  expect(result).toHaveTextContent('Stripe is not ready');expect(result).not.toHaveTextContent('stripe_not_ready');
+});
+
+it('formats the enrollment start as a localized date, never a raw ISO timestamp', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async () => Response.json({ ...row(orgA),
+    enrollment: { status: 'active', generation: 1, effectiveFrom: '2026-10-02T12:10:01.255Z', needsAttentionReason: null } }));
+  render(<OrgAutopayCard orgId={orgA} />);
+  const effective = await screen.findByTestId('autopay-effective');
+  expect(effective).toHaveTextContent(/Applies to invoices issued after Oct 2, 2026/);
+  expect(screen.getByTestId('autopay-org-card')).not.toHaveTextContent('2026-10-02T');
+});
+it('does not claim a start date before the client has enrolled', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async () => Response.json({ ...row(orgA, 'not_requested'), enrollment: null }));
+  render(<OrgAutopayCard orgId={orgA} />);
+  await screen.findByTestId('autopay-request');
+  expect(screen.queryByTestId('autopay-effective')).toBeNull();
+  expect(screen.getByTestId('autopay-org-card')).not.toHaveTextContent('Applies to invoices issued after');
+});
+it('titles the card for the enrollment so the org page has one Automatic payment heading', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async () => Response.json(row(orgA)));
+  render(<OrgAutopayCard orgId={orgA} />);
+  expect(await screen.findByRole('heading', { name: 'Automatic payment enrollment' })).toBeInTheDocument();
+});
+it('names the request recipient instead of a generic completion', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async (_url, init) => Response.json(init?.method
+    ? { requested: [orgA], skipped: [] } : { ...row(orgA, 'not_requested'), enrollment: null }));
+  render(<OrgAutopayCard orgId={orgA} />);
+  fireEvent.click(await screen.findByTestId('autopay-request'));
+  const result = await screen.findByTestId('autopay-org-result');
+  expect(result).toHaveTextContent('Request sent to billing@example.test.');
+  expect(result).not.toHaveTextContent('Request completed');
+});
+it.each([
+  ['pause', 'active', 'Automatic payments paused.'],
+  ['resume', 'paused', 'Automatic payments resumed.'],
+])('reports %s with what changed in the result and the toast', async (action, initial, message) => {
+  vi.mocked(fetchWithAuth).mockImplementation(async (_url, init) => init?.method ? Response.json({ success: true }) : Response.json(row(orgA, initial)));
+  render(<OrgAutopayCard orgId={orgA} />);
+  fireEvent.click(await screen.findByTestId(`autopay-${action}`));
+  expect(await screen.findByTestId('autopay-org-result')).toHaveTextContent(message);
+  expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message }));
+  expect(h.toast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Request completed.' }));
+});
+it('explains a needs-attention reason instead of printing its code', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async () => Response.json({ ...row(orgA), status: 'needs_attention',
+    enrollment: { status: 'active', generation: 1, effectiveFrom: null, needsAttentionReason: 'method_unusable' } }));
+  render(<OrgAutopayCard orgId={orgA} />);
+  const reason = await screen.findByTestId('autopay-attention-reason');
+  expect(reason).toHaveTextContent("The saved payment method can't be charged.");
+  expect(reason).not.toHaveTextContent('method_unusable');
 });

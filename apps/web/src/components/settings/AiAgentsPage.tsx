@@ -102,12 +102,14 @@ export default function AiAgentsPage() {
     patch: t('aiAgentsPage.kinds.patch'),
     helpdesk: t('aiAgentsPage.kinds.helpdesk'),
     designer: t('aiAgentsPage.kinds.designer'),
+    research: t('aiAgentsPage.kinds.research'),
   };
   const KIND_HINT: Record<(typeof AI_AGENT_KINDS)[number], string> = {
     triage: t('aiAgentsPage.kindHints.triage'),
     patch: t('aiAgentsPage.kindHints.patch'),
     helpdesk: t('aiAgentsPage.kindHints.helpdesk'),
     designer: t('aiAgentsPage.kindHints.designer'),
+    research: t('aiAgentsPage.kindHints.research'),
   };
   // Same reason, over `AI_AGENT_RUN_STATUSES`. Shares the runs page's own
   // vocabulary rather than minting a second set of status words.

@@ -704,6 +704,46 @@ describe('POST /devices/:id/move-org', () => {
       expect(vi.mocked(dissolveLinkGroupIfBelowMinimum).mock.calls[0]![1]).toBe('grp-multiboot-1');
     });
 
+    it('skips rows the devices trigger already re-stamped in the generic loop, but not tickets (#7988)', async () => {
+      // breeze_cascade_device_org_id() (AFTER UPDATE on devices) re-stamps
+      // org_id on every breeze_device_child_orgid_tables() row before this
+      // loop runs. An unfiltered loop rewrites every telemetry row a second
+      // time, which is what pushed online-device moves past the client's
+      // 30 s timeout.
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+      });
+      expect(res.status).toBe(200);
+
+      const flat = statements.map(collapseStmt);
+      for (const table of ['device_metrics', 'agent_logs']) {
+        expect(flat).toContain(
+          `UPDATE ${table} SET org_id = ${TARGET_ORG}::uuid WHERE device_id = ${DEVICE_ID}::uuid ` +
+            `AND org_id IS DISTINCT FROM ${TARGET_ORG}::uuid`,
+        );
+      }
+
+      // tickets stays UNFILTERED: the trigger already moved tickets.org_id but
+      // not partner_id, and the RETURNING ids drive assignee revalidation. A
+      // filter here would skip every trigger-moved ticket.
+      const ticketUpdates = flat.filter((s) => s.startsWith('UPDATE tickets SET org_id'));
+      expect(ticketUpdates).toHaveLength(1);
+      expect(ticketUpdates[0]).toContain('partner_id = (SELECT partner_id FROM organizations');
+      expect(ticketUpdates[0]).toMatch(/WHERE device_id = \S+::uuid RETURNING id$/);
+    });
+
     it('rewrites ticket_alert_links org_id via the alert join inside the transaction', async () => {
       vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
       rigOrgAndSiteSelects({

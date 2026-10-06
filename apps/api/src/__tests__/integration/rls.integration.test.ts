@@ -124,6 +124,8 @@ vi.mock('drizzle-orm/postgres-js', () => {
 // Now import the real db module (it will use the mocked postgres + drizzle)
 // ---------------------------------------------------------------------------
 import { withDbAccessContext, type DbAccessContext } from '../../db';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 // ---------------------------------------------------------------------------
 // The session GUCs withDbAccessContext must stamp on EVERY context entry.
@@ -140,6 +142,12 @@ import { withDbAccessContext, type DbAccessContext } from '../../db';
 // policies — see migrations/2026-06-13-catalog-partner-read-branch.sql.
 // The count assertion below sat at `5` for a month because no CI job ever ran
 // this file.
+//
+// `breeze.report_history_org_ids` is the seventh (#6771). It rode in the same
+// statement as current_partner_id, and the old one-GUC-per-statement parser
+// here only ever saw the FIRST set_config of a statement — so this list silently
+// lacked it. Since #8052 all seven GUCs are ONE statement, and the parser below
+// reads every set_config pair in it.
 // ---------------------------------------------------------------------------
 const EXPECTED_SESSION_GUCS = [
   'breeze.scope',
@@ -148,41 +156,34 @@ const EXPECTED_SESSION_GUCS = [
   'breeze.accessible_partner_ids',
   'breeze.user_id',
   'breeze.current_partner_id',
+  'breeze.report_history_org_ids',
 ] as const;
 
-const EXPECTED_SESSION_GUC_COUNT = EXPECTED_SESSION_GUCS.length;
+// #8052: the whole prologue is ONE `select set_config(...), ...` statement.
+const EXPECTED_PROLOGUE_STATEMENTS = 1;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function findSetConfigCall(setting: string): string | undefined {
-  // set_config calls look like: select set_config('breeze.scope', ...
-  return capturedSqlStrings.find((s) => s.includes(`'${setting}'`));
-}
+// Renders the captured drizzle sql`` object with the REAL Postgres dialect (only
+// `postgres` and `drizzle-orm/postgres-js` are mocked), so SQL text and bound
+// params come out exactly as postgres.js would receive them.
+const dialect = new PgDialect();
 
-/** Pull the second argument value from a captured set_config SQL fragment. */
-function extractSetConfigValue(setting: string, capturedSql: string): string | null {
-  // The actual parameter values are NOT embedded in the SQL string because
-  // drizzle uses parameterised queries. We therefore inspect the parameters
-  // that were passed to mockExecute instead.
-  //
-  // mockExecute receives the drizzle sql`` object. Its `params` array holds
-  // the positional values in the order they appear in the template.
-  const calls = mockExecute.mock.calls;
-  for (const [sqlObj] of calls) {
-    const chunks = (sqlObj as { queryChunks?: Array<{ value?: string[] }> })?.queryChunks ?? [];
-    const sqlText = chunks
-      .flatMap((c: { value?: string[] }) => c.value ?? [])
-      .join('');
-    if (sqlText.includes(`'${setting}'`)) {
-      // The params are stored separately; collect them from inlineParams if
-      // present, otherwise from the mock call's second argument capture we
-      // set up in the execute spy.
-      return (sqlObj as { params?: string[] })?.params?.[0] ?? null;
-    }
+/**
+ * Every `set_config('<name>', $n, <is_local>)` in one executed statement, in
+ * order, with `$n` resolved to its bound value. Throws on a non-local write:
+ * every RLS GUC must be SET LOCAL so it unwinds with the transaction.
+ */
+function parseSetConfigs(sqlObj: unknown): Array<[name: string, value: string]> {
+  const { sql: text, params } = dialect.sqlToQuery(sqlObj as SQL);
+  const pairs: Array<[string, string]> = [];
+  for (const match of text.matchAll(/set_config\('([^']+)', \$(\d+), (true|false)\)/g)) {
+    if (match[3] !== 'true') throw new Error(`${match[1]} written with is_local=${match[3]}`);
+    pairs.push([match[1]!, params[Number(match[2]) - 1] as string]);
   }
-  return null;
+  return pairs;
 }
 
 // ---------------------------------------------------------------------------
@@ -204,36 +205,16 @@ beforeEach(() => {
 // ===========================================================================
 describe('serializeAccessibleOrgIds (via withDbAccessContext)', () => {
   // We cannot import the private `serializeAccessibleOrgIds` directly, so we
-  // observe the value it produces by inspecting what gets passed to set_config.
-  // The execute spy captures drizzle sql`` objects; we collect the bound
-  // parameter values through a custom helper that intercepts mockExecute.
-
-  /**
-   * Extract the parameter value from a drizzle sql`` object.
-   * queryChunks alternates between { value: string[] } SQL fragments and
-   * raw parameter values. For `set_config('setting', $value, true)`, the
-   * parameter we care about is the second raw value (index 3 in chunks).
-   */
-  function extractParamFromSqlObj(sqlObj: object): string | undefined {
-    const chunks = (sqlObj as { queryChunks?: unknown[] }).queryChunks ?? [];
-    // Collect only the raw (non-object) entries — these are the interpolated params
-    const rawParams: unknown[] = [];
-    for (const chunk of chunks) {
-      if (typeof chunk === 'string' || typeof chunk === 'number' || typeof chunk === 'boolean') {
-        rawParams.push(chunk);
-      }
-    }
-    // For set_config('setting', $value, true) there is one interpolated param: $value
-    return rawParams[0] as string | undefined;
-  }
+  // observe the value it produces by inspecting what gets passed to set_config:
+  // the bound value paired with `'breeze.accessible_org_ids'` in the prologue.
 
   async function captureOrgIdsParam(context: DbAccessContext): Promise<string | undefined> {
-    // We need to capture the parameter value for `breeze.accessible_org_ids`.
-    // Intercept execute calls and pull the interpolated param from each.
-    const paramsByCall: Array<string | undefined> = [];
+    let value: string | undefined;
 
     mockExecute.mockImplementation(async (sqlObj: object) => {
-      paramsByCall.push(extractParamFromSqlObj(sqlObj));
+      for (const [name, bound] of parseSetConfigs(sqlObj)) {
+        if (name === 'breeze.accessible_org_ids') value = bound;
+      }
       return [];
     });
 
@@ -241,9 +222,7 @@ describe('serializeAccessibleOrgIds (via withDbAccessContext)', () => {
       return 'done';
     });
 
-    // Call order: scope(0), org_id(1), accessible_org_ids(2),
-    // accessible_partner_ids(3), user_id(4), current_partner_id(5)
-    return paramsByCall[2];
+    return value;
   }
 
   it("returns '*' for system scope", async () => {
@@ -316,33 +295,15 @@ describe('serializeAccessibleOrgIds (via withDbAccessContext)', () => {
 // ===========================================================================
 describe('withDbAccessContext sets session variables', () => {
   // Helper: run withDbAccessContext and collect all (setting, value) pairs
-  // that were passed to set_config.
-  //
-  // Each execute call receives a drizzle sql`` object whose queryChunks look
-  // like: [{ value: ["select set_config('breeze.scope', "] }, "system", { value: [", true)"] }]
-  // The setting name is embedded in the SQL text and the value is the raw param.
+  // that were passed to set_config, across every set_config in the statement.
   async function captureSetConfigParams(
     context: DbAccessContext
   ): Promise<Record<string, string>> {
     const result: Record<string, string> = {};
 
     mockExecute.mockImplementation(async (sqlObj: object) => {
-      const chunks = (sqlObj as { queryChunks?: unknown[] }).queryChunks ?? [];
-      // Extract the setting name from the first SQL fragment
-      const firstChunk = chunks[0];
-      const sqlText = (firstChunk as { value?: string[] })?.value?.[0] ?? '';
-      // Match the setting name from set_config('breeze.xxx',
-      const match = sqlText.match(/set_config\('([^']+)'/);
-      // Extract the interpolated value (first raw param in chunks)
-      let paramValue: string | undefined;
-      for (const chunk of chunks) {
-        if (typeof chunk === 'string') {
-          paramValue = chunk;
-          break;
-        }
-      }
-      if (match?.[1] && paramValue !== undefined) {
-        result[match[1]] = paramValue;
+      for (const [name, value] of parseSetConfigs(sqlObj)) {
+        result[name] = value;
       }
       return [];
     });
@@ -408,12 +369,8 @@ describe('withDbAccessContext sets session variables', () => {
     const settingNames: string[] = [];
 
     mockExecute.mockImplementation(async (sqlObj: object) => {
-      const chunks = (sqlObj as { queryChunks?: unknown[] }).queryChunks ?? [];
-      const firstChunk = chunks[0];
-      const sqlText = (firstChunk as { value?: string[] })?.value?.[0] ?? '';
-      const match = sqlText.match(/set_config\('([^']+)'/);
-      if (match?.[1]) {
-        settingNames.push(match[1]);
+      for (const [name] of parseSetConfigs(sqlObj)) {
+        settingNames.push(name);
       }
       return [];
     });
@@ -427,6 +384,8 @@ describe('withDbAccessContext sets session variables', () => {
     // but a missing/extra/renamed GUC does.
     expect([...settingNames].sort()).toEqual([...EXPECTED_SESSION_GUCS].sort());
     expect(settingNames).toHaveLength(EXPECTED_SESSION_GUCS.length);
+    // ...and all of them in ONE round trip (#8052).
+    expect(mockExecute).toHaveBeenCalledTimes(EXPECTED_PROLOGUE_STATEMENTS);
   });
 
   it('wraps set_config calls in a transaction', async () => {
@@ -551,9 +510,10 @@ describe('nested context detection', () => {
     // Exactly ONE transaction for the outer call; the inner call opened none.
     expect(mockTransaction).toHaveBeenCalledTimes(1);
 
-    // ...and the session GUCs were stamped exactly once (one full set), not
-    // twice. A second stamp would mean the inner context overwrote the outer.
-    expect(mockExecute).toHaveBeenCalledTimes(EXPECTED_SESSION_GUC_COUNT);
+    // ...and the session GUCs were stamped exactly once (one prologue
+    // statement), not twice. A second stamp would mean the inner context
+    // overwrote the outer.
+    expect(mockExecute).toHaveBeenCalledTimes(EXPECTED_PROLOGUE_STATEMENTS);
   });
 
   it('fn result is returned correctly from outer context', async () => {
@@ -580,17 +540,8 @@ describe('RLS function contracts (documented expectations)', () => {
     const capturedScopes: string[] = [];
 
     mockExecute.mockImplementation(async (sqlObj: object) => {
-      const chunks = (sqlObj as { queryChunks?: unknown[] }).queryChunks ?? [];
-      const firstChunk = chunks[0];
-      const sqlText = (firstChunk as { value?: string[] })?.value?.[0] ?? '';
-      if (sqlText.includes("'breeze.scope'")) {
-        // The scope value is the first raw param in chunks
-        for (const chunk of chunks) {
-          if (typeof chunk === 'string') {
-            capturedScopes.push(chunk);
-            break;
-          }
-        }
+      for (const [name, value] of parseSetConfigs(sqlObj)) {
+        if (name === 'breeze.scope') capturedScopes.push(value);
       }
       return [];
     });
@@ -617,16 +568,8 @@ describe('RLS function contracts (documented expectations)', () => {
     const capturedOrgIdValues: string[] = [];
 
     mockExecute.mockImplementation(async (sqlObj: object) => {
-      const chunks = (sqlObj as { queryChunks?: unknown[] }).queryChunks ?? [];
-      const firstChunk = chunks[0];
-      const sqlText = (firstChunk as { value?: string[] })?.value?.[0] ?? '';
-      if (sqlText.includes("'breeze.accessible_org_ids'")) {
-        for (const chunk of chunks) {
-          if (typeof chunk === 'string') {
-            capturedOrgIdValues.push(chunk);
-            break;
-          }
-        }
+      for (const [name, value] of parseSetConfigs(sqlObj)) {
+        if (name === 'breeze.accessible_org_ids') capturedOrgIdValues.push(value);
       }
       return [];
     });
