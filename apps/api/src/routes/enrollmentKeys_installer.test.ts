@@ -514,6 +514,33 @@ describe('enrollment key routes — installer download', () => {
       );
     });
 
+    it('#7974: macOS installer_download audit never stores the live short code', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockInsertValuesReturning([
+        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
+      ]);
+
+      await app.request(`/enrollment-keys/${KEY_ID}/installer/macos`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      const insertMock = vi.mocked(db.insert).mock.results[0]!.value;
+      const liveCode = insertMock.values.mock.calls[0][0].shortCode as string;
+      expect(liveCode).toMatch(/^[A-Za-z0-9]{10}$/);
+
+      const call = vi
+        .mocked(createAuditLogAsync)
+        .mock.calls.map(([arg]) => arg)
+        .find((arg) => arg.action === 'enrollment_key.installer_download');
+      expect(call).toBeDefined();
+      expect(JSON.stringify(call)).not.toContain(liveCode);
+      expect(call!.details).not.toHaveProperty('shortCode');
+      expect(call!.details).toMatchObject({
+        shortCodeRef: expect.stringMatching(/^[0-9a-f]{12}$/),
+      });
+    });
+
     it('windows bootstrap passes maxUsage to issueBootstrapTokenForKey (count query param)', async () => {
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
 
