@@ -27,10 +27,51 @@ param(
     [string]$UserHelperExePath = "",
 
     [Parameter(Mandatory = $false)]
-    [string]$OutputPath = ""
+    [string]$OutputPath = "",
+
+    # Optional display strings an operator can brand (see breeze.wxs and
+    # agent/internal/branding). Empty keeps today's text. Only these strings
+    # are brandable: the service names, ProductName and UpgradeCode stay fixed.
+    [Parameter(Mandatory = $false)]
+    [string]$Manufacturer = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$PackageDescription = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$AgentServiceDisplayName = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$AgentServiceDescription = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$WatchdogServiceDisplayName = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$WatchdogServiceDescription = ""
+
 )
 
 $ErrorActionPreference = "Stop"
+
+# Display strings an operator can brand. They travel through the wix command
+# line and end up in files and registry entries the service manager reads, so
+# a value is refused when it is longer than 256 bytes (Windows caps a service
+# display name at 256 characters) or holds a control character, a single quote,
+# a double quote (PowerShell drops it on the way to wix), a backslash or a
+# percent sign. Same rules as agent/scripts/build-edition.sh
+# and agent/internal/branding. A blank value means "not set" and is never
+# passed to wix. The value is not echoed back.
+function Assert-BrandingValue {
+    param([string]$Name, [string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return }
+    if ([System.Text.Encoding]::UTF8.GetByteCount($Value) -gt 256) {
+        throw "$Name is longer than 256 bytes."
+    }
+    if ($Value -match '[\x00-\x1F\x7F''"\\%]') {
+        throw "$Name contains a control character, single quote, double quote, backslash or percent sign."
+    }
+}
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $installerPath = Join-Path $PSScriptRoot "breeze.wxs"
@@ -164,6 +205,24 @@ $wixArgs = @(
     "-d", "EnrollAgentScriptPath=$enrollAgentScriptPath",
     "-o", "$OutputPath"
 )
+
+# Optional display strings (see breeze.wxs): only non-blank values reach wix, so
+# a build with no brand is exactly today's package.
+$brandingDefines = [ordered]@{
+    Manufacturer               = $Manufacturer
+    PackageDescription         = $PackageDescription
+    AgentServiceDisplayName    = $AgentServiceDisplayName
+    AgentServiceDescription    = $AgentServiceDescription
+    WatchdogServiceDisplayName = $WatchdogServiceDisplayName
+    WatchdogServiceDescription = $WatchdogServiceDescription
+}
+foreach ($name in $brandingDefines.Keys) {
+    $value = $brandingDefines[$name]
+    Assert-BrandingValue -Name $name -Value $value
+    if (-not [string]::IsNullOrWhiteSpace($value)) {
+        $wixArgs += @("-d", "$name=$value")
+    }
+}
 
 & wix @wixArgs
 if ($LASTEXITCODE -ne 0) {
