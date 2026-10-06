@@ -254,13 +254,23 @@ vi.mock('./resolveOrg', () => ({
   loadPartnerInboundPolicy: loadPolicyMock
 }));
 
-const { createTicketMock, changeStatusMock } = vi.hoisted(() => ({
+const { createTicketMock, changeStatusMock, assignTicketMock, TicketServiceErrorMock } = vi.hoisted(() => ({
+  assignTicketMock: vi.fn(),
+  // Stand-in for ticketService's error class: the default-assignee step
+  // recognizes an eligibility refusal by instanceof + code.
+  TicketServiceErrorMock: class TicketServiceError extends Error {
+    constructor(message: string, public status = 400, public code?: string) {
+      super(message);
+    }
+  },
   createTicketMock: vi.fn(),
   changeStatusMock: vi.fn()
 }));
 vi.mock('../ticketService', () => ({
   createTicket: createTicketMock,
-  changeTicketStatus: changeStatusMock
+  changeTicketStatus: changeStatusMock,
+  assignTicket: assignTicketMock,
+  TicketServiceError: TicketServiceErrorMock,
 }));
 
 const { emitMock } = vi.hoisted(() => ({ emitMock: vi.fn() }));
@@ -345,6 +355,8 @@ beforeEach(() => {
   resolveMock.mockReset();
   createTicketMock.mockReset();
   changeStatusMock.mockReset();
+  assignTicketMock.mockReset();
+  assignTicketMock.mockResolvedValue({});
   emitMock.mockReset();
   maybeSendAutoresponseMock.mockReset();
   captureExceptionMock.mockReset();
@@ -2269,5 +2281,117 @@ describe('staff-forward intake', () => {
 
     expect(createTicketMock.mock.calls.map((c) => (c[0] as Record<string, unknown>).orgId)).toEqual(['o-msp', 'o-msp']);
     expect(resolveOrgMock).not.toHaveBeenCalledWith('jane@client.example', expect.anything());
+  });
+});
+
+// Partner default assignee (settings.ticketing.inbound.defaultAssigneeUserId).
+// The real applyDefaultInboundAssignee runs; only ticketService is mocked.
+describe('default inbound assignee', () => {
+  const DEFAULT_USER = '77777777-7777-4777-8777-777777777777';
+
+  beforeEach(() => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-new', internalNumber: 'T-2026-0009', assignedTo: null });
+    loadPolicyMock.mockResolvedValue({
+      enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null,
+      dropUnverifiedSenders: false, staffForwardRouting: false, defaultAssigneeUserId: DEFAULT_USER,
+    });
+  });
+
+  it('assigns a newly created ticket to the default assignee as the system actor', async () => {
+    await processInboundEmail(email({ subject: 'brand new issue' }));
+
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    // The ticket is created unassigned and then assigned through assignTicket,
+    // so the ticket.assigned notification rides the committed outbox row.
+    expect((createTicketMock.mock.calls[0]![0] as Record<string, unknown>).assigneeId).toBeUndefined();
+    expect(assignTicketMock).toHaveBeenCalledTimes(1);
+    const [ticketId, assigneeId, actor] = assignTicketMock.mock.calls[0]!;
+    expect(ticketId).toBe('t-new');
+    expect(assigneeId).toBe(DEFAULT_USER);
+    expect((actor as { kind: string }).kind).toBe('system');
+    const log = inboundOf();
+    expect(log[0]!.parseStatus).toBe('created');
+    expect(String(log[0]!.error ?? '')).not.toContain('default assignee');
+  });
+
+  it('assigns tickets from every create path, including the triage org for an unknown sender', async () => {
+    state.selectRows['portal_users'] = [];
+    loadPolicyMock.mockResolvedValue({
+      enabled: true, unknownSenderMode: 'triage', defaultTriageOrgId: 'o-1',
+      dropUnverifiedSenders: false, staffForwardRouting: false, defaultAssigneeUserId: DEFAULT_USER,
+    });
+
+    await processInboundEmail(email({ from: 'stranger@nowhere.example' }));
+
+    expect(assignTicketMock).toHaveBeenCalledWith('t-new', DEFAULT_USER, expect.objectContaining({ kind: 'system' }));
+  });
+
+  it('does nothing when the partner has no default assignee', async () => {
+    loadPolicyMock.mockResolvedValue({
+      enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null,
+      dropUnverifiedSenders: false, staffForwardRouting: false, defaultAssigneeUserId: null,
+    });
+
+    await processInboundEmail(email());
+
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    expect(assignTicketMock).not.toHaveBeenCalled();
+  });
+
+  it('does not override an assignment the ticket already has', async () => {
+    // Positive control first: an unassigned new ticket does get the default.
+    createTicketMock.mockResolvedValueOnce({ id: 't-unassigned', internalNumber: 'T-2026-0009', assignedTo: null });
+    await processInboundEmail(email({ providerMessageId: '<a@customer.com>', messageId: '<a@customer.com>' }));
+    // A ticket that already carries an assignee keeps it.
+    createTicketMock.mockResolvedValueOnce({ id: 't-owned', internalNumber: 'T-2026-0010', assignedTo: 'someone-else' });
+    await processInboundEmail(email({ providerMessageId: '<b@customer.com>', messageId: '<b@customer.com>' }));
+
+    expect(createTicketMock).toHaveBeenCalledTimes(2);
+    expect(assignTicketMock).toHaveBeenCalledTimes(1);
+    expect(assignTicketMock.mock.calls[0]![0]).toBe('t-unassigned');
+  });
+
+  it('never touches the assignee of an existing ticket a reply threads onto', async () => {
+    // Positive control: a new ticket from the same sender gets the default.
+    await processInboundEmail(email({ providerMessageId: '<new@customer.com>', messageId: '<new@customer.com>' }));
+    expect(assignTicketMock).toHaveBeenCalledTimes(1);
+
+    state.selectRows['tickets'] = [{
+      id: 't-live', partnerId: 'p-1', orgId: 'o-1', status: 'open', assignedTo: null,
+      emailThreadKey: '<thread-live>', internalNumber: 'T-2026-0002',
+    }];
+    await processInboundEmail(email({ inReplyTo: '<thread-live>', providerMessageId: '<r@customer.com>', messageId: '<r@customer.com>' }));
+
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    expect(assignTicketMock).toHaveBeenCalledTimes(1);
+    expect(inboundOf().map((r) => r.parseStatus)).toEqual(['created', 'matched']);
+  });
+
+  it.each(['ASSIGNEE_NOT_FOUND', 'ASSIGNEE_WRONG_PARTNER', 'ASSIGNEE_NOT_ELIGIBLE'])(
+    'keeps the ticket, unassigned, and records why when the default assignee is refused (%s)',
+    async (code) => {
+      assignTicketMock.mockRejectedValue(new TicketServiceErrorMock('refused', 400, code));
+
+      await processInboundEmail(email());
+
+      const log = inboundOf();
+      expect(log).toHaveLength(1);
+      expect(log[0]!.parseStatus).toBe('created');
+      expect(log[0]!.ticketId).toBe('t-new');
+      expect(String(log[0]!.error)).toContain(`default assignee not applied (${code})`);
+    },
+  );
+
+  it('treats any other assignment error as a processing failure, not a silent skip', async () => {
+    assignTicketMock.mockRejectedValue(new Error('db down'));
+
+    await expect(processInboundEmail(email())).rejects.toBeInstanceOf(InboundEmailProcessingRecorded);
+
+    expect(captureExceptionMock).toHaveBeenCalled();
   });
 });

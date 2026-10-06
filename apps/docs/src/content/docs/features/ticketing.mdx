@@ -246,6 +246,16 @@ Anything else is routed exactly as it would be with the setting off. The origina
   Staff forwards are routed only for mail received by a **connected Gmail mailbox**. Mail sent to the native inbound address or a connected **Microsoft 365** mailbox always routes normally, because Breeze can't confirm it has the sender's own plain-text copy there. Breeze recognizes an inline forward by Gmail's `---------- Forwarded message ---------` line (or Outlook's older `-----Original Message-----` line) followed by a `From:` header block, read from the message's plain-text part. Modern Outlook marks a forward differently, and messages forwarded as attachments are never recognized. Because recognition is textual, a staff user who types the same marker and header block gets the same routing.
 </Aside>
 
+#### Default assignee for new inbound tickets
+
+An unassigned ticket sends no assignee notification, so staff can miss it. Pick a **Default assignee for new inbound tickets** on the same card to give every ticket created from inbound email an owner. It's empty (off) by default.
+
+- Only **new** tickets are assigned. A reply that threads onto an existing ticket never changes who it's assigned to, and a ticket something else already assigned is left alone.
+- You can pick an **active** member of your team whose organization access isn't set to none and whose role can view tickets. Breeze checks this every time the card saves, and rejects a user from another partner, a disabled user, or someone without ticket access. If the person you picked later stops qualifying, the card shows them as unavailable and won't save other changes until you pick someone else or clear the setting.
+- Each ticket is checked again when it arrives. If the default assignee can no longer be assigned that ticket (for example, they were disabled, or their access doesn't include that customer's organization), the ticket is created **unassigned** and Breeze records why in its inbound email log. The email is never rejected because of this setting.
+- The assignment is recorded like any other: it appears in the ticket's activity and the audit log, and the assignee gets the usual assignment notification once the ticket has been saved.
+- The setting applies to every inbound path: the native inbound address and connected Microsoft 365 and Gmail mailboxes.
+
 ### Who the requester is
 
 A ticket records **who asked** separately from **who signed in**. The requester is an organization [contact](/reference/organizations-and-sites/#contacts) — a person in the customer's business, whether or not they have ever logged into anything. The submitter is a portal login, and only exists when the ticket came in through the portal.
