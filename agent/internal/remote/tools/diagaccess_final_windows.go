@@ -14,7 +14,11 @@ import (
 // symlinks, mount points and 8.3 short names are all resolved, and the answer
 // cannot change underneath us because it describes this handle.
 func finalPathOfFile(f *os.File) (string, error) {
-	h := windows.Handle(f.Fd())
+	return finalPathOfHandle(windows.Handle(f.Fd()))
+}
+
+// finalPathOfHandle is finalPathOfFile for a raw handle.
+func finalPathOfHandle(h windows.Handle) (string, error) {
 	buf := make([]uint16, 1024)
 	for {
 		n, err := windows.GetFinalPathNameByHandle(h, &buf[0], uint32(len(buf)), 0 /* VOLUME_NAME_DOS */)
