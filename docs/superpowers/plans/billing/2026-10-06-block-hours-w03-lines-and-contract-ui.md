@@ -42,6 +42,8 @@ These were found while writing the plan. Each is handled below; the first three 
 | 8 | CLAUDE.md i18n traps | `translationCoverage.test.ts` caps exact-English duplicates per locale/namespace; `humanizedKeyRegression.test.ts` rejects a 4+-word key whose value equals its humanized name. | Every new string is a real translation that differs from English; no new key leaf is 4+ camel-case words whose value spells the key. |
 | 9 | `ContractEditor.tsx:101-135` `buildLinePatch` | The generic allowance branch (`l.includedQuantity != null && !d.allowanceOn` → `patch.includedQuantity = null …`) would send three nulls the moment a tech renames a block line, because `draftFromLine` computes `allowanceOn` from `includedQuantity != null`. | Task 11 returns from `buildLinePatch` **before** the allowance branch for `hour_block`, and `ALLOWANCE_TYPES` (web) deliberately **excludes** `hour_block` — the generic "fixed quantity of devices" toggle is the wrong control for hours. Pinned by a test. |
 | 10 | Index C7 "`createContractWithLinesDetailed` rejects `hour_block`" | The function inserts the contract row first, then loops the lines (`contractService.ts:2223-2250`); a mid-loop rejection would leave an orphan draft contract. | The rejection runs **before** the contract insert. |
+| 11 | **W01's fail-closed guards and their tests** (`2026-10-06-block-hours-w01-foundation.md` Tasks 1-3) | W01 asserts `hour_block` is **not** in `CONTRACT_LINE_TYPES` / `ALLOWANCE_LINE_TYPES`, that `contractLineInputSchema` rejects it, and that the estimate (`resolveLineQty` arm) and `updateContractLine` (`assertNotHourBlock(current)`) throw `HOUR_BLOCK_NOT_ENABLED`. Left in place they turn W03 red. | Removed explicitly: Task 1 Step 4 (the two shared tests), Task 3 Step 3 item 2 (the arm) and Step 4 (the estimate test), Task 4 Step 3 item 0 and Step 4 (the update guard and its test). `generateDueInvoice`'s guard is W02's to replace and is untouched. |
+| 12 | Mid-period edits (index Open Decision 15, default A) | `updateContractLine`'s docblock says "edits affect FUTURE periods only"; true for a flat line, **false** for a block: the close reads the line as it is. | Block edits apply to the open period at its close. The editor shows "Changes apply to the current open period (dates) at its close", the audit records before/after for the block columns, and the AI `patch` description no longer says "future periods only". |
 
 ---
 
@@ -51,7 +53,7 @@ These were found while writing the plan. Each is handled below; the first three 
 - **Open Decision 10 (default A):** `overageMode` on a block is `'bill'` only. The validator, the service lock and the UI all pin it; the UI never offers a choice.
 - **Open Decision 13 (default A):** the live-block index is per org and counts **draft** contracts' lines. The editor error copy says "retire the current block first". Do not add a draft exemption.
 - **No new migration, no new table, no new tenancy shape.** `contract_hour_periods` is Shape 1 (W01); the hour-periods route reads it in the ordinary request context exactly like `contract_billing_periods` in `getContract` (`contractService.ts:379-399`). The real-DB suite (Task 14) asserts that, rather than trusting the analogy.
-- **Money.** Hours are exact 2-dp (`sumEntryHours`, never float sums of floats). The overage price goes through `assertRepresentable` (already on the allowance path, `contractService.ts:1596`) and `overageValue()` for display.
+- **Money.** Hours are exact 2-dp (`sumEntryHours`, never float sums of floats). The overage price goes through `assertRepresentable` (already on the allowance path, `contractService.ts:1605`, `:1615`) and `overageValue()` for display.
 - **Never catch a 23505/23503 inside a context and continue.** The only catch in this wave maps a 23505 to `ContractServiceError` and **re-throws** inside the line writer's own `db.transaction` (the same shape as `isGroupFkViolation`, `contractService.ts:282-288`).
 - **Web mutations go through `runAction`** (`apps/web/src/lib/runAction.ts`); the `no-silent-mutations` test guards it. This wave adds no new mutation handler — it changes the three existing ones (`addLine`, `saveLine`, `removeLine`) — and one `GET` (history), which is not a mutation.
 - **Eight-locale parity with real translations** (`apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/billing.json`, plus `tickets.json` for the held-hours notice).
@@ -415,6 +417,12 @@ Update the comment above `ALLOWANCE_LINE_TYPES`: replace "#4547's hour_block joi
   });
 ```
 
+- [ ] **Step 3b: Remove W01's now-false tests** (they assert the opposite of this wave). In `packages/shared/src/validators/contracts.test.ts`, inside `describe('hour_block constants (#4547 W01)')`:
+  - **DELETE** `it('does NOT add hour_block to CONTRACT_LINE_TYPES or ALLOWANCE_LINE_TYPES until W03', …)` — inverted by `contracts.hourBlock.test.ts` > `hour_block — type registration`.
+  - **DELETE** `it('the line input schema still rejects hour_block, so no API can create one', …)` — inverted by `contractLineInputSchema — hour_block` > `accepts the minimal valid block`.
+  - **KEEP** `it('exports the line-type literal and the rollover policies', …)`.
+  - Remove `CONTRACT_LINE_TYPES, ALLOWANCE_LINE_TYPES,` from that file's import block if nothing else in the file uses them (lint).
+
 - [ ] **Step 4: Run to verify it passes, then the neighbours**
 
 Run: `cd packages/shared && npx vitest run src/validators/contracts.hourBlock.test.ts src/validators/contracts.test.ts src/validators/quotes.test.ts`
@@ -456,15 +464,22 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
     status: string; startDate: string; intervalMonths: number;
     billingTiming: 'advance' | 'arrears'; nextBillingAt: string | null;
   }): string | null;
+  /**
+   * I3: `candidate` may already be claimed (pause -> resume on an advance contract resets the pointer
+   * onto a period that was claimed before the pause). Advance period by period until unclaimed.
+   */
+  export function advancePastClaimed(
+    candidate: string, claimedStarts: ReadonlySet<string>, startDate: string, intervalMonths: number,
+  ): string;
   ```
-- Consumes: the existing `duePeriodStartFor(billingTiming, nextBillingAt, intervalMonths)` (`contractMath.ts:74`) — advance -> `nextBillingAt` (the next period to be claimed), arrears -> `nextBillingAt` minus one interval (the period in progress).
+- Consumes: `computePeriod` / `periodIndexFor` (`contractMath.ts:30`, `:37`) — **deliberately not** `duePeriodStartFor`: its arrears branch is `addMonthsClamped(nextBillingAt, -interval)`, and month-end starts do not round-trip (a 03-31 monthly contract: `04-30` minus one month is `03-30`, not the real period start `03-31`). `nextBillingAt` is always a period boundary, so `periodIndexFor` finds its index exactly and `computePeriod` rebuilds the true boundary.
 
 Why this rule (it replaces the first draft's "first period starting on or after today"): entitlement must start exactly where the fee starts. On an advance contract the current period was claimed without the fee, so the block starts at the next period. On an arrears contract the period in progress is billed at its end **with** the fee, so the block starts there. A draft has claimed nothing yet; its provisional stamp is the first period, and `activateContract` re-stamps it (Task 3) to the period activation really claims.
 
 - [ ] **Step 1: Write the failing tests** — append to `contractMath.test.ts`:
 
 ```ts
-import { firstUnclaimedPeriodStart, todayISO } from './contractMath';
+import { advancePastClaimed, firstUnclaimedPeriodStart, todayISO } from './contractMath';
 
 describe('todayISO (#4547 W03)', () => {
   it('is the UTC calendar date', () => {
@@ -487,8 +502,28 @@ describe('firstUnclaimedPeriodStart — index C9 (#4547 W03)', () => {
     ['draft with a past start date is still its first period (activation re-stamps it)', c({ status: 'draft', startDate: '2025-01-01', nextBillingAt: null }), '2025-01-01'],
     ['draft ignores a stale pointer', c({ status: 'draft', nextBillingAt: '2026-09-01' }), '2026-06-01'],
     ['active with no pointer cannot be stamped', c({ nextBillingAt: null }), null],
+    // S5: month-end starts. Periods of a 03-31 monthly contract: 03-31, 04-30, 05-31, 06-30 (each from the START date).
+    ['03-31 monthly ARREARS, pointer 04-30: the period in progress starts 03-31 (duePeriodStartFor would say 03-30)', c({ startDate: '2026-03-31', billingTiming: 'arrears', nextBillingAt: '2026-04-30' }), '2026-03-31'],
+    ['03-31 monthly ARREARS, pointer 05-31: period in progress starts 04-30', c({ startDate: '2026-03-31', billingTiming: 'arrears', nextBillingAt: '2026-05-31' }), '2026-04-30'],
+    ['03-31 monthly ADVANCE, pointer 04-30: the next period', c({ startDate: '2026-03-31', nextBillingAt: '2026-04-30' }), '2026-04-30'],
   ])('%s', (_name, contract, expected) => {
     expect(firstUnclaimedPeriodStart(contract)).toBe(expected);
+  });
+});
+
+describe('advancePastClaimed — pause -> resume lands the pointer on a claimed period (#4547 W03, I3)', () => {
+  it.each([
+    ['unclaimed candidate is returned as is', '2026-07-01', [], '2026-07-01'],
+    ['one claimed period (June claimed before the pause) -> July', '2026-06-01', ['2026-06-01'], '2026-07-01'],
+    ['two consecutive claimed periods -> August', '2026-06-01', ['2026-06-01', '2026-07-01'], '2026-08-01'],
+    ['a claimed period later than the gap does not matter', '2026-06-01', ['2026-08-01'], '2026-06-01'],
+  ])('%s', (_name, candidate, claimed, expected) => {
+    expect(advancePastClaimed(candidate as string, new Set(claimed as string[]), '2026-06-01', 1)).toBe(expected);
+  });
+
+  it('walks month-end boundaries from the START date (03-31 contract)', () => {
+    expect(advancePastClaimed('2026-03-31', new Set(['2026-03-31']), '2026-03-31', 1)).toBe('2026-04-30');
+    expect(advancePastClaimed('2026-03-31', new Set(['2026-03-31', '2026-04-30']), '2026-03-31', 1)).toBe('2026-05-31');
   });
 });
 ```
@@ -496,7 +531,7 @@ describe('firstUnclaimedPeriodStart — index C9 (#4547 W03)', () => {
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `cd apps/api && npx vitest run src/services/contractMath.test.ts`
-Expected: FAIL — the two exports do not exist.
+Expected: FAIL — the exports do not exist.
 
 - [ ] **Step 3: Implement** — add to `contractMath.ts` (after `duePeriodStartFor`):
 
@@ -514,6 +549,14 @@ export function todayISO(asOf: Date = new Date()): string {
  * pointer will claim next (advance: the next period; arrears: the period in
  * progress). Draft: nothing is claimed, so the first period — provisional until
  * activateContract re-stamps it. Null when a non-draft contract has no pointer.
+ *
+ * Built from computePeriod/periodIndexFor, NOT duePeriodStartFor: `nextBillingAt`
+ * is always a period boundary, so periodIndexFor returns its exact index k; the
+ * pointer is period k's START (advance) or END (arrears, so the period in
+ * progress is k-1). addMonthsClamped(nextBillingAt, -interval) would mis-derive
+ * month-end starts. This is the PURE candidate; the caller must still walk it past
+ * periods that are already claimed (advancePastClaimed) — a pause -> resume resets
+ * an advance pointer onto a claimed period.
  */
 export function firstUnclaimedPeriodStart(c: {
   status: string; startDate: string; intervalMonths: number;
@@ -521,7 +564,22 @@ export function firstUnclaimedPeriodStart(c: {
 }): string | null {
   if (c.status === 'draft') return c.startDate;
   if (c.nextBillingAt === null) return null;
-  return duePeriodStartFor(c.billingTiming, c.nextBillingAt, c.intervalMonths);
+  const k = periodIndexFor(c.startDate, c.intervalMonths, c.nextBillingAt);
+  const idx = c.billingTiming === 'arrears' ? Math.max(0, k - 1) : k;
+  return computePeriod(c.startDate, c.intervalMonths, idx).periodStart;
+}
+
+/** `candidate` is a period boundary; step forward one period at a time while it is in `claimedStarts`. */
+export function advancePastClaimed(
+  candidate: string, claimedStarts: ReadonlySet<string>, startDate: string, intervalMonths: number,
+): string {
+  let idx = periodIndexFor(startDate, intervalMonths, candidate);
+  let start = computePeriod(startDate, intervalMonths, idx).periodStart;
+  for (let guard = 0; claimedStarts.has(start) && guard < 100000; guard++) {
+    idx += 1;
+    start = computePeriod(startDate, intervalMonths, idx).periodStart;
+  }
+  return start;
 }
 ```
 (`BillingTiming` is already imported at the top of the file.)
@@ -539,9 +597,11 @@ Expected: PASS (2 files; `contractService.test.ts` proves the `todayISO` move di
 git add apps/api/src/services/contractMath.ts apps/api/src/services/contractMath.test.ts apps/api/src/services/contractService.ts
 git commit -m "feat(billing): period helper for where block-hours entitlement starts (#4547)
 
-Exports todayISO from contractMath and adds firstUnclaimedPeriodStart, the
+Exports todayISO from contractMath and adds firstUnclaimedPeriodStart (the
 pure rule index C9 stamps on a block line: the first period whose block fee
-has not been claimed yet.
+has not been claimed yet, derived from period boundaries rather than a month
+subtraction) and advancePastClaimed for a pointer that landed on a claimed
+period.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -557,7 +617,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Produces: `ContractServiceErrorCode` gains `'HOUR_BLOCK_EXISTS'` (409) and `'HOUR_BLOCK_FIELD_LOCKED'` (400) — both map through the existing `handleContractError` (`routes/contracts/contracts.ts:46-53`), which echoes `err.status` and `code`; **no route change is needed** for the mapping.
-- Consumes: `firstUnclaimedPeriodStart` (Task 2), `duePeriodStartFor` / `nextBillingDate` / `periodIndexFor` (already imported by `contractService.ts`); `isPgUniqueViolation` from `../utils/pgErrors`; W01's Drizzle columns on `contractLines`.
+- Consumes: `firstUnclaimedPeriodStart`, `advancePastClaimed` (Task 2), `nextBillingDate` / `periodIndexFor` (already imported by `contractService.ts`), `contractBillingPeriods` (already imported); `isPgUniqueViolation` from `../utils/pgErrors`; W01's Drizzle columns on `contractLines`.
 
 Verified facts: `allowanceColumnsFor` (`:624-637`) is keyed on `ALLOWANCE_LINE_TYPE_SET` (built from the shared tuple), so Task 1's tuple change makes it pass `includedQuantity`/`overageMode`/`overageUnitPrice` through for a block with **no edit**. `assertRepresentable(allowance.overageUnitPrice, …)` already runs on the add path (`:1596`) and on the quote path (`:2255-2260`). The live-block index name is `contract_lines_one_live_hour_block_per_org_uq` (C2).
 
@@ -621,8 +681,10 @@ const contractRow = (over: Record<string, unknown> = {}) => ({
 describe('addContractLineToContract — hour_block (#4547 W03)', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 
-  const addAndRead = async (contract: Record<string, unknown>) => {
+  /** `claimed`: contract_billing_periods rows at/after the candidate (only an ACTIVE contract is asked). */
+  const addAndRead = async (contract: Record<string, unknown>, claimed: Array<{ periodStart: string }> = []) => {
     queueResult([contractRow(contract)]);                                                  // lockContract
+    if (contract.status !== 'draft') queueResult(claimed);                                 // claimed periods >= candidate
     queueResult([{ id: 'l1', contractId: 'c1', orgId: 'org1', lineType: 'hour_block' }]);  // insert returning
     await svc.addContractLineToContract('c1', BLOCK_INPUT, actor);
     return (db as unknown as Chain).values.mock.calls[0]![0];
@@ -651,6 +713,21 @@ describe('addContractLineToContract — hour_block (#4547 W03)', () => {
   it('active quarterly arrears: the quarter in progress', async () => {
     expect(await addAndRead({ intervalMonths: 3, billingTiming: 'arrears', nextBillingAt: '2026-10-01' }))
       .toMatchObject({ hourBlockFirstPeriodStart: '2026-07-01' });
+  });
+
+  it('03-31 contract, arrears, pointer 04-30: the period in progress starts 03-31 (no month-subtraction drift)', async () => {
+    expect(await addAndRead({ startDate: '2026-03-31', billingTiming: 'arrears', nextBillingAt: '2026-04-30' }))
+      .toMatchObject({ hourBlockFirstPeriodStart: '2026-03-31' });
+  });
+
+  it('PAUSE -> RESUME on an advance contract: the pointer was reset onto a period claimed before the pause, so the block starts at the first UNCLAIMED one', async () => {
+    // resumeContract points nextBillingAt at the period containing today (June), which was claimed before the pause.
+    expect(await addAndRead({ nextBillingAt: '2026-06-01' }, [{ periodStart: '2026-06-01' }]))
+      .toMatchObject({ hourBlockFirstPeriodStart: '2026-07-01' });
+    results.length = 0; (db as unknown as Chain).values.mock.calls.length = 0;
+    // ...and two consecutive claimed periods walk two steps.
+    expect(await addAndRead({ nextBillingAt: '2026-06-01' }, [{ periodStart: '2026-06-01' }, { periodStart: '2026-07-01' }]))
+      .toMatchObject({ hourBlockFirstPeriodStart: '2026-08-01' });
   });
 
   it("draft: the provisional stamp is the contract's FIRST period, whatever today is (activation re-stamps it)", async () => {
@@ -834,7 +911,7 @@ Expected: FAIL — `hourBlockFirstPeriodStart` is not written, no `HOUR_BLOCK_EX
 
 `contractService.ts`:
 
-1. Imports: add `firstUnclaimedPeriodStart` to the existing `contractMath` import (`todayISO` is already there from Task 2; `duePeriodStartFor`, `nextBillingDate`, `periodIndexFor` are already imported); `import { isPgUniqueViolation } from '../utils/pgErrors';` (the file already imports `pgErrorNode` from there — extend that import); add `isNull` to the `drizzle-orm` import.
+1. Imports: add `firstUnclaimedPeriodStart`, `advancePastClaimed` to the existing `contractMath` import (`todayISO` is already there from Task 2; `nextBillingDate`, `periodIndexFor` are already imported); add `gte` to the `drizzle-orm` import; `import { isPgUniqueViolation } from '../utils/pgErrors';` (the file already imports `pgErrorNode` from there — extend that import); add `isNull` to the `drizzle-orm` import.
 
 2. `resolveLineQty` — add the arm before `default`:
 
@@ -852,7 +929,28 @@ Expected: FAIL — `hourBlockFirstPeriodStart` is not written, no `HOUR_BLOCK_EX
       return { counted: 1, billed: 1, included: null, overage: 0, overageMode: null, live: false };
     }
 ```
-(replacing W01's fail-closed `hour_block` arm).
+**Delete W01's fail-closed arm in the same edit** (`2026-10-06-block-hours-w01-foundation.md` Task 3 Step 9(c)): the `case 'hour_block': throw hourBlockNotEnabled();` immediately before `default:` in `resolveLineQty` is *replaced* by the arm above — there must be exactly one `case 'hour_block'` in that switch. (`hourBlockNotEnabled()` stays: `generateDueInvoice`'s pre-flight still uses it until W02 replaces it.)
+
+2b. Helper (next to `lockContractRow`):
+
+```ts
+/** Index C9: where a block's entitlement starts. Pure candidate from the billing pointer (Task 2),
+ *  then walked past periods that are already claimed — a pause -> resume on an advance contract
+ *  resets the pointer onto a claimed period. A draft has nothing claimed. Run under the contract lock. */
+async function blockFirstPeriodStart(tx: DbExecutor, c: typeof contracts.$inferSelect): Promise<string> {
+  const candidate = firstUnclaimedPeriodStart({
+    status: c.status, startDate: c.startDate, intervalMonths: c.intervalMonths,
+    billingTiming: c.billingTiming as 'advance' | 'arrears', nextBillingAt: c.nextBillingAt,
+  });
+  if (candidate === null) {
+    throw new ContractServiceError('The contract has no billing pointer to start a block-hours line from', 409, 'INVALID_STATE');
+  }
+  if (c.status === 'draft') return candidate;
+  const claimed = await tx.select({ periodStart: contractBillingPeriods.periodStart }).from(contractBillingPeriods)
+    .where(and(eq(contractBillingPeriods.contractId, c.id), gte(contractBillingPeriods.periodStart, candidate)));
+  return advancePastClaimed(candidate, new Set(claimed.map((r) => r.periodStart)), c.startDate, c.intervalMonths);
+}
+```
 
 3. `addContractLineToContract` — after `const allowance = allowanceColumnsFor(input);` block and its `assertRepresentable`, add:
 
@@ -864,16 +962,9 @@ Expected: FAIL — `hourBlockFirstPeriodStart` is not written, no `HOUR_BLOCK_EX
       // Service-level backstop for internal callers; the shared validator already requires it.
       throw new ContractServiceError('rolloverPolicy is required on hour_block lines', 400, 'INVALID_STATE');
     }
-    // C9 (refined): where entitlement starts = where the fee starts (see Task 2).
-    const firstPeriodStart = isBlock
-      ? firstUnclaimedPeriodStart({
-          status: c.status, startDate: c.startDate, intervalMonths: c.intervalMonths,
-          billingTiming: c.billingTiming as 'advance' | 'arrears', nextBillingAt: c.nextBillingAt,
-        })
-      : null;
-    if (isBlock && firstPeriodStart === null) {
-      throw new ContractServiceError('The contract has no billing pointer to start a block-hours line from', 409, 'INVALID_STATE');
-    }
+    // C9 (refined): where entitlement starts = where the fee starts (see Task 2). Reads the
+    // contract's claimed periods when the contract is active; runs inside the contract row lock.
+    const firstPeriodStart = isBlock ? await blockFirstPeriodStart(tx, c) : null;
     const blockColumns = isBlock
       ? {
           rolloverPolicy: input.rolloverPolicy!,
@@ -947,7 +1038,13 @@ and `return { …, overages, hourBlock: null };` (Task 6 replaces the `null`). `
     // already-claimed periods behind it, and moving first_period_start forward would strand them.
     if (c.status === 'draft' && lineRows.some((l) => l.lineType === 'hour_block')) {
       await tx.update(contractLines)
-        .set({ hourBlockFirstPeriodStart: duePeriodStartFor(c.billingTiming as 'advance' | 'arrears', nextAt, c.intervalMonths) })
+        .set({
+          // a draft has claimed nothing, so the pure candidate is already the first unclaimed period
+          hourBlockFirstPeriodStart: firstUnclaimedPeriodStart({
+            status: 'active', startDate: c.startDate, intervalMonths: c.intervalMonths,
+            billingTiming: c.billingTiming as 'advance' | 'arrears', nextBillingAt: nextAt,
+          })!,
+        })
         .where(and(
           eq(contractLines.contractId, contractId),
           eq(contractLines.lineType, 'hour_block'),
@@ -955,7 +1052,9 @@ and `return { …, overages, hourBlock: null };` (Task 6 replaces the `null`). `
         ));
     }
 ```
-The activation-claim arithmetic the tests pin: `idx = periodIndexFor(start, interval, today)`; advance -> `nextAt` = that period's start (due immediately, claimed with the fee); arrears -> `nextAt` = that period's end, so `duePeriodStartFor` returns the same period start. Hence both timings re-stamp to the period containing the activation day (or the first period if the contract has not started).
+The activation-claim arithmetic the tests pin: `idx = periodIndexFor(start, interval, today)`; advance -> `nextAt` = that period's start (due immediately, claimed with the fee); arrears -> `nextAt` = that period's end, so `firstUnclaimedPeriodStart` (computePeriod-based) returns the same period start. Hence both timings re-stamp to the period containing the activation day (or the first period if the contract has not started).
+
+- [ ] **Step 3b: Remove W01's now-false test.** In `apps/api/src/services/contractService.test.ts`, `describe('hour_block fails closed until its engine ships (#4547 W01)')`: **DELETE** `it('computeContractEstimate (resolveLineQty) refuses a forged hour_block line', …)` — superseded by this task's `computeContractEstimate: the block line is quantity 1…` and the retired-line tests. (**Keep** the `generateDueInvoice refuses a forged hour_block line…` test: W02 owns it.) The `updateContractLine` test in the same describe is deleted in Task 4.
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -989,7 +1088,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Consumes: Task 1's merged-row invariants; Task 3's error codes.
 - Produces: per index C7, patchable on a block: `description`, `unitPrice`, `taxable`, `includedQuantity`, `overageUnitPrice`, `rolloverPolicy`, `rolloverCapHours`, `hourBlockAlertPct` (and `sortOrder`, `catalogItemId`/`refreshCatalogPrice`, which the generic transition table already handles). Locked → 400 `HOUR_BLOCK_FIELD_LOCKED`: `siteId`, `deviceRoles`, `deviceGroupId`, `manualQuantity`, `overageMode` ≠ `'bill'`, and **every** patch of a retired block. `hour_block_first_period_start` / `hour_block_retired_at` are unreachable (strict schema, Task 1).
 
-**Mid-period semantics (state in the UI copy, `form.midPeriodEdit`):** editing `includedQuantity`, `overageUnitPrice` or the rollover fields changes the **open** period's figures at its close — closed periods are frozen in `contract_hour_periods` and never move. The close (W02) reads the line as it is at close time.
+**Mid-period semantics (index Open Decision 15, default A):** editing `includedQuantity`, `overageUnitPrice`, `rolloverPolicy` or `rolloverCapHours` applies at the **next close**: the close (W02) reads the line as it is at close time, so the open period (and any claimed-but-unclosed one) is settled with the new values; periods already closed are frozen in `contract_hour_periods` and never move. `updateContractLine`'s existing docblock claim — "Edits affect FUTURE periods only, by construction" — is **false for a block** and must be amended in this task (Step 3 item 4). The editor says so on the form (`form.midPeriodEdit`, with the open period's dates), and the audit entry records before/after for the block columns (`blockChanges`, numbers and enum values only — no free text).
 
 - [ ] **Step 1: Write the failing tests** — append to `contractService.hourBlock.test.ts`:
 
@@ -1035,7 +1134,7 @@ describe('updateContractLine — hour_block (#4547 W03)', () => {
     expect((db as unknown as Chain).set.mock.calls).toHaveLength(0);
   });
 
-  it('persists the block columns and reports them in the audit diff (names only)', async () => {
+  it('persists the block columns and the audit records names AND before/after for them (Open Decision 15)', async () => {
     lockAndRead(blockRow());
     queueResult([blockRow({ includedQuantity: '12.00', rolloverPolicy: 'none', rolloverCapHours: null, hourBlockAlertPct: 90 })]);
     const { audit } = await svc.updateContractLine('c1', 'b1',
@@ -1045,6 +1144,21 @@ describe('updateContractLine — hour_block (#4547 W03)', () => {
     });
     expect(audit.changedFields).toEqual(expect.arrayContaining(['includedQuantity', 'rolloverPolicy', 'rolloverCapHours', 'hourBlockAlertPct']));
     expect(audit.changedFields).not.toContain('description');
+    expect(audit.blockChanges).toEqual({
+      includedQuantity: { before: '10.00', after: '12.00' },
+      rolloverPolicy: { before: 'carry_forward', after: 'none' },
+      rolloverCapHours: { before: '4.00', after: null },
+      hourBlockAlertPct: { before: 80, after: 90 },
+    });
+    // the shared audit-detail builder carries it to every door (HTTP, partner API, AI)
+    expect(svc.contractLineAuditDetails(audit)).toMatchObject({ blockChanges: audit.blockChanges });
+  });
+
+  it('a non-block edit carries no blockChanges (audit payloads for other lines are unchanged)', async () => {
+    lockAndRead({ ...blockRow(), lineType: 'flat', includedQuantity: null, overageMode: null, overageUnitPrice: null, rolloverPolicy: null, rolloverCapHours: null, hourBlockAlertPct: null, hourBlockFirstPeriodStart: null });
+    queueResult([{ ...blockRow(), lineType: 'flat', description: 'Renamed', includedQuantity: null, overageMode: null, overageUnitPrice: null, rolloverPolicy: null, rolloverCapHours: null, hourBlockAlertPct: null, hourBlockFirstPeriodStart: null }]);
+    const { audit } = await svc.updateContractLine('c1', 'b1', { description: 'Renamed' } as never, actor);
+    expect(audit).not.toHaveProperty('blockChanges');
   });
 
   it('a switch to rollover none that leaves the cap set is a 400 INVALID_LINE_PATCH naming the cap', async () => {
@@ -1074,7 +1188,29 @@ Expected: FAIL — no lock check, the block columns are not in `.set()`, no audi
 
 - [ ] **Step 3: Implement** in `contractService.ts`:
 
-1. `AUDITED_LINE_COLUMNS` (`:215-219`) — append `'rolloverPolicy', 'rolloverCapHours', 'hourBlockAlertPct'`.
+0. **Delete W01's guard** (`2026-10-06-block-hours-w01-foundation.md` Task 3 Step 9(d)): remove the line `assertNotHourBlock(current);` that W01 added directly after the `LINE_NOT_FOUND` throw in `updateContractLine` — it is replaced by item 3 below (`if (current.lineType === 'hour_block') assertBlockPatchAllowed(current, patch);`). If no other `assertNotHourBlock(...)` call remains in `contractService.ts` (W01's Step 10 may have added read-site calls — `git grep -n assertNotHourBlock apps/api/src`), also delete the helper and the `type ContractLineType` import W01 added for it; if calls remain, leave the helper.
+
+1. `AUDITED_LINE_COLUMNS` (`:215-219`) — append `'rolloverPolicy', 'rolloverCapHours', 'hourBlockAlertPct'`. Add the before/after record (Open Decision 15). In `contractTypes.ts`, `ContractLineAudit` gains
+
+```ts
+  /** #4547 W03: block lines only. Before/after of the columns a mid-period edit moves; the next close
+   *  reads them. Numbers and enum values only — never free text (the audit no-free-text rule). */
+  blockChanges?: Record<string, { before: string | number | null; after: string | number | null }>;
+```
+and `contractLineAuditDetails` (`contractService.ts:240-248`) gains `...(audit.blockChanges ? { blockChanges: audit.blockChanges } : {})`. In `diffLineAudit`, after `changedFields` is computed:
+
+```ts
+const BLOCK_AUDIT_COLUMNS = ['includedQuantity', 'overageUnitPrice', 'rolloverPolicy', 'rolloverCapHours', 'hourBlockAlertPct'] as const;
+// …inside diffLineAudit, in the returned object:
+    ...(after.lineType === 'hour_block'
+      ? (() => {
+          const moved = BLOCK_AUDIT_COLUMNS.filter((f) => changedFields.includes(f));
+          if (moved.length === 0) return {};
+          const v = (x: unknown): string | number | null => (x === null || x === undefined ? null : typeof x === 'number' ? x : String(x));
+          return { blockChanges: Object.fromEntries(moved.map((f) => [f, { before: v(before[f]), after: v(after[f]) }])) };
+        })()
+      : {}),
+```
 
 2. Add the lock helper next to `isGroupFkViolation`:
 
@@ -1110,15 +1246,19 @@ function assertBlockPatchAllowed(
 ```ts
     if (current.lineType === 'hour_block') assertBlockPatchAllowed(current, patch);
 ```
-and in the `.set({...})` (`:1744-1760`) add:
+(`import type { RolloverPolicy } from '@breeze/shared'` — W01 exports it) and in the `.set({...})` (`:1744-1760`) add:
 
 ```ts
         // #4547 W03: NULL on every non-block line (the merge carries current
         // values, and the invariants above reject a block field on another type).
-        rolloverPolicy: merged.rolloverPolicy ?? null,
+        rolloverPolicy: (merged.rolloverPolicy ?? null) as RolloverPolicy | null,   // the invariants above proved membership
         rolloverCapHours: merged.rolloverCapHours ?? null,
         hourBlockAlertPct: merged.hourBlockAlertPct ?? null,
 ```
+
+4. Amend `updateContractLine`'s docblock: after "Edits affect FUTURE periods only, by construction rather than by a guard: invoice lines carry their own copies…" add: "EXCEPTION (#4547, Open Decision 15): on an `hour_block` line `includedQuantity`, `overageUnitPrice`, `rolloverPolicy` and `rolloverCapHours` are read by the close (W02) at close time, so an edit applies to the open period when it closes; closed periods are frozen in `contract_hour_periods`. The audit records before/after (`blockChanges`)."
+
+- [ ] **Step 3b: Remove W01's now-false test.** In `apps/api/src/services/contractService.test.ts`, `describe('hour_block fails closed until its engine ships (#4547 W01)')`: **DELETE** `it('updateContractLine refuses to patch a forged hour_block line', …)` — inverted by this task's lock tests, which now patch a live block successfully and refuse only the locked fields. After this and Task 3's deletion, the describe keeps only the `generateDueInvoice` test (W02's to replace).
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -1191,8 +1331,11 @@ describe('removeContractLine — retire vs delete (#4547 W03)', () => {
     const audit = await svc.removeContractLine('c1', 'b1', actor);
     expect(audit).toMatchObject({ lineType: 'hour_block', retired: true });
     expect((db as unknown as Chain).delete.mock.calls).toHaveLength(0);
-    const set = (db as unknown as Chain).set.mock.calls[0]![0] as { hourBlockRetiredAt: Date };
-    expect(set.hourBlockRetiredAt).toBeInstanceOf(Date);
+    // W02: a retired line's period closes iff generated_at <= retired_at, which compares transaction clocks —
+    // so the stamp must be the DATABASE's now() (transaction time), never a JS Date from another clock.
+    const set = (db as unknown as Chain).set.mock.calls[0]![0] as { hourBlockRetiredAt: unknown };
+    expect(set.hourBlockRetiredAt).not.toBeInstanceOf(Date);
+    expect(set.hourBlockRetiredAt).toHaveProperty('queryChunks');
   });
 
   it('RETIRES a block with a claimed-but-unclosed period (the advance-billing window)', async () => {
@@ -1272,7 +1415,7 @@ Expected: FAIL — block lines are deleted blindly, no `retired`, no decoration.
 
 `contractService.ts`:
 
-1. Imports: `gte` from `drizzle-orm`; `contractHourPeriods` from `../db/schema`.
+1. Imports: `gte`, `lte` from `drizzle-orm` (`gte` was added in Task 3); `contractHourPeriods` from `../db/schema` (`sql` is already imported).
 
 2. Helper (next to `withLineRefs`):
 
@@ -1292,6 +1435,10 @@ async function hourBlockHasHistory(
     .where(and(
       eq(contractBillingPeriods.contractId, line.contractId),
       gte(contractBillingPeriods.periodStart, line.hourBlockFirstPeriodStart),
+      // Mirrors W02's close criterion: a retired line's period closes iff it was claimed while the line
+      // was live (generated_at <= hour_block_retired_at), and retire stamps now(). Every existing claim
+      // satisfies this at retire time; stating it keeps the two predicates from drifting.
+      lte(contractBillingPeriods.generatedAt, sql`now()`),
     )).limit(1);
   return !!claimed;
 }
@@ -1334,7 +1481,7 @@ and `lines: await withBlockHistory(await withLineRefs(lines)),` in both return s
       // Index C7: history => retire (never delete: the ledger FK is ON DELETE RESTRICT and a
       // claimed-but-unclosed period must still close via W02's sweep); else delete.
       if (await hourBlockHasHistory(tx, { id: row.id, contractId, hourBlockFirstPeriodStart: row.hourBlockFirstPeriodStart })) {
-        await tx.update(contractLines).set({ hourBlockRetiredAt: new Date() })
+        await tx.update(contractLines).set({ hourBlockRetiredAt: sql`now()` })
           .where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId)));
         return { ...audit, retired: true };
       }
@@ -1984,7 +2131,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 8: The AI tool and the partner API — the other doors
 
 **Files:**
-- Modify: `apps/api/src/services/aiToolsContracts.ts` (the `line` / `patch` property descriptions, `:279-300`)
+- Create: `apps/api/src/services/contractHourBlockLocked.ts` (+ `.test.ts`) — maps the strict update schema's refusal of the two server-stamped columns to `HOUR_BLOCK_FIELD_LOCKED`
+- Modify: `apps/api/src/routes/contracts/lines.ts`, `apps/api/src/routes/partnerApi/contracts.ts` (pass the hook as `zValidator`'s third argument on PATCH)
+- Modify: `apps/api/src/services/aiToolsContracts.ts` (the `line` / `patch` property descriptions, `:279-300`; the `update_line` catch)
 - Modify: `apps/api/src/services/aiToolsContracts.manageContracts.test.ts`
 - Modify: `apps/api/src/routes/partnerApi/contracts.test.ts`
 - Modify: `apps/api/src/routes/contracts/contracts.test.ts` (POST/PATCH block cases)
@@ -2040,12 +2189,17 @@ describe('manage_contracts — hour_block (#4547 W03)', () => {
     expect(forwarded).not.toHaveProperty('hourBlockFirstPeriodStart');
   });
 
-  it('update_line accepts the patchable block fields and rejects the server-stamped ones (strict)', async () => {
+  it('update_line accepts the patchable block fields; the server-stamped ones are HOUR_BLOCK_FIELD_LOCKED, not a generic validation error', async () => {
     await getTool().handler({ action: 'update_line', contractId: 'contract-1', lineId: 'line-1', patch: { rolloverCapHours: null, hourBlockAlertPct: 90 } }, auth);
     expect(contractService.updateContractLine).toHaveBeenCalledWith('contract-1', 'line-1', { rolloverCapHours: null, hourBlockAlertPct: 90 }, actor);
     (contractService.updateContractLine as any).mockClear();
-    const bad = JSON.parse(await getTool().handler({ action: 'update_line', contractId: 'contract-1', lineId: 'line-1', patch: { hourBlockRetiredAt: '2026-01-01T00:00:00Z' } }, auth));
-    expect(bad.code).toBe('VALIDATION_ERROR');
+    for (const key of ['hourBlockRetiredAt', 'hourBlockFirstPeriodStart']) {
+      const bad = JSON.parse(await getTool().handler({ action: 'update_line', contractId: 'contract-1', lineId: 'line-1', patch: { [key]: '2026-01-01' } }, auth));
+      expect(bad).toMatchObject({ code: 'HOUR_BLOCK_FIELD_LOCKED', details: { fields: [key] } });
+    }
+    // an unrelated unknown key stays an ordinary validation error
+    const other = JSON.parse(await getTool().handler({ action: 'update_line', contractId: 'contract-1', lineId: 'line-1', patch: { lineType: 'flat' } }, auth));
+    expect(other.code).toBe('VALIDATION_ERROR');
     expect(contractService.updateContractLine).not.toHaveBeenCalled();
   });
 
@@ -2107,8 +2261,16 @@ Append to `routes/contracts/contracts.test.ts` (next to the allowance route test
     const patch = (body: unknown) => app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, {
       method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
     });
-    expect((await patch({ hourBlockFirstPeriodStart: '2020-01-01' })).status).toBe(400);
-    expect((await patch({ hourBlockRetiredAt: '2020-01-01T00:00:00Z' })).status).toBe(400);
+    for (const key of ['hourBlockFirstPeriodStart', 'hourBlockRetiredAt']) {
+      const res = await patch({ [key]: '2020-01-01' });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'HOUR_BLOCK_FIELD_LOCKED', details: { fields: [key] } });
+    }
+    expect(svc.updateContractLine).not.toHaveBeenCalled();
+    // an unrelated unknown key is still the ordinary validation 400 (no code)
+    const other = await patch({ lineType: 'flat' });
+    expect(other.status).toBe(400);
+    expect(await other.json()).not.toHaveProperty('code');
     (svc.updateContractLine as any).mockRejectedValueOnce(new ContractServiceError('locked', 400, 'HOUR_BLOCK_FIELD_LOCKED'));
     const locked = await patch({ overageMode: 'flag' });
     expect(locked.status).toBe(400);
@@ -2123,8 +2285,78 @@ Append to `routes/contracts/contracts.test.ts` (next to the allowance route test
 Run: `cd apps/api && npx vitest run src/services/aiToolsContracts.manageContracts.test.ts src/routes/contracts/contracts.test.ts src/routes/partnerApi/contracts.test.ts`
 Expected: FAIL on the description test (no `hour_block` text, no `rolloverPolicy` property). The schema-driven cases already pass once Task 1 is in the checkout.
 
-- [ ] **Step 3: Implement** the descriptions in `aiToolsContracts.ts` (each ≤ 160 characters; lengths measured):
+Create `contractHourBlockLocked.test.ts` first (red):
 
+```ts
+import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
+import { updateContractLineSchema } from '@breeze/shared';
+import { stampedKeysFromZod, stampedKeysErrorBody } from './contractHourBlockLocked';
+
+const failure = (body: unknown) => { const r = updateContractLineSchema.safeParse(body); if (r.success) throw new Error('expected failure'); return r.error; };
+
+describe('server-stamped block columns on a line patch (#4547 W03)', () => {
+  it('names exactly the stamped keys the strict schema refused', () => {
+    expect(stampedKeysFromZod(failure({ hourBlockFirstPeriodStart: '2026-01-01' }))).toEqual(['hourBlockFirstPeriodStart']);
+    expect(stampedKeysFromZod(failure({ hourBlockRetiredAt: 'x', hourBlockFirstPeriodStart: 'y' })).sort()).toEqual(['hourBlockFirstPeriodStart', 'hourBlockRetiredAt']);
+  });
+  it('ignores other unknown keys and other failures', () => {
+    expect(stampedKeysFromZod(failure({ lineType: 'flat' }))).toEqual([]);
+    expect(stampedKeysFromZod(failure({ unitPrice: 'abc' }))).toEqual([]);
+  });
+  it('builds the 400 body only when a stamped key is involved', () => {
+    expect(stampedKeysErrorBody(failure({ hourBlockRetiredAt: 'x' }))).toMatchObject({ code: 'HOUR_BLOCK_FIELD_LOCKED', details: { fields: ['hourBlockRetiredAt'] } });
+    expect(stampedKeysErrorBody(failure({ lineType: 'flat' }))).toBeNull();
+    expect(stampedKeysErrorBody(new Error('boom'))).toBeNull();
+    expect(stampedKeysErrorBody(new z.ZodError([]))).toBeNull();
+  });
+});
+```
+
+- [ ] **Step 3: Implement** the descriptions in `aiToolsContracts.ts` (each ≤ 160 characters; lengths measured), and the stamped-key mapping.
+
+`apps/api/src/services/contractHourBlockLocked.ts`:
+
+```ts
+import { ZodError } from 'zod';
+
+export const HOUR_BLOCK_STAMPED_KEYS = ['hourBlockFirstPeriodStart', 'hourBlockRetiredAt'] as const;
+
+/** The server-stamped block columns a PATCH named and the strict update schema refused. */
+export function stampedKeysFromZod(error: { issues: ReadonlyArray<{ code?: string; keys?: readonly string[] }> }): string[] {
+  const out = new Set<string>();
+  for (const issue of error.issues) {
+    if (issue.code !== 'unrecognized_keys') continue;
+    for (const k of issue.keys ?? []) if ((HOUR_BLOCK_STAMPED_KEYS as readonly string[]).includes(k)) out.add(k);
+  }
+  return [...out];
+}
+
+/** 400 body for HOUR_BLOCK_FIELD_LOCKED, or null when the failure is not about a stamped key. */
+export function stampedKeysErrorBody(err: unknown): { error: string; code: 'HOUR_BLOCK_FIELD_LOCKED'; details: { fields: string[] } } | null {
+  if (!(err instanceof ZodError)) return null;
+  const fields = stampedKeysFromZod(err);
+  if (fields.length === 0) return null;
+  return { error: `These fields are set by the server and cannot be changed: ${fields.join(', ')}`, code: 'HOUR_BLOCK_FIELD_LOCKED', details: { fields } };
+}
+
+/** zValidator hook (third argument) for the line PATCH routes: only the stamped-key failure is mapped; every
+ *  other validation failure falls through to the shared readable 400. */
+export function hourBlockStampedKeyHook(
+  result: { success: boolean; error?: unknown },
+  c: { json: (body: unknown, status: 400) => Response },
+): Response | undefined {
+  if (result.success) return undefined;
+  const body = stampedKeysErrorBody(result.error);
+  return body ? c.json(body, 400) : undefined;
+}
+```
+Wire it: `lines.ts` PATCH — `zValidator('json', updateContractLineSchema, hourBlockStampedKeyHook)`; `partnerApi/contracts.ts` PATCH likewise; `aiToolsContracts.ts` — in the tool's `catch`, `const json = serviceErrorToJson(err) ?? zodErrorToJson(err);` becomes `const stamped = stampedKeysErrorBody(err); if (stamped) return JSON.stringify(stamped); const json = serviceErrorToJson(err) ?? zodErrorToJson(err);`. (The shared strict schema is unchanged: the keys are still refused; only the answer is typed.)
+
+`properties.patch.description` (**replaces** "…Future periods only; generated invoices unchanged." — untrue for a block, Open Decision 15; ≤ 160, measured):
+```
+"Header (update) or line (update_line) patch; lineType immutable. siteId:null widens to org. Invoices unchanged; hour_block edits apply at open period close."
+```
 `properties.line.description` (151):
 ```
 "Line: flat|per_device|per_device_role|per_device_group|per_seat|manual|hour_block (fields below). Contract currency prices; gaps fail, never converted."
@@ -2174,6 +2406,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Modify: `apps/api/src/services/orgMerge.ts` (`loadAndValidate` `:334`, `assertPairStillMergeable` `:599`, new `assertNotBothHaveLiveHourBlock`)
 - Modify: `apps/api/src/services/orgMerge.test.ts` (the `assertPairStillMergeable` describe, `:332`)
 - Modify: `apps/api/src/__tests__/integration/orgMerge.integration.test.ts` (new describe at the end)
+- Modify: `apps/api/src/__tests__/integration/orgMergeRegistry.integration.test.ts` (one case pinning *why* the preflight is needed)
 
 **Why it lands in W03.** `contract_lines` is a plain `repoint` in the merge registry (`orgMergeRegistry.ts:834`), and `contract_lines_one_live_hour_block_per_org_uq` is on `(org_id)`. Merging two orgs that each hold a live block would repoint the loser's block onto the survivor and fail mid-transaction with a 23505 — after the loser was fenced and its sockets closed. W03 is the wave that makes a block creatable, so it must also make the merge refuse the pair cleanly. (One live block on one side is fine: the repoint leaves exactly one.)
 
@@ -2263,6 +2496,42 @@ describe('blocks-merge: both organizations hold a live block of hours (#4547 W03
 ```
 (Reuse the file's existing imports for `randomUUID`, `sql`, `getTestDb`, `orgMergeModule`, `vi`, `snapshotOrgState`.)
 
+`orgMergeRegistry.integration.test.ts` — append (imports to add at the top: `import { partners, organizations, contracts, contractLines } from '../../db/schema'; import { isPgUniqueViolation } from '../../utils/pgErrors';`):
+
+```ts
+describe('contract_lines live-block index vs the merge registry (#4547 W03, Open Decision 14)', () => {
+  it('contract_lines is a plain repoint, and repointing a second live block onto the same org violates the live-block index — the reason orgMerge refuses such a pair before it fences anything', async () => {
+    expect(getOrgMergePolicies().get('contract_lines')).toMatchObject({ kind: 'repoint' });
+
+    const sfx = randomUUID().slice(0, 8);
+    const { a, b } = await withSystemDbAccessContext(async () => {
+      const [p] = await db.insert(partners).values({ name: `MB ${sfx}`, slug: `mb-${sfx}`, type: 'msp', plan: 'pro', status: 'active' }).returning({ id: partners.id });
+      const seed = async (tag: string) => {
+        const [o] = await db.insert(organizations).values({ partnerId: p!.id, name: `MB ${tag} ${sfx}`, slug: `mb-${tag}-${sfx}`, currencyCode: 'USD' }).returning({ id: organizations.id });
+        const [c] = await db.insert(contracts).values({ partnerId: p!.id, orgId: o!.id, name: 'Block', status: 'draft', intervalMonths: 1, startDate: '2026-12-01', currencyCode: 'USD', billingTiming: 'advance' }).returning({ id: contracts.id });
+        const [l] = await db.insert(contractLines).values({
+          contractId: c!.id, orgId: o!.id, lineType: 'hour_block', description: 'Block', unitPrice: '1.00', taxable: false,
+          includedQuantity: '1.00', overageMode: 'bill', overageUnitPrice: '1.00', rolloverPolicy: 'none', hourBlockFirstPeriodStart: '2026-12-01',
+        }).returning({ id: contractLines.id });
+        return { orgId: o!.id, lineId: l!.id };
+      };
+      return { a: await seed('a'), b: await seed('b') };
+    });
+
+    // What the registry's plain repoint does to the loser's block (constraints deferred, as the merge walk does).
+    const err = await withSystemDbAccessContext(async () => {
+      await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+      try {
+        await db.execute(sql`UPDATE contract_lines SET org_id = ${b.orgId}::uuid WHERE id = ${a.lineId}::uuid`);
+        return null;
+      } catch (e) { return e; }
+    });
+    expect(isPgUniqueViolation(err, 'contract_lines_one_live_hour_block_per_org_uq')).toBe(true);
+  });
+});
+```
+(If the registry ever moves `contract_lines` to a custom executor that handles the collision, this case fails on its first assertion and the preflight can be revisited — that is its job.)
+
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `cd apps/api && npx vitest run src/services/orgMerge.test.ts`
@@ -2336,12 +2605,12 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 | Key (billing namespace unless noted) | Used by |
 |---|---|
 | `contracts.shared.lineType.hourBlock` | `LINE_TYPE_LABELS` (editor, detail) |
-| `contracts.hourBlock.form.{hoursPerPeriod, extraRate, rolloverMode, rolloverExpire, rolloverCarry, carryCap, alertPct, required, firstPeriod, midPeriodEdit, onlyOne}` | editor add + edit forms |
+| `contracts.hourBlock.form.{hoursPerPeriod, extraRate, rolloverMode, rolloverExpire, rolloverCarry, carryCap, alertPct, required, firstPeriod, midPeriodEdit, midPeriodEditNoDates, onlyOne}` | editor add + edit forms |
 | `contracts.hourBlock.row.{perPeriod, retiredBadge, startsOn}` | `AllowanceCell`, editor/detail line rows |
 | `contracts.hourBlock.errors.{exists, locked}` | editor `friendly` maps |
 | `contracts.hourBlock.retire.{title, message, confirm, toast}` | remove-confirm dialog, success toast |
 | `contracts.hourBlock.detail.{title, usage, carried, unapproved, foreign, over, advanceNote, arrearsNote, lateEntry, startsLater, extraRate, loadFailed}` | `HourBlockPanel` |
-| `contracts.hourBlock.history.{title, empty, included, carriedIn, used, over, carriedOut, loadMore}` | `HourBlockPanel` history |
+| `contracts.hourBlock.history.{title, empty, included, carriedIn, used, over, carriedOut, loadMore, invoiceRemoved}` | `HourBlockPanel` history |
 | `invoicesPage.dialog.heldForHourBlock_one/_other` | `InvoicesPage` (Task 13) |
 | `tickets`: `ticketWorkbench.invoice.heldForHourBlock_one/_other` | `TicketWorkbench` (Task 13) |
 
@@ -2381,7 +2650,8 @@ const L = {
         alertPct: 'Alert at % of block used (optional)',
         required: 'Enter the included hours and the price per extra hour.',
         firstPeriod: 'Hours count from the first billing period still to be invoiced; on a draft contract this is set when it is activated. Earlier time bills as usual.',
-        midPeriodEdit: 'Changes to hours, price or rollover apply to the open period when it closes.',
+        midPeriodEdit: "Changes apply to the current open period ({{start}} – {{end}}) at its close.",
+        midPeriodEditNoDates: "Changes apply to the current open period at its close.",
         onlyOne: 'This organization already has an active block. Retire it before adding another.',
       },
       row: { perPeriod: '{{hours}} hours per period', retiredBadge: 'Retired', startsOn: 'Counts from {{date}}' },
@@ -2391,7 +2661,7 @@ const L = {
       },
       retire: {
         title: 'Retire block hours',
-        message: '"{{description}}" has billing history, so it is retired instead of deleted. It stops billing and stops counting hours; its closed periods stay on the contract.',
+        message: "\"{{description}}\" has billing history, so it is retired instead of deleted. No new periods; already-billed periods still settle. Its closed periods stay on the contract.",
         confirm: 'Retire block',
         toast: 'Block hours retired',
       },
@@ -2405,13 +2675,14 @@ const L = {
         advanceNote: 'Overage bills on the following invoice.',
         arrearsNote: "Overage bills on this period's invoice.",
         lateEntry: '{{hours}} hours were entered after their period closed and bill separately.',
-        startsLater: 'Hours start counting {{date}}.',
+        startsLater: "Block starts {{date}}.",
         extraRate: 'Extra hours: {{rate}} each',
         loadFailed: "Block usage couldn't be loaded.",
       },
       history: {
         title: 'Closed block periods', empty: 'No block period has closed yet.', included: 'Included',
         carriedIn: 'Carried in', used: 'Used', over: 'Over', carriedOut: 'Carried out', loadMore: 'Load more',
+        invoiceRemoved: "Overage invoice removed — hours not billed",
       },
     },
     held: {
@@ -2433,7 +2704,8 @@ const L = {
         alertPct: 'Warnung bei % des Kontingents (optional)',
         required: 'Geben Sie die enthaltenen Stunden und den Preis pro zusätzlicher Stunde ein.',
         firstPeriod: 'Die Stunden zählen ab dem ersten Abrechnungszeitraum, der noch nicht abgerechnet wurde; bei einem Entwurf wird er bei der Aktivierung festgelegt. Frühere Zeit wird wie gewohnt abgerechnet.',
-        midPeriodEdit: 'Änderungen an Stunden, Preis oder Übertrag gelten für den offenen Zeitraum, sobald er abgeschlossen wird.',
+        midPeriodEdit: "Änderungen gelten für den laufenden Zeitraum ({{start}} – {{end}}) bei dessen Abschluss.",
+        midPeriodEditNoDates: "Änderungen gelten für den laufenden Zeitraum bei dessen Abschluss.",
         onlyOne: 'Diese Organisation hat bereits ein aktives Kontingent. Beenden Sie es, bevor Sie ein weiteres hinzufügen.',
       },
       row: { perPeriod: '{{hours}} Stunden pro Zeitraum', retiredBadge: 'Beendet', startsOn: 'Zählt ab {{date}}' },
@@ -2443,7 +2715,7 @@ const L = {
       },
       retire: {
         title: 'Stundenkontingent beenden',
-        message: '„{{description}}“ hat eine Abrechnungshistorie und wird daher beendet statt gelöscht. Es wird nicht mehr abgerechnet und zählt keine Stunden mehr; abgeschlossene Zeiträume bleiben im Vertrag.',
+        message: "„{{description}}“ hat eine Abrechnungshistorie und wird daher beendet statt gelöscht. Keine neuen Zeiträume; bereits abgerechnete Zeiträume werden weiterhin abgeschlossen. Abgeschlossene Zeiträume bleiben im Vertrag.",
         confirm: 'Kontingent beenden',
         toast: 'Stundenkontingent beendet',
       },
@@ -2457,13 +2729,14 @@ const L = {
         advanceNote: 'Mehrstunden werden auf der folgenden Rechnung abgerechnet.',
         arrearsNote: 'Mehrstunden werden auf der Rechnung für diesen Zeitraum abgerechnet.',
         lateEntry: '{{hours}} Stunden wurden nach Abschluss ihres Zeitraums erfasst und werden separat abgerechnet.',
-        startsLater: 'Die Stunden zählen ab {{date}}.',
+        startsLater: "Das Kontingent beginnt am {{date}}.",
         extraRate: 'Zusätzliche Stunden: je {{rate}}',
         loadFailed: 'Die Kontingentnutzung konnte nicht geladen werden.',
       },
       history: {
         title: 'Abgeschlossene Kontingentzeiträume', empty: 'Noch kein Kontingentzeitraum abgeschlossen.', included: 'Enthalten',
         carriedIn: 'Übertrag Eingang', used: 'Verbraucht', over: 'Darüber', carriedOut: 'Übertrag Ausgang', loadMore: 'Mehr laden',
+        invoiceRemoved: "Mehrstunden-Rechnung entfernt – Stunden nicht abgerechnet",
       },
     },
     held: {
@@ -2485,7 +2758,8 @@ const L = {
         alertPct: 'Alertar al usar este % de la bolsa (opcional)',
         required: 'Ingresa las horas incluidas y el precio por hora adicional.',
         firstPeriod: 'Las horas cuentan desde el primer período de facturación aún por facturar; en un contrato en borrador se define al activarlo. El tiempo anterior se factura como de costumbre.',
-        midPeriodEdit: 'Los cambios en horas, precio o traslado se aplican al período abierto cuando se cierre.',
+        midPeriodEdit: "Los cambios se aplican al período abierto actual ({{start}} – {{end}}) cuando se cierre.",
+        midPeriodEditNoDates: "Los cambios se aplican al período abierto actual cuando se cierre.",
         onlyOne: 'Esta organización ya tiene una bolsa activa. Retírala antes de agregar otra.',
       },
       row: { perPeriod: '{{hours}} horas por período', retiredBadge: 'Retirada', startsOn: 'Cuenta desde {{date}}' },
@@ -2495,7 +2769,7 @@ const L = {
       },
       retire: {
         title: 'Retirar bolsa de horas',
-        message: '«{{description}}» tiene historial de facturación, por lo que se retira en lugar de eliminarse. Deja de facturarse y de contar horas; sus períodos cerrados permanecen en el contrato.',
+        message: "«{{description}}» tiene historial de facturación, por lo que se retira en lugar de eliminarse. No habrá períodos nuevos; los períodos ya facturados se siguen liquidando. Los períodos cerrados permanecen en el contrato.",
         confirm: 'Retirar bolsa',
         toast: 'Bolsa de horas retirada',
       },
@@ -2509,13 +2783,14 @@ const L = {
         advanceNote: 'El exceso se factura en la factura siguiente.',
         arrearsNote: 'El exceso se factura en la factura de este período.',
         lateEntry: '{{hours}} horas se registraron después del cierre de su período y se facturan por separado.',
-        startsLater: 'Las horas empiezan a contar el {{date}}.',
+        startsLater: "La bolsa comienza el {{date}}.",
         extraRate: 'Horas adicionales: {{rate}} cada una',
         loadFailed: 'No se pudo cargar el uso de la bolsa.',
       },
       history: {
         title: 'Períodos de bolsa cerrados', empty: 'Aún no se ha cerrado ningún período de bolsa.', included: 'Incluidas',
         carriedIn: 'Trasladadas de entrada', used: 'Usadas', over: 'Exceso', carriedOut: 'Trasladadas de salida', loadMore: 'Cargar más',
+        invoiceRemoved: "Factura del exceso eliminada: horas no facturadas",
       },
     },
     held: {
@@ -2537,7 +2812,8 @@ const L = {
         alertPct: 'Alertar ao usar este % do banco (opcional)',
         required: 'Informe as horas incluídas e o preço por hora extra.',
         firstPeriod: 'As horas contam a partir do primeiro período de cobrança ainda não faturado; em um contrato em rascunho isso é definido na ativação. O tempo anterior é cobrado normalmente.',
-        midPeriodEdit: 'Alterações em horas, preço ou acúmulo valem para o período aberto quando ele for encerrado.',
+        midPeriodEdit: "As alterações valem para o período aberto atual ({{start}} – {{end}}) quando ele for encerrado.",
+        midPeriodEditNoDates: "As alterações valem para o período aberto atual quando ele for encerrado.",
         onlyOne: 'Esta organização já tem um banco ativo. Desative-o antes de adicionar outro.',
       },
       row: { perPeriod: '{{hours}} horas por período', retiredBadge: 'Desativado', startsOn: 'Conta a partir de {{date}}' },
@@ -2547,7 +2823,7 @@ const L = {
       },
       retire: {
         title: 'Desativar banco de horas',
-        message: '"{{description}}" tem histórico de cobrança, por isso é desativado em vez de excluído. Ele deixa de ser cobrado e de contar horas; os períodos encerrados permanecem no contrato.',
+        message: "\"{{description}}\" tem histórico de cobrança, por isso é desativado em vez de excluído. Sem novos períodos; os períodos já faturados ainda são liquidados. Os períodos encerrados permanecem no contrato.",
         confirm: 'Desativar banco',
         toast: 'Banco de horas desativado',
       },
@@ -2561,13 +2837,14 @@ const L = {
         advanceNote: 'O excedente é cobrado na fatura seguinte.',
         arrearsNote: 'O excedente é cobrado na fatura deste período.',
         lateEntry: '{{hours}} horas foram lançadas depois do fechamento do período e são cobradas separadamente.',
-        startsLater: 'As horas começam a contar em {{date}}.',
+        startsLater: "O banco começa em {{date}}.",
         extraRate: 'Horas extras: {{rate}} cada',
         loadFailed: 'Não foi possível carregar o uso do banco.',
       },
       history: {
         title: 'Períodos do banco encerrados', empty: 'Nenhum período do banco foi encerrado ainda.', included: 'Incluídas',
         carriedIn: 'Acumuladas na entrada', used: 'Usadas', over: 'Excedente', carriedOut: 'Acumuladas na saída', loadMore: 'Carregar mais',
+        invoiceRemoved: "Fatura do excedente removida — horas não cobradas",
       },
     },
     held: {
@@ -2589,7 +2866,8 @@ const L = {
         alertPct: 'Alerter à ce % du forfait consommé (facultatif)',
         required: 'Saisissez les heures incluses et le prix par heure supplémentaire.',
         firstPeriod: "Les heures comptent à partir de la première période de facturation encore à facturer ; pour un contrat brouillon, elle est fixée à l'activation. Le temps antérieur est facturé comme d'habitude.",
-        midPeriodEdit: "Les modifications des heures, du prix ou du report s'appliquent à la période en cours à sa clôture.",
+        midPeriodEdit: "Les modifications s'appliquent à la période en cours ({{start}} – {{end}}) à sa clôture.",
+        midPeriodEditNoDates: "Les modifications s'appliquent à la période en cours à sa clôture.",
         onlyOne: "Cette organisation a déjà un forfait actif. Retirez-le avant d'en ajouter un autre.",
       },
       row: { perPeriod: '{{hours}} heures par période', retiredBadge: 'Retiré', startsOn: 'Compte à partir du {{date}}' },
@@ -2599,7 +2877,7 @@ const L = {
       },
       retire: {
         title: "Retirer le forfait d'heures",
-        message: "« {{description}} » a un historique de facturation ; il est donc retiré au lieu d'être supprimé. Il n'est plus facturé et ne compte plus d'heures ; ses périodes clôturées restent dans le contrat.",
+        message: "« {{description}} » a un historique de facturation ; il est donc retiré au lieu d'être supprimé. Plus de nouvelles périodes ; les périodes déjà facturées sont toujours réglées. Les périodes clôturées restent dans le contrat.",
         confirm: 'Retirer le forfait',
         toast: "Forfait d'heures retiré",
       },
@@ -2613,13 +2891,14 @@ const L = {
         advanceNote: 'Le dépassement est facturé sur la facture suivante.',
         arrearsNote: 'Le dépassement est facturé sur la facture de cette période.',
         lateEntry: '{{hours}} heures ont été saisies après la clôture de leur période et sont facturées séparément.',
-        startsLater: 'Les heures commencent à compter le {{date}}.',
+        startsLater: "Le forfait commence le {{date}}.",
         extraRate: 'Heures supplémentaires : {{rate}} chacune',
         loadFailed: "Impossible de charger la consommation du forfait.",
       },
       history: {
         title: 'Périodes de forfait clôturées', empty: "Aucune période de forfait n'a encore été clôturée.", included: 'Incluses',
         carriedIn: 'Reportées en entrée', used: 'Utilisées', over: 'Dépassement', carriedOut: 'Reportées en sortie', loadMore: 'Charger plus',
+        invoiceRemoved: "Facture du dépassement supprimée — heures non facturées",
       },
     },
     held: {
@@ -2641,7 +2920,8 @@ const L = {
         alertPct: "Alerter à ce % de la banque utilisé (facultatif)",
         required: 'Saisissez les heures incluses et le prix par heure supplémentaire.',
         firstPeriod: "Les heures comptent à partir de la première période de facturation encore à facturer; pour un contrat brouillon, elle est fixée à l'activation. Le temps antérieur est facturé comme d'habitude.",
-        midPeriodEdit: "Les modifications aux heures, au prix ou au report s'appliquent à la période en cours à sa clôture.",
+        midPeriodEdit: "Les modifications s'appliquent à la période en cours ({{start}} – {{end}}) à sa clôture.",
+        midPeriodEditNoDates: "Les modifications s'appliquent à la période en cours à sa clôture.",
         onlyOne: "Cette organisation a déjà une banque active. Retirez-la avant d'en ajouter une autre.",
       },
       row: { perPeriod: '{{hours}} heures par période', retiredBadge: 'Retirée', startsOn: 'Compte à partir du {{date}}' },
@@ -2651,7 +2931,7 @@ const L = {
       },
       retire: {
         title: "Retirer la banque d'heures",
-        message: "« {{description}} » a un historique de facturation; elle est donc retirée plutôt que supprimée. Elle n'est plus facturée et ne compte plus d'heures; ses périodes clôturées restent au contrat.",
+        message: "« {{description}} » a un historique de facturation; elle est donc retirée plutôt que supprimée. Plus de nouvelles périodes; les périodes déjà facturées sont tout de même réglées. Les périodes clôturées restent au contrat.",
         confirm: 'Retirer la banque',
         toast: "Banque d'heures retirée",
       },
@@ -2665,13 +2945,14 @@ const L = {
         advanceNote: 'Le dépassement est facturé sur la facture suivante.',
         arrearsNote: 'Le dépassement est facturé sur la facture de cette période.',
         lateEntry: '{{hours}} heures ont été saisies après la clôture de leur période et sont facturées séparément.',
-        startsLater: 'Les heures commencent à compter le {{date}}.',
+        startsLater: "La banque commence le {{date}}.",
         extraRate: 'Heures supplémentaires : {{rate}} chacune',
         loadFailed: "Impossible de charger l'utilisation de la banque.",
       },
       history: {
         title: 'Périodes de banque clôturées', empty: "Aucune période de banque n'a encore été clôturée.", included: 'Incluses',
         carriedIn: 'Reportées en entrée', used: 'Utilisées', over: 'Dépassement', carriedOut: 'Reportées en sortie', loadMore: 'Charger plus',
+        invoiceRemoved: "Facture du dépassement supprimée — heures non facturées",
       },
     },
     held: {
@@ -2693,7 +2974,8 @@ const L = {
         alertPct: 'Avvisa al % del monte ore utilizzato (facoltativo)',
         required: 'Inserisci le ore incluse e il prezzo per ora aggiuntiva.',
         firstPeriod: "Le ore contano dal primo periodo di fatturazione ancora da fatturare; in un contratto in bozza viene stabilito all'attivazione. Il tempo precedente viene fatturato come di consueto.",
-        midPeriodEdit: 'Le modifiche a ore, prezzo o riporto si applicano al periodo aperto alla sua chiusura.',
+        midPeriodEdit: "Le modifiche si applicano al periodo aperto corrente ({{start}} – {{end}}) alla sua chiusura.",
+        midPeriodEditNoDates: "Le modifiche si applicano al periodo aperto corrente alla sua chiusura.",
         onlyOne: 'Questa organizzazione ha già un monte ore attivo. Ritiralo prima di aggiungerne un altro.',
       },
       row: { perPeriod: '{{hours}} ore per periodo', retiredBadge: 'Ritirato', startsOn: 'Conta dal {{date}}' },
@@ -2703,7 +2985,7 @@ const L = {
       },
       retire: {
         title: 'Ritira il monte ore',
-        message: '«{{description}}» ha uno storico di fatturazione, quindi viene ritirato anziché eliminato. Smette di essere fatturato e di contare ore; i periodi chiusi restano nel contratto.',
+        message: "«{{description}}» ha uno storico di fatturazione, quindi viene ritirato anziché eliminato. Nessun nuovo periodo; i periodi già fatturati vengono comunque regolati. I periodi chiusi restano nel contratto.",
         confirm: 'Ritira monte ore',
         toast: 'Monte ore ritirato',
       },
@@ -2717,13 +2999,14 @@ const L = {
         advanceNote: "L'eccedenza viene fatturata nella fattura successiva.",
         arrearsNote: "L'eccedenza viene fatturata nella fattura di questo periodo.",
         lateEntry: '{{hours}} ore sono state inserite dopo la chiusura del loro periodo e vengono fatturate separatamente.',
-        startsLater: 'Le ore iniziano a contare dal {{date}}.',
+        startsLater: "Il monte ore inizia il {{date}}.",
         extraRate: 'Ore aggiuntive: {{rate}} ciascuna',
         loadFailed: "Impossibile caricare l'utilizzo del monte ore.",
       },
       history: {
         title: 'Periodi di monte ore chiusi', empty: 'Nessun periodo di monte ore è ancora stato chiuso.', included: 'Incluse',
         carriedIn: 'Riportate in ingresso', used: 'Usate', over: 'Eccedenza', carriedOut: 'Riportate in uscita', loadMore: 'Carica altro',
+        invoiceRemoved: "Fattura dell'eccedenza rimossa — ore non fatturate",
       },
     },
     held: {
@@ -2745,7 +3028,8 @@ const L = {
         alertPct: "Paketin bu %'si kullanıldığında uyar (isteğe bağlı)",
         required: 'Dahil saatleri ve ek saat başına fiyatı girin.',
         firstPeriod: 'Saatler, henüz faturalanmamış ilk faturalama döneminden itibaren sayılır; taslak sözleşmede bu, etkinleştirildiğinde belirlenir. Öncesindeki süre her zamanki gibi faturalanır.',
-        midPeriodEdit: 'Saat, fiyat veya aktarım değişiklikleri açık döneme, dönem kapandığında uygulanır.',
+        midPeriodEdit: "Değişiklikler, mevcut açık döneme ({{start}} – {{end}}) dönem kapandığında uygulanır.",
+        midPeriodEditNoDates: "Değişiklikler, mevcut açık döneme dönem kapandığında uygulanır.",
         onlyOne: 'Bu kuruluşun zaten etkin bir saat paketi var. Yenisini eklemeden önce onu kullanımdan kaldırın.',
       },
       row: { perPeriod: 'Dönem başına {{hours}} saat', retiredBadge: 'Kullanımdan kaldırıldı', startsOn: '{{date}} tarihinden itibaren sayılır' },
@@ -2755,7 +3039,7 @@ const L = {
       },
       retire: {
         title: 'Saat paketini kullanımdan kaldır',
-        message: '"{{description}}" faturalama geçmişine sahip olduğundan silinmek yerine kullanımdan kaldırılır. Faturalanmayı ve saat saymayı durdurur; kapanmış dönemleri sözleşmede kalır.',
+        message: "\"{{description}}\" faturalama geçmişine sahip olduğundan silinmek yerine kullanımdan kaldırılır. Yeni dönem yok; zaten faturalanmış dönemler yine de kapanır. Kapanmış dönemler sözleşmede kalır.",
         confirm: 'Paketi kaldır',
         toast: 'Saat paketi kullanımdan kaldırıldı',
       },
@@ -2769,13 +3053,14 @@ const L = {
         advanceNote: 'Aşım, sonraki faturada faturalanır.',
         arrearsNote: 'Aşım, bu dönemin faturasında faturalanır.',
         lateEntry: '{{hours}} saat, dönemi kapandıktan sonra girildi ve ayrıca faturalanır.',
-        startsLater: 'Saatler {{date}} tarihinde saymaya başlar.',
+        startsLater: "Paket {{date}} tarihinde başlar.",
         extraRate: 'Ek saatler: saat başına {{rate}}',
         loadFailed: 'Paket kullanımı yüklenemedi.',
       },
       history: {
         title: 'Kapanan paket dönemleri', empty: 'Henüz kapanan bir paket dönemi yok.', included: 'Dahil',
         carriedIn: 'Gelen aktarım', used: 'Kullanılan', over: 'Aşım', carriedOut: 'Giden aktarım', loadMore: 'Daha fazla yükle',
+        invoiceRemoved: "Aşım faturası kaldırıldı — saatler faturalanmadı",
       },
     },
     held: {
@@ -3073,10 +3358,20 @@ describe('ContractEditor — block hours (#4547 W03)', () => {
     expect(screen.queryByTestId('line-edit-block-overage-mode-0')).toBeNull();   // mode is never a choice
   });
 
-  it('states that mid-period edits apply when the open period closes', async () => {
+  it('states that edits apply to the current open period at its close — with the period dates once the estimate is loaded', async () => {
     renderEdit([blockLine()]);
     fireEvent.click(await screen.findByTestId('line-edit-0'));
-    expect(screen.getByTestId('line-edit-block-midperiod-0')).toBeInTheDocument();
+    expect(screen.getByTestId('line-edit-block-midperiod-0')).toHaveTextContent('Changes apply to the current open period at its close.');
+  });
+
+  it('shows the open period dates in that notice when the estimate carries the live block', async () => {
+    (api.getContractEstimate as any).mockResolvedValue(resp({ data: {
+      currencyCode: 'USD', periodTotal: '1000.00', lines: [], uncoveredDevices: null, overages: [],
+      hourBlock: { lineId: 'b1', periodStart: '2026-09-01', periodEnd: '2026-10-01', includedHours: 10, carriedInHours: 0, consumedHours: 0, unapprovedHours: 0, foreignCurrencyHours: 0, remainingHours: 10, overageHours: 0, overageUnitPrice: '150.00', overageValue: '0.00', alertPct: null, billingTiming: 'advance', lateEntryHours: 0 },
+    } }));
+    renderEdit([blockLine()]);
+    fireEvent.click(await screen.findByTestId('line-edit-0'));
+    await waitFor(() => expect(screen.getByTestId('line-edit-block-midperiod-0')).toHaveTextContent(/current open period \(.+ – .+\) at its close/));
   });
 
   it('maps HOUR_BLOCK_FIELD_LOCKED on save to its copy', async () => {
@@ -3296,7 +3591,12 @@ and wrap the Edit/Remove button group (`{linesEditable && (` at `:1411`) as `{li
 ```tsx
 {l.lineType === 'hour_block' && (
   <fieldset className="flex flex-col gap-2 text-xs text-muted-foreground" data-testid={`line-edit-block-fields-${idx}`}>
-    <span data-testid={`line-edit-block-midperiod-${idx}`}>{t('contracts.hourBlock.form.midPeriodEdit')}</span>
+    {/* Open Decision 15: the close reads the line as it is, so an edit moves the open period's figures. */}
+    <span data-testid={`line-edit-block-midperiod-${idx}`}>
+      {liveEstimate?.hourBlock
+        ? t('contracts.hourBlock.form.midPeriodEdit', { start: formatDate(liveEstimate.hourBlock.periodStart), end: formatDate(liveEstimate.hourBlock.periodEnd) })
+        : t('contracts.hourBlock.form.midPeriodEditNoDates')}
+    </span>
     <label className="flex flex-col gap-1">
       {t('contracts.hourBlock.form.hoursPerPeriod')}
       <input type="number" min="0.01" step="0.01" value={d.blockHours}
@@ -3593,9 +3893,12 @@ describe('ContractDetail — block hours (#4547 W03)', () => {
     }
   });
 
-  it('before the first counted period it says when hours start counting', async () => {
+  it('before the first counted period it says "Block starts <date>" instead of a 0-used bar', async () => {
     renderDetail([blockLine()], hb({ periodStart: '2999-01-01', periodEnd: '2999-02-01', consumedHours: 0, remainingHours: 10 }));
-    expect(await screen.findByTestId('hour-block-starts-later')).toBeInTheDocument();
+    expect(await screen.findByTestId('hour-block-starts-later')).toHaveTextContent(/^Block starts /);
+    expect(screen.queryByTestId('hour-block-bar')).toBeNull();
+    expect(screen.queryByTestId('hour-block-usage')).toBeNull();
+    expect(screen.getByTestId('hour-block-extra-rate')).toBeInTheDocument();
   });
 
   it('a failed estimate shows the load-failed note without crashing the page', async () => {
@@ -3626,6 +3929,18 @@ describe('ContractDetail — block hours (#4547 W03)', () => {
     unmount();
     renderDetail([blockLine()], hb());
     expect(await screen.findByTestId('hour-block-history-error')).toBeInTheDocument();
+  });
+
+  it('flags a closed period that had overage but lost its invoice, and shows a plain dash only when nothing was over', async () => {
+    (api.listContractHourPeriods as any).mockResolvedValue(resp({ data: { items: [
+      row(3, { overageInvoiceId: null, overageHours: '2.00' }),   // invoice removed: hours not billed
+      row(2, { overageInvoiceId: null, overageHours: '0.00' }),   // nothing over: no invoice expected
+      row(1),                                                       // invoiced
+    ], nextCursor: null } }));
+    renderDetail([blockLine()], hb());
+    expect(await screen.findByTestId('hour-block-history-removed-hp3')).toHaveTextContent('Overage invoice removed — hours not billed');
+    expect(screen.queryByTestId('hour-block-history-removed-hp2')).toBeNull();
+    expect(screen.queryByTestId('hour-block-history-removed-hp1')).toBeNull();
   });
 
   it('a retired block still shows its history and a Retired badge in the lines table, with no live bar', async () => {
@@ -3711,7 +4026,17 @@ export default function HourBlockPanel({ contractId, currency, hourBlock: est, e
       </h3>
 
       <div className="space-y-2 p-3 text-sm">
-        {est ? (
+        {est && startsLater ? (
+          <>
+            {/* I9: the block starts at the NEXT period (advance, added mid-period) — say so instead of a 0-used bar. */}
+            <p className="font-medium" data-testid="hour-block-starts-later">
+              {t('contracts.hourBlock.detail.startsLater', { date: formatDate(est.periodStart) })}
+            </p>
+            <p className="text-xs text-muted-foreground" data-testid="hour-block-extra-rate">
+              {t('contracts.hourBlock.detail.extraRate', { rate: formatMoney(est.overageUnitPrice, currency) })}
+            </p>
+          </>
+        ) : est ? (
           <>
             <p className="font-medium tabular-nums" data-testid="hour-block-usage">
               {t('contracts.hourBlock.detail.usage', {
@@ -3729,11 +4054,6 @@ export default function HourBlockPanel({ contractId, currency, hourBlock: est, e
                 style={{ width: `${pct}%` }}
               />
             </div>
-            {startsLater && (
-              <p className="text-xs text-muted-foreground" data-testid="hour-block-starts-later">
-                {t('contracts.hourBlock.detail.startsLater', { date: formatDate(est.periodStart) })}
-              </p>
-            )}
             {est.carriedInHours > 0 && (
               <p className="text-xs text-muted-foreground" data-testid="hour-block-carried">
                 {t('contracts.hourBlock.detail.carried', { hours: fmtHours(est.carriedInHours) })}
@@ -3811,7 +4131,11 @@ export default function HourBlockPanel({ contractId, currency, hourBlock: est, e
                 <td className="px-3 py-2">
                   {r.overageInvoiceId
                     ? <a href={`/billing/invoices/${r.overageInvoiceId}`} className="text-primary hover:underline">{t('contracts.contractDetail.billingHistory.viewInvoice')}</a>
-                    : <span className="text-muted-foreground">—</span>}
+                    : Number(r.overageHours) > 0
+                      // I7: the ledger says hours were over, but the draft invoice that carried them is gone
+                      // (the FK is ON DELETE SET NULL) — nothing billed them. Say so; never a quiet dash.
+                      ? <span className="text-xs text-amber-600 dark:text-amber-500" data-testid={`hour-block-history-removed-${r.id}`}>{t('contracts.hourBlock.history.invoiceRemoved')}</span>
+                      : <span className="text-muted-foreground">—</span>}
                 </td>
               </tr>
             ))}
@@ -4143,7 +4467,7 @@ vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mo
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { contractHourPeriods, contractLines, contracts, organizations, partners, timeEntries, users } from '../../db/schema';
+import { contractBillingPeriods, contractHourPeriods, contractLines, contracts, organizations, partners, timeEntries, users } from '../../db/schema';
 import {
   activateContract, addContractLineToContract, computeContractEstimate, removeContractLine, summarizeActiveContractMrrByOrg,
   updateContractLine, type ContractActorT,
@@ -4218,6 +4542,16 @@ describe('block-hours lines against real Postgres (#4547 W03)', () => {
       expect(row.hourBlockFirstPeriodStart).toBe(cur.periodStart);
     });
 
+    it('PAUSE -> RESUME on an advance contract: the pointer sits on a period claimed before the pause, so the block starts at the first UNCLAIMED one', async () => {
+      const f = await seedOrg();
+      const c = await seedContract(f, { status: 'active', startDate, billingTiming: 'advance', nextBillingAt: cur.periodStart });
+      await withSystemDbAccessContext(() => db.insert(contractBillingPeriods).values({
+        contractId: c.id, orgId: f.orgId, periodStart: cur.periodStart, periodEnd: cur.periodEnd,
+      }));
+      const row = await withSystemDbAccessContext(() => addContractLineToContract(c.id, BLOCK, f.actor));
+      expect(row.hourBlockFirstPeriodStart).toBe(cur.periodEnd);
+    });
+
     it.each(['advance', 'arrears'] as const)('%s DRAFT with a past start date: provisional first period, re-stamped to the period activation claims', async (billingTiming) => {
       const f = await seedOrg();
       const c = await seedContract(f, { status: 'draft', startDate, billingTiming });
@@ -4251,7 +4585,7 @@ describe('block-hours lines against real Postgres (#4547 W03)', () => {
     const retired = await withSystemDbAccessContext(() => removeContractLine(c2.id, second.id, f.actor));
     expect(retired.retired).toBe(true);
     const [kept] = await withSystemDbAccessContext(() => db.select().from(contractLines).where(eq(contractLines.id, second.id)));
-    expect(kept!.hourBlockRetiredAt).toBeInstanceOf(Date);
+    expect(kept!.hourBlockRetiredAt).toBeInstanceOf(Date);          // stamped with the database's now() (transaction time)
     // Idempotent: a second remove neither deletes nor moves retired_at.
     const again = await withSystemDbAccessContext(() => removeContractLine(c2.id, second.id, f.actor));
     expect(again.retired).toBe(true);
@@ -4438,7 +4772,12 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 | `GET /contracts/:id/hour-periods`, paginated, `contracts:read`, org access, Shape 1 verified | Tasks 7, 14 |
 | AI `line` description + budget; add_line accepts a block and rejects `flag` | Task 8 |
 | Partner API (unlisted door) | Tasks 5, 8 |
-| Open Decision 14 (merge preflight, coordinator addition) | Task 9 |
+| Open Decision 14 (merge preflight, coordinator addition), incl. the registry-level case | Task 9 |
+| Open Decision 15 (mid-period edit = applies at next close): UI notice with dates, audit before/after, AI description | Tasks 4, 8, 10, 11 |
+| W01 fail-closed guards/tests removed (not just shadowed) | Tasks 1, 3, 4 |
+| Retire uses the database `now()`, history predicate mirrors W02's `generated_at <= retired_at` close rule | Task 5 |
+| Stamped-key patch → `HOUR_BLOCK_FIELD_LOCKED` on HTTP, partner API and AI | Task 8 |
+| History: overage with a removed invoice is flagged; "Block starts <date>" instead of a 0-used bar | Task 12 |
 | Web: add/edit forms, hidden site/roles/group/manual, `bill` fixed, cap disabled under none, retire copy, `runAction` | Tasks 10, 11 |
 | Web: bar, sub-figures, over-block, advance/arrears note, late-entry note, history | Task 12 |
 | `heldForHourBlock` notice (coordinator addition) | Task 13 |
