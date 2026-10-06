@@ -401,8 +401,8 @@ const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
  * cannot exhaust another principal's, or its owner's own sessions', budget.
  */
 function toolRateLimitIdentity(auth: AuthContext): string {
-  return auth.principal.kind === 'partner_service_principal'
-    ? `partner_sp:${auth.principal.principalId}`
+  return auth.principal.kind === 'api_key' && auth.principal.partnerServicePrincipalId
+    ? `partner_sp:${auth.principal.partnerServicePrincipalId}`
     : auth.user.id;
 }
 
@@ -2140,7 +2140,10 @@ async function runTier3ToolLifecycle(
           apiKeyId: ctx.apiKey.id,
           oauthGrantId: ctx.apiKey.oauthGrantId ?? null,
           partnerId: ctx.auth.partnerId ?? ctx.apiKey.partnerId ?? null,
-          actorUserId: ctx.auth.user.id,
+          // A partner service principal's `user` is its owner, borrowed for
+          // RBAC; the ledger records the principal and owns no user session.
+          partnerServicePrincipalId: ctx.apiKey.partnerServicePrincipalId ?? null,
+          actorUserId: ctx.apiKey.partnerServicePrincipalId ? null : ctx.auth.user.id,
         },
       });
     } catch (err) {
@@ -2874,7 +2877,7 @@ async function buildAuthFromApiKey(apiKey: {
   }
 
   const principal: PrincipalKind = apiKey.partnerServicePrincipalId
-    ? { kind: 'partner_service_principal', principalId: apiKey.partnerServicePrincipalId, keyId: apiKey.id }
+    ? { kind: 'api_key', apiKeyId: apiKey.id, partnerServicePrincipalId: apiKey.partnerServicePrincipalId }
     : apiKey.oauthGrantId
       ? { kind: 'oauth_grant', grantId: apiKey.oauthGrantId }
       : { kind: 'api_key', apiKeyId: apiKey.id };

@@ -18,10 +18,14 @@ function partnerAuth(principal: AuthContext['principal']): AuthContext {
 
 describe('dbAccessContextFromAuth user id', () => {
   it('never puts a partner service principal owner into breeze.user_id', () => {
-    const ctx = dbAccessContextFromAuth(partnerAuth({ kind: 'partner_service_principal', principalId: OWNER, keyId: OWNER }));
+    const ctx = dbAccessContextFromAuth(partnerAuth({ kind: 'api_key', apiKeyId: OWNER, partnerServicePrincipalId: OWNER }));
     expect(ctx.userId).toBeNull();
     expect(ctx.accessibleOrgIds).toEqual([ORG]);
     expect(ctx.scope).toBe('partner');
+  });
+
+  it('keeps the user id for an ordinary API key (unchanged)', () => {
+    expect(dbAccessContextFromAuth(partnerAuth({ kind: 'api_key', apiKeyId: 'k' })).userId).toBe(OWNER);
   });
 
   it('keeps the user id for an OAuth grant (unchanged)', () => {

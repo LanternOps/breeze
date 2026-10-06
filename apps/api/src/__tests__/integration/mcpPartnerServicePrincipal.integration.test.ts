@@ -31,6 +31,8 @@ import { and, eq, sql } from 'drizzle-orm';
 
 import { db } from '../../db';
 import {
+  aiSessions,
+  aiToolExecutions,
   apiKeys,
   auditLogs,
   organizations,
@@ -395,6 +397,39 @@ describe('partner service principal key on MCP: Tier 3 approval gate', () => {
     const redis = getRedis()!;
     expect(await redis.exists(`ai:tool:partner_sp:${p.principal.id}:execute_command`)).toBe(1);
     expect(await redis.exists(`ai:tool:${p.owner.id}:execute_command`)).toBe(0);
+  });
+
+  it('an own-partner Tier 3 call writes a ledger naming the principal, with no human session owner', async () => {
+    const p = await partnerFixture();
+    const site = await createSite({ orgId: p.orgA.id });
+    const [device] = await getTestDb().insert(devices).values({
+      orgId: p.orgA.id, siteId: site.id, agentId: randomUUID(), hostname: `own-${randomUUID()}`,
+      osType: 'linux', osVersion: 'test', architecture: 'x86_64', agentVersion: 'test', status: 'offline',
+    }).returning();
+    process.env.MCP_UNATTENDED_TIER3_PRINCIPALS = `partner_sp:${p.principal.id}`;
+
+    const res = await callTool(p.key.rawKey, 'execute_command', { deviceId: device!.id, commandType: 'list_processes' });
+    expect(toolText(res.body)).not.toContain('MCP_APPROVAL_REQUIRED');
+    // The offline device fails the call AFTER the ledger opened.
+    expect(JSON.stringify(res.body)).toMatch(/not online/);
+
+    const sessions = await getTestDb()
+      .select({ id: aiSessions.id, userId: aiSessions.userId, orgId: aiSessions.orgId, snapshot: aiSessions.contextSnapshot })
+      .from(aiSessions)
+      .where(and(eq(aiSessions.orgId, p.orgA.id), eq(aiSessions.type, 'mcp')));
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.userId).toBeNull();
+    expect((sessions[0]!.snapshot as any).principal).toMatchObject({
+      type: 'partner_service_principal',
+      apiKeyId: p.key.id,
+      partnerServicePrincipalId: p.principal.id,
+      actorUserId: null,
+    });
+    const executions = await getTestDb()
+      .select({ toolName: aiToolExecutions.toolName })
+      .from(aiToolExecutions)
+      .where(eq(aiToolExecutions.sessionId, sessions[0]!.id));
+    expect(executions.map((e) => e.toolName)).toEqual(['execute_command']);
   });
 
   it('listing one principal does not lift another principal of the same partner', async () => {

@@ -1236,9 +1236,10 @@ export async function createActionIntent(
   // narrowing inside the transaction closure below, so reading
   // `auth.principal.kind` at the insert site would widen the type back out.
   // A partner service principal (MCP `brz_sp_` key) never creates intents:
-  // it has no interactive approval surface and no storable origin kind.
-  // Refuse before anything is written rather than record it as someone else.
-  if (auth.principal.kind === 'partner_service_principal') {
+  // it has no interactive approval surface, and its key id is not an api_keys
+  // row that a released intent could be re-authorized against. Refuse before
+  // anything is written rather than record it as an ordinary API key.
+  if (auth.principal.kind === 'api_key' && auth.principal.partnerServicePrincipalId) {
     throw new ActionIntentError(
       'Partner service principals cannot create action intents',
       'principal_not_supported',

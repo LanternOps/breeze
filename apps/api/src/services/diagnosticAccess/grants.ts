@@ -77,6 +77,8 @@ export class DiagnosticAccessError extends Error {
 export function beneficiaryOf(auth: AuthContext): Beneficiary | null {
   const p = auth.principal;
   if (p.kind === 'user_session' && auth.user?.id) return { kind: 'user', id: auth.user.id };
+  // A partner service principal's apiKeyId is not an api_keys id; it holds no grant.
+  if (p.kind === 'api_key' && p.partnerServicePrincipalId) return null;
   if (p.kind === 'api_key' && p.apiKeyId) return { kind: 'api_key', id: p.apiKeyId };
   if (p.kind === 'oauth_grant' && p.grantId) return { kind: 'oauth_grant', id: p.grantId };
   return null;
