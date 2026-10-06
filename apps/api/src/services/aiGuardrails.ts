@@ -1776,7 +1776,7 @@ export const TOOL_ACTION_EXTRA_PERMISSIONS: Record<
     create_pay_link: [{ resource: 'quotes', action: 'read' }],
   },
   manage_invoices: {
-    // SEC-145 — materializing a contract line reads the contract, so the
+    // Materializing a contract line reads the contract, so the
     // caller needs contracts:read on top of invoices:write. Per-action so
     // unrelated invoice edits are not raised to contract-read authority.
     add_contract_line: [{ resource: 'contracts', action: 'read' }],

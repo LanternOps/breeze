@@ -31,7 +31,7 @@ const { db } = dbModule;
  * atomicity `processRemediationActionInContext` depends on. Its `FOR UPDATE`
  * locks on the device and the action would each live only for the length of
  * their own statement, releasing before the command insert and the status
- * transition they exist to fence, which is precisely the SEC-118 window. A
+ * transition they exist to fence, which is precisely the window. A
  * console.warn on the way past is not an acceptable trade for that.
  *
  * The `typeof` check only ever fired under a test mock of `../db` that omitted

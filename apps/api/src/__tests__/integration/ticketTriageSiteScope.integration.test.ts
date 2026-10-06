@@ -1,5 +1,5 @@
 /**
- * SEC-022: ticket-triage evaluation must honor the staff caller's site ceiling.
+ * Ticket-triage evaluation must honor the staff caller's site ceiling.
  *
  * The aggregate reads ml_feedback_events, which is org-scoped by RLS but has no
  * site column. These tests therefore exercise the real source-ticket/device

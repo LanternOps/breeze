@@ -337,7 +337,7 @@ describe('partner reconstruction resource watermarks', () => {
   });
 
   /**
-   * SEC-2026-09-05-146 review F3. The recurring-authority envelope on
+   * Review F3. The recurring-authority envelope on
    * network_baselines (creator, ceiling, epochs, fingerprint, generation,
    * armed-at, blocked reason) changes on every re-arm and every blocked
    * dispatch, and alters nothing a partner export reconstructs. Without an

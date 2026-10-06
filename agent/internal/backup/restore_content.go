@@ -304,7 +304,7 @@ func (c *contentRestorer) finish(ctx context.Context, i int, s *contentSlot) {
 	// applied to the pinned temporary's handle BEFORE the atomic replace, so
 	// #5520's fidelity is preserved without any post-publication pathname
 	// chmod/chown/chtimes/SetSecurity — the exact operations this boundary
-	// (SEC-121) exists to remove. That walk also subsumes a lexical
+	// exists to remove. That walk also subsumes a lexical
 	// containment check and EnsureNoSymlinkAncestor, including the RESUMED
 	// case where an earlier pass recreated an ancestor as a symlink.
 	mode := os.FileMode(file.Mode).Perm()

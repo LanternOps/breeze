@@ -2561,7 +2561,7 @@ softwareRoutes.post(
     // narrowing below is not sufficient on its own: without this the parent
     // still resolves for a site-restricted caller, so a deployment that
     // `GET /deployments/:id` refuses to show is still confirmed to exist here
-    // (and remains mutable) — an existence oracle around the SEC-046 gate.
+    // (and remains mutable) — an existence oracle around the gate.
     const [deployment] = await db.select().from(softwareDeployments)
       .where(and(
         eq(softwareDeployments.id, id),
@@ -2701,7 +2701,7 @@ softwareRoutes.get(
     // still resolves for a site-restricted caller, so a deployment that
     // `GET /deployments/:id` refuses to show is still confirmed to exist here
     // (returning 200 with an empty page) — an existence oracle around the
-    // SEC-046 gate.
+    // gate.
     const [deployment] = await db.select().from(softwareDeployments)
       .where(and(
         eq(softwareDeployments.id, id),

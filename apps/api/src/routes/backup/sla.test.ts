@@ -286,7 +286,7 @@ describe('sla routes', () => {
     expect(body.data.avgRtoMinutes).toBe(45);
   });
 
-  it('narrows the SLA dashboard to allowed device sites (SEC-021 sibling)', async () => {
+  it('narrows the SLA dashboard to allowed device sites (same rule as /backup/health)', async () => {
     permissionsState = { allowedSiteIds: [SITE_A] };
     const breachesChain = chainMock([{ count: 1 }]);
     const eventsChain = chainMock([{ count: 4 }]);

@@ -1030,7 +1030,7 @@ function createDesktopWsHandlers(
         const streamPrompt = streamPromptDecision.prompt;
 
         // Update only a still-open row, under the same row-locked start-intent
-        // commit the WebRTC paths use (SEC-038 W02). A prior owner may have made
+        // commit the WebRTC paths use. A prior owner may have made
         // the row terminal after validation but before this exact lease was
         // bound, and the generation orders this start against that decision.
         const streamStartCommandId = createDesktopStartCommandId(sessionId);
@@ -1983,7 +1983,7 @@ export function createDesktopWsRoutes(
 
       const promptMode = prompt?.mode === 'consent' || prompt?.mode === 'notify' ? prompt.mode : 'off';
       const startCommandId = createDesktopStartCommandId(sessionId);
-      // Row-locked start decision (SEC-038 W02): refuses a session whose
+      // Row-locked start decision: refuses a session whose
       // terminal intent has already committed, and bumps the generation the
       // agent fences on.
       const startIntent = await withSystemDbAccessContext(() =>
@@ -2131,7 +2131,7 @@ export function createDesktopWsRoutes(
         return c.json({ error: access.error }, access.status);
       }
 
-      // SEC-038 W06: a terminal decision (server End, teardown, sweep, lease
+      // A terminal decision (server End, teardown, sweep, lease
       // revocation) commits before the agent acknowledges the stop, leaving
       // the row with terminationPhase='pending'. The viewer's answer poll
       // must never connect on a stale answer from such a row, so the answer

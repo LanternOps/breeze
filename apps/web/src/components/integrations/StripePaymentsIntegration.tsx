@@ -35,7 +35,7 @@ interface ConnectState {
     lastPolledAt: string | null;
     error: string | null;
   };
-  /** SEC-150 Checkout-session revocation health. `credentialUnavailable` is the
+  /** Checkout-session revocation health. `credentialUnavailable` is the
    *  only class the partner can act on — the payment link cannot be killed
    *  because the key that minted it is gone, so the links must be reissued. It
    *  is surfaced here rather than emailed: the fix lives on this card. */

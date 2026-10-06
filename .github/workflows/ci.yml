@@ -2093,7 +2093,7 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the helper token tests SKIPPED" }
           if ($passes -ne 15) { throw "expected exactly 15 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
-      # securefs's Windows implementation is the SEC-121 privileged-staging
+      # securefs's Windows implementation is the privileged-staging
       # boundary: handle-relative NtCreateFile walks, reparse-point rejection at
       # every component, the atomic FILE_RENAME_INFO publish, and symlink entry
       # restore. Its reparse-point cases plant a junction with `mklink /J` and
@@ -2113,7 +2113,7 @@ jobs:
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
-          if ($skips -ne 0) { throw "$skips of the secure-staging boundary tests SKIPPED - the SEC-121 Windows reparse-point/DACL boundary has no live coverage here" }
+          if ($skips -ne 0) { throw "$skips of the secure-staging boundary tests SKIPPED - the Windows reparse-point/DACL boundary has no live coverage here" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 16) { throw "expected exactly 16 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 

@@ -16,7 +16,7 @@ vi.mock("../../lib/authScope", () => ({
   getJwtClaims: () => ({ scope, orgId: orgState.jwtOrgId, partnerId: "partner-1" }),
   loginPathWithNext: () => "/login",
 }));
-// SEC-2026-09-05-057: the QuickBooks sub-tab and panel are gated on
+// The QuickBooks sub-tab and panel are gated on
 // `accounting:read`. This suite covers tab/sub-tab wiring, so it holds the
 // grant throughout; the negative branch lives in
 // IntegrationsPage.accountingPermissions.test.tsx.

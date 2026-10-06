@@ -30,7 +30,7 @@ export type SessionType = 'terminal' | 'desktop' | 'file_transfer';
 export type SessionStatus = 'pending' | 'connecting' | 'active' | 'disconnected' | 'failed';
 
 /**
- * SEC-038 teardown phase. 'pending' = the server ended the session but the
+ * Teardown phase. 'pending' = the server ended the session but the
  * device has not yet acknowledged the stop; 'confirmed' = the device has.
  * Absent/'none' on live rows and on rows written before the fence shipped.
  */
@@ -93,7 +93,7 @@ const sessionStatusConfig: Record<SessionStatus, { labelKey: string; color: stri
   failed: { labelKey: 'sessionHistory.status.failed', color: 'bg-destructive/15 text-destructive border-destructive/30' }
 };
 
-// SEC-038 W06: a terminal row the device has not yet acknowledged is labelled
+// A terminal row the device has not yet acknowledged is labelled
 // distinctly from a confirmed end — the stream may still be tearing down.
 const teardownPendingStatusConfig = {
   labelKey: 'sessionHistory.status.teardownPending',

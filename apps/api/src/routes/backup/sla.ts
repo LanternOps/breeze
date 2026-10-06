@@ -287,7 +287,7 @@ slaRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resource, PE
 
   // Site axis. Without this the device-scoped aggregates below (breach count,
   // 30-day event count, RPO/RTO averages) report org-wide figures to a
-  // site-restricted tech — the same leak SEC-021 closed on /backup/health.
+  // site-restricted tech — the same gap already closed on /backup/health.
   // `auth.allowedSiteIds` is the primary source because the auth middleware
   // always populates it; `permissions` is only set by requirePermission.
   const perms = c.get('permissions') as UserPermissions | undefined;

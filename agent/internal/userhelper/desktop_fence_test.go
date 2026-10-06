@@ -6,7 +6,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
-// SEC-038 W05: the helper hosts the capture, so the fence has to hold there
+// The helper hosts the capture, so the fence has to hold there
 // too — a helper that restarts must not replay a start the service has
 // already superseded or tombstoned.
 

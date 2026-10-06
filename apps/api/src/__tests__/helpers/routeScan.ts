@@ -407,7 +407,7 @@ const CANONICAL_GATE_NAMES = [
   // prevent.
   'alertsDeviceSiteCondition',
   'alertsMultiOrgDeviceCondition',
-  // AI-agent run history site gate (SEC-2026-09-05-052), extracted to
+  // AI-agent run history site gate, extracted to
   // services/aiAgentRunSiteScope.ts so routes/aiOperatorTasks.ts's linked-run
   // projection can reuse it without importing another route module. Same
   // trajectory as ticketSiteScopeCondition above: it was file-local to

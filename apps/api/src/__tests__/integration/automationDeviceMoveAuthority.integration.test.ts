@@ -539,7 +539,7 @@ describe('automation and CIS pre-command authority across device org moves', () 
   }, 30_000);
 
   // ==========================================================================
-  // SEC-118 review blocker 1 — cross-org LOCK ORDER (#3778)
+  // Cross-org LOCK ORDER (#3778)
   // ==========================================================================
   //
   // The repo-wide order for anything that spans organizations is
@@ -744,7 +744,7 @@ describe('automation and CIS pre-command authority across device org moves', () 
   }, 60_000);
 
   // ==========================================================================
-  // SEC-118 review blocker 3 — the trigger must NOT fire on an org MERGE
+  // The trigger must NOT fire on an org MERGE
   // ==========================================================================
   //
   // An org merge repoints the loser's devices to the survivor set-based. That
@@ -821,14 +821,14 @@ describe('automation and CIS pre-command authority across device org moves', () 
   }, 30_000);
 
   // ==========================================================================
-  // SEC-118 review blocker 2 — the CONFIG-POLICY sibling path
+  // The CONFIG-POLICY sibling path
   // ==========================================================================
   //
   // `targetDeviceIds` is frozen at enqueue time by automationWorker's
   // enqueueConfigPolicyRun, and admitConfigPolicyAutomationRun validates the
   // POLICY owner, not the devices. Before this change the dispatch loaded its
   // targets with `inArray(devices.id, targetDeviceIds)` and NO org predicate,
-  // so SEC-118 survived here untouched.
+  // so the stale frozen target list survived here untouched.
   runDb('does not action a config-policy target that left the policy org between enqueue and dispatch', async () => {
     const adminDb = getTestDb();
     const partner = await createPartner();

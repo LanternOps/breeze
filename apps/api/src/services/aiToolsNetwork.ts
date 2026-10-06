@@ -122,7 +122,7 @@ function siteAccessDenied(auth: AuthContext, siteId: string | null | undefined):
 // ============================================
 
 /**
- * SEC-2026-09-05-146 — same arming contract as the REST routes: an enabled
+ * Same arming contract as the REST routes: an enabled
  * recurring schedule created or changed through the AI/MCP tool is bound to the
  * calling principal's live authority. Returns null when the schedule is
  * disabled (nothing dispatches, so nothing needs an owner).
@@ -531,7 +531,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           ...(alertOverrides.rogueDevice !== undefined ? { rogueDevice: alertOverrides.rogueDevice } : {})
         });
 
-        // SEC-146: re-arm the authority envelope and bump the generation for the
+        // Re-arm the authority envelope and bump the generation for the
         // changed schedule. Also the re-approval path for a legacy row.
         let envelope: BaselineAuthorityEnvelope | null;
         try {
@@ -606,7 +606,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       // createCatalogItem in catalogService.ts). Suppressing the conflict at the
       // statement level keeps the transaction healthy; zero returned rows means
       // a baseline already exists for this org/site/subnet.
-      // SEC-146: bind the new recurring schedule to the calling principal.
+      // Bind the new recurring schedule to the calling principal.
       let createEnvelope: BaselineAuthorityEnvelope | null;
       try {
         createEnvelope = await armScheduleAuthority(auth, {

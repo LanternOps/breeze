@@ -91,7 +91,7 @@ describe('POST /invoices/:id/pay-link', () => {
 });
 
 /**
- * SEC-150 operator override. Accepting that a Checkout session may still be
+ * Operator override. Accepting that a Checkout session may still be
  * payable on Stripe while Breeze proceeds as if it were not is a BILLING
  * decision, not a send action — so it carries billing:manage, a required reason,
  * and an audit row. The abandon semantics themselves (what the blocked row does

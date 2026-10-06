@@ -26,7 +26,7 @@ export type PartnerStripeErrorCode =
   | 'STRIPE_CONNECTION_CHANGED' // the stored connection was replaced/disconnected mid-operation —
                                  // a purely LOCAL race, nothing to do with Stripe's availability
   | 'STRIPE_ACCOUNT_CHANGE_BLOCKED' // historical payments still require the old account's event stream
-  | 'STRIPE_SESSION_REVOCATION_PENDING' // SEC-150: open Checkout sessions on the OUTGOING key are not
+  | 'STRIPE_SESSION_REVOCATION_PENDING' // open Checkout sessions on the OUTGOING key are not
                                          // provably dead yet — TRANSIENT, the sweep is finishing them
   | 'STRIPE_ACCOUNT_UNKNOWN' // Stripe answered, but not with the account: restricted key without
                              // accounts.retrieve, an untyped/unknown error. The KEY MAY BE FINE
@@ -213,7 +213,7 @@ export async function savePartnerStripeKey(input: {
         );
   }
 
-  // SEC-150: session revocation depends on Checkout WRITE access. A restricted
+  // Session revocation depends on Checkout WRITE access. A restricted
   // key that can create sessions but not expire them would collect money it can
   // never be told to stop collecting — and the failure would surface at the
   // first void, not here. Probe with a well-formed but non-existent session id:
@@ -299,7 +299,7 @@ export async function savePartnerStripeKey(input: {
     );
   }
 
-  // SEC-150 FAIL-CLOSED key replacement, phases 1-2, BEFORE the write
+  // FAIL-CLOSED key replacement, phases 1-2, BEFORE the write
   // transaction. Overwriting the only credential for an account is what makes
   // its open Checkout sessions unrevocable, so they are expired with the
   // OUTGOING key first. Stripe I/O must not enter the write transaction (#1105),
@@ -352,7 +352,7 @@ export async function savePartnerStripeKey(input: {
         }).from(stripeConnectAccounts)
           .where(eq(stripeConnectAccounts.partnerId, input.partnerId))
           .limit(1).for('update');
-        // SEC-150: archive the OUTGOING credential under the row lock, in the
+        // Archive the OUTGOING credential under the row lock, in the
         // same transaction that overwrites it. Unconditional: a session minted
         // between the revocation above and this lock carries no credential
         // pointer, and the archive is what re-points it. Re-pasting the same key
@@ -463,7 +463,7 @@ export async function savePartnerStripeKey(input: {
     }
   });
 
-  // SEC-150: `revocation_blocked` is otherwise ABSORBING — nothing re-selects it
+  // `revocation_blocked` is otherwise ABSORBING — nothing re-selects it
   // and the sweep only drains `revocation_requested`, so a single transient auth
   // blip would brick the invoice until someone used the abandon route. A partner
   // who has just pasted a working key has supplied exactly what was missing, so
@@ -792,7 +792,7 @@ export async function getPartnerStripeStatus(partnerId: string): Promise<Partner
 /**
  * Disconnect: wipe the stored secret + last4 and mark disconnected.
  *
- * SEC-150 BOUNDED-ASYNC (the single Option-B exception). Emergency
+ * BOUNDED-ASYNC (the single Option-B exception). Emergency
  * de-integration must succeed while Stripe is unreachable, so this NEVER
  * refuses. Phases 1 and 3 commit TOGETHER — the credential is archived, the open
  * sessions are stamped `revocation_requested`, and the live key is wiped in one
