@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Network } from 'lucide-react';
-import type { NetworkAssetRowDto, NetworkAssetsDto } from '@breeze/shared';
+import type { NetworkAssetRowDto, NetworkAssetsDto, NetworkSiteDto } from '@breeze/shared';
 import { portalApi, type NetworkAssetStatusFilter } from '@/lib/api';
 import { cn, formatDateTime } from '@/lib/utils';
 import { CELL, EmptyState, ErrorNotice, INPUT, BTN_SECONDARY, ROW, StatusMark, TH } from './ui';
@@ -9,9 +9,9 @@ import { CELL, EmptyState, ErrorNotice, INPUT, BTN_SECONDARY, ROW, StatusMark, T
  * Per-asset register for /network (#6641), below the overview ledger.
  *
  * Filters and page live in the URL hash (repo convention for client UI state,
- * never query params) and map 1:1 onto GET /portal/network/assets. There is
- * deliberately no site filter yet: the portal has no site list to choose from
- * and rows carry only `siteName`, not an id (follow-up issue).
+ * never query params) and map 1:1 onto GET /portal/network/assets. The Site
+ * filter (#7025) is driven by GET /portal/network/sites and shown only when
+ * the org has more than one site (a single-site filter is noise).
  */
 
 const PAGE_SIZE = 50;
@@ -47,17 +47,24 @@ const PHONE_LABEL =
 interface FilterState {
   assetType: string;
   status: string;
+  siteId: string;
   page: number;
 }
 
-function readHash(): FilterState {
+const EMPTY_FILTERS: FilterState = { assetType: '', status: '', siteId: '', page: 1 };
+
+function readHash(sites: ReadonlyArray<NetworkSiteDto>): FilterState {
   const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
   const type = params.get('type') ?? '';
   const status = params.get('status') ?? '';
+  const site = params.get('site') ?? '';
   const page = Number.parseInt(params.get('page') ?? '1', 10);
   return {
     assetType: (ASSET_TYPES as readonly string[]).includes(type) ? type : '',
     status: STATUS_OPTIONS.some((o) => o.value === status) ? status : '',
+    // An id that is not one of this org's sites (stale/hand-edited link) would
+    // 400 at the API when not a UUID; drop it rather than send it.
+    siteId: sites.some((s) => s.id === site) ? site : '',
     page: Number.isInteger(page) && page >= 1 ? page : 1,
   };
 }
@@ -65,6 +72,7 @@ function readHash(): FilterState {
 function writeHash(f: FilterState) {
   const params = new URLSearchParams();
   if (f.assetType) params.set('type', f.assetType);
+  if (f.siteId) params.set('site', f.siteId);
   if (f.status) params.set('status', f.status);
   if (f.page > 1) params.set('page', String(f.page));
   const next = params.toString();
@@ -86,17 +94,20 @@ const FILTER_SELECT = cn(INPUT, 'mt-0 w-auto min-w-[10rem]');
 
 export function NetworkAssetTable({
   initial,
+  sites = [],
   timezone = 'UTC',
   error,
 }: {
   /** First page, server-rendered. null when that load failed. */
   initial: NetworkAssetsDto | null;
+  /** Sites owning visible assets (#7025); the Site filter needs at least two. */
+  sites?: NetworkSiteDto[];
   timezone?: string;
   error?: string | null;
 }) {
   const [result, setResult] = useState<NetworkAssetsDto | null>(initial);
   const [failed, setFailed] = useState(Boolean(error) || initial === null);
-  const [filters, setFilters] = useState<FilterState>({ assetType: '', status: '', page: 1 });
+  const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [busy, setBusy] = useState(false);
   const requestSeq = useRef(0);
 
@@ -108,6 +119,7 @@ export function NetworkAssetTable({
     const response = await portalApi.getNetworkAssets({
       page: next.page,
       limit: PAGE_SIZE,
+      siteId: next.siteId || undefined,
       assetType: next.assetType || undefined,
       status: (next.status || undefined) as NetworkAssetStatusFilter | undefined,
     });
@@ -137,14 +149,14 @@ export function NetworkAssetTable({
   // A shared/reloaded link carries its filters in the hash; the server render
   // knows nothing of them, so fetch once if they differ from the defaults.
   useEffect(() => {
-    const fromHash = readHash();
-    if (fromHash.assetType || fromHash.status || fromHash.page > 1) {
+    const fromHash = readHash(sites);
+    if (fromHash.assetType || fromHash.status || fromHash.siteId || fromHash.page > 1) {
       void load(fromHash);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const filtered = Boolean(filters.assetType || filters.status);
+  const filtered = Boolean(filters.assetType || filters.status || filters.siteId);
   const rows = result?.data ?? [];
   const total = result?.pagination.total ?? 0;
   const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -206,12 +218,28 @@ export function NetworkAssetTable({
             ))}
           </select>
         </label>
+        {sites.length > 1 && (
+          <label className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+            Site
+            <select
+              className={FILTER_SELECT}
+              data-testid="portal-network-filter-site"
+              value={filters.siteId}
+              onChange={(e) => void load({ ...filters, siteId: e.target.value, page: 1 })}
+            >
+              <option value="">All sites</option>
+              {sites.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </label>
+        )}
         {filtered && (
           <button
             type="button"
             className={BTN_SECONDARY}
             data-testid="portal-network-filter-clear"
-            onClick={() => void load({ assetType: '', status: '', page: 1 })}
+            onClick={() => void load(EMPTY_FILTERS)}
           >
             Clear filters
           </button>

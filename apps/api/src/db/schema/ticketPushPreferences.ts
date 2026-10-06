@@ -1,4 +1,4 @@
-import { pgTable, pgEnum, uuid, boolean, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, pgEnum, uuid, boolean, timestamp, index, text } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { users } from './users';
 
@@ -13,6 +13,8 @@ export const ticketPushPreferences = pgTable('ticket_push_preferences', {
   userId: uuid('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
   assignedEnabled: boolean('assigned_enabled').notNull().default(true),
   slaScope: ticketSlaPushScopeEnum('sla_scope').notNull().default('owned'),
+  /** Pushover user key for ticket-assignment pushes, sealed (services/ticketPushover.ts). */
+  pushoverUserKeyEncrypted: text('pushover_user_key_encrypted'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

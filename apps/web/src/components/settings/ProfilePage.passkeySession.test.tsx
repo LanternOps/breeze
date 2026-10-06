@@ -48,6 +48,7 @@ vi.mock('@/lib/avatarBlobCache', () => ({
 // Both stubbed so they don't consume from this file's ordered fetchWithAuth
 // sequence; their own behavior is covered by their own suites.
 vi.mock('./ApproverDevicesSection', () => ({ default: () => null }));
+vi.mock('./TicketPushoverSettings', () => ({ default: () => null }));
 vi.mock('./ConnectSsoCard', () => ({ default: () => null }));
 
 import ProfilePage from './ProfilePage';

@@ -1,5 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { HonoRequest } from 'hono';
+import { parseMailboxes } from './addressParse';
 import { getConfig } from '../../config/validate';
 import { BREEZE_OUTBOUND_HEADER } from '../emailDomains/outboundMarker';
 import type {
@@ -37,7 +38,8 @@ export class MailgunInboundProvider implements InboundEmailProvider {
   async parse(req: HonoRequest): Promise<NormalizedInboundEmail> {
     const b = (await req.parseBody()) as Record<string, string>;
     const from = extractEmail(b.sender || b.from || '');
-    const fromName = extractName(b.from || '');
+    // Display name of the visible From's RFC 5322 mailbox (see addressParse.ts).
+    const fromName = parseMailboxes(b.from)[0]?.name ?? '';
     const refs = (b['References'] || '').trim();
     // When no Message-Id is present, fall back to a content hash that is STABLE
     // across provider retries — the signing `timestamp` differs each retry, so
@@ -65,6 +67,9 @@ export class MailgunInboundProvider implements InboundEmailProvider {
       fromName: fromName || undefined,
       subject: b.subject || '',
       text: b['stripped-text'] || b['body-plain'] || '',
+      // No forwardScanText: staff-forward routing runs only for connected Gmail
+      // mailboxes. Mailgun's body-plain may be Mailgun's own text rendering of
+      // an HTML-only message, and its fields do not say which.
       html: b['body-html'] || undefined,
       messageId: b['Message-Id'] || undefined,
       inReplyTo: b['In-Reply-To'] || undefined,
@@ -207,15 +212,10 @@ function normalizeVerdict(raw: string | undefined): SenderAuthVerdict {
   }
 }
 
-// `Jane Doe <jane@x.com>` → `jane@x.com`; bare address passes through.
+// `Jane Doe <jane@x.com>` → `jane@x.com`; bare address passes through. The first
+// RFC 5322 mailbox; an unparseable value falls back to itself, lower-cased.
 function extractEmail(s: string): string {
-  const m = s.match(/<([^>]+)>/);
-  return (m ? (m[1] ?? s) : s).trim().toLowerCase();
-}
-
-function extractName(s: string): string {
-  const m = s.match(/^\s*"?([^"<]+?)"?\s*</);
-  return m ? (m[1] ?? '').trim() : '';
+  return parseMailboxes(s)[0]?.address ?? s.trim().toLowerCase();
 }
 
 function parseHeader(headersJson: string | undefined, name: string): string | undefined {

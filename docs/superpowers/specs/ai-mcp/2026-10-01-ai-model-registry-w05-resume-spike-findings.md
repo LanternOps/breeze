@@ -129,3 +129,23 @@ Usage on the streamed `assistant` messages is not a substitute: their `output_to
 ## Spend
 
 Estimated from the proxy-recorded usage at the seeded registry list rates: **≈ USD 1.37** across six runs (the 344k-token Sonnet turn for Q3 was USD 0.86 of it). The fast-mode request was rejected with a 429, so nothing was billed at fast rates. `countTokens` calls are free.
+
+## 2026-10-06: re-run on Agent SDK 0.3.288
+
+Run on 2026-10-06 by the SDK-bump runner (Claude Opus 5.5) for dependabot PR #7999, on `@anthropic-ai/claude-agent-sdk` **0.3.288**, all scenarios (`--sonnet claude-sonnet-5-5 --opus claude-opus-5-5 --haiku claude-haiku-4-5`). The harness env includes `SDK_CHILD_HOST_CONTEXT_GUARDS`, which now carries `CLAUDE_CODE_THINKING_DISPLAY_UPDATES=0`: 0.3.288's CLI otherwise defaults every adaptive request to `display: "updates"` (W01 findings, 2026-10-06 section). Every `/v1/messages` request in the run carried no `thinking-display-updates` beta, and every adaptive request carried `{"type":"adaptive"}`. Estimated spend **≈ USD 1.16** (Q3's 344k-token Sonnet turn was USD 0.86 of it), plus ≈ USD 0.08 of earlier same-day partial runs.
+
+**Every answer matches the 0.3.286 run.** All labels **verified**.
+
+| # | 0.3.288 result | Same as 0.3.286 |
+|---|---|---|
+| Q1 | All five pairs (Sonnet→Opus, Opus→Sonnet, Sonnet→Haiku budget, Sonnet→Haiku disabled, Haiku budget→Sonnet): every B request carried 0 thinking / 2 tool_use / 2 tool_result, all 200, every check ✓ ✓ ✓ ✓ (`SECOND=bravo-7 CODE=CODE-4417 GAMMA=GAMMA-9031`, `gamma` called once, no re-lookups). | yes |
+| Q2 | Thinking blocks sent on B: cross-model **0**; same-model **2**; round trip Sonnet→Opus→Sonnet **0** then **2** (Sonnet's own, 200); `setModel` Sonnet→Haiku **0**. Persisted blocks `thinking(sig=true,len=0)`. | yes |
+| Q3 | `countTokens`: Haiku 211,831 / Sonnet 343,631. Sonnet A 200 (`cache_creation 344,285`). Haiku B: `400 prompt is too long: 212762 tokens > 200000`, then compaction `400 … 214091 tokens`, then a 200 compaction at 2,073 input tokens, `system:compact_boundary`, three `spike_lookup` calls with invented keys (`current_task`, `last_status`, `resume_file_path`), result `success` without `STILL-HERE`. | yes (same token counts; different invented keys) |
+| Q4 | Opus 5.5 effort medium → low → max: all 200, same-model thinking replayed. Fast on resume: `speed: "fast"` + fast beta → `429` (0 fast input tokens/min), CLI silently retried without `speed` (beta still present), answer correct. Fast off: no `speed`, no fast beta. No `model_refusal_fallback` this run. | yes |
+| Q5 | `modelUsage` per key matches A and B; cumulative across `resume` (same-model B key = A+B; cross-model B holds both keys); `result.usage` per turn; `total_cost_usd` cumulative. Keys are the requested id (`claude-haiku-4-5`), the transcript the served id (`claude-haiku-4-5-20251001`). | yes |
+| Q6 | `interrupt()` → `error_during_execution`, SDK throws `[ede_diagnostic] … stop_reason=tool_use`; `abort()` → `Claude Code process aborted by user`, no result. B (Opus, and Sonnet control) continued with 200s, and **re-ran the interrupted `bravo-7` call in all three runs**. Interrupted A's `modelUsage` counts 1 of 2 billed calls; the abort run's carried total counts 2 of 3. | yes |
+| `setModel` | History intact, Sonnet's thinking dropped, Haiku sent `{type:"enabled", budget_tokens: 31999}`, one extra 22-token Haiku request at `setModel`. | yes |
+
+New, not a resume question: each `query()` makes one `GET /api/hello` to `ANTHROPIC_BASE_URL` before its first Messages call (**unknown whether new**; the 0.3.286 run did not report non-Messages paths).
+
+**Verdict unchanged: SAFE**, with the same six constraints. The pin moves to 0.3.288.

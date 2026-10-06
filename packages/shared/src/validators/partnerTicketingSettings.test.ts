@@ -54,6 +54,11 @@ describe('ticketingInboundSettingsSchema', () => {
     expect(ticketingInboundSettingsSchema.safeParse({ fullMessageReply: true }).success).toBe(true);
     expect(ticketingInboundSettingsSchema.safeParse({ fullMessageReply: 'yes' }).success).toBe(false);
   });
+
+  it('accepts the staffForwardRouting toggle and rejects a non-boolean', () => {
+    expect(ticketingInboundSettingsSchema.safeParse({ staffForwardRouting: true }).success).toBe(true);
+    expect(ticketingInboundSettingsSchema.safeParse({ staffForwardRouting: 'yes' }).success).toBe(false);
+  });
 });
 
 describe('timeTrackingSessionSuggestionsSchema', () => {

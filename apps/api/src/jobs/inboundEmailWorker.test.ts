@@ -53,6 +53,20 @@ vi.mock('../services/ticketMailbox/fetchInboundAttachments', () => ({
   discardUnpersistedAttachments: discardMock,
 }));
 
+// Marking itself must never run on the intake job; it is enqueued instead.
+const { markHandledMock, enqueueMarkMock, wantedMock, recordFailureMock } = vi.hoisted(() => ({
+  markHandledMock: vi.fn(async () => 'marked'),
+  enqueueMarkMock: vi.fn(async (..._a: unknown[]): Promise<'queued' | 'full'> => 'queued'),
+  wantedMock: vi.fn(async (..._a: unknown[]) => true),
+  recordFailureMock: vi.fn(async (..._a: unknown[]) => {}),
+}));
+vi.mock('../services/ticketMailbox/markIngestedGmailHandled', () => ({
+  markIngestedGmailHandled: markHandledMock,
+  isGmailMarkWanted: wantedMock,
+  recordGmailHandledFailure: recordFailureMock,
+}));
+vi.mock('../services/gmailMarkHandledQueue', () => ({ enqueueGmailMarkHandled: enqueueMarkMock }));
+
 import * as workerModule from './inboundEmailWorker';
 
 const makeEmail = (overrides: Partial<{ providerMessageId: string }> = {}) => ({
@@ -74,6 +88,8 @@ describe('inboundEmailWorker', () => {
     withSystemDbAccessContextMock.mockImplementation(<T>(fn: () => Promise<T>) => fn());
     runOutsideDbContextMock.mockImplementation(<T>(fn: () => T) => fn());
     processInboundEmailMock.mockResolvedValue(undefined);
+    enqueueMarkMock.mockImplementation(async () => 'queued');
+    wantedMock.mockImplementation(async () => true);
   });
 
   // Drive the REAL exported handleInboundEmail and verify the
@@ -122,6 +138,85 @@ describe('inboundEmailWorker', () => {
     const email = makeEmail({ providerMessageId: 'mg-xyz-999' });
     await expect(workerModule.handleInboundEmail({ data: { email } } as any)).resolves.toBeUndefined();
     expect(processInboundEmailMock).toHaveBeenCalledWith(email, undefined);
+  });
+
+  it('gmail: enqueues mark-handled AFTER the pipeline, outside any DB context, and never calls Gmail inline', async () => {
+    const order: string[] = [];
+    runOutsideDbContextMock.mockImplementation(<T>(fn: () => T): T => { order.push('outside'); return fn(); });
+    enqueueMarkMock.mockImplementation(async () => { order.push('enqueue'); return 'queued'; });
+    const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m1' }), provider: 'gmail' as const };
+    const gen = { provider: 'gmail', connectionId: 'c-1', partnerId: 'p-1', tenantId: null, consentAttemptId: 'a-1' };
+    await workerModule.handleInboundEmail({ data: { email, mailboxGeneration: gen } } as any);
+    expect(enqueueMarkMock).toHaveBeenCalledWith('gmail:sub:m1', gen);
+    expect(enqueueMarkMock.mock.invocationCallOrder[0]!).toBeGreaterThan(processInboundEmailMock.mock.invocationCallOrder[0]!);
+    // The enqueue runs inside its own runOutsideDbContext (the last one, after the pipeline's).
+    expect(order.slice(-2)).toEqual(['outside', 'enqueue']);
+    expect(markHandledMock).not.toHaveBeenCalled();
+  });
+
+  it('gmail: an infra failure in the pipeline rethrows and never enqueues a mark', async () => {
+    processInboundEmailMock.mockRejectedValue(new Error('db down'));
+    const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m2' }), provider: 'gmail' as const };
+    const gen = { provider: 'gmail', connectionId: 'c-1', partnerId: 'p-1', tenantId: null, consentAttemptId: 'a-1' };
+    await expect(workerModule.handleInboundEmail({ data: { email, mailboxGeneration: gen } } as any)).rejects.toThrow('db down');
+    expect(enqueueMarkMock).not.toHaveBeenCalled();
+    expect(markHandledMock).not.toHaveBeenCalled();
+  });
+
+  it('gmail: a failed enqueue never fails the (already ticketed) job and is recorded as not_queued', async () => {
+    const redisDown = new Error('redis down');
+    enqueueMarkMock.mockRejectedValueOnce(redisDown);
+    const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m3' }), provider: 'gmail' as const };
+    const gen = { provider: 'gmail', connectionId: 'c-1', partnerId: 'p-1', tenantId: null, consentAttemptId: 'a-1' };
+    await expect(workerModule.handleInboundEmail({ data: { email, mailboxGeneration: gen } } as any)).resolves.toBeUndefined();
+    expect(processInboundEmailMock).toHaveBeenCalledTimes(1);
+    expect(recordFailureMock).toHaveBeenCalledWith(gen, 'not_queued', redisDown);
+  });
+
+  it('gmail: an enqueue that hangs (Redis unreachable) is abandoned after its timeout and recorded as not_queued', async () => {
+    enqueueMarkMock.mockImplementationOnce(() => new Promise(() => {}));
+    const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m8' }), provider: 'gmail' as const };
+    const gen = { provider: 'gmail', connectionId: 'c-1', partnerId: 'p-1', tenantId: null, consentAttemptId: 'a-1' };
+    const started = Date.now();
+    await expect(workerModule.handleInboundEmail({ data: { email, mailboxGeneration: gen } } as any)).resolves.toBeUndefined();
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(workerModule.GMAIL_MARK_ENQUEUE_TIMEOUT_MS - 50);
+    expect(elapsed).toBeLessThan(workerModule.GMAIL_MARK_ENQUEUE_TIMEOUT_MS + 1_500);
+    expect(recordFailureMock).toHaveBeenCalledWith(gen, 'not_queued', expect.objectContaining({ message: 'mark-handled enqueue timed out' }));
+  }, 8_000);
+
+  it('gmail: a full mark queue skips the message and records not_queued', async () => {
+    enqueueMarkMock.mockResolvedValueOnce('full');
+    const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m5' }), provider: 'gmail' as const };
+    const gen = { provider: 'gmail', connectionId: 'c-1', partnerId: 'p-1', tenantId: null, consentAttemptId: 'a-1' };
+    await expect(workerModule.handleInboundEmail({ data: { email, mailboxGeneration: gen } } as any)).resolves.toBeUndefined();
+    expect(recordFailureMock).toHaveBeenCalledWith(gen, 'not_queued', expect.any(Error));
+  });
+
+  it('gmail: nothing is queued or recorded when the mailbox has no label or the message is not a ticket', async () => {
+    wantedMock.mockResolvedValueOnce(false);
+    const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m6' }), provider: 'gmail' as const };
+    const gen = { provider: 'gmail', connectionId: 'c-1', partnerId: 'p-1', tenantId: null, consentAttemptId: 'a-1' };
+    await workerModule.handleInboundEmail({ data: { email, mailboxGeneration: gen } } as any);
+    expect(wantedMock).toHaveBeenCalledWith('gmail:sub:m6', gen);
+    expect(enqueueMarkMock).not.toHaveBeenCalled();
+    expect(recordFailureMock).not.toHaveBeenCalled();
+  });
+
+  it('gmail: a failed pre-check still queues the mark (the job re-checks)', async () => {
+    wantedMock.mockRejectedValueOnce(new Error('db blip'));
+    const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m7' }), provider: 'gmail' as const };
+    const gen = { provider: 'gmail', connectionId: 'c-1', partnerId: 'p-1', tenantId: null, consentAttemptId: 'a-1' };
+    await expect(workerModule.handleInboundEmail({ data: { email, mailboxGeneration: gen } } as any)).resolves.toBeUndefined();
+    expect(enqueueMarkMock).toHaveBeenCalledWith('gmail:sub:m7', gen);
+  });
+
+  it('gmail without a gmail generation, and non-gmail jobs, never enqueue a mark', async () => {
+    const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m4' }), provider: 'gmail' as const };
+    await workerModule.handleInboundEmail({ data: { email } } as any);
+    await workerModule.handleInboundEmail({ data: { email: makeEmail() } } as any);
+    expect(enqueueMarkMock).not.toHaveBeenCalled();
+    expect(markHandledMock).not.toHaveBeenCalled();
   });
 
   it('passes an exact M365 mailbox generation to the transactional ingestion service', async () => {

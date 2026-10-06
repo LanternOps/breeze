@@ -230,6 +230,8 @@
       "add": "Ajouter une connexion",
       "edit": "Modifier",
       "created": "Connexion ajoutée",
+      "createdDiscoveryQueued": "Connexion ajoutée. Détection de ses modèles en cours.",
+      "createdDiscoveryNotQueued": "Connexion ajoutée, mais la détection des modèles n’a pas pu être planifiée. Utilisez Actualiser pour réessayer.",
       "saved": "Connexion enregistrée",
       "saveFailed": "Impossible d'enregistrer la connexion.",
       "keyFailed": "Impossible de remplacer la clé API.",
@@ -456,6 +458,7 @@
     "offering": {
       "displayName": "Nom affiché",
       "displayNameHint": "Laissez vide pour utiliser le nom du fournisseur. Identifiant du modèle : {{modelId}}",
+      "envManaged": "Ce modèle est géré par les variables d'environnement MCP_LLM_*. Son nom et son prix y sont définis et ne peuvent pas être modifiés ici.",
       "pricesTitle": "Prix",
       "pricesHint": "Centimes par million de jetons. Renseignez les quatre ou laissez-les vides pour aucun prix (le modèle ne pourra alors pas être activé).",
       "prices": {
@@ -874,6 +877,8 @@
     "slackChannelPlaceholder": "#alerts",
     "pushoverDefaults": "Défauts de Pushover",
     "pushoverDescription": "Hérité par tout canal Pushover par organisation qui laisse le champ correspondant vide.",
+    "pushoverTicketAssignmentFallback": "Envoyer les assignations de billets à la clé par défaut si la personne assignée n’a pas de clé Pushover",
+    "pushoverTicketAssignmentFallbackHelp": "Chaque technicien peut ajouter sa propre clé d’utilisateur Pushover dans son profil; les assignations ne parviennent alors qu’à lui. Activez cette option pour envoyer les assignations des techniciens sans clé à la clé d’utilisateur ou de groupe par défaut ci-dessus.",
     "applicationToken": "Jeton d’application",
     "defaultUserKey": "Clé utilisateur ou de groupe par défaut",
     "defaultSound": "Son par défaut",
@@ -1400,6 +1405,8 @@
     "dropDescription": "Aucun billet, aucune entrée dans la file de revue et aucune réponse automatique. Une ligne d’audit reste enregistrée. Utilisez cette option pour écarter les courriers indésirables non associés de la qualification et de la file de revue.",
     "dropUnverified": "Envoi de courrier qui échoue à l’authentification de l’expéditeur (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Lorsque cette option est désactivée, les courriels non vérifiés sont mis en quarantaine pour examen. Lorsqu’elle est activée, ils sont supprimés silencieusement. Cela s’applique à <all>tous</all> les expéditeurs non vérifiés, y compris les clients associés dont le message échoue à la vérification.",
+    "staffForwardRouting": "Classer les transferts du personnel sous le client de l’expéditeur d’origine",
+    "staffForwardRoutingDescription": "Lorsqu’un membre de votre personnel au niveau partenaire transfère le courriel d’un client à l’adresse de soutien, le nouveau billet est classé sous l’organisation associée au domaine de l’expéditeur d’origine plutôt que sous la vôtre. Ce membre du personnel doit avoir accès à cette organisation. Fonctionne seulement pour les transferts faits dans Gmail et reçus par une boîte Gmail connectée; pas pour l’adresse de réception native, les boîtes Microsoft 365 ni les transferts d’Outlook.",
     "enableAutoresponse": "Envoyez une réponse automatique pour accuser réceptionné des nouveaux billets par courriel",
     "editEmailTemplates": "Le courriel d'accusé de réception s'édite sous Modèles de courriel.",
     "editEmailTemplatesLink": "Modifier les modèles de courriel",
@@ -1496,7 +1503,28 @@
     "namePlaceholder": "Soutien",
     "connect": "Connecter",
     "credentialOrg": "Identifiants : connexion Google Workspace de {{org}}",
-    "credentialOrgUnknown": "une organisation que vous ne pouvez pas voir"
+    "credentialOrgUnknown": "une organisation que vous ne pouvez pas voir",
+    "handling": {
+      "off": "Désactivé : le courriel reste dans la boîte de réception après être devenu un billet.",
+      "onArchive": "Le courriel qui devient un billet reçoit le libellé Gmail « {{label}} » et est archivé hors de la boîte de réception.",
+      "onLabelOnly": "Le courriel qui devient un billet reçoit le libellé Gmail « {{label}} » et reste dans la boîte de réception.",
+      "edit": "Modifier le traitement des courriels",
+      "labelField": "Libellé Gmail pour les courriels devenus billets (laisser vide pour désactiver)",
+      "labelPlaceholder": "Breeze/Billet",
+      "archiveField": "Les archiver aussi (les retirer de la boîte de réception)",
+      "scopeNote": "L’étiquetage exige cette portée supplémentaire dans la délégation au niveau du domaine de l’organisation. La lecture des courriels n’en a pas besoin; la relève continue donc de fonctionner sans elle.",
+      "saved": "Traitement des courriels enregistré",
+      "saveFailed": "Impossible d’enregistrer le traitement des courriels.",
+      "error": {
+        "access_denied": "Échec de l’étiquetage : Google a refusé l’accès. Ajoutez la portée gmail.modify à la délégation au niveau du domaine.",
+        "rate_limited": "Échec de l’étiquetage : limite de débit Gmail atteinte. Les nouveaux courriels seront réessayés.",
+        "unavailable": "Échec de l’étiquetage : Gmail n’a pas répondu à temps. Les nouveaux courriels seront réessayés.",
+        "label_invalid": "Échec de l’étiquetage : ce libellé ne peut pas être utilisé. Choisissez un autre nom.",
+        "no_credential": "Échec de l’étiquetage : la connexion Google Workspace de cette organisation est absente ou inactive. Reconnectez-la dans Intégrations.",
+        "not_queued": "Étiquetage ignoré : la file d’étiquetage était indisponible ou pleine, donc certains courriels devenus des billets sont restés dans la boîte de réception sans l’étiquette. Les nouveaux courriels seront réessayés.",
+        "failed": "Échec de l’étiquetage. Le courriel reste dans la boîte de réception."
+      }
+    }
   },
   "orgApprovalSecurityTab": {
     "title": "Sécurité de l’approbation",
@@ -1863,6 +1891,10 @@
         "enableLifecycle": {
           "label": "Cycle de vie du matériel",
           "description": "Affiche le plan de remplacement à jour des appareils de votre client."
+        },
+        "enableHardwareHealth": {
+          "label": "État du matériel",
+          "description": "Affiche l'état des composants, les événements, les disques et la batterie des appareils de votre client."
         },
         "enableNetworkVisibility": {
           "label": "Visibilité réseau",
@@ -6548,5 +6580,19 @@
     "sourceDefault": "valeur par défaut du produit",
     "range": "Choisissez {{min}}-{{max}} minutes.",
     "save": "Enregistrer"
+  },
+  "ticketPushover": {
+    "title": "Pushover pour les assignations de billets",
+    "description": "Ajoutez votre clé d’utilisateur Pushover pour recevoir une notification quand un billet vous est assigné. Vous seul la recevez. Votre MSP doit avoir configuré un jeton d’application Pushover sous Notifications.",
+    "statusSet": "Une clé Pushover est enregistrée.",
+    "statusNotSet": "Aucune clé Pushover enregistrée.",
+    "placeholder": "Clé d’utilisateur Pushover de 30 caractères",
+    "save": "Enregistrer la clé",
+    "remove": "Retirer la clé",
+    "saved": "Clé Pushover enregistrée.",
+    "removed": "Clé Pushover retirée.",
+    "invalidKey": "Une clé d’utilisateur Pushover compte 30 lettres ou chiffres.",
+    "loadFailed": "Impossible de charger votre réglage Pushover.",
+    "saveFailed": "Impossible d’enregistrer votre réglage Pushover."
   }
 }

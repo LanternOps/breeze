@@ -55,12 +55,6 @@ const UNGATED_JOBS = new Set([
   // criterion — a week of green, then move it into ci-success needs: with an env var and a
   // blocking assertion — is recorded at its job definition in ci.yml.
   'portal-dev-e2e',
-  // check-migrations is in ci-success needs: so its result can be read, but it is asserted ONLY
-  // on the tooling-only path (APP_CHANGED == 'false'), where it is the sole validation of the
-  // release-lineage / migration-immutability guards. For an application PR it remains
-  // non-blocking, exactly as before. #4227 (the reason it was left non-blocking) is closed and
-  // the job is green today, so promoting it for every PR is a reasonable follow-up — but that
-  // is a policy change to make deliberately, not as a side effect of a CI speed-up.
   'lint-agent', // KNOWN GAP
   'test-agent-race', // KNOWN GAP
   'agent-windows-manifest-guard', // KNOWN GAP

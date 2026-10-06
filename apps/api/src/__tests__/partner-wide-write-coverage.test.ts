@@ -330,6 +330,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/ticketConfigService.ts': 'gated by routes/ticketConfig.ts middleware; org/registration bootstrap paths are system-owned',
   'services/ticketMailbox/connectionService.ts': 'connect/retest/delete gated in routes/tickets/mailboxConnect.ts; polling is worker-owned',
   'services/ticketMailbox/consentSessionService.ts': 'consent start gated in routes/tickets/mailboxConnect.ts; callback consumes its signed session',
+  'services/ticketMailbox/markIngestedGmailHandled.ts': 'inbound worker only: records/clears the mark-handled failure code on the same connection generation that ingested the message; the setting itself is written only by the gated PATCH in routes/tickets/mailboxConnect.ts',
   'services/unifi/unifiConnectionService.ts': 'every /unifi route passes the global capability middleware in routes/unifi/index.ts',
 
   // --- catalog/accounting data on their own permission sets (precedent:

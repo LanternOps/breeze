@@ -56,6 +56,10 @@ export const portalBranding = pgTable('portal_branding', {
   // MSP can turn on generic report self-service before exposing the
   // replacement plan, which names specific machines.
   enableLifecycle: boolean('enable_lifecycle').notNull().default(false),
+  // Portal Advanced Visibility W01 (#7731): independent, fail-closed gate for
+  // the read-only hardware health surface (component state, events, disks,
+  // battery). Inside "Enable all" (low sensitivity).
+  enableHardwareHealth: boolean('enable_hardware_health').notNull().default(false),
   // Customer Portal Network Visibility (#5861): independent, fail-closed
   // visibility gate for the read-only networking surface.
   enableNetworkVisibility: boolean('enable_network_visibility').notNull().default(false),

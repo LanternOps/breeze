@@ -672,7 +672,7 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
     it('creates with the partner id from auth, enqueues discovery after the write, audits host/hasKey but never the key or URL path', async () => {
       const res = await call('POST', '/connections', BYO_BODY);
       expect(res.status).toBe(201);
-      expect(await res.json()).toEqual({ id: G });
+      expect(await res.json()).toEqual({ id: G, discoveryQueued: true });
       expect(createGatewayConnection).toHaveBeenCalledWith({
         partnerId: P, name: 'Office vLLM', baseUrl: 'https://llm.example.com/v1', apiKey: BYO_KEY, connectedBy: baseAuth().user.id,
       });
@@ -703,6 +703,7 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       vi.mocked(enqueueConnectionSync).mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
       const res = await call('POST', '/connections', BYO_BODY);
       expect(res.status).toBe(201);
+      expect(await res.json()).toEqual({ id: G, discoveryQueued: false });
       expect(captureException).toHaveBeenCalled();
       expect(audits().map((a) => a.action)).toEqual(['ai_models.connection.created']);
     });

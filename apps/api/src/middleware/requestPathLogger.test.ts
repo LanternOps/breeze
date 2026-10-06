@@ -106,4 +106,26 @@ describe('requestPathLogger', () => {
     expect(logs).toContain('route=/throws/:token status=500');
     expect(logs).not.toContain('thrown-capability-secret');
   });
+
+  it('names the reject reason on the completion line when a middleware set one (#7875)', async () => {
+    const print = vi.fn();
+    const app = new Hono();
+    app.use('*', requestPathLogger(print));
+    app.use('*', async (c) => {
+      c.set('rejectReason', 'force_https_non_canonical_host');
+      return c.text('no', 400);
+    });
+    await app.request('/anything');
+    const logs = print.mock.calls.flat().join('\n');
+    expect(logs).toMatch(/--> GET route=unmatched status=400 reason=force_https_non_canonical_host duration_ms=\d+/);
+  });
+
+  it('omits reason when none was set', async () => {
+    const print = vi.fn();
+    const app = new Hono();
+    app.use('*', requestPathLogger(print));
+    app.get('/ok', (c) => c.text('ok'));
+    await app.request('/ok');
+    expect(print.mock.calls.flat().join('\n')).not.toContain('reason=');
+  });
 });

@@ -425,6 +425,38 @@ describe("#7217 installer-link: no live key without a link", () => {
     errSpy.mockRestore();
   });
 
+  it("#7974: installer_link_created audit never stores the live short code", async () => {
+    mockParentLookup();
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([makeChildKeyRow()]),
+      }),
+    } as any);
+
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform: "windows" }),
+    });
+
+    expect(res.status).toBe(200);
+    const { shortUrl } = await res.json();
+    const liveCode = shortUrl.split("/s/")[1];
+    expect(liveCode).toMatch(/^[A-Za-z0-9]{10}$/);
+
+    const call = vi
+      .mocked(createAuditLogAsync)
+      .mock.calls.map(([arg]) => arg)
+      .find((arg) => arg.action === "enrollment_key.installer_link_created");
+    expect(call).toBeDefined();
+    expect(JSON.stringify(call)).not.toContain(liveCode);
+    expect(call!.details).not.toHaveProperty("shortCode");
+    // Still correlatable: a stable, non-reversible reference is recorded.
+    expect(call!.details).toMatchObject({
+      shortCodeRef: expect.stringMatching(/^[0-9a-f]{12}$/),
+    });
+  });
+
   it("deletes the child link row it minted when issuing the download handle fails", async () => {
     mockParentLookup();
     vi.mocked(db.insert).mockReturnValueOnce({

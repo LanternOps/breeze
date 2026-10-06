@@ -1384,6 +1384,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Gmail mark-handled (#7949): its own queue so ticket intake never waits on Gmail.
+    name: 'gmailMarkHandledWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/gmailMarkHandledWorker');
+      return { init: m.initializeGmailMarkHandledWorker, shutdown: m.shutdownGmailMarkHandledWorker };
+    },
+  },
+  {
     name: 'ticketMailboxPollWorker',
     placement: 'global',
     load: async () => {

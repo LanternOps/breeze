@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   isPartnerScope: true,
   defaultOwnerScope: 'organization' as 'organization' | 'partner',
   currentOrgId: 'org-1' as string | null,
+  organizations: [] as Array<{ id: string; name: string }>,
   partnerId: 'partner-1',
 }));
 
@@ -29,8 +30,9 @@ vi.mock('../../hooks/useDefaultOwnerScope', () => ({
 }));
 
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: (selector: (s: { currentOrgId: string | null }) => unknown) =>
-    selector({ currentOrgId: state.currentOrgId }),
+  useOrgStore: (
+    selector: (s: { currentOrgId: string | null; organizations: Array<{ id: string; name: string }> }) => unknown,
+  ) => selector({ currentOrgId: state.currentOrgId, organizations: state.organizations }),
 }));
 
 vi.mock('../../lib/authScope', () => ({
@@ -64,6 +66,7 @@ beforeEach(() => {
   state.isPartnerScope = true;
   state.defaultOwnerScope = 'organization';
   state.currentOrgId = 'org-1';
+  state.organizations = [];
   state.partnerId = 'partner-1';
   fetchMock.mockImplementation(async (url: string) => {
     if (String(url).startsWith('/custom-fields?')) {
@@ -296,5 +299,17 @@ describe('CustomFieldsPage dropdown choices — legacy string[] shape (#3257 Pha
         { label: 'West', value: 'West' },
       ]);
     });
+  });
+});
+
+describe('CustomFieldsPage organization column (#7122)', () => {
+  const ORG_FIELD = { ...PARTNER_WIDE_FIELD, id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', orgId: 'org-2', partnerId: null, name: 'Contract Tier', fieldKey: 'contract_tier' };
+
+  it('shows the owning organization name for org-owned fields and All organizations for partner-wide ones', async () => {
+    state.organizations = [{ id: 'org-1', name: 'Acme' }, { id: 'org-2', name: 'Globex' }];
+    fetchMock.mockImplementation(async () => jsonResponse({ data: [PARTNER_WIDE_FIELD, ORG_FIELD], total: 2 }));
+    render(<CustomFieldsPage />);
+    const cells = await screen.findAllByTestId('custom-field-org');
+    expect(cells.map((c) => c.textContent)).toEqual(['All organizations', 'Globex']);
   });
 });

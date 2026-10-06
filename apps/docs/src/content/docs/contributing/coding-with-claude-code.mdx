@@ -9,46 +9,82 @@ sidebar:
 import { Aside, Steps, LinkCard, CardGrid } from '@astrojs/starlight/components';
 
 This guide is for people who want to **write code** for Breeze. It assumes you'll
-work with [Claude Code](https://claude.com/claude-code) (or a compatible agent) —
-the repo ships a `CLAUDE.md` and a set of skills that hand the agent almost all
-the project's conventions automatically. Your job is to point it at the right
-work and to hand back finished, self-reviewed, green PRs.
+work with [Claude Code](https://claude.com/claude-code) (or a compatible agent).
+The repo ships a `CLAUDE.md` and a set of project skills that give the agent
+most of the project's conventions automatically. Your job is to point it at the
+right work and to hand back finished, self-reviewed, green PRs.
 
 If you only want to report a bug or pitch an idea, you don't need any of this —
 see the top of [`CONTRIBUTING.md`](https://github.com/LanternOps/breeze/blob/main/CONTRIBUTING.md).
 
+## Set up the agent
+
+<Steps>
+
+1. Clone the repo and run Claude Code **from the repo root**. That's what loads
+   `CLAUDE.md` and the project skills in `.claude/skills/`. Don't re-explain the
+   conventions to the agent; they're already in context.
+
+2. Install the [superpowers](https://github.com/obra/superpowers) plugin. The
+   process skills this guide names (`brainstorming`, `writing-plans`,
+   `executing-plans`, `subagent-driven-development`, `test-driven-development`)
+   come from it, not from the repo.
+
+3. Install the `pr-review-toolkit` plugin for the self-review step below.
+
+</Steps>
+
+The repo ships 15 project skills in `.claude/skills/`. Claude Code loads them all,
+but they aren't all meant for you. Some run maintainer workflows (triage,
+merging, releases, production deploys).
+
+**Use these:**
+
+| Skill | Use it for |
+|---|---|
+| `breeze-testing` | Test conventions: Drizzle mocks, Go table tests, the coverage checklist |
+| `worktree-stack` | A running, seeded local stack (API, web, portal) for your worktree, for browser checks |
+| `agent-info`, `ai-agent`, `breeze-helper` | Architecture references for the Go agent, the AI agent, and the Helper desktop app |
+| `agent-log-debugging` | Reading agent diagnostic logs on your local stack |
+
+**Use these with care:**
+
+| Skill | Caveat |
+|---|---|
+| `issue-to-pr` | A good runbook from issue to reviewed PR, but it assumes write access: it self-assigns the issue and pushes to `origin`. Without write access, comment on the issue instead and push to your fork. |
+| `feature-testing` | End-to-end checks across UI, API and agent. Point it at your local stack, never at a hosted URL. |
+| `security-review` | Fine for reviewing code. Report anything you find privately (see `SECURITY.md`), never in a public issue or PR. |
+
+**Ignore these** — they're maintainer tooling: `gh-queue`, `feature-delivery`,
+`release`, `pre-release-sweep`, `e2e-coverage`, `ui-qa-sweep`.
+
 ## The one idea to internalize
 
-Work on Breeze is captured as **plan documents**. A plan spells out the goal,
-the architecture, the tech stack, and a checklist of tasks — it's a
-ready-to-implement work order, written for an agent to execute.
+Non-trivial work on Breeze starts as a **plan document**. A plan spells out the
+goal, the architecture, and a checklist of tasks. It's a ready-to-implement work
+order, written for an agent to execute.
 
 That means a plan is two things at once:
 
-- **The work definition** — it's what there is to build.
-- **The approval** — if a plan exists and has been approved, the *what* and the
-  *how* are already agreed. You don't need a separate sign-off to start.
+- **The work definition**: what there is to build.
+- **The approval**: once a plan is approved, the *what* and the *how* are
+  agreed. You don't need a separate sign-off to start.
 
 <Aside type="caution" title="Don't write feature code without an approved plan">
 The plan **is** the approval gate. If there's no plan for what you want to do,
-the first deliverable is the plan — not the code. Write it, get a 👍, *then*
-build. This is the whole point of the workflow: we agree on the approach before
-anyone spends effort, so nothing gets built the wrong way.
+the first deliverable is the plan, not the code. Write it, get a 👍, *then*
+build. A small, well-described bug fix doesn't need a plan; a new feature,
+table, or API surface does.
 </Aside>
 
 ## 1. Find something to build
 
-<Aside type="note" title="Work tracking lives on GitHub">
-This guide used to point at a folder of open plan documents in the repo. That
-folder has been reorganized and no longer reflects what's actually up for
-grabs, so don't mine `docs/superpowers/plans/` for work — it's an archive of
-completed, shipped plans kept for history. Work is tracked on GitHub issues,
-and the public roadmap at [breezermm.com/roadmap](https://breezermm.com/roadmap)
-shows shipped, in-progress, planned, and exploratory items straight from the
-public repository.
-</Aside>
+Work is tracked on **GitHub issues**. The public roadmap at
+[breezermm.com/roadmap](https://breezermm.com/roadmap) shows shipped,
+in-progress, planned, and exploratory items from the same tracker.
 
-Until then, find work on the issue tracker:
+Don't mine `docs/superpowers/plans/` for work. It's an archive of plans that
+have already shipped, kept for history.
 
 <CardGrid>
   <LinkCard
@@ -57,89 +93,125 @@ Until then, find work on the issue tracker:
     href="https://github.com/LanternOps/breeze/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22help%20wanted%22"
   />
   <LinkCard
-    title="Good first issues"
-    description="Smaller, well-scoped starters."
-    href="https://github.com/LanternOps/breeze/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22good%20first%20issue%22"
+    title="All open issues"
+    description="The labelled lists are short — any unassigned open issue is fair game."
+    href="https://github.com/LanternOps/breeze/issues?q=is%3Aissue%20state%3Aopen%20no%3Aassignee"
   />
 </CardGrid>
 
 <Steps>
 
-1. Browse the open issues above, or any open issue that interests you.
+1. Pick an unassigned issue that fits your appetite. Some are small UI or CRUD
+   jobs; some touch deeper systems.
 
-2. Pick one that fits your appetite — some are small UI/CRUD jobs, some touch
-   deeper systems.
+2. Comment on the issue that you're taking it, so two people don't grab the
+   same one.
 
-3. Comment on the issue that you're taking it (so two people don't grab the
-   same one). Then start with a plan, as below.
+3. If it's more than a contained fix, start with a plan (below).
 
 </Steps>
 
+<Aside type="note" title="Multi-wave features">
+Larger features are tracked as a parent issue labelled `feature` with one
+`wave` sub-issue per PR. If you pick up a wave, work only that sub-issue, and
+put `Closes #<wave sub-issue>` in the PR — never the parent.
+</Aside>
+
 ## 2. …or propose your own
 
-Want to scratch your own itch? Great — but the plan comes first.
+Want to scratch your own itch? The plan comes first.
 
 <Steps>
 
-1. From the repo root, run Claude Code and use the **`brainstorming`** skill to
-   pin down intent and requirements, then **`writing-plans`** to produce the plan
-   document.
+1. Open (or find) a GitHub issue describing the problem.
 
-2. Share the finished plan with Todd — attach it to the GitHub issue you're
-   working from (open one if there isn't one yet).
+2. In Claude Code, use the **`brainstorming`** skill to pin down intent and
+   requirements, then **`writing-plans`** to produce the plan.
 
-3. Wait for approval on the *plan*. Once it's a 👍, it's an open work order like
-   any other — go build it.
+3. Attach the plan to the issue and wait for a 👍 on the *plan*. Once approved,
+   it's an open work order like any other.
 
 </Steps>
 
 <Aside type="tip">
-Proposing via a plan doc — not a draft PR — keeps the PR queue meaning exactly
-one thing: "ready to merge." Planning and in-progress work never sit in a PR.
+Propose via the issue, not a draft PR. That keeps the PR queue meaning exactly
+one thing: "ready to merge."
 </Aside>
 
 ## 3. Build it
 
 <Steps>
 
-1. Run Claude Code **from the repo root** so it loads `CLAUDE.md` and the project
-   skills automatically. Don't re-explain the conventions — they're already in
-   context.
+1. Work on a branch in its own worktree, cut from current `main`. Fetch and
+   rebase before you start exploring — a stale tree sends the agent after code
+   that has already changed.
 
-2. Follow the plan's **`REQUIRED SUB-SKILL`** note (usually
+2. Follow the plan's `REQUIRED SUB-SKILL` note (usually
    `subagent-driven-development` or `executing-plans`). Work the `- [ ]` tasks in
    order and check them off.
 
-3. Write tests as you go — the **`breeze-testing`** and
-   `test-driven-development` skills cover the repo's patterns (Drizzle mocks,
-   Go table tests, the coverage checklist). New features are expected to ship
-   with tests.
+3. Write the test first and watch it fail, then implement. `breeze-testing`
+   covers the repo's patterns. Tests live next to the source file
+   (`routes/devices.ts` → `routes/devices.test.ts`). New features ship with
+   tests.
+
+4. For UI changes, bring up a stack with `pnpm wt-stack up` (or the
+   `worktree-stack` skill) and check the change in a browser. Tear it down with
+   `pnpm wt-stack down` when you're done.
 
 </Steps>
 
-<Aside type="caution" title="Some surfaces are Todd's call">
-`CLAUDE.md` flags high-blast-radius areas — tenant isolation / RLS, database
-migrations, auth, billing, and the org-erasure cascade contracts. If a plan
-leads you into one of these, follow the contract in `CLAUDE.md` exactly and flag
-it in the PR rather than improvising. When in doubt, ask before you touch it.
+<Aside type="caution" title="High-blast-radius surfaces">
+`CLAUDE.md` spells out exact contracts for tenant isolation / RLS, database
+migrations, auth, billing, the org-erasure cascade lists, and partner-wide
+config tables. If your work leads into one of these, follow the contract to the
+letter and call it out in the PR. A few that catch people:
+
+- **New tenant-scoped table**: RLS policies in the same migration, plus the
+  cascade, merge, and export-policy registries. Adding a *column* to a
+  registered table still needs an export-policy entry.
+- **New config/policy table**: partner-wide first (`org_id` XOR `partner_id`),
+  not org-only.
+- **Migrations**: hand-written SQL, idempotent, named so they sort after the
+  newest committed migration, and never edit one that has shipped.
+- **Settings**: one concept, one home. The PR template asks for the setting's
+  home, level, and resolver.
+
+When in doubt, ask on the issue before you touch it.
 </Aside>
 
 ## 4. Before you hand it over
 
-Two things are **your** responsibility, not Todd's. A PR that skips them isn't
-ready.
+Two things are **your** responsibility. A PR that skips them isn't ready.
 
 <Steps>
 
-1. **Make CI green yourself.** Mirror the gate locally and get it passing before
-   you open anything — `test-api`, `test-web`, and `test-agent` are the required
-   jobs. You fix your own reds; a red PR isn't on anyone's plate yet.
+1. **Make CI green yourself.** Mirror the gate locally before you open
+   anything, and fix your own reds. The single required check is
+   **CI Success**, which aggregates every blocking job: lint, type check,
+   Test API, Test Web, Test Agent, the security audit, and the sharded
+   Integration Tests.
 
-2. **Self-review your own diff.** Run `/code-review` (or the
-   `pr-review-toolkit` agents) against your changes, address what it finds, and
-   *then* request a human review.
+2. **Self-review your own diff.** Run `/code-review` or
+   `/pr-review-toolkit:review-pr` against your changes, fix what's real, and
+   say in the PR what the review found.
 
 </Steps>
+
+<Aside type="caution" title="Local green isn't CI green">
+`pnpm test` does **not** run the RLS and integration contract suites. If you
+touched tenancy, cascade, or migration code, run them against a real database:
+
+```bash
+pnpm test-stack up        # private Postgres + Redis for this worktree
+DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage
+pnpm test-stack down
+```
+
+To run one test file, use `cd apps/api && npx vitest run src/routes/auth.test.ts`.
+Don't write `pnpm --filter … test -- --run <path>`: the extra `--` makes vitest
+run the whole suite in watch mode.
+</Aside>
 
 <LinkCard
   title="Local CI gate — exact commands"
@@ -149,25 +221,28 @@ ready.
 
 ## 5. Open the PR
 
-A PR means **done, green, self-reviewed, ready to merge** — not a discussion
-venue and not work-in-progress.
+A PR means **done, green, self-reviewed, ready to merge**. It isn't a
+discussion venue or work in progress.
 
 <Steps>
 
-1. Branch, and use [Conventional Commits](https://www.conventionalcommits.org/)
+1. Use [Conventional Commits](https://www.conventionalcommits.org/)
    (`feat:`, `fix:`, `docs:`, …).
 
-2. Keep it to **one concern**. Don't mix a feature, a refactor, and a docs sweep
-   in one PR — small, single-purpose PRs review fast.
+2. Keep it to **one concern**. Don't mix a feature, a refactor, and a docs
+   sweep. Small, single-purpose PRs review fast.
 
-3. Reference the plan and the issue you implemented in the PR description
-   (`Closes #NNN` if the PR completes the issue).
+3. Fill in the PR template. Use `Closes #NNN` when the PR fully resolves the
+   issue, `Refs #NNN` when it only covers part of it. Repeat the keyword for
+   each issue (`Closes #1, closes #2`).
 
-4. Open it against `main`.
+4. Open it against `main`. A PR based on another branch gets no CI run.
 
 </Steps>
 
 <Aside type="note">
-Squash-merge is the norm on this repo; merge commits are disabled. Todd handles
-the merge.
+`main` uses GitHub's merge queue. A maintainer enqueues your PR once it's green
+and reviewed; the queue rebuilds it on top of current `main`, re-runs CI, and
+squash-merges it. If the queue run fails, the PR is dequeued with a comment —
+fix it and it goes back in.
 </Aside>

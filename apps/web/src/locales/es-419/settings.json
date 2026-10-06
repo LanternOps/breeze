@@ -230,6 +230,8 @@
       "add": "Agregar conexión",
       "edit": "Editar",
       "created": "Conexión agregada",
+      "createdDiscoveryQueued": "Conexión agregada. Detectando sus modelos ahora.",
+      "createdDiscoveryNotQueued": "Conexión agregada, pero no se pudo programar la detección de modelos. Usa Actualizar para intentarlo de nuevo.",
       "saved": "Conexión guardada",
       "saveFailed": "No se pudo guardar la conexión.",
       "keyFailed": "No se pudo reemplazar la clave de API.",
@@ -456,6 +458,7 @@
     "offering": {
       "displayName": "Nombre para mostrar",
       "displayNameHint": "Déjalo en blanco para usar el nombre del proveedor. ID del modelo: {{modelId}}",
+      "envManaged": "Este modelo se administra con las variables de entorno MCP_LLM_*. Su nombre y precio se definen allí y no se pueden cambiar aquí.",
       "pricesTitle": "Precio",
       "pricesHint": "Centavos por 1 M de tokens. Completa los cuatro o déjalos en blanco para no tener precio (el modelo no se podrá activar).",
       "prices": {
@@ -874,6 +877,8 @@
     "slackChannelPlaceholder": "#alertas",
     "pushoverDefaults": "Valores predeterminados de Pushover",
     "pushoverDescription": "Heredado por cualquier canal Pushover por organización que deje el campo coincidente en blanco.",
+    "pushoverTicketAssignmentFallback": "Enviar las asignaciones de tickets a la clave predeterminada cuando la persona asignada no tenga clave de Pushover",
+    "pushoverTicketAssignmentFallbackHelp": "Cada técnico puede agregar su propia clave de usuario de Pushover en su perfil; las asignaciones solo le llegan a esa persona. Actívalo para enviar las asignaciones de técnicos sin clave a la clave predeterminada de usuario o grupo indicada arriba.",
     "applicationToken": "Ficha de aplicación",
     "defaultUserKey": "Clave de usuario o grupo predeterminada",
     "defaultSound": "Sonido predeterminado",
@@ -1400,6 +1405,8 @@
     "dropDescription": "Sin ticket, sin entrada a la cola de revisión, sin respuesta automática. Todavía se registra una fila de auditoría. Utilice esto para mantener el spam no asignado fuera de la clasificación y de la cola de revisión.",
     "dropUnverified": "Descartar correo que falla en la autenticación del remitente (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Cuando está desactivado, el correo no verificado se pone en cuarentena para su revisión. Cuando está encendido, cae silenciosamente. Esto se aplica a <all>all</all> remitentes no verificados, incluidos los clientes asignados cuyo mensaje individual no pasa la verificación.",
+    "staffForwardRouting": "Asignar los reenvíos del personal al cliente del remitente original",
+    "staffForwardRoutingDescription": "Cuando un miembro de su personal a nivel de socio reenvía el correo de un cliente a la dirección de soporte, el nuevo ticket se asigna a la organización vinculada al dominio del remitente original y no a la suya. El miembro del personal debe tener acceso a esa organización. Solo funciona con reenvíos hechos en Gmail y recibidos en un buzón de Gmail conectado; no con la dirección de entrada nativa, los buzones de Microsoft 365 ni los reenvíos de Outlook.",
     "enableAutoresponse": "Enviar una respuesta automática reconociendo nuevos tickets por correo electrónico",
     "editEmailTemplates": "El correo de acuse se edita en Plantillas de correo.",
     "editEmailTemplatesLink": "Editar plantillas de correo",
@@ -1496,7 +1503,28 @@
     "namePlaceholder": "Soporte",
     "connect": "Conectar",
     "credentialOrg": "Credencial: conexión de Google Workspace de {{org}}",
-    "credentialOrgUnknown": "una organización que no puedes ver"
+    "credentialOrgUnknown": "una organización que no puedes ver",
+    "handling": {
+      "off": "Desactivado: el correo permanece en la bandeja de entrada después de convertirse en ticket.",
+      "onArchive": "El correo que se convierte en ticket recibe la etiqueta de Gmail \"{{label}}\" y se archiva fuera de la bandeja de entrada.",
+      "onLabelOnly": "El correo que se convierte en ticket recibe la etiqueta de Gmail \"{{label}}\" y permanece en la bandeja de entrada.",
+      "edit": "Cambiar el manejo del correo",
+      "labelField": "Etiqueta de Gmail para el correo con ticket (déjala en blanco para desactivarlo)",
+      "labelPlaceholder": "Breeze/Ticket",
+      "archiveField": "Archivarlo también (quitarlo de la bandeja de entrada)",
+      "scopeNote": "Etiquetar requiere este alcance adicional en la delegación de todo el dominio de la organización. Leer el correo no lo necesita, así que la consulta sigue funcionando sin él.",
+      "saved": "Manejo del correo guardado",
+      "saveFailed": "No se pudo guardar el manejo del correo.",
+      "error": {
+        "access_denied": "Error al etiquetar: Google denegó el acceso. Agrega el alcance gmail.modify a la delegación de todo el dominio.",
+        "rate_limited": "Error al etiquetar: se alcanzó el límite de Gmail. Se volverá a intentar con el correo nuevo.",
+        "unavailable": "Error al etiquetar: Gmail no respondió a tiempo. Se volverá a intentar con el correo nuevo.",
+        "label_invalid": "Error al etiquetar: esta etiqueta no se puede usar. Elige otro nombre.",
+        "no_credential": "Error al etiquetar: la conexión de Google Workspace de esta organización falta o está inactiva. Vuelve a conectarla en Integraciones.",
+        "not_queued": "Etiquetado omitido: la cola de etiquetado no estaba disponible o estaba llena, así que algunos correos que se convirtieron en ticket quedaron en la bandeja de entrada sin la etiqueta. Se volverá a intentar con el correo nuevo.",
+        "failed": "Error al etiquetar. El correo permanece en la bandeja de entrada."
+      }
+    }
   },
   "orgApprovalSecurityTab": {
     "title": "Seguridad de aprobación",
@@ -1863,6 +1891,10 @@
         "enableLifecycle": {
           "label": "Ciclo de vida del hardware",
           "description": "Muestra el plan de reemplazo actualizado de los equipos de tu cliente."
+        },
+        "enableHardwareHealth": {
+          "label": "Salud del hardware",
+          "description": "Muestra la salud de los componentes, los eventos, los discos y la batería de los equipos de su cliente."
         },
         "enableNetworkVisibility": {
           "label": "Visibilidad de red",
@@ -6548,5 +6580,19 @@
     "sourceDefault": "predeterminado del producto",
     "range": "Elija entre {{min}} y {{max}} minutos.",
     "save": "Guardar"
+  },
+  "ticketPushover": {
+    "title": "Pushover para asignaciones de tickets",
+    "description": "Agrega tu clave de usuario de Pushover para recibir una notificación cuando se te asigne un ticket. Solo tú la recibes. Tu MSP debe haber configurado un token de aplicación de Pushover en Notificaciones.",
+    "statusSet": "Hay una clave de Pushover guardada.",
+    "statusNotSet": "No hay una clave de Pushover guardada.",
+    "placeholder": "Clave de usuario de Pushover de 30 caracteres",
+    "save": "Guardar clave",
+    "remove": "Quitar clave",
+    "saved": "Clave de Pushover guardada.",
+    "removed": "Clave de Pushover quitada.",
+    "invalidKey": "Una clave de usuario de Pushover tiene 30 letras o dígitos.",
+    "loadFailed": "No se pudo cargar tu configuración de Pushover.",
+    "saveFailed": "No se pudo guardar tu configuración de Pushover."
   }
 }

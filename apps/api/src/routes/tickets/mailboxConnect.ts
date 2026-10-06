@@ -40,8 +40,13 @@ import {
   refreshErrorReason,
   restoreVerifiedConnection,
   setConnectedMailboxStatus,
+  updateGmailHandling,
   type MailboxConnection,
 } from '../../services/ticketMailbox/connectionService';
+import {
+  HANDLED_LABEL_MAX_LENGTH,
+  isUsableHandledLabelName,
+} from '../../services/ticketMailbox/handledLabel';
 import {
   buildMicrosoftAuthorizationUrl,
   exchangeMicrosoftAuthorizationCode,
@@ -90,6 +95,11 @@ const callbackQuery = z.object({
   error_description: z.string().optional(),
 });
 const idParam = z.object({ id: z.string().uuid() });
+// Per-mailbox Gmail "mark handled" (#7949). label null (or blank) = off.
+const gmailHandlingBody = z.object({
+  label: z.string().max(HANDLED_LABEL_MAX_LENGTH * 4).nullable(),
+  archive: z.boolean(),
+}).strict();
 
 type CallbackQuery = z.infer<typeof callbackQuery>;
 
@@ -816,6 +826,47 @@ mailboxRoutes.post(
     });
     if (!changed) return c.json({ error: 'Mailbox connection changed during retest', code: ERROR_CODES.CONFLICT }, 409);
     return c.json({ ok: probe.ok, ...(probe.ok ? {} : { error: failureMessage(probe.reason) }) });
+  },
+);
+
+// Edit a Gmail mailbox's "mark handled" setting: the user label added to mail
+// that became a ticket (null = off) and whether that mail is also archived.
+// Turning it on needs gmail.modify in the org's domain-wide delegation grant; the
+// settings card says so next to the field.
+mailboxRoutes.patch(
+  '/connections/:id/gmail-handling',
+  authMiddleware,
+  partnerScopes,
+  requireMailboxAdmin,
+  requireMfa(),
+  zValidator('param', idParam),
+  zValidator('json', gmailHandlingBody),
+  async (c) => {
+    const auth = c.get('auth');
+    if (!canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+    const resolved = resolvePartnerId(auth);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const { id } = c.req.valid('param');
+    const body = c.req.valid('json');
+    const label = body.label?.trim() ? body.label.trim() : null;
+    if (label !== null && !isUsableHandledLabelName(label)) {
+      return c.json({
+        error: `Label must be 1 to ${HANDLED_LABEL_MAX_LENGTH} characters and not a Gmail system label (such as INBOX, TRASH or SPAM).`,
+      }, 400);
+    }
+    const updated = await updateGmailHandling(id, resolved.partnerId, { label, archive: body.archive });
+    if (!updated) return c.json({ error: 'Gmail mailbox connection not found' }, 404);
+    writeRouteAudit(c, {
+      orgId: updated.orgId,
+      action: 'ticket_mailbox.gmail_handling_updated',
+      resourceType: 'ticket_mailbox_connection',
+      resourceId: id,
+      resourceName: updated.mailboxAddress,
+      details: { provider: 'gmail', enabled: label !== null, archive: body.archive },
+    });
+    return c.json({ ok: true, gmailHandling: { label, archive: body.archive, error: null, errorAt: null } });
   },
 );
 

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { PORTAL_SENSITIVE_FLAG_KEYS } from '@breeze/shared';
 import OrgPortalSettingsEditor from './OrgPortalSettingsEditor';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -33,6 +34,7 @@ const SETTINGS = {
   enableService: false,
   enableDocuments: false,
   enableLifecycle: false,
+  enableHardwareHealth: false,
   enableNetworkVisibility: false,
   supportEmail: 'help@msp.example',
   supportPhone: null,
@@ -128,6 +130,7 @@ describe('OrgPortalSettingsEditor', () => {
       'enableService',
       'enableDocuments',
       'enableLifecycle',
+      'enableHardwareHealth',
       'enableNetworkVisibility',
     ]) {
       expect((screen.getByTestId(
@@ -136,6 +139,18 @@ describe('OrgPortalSettingsEditor', () => {
     }
 
     expect(onDirty).toHaveBeenCalled();
+  });
+
+  it('leaves every sensitive flag off when "Enable all" is clicked', async () => {
+    mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+
+    fireEvent.click(await screen.findByTestId('org-portal-enable-all-visibility'));
+
+    expect(PORTAL_SENSITIVE_FLAG_KEYS.length).toBeGreaterThan(0);
+    for (const key of PORTAL_SENSITIVE_FLAG_KEYS) {
+      expect((screen.getByTestId(`org-portal-toggle-${key}`) as HTMLInputElement).checked).toBe(false);
+    }
   });
 
   it('saves all visibility flags through the existing runAction path', async () => {
@@ -169,6 +184,7 @@ describe('OrgPortalSettingsEditor', () => {
       enableService: true,
       enableDocuments: true,
       enableLifecycle: true,
+      enableHardwareHealth: true,
       enableNetworkVisibility: true,
     });
   });

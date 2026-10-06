@@ -8,6 +8,15 @@ import { z } from 'zod';
 
 export const PORTAL_CUSTOM_CSS_MAX_LENGTH = 65_536;
 
+// Portal visibility flags that stay OUTSIDE the editor's "Enable all": each
+// exposes a more sensitive tier and needs its own explicit opt-in. Lives here
+// (not only in the API) so the web editor test and the API share one list;
+// apps/api re-exports it from services/portal/portalFlags.ts. Waves 5 and 6 of
+// the portal advanced visibility feature (#7730) add enablePatchDetail and
+// enableVulnerabilityDetail.
+export const PORTAL_SENSITIVE_FLAG_KEYS = ['enableNetworkAlerts'] as const;
+export type PortalSensitiveFlag = typeof PORTAL_SENSITIVE_FLAG_KEYS[number];
+
 // This CSS is served verbatim to end users of the customer portal (no
 // authoring-time sandbox), so a handful of legacy attack vectors are rejected
 // outright rather than silently stripped — a silent strip would leave the
@@ -106,6 +115,8 @@ export const updatePortalSettingsSchema = z.object({
   enableDocuments: z.boolean().optional(),
   // Portal Hardware Lifecycle (#5719): fail closed, required alongside enableReports.
   enableLifecycle: z.boolean().optional(),
+  // Portal advanced visibility W01 (#7731): hardware health, fail closed.
+  enableHardwareHealth: z.boolean().optional(),
   // Customer Portal Network Visibility (#5861): fail closed by default.
   enableNetworkVisibility: z.boolean().optional(),
   enableNetworkAlerts: z.boolean().optional(),

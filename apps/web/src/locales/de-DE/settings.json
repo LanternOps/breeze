@@ -230,6 +230,8 @@
       "add": "Verbindung hinzufügen",
       "edit": "Bearbeiten",
       "created": "Verbindung hinzugefügt",
+      "createdDiscoveryQueued": "Verbindung hinzugefügt. Ihre Modelle werden jetzt ermittelt.",
+      "createdDiscoveryNotQueued": "Verbindung hinzugefügt, aber die Modellermittlung konnte nicht eingeplant werden. Klicken Sie auf „Aktualisieren“, um es erneut zu versuchen.",
       "saved": "Verbindung gespeichert",
       "saveFailed": "Die Verbindung konnte nicht gespeichert werden.",
       "keyFailed": "Der API-Schlüssel konnte nicht ersetzt werden.",
@@ -456,6 +458,7 @@
     "offering": {
       "displayName": "Anzeigename",
       "displayNameHint": "Leer lassen, um den Namen des Anbieters zu verwenden. Modell-ID: {{modelId}}",
+      "envManaged": "Dieses Modell wird über die Umgebungsvariablen MCP_LLM_* verwaltet. Name und Preis werden dort festgelegt und können hier nicht geändert werden.",
       "pricesTitle": "Preis",
       "pricesHint": "Cent pro 1 Mio. Tokens. Füllen Sie alle vier aus oder lassen Sie alle leer für keinen Preis (das Modell lässt sich dann nicht aktivieren).",
       "prices": {
@@ -874,6 +877,8 @@
     "slackChannelPlaceholder": "#Warnungen",
     "pushoverDefaults": "Pushover-Standardwerte",
     "pushoverDescription": "Wird von jedem Pushover-Kanal pro Organisation übernommen, der das entsprechende Feld leer lässt.",
+    "pushoverTicketAssignmentFallback": "Ticketzuweisungen an den Standardschlüssel senden, wenn die zugewiesene Person keinen Pushover-Schlüssel hat",
+    "pushoverTicketAssignmentFallbackHelp": "Jede technische Fachkraft kann im Profil einen eigenen Pushover-Benutzerschlüssel hinterlegen; Zuweisungen erreichen dann nur sie. Aktivieren Sie dies, um Zuweisungen für Personen ohne Schlüssel an den oben angegebenen Standard-Benutzer- oder Gruppenschlüssel zu senden.",
     "applicationToken": "Anwendungstoken",
     "defaultUserKey": "Standardbenutzer- oder Gruppenschlüssel",
     "defaultSound": "Standardton",
@@ -1400,6 +1405,8 @@
     "dropDescription": "Kein Ticket, kein Eintrag in der Prüfwarteschlange, keine automatische Antwort. Es wird weiterhin eine Auditzeile aufgezeichnet. Verwenden Sie diese Option, um nicht zugeordneten Spam von der Triage und der Prüfwarteschlange fernzuhalten.",
     "dropUnverified": "E-Mails verwerfen, die die Absenderauthentifizierung nicht bestehen (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Ist diese Option deaktiviert, werden nicht verifizierte E-Mails zur Prüfung in Quarantäne gestellt. Ist sie aktiviert, werden sie ohne Benachrichtigung verworfen. Dies gilt für <all>alle</all> nicht verifizierten Absender – einschließlich zugeordneter Kunden, deren einzelne Nachricht die Prüfung nicht besteht.",
+    "staffForwardRouting": "Weitergeleitete E-Mails von Mitarbeitern dem ursprünglichen Kunden zuordnen",
+    "staffForwardRoutingDescription": "Leitet ein Mitarbeiter auf Partnerebene die E-Mail eines Kunden an die Support-Adresse weiter, wird das neue Ticket der Organisation zugeordnet, die der Domain des ursprünglichen Absenders zugewiesen ist, statt Ihrer eigenen. Der Mitarbeiter muss Zugriff auf diese Organisation haben. Funktioniert nur für in Gmail erstellte Weiterleitungen, die in einem verbundenen Gmail-Postfach eingehen; nicht für die native Eingangsadresse, Postfächer von Microsoft 365 oder Weiterleitungen aus Outlook.",
     "enableAutoresponse": "Senden Sie eine automatische Antwort zur Bestätigung neuer E-Mail-Tickets",
     "editEmailTemplates": "Die Bestätigungs-E-Mail wird unter E-Mail-Vorlagen bearbeitet.",
     "editEmailTemplatesLink": "E-Mail-Vorlagen bearbeiten",
@@ -1496,7 +1503,28 @@
     "namePlaceholder": "Unterstützung",
     "connect": "Verbinden",
     "credentialOrg": "Anmeldedaten: Google Workspace-Verbindung von {{org}}",
-    "credentialOrgUnknown": "eine Organisation, die Sie nicht sehen können"
+    "credentialOrgUnknown": "eine Organisation, die Sie nicht sehen können",
+    "handling": {
+      "off": "Aus: E-Mails bleiben im Posteingang, nachdem daraus ein Ticket wurde.",
+      "onArchive": "E-Mails, aus denen ein Ticket wird, erhalten das Gmail-Label \"{{label}}\" und werden aus dem Posteingang archiviert.",
+      "onLabelOnly": "E-Mails, aus denen ein Ticket wird, erhalten das Gmail-Label \"{{label}}\" und bleiben im Posteingang.",
+      "edit": "E-Mail-Behandlung ändern",
+      "labelField": "Gmail-Label für E-Mails mit Ticket (leer lassen zum Ausschalten)",
+      "labelPlaceholder": "Breeze/Ticket",
+      "archiveField": "Zusätzlich archivieren (aus dem Posteingang entfernen)",
+      "scopeNote": "Für das Labeln wird dieser zusätzliche Bereich in der domänenweiten Delegierung der Organisation benötigt. Das Lesen von E-Mails braucht ihn nicht, der Abruf funktioniert also auch ohne ihn.",
+      "saved": "E-Mail-Behandlung gespeichert",
+      "saveFailed": "E-Mail-Behandlung konnte nicht gespeichert werden.",
+      "error": {
+        "access_denied": "Labeln fehlgeschlagen: Google hat den Zugriff verweigert. Fügen Sie den Bereich gmail.modify zur domänenweiten Delegierung hinzu.",
+        "rate_limited": "Labeln fehlgeschlagen: Gmail-Ratenlimit erreicht. Neue E-Mails werden erneut versucht.",
+        "unavailable": "Labeln fehlgeschlagen: Gmail hat nicht rechtzeitig geantwortet. Neue E-Mails werden erneut versucht.",
+        "label_invalid": "Labeln fehlgeschlagen: Dieses Label kann nicht verwendet werden. Wählen Sie einen anderen Namen.",
+        "no_credential": "Labeln fehlgeschlagen: Die Google Workspace-Verbindung dieser Organisation fehlt oder ist inaktiv. Verbinden Sie sie unter Integrationen erneut.",
+        "not_queued": "Labeln übersprungen: Die Label-Warteschlange war nicht verfügbar oder voll, daher blieben einige E-Mails, aus denen ein Ticket wurde, ohne Label im Posteingang. Neue E-Mails werden erneut versucht.",
+        "failed": "Labeln fehlgeschlagen. Die E-Mail bleibt im Posteingang."
+      }
+    }
   },
   "orgApprovalSecurityTab": {
     "title": "Genehmigungssicherheit",
@@ -1863,6 +1891,10 @@
         "enableLifecycle": {
           "label": "Hardware-Lebenszyklus",
           "description": "Zeigt den aktuellen Austauschplan für die Geräte Ihres Kunden."
+        },
+        "enableHardwareHealth": {
+          "label": "Hardware-Zustand",
+          "description": "Zeigt Komponentenzustand, Ereignisse, Laufwerke und Akku der Geräte Ihres Kunden an."
         },
         "enableNetworkVisibility": {
           "label": "Netzwerksichtbarkeit",
@@ -6548,5 +6580,19 @@
     "sourceDefault": "Produktstandard",
     "range": "Wählen Sie {{min}}-{{max}} Minuten.",
     "save": "Speichern"
+  },
+  "ticketPushover": {
+    "title": "Pushover für Ticketzuweisungen",
+    "description": "Hinterlegen Sie Ihren Pushover-Benutzerschlüssel, um eine Push-Nachricht zu erhalten, wenn Ihnen ein Ticket zugewiesen wird. Nur Sie erhalten sie. Ihr MSP muss unter Benachrichtigungen ein Pushover-Anwendungstoken hinterlegt haben.",
+    "statusSet": "Ein Pushover-Schlüssel ist gespeichert.",
+    "statusNotSet": "Kein Pushover-Schlüssel gespeichert.",
+    "placeholder": "30-stelliger Pushover-Benutzerschlüssel",
+    "save": "Schlüssel speichern",
+    "remove": "Schlüssel entfernen",
+    "saved": "Pushover-Schlüssel gespeichert.",
+    "removed": "Pushover-Schlüssel entfernt.",
+    "invalidKey": "Ein Pushover-Benutzerschlüssel besteht aus 30 Buchstaben oder Ziffern.",
+    "loadFailed": "Ihre Pushover-Einstellung konnte nicht geladen werden.",
+    "saveFailed": "Ihre Pushover-Einstellung konnte nicht gespeichert werden."
   }
 }

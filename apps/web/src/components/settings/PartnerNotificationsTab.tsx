@@ -184,6 +184,19 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
             </select>
           </div>
         </div>
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={data.pushoverTicketAssignmentFallback === true}
+            onChange={e => set({ pushoverTicketAssignmentFallback: e.target.checked })}
+            className="mt-0.5"
+            data-testid="partner-notifications-pushover-ticket-assignment-fallback"
+          />
+          <span>
+            <span className="font-medium">{t('partnerNotifications.pushoverTicketAssignmentFallback')}</span>
+            <span className="block text-xs text-muted-foreground">{t('partnerNotifications.pushoverTicketAssignmentFallbackHelp')}</span>
+          </span>
+        </label>
       </div>
     </div>
   );

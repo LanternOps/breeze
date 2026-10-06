@@ -95,6 +95,8 @@ export const WORKER_FAILURE_REASONS = [
   'm365_sync_throttled',
   /** scriptReviewWorker: the proposal row was not found/visible (#7128). */
   'script_review_proposal_not_visible',
+  /** gmailMarkHandledWorker: transient Gmail failure, already recorded on the mailbox; retrying with backoff. */
+  'gmail_mark_retry',
 ] as const;
 
 export type WorkerFailureReason = (typeof WORKER_FAILURE_REASONS)[number];

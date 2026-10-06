@@ -11,10 +11,12 @@ import { redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
 const config = buildServerApiConfig(Astro.request);
 // The dashboard rides along only for `timezone` (the network DTOs carry no
 // zone, same as the backups page); its failure is not the page's failure.
-const [response, assets, dashboard] = await Promise.all([
+const [response, assets, dashboard, siteList] = await Promise.all([
   portalApi.getNetworkOverview(config),
   portalApi.getNetworkAssets({ page: 1, limit: 50 }, config),
   portalApi.getDashboard(config),
+  // Site filter options; failure just hides the filter.
+  portalApi.getNetworkSites(config),
 ]);
 const timezone = dashboard.data?.timezone ?? 'UTC';
 
@@ -47,6 +49,7 @@ if (response.data?.dataStatus === 'not_enabled' || assets.data?.dataStatus === '
       hash-driven filters and paging run. */}
   <NetworkAssetTable
     initial={assets.data ?? null}
+    sites={siteList.data?.data ?? []}
     timezone={timezone}
     error={assets.error}
     client:load
