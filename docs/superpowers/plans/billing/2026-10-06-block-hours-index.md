@@ -299,8 +299,10 @@ export async function runHourBlockCloseOutSweep(asOf?: Date): Promise<{ contract
 `apps/api/src/services/contractHourBlockEstimate.ts` (new, W03):
 
 ```ts
-/** Live figures for the OPEN period of one block line. Caller supplies a SYSTEM
- *  db context (time_entries is partner-axis RLS); this function opens none. */
+/** Live figures for the OPEN period of one block line. Caller supplies a SYSTEM or a
+ *  PARTNER-scoped db context for the owning partner (time_entries RLS is
+ *  `system OR breeze_has_partner_access(partner_id)`); it opens none, and THROWS
+ *  under org scope or no context rather than reporting zero hours used. */
 export async function computeOpenHourBlockPeriod(
   contract: typeof contracts.$inferSelect,
   line: typeof contractLines.$inferSelect,
@@ -317,7 +319,7 @@ Changes to existing services (owner wave):
 
 | Symbol | File | Wave | Change |
 |---|---|---|---|
-| `resolveLineQty` | `contractService.ts:674` | W01 fail-closed arm → **W03** fee-only arm `{counted:1,billed:1,included:null,overage:0,overageMode:null}`, `live:false` | |
+| `resolveLineQty` | `contractService.ts:674` | W01 fail-closed arm → **W03** fee-only arm `{counted:1,billed:1,included:null,overage:0,overageMode:null}`, `live:false`; a **retired** line returns all zeros (no fee in estimate/list/MRR, matching W02's billing skip) | |
 | `generateDueInvoice` switch | `contractService.ts:2101` | W01 fail-closed → **W02**: `case 'hour_block'` bills fee only (`applyAllowance(1, NO_ALLOWANCE, 'single_block')`) and **skips retired lines**; after the claim (step 3) and before the outcomes insert, calls `closeHourBlockPeriods` for each `hour_block` line | |
 | `GenerateResult` | `contractService.ts:1940` | W02 | `+ hourBlockCloses: HourBlockCloseSummary[]` (always present, `[]`), and `+ hourBlockCloseTruncated: boolean` |
 | expire (×2) / `cancelContract` | `contractService.ts:2031`, `:2196`, `:1870` | W02 | stamp `hour_block_retired_at = now()` on the contract's live block lines in the same statement batch |
@@ -352,9 +354,17 @@ export interface HourBlockEstimate {
 
 - Periods are the contract's billing periods: `computePeriod(startDate, intervalMonths, idx)`
   (`contractMath.ts:30`), half-open `[periodStart, periodEnd)`.
-- `hour_block_first_period_start` = `computePeriod(start, interval, k).periodStart` for the
-  smallest `k` with `periodStart >= today` (contract-local `todayISO`). On a **draft** contract whose
-  `startDate >= today` that is the contract's first period.
+- `hour_block_first_period_start` = **the first period whose block fee has not yet been claimed** —
+  entitlement starts exactly where the fee starts (refined at plan time from the spec's "first period
+  starting >= today", which under-delivers on arrears: the in-progress arrears period is still
+  unclaimed and is billed the block fee at its end).
+  - **active** contract: `duePeriodStartFor(billingTiming, nextBillingAt, intervalMonths)`
+    (`contractMath.ts:74`) — advance: the next period (the current one was claimed without the fee);
+    arrears: the period in progress.
+  - **draft** contract: provisional stamp = the contract's first period; **re-stamped inside
+    `activateContract`** (`contractService.ts:1815`) to the first period activation will claim
+    (`duePeriodStartFor` over the `nextBillingAt` it sets), in the same transaction.
+  - "today" is UTC (`todayISO`, moved to `contractMath.ts` by W03); contracts carry no timezone.
 - Entry eligibility for a period (the claim query, W02): `org_id = contract.org_id AND is_billable
   AND billing_status = 'not_billed' AND ended_at IS NOT NULL AND ended_at >= periodStart::timestamptz
   AND ended_at < periodEnd::timestamptz`, `ORDER BY id FOR UPDATE`; minutes =

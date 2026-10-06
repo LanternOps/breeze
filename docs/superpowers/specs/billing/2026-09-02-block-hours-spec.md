@@ -28,7 +28,9 @@ These override the text below wherever they conflict. Full rationale and file:li
 7. **Block overage is not added to the device-evidence totals** (`contract_billing_period_outcomes` counts are integers); closes are reported as `GenerateResult.hourBlockCloses` and evidenced by `contract_hour_periods`, which gains `foreign_currency_hours` (Decision 8 flag), `entry_count` and `close_source`.
 8. **Portal card lives in the existing Support usage panel** *(OD 12)*, behind its own fail-closed `enable_hour_block` flag (Decision 7 A), outside "Enable all".
 9. **Prerequisites met:** #4596 composite `time_entries_org_partner_fk` shipped (the "pre-existing gap" paragraph below is closed); `billable_minutes` shipped; `resolveLineQty` is now exhaustive (`contractService.ts:704`).
-10. **Migrations** are renamed to sort after the current ceiling (`2026-12-13-110200-…`): `2026-12-14-1000NN-…` (W01) and `2026-12-14-1300NN-…` (W04); the `portal_branding` column moves to W04.
+10. **`hour_block_first_period_start` = the first period whose block fee is not yet claimed** (refines §1's "first period starting on or after today", which on an arrears contract would bill the fee for the in-progress period without entitling its hours). Active: `duePeriodStartFor(timing, nextBillingAt, interval)`; draft: re-stamped at activation. Entitlement and fee always start together.
+11. **Org merge refuses when both organizations have a live block** *(OD 14)* — the one-live-block index would otherwise fail mid-merge.
+12. **Migrations** are renamed to sort after the current ceiling (`2026-12-13-110200-…`): `2026-12-14-1000NN-…` (W01) and `2026-12-14-1300NN-…` (W04); the `portal_branding` column moves to W04.
 
 ## Problem
 
