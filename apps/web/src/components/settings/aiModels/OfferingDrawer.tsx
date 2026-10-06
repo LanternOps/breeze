@@ -174,11 +174,13 @@ export interface OfferingDrawerProps {
   offering: AiOfferingDto;
   /** Every offering in the snapshot (the refusal-fallback candidates). */
   offerings: AiOfferingDto[];
+  /** The offering's connection is managed by the MCP_LLM_* environment: its name and price are read-only (the API refuses them with 409 managed_by_env). */
+  envManaged?: boolean;
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }
 
-export default function OfferingDrawer({ offering, offerings, onClose, onSaved }: OfferingDrawerProps) {
+export default function OfferingDrawer({ offering, offerings, envManaged = false, onClose, onSaved }: OfferingDrawerProps) {
   const { t } = useTranslation('settings');
   const initial = useMemo(() => draftFrom(offering), [offering]);
   const [draft, setDraft] = useState<Draft>(initial);
@@ -269,17 +271,22 @@ export default function OfferingDrawer({ offering, offerings, onClose, onSaved }
     <Drawer open onClose={onClose} title={offering.displayName}
       dataTestId="ai-offering-drawer" closeDisabled={saving}>
       <div className="space-y-5">
+        {envManaged && (
+          <p data-testid="ai-offering-env-managed" className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            {t('aiModels.offering.envManaged')}
+          </p>
+        )}
         <div className="space-y-1">
           <label className="text-sm font-medium" htmlFor="ai-offering-display-name">{t('aiModels.offering.displayName')}</label>
           <input id="ai-offering-display-name" data-testid="ai-offering-display-name" className={inputClass} maxLength={120}
-            value={draft.displayName} placeholder={offering.displayName} disabled={saving}
+            value={draft.displayName} placeholder={offering.displayName} disabled={saving || envManaged}
             onChange={(e) => set({ displayName: e.target.value })} />
           <p className="text-xs text-muted-foreground">{t('aiModels.offering.displayNameHint', { modelId: offering.modelId })}</p>
         </div>
 
         <fieldset className="space-y-2" disabled={saving}>
           <legend className="text-sm font-medium">{t('aiModels.offering.pricesTitle')}</legend>
-          {offering.pricesEditable ? (
+          {offering.pricesEditable && !envManaged ? (
             <>
               <p className="text-xs text-muted-foreground">{t('aiModels.offering.pricesHint')}</p>
               <div className="grid grid-cols-2 gap-2">

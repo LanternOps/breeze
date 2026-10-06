@@ -456,6 +456,7 @@
     "offering": {
       "displayName": "Display name",
       "displayNameHint": "Leave blank to use the provider’s name. Model id: {{modelId}}",
+      "envManaged": "This model is managed by the MCP_LLM_* environment variables. Its name and price are set there and can’t be changed here.",
       "pricesTitle": "Price",
       "pricesHint": "Cents per 1M tokens. Fill in all four, or leave all blank for no price (the model then cannot be enabled).",
       "prices": {

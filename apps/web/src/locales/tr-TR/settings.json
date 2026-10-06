@@ -456,6 +456,7 @@
     "offering": {
       "displayName": "Görünen ad",
       "displayNameHint": "Sağlayıcının adını kullanmak için boş bırakın. Model kimliği: {{modelId}}",
+      "envManaged": "Bu model MCP_LLM_* ortam değişkenleriyle yönetiliyor. Adı ve fiyatı orada belirlenir ve burada değiştirilemez.",
       "pricesTitle": "Fiyat",
       "pricesHint": "1 milyon token başına sent. Dördünü de doldurun veya fiyatsız bırakmak için hepsini boş bırakın (model etkinleştirilemez).",
       "prices": {

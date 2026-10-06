@@ -456,6 +456,7 @@
     "offering": {
       "displayName": "Nom affiché",
       "displayNameHint": "Laissez vide pour utiliser le nom du fournisseur. Identifiant du modèle : {{modelId}}",
+      "envManaged": "Ce modèle est géré par les variables d'environnement MCP_LLM_*. Son nom et son prix y sont définis et ne peuvent pas être modifiés ici.",
       "pricesTitle": "Prix",
       "pricesHint": "Centimes par million de jetons. Renseignez les quatre ou laissez-les vides pour aucun prix (le modèle ne pourra alors pas être activé).",
       "prices": {
