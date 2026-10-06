@@ -148,6 +148,26 @@ describe('ConnectionDrawer', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
+  describe('gateway create reports whether discovery was queued (#7781)', () => {
+    const create = async (discoveryQueued: boolean) => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ id: CONN, discoveryQueued }, 201));
+      const onClose = vi.fn();
+      render(<ConnectionDrawer connection={null} catalog={[]} catalogEnabled={false} initialKind="openai_compatible" onClose={onClose} onSaved={vi.fn()} />);
+      fireEvent.change(screen.getByTestId('ai-connection-openai-name'), { target: { value: 'Office vLLM' } });
+      fireEvent.change(screen.getByTestId('ai-connection-openai-base-url'), { target: { value: 'https://llm.example.com/v1' } });
+      fireEvent.click(screen.getByTestId('ai-connection-save'));
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+    };
+    it('says models are being discovered when queued', async () => {
+      await create(true);
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringMatching(/discover/i) }));
+    });
+    it('says discovery could not be queued, and to Refresh, when not', async () => {
+      await create(false);
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringMatching(/refresh/i) }));
+    });
+  });
+
   it('disconnect asks for confirmation (no window.confirm) then DELETEs', async () => {
     fetchWithAuth.mockResolvedValueOnce(jsonRes({ deleted: true }));
     const confirmSpy = vi.spyOn(window, 'confirm');
