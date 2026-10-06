@@ -13,11 +13,23 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { orgRoutes, createOrganizationSchema, updateOrganizationSchema } from './orgs';
 
+beforeEach(() => {
+  defaultAssigneeSettingsErrorMock.mockReset();
+  defaultAssigneeSettingsErrorMock.mockResolvedValue(null);
+  listAssignableMock.mockReset();
+});
+
 vi.mock('../services', () => ({}));
 
-const { isAssignableInboundDefaultUserMock } = vi.hoisted(() => ({ isAssignableInboundDefaultUserMock: vi.fn() }));
+const { isAssignableInboundDefaultUserMock, listAssignableMock, defaultAssigneeSettingsErrorMock } = vi.hoisted(() => ({
+  isAssignableInboundDefaultUserMock: vi.fn(),
+  listAssignableMock: vi.fn(),
+  defaultAssigneeSettingsErrorMock: vi.fn(),
+}));
 vi.mock('../services/inboundEmail/defaultAssigneeEligibility', () => ({
   isAssignableInboundDefaultUser: isAssignableInboundDefaultUserMock,
+  listAssignableInboundDefaultUsers: listAssignableMock,
+  defaultAssigneeSettingsError: defaultAssigneeSettingsErrorMock,
 }));
 
 vi.mock('../services/sentry', () => ({
@@ -621,6 +633,23 @@ describe('org routes', () => {
   });
 
   describe('POST /orgs/partners', () => {
+    it('refuses a default inbound assignee on a partner that has no members yet', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) })
+      } as any);
+      defaultAssigneeSettingsErrorMock.mockResolvedValue('nope');
+
+      const res = await app.request('/orgs/partners', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Partner', slug: 'newp', settings: { ticketing: { inbound: { defaultAssigneeUserId: '44444444-4444-4444-8444-444444444444' } } } })
+      });
+
+      expect(res.status).toBe(400);
+      expect(defaultAssigneeSettingsErrorMock.mock.calls[0]!.slice(1)).toEqual([null, null]);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
     it("returns 409 when the new slug collides with an existing partner's inbound local part", async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
@@ -905,6 +934,30 @@ describe('org routes', () => {
   });
 
   describe('PATCH /orgs/partners/:id', () => {
+    it('refuses a default inbound assignee the partner cannot assign (free-form settings)', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-1', settings: { ticketing: { inbound: { defaultAssigneeUserId: null } } } }])
+          })
+        })
+      } as any);
+      defaultAssigneeSettingsErrorMock.mockResolvedValue('nope');
+      const settings = { ticketing: { inbound: { defaultAssigneeUserId: '44444444-4444-4444-8444-444444444444' } } };
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings })
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('DEFAULT_ASSIGNEE_NOT_ASSIGNABLE');
+      // Checked against THIS partner and the stored value (an unchanged value passes).
+      expect(defaultAssigneeSettingsErrorMock).toHaveBeenCalledWith(expect.objectContaining(settings), null, 'partner-1');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     it('should reject empty updates', async () => {
       const res = await app.request('/orgs/partners/partner-1', {
         method: 'PATCH',
@@ -1856,6 +1909,26 @@ describe('org routes', () => {
         expect(res.status).toBe(200);
         expect(isAssignableInboundDefaultUserMock).not.toHaveBeenCalled();
         expect(getCaptured().settings.ticketing.inbound.defaultAssigneeUserId).toBeNull();
+      });
+
+      it('lists default-assignee candidates for a full-access partner admin', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        listAssignableMock.mockResolvedValue([{ id: USER, name: 'Tess', email: 't@msp.example' }]);
+
+        const res = await app.request('/orgs/partners/me/default-assignee-candidates');
+
+        expect(res.status).toBe(200);
+        expect((await res.json()).data).toEqual([{ id: USER, name: 'Tess', email: 't@msp.example' }]);
+        expect(listAssignableMock).toHaveBeenCalledWith('partner-123');
+      });
+
+      it('refuses the candidate list to a partner user without full partner access (403)', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', partnerOrgAccess: 'selected' });
+
+        const res = await app.request('/orgs/partners/me/default-assignee-candidates');
+
+        expect(res.status).toBe(403);
+        expect(listAssignableMock).not.toHaveBeenCalled();
       });
 
       it('rejects a value that is not a uuid at the schema (400)', async () => {

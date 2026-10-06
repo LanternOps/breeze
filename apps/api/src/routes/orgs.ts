@@ -32,7 +32,7 @@ import { normalizeAlertThresholds } from '../services/aiBudgetAlerts';
 import { enqueueAiBudgetEvaluationForPartner } from '../jobs/aiBudgetAlertDelivery';
 import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
-import { isAssignableInboundDefaultUser } from '../services/inboundEmail/defaultAssigneeEligibility';
+import { defaultAssigneeSettingsError, isAssignableInboundDefaultUser, listAssignableInboundDefaultUsers } from '../services/inboundEmail/defaultAssigneeEligibility';
 import {
   restoreOrganizationTenantAccess,
   restorePartnerTenantAccess,
@@ -593,6 +593,12 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
   // otherwise it mints `{}`-settings partners that the inbound readers' legacy
   // absent-means-enabled fallback treats as opted IN (the #3608 regression).
   data.settings = applyNewPartnerDefaultSettings(data.settings);
+  // A partner being created has no members, so it cannot have a default
+  // inbound assignee yet (settings is free-form on this system route).
+  const createAssigneeError = await defaultAssigneeSettingsError(data.settings, null, null);
+  if (createAssigneeError) {
+    return c.json({ error: createAssigneeError, code: 'DEFAULT_ASSIGNEE_NOT_ASSIGNABLE' }, 400);
+  }
   const createSecrets = resolveIncomingSettingsSecrets(data.settings, undefined);
   if (!createSecrets.ok) {
     return c.json({ error: createSecrets.error }, 400);
@@ -1001,6 +1007,24 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOr
 
   return c.json(withMaskedSettings(partner));
 });
+
+// Candidates for the Inbound email card's default-assignee picker. Gated like
+// the PATCH that saves the setting (minus MFA, which gates writes), so anyone
+// who can save it can list who it accepts, without needing users:read.
+orgRoutes.get(
+  '/partners/me/default-assignee-candidates',
+  requireScope('partner'),
+  requirePartner,
+  requireOrgWrite,
+  async (c) => {
+    const auth = c.get('auth');
+    if (!canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: 'Full partner access required', code: ERROR_CODES.ACCESS_DENIED }, 403);
+    }
+    const data = await listAssignableInboundDefaultUsers(auth.partnerId as string);
+    return c.json({ data });
+  },
+);
 
 orgRoutes.get('/partners/me/ip-allowlist/status', requireScope('partner'), requirePartner, requireOrgRead, async (c) => {
   const auth = c.get('auth');
@@ -1428,6 +1452,17 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
         const next = updates.settings as Record<string, unknown>;
         const stored = (currentPartner.settings as Record<string, unknown> | null)?.ai;
         if (stored === undefined) delete next.ai; else next.ai = stored;
+
+        // Same contract as PATCH /partners/me: a CHANGED default inbound
+        // assignee must be an assignable member of THIS partner.
+        const assigneeError = await defaultAssigneeSettingsError(
+          next,
+          readTicketingInboundSettings(currentPartner.settings).settings.defaultAssigneeUserId ?? null,
+          id,
+        );
+        if (assigneeError) {
+          return c.json({ error: assigneeError, code: 'DEFAULT_ASSIGNEE_NOT_ASSIGNABLE' }, 400);
+        }
       }
 
       // Keep the first-class `partners.timezone` column in sync with the

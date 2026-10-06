@@ -52,13 +52,12 @@ interface OrgOption {
   name: string;
 }
 
-// A row from GET /users (partner scope lists partner_users members).
+// A row from GET /orgs/partners/me/default-assignee-candidates: exactly the
+// users the API accepts as the default assignee.
 interface AssigneeOption {
   id: string;
   name: string | null;
   email: string;
-  status?: string;
-  orgAccess?: 'all' | 'selected' | 'none';
 }
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
@@ -104,17 +103,14 @@ export default function InboundEmailCard() {
     }
   }, []);
 
-  // Candidates for the default assignee: active partner members with access to
-  // at least one org. The API re-validates the pick on save.
+  // Candidates for the default assignee, filtered server-side by the same
+  // rule the save enforces (active member, org access, ticket permission).
   const loadAssignees = useCallback(async () => {
     try {
-      const res = await fetchWithAuth('/users');
+      const res = await fetchWithAuth('/orgs/partners/me/default-assignee-candidates');
       if (!res.ok) return;
-      const body = (await res.json()) as { data?: AssigneeOption[] } | AssigneeOption[];
-      const rows = Array.isArray(body) ? body : body.data;
-      if (Array.isArray(rows)) {
-        setAssignees(rows.filter((u) => u.id && u.status === 'active' && u.orgAccess !== 'none'));
-      }
+      const body = (await res.json()) as { data?: AssigneeOption[] };
+      if (Array.isArray(body.data)) setAssignees(body.data.filter((u) => u.id));
     } catch {
       // Degrade silently: the picker then lists only the current value.
     }

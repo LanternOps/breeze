@@ -58,18 +58,14 @@ const CFG: CfgShape = {
   domainConfigured: true,
 };
 
-// GET /users (partner scope): one assignable member, one disabled user and one
-// member with no org access. Only the first may appear in the picker.
-const USERS = [
-  { id: 'u-1', name: 'Tess Tech', email: 'tess@msp.example', status: 'active', orgAccess: 'all' },
-  { id: 'u-2', name: 'Old Hand', email: 'old@msp.example', status: 'disabled', orgAccess: 'all' },
-  { id: 'u-3', name: 'No Access', email: 'none@msp.example', status: 'active', orgAccess: 'none' },
-];
+// GET /orgs/partners/me/default-assignee-candidates: the server already
+// filtered to users the save accepts.
+const CANDIDATES = [{ id: 'u-1', name: 'Tess Tech', email: 'tess@msp.example' }];
 
 function routeFetch(cfg: CfgShape = CFG) {
   fetchWithAuth.mockImplementation((url: string) => {
     if (url === '/ticket-config') return Promise.resolve(jsonRes({ data: { inbound: cfg } }));
-    if (url === '/users') return Promise.resolve(jsonRes({ data: USERS }));
+    if (url === '/orgs/partners/me/default-assignee-candidates') return Promise.resolve(jsonRes({ data: CANDIDATES }));
     if (url === '/orgs/organizations?page=1&limit=100')
       return Promise.resolve(jsonRes({ data: [{ id: 'o-1', name: 'Acme Org' }] }));
     if (url === '/orgs/partners/me') return Promise.resolve(jsonRes({ id: 'p-1' }));
@@ -180,13 +176,28 @@ describe('InboundEmailCard', () => {
     expect(lastInboundPatch().staffForwardRouting).toBe(true);
   });
 
-  it('lists only active members with org access as default-assignee choices', async () => {
+  it('offers exactly the server-side candidates, not the general user list', async () => {
     routeFetch();
     render(<InboundEmailCard />);
     await screen.findByTestId('inbound-email-card');
     const picker = screen.getByTestId('inbound-default-assignee') as HTMLSelectElement;
     await waitFor(() => expect(Array.from(picker.options).map((o) => o.value)).toEqual(['', 'u-1']));
     expect(picker.value).toBe('');
+    expect(fetchWithAuth).not.toHaveBeenCalledWith('/users', expect.anything());
+    expect(fetchWithAuth.mock.calls.some((c) => c[0] === '/users')).toBe(false);
+  });
+
+  it('keeps working when the candidate list cannot be loaded', async () => {
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url === '/ticket-config') return Promise.resolve(jsonRes({ data: { inbound: { ...CFG, defaultAssigneeUserId: 'u-9' } } }));
+      if (url === '/orgs/partners/me/default-assignee-candidates') return Promise.resolve(jsonRes({ error: 'x' }, false, 403));
+      return Promise.resolve(jsonRes({ data: [] }));
+    });
+    render(<InboundEmailCard />);
+    await screen.findByTestId('inbound-email-card');
+    const picker = screen.getByTestId('inbound-default-assignee') as HTMLSelectElement;
+    expect(Array.from(picker.options).map((o) => o.value)).toEqual(['', 'u-9']);
+    expect(picker.value).toBe('u-9');
   });
 
   it('picking a default assignee PATCHes defaultAssigneeUserId in the complete inbound object', async () => {

@@ -56,7 +56,11 @@ import { publishOutboxRows } from '../../jobs/ticketOutboxPublisher';
 import { handleTicketEvent } from '../../jobs/ticketNotifyWorker';
 import { assignTicket } from '../../services/ticketService';
 import type { TicketEvent } from '../../services/ticketEvents';
-import { isAssignableInboundDefaultUser } from '../../services/inboundEmail/defaultAssigneeEligibility';
+import {
+  defaultAssigneeSettingsError,
+  isAssignableInboundDefaultUser,
+  listAssignableInboundDefaultUsers,
+} from '../../services/inboundEmail/defaultAssigneeEligibility';
 import { processInboundEmail } from '../../services/inboundEmail/inboundEmailService';
 import { normalizeGmailMessage } from '../../services/ticketMailbox/normalizeGmailMessage';
 import {
@@ -217,6 +221,32 @@ describe('default inbound assignee (real DB)', () => {
     expect(await check(u.foreign.id, fx.otherPartnerId)).toBe(true);
     expect(await check(u.foreign.id)).toBe(false);
     expect(await check(u.foreignLinked.id)).toBe(false);
+  });
+
+  runDb('the picker lists exactly the users the save accepts', async () => {
+    const fx = await seed();
+    const u = fx.users;
+    const listed = await withSystemDbAccessContext(() => listAssignableInboundDefaultUsers(fx.partnerId));
+    expect(listed.map((r) => r.id).sort()).toEqual([u.tech.id, u.otherTech.id, u.scopedOut.id].sort());
+  });
+
+  runDb('system partner writes: a changed value must be assignable for that partner', async () => {
+    const fx = await seed();
+    const u = fx.users;
+    const err = (userId: unknown, current: string | null, partnerId: string | null = fx.partnerId) =>
+      withSystemDbAccessContext(() => defaultAssigneeSettingsError(
+        { ticketing: { inbound: { defaultAssigneeUserId: userId } } }, current, partnerId));
+
+    expect(await err(u.tech.id, null)).toBeNull();
+    expect(await err(null, u.tech.id)).toBeNull();
+    // Unchanged is not re-checked, even for a user who no longer qualifies.
+    expect(await err(u.disabled.id, u.disabled.id)).toBeNull();
+    expect(await err(u.disabled.id, null)).toMatch(/active member/);
+    expect(await err(u.foreign.id, null)).toMatch(/active member/);
+    expect(await err(u.foreignLinked.id, null)).toMatch(/active member/);
+    expect(await err('bob', null)).toMatch(/user id/);
+    // A partner being created has no members.
+    expect(await err(u.tech.id, null, null)).toMatch(/active member/);
   });
 
   runDb('ingest assigns a new ticket and queues ticket.assigned only after the ingest commits', async () => {
