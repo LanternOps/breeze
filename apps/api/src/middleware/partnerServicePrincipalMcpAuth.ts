@@ -7,7 +7,7 @@ import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { validateApiKeyScopeDelegation } from '../services/apiKeyScopes';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
-import { getUserPermissions, type UserPermissions } from '../services/permissions';
+import { getUserPermissions, runWithUncachedPermissionsFor, type UserPermissions } from '../services/permissions';
 import {
   PARTNER_SERVICE_PRINCIPAL_MCP_READ_REQUIRED_ERROR,
   partnerServicePrincipalMcpScopes,
@@ -231,8 +231,10 @@ export async function partnerServicePrincipalMcpAuthMiddleware(c: Context, next:
 
   // See MCP_SKIP_AMBIENT_DB_CONTEXT_KEY's doc comment (same contract as the
   // API-key and OAuth bearer middlewares).
+  // Every permission read for the owner in the rest of this request (per-tool
+  // RBAC included) is uncached, matching the owner gate above.
   if (c.get(MCP_SKIP_AMBIENT_DB_CONTEXT_KEY) === true) {
-    await next();
+    await runWithUncachedPermissionsFor(ownerUserId, () => next());
     return;
   }
 
@@ -250,7 +252,7 @@ export async function partnerServicePrincipalMcpAuthMiddleware(c: Context, next:
       currentPartnerId: credential.partnerId,
     },
     async () => {
-      await next();
+      await runWithUncachedPermissionsFor(ownerUserId, () => next());
     },
   );
 }

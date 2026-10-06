@@ -41,6 +41,7 @@ import {
   partnerServicePrincipals,
   partnerUsers,
   partners,
+  permissions,
   rolePermissions,
   users,
 } from '../../db/schema';
@@ -351,6 +352,35 @@ describe('partner service principal key on MCP: fail closed', () => {
     await getTestDb().delete(rolePermissions).where(eq(rolePermissions.roleId, p.role.id));
     await grantRolePermissions(p.role.id, READ_ONLY_ROLE_PERMS);
     expect((await mcp(p.key.rawKey, 'tools/list')).status).toBe(401);
+  });
+
+  it('per-tool RBAC in the same request also ignores a stale cache: a removed tool permission is denied', async () => {
+    // Owner keeps the full ai:read baseline (so the owner gate still passes)
+    // plus tickets:read; only tickets:read is then removed, with NO cache
+    // invalidation (a lost cross-process invalidation).
+    const partner = await createPartner();
+    await createOrganization({ partnerId: partner.id });
+    const { owner, role } = await partnerOwner(partner.id, [...READ_ONLY_ROLE_PERMS, { resource: 'tickets', action: 'read' }]);
+    const principal = await insertPrincipal({ partnerId: partner.id, ownerId: owner.id, scopes: ['ai:read'] });
+    const key = await insertKey({ partnerId: partner.id, principalId: principal.id, createdBy: owner.id });
+
+    // Warm this process's cache for the owner via the tool path.
+    const { getUserPermissions } = await import('../../services/permissions');
+    expect(await getUserPermissions(owner.id, { partnerId: partner.id })).not.toBeNull();
+    const before = await callTool(key.rawKey, 'manage_tickets', { action: 'list' });
+    expect(JSON.stringify(before.body)).not.toContain('requires tickets.read');
+
+    const [ticketsRead] = await getTestDb().select({ id: permissions.id }).from(permissions)
+      .where(and(eq(permissions.resource, 'tickets'), eq(permissions.action, 'read'))).limit(1);
+    await getTestDb().delete(rolePermissions)
+      .where(and(eq(rolePermissions.roleId, role.id), eq(rolePermissions.permissionId, ticketsRead!.id)));
+    // The stale entry is still what a plain cached read returns ...
+    const stale = await getUserPermissions(owner.id, { partnerId: partner.id });
+    expect(stale!.permissions.some((perm) => perm.resource === 'tickets' && perm.action === 'read')).toBe(true);
+
+    // ... but the MCP request reads fresh and denies the tool.
+    const after = await callTool(key.rawKey, 'manage_tickets', { action: 'list' });
+    expect(JSON.stringify(after.body)).toContain('requires tickets.read');
   });
 
   it('an unknown well-formed brz_sp_ key is a 401', async () => {

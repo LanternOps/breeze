@@ -192,6 +192,27 @@ async function existingPrincipalMcpDelegationDenial(
   return validateMcpScopeDelegation(c, principal.scopes);
 }
 
+/**
+ * True when a PATCH restores or widens a principal's reach: re-enables it,
+ * removes or extends its expiry, or removes / adds source CIDRs.
+ */
+function patchLoosensPrincipal(
+  input: { status?: 'active' | 'disabled'; sourceCidrs?: string[] },
+  nextExpiresAt: Date | null | undefined,
+  existing: { status: string; expiresAt: Date | null; sourceCidrs: string[] },
+): boolean {
+  if (input.status === 'active' && existing.status !== 'active') return true;
+  if (nextExpiresAt !== undefined && existing.expiresAt !== null) {
+    if (nextExpiresAt === null || nextExpiresAt.getTime() > existing.expiresAt.getTime()) return true;
+  }
+  if (input.sourceCidrs !== undefined) {
+    const before = new Set(existing.sourceCidrs);
+    if (before.size > 0 && input.sourceCidrs.length === 0) return true;
+    if (before.size > 0 && input.sourceCidrs.some((cidr) => !before.has(cidr))) return true;
+  }
+  return false;
+}
+
 function keyError(c: any, error: unknown): Response {
   if (error instanceof PartnerServicePrincipalKeyError) {
     return c.json({ error: error.message, code: error.code }, error.status as 400 | 404 | 409);
@@ -368,11 +389,23 @@ partnerServicePrincipalRoutes.patch(
       scopes: partnerServicePrincipals.scopes,
       sourceCidrs: partnerServicePrincipals.sourceCidrs,
       expiresAt: partnerServicePrincipals.expiresAt,
+      status: partnerServicePrincipals.status,
     }).from(partnerServicePrincipals).where(and(
       eq(partnerServicePrincipals.id, id),
       eq(partnerServicePrincipals.partnerId, resolved.partnerId),
     )).limit(1);
     if (!existing) return c.json({ error: 'Service principal not found' }, 404);
+
+    // Re-enabling the principal or loosening its expiry / source CIDRs restores
+    // or widens the authority of keys that already exist, so it is the same
+    // delegation as issuing one: check the ceiling against the EFFECTIVE MCP
+    // scopes (the existing ones when this PATCH omits scopes). Tightening
+    // (disable, shorter expiry, narrower CIDRs) never needs it, so a lower-
+    // privileged admin can still shut a principal down.
+    if (patchLoosensPrincipal(input, validated.expiresAt, existing)) {
+      const loosenDenial = validateMcpScopeDelegation(c, validated.scopes ?? existing.scopes);
+      if (loosenDenial) return loosenDenial.response;
+    }
 
     const restrictionError = validateEnrollmentWriteRestrictions(c, {
       scopes: validated.scopes ?? existing.scopes,

@@ -334,6 +334,47 @@ describe('service principal management routes', () => {
       expect(res.status).toBe(201);
     });
 
+    const EXISTING_STRONG = {
+      scopes: ['ai:read', 'ai:execute_admin'], sourceCidrs: ['203.0.113.0/24'],
+      expiresAt: new Date(Date.now() + 86_400_000), status: 'disabled',
+    };
+
+    it.each([
+      ['re-enables', { status: 'active' }],
+      ['removes the expiry', { expiresAt: null }],
+      ['extends the expiry', { expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString() }],
+      ['removes the CIDR restriction', { sourceCidrs: [] }],
+      ['adds a CIDR', { sourceCidrs: ['203.0.113.0/24', '198.51.100.0/24'] }],
+    ])('refuses a scope-omitting PATCH that %s a principal the admin cannot delegate', async (_label, body) => {
+      permissionsOf(READ_ONLY);
+      selectRows([EXISTING_STRONG]);
+      const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/ai:execute_admin/);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['disables', { status: 'disabled' }, 'active'],
+      ['shortens the expiry', { expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, 'active'],
+      ['narrows the CIDRs', { sourceCidrs: ['203.0.113.0/25'] }, 'active'],
+    ])('still lets a lower-privileged admin tighten: %s', async (_label, body, status) => {
+      permissionsOf(READ_ONLY);
+      selectRows([{ ...EXISTING_STRONG, status, sourceCidrs: ['203.0.113.0/24', '203.0.113.0/25'] }]);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, name: 'p' }]) })),
+        })),
+      } as any);
+      vi.mocked(db.transaction).mockImplementation(async (callback: any) => callback({ update: db.update }));
+      const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(200);
+    });
+
     it('lets a full admin grant every MCP scope', async () => {
       selectRows([]);
       const returning = vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, name: 'claude-automation', scopes: [] }]);
