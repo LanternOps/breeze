@@ -16,9 +16,9 @@ blast_radius: medium (a customer-facing portal read path that must run in a syst
 
 1. **Flag.** `portal_branding.enable_hour_block boolean NOT NULL DEFAULT false`. Gated by the existing *strict* (fail-closed) portal gate, widened to accept this flag. It is **not** added to `PORTAL_VISIBILITY_FLAG_KEYS`, so "Enable all visibility" never turns it on (precedent: `enableNetworkAlerts`).
 2. **Data.** A new endpoint `GET /portal/support-usage/hour-block` returns `{ hourBlock: PortalHourBlockDto | null }`. The handler reads in a **system** context scoped explicitly to the session's `auth.user.orgId` (the drawdown reads `time_entries`, which is partner-axis: an org-scoped context sees zero rows). It reuses W03's live open-period computation; it never re-derives drawdown.
-3. **Honest buckets.** When the flag is on, the existing Support usage buckets stop calling block-covered hours "to be billed": block-drawn entries and open-period block-eligible entries land in a new `coveredByBlock` bucket. When the flag is off nothing changes.
+3. **Honest buckets.** When the flag is on, the existing Support usage buckets stop calling block-covered hours "to be billed": block-drawn entries and open-period block-eligible entries land in a new `coveredByBlock` bucket, **capped at the period's entitlement**; hours past it are a separate `overBlock` figure ("Over your support hours"). When the flag is off nothing changes. A block that starts next period shows "Your support hours start <date>" instead of a card.
 4. **Card.** `SupportUsagePanel` renders a "Support hours" card above the usage table, only when the portal branding says `enableHourBlock`.
-5. **Alerts.** `runHourBlockAlertSweep()` runs in the contract billing-sweep job **before** `runContractBillingSweep()`. One system transaction per block line; `user_notifications` rows deduped by `hour_block:<lineId>:<periodStart>:<pct>`; one `contract.hour_block_threshold` event per crossing.
+5. **Alerts.** `runHourBlockAlertSweep()` runs **last** in the contract billing-sweep job (renewal → billing → close-out → alerts), so the open period's carried-in balance is fresh, and skips a line whose close is backlogged. One system transaction per block line. A durable Redis `SET NX` marker `hour_block_alert:<lineId>:<periodStart>:<pct>` (dismissing a notification deletes its row, so the inbox cannot remember) is the primary dedupe; `user_notifications.dedupe_key` is the second guard; one `contract.hour_block_threshold` event per newly set marker.
 6. **Docs.** Contracts and Portal pages, plus a release-notes hand-off.
 
 **Tech Stack:** Hono, Drizzle, Postgres, BullMQ, Zod, React (web + portal islands), Astro, Vitest, MDX (Starlight).
@@ -33,7 +33,7 @@ Everything below is **not in the tree at planning time** (W01–W03 are unmerged
 
 | Assumed name | Owner | Signature / shape | Used by |
 |---|---|---|---|
-| `computeOpenHourBlockPeriod` exported from `apps/api/src/services/contractHourBlockEstimate.ts` (index C7) | **W03** (live open-period computation behind `computeContractEstimate(...).hourBlock`) | `(contract: typeof contracts.$inferSelect, line: typeof contractLines.$inferSelect, asOf: Date) => Promise<HourBlockEstimate>`. **Must be called inside a system DB context** (it reads partner-axis `time_entries`). Returns the OPEN period; `consumedHours` includes unapproved entries (Decision 4 A); `remainingHours = max(0, includedHours + carriedInHours − consumedHours)` | Task 2 (`services/portal/hourBlock.ts`), Task 6 (`contractHourBlockAlerts.ts`) |
+| `computeOpenHourBlockPeriod` exported from `apps/api/src/services/contractHourBlockEstimate.ts` (index C7) | **W03** (live open-period computation behind `computeContractEstimate(...).hourBlock`) | `(contract: typeof contracts.$inferSelect, line: typeof contractLines.$inferSelect, asOf: Date) => Promise<HourBlockEstimate>`. **Must be called inside a system OR partner-scoped DB context; it throws under an org scope** (it reads partner-axis `time_entries`; W04 always escapes to system). Returns the OPEN period; `consumedHours` includes unapproved entries (Decision 4 A); `remainingHours = max(0, includedHours + carriedInHours − consumedHours)` | Task 2 (`services/portal/hourBlock.ts`), Task 6 (`contractHourBlockAlerts.ts`) |
 | `HourBlockEstimate` exported from `@breeze/shared` | W03 (index C8) | exactly as C8 | Tasks 2, 6 |
 | `hourBlockHoldWindows` exported from `apps/api/src/services/contractHourBlockClose.ts` | **W02** (index C7) | `(orgId: string, asOf?: Date) => Promise<Array<{ start: Date; end: Date \| null; contractLineId: string }>>`, system context required | Task 3 (`services/portal/hourBlockCoverage.ts`) |
 | `contractLines.hourBlockAlertPct`, `.hourBlockRetiredAt`, `.includedQuantity`, `.overageUnitPrice`, `.hourBlockFirstPeriodStart`, `.rolloverPolicy`, `.overageMode`; `'hour_block'` in the `contractLineTypeEnum` | W01 (index C2) | Drizzle names exactly as in C2 | Tasks 2, 3, 6 and every integration fixture |
@@ -65,8 +65,8 @@ The five failure modes most likely to bite, each pinned by a named test:
 1. **A portal read outside a system context silently reports zero hours used.** `time_entries` is partner-axis (RLS Shape 3); an org-scoped request context sees none, so a card would read "0 of 10 hours used" with no error. *Pinned:* Task 2 integration test `reads real figures from an org-scoped request context that cannot see time_entries` (asserts the org-scoped select returns `[]` **and** the service still returns 5.5 used) plus the unit test `runs the open-period computation inside a system context`.
 2. **Cross-org leak.** The handler trusts anything but the session org, or the DTO carries an identifier or internal figure. *Pinned:* Task 2 unit `ignores every org selector on the request`, Task 2 unit `whitelists the customer-safe keys`, Task 2 integration `org B never sees org A's block`.
 3. **The flag fails open or "Enable all" turns it on.** *Pinned:* Task 1 `featureFlags.test.ts` (`enableHourBlock` 403 on missing row, explicit false, truthy non-boolean), `portalFlags.test.ts` (not in `PORTAL_VISIBILITY_FLAG_KEYS`), Task 2 real-mount tests in `portal.test.ts` (401, 403 auth-then-gate order, 200), Task 4 `Enable all visibility does not turn on Support hours`.
-4. **The customer is told "to be billed" for hours the block already covers, or learns a block exists while the flag is off.** *Pinned:* Task 3 unit buckets (flag on: open-period eligible entries and drawn entries → `coveredByBlock`; flag off: byte-identical to today, no `coveredByBlock` key) and the Task 3 real-DB test.
-5. **Alert storm, double alert, or one bad contract aborting the sweep.** *Pinned:* Task 6 `crosses once → one notification`, `second sweep in the same period writes none`, `changing the threshold alerts again exactly once`, `one failing line does not stop the others` + `opens one system context per block line`, exact integer-cent threshold table, and the real-DB dedupe (the partial-index arbiter trap that only a real database sees).
+4. **The customer is told "to be billed" for hours the block already covers, "covered" for hours that are really overage, or learns a block exists while the flag is off.** *Pinned:* Task 3 unit buckets (flag on: open-period eligible entries and drawn entries → `coveredByBlock` capped at the entitlement with the excess in `overBlock`, both sides of the cap; flag off: byte-identical to today, no block keys) and the Task 3 real-DB test (10 h covered / 2 h over for a 12 h month).
+5. **Alert storm, double alert, a dismissed alert returning, a stale rollover balance, or one bad contract aborting the sweep.** *Pinned:* Task 6 `crosses once → one notification`, `DISMISSING the notification … does not re-fire` (real DB + Redis marker), `second sweep in the same period writes none`, `changing the threshold alerts again exactly once`, the carry_forward rollover-day test (alerts judged after the close, a line with a close backlog skipped), `one failing line does not stop the others` + `opens one system context per block line`, the exact integer-cent threshold table, and the real-DB dedupe (the partial-index arbiter trap that only a real database sees).
 
 ---
 
@@ -101,14 +101,15 @@ Create `apps/api/src/db/portalBrandingHourBlock.migration.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 const FILE = '2026-12-14-130000-portal-branding-enable-hour-block.sql';
-// W01's last migration (index C1). W04 depends on W01 being merged, so this
-// file must exist and must sort before ours.
-const W01_LAST = '2026-12-14-100300-time-entries-contract-line.sql';
+// W01 ships its migrations as 2026-12-14-10NNNN-*.sql (index C1). W04 depends
+// on W01 being merged, so at least one must exist and every one must sort
+// before ours. Listed, not hardcoded: W01 may add or rename a file.
+const W01_PREFIX = '2026-12-14-10';
 
 describe('portal_branding.enable_hour_block migration (block hours W04)', () => {
   it('adds exactly one fail-closed, idempotent column and writes no rows', () => {
@@ -128,9 +129,12 @@ describe('portal_branding.enable_hour_block migration (block hours W04)', () => 
     expect(code).not.toMatch(/\b(UPDATE|INSERT|DELETE|MERGE)\b/i);
   });
 
-  it('sorts after W01 (the wave it depends on)', () => {
-    expect(existsSync(path.join(MIGRATIONS_DIR, W01_LAST))).toBe(true);
-    expect(FILE.localeCompare(W01_LAST)).toBeGreaterThan(0);
+  it('sorts after every W01 migration (the wave it depends on)', () => {
+    const w01 = readdirSync(MIGRATIONS_DIR).filter((f) => f.startsWith(W01_PREFIX) && f.endsWith('.sql'));
+    expect(w01.length).toBeGreaterThan(0); // fails loudly if W01 is not merged
+    for (const file of w01) {
+      expect(FILE.localeCompare(file), `${FILE} must sort after ${file}`).toBeGreaterThan(0);
+    }
   });
 });
 ```
@@ -525,11 +529,19 @@ export interface PortalHourBlockDto {
   currencyCode: string;           // the contract's currency
   billingTiming: 'advance' | 'arrears';
 }
-export interface PortalHourBlockResponse { hourBlock: PortalHourBlockDto | null }
+export interface PortalHourBlockResponse {
+  hourBlock: PortalHourBlockDto | null;
+  /** YYYY-MM-DD. Set (with hourBlock null) when the org's block exists but its
+   *  open period has not started yet (a block added mid-period starts next period). */
+  startsOn: string | null;
+}
 
 // apps/api/src/services/portal/hourBlock.ts
 export function toPortalHourBlockDto(estimate: HourBlockEstimate, currencyCode: string): PortalHourBlockDto;
-export async function portalHourBlockForOrg(args: { orgId: string; asOf?: Date }): Promise<PortalHourBlockDto | null>;
+/** MUST be called inside a system (or partner-scoped) DB context: W03's helper throws under an org scope. Opens no context itself. */
+export async function liveHourBlockForOrg(orgId: string, asOf: Date): Promise<{ estimate: HourBlockEstimate; currencyCode: string } | null>;
+/** Opens its own system context (escaping any request context). */
+export async function portalHourBlockForOrg(args: { orgId: string; asOf?: Date }): Promise<PortalHourBlockResponse>;
 
 // apps/api/src/routes/portal/hourBlock.ts
 export const portalHourBlockRoutes: Hono;   // GET /support-usage/hour-block
@@ -539,7 +551,9 @@ export const portalHourBlockRoutes: Hono;   // GET /support-usage/hour-block
 
 - **Hours plus the overage rate, no computed money.** The card shows hours (facts the customer can reconcile against their own ticket time) and the *contracted overage rate* (a term already printed on every overage invoice line). It does **not** show a projected overage amount: that figure would need tax and rounding rules, would be a promise about an invoice that does not exist yet, and moves whenever an unapproved entry is edited or approved. Adding it later is additive (the estimate already carries `overageValue`).
 - **Separate path, not under `/tickets`.** `/tickets/*` carries the `enable_tickets` gate (`routes/portal/index.ts:87-98`), which Support usage deliberately opts out of via two exact-path wrappers (`:75-82`). A nested path would need a third exemption. `/support-usage/*` is a clean prefix with `auth → enableSupportUsage → enableHourBlock`: the card lives inside the Support usage section, so it requires that section to be on too (two small reads per request; no new exemption).
-- **Envelope.** `{ hourBlock: … | null }` rather than a bare JSON `null`, so ETag/304 handling and the portal client's `data !== undefined` convention keep working.
+- **Envelope.** `{ hourBlock: … | null, startsOn: … | null }` rather than a bare JSON `null`, so ETag/304 handling and the portal client's `data !== undefined` convention keep working.
+- **A block that starts next period.** A block added mid-period has `hour_block_first_period_start` in the future, so its open period begins after today. The endpoint then returns `hourBlock: null` and `startsOn: <first period start>` (the portal renders "Your support hours start <date>") instead of a misleading "0 of 10 hours used" for a period that is not running yet.
+- **Context rule.** W03's open-period helper accepts a system or partner-scoped context and throws under an org scope, so the portal read can never be done from the portal session's own context; it always escapes to system, pinned to the session org by explicit predicates.
 - **Only the active contract's live block shows.** A paused, draft or ended contract, or a retired line, yields `null`: the card is "your current balance", not history.
 - **No `unapprovedHours`.** It is an MSP-side exposure figure (Decision 4 A); `usedHours` already includes it and the customer's existing "Pending review" bucket covers the approval story.
 
@@ -604,7 +618,7 @@ vi.mock('../../db', () => ({
 }));
 vi.mock('../contractHourBlockEstimate', () => ({ computeOpenHourBlockPeriod: computeMock }));
 
-import { portalHourBlockForOrg, toPortalHourBlockDto } from './hourBlock';
+import { liveHourBlockForOrg, portalHourBlockForOrg, toPortalHourBlockDto } from './hourBlock';
 
 const ORG = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
@@ -688,7 +702,7 @@ describe('portalHourBlockForOrg', () => {
 
   it('returns null without computing anything when the org has no live block', async () => {
     state.rows = [];
-    await expect(portalHourBlockForOrg({ orgId: ORG })).resolves.toBeNull();
+    await expect(portalHourBlockForOrg({ orgId: ORG })).resolves.toEqual({ hourBlock: null, startsOn: null });
     expect(computeMock).not.toHaveBeenCalled();
   });
 
@@ -696,14 +710,48 @@ describe('portalHourBlockForOrg', () => {
     state.rows = [{ contract: { id: 'c1', currencyCode: 'EUR' }, line: { id: 'l1' } }];
     const asOf = new Date('2026-12-20T12:00:00Z');
 
-    const dto = await portalHourBlockForOrg({ orgId: ORG, asOf });
+    const res = await portalHourBlockForOrg({ orgId: ORG, asOf });
 
     expect(state.outsideCalls).toBe(1);
     // The partner-axis trap: an org-scoped read of time_entries returns zero
     // rows, so the computation MUST see a system context.
     expect(state.computeSawSystem).toBe(true);
     expect(computeMock).toHaveBeenCalledWith({ id: 'c1', currencyCode: 'EUR' }, { id: 'l1' }, asOf);
-    expect(dto?.currencyCode).toBe('EUR');
+    expect(res.hourBlock?.currencyCode).toBe('EUR');
+    expect(res.startsOn).toBeNull();
+  });
+
+  it('a block whose open period starts AFTER today yields no card but its start date', async () => {
+    state.rows = [{ contract: { id: 'c1', currencyCode: 'USD' }, line: { id: 'l1' } }];
+    computeMock.mockResolvedValue({ ...estimate, periodStart: '2026-12-01', periodEnd: '2027-01-01' });
+
+    const res = await portalHourBlockForOrg({ orgId: ORG, asOf: new Date('2026-11-20T12:00:00Z') });
+
+    expect(res).toEqual({ hourBlock: null, startsOn: '2026-12-01' });
+  });
+
+  it('a period that starts today is already running: the card shows', async () => {
+    state.rows = [{ contract: { id: 'c1', currencyCode: 'USD' }, line: { id: 'l1' } }];
+    computeMock.mockResolvedValue({ ...estimate, periodStart: '2026-12-01', periodEnd: '2027-01-01' });
+
+    const res = await portalHourBlockForOrg({ orgId: ORG, asOf: new Date('2026-12-01T00:30:00Z') });
+
+    expect(res.startsOn).toBeNull();
+    expect(res.hourBlock?.periodStart).toBe('2026-12-01');
+  });
+});
+
+describe('liveHourBlockForOrg', () => {
+  it('opens no context of its own (the caller already holds one; a second would take a second pooled connection)', async () => {
+    vi.clearAllMocks();
+    state.outsideCalls = 0;
+    state.rows = [{ contract: { id: 'c1', currencyCode: 'USD' }, line: { id: 'l1' } }];
+    computeMock.mockResolvedValue(estimate);
+
+    const live = await liveHourBlockForOrg(ORG, new Date('2026-12-20T12:00:00Z'));
+
+    expect(state.outsideCalls).toBe(0);
+    expect(live?.currencyCode).toBe('USD');
   });
 });
 ```
@@ -747,12 +795,13 @@ const dto = {
   usedHours: 4, remainingHours: 6, overageHours: 0, overageRate: '150.00',
   currencyCode: 'USD', billingTiming: 'arrears',
 };
+const response = { hourBlock: dto, startsOn: null };
 
 describe('GET /support-usage/hour-block', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('ignores every org selector on the request — only the session org is read', async () => {
-    forOrgMock.mockResolvedValue(dto);
+    forOrgMock.mockResolvedValue(response);
 
     const res = await buildApp().request(
       `/support-usage/hour-block?orgId=${OTHER_ORG}&org_id=${OTHER_ORG}`,
@@ -764,19 +813,19 @@ describe('GET /support-usage/hour-block', () => {
     expect(forOrgMock).toHaveBeenCalledWith({ orgId: SESSION_ORG });
   });
 
-  it('wraps the DTO in an envelope and answers null (not 404) when the org has no live block', async () => {
-    forOrgMock.mockResolvedValueOnce(dto).mockResolvedValueOnce(null);
+  it('wraps the DTO in an envelope and answers null (not 404), carrying startsOn when the block has not started', async () => {
+    forOrgMock.mockResolvedValueOnce(response).mockResolvedValueOnce({ hourBlock: null, startsOn: '2026-12-01' });
 
     const withBlock = await buildApp().request('/support-usage/hour-block');
-    expect(await withBlock.json()).toEqual({ hourBlock: dto });
+    expect(await withBlock.json()).toEqual(response);
 
     const without = await buildApp().request('/support-usage/hour-block');
     expect(without.status).toBe(200);
-    expect(await without.json()).toEqual({ hourBlock: null });
+    expect(await without.json()).toEqual({ hourBlock: null, startsOn: '2026-12-01' });
   });
 
   it('is privately cached per viewer and honours If-None-Match', async () => {
-    forOrgMock.mockResolvedValue(dto);
+    forOrgMock.mockResolvedValue(response);
 
     const first = await buildApp().request('/support-usage/hour-block');
     expect(first.headers.get('Cache-Control')).toContain('private');
@@ -855,7 +904,7 @@ vi.mock('../services/portal/hourBlock', () => ({
           .mockReturnValueOnce(mockSelectLimit([portalUser]) as any)
           .mockReturnValueOnce(mockSelectLimit([{ enableSupportUsage: true }]) as any)
           .mockReturnValueOnce(mockSelectLimit([{ enableHourBlock: true }]) as any);
-        portalHourBlockForOrgMock.mockResolvedValue(null);
+        portalHourBlockForOrgMock.mockResolvedValue({ hourBlock: null, startsOn: null });
 
         const token = await loginUser();
         const res = await app.request(`${path}?orgId=00000000-0000-4000-8000-000000000000`, {
@@ -863,7 +912,7 @@ vi.mock('../services/portal/hourBlock', () => ({
         });
 
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ hourBlock: null });
+        expect(await res.json()).toEqual({ hourBlock: null, startsOn: null });
         expect(portalHourBlockForOrgMock).toHaveBeenCalledWith({ orgId: portalUser.orgId });
       });
     });
@@ -1063,7 +1112,7 @@ describe('portal hour-block read (block hours W04)', () => {
 
       // ...yet the portal read still sees the real balance because it escapes
       // to a system context pinned to the org.
-      const dto = await portalHourBlockForOrg({ orgId: a.orgId, asOf: AS_OF });
+      const { hourBlock: dto } = await portalHourBlockForOrg({ orgId: a.orgId, asOf: AS_OF });
       expect(dto).toEqual({
         periodStart: '2026-12-01',
         periodEnd: '2027-01-01',
@@ -1087,12 +1136,12 @@ describe('portal hour-block read (block hours W04)', () => {
       entries: [{ minutes: 60 }],
     });
 
-    const forB = await portalHourBlockForOrg({ orgId: b.orgId, asOf: AS_OF });
+    const { hourBlock: forB } = await portalHourBlockForOrg({ orgId: b.orgId, asOf: AS_OF });
     expect(forB).toMatchObject({ includedHours: 4, usedHours: 1, overageRate: '90.00' });
     // Org A's 10.0 used hours and 150.00 rate are nowhere in B's answer.
     expect(JSON.stringify(forB)).not.toContain('150.00');
 
-    const forA = await portalHourBlockForOrg({ orgId: a.orgId, asOf: AS_OF });
+    const { hourBlock: forA } = await portalHourBlockForOrg({ orgId: a.orgId, asOf: AS_OF });
     expect(forA).toMatchObject({ includedHours: 10, usedHours: 10, remainingHours: 0, overageHours: 0 });
 
     const stranger = await createPartner();
@@ -1101,14 +1150,24 @@ describe('portal hour-block read (block hours W04)', () => {
       technicianId: (await createUser({ partnerId: stranger.id, orgId: null })).id,
       retired: true,
     });
-    await expect(portalHourBlockForOrg({ orgId: noBlock.orgId, asOf: AS_OF })).resolves.toBeNull();
+    await expect(portalHourBlockForOrg({ orgId: noBlock.orgId, asOf: AS_OF })).resolves.toEqual({ hourBlock: null, startsOn: null });
+  });
+
+  it('a block whose first period has not started yet reports startsOn, not a 0-of-10 card', async () => {
+    const { partnerId, technicianId } = await seedPartnerAndTech();
+    const a = await seedBlockOrg({ partnerId, technicianId });
+
+    // The fixture's first period starts 2026-12-01; the day before it, nothing is running.
+    const res = await portalHourBlockForOrg({ orgId: a.orgId, asOf: new Date('2026-11-20T12:00:00Z') });
+
+    expect(res).toEqual({ hourBlock: null, startsOn: '2026-12-01' });
   });
 
   it('reports overage hours once the block is exhausted', async () => {
     const { partnerId, technicianId } = await seedPartnerAndTech();
     const a = await seedBlockOrg({ partnerId, technicianId, entries: [{ minutes: 720 }] }); // 12 h
 
-    const dto = await portalHourBlockForOrg({ orgId: a.orgId, asOf: AS_OF });
+    const { hourBlock: dto } = await portalHourBlockForOrg({ orgId: a.orgId, asOf: AS_OF });
     expect(dto).toMatchObject({ usedHours: 12, remainingHours: 0, overageHours: 2 });
   });
 
@@ -1119,7 +1178,7 @@ describe('portal hour-block read (block hours W04)', () => {
     const retired = await seedBlockOrg({ partnerId, technicianId, retired: true });
 
     for (const org of [paused, draft, retired]) {
-      await expect(portalHourBlockForOrg({ orgId: org.orgId, asOf: AS_OF })).resolves.toBeNull();
+      await expect(portalHourBlockForOrg({ orgId: org.orgId, asOf: AS_OF })).resolves.toEqual({ hourBlock: null, startsOn: null });
     }
   });
 });
@@ -1141,13 +1200,14 @@ Expected FAIL: `Cannot find module './hourBlock'` (service and route) and the re
 Create `apps/api/src/services/portal/hourBlock.ts`:
 
 ```ts
-import type { HourBlockEstimate, PortalHourBlockDto } from '@breeze/shared';
+import type { HourBlockEstimate, PortalHourBlockDto, PortalHourBlockResponse } from '@breeze/shared';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { contractLines, contracts } from '../../db/schema';
-// W03 (see "Assumes from W03"): the live OPEN-period computation behind
+// W03 (see "Assumes from W03", index C7): the live OPEN-period computation behind
 // computeContractEstimate(...).hourBlock. It reads time_entries, which is
-// partner-axis RLS, so it MUST run inside a system DB context.
+// partner-axis RLS, so it accepts a system OR partner-scoped context and
+// throws under an org scope.
 import { computeOpenHourBlockPeriod } from '../contractHourBlockEstimate';
 
 /**
@@ -1174,43 +1234,66 @@ export function toPortalHourBlockDto(
 }
 
 /**
- * The org's live block balance for the portal, or null when it has none.
+ * The org's live block and its OPEN-period estimate, or null. Only the active
+ * contract's live (non-retired) block counts: at most one exists per org
+ * (contract_lines_one_live_hour_block_per_org_uq).
  *
- * Runs in a SYSTEM context pinned to `orgId` by explicit predicates on both
- * tables — the portal session's own org context cannot read time_entries
- * (partner-axis), so scoping here is by the predicate, not by RLS. The caller
- * must pass the SESSION org (`portalAuth.user.orgId`), never request input.
+ * MUST be called inside a system DB context; it opens none of its own, so a
+ * caller that already holds one (the Support usage buckets) does not take a
+ * second pooled connection. Scoping is by the explicit org predicate on BOTH
+ * tables, not by RLS.
+ */
+export async function liveHourBlockForOrg(
+  orgId: string,
+  asOf: Date,
+): Promise<{ estimate: HourBlockEstimate; currencyCode: string } | null> {
+  const [row] = await db
+    .select({ contract: contracts, line: contractLines })
+    .from(contractLines)
+    .innerJoin(contracts, eq(contracts.id, contractLines.contractId))
+    .where(
+      and(
+        eq(contractLines.orgId, orgId),
+        eq(contracts.orgId, orgId),
+        eq(contractLines.lineType, 'hour_block'),
+        isNull(contractLines.hourBlockRetiredAt),
+        eq(contracts.status, 'active'),
+      ),
+    )
+    .limit(1);
+
+  if (!row) return null;
+  const estimate = await computeOpenHourBlockPeriod(row.contract, row.line, asOf);
+  return { estimate, currencyCode: row.contract.currencyCode };
+}
+
+/**
+ * The portal's view of the org's block balance.
  *
- * Only the active contract's live (non-retired) block counts: at most one
- * exists per org (contract_lines_one_live_hour_block_per_org_uq).
+ * Runs in a SYSTEM context entered from OUTSIDE the request context: the portal
+ * session's own org context cannot read time_entries (partner-axis) and W03's
+ * helper throws under an org scope. The caller must pass the SESSION org
+ * (`portalAuth.user.orgId`), never request input.
+ *
+ * A block whose open period starts after today (added mid-period, so its first
+ * period is the next one) is reported as `startsOn`, not as a card.
  */
 export async function portalHourBlockForOrg(args: {
   orgId: string;
   asOf?: Date;
-}): Promise<PortalHourBlockDto | null> {
+}): Promise<PortalHourBlockResponse> {
   const asOf = args.asOf ?? new Date();
 
   return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const [row] = await db
-        .select({ contract: contracts, line: contractLines })
-        .from(contractLines)
-        .innerJoin(contracts, eq(contracts.id, contractLines.contractId))
-        .where(
-          and(
-            eq(contractLines.orgId, args.orgId),
-            eq(contracts.orgId, args.orgId),
-            eq(contractLines.lineType, 'hour_block'),
-            isNull(contractLines.hourBlockRetiredAt),
-            eq(contracts.status, 'active'),
-          ),
-        )
-        .limit(1);
+    withSystemDbAccessContext(async (): Promise<PortalHourBlockResponse> => {
+      const live = await liveHourBlockForOrg(args.orgId, asOf);
+      if (!live) return { hourBlock: null, startsOn: null };
 
-      if (!row) return null;
-
-      const estimate = await computeOpenHourBlockPeriod(row.contract, row.line, asOf);
-      return toPortalHourBlockDto(estimate, row.contract.currencyCode);
+      const today = asOf.toISOString().slice(0, 10);
+      if (live.estimate.periodStart > today) {
+        return { hourBlock: null, startsOn: live.estimate.periodStart };
+      }
+      return { hourBlock: toPortalHourBlockDto(live.estimate, live.currencyCode), startsOn: null };
     }),
   );
 }
@@ -1238,8 +1321,7 @@ export const portalHourBlockRoutes = new Hono();
  */
 portalHourBlockRoutes.get('/support-usage/hour-block', async (c) => {
   const auth = c.get('portalAuth');
-  const hourBlock = await portalHourBlockForOrg({ orgId: auth.user.orgId });
-  const payload: PortalHourBlockResponse = { hourBlock };
+  const payload: PortalHourBlockResponse = await portalHourBlockForOrg({ orgId: auth.user.orgId });
 
   applyPortalCacheHeaders(c, {
     scope: 'private',
@@ -1316,23 +1398,28 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - entries in the **open** period are still `not_billed` and read "To be billed", although the block fee already pays for them and ad-hoc billing is holding them back (index Open Decision 9); and
 - entries already **drawn** at a close are `contract` + `contract_line_id` and read "Covered by contract" (true, but indistinguishable from the work-type-included entries that billing profiles also mark `contract` with no line, spec amendment 1).
 
-**Decision (recommended and implemented):** when — and only when — the org's `enable_hour_block` flag is on, report both groups in a new **`coveredByBlock`** bucket:
+**Decision (recommended and implemented):** when — and only when — the org's `enable_hour_block` flag is on, report both groups in new **`coveredByBlock`** and **`overBlock`** buckets. The covered figure is **capped at the period's entitlement** (included + carried-in hours): hours past the block are the overage the customer will be invoiced for, so they must not be labelled "covered".
 
 | Entry (approved) | Flag off | Flag on |
 |---|---|---|
 | `billed` | billed | billed |
 | `contract`, `contract_line_id IS NULL` (card-included) | coveredByContract | coveredByContract |
-| `contract`, `contract_line_id IS NOT NULL` (drawn at close) | coveredByContract | **coveredByBlock** |
-| `not_billed`, `ended_at` inside a block hold window (open period) | toBeBilled | **coveredByBlock** |
+| `contract`, `contract_line_id IS NOT NULL` (drawn at close) | coveredByContract | **coveredByBlock** up to the period's entitlement, the excess **overBlock** |
+| `not_billed`, `ended_at` inside a block hold window (open period) | toBeBilled | **coveredByBlock** up to the entitlement, the excess **overBlock** |
 | `not_billed`, anywhere else (incl. late entries in a closed period) | toBeBilled | toBeBilled |
 | unapproved (any status) | pendingReview | pendingReview |
 
-Why gated on the flag: with it off, the customer must not learn a block exists, and existing portals must be byte-identical (the pre-existing tests prove it). Why the **hold windows** (`hourBlockHoldWindows`, W02): they are the *same* function ad-hoc invoice assembly uses to withhold those entries, so "held from ad-hoc billing" and "shown as covered by the block" cannot drift apart. Why `billableMinutes ?? durationMinutes` for the block bucket: the drawdown draws `COALESCE(billable_minutes, duration_minutes)` (spec amendment 2), so the hours tie to the card. Unapproved time keeps landing in `pendingReview` (the panel's existing "approval gates classification" rule); the card is the authority on balance and already includes it.
+**How the cap is computed.** Each period (the open one from W03's estimate, each closed one from the `contract_hour_periods` ledger) knows its `overageHours` = hours past `included + carried-in`. Entries of that period are walked **latest-ended first** and the period's overage minutes are assigned to them, splitting an entry if the boundary falls inside it; the rest is covered. So covered minutes of a period never exceed its entitlement, and over minutes equal its overage. (A period that straddles two calendar months, viewed through the calendar-month usage query, attributes the overage to the latest entries visible in the month. That is a display approximation; the card is the authority on balance.)
+
+Why gated on the flag: with it off, the customer must not learn a block exists, and existing portals must be byte-identical (the pre-existing tests prove it). Why the **hold windows** (`hourBlockHoldWindows`, W02): they are the *same* function ad-hoc invoice assembly uses to withhold those entries, so "held from ad-hoc billing" and "shown as covered by the block" cannot drift apart. Why `billableMinutes ?? durationMinutes`: the drawdown draws `COALESCE(billable_minutes, duration_minutes)` (spec amendment 2), so the hours tie to the card. Unapproved time keeps landing in `pendingReview` (the panel's existing "approval gates classification" rule).
+
+**One connection, one context.** The coverage read does **not** open its own system context. `supportUsageForOrg` already runs its query in `runOutsideDbContext(() => withSystemDbAccessContext(...))`; the coverage helper (flag read, `hourBlockHoldWindows`, ledger read, open-period estimate) is called inside that same callback, so a request never holds two pooled connections.
 
 **Files:**
 - Modify: `packages/shared/src/types/portalVisibility.ts` (`SupportUsageTicketDto`, `SupportUsageDto`)
 - Create: `apps/api/src/services/portal/hourBlockWindows.ts` + `hourBlockWindows.test.ts` (pure)
-- Create: `apps/api/src/services/portal/hourBlockCoverage.ts` (DB; one flag read + W02's windows)
+- Create: `apps/api/src/services/portal/hourBlockCoverage.ts` (DB; runs in the caller's system context)
+- Modify: `apps/api/src/services/portal/hourBlock.ts` (export `liveHourBlockForOrg`, see Task 2 Step 7)
 - Modify: `apps/api/src/services/portal/supportUsage.ts`
 - Modify: `apps/api/src/services/portal/supportUsage.test.ts`
 - Create: `apps/api/src/__tests__/integration/portalSupportUsageHourBlock.integration.test.ts`
@@ -1340,29 +1427,39 @@ Why gated on the flag: with it off, the customer must not learn a block exists, 
 **Interfaces:**
 
 ```ts
-// packages/shared — both ADDITIVE and OPTIONAL (absent when the flag is off)
+// packages/shared — all ADDITIVE and OPTIONAL (absent when the flag is off)
 SupportUsageTicketDto.coveredByBlockMinutes?: number;
+SupportUsageTicketDto.overBlockMinutes?: number;
 SupportUsageDto.totals.coveredByBlock?: CountHoursDto;
+SupportUsageDto.totals.overBlock?: CountHoursDto;
 
 // hourBlockWindows.ts (pure)
 export interface HourBlockHoldWindow { start: Date; end: Date | null; contractLineId: string }
+export interface BlockPeriodCoverage { start: Date; end: Date; overageMinutes: number }   // [start, end)
 export function isHeldByBlock(endedAt: Date | null, windows: readonly HourBlockHoldWindow[]): boolean;
+export function allocateBlockCoverage(
+  entries: ReadonlyArray<{ key: string; endedAt: Date | null; minutes: number }>,
+  periods: readonly BlockPeriodCoverage[],
+): Map<string, { covered: number; over: number }>;
 
-// hourBlockCoverage.ts
-export interface HourBlockCoverage { windows: HourBlockHoldWindow[] }
+// hourBlockCoverage.ts — MUST be called inside a system DB context
+export interface HourBlockCoverage { windows: HourBlockHoldWindow[]; periods: BlockPeriodCoverage[] }
 export async function hourBlockCoverageForOrg(orgId: string, asOf?: Date): Promise<HourBlockCoverage | null>; // null = flag off/absent
 
 // supportUsage.ts — args gain an optional asOf (default now); the ROUTE is unchanged
 supportUsageForOrg(args: { orgId; month; timezone; portalUserId; asOf?: Date }): Promise<SupportUsageDto>
 ```
 
-- [ ] **Step 1: Write the failing pure-window test**
+- [ ] **Step 1: Write the failing pure tests**
 
 Create `apps/api/src/services/portal/hourBlockWindows.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest';
-import { isHeldByBlock, type HourBlockHoldWindow } from './hourBlockWindows';
+import {
+  allocateBlockCoverage, isHeldByBlock,
+  type BlockPeriodCoverage, type HourBlockHoldWindow,
+} from './hourBlockWindows';
 
 const win = (start: string, end: string | null): HourBlockHoldWindow => ({
   start: new Date(start),
@@ -1395,27 +1492,83 @@ describe('isHeldByBlock', () => {
     expect(isHeldByBlock(new Date('2026-12-10T13:00:00Z'), [])).toBe(false);
   });
 });
+
+describe('allocateBlockCoverage (cap at the period entitlement)', () => {
+  const dec = (overageMinutes: number): BlockPeriodCoverage[] => [
+    { start: new Date('2026-12-01T00:00:00Z'), end: new Date('2027-01-01T00:00:00Z'), overageMinutes },
+  ];
+  const a = { key: 'a', endedAt: new Date('2026-12-05T10:00:00Z'), minutes: 120 };
+  const b = { key: 'b', endedAt: new Date('2026-12-10T10:00:00Z'), minutes: 90 };
+
+  it('under the cap (no overage): every minute is covered, none is over', () => {
+    const out = allocateBlockCoverage([a, b], dec(0));
+    expect(out.get('a')).toEqual({ covered: 120, over: 0 });
+    expect(out.get('b')).toEqual({ covered: 90, over: 0 });
+  });
+
+  it('over the cap: the overage lands on the LATEST entries, splitting the boundary entry', () => {
+    const out = allocateBlockCoverage([a, b], dec(60));
+    expect(out.get('b')).toEqual({ covered: 30, over: 60 });
+    expect(out.get('a')).toEqual({ covered: 120, over: 0 });
+  });
+
+  it('an overage larger than the latest entry spills into the earlier one', () => {
+    const out = allocateBlockCoverage([a, b], dec(100));
+    expect(out.get('b')).toEqual({ covered: 0, over: 90 });
+    expect(out.get('a')).toEqual({ covered: 110, over: 10 });
+  });
+
+  it('covered + over always equals the entry minutes, and over sums to the overage', () => {
+    const out = allocateBlockCoverage([a, b], dec(75));
+    let over = 0;
+    for (const e of [a, b]) {
+      const r = out.get(e.key)!;
+      expect(r.covered + r.over).toBe(e.minutes);
+      over += r.over;
+    }
+    expect(over).toBe(75);
+  });
+
+  it('periods are independent: a closed period with overage does not touch the open one', () => {
+    const periods: BlockPeriodCoverage[] = [
+      { start: new Date('2026-11-01T00:00:00Z'), end: new Date('2026-12-01T00:00:00Z'), overageMinutes: 30 },
+      ...dec(0),
+    ];
+    const nov = { key: 'n', endedAt: new Date('2026-11-20T10:00:00Z'), minutes: 60 };
+    const out = allocateBlockCoverage([nov, b], periods);
+    expect(out.get('n')).toEqual({ covered: 30, over: 30 });
+    expect(out.get('b')).toEqual({ covered: 90, over: 0 });
+  });
+
+  it('an entry that fits no known period is treated as fully covered (never invents overage)', () => {
+    const out = allocateBlockCoverage([{ key: 'x', endedAt: new Date('2030-01-01T00:00:00Z'), minutes: 45 }], dec(50));
+    expect(out.get('x')).toEqual({ covered: 45, over: 0 });
+  });
+});
 ```
 
 - [ ] **Step 2: Write the failing bucket tests**
 
 In `apps/api/src/services/portal/supportUsage.test.ts`:
 
-1. Add a coverage mock next to the existing `vi.mock('../../db', …)` (and import the real pure helper — only the DB-backed module is mocked):
+1. Add a coverage mock next to the existing `vi.mock('../../db', …)` (only the DB-backed module is mocked; the pure helper is real):
 
 ```ts
 const { coverageMock } = vi.hoisted(() => ({ coverageMock: vi.fn() }));
 vi.mock('./hourBlockCoverage', () => ({ hourBlockCoverageForOrg: coverageMock }));
 ```
 
-2. In the file's existing top-level `beforeEach` blocks (both `describe`s), add `coverageMock.mockResolvedValue(null);` so every pre-existing test keeps running with the flag off. (Add a top-level `beforeEach(() => coverageMock.mockResolvedValue(null));` if simpler.)
+2. Add a top-level `beforeEach(() => coverageMock.mockResolvedValue(null));` so every pre-existing test keeps running with the flag off.
 
 3. Append:
 
 ```ts
 describe('block hours coverage (#4547 W04)', () => {
-  const open = (start = '2026-12-01T00:00:00Z') => ({
-    windows: [{ start: new Date(start), end: null, contractLineId: 'line-1' }],
+  const dec = (overageMinutes = 0) => ({
+    windows: [{ start: new Date('2026-12-01T00:00:00Z'), end: null, contractLineId: 'line-1' }],
+    periods: [{
+      start: new Date('2026-12-01T00:00:00Z'), end: new Date('2027-01-01T00:00:00Z'), overageMinutes,
+    }],
   });
   const row = (over: Record<string, unknown>) => ({
     ticketNumber: 'T-1', title: null,
@@ -1430,7 +1583,7 @@ describe('block hours coverage (#4547 W04)', () => {
     coverageMock.mockReset();
   });
 
-  it('flag OFF: nothing changes — no coveredByBlock key anywhere, entries stay to-be-billed', async () => {
+  it('flag OFF: nothing changes — no block keys anywhere, entries stay to-be-billed', async () => {
     coverageMock.mockResolvedValue(null);
     state.rows = [
       row({}),
@@ -1446,26 +1599,51 @@ describe('block hours coverage (#4547 W04)', () => {
       pendingReview: { minutes: 0, hours: 0 },
     });
     expect(result.totals).not.toHaveProperty('coveredByBlock');
-    for (const t of result.tickets) expect(t).not.toHaveProperty('coveredByBlockMinutes');
+    expect(result.totals).not.toHaveProperty('overBlock');
+    for (const t of result.tickets) {
+      expect(t).not.toHaveProperty('coveredByBlockMinutes');
+      expect(t).not.toHaveProperty('overBlockMinutes');
+    }
   });
 
-  it('flag ON: an approved not_billed entry inside the open window is covered by the block, not to-be-billed', async () => {
-    coverageMock.mockResolvedValue(open());
+  it('flag ON, inside the entitlement: an open-period entry is covered by the block, not to-be-billed', async () => {
+    coverageMock.mockResolvedValue(dec(0));
     state.rows = [row({ durationMinutes: 60, billableMinutes: 90 })];
 
     const result = await supportUsageForOrg(args);
 
-    // Block bucket uses the billed quantity (billable ?? duration) so it ties to the card.
+    // Uses the billed quantity (billable ?? duration) so it ties to the card.
     expect(result.totals.coveredByBlock).toEqual({ minutes: 90, hours: 1.5 });
+    expect(result.totals.overBlock).toEqual({ minutes: 0, hours: 0 });
     expect(result.totals.toBeBilled).toEqual({ minutes: 0, hours: 0 });
     expect(result.tickets[0]!.coveredByBlockMinutes).toBe(90);
-    expect(result.tickets[0]!.toBeBilledMinutes).toBe(0);
+    expect(result.tickets[0]!.overBlockMinutes).toBe(0);
   });
 
-  it('flag ON: a drawn entry (contract + line id) moves from coveredByContract to coveredByBlock; a card-included one (no line id) does not', async () => {
-    coverageMock.mockResolvedValue(open());
+  it('flag ON, past the entitlement: the excess is "over", not "covered" (both sides of the cap)', async () => {
+    coverageMock.mockResolvedValue(dec(60)); // the open period is 60 minutes over its block
     state.rows = [
-      row({ ticketNumber: 'T-1', billingStatus: 'contract', contractLineId: 'line-1', durationMinutes: 30 }),
+      row({ ticketNumber: 'T-A', endedAt: new Date('2026-12-05T10:00:00Z'), durationMinutes: 120 }),
+      row({ ticketNumber: 'T-B', endedAt: new Date('2026-12-10T10:00:00Z'), durationMinutes: 90 }),
+    ];
+
+    const result = await supportUsageForOrg(args);
+
+    expect(result.totals.coveredByBlock).toEqual({ minutes: 150, hours: 2.5 });
+    expect(result.totals.overBlock).toEqual({ minutes: 60, hours: 1 });
+    expect(result.totals.toBeBilled).toEqual({ minutes: 0, hours: 0 });
+    const byTicket = Object.fromEntries(result.tickets.map((t) => [t.ticketNumber, t]));
+    expect(byTicket['T-A']).toMatchObject({ coveredByBlockMinutes: 120, overBlockMinutes: 0 });
+    expect(byTicket['T-B']).toMatchObject({ coveredByBlockMinutes: 30, overBlockMinutes: 60 });
+  });
+
+  it('flag ON: a drawn entry moves from coveredByContract to the block; a card-included one (no line id) does not', async () => {
+    coverageMock.mockResolvedValue({
+      windows: [],
+      periods: [{ start: new Date('2026-11-01T00:00:00Z'), end: new Date('2026-12-01T00:00:00Z'), overageMinutes: 0 }],
+    });
+    state.rows = [
+      row({ ticketNumber: 'T-1', billingStatus: 'contract', contractLineId: 'line-1', durationMinutes: 30, endedAt: new Date('2026-11-20T10:00:00Z') }),
       row({ ticketNumber: 'T-2', billingStatus: 'contract', contractLineId: null, durationMinutes: 45 }),
     ];
 
@@ -1476,7 +1654,7 @@ describe('block hours coverage (#4547 W04)', () => {
   });
 
   it('flag ON: a late entry from before the window and a running entry stay to-be-billed', async () => {
-    coverageMock.mockResolvedValue(open('2026-12-01T00:00:00Z'));
+    coverageMock.mockResolvedValue(dec(0));
     state.rows = [
       row({ ticketNumber: 'T-1', endedAt: new Date('2026-11-20T10:00:00Z'), durationMinutes: 20 }),
       row({ ticketNumber: 'T-2', endedAt: null, durationMinutes: 10 }),
@@ -1489,7 +1667,7 @@ describe('block hours coverage (#4547 W04)', () => {
   });
 
   it('flag ON: unapproved block-eligible time is still pending review (approval gates classification)', async () => {
-    coverageMock.mockResolvedValue(open());
+    coverageMock.mockResolvedValue(dec(0));
     state.rows = [row({ isApproved: false, durationMinutes: 40 })];
 
     const result = await supportUsageForOrg(args);
@@ -1498,13 +1676,14 @@ describe('block hours coverage (#4547 W04)', () => {
     expect(result.totals.coveredByBlock).toEqual({ minutes: 0, hours: 0 });
   });
 
-  it('flag ON with nothing to bucket still reports a zeroed coveredByBlock (the flag, not the data, decides presence)', async () => {
-    coverageMock.mockResolvedValue({ windows: [] });
+  it('flag ON with nothing to bucket still reports zeroed block buckets (the flag, not the data, decides presence)', async () => {
+    coverageMock.mockResolvedValue({ windows: [], periods: [] });
     state.rows = [];
 
     const result = await supportUsageForOrg(args);
 
     expect(result.totals.coveredByBlock).toEqual({ minutes: 0, hours: 0 });
+    expect(result.totals.overBlock).toEqual({ minutes: 0, hours: 0 });
   });
 
   it('asks for coverage with the same org it queries, and selects the two new columns', async () => {
@@ -1517,10 +1696,20 @@ describe('block hours coverage (#4547 W04)', () => {
     expect(state.columns).toHaveProperty('endedAt');
     expect(state.columns).toHaveProperty('contractLineId');
   });
+
+  it('reads coverage inside the SAME system context as the usage query (one pooled connection)', async () => {
+    const { withSystemDbAccessContext } = await import('../../db');
+    vi.mocked(withSystemDbAccessContext).mockClear();
+    coverageMock.mockResolvedValue(null);
+
+    await supportUsageForOrg(args);
+
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+  });
 });
 ```
 
-(`state` and `args` are the existing fixtures at the top of the file; the first describe's `args` object is module-scope.)
+(`state` and `args` are the existing fixtures at the top of the file; `withSystemDbAccessContext` is already a `vi.fn` in that file's db mock.)
 
 - [ ] **Step 3: Write the failing real-DB test**
 
@@ -1532,15 +1721,11 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { supportUsageForOrg } from '../../services/portal/supportUsage';
 import { createPartner, createUser } from './db-utils';
-import { seedBlockOrg } from './hourBlockFixtures';
+import { seedBlockOrg, type FixtureEntry } from './hourBlockFixtures';
 
 const AS_OF = new Date('2026-12-20T12:00:00Z');
-const entries = [
-  { minutes: 240 },                                  // open period, approved, not_billed → block-held
-  { minutes: 30, status: 'contract' as const },      // already drawn at a close (carries the line id)
-];
 
-async function run(enableHourBlock: boolean) {
+async function run(enableHourBlock: boolean, entries: FixtureEntry[]) {
   const partner = await createPartner();
   const technician = await createUser({ partnerId: partner.id, orgId: null });
   const org = await seedBlockOrg({
@@ -1552,18 +1737,32 @@ async function run(enableHourBlock: boolean) {
 }
 
 describe('support usage with block hours (real DB)', () => {
-  it('flag ON: open-period eligible time and drawn time are covered by the block, nothing is "to be billed"', async () => {
-    const usage = await run(true);
+  const within = [
+    { minutes: 240 },                              // open period, approved, not_billed -> block-held
+    { minutes: 30, status: 'contract' as const },  // already drawn (carries the line id)
+  ];
+
+  it('flag ON, inside the entitlement: covered by the block, nothing "to be billed", nothing over', async () => {
+    const usage = await run(true, within);
     expect(usage.totals.coveredByBlock).toEqual({ minutes: 270, hours: 4.5 });
+    expect(usage.totals.overBlock).toEqual({ minutes: 0, hours: 0 });
     expect(usage.totals.toBeBilled).toEqual({ minutes: 0, hours: 0 });
     expect(usage.totals.coveredByContract).toEqual({ minutes: 0, hours: 0 });
   });
 
-  it('flag OFF: the same rows read exactly as before — to-be-billed and covered-by-contract, no block bucket', async () => {
-    const usage = await run(false);
+  it('flag ON, past the entitlement (12 h of a 10 h block): 10 h covered, 2 h over — never "covered"', async () => {
+    const usage = await run(true, [{ minutes: 300, day: '2026-12-04' }, { minutes: 420, day: '2026-12-12' }]);
+    expect(usage.totals.coveredByBlock).toEqual({ minutes: 600, hours: 10 });
+    expect(usage.totals.overBlock).toEqual({ minutes: 120, hours: 2 });
+    expect(usage.totals.toBeBilled).toEqual({ minutes: 0, hours: 0 });
+  });
+
+  it('flag OFF: the same rows read exactly as before — to-be-billed and covered-by-contract, no block buckets', async () => {
+    const usage = await run(false, within);
     expect(usage.totals.toBeBilled).toEqual({ minutes: 240, hours: 4 });
     expect(usage.totals.coveredByContract).toEqual({ minutes: 30, hours: 0.5 });
     expect(usage.totals).not.toHaveProperty('coveredByBlock');
+    expect(usage.totals).not.toHaveProperty('overBlock');
   });
 });
 ```
@@ -1576,7 +1775,7 @@ cd apps/api && npx vitest run \
   src/services/portal/supportUsage.test.ts
 ```
 
-Expected FAIL: `Cannot find module './hourBlockWindows'`; in `supportUsage.test.ts` the new cases fail (`coveredByBlock` undefined) and the import of `./hourBlockCoverage` cannot resolve. The existing cases in the file must still be the only ones passing.
+Expected FAIL: `Cannot find module './hourBlockWindows'`; in `supportUsage.test.ts` the new cases fail (`coveredByBlock` undefined) and `./hourBlockCoverage` cannot be resolved. The pre-existing cases in the file must still be the only ones passing.
 
 - [ ] **Step 5: Implement the shared type additions**
 
@@ -1587,26 +1786,29 @@ In `packages/shared/src/types/portalVisibility.ts`:
 ```ts
   /** Present only when the org's Support hours flag is on (#4547 W04). */
   coveredByBlockMinutes?: number;
+  /** Minutes past the block's entitlement (the overage the customer will be invoiced for). Same presence rule. */
+  overBlockMinutes?: number;
 ```
 
 - in `SupportUsageDto.totals` add, after `pendingReview: CountHoursDto;`:
 
 ```ts
-    /** Hours drawn by, or reserved for, the org's prepaid block. Present only
-     *  when the org's Support hours flag is on (#4547 W04): with it off a
-     *  customer must not learn a block exists, and every existing portal reads
-     *  exactly as before. */
+    /** Hours drawn by, or reserved for, the org's prepaid block, capped at each
+     *  period's entitlement. Present only when the org's Support hours flag is
+     *  on (#4547 W04): with it off a customer must not learn a block exists. */
     coveredByBlock?: CountHoursDto;
+    /** The part of block-drawn/reserved time past the entitlement (overage). Same presence rule. */
+    overBlock?: CountHoursDto;
 ```
 
-- [ ] **Step 6: Implement the pure windows helper and the DB coverage helper**
+- [ ] **Step 6: Implement the pure helper and the DB coverage helper**
 
 Create `apps/api/src/services/portal/hourBlockWindows.ts`:
 
 ```ts
 /**
- * Pure classification helper for the Support usage buckets (#4547 W04). Kept
- * out of hourBlockCoverage.ts so unit suites can use it without mocking the DB.
+ * Pure classification helpers for the Support usage buckets (#4547 W04). Kept
+ * out of hourBlockCoverage.ts so unit suites can use them without mocking the DB.
  */
 export interface HourBlockHoldWindow {
   /** inclusive */
@@ -1614,6 +1816,13 @@ export interface HourBlockHoldWindow {
   /** exclusive; null = open-ended */
   end: Date | null;
   contractLineId: string;
+}
+
+/** One block period, open or closed: [start, end), with the hours past its entitlement. */
+export interface BlockPeriodCoverage {
+  start: Date;
+  end: Date;
+  overageMinutes: number;
 }
 
 /** True when a not-billed entry that ended at `endedAt` is reserved for a block. */
@@ -1624,45 +1833,114 @@ export function isHeldByBlock(endedAt: Date | null, windows: readonly HourBlockH
     (w) => t >= w.start.getTime() && (w.end === null || t < w.end.getTime()),
   );
 }
+
+/**
+ * Split block-drawn minutes into covered vs over. Per period the overage is
+ * assigned to the LATEST-ended entries first (the hours that went past the
+ * block), splitting the boundary entry; everything else is covered. covered +
+ * over === minutes for every entry, and a period's over minutes sum to its
+ * overage (bounded by the entries visible to the caller). An entry that fits
+ * no known period is treated as fully covered: this never invents overage.
+ */
+export function allocateBlockCoverage(
+  entries: ReadonlyArray<{ key: string; endedAt: Date | null; minutes: number }>,
+  periods: readonly BlockPeriodCoverage[],
+): Map<string, { covered: number; over: number }> {
+  const out = new Map<string, { covered: number; over: number }>();
+  const groups = new Map<BlockPeriodCoverage, typeof entries[number][]>();
+
+  for (const entry of entries) {
+    const t = entry.endedAt?.getTime();
+    const period = t === undefined
+      ? undefined
+      : periods.find((p) => t >= p.start.getTime() && t < p.end.getTime());
+    if (!period) {
+      out.set(entry.key, { covered: entry.minutes, over: 0 });
+      continue;
+    }
+    groups.set(period, [...(groups.get(period) ?? []), entry]);
+  }
+
+  for (const [period, group] of groups) {
+    let remaining = Math.max(0, period.overageMinutes);
+    const latestFirst = [...group].sort(
+      (a, b) => (b.endedAt!.getTime() - a.endedAt!.getTime()) || (a.key < b.key ? 1 : -1),
+    );
+    for (const entry of latestFirst) {
+      const over = Math.min(entry.minutes, remaining);
+      remaining -= over;
+      out.set(entry.key, { covered: entry.minutes - over, over });
+    }
+  }
+  return out;
+}
 ```
 
 Create `apps/api/src/services/portal/hourBlockCoverage.ts`:
 
 ```ts
 import { eq } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { portalBranding } from '../../db/schema';
+import { db } from '../../db';
+import { contractHourPeriods, portalBranding } from '../../db/schema';
 // W02 (see "Assumes from W02"): the SAME windows ad-hoc invoice assembly uses
 // to withhold block-eligible entries, so "held from ad-hoc billing" and
 // "shown as covered by the block" cannot drift apart.
 import { hourBlockHoldWindows } from '../contractHourBlockClose';
-import type { HourBlockHoldWindow } from './hourBlockWindows';
+import { liveHourBlockForOrg } from './hourBlock';
+import type { BlockPeriodCoverage, HourBlockHoldWindow } from './hourBlockWindows';
 
 export interface HourBlockCoverage {
   windows: HourBlockHoldWindow[];
+  periods: BlockPeriodCoverage[];
 }
 
 /**
  * The block-coverage context for an org's Support usage buckets, or null when
  * the org's `enable_hour_block` flag is off/absent (the buckets then stay
- * exactly as they were). System context pinned to `orgId`: portal_branding is
- * org-scoped but the windows read time_entries' partner-axis neighbours.
+ * exactly as they were).
+ *
+ * MUST be called inside a system DB context (the ledger, the hold windows and
+ * the open-period estimate read partner-axis time_entries neighbours). It opens
+ * NO context of its own: the caller already holds one, and a second would take
+ * a second pooled connection while the first is still checked out. Every read is
+ * pinned to `orgId` by an explicit predicate.
  */
 export async function hourBlockCoverageForOrg(
   orgId: string,
   asOf: Date = new Date(),
 ): Promise<HourBlockCoverage | null> {
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const [row] = await db
-        .select({ enabled: portalBranding.enableHourBlock })
-        .from(portalBranding)
-        .where(eq(portalBranding.orgId, orgId))
-        .limit(1);
-      if (row?.enabled !== true) return null;
-      return { windows: await hourBlockHoldWindows(orgId, asOf) };
-    }),
-  );
+  const [flag] = await db
+    .select({ enabled: portalBranding.enableHourBlock })
+    .from(portalBranding)
+    .where(eq(portalBranding.orgId, orgId))
+    .limit(1);
+  if (flag?.enabled !== true) return null;
+
+  const windows = await hourBlockHoldWindows(orgId, asOf);
+
+  const closed = await db
+    .select({
+      periodStart: contractHourPeriods.periodStart,
+      periodEnd: contractHourPeriods.periodEnd,
+      overageHours: contractHourPeriods.overageHours,
+    })
+    .from(contractHourPeriods)
+    .where(eq(contractHourPeriods.orgId, orgId));
+  const periods: BlockPeriodCoverage[] = closed.map((p) => ({
+    start: new Date(`${p.periodStart}T00:00:00Z`),
+    end: new Date(`${p.periodEnd}T00:00:00Z`),
+    overageMinutes: Math.round(Number(p.overageHours) * 60),
+  }));
+
+  const live = await liveHourBlockForOrg(orgId, asOf);
+  if (live) {
+    periods.push({
+      start: new Date(`${live.estimate.periodStart}T00:00:00Z`),
+      end: new Date(`${live.estimate.periodEnd}T00:00:00Z`),
+      overageMinutes: Math.round(live.estimate.overageHours * 60),
+    });
+  }
+  return { windows, periods };
 }
 ```
 
@@ -1674,7 +1952,7 @@ Edit `apps/api/src/services/portal/supportUsage.ts`:
 
 ```ts
 import { hourBlockCoverageForOrg } from './hourBlockCoverage';
-import { isHeldByBlock } from './hourBlockWindows';
+import { allocateBlockCoverage, isHeldByBlock } from './hourBlockWindows';
 ```
 
 2. `UsageRow` — add two fields after `isApproved: boolean;`:
@@ -1685,28 +1963,64 @@ import { isHeldByBlock } from './hourBlockWindows';
   contractLineId: string | null;
 ```
 
-3. Function signature — add `asOf?: Date;` to the args type. Before the `const rows = await runOutsideDbContext(…)` statement add:
+3. Add `asOf?: Date;` to the args type of `supportUsageForOrg`.
+
+4. Replace the statement `const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.select({ … }) … as Promise<UsageRow[]>));` with the version below — **one** system context holds both the coverage reads and the usage query:
 
 ```ts
-  // #4547 W04: null unless the org's Support hours flag is on. Resolved in its
-  // own system context BEFORE the usage query so the usage query stays a single
-  // statement, and so a flag-off org pays one indexed portal_branding read.
-  const coverage = await hourBlockCoverageForOrg(args.orgId, args.asOf);
-```
+  const { coverage, rows } = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      // #4547 W04: null unless the org's Support hours flag is on. Called inside
+      // THIS context (it opens none of its own), so one request holds one
+      // pooled connection.
+      const coverage = await hourBlockCoverageForOrg(args.orgId, args.asOf);
 
-4. In the `.select({ … })` object add after `isApproved: timeEntries.isApproved,`:
-
-```ts
+      const rows = (await db
+        .select({
+          ticketNumber: tickets.ticketNumber,
+          title: sql<string | null>`
+            CASE
+              WHEN ${tickets.submittedBy} = ${args.portalUserId}
+              THEN ${tickets.subject}
+              ELSE NULL
+            END
+          `,
+          durationMinutes: timeEntries.durationMinutes,
+          billableMinutes: timeEntries.billableMinutes,
+          billingStatus: timeEntries.billingStatus,
+          isApproved: timeEntries.isApproved,
           endedAt: timeEntries.endedAt,
           contractLineId: timeEntries.contractLineId,
+        })
+        .from(timeEntries)
+        .innerJoin(
+          tickets,
+          and(
+            eq(tickets.id, timeEntries.ticketId),
+            eq(tickets.orgId, args.orgId),
+          ),
+        )
+        .where(and(
+          eq(timeEntries.orgId, args.orgId),
+          isNotNull(timeEntries.ticketId),
+          eq(timeEntries.isBillable, true),
+          ne(timeEntries.billingStatus, 'no_charge'),
+          isNull(tickets.deletedAt),
+          sql`${timeEntries.startedAt} AT TIME ZONE 'UTC' >= ${start}`,
+          sql`${timeEntries.startedAt} AT TIME ZONE 'UTC' < ${end}`,
+        ))) as UsageRow[];
+
+      return { coverage, rows };
+    }),
+  );
 ```
 
-5. After `let pendingReview = 0;` add `let coveredByBlock = 0;`.
+5. After `let pendingReview = 0;` add `const blockRows: Array<{ key: string; row: UsageRow; billedQuantity: number; ticket: SupportUsageDto['tickets'][number] }> = [];`
 
-6. In the per-ticket default object (the `?? { ticketNumber: …, pendingReviewMinutes: 0, }` literal) add, after `pendingReviewMinutes: 0,`:
+6. In the per-ticket default object literal add, after `pendingReviewMinutes: 0,`:
 
 ```ts
-      ...(coverage ? { coveredByBlockMinutes: 0 } : {}),
+      ...(coverage ? { coveredByBlockMinutes: 0, overBlockMinutes: 0 } : {}),
 ```
 
 7. In the bucket `if/else` chain, insert a new branch **between** the `!row.isApproved` branch and the `billed` branch:
@@ -1718,18 +2032,40 @@ import { isHeldByBlock } from './hourBlockWindows';
         (row.billingStatus === 'not_billed' && isHeldByBlock(row.endedAt, coverage.windows)))
     ) {
       // #4547 W04. Drawn at a close (contract + line id) or reserved for the
-      // open period (the same hold windows ad-hoc assembly uses). Reported in
-      // the BILLED quantity so the hours tie to the Support hours card, which
-      // draws COALESCE(billable_minutes, duration_minutes).
-      coveredByBlock += billedQuantity;
-      ticket.coveredByBlockMinutes = (ticket.coveredByBlockMinutes ?? 0) + billedQuantity;
+      // open period (the same hold windows ad-hoc assembly uses). Split into
+      // covered vs over AFTER the loop, once every entry of a period is known.
+      // Reported in the BILLED quantity so the hours tie to the Support hours
+      // card, which draws COALESCE(billable_minutes, duration_minutes).
+      blockRows.push({ key: String(blockRows.length), row, billedQuantity, ticket });
 ```
 
-8. In the returned `totals`, after `pendingReview: amount(pendingReview),` add:
+8. After the `for (const row of rows) { … }` loop and before the `return`, add:
 
 ```ts
-      ...(coverage ? { coveredByBlock: amount(coveredByBlock) } : {}),
+  let coveredByBlock = 0;
+  let overBlock = 0;
+  if (coverage) {
+    const split = allocateBlockCoverage(
+      blockRows.map((b) => ({ key: b.key, endedAt: b.row.endedAt, minutes: b.billedQuantity })),
+      coverage.periods,
+    );
+    for (const b of blockRows) {
+      const { covered, over } = split.get(b.key)!;
+      coveredByBlock += covered;
+      overBlock += over;
+      b.ticket.coveredByBlockMinutes = (b.ticket.coveredByBlockMinutes ?? 0) + covered;
+      b.ticket.overBlockMinutes = (b.ticket.overBlockMinutes ?? 0) + over;
+    }
+  }
 ```
+
+9. In the returned `totals`, after `pendingReview: amount(pendingReview),` add:
+
+```ts
+      ...(coverage ? { coveredByBlock: amount(coveredByBlock), overBlock: amount(overBlock) } : {}),
+```
+
+(`ticket` objects are the same references held in `ticketsByNumber`, so the post-loop mutation is reflected in the returned `tickets`.)
 
 - [ ] **Step 8: Run unit tests, confirm PASS; run the integration suite; typecheck**
 
@@ -1737,6 +2073,7 @@ import { isHeldByBlock } from './hourBlockWindows';
 cd apps/api && npx vitest run \
   src/services/portal/hourBlockWindows.test.ts \
   src/services/portal/supportUsage.test.ts \
+  src/services/portal/hourBlock.test.ts \
   src/routes/portal/tickets.test.ts \
   src/routes/portal.test.ts
 npx vitest run --config vitest.integration.config.ts \
@@ -1756,11 +2093,11 @@ git add packages/shared/src/types/portalVisibility.ts \
   apps/api/src/services/portal/hourBlockCoverage.ts \
   apps/api/src/services/portal/supportUsage.ts apps/api/src/services/portal/supportUsage.test.ts \
   apps/api/src/__tests__/integration/portalSupportUsageHourBlock.integration.test.ts
-git commit -m "feat(portal): report block-covered support time in its own bucket (#4547)
+git commit -m "feat(portal): report block-covered support time in its own buckets (#4547)
 
 With Support hours enabled, drawn and open-period eligible entries are
-reported as covered by the block instead of to-be-billed. With the flag off
-the buckets are unchanged.
+reported as covered by the block up to the period's entitlement; the excess is
+reported separately. With the flag off the buckets are unchanged.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -1774,7 +2111,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Modify: `apps/web/src/components/settings/OrgPortalSettingsEditor.test.tsx`
 - Modify: `apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/settings.json` (insert after `visibility.toggles.enableNetworkAlerts`, line 1871)
 
-**Interfaces:** i18n keys `orgPortalSettingsEditor.visibility.toggles.enableHourBlock.{label,description}`; test id `org-portal-toggle-enableHourBlock` (built by the existing toggle renderer from the `key`). The toggle lives in the existing Visibility panel; **`enableAllVisibility()` does not set it.**
+**Interfaces:** i18n keys `orgPortalSettingsEditor.visibility.toggles.enableHourBlock.{label,description}`; test id `org-portal-toggle-enableHourBlock` (built by the existing toggle renderer from the `key`). The toggle lives in the existing Visibility panel; **`enableAllVisibility()` does not set it.** The toggle is **disabled while Support usage is off** (its description already says it requires it), turning Support usage off also turns Support hours off, and the save payload sends `enableHourBlock: draft.enableHourBlock && draft.enableSupportUsage`, so Support hours can never be saved ON while Support usage is OFF.
 
 Settings-rule check (CLAUDE.md "Settings — one concept, one home"): one concept, one home (this editor); level = org; the portal reads the same `portal_branding` row (one resolver: `orgPortalSettings.ts`); saves through the page Save + `runAction` like its siblings.
 
@@ -1804,8 +2141,19 @@ In `OrgPortalSettingsEditor.test.tsx`:
     expect((screen.getByTestId('org-portal-toggle-enableSupportUsage') as HTMLInputElement).checked).toBe(true);
   });
 
-  it('saves the Support hours flag through the existing runAction PATCH', async () => {
+  it('is disabled while Support usage is off, enabled once it is on', async () => {
     mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+
+    const hours = await screen.findByTestId('org-portal-toggle-enableHourBlock') as HTMLInputElement;
+    expect(hours.disabled).toBe(true);
+
+    fireEvent.click(screen.getByTestId('org-portal-toggle-enableSupportUsage'));
+    expect((screen.getByTestId('org-portal-toggle-enableHourBlock') as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it('saves the Support hours flag through the existing runAction PATCH once Support usage is on', async () => {
+    mockApi({ ...SETTINGS, enableSupportUsage: true });
     render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
 
     fireEvent.click(await screen.findByTestId('org-portal-toggle-enableHourBlock'));
@@ -1814,13 +2162,33 @@ In `OrgPortalSettingsEditor.test.tsx`:
 
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
-    expect(JSON.parse(String(patchCall![1]!.body))).toMatchObject({ enableHourBlock: true });
+    expect(JSON.parse(String(patchCall![1]!.body))).toMatchObject({ enableSupportUsage: true, enableHourBlock: true });
   });
-```
 
-3. Add an `it` that asserts every locale defines the new keys (the generic `localeParity.test.ts` covers parity; this pins the exact keys exist and are non-empty):
+  it('turning Support usage off also turns Support hours off', async () => {
+    mockApi({ ...SETTINGS, enableSupportUsage: true, enableHourBlock: true });
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
 
-```tsx
+    fireEvent.click(await screen.findByTestId('org-portal-toggle-enableSupportUsage'));
+
+    expect((screen.getByTestId('org-portal-toggle-enableHourBlock') as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(screen.getByTestId('org-portal-save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patchCall![1]!.body))).toMatchObject({ enableSupportUsage: false, enableHourBlock: false });
+  });
+
+  it('never saves Support hours ON while Support usage is OFF, even from stale loaded settings', async () => {
+    mockApi({ ...SETTINGS, enableSupportUsage: false, enableHourBlock: true });
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+
+    fireEvent.click(await screen.findByTestId('org-portal-save'));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patchCall![1]!.body))).toMatchObject({ enableHourBlock: false });
+  });
+
   it.each(['en', 'de-DE', 'es-419', 'fr-CA', 'fr-FR', 'it-IT', 'pt-BR', 'tr-TR'])(
     'has a translated Support hours label and description in %s',
     async (locale) => {
@@ -1864,6 +2232,18 @@ In `OrgPortalSettingsEditor.tsx`:
 
 - `save` body: after `enableNetworkAlerts: draft.enableNetworkAlerts,` add `enableHourBlock: draft.enableHourBlock,`
 - `enableAllVisibility`: leave the object unchanged.
+- `VISIBILITY_TOGGLES` element type: add `requires?: VisibilityToggleKey;` and put `requires: 'enableSupportUsage',` on the `enableHourBlock` entry.
+- Toggle renderer (`VISIBILITY_TOGGLES.map`): destructure `requires`, add `disabled={requires !== undefined && !draft[requires]}` to the checkbox, and make the `onChange` also clear what lives inside Support usage:
+
+```tsx
+                onChange={(e) => update({
+                  [key]: e.target.checked,
+                  // Turning Support usage off also turns off what lives inside it.
+                  ...(key === 'enableSupportUsage' && !e.target.checked ? { enableHourBlock: false } : {}),
+                } as Partial<PortalSettings>)}
+```
+
+- Save body: send `enableHourBlock: draft.enableHourBlock && draft.enableSupportUsage,` instead of the bare `draft.enableHourBlock` (belt and braces for stale loaded state; the portal endpoint also requires both flags).
 
 - [ ] **Step 4: Add the 8 locale entries**
 
@@ -1948,11 +2328,12 @@ portalApi.getHourBlock(config?): Promise<ApiResponse<PortalHourBlockResponse>>  
 // ticketsPage.ts
 export function shouldLoadHourBlock(branding: { enableHourBlock?: boolean }, usageResponse: { statusCode?: number }): boolean;
 export function hourBlockPanelState(response: { data?: PortalHourBlockResponse; statusCode?: number } | null):
-  { hourBlock: PortalHourBlockDto | null; hourBlockError: string | undefined };
+  { hourBlock: PortalHourBlockDto | null; hourBlockStartsOn: string | null; hourBlockError: string | undefined };
 
 // HourBlockCard.tsx
 export function HourBlockCard({ hourBlock }: { hourBlock: PortalHourBlockDto }): JSX.Element
-// SupportUsagePanel props gain: hourBlock?: PortalHourBlockDto | null; hourBlockError?: string
+export function HourBlockStartsNotice({ startsOn }: { startsOn: string }): JSX.Element   // "Your support hours start <date>."
+// SupportUsagePanel props gain: hourBlock?: PortalHourBlockDto | null; hourBlockStartsOn?: string | null; hourBlockError?: string
 ```
 
 Copy (English literals; the portal has no i18n layer):
@@ -1962,7 +2343,9 @@ Copy (English literals; the portal has no i18n layer):
 - `Period: Dec 1, 2026 – Dec 31, 2026` (the API sends a half-open end; the card shows the inclusive last day).
 - Rate note, `advance`: `Hours beyond your block are billed at $150.00 per hour on the invoice for the following period.` / `arrears`: `… on this period's invoice.`
 - `Support hours` (the unit label) is pluralised with `Intl.PluralRules`-free logic: `1 hour` / `N hours`.
-- The `Covered by your support hours` totals row appears in the usage table only when `usage.totals.coveredByBlock` has minutes.
+- A block that has not started yet (`startsOn` set, no card): `Your support hours start Dec 1, 2026.`
+- Totals rows: `Covered by your support hours` only when `usage.totals.coveredByBlock` has minutes, and `Over your support hours` only when `usage.totals.overBlock` has minutes.
+- The usage table gains a **Support hours** column (per ticket: covered minutes, plus `+ N over` when some is over) **only when the flag is on** (`usage.totals.coveredByBlock !== undefined`); with it off the five existing headers are unchanged.
 
 - [ ] **Step 1: Write the failing helper tests**
 
@@ -1989,16 +2372,20 @@ describe('hourBlockPanelState', () => {
   };
 
   it('passes the block through on success', () => {
-    expect(hourBlockPanelState({ statusCode: 200, data: { hourBlock: dto } }))
-      .toEqual({ hourBlock: dto, hourBlockError: undefined });
+    expect(hourBlockPanelState({ statusCode: 200, data: { hourBlock: dto, startsOn: null } }))
+      .toEqual({ hourBlock: dto, hourBlockStartsOn: null, hourBlockError: undefined });
+  });
+
+  it('carries the start date of a block that has not started yet (no card)', () => {
+    expect(hourBlockPanelState({ statusCode: 200, data: { hourBlock: null, startsOn: '2026-12-01' } }))
+      .toEqual({ hourBlock: null, hourBlockStartsOn: '2026-12-01', hourBlockError: undefined });
   });
 
   it('is empty (no card, no error) when not requested, when there is no block, or when the flag raced to 403', () => {
-    expect(hourBlockPanelState(null)).toEqual({ hourBlock: null, hourBlockError: undefined });
-    expect(hourBlockPanelState({ statusCode: 200, data: { hourBlock: null } }))
-      .toEqual({ hourBlock: null, hourBlockError: undefined });
-    expect(hourBlockPanelState({ statusCode: 403 }))
-      .toEqual({ hourBlock: null, hourBlockError: undefined });
+    const empty = { hourBlock: null, hourBlockStartsOn: null, hourBlockError: undefined };
+    expect(hourBlockPanelState(null)).toEqual(empty);
+    expect(hourBlockPanelState({ statusCode: 200, data: { hourBlock: null, startsOn: null } })).toEqual(empty);
+    expect(hourBlockPanelState({ statusCode: 403 })).toEqual(empty);
   });
 
   it('reports a load failure instead of silently dropping the card', () => {
@@ -2017,7 +2404,7 @@ Create `apps/portal/src/components/portal/HourBlockCard.test.tsx`:
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { PortalHourBlockDto } from '@breeze/shared';
-import { HourBlockCard } from './HourBlockCard';
+import { HourBlockCard, HourBlockStartsNotice } from './HourBlockCard';
 
 const base: PortalHourBlockDto = {
   periodStart: '2026-12-01',
@@ -2031,6 +2418,14 @@ const base: PortalHourBlockDto = {
   currencyCode: 'USD',
   billingTiming: 'advance',
 };
+
+describe('HourBlockStartsNotice', () => {
+  it('says when the block starts instead of showing an empty balance', () => {
+    render(<HourBlockStartsNotice startsOn="2026-12-01" />);
+    expect(screen.getByTestId('portal-hour-block-starts').textContent).toContain('Your support hours start Dec 1, 2026.');
+    expect(screen.queryByTestId('portal-hour-block')).toBeNull();
+  });
+});
 
 describe('HourBlockCard', () => {
   it('shows used of total hours, the remainder and the inclusive period', () => {
@@ -2149,31 +2544,70 @@ describe('Support hours card inside the panel (block hours W04)', () => {
     expect(screen.queryByTestId('portal-hour-block')).toBeNull();
   });
 
-  it('adds a "Covered by your support hours" row only when the block bucket has time', () => {
-    render(
+  it('shows "Your support hours start <date>" for a block that has not started, and no card', () => {
+    render(<SupportUsagePanel usage={{ ...usage }} hourBlockStartsOn="2026-12-01" />);
+    expect(screen.getByTestId('portal-hour-block-starts').textContent).toContain('Dec 1, 2026');
+    expect(screen.queryByTestId('portal-hour-block')).toBeNull();
+  });
+
+  it('adds covered / over rows only when those buckets have time', () => {
+    const { unmount } = render(
       <SupportUsagePanel
-        usage={{ ...usage, totals: { ...usage.totals, coveredByBlock: { minutes: 90, hours: 1.5 } } }}
+        usage={{
+          ...usage,
+          totals: { ...usage.totals, coveredByBlock: { minutes: 90, hours: 1.5 }, overBlock: { minutes: 30, hours: 0.5 } },
+        }}
         hourBlock={hourBlock}
       />,
     );
     expect(screen.getByTestId('portal-support-usage-block').textContent).toContain('90');
+    expect(screen.getByTestId('portal-support-usage-block').textContent).toContain('Covered by your support hours');
+    expect(screen.getByTestId('portal-support-usage-over-block').textContent).toContain('30');
+    expect(screen.getByTestId('portal-support-usage-over-block').textContent).toContain('Over your support hours');
+    unmount();
 
     render(
       <SupportUsagePanel
-        usage={{ ...usage, totals: { ...usage.totals, coveredByBlock: { minutes: 0, hours: 0 } } }}
+        usage={{
+          ...usage,
+          totals: { ...usage.totals, coveredByBlock: { minutes: 0, hours: 0 }, overBlock: { minutes: 0, hours: 0 } },
+        }}
         hourBlock={hourBlock}
       />,
     );
-    // second render adds no block row: exactly one in the document overall
-    expect(screen.getAllByTestId('portal-support-usage-block')).toHaveLength(1);
+    expect(screen.queryByTestId('portal-support-usage-block')).toBeNull();
+    expect(screen.queryByTestId('portal-support-usage-over-block')).toBeNull();
   });
 
-  it('keeps the existing five column headers when there is no block bucket', () => {
+  it('keeps the existing five column headers when the flag is off (no block buckets)', () => {
     render(<SupportUsagePanel usage={{ ...usage }} hourBlock={hourBlock} />);
     const headers = Array.from(
       screen.getByTestId('portal-support-usage-tickets').querySelectorAll('th[scope="col"]'),
     ).map((th) => th.textContent);
     expect(headers).toEqual(['Request', 'Billed', 'To be billed', 'Covered', 'Pending review']);
+  });
+
+  it('adds a per-ticket Support hours column (covered, plus how much is over) when the flag is on', () => {
+    render(
+      <SupportUsagePanel
+        usage={{
+          ...usage,
+          totals: { ...usage.totals, coveredByBlock: { minutes: 150, hours: 2.5 }, overBlock: { minutes: 60, hours: 1 } },
+          tickets: [
+            { ...usage.tickets[0]!, coveredByBlockMinutes: 120, overBlockMinutes: 0 },
+            { ...usage.tickets[1]!, coveredByBlockMinutes: 30, overBlockMinutes: 60 },
+          ],
+        }}
+        hourBlock={hourBlock}
+      />,
+    );
+    const table = screen.getByTestId('portal-support-usage-tickets');
+    const headers = Array.from(table.querySelectorAll('th[scope="col"]')).map((th) => th.textContent);
+    expect(headers).toEqual(['Request', 'Billed', 'To be billed', 'Covered', 'Support hours', 'Pending review']);
+    expect(screen.getByTestId('portal-support-usage-ticket-T-1').textContent).toContain('120 min');
+    const second = screen.getByTestId('portal-support-usage-ticket-T-2').textContent ?? '';
+    expect(second).toContain('30 min');
+    expect(second).toContain('+ 60 over');
   });
 });
 ```
@@ -2228,13 +2662,18 @@ export function shouldLoadHourBlock(
  */
 export function hourBlockPanelState(
   response: { data?: PortalHourBlockResponse; statusCode?: number } | null,
-): { hourBlock: PortalHourBlockDto | null; hourBlockError: string | undefined } {
-  if (!response) return { hourBlock: null, hourBlockError: undefined };
+): { hourBlock: PortalHourBlockDto | null; hourBlockStartsOn: string | null; hourBlockError: string | undefined } {
+  const none = { hourBlock: null, hourBlockStartsOn: null, hourBlockError: undefined };
+  if (!response) return none;
   if (response.data !== undefined) {
-    return { hourBlock: response.data.hourBlock, hourBlockError: undefined };
+    return {
+      hourBlock: response.data.hourBlock,
+      hourBlockStartsOn: response.data.startsOn,
+      hourBlockError: undefined,
+    };
   }
-  if (response.statusCode === 403) return { hourBlock: null, hourBlockError: undefined };
-  return { hourBlock: null, hourBlockError: 'Your support hours could not be loaded right now.' };
+  if (response.statusCode === 403) return none;
+  return { ...none, hourBlockError: 'Your support hours could not be loaded right now.' };
 }
 ```
 
@@ -2325,6 +2764,25 @@ export function HourBlockCard({ hourBlock }: { hourBlock: PortalHourBlockDto }) 
   );
 }
 
+/** A block that exists but whose first period has not started (added mid-period). */
+export function HourBlockStartsNotice({ startsOn }: { startsOn: string }) {
+  const fmt = new Intl.DateTimeFormat(portalLocale(), {
+    year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC',
+  });
+  return (
+    <section
+      className="mb-8 border-y border-border/70 px-4 py-5"
+      data-testid="portal-hour-block-starts"
+      aria-label="Support hours"
+    >
+      <h2 className="font-display text-lg font-semibold text-foreground">Support hours</h2>
+      <p className="mt-2 text-sm text-muted-foreground">
+        {`Your support hours start ${fmt.format(new Date(`${startsOn}T00:00:00Z`))}.`}
+      </p>
+    </section>
+  );
+}
+
 export default HourBlockCard;
 ```
 
@@ -2332,25 +2790,47 @@ export default HourBlockCard;
 
 `apps/portal/src/components/portal/SupportUsagePanel.tsx`:
 
-- imports: add `import type { PortalHourBlockDto, SupportUsageDto } from '@breeze/shared';` (replace the existing type import) and `import { HourBlockCard } from './HourBlockCard';`
-- `Totals`: build the rows array so the block row is optional — replace the `rows` const with:
+- imports: add `import type { PortalHourBlockDto, SupportUsageDto } from '@breeze/shared';` (replace the existing type import) and `import { HourBlockCard, HourBlockStartsNotice } from './HourBlockCard';`
+- `Totals`: build the rows array so the block rows are optional — replace the `rows` const with:
 
 ```tsx
   const rows = [
     { key: 'billed', label: 'Billed', value: usage.totals.billed },
     { key: 'to-be-billed', label: 'To be billed', value: usage.totals.toBeBilled },
     { key: 'contract', label: 'Covered by contract', value: usage.totals.coveredByContract },
-    // #4547 W04: only when the org's Support hours flag is on AND the block
-    // actually covered something; otherwise the four rows read as before.
+    // #4547 W04: only when the org's Support hours flag is on AND the bucket has
+    // time; otherwise the rows read as before. "Over" is shown separately so
+    // hours past the block are never labelled "covered".
     ...(usage.totals.coveredByBlock && usage.totals.coveredByBlock.minutes > 0
       ? [{ key: 'block', label: 'Covered by your support hours', value: usage.totals.coveredByBlock }]
+      : []),
+    ...(usage.totals.overBlock && usage.totals.overBlock.minutes > 0
+      ? [{ key: 'over-block', label: 'Over your support hours', value: usage.totals.overBlock }]
       : []),
     { key: 'pending', label: 'Pending review', value: usage.totals.pendingReview },
   ];
 ```
 
-  (remove the `as const` and keep the `.map` as is).
-- signature: `export function SupportUsagePanel({ usage, error, hourBlock, hourBlockError }: { usage: SupportUsageDto | null; error?: string; hourBlock?: PortalHourBlockDto | null; hourBlockError?: string; })`.
+  (remove the `as const` and keep the `.map` as is; the `data-testid` stays `portal-support-usage-${row.key}`).
+- Table: in the main component body add `const showBlock = usage.totals.coveredByBlock !== undefined;`. Add a header after the `Covered` one, and a cell after the `Covered` cell in each ticket row:
+
+```tsx
+              {showBlock && <th scope="col" className={cn(TH, 'text-right')}>Support hours</th>}
+```
+
+```tsx
+                {showBlock && (
+                  <td className={cn(CELL, 'order-4 text-xs text-muted-foreground sm:text-right sm:text-sm')}>
+                    <span className="sm:hidden">Support hours </span>
+                    <span className="text-figures">{ticket.coveredByBlockMinutes ?? 0} min</span>
+                    {(ticket.overBlockMinutes ?? 0) > 0 && (
+                      <span className="text-figures"> + {ticket.overBlockMinutes} over</span>
+                    )}
+                  </td>
+                )}
+```
+
+- signature: `export function SupportUsagePanel({ usage, error, hourBlock, hourBlockStartsOn, hourBlockError }: { usage: SupportUsageDto | null; error?: string; hourBlock?: PortalHourBlockDto | null; hourBlockStartsOn?: string | null; hourBlockError?: string; })`.
 - add, just above the `no_data` branch: 
 
 ```tsx
@@ -2358,6 +2838,7 @@ export default HourBlockCard;
     <>
       {hourBlockError && <div className="mb-8"><ErrorNotice>{hourBlockError}</ErrorNotice></div>}
       {hourBlock && <HourBlockCard hourBlock={hourBlock} />}
+      {!hourBlock && hourBlockStartsOn && <HourBlockStartsNotice startsOn={hourBlockStartsOn} />}
     </>
   );
 ```
@@ -2380,7 +2861,7 @@ const hourBlockResponse = shouldLoadHourBlock(branding, usageResponse)
 if (hourBlockResponse?.statusCode === 401) {
   return redirectToLoginAfter401(Astro);
 }
-const { hourBlock, hourBlockError } = hourBlockPanelState(hourBlockResponse);
+const { hourBlock, hourBlockStartsOn, hourBlockError } = hourBlockPanelState(hourBlockResponse);
 ```
 
 - change `showSupportUsage` so a card-only failure still opens the section:
@@ -2392,7 +2873,7 @@ const showSupportUsage =
 ```
 
   (unchanged — the card is inside the panel, which already renders whenever usage loads.)
-- pass the props: `<SupportUsagePanel usage={usageResponse.data ?? null} error={usageResponse.error} hourBlock={hourBlock} hourBlockError={hourBlockError} />`
+- pass the props: `<SupportUsagePanel usage={usageResponse.data ?? null} error={usageResponse.error} hourBlock={hourBlock} hourBlockStartsOn={hourBlockStartsOn} hourBlockError={hourBlockError} />`
 
 - [ ] **Step 6: Run portal tests, confirm PASS; typecheck**
 
@@ -2427,7 +2908,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `apps/api/src/services/contractEvents.ts` (the `ContractEvent` type, lines 13-20)
-- Modify: `apps/api/src/jobs/deliverableWorker.test.ts` (:158)
+- Modify: `apps/api/src/jobs/deliverableWorker.test.ts` (:158, compile-time list only)
+- Modify: `apps/api/src/__tests__/integration/hourBlockFixtures.ts` (one optional fixture param, see Step 1)
 - Create: `apps/api/src/services/contractHourBlockAlerts.ts` + `contractHourBlockAlerts.test.ts`
 - Modify: `apps/api/src/jobs/contractWorker.ts` (:143-146)
 - Create: `apps/api/src/jobs/contractWorker.alerts.test.ts`
@@ -2445,23 +2927,31 @@ alertPct?: number;         // set on contract.hour_block_threshold
 
 // contractHourBlockAlerts.ts
 export function hasCrossedThreshold(consumedHours: number, openingHours: number, alertPct: number): boolean;
-export interface HourBlockAlertSweepResult { lines: number; crossed: number; notified: number; errors: number }
+export interface HourBlockAlertSweepResult { lines: number; crossed: number; notified: number; skippedBacklog: number; errors: number }
 export async function runHourBlockAlertSweep(asOf?: Date): Promise<HourBlockAlertSweepResult>;
 ```
 
 **Design decisions:**
 
-- **Recipients reuse `resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.CONTRACTS_READ)`** (`services/usersWithPermission.ts`), not `contractRenewal.ts`'s private `resolveMspRecipients` (:27-45): that one returns *every* active org user and every active partner user with org access, with **no permission filter**, which would notify staff who cannot open the contract. The permission resolver is wildcard-aware, filters `users.status='active'`, honours `partner_users.org_access`, and always escapes to a system read. Fallback: the contract's `created_by` if that user is still active.
-- **`type: 'system'`** (spec §5). Verified allowed (`packages/shared/src/constants/notificationTypes.ts:2-14`; `'billing'` also exists since the autopay work and would suit equally — a one-word change if Todd prefers the billing filter).
-- **Threshold test is exact integer-cent arithmetic**: `round(consumed×100)×100 ≥ pct × round(opening×100)`. Hours are 2-dp by construction (W02 `sumEntryHours`), so no float comparison ever decides a notification.
-- **One transaction per line, event after commit.** Each line is evaluated and notified inside its own `runOutsideDbContext(() => withSystemDbAccessContext(...))`; a failure rolls back *that line's* notifications and the next line proceeds. The bus event is emitted **after** the line's transaction commits, and only when at least one notification row was newly created (so a retry sweep or a second recipient batch does not re-emit; `emitContractEvent` itself never throws).
-- **Changing the threshold re-alerts once** (the pct is in the dedupe key): raising 80 → 90 mid-period while already past 90 notifies once for the new level. Documented, tested.
-- **Dedupe key** is the spec's `hour_block:<lineId>:<periodStart>:<pct>`; uniqueness is per `(user_id, dedupe_key)` (partial unique index), so every recipient gets exactly one row per crossing.
-- Notification `link` is the contract page `/contracts/<contractId>` (same-origin relative path, as `user_notifications` requires).
+- **Order: renewal → billing → close-out → alerts.** The alert reads the open period's `carriedInHours`, which is the previous period's `carried_out`. That figure only exists after the billing path (and W02's `runHourBlockCloseOutSweep`) has closed the period that just ended. Running alerts first would judge the first day of a `carry_forward` period against a stale (too small) opening balance and could raise a false alert on rollover day. So the sweep runs last, and it also **skips a line that still has a close backlog**: a claimed, ended, unclosed period at or after `hour_block_first_period_start` (for example a close that hit the 12-period cap or failed). That line is judged on the next run; it is counted in `skippedBacklog` and logged.
+- **Durable dedupe marker, independent of the inbox.** Dismissing a notification **deletes** the `user_notifications` row (`routes/notifications.ts:152,179`), so the `(user_id, dedupe_key)` index alone would re-notify the next day. The primary guard is therefore a Redis `SET NX` marker `hour_block_alert:<lineId>:<periodStart>:<pct>` with a TTL running to the end of the period plus one day (same call shape as `routes/webhooks/emailProvider.ts:154`: `redis.set(key, '1', 'EX', ttl, 'NX') === 'OK'`, client from `getRedis()` in `services/redis.ts:125`). The notification `dedupe_key` stays as a second guard. The marker is released if the line has no recipient or if writing the notifications throws, so a lost alert is retried next run. If Redis is unavailable the sweep degrades to the `dedupe_key` guard alone and logs it. **The bus event is emitted only when this run newly set the marker** (degraded mode: only when a notification row was newly created).
+- **Recipients reuse `resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.CONTRACTS_READ)`** (`services/usersWithPermission.ts`), not `contractRenewal.ts`'s private `resolveMspRecipients` (:27-45): that one returns *every* active org user and every active partner user with org access, with **no permission filter**. The permission resolver is wildcard-aware, filters `users.status='active'`, honours `partner_users.org_access`, and always escapes to a system read. Fallback: the contract's `created_by` if that user is still active.
+- **`type: 'system'`** (spec §5). Verified allowed (`packages/shared/src/constants/notificationTypes.ts:2-14`); `'billing'` also exists and would suit equally, a one-word change if the billing filter is preferred.
+- **Threshold test is exact integer-cent arithmetic**: `round(consumed×100)×100 ≥ pct × round(opening×100)`.
+- **One transaction per line, event after commit.** Each line is evaluated inside its own `runOutsideDbContext(() => withSystemDbAccessContext(...))`; a failure rolls back that line's notifications (and releases its marker) and the next line proceeds.
+- **Retired lines are never candidates** (`hour_block_retired_at IS NULL`). A retired line's already-claimed periods still close through W02's close-out sweep (a retired line's periods close iff they were claimed while it was live); alerting is for live blocks only.
+- **Changing the threshold re-alerts once** (the pct is in both the marker and the dedupe key).
+- Notification `link` is `/contracts/<contractId>` (a same-origin relative path, as `user_notifications` requires).
 
-- [ ] **Step 1: Write the failing event-type test**
+- [ ] **Step 1: Extend the fixture (needed by the real-DB test)**
 
-In `apps/api/src/jobs/deliverableWorker.test.ts` line 158 add `'contract.hour_block_threshold'` to the `for (const type of [...] as const)` list so the "ignores every other contract event type" test covers the new event (it fails to compile until the type has the literal).
+In `apps/api/src/__tests__/integration/hourBlockFixtures.ts` add to `SeedBlockOrgArgs`:
+
+```ts
+  rolloverPolicy?: 'none' | 'carry_forward';   // default 'none'
+```
+
+and in the `contractLines` insert replace `rolloverPolicy: 'none',` with `rolloverPolicy: args.rolloverPolicy ?? 'none',`. (`entries[].day` already lets a test place hours in January 2027.)
 
 - [ ] **Step 2: Write the failing sweep unit tests**
 
@@ -2473,6 +2963,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
 // db: every builder method returns the chain; awaiting the chain pops the next queued result.
+// Per-line query order inside the sweep: backlog check -> (creator fallback) -> org name.
 const { queue, whereArgs, ctx } = vi.hoisted(() => ({
   queue: [] as unknown[][],
   whereArgs: [] as unknown[],
@@ -2493,12 +2984,14 @@ vi.mock('../db', () => {
 
 const m = vi.hoisted(() => ({
   compute: vi.fn(), holders: vi.fn(), notify: vi.fn(), emit: vi.fn(), capture: vi.fn(),
+  redisSet: vi.fn(), redisDel: vi.fn(), getRedis: vi.fn(),
 }));
 vi.mock('./contractHourBlockEstimate', () => ({ computeOpenHourBlockPeriod: m.compute }));
 vi.mock('./usersWithPermission', () => ({ resolveUsersWithPermissionForOrg: m.holders }));
 vi.mock('./userNotifications', () => ({ createNotification: m.notify }));
 vi.mock('./contractEvents', () => ({ emitContractEvent: m.emit }));
 vi.mock('./sentry', () => ({ captureException: m.capture }));
+vi.mock('./redis', () => ({ getRedis: m.getRedis }));
 vi.mock('./permissions', () => ({ PERMISSIONS: { CONTRACTS_READ: { resource: 'contracts', action: 'read' } } }));
 
 import { hasCrossedThreshold, runHourBlockAlertSweep } from './contractHourBlockAlerts';
@@ -2506,24 +2999,30 @@ import { hasCrossedThreshold, runHourBlockAlertSweep } from './contractHourBlock
 const contract = (id: string, over: Record<string, unknown> = {}) => ({
   id, orgId: `org-${id}`, partnerId: 'p1', createdBy: 'creator-1', ...over,
 });
-const line = (id: string, pct: number | null = 80) => ({ id, hourBlockAlertPct: pct });
+const line = (id: string, pct: number | null = 80) => ({
+  id, hourBlockAlertPct: pct, hourBlockFirstPeriodStart: '2026-12-01',
+});
 const est = (over: Record<string, unknown> = {}) => ({
   periodStart: '2026-12-01', periodEnd: '2027-01-01',
   includedHours: 10, carriedInHours: 0, consumedHours: 8, ...over,
 });
+const NO_BACKLOG: unknown[] = [];
+const BACKLOG = [{ id: 'bp-1' }];
+const ASOF = new Date('2026-12-20T12:00:00Z');
+const MARKER = 'hour_block_alert:l1:2026-12-01:80';
 
 describe('hasCrossedThreshold (exact integer-cent arithmetic)', () => {
   it.each([
-    [8, 10, 80, true],        // exactly on the line
-    [7.99, 10, 80, false],    // one cent short
+    [8, 10, 80, true],
+    [7.99, 10, 80, false],
     [10, 10, 100, true],
     [9.99, 10, 100, false],
     [9.6, 12, 80, true],      // opening includes 2 carried hours: 9.6 / 12 = 80%
     [9.59, 12, 80, false],
     [0, 10, 1, false],
-    [25, 10, 100, true],      // far over the block
+    [25, 10, 100, true],
     [0.1 + 0.2, 1, 30, true], // 0.30000000000000004 must not flip the answer
-    [5, 0, 50, false],        // a zero opening never alerts (division-free guard)
+    [5, 0, 50, false],
   ])('consumed %s of %s at %s%% -> %s', (consumed, opening, pct, expected) => {
     expect(hasCrossedThreshold(consumed, opening, pct)).toBe(expected);
   });
@@ -2539,10 +3038,13 @@ describe('runHourBlockAlertSweep', () => {
     m.holders.mockResolvedValue(['u1']);
     m.notify.mockResolvedValue('notif-1');
     m.emit.mockResolvedValue(undefined);
+    m.redisSet.mockResolvedValue('OK');
+    m.redisDel.mockResolvedValue(1);
+    m.getRedis.mockReturnValue({ set: m.redisSet, del: m.redisDel });
   });
 
   it('selects only live, alert-configured blocks on active contracts of automation-eligible orgs (compiled SQL)', async () => {
-    await runHourBlockAlertSweep(new Date('2026-12-20T12:00:00Z'));
+    await runHourBlockAlertSweep(ASOF);
 
     const q = new PgDialect().sqlToQuery(whereArgs[0] as SQL);
     expect(q.sql).toContain('"contract_lines"."line_type" = $');
@@ -2556,22 +3058,22 @@ describe('runHourBlockAlertSweep', () => {
     expect(q.params).not.toContain('merging');
   });
 
-  it('crossing -> one in-app notification with the spec fields, then ONE event after the line committed', async () => {
-    queue.push([{ contract: contract('c1'), line: line('l1', 80) }], [{ name: 'Acme Dental' }]);
-    const asOf = new Date('2026-12-20T12:00:00Z');
+  it('crossing -> claims the durable marker, writes the notification, then emits ONE event after commit', async () => {
+    queue.push([{ contract: contract('c1'), line: line('l1', 80) }], NO_BACKLOG, [{ name: 'Acme Dental' }]);
 
-    const result = await runHourBlockAlertSweep(asOf);
+    const result = await runHourBlockAlertSweep(ASOF);
 
-    expect(m.compute).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), expect.objectContaining({ id: 'l1' }), asOf);
+    // SET key 1 EX <ttl to period end + 1 day> NX
+    expect(m.redisSet).toHaveBeenCalledWith(MARKER, '1', 'EX', expect.any(Number), 'NX');
+    const ttl = m.redisSet.mock.calls[0]![3] as number;
+    expect(ttl).toBe(Math.ceil((Date.UTC(2027, 0, 1) - ASOF.getTime()) / 1000) + 86_400);
+
+    expect(m.compute).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), expect.objectContaining({ id: 'l1' }), ASOF);
     expect(m.holders).toHaveBeenCalledWith('org-c1', { resource: 'contracts', action: 'read' });
     expect(m.notify).toHaveBeenCalledTimes(1);
     expect(m.notify).toHaveBeenCalledWith(expect.objectContaining({
-      userId: 'u1',
-      orgId: 'org-c1',
-      type: 'system',
-      priority: 'high',
-      link: '/contracts/c1',
-      dedupeKey: 'hour_block:l1:2026-12-01:80',
+      userId: 'u1', orgId: 'org-c1', type: 'system', priority: 'high',
+      link: '/contracts/c1', dedupeKey: 'hour_block:l1:2026-12-01:80',
       metadata: expect.objectContaining({ event: 'contract.hour_block_threshold', contractId: 'c1', contractLineId: 'l1', alertPct: 80 }),
     }));
     const call = m.notify.mock.calls[0]![0] as { title: string; message: string };
@@ -2586,38 +3088,57 @@ describe('runHourBlockAlertSweep', () => {
       contractId: 'c1', orgId: 'org-c1', partnerId: 'p1',
       contractLineId: 'l1', periodStart: '2026-12-01', alertPct: 80,
     });
-    expect(result).toEqual({ lines: 1, crossed: 1, notified: 1, errors: 0 });
+    expect(result).toEqual({ lines: 1, crossed: 1, notified: 1, skippedBacklog: 0, errors: 0 });
   });
 
-  it('below the threshold: nothing is resolved, written or emitted', async () => {
+  it('marker already set (an earlier sweep alerted, even if the user dismissed the notification): nothing is written or emitted', async () => {
+    m.redisSet.mockResolvedValue(null); // SET NX lost
+    queue.push([{ contract: contract('c1'), line: line('l1', 80) }], NO_BACKLOG);
+
+    const result = await runHourBlockAlertSweep(ASOF);
+
+    expect(m.holders).not.toHaveBeenCalled();
+    expect(m.notify).not.toHaveBeenCalled();
+    expect(m.emit).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ crossed: 1, notified: 0 });
+  });
+
+  it('below the threshold: no marker, nothing resolved, written or emitted', async () => {
     m.compute.mockResolvedValue(est({ consumedHours: 7.99 }));
-    queue.push([{ contract: contract('c1'), line: line('l1', 80) }]);
+    queue.push([{ contract: contract('c1'), line: line('l1', 80) }], NO_BACKLOG);
 
-    const result = await runHourBlockAlertSweep();
+    const result = await runHourBlockAlertSweep(ASOF);
 
+    expect(m.redisSet).not.toHaveBeenCalled();
     expect(m.holders).not.toHaveBeenCalled();
     expect(m.notify).not.toHaveBeenCalled();
     expect(m.emit).not.toHaveBeenCalled();
     expect(result).toMatchObject({ lines: 1, crossed: 0, notified: 0 });
   });
 
-  it('already notified (dedupe hit -> createNotification returns null): no event is re-emitted', async () => {
-    m.notify.mockResolvedValue(null);
-    queue.push([{ contract: contract('c1'), line: line('l1', 80) }], [{ name: 'Acme' }]);
+  it('a close backlog (claimed, ended, unclosed period) skips the line BEFORE computing anything', async () => {
+    queue.push([{ contract: contract('c1'), line: line('l1', 80) }], BACKLOG);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runHourBlockAlertSweep(ASOF);
 
-    const result = await runHourBlockAlertSweep();
-
-    expect(m.notify).toHaveBeenCalledTimes(1);
-    expect(m.emit).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ crossed: 1, notified: 0 });
+      expect(m.compute).not.toHaveBeenCalled();
+      expect(m.redisSet).not.toHaveBeenCalled();
+      expect(m.notify).not.toHaveBeenCalled();
+      expect(m.emit).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalled();
+      expect(result).toEqual({ lines: 1, crossed: 0, notified: 0, skippedBacklog: 1, errors: 0 });
+    } finally {
+      warn.mockRestore();
+    }
   });
 
-  it('notifies every permission holder, one row each', async () => {
+  it('notifies every permission holder, one row each; the event still fires once', async () => {
     m.holders.mockResolvedValue(['u1', 'u2', 'u3']);
     m.notify.mockResolvedValueOnce('n1').mockResolvedValueOnce(null).mockResolvedValueOnce('n3');
-    queue.push([{ contract: contract('c1'), line: line('l1') }], [{ name: 'Acme' }]);
+    queue.push([{ contract: contract('c1'), line: line('l1') }], NO_BACKLOG, [{ name: 'Acme' }]);
 
-    const result = await runHourBlockAlertSweep();
+    const result = await runHourBlockAlertSweep(ASOF);
 
     expect(m.notify.mock.calls.map((c) => (c[0] as { userId: string }).userId)).toEqual(['u1', 'u2', 'u3']);
     expect(result.notified).toBe(2);
@@ -2626,24 +3147,58 @@ describe('runHourBlockAlertSweep', () => {
 
   it("falls back to the contract's creator when nobody holds contracts:read", async () => {
     m.holders.mockResolvedValue([]);
-    queue.push([{ contract: contract('c1'), line: line('l1') }], [{ id: 'creator-1' }], [{ name: 'Acme' }]);
+    queue.push([{ contract: contract('c1'), line: line('l1') }], NO_BACKLOG, [{ id: 'creator-1' }], [{ name: 'Acme' }]);
 
-    await runHourBlockAlertSweep();
+    await runHourBlockAlertSweep(ASOF);
 
     expect(m.notify).toHaveBeenCalledTimes(1);
     expect(m.notify).toHaveBeenCalledWith(expect.objectContaining({ userId: 'creator-1' }));
   });
 
-  it('no recipient at all: warns, writes nothing, emits nothing, does not count as an error', async () => {
+  it('no recipient at all: warns, RELEASES the marker, writes and emits nothing, not an error', async () => {
     m.holders.mockResolvedValue([]);
-    queue.push([{ contract: contract('c1', { createdBy: null }), line: line('l1') }]);
+    queue.push([{ contract: contract('c1', { createdBy: null }), line: line('l1') }], NO_BACKLOG);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const result = await runHourBlockAlertSweep();
+      const result = await runHourBlockAlertSweep(ASOF);
       expect(m.notify).not.toHaveBeenCalled();
       expect(m.emit).not.toHaveBeenCalled();
+      expect(m.redisDel).toHaveBeenCalledWith(MARKER);
       expect(warn).toHaveBeenCalled();
       expect(result).toMatchObject({ crossed: 1, notified: 0, errors: 0 });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a failing notification write releases the marker (so the alert is retried) and counts as an error', async () => {
+    m.notify.mockRejectedValue(new Error('insert failed'));
+    queue.push([{ contract: contract('c1'), line: line('l1') }], NO_BACKLOG, [{ name: 'Acme' }]);
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await runHourBlockAlertSweep(ASOF);
+      expect(m.redisDel).toHaveBeenCalledWith(MARKER);
+      expect(m.emit).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ errors: 1, notified: 0 });
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it('Redis unavailable: degrades to the notification dedupe_key guard and emits only if a row was newly created', async () => {
+    m.getRedis.mockReturnValue(null);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      queue.push([{ contract: contract('c1'), line: line('l1') }], NO_BACKLOG, [{ name: 'Acme' }]);
+      await runHourBlockAlertSweep(ASOF);
+      expect(m.notify).toHaveBeenCalledTimes(1);
+      expect(m.emit).toHaveBeenCalledTimes(1);
+
+      m.emit.mockClear();
+      m.notify.mockResolvedValue(null); // dedupe_key hit: row already exists
+      queue.push([{ contract: contract('c1'), line: line('l1') }], NO_BACKLOG, [{ name: 'Acme' }]);
+      await runHourBlockAlertSweep(ASOF);
+      expect(m.emit).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();
     }
@@ -2652,30 +3207,30 @@ describe('runHourBlockAlertSweep', () => {
   it('opens one system context per block line (+1 for the candidate read) so one failure cannot poison the rest', async () => {
     queue.push(
       [{ contract: contract('c1'), line: line('l1') }, { contract: contract('c2'), line: line('l2') }],
-      [{ name: 'Beta' }],
+      NO_BACKLOG, NO_BACKLOG, [{ name: 'Beta' }],
     );
     m.compute.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce(est());
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      const result = await runHourBlockAlertSweep();
+      const result = await runHourBlockAlertSweep(ASOF);
 
       expect(ctx.systemEnters).toBe(3);
-      // line 1 failed, line 2 still notified.
       expect(m.notify).toHaveBeenCalledTimes(1);
       expect(m.notify).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-c2' }));
       expect(m.capture).toHaveBeenCalledTimes(1);
-      expect(result).toEqual({ lines: 2, crossed: 1, notified: 1, errors: 1 });
+      expect(result).toMatchObject({ lines: 2, crossed: 1, notified: 1, errors: 1 });
     } finally {
       err.mockRestore();
     }
   });
 
-  it('a changed threshold produces a different dedupe key (so it can alert once more)', async () => {
-    queue.push([{ contract: contract('c1'), line: line('l1', 90) }], [{ name: 'Acme' }]);
+  it('a changed threshold uses a different marker and dedupe key (so it can alert once more)', async () => {
+    queue.push([{ contract: contract('c1'), line: line('l1', 90) }], NO_BACKLOG, [{ name: 'Acme' }]);
     m.compute.mockResolvedValue(est({ consumedHours: 9.5 }));
 
-    await runHourBlockAlertSweep();
+    await runHourBlockAlertSweep(ASOF);
 
+    expect(m.redisSet).toHaveBeenCalledWith('hour_block_alert:l1:2026-12-01:90', '1', 'EX', expect.any(Number), 'NX');
     expect(m.notify).toHaveBeenCalledWith(expect.objectContaining({ dedupeKey: 'hour_block:l1:2026-12-01:90' }));
   });
 });
@@ -2689,10 +3244,11 @@ Create `apps/api/src/jobs/contractWorker.alerts.test.ts`:
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const order: string[] = [];
-const { processorRef, alertMock, renewalMock, captureMock } = vi.hoisted(() => ({
+const { processorRef, alertMock, renewalMock, closeOutMock, captureMock } = vi.hoisted(() => ({
   processorRef: { fn: undefined as undefined | ((job: { name: string }) => Promise<unknown>) },
   alertMock: vi.fn(),
   renewalMock: vi.fn(),
+  closeOutMock: vi.fn(),
   captureMock: vi.fn(),
 }));
 
@@ -2711,6 +3267,7 @@ vi.mock('../services/contractService', () => ({ generateDueInvoice: vi.fn() }));
 vi.mock('../services/invoiceService', () => ({ issueInvoice: vi.fn() }));
 vi.mock('../services/invoicePdf', () => ({ sendInvoiceEmail: vi.fn() }));
 vi.mock('../services/contractRenewal', () => ({ runContractRenewalSweep: renewalMock }));
+vi.mock('../services/contractHourBlockClose', () => ({ runHourBlockCloseOutSweep: closeOutMock }));
 vi.mock('../services/contractHourBlockAlerts', () => ({ runHourBlockAlertSweep: alertMock }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('../db', () => {
@@ -2732,21 +3289,22 @@ describe('contract billing-sweep job ordering (block hours W04)', () => {
     vi.clearAllMocks();
     order.length = 0;
     renewalMock.mockImplementation(async () => { order.push('renewal'); });
+    closeOutMock.mockImplementation(async () => { order.push('closeout'); });
     alertMock.mockImplementation(async () => { order.push('alerts'); });
     createContractWorker();
   });
 
-  it('runs renewal, then threshold alerts, then billing', async () => {
+  it('runs renewal, billing, the close-out sweep, and only THEN the threshold alerts', async () => {
     await processorRef.fn!({ name: 'billing-sweep' });
-    expect(order.slice(0, 3)).toEqual(['renewal', 'alerts', 'billing']);
+    expect(order).toEqual(['renewal', 'billing', 'closeout', 'alerts']);
   });
 
-  it('an alert-sweep failure is reported but never blocks billing', async () => {
+  it('an alert-sweep failure is reported and never fails the job or the billing result', async () => {
     alertMock.mockRejectedValueOnce(new Error('alerts down'));
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      await processorRef.fn!({ name: 'billing-sweep' });
-      expect(order).toContain('billing');
+      const result = await processorRef.fn!({ name: 'billing-sweep' });
+      expect(result).toEqual({ billed: 0, failed: 0 });
       expect(captureMock).toHaveBeenCalledTimes(1);
     } finally {
       err.mockRestore();
@@ -2757,21 +3315,23 @@ describe('contract billing-sweep job ordering (block hours W04)', () => {
 
 - [ ] **Step 4: Write the failing real-DB test**
 
-Create `apps/api/src/__tests__/integration/contractHourBlockAlerts.integration.test.ts`:
+Create `apps/api/src/__tests__/integration/contractHourBlockAlerts.integration.test.ts` (needs the test-stack Redis for the durable marker):
 
 ```ts
 import './setup';
 import { vi } from 'vitest';
-// contract-events is a BullMQ side effect; mock it so the suite needs no Redis queue.
+// contract-events is a BullMQ side effect; mock it so the suite needs no event queue.
 vi.mock('../../services/contractEvents', () => ({ emitContractEvent: vi.fn().mockResolvedValue(undefined) }));
 
 import { and, eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { contractLines, userNotifications } from '../../db/schema';
+import {
+  contractBillingPeriods, contractHourPeriods, contractLines, userNotifications,
+} from '../../db/schema';
 import { emitContractEvent } from '../../services/contractEvents';
 import { runHourBlockAlertSweep } from '../../services/contractHourBlockAlerts';
 import { assignUserToPartner, createPartner, createRole, createUser, grantRolePermissions } from './db-utils';
-import { seedBlockOrg } from './hourBlockFixtures';
+import { seedBlockOrg, type SeededBlockOrg } from './hourBlockFixtures';
 import { getTestDb } from './setup';
 
 const AS_OF = new Date('2026-12-20T12:00:00Z');
@@ -2791,7 +3351,7 @@ async function notificationsFor(userId: string) {
   return getTestDb().select().from(userNotifications).where(eq(userNotifications.userId, userId));
 }
 
-describe('runHourBlockAlertSweep (real DB)', () => {
+describe('runHourBlockAlertSweep (real DB + Redis marker)', () => {
   beforeEach(() => vi.mocked(emitContractEvent).mockClear());
 
   it('crosses once -> one notification and one event; a second sweep in the same period writes nothing', async () => {
@@ -2814,19 +3374,37 @@ describe('runHourBlockAlertSweep (real DB)', () => {
       periodStart: '2026-12-01', alertPct: 80,
     }));
 
-    // Real partial-index arbiter: a second sweep must be a silent no-op (a
-    // missing ON CONFLICT predicate only fails against a real database).
     const second = await runHourBlockAlertSweep(AS_OF);
     expect(second).toMatchObject({ crossed: 1, notified: 0, errors: 0 });
     expect(await notificationsFor(s.staffId)).toHaveLength(1);
     expect(emitContractEvent).toHaveBeenCalledTimes(1);
   });
 
+  it('DISMISSING the notification (which deletes the row) does not re-fire the alert or the event', async () => {
+    const s = await seedStaff();
+    await seedBlockOrg({ partnerId: s.partnerId, technicianId: s.technicianId, entries: OVER_80 });
+
+    await runHourBlockAlertSweep(AS_OF);
+    expect(await notificationsFor(s.staffId)).toHaveLength(1);
+
+    // What routes/notifications.ts does on dismiss: the row is deleted, so the
+    // (user_id, dedupe_key) index no longer remembers the alert. Only the
+    // durable Redis marker does.
+    await getTestDb().delete(userNotifications).where(eq(userNotifications.userId, s.staffId));
+    expect(await notificationsFor(s.staffId)).toHaveLength(0);
+
+    const again = await runHourBlockAlertSweep(AS_OF);
+
+    expect(again).toMatchObject({ crossed: 1, notified: 0, errors: 0 });
+    expect(await notificationsFor(s.staffId)).toHaveLength(0);
+    expect(emitContractEvent).toHaveBeenCalledTimes(1);
+  });
+
   it('does nothing below the threshold, with a NULL alert pct, on a retired line, or on a non-active contract', async () => {
     const s = await seedStaff();
-    await seedBlockOrg({ partnerId: s.partnerId, technicianId: s.technicianId, entries: [{ minutes: 420 }] });               // 7.0 h < 80%
-    await seedBlockOrg({ partnerId: s.partnerId, technicianId: s.technicianId, entries: OVER_80, alertPct: null });         // alerts off
-    await seedBlockOrg({ partnerId: s.partnerId, technicianId: s.technicianId, entries: OVER_80, retired: true });          // retired
+    await seedBlockOrg({ partnerId: s.partnerId, technicianId: s.technicianId, entries: [{ minutes: 420 }] });
+    await seedBlockOrg({ partnerId: s.partnerId, technicianId: s.technicianId, entries: OVER_80, alertPct: null });
+    await seedBlockOrg({ partnerId: s.partnerId, technicianId: s.technicianId, entries: OVER_80, retired: true });
     await seedBlockOrg({ partnerId: s.partnerId, technicianId: s.technicianId, entries: OVER_80, contractStatus: 'paused' });
 
     const result = await runHourBlockAlertSweep(AS_OF);
@@ -2852,11 +3430,11 @@ describe('runHourBlockAlertSweep (real DB)', () => {
       partnerId: s.partnerId, technicianId: s.technicianId,
       entries: [{ minutes: 300 }, { minutes: 270 }], // 9.5 h
     });
-    await runHourBlockAlertSweep(AS_OF);                       // 80% key
+    await runHourBlockAlertSweep(AS_OF);                       // 80% marker + key
     await getTestDb().update(contractLines).set({ hourBlockAlertPct: 90 }).where(eq(contractLines.id, org.lineId));
 
-    await runHourBlockAlertSweep(AS_OF);                       // 90% key (9.5 >= 9.0)
-    await runHourBlockAlertSweep(AS_OF);                       // no new key
+    await runHourBlockAlertSweep(AS_OF);                       // 90% (9.5 >= 9.0)
+    await runHourBlockAlertSweep(AS_OF);                       // nothing new
 
     const keys = (await notificationsFor(s.staffId)).map((r) => r.dedupeKey).sort();
     expect(keys).toEqual([
@@ -2879,19 +3457,61 @@ describe('runHourBlockAlertSweep (real DB)', () => {
       .where(and(eq(userNotifications.userId, creator.id), eq(userNotifications.orgId, org.orgId)));
     expect(rows).toHaveLength(1);
   });
+
+  describe('carry_forward rollover day (the sweep must judge the NEW period on a fresh carried-in balance)', () => {
+    const ROLLOVER_DAY = new Date('2027-01-05T12:00:00Z');
+    const jan = (minutes: number) => [{ minutes, day: '2027-01-03' }];
+
+    /** Dec [2026-12-01, 2027-01-01) was claimed by billing. */
+    async function claimDecember(org: SeededBlockOrg) {
+      await getTestDb().insert(contractBillingPeriods).values({
+        contractId: org.contractId, orgId: org.orgId, periodStart: '2026-12-01', periodEnd: '2027-01-01',
+      });
+    }
+    /** ...and (when the close ran) closed with 3.00 h carried out into January. */
+    async function closeDecember(org: SeededBlockOrg) {
+      await getTestDb().insert(contractHourPeriods).values({
+        contractLineId: org.lineId, contractId: org.contractId, orgId: org.orgId,
+        periodStart: '2026-12-01', periodEnd: '2027-01-01',
+        includedHours: '10.00', carriedInHours: '0.00', consumedHours: '7.00',
+        overageHours: '0.00', carriedOutHours: '3.00', entryCount: 2,
+        overageUnitPrice: '150.00', currencyCode: 'USD', closeSource: 'billing_run',
+      });
+    }
+
+    it('judges against the carried-in balance once December is closed, and skips a line whose close is still pending', async () => {
+      const s = await seedStaff();
+      const base = { partnerId: s.partnerId, technicianId: s.technicianId, rolloverPolicy: 'carry_forward' as const };
+
+      // X: closed, 9.0 h of (10 + 3 carried) = 69% -> must NOT alert (a stale carried-in of 0 would say 90%).
+      const x = await seedBlockOrg({ ...base, entries: jan(540) });
+      await claimDecember(x); await closeDecember(x);
+      // Y: closed, 10.5 h of 13 = 80.8% -> alerts.
+      const y = await seedBlockOrg({ ...base, entries: jan(630) });
+      await claimDecember(y); await closeDecember(y);
+      // Z: December claimed and ended but NOT closed (backlog) -> skipped, even though 9.0 h of a stale 10 would alert.
+      const z = await seedBlockOrg({ ...base, entries: jan(540) });
+      await claimDecember(z);
+
+      const result = await runHourBlockAlertSweep(ROLLOVER_DAY);
+
+      expect(result).toMatchObject({ lines: 3, crossed: 1, notified: 1, skippedBacklog: 1, errors: 0 });
+      const rows = await notificationsFor(s.staffId);
+      expect(rows.map((r) => r.orgId)).toEqual([y.orgId]);
+    });
+  });
 });
 ```
 
-- [ ] **Step 5: Run, confirm FAIL**
+- [ ] **Step 5: Run, confirm FAIL (behaviour, not types)**
 
 ```bash
 cd apps/api && npx vitest run \
   src/services/contractHourBlockAlerts.test.ts \
-  src/jobs/contractWorker.alerts.test.ts \
-  src/jobs/deliverableWorker.test.ts
+  src/jobs/contractWorker.alerts.test.ts
 ```
 
-Expected FAIL: `Cannot find module './contractHourBlockAlerts'` (both the service test and the worker test's `vi.mock` target is unresolved), and a TypeScript/vitest type error for `'contract.hour_block_threshold'` in `deliverableWorker.test.ts`. The integration file fails the same way; run it after Step 7.
+Expected FAIL: the service test cannot import `./contractHourBlockAlerts` (module not found); the worker test fails on `expect(order).toEqual(['renewal','billing','closeout','alerts'])` (today the job runs no alert sweep, so `alerts` is absent). The integration file fails the same way until Step 7. (Vitest does not typecheck, so the `ContractEvent` type change is verified by `tsc` in Step 8, not by a red test.)
 
 - [ ] **Step 6: Implement the event variant**
 
@@ -2911,19 +3531,22 @@ export type ContractEvent = {
 };
 ```
 
-(The only consumer, `deliverableWorker.ts:151`, acts on `contract.cancelled` and ignores every other `type`; there is no exhaustive switch over this type.)
+Also add `'contract.hour_block_threshold'` to the `for (const type of [...] as const)` list at `apps/api/src/jobs/deliverableWorker.test.ts:158`. The only consumer, `deliverableWorker.ts:151`, acts on `contract.cancelled` and ignores every other type; there is no exhaustive switch over this type.
 
 - [ ] **Step 7: Implement the sweep and wire it into the job**
 
 Create `apps/api/src/services/contractHourBlockAlerts.ts`:
 
 ```ts
-import { and, eq, isNotNull, isNull } from 'drizzle-orm';
+import { and, eq, gte, isNotNull, isNull, lte, notExists, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { contractLines, contracts, organizations, users } from '../db/schema';
+import {
+  contractBillingPeriods, contractHourPeriods, contractLines, contracts, organizations, users,
+} from '../db/schema';
 import { computeOpenHourBlockPeriod } from './contractHourBlockEstimate'; // W03 — index C7
 import { emitContractEvent } from './contractEvents';
 import { PERMISSIONS } from './permissions';
+import { getRedis } from './redis';
 import { captureException } from './sentry';
 import { buildAutomationEligibleOrgPredicate } from './tenantStatus';
 import { createNotification } from './userNotifications';
@@ -2936,15 +3559,15 @@ export interface HourBlockAlertSweepResult {
   lines: number;
   crossed: number;
   notified: number;
+  skippedBacklog: number;
   errors: number;
 }
 
 /**
  * Has `consumed` reached `alertPct` percent of `opening` hours?
- *
- * Hours are 2-dp by construction (W02 sums rounded-each-then-added), so compare
- * in integer cents: round(consumed*100)*100 >= pct * round(opening*100). No float
- * comparison ever decides whether a person is notified.
+ * Hours are 2-dp by construction, so compare in integer cents:
+ * round(consumed*100)*100 >= pct * round(opening*100). No float comparison
+ * ever decides whether a person is notified.
  */
 export function hasCrossedThreshold(consumedHours: number, openingHours: number, alertPct: number): boolean {
   const consumed = Math.round(consumedHours * 100);
@@ -2954,6 +3577,40 @@ export function hasCrossedThreshold(consumedHours: number, openingHours: number,
 }
 
 const hoursText = (n: number): string => String(Number(n.toFixed(2)));
+
+/**
+ * A claimed, ENDED period at/after the block's first period with no
+ * contract_hour_periods row = the close has not caught up (cap hit, failure).
+ * The open period's carriedInHours is the previous close's carried_out, so
+ * until the backlog clears the opening balance is stale.
+ */
+async function hasCloseBacklog(contract: ContractRow, line: LineRow, todayISO: string): Promise<boolean> {
+  const first = line.hourBlockFirstPeriodStart;
+  if (!first) return false;
+  const rows = await db
+    .select({ id: contractBillingPeriods.id })
+    .from(contractBillingPeriods)
+    .where(
+      and(
+        eq(contractBillingPeriods.contractId, contract.id),
+        gte(contractBillingPeriods.periodStart, first),
+        lte(contractBillingPeriods.periodEnd, todayISO),
+        notExists(
+          db
+            .select({ one: sql`1` })
+            .from(contractHourPeriods)
+            .where(
+              and(
+                eq(contractHourPeriods.contractLineId, line.id),
+                eq(contractHourPeriods.periodStart, contractBillingPeriods.periodStart),
+              ),
+            ),
+        ),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
 
 async function resolveRecipients(contract: ContractRow): Promise<string[]> {
   // contracts:read holders of the owning partner with access to THIS org (plus
@@ -2970,84 +3627,127 @@ async function resolveRecipients(contract: ContractRow): Promise<string[]> {
   return creator ? [creator.id] : [];
 }
 
-interface LineOutcome {
-  crossed: boolean;
-  created: number;
-  periodStart: string;
-  alertPct: number;
+/**
+ * Durable "already alerted" marker. Dismissing a notification DELETES its
+ * user_notifications row (routes/notifications.ts), so the (user_id,
+ * dedupe_key) index forgets; this marker does not. true = newly set (this run
+ * owns the alert), false = already alerted, null = Redis unavailable (degraded).
+ */
+async function claimMarker(key: string, periodEnd: string, now: Date): Promise<boolean | null> {
+  const redis = getRedis();
+  if (!redis) {
+    console.warn('[HourBlockAlerts] Redis unavailable: relying on the notification dedupe key only', key);
+    return null;
+  }
+  const secondsToPeriodEnd = Math.ceil((new Date(`${periodEnd}T00:00:00Z`).getTime() - now.getTime()) / 1000);
+  const ttl = Math.max(3600, secondsToPeriodEnd) + 86_400;
+  return (await redis.set(key, '1', 'EX', ttl, 'NX')) === 'OK';
 }
+
+async function releaseMarker(key: string): Promise<void> {
+  try {
+    await getRedis()?.del(key);
+  } catch (err) {
+    console.error('[HourBlockAlerts] failed to release marker', key, err instanceof Error ? err.message : err);
+  }
+}
+
+type LineOutcome =
+  | { status: 'backlog' }
+  | { status: 'below' }
+  | { status: 'crossed'; created: number; emit: boolean; periodStart: string; alertPct: number };
 
 /** One block line, inside the caller's per-line system transaction. */
 async function evaluateLine(contract: ContractRow, line: LineRow, asOf: Date): Promise<LineOutcome> {
   const alertPct = line.hourBlockAlertPct as number; // the candidate query guarantees non-null
+  const todayISO = asOf.toISOString().slice(0, 10);
+
+  if (await hasCloseBacklog(contract, line, todayISO)) {
+    console.warn(
+      '[HourBlockAlerts] close backlog: judging deferred. contract=%s line=%s',
+      contract.id, line.id,
+    );
+    return { status: 'backlog' };
+  }
+
   const estimate = await computeOpenHourBlockPeriod(contract, line, asOf);
   const opening = estimate.includedHours + estimate.carriedInHours;
-  const base = { created: 0, periodStart: estimate.periodStart, alertPct };
+  if (!hasCrossedThreshold(estimate.consumedHours, opening, alertPct)) return { status: 'below' };
 
-  if (!hasCrossedThreshold(estimate.consumedHours, opening, alertPct)) {
-    return { crossed: false, ...base };
+  const markerKey = `hour_block_alert:${line.id}:${estimate.periodStart}:${alertPct}`;
+  const claimed = await claimMarker(markerKey, estimate.periodEnd, asOf);
+  const crossed = (created: number, emit: boolean): LineOutcome => ({
+    status: 'crossed', created, emit, periodStart: estimate.periodStart, alertPct,
+  });
+  if (claimed === false) return crossed(0, false); // alerted before, whether or not the inbox row still exists
+
+  try {
+    const recipients = await resolveRecipients(contract);
+    if (recipients.length === 0) {
+      console.warn(
+        '[HourBlockAlerts] threshold crossed but nobody to notify: contract=%s org=%s line=%s',
+        contract.id, contract.orgId, line.id,
+      );
+      if (claimed) await releaseMarker(markerKey); // let a later run alert once someone has access
+      return crossed(0, false);
+    }
+
+    const [org] = await db
+      .select({ name: organizations.name })
+      .from(organizations)
+      .where(eq(organizations.id, contract.orgId))
+      .limit(1);
+    const orgName = Array.from((org?.name ?? 'a customer').replace(/[\r\n]+/g, ' ')).slice(0, 120).join('');
+    const usedPct = Math.floor((Math.round(estimate.consumedHours * 100) * 100) / Math.max(1, Math.round(opening * 100)));
+    const title = `Block hours ${usedPct}% used: ${orgName}`;
+    const message =
+      `${orgName}: ${hoursText(estimate.consumedHours)} of ${hoursText(opening)} block hours used ` +
+      `for ${estimate.periodStart} – ${estimate.periodEnd} (alert threshold ${alertPct}%).`;
+    const dedupeKey = `hour_block:${line.id}:${estimate.periodStart}:${alertPct}`;
+
+    let created = 0;
+    for (const userId of recipients) {
+      const id = await createNotification({
+        userId,
+        orgId: contract.orgId,
+        type: 'system',
+        priority: 'high',
+        title,
+        message,
+        link: `/contracts/${contract.id}`,
+        metadata: {
+          event: 'contract.hour_block_threshold',
+          contractId: contract.id,
+          contractLineId: line.id,
+          periodStart: estimate.periodStart,
+          alertPct,
+        },
+        dedupeKey,
+      });
+      if (id) created++;
+    }
+    // Marker newly set => this run owns the event. Degraded (no Redis) => only
+    // when a row was actually created, so the dedupe_key still bounds it.
+    return crossed(created, claimed === true ? true : created > 0);
+  } catch (err) {
+    if (claimed) await releaseMarker(markerKey); // the line's transaction rolls back: retry next run
+    throw err;
   }
-
-  const recipients = await resolveRecipients(contract);
-  if (recipients.length === 0) {
-    console.warn(
-      '[HourBlockAlerts] threshold crossed but nobody to notify: contract=%s org=%s line=%s',
-      contract.id, contract.orgId, line.id,
-    );
-    return { crossed: true, ...base };
-  }
-
-  const [org] = await db
-    .select({ name: organizations.name })
-    .from(organizations)
-    .where(eq(organizations.id, contract.orgId))
-    .limit(1);
-  const orgName = Array.from((org?.name ?? 'a customer').replace(/[\r\n]+/g, ' ')).slice(0, 120).join('');
-  const usedPct = Math.floor((Math.round(estimate.consumedHours * 100) * 100) / Math.max(1, Math.round(opening * 100)));
-  const title = `Block hours ${usedPct}% used: ${orgName}`;
-  const message =
-    `${orgName}: ${hoursText(estimate.consumedHours)} of ${hoursText(opening)} block hours used ` +
-    `for ${estimate.periodStart} – ${estimate.periodEnd} (alert threshold ${alertPct}%).`;
-  const dedupeKey = `hour_block:${line.id}:${estimate.periodStart}:${alertPct}`;
-
-  let created = 0;
-  for (const userId of recipients) {
-    const id = await createNotification({
-      userId,
-      orgId: contract.orgId,
-      type: 'system',
-      priority: 'high',
-      title,
-      message,
-      link: `/contracts/${contract.id}`,
-      metadata: {
-        event: 'contract.hour_block_threshold',
-        contractId: contract.id,
-        contractLineId: line.id,
-        periodStart: estimate.periodStart,
-        alertPct,
-      },
-      dedupeKey,
-    });
-    if (id) created++;
-  }
-  return { crossed: true, ...base, created };
 }
 
 /**
- * Threshold alerts for live block lines (#4547 W04). Runs in the contract
- * billing-sweep job BEFORE runContractBillingSweep (so a period about to close
- * is judged on the hours it still holds).
+ * Threshold alerts for live block lines (#4547 W04). Runs LAST in the
+ * contract billing-sweep job (renewal -> billing -> close-out -> alerts) so
+ * the open period's carried-in balance reflects the close that just ran.
  *
- * Candidates: a live (non-retired) hour_block line with a non-NULL alert pct on
- * an ACTIVE contract of an automation-eligible org — the same archived/purging/
- * merging gate as the billing and renewal sweeps.
+ * Candidates: a live (non-retired) hour_block line with a non-NULL alert pct
+ * on an ACTIVE contract of an automation-eligible org (the same archived/
+ * purging/merging gate as the billing and renewal sweeps).
  *
  * ONE system transaction per line: a failed statement poisons every later
  * statement in a transaction, so a try/catch inside a shared context would not
- * isolate failures. (Same shape as runContractBillingSweep.) The bus event is
- * emitted after the line's transaction commits, only when a notification row
- * was newly written — a repeat sweep is silent.
+ * isolate failures (same shape as runContractBillingSweep). The bus event is
+ * emitted after the line's transaction commits.
  */
 export async function runHourBlockAlertSweep(asOf: Date = new Date()): Promise<HourBlockAlertSweepResult> {
   const candidates = await runOutsideDbContext(() =>
@@ -3068,17 +3768,20 @@ export async function runHourBlockAlertSweep(asOf: Date = new Date()): Promise<H
     ),
   );
 
-  const result: HourBlockAlertSweepResult = { lines: candidates.length, crossed: 0, notified: 0, errors: 0 };
+  const result: HourBlockAlertSweepResult = {
+    lines: candidates.length, crossed: 0, notified: 0, skippedBacklog: 0, errors: 0,
+  };
 
   for (const { contract, line } of candidates) {
     try {
       const outcome = await runOutsideDbContext(() =>
         withSystemDbAccessContext(() => evaluateLine(contract, line, asOf)),
       );
-      if (!outcome.crossed) continue;
+      if (outcome.status === 'backlog') { result.skippedBacklog++; continue; }
+      if (outcome.status === 'below') continue;
       result.crossed++;
       result.notified += outcome.created;
-      if (outcome.created > 0) {
+      if (outcome.emit) {
         await emitContractEvent({
           type: 'contract.hour_block_threshold',
           contractId: contract.id,
@@ -3108,28 +3811,28 @@ export async function runHourBlockAlertSweep(asOf: Date = new Date()): Promise<H
 In `apps/api/src/jobs/contractWorker.ts`:
 
 - add `import { runHourBlockAlertSweep } from '../services/contractHourBlockAlerts';` after the `runContractRenewalSweep` import (line 18).
-- replace the `billing-sweep` body (lines 143-146) with:
+- make the `billing-sweep` branch run renewal → billing → W02's close-out → alerts. Keep W02's close-out lines exactly as W02 left them and add the alert block after them:
 
 ```ts
       if (job.name === 'billing-sweep') {
         // Renewal pre-pass MUST run before billing so an about-to-expire auto-renew
         // contract has its term extended before generateDueInvoice decides expiry.
         await runOutsideDbContext(() => withSystemDbAccessContext(() => runContractRenewalSweep()));
-        // #4547 W04: block-hours threshold alerts, BEFORE billing so a period that
-        // is about to close is judged on the hours it still holds. The sweep opens
-        // its own per-line system contexts; a failure here is reported but must
-        // never stop a customer from being billed.
+        const billing = await runContractBillingSweep();
+        // W02: the close-out sweep (kept as W02 wrote it) runs here.
+        // #4547 W04: threshold alerts run LAST. They read the open period's
+        // carried-in balance, which only exists once billing and close-out have
+        // closed the period that just ended. Own per-line system contexts; a
+        // failure is reported but must never fail the job or the billing result.
         try {
           await runHourBlockAlertSweep();
         } catch (err) {
           console.error('[ContractWorker] hour-block alert sweep failed', err instanceof Error ? err.message : err);
           captureException(err instanceof Error ? err : new Error(String(err)));
         }
-        return runContractBillingSweep();
+        return billing;
       }
 ```
-
-(W02 also edits this branch to run `runHourBlockCloseOutSweep` after the billing sweep. Anchor on the `await runContractRenewalSweep` line and the `runContractBillingSweep()` call; keep both W02's and this wave's lines. The ordering this wave owns is renewal → alerts → billing.)
 
 - [ ] **Step 8: Run unit tests, confirm PASS; run the integration suite; typecheck**
 
@@ -3146,21 +3849,22 @@ npx vitest run --config vitest.integration.config.ts \
 NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit -p . ; echo "tsc exit=$?"
 ```
 
-Expected: 5 unit files green (confirm the file count), integration green, `tsc exit=0`. Re-run `contractWorker.renewal.integration.test.ts` to prove the renewal → billing order is unchanged. If the integration alert suite fails at `createNotification` with `42P10`, the `ON CONFLICT` predicate was dropped — that is the trap the real-DB test exists for.
+Expected: 5 unit files green (confirm the file count), integration green, `tsc exit=0` (the check for the `ContractEvent` type change). If the integration suite fails at `createNotification` with `42P10`, the `ON CONFLICT` predicate was dropped. If an existing worker test asserts the old order, update it to renewal → billing → close-out → alerts.
 
 - [ ] **Step 9: Commit**
 
 ```bash
 git add apps/api/src/services/contractEvents.ts apps/api/src/jobs/deliverableWorker.test.ts \
+  apps/api/src/__tests__/integration/hourBlockFixtures.ts \
   apps/api/src/services/contractHourBlockAlerts.ts apps/api/src/services/contractHourBlockAlerts.test.ts \
   apps/api/src/jobs/contractWorker.ts apps/api/src/jobs/contractWorker.alerts.test.ts \
   apps/api/src/__tests__/integration/contractHourBlockAlerts.integration.test.ts
-git commit -m "feat(contracts): block-hours threshold alerts in the billing sweep job (#4547)
+git commit -m "feat(contracts): block-hours threshold alerts in the contract sweep job (#4547)
 
-Notifies contract readers once per crossing (deduped per user, period and
-threshold) and emits contract.hour_block_threshold. Runs before billing, one
-transaction per block line, behind the same tenant-status gate as the other
-contract sweeps.
+Notifies contract readers once per crossing and emits
+contract.hour_block_threshold. A durable marker keeps a dismissed alert from
+returning. Runs after billing and close-out, one transaction per block line,
+behind the same tenant-status gate as the other contract sweeps.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -3370,7 +4074,7 @@ Expected: a row or zero rows under no tenant context (RLS), never an error about
 
 **Spec coverage.**
 - §5 Portal: card (Tasks 2, 5), `enable_hour_block` default false (Task 1), route behind a fail-closed gate (Tasks 1-2), system-context handler scoped to `auth.user.orgId` (Task 2, Review Focus 1-2). The spec says `createPortalFeatureGate`; this plan deliberately uses the *strict* gate because the non-strict one fails open on a missing row (listed under contradictions below).
-- §5 Threshold alert: sweep before `runContractBillingSweep` (Task 6), same `buildAutomationEligibleOrgPredicate` gate (Task 6, compiled-SQL test), `type: 'system'`, `priority: 'high'`, spec dedupe key, `contract.hour_block_threshold` event, recipients with `contracts:read` falling back to `created_by` (Task 6).
+- §5 Threshold alert: sweep after `runContractBillingSweep` and W02's close-out (Task 6; the spec said "before", changed so carried-in balances are fresh), same `buildAutomationEligibleOrgPredicate` gate (Task 6, compiled-SQL test), `type: 'system'`, `priority: 'high'`, spec dedupe key, `contract.hour_block_threshold` event (emitted only when the durable marker was newly set), recipients with `contracts:read` falling back to `created_by` (Task 6).
 - §6 Docs: Contract Lines row + drawdown / rollover / advance lag / retire vs delete / held entries / late entries / org-move refusal (Task 7); portal docs; release notes handed to the release skill (out of repo).
 - Index: C1 W04 migration name (exact), C5 W04 export row (Task 1), C7 `contractWorker` row (Task 6), C8 `HourBlockEstimate` (consumed, not re-typed), C10 `PORTAL_HOUR_BLOCK_DISABLED` (403, Task 1), Open Decision 12 default and the rule-9 statement (Task 8). Nothing in the index is renamed or re-typed.
 - Open scope the prompt listed and where it landed: `coveredByContract` / "to be billed" handling → Task 3 (decision table + code + tests); portal i18n → English literals, no portal i18n layer exists (Global Constraints).
@@ -3381,7 +4085,7 @@ Expected: a row or zero rows under no tenant context (RLS), never an error about
 
 **Known risks the implementer should watch.**
 1. `supportUsage.test.ts` mocks a single-statement chain; the coverage read was therefore split into `hourBlockCoverage.ts` and mocked. If a future change adds a second `db.select` inside `supportUsageForOrg`, that mock chain breaks.
-2. `contractWorker.ts` is edited by W02 as well (close-out sweep after billing). Both waves anchor on the `runContractRenewalSweep` / `runContractBillingSweep()` lines; resolve in favour of renewal → alerts → billing → close-out.
+2. `contractWorker.ts` is edited by W02 as well (close-out sweep after billing). Both waves anchor on the `runContractRenewalSweep` / `runContractBillingSweep()` lines; the order W04 owns and tests is renewal → billing → close-out → alerts (index C7 is being updated to match).
 3. The portal tickets page memoises branding per request (`loadPortalBranding`), so reading it in `index.astro` is not an extra API call.
 4. `hourBlockHoldWindows` may return windows for a *retired* line's pre-retirement period; Task 3 treats whatever W02 returns as authoritative, which is the point of reusing it.
 
