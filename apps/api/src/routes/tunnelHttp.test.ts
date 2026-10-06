@@ -138,6 +138,13 @@ vi.mock('../services/clientIp', () => ({
 
 // getActiveAllowlistPatterns is replicated in-file in the route, which queries
 // the (mocked) db; it resolves to [] given the join-only db mock above.
+// Viewer presence (set by the owner's ProxyTunnelPage poll of GET /tunnels/:id)
+// gates cookie-less path-token auth. Present by default; tests flip it off.
+const { redisExistsMock } = vi.hoisted(() => ({ redisExistsMock: vi.fn(async () => 1) }));
+vi.mock('../services/redis', () => ({
+  getRedis: vi.fn(() => ({ exists: redisExistsMock })),
+}));
+
 vi.mock('../services/tunnelAllowlist', () => ({
   getActiveAllowlistPatterns: vi.fn(async () => ['192.168.1.0/24']),
 }));
@@ -990,6 +997,30 @@ describe('tunnelHttp path-token auth (no cookie — opaque-origin subresources)'
     const res = await app.request(`${TOKEN_BASE}/`);
     expect(res.status).toBe(401);
     expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('401s a cookie-less request once the owner\'s proxy page is gone (no viewer presence), without a DB lookup', async () => {
+    // A leaked token must not outlive the owner's open Breeze page: presence
+    // is refreshed only by the owner's authenticated poll, never by proxied
+    // traffic, so an outsider polling with the token cannot keep it alive.
+    setJoinRow(defaultJoinRow({ lastActivityAt: recent() }));
+    redisExistsMock.mockResolvedValueOnce(0);
+    const { db } = await import('../db');
+    const app = makeApp();
+    const res = await app.request(`${TOKEN_BASE}/`);
+    expect(res.status).toBe(401);
+    expect(redisExistsMock).toHaveBeenCalledWith(`tunnel-http:viewer:${TUNNEL_ID}`);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('does not mint a tunnel cookie on a path-token-only response', async () => {
+    // Otherwise a leaked token converts into a cookie that outlives viewer presence.
+    setJoinRow(defaultJoinRow({ lastActivityAt: recent() }));
+    const app = makeApp();
+    const res = await app.request(`${TOKEN_BASE}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie().some((v) => v.startsWith(`bz_tunnel_${TUNNEL_ID}=`))).toBe(false);
   });
 
   it('still runs the live-authority gate on a path-token request', async () => {

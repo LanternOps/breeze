@@ -21,6 +21,7 @@ import { rewriteTunnelCss, rewriteTunnelHtml } from './tunnelHttpRewrite';
 import { createCorsOriginResolver } from '../services/corsOrigins';
 import { isSameOriginRequest } from '../services/requestTransport';
 import { UUID_REGEX } from '../utils/uuid';
+import { getRedis } from '../services/redis';
 
 /**
  * HTTP reverse-proxy route for the Network Proxy feature.
@@ -56,6 +57,11 @@ export const HTTP_TUNNEL_COOKIE_CLOCK_TOLERANCE_SECONDS = 0;
 // here (before forwarding to the agent) AND in POST /tunnels/:id/http-ticket
 // (tunnels.ts) so an already-capped session can't even mint a fresh ticket.
 export const HTTP_TUNNEL_MAX_SESSION_HOURS = 12;
+// Cookie-less path-token auth is only honoured while the owner's own Breeze
+// proxy page is open: its authenticated 5s poll of GET /tunnels/:id refreshes
+// this marker (see markTunnelViewerPresent). Generous enough to survive
+// background-tab timer throttling (Chrome clamps hidden tabs to ~1/min).
+export const TUNNEL_VIEWER_PRESENCE_TTL_SECONDS = 90;
 const HTTP_TUNNEL_MAX_SESSION_MS = HTTP_TUNNEL_MAX_SESSION_HOURS * 60 * 60 * 1000;
 // Throttle for the lastActivityAt bump — avoid a write on every single
 // sub-resource request while a page is actively loading.
@@ -311,15 +317,50 @@ async function loadTunnelRow(tunnelId: string) {
  * it never leaves via Referer (`Referrer-Policy: no-referrer` on every
  * response). The sliding cookie's idle expiry is reproduced from the row's
  * activity timestamp, so a token stops working after the same idle window a
- * cookie would. Every later gate (live authority, ownership, 12h cap, device
+ * cookie would — and it stops within TUNNEL_VIEWER_PRESENCE_TTL_SECONDS of the
+ * owner closing their Breeze proxy page, whatever traffic the token carries.
+ * It is never exchanged for a cookie (no sliding refresh on these responses).
+ * Every later gate (live authority, ownership, 12h cap, device
  * online, policy) still runs for the returned user.
  */
+function tunnelViewerPresenceKey(tunnelId: string): string {
+  return `tunnel-http:viewer:${tunnelId}`;
+}
+
+/**
+ * Called ONLY from the owner's JWT-authenticated poll of GET /tunnels/:id —
+ * never from proxied traffic, so a leaked path token cannot keep itself alive.
+ */
+export async function markTunnelViewerPresent(tunnelId: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.set(tunnelViewerPresenceKey(tunnelId), '1', 'EX', TUNNEL_VIEWER_PRESENCE_TTL_SECONDS);
+  } catch (err) {
+    console.warn('[tunnel-http] failed to mark viewer presence:', err);
+  }
+}
+
+// Fails closed: without Redis, cookie-less requests are refused exactly as
+// they were before path-token auth existed.
+async function isTunnelViewerPresent(tunnelId: string): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) return false;
+  try {
+    return (await redis.exists(tunnelViewerPresenceKey(tunnelId))) > 0;
+  } catch {
+    return false;
+  }
+}
+
 async function authenticateByPathToken(
   candidateToken: string,
   tunnelId: string,
 ): Promise<string | null> {
   if (!UUID_REGEX.test(tunnelId) || !/^[0-9a-f]+$/.test(candidateToken)) return null;
   if (candidateToken.length !== TUNNEL_PATH_TOKEN_HEX_LENGTH) return null;
+  // Cheap Redis check first, so unauthenticated floods never reach the DB.
+  if (!(await isTunnelViewerPresent(tunnelId))) return null;
   const row = await loadTunnelRow(tunnelId);
   if (!row) return null;
   const { session } = row;
@@ -505,8 +546,10 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   // subresources); else one-time ticket → set cookie → redirect.
   const ticket = c.req.query('__bzt');
   let userId = await verifyTunnelCookie(getCookie(c, authCookieName), tunnelId);
+  let pathTokenOnly = false;
   if (!userId && !ticket) {
     userId = await authenticateByPathToken(candidateToken, tunnelId);
+    pathTokenOnly = userId !== null;
   }
   if (!userId) {
     if (!ticket) {
@@ -644,7 +687,7 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   }
   // Built here (not via setCookie(c, …), which no-ops against the hand-built
   // Response returned below) and appended to respHeaders once it exists.
-  const refreshedCookie = generateCookie(authCookieName, await signTunnelCookie(userId, tunnelId), {
+  const refreshedCookie = pathTokenOnly ? null : generateCookie(authCookieName, await signTunnelCookie(userId, tunnelId), {
     httpOnly: true,
     secure: true,
     sameSite: 'None',
@@ -790,8 +833,10 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   respHeaders.append('vary', 'Origin');
 
   // Sliding refresh: append (not set) so this doesn't clobber any device
-  // Set-Cookie headers already appended above.
-  respHeaders.append('set-cookie', refreshedCookie);
+  // Set-Cookie headers already appended above. Never on a path-token-only
+  // request — that would convert a URL token into a cookie that outlives the
+  // owner's viewer presence.
+  if (refreshedCookie) respHeaders.append('set-cookie', refreshedCookie);
 
   const targetHost = session.targetHost.includes(':') && !session.targetHost.startsWith('[')
     ? `[${session.targetHost}]` : session.targetHost;

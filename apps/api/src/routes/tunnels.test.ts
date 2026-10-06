@@ -178,9 +178,10 @@ vi.mock('../services/jwt', () => ({
 }));
 
 // --- Redis (used by requireViewerToken session-revoke check) ---
+const { redisSetMock } = vi.hoisted(() => ({ redisSetMock: vi.fn(async () => 'OK') }));
 vi.mock('../services/redis', () => ({
   getRedis: vi.fn(() => ({
-    set: vi.fn(async () => 'OK'),
+    set: redisSetMock,
     get: vi.fn(async () => null),
   })),
 }));
@@ -3530,5 +3531,40 @@ describe('POST /tunnels — proxy scheme/skipTlsVerify persistence', () => {
     const audits = auditCalls(insertMock);
     expect(audits).toHaveLength(1);
     expect(audits[0].details).toEqual(expect.objectContaining({ scheme: 'http', skipTlsVerify: false }));
+  });
+});
+
+describe('GET /tunnels/:id — proxy viewer presence (gates cookie-less path-token auth)', () => {
+  let app: Hono;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  it('marks the viewer present when the owner polls a live proxy tunnel', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{
+      ...sessionRecord, type: 'proxy', status: 'active', lastActivityAt: new Date(),
+    }]) as any);
+    const res = await app.request(`/tunnels/${SESSION_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(redisSetMock).toHaveBeenCalledWith(`tunnel-http:viewer:${SESSION_ID}`, '1', 'EX', expect.any(Number));
+  });
+
+  it('does not mark presence for a poll by someone other than the owner', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{
+      ...sessionRecord, userId: 'another-user', type: 'proxy', status: 'active', lastActivityAt: new Date(),
+    }]) as any);
+    await app.request(`/tunnels/${SESSION_ID}`, { method: 'GET' });
+    expect(redisSetMock).not.toHaveBeenCalledWith(`tunnel-http:viewer:${SESSION_ID}`, expect.anything(), expect.anything(), expect.anything());
+  });
+
+  it('does not mark presence for a terminal or non-proxy tunnel', async () => {
+    for (const row of [{ type: 'proxy', status: 'disconnected' }, { type: 'vnc', status: 'active' }]) {
+      vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{ ...sessionRecord, ...row, lastActivityAt: new Date() }]) as any);
+      await app.request(`/tunnels/${SESSION_ID}`, { method: 'GET' });
+    }
+    expect(redisSetMock).not.toHaveBeenCalledWith(`tunnel-http:viewer:${SESSION_ID}`, expect.anything(), expect.anything(), expect.anything());
   });
 });
