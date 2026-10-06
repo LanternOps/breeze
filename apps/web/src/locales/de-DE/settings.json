@@ -456,6 +456,7 @@
     "offering": {
       "displayName": "Anzeigename",
       "displayNameHint": "Leer lassen, um den Namen des Anbieters zu verwenden. Modell-ID: {{modelId}}",
+      "envManaged": "Dieses Modell wird über die Umgebungsvariablen MCP_LLM_* verwaltet. Name und Preis werden dort festgelegt und können hier nicht geändert werden.",
       "pricesTitle": "Preis",
       "pricesHint": "Cent pro 1 Mio. Tokens. Füllen Sie alle vier aus oder lassen Sie alle leer für keinen Preis (das Modell lässt sich dann nicht aktivieren).",
       "prices": {

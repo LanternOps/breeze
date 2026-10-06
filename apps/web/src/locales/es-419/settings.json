@@ -456,6 +456,7 @@
     "offering": {
       "displayName": "Nombre para mostrar",
       "displayNameHint": "Déjalo en blanco para usar el nombre del proveedor. ID del modelo: {{modelId}}",
+      "envManaged": "Este modelo se administra con las variables de entorno MCP_LLM_*. Su nombre y precio se definen allí y no se pueden cambiar aquí.",
       "pricesTitle": "Precio",
       "pricesHint": "Centavos por 1 M de tokens. Completa los cuatro o déjalos en blanco para no tener precio (el modelo no se podrá activar).",
       "prices": {
