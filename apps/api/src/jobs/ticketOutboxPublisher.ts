@@ -7,7 +7,7 @@ import { getBullMQConnection } from '../services/redis';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
-import { emitTicketEvent } from '../services/ticketEvents';
+import { emitTicketEvent, enqueueTicketEvent } from '../services/ticketEvents';
 
 /**
  * Drains the `ticket_outbox` transactional outbox (#3828 wave-6-3 task 2 —
@@ -34,6 +34,9 @@ import { emitTicketEvent } from '../services/ticketEvents';
  *     (automationWorker, webhookDelivery) sees for free. Extending the
  *     mapping later is additive — a new EventType literal + an entry in
  *     TICKET_OUTBOX_EVENT_BUS_TYPES, no outbox/schema change.
+ *     `ticket.assigned` is still not on the bus, but its committed row is
+ *     what queues the assignee notification on the `ticket-events` queue
+ *     (#7963 — see queueAssigneeNotification).
  *
  * Payload shape: `{ ticketId, ...row.payload }`. `row.payload` was written
  * id-only by `ticketService.ts`'s `writeTicketOutbox` (structured ids/enum
@@ -174,6 +177,44 @@ async function scanAndClaimOutboxRows(): Promise<ClaimResult> {
   return { stuckRows, claimedRows };
 }
 
+const optionalString = (value: unknown): string | null => (typeof value === 'string' ? value : null);
+
+/**
+ * #7963: queue the assignee-notification job for a committed `ticket.assigned`
+ * row. assignTicket used to queue it from inside the request transaction, so a
+ * fast worker could read the PRE-commit assignee, conclude "reassigned since"
+ * and drop the notification with no retry. Queuing from the committed row
+ * means the worker can only ever see the committed assignment, so its
+ * "reassigned since" rule is accurate again.
+ *
+ * The eventId is deterministic (`ticket-outbox-<row id>`): if this pass queues
+ * the job but fails to mark the row published, the next pass queues it again
+ * and the worker's dedupe key (`ticket:<id>:assigned:<assignee>:<eventId>`)
+ * suppresses the second notification. Throws when the job cannot be queued,
+ * so the caller leaves the row for the next pass.
+ *
+ * Skipped (the row still drains) when there is nobody to notify — an
+ * unassign, or revalidateTicketAssignee's eligibility clear — and for rows
+ * written before this change, which carry no actor fields: assignTicket had
+ * already queued their job itself, and queuing again under a new eventId
+ * would notify twice.
+ */
+async function queueAssigneeNotification(row: ClaimedOutboxRow): Promise<void> {
+  const payload = row.payload ?? {};
+  const assigneeId = optionalString(payload.assigneeId);
+  if (!assigneeId || !('actorUserId' in payload)) return;
+  await enqueueTicketEvent({
+    type: 'ticket.assigned',
+    ticketId: row.ticket_id,
+    orgId: row.org_id,
+    partnerId: optionalString(payload.partnerId),
+    actorUserId: optionalString(payload.actorUserId),
+    actorPrincipalId: optionalString(payload.actorPrincipalId),
+    eventId: `ticket-outbox-${row.id}`,
+    payload: { assigneeId },
+  });
+}
+
 /**
  * Phase 2 (PUBLISH) — no DB context. Caller must invoke this via
  * `runOutsideDbContext` so the Redis round-trip never runs while a pooled
@@ -183,10 +224,21 @@ async function publishClaimedRows(rows: ClaimedOutboxRow[]): Promise<number[]> {
   const publishedIds: number[] = [];
   for (const row of rows) {
     const busType = TICKET_OUTBOX_EVENT_BUS_TYPES[row.event_type as TicketOutboxEvent];
+    if (row.event_type === 'ticket.assigned') {
+      try {
+        await queueAssigneeNotification(row);
+        publishedIds.push(row.id);
+      } catch (err) {
+        console.error(`[TicketOutboxPublisher] Failed to queue ticket.assigned for outbox row ${row.id}:`, err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+        // Leave published_at NULL — next pass retries; attempt already counted above.
+      }
+      continue;
+    }
     if (!busType) {
       // No eventBus mapping for this outbox event type yet (ticket.updated /
-      // ticket.assigned / ticket.restored) — the row still drains cleanly;
-      // there is simply nothing to publish. See the file doc comment.
+      // ticket.restored) — the row still drains cleanly; there is simply
+      // nothing to publish. See the file doc comment.
       publishedIds.push(row.id);
       continue;
     }
