@@ -40,20 +40,39 @@ export function gmailMarkHandledJobId(providerMessageId: string, generation: Mai
   return `gmail-mark-${digest}`;
 }
 
-/** Must be called outside any DB context: it only talks to Redis. */
+/** Most jobs waiting (or delayed for a retry) before new marks are skipped.
+ *  At about a second per mark that is over an hour of backlog; past it, a Gmail
+ *  outage stops growing Redis and the skip is recorded on the mailbox card. */
+export const GMAIL_MARK_HANDLED_QUEUE_CAP = 5_000;
+
+/** Queue-level retries for a transient Gmail failure (rate limit, unavailable,
+ *  too slow) that outlasts the in-call retries: 30 s, 1, 2 and 4 minutes. */
+export const GMAIL_MARK_HANDLED_ATTEMPTS = 5;
+const GMAIL_MARK_HANDLED_BACKOFF_MS = 30_000;
+
+export type EnqueueGmailMarkResult = 'queued' | 'full';
+
+/**
+ * Must be called outside any DB context: it only talks to Redis. Returns
+ * 'full' without queueing when the backlog is at the cap. The cap is checked
+ * before the add, so concurrent producers can overshoot it slightly.
+ */
 export async function enqueueGmailMarkHandled(
   providerMessageId: string,
   generation: MailboxGenerationContext,
-): Promise<void> {
+  /** `cap` and `backoffMs` are test hooks; production uses the defaults. */
+  opts: { cap?: number; backoffMs?: number } = {},
+): Promise<EnqueueGmailMarkResult> {
+  const q = getGmailMarkHandledQueue();
+  // waiting + paused + delayed (retry backoff) + prioritized
+  if (await q.count() >= (opts.cap ?? GMAIL_MARK_HANDLED_QUEUE_CAP)) return 'full';
   const data: GmailMarkHandledJobData = { email: { provider: 'gmail', providerMessageId }, generation };
-  await getGmailMarkHandledQueue().add('mark', data, {
+  await q.add('mark', data, {
     jobId: gmailMarkHandledJobId(providerMessageId, generation),
     removeOnComplete: { count: 200 },
     removeOnFail: { count: 500 },
-    // markIngestedGmailHandled retries rate-limited/transient Gmail errors itself
-    // within its time budget and never throws; these attempts only cover a job
-    // that dies before it can run (e.g. the worker process stops mid-job).
-    attempts: 3,
-    backoff: { type: 'exponential', delay: 3000 },
+    attempts: GMAIL_MARK_HANDLED_ATTEMPTS,
+    backoff: { type: 'exponential', delay: opts.backoffMs ?? GMAIL_MARK_HANDLED_BACKOFF_MS },
   });
+  return 'queued';
 }

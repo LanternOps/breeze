@@ -1514,6 +1514,7 @@
         "unavailable": "Etiketleme başarısız: Gmail zamanında yanıt vermedi. Yeni postalar yeniden denenecek.",
         "label_invalid": "Etiketleme başarısız: bu etiket kullanılamaz. Farklı bir ad seçin.",
         "no_credential": "Etiketleme başarısız: bu kuruluşun Google Workspace bağlantısı eksik veya etkin değil. Entegrasyonlar altında yeniden bağlayın.",
+        "not_queued": "Etiketleme atlandı: etiketleme kuyruğu kullanılamıyordu veya doluydu, bu nedenle bilete dönüşen bazı postalar etiketsiz olarak gelen kutusunda kaldı. Yeni postalar yeniden denenecek.",
         "failed": "Etiketleme başarısız. Posta gelen kutusunda kalır."
       }
     }

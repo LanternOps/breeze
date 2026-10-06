@@ -1514,6 +1514,7 @@
         "unavailable": "Error al etiquetar: Gmail no respondió a tiempo. Se volverá a intentar con el correo nuevo.",
         "label_invalid": "Error al etiquetar: esta etiqueta no se puede usar. Elige otro nombre.",
         "no_credential": "Error al etiquetar: la conexión de Google Workspace de esta organización falta o está inactiva. Vuelve a conectarla en Integraciones.",
+        "not_queued": "Etiquetado omitido: la cola de etiquetado no estaba disponible o estaba llena, así que algunos correos que se convirtieron en ticket quedaron en la bandeja de entrada sin la etiqueta. Se volverá a intentar con el correo nuevo.",
         "failed": "Error al etiquetar. El correo permanece en la bandeja de entrada."
       }
     }

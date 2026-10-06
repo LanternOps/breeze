@@ -413,23 +413,23 @@ describe('markIngestedGmailHandled (post-ticket, real DB)', () => {
       modifyClient: (_k: string, _m: string, s?: AbortSignal) => { signal = s; return sessionFor(SUB)(); },
     });
     await holder;
-    expect(result).toBe('failed');
+    expect(result).toBe('retry');
     expect(gm.markGmailHandled).toHaveBeenCalledTimes(1);
     expect(abortedAfter).toBeGreaterThanOrEqual(loadDelayMs);
     // Before the fix the abort timer got the full budget after the load (~3.2s).
     expect(abortedAfter).toBeLessThan(budgetMs + 600);
   });
 
-  it('stops retrying once the overall time budget is spent, and records it', async () => {
+  it('stops retrying in-call once the time budget is spent, records it, and asks for a later retry', async () => {
     const { email, generation, connId } = await seed('created');
     let t = 0;
     gm.markGmailHandled.mockImplementation(async () => { t += 15_000; throw Object.assign(new Error('backend'), { code: 503 }); });
-    expect(await markIngestedGmailHandled(email, generation, { ...deps, now: () => t })).toBe('failed');
+    expect(await markIngestedGmailHandled(email, generation, { ...deps, now: () => t })).toBe('retry');
     expect(gm.markGmailHandled).toHaveBeenCalledTimes(1);
     expect((await readConn(connId)).gmailHandledError).toBe('unavailable');
   });
 
-  it('aborts an in-flight Gmail call at the deadline and does not retry past it', async () => {
+  it('aborts an in-flight Gmail call at the deadline, does not retry past it in-call, and asks for a later retry', async () => {
     const { email, generation } = await seed('created');
     let signal: AbortSignal | undefined;
     const started = Date.now();
@@ -441,7 +441,7 @@ describe('markIngestedGmailHandled (post-ticket, real DB)', () => {
       budgetMs: 300,
       modifyClient: (_k: string, _m: string, s?: AbortSignal) => { signal = s; return sessionFor(SUB)(); },
     });
-    expect(result).toBe('failed');
+    expect(result).toBe('retry');
     expect(signal?.aborted).toBe(true);
     expect(Date.now() - started).toBeLessThan(3_000);
     expect(gm.markGmailHandled).toHaveBeenCalledTimes(1);

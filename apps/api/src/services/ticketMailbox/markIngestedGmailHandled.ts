@@ -53,7 +53,7 @@ export const HANDLED_LABEL_CACHE_TTL_MS = 10 * 60 * 1000;
 const ERROR_REFRESH_MS = 10 * 60 * 1000;
 
 /** Fixed failure codes stored on the connection (CHECK-constrained in the DB). */
-export const GMAIL_HANDLED_ERROR_CODES = ['access_denied', 'rate_limited', 'unavailable', 'label_invalid', 'no_credential', 'failed'] as const;
+export const GMAIL_HANDLED_ERROR_CODES = ['access_denied', 'rate_limited', 'unavailable', 'label_invalid', 'no_credential', 'not_queued', 'failed'] as const;
 export type GmailHandledErrorCode = typeof GMAIL_HANDLED_ERROR_CODES[number];
 
 /**
@@ -61,9 +61,13 @@ export type GmailHandledErrorCode = typeof GMAIL_HANDLED_ERROR_CODES[number];
  * - not_ticketed: the pipeline did not create or match a ticket for it
  * - stale: the mailbox was disconnected, reconnected or now resolves to another account
  * - no_credential: the org's Google Workspace credential is missing or inactive
- * - marked / failed
+ * - marked
+ * - failed: a permanent failure (recorded on the connection); retrying will not help
+ * - retry: a transient failure (rate limit, Gmail unavailable or too slow, or the
+ *   lookup failed), recorded on the connection when it could be; worth retrying
+ *   the message later
  */
-export type MarkIngestedResult = 'skipped' | 'not_ticketed' | 'stale' | 'no_credential' | 'marked' | 'failed';
+export type MarkIngestedResult = 'skipped' | 'not_ticketed' | 'stale' | 'no_credential' | 'marked' | 'failed' | 'retry';
 
 export interface MarkIngestedDeps {
   sleep?: (ms: number) => Promise<void>;
@@ -125,6 +129,110 @@ function shouldReportLookupFailure(connectionId: string, at: number): boolean {
 function isBookkeepingTimeout(err: unknown): boolean {
   const code = pgErrorCode(err);
   return code === '55P03' || code === '57014';
+}
+
+/**
+ * Record a marking failure on the connection as a fixed code (the mailbox card
+ * shows it), scoped to the same row and generation so a reconnect never
+ * inherits it. Reported to Sentry only by the caller whose write actually
+ * changed the stored code, so a repeated or concurrent identical failure is
+ * reported once. Never throws.
+ */
+export async function recordGmailHandledFailure(
+  generation: MailboxGenerationContext,
+  code: GmailHandledErrorCode,
+  err: unknown,
+): Promise<void> {
+  const sameRowAndGeneration = and(
+    eq(ticketMailboxConnections.id, generation.connectionId),
+    eq(ticketMailboxConnections.partnerId, generation.partnerId),
+    eq(ticketMailboxConnections.consentAttemptId, generation.consentAttemptId),
+  );
+  let transitioned = false;
+  console.warn('[gmailHandled] mark-handled failed; message stays in the inbox', {
+    connectionId: generation.connectionId, code, err: err instanceof Error ? err.message : String(err),
+  });
+  try {
+    await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      await boundDbWaits(BOOKKEEPING_DB_WAIT_MS);
+      const at = new Date();
+      // A change of code: only the caller whose UPDATE actually changed the
+      // stored code reports it, so concurrent identical failures report once.
+      const changed = await db.update(ticketMailboxConnections)
+        .set({ gmailHandledError: code, gmailHandledErrorAt: at })
+        .where(and(
+          sameRowAndGeneration,
+          sql`${ticketMailboxConnections.gmailHandledError} IS DISTINCT FROM ${code}`,
+        ))
+        .returning({ id: ticketMailboxConnections.id });
+      if (changed.length > 0) {
+        transitioned = true;
+        return;
+      }
+      // Same code again: refresh the timestamp at most once per window.
+      await db.update(ticketMailboxConnections)
+        .set({ gmailHandledErrorAt: at })
+        .where(and(
+          sameRowAndGeneration,
+          eq(ticketMailboxConnections.gmailHandledError, code),
+          or(
+            sql`${ticketMailboxConnections.gmailHandledErrorAt} IS NULL`,
+            lt(ticketMailboxConnections.gmailHandledErrorAt, new Date(at.getTime() - ERROR_REFRESH_MS)),
+          ),
+        ));
+    }, 'gmailHandled.recordFailure'));
+  } catch (dbErr) {
+    console.warn('[gmailHandled] could not record the failure on the connection', {
+      connectionId: generation.connectionId, err: dbErr instanceof Error ? dbErr.message : String(dbErr),
+    });
+    // Whether this was a change is unknown, and the pre-call snapshot cannot
+    // tell: every attempt that loaded the same snapshot would infer the same
+    // "change" and report it. A lock/statement timeout means another
+    // transaction holds the row; report nothing (the console line above
+    // stays). Any other DB failure is reported at most once per connection
+    // per window, like a lookup failure.
+    if (!isBookkeepingTimeout(dbErr) && shouldReportLookupFailure(generation.connectionId, Date.now())) {
+      safeCapture(err, code);
+    }
+    return;
+  }
+  if (transitioned) safeCapture(err, code);
+}
+
+/**
+ * Cheap pre-check before queueing a mark: true only when this generation's
+ * mailbox has a handled label set (archive applies only with a label) and the
+ * message was logged as created or matched. One short read-only transaction of
+ * its own, opened outside any caller DB context. The mark job re-checks all of
+ * this itself, so this only keeps no-op jobs out of the queue. Throws on a DB
+ * error; the caller decides what to do.
+ */
+export async function isGmailMarkWanted(
+  providerMessageId: string,
+  generation: MailboxGenerationContext,
+): Promise<boolean> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    await boundDbWaits(BOOKKEEPING_DB_WAIT_MS);
+    const [conn] = await db.select({ id: ticketMailboxConnections.id })
+      .from(ticketMailboxConnections)
+      .where(and(
+        eq(ticketMailboxConnections.id, generation.connectionId),
+        eq(ticketMailboxConnections.partnerId, generation.partnerId),
+        eq(ticketMailboxConnections.provider, 'gmail'),
+        eq(ticketMailboxConnections.consentAttemptId, generation.consentAttemptId),
+        sql`${ticketMailboxConnections.gmailHandledLabel} IS NOT NULL`,
+      ))
+      .limit(1);
+    if (!conn) return false;
+    const [log] = await db.select({ parseStatus: ticketEmailInbound.parseStatus })
+      .from(ticketEmailInbound)
+      .where(and(
+        eq(ticketEmailInbound.partnerId, generation.partnerId),
+        eq(ticketEmailInbound.providerMessageId, providerMessageId),
+      ))
+      .limit(1);
+    return !!log && TICKETED_STATUSES.has(log.parseStatus);
+  }, 'gmailHandled.precheck'));
 }
 
 type MarkContext =
@@ -217,57 +325,7 @@ export async function markIngestedGmailHandled(
       };
     }, 'gmailHandled.load'));
 
-  const recordFailure = async (code: GmailHandledErrorCode, err: unknown) => {
-    let transitioned = false;
-    console.warn('[gmailHandled] mark-handled failed; message stays in the inbox', {
-      connectionId: generation.connectionId, code, err: err instanceof Error ? err.message : String(err),
-    });
-    try {
-      await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-        await boundDbWaits(BOOKKEEPING_DB_WAIT_MS);
-        const at = new Date();
-        // A change of code: only the caller whose UPDATE actually changed the
-        // stored code reports it, so concurrent identical failures report once.
-        const changed = await db.update(ticketMailboxConnections)
-          .set({ gmailHandledError: code, gmailHandledErrorAt: at })
-          .where(and(
-            sameRowAndGeneration,
-            sql`${ticketMailboxConnections.gmailHandledError} IS DISTINCT FROM ${code}`,
-          ))
-          .returning({ id: ticketMailboxConnections.id });
-        if (changed.length > 0) {
-          transitioned = true;
-          return;
-        }
-        // Same code again: refresh the timestamp at most once per window.
-        await db.update(ticketMailboxConnections)
-          .set({ gmailHandledErrorAt: at })
-          .where(and(
-            sameRowAndGeneration,
-            eq(ticketMailboxConnections.gmailHandledError, code),
-            or(
-              sql`${ticketMailboxConnections.gmailHandledErrorAt} IS NULL`,
-              lt(ticketMailboxConnections.gmailHandledErrorAt, new Date(at.getTime() - ERROR_REFRESH_MS)),
-            ),
-          ));
-      }, 'gmailHandled.recordFailure'));
-    } catch (dbErr) {
-      console.warn('[gmailHandled] could not record the failure on the connection', {
-        connectionId: generation.connectionId, err: dbErr instanceof Error ? dbErr.message : String(dbErr),
-      });
-      // Whether this was a change is unknown, and the pre-call snapshot cannot
-      // tell: every attempt that loaded the same snapshot would infer the same
-      // "change" and report it. A lock/statement timeout means another
-      // transaction holds the row; report nothing (the console line above
-      // stays). Any other DB failure is reported at most once per connection
-      // per window, like a lookup failure.
-      if (!isBookkeepingTimeout(dbErr) && shouldReportLookupFailure(generation.connectionId, Date.now())) {
-        safeCapture(err, code);
-      }
-      return;
-    }
-    if (transitioned) safeCapture(err, code);
-  };
+  const recordFailure = (code: GmailHandledErrorCode, err: unknown) => recordGmailHandledFailure(generation, code, err);
 
   // Clears only the exact failure this attempt observed (code and timestamp), so
   // a newer failure recorded by a concurrent attempt is never erased.
@@ -298,7 +356,7 @@ export async function markIngestedGmailHandled(
     const remaining = remainingMs();
     if (remaining <= 0) {
       await recordFailure('unavailable', new Error('mark-handled time budget spent'));
-      return 'failed';
+      return 'retry';
     }
     let ctx: MarkContext;
     try {
@@ -312,7 +370,7 @@ export async function markIngestedGmailHandled(
         connectionId: generation.connectionId, err: err instanceof Error ? err.message : String(err),
       });
       if (shouldReportLookupFailure(generation.connectionId, Date.now())) safeCapture(err, 'lookup_failed');
-      return 'failed';
+      return 'retry';
     }
     if (ctx.kind === 'no_credential') {
       await recordFailure('no_credential', new Error('Google Workspace credential missing or inactive'));
@@ -329,7 +387,7 @@ export async function markIngestedGmailHandled(
     const gmailRemaining = Math.floor(remainingMs());
     if (gmailRemaining <= 0) {
       await recordFailure('unavailable', new Error('mark-handled time budget spent'));
-      return 'failed';
+      return 'retry';
     }
 
     try {
@@ -360,7 +418,9 @@ export async function markIngestedGmailHandled(
         continue;
       }
       await recordFailure(code, err);
-      return 'failed';
+      // A rate limit or an unavailable/slow Gmail may clear later: the caller
+      // (the mark-handled queue) retries the message with backoff.
+      return code === 'rate_limited' || code === 'unavailable' ? 'retry' : 'failed';
     }
   }
 }

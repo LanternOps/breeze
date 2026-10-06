@@ -24,6 +24,7 @@ import {
   INBOUND_EMAIL_QUEUE,
   type InboundEmailJobData,
   type InboundEmailQueueJob,
+  type MailboxGenerationContext,
 } from '../services/inboundEmailQueue';
 import { processInboundEmail, InboundEmailProcessingRecorded } from '../services/inboundEmail/inboundEmailService';
 import {
@@ -32,6 +33,7 @@ import {
 } from '../services/ticketMailbox/fetchInboundAttachments';
 import { inboundQueueMaxPerSec } from '../config/env';
 import { enqueueGmailMarkHandled } from '../services/gmailMarkHandledQueue';
+import { isGmailMarkWanted, recordGmailHandledFailure } from '../services/ticketMailbox/markIngestedGmailHandled';
 import { attachWorkerObservability } from './workerObservability';
 
 let worker: Worker<InboundEmailQueueJob> | null = null;
@@ -65,22 +67,14 @@ export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promis
   if (email.provider === 'gmail') {
     await run();
     // Opt-in per mailbox (ticket_mailbox_connections.gmail_handled_label):
-    // label/archive mail that became a ticket. That runs on its own queue and
-    // worker (jobs/gmailMarkHandledWorker), so intake never waits on Gmail; the
-    // consumer decides whether there is anything to do. Only a generation-bound
-    // Gmail job can be marked. Enqueued after the pipeline's transaction has
-    // closed, outside any DB context. The ticket already exists: a failed
-    // enqueue (Redis down) must not fail the job, which would be retried and
-    // re-run the pipeline; that message just stays unlabelled in the inbox.
+    // label/archive mail that became a ticket. Best effort, on its own queue and
+    // worker (jobs/gmailMarkHandledWorker), so intake never waits on Gmail.
+    // Everything here runs after the pipeline's transaction has closed and
+    // outside any DB context, and nothing here may fail the job: the ticket
+    // already exists, and a rejected job would be retried and re-run the
+    // pipeline. Only a generation-bound Gmail job can be marked.
     if (mailboxGeneration?.provider !== 'gmail') return;
-    const generation = mailboxGeneration;
-    await dbModule.runOutsideDbContext(() => enqueueGmailMarkHandled(email.providerMessageId, generation))
-      .catch((err: unknown) => {
-        console.warn('[gmailHandled] could not enqueue mark-handled; message stays in the inbox', {
-          connectionId: generation.connectionId,
-          err: err instanceof Error ? err.message : String(err),
-        });
-      });
+    await queueGmailMark(email.providerMessageId, mailboxGeneration);
     return;
   }
   // M365 attachments (#6688): Graph download + blob put happen HERE, before the
@@ -97,6 +91,38 @@ export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promis
   } finally {
     await discardUnpersistedAttachments(email);
   }
+}
+
+/**
+ * Queue the mark for a message only when it can matter (the mailbox has a
+ * handled label and the message became a ticket). A full queue or a Redis
+ * failure leaves the message unlabelled in the inbox and is recorded on the
+ * mailbox as `not_queued`, so the card shows it. A Redis failure that also
+ * stops that record from being written is only logged. Never throws.
+ */
+async function queueGmailMark(providerMessageId: string, generation: MailboxGenerationContext): Promise<void> {
+  try {
+    if (!(await isGmailMarkWanted(providerMessageId, generation))) return;
+  } catch (err) {
+    // The mark job re-checks everything itself, so queue it anyway.
+    console.warn('[gmailHandled] mark pre-check failed; queueing anyway', {
+      connectionId: generation.connectionId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+  let failure: unknown = null;
+  try {
+    const queued = await dbModule.runOutsideDbContext(() => enqueueGmailMarkHandled(providerMessageId, generation));
+    if (queued === 'full') failure = new Error('mark-handled queue is at its cap');
+  } catch (err) {
+    failure = err;
+  }
+  if (failure === null) return;
+  console.warn('[gmailHandled] mark not queued; message stays in the inbox', {
+    connectionId: generation.connectionId,
+    err: failure instanceof Error ? failure.message : String(failure),
+  });
+  await recordGmailHandledFailure(generation, 'not_queued', failure).catch(() => {});
 }
 
 export function initializeInboundEmailWorker(): Promise<void> {

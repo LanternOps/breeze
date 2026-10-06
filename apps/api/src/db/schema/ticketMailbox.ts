@@ -122,7 +122,7 @@ export const ticketMailboxConnections = pgTable('ticket_mailbox_connections', {
   gmailHandledErrorCheck: check(
     'ticket_mailbox_connections_gmail_handled_error_check',
     sql`${table.gmailHandledError} IS NULL
-      OR ${table.gmailHandledError} IN ('access_denied', 'rate_limited', 'unavailable', 'label_invalid', 'no_credential', 'failed')`,
+      OR ${table.gmailHandledError} IN ('access_denied', 'rate_limited', 'unavailable', 'label_invalid', 'no_credential', 'not_queued', 'failed')`,
   ),
 }));
 

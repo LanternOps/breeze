@@ -1514,6 +1514,7 @@
         "unavailable": "Échec de l’étiquetage : Gmail n’a pas répondu à temps. Les nouveaux e-mails seront retentés.",
         "label_invalid": "Échec de l’étiquetage : ce libellé ne peut pas être utilisé. Choisissez un autre nom.",
         "no_credential": "Échec de l’étiquetage : la connexion Google Workspace de cette organisation est absente ou inactive. Reconnectez-la dans Intégrations.",
+        "not_queued": "Étiquetage ignoré : la file d’étiquetage était indisponible ou pleine, donc certains e-mails devenus des tickets sont restés dans la boîte de réception sans l’étiquette. Les nouveaux e-mails seront retentés.",
         "failed": "Échec de l’étiquetage. L’e-mail reste dans la boîte de réception."
       }
     }

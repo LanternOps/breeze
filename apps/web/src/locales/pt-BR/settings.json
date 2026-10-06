@@ -1514,6 +1514,7 @@
         "unavailable": "Falha ao marcar: o Gmail não respondeu a tempo. Novos e-mails serão tentados novamente.",
         "label_invalid": "Falha ao marcar: este marcador não pode ser usado. Escolha outro nome.",
         "no_credential": "Falha ao marcar: a conexão do Google Workspace desta organização está ausente ou inativa. Reconecte-a em Integrações.",
+        "not_queued": "Marcação ignorada: a fila de marcação estava indisponível ou cheia, então alguns e-mails que viraram chamados ficaram na caixa de entrada sem o marcador. Novos e-mails serão tentados novamente.",
         "failed": "Falha ao marcar. O e-mail continua na caixa de entrada."
       }
     }

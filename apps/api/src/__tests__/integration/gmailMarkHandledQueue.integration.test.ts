@@ -17,6 +17,11 @@ vi.mock('../../services/ticketMailbox/googleMailboxClient', async (importActual)
   const actual = await importActual<typeof import('../../services/ticketMailbox/googleMailboxClient')>();
   return { ...actual, markGmailHandled: gm.markGmailHandled };
 });
+const sentry = vi.hoisted(() => ({ captureException: vi.fn() }));
+vi.mock('../../services/sentry', async (importActual) => {
+  const actual = await importActual<typeof import('../../services/sentry')>();
+  return { ...actual, captureException: sentry.captureException };
+});
 vi.mock('../../services/googleClient', async (importActual) => {
   const actual = await importActual<typeof import('../../services/googleClient')>();
   return {
@@ -34,7 +39,9 @@ import { encryptSecret } from '../../services/secretCrypto';
 import { normalizeGmailMessage } from '../../services/ticketMailbox/normalizeGmailMessage';
 import { handleInboundEmail } from '../../jobs/inboundEmailWorker';
 import { initializeGmailMarkHandledWorker, shutdownGmailMarkHandledWorker } from '../../jobs/gmailMarkHandledWorker';
-import { getGmailMarkHandledQueue, gmailMarkHandledJobId } from '../../services/gmailMarkHandledQueue';
+import { enqueueGmailMarkHandled, getGmailMarkHandledQueue, gmailMarkHandledJobId } from '../../services/gmailMarkHandledQueue';
+import { recordGmailHandledFailure } from '../../services/ticketMailbox/markIngestedGmailHandled';
+import { listMailboxConnections } from '../../services/ticketMailbox/connectionService';
 import type { MailboxGenerationContext } from '../../services/inboundEmailQueue';
 
 const SUB = 'goog-sub-q';
@@ -61,7 +68,7 @@ function gmailMsg(id: string, from: string, mailbox: string): gmail_v1.Schema$Me
   };
 }
 
-async function seed() {
+async function seed(opts: { label?: string | null } = {}) {
   const suffix = `${Date.now()}-${Math.floor(performance.now())}`;
   const customer = `cust-${suffix}@known.test`;
   const mailbox = `help-${suffix}@example.test`;
@@ -79,15 +86,20 @@ async function seed() {
     const [conn] = await db.insert(ticketMailboxConnections).values({
       partnerId: partner.id, provider: 'gmail', orgId: org.id, googleAccountSub: SUB,
       mailboxAddress: mailbox, status: 'connected', historyId: 'H1',
-      gmailHandledLabel: 'Handled', gmailArchiveOnHandle: true,
+      gmailHandledLabel: opts.label === undefined ? 'Handled' : opts.label, gmailArchiveOnHandle: true,
     }).returning({ id: ticketMailboxConnections.id, consentAttemptId: ticketMailboxConnections.consentAttemptId });
     const generation: MailboxGenerationContext = {
       provider: 'gmail', connectionId: conn!.id, partnerId: partner.id, tenantId: null, consentAttemptId: conn!.consentAttemptId,
     };
-    const emailFor = (id: string) => normalizeGmailMessage(gmailMsg(`${id}-${suffix}`, customer, mailbox), partner.id, mailbox, SUB);
-    return { partnerId: partner.id, generation, emailFor };
+    const emailFor = (id: string, from = customer) => normalizeGmailMessage(gmailMsg(`${id}-${suffix}`, from, mailbox), partner.id, mailbox, SUB);
+    return { partnerId: partner.id, connId: conn!.id, generation, emailFor };
   });
 }
+
+const readConn = (id: string) => withSystemDbAccessContext(async () => {
+  const [row] = await db.select().from(ticketMailboxConnections).where(eq(ticketMailboxConnections.id, id));
+  return row as { gmailHandledError: string | null; gmailHandledLabel: string | null };
+});
 
 const inboundStatus = (partnerId: string, providerMessageId: string) => withSystemDbAccessContext(async () => {
   const [row] = await db.select({ parseStatus: ticketEmailInbound.parseStatus, ticketId: ticketEmailInbound.ticketId })
@@ -112,6 +124,7 @@ describe('Gmail mark-handled queue (real DB + Redis)', () => {
     gm.markGmailHandled.mockImplementation(async () => {});
     gm.identity.mockReset();
     gm.identity.mockImplementation(async () => ({ sub: SUB, email: 'x' }));
+    sentry.captureException.mockClear();
     // The worker is started once per process (its readiness consumer attaches
     // once), so the intake test runs first, before it exists.
     await getGmailMarkHandledQueue().obliterate({ force: true });
@@ -148,6 +161,37 @@ describe('Gmail mark-handled queue (real DB + Redis)', () => {
     expect(await getGmailMarkHandledQueue().getWaitingCount()).toBe(1);
   }, 20_000);
 
+  it('queues nothing for a mailbox without a handled label, or for mail that did not become a ticket', async () => {
+    const off = await seed({ label: null });
+    const offEmail = off.emailFor('off');
+    await handleInboundEmail({ data: { email: offEmail, mailboxGeneration: off.generation } } as never);
+    expect((await inboundStatus(off.partnerId, offEmail.providerMessageId))?.parseStatus).toBe('created');
+
+    const on = await seed();
+    const strangerEmail = on.emailFor('stranger', 'nobody@unknown.test');
+    await handleInboundEmail({ data: { email: strangerEmail, mailboxGeneration: on.generation } } as never);
+    expect((await inboundStatus(on.partnerId, strangerEmail.providerMessageId))?.parseStatus).not.toMatch(/^(created|matched)$/);
+
+    expect(await getGmailMarkHandledQueue().count()).toBe(0);
+  }, 20_000);
+
+  it('skips a mark once the backlog is at the cap', async () => {
+    const { generation } = await seed();
+    expect(await enqueueGmailMarkHandled('gmail:goog-sub-q:cap-1', generation, { cap: 1 })).toBe('queued');
+    expect(await enqueueGmailMarkHandled('gmail:goog-sub-q:cap-2', generation, { cap: 1 })).toBe('full');
+    expect(await getGmailMarkHandledQueue().count()).toBe(1);
+  });
+
+  it('a mark that could not be queued shows on the mailbox card as not_queued, reported once', async () => {
+    const { partnerId, connId, generation } = await seed();
+    await recordGmailHandledFailure(generation, 'not_queued', new Error('redis down'));
+    await recordGmailHandledFailure(generation, 'not_queued', new Error('redis down'));
+    expect((await readConn(connId)).gmailHandledError).toBe('not_queued');
+    const list = await withSystemDbAccessContext(() => listMailboxConnections(partnerId));
+    expect(list.find((c) => c.id === connId)?.gmailHandling?.error).toBe('not_queued');
+    expect(sentry.captureException).toHaveBeenCalledTimes(1);
+  });
+
   it('the worker marks the queued message, retrying a transient Gmail failure', async () => {
     const { generation, emailFor } = await seed();
     const email = emailFor('retry');
@@ -166,6 +210,54 @@ describe('Gmail mark-handled queue (real DB + Redis)', () => {
       expect.anything(), expect.any(String), email.providerMessageId.split(':')[2],
       expect.objectContaining({ labelName: 'Handled', archive: true, accountSub: SUB }),
     );
+  }, 30_000);
+
+  it('a transient failure that outlasts the in-call retries is retried by the queue; Sentry hears of it once', async () => {
+    const { partnerId, connId, generation, emailFor } = await seed({ label: null });
+    const email = emailFor('queue-retry');
+    await handleInboundEmail({ data: { email, mailboxGeneration: generation } } as never);
+    await withSystemDbAccessContext(() => db.update(ticketMailboxConnections)
+      .set({ gmailHandledLabel: 'Handled' }).where(eq(ticketMailboxConnections.id, connId)));
+    expect((await inboundStatus(partnerId, email.providerMessageId))?.parseStatus).toBe('created');
+    // The first job attempt fails all three in-call tries (503); the queue retries it.
+    let calls = 0;
+    gm.markGmailHandled.mockImplementation(async () => {
+      calls += 1;
+      if (calls <= 3) throw Object.assign(new Error('backend'), { code: 503 });
+    });
+    await initializeGmailMarkHandledWorker();
+    expect(await enqueueGmailMarkHandled(email.providerMessageId, generation, { backoffMs: 50 })).toBe('queued');
+    const job = await waitFor(
+      () => getGmailMarkHandledQueue().getJob(gmailMarkHandledJobId(email.providerMessageId, generation)),
+      (j) => j?.returnvalue === 'marked',
+      20_000,
+    );
+    expect(job?.returnvalue).toBe('marked');
+    expect(job?.attemptsMade).toBeGreaterThanOrEqual(1);
+    expect(calls).toBe(4);
+    // Recorded as unavailable by the first attempt, cleared by the success.
+    expect((await readConn(connId)).gmailHandledError).toBeNull();
+    expect(sentry.captureException).toHaveBeenCalledTimes(1);
+  }, 30_000);
+
+  it('a permanent failure is recorded and not retried by the queue', async () => {
+    const { connId, generation, emailFor } = await seed({ label: null });
+    const email = emailFor('permanent');
+    await handleInboundEmail({ data: { email, mailboxGeneration: generation } } as never);
+    await withSystemDbAccessContext(() => db.update(ticketMailboxConnections)
+      .set({ gmailHandledLabel: 'Handled' }).where(eq(ticketMailboxConnections.id, connId)));
+    gm.markGmailHandled.mockRejectedValue(Object.assign(new Error('insufficient scope'), { status: 403 }));
+    await initializeGmailMarkHandledWorker();
+    expect(await enqueueGmailMarkHandled(email.providerMessageId, generation, { backoffMs: 50 })).toBe('queued');
+    const job = await waitFor(
+      () => getGmailMarkHandledQueue().getJob(gmailMarkHandledJobId(email.providerMessageId, generation)),
+      (j) => j?.returnvalue === 'failed',
+    );
+    await new Promise((r) => setTimeout(r, 500));
+    expect(job?.returnvalue).toBe('failed');
+    expect(gm.markGmailHandled).toHaveBeenCalledTimes(1);
+    expect((await readConn(connId)).gmailHandledError).toBe('access_denied');
+    expect(sentry.captureException).toHaveBeenCalledTimes(1);
   }, 30_000);
 
   it('the worker runs one mark job at a time', async () => {

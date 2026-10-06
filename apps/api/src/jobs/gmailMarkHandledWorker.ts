@@ -23,9 +23,25 @@ export const GMAIL_MARK_HANDLED_CONCURRENCY = 1;
 
 let worker: Worker<GmailMarkHandledJobData> | null = null;
 
+/** Thrown only to make BullMQ retry a transient failure with backoff. The
+ *  failure itself is already recorded on the connection (and reported to Sentry
+ *  once, when its code changed), so these attempts are not reported again. */
+export class GmailMarkRetryLater extends Error {
+  constructor() {
+    super('transient Gmail mark-handled failure; retrying with backoff');
+    this.name = 'GmailMarkRetryLater';
+  }
+}
+
 export async function handleGmailMarkHandled(job: Job<GmailMarkHandledJobData>): Promise<MarkIngestedResult> {
   const { email, generation } = job.data;
-  return markIngestedGmailHandled(email, generation);
+  const result = await markIngestedGmailHandled(email, generation);
+  if (result !== 'retry') return result;
+  // The last attempt completes instead of failing, so the BullMQ failure path
+  // never reaches Sentry for it: the recorded code already said what happened.
+  const attemptsLeft = (job.opts?.attempts ?? 1) - ((job.attemptsMade ?? 0) + 1);
+  if (attemptsLeft > 0) throw new GmailMarkRetryLater();
+  return 'failed';
 }
 
 export function initializeGmailMarkHandledWorker(): Promise<void> {
@@ -39,7 +55,13 @@ export function initializeGmailMarkHandledWorker(): Promise<void> {
       concurrency: GMAIL_MARK_HANDLED_CONCURRENCY,
     },
   );
-  attachWorkerObservability(worker, 'gmailMarkHandledWorker');
+  attachWorkerObservability(worker, 'gmailMarkHandledWorker', {
+    // A retry-later attempt is expected and already recorded on the connection;
+    // anything else a job throws is reported as usual.
+    classifyFailure: (_job, err) => (err instanceof GmailMarkRetryLater
+      ? { level: 'warning', reason: 'gmail_mark_retry', reportOnlyWhenExhausted: true }
+      : null),
+  });
 
   worker.on('error', (error) => {
     console.error('[GmailMarkHandled] Worker error:', error);
