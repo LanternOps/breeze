@@ -441,8 +441,10 @@ helperRoutes.post(
     // Get or create streaming session. The model was resolved (and its wire
     // id translated) in preflight; a LlmUnavailableError here is a
     // last-resort guard with the same catch shape as ai.ts, never a 500.
+    const subscriptionId = crypto.randomUUID();
+    let subscribedSession: ActiveSession | null = null;
     const dispatch = await inRequestDb(async (): Promise<
-      | { kind: 'dispatched'; activeSession: ActiveSession }
+      | { kind: 'dispatched'; activeSession: ActiveSession; events: ReturnType<ActiveSession['eventBus']['subscribe']> }
       | { kind: 'refused'; response: Response }
       | { kind: 'failed'; error: unknown }
     > => {
@@ -507,9 +509,19 @@ helperRoutes.post(
       }
 
       // Push message and start timeout
+      // Subscribe BEFORE the turn is pushed: the session event bus has no
+      // replay, and a fast transport can publish the turn's events (even its
+      // error and done) before the SSE callback below would run (#7783).
+      const events = activeSession.eventBus.subscribe(subscriptionId);
+      subscribedSession = activeSession;
       activeSession.inputController.pushMessage(sanitizedContent);
       streamingSessionManager.startTurnTimeout(activeSession);
-      return { kind: 'dispatched', activeSession };
+      return { kind: 'dispatched', activeSession, events };
+    }).catch((err: unknown) => {
+      // The dispatch context failed after subscribing (e.g. its commit): drop
+      // the subscription so the bus doesn't keep a dead queue.
+      subscribedSession?.eventBus.unsubscribe(subscriptionId);
+      throw err;
     });
     if (dispatch.kind !== 'dispatched') {
       // Released only after the dispatch context has closed, so the release's
@@ -518,13 +530,9 @@ helperRoutes.post(
       if (dispatch.kind === 'failed') throw dispatch.error;
       return dispatch.response;
     }
-    const { activeSession } = dispatch;
-
-    const subscriptionId = crypto.randomUUID();
+    const { activeSession, events } = dispatch;
 
     return streamSSE(c, async (stream) => {
-      const events = activeSession.eventBus.subscribe(subscriptionId);
-
       try {
         for await (const event of events) {
           await stream.writeSSE({
