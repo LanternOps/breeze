@@ -66,6 +66,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'services/aiToolsBackup.ts': { guards: 5, reason: 'device lookup carries the parked-device predicate' },
   'services/aiToolsBackupVm.ts': { guards: 2, reason: 'device lookup carries the parked-device predicate' },
   'services/aiToolsCisBenchmark.ts': { guards: 1, reason: 'device lookup carries the parked-device predicate' },
+  'services/aiToolsDiagnosticAccess.ts': { guards: 1, reason: 'device lookup carries the parked-device predicate' },
   'services/aiToolsFilesystem.ts': { guards: 1, reason: 'device lookup carries the parked-device predicate' },
   'services/aiToolsNetwork.ts': { guards: 1, reason: 'device lookup carries the parked-device predicate' },
   'services/aiToolsPam.ts': { guards: 1, reason: 'device lookup carries the parked-device predicate' },

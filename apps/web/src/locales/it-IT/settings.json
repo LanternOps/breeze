@@ -456,6 +456,7 @@
     "offering": {
       "displayName": "Nome visualizzato",
       "displayNameHint": "Lascia vuoto per usare il nome del provider. ID modello: {{modelId}}",
+      "envManaged": "Questo modello è gestito dalle variabili d'ambiente MCP_LLM_*. Nome e prezzo sono definiti lì e non possono essere modificati qui.",
       "pricesTitle": "Prezzo",
       "pricesHint": "Centesimi per 1 mln di token. Compila tutti e quattro o lasciali vuoti per nessun prezzo (il modello non potrà essere abilitato).",
       "prices": {
@@ -1402,6 +1403,8 @@
     "dropDescription": "Nessun ticket, nessuna voce nella coda di revisione, nessuna risposta automatica. Viene comunque registrata una riga di audit. Usa questa opzione per tenere lo spam non mappato fuori dal triage e dalla coda di revisione.",
     "dropUnverified": "Scarta le email che non superano l'autenticazione del mittente (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Quando disattivato, le email non verificate vengono messe in quarantena per revisione. Quando attivato, vengono scartate senza avviso. Si applica a <all>tutti</all> i mittenti non verificati, inclusi i clienti mappati il cui singolo messaggio non supera il controllo.",
+    "staffForwardRouting": "Assegna gli inoltri del personale al cliente del mittente originale",
+    "staffForwardRoutingDescription": "Quando un membro del personale a livello partner inoltra l'email di un cliente all'indirizzo di supporto, il nuovo ticket viene assegnato all'organizzazione associata al dominio del mittente originale anziché alla vostra. Il membro del personale deve avere accesso a quell'organizzazione. Funziona solo per gli inoltri fatti in Gmail e ricevuti da una casella Gmail collegata; non per l'indirizzo di ricezione nativo, le caselle Microsoft 365 né gli inoltri da Outlook.",
     "enableAutoresponse": "Invia una risposta automatica di conferma per i nuovi ticket email",
     "editEmailTemplates": "L'e-mail di conferma si modifica in Modelli e-mail.",
     "editEmailTemplatesLink": "Modifica modelli e-mail",
@@ -1498,7 +1501,28 @@
     "namePlaceholder": "Assistenza",
     "connect": "Connetti",
     "credentialOrg": "Credenziali: connessione Google Workspace di {{org}}",
-    "credentialOrgUnknown": "un'organizzazione che non puoi vedere"
+    "credentialOrgUnknown": "un'organizzazione che non puoi vedere",
+    "handling": {
+      "off": "Disattivato: la posta resta nella posta in arrivo dopo essere diventata un ticket.",
+      "onArchive": "La posta che diventa un ticket riceve l'etichetta Gmail \"{{label}}\" e viene archiviata fuori dalla posta in arrivo.",
+      "onLabelOnly": "La posta che diventa un ticket riceve l'etichetta Gmail \"{{label}}\" e resta nella posta in arrivo.",
+      "edit": "Modifica la gestione della posta",
+      "labelField": "Etichetta Gmail per la posta con ticket (lascia vuoto per disattivare)",
+      "labelPlaceholder": "Breeze/Ticket",
+      "archiveField": "Archiviala anche (rimuovila dalla posta in arrivo)",
+      "scopeNote": "L'etichettatura richiede questo ambito aggiuntivo nella delega a livello di dominio dell'organizzazione. La lettura della posta non lo richiede, quindi il polling continua a funzionare anche senza.",
+      "saved": "Gestione della posta salvata",
+      "saveFailed": "Impossibile salvare la gestione della posta.",
+      "error": {
+        "access_denied": "Etichettatura non riuscita: Google ha negato l'accesso. Aggiungi l'ambito gmail.modify alla delega a livello di dominio.",
+        "rate_limited": "Etichettatura non riuscita: raggiunto il limite di Gmail. La nuova posta verrà riprovata.",
+        "unavailable": "Etichettatura non riuscita: Gmail non ha risposto in tempo. La nuova posta verrà riprovata.",
+        "label_invalid": "Etichettatura non riuscita: questa etichetta non può essere usata. Scegli un altro nome.",
+        "no_credential": "Etichettatura non riuscita: la connessione Google Workspace di questa organizzazione manca o non è attiva. Ricollegala in Integrazioni.",
+        "not_queued": "Etichettatura saltata: la coda di etichettatura non era disponibile o era piena, quindi parte della posta diventata ticket è rimasta nella posta in arrivo senza etichetta. La nuova posta verrà riprovata.",
+        "failed": "Etichettatura non riuscita. La posta resta nella posta in arrivo."
+      }
+    }
   },
   "orgApprovalSecurityTab": {
     "title": "Sicurezza approvazioni",
@@ -1865,6 +1889,10 @@
         "enableLifecycle": {
           "label": "Ciclo di vita dell'hardware",
           "description": "Mostra il piano di sostituzione aggiornato dei dispositivi del cliente."
+        },
+        "enableHardwareHealth": {
+          "label": "Stato dell'hardware",
+          "description": "Mostra lo stato dei componenti, gli eventi, i dischi e la batteria dei dispositivi del cliente."
         },
         "enableNetworkVisibility": {
           "label": "Visibilità di rete",

@@ -291,7 +291,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // DELETE CASCADE. No cross-references to ai_budgets, so its position is
   // pure alphabetization ('_' sorts before letters under localeCompare).
   'ai_budget_alert_events',
-  // ai_budget_reservations (SEC-142/143): durable pre-dispatch spend fence,
+  // ai_budget_reservations: durable pre-dispatch spend fence,
   // Shape 1 with NOT NULL org_id ON DELETE CASCADE. It also carries a
   // composite (session_id, org_id) FK to ai_sessions with a column-scoped
   // ON DELETE SET NULL (session_id) — that FK has an explicit ON DELETE, so
@@ -564,6 +564,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_vulnerabilities',
   'device_warranty',
   'devices',
+  'diagnostic_access_grants',
   'discovered_assets',
   'discovery_jobs',
   'discovery_profiles',

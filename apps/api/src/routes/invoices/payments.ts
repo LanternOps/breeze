@@ -56,9 +56,6 @@ invoicePaymentRoutes.delete('/:id/payments/:pid', scopes, sendPerm, zValidator('
       }
     });
     const untouched = audit.providerRecordUntouched === true;
-    // `quickbooksRecordUntouched` is a deprecated alias for one release, so a
-    // browser tab loaded before this deploy still shows its warning. Remove it
-    // in #7298.
-    return c.json({ data: invoice, providerRecordUntouched: untouched, quickbooksRecordUntouched: untouched });
+    return c.json({ data: invoice, providerRecordUntouched: untouched });
   } catch (err) { return handleServiceError(c, err); }
 });

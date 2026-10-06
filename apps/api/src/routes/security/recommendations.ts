@@ -4,7 +4,11 @@ import { zValidator } from '../../lib/validation';
 import { db } from '../../db';
 import { auditLogs } from '../../db/schema';
 import { requirePermission, requireScope } from '../../middleware/auth';
-import { recommendationsQuerySchema, recommendationActionSchema } from './schemas';
+import {
+  recommendationsQuerySchema,
+  recommendationActionSchema,
+  recommendationActionQuerySchema
+} from './schemas';
 import {
   getPagination,
   paginate,
@@ -14,6 +18,28 @@ import {
 } from './helpers';
 import { requireSecurityReadAccess } from './readAuthorization';
 import { markRequestAuditWritten } from '../../services/auditRequestTracking';
+import type { AuthContext } from '../../middleware/auth';
+
+// The org a complete/dismiss is recorded against: the caller-selected ?orgId
+// (validated for access), else the token's single org. A multi-org partner
+// user has auth.orgId === null, so without honouring ?orgId these actions
+// always 400'd (#8086).
+function resolveActionOrgId(
+  auth: AuthContext,
+  requestedOrgId: string | undefined
+): { orgId: string } | { error: string; status: 400 | 403 } {
+  if (requestedOrgId) {
+    if (!auth.canAccessOrg(requestedOrgId)) {
+      return { error: 'Access denied to this organization', status: 403 };
+    }
+    return { orgId: requestedOrgId };
+  }
+  const orgId = getPolicyOrgId(auth);
+  if (!orgId) {
+    return { error: 'Unable to determine organization context', status: 400 };
+  }
+  return { orgId };
+}
 
 export const recommendationsRoutes = new Hono();
 
@@ -72,13 +98,15 @@ recommendationsRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission('devices', 'write'),
   zValidator('param', recommendationActionSchema),
+  zValidator('query', recommendationActionQuerySchema),
   async (c) => {
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
-    const orgId = getPolicyOrgId(auth);
-    if (!orgId) {
-      return c.json({ error: 'Unable to determine organization context' }, 400);
+    const resolved = resolveActionOrgId(auth, c.req.valid('query').orgId);
+    if ('error' in resolved) {
+      return c.json({ error: resolved.error }, resolved.status);
     }
+    const { orgId } = resolved;
 
     const recommendationsResult = await buildBe9Recommendations(auth, orgId);
     if (recommendationsResult.error) {
@@ -111,13 +139,15 @@ recommendationsRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission('devices', 'write'),
   zValidator('param', recommendationActionSchema),
+  zValidator('query', recommendationActionQuerySchema),
   async (c) => {
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
-    const orgId = getPolicyOrgId(auth);
-    if (!orgId) {
-      return c.json({ error: 'Unable to determine organization context' }, 400);
+    const resolved = resolveActionOrgId(auth, c.req.valid('query').orgId);
+    if ('error' in resolved) {
+      return c.json({ error: resolved.error }, resolved.status);
     }
+    const { orgId } = resolved;
 
     const recommendationsResult = await buildBe9Recommendations(auth, orgId);
     if (recommendationsResult.error) {

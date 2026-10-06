@@ -28,6 +28,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
+import { SDK_CHILD_HOST_CONTEXT_GUARDS } from '../../llm/sdkChildEnvGuards';
+import { THINKING_DISPLAY_UPDATES_BETA } from '../wireParams';
+
+const BREEZE_GUARDED_VARIANT = 'breeze-guarded-unset-display';
 
 interface ObservedRequest {
   variant: string;
@@ -120,6 +124,34 @@ function buildVariants(model: string, fastModel: string): Variant[] {
   return [
     { name: 'control-adaptive-medium', model, options: { thinking: { type: 'adaptive' }, effort: 'medium' } },
     { name: 'display-summarized', model, options: { thinking: { type: 'adaptive', display: 'summarized' } } },
+    // 0.3.288 made `updates` the CLI default; breeze pins `omitted` (wireParams.ts).
+    { name: 'display-omitted', model, options: { thinking: { type: 'adaptive', display: 'omitted' } } },
+    // What breeze sends: unset display, the production child-env guard set.
+    // main() exits non-zero unless this is `{"type":"adaptive"}` with no updates beta.
+    {
+      name: BREEZE_GUARDED_VARIANT,
+      model,
+      options: { thinking: { type: 'adaptive' } },
+      env: { ...SDK_CHILD_HOST_CONTEXT_GUARDS },
+    },
+    {
+      name: 'display-unset-updates-env-0',
+      model,
+      options: { thinking: { type: 'adaptive' } },
+      env: { CLAUDE_CODE_THINKING_DISPLAY_UPDATES: '0' },
+    },
+    {
+      name: 'display-unset-updates-env-false',
+      model,
+      options: { thinking: { type: 'adaptive' } },
+      env: { CLAUDE_CODE_THINKING_DISPLAY_UPDATES: 'false' },
+    },
+    {
+      name: 'display-omitted-updates-env-0',
+      model,
+      options: { thinking: { type: 'adaptive', display: 'omitted' } },
+      env: { CLAUDE_CODE_THINKING_DISPLAY_UPDATES: '0' },
+    },
     {
       name: 'display-updates-cast',
       model,
@@ -236,6 +268,19 @@ async function main(): Promise<void> {
   })));
   const out = argValue('--out');
   if (out) await writeFile(out, JSON.stringify(report, null, 2));
+  // Agent SDK 0.3.288 made display 'updates' the CLI default; breeze opts out
+  // via SDK_CHILD_HOST_CONTEXT_GUARDS. Fail loudly if the opt-out stops working.
+  const guarded = observed.filter((row) => row.variant === BREEZE_GUARDED_VARIANT);
+  const leaked = guarded.length === 0 || guarded.some((row) => (
+    JSON.stringify(row.thinking) !== '{"type":"adaptive"}'
+    || (row.betaHeader ?? '').includes(THINKING_DISPLAY_UPDATES_BETA)
+  ));
+  if (leaked) {
+    console.error(`[spike] FAIL: ${BREEZE_GUARDED_VARIANT} did not send {"type":"adaptive"} without ${THINKING_DISPLAY_UPDATES_BETA}`);
+    process.exitCode = 1;
+  } else {
+    console.error(`[spike] OK: ${BREEZE_GUARDED_VARIANT} sent {"type":"adaptive"} without ${THINKING_DISPLAY_UPDATES_BETA}`);
+  }
 }
 
 main().catch((error) => {

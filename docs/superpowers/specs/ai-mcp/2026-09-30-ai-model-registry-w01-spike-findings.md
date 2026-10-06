@@ -99,3 +99,37 @@ All 13 models listed carry the same nine top-level capability keys. Thinking and
 | D3 | `inference_geo` values in `option_support` and the EU platform geo (§15 #5) (W03) | The operator enters the values Q6 confirmed on `/admin/ai-models`; W03 sends them where supported | `option_support.inferenceGeo` stays `[]`; EU residency stays open in W03 planning | **Partly**: `us` and `global` are accepted; **`eu` is rejected**. The seed keeps `inferenceGeo: []` (Task 7); the operator may enter `us`/`global`. An EU platform geo is not available, so §15 #5's condition fails and EU residency stays open in W03 planning. The Agent SDK can carry the value only through `CLAUDE_CODE_EXTRA_BODY` (Q3). |
 | D4 | `supportsTools` derivation (W01 Task 3) | An explicit tools leaf exists and `deriveCapabilities` reads it (already coded) | No leaf: Anthropic trees default to `supportsTools: true` (already coded) | **No leaf** (Q4): Anthropic trees default to `supportsTools: true`. |
 | D5 | Lifecycle never-seen guard (W01 Task 13) | Aliases are listed: the guard is defensive only | Aliases absent: the guard is load-bearing for the seeded alias rows | **Aliases absent** (Q5: `claude-haiku-4-5`, `claude-sonnet-4-5`): the guard is load-bearing. Without it, both seeded alias rows would go `missing` after three syncs. |
+
+## 2026-10-06: re-run on Agent SDK 0.3.288
+
+Run on 2026-10-06 by the SDK-bump runner (Claude Opus 5.5) for dependabot PR #7999: `@anthropic-ai/claude-agent-sdk` 0.3.286 → **0.3.288** (bundled Claude Code 2.1.288), `@anthropic-ai/sdk` 0.128.0 → 0.131.0. Passthrough spike against the local capture server (`--model claude-sonnet-5-5 --fast-model claude-opus-5-5`), with four new variants added for this run. The Models API probe was not re-run: it does not go through the Agent SDK.
+
+### What changed: the CLI now defaults to thinking display `updates`
+
+| variant | thinking on the wire | `thinking-display-updates-2026-08-18` beta | vs 0.3.286 |
+|---|---|---|---|
+| control-adaptive-medium (display unset, raw env) | `{"type":"adaptive","display":"updates"}` | **yes** | **changed** (was `{"type":"adaptive"}`, no beta) |
+| display-summarized | `{"type":"adaptive","display":"summarized"}` | no | same |
+| display-omitted (new) | `{"type":"adaptive","display":"updates"}` | **yes** | new variant: explicit `omitted` is rewritten to `updates` |
+| display-unset-updates-env-0 / -env-false (new) | `{"type":"adaptive"}` | no | reproduces 0.3.286 |
+| display-omitted-updates-env-0 (new) | `{"type":"adaptive","display":"omitted"}` | no | – |
+| **breeze-guarded-unset-display** (new; display unset + `SDK_CHILD_HOST_CONTEXT_GUARDS`) | `{"type":"adaptive"}` | no | **reproduces 0.3.286**; the script exits non-zero otherwise |
+| display-updates-cast / -extra-arg | (no request) CLI exit 1: `argument 'updates' is invalid. Allowed choices are summarized, omitted, highlights.` | – | same |
+| fast-mode-settings (opus-5-5) | `speed: "fast"` + `fast-mode-2026-02-01` | (yes, raw env) | same for fast |
+| custom-headers-env | no `speed`, no fast beta | (yes, raw env) | same |
+| extra-body-env-geo | `inference_geo: "us"` | (yes, raw env) | same |
+
+Mechanism (**verified** by reading the bundled CLI 2.1.288, minified names): the request builder classifies the session's display. `summarized`/`highlights` are left alone; `omitted` that the CLI chose itself is left alone; anything else, **including an `omitted` the SDK passes as `--thinking-display omitted`** (that counts as explicit), is rewritten to `display: "updates"` plus the beta, unless `CLAUDE_CODE_THINKING_DISPLAY_UPDATES` is falsy (default on). If the API rejects `updates`, the CLI drops it for the rest of the conversation (`retry:thinking-display-updates-unclaimed`).
+
+**Breeze keeps the 0.3.286 behaviour.** `SDK_CHILD_HOST_CONTEXT_GUARDS` (`apps/api/src/services/llm/sdkChildEnvGuards.ts`) now carries `CLAUDE_CODE_THINKING_DISPLAY_UPDATES=0`, so every SDK child (chat, agent runs incl. failover hops, tool capture, fidelity harness, offering verification, both spikes) sends `{"type":"adaptive"}` with no updates beta. An explicit `display: 'omitted'` would **not** have been enough (row above). D1 stays **No**: `toAgentSdkOptions` still refuses `updates`. Real-API check (resume spike, Sonnet 5.5, guarded env): every `/v1/messages` request carried `{"type":"adaptive"}` and no updates beta, and the persisted thinking blocks are signed with empty text (`thinking(sig=true,len=0)`), the same shape as 0.3.286. Without the guard (raw env, same day), the API accepted `updates` with 200s; the persisted blocks also read `len=0`, so the transcript alone does not distinguish the two modes, only the wire does.
+
+### Other observations (verified unless labelled)
+
+- **`mid-conversation-tool-changes-2026-07-01` is now in the base beta header on Sonnet 5.5 too.** On 0.3.286 it appeared only on the Opus 5.5 rows. Base header on 0.3.288 (raw env): `claude-code-20250219, interleaved-thinking-2025-05-14, thinking-token-count-2026-05-13, context-management-2025-06-27, prompt-caching-scope-2026-01-05, mid-conversation-system-2026-04-07, per-turn-control-2026-07-01, mid-conversation-tool-changes-2026-07-01, effort-2025-11-24, dangerous-tool-use-2026-09-03, thinking-display-updates-2026-08-18, afk-mode-2026-01-31`.
+- **`ANTHROPIC_BETAS=thinking-display-updates-2026-08-18` no longer has a visible effect**: with the raw env the beta is already present, and `thinking` already carries `display: "updates"`. ANTHROPIC_BETAS combined with the guard was **not checked**. Breeze never sets ANTHROPIC_BETAS.
+- **`GET /api/hello` preflight.** Each `query()` makes one `GET /api/hello` to `ANTHROPIC_BASE_URL` before its first `/v1/messages` (27 in the full resume run, all 200 from api.anthropic.com). **Unknown whether new**: the 0.3.286 runs did not report non-Messages paths.
+- Default effort, D2 (fast via `settings.fastMode`) and D3 (`inference_geo` only via `CLAUDE_CODE_EXTRA_BODY`): unchanged.
+
+### Outcome
+
+`VERIFIED_AGENT_SDK_VERSION` moves to `0.3.288`. D1 **No** (unchanged, now enforced by the env guard rather than by the CLI's default), D2 **Yes** (unchanged), D3 unchanged. The W05 resume spike was re-run in full on 0.3.288 with the guard; see `2026-10-01-ai-model-registry-w05-resume-spike-findings.md`.

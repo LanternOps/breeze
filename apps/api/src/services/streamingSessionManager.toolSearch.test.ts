@@ -207,6 +207,8 @@ describe('tool-search policy wiring (A-W04)', () => {
     // #7444: merging the tool-search env must not drop the host-context guards.
     expect(optionsOfLastQuery().env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
     expect(optionsOfLastQuery().env.CLAUDE_CODE_DISABLE_CLAUDE_MDS).toBe('1');
+    // Agent SDK 0.3.288: the env query() actually receives opts out of the CLI's display 'updates' default.
+    expect(optionsOfLastQuery().env.CLAUDE_CODE_THINKING_DISPLAY_UPDATES).toBe('0');
   });
 
   it('keeps tools: [] and ENABLE_TOOL_SEARCH=false for a surface that did not opt in', async () => {

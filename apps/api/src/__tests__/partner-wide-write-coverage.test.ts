@@ -183,7 +183,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/autopay/setupReconciliation.ts': 'system setup reconciliation worker persists provider events; no tenant caller',
   'services/stripeFinancialEventPoller.ts': 'system reconciliation worker persists provider cursor/error state; no tenant caller',
   'services/stripeReversalState.ts': 'system poller and verified Stripe webhook own the provider-authoritative reversal inbox',
-  'services/stripeCredentialArchive.ts': 'SEC-150 superseded-credential archive. Every write is made by a SYSTEM-context transition that is itself gated: the archive/erase writes come from savePartnerStripeKey and disconnectPartnerStripe (routes/stripeConnect/index.ts, capability-checked on every handler) and from the revocation sweep, which has no tenant caller at all. The table is never reachable from a request that has not already passed the gate, and its RLS policies additionally require breeze_current_scope() = system, so a partner-scoped write is refused by Postgres regardless.',
+  'services/stripeCredentialArchive.ts': 'superseded-credential archive. Every write is made by a SYSTEM-context transition that is itself gated: the archive/erase writes come from savePartnerStripeKey and disconnectPartnerStripe (routes/stripeConnect/index.ts, capability-checked on every handler) and from the revocation sweep, which has no tenant caller at all. The table is never reachable from a request that has not already passed the gate, and its RLS policies additionally require breeze_current_scope() = system, so a partner-scoped write is refused by Postgres regardless.',
   'services/systemScriptLibrary.ts': 'startup-only system script library seed (index.ts boot path); writes is_system rows with org_id/partner_id NULL; no tenant route calls it',
   'services/tenantOffboarding.ts': 'offboarding/erasure lifecycle — the documented system-context exemption class',
   'services/unifi/unifiSyncService.ts': 'UniFi worker sync-run telemetry (jobs/unifiWorker); no tenant route calls the mutator',
@@ -330,6 +330,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/ticketConfigService.ts': 'gated by routes/ticketConfig.ts middleware; org/registration bootstrap paths are system-owned',
   'services/ticketMailbox/connectionService.ts': 'connect/retest/delete gated in routes/tickets/mailboxConnect.ts; polling is worker-owned',
   'services/ticketMailbox/consentSessionService.ts': 'consent start gated in routes/tickets/mailboxConnect.ts; callback consumes its signed session',
+  'services/ticketMailbox/markIngestedGmailHandled.ts': 'inbound worker only: records/clears the mark-handled failure code on the same connection generation that ingested the message; the setting itself is written only by the gated PATCH in routes/tickets/mailboxConnect.ts',
   'services/unifi/unifiConnectionService.ts': 'every /unifi route passes the global capability middleware in routes/unifi/index.ts',
 
   // --- catalog/accounting data on their own permission sets (precedent:

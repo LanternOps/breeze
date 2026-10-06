@@ -51,7 +51,7 @@ const (
 	StopReasonLeaseExpired = "lease_expired"
 	StopReasonHardDeadline = "max_session_duration_exceeded"
 	// StopReasonLeaseUnavailableAtStart — the control plane could not answer
-	// this session's FIRST renewal (SEC-038 owner decision 2). A session the
+	// this session's FIRST renewal. A session the
 	// control plane has never once confirmed has no standing to ride the 90 s
 	// grace window through an outage, so it stops immediately.
 	StopReasonLeaseUnavailableAtStart = "lease_unavailable_at_start"
@@ -66,7 +66,7 @@ type revocationLeaseState struct {
 	grace        time.Duration
 	renewEvery   time.Duration
 	// established is set by the first successful renewal. Until then an
-	// `unavailable` answer is fatal rather than graced (SEC-038 decision 2).
+	// `unavailable` answer is fatal rather than graced.
 	established   bool
 	revoked       bool
 	revokedReason string

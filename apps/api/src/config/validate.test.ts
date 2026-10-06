@@ -49,7 +49,7 @@ const validEnv = {
   // never guesses its compatibility posture. Tests that assert the
   // missing/invalid throw override this.
   EVENT_PERMISSION_EPOCH_MODE: 'compat',
-  // Production-required (SEC-065): integration provider credentials are sealed
+  // Production-required: integration provider credentials are sealed
   // with AAD-bound enc:v3 ciphertext and fail closed without an active key id.
   // Supplied here so the suite's production happy-path tests don't trip it; the
   // test that asserts the throw overrides it explicitly.

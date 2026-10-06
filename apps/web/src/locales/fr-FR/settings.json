@@ -456,6 +456,7 @@
     "offering": {
       "displayName": "Nom affiché",
       "displayNameHint": "Laissez vide pour utiliser le nom du fournisseur. Identifiant du modèle : {{modelId}}",
+      "envManaged": "Ce modèle est géré par les variables d'environnement MCP_LLM_*. Son nom et son prix y sont définis et ne peuvent pas être modifiés ici.",
       "pricesTitle": "Prix",
       "pricesHint": "Centimes par million de jetons. Renseignez les quatre ou laissez-les vides pour aucun prix (le modèle ne pourra alors pas être activé).",
       "prices": {
@@ -1402,6 +1403,8 @@
     "dropDescription": "Aucun ticket, aucune entrée dans la file de revue et aucune réponse automatique. Une ligne d’audit reste enregistrée. Utilisez cette option pour écarter les courriers indésirables non associés de la qualification et de la file de revue.",
     "dropUnverified": "Envoi de courrier qui échoue à l’authentification de l’expéditeur (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Lorsque cette option est désactivée, les e-mails non vérifiés sont mis en quarantaine pour examen. Lorsqu’elle est activée, ils sont supprimés silencieusement. Cela s’applique à <all>tous</all> les expéditeurs non vérifiés, y compris les clients associés dont le message échoue à la vérification.",
+    "staffForwardRouting": "Classer les transferts du personnel sous le client de l’expéditeur d’origine",
+    "staffForwardRoutingDescription": "Lorsqu’un membre de votre personnel au niveau partenaire transfère l’e-mail d’un client à l’adresse de support, le nouveau ticket est classé sous l’organisation associée au domaine de l’expéditeur d’origine plutôt que sous la vôtre. Ce membre du personnel doit avoir accès à cette organisation. Fonctionne uniquement pour les transferts faits dans Gmail et reçus par une boîte Gmail connectée ; pas pour l’adresse de réception native, les boîtes Microsoft 365 ni les transferts d’Outlook.",
     "enableAutoresponse": "Envoyez une réponse automatique pour accuser réceptionné des nouveaux tickets par e-mail",
     "editEmailTemplates": "L'e-mail d'accusé de réception s'édite sous Modèles d'e-mail.",
     "editEmailTemplatesLink": "Modifier les modèles d'e-mail",
@@ -1498,7 +1501,28 @@
     "namePlaceholder": "Soutien",
     "connect": "Connecter",
     "credentialOrg": "Identifiants : connexion Google Workspace de {{org}}",
-    "credentialOrgUnknown": "une organisation que vous ne pouvez pas voir"
+    "credentialOrgUnknown": "une organisation que vous ne pouvez pas voir",
+    "handling": {
+      "off": "Désactivé : l’e-mail reste dans la boîte de réception après être devenu un ticket.",
+      "onArchive": "L’e-mail qui devient un ticket reçoit le libellé Gmail « {{label}} » et est archivé hors de la boîte de réception.",
+      "onLabelOnly": "L’e-mail qui devient un ticket reçoit le libellé Gmail « {{label}} » et reste dans la boîte de réception.",
+      "edit": "Modifier le traitement des e-mails",
+      "labelField": "Libellé Gmail pour les e-mails devenus tickets (laisser vide pour désactiver)",
+      "labelPlaceholder": "Breeze/Ticket",
+      "archiveField": "Les archiver aussi (les retirer de la boîte de réception)",
+      "scopeNote": "L’étiquetage nécessite ce champ d’application supplémentaire dans la délégation au niveau du domaine de l’organisation. La lecture des e-mails n’en a pas besoin, la relève continue donc de fonctionner sans lui.",
+      "saved": "Traitement des e-mails enregistré",
+      "saveFailed": "Impossible d’enregistrer le traitement des e-mails.",
+      "error": {
+        "access_denied": "Échec de l’étiquetage : Google a refusé l’accès. Ajoutez le champ d’application gmail.modify à la délégation au niveau du domaine.",
+        "rate_limited": "Échec de l’étiquetage : limite de débit Gmail atteinte. Les nouveaux e-mails seront retentés.",
+        "unavailable": "Échec de l’étiquetage : Gmail n’a pas répondu à temps. Les nouveaux e-mails seront retentés.",
+        "label_invalid": "Échec de l’étiquetage : ce libellé ne peut pas être utilisé. Choisissez un autre nom.",
+        "no_credential": "Échec de l’étiquetage : la connexion Google Workspace de cette organisation est absente ou inactive. Reconnectez-la dans Intégrations.",
+        "not_queued": "Étiquetage ignoré : la file d’étiquetage était indisponible ou pleine, donc certains e-mails devenus des tickets sont restés dans la boîte de réception sans l’étiquette. Les nouveaux e-mails seront retentés.",
+        "failed": "Échec de l’étiquetage. L’e-mail reste dans la boîte de réception."
+      }
+    }
   },
   "orgApprovalSecurityTab": {
     "title": "Sécurité de l’approbation",
@@ -1865,6 +1889,10 @@
         "enableLifecycle": {
           "label": "Cycle de vie du matériel",
           "description": "Affiche le plan de remplacement à jour des appareils de votre client."
+        },
+        "enableHardwareHealth": {
+          "label": "État du matériel",
+          "description": "Affiche l'état des composants, les événements, les disques et la batterie des appareils de votre client."
         },
         "enableNetworkVisibility": {
           "label": "Visibilité réseau",

@@ -26,7 +26,7 @@ export const stripeFinancialEventStatusEnum = pgEnum('stripe_financial_event_sta
 ]);
 
 /**
- * Durable revocation intent for an issued Checkout session (SEC-150).
+ * Durable revocation intent for an issued Checkout session.
  *
  * `active` — payable, nothing asked of it.
  * `revocation_requested` — a transition asked for it to die; no producer may
@@ -157,7 +157,7 @@ export const invoiceStripePayments = pgTable('invoice_stripe_payments', {
   // First successful capture recorded by Breeze; survives principal reversal/deletion.
   paymentCapturedAt: timestamp('payment_captured_at', { withTimezone: true }),
   lastEventAt: timestamp('last_event_at'),
-  // --- SEC-150 durable Checkout-session revocation intent + retry ladder ---
+  // --- Durable Checkout-session revocation intent + retry ladder ---
   revocationState: stripeSessionRevocationStateEnum('revocation_state').notNull().default('active'),
   revocationReason: text('revocation_reason'),
   revocationRequestedAt: timestamp('revocation_requested_at', { withTimezone: true }),

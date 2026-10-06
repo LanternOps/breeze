@@ -17,7 +17,7 @@ import { portalBase } from './portalUrl';
 import { assertNoHeldDbContextForStripe } from './stripeSettle';
 
 /**
- * Provider-side expiry for a new Checkout session (SEC-150, defence in depth).
+ * Provider-side expiry for a new Checkout session (defence in depth).
  *
  * Stripe expires an unclaimed session after 24h anyway; asking for it EXPLICITLY
  * means the bound is recorded on our side (`provider_expires_at`) and survives a
@@ -118,7 +118,7 @@ export async function createInvoicePayLink(
     }
   });
   if (!PAYABLE.has(inv.status)) throw new InvoiceServiceError('Invoice is not payable', 409, 'NOT_PAYABLE');
-  // SEC-150 producer gate. Once a transition has recorded revocation intent for
+  // Producer gate. Once a transition has recorded revocation intent for
   // this invoice, minting another session would re-open the very window the
   // intent exists to close — and the new session would not be covered by the
   // in-flight revocation. Refuse until the sweep has settled the old ones.
@@ -183,7 +183,7 @@ export async function createInvoicePayLink(
     payment_method_types: ['card'],
     // FP-20: the PaymentIntent names the invoice and MSP, as autopay ones do.
     ...withPaymentDescription(cardSaveStripeFields(capture), paymentIntentDescription(inv.invoiceNumber, inv.partnerName)),
-    // SEC-150 defence in depth: an explicit provider-side death clock, so an
+    // Defence in depth: an explicit provider-side death clock, so an
     // unrevoked session cannot outlive the day even if every local control fails.
     expires_at: expiresAt,
     line_items: [{
@@ -219,7 +219,7 @@ export async function createInvoicePayLink(
     // 50%-deposit invoice has the SAME chargeMinor for the deposit and the later
     // balance charge (different product name but equal amount), so the amount
     // alone can't disambiguate — the explicit dep/bal discriminator does.
-    // `_e<quantum>` (SEC-150): `expires_at` is part of the request, and Stripe
+    // `_e<quantum>`: `expires_at` is part of the request, and Stripe
     // refuses an idempotent replay whose parameters moved. Folding the hour
     // quantum into the key keeps the replay identical within the hour instead of
     // erroring across one.
@@ -256,7 +256,7 @@ export async function createInvoicePayLink(
     if (!currentConnection) {
       throw new InvoiceServiceError('Stripe connection changed while creating the payment link — please retry', 409, 'STRIPE_NOT_CONNECTED');
     }
-    // SEC-150: did a reset/void/pay record revocation intent WHILE the Stripe
+    // Did a reset/void/pay record revocation intent WHILE the Stripe
     // round-trip was in flight? Read it here, but never refuse before the
     // mapping is written — a session that exists on Stripe with no mapping row
     // is an orphan no revocation can ever find, which is strictly worse than

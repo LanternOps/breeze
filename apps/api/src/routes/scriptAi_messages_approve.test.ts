@@ -291,6 +291,105 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
       expect(dbCtx.depth).toBe(0);
     });
 
+    it('#7783: subscribes to the session events BEFORE the turn is pushed: a transport that answers at once still reaches the client', async () => {
+      // The real SessionEventBus has no replay: an event published while nobody
+      // is subscribed is gone. Model a transport fast enough to publish the
+      // whole turn synchronously when the message is pushed.
+      const subscribers = new Map<string, Array<{ type: string; message?: string }>>();
+      const waiters = new Map<string, () => void>();
+      const bus = {
+        subscribe: vi.fn((id: string) => {
+          subscribers.set(id, []);
+          return (async function* () {
+            for (;;) {
+              const queue = subscribers.get(id)!;
+              while (queue.length) {
+                const event = queue.shift()!;
+                yield event;
+                if (event.type === 'done') return;
+              }
+              await new Promise<void>((resolve) => { waiters.set(id, resolve); });
+            }
+          })();
+        }),
+        unsubscribe: vi.fn((id: string) => { subscribers.delete(id); }),
+        publish: vi.fn((event: { type: string; message?: string }) => {
+          for (const [id, queue] of subscribers) { queue.push(event); waiters.get(id)?.(); }
+        }),
+      };
+      vi.mocked(runPreFlightChecks).mockResolvedValue({
+        ok: true,
+        session: {
+          id: SESSION_ID, type: 'script_builder', orgId: ORG_ID, sdkSessionId: null,
+          model: 'claude-sonnet-4-6', maxTurns: 50, turnCount: 0, systemPrompt: 'System prompt', title: 'existing',
+        },
+        sanitizedContent: 'Hello',
+        systemPrompt: 'System prompt',
+        maxBudgetUsd: 1,
+        model: makeResolvedModel('platform', { surface: 'script_builder' }),
+      } as any);
+      const activeSession = {
+        state: 'processing',
+        inputController: {
+          pushMessage: vi.fn(() => {
+            bus.publish({ type: 'error', message: 'script builder turn failed fast' });
+            bus.publish({ type: 'done' });
+          }),
+        },
+        eventBus: bus,
+      } as any;
+      vi.mocked(streamingSessionManager.get).mockReturnValue(undefined);
+      vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(activeSession);
+      vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
+      vi.mocked(db.insert).mockImplementation(() => ({ values: vi.fn().mockResolvedValue(undefined) }) as any);
+
+      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Hello' }),
+      });
+
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).toContain('script builder turn failed fast');
+      expect(bus.unsubscribe).toHaveBeenCalled();
+    });
+
+    it('#7783: drops the pre-push subscription when the dispatch context fails', async () => {
+      const bus = { subscribe: vi.fn((_id: string) => (async function* () { /* never read */ })()), unsubscribe: vi.fn(), publish: vi.fn() };
+      vi.mocked(runPreFlightChecks).mockResolvedValue({
+        ok: true,
+        session: {
+          id: SESSION_ID, type: 'script_builder', orgId: ORG_ID, sdkSessionId: null,
+          model: 'claude-sonnet-4-6', maxTurns: 50, turnCount: 0, systemPrompt: 'System prompt', title: 'existing',
+        },
+        sanitizedContent: 'Hello',
+        systemPrompt: 'System prompt',
+        maxBudgetUsd: 1,
+        model: makeResolvedModel('platform', { surface: 'script_builder' }),
+      } as any);
+      const activeSession = {
+        state: 'processing',
+        inputController: { pushMessage: vi.fn() },
+        eventBus: bus,
+      } as any;
+      vi.mocked(streamingSessionManager.get).mockReturnValue(undefined);
+      vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(activeSession);
+      vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
+      vi.mocked(db.insert).mockImplementation(() => ({ values: vi.fn().mockResolvedValue(undefined) }) as any);
+      vi.mocked(streamingSessionManager.startTurnTimeout).mockImplementationOnce(() => { throw new Error('timeout boom'); });
+
+      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Hello' }),
+      });
+
+      expect(res.status).toBe(500);
+      expect(bus.subscribe).toHaveBeenCalledTimes(1);
+      expect(bus.unsubscribe).toHaveBeenCalledWith(bus.subscribe.mock.calls[0]![0]);
+    });
+
     it('dispatches and reserves exactly the model preflight resolved (finding 13)', async () => {
       const model = makeResolvedModel('anthropic_byok', { surface: 'script_builder' });
       vi.mocked(runPreFlightChecks).mockResolvedValue({

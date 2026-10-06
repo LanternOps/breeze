@@ -456,6 +456,7 @@
     "offering": {
       "displayName": "Nome de exibição",
       "displayNameHint": "Deixe em branco para usar o nome do provedor. ID do modelo: {{modelId}}",
+      "envManaged": "Este modelo é gerenciado pelas variáveis de ambiente MCP_LLM_*. Nome e preço são definidos lá e não podem ser alterados aqui.",
       "pricesTitle": "Preço",
       "pricesHint": "Centavos por 1 mi de tokens. Preencha os quatro ou deixe todos em branco para nenhum preço (o modelo não poderá ser ativado).",
       "prices": {
@@ -1402,6 +1403,8 @@
     "dropDescription": "Sem chamado, entrada na fila de revisão ou resposta automática. Uma linha de auditoria ainda é registrada. Use para manter spam não mapeado fora da triagem e da fila de revisão.",
     "dropUnverified": "Descartar mensagens que falham na autenticação do remetente (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Quando desativado, mensagens não verificadas ficam em quarentena para revisão. Quando ativado, são descartadas silenciosamente. Isso se aplica a <all>todos</all> os remetentes não verificados — inclusive clientes mapeados cuja mensagem falhe na verificação.",
+    "staffForwardRouting": "Registrar encaminhamentos da equipe no cliente do remetente original",
+    "staffForwardRoutingDescription": "Quando um membro da sua equipe no nível de parceiro encaminha o e-mail de um cliente para o endereço de suporte, o novo ticket é registrado na organização vinculada ao domínio do remetente original, e não na sua. O membro da equipe precisa ter acesso a essa organização. Funciona apenas para encaminhamentos feitos no Gmail e recebidos por uma caixa do Gmail conectada; não para o endereço de entrada nativo, caixas do Microsoft 365 nem encaminhamentos do Outlook.",
     "enableAutoresponse": "Enviar resposta automática confirmando novos chamados por e-mail",
     "editEmailTemplates": "O e-mail de confirmação é editado em Modelos de e-mail.",
     "editEmailTemplatesLink": "Editar modelos de e-mail",
@@ -1498,7 +1501,28 @@
     "namePlaceholder": "Suporte",
     "connect": "Conectar",
     "credentialOrg": "Credencial: conexão do Google Workspace de {{org}}",
-    "credentialOrgUnknown": "uma organização que você não pode ver"
+    "credentialOrgUnknown": "uma organização que você não pode ver",
+    "handling": {
+      "off": "Desativado: o e-mail continua na caixa de entrada depois de virar um ticket.",
+      "onArchive": "O e-mail que vira um ticket recebe o marcador do Gmail \"{{label}}\" e é arquivado fora da caixa de entrada.",
+      "onLabelOnly": "O e-mail que vira um ticket recebe o marcador do Gmail \"{{label}}\" e continua na caixa de entrada.",
+      "edit": "Alterar o tratamento de e-mails",
+      "labelField": "Marcador do Gmail para e-mails com ticket (deixe em branco para desativar)",
+      "labelPlaceholder": "Breeze/Ticket",
+      "archiveField": "Também arquivar (remover da caixa de entrada)",
+      "scopeNote": "A marcação precisa deste escopo adicional na delegação em todo o domínio da organização. A leitura dos e-mails não precisa dele, então a consulta continua funcionando sem ele.",
+      "saved": "Tratamento de e-mails salvo",
+      "saveFailed": "Não foi possível salvar o tratamento de e-mails.",
+      "error": {
+        "access_denied": "Falha ao marcar: o Google negou o acesso. Adicione o escopo gmail.modify à delegação em todo o domínio.",
+        "rate_limited": "Falha ao marcar: limite de taxa do Gmail atingido. Novos e-mails serão tentados novamente.",
+        "unavailable": "Falha ao marcar: o Gmail não respondeu a tempo. Novos e-mails serão tentados novamente.",
+        "label_invalid": "Falha ao marcar: este marcador não pode ser usado. Escolha outro nome.",
+        "no_credential": "Falha ao marcar: a conexão do Google Workspace desta organização está ausente ou inativa. Reconecte-a em Integrações.",
+        "not_queued": "Marcação ignorada: a fila de marcação estava indisponível ou cheia, então alguns e-mails que viraram chamados ficaram na caixa de entrada sem o marcador. Novos e-mails serão tentados novamente.",
+        "failed": "Falha ao marcar. O e-mail continua na caixa de entrada."
+      }
+    }
   },
   "orgApprovalSecurityTab": {
     "title": "Segurança de aprovação",
@@ -1865,6 +1889,10 @@
         "enableLifecycle": {
           "label": "Ciclo de vida do hardware",
           "description": "Mostra o plano de substituição atualizado dos equipamentos do seu cliente."
+        },
+        "enableHardwareHealth": {
+          "label": "Saúde do hardware",
+          "description": "Mostra a saúde dos componentes, eventos, discos e bateria das máquinas do seu cliente."
         },
         "enableNetworkVisibility": {
           "label": "Visibilidade de rede",

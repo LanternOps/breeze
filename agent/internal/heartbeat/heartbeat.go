@@ -250,7 +250,7 @@ type SecurityCapabilities struct {
 	// session's revocation lease alive and stops streaming when it lapses. The
 	// API refuses to start a desktop session against an agent reporting 0.
 	RevocationLeaseProtocolVersion int `json:"revocationLeaseProtocolVersion,omitempty"`
-	// DesktopFenceProtocolVersion (SEC-038 W06) declares that this build keeps
+	// DesktopFenceProtocolVersion declares that this build keeps
 	// the durable per-session start/terminal generation fence (W04/W05): it
 	// refuses any desktop start not strictly newer than everything it has
 	// already seen, and refuses all starts after a terminal. Behind
@@ -561,7 +561,7 @@ type Heartbeat struct {
 	leaseRenewRequester func(sessionID string)
 
 	// desktopStartFence linearizes desktop start decisions against terminal
-	// decisions (SEC-038): a per-session high-water generation plus an
+	// decisions: a per-session high-water generation plus an
 	// absolute terminal tombstone. See desktop_fence.go. Carries its own lock
 	// and its zero value is ready to use, so it is never nil.
 	desktopStartFence desktopFence
@@ -1281,7 +1281,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	h.leaseRenewRequester = h.requestRevocationLeaseRenew
 	h.leaseSyncRequester = h.requestRevocationLeaseSync
 
-	// SEC-038: make the desktop start fence durable. A restart must not forget
+	// Make the desktop start fence durable. A restart must not forget
 	// a tombstone; anything the file does not cover fails closed through the
 	// resync above.
 	h.desktopStartFence.attachStore(desktopfence.NewStore(
@@ -1333,7 +1333,7 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	if msg.SessionID == "" {
 		return
 	}
-	// SEC-038: every answer feeds the durable start fence — this is also the
+	// Every answer feeds the durable start fence — this is also the
 	// resync channel a start for an unknown session waits on. Queued, never
 	// applied inline: this callback runs on the WS read pump and a fence write
 	// hits the disk.

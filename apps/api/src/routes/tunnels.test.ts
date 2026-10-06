@@ -2033,8 +2033,8 @@ describe('POST /vnc-viewer/upgrade-to-webrtc', () => {
       agentId: 'agent-abc',
       userEmail: 'test@example.com',
     }]) as any);
-    // The straggler sweep now runs through the terminal-intent contract
-    // (SEC-038 W03): db.update(...).set(...).where(...).returning(...) —
+    // The straggler sweep now runs through the terminal-intent contract:
+    // db.update(...).set(...).where(...).returning(...) —
     // .returning() must resolve (no live stragglers here, so []) or the
     // update throws before createRemoteSession/evaluateCapability ever run,
     // silently stranding this test's queued mockResolvedValueOnce for a
@@ -3229,7 +3229,7 @@ describe('Audit logging — credential-minting tunnel endpoints', () => {
         }),
       }),
     } as any);
-    // db.update (terminate stragglers, through the SEC-038 W03 terminal-intent
+    // db.update (terminate stragglers, through the terminal-intent
     // contract) then db.insert (new desktop session). No live stragglers, so
     // .returning() resolves to [] — teardownDisconnectedSessions runs after
     // the system context above returns and is mocked separately below.

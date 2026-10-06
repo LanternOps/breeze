@@ -2093,7 +2093,7 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the helper token tests SKIPPED" }
           if ($passes -ne 15) { throw "expected exactly 15 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
-      # securefs's Windows implementation is the SEC-121 privileged-staging
+      # securefs's Windows implementation is the privileged-staging
       # boundary: handle-relative NtCreateFile walks, reparse-point rejection at
       # every component, the atomic FILE_RENAME_INFO publish, and symlink entry
       # restore. Its reparse-point cases plant a junction with `mklink /J` and
@@ -2113,9 +2113,61 @@ jobs:
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
-          if ($skips -ne 0) { throw "$skips of the secure-staging boundary tests SKIPPED - the SEC-121 Windows reparse-point/DACL boundary has no live coverage here" }
+          if ($skips -ne 0) { throw "$skips of the secure-staging boundary tests SKIPPED - the Windows reparse-point/DACL boundary has no live coverage here" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 16) { throw "expected exactly 16 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # Grant-mode diagnostic reads (diag_file_list / diag_file_read) refuse any
+      # path whose final, handle-resolved location differs from the requested
+      # one: junctions, 8.3 short names, stream and namespace spellings, and a
+      # root swapped for a junction after approval. internal/remote/tools as a
+      # whole is excluded from the package list above (#2523), so these run by
+      # name. Only one skip is tolerated: the POSIX symlink test (Windows
+      # symlinks need a privilege; junctions are covered instead). The 8.3 test
+      # must PASS: short-name generation is switched on for the temp volume first.
+      - name: Run Windows diagnostic-access containment tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          # 8.3 names must exist for the short-name test to prove anything:
+          # enable generation on the temp volume (runners are admin).
+          $tempVolume = (Split-Path -Qualifier $env:TEMP)
+          fsutil 8dot3name set $tempVolume 0 | Out-Null
+          $out = go test ./internal/remote/tools -run '^Test(Diag|ClassifyDiagnosticPath|SensitiveReadPathsAreAllClassified)' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: (Test\S+)' | ForEach-Object { $_.Matches[0].Groups[1].Value })
+          $unexpected = @($skips | Where-Object { $_ -notin @('TestDiagnosticLinkEscapesRefused') })
+          if ($unexpected.Count -ne 0) { throw "unexpected skips: $($unexpected -join ', ') - Windows diagnostic-access containment has no live coverage for them" }
+          # Every containment, token and classifier test must PASS by name, so
+          # deleting or renaming one fails this step instead of shrinking it.
+          $required = @(
+            'TestClassifyDiagnosticPathSharedFixture',
+            'TestDiagInteropAPISignedAuthorizationVerifiesOnAgent',
+            'TestDiagInteropSealedVectorOpensWithServerKey',
+            'TestDiagnosticHardDeniedEvenIfNamed',
+            'TestDiagnosticHardLinkRefused',
+            'TestDiagnosticListPagination',
+            'TestDiagnosticListWithholdsUnapprovedSensitiveChildren',
+            'TestDiagnosticOutOfScopeAndPrefixSibling',
+            'TestDiagnosticPathFormsRejected',
+            'TestDiagnosticReadAuthorizedPaginatedAndSealed',
+            'TestDiagnosticRecursiveVsFlat',
+            'TestDiagnosticSensitiveClassMustBeExplicit',
+            'TestDiagnosticTokenFailures',
+            'TestDiagnosticTraversalSpellingsRefused',
+            'TestDiagWindowsAlternatePathFormsRefused',
+            'TestDiagWindowsCaseInsensitiveContainment',
+            'TestDiagWindowsJunctionEscapesRefused',
+            'TestDiagWindowsShortNameRefused',
+            'TestSensitiveReadPathsAreAllClassified'
+          )
+          foreach ($must in $required) {
+            if (-not ($out | Select-String -SimpleMatch "--- PASS: $must ")) { throw "$must did not PASS" }
+          }
 
       # sd_windows.go/winpriv_windows.go are the HiveNightmare-class fix
       # (CVE-2021-36934) this wave depends on: a rebuilt C:\ with no
@@ -4388,6 +4440,8 @@ jobs:
              { [[ "${API_CHANGED}" != "true" ]] && [[ "${API_CHANGED}" != "false" ]]; } || \
              { [[ "${API_CHANGED}" == "false" ]] && [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "skipped" ]]; } || \
              [[ "${AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT}" != "success" ]] || \
+             { [[ "${API_CHANGED}" == "true" ]] && [[ "${CHECK_MIGRATIONS_RESULT}" != "success" ]]; } || \
+             { [[ "${API_CHANGED}" != "true" ]] && [[ "${API_CHANGED}" != "false" ]]; } || \
              { [[ "${API_CHANGED}" == "false" ]] && [[ "${CHECK_MIGRATIONS_RESULT}" != "skipped" ]]; } || \
              { [[ "${STACK_CHANGED}" == "false" ]] && [[ "${BUILD_SMOKE_IMAGES_RESULT}" != "skipped" ]]; } || \
              { [[ "${STACK_CHANGED}" == "false" ]] && [[ "${SMOKE_TEST_RESULT}" != "skipped" ]]; } || \

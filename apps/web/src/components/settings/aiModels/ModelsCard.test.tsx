@@ -161,6 +161,16 @@ describe('ModelsCard', () => {
       expect(screen.getByTestId('ai-manual-model-id')).toBeTruthy();
     });
 
+    it('opens the drawer read-only for an env-managed connection and editable otherwise', () => {
+      const { unmount } = render(<ModelsCard snapshot={gwSnap([gw()], 'env')} onChanged={vi.fn()} />);
+      fireEvent.click(screen.getByTestId(`ai-offering-edit-${OFF}`));
+      expect(screen.getByTestId('ai-offering-env-managed')).toBeTruthy();
+      unmount();
+      render(<ModelsCard snapshot={gwSnap([gw()])} onChanged={vi.fn()} />);
+      fireEvent.click(screen.getByTestId(`ai-offering-edit-${OFF}`));
+      expect(screen.queryByTestId('ai-offering-env-managed')).toBeNull();
+    });
+
     it('does not offer Add model on a non-gateway connection or an env-managed one', () => {
       const { unmount } = render(<ModelsCard snapshot={snap([row({ id: OFF, connectionId: CONN, funding: 'partner_key' })])} onChanged={vi.fn()} />);
       expect(screen.queryByTestId(`ai-models-add-manual-${CONN}`)).toBeNull();

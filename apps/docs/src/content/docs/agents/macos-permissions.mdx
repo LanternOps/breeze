@@ -212,6 +212,14 @@ Changes to Full Disk Access take effect after the agent service restarts:
 sudo launchctl kickstart -k system/com.breeze.agent
 ```
 
+After granting Screen Recording or Accessibility, restart the desktop helper as the logged-in user (run in that user's Terminal, without `sudo`) so it re-reads its permissions:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.breeze.desktop-helper-user
+```
+
+Remote desktop needs **both** Screen Recording and Accessibility for the desktop helper -- with either one missing, the device reports remote desktop as unavailable.
+
 ## After an agent relocation
 
 This applies only to a Mac where `/usr/local/bin` was unsafe for a root daemon and the agent moved to `/Library/Breeze/bin` (see [Agent Path](#agent-path-usrlocalbin-or-librarybreezebin)). Most Macs never hit this.

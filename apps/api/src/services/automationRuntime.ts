@@ -4405,7 +4405,7 @@ export async function executeConfigPolicyAutomationRun(
 
   // Load target devices.
   //
-  // SEC-118, sibling path. `targetDeviceIds` was frozen at ENQUEUE time by
+  // Sibling path. `targetDeviceIds` was frozen at ENQUEUE time by
   // automationWorker's `enqueueConfigPolicyRun`, and `admitConfigPolicyAutomationRun`
   // above validates the POLICY owner, not the devices. So this read is the only
   // place the device side of the boundary can be enforced, and without

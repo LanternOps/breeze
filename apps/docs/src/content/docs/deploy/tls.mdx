@@ -129,6 +129,18 @@ It also disables buffering (but does not upgrade the connection) for the SSE end
 
 No additional configuration needed.
 
+### Troubleshooting: remote tools time out / event socket returns 400 behind your own proxy
+
+With `FORCE_HTTPS=true`, a request that reaches the API looking like plain `http` with a `Host` other than the one in `PUBLIC_API_URL` is rejected with `400` and the body `{"error":"FORCE_HTTPS_NON_CANONICAL_HOST"}`. The API request log shows the same thing as `reason=force_https_non_canonical_host` on the `-->` line. Browsers hide the status and body of a failed WebSocket upgrade, so from the page it only reads as "failed to connect".
+
+Check that your proxy:
+
+- forwards `X-Forwarded-Proto: https` on WebSocket upgrade requests, not just plain requests;
+- preserves the original `Host` header on upgrades (nginx: `proxy_set_header Host $host;`);
+- has its IP in `TRUSTED_PROXY_CIDRS`, otherwise the API ignores the forwarded headers.
+
+The API also logs a rate-limited `[force-https]` warning on this path with the values it saw.
+
 ## Nginx (Alternative)
 
 If you prefer nginx, here's an equivalent configuration.

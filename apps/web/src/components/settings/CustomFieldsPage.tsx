@@ -70,6 +70,10 @@ export default function CustomFieldsPage() {
   // matching the server (which still gates every write regardless).
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const organizations = useOrgStore((s) => s.organizations);
+  // #7122: org names for the Organization column, so an org-owned field is
+  // attributable when several orgs' fields are listed together.
+  const orgNameById = new Map((organizations ?? []).map((o) => [o.id, o.name]));
   const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
   const showOwnerScope = isPartnerScope && canManagePartnerWide;
   const [formOwnerScope, setFormOwnerScope] = useState<OwnerScope>(defaultOwnerScope);
@@ -457,6 +461,7 @@ export default function CustomFieldsPage() {
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 <th className="px-4 py-3">{t('common:labels.name')}</th>
+                {isPartnerScope && <th className="px-4 py-3">{t('common:labels.organization')}</th>}
                 <th className="px-4 py-3">{t('customFieldsPage.columns.key')}</th>
                 <th className="px-4 py-3">{t('common:labels.type')}</th>
                 <th className="px-4 py-3">{t('common:labels.required')}</th>
@@ -481,6 +486,13 @@ export default function CustomFieldsPage() {
                       )}
                     </div>
                   </td>
+                  {isPartnerScope && (
+                    <td className="px-4 py-3" data-testid="custom-field-org">
+                      {field.orgId === null
+                        ? t('customFieldsPage.allOrganizations')
+                        : (orgNameById.get(field.orgId) ?? field.orgId)}
+                    </td>
+                  )}
                   <td className="px-4 py-3">
                     <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
                       {field.fieldKey}

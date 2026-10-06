@@ -83,7 +83,7 @@ describe('SessionHistoryPage', () => {
     expect(screen.queryByRole('link', { name: 'View Recording' })).toBeNull();
   });
 
-  // SEC-038 W06 (#5537): the detail panel flags a teardown the device has not
+  // #5537 — the detail panel flags a teardown the device has not
   // yet acknowledged, and says nothing for a confirmed end.
   it('labels a pending teardown in the detail panel', () => {
     sessionState.session = { ...sessionState.session, terminationPhase: 'pending' };

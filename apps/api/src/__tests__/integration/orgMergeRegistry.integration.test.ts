@@ -269,6 +269,12 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // Diagnostic access grants (2026-12-13-130000): on an org_id change, turns an
+  // active grant into revoked and a pending request into expired. Never blocks
+  // or reverts the org_id change itself; the merge fences these rows in its
+  // resolve phase first, so the repoint finds them already dead.
+  'diagnostic_access_grants.diagnostic_access_grants_fence_org_change': 'kills a live grant on org change; never reads-to-block or reverts org_id',
+  'diagnostic_access_grants.diagnostic_access_grants_expire_pending_approvals': 'BEFORE DELETE only: expires the grant\'s pending approval rows; never blocks or rewrites org_id',
   // AI Suggested Fixes W2 (2026-12-07-100000): BEFORE INSERT OR UPDATE guard
   // that compares only created_by / provisioned_by and RAISEs on a change
   // outside the system scope. It never reads org_id, and org merge runs in the
@@ -298,6 +304,7 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // NEW.partner_feed_xid := pg_current_xact_id(). Never reads or blocks org_id;
   // an org repoint restamps the row, which correctly re-delivers it in the feed.
   'alerts.breeze_alerts_partner_feed_xid': 'only stamps partner_feed_xid; never reads or reverts org_id',
+  'tickets.breeze_tickets_partner_feed_xid': 'only stamps partner_feed_xid; never reads or reverts org_id',
   // #6488 (2026-10-31-100700): fires on an actual org_id/device_id change and
   // only drops a complete/hydrating file_index_status to 'none', so the
   // snapshot's origin provenance is re-verified under the new org. Never

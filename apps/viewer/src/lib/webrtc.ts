@@ -476,7 +476,7 @@ async function pollForAnswer(
 
     if (resp.ok) {
       const data = await resp.json();
-      // SEC-038 W06: a terminal failure, a pending/confirmed teardown, or an
+      // A terminal failure, a pending/confirmed teardown, or an
       // ended status all take precedence over an answer from an earlier
       // attempt on this session. Never reconnect using stale signaling data.
       const verdict = classifyAnswerPoll(data);

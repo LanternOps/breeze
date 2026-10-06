@@ -7,7 +7,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
-// SEC-038 owner decision 2: a start whose FIRST lease renewal comes back
+// A start whose FIRST lease renewal comes back
 // `unavailable` hard-stops instead of riding the 90 s grace — a session that
 // has never been confirmed by the control plane has no standing to keep
 // streaming through an outage. Renewals after the session is established keep

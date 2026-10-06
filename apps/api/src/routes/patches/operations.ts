@@ -389,7 +389,7 @@ operationsRoutes.post(
 
     if (data.deviceIds && data.deviceIds.length > 0) {
       // Bind each rollback target to the device's own `installed` observation
-      // (#5565), mirroring how install binds to `pending` (SEC-115). A device
+      // (#5565), mirroring how install binds to `pending`. A device
       // that exists but never reported this patch as installed is skipped
       // rather than sent a rollback for a catalog row it has no relation to.
       const requestedDevices = await db

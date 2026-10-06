@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import AccountingMappingWorkbench from "./AccountingMappingWorkbench";
 
-// SEC-2026-09-05-057: every mutating control here is gated on
+// Every mutating control here is gated on
 // `accounting:manage`. This suite covers the workbench's own behaviour, so it
 // holds the grant throughout; the gate itself is covered by
 // AccountingMappingWorkbench.accountingPermissions.test.tsx.

@@ -275,7 +275,7 @@ export const networkBaselines = pgTable('network_baselines', {
     changed: true,
     rogueDevice: false
   }),
-  // SEC-2026-09-05-146 — creator-bound versioned authority envelope. A recurring
+  // Creator-bound versioned authority envelope. A recurring
   // scan_schedule is an effect that keeps firing long after the request that
   // armed it; without a durable record of WHO armed it the scheduler cannot tell
   // whether that authority still exists. Every arming path (REST create/update,

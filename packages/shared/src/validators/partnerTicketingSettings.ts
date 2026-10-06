@@ -33,6 +33,10 @@ export const ticketingInboundSettingsSchema = z.object({
   // When true, senders failing the SPF/DKIM/DMARC gate are dropped silently
   // instead of quarantined. Default-off; applies to all unverified senders.
   dropUnverifiedSenders: z.boolean().optional(),
+  // When true, a new ticket forwarded in by one of the partner's own staff is
+  // filed under the customer mapped to the ORIGINAL sender's domain rather than
+  // the forwarder's. Default-off.
+  staffForwardRouting: z.boolean().optional(),
   autoresponseSubject: z.string().max(200).nullable().optional(),
   autoresponseBody: z.string().max(5000).nullable().optional(),
   // Reply-to-client content mode. Default (false/absent) keeps the existing

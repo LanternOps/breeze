@@ -33,6 +33,7 @@ interface CfgShape {
   autoresponderEnabled: boolean;
   unknownSenderMode: 'quarantine' | 'triage' | 'drop';
   dropUnverifiedSenders: boolean;
+  staffForwardRouting?: boolean;
   autoresponseSubject: string | null;
   autoresponseBody: string | null;
   slug: string;
@@ -143,6 +144,30 @@ describe('InboundEmailCard', () => {
       expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me', expect.objectContaining({ method: 'PATCH' })),
     );
     expect(lastInboundPatch().dropUnverifiedSenders).toBe(true);
+  });
+
+  it('toggling staff-forward routing PATCHes staffForwardRouting=true', async () => {
+    routeFetch();
+    render(<InboundEmailCard />);
+    await screen.findByTestId('inbound-email-card');
+    expect((screen.getByTestId('inbound-staff-forward-toggle') as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(screen.getByTestId('inbound-staff-forward-toggle'));
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me', expect.objectContaining({ method: 'PATCH' })),
+    );
+    expect(lastInboundPatch().staffForwardRouting).toBe(true);
+  });
+
+  it('preserves staffForwardRouting=true when another inbound setting is saved (wholesale replace)', async () => {
+    routeFetch({ ...CFG, staffForwardRouting: true });
+    render(<InboundEmailCard />);
+    await screen.findByTestId('inbound-email-card');
+    expect((screen.getByTestId('inbound-staff-forward-toggle') as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByTestId('inbound-drop-unverified-toggle'));
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me', expect.objectContaining({ method: 'PATCH' })),
+    );
+    expect(lastInboundPatch().staffForwardRouting).toBe(true);
   });
 
   it('toggling enable PATCHes /orgs/partners/me with the COMPLETE ticketing.inbound (no address when override is null)', async () => {

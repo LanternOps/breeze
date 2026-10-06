@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// The API (SEC-038 W06) refuses a desktop start against an agent reporting
+// The API refuses a desktop start against an agent reporting
 // desktopFenceProtocolVersion 0 once REMOTE_DESKTOP_FENCE_REQUIRED is on, so
 // a build that carries the durable start fence (W04/W05) MUST declare the
 // capability on every beat — under the exact JSON key the server's heartbeat

@@ -120,5 +120,32 @@
     "activeBody": "Depuis le {{date}}, la valeur par défaut de la plateforme exige un appareil d’approbateur enregistré pour approuver les demandes à risque élevé et critique, car aucun choix de sécurité des approbations n’a été enregistré pour votre compte partenaire. C’est pourquoi ces approbations demandent votre appareil.",
     "settingsLink": "Vérifier la sécurité des approbations",
     "registerLink": "Enregistrer un appareil d’approbateur"
+  },
+  "diagnosticAccess": {
+    "title": "Accès de diagnostic en lecture seule",
+    "organization": "Organisation",
+    "device": "Appareil",
+    "access": "Accès",
+    "readOnlyOps": "Lecture seule : {{operations}}. Aucune écriture, suppression, aucun renommage, script ou changement de registre.",
+    "duration": "Durée",
+    "durationValue": "{{minutes}} minutes après l'approbation",
+    "purpose": "Objectif",
+    "requestedBy": "Demandé par",
+    "principalUser": "Clavardage IA Breeze",
+    "principalApiKey": "Clé d'API MCP",
+    "principalOauth": "Connexion OAuth MCP",
+    "paths": "Chemins",
+    "recursive": "Toute l'arborescence",
+    "thisFolderOnly": "Ce dossier et les fichiers qu'il contient directement",
+    "sensitiveHeading": "Magasins sensibles demandés explicitement",
+    "noSensitive": "Les emplacements connus des mots de passe et témoins du navigateur, des magasins d'identifiants, des clés privées et des jetons enregistrés sont retenus, même dans ces chemins. Il s'agit d'une liste fixe; tout le reste dans ces chemins est lisible.",
+    "opList": "lister",
+    "opRead": "lire",
+    "classes": {
+      "browser_secrets": "Mots de passe, témoins du navigateur et leurs clés",
+      "credential_store": "Magasins d'identifiants du système d'exploitation",
+      "private_keys": "Clés privées (SSH, GnuPG, TLS)",
+      "session_tokens": "Jetons de session et identifiants infonuagiques enregistrés"
+    }
   }
 }

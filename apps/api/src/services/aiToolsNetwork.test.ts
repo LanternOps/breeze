@@ -13,7 +13,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// SEC-2026-09-05-146: these suites cover route/tool behaviour, not the authority
+// These suites cover route/tool behaviour, not the authority
 // envelope. Arming is asserted directly in networkBaselineAuthority.arming.test.ts.
 vi.mock('./networkBaselineAuthority', () => ({
   BaselineAuthorityUnsupportedError: class extends Error {},

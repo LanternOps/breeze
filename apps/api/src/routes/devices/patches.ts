@@ -736,7 +736,7 @@ patchesRoutes.post(
     }
 
     // Bind the rollback target to THIS device's own `installed` observation,
-    // mirroring how install binds to `pending` (#5561 / SEC-115). `patches` is
+    // mirroring how install binds to `pending` (#5561). `patches` is
     // a global catalog shared across tenants, so an id alone must never select
     // what gets removed from a device. `packageId` is deliberately not
     // forwarded: the agent resolves rollbacks against its own installed set.

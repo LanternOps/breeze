@@ -85,7 +85,7 @@ const deleteBaselineQuerySchema = z.object({
 });
 
 /**
- * SEC-2026-09-05-146: an explicit allowlist, not a spread.
+ * An explicit allowlist, not a spread.
  *
  * These handlers are gated on `devices:read`, which every device-viewing role
  * holds, so spreading the row handed all of them the arming user's
@@ -155,7 +155,7 @@ function baselineInSiteScope(
 }
 
 /**
- * SEC-2026-09-05-146 — arm the creator-bound authority envelope for a schedule
+ * Arm the creator-bound authority envelope for a schedule
  * that is (or stays) enabled. A disabled schedule dispatches nothing, so it
  * needs no authority; an enabled one must name the live principal that owns it.
  * Returns null when no envelope is needed.
@@ -337,7 +337,7 @@ networkBaselineRoutes.post(
     // unique violation at commit time even after it's caught here, turning the
     // mapped 409 back into a raw 500 (see createCatalogItem in catalogService.ts).
     // Zero returned rows means a baseline already exists for this org/site/subnet.
-    // SEC-146: an enabled recurring schedule is armed with the CURRENT user's
+    // An enabled recurring schedule is armed with the CURRENT user's
     // authority in the same statement that creates it. System-scope contexts
     // cannot own a recurring effect (nothing would ever revoke it) — they may
     // still create a baseline whose schedule is disabled.
@@ -457,7 +457,7 @@ networkBaselineRoutes.patch(
       ? normalizeBaselineAlertSettings({ ...currentAlertSettings, ...body.alertSettings })
       : currentAlertSettings;
 
-    // SEC-146: any change to the schedule re-arms the envelope from the CURRENT
+    // Any change to the schedule re-arms the envelope from the CURRENT
     // user and bumps the generation, which also invalidates any tick already
     // issued against the previous envelope. This is the re-approval path for a
     // legacy row: re-saving the schedule is what makes it dispatchable again.

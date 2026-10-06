@@ -95,7 +95,7 @@ async function runOnVm(
  * enqueued by Breeze's own patch pipeline rather than initiated by the
  * organization. Admitting it against the org's `ai_budget_reservations` cap
  * would let a background job exhaust a technician's interactive budget — the
- * opposite of what the SEC-142 fence is for.
+ * opposite of what the fence is for.
  *
  * Like the workspace embedder, metering this belongs to a platform/system
  * budget that does not exist yet. Recorded as an accepted exemption on #5557.

@@ -213,7 +213,7 @@ describe('revocation lease against live Postgres', () => {
     expect(row!.errorMessage).toBe('revoked:permissions_changed');
     expect(row!.endedAt).not.toBeNull();
 
-    // The revocation goes through the terminal-intent contract (SEC-038 W03):
+    // The revocation goes through the terminal-intent contract:
     // the row handed to the teardown names the terminal generation the stop
     // must carry, and the phase is 'pending' until the agent acknowledges it.
     expect(teardownDisconnectedSessions).toHaveBeenCalledWith([
@@ -467,7 +467,7 @@ describe('revocation lease against live Postgres', () => {
     });
   });
 
-  // SEC-038 W06 (#5537): the desktop-fence gate against the real column.
+  // #5537 — the desktop-fence gate against the real column.
   describe('desktop fence capability gate (REMOTE_DESKTOP_FENCE_REQUIRED)', () => {
     const original = process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
     afterEach(() => {
