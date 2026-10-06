@@ -1,10 +1,10 @@
-import type { NetworkOverviewDto, NetworkAssetsDto } from '@breeze/shared';
+import type { NetworkOverviewDto, NetworkAssetsDto, NetworkSitesDto } from '@breeze/shared';
 import { eq } from 'drizzle-orm';
 import { zValidator } from '../../lib/validation';
 import { Hono } from 'hono';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { portalBranding } from '../../db/schema';
-import { networkAssets, networkOverview } from '../../services/portal/networkVisibilityReadModel';
+import { networkAssets, networkOverview, networkSites } from '../../services/portal/networkVisibilityReadModel';
 import { networkAssetsQuerySchema } from './schemas';
 import {
   applyPortalCacheHeaders,
@@ -39,7 +39,7 @@ function portalOrgContext(
 
 function cached(
   c: Parameters<typeof applyPortalCacheHeaders>[0],
-  payload: NetworkOverviewDto | NetworkAssetsDto,
+  payload: NetworkOverviewDto | NetworkAssetsDto | NetworkSitesDto,
 ) {
   applyPortalCacheHeaders(c, {
     scope: 'private',
@@ -125,6 +125,39 @@ function notEnabledAssets(page?: number, limit?: number): NetworkAssetsDto {
     },
   };
 }
+
+/**
+ * Site options for the per-asset table's Site filter (#7025). Same gating as
+ * /network/assets: a disabled feature answers 200 `not_enabled`, never 403.
+ */
+portalNetworkRoutes.get('/network/sites', async (c) => {
+  const auth = c.get('portalAuth');
+
+  if (!auth) {
+    return c.json({ error: 'Authentication required' }, 401);
+  }
+
+  const orgId = auth.user.orgId;
+  const partnerId = auth.partnerId;
+
+  if (!partnerId) {
+    return c.json({ error: 'Organization is not available' }, 403);
+  }
+
+  return withDbAccessContext(portalOrgContext(orgId, partnerId), async () => {
+    const [settings] = await db
+      .select({ enableNetworkVisibility: portalBranding.enableNetworkVisibility })
+      .from(portalBranding)
+      .where(eq(portalBranding.orgId, orgId))
+      .limit(1);
+
+    if (settings?.enableNetworkVisibility !== true) {
+      return cached(c, { dataStatus: 'not_enabled', data: [] });
+    }
+
+    return cached(c, await networkSites(orgId));
+  });
+});
 
 portalNetworkRoutes.get(
   '/network/assets',
