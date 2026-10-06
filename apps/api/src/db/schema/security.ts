@@ -119,7 +119,11 @@ export const securityScans = pgTable('security_scans', {
   itemsScanned: integer('items_scanned'),
   threatsFound: integer('threats_found'),
   duration: integer('duration'),
-  initiatedBy: uuid('initiated_by').references(() => users.id)
+  initiatedBy: uuid('initiated_by').references(() => users.id),
+  // Set when the governing policy asked for auto-quarantine but its stored
+  // authority did not resolve, so the scan was dispatched detect-only
+  // (services/securityScanQuarantineAuthority.ts). NULL = not suppressed.
+  autoQuarantineSuppressedReason: varchar('auto_quarantine_suppressed_reason', { length: 64 })
 }, (table) => ({
   deviceStartedIdx: index('security_scans_device_started_idx').on(table.deviceId, table.startedAt),
   statusIdx: index('security_scans_status_idx').on(table.status)

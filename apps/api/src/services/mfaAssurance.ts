@@ -57,16 +57,22 @@ export interface FactorChangeResult {
  * `user_id = self OR scope = 'system'`, so the admin's ambient context would
  * silently revoke ZERO families. That caller MUST wrap this in
  * `runOutsideDbContext(() => withSystemDbAccessContext(() => ...))`, and gates
- * the cross-tenant authorization itself (requirePermission + getScopedUser)
+ * the cross-tenant authorization itself (requirePermission + getScopedMembership)
  * BEFORE calling in — RLS is defense-in-depth there, not the primary check.
+ *
+ * `beforeEpoch` runs first inside the transaction, before the user-row lock is
+ * taken — it is where a caller locks and re-verifies rows its authorization
+ * depended on (membership before users, the same order a role change takes).
  */
 export async function invalidateMfaAssuranceAfterFactorChange(
   userId: string,
   reason: string,
   mutate?: (tx: Tx) => Promise<void>,
   expected?: Parameters<typeof advanceUserEpochs>[3],
+  beforeEpoch?: (tx: Tx) => Promise<void>,
 ): Promise<FactorChangeResult> {
   const epochRow = await dbModule.db.transaction(async (tx: Tx) => {
+    if (beforeEpoch) await beforeEpoch(tx);
     // Self-service proof may have completed before a concurrent reset. Bind
     // its terminal write to the same epochs under the user-row write lock.
     const row = await advanceUserEpochs(tx, userId, { mfa: true }, expected);

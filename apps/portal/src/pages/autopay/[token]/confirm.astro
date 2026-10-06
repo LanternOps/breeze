@@ -1,8 +1,8 @@
 ---
 import PublicDocumentLayout from '../../../layouts/PublicDocumentLayout.astro';
-import AutopayActionPage from '../../../components/portal/AutopayActionPage';
+import AutopayConfirmPage from '../../../components/portal/AutopayConfirmPage';
 const { token } = Astro.params;
 ---
-<PublicDocumentLayout title="Confirm payment">
-  <AutopayActionPage token={token!} action="confirm" client:load />
+<PublicDocumentLayout title="Confirm a payment">
+  <AutopayConfirmPage token={token!} client:load />
 </PublicDocumentLayout>

@@ -277,6 +277,8 @@ listRoutes.get(
 listRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  // Same RBAC bar as the patch list above.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', patchIdParamSchema),
   async (c) => {
     const { id } = c.req.valid('param');

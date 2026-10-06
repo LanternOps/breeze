@@ -79,7 +79,7 @@ export const maintenanceWindows = pgTable('maintenance_windows', {
 
 export const maintenanceOccurrences = pgTable('maintenance_occurrences', {
   id: uuid('id').primaryKey().defaultRandom(),
-  windowId: uuid('window_id').notNull().references(() => maintenanceWindows.id),
+  windowId: uuid('window_id').notNull().references(() => maintenanceWindows.id, { onDelete: 'cascade' }),
   startTime: timestamp('start_time').notNull(),
   endTime: timestamp('end_time').notNull(),
   status: maintenanceWindowStatusEnum('status').notNull().default('scheduled'),

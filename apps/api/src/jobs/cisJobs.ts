@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import {
   cisBaselines,
@@ -18,6 +18,8 @@ import { isReusableState } from '../services/bullmqUtils';
 import { jobSchedule } from './scheduleRegistry';
 import { attachWorkerObservability } from './workerObservability';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import { resolveCisScheduleDispatch } from '../services/cisBaselineScheduleAuthority';
+import { resolveLegacyPrincipalExecuteAuthorityInCurrentSystemContext } from '../services/sensitiveDataPolicyAuthority';
 
 const { db } = dbModule;
 
@@ -65,6 +67,20 @@ type RunBaselineScanJobData = {
   requestedBy?: string | null;
   deviceIds?: string[];
   origin?: 'scheduled' | 'manual';
+  /**
+   * Scheduled runs only: the baseline's execution_authority_generation the
+   * scheduler admitted. The run re-resolves the authority and must see this
+   * exact generation, so a re-approval or revocation between enqueue and run
+   * (or a job left in Redis from before stored authority existed) dispatches
+   * nothing.
+   */
+  authorityGeneration?: string;
+  /**
+   * Scheduled runs of a grandfathered legacy baseline (no envelope): the run
+   * re-checks the creator live and dispatches only while the row is still
+   * unstamped and grandfathered.
+   */
+  legacyAuthority?: true;
 };
 
 type AggregateScoresJobData = {
@@ -94,12 +110,25 @@ export function getCisQueue(): Queue<CisJobData> {
   return cisQueue;
 }
 
-async function processScheduleScans(): Promise<{ enqueued: number }> {
+async function processScheduleScans(): Promise<{ enqueued: number; reapprovalRequired: number }> {
   const now = new Date();
   const dueBaselines = await db
     .select({
       id: cisBaselines.id,
       scanSchedule: cisBaselines.scanSchedule,
+      orgId: cisBaselines.orgId,
+      partnerId: cisBaselines.partnerId,
+      executionAuthorityVersion: cisBaselines.executionAuthorityVersion,
+      executionAuthorityKind: cisBaselines.executionAuthorityKind,
+      executionAuthoritySiteIds: cisBaselines.executionAuthoritySiteIds,
+      executionAuthorityUserId: cisBaselines.executionAuthorityUserId,
+      executionAuthorityPrincipalKind: cisBaselines.executionAuthorityPrincipalKind,
+      executionAuthorityFingerprint: cisBaselines.executionAuthorityFingerprint,
+      executionAuthorityCapturedAt: cisBaselines.executionAuthorityCapturedAt,
+      executionAuthorityGeneration: cisBaselines.executionAuthorityGeneration,
+      executionAuthorityLegacy: cisBaselines.executionAuthorityLegacy,
+      executionAuthorityStatus: cisBaselines.executionAuthorityStatus,
+      createdBy: cisBaselines.createdBy,
     })
     .from(cisBaselines)
     .where(
@@ -111,15 +140,54 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
     );
 
   if (dueBaselines.length === 0) {
-    return { enqueued: 0 };
+    return { enqueued: 0, reapprovalRequired: 0 };
   }
 
   const queue = getCisQueue();
   // Hourly slot used as jobId suffix to deduplicate scans within the same scheduling window
   const slot = Math.floor(Date.now() / (60 * 60 * 1000));
   let enqueued = 0;
+  let reapprovalRequired = 0;
 
   for (const baseline of dueBaselines) {
+    // A schedule is only a request to scan. It dispatches under the stored
+    // authority of the user who approved it — or, for a grandfathered legacy
+    // row, of its creator — re-resolved live here. Anything else is skipped
+    // (nextScanAt left as-is so a re-approval takes effect on the next tick).
+    const decision = await resolveCisScheduleDispatch(baseline);
+
+    // Persist the check outcome (only when it changed) so the API can say WHY a
+    // schedule stopped, e.g. its approver left — not keep reporting "approved".
+    const statusChanged = decision.checkStatus !== undefined
+      && decision.checkStatus !== baseline.executionAuthorityStatus;
+    const revokeLegacy = !decision.ok && decision.revokeLegacy === true;
+    if (statusChanged || revokeLegacy) {
+      // Revoking is one-way: the creator no longer qualifies, so the row
+      // needs an explicit re-approval even if they regain the permission.
+      const where = revokeLegacy
+        ? and(
+            eq(cisBaselines.id, baseline.id),
+            eq(cisBaselines.executionAuthorityLegacy, 'grandfathered'),
+            isNull(cisBaselines.executionAuthorityGeneration),
+          )
+        : eq(cisBaselines.id, baseline.id);
+      await db
+        .update(cisBaselines)
+        .set({
+          ...(revokeLegacy ? { executionAuthorityLegacy: 'revoked' as const } : {}),
+          ...(statusChanged ? { executionAuthorityStatus: decision.checkStatus, executionAuthorityStatusAt: now } : {}),
+        })
+        .where(where)
+        .catch((error) => {
+          console.error(`[CisJobs] processScheduleScans: failed to record authority status for baseline ${baseline.id}:`, error);
+          captureException(error);
+        });
+    }
+
+    if (!decision.ok) {
+      reapprovalRequired++;
+      continue;
+    }
     try {
       await queue.add(
         'run-baseline-scan',
@@ -127,6 +195,9 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
           type: 'run-baseline-scan',
           baselineId: baseline.id,
           origin: 'scheduled',
+          ...(decision.mode === 'stamped'
+            ? { authorityGeneration: decision.authority.generation }
+            : { legacyAuthority: true as const }),
         },
         {
           jobId: `cis-scan-${baseline.id}-${slot}`,
@@ -155,7 +226,13 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
     }
   }
 
-  return { enqueued };
+  if (reapprovalRequired > 0) {
+    console.warn(
+      `[CisJobs] processScheduleScans: skipped ${reapprovalRequired} due baseline(s) whose schedule needs re-approval`,
+    );
+  }
+
+  return { enqueued, reapprovalRequired };
 }
 
 /**
@@ -180,6 +257,7 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
 export async function selectCisScanTargetDevices(
   baseline: Pick<typeof cisBaselines.$inferSelect, 'orgId' | 'partnerId' | 'osType'>,
   deviceIds?: string[] | null,
+  options: { siteIds?: string[] | null } = {},
 ): Promise<Array<{ id: string; orgId: string }>> {
   const ownerCondition = baseline.partnerId
     ? inArray(
@@ -202,6 +280,12 @@ export async function selectCisScanTargetDevices(
 
   if (Array.isArray(deviceIds) && deviceIds.length > 0) {
     deviceConditions.push(inArray(devices.id, deviceIds));
+  }
+
+  // Site ceiling of a site-restricted approver (scheduled runs only).
+  if (Array.isArray(options.siteIds)) {
+    if (options.siteIds.length === 0) return [];
+    deviceConditions.push(inArray(devices.siteId, options.siteIds));
   }
 
   return db
@@ -235,7 +319,29 @@ async function processRunBaselineScan(data: RunBaselineScanJobData): Promise<{
     };
   }
 
-  const rows = await selectCisScanTargetDevices(baseline, data.deviceIds);
+  let requestedBy = data.requestedBy ?? undefined;
+  let siteIds: string[] | null = null;
+  if (data.origin === 'scheduled') {
+    const decision = data.authorityGeneration || data.legacyAuthority
+      ? await resolveCisScheduleDispatch(baseline)
+      : null;
+    const authority = decision?.ok
+      && (decision.mode === 'stamped'
+        ? decision.authority.generation === data.authorityGeneration
+        : data.legacyAuthority === true)
+      ? decision.authority
+      : null;
+    if (!authority) {
+      console.warn(
+        `[CisJobs] processRunBaselineScan: scheduled run for baseline ${baseline.id} not dispatched — schedule authority missing, stale or revoked`,
+      );
+      return { baselineId: baseline.id, devicesTargeted: 0, commandsQueued: 0 };
+    }
+    requestedBy = authority.userId ?? undefined;
+    siteIds = authority.siteIds;
+  }
+
+  const rows = await selectCisScanTargetDevices(baseline, data.deviceIds, { siteIds });
 
   let commandsQueued = 0;
   const seen = new Set<string>();
@@ -257,7 +363,7 @@ async function processRunBaselineScan(data: RunBaselineScanJobData): Promise<{
           level: baseline.level,
           customExclusions: baseline.customExclusions ?? [],
         },
-        data.requestedBy ?? undefined
+        requestedBy
       );
       commandsQueued++;
     } catch (error) {
@@ -350,6 +456,12 @@ async function processAggregateScores(): Promise<{ orgsProcessed: number }> {
   return { orgsProcessed: rows.length };
 }
 
+/**
+ * How long an approved remediation action may wait for dispatch. Approval
+ * normally dispatches within seconds; this only bites when the queue stalled.
+ */
+const REMEDIATION_APPROVAL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 async function processRemediationActionInContext(data: RemediateActionJobData): Promise<{
   actionId: string;
   queued: boolean;
@@ -370,7 +482,7 @@ async function processRemediationActionInContext(data: RemediateActionJobData): 
   }
 
   const [device] = await db
-    .select({ id: devices.id, orgId: devices.orgId })
+    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
     .from(devices)
     .where(eq(devices.id, candidate.deviceId))
     .for('update');
@@ -408,6 +520,60 @@ async function processRemediationActionInContext(data: RemediateActionJobData): 
         eq(cisRemediationActions.id, action.id),
         eq(cisRemediationActions.status, 'queued'),
       ));
+    return { actionId: action.id, queued: false, commandId: null };
+  }
+
+  const returnForReapproval = async (reason: 'approver_lacks_execute' | 'approval_expired') => {
+    await db
+      .update(cisRemediationActions)
+      .set({
+        status: 'pending_approval',
+        approvalStatus: 'pending',
+        approvedBy: null,
+        approvedAt: null,
+        approvalNote: null,
+        details: {
+          ...(action.details ?? {}),
+          returnedForReapprovalAt: new Date().toISOString(),
+          returnedForReapprovalReason: reason,
+        },
+      })
+      .where(and(
+        eq(cisRemediationActions.id, action.id),
+        eq(cisRemediationActions.status, 'queued'),
+      ));
+  };
+
+  // An approval is a decision about the device as it was when it was made.
+  // One that has waited longer than the max age without being dispatched (a
+  // stalled or backlogged queue) goes back for a fresh decision rather than
+  // running on a stale one. A missing approval time is treated as expired.
+  const approvedAtMs = action.approvedAt ? new Date(action.approvedAt).getTime() : Number.NaN;
+  if (!Number.isFinite(approvedAtMs) || Date.now() - approvedAtMs > REMEDIATION_APPROVAL_MAX_AGE_MS) {
+    console.warn(
+      `[CisJobs] processRemediationAction: action ${action.id} returned to pending — approval is older than the dispatch max age`,
+    );
+    await returnForReapproval('approval_expired');
+    return { actionId: action.id, queued: false, commandId: null };
+  }
+
+  // The approval is only as good as the approver right now: active, still
+  // holding devices:execute for the action's org, and still reaching the
+  // device's site. This also covers actions approved before the approve route
+  // required devices:execute + MFA (they keep working while their approver
+  // qualifies). Otherwise the action returns to pending for re-approval. A
+  // lookup failure throws, so the job retries without changing the action.
+  const approver = await resolveLegacyPrincipalExecuteAuthorityInCurrentSystemContext(
+    { orgId: action.orgId, partnerId: null },
+    action.approvedBy,
+  );
+  const approverReachesDevice = !!approver
+    && (approver.siteIds === null || (device.siteId !== null && approver.siteIds.includes(device.siteId)));
+  if (!approverReachesDevice) {
+    console.warn(
+      `[CisJobs] processRemediationAction: action ${action.id} returned to pending — approver no longer holds devices:execute for this device`,
+    );
+    await returnForReapproval('approver_lacks_execute');
     return { actionId: action.id, queued: false, commandId: null };
   }
 
@@ -652,6 +818,22 @@ export async function scheduleCisRemediationWithResult(
 
   for (const actionId of uniqueActionIds) {
     try {
+      // A finished job keeps its id for a while (removeOnComplete), and BullMQ
+      // silently ignores an add with an existing id. An action approved again
+      // after being returned to pending (queue failure, or the one-time
+      // re-approval after the CIS authority upgrade) must get a fresh job.
+      const jobId = `cis-remediation-${actionId}`;
+      const existing = await queue.getJob(jobId);
+      if (existing) {
+        const state = await existing.getState();
+        if (isReusableState(state)) {
+          queuedActionIds.push(actionId);
+          continue;
+        }
+        await existing.remove().catch((error) => {
+          console.error(`[CisJobs] Failed to remove stale remediation job ${jobId}:`, error);
+        });
+      }
       await queue.add(
         'remediate-action',
         {
@@ -659,7 +841,7 @@ export async function scheduleCisRemediationWithResult(
           actionId,
         },
         {
-          jobId: `cis-remediation-${actionId}`,
+          jobId,
           removeOnComplete: { count: 100 },
           removeOnFail: { count: 200 },
           attempts: 3,
@@ -689,5 +871,8 @@ export async function scheduleCisRemediation(actionIds: string[]): Promise<numbe
 }
 
 export const __testOnly = {
+  REMEDIATION_APPROVAL_MAX_AGE_MS,
   processRemediationAction,
+  processScheduleScans,
+  processRunBaselineScan,
 };

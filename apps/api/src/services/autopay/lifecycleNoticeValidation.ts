@@ -22,6 +22,11 @@ export function lifecycleTransitionAt(kind: string, enrollment: Enrollment): str
  * sent only while the enrollment is still in that state, at the same generation
  * and transition instant. */
 export const validateLifecycleNotice: NoticePreSendValidator = async (tx, row) => {
+  const verdict = await lifecycleVerdict(tx, row);
+  if (verdict && (row.kind === 'autopay_paused' || row.kind === 'autopay_stopped')) await reissueAnnouncedCharges(tx, row);
+  return verdict;
+};
+async function lifecycleVerdict(tx: Parameters<NoticePreSendValidator>[0], row: Parameters<NoticePreSendValidator>[1]): Promise<string | null> {
   const superseded = 'Automatic payment status changed since this notice';
   const transition = TRANSITIONS[row.kind as LifecycleNoticeKind];
   if (!transition || !row.enrollmentId) return superseded;
@@ -33,4 +38,18 @@ export const validateLifecycleNotice: NoticePreSendValidator = async (tx, row) =
   // Rows enqueued before the transition instant was frozen fall back to status + generation.
   const frozen = (row.rendered as RenderedNotice).frozen?.transitionAt;
   return typeof frozen === 'string' && frozen !== transition.at(enrollment)?.toISOString() ? superseded : null;
-};
+}
+/** A pause or stop cancelled schedules whose charges the client had been told about, and
+ * those schedules are never re-planned, so "the automatic payment we planned … will not happen"
+ * stays true after a resume or re-request supersedes the email that carried it (F2). Each
+ * listed invoice that is still payable gets the per-invoice not-charged notice instead
+ * (one per announcement; nothing if it was paid meanwhile). */
+async function reissueAnnouncedCharges(tx: Parameters<NoticePreSendValidator>[0], row: Parameters<NoticePreSendValidator>[1]): Promise<void> {
+  const listed = (row.rendered as RenderedNotice).frozen?.announcedInvoiceIds;
+  const ids = typeof listed === 'string' ? listed.split(',').filter(id => /^[0-9a-f-]{36}$/i.test(id)) : [];
+  if (!ids.length) return;
+  const { noticeChargeNotMade } = await import('./notChargedNotice');
+  for (const invoiceId of ids) {
+    await noticeChargeNotMade(tx, { invoiceId, reason: row.kind === 'autopay_paused' ? 'paused' : 'stopped' });
+  }
+}

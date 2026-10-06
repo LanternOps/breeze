@@ -11,7 +11,7 @@ const { client, h } = vi.hoisted(() => ({ client: vi.fn(), h: {
   beforeRead: vi.fn(),
   balance: '100.00', reserved: '0.00', ordinal: 0,
   method: vi.fn(), gate: vi.fn(), readiness: vi.fn(), settings: vi.fn(),
-  retrieve: vi.fn(), create: vi.fn(), notice: vi.fn(), staff: vi.fn(),
+  retrieve: vi.fn(), create: vi.fn(), notice: vi.fn(), staff: vi.fn(), notCharged: vi.fn(),
   piRetrieve: vi.fn(), confirm: vi.fn(), cancel: vi.fn(), settle: vi.fn(), attemptNotice: vi.fn(), attention: vi.fn(), methodNotice: vi.fn(),
   capture: vi.fn(), unusable: vi.fn(), provenance: vi.fn(), accountProvenance:vi.fn(), revocation: vi.fn(), persist: false, mappingError: false,
 } }));
@@ -22,13 +22,16 @@ vi.mock('../stripeSettle', () => ({ assertNoHeldDbContextForStripe: () => {
 }, settlePaymentIntent: h.settle }));
 vi.mock('../orgMergeProvenance', () => ({ resolveMergedOrgIds: h.provenance }));
 vi.mock('../stripeSessionRevocation', () => ({ requestInvoiceSessionRevocation: h.revocation }));
-vi.mock('./paymentNotices', () => ({ enqueueAttemptNotice: h.attemptNotice, notifyPaymentAttention: h.attention, enqueueMethodUnusableNotice: h.methodNotice }));
+vi.mock('./paymentNotices', () => ({ enqueueAttemptNotice: h.attemptNotice, notifyPaymentAttention: h.attention, enqueueMethodUnusableNotice: h.methodNotice,
+  noticeDedupeKey: (id: string, kind: string) => `${id}:${kind}:1` }));
+vi.mock('./notChargedNotice', async importOriginal => ({ ...await importOriginal<typeof import('./notChargedNotice')>(), noticeChargeNotMade: h.notCharged }));
 vi.mock('./paymentMethods', () => ({ getAutopayMethod: h.method, markPaymentMethodUnusable: h.unusable }));
 vi.mock('./autopayGate', () => ({ isAutopayEnabledForPartner: h.gate }));
 vi.mock('./stripeCapabilities', () => ({ getAutopayStripeReadiness: h.readiness }));
 vi.mock('./billingPaymentSettings', () => ({ resolveBillingPaymentSettings: h.settings }));
 vi.mock('./chargingNotice', () => ({ enqueueAutopayNotice: h.notice }));
-vi.mock('./staffNotifications', () => ({ enqueueAutopayStaffNotifications: h.staff }));
+// Collection-path attention also emails after commit (S-1); the in-app half is what these tests observe.
+vi.mock('./staffNotifications', () => ({ enqueueAutopayStaffNotifications: h.staff, enqueueAutopayStaffAttention: h.staff }));
 vi.mock('../../db', () => {
   const query = (projection?: Record<string, unknown>, write?: { table: unknown; values: any }) => {
     const read: { table: unknown; where?: SQL; lock?: string } = { table: undefined };
@@ -77,7 +80,14 @@ vi.mock('../../db', () => {
     try { return await fn(); } finally { h.depth--; }
   } };
 });
-import { collectionNoticeAllows, reserveCollection, paymentIntentCreateParams, outcomeState, resumeCollectionAttempt, applyAttemptOutcome, loadAttemptForReconciliation, attemptCollection, readProviderFailure, runAutopayCollection } from './collectionEngine';
+// P-17: staff email bodies and in-app messages name invoices by number (added by the
+// staff renderer), never by a raw invoice or attempt id.
+const STAFF_UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+afterEach(() => {
+  for (const call of h.staff.mock.calls) expect(String((call[1] as { message?: string })?.message ?? '')).not.toMatch(STAFF_UUID);
+  for (const call of h.attention.mock.calls) expect(String((call[0] as { message?: string })?.message ?? '')).not.toMatch(STAFF_UUID);
+});
+import { collectionNoticeAllows, reserveCollection, paymentIntentCreateParams, paymentIntentDescription, outcomeState, resumeCollectionAttempt, applyAttemptOutcome, loadAttemptForReconciliation, attemptCollection, readProviderFailure, runAutopayCollection } from './collectionEngine';
 import { reconcilePendingControls, requestInvoiceControl } from './collectionControl';
 import { db, withSystemDbAccessContext } from '../../db';
 import { computeCollectOn } from './scheduler';
@@ -239,7 +249,8 @@ it.each(['method', 'holder', 'fee'])('re-notices changed %s terms', async change
   await expect(reserveCollection(input)).resolves.toMatchObject({ reason: 'renotice_required' });
   expect(attempts()).toEqual([]); expect(h.notice).toHaveBeenCalledOnce();
   expect(h.writes).toContainEqual({ table: invoiceAutopaySchedules, values: expect.objectContaining({
-    state: 'awaiting_notice', noticeSentAt: null, noticeOutboxId: null, termsSnapshot: expect.objectContaining({ noticeSeq: 2 }),
+    state: 'awaiting_notice', noticeSentAt: null, noticeOutboxId: null,
+    termsSnapshot: expect.objectContaining({ noticeSeq: 2, methodLabel: 'Visa credit card ending in 4242' }),
   }) });
 });
 it('excludes invoices with an excluded source contract', async () => {
@@ -376,6 +387,20 @@ it('creates unconfirmed with principal and fee metadata, never confirms before m
   expect(params).toMatchObject({ amount: 10250, currency: 'usd', customer: 'cus_test',
     payment_method: 'pm_test', confirm: false, metadata: { principal_minor: '10000', fee_minor: '250' } });
   expect(params).not.toHaveProperty('off_session');
+});
+it('describes the PaymentIntent by invoice number and MSP, keeping metadata as is', () => {
+  const attempt = { id: '10000000-0000-4000-8000-000000000001', invoiceId: '20000000-0000-4000-8000-000000000001',
+    orgId: '30000000-0000-4000-8000-000000000001', principalAmount: '100.00', feeAmount: '0.00', currency: 'USD' } as never;
+  const params = paymentIntentCreateParams(attempt, 'cus_test', 'pm_test', '40000000-0000-4000-8000-000000000001', 'us_bank_account',
+    paymentIntentDescription('INV-2026-0008', 'Example MSP'));
+  expect(params.description).toBe('Invoice INV-2026-0008 · Example MSP');
+  expect(params.metadata).toEqual({ invoice_id: '20000000-0000-4000-8000-000000000001', org_id: '30000000-0000-4000-8000-000000000001',
+    partner_id: '40000000-0000-4000-8000-000000000001', attempt_id: '10000000-0000-4000-8000-000000000001', principal_minor: '10000', fee_minor: '0' });
+  expect(params).not.toHaveProperty('statement_descriptor');
+  expect(params).not.toHaveProperty('statement_descriptor_suffix');
+  expect(paymentIntentDescription(null, 'Example MSP')).toBe('Invoice · Example MSP');
+  expect(paymentIntentDescription('INV-1', null)).toBe('Invoice INV-1');
+  expect(paymentIntentDescription('INV-1', 'x'.repeat(2000))!.length).toBeLessThanOrEqual(500);
 });
 it.each([
   ['processing', null, 'processing'], ['requires_action', null, 'requires_action'],
@@ -613,7 +638,8 @@ it('cancels and re-notices a replacement rail before confirmation', async () => 
   await resumeCollectionAttempt(attempt.id);
   expect(h.confirm).not.toHaveBeenCalled(); expect(h.cancel).toHaveBeenCalledOnce();
   expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'awaiting_notice',
-    termsSnapshot: expect.objectContaining({ methodId: replacement.id, methodType: 'us_bank_account', noticeSeq: 2 }) });
+    termsSnapshot: expect.objectContaining({ methodId: replacement.id, methodType: 'us_bank_account', noticeSeq: 2,
+      methodLabel: 'Bank account' }) });
   expect(h.notice).toHaveBeenCalledOnce();
 });
 
@@ -1036,6 +1062,19 @@ it.each([
  expect(h.attemptNotice).toHaveBeenCalledWith(expect.anything(),attempt.id,variant);
  if(event)expect(h.attention).toHaveBeenCalledWith(expect.objectContaining({event}));else expect(h.attention).not.toHaveBeenCalled();
 });
+// FP-13: staff copy says what actually happened (a first decline is not "stopped retrying";
+// a bank confirmation request says the client must confirm), the same in-app and by email.
+it.each([
+ ['card','stolen_card','requires_payment_method',"The automatic payment was declined and won't be retried: the saved payment method can no longer be used. The client was asked to pay the invoice and update their payment method."],
+ ['card','authentication_required','requires_action',"The client's bank asked them to confirm this payment (3D Secure). They were emailed a link to confirm it; nothing is charged until they do, and they can also pay the invoice directly."],
+ ['us_bank_account','R03','requires_payment_method',"The automatic payment was declined and won't be retried: the saved payment method can no longer be used. The client was asked to pay the invoice and update their payment method."],
+] as const)('staff hear what happened to a %s %s decline',async(methodType,code,status,message)=>{
+ recovery(true);update(invoiceStripePayments,{paymentMethodType:methodType});
+ h.piRetrieve.mockResolvedValue({...pi,status,last_payment_error:{code}});
+ await applyAttemptOutcome(invoice.partnerId,attempt.id);
+ expect(h.attention).toHaveBeenCalledWith(expect.objectContaining({message}));
+ expect(h.staff).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({message}));
+});
 
 it('rethrows held-context programming errors during method admission',async()=>{
  const error=Object.assign(new Error('held context'),{name:'HeldDbContextForStripeError'});
@@ -1052,8 +1091,10 @@ it('persists unapplied-money attention before the outcome transaction exits',asy
 
 // Lab regressions: transient readiness cannot permanently abandon a due invoice.
 it.each(['charging_disabled', 'stripe_unavailable'])('defers %s until the next daily tick, then collects', async reason => {
-  recovery(); h.rows.set(invoiceCollectionAttempts, [{...attempt,state:'failed',createdAt:new Date(Date.now()+86_400_000)}]); update(invoiceAutopaySchedules, {...schedule});
+  recovery(); h.rows.set(invoiceCollectionAttempts, [{...attempt,state:'failed',createdAt:new Date(Date.now()+86_400_000)}]);
   const now = new Date();
+  // Due today: within the deferral grace (G1), so it is retried rather than ended.
+  update(invoiceAutopaySchedules, {...schedule, collectOn: now.toISOString().slice(0, 10)});
   mockCollectionCandidates([schedule], now);
   if (reason === 'charging_disabled') h.gate.mockResolvedValue(false);
   else h.readiness.mockResolvedValue({ready:false});
@@ -1083,22 +1124,54 @@ it.each(['scheduled','retry_scheduled'] as const)('fails a due %s schedule once 
   update(invoiceAutopaySchedules, { state, nextAttemptAt: null });
   h.persist = true;
   h.method.mockResolvedValue(null);
+  h.rows.set(orgPaymentMethods, [{ ...method, status: 'unusable' }]);
   mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], now);
   expect(await runAutopayCollection(now)).toEqual({ attempted: 0, deferred: 1 });
   expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'failed', stateReason: 'method_not_usable', nextAttemptAt: null });
   expect(h.methodNotice).toHaveBeenCalledOnce();
   expect(h.methodNotice).toHaveBeenCalledWith(expect.anything(), schedule.id);
+  // R2: staff hear about each failed invoice in-app, and once per dead method by email.
+  expect(h.staff).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ event: 'autopay.needs_attention',
+    invoiceId: invoice.id, dedupeKey: `autopay:${schedule.id}:method_not_usable`, emailDedupeKey: `autopay:method_unusable:${method.id}:not_charged` }));
   vi.restoreAllMocks();
   mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], new Date(now.getTime() + 86_400_000));
   expect(await runAutopayCollection(new Date(now.getTime() + 86_400_000))).toEqual({ attempted: 0, deferred: 0 });
   expect(h.methodNotice).toHaveBeenCalledOnce();
   expect(attempts()).toEqual([]); expect(h.create).not.toHaveBeenCalled();
 });
+// R1: an active method the live check rejects no longer defers forever; it is marked
+// unusable so the next pass fails the schedule with the update-method notice.
+it('marks an active method the live check did not admit unusable instead of deferring forever', async () => {
+  const now = new Date();
+  update(invoiceAutopaySchedules, { collectOn: now.toISOString().slice(0, 10) });
+  h.persist = true; h.retrieve.mockResolvedValue({ ...card, card: { ...card.card, wallet: { type: 'link' } } });
+  mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], now);
+  await runAutopayCollection(now);
+  expect(h.unusable).toHaveBeenCalledWith(expect.anything(), method.id, 'live_method_mismatch');
+  expect(h.staff).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ event: 'autopay.needs_attention',
+    emailDedupeKey: `autopay:method_unusable:${method.id}:admission` }));
+  // F3: the admission email and the later "not charged" email claim different keys, so the
+  // first never suppresses the second (which may say the client could not be told).
+  const keys = h.staff.mock.calls.map(call => (call[1] as { emailDedupeKey?: string }).emailDedupeKey).filter(Boolean);
+  expect(new Set(keys).size).toBe(keys.length);
+});
+// G1: past the grace, a saved method that never passes admission is as good as none: the
+// schedule fails with the update-method notice instead of deferring forever.
+it('fails a schedule past the grace whose saved method still never passes admission', async () => {
+  const now = new Date();
+  h.persist = true; h.retrieve.mockResolvedValue({ ...card, card: { ...card.card, wallet: { type: 'link' } } });
+  h.rows.set(orgPaymentMethods, [{ ...method }]);
+  mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], now);
+  expect(await runAutopayCollection(now)).toEqual({ attempted: 0, deferred: 1 });
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'failed', stateReason: 'method_not_usable', nextAttemptAt: null });
+  expect(h.methodNotice).toHaveBeenCalledWith(expect.anything(), schedule.id);
+});
 it.each([
   ['a pending microdeposit verification', () => h.method.mockResolvedValue({ ...method, status: 'pending_verification' })],
-  ['an active method the live check did not admit', () => h.retrieve.mockResolvedValue({ ...card, card: { ...card.card, wallet: { type: 'link' } } })],
 ] as const)('keeps deferring daily while %s still exists', async (_case, change) => {
   const now = new Date();
+  // Within the grace (G1); past it the schedule ends, which the integration suite covers.
+  update(invoiceAutopaySchedules, { collectOn: now.toISOString().slice(0, 10) });
   h.persist = true; change();
   mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], now);
   expect(await runAutopayCollection(now)).toEqual({ attempted: 0, deferred: 1 });

@@ -1,6 +1,8 @@
 import type Stripe from 'stripe';
-import type {CardFundingType} from '@breeze/shared';
-import {and,desc,eq,inArray} from 'drizzle-orm';
+import {autopayScheduleSummary,formatPercentBps,paymentMethodInSentence,type CardFundingType} from '@breeze/shared';
+import {clientNameFor,emailDate,emailMoney} from './billingEmail';
+import {formatStripePaymentMethod} from './methodLabel';
+import {and,desc,eq,inArray,ne,sql} from 'drizzle-orm';
 import {db,withSystemDbAccessContext,runOutsideDbContext,runAfterDbContextExit} from '../../db';
 import {organizations,stripeConnectAccounts,orgAutopayEnrollments,orgPaymentMethods,orgAutopayConsents,billingLinkTokens} from '../../db/schema';
 import {autopaySetupAttempts} from '../../db/schema/autopaySetupAttempts';
@@ -11,6 +13,11 @@ import {renderBillingNotice} from './renderBillingNotice';
 import {verifiedFeeText,hasSupportedCardEvidence} from './feeDisclosure';
 import {mintBillingLinkToken,buildBillingLinkUrl} from './linkTokens';
 import {detachPaymentMethodPostCommit,enqueueRejectedAutopayMethod} from './paymentMethods';
+import {resolveBillingEmail} from '../invoicePdf';
+import {getOrMintInvoiceLink,buildPublicInvoiceUrl} from '../invoiceLinkToken';
+import {invoices,invoiceAutopaySchedules} from '../../db/schema';
+import {DEFERRAL_END_REASONS} from './notChargedNotice';
+import {formatPaymentMethod} from '@breeze/shared';
 import {notifyAutopayStaff} from './staffNotifications';
 import {autopayConsentSnapshotSchema} from './types';
 import type {AutopayEnrollmentStatus,AutopaySetupOutcome as Outcome} from '@breeze/shared';
@@ -28,6 +35,14 @@ function cardFunding(value:string):CardFundingType{
  return value==='credit'||value==='debit'||value==='prepaid'?value:'unknown';
 }
 
+/** FP-10: billing email goes to the billing contact (spec: recipient = billing contact); the
+ * person who accepted the authorization (a portal user, or a link's recipient) also gets it. */
+function enrollmentRecipients(billingContact:unknown,authorizer:string):{email:string;suffix:string}[]{
+ const contact=resolveBillingEmail(billingContact as never);
+ const out=[{email:contact||authorizer,suffix:''}];
+ if(contact&&authorizer&&contact.toLowerCase()!==authorizer.toLowerCase())out.push({email:authorizer,suffix:':authorizer'});
+ return out.filter(r=>!!r.email);
+}
 // Internal shared persistence for setup and pay-and-save; not part of the public facade.
 export async function persistCapturedAutopayMethod(attemptId:string,method:Stripe.PaymentMethod|null,outcome:Outcome,setupIntentId:string|null,mandateId:string|null):Promise<{outcome:Outcome;orgId:string}>{
  return withSystemDbAccessContext(async()=>{
@@ -69,15 +84,35 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
    // pending methods in this transaction, preserving their provider identities.
    const failedMethods=await db.update(orgPaymentMethods).set({status:'unusable',unusableReason:'verification_failed',
     isAutopayMethod:false,removedAt:new Date(),detachStripeAccountId:attempt.stripeAccountId,detachStripeCustomerId:attempt.stripeCustomerId})
-    .where(and(eq(orgPaymentMethods.enrollmentId,enrollment.id),eq(orgPaymentMethods.stripeSetupIntentId,setupIntentId??''),eq(orgPaymentMethods.status,'pending_verification'))).returning({id:orgPaymentMethods.id,stripePaymentMethodId:orgPaymentMethods.stripePaymentMethodId});
+    .where(and(eq(orgPaymentMethods.enrollmentId,enrollment.id),eq(orgPaymentMethods.stripeSetupIntentId,setupIntentId??''),eq(orgPaymentMethods.status,'pending_verification'))).returning();
    for(const failed of failedMethods)runAfterDbContextExit('autopay.detachFailedVerification',()=>detachPaymentMethodPostCommit(attempt.partnerId,failed.id));
-   const [working]=await db.select({id:orgPaymentMethods.id}).from(orgPaymentMethods).where(and(eq(orgPaymentMethods.enrollmentId,enrollment.id),eq(orgPaymentMethods.isAutopayMethod,true),eq(orgPaymentMethods.status,'active'))).limit(1);
+   const [working]=await db.select().from(orgPaymentMethods).where(and(eq(orgPaymentMethods.enrollmentId,enrollment.id),eq(orgPaymentMethods.isAutopayMethod,true),eq(orgPaymentMethods.status,'active'))).limit(1);
    if(!working)await db.update(orgAutopayEnrollments).set({needsAttentionReason:'verification_failed'}).where(eq(orgAutopayEnrollments.id,enrollment.id));
    await db.update(autopaySetupAttempts).set({outcome:'failed',completedAt:new Date()}).where(eq(autopaySetupAttempts.id,attempt.id));
+   // F-1: microdeposits fail days after the client left the page, so the client is told by
+   // email, with what still works (the method kept beside it) or how to set up again.
+   const failedBank=failedMethods[0];
+   if(attempt.outcome==='pending_verification'&&failedBank&&org){
+    const snapshot=autopayConsentSnapshotSchema.parse(attempt.consentSnapshot);
+    const kept=working?formatPaymentMethod(working):null;
+    const again=await mintBillingLinkToken(db,{orgId:attempt.orgId,purpose:'enroll',enrollmentId:enrollment.id,generation:enrollment.generation,ttlDays:30});
+    const rendered=await renderBillingNotice('autopay_enrolled',{autopay:{partnerId:attempt.partnerId,orgId:attempt.orgId,variant:'verification_failed',locked:true,
+     vars:{partner_name:snapshot.partnerName,org_name:org.name,client_name:clientNameFor(org.billingContact,org.name),
+      payment_method:paymentMethodInSentence(formatPaymentMethod(failedBank))},
+     processingText:kept?`Your automatic payments continue with your ${paymentMethodInSentence(kept)}.`
+      :"Automatic payments aren't set up yet. Nothing will be charged automatically until you set them up again.",
+     links:[{label:kept?'Change payment method':'Set up automatic payments',url:buildBillingLinkUrl('enroll',again.token)}]}});
+    for(const recipient of enrollmentRecipients(org.billingContact,snapshot.contactEmail)){
+     await enqueueBillingNotice(db,{orgId:attempt.orgId,partnerId:attempt.partnerId,enrollmentId:enrollment.id,kind:'autopay_enrolled',seq:attempt.generation,
+      dedupeKey:`${attempt.id}:autopay_enrolled:verification_failed${recipient.suffix}`,toEmail:recipient.email,rendered});
+    }
+   }
    runAfterDbContextExit('autopay.verificationFailed',async()=>{
     const [committed]=await withSystemDbAccessContext(()=>db.select().from(autopaySetupAttempts).where(eq(autopaySetupAttempts.id,attempt.id)).limit(1));
-    if(committed?.outcome==='failed')await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,event:'autopay.needs_attention',
-     dedupeKey:`${attempt.id}:verification_failed`,message:'Automatic payments need a verified payment method.'});
+    // A failed change leaves the working method paying: nothing needs attention (Final-V).
+    if(committed?.outcome==='failed')await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,event:working?'autopay.verification_failed':'autopay.needs_attention',
+     dedupeKey:`${attempt.id}:verification_failed`,message:working?'Bank verification failed. Automatic payments continue with the previous payment method.'
+      :'Automatic payments need a verified payment method.'});
    });
    if(!failedMethods.some(failed=>failed.stripePaymentMethodId===method?.id))await enqueueRejectedAutopayMethod(db,attempt,method);
    return {outcome,orgId:attempt.orgId};
@@ -95,20 +130,32 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   const snapshot=autopayConsentSnapshotSchema.parse(attempt.consentSnapshot);
   const [existing]=await db.select().from(orgPaymentMethods).where(and(eq(orgPaymentMethods.orgId,attempt.orgId),
    eq(orgPaymentMethods.stripePaymentMethodId,method.id))).limit(1);
-  if(wasPending&&(!existing||existing.status!=='pending_verification'||!existing.isAutopayMethod)){
+  // A pending bank may wait unflagged beside a working method (F-1); a retired one is stale.
+  if(wasPending&&(!existing||existing.status!=='pending_verification')){
    await db.update(autopaySetupAttempts).set({outcome:'stale_generation',completedAt:new Date()}).where(eq(autopaySetupAttempts.id,attempt.id));
    await enqueueRejectedAutopayMethod(db,attempt,method);
    return {outcome:'stale_generation',orgId:attempt.orgId};
   }
-  const replaced=await db.update(orgPaymentMethods).set({isAutopayMethod:false,status:'removed',removedAt:new Date()})
-   .where(and(eq(orgPaymentMethods.orgId,attempt.orgId),eq(orgPaymentMethods.isAutopayMethod,true),inArray(orgPaymentMethods.status,['active','pending_verification']))).returning();
+  // F-1: an update to a bank that still needs microdeposit verification must not take away a
+  // WORKING method. The working row keeps the one autopay-method flag (a database invariant);
+  // the pending bank waits beside it unflagged and is swapped in only when it verifies.
+  // Invoice-bound bank payment setups are excluded: their collection needs the new account
+  // to be the autopay method (collectAfterBankSetup).
+  const mayKeepWorking=outcome==='pending_verification'&&!wasPending&&!snapshot.bankPayment;
+  const [working]=mayKeepWorking?await db.select().from(orgPaymentMethods).where(and(eq(orgPaymentMethods.orgId,attempt.orgId),
+   eq(orgPaymentMethods.isAutopayMethod,true),eq(orgPaymentMethods.status,'active'))).limit(1):[];
+  const keepWorking=mayKeepWorking&&!!working&&working.id!==existing?.id;
+  // Retire whatever row is the current autopay method, including a hard-declined one that
+  // kept the flag as 'unusable' (D-17); one flagged row per org is a database invariant.
+  const replaced=keepWorking?[]:await db.update(orgPaymentMethods).set({isAutopayMethod:false,status:'removed',removedAt:new Date()})
+   .where(and(eq(orgPaymentMethods.orgId,attempt.orgId),eq(orgPaymentMethods.isAutopayMethod,true),inArray(orgPaymentMethods.status,['active','pending_verification','unusable']))).returning();
   const holderType=method.us_bank_account?.account_holder_type;
   const values:typeof orgPaymentMethods.$inferInsert={orgId:attempt.orgId,enrollmentId:enrollment.id,stripePaymentMethodId:method.id,type:attempt.methodType,
    cardBrand:method.card?.brand??null,cardLast4:method.card?.last4??null,cardExpMonth:method.card?.exp_month??null,cardExpYear:method.card?.exp_year??null,
    cardFunding:method.card?(method.card.funding==='credit'&&!hasSupportedCardEvidence(method.card)?'unknown':cardFunding(method.card.funding)):null,cardCountry:method.card?.country??null,bankName:method.us_bank_account?.bank_name??null,
    bankLast4:method.us_bank_account?.last4??null,accountHolderType:holderType==='individual'?'individual':holderType==='company'?'company':null,
    stripeMandateId:mandateId,stripeSetupIntentId:setupIntentId,status:outcome==='activated'?'active' as const:'pending_verification' as const,
-   isAutopayMethod:true,removedAt:null,unusableReason:null};
+   isAutopayMethod:!keepWorking,removedAt:null,unusableReason:null};
   const [saved]=existing?await db.update(orgPaymentMethods).set(values).where(eq(orgPaymentMethods.id,existing.id)).returning():
    await db.insert(orgPaymentMethods).values(values).returning();
   // The locked setup attempt is the idempotency key, not the accepted text.
@@ -122,22 +169,122 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
    needsAttentionReason:null}).where(eq(orgAutopayEnrollments.id,enrollment.id));
   await db.update(autopaySetupAttempts).set({outcome,completedAt:outcome==='activated'?new Date():null,setupIntentId}).where(eq(autopaySetupAttempts.id,attempt.id));
   if(attempt.tokenId&&!snapshot.bankPayment)await db.update(billingLinkTokens).set({consumedAt:new Date()}).where(eq(billingLinkTokens.id,attempt.tokenId));
-  if(!wasPending){
-  const stop=await mintBillingLinkToken(db,{orgId:attempt.orgId,purpose:'stop_autopay',enrollmentId:enrollment.id,generation:enrollment.generation,ttlDays:365});
-  const methodDescription=method.card?`${method.card.brand} ${method.card.funding} ••${method.card.last4}`:`${method.us_bank_account?.bank_name??'Bank'} ••${method.us_bank_account?.last4??''}`;
-  const paymentMethod=methodDescription+(outcome==='pending_verification'?' (bank verification pending; no automatic payments yet)':'');
-  const displayFee=verifiedFeeText(method.type,method.card?.funding??null,snapshot.feeText,method.card);
-  await enqueueBillingNotice(db,{orgId:attempt.orgId,partnerId:attempt.partnerId,enrollmentId:enrollment.id,kind:'autopay_enrolled',seq:attempt.generation,
-   dedupeKey:`${attempt.id}:autopay_enrolled:${outcome}`,toEmail:snapshot.contactEmail,
-   rendered:await renderBillingNotice('autopay_enrolled',{autopay:{partnerId:attempt.partnerId,orgId:attempt.orgId,
-    vars:{partner_name:snapshot.partnerName,org_name:org.name,client_name:snapshot.contactEmail,payment_method:paymentMethod,schedule_text:snapshot.scheduleText,fee_text:displayFee},
-    scheduleText:snapshot.scheduleText,feeText:displayFee,stopUrl:buildBillingLinkUrl('stop_autopay',stop.token),authorizationReference:snapshot.version}})});
+  // Re-authorizing a bank payment for the same invoice (a changed total, a spent authority)
+  // re-runs setup under the same enrollment generation. When it saved the SAME bank account the
+  // client already heard autopay is set up, so nothing new is sent to them or to staff; the new
+  // consent is still recorded (B1-5). A different account is a method change and is announced
+  // (F7). Same account: the same Stripe method, or the same bank and last four digits on the
+  // method it replaced (Financial Connections mints a new PaymentMethod id per link and no
+  // fingerprint is stored; a false match only suppresses a courtesy email).
+  const sameAccount=method.type==='us_bank_account'&&replaced.some(old=>old.id===saved!.id||(old.type==='us_bank_account'
+   &&!!old.bankLast4&&old.bankLast4===method.us_bank_account?.last4&&old.bankName===(method.us_bank_account?.bank_name??null)));
+  const [earlierBankPay]=snapshot.bankPayment&&!wasPending&&sameAccount?await db.select({id:autopaySetupAttempts.id}).from(autopaySetupAttempts).where(and(
+   eq(autopaySetupAttempts.enrollmentId,enrollment.id),eq(autopaySetupAttempts.generation,attempt.generation),
+   eq(autopaySetupAttempts.outcome,'activated'),ne(autopaySetupAttempts.id,attempt.id),
+   sql`${autopaySetupAttempts.consentSnapshot}->'bankPayment'->>'invoiceId' = ${snapshot.bankPayment.invoiceId}`)).limit(1):[];
+  // The client's confirmation: set up (activated), saved but awaiting bank verification,
+  // or verified after microdeposits (D-12: that moment used to pass silently). Nothing for a
+  // same-account bank-pay re-authorization (B1-5).
+  const baseVariant=wasPending?(outcome==='activated'?'verified':null):earlierBankPay?null
+   :outcome==='pending_verification'?'pending_verification':'activated';
+  // Replacing another method is an update for the client and staff, not a new enrollment (P-17).
+  const updated=replaced.some(old=>old.id!==saved!.id);
+  const previous=keepWorking?working:replaced.find(old=>old.id!==saved!.id)??null;
+  const previousLabel=previous?formatPaymentMethod(previous):null;
+  // V2-3: a re-authorization accepted by re-entering the SAME card or bank is not a method
+  // change. When its accepted terms differ from that method's last authorization, the client
+  // hears the updated terms are accepted (with the limit and fee), never "It replaces your …".
+  const sameMethod=!!previous&&previous.type===saved!.type&&(saved!.type==='card'
+   ?previous.cardBrand===saved!.cardBrand&&previous.cardLast4===saved!.cardLast4&&previous.cardExpMonth===saved!.cardExpMonth&&previous.cardExpYear===saved!.cardExpYear
+   :!!saved!.bankLast4&&previous.bankName===saved!.bankName&&previous.bankLast4===saved!.bankLast4);
+  const [previousConsent]=sameMethod&&baseVariant==='activated'?await db.select({textHash:orgAutopayConsents.consentTextHash}).from(orgAutopayConsents)
+   .where(and(eq(orgAutopayConsents.orgId,attempt.orgId),eq(orgAutopayConsents.enrollmentId,enrollment.id),eq(orgAutopayConsents.paymentMethodId,previous!.id)))
+   .orderBy(desc(orgAutopayConsents.createdAt)).limit(1):[];
+  const termsAccepted=!!previousConsent&&previousConsent.textHash!==snapshot.textHash;
+  // R1: the enrollment stays paused (above); a usable method saved while paused is "saved,
+  // payments paused", never "automatic payments are on". Pending verification says nothing is charged yet anyway.
+  const variant=baseVariant&&baseVariant!=='pending_verification'&&enrollment.status==='paused'?'paused'
+   :baseVariant==='pending_verification'&&keepWorking?'pending_change'
+   :baseVariant==='verified'&&updated?'verified_change'
+   :baseVariant==='activated'&&updated&&termsAccepted?'terms_accepted'
+   :baseVariant==='activated'&&updated?'method_changed':baseVariant;
+  // The product's copy wherever a partner's generic "you're set up" wording would be untrue.
+  const locked=variant==='paused'||variant==='pending_change'||variant==='verified_change'||variant==='method_changed'||variant==='terms_accepted';
+  const lockedLine=variant==='pending_change'&&previousLabel?`Until it's verified, we'll keep using your ${paymentMethodInSentence(previousLabel)} for automatic payments.`
+   :(variant==='verified_change'||variant==='method_changed')&&previousLabel&&!sameMethod?`It replaces your ${paymentMethodInSentence(previousLabel)}.`:undefined;
+  // FP-7: a bank verified for a bank payment: the page promised an email to come back and pay
+  // that invoice (it was issued before automatic payments, so it isn't collected by itself).
+  const [bankPayInvoice]=baseVariant==='verified'&&snapshot.bankPayment?await db.select().from(invoices).where(and(
+   eq(invoices.id,snapshot.bankPayment.invoiceId),eq(invoices.orgId,attempt.orgId))).limit(1):[];
+  const stillToPay=bankPayInvoice&&bankPayInvoice.orgId===attempt.orgId&&['sent','partially_paid','overdue'].includes(bankPayInvoice.status)
+   &&Number(bankPayInvoice.balance)>0?bankPayInvoice:null;
+  // V2-2: what the verified bank now means for invoices the client already heard about. Only a
+  // schedule still planned is charged; one the grace ended (the client was told it won't be
+  // charged) stays manual and is linked. Never a blanket "charged as that email described".
+  const announced=baseVariant==='verified'&&enrollment.status!=='paused'?await db.select({schedule:invoiceAutopaySchedules,invoice:invoices})
+   .from(invoiceAutopaySchedules).innerJoin(invoices,and(eq(invoices.id,invoiceAutopaySchedules.invoiceId),eq(invoices.orgId,invoiceAutopaySchedules.orgId)))
+   .where(and(eq(invoiceAutopaySchedules.orgId,attempt.orgId),eq(invoiceAutopaySchedules.enrollmentId,enrollment.id),
+    inArray(invoices.status,['sent','partially_paid','overdue']),sql`${invoices.balance} > 0`,
+    sql`((${invoiceAutopaySchedules.state} IN ('scheduled','retry_scheduled') AND ${invoiceAutopaySchedules.noticeSentAt} IS NOT NULL)
+     OR (${invoiceAutopaySchedules.state} = 'cancelled' AND ${inArray(invoiceAutopaySchedules.stateReason,[...DEFERRAL_END_REASONS])}))`))
+   .orderBy(invoices.invoiceNumber):[];
+  const others=announced.filter(row=>row.invoice.orgId===attempt.orgId&&row.invoice.id!==stillToPay?.id);
+  // A first bank was announced as "paid once it's verified"; a changed one replaced a card that kept paying.
+  const stillPlanned=variant==='verified'?others.filter(row=>row.schedule.state!=='cancelled'):[];
+  const ended=others.filter(row=>row.schedule.state==='cancelled');
+  if(variant){
+   const stop=await mintBillingLinkToken(db,{orgId:attempt.orgId,purpose:'stop_autopay',enrollmentId:enrollment.id,generation:enrollment.generation,ttlDays:365});
+   // V2-4: the client is enrolled now, so the invoice offers its normal Pay (G3 hides bank pay).
+   const payLink=stillToPay?{label:'Pay it here',url:buildPublicInvoiceUrl((await getOrMintInvoiceLink(stillToPay,db)).token),
+    note:`Invoice ${stillToPay.invoiceNumber} is still unpaid (${emailMoney(stillToPay.balance,stillToPay.currencyCode)}).`}:null;
+   const endedLinks=await Promise.all(ended.map(async row=>({label:'Pay it here',url:buildPublicInvoiceUrl((await getOrMintInvoiceLink(row.invoice,db)).token),
+    note:`Invoice ${row.invoice.invoiceNumber} (${emailMoney(row.invoice.balance,row.invoice.currencyCode)}) won't be paid automatically, as we emailed you.`})));
+   const processingText=[lockedLine,...stillPlanned.map(row=>`Invoice ${row.invoice.invoiceNumber} will now be paid automatically from this account.`)]
+    .filter(Boolean).join('\n')||undefined;
+   const methodLabel=formatStripePaymentMethod(method);
+   const displayFee=verifiedFeeText(method.type,method.card?.funding??null,snapshot.feeText,method.card);
+   const verifiedCredit=method.type==='card'&&displayFee===snapshot.feeText&&snapshot.feeTerms.cardFeeBps>0;
+   const fee=method.type==='us_bank_account'
+    ?(Number(snapshot.feeTerms.achFeeAmount)>0?`${emailMoney(snapshot.feeTerms.achFeeAmount,snapshot.feeTerms.currency)} per payment`:'No fee')
+    :verifiedCredit?`Up to ${formatPercentBps(snapshot.feeTerms.cardFeeBps)} per payment`:'No fee for this card';
+   const acceptedOn=emailDate(attempt.createdAt??new Date());
+   const cap=snapshot.scheduleTerms.cap;
+   const rendered=await renderBillingNotice('autopay_enrolled',{autopay:{partnerId:attempt.partnerId,orgId:attempt.orgId,
+     variant:variant==='activated'?undefined:variant,locked,processingText,...(payLink||endedLinks.length?{links:[...(payLink?[payLink]:[]),...endedLinks]}:{}),
+     vars:{partner_name:snapshot.partnerName,org_name:org.name,client_name:clientNameFor(org.billingContact,org.name),
+      payment_method:paymentMethodInSentence(methodLabel),schedule_text:snapshot.scheduleText,fee_text:displayFee},
+     summary:[{label:variant==='pending_verification'?'Bank account':'Payment method',value:`${methodLabel}${variant==='pending_verification'?' (waiting for verification)':''}`},
+      {label:"When you're charged",value:autopayScheduleSummary(snapshot.scheduleTerms)},{label:'Processing fee',value:fee},
+      ...(variant==='terms_accepted'?[{label:'Limit',value:cap.enabled?`Up to ${emailMoney(cap.amount,cap.currency)} per invoice`:'No limit'}]
+       :cap.enabled?[{label:'Which invoices',value:`Up to ${emailMoney(cap.amount,cap.currency)} each`}]:[]),
+      ...(variant==='pending_verification'||variant==='pending_change'||variant==='paused'||variant==='method_changed'||variant==='verified_change'||variant==='terms_accepted'?[]
+       :[{label:'Starts with',value:`Invoices issued from ${emailDate(enrollment.effectiveFrom??new Date())}`}])],
+     terms:{title:'Your authorization',paragraphs:baseVariant==='verified'
+      ?[`You accepted these terms on ${acceptedOn} (terms version ${snapshot.version}). We sent you a copy when you set up automatic payments.`]
+      :[`You accepted these terms on ${acceptedOn} (terms version ${snapshot.version}):`,snapshot.text]},
+     scheduleText:snapshot.scheduleText,feeText:displayFee,stopUrl:buildBillingLinkUrl('stop_autopay',stop.token),authorizationReference:snapshot.version}});
+   for(const recipient of enrollmentRecipients(org.billingContact,snapshot.contactEmail)){
+    await enqueueBillingNotice(db,{orgId:attempt.orgId,partnerId:attempt.partnerId,enrollmentId:enrollment.id,kind:'autopay_enrolled',seq:attempt.generation,
+     dedupeKey:`${attempt.id}:autopay_enrolled:${baseVariant==='verified'?'verified':outcome}${recipient.suffix}`,toEmail:recipient.email,rendered});
+   }
   }
-  for(const old of replaced)if(old.id!==saved!.id)runAfterDbContextExit('autopay.detachReplaced',()=>detachPaymentMethodPostCommit(attempt.partnerId,old.id));
-  if(!wasPending)runAfterDbContextExit('autopay.enrolled',async()=>{
+  // Any other bank still waiting unflagged beside a working method is superseded by this
+  // setup, so it can never be swapped in later over a newer choice (F-1).
+  const superseded=await db.update(orgPaymentMethods).set({status:'removed',removedAt:new Date()}).where(and(
+   eq(orgPaymentMethods.orgId,attempt.orgId),eq(orgPaymentMethods.isAutopayMethod,false),eq(orgPaymentMethods.status,'pending_verification'),
+   ne(orgPaymentMethods.id,saved!.id))).returning();
+  for(const old of [...replaced,...superseded])if(old.id!==saved!.id)runAfterDbContextExit('autopay.detachReplaced',()=>detachPaymentMethodPostCommit(attempt.partnerId,old.id));
+  // FP-11: staff hear "enabled" when a method can be charged: not while a bank waits for verification.
+  if(variant&&variant!=='pending_verification'&&variant!=='pending_change')runAfterDbContextExit('autopay.enrolled',async()=>{
    const [committed]=await withSystemDbAccessContext(()=>db.select().from(autopaySetupAttempts).where(eq(autopaySetupAttempts.id,attempt.id)).limit(1));
-   if(committed?.outcome===outcome)await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,event:'autopay.enrolled',
-    dedupeKey:`${attempt.id}:enrolled:${outcome}`,message:`Automatic payments ${outcome==='activated'?'enabled':'await bank verification'}.`});
+   // FP-13: never "Automatic payments enabled" for a method saved while payments are paused.
+   if(committed?.outcome===outcome)await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,
+    event:variant==='terms_accepted'?'autopay.terms_accepted':updated||variant==='paused'?'autopay.method_updated':'autopay.enrolled',
+    dedupeKey:`${attempt.id}:enrolled:${baseVariant==='verified'?'verified':outcome}`,
+    message:variant==='terms_accepted'?'The client accepted the updated terms.'
+     :variant==='paused'?`${updated?'Payment method updated':'Payment method saved'} while automatic payments are paused.`
+     :baseVariant==='verified'?`${updated?'Payment method updated':'Automatic payments enabled'}: the bank account is verified.`
+     :updated?'Payment method updated.':'Automatic payments enabled.'});
   });
   return {outcome,orgId:attempt.orgId};
  });

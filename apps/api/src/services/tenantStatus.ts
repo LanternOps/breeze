@@ -214,10 +214,11 @@ export async function assertActiveTenantContext(
 //
 // Positive results are cached in Redis for a short TTL, so the per-heartbeat
 // cost on the happy path is a single GET. Negatives are deliberately NOT
-// cached: a reactivated tenant should resume promptly, and inactive-tenant
-// traffic is already throttled upstream (the REST gate runs after the
-// per-agent/per-org rate limiters; the WS path is bounded by reconnect
-// backoff). Redis errors fall through to the authoritative DB check — fail to
+// cached HERE (in Redis, shared across instances): a reactivated tenant should
+// resume promptly. The callers bound inactive-tenant traffic instead — since
+// #8050 both agent ingresses negative-cache the resulting DENIAL in-process
+// for 60 s per (agentId, token) (middleware/agentAuthNegativeCache.ts), which
+// caps reactivation latency at that TTL. Redis errors fall through to the authoritative DB check — fail to
 // the source of truth, never fail open.
 const AGENT_TENANT_OK_CACHE_PREFIX = 'agent_tenant_ok:';
 const AGENT_TENANT_OK_CACHE_SECONDS = 60;

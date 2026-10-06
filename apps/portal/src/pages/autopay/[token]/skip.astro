@@ -1,8 +1,8 @@
 ---
 import PublicDocumentLayout from '../../../layouts/PublicDocumentLayout.astro';
-import AutopayActionPage from '../../../components/portal/AutopayActionPage';
+import AutopaySkipPage from '../../../components/portal/AutopaySkipPage';
 const { token } = Astro.params;
 ---
-<PublicDocumentLayout title="Skip automatic payment">
-  <AutopayActionPage token={token!} action="skip" client:load />
+<PublicDocumentLayout title="Skip an automatic payment">
+  <AutopaySkipPage token={token!} client:load />
 </PublicDocumentLayout>

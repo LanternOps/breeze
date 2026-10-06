@@ -208,8 +208,8 @@ export const alerts = pgTable('alerts', {
 
 export const alertCorrelations = pgTable('alert_correlations', {
   id: uuid('id').primaryKey().defaultRandom(),
-  parentAlertId: uuid('parent_alert_id').notNull().references(() => alerts.id),
-  childAlertId: uuid('child_alert_id').notNull().references(() => alerts.id),
+  parentAlertId: uuid('parent_alert_id').notNull().references(() => alerts.id, { onDelete: 'cascade' }),
+  childAlertId: uuid('child_alert_id').notNull().references(() => alerts.id, { onDelete: 'cascade' }),
   correlationType: varchar('correlation_type', { length: 50 }).notNull(),
   confidence: numeric('confidence', { precision: 3, scale: 2 }),
   metadata: jsonb('metadata'),
@@ -378,8 +378,8 @@ export const escalationPolicies = pgTable('escalation_policies', {
 // rls-coverage.integration.test.ts — "no org_id column" is not "no RLS".
 export const alertNotifications = pgTable('alert_notifications', {
   id: uuid('id').primaryKey().defaultRandom(),
-  alertId: uuid('alert_id').notNull().references(() => alerts.id),
-  channelId: uuid('channel_id').notNull().references(() => notificationChannels.id),
+  alertId: uuid('alert_id').notNull().references(() => alerts.id, { onDelete: 'cascade' }),
+  channelId: uuid('channel_id').references(() => notificationChannels.id, { onDelete: 'set null' }),
   escalationStep: integer('escalation_step').notNull().default(0),
   status: varchar('status', { length: 20 }).notNull().default('pending'),
   sentAt: timestamp('sent_at'),

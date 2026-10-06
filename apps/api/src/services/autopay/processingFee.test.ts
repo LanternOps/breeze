@@ -53,3 +53,17 @@ describe('fee rule Cartesian product', () => {
     expect(quoteProcessingFee({ ...base, orgBillingRegion: ' ny ', currency: 'usd', stripeAccountCountry: 'us' }).reason).toBe('applied');
   });
 });
+
+// G4: settings comparisons (lower authorized terms) use allowedCardFeeBps; it must agree with
+// what the engine charges a US-account credit card for every client address.
+import { allowedCardFeeBps, quoteProcessingFee as quote } from './processingFee';
+describe('allowedCardFeeBps agrees with the fee engine', () => {
+  const addresses: [string | null, string | null][] = [['US', 'NY'], ['US', 'CO'], ['US', 'CA'], ['US', 'CT'], ['US', 'TX'],
+    ['US', null], ['US', 'ZZ'], ['CA', 'ON'], ['GB', null], [null, null], ['us', 'ny ']];
+  it.each(addresses.flatMap(([country, region]) => [300, 250, 100, 0].map(bps => [country, region, bps] as const)))(
+    '%s/%s at %i bps', (country, region, bps) => {
+      const engine = quote({ methodType: 'card', cardFunding: 'credit', principal: '100.00', currency: 'USD', stripeAccountCountry: 'US',
+        orgBillingCountry: country, orgBillingRegion: region, cardFeeBps: bps, achFeeAmount: '0.00', feeAttested: true });
+      expect(allowedCardFeeBps(bps, country, region)).toBe(engine.appliedBps ?? 0);
+    });
+});

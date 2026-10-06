@@ -2523,12 +2523,16 @@
       "method_not_usable": "Método de pago no disponible",
       "over_cap": "Supera el límite de pago automático",
       "above_authorized_cap": "Supera el límite autorizado por el cliente",
+      "issued_before_authorization": "Emitida antes de la autorización actualizada del cliente: cóbrala manualmente",
       "cap_currency_mismatch": "La moneda del límite no coincide",
       "ach_currency_unsupported": "Moneda no compatible con pagos bancarios",
       "excluded_contract": "Contrato excluido",
       "excluded_invoice": "Factura excluida",
       "charging_disabled": "Cobro automático desactivado",
       "stripe_unavailable": "Stripe no disponible",
+      "bank_unverified": "No cobrada: el banco del cliente no se verificó a tiempo. Cóbrala manualmente",
+      "charging_on_hold": "No cobrada: los pagos automáticos siguieron desactivados. Cóbrala manualmente",
+      "service_unavailable": "No cobrada: Stripe siguió sin estar disponible. Cóbrala manualmente",
       "control_pending:skip": "Omisión solicitada; deteniendo el pago pendiente",
       "control_pending:exclude": "Exclusión solicitada; deteniendo el pago pendiente",
       "control_pending:stop": "Cancelación solicitada; deteniendo el pago pendiente",
@@ -2543,6 +2547,7 @@
     },
     "noticeTemplate": "Factura con aviso de pago automático",
     "chargeFailed": "No se pudo iniciar el pago. Inténtalo de nuevo.",
+    "chargeResultUnknown": "No pudimos confirmar qué pasó con este pago. Actualizando la factura para mostrar su estado actual.",
     "chargeStarted": "Intento de pago iniciado",
     "chargeNow": "Cobrar ahora",
     "noCharge": "Aún no hay cobros",
@@ -2559,7 +2564,10 @@
       "failed": "Pago fallido",
       "requires_action": "Se requiere confirmación",
       "canceled": "Cancelado",
-      "unapplied": "El pago requiere conciliación"
+      "unapplied": "El pago requiere conciliación",
+      "returned": "Devuelto",
+      "refunded": "Reembolsado",
+      "disputed": "Disputado"
     },
     "fees": {
       "title": "Comisiones de procesamiento",
@@ -2570,9 +2578,11 @@
       "cost": "Esta comisión no supera mi costo de aceptación de tarjetas",
       "rules": "Solo tarjetas de crédito. No se cobra comisión por tarjeta en CA, CT, ME ni MA; en Colorado el límite es del 2 %. Las comisiones solo se aplican a pagos automáticos elegibles de EE. UU. en USD. Los enlaces de pago único no tienen comisión.",
       "legal": "Breeze no brinda asesoramiento legal. Usted es responsable de la elegibilidad de los recargos, los avisos y el tratamiento fiscal.",
-      "lowerAuthorization": "Clientes con comisiones autorizadas más bajas: {{count}}. Su autorización actual sigue vigente hasta que acepten los nuevos términos.",
+      "lowerAuthorization": "Clientes con términos autorizados más bajos: {{count}}. Su autorización actual sigue vigente hasta que acepten los nuevos términos.",
       "authorizedCard": "Autorizado: {{accepted}} puntos básicos; configurado: {{configured}}",
       "authorizedAch": "Autorizado: USD {{accepted}}; configurado: USD {{configured}}",
+      "authorizedCap": "Límite autorizado: {{accepted}}; configurado: {{configured}}",
+      "noCap": "sin límite",
       "requestAuthorization": "Solicitar autorización actualizada",
       "requestFailed": "No se pudo solicitar la autorización actualizada. Verifique el contacto de facturación y la disponibilidad de Stripe.",
       "requested": "Se solicitó la autorización actualizada. La autorización actual sigue vigente.",
@@ -2581,7 +2591,7 @@
       "reattestHelp": "Para volver a confirmar, marca ambas declaraciones y guarda. Así se registra una nueva confirmación a tu nombre con la fecha actual, que reemplaza la registrada. No cambia la comisión autorizada de ningún cliente.",
       "authorizedCardNone": "No hay autorización registrada; configurado: {{configured}} puntos básicos",
       "authorizedAchNone": "No hay autorización registrada; configurado: USD {{configured}}",
-      "lowerAuthorizationOrg": "Este cliente no autorizó la comisión configurada. Cualquier autorización existente sigue vigente hasta que acepte los nuevos términos.",
+      "lowerAuthorizationOrg": "Este cliente no autorizó los términos configurados. Cualquier autorización existente sigue vigente hasta que acepte los nuevos términos.",
       "blankPartner": "En blanco usa el valor predeterminado de Breeze (sin comisión). Para eximir a un cliente, establece su comisión en 0 en la página de facturación de ese cliente.",
       "blankOrg": "En blanco usa el valor predeterminado del socio. Ingresa 0 para eximir a este cliente.",
       "inactiveOrg": "Las comisiones por tarjeta no se activan hasta que un administrador del socio confirme ambas declaraciones de comisiones en la pestaña Payments de la configuración de facturación del socio.",
@@ -2624,7 +2634,8 @@
       "nothing_to_pay": "No queda nada por pagar en esta factura.",
       "enrollment_inactive": "Los pagos automáticos no están activos para este cliente.",
       "schedule_inactive": "Esta factura ya no está programada para pago automático.",
-      "generic": "No se pudo iniciar el pago automático. Actualiza la factura para ver su estado actual."
+      "generic": "No se pudo iniciar el pago automático. Actualiza la factura para ver su estado actual.",
+      "excluded_contract": "El contrato de esta factura está excluido de los pagos automáticos, así que no se cobró. Si al cliente se le había avisado de este pago, se le envió un correo indicando que no se realizará."
     }
   },
   "reminders": {

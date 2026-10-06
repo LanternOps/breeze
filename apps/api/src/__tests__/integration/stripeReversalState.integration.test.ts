@@ -483,6 +483,8 @@ async function expectDurableReturnNotice(f: Awaited<ReturnType<typeof seedAutopa
     link: `/billing/invoices/${f.invoiceId}`, metadata: { event: 'payment.ach_returned' },
     dedupeKey: `autopay:${f.attemptId}:payment.ach_returned:${f.mappingId}:dp_${f.invoiceId}:${f.userId}`,
   });
+  // P-17: the message names the invoice by number, never by its raw id.
+  expect(notices[0]!.message).not.toContain(f.invoiceId); expect(notices[0]!.message).not.toContain(f.attemptId);
 }
 runDb('returns and restores bank principal once, preserving ach_debit',async()=>{
   returnedStaff.mockClear();
@@ -548,6 +550,14 @@ runDb.each(['R07', 'R02'])('disables a bank method after authoritative %s return
   expect(await withSystemDbAccessContext(() => getAutopayMethod(db, f.orgId))).toBeNull();
   const [method] = await withSystemDbAccessContext(() => db.select().from(orgPaymentMethods).where(eq(orgPaymentMethods.orgId, f.orgId)));
   expect(method).toMatchObject({ status: 'unusable', unusableReason: code });
+  // 2b-2: the returned email says the account can no longer be used and offers the update link.
+  const [returnedNotice] = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(and(
+    eq(billingNoticeOutbox.invoiceId, f.invoiceId), eq(billingNoticeOutbox.kind, 'payment_failed'))));
+  const returnedBody = returnedNotice!.rendered as { text: string; frozen: { variant: string; tokenId: string | null } };
+  expect(returnedBody.frozen).toMatchObject({ variant: 'returned', tokenId: expect.any(String) });
+  expect(returnedBody.text).toContain('bank account ending in 6789 can no longer be used for automatic payments');
+  expect(returnedBody.text).toMatch(/Pay invoice: https?:\/\/\S+/);
+  expect(returnedBody.text).toMatch(/Update payment method: https?:\/\/\S+/);
   await withSystemDbAccessContext(async () => {
     await db.update(partners).set({ autopayEnabled: true }).where(eq(partners.id, f.partnerId));
     await db.update(stripeConnectAccounts).set({ status: 'connected', accountCountry: 'US',
@@ -764,7 +774,73 @@ runDb('still sends the receipt of a payment refunded before dispatch', async () 
   await withSystemDbAccessContext(() => enqueueOnlineReceipt(db, f.mappingId));
   await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: `evt_receipt_refund_${f.invoiceId}`, refundedAmountMinor: 10000 }));
   await dispatchPendingBillingNotices(new Date(Date.now() + 1000));
-  const [receipt] = await receiptRows(f.invoiceId);
+  const [receipt] = (await receiptRows(f.invoiceId)).filter(row => (row.rendered as { frozen: { variant?: string } }).frozen.variant !== 'refund');
   expect(receipt).toMatchObject({ status: 'sent' });
-  expect(returnMail.send).toHaveBeenCalledTimes(1);
+  // The receipt and, since batch 3b (D-20), the refund notice.
+  expect(returnMail.send).toHaveBeenCalledTimes(2);
+});
+
+// Batch 3b (2b-3): a return held until after capture is applied, and its email enqueued,
+// before the attempt itself is marked succeeded. Dispatch in that window still sends it.
+runDb('sends the returned email while the captured attempt is still processing', async () => {
+  returnMail.send.mockClear();
+  const f = await seedAutopayBank();
+  await withSystemDbAccessContext(async () => {
+    await db.update(invoiceCollectionAttempts).set({ state: 'processing' }).where(eq(invoiceCollectionAttempts.id, f.attemptId));
+    await db.update(invoiceStripePayments).set({ paymentCapturedAt: new Date() }).where(eq(invoiceStripePayments.id, f.mappingId));
+  });
+  await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: `evt_processing_return_${f.invoiceId}`,
+    eventType: 'charge.dispute.funds_withdrawn', providerCreated: 300, refundedAmountMinor: null,
+    disputeId: `dp_${f.invoiceId}`, disputeAmountMinor: 10000, disputeFundsWithdrawn: true }));
+  await dispatchPendingBillingNotices(new Date(Date.now() + 1000));
+  const [returned] = await returnedFailures(f.invoiceId);
+  expect(returned).toMatchObject({ status: 'sent', lastError: null });
+  expect(returnMail.send).toHaveBeenCalledWith(expect.objectContaining({
+    text: expect.stringContaining('returned a previously completed payment') }));
+});
+
+// Batch 3b (D-20): a refund tells the client the amount, where it goes and the balance after.
+async function refundNotices(invoiceId: string) {
+  return (await receiptRows(invoiceId)).filter(row => (row.rendered as { frozen: { variant?: string } }).frozen.variant === 'refund');
+}
+runDb('a refund tells the client the amount refunded, the method and the invoice balance afterwards', async () => {
+  const f = await seedAutopayBank();
+  const first = financialEvent(f, { stripeEventId: `evt_refund_a_${f.invoiceId}`, refundedAmountMinor: 4000 });
+  await ingestStripeFinancialEvent(first); await ingestStripeFinancialEvent(first);
+  let notices = await refundNotices(f.invoiceId);
+  expect(notices).toHaveLength(1);
+  expect(notices[0]!.dedupeKey).toBe(`${f.mappingId}:payment_receipt:refund:4000`);
+  let text = (notices[0]!.rendered as { text: string }).text;
+  // One money formatter in client emails ("$40.00", never "USD 40.00").
+  expect(text).toContain('Refunded: $40.00');
+  expect(text).toContain('Refunded to: Bank account ending in 6789');
+  expect(text).toMatch(/Balance due on invoice \S+ after this refund: \$40\.00/);
+  await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: `evt_refund_b_${f.invoiceId}`, refundedAmountMinor: 10000, providerCreated: 1_788_690_001 }));
+  notices = await refundNotices(f.invoiceId);
+  expect(notices).toHaveLength(2);
+  text = (notices.find(row => row.dedupeKey.endsWith(':10000'))!.rendered as { text: string }).text;
+  expect(text).toContain('Refunded: $60.00');
+  expect(text).toMatch(/after this refund: \$100\.00/);
+});
+
+// Batch 3b (#7897): a card dispute withdrawal raises a staff notice, as an ACH return does.
+// The client gets none: they opened the dispute with their own bank (see the batch report).
+runDb('a card dispute withdrawal raises one staff notice and staff email, and no client email', async () => {
+  returnedStaff.mockClear();
+  const f = await seedAutopayBank();
+  await withSystemDbAccessContext(() => db.update(invoiceStripePayments).set({ paymentMethodType: 'card' })
+    .where(eq(invoiceStripePayments.id, f.mappingId)));
+  const withdrawal = financialEvent(f, { stripeEventId: `evt_card_dispute_${f.invoiceId}`, eventType: 'charge.dispute.funds_withdrawn',
+    providerCreated: 300, refundedAmountMinor: null, disputeId: `dp_card_${f.invoiceId}`, disputeAmountMinor: 10000, disputeFundsWithdrawn: true });
+  await ingestStripeFinancialEvent(withdrawal); await ingestStripeFinancialEvent(withdrawal);
+  const notices = await withSystemDbAccessContext(() => db.select().from(userNotifications).where(eq(userNotifications.orgId, f.orgId)));
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toMatchObject({ userId: f.userId, priority: 'high', link: `/billing/invoices/${f.invoiceId}`,
+    metadata: { event: 'payment.disputed' } });
+  expect(notices[0]!.message).toContain('USD 100.00');
+  expect(returnedStaff).toHaveBeenCalledTimes(1);
+  expect(returnedStaff).toHaveBeenCalledWith(expect.objectContaining({ event: 'payment.disputed', invoiceId: f.invoiceId }));
+  const clientMail = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(and(
+    eq(billingNoticeOutbox.invoiceId, f.invoiceId), eq(billingNoticeOutbox.kind, 'payment_failed'))));
+  expect(clientMail).toHaveLength(0);
 });

@@ -1003,6 +1003,8 @@
         "addPathOrProcess": "Ajouter un chemin ou un processus",
         "autoQuarantine": "Auto-quarantaine",
         "moveThreatsToQuarantineImmediately": "Mettez les menaces en quarantaine immédiatement.",
+        "autoQuarantineReapproval": "La mise en quarantaine automatique est en pause : les analyses se limitent à la détection jusqu'à ce qu'un utilisateur disposant de l'autorisation devices:execute enregistre de nouveau ces paramètres.",
+        "autoQuarantineApproverInvalid": "La mise en quarantaine automatique est en pause : l'utilisateur qui l'a approuvée n'a plus l'accès devices:execute. Les analyses se limitent à la détection jusqu'à ce qu'un utilisateur disposant de cette autorisation enregistre de nouveau ces paramètres.",
         "autoQuarantine2": "autoQuarantine",
         "scheduledScans2": "Scans programmés",
         "scanMinute": "scanMinute",

@@ -41,9 +41,12 @@ export async function lockInvoiceForCollection(tx: Tx, invoiceId: string): Promi
  * diverge. Advisory only: it takes no lock, the pay routes still enforce.
  */
 export async function readInFlightCollection(tx: Tx, invoiceId: string)
-  : Promise<{ inProgress: boolean; amount: string; actionRequired: boolean }> {
+  : Promise<{ inProgress: boolean; amount: string; fee: string; paymentMethodId: string | null; actionRequired: boolean }> {
   const [row] = await tx.select({
     reservedAmount: sql<string>`coalesce(sum(${invoiceCollectionAttempts.principalAmount}), 0)::numeric(12,2)::text`,
+    // What the client is told is moving (V-5): the fee on top, and the newest attempt's method.
+    reservedFee: sql<string>`coalesce(sum(${invoiceCollectionAttempts.feeAmount}), 0)::numeric(12,2)::text`,
+    paymentMethodId: sql<string | null>`(array_agg(${invoiceCollectionAttempts.paymentMethodId} order by ${invoiceCollectionAttempts.createdAt} desc))[1]`,
     // Every reserving attempt is waiting on the customer's bank (off-session 3DS):
     // nothing will complete without them, so the page must not say "no action needed".
     actionRequired: sql<boolean>`coalesce(bool_and(${invoiceCollectionAttempts.state} = 'requires_action'), false)`,
@@ -53,7 +56,17 @@ export async function readInFlightCollection(tx: Tx, invoiceId: string)
     .limit(1);
   const amount = row?.reservedAmount ?? '0.00';
   const inProgress = hundredths(amount) > 0n;
-  return { inProgress, amount, actionRequired: inProgress && row?.actionRequired === true };
+  return { inProgress, amount, fee: row?.reservedFee ?? '0.00', paymentMethodId: inProgress ? row?.paymentMethodId ?? null : null,
+    actionRequired: inProgress && row?.actionRequired === true };
+}
+/** True while an attempt reserves money for the invoice or holds captured money that
+ * could not be applied ('unapplied', until staff refund or apply it). Client offers that
+ * start a new payment (bank pay, card pay-and-save) are withheld then (B1-2). */
+export async function holdsClientMoney(tx: Tx, invoiceId: string): Promise<boolean> {
+  const [row] = await tx.select({ id: invoiceCollectionAttempts.id }).from(invoiceCollectionAttempts)
+    .where(sql`${invoiceCollectionAttempts.invoiceId} = ${invoiceId}
+      and ${inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES, 'unapplied'])}`).limit(1);
+  return !!row;
 }
 export async function assertNoActiveCollection(tx: Tx, invoiceId: string): Promise<void> {
   const locked = await lockInvoiceForCollection(tx, invoiceId);

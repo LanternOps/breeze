@@ -101,6 +101,22 @@ describe('openai_compatible discovery', () => {
     expect(err.message.length).toBeLessThanOrEqual(600);
   });
 
+  it.each([401, 403])('HTTP %i → a fixed message; the upstream body (which may echo part of the key) is not kept', async (status) => {
+    __setUpstreamFetchForTests((async () => new Response(
+      'Incorrect API key provided: sk-x-1234****6789. You can find your key at https://example.test/keys',
+      { status },
+    )) as never);
+    const err = (await discoverOpenAiCompatibleModels({ config, credential: { secret: KEY } }).catch((e: unknown) => e)) as Error;
+    expect(err.message).toBe(`The endpoint rejected the connection's key (HTTP ${status} for /models).`);
+  });
+
+  it('other non-2xx statuses still carry the (scrubbed) upstream detail', async () => {
+    __setUpstreamFetchForTests((async () => new Response('model registry offline', { status: 503 })) as never);
+    const err = (await discoverOpenAiCompatibleModels({ config, credential: { secret: KEY } }).catch((e: unknown) => e)) as Error;
+    expect(err.message).toContain('HTTP 503');
+    expect(err.message).toContain('model registry offline');
+  });
+
   it('a non-JSON or wrong-shape body → throws, never returns partial garbage', async () => {
     __setUpstreamFetchForTests((async () => new Response('<html>')) as never);
     await expect(discoverOpenAiCompatibleModels({ config, credential: { secret: null } })).rejects.toThrow(/model list/);

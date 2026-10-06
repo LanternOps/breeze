@@ -2523,12 +2523,16 @@
       "method_not_usable": "Zahlungsmethode nicht verfügbar",
       "over_cap": "Über dem Limit für automatische Zahlungen",
       "above_authorized_cap": "Über dem vom Kunden autorisierten Limit",
+      "issued_before_authorization": "Vor der aktualisierten Autorisierung des Kunden ausgestellt: manuell einziehen",
       "cap_currency_mismatch": "Währung des Limits stimmt nicht überein",
       "ach_currency_unsupported": "Währung für Bankzahlungen nicht unterstützt",
       "excluded_contract": "Vertrag ausgeschlossen",
       "excluded_invoice": "Rechnung ausgeschlossen",
       "charging_disabled": "Automatischer Einzug deaktiviert",
       "stripe_unavailable": "Stripe nicht verfügbar",
+      "bank_unverified": "Nicht eingezogen: Das Bankkonto des Kunden wurde nicht rechtzeitig verifiziert. Manuell einziehen",
+      "charging_on_hold": "Nicht eingezogen: Automatische Zahlungen blieben ausgeschaltet. Manuell einziehen",
+      "service_unavailable": "Nicht eingezogen: Stripe blieb nicht erreichbar. Manuell einziehen",
       "control_pending:skip": "Überspringen angefordert; ausstehende Zahlung wird gestoppt",
       "control_pending:exclude": "Ausschluss angefordert; ausstehende Zahlung wird gestoppt",
       "control_pending:stop": "Stopp angefordert; ausstehende Zahlung wird gestoppt",
@@ -2543,6 +2547,7 @@
     },
     "noticeTemplate": "Rechnung mit Benachrichtigung zur automatischen Zahlung",
     "chargeFailed": "Die Zahlung konnte nicht gestartet werden. Bitte versuchen Sie es erneut.",
+    "chargeResultUnknown": "Wir konnten nicht bestätigen, was mit dieser Zahlung passiert ist. Die Rechnung wird aktualisiert, um ihren aktuellen Status anzuzeigen.",
     "chargeStarted": "Zahlungsversuch gestartet",
     "chargeNow": "Jetzt abbuchen",
     "noCharge": "Noch keine Abbuchungen",
@@ -2559,7 +2564,10 @@
       "failed": "Zahlung fehlgeschlagen",
       "requires_action": "Bestätigung erforderlich",
       "canceled": "Abgebrochen",
-      "unapplied": "Zahlung muss zugeordnet werden"
+      "unapplied": "Zahlung muss zugeordnet werden",
+      "returned": "Zurückgebucht",
+      "refunded": "Erstattet",
+      "disputed": "Angefochten"
     },
     "fees": {
       "title": "Bearbeitungsgebühren",
@@ -2570,9 +2578,11 @@
       "cost": "Diese Gebühr übersteigt nicht meine Kosten für die Kartenakzeptanz",
       "rules": "Nur Kreditkarten. Keine Kartengebühr in CA, CT, ME oder MA; in Colorado gilt eine Obergrenze von 2 %. Gebühren gelten nur für berechtigte automatische US-Zahlungen in USD. Einmalige Zahlungslinks sind gebührenfrei.",
       "legal": "Breeze bietet keine Rechtsberatung. Sie sind für die Zulässigkeit von Zuschlägen, Hinweise und die steuerliche Behandlung verantwortlich.",
-      "lowerAuthorization": "Kunden mit niedrigeren autorisierten Gebühren: {{count}}. Ihre bisherige Autorisierung gilt, bis sie aktualisierte Bedingungen akzeptieren.",
+      "lowerAuthorization": "Kunden mit niedrigeren autorisierten Bedingungen: {{count}}. Ihre bisherige Autorisierung gilt, bis sie aktualisierte Bedingungen akzeptieren.",
       "authorizedCard": "Autorisiert: {{accepted}} Basispunkte; eingestellt: {{configured}}",
       "authorizedAch": "Autorisiert: USD {{accepted}}; eingestellt: USD {{configured}}",
+      "authorizedCap": "Autorisiertes Limit: {{accepted}}; eingestellt: {{configured}}",
+      "noCap": "kein Limit",
       "requestAuthorization": "Aktualisierte Autorisierung anfordern",
       "requestFailed": "Aktualisierte Autorisierung konnte nicht angefordert werden. Prüfen Sie den Rechnungskontakt und die Stripe-Verfügbarkeit.",
       "requested": "Aktualisierte Autorisierung angefordert. Die bisherige Autorisierung bleibt gültig.",
@@ -2581,7 +2591,7 @@
       "reattestHelp": "Für eine erneute Bestätigung aktivieren Sie beide Erklärungen und speichern. Dadurch wird eine neue Bestätigung mit Ihrem Namen und dem aktuellen Datum erfasst, die die hinterlegte ersetzt. Die autorisierten Gebühren Ihrer Kunden ändern sich dadurch nicht.",
       "authorizedCardNone": "Keine Autorisierung hinterlegt; eingestellt: {{configured}} Basispunkte",
       "authorizedAchNone": "Keine Autorisierung hinterlegt; eingestellt: USD {{configured}}",
-      "lowerAuthorizationOrg": "Dieser Kunde hat die eingestellte Gebühr nicht autorisiert. Eine bestehende Autorisierung gilt weiter, bis er aktualisierte Bedingungen akzeptiert.",
+      "lowerAuthorizationOrg": "Dieser Kunde hat die eingestellten Bedingungen nicht autorisiert. Eine bestehende Autorisierung gilt weiter, bis er aktualisierte Bedingungen akzeptiert.",
       "blankPartner": "Leer verwendet den Breeze-Standard (keine Gebühr). Um einen einzelnen Kunden auszunehmen, setzen Sie seine Gebühr auf dessen Abrechnungsseite auf 0.",
       "blankOrg": "Leer übernimmt den Partnerstandard. Geben Sie 0 ein, um diesen Kunden auszunehmen.",
       "inactiveOrg": "Kartengebühren sind erst aktiv, wenn ein Partneradministrator beide Gebührenerklärungen auf der Registerkarte „Payments“ der Partner-Abrechnungseinstellungen bestätigt.",
@@ -2624,7 +2634,8 @@
       "nothing_to_pay": "Auf dieser Rechnung ist nichts mehr zu zahlen.",
       "enrollment_inactive": "Automatische Zahlungen sind für diesen Kunden nicht aktiv.",
       "schedule_inactive": "Diese Rechnung ist nicht mehr für eine automatische Zahlung geplant.",
-      "generic": "Die automatische Zahlung konnte nicht gestartet werden. Aktualisieren Sie die Rechnung, um ihren aktuellen Status zu sehen."
+      "generic": "Die automatische Zahlung konnte nicht gestartet werden. Aktualisieren Sie die Rechnung, um ihren aktuellen Status zu sehen.",
+      "excluded_contract": "Der Vertrag dieser Rechnung ist von automatischen Zahlungen ausgenommen, daher wurde nichts belastet. Wurde der Kunde über diese Zahlung informiert, hat er eine E-Mail erhalten, dass sie nicht stattfindet."
     }
   },
   "reminders": {

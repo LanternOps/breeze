@@ -11,6 +11,7 @@ const h = vi.hoisted(() => {
     rows: {} as Record<string, Array<Record<string, unknown>>>,
     tables: {
       alertCorrelationGroups: tbl('alertCorrelationGroups'),
+      alertCorrelationMembers: tbl('alertCorrelationMembers'),
       alerts: tbl('alerts'),
       devices: tbl('devices', { id: 'd', osType: 'd' }),
       metricAnomalies: tbl('metricAnomalies'),
@@ -33,6 +34,8 @@ vi.mock('../db', () => {
     const passthrough = () => chain;
     chain.from = (t: Record<string, string>) => { table = t?.[h.TABLE]; return chain; };
     chain.where = passthrough;
+    chain.innerJoin = passthrough;
+    chain.leftJoin = passthrough;
     chain.orderBy = passthrough;
     chain.limit = passthrough;
     chain.then = (resolve: (v: unknown) => unknown) => {
@@ -78,7 +81,7 @@ vi.mock('./fixMemory/research', () => ({
   requestResearch: vi.fn(async () => ({ status: 'started', runId: 'run-1', depth: 'quick' })),
 }));
 
-import { __testOnly, generateRemediationSuggestions } from './remediationSuggestions';
+import { __testOnly, generateRemediationSuggestions, RemediationSourceDeviceError } from './remediationSuggestions';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
 import { attachProvenFixes } from './fixMemory/attach';
 import { requestResearch } from './fixMemory/research';
@@ -189,5 +192,49 @@ describe('remediation suggestion source context', () => {
       rcaId: 'group-1',
       title: 'RCA for correlation group site:server-room',
     });
+  });
+});
+
+describe('RCA source: a caller-supplied deviceId must belong to the source', () => {
+  const group = {
+    id: 'group-1', orgId: 'org-1', rootAlertId: 'alert-1', groupKey: 'site:server-room', status: 'open', metadata: {},
+  };
+
+  beforeEach(() => {
+    h.rows = {};
+    vi.clearAllMocks();
+    vi.mocked(shouldProduceMlOutput).mockResolvedValue(true);
+  });
+
+  it('binds the device when one of the correlation group alerts is on it', async () => {
+    h.rows = { alertCorrelationGroups: [group], alerts: [{ id: 'alert-2' }] };
+    const context = await __testOnly.resolveSourceContext({
+      sourceType: 'rca', sourceId: 'group-1', orgId: 'org-1', deviceId: 'dev-in-group',
+    });
+    expect(context).toMatchObject({ sourceType: 'rca', orgId: 'org-1', deviceId: 'dev-in-group', correlationGroupId: 'group-1' });
+  });
+
+  it('rejects a device that is not on any alert of the correlation group', async () => {
+    h.rows = { alertCorrelationGroups: [group], alerts: [] };
+    await expect(__testOnly.resolveSourceContext({
+      sourceType: 'rca', sourceId: 'group-1', orgId: 'org-1', deviceId: 'dev-elsewhere',
+    })).rejects.toBeInstanceOf(RemediationSourceDeviceError);
+    await expect(generateRemediationSuggestions({
+      sourceType: 'rca', sourceId: 'group-1', orgId: 'org-1', deviceId: 'dev-elsewhere',
+    }, opts)).rejects.toBeInstanceOf(RemediationSourceDeviceError);
+    expect(attachProvenFixes).not.toHaveBeenCalled();
+  });
+
+  it('rejects any deviceId for an RCA that is not tied to a correlation group (nothing to match it against)', async () => {
+    h.rows = { alertCorrelationGroups: [] };
+    await expect(__testOnly.resolveSourceContext({
+      sourceType: 'rca', sourceId: 'rca-1', orgId: 'org-1', deviceId: 'dev-any',
+    })).rejects.toBeInstanceOf(RemediationSourceDeviceError);
+  });
+
+  it('leaves an RCA with no deviceId unchanged', async () => {
+    h.rows = { alertCorrelationGroups: [] };
+    const context = await __testOnly.resolveSourceContext({ sourceType: 'rca', sourceId: 'rca-1', orgId: 'org-1' });
+    expect(context).toMatchObject({ sourceType: 'rca', orgId: 'org-1', deviceId: null });
   });
 });

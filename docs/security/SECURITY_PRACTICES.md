@@ -158,7 +158,7 @@ The agent runs on customer endpoints with elevated privileges. Its security is p
 - **Validation**: Every agent REST request and WebSocket connection validates the bearer token against the stored hash
 - **Status checks**: Decommissioned and quarantined devices are rejected with 403
 
-When a device record exists in the database but has no token hash — the case for legacy devices enrolled before the v0.62 token-hash migration — the API returns a structured `{ code: "re_enrollment_required" }` signal on both the WebSocket auth path and HTTP 401 responses (`apps/api/src/middleware/agentAuth.ts`, `apps/api/src/routes/agentWs.ts`). The agent treats this as a non-fault terminal state: it stops retrying with the orphaned credential and prompts the operator to re-enroll the device, rather than silently failing in a reconnect loop or appearing healthy while unable to receive commands. This makes upgrade behavior explicit and auditable.
+When a device record exists in the database but has no token hash — the case for legacy devices enrolled before the v0.62 token-hash migration — the API returns a structured `{ code: "RE_ENROLLMENT_REQUIRED" }` signal on both the WebSocket auth path and HTTP 401 responses (`apps/api/src/middleware/agentAuth.ts`, `apps/api/src/routes/agentWs.ts`). The agent treats this as a non-fault terminal state: it stops retrying with the orphaned credential and prompts the operator to re-enroll the device, rather than silently failing in a reconnect loop or appearing healthy while unable to receive commands. This makes upgrade behavior explicit and auditable.
 
 ### Config File Permissions
 

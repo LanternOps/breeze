@@ -2523,12 +2523,16 @@
       "method_not_usable": "Ödeme yöntemi kullanılamıyor",
       "over_cap": "Otomatik ödeme limiti aşıldı",
       "above_authorized_cap": "Müşterinin onayladığı limitin üzerinde",
+      "issued_before_authorization": "Müşterinin güncellenmiş onayından önce düzenlendi: manuel olarak tahsil edin",
       "cap_currency_mismatch": "Limit para birimi eşleşmiyor",
       "ach_currency_unsupported": "Banka ödemesi para birimi desteklenmiyor",
       "excluded_contract": "Sözleşme hariç tutuldu",
       "excluded_invoice": "Fatura hariç tutuldu",
       "charging_disabled": "Otomatik tahsilat devre dışı",
       "stripe_unavailable": "Stripe kullanılamıyor",
+      "bank_unverified": "Tahsil edilmedi: müşterinin banka hesabı zamanında doğrulanmadı. Manuel olarak tahsil edin",
+      "charging_on_hold": "Tahsil edilmedi: otomatik ödemeler kapalı kaldı. Manuel olarak tahsil edin",
+      "service_unavailable": "Tahsil edilmedi: Stripe'a ulaşılamadı. Manuel olarak tahsil edin",
       "control_pending:skip": "Atlama istendi; bekleyen ödeme durduruluyor",
       "control_pending:exclude": "Hariç tutma istendi; bekleyen ödeme durduruluyor",
       "control_pending:stop": "Durdurma istendi; bekleyen ödeme durduruluyor",
@@ -2543,6 +2547,7 @@
     },
     "noticeTemplate": "Otomatik ödeme bildirimi içeren fatura",
     "chargeFailed": "Ödeme başlatılamadı. Lütfen tekrar deneyin.",
+    "chargeResultUnknown": "Bu ödemeye ne olduğunu doğrulayamadık. Güncel durumunu göstermek için fatura yenileniyor.",
     "chargeStarted": "Ödeme girişimi başlatıldı",
     "chargeNow": "Şimdi tahsil et",
     "noCharge": "Henüz tahsilat yok",
@@ -2559,7 +2564,10 @@
       "failed": "Ödeme başarısız",
       "requires_action": "Onay gerekli",
       "canceled": "İptal edildi",
-      "unapplied": "Ödeme mutabakat gerektiriyor"
+      "unapplied": "Ödeme mutabakat gerektiriyor",
+      "returned": "İade edildi (banka)",
+      "refunded": "İade edildi",
+      "disputed": "İtiraz edildi"
     },
     "fees": {
       "title": "İşlem ücretleri",
@@ -2570,9 +2578,11 @@
       "cost": "Bu ücret, kart kabul maliyetimi aşmıyor",
       "rules": "Yalnızca kredi kartları. CA, CT, ME veya MA’da kart ücreti uygulanmaz; Colorado’da üst sınır %2’dir. Ücretler yalnızca USD cinsinden uygun ABD otomatik ödemelerine uygulanır. Tek seferlik ödeme bağlantılarında ücret yoktur.",
       "legal": "Breeze hukuki danışmanlık sağlamaz. Ek ücret uygunluğu, bildirimler ve vergi uygulamalarından siz sorumlusunuz.",
-      "lowerAuthorization": "Daha düşük ücretlere yetki veren müşteriler: {{count}}. Yeni koşulları kabul edene kadar mevcut yetkilendirmeleri geçerli kalır.",
+      "lowerAuthorization": "Daha düşük koşullara yetki veren müşteriler: {{count}}. Yeni koşulları kabul edene kadar mevcut yetkilendirmeleri geçerli kalır.",
       "authorizedCard": "Yetkilendirilen: {{accepted}} baz puan; yapılandırılan: {{configured}}",
       "authorizedAch": "Yetkilendirilen: USD {{accepted}}; yapılandırılan: USD {{configured}}",
+      "authorizedCap": "Yetkilendirilen limit: {{accepted}}; yapılandırılan: {{configured}}",
+      "noCap": "limit yok",
       "requestAuthorization": "Güncel yetkilendirme iste",
       "requestFailed": "Güncel yetkilendirme istenemedi. Faturalandırma kişisini ve Stripe hazırlığını kontrol edin.",
       "requested": "Güncel yetkilendirme istendi. Mevcut yetkilendirme geçerliliğini korur.",
@@ -2581,7 +2591,7 @@
       "reattestHelp": "Yeniden beyan etmek için iki beyanı da işaretleyip kaydedin. Bu, adınıza ve güncel tarihe yeni bir beyan kaydeder ve kayıtlı olanın yerini alır. Hiçbir müşterinin yetkilendirdiği ücret değişmez.",
       "authorizedCardNone": "Kayıtlı yetkilendirme yok; yapılandırılan: {{configured}} baz puan",
       "authorizedAchNone": "Kayıtlı yetkilendirme yok; yapılandırılan: USD {{configured}}",
-      "lowerAuthorizationOrg": "Bu müşteri yapılandırılan ücrete yetki vermedi. Mevcut yetkilendirmesi, yeni koşulları kabul edene kadar geçerli kalır.",
+      "lowerAuthorizationOrg": "Bu müşteri yapılandırılan koşullara yetki vermedi. Mevcut yetkilendirmesi, yeni koşulları kabul edene kadar geçerli kalır.",
       "blankPartner": "Boş bırakılırsa Breeze varsayılanı kullanılır (ücret yok). Tek bir müşteriyi muaf tutmak için o müşterinin Faturalandırma sayfasında ücretini 0 yapın.",
       "blankOrg": "Boş bırakılırsa iş ortağı varsayılanı kullanılır. Bu müşteriyi muaf tutmak için 0 girin.",
       "inactiveOrg": "Bir iş ortağı yöneticisi, iş ortağı Faturalandırma ayarlarının Payments sekmesinde iki ücret beyanını da onaylayana kadar kart ücretleri uygulanmaz.",
@@ -2624,7 +2634,8 @@
       "nothing_to_pay": "Bu faturada ödenecek tutar kalmadı.",
       "enrollment_inactive": "Bu müşteri için otomatik ödemeler etkin değil.",
       "schedule_inactive": "Bu fatura artık otomatik ödeme için planlanmış değil.",
-      "generic": "Otomatik ödeme başlatılamadı. Güncel durumunu görmek için faturayı yenileyin."
+      "generic": "Otomatik ödeme başlatılamadı. Güncel durumunu görmek için faturayı yenileyin.",
+      "excluded_contract": "Bu faturanın sözleşmesi otomatik ödemelerin dışında tutulduğu için tahsilat yapılmadı. Müşteriye bu ödeme bildirildiyse, ödemenin gerçekleşmeyeceğine dair bir e-posta gönderildi."
     }
   },
   "reminders": {

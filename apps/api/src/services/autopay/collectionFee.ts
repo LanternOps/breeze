@@ -2,7 +2,7 @@ import { autopayFeeTermsSchema, type AutopayTerms } from '@breeze/shared';
 import { and, desc, eq } from 'drizzle-orm';
 import { orgAutopayConsents } from '../../db/schema';
 import type { Tx } from './types';
-import { enqueueAutopayStaffNotifications } from './staffNotifications';
+import { enqueueAutopayStaffAttention } from './staffNotifications';
 import {fromMinorUnits,toMinorUnits} from '../stripeMoney';
 import type {FeeQuote} from './processingFee';
 
@@ -37,7 +37,7 @@ export async function acceptedCollectionFee(tx: Tx, input: {
 }): Promise<FeeQuote | null> {
   const consent = await latestAutopayConsent(tx, input);
   const missingConsent=async()=>{
-    await enqueueAutopayStaffNotifications(tx,{orgId:input.orgId,partnerId:input.partnerId,partnerOnly:true,
+    await enqueueAutopayStaffAttention(tx,{orgId:input.orgId,partnerId:input.partnerId,partnerOnly:true,
       event:'autopay.needs_attention',dedupeKey:`autopay:consent_required:${input.enrollmentId}:${input.generation}:${input.methodId}`,
       message:'Automatic payment authorization is missing for the saved method. Request updated authorization before collecting.'});
     return null;
@@ -49,7 +49,7 @@ export async function acceptedCollectionFee(tx: Tx, input: {
   const none: FeeQuote = { feeAmount:'0.00', kind:'none', appliedBps:null, reason:'disabled' };
   if (!terms || !/^(?:0|[1-9]\d?)\.\d{2}$/.test(terms.achFeeAmount)
     || toMinorUnits(terms.achFeeAmount, 'USD') > 2500) {
-    await enqueueAutopayStaffNotifications(tx, {orgId:input.orgId, partnerId:input.partnerId,
+    await enqueueAutopayStaffAttention(tx, {orgId:input.orgId, partnerId:input.partnerId,
       partnerOnly:true, event:'autopay.needs_attention',
       dedupeKey:`autopay:invalid_fee_terms:${consent.id}`,
       message:'Accepted automatic payment fee terms are invalid. No processing fee will be charged; request updated authorization.'});

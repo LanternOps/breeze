@@ -1,4 +1,4 @@
-import { autopayTermsSnapshotSchema } from '@breeze/shared';
+import { autopayTermsSnapshotSchema, formatPaymentMethod } from '@breeze/shared';
 import { collectionFenced, pendingInvoiceControl } from './collectionControl';
 import { and, eq, inArray, sql, asc, gt } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
@@ -140,9 +140,7 @@ export async function planAutopayForInvoice(tx: Tx, invoiceId: string, refresh =
     issuedAt: previous?.issuedAt ?? invoice.updatedAt.toISOString(), offsetDays: settings.autopayOffsetDays.value,
     rule: settings.autopayOffsetRule.value, cap, methodType: method.type, methodId: method.id,
     last4: method.type === 'card' ? method.cardLast4 ?? '' : method.bankLast4 ?? '',
-    methodLabel: method.type === 'card'
-      ? `${method.cardBrand ?? 'Card'} ••${method.cardLast4 ?? ''}`
-      : `${method.bankName ?? 'Bank'} ••${method.bankLast4 ?? ''}`,
+    methodLabel: formatPaymentMethod(method),
     accountHolderType: method.accountHolderType, noticeLeadDays: leadDays,
     principal: invoice.balance, currency: invoice.currencyCode, feeAmount: fee?.feeAmount ?? '0.00',
     feeKind: fee?.kind ?? 'none', cardFeeBps: settings.cardFeeBps.value,

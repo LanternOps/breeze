@@ -6,6 +6,7 @@ import { PERMISSIONS } from '../../services/permissions';
 import { listActiveTicketDrafts, sendTicketDraft, discardTicketDraft, postProposalNote } from '../../services/ticketService';
 import { getLatestTicketProposal } from '../../services/aiTicketProposal';
 import { getScopedTicketOr404, actorFrom, handleServiceError } from './tickets';
+import { ERROR_CODES } from '@breeze/shared';
 
 // P2-4 (#4191), Task A10 — human draft routes: list a ticket's active AI
 // drafts, "send as me" a reply draft, or discard one (either kind — discard
@@ -34,10 +35,10 @@ ticketAiDraftsRoutes.get(
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
     if (auth.scope === 'organization' && !auth.orgId) {
-      return c.json({ error: 'Organization context required' }, 403);
+      return c.json({ error: 'Organization context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     const found = await getScopedTicketOr404(auth, id);
-    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+    if (!found) return c.json({ error: 'Ticket not found', code: ERROR_CODES.NOT_FOUND }, 404);
 
     const drafts = await listActiveTicketDrafts(id);
     return c.json({ data: drafts });
@@ -55,10 +56,10 @@ ticketAiDraftsRoutes.post(
     const { id, draftId } = c.req.valid('param');
     const body = c.req.valid('json');
     if (auth.scope === 'organization' && !auth.orgId) {
-      return c.json({ error: 'Organization context required' }, 403);
+      return c.json({ error: 'Organization context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     const found = await getScopedTicketOr404(auth, id);
-    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+    if (!found) return c.json({ error: 'Ticket not found', code: ERROR_CODES.NOT_FOUND }, 404);
 
     try {
       const result = await sendTicketDraft(id, draftId, body.content, actorFrom(c));
@@ -78,10 +79,10 @@ ticketAiDraftsRoutes.post(
     const auth = c.get('auth');
     const { id, draftId } = c.req.valid('param');
     if (auth.scope === 'organization' && !auth.orgId) {
-      return c.json({ error: 'Organization context required' }, 403);
+      return c.json({ error: 'Organization context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     const found = await getScopedTicketOr404(auth, id);
-    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+    if (!found) return c.json({ error: 'Ticket not found', code: ERROR_CODES.NOT_FOUND }, 404);
 
     try {
       const result = await discardTicketDraft(id, draftId);
@@ -113,10 +114,10 @@ ticketAiDraftsRoutes.get(
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
     if (auth.scope === 'organization' && !auth.orgId) {
-      return c.json({ error: 'Organization context required' }, 403);
+      return c.json({ error: 'Organization context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     const found = await getScopedTicketOr404(auth, id);
-    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+    if (!found) return c.json({ error: 'Ticket not found', code: ERROR_CODES.NOT_FOUND }, 404);
     return c.json({ data: await getLatestTicketProposal(id) });
   }
 );
@@ -132,10 +133,10 @@ ticketAiDraftsRoutes.post(
     const { id } = c.req.valid('param');
     const { runId, content } = c.req.valid('json');
     if (auth.scope === 'organization' && !auth.orgId) {
-      return c.json({ error: 'Organization context required' }, 403);
+      return c.json({ error: 'Organization context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     const found = await getScopedTicketOr404(auth, id);
-    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+    if (!found) return c.json({ error: 'Ticket not found', code: ERROR_CODES.NOT_FOUND }, 404);
     try {
       const { comment } = await postProposalNote(id, runId, content, actorFrom(c));
       return c.json({ data: { commentId: comment.id } }, 201);

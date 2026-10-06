@@ -103,8 +103,10 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     // SEC-150 appends the hour quantum of the requested `expires_at`, because
     // Stripe refuses an idempotent replay whose parameters moved — asserted
     // through checkoutSessionExpiry() so a drift between the two would fail here
-    // rather than as an idempotency_key_in_use in production.
-    expect(call[1].idempotencyKey).toBe(`inv_${inv.id}_10000_bal_e${checkoutSessionExpiry().quantum}`);
+    // rather than as an idempotency_key_in_use in production. FP-20 added the
+    // PaymentIntent description, a parameter change, hence the `_pd` key family.
+    expect(call[1].idempotencyKey).toBe(`inv_${inv.id}_10000_bal_e${checkoutSessionExpiry().quantum}_pd`);
+    expect(call[0].payment_intent_data?.description).toMatch(/^Invoice /);
     expect(call[0].expires_at).toBe(checkoutSessionExpiry().expiresAt);
 
     const mappings = await withSystemDbAccessContext(() =>

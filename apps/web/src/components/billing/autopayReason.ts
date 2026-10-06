@@ -10,9 +10,12 @@ const reasonKeys: Record<string, string> = {
   consent_required:'autopay.reasons.consent_required',
   method_not_usable:'autopay.reasons.method_not_usable', over_cap:'autopay.reasons.over_cap',
   above_authorized_cap:'autopay.reasons.above_authorized_cap',
+  issued_before_authorization:'autopay.reasons.issued_before_authorization',
   cap_currency_mismatch:'autopay.reasons.cap_currency_mismatch',ach_currency_unsupported:'autopay.reasons.ach_currency_unsupported',
   excluded_contract:'autopay.reasons.excluded_contract',excluded_invoice:'autopay.reasons.excluded_invoice',
   charging_disabled:'autopay.reasons.charging_disabled',stripe_unavailable:'autopay.reasons.stripe_unavailable',
+  bank_unverified:'autopay.reasons.bank_unverified',charging_on_hold:'autopay.reasons.charging_on_hold',
+  service_unavailable:'autopay.reasons.service_unavailable',
   skip:'autopay.reasons.skip',exclude:'autopay.reasons.exclude',stop:'autopay.reasons.stop',
   no_billing_contact:'autopay.reasons.no_billing_contact',delivery_failed:'autopay.reasons.delivery_failed',
 };
@@ -34,6 +37,7 @@ const refusedKeys: Record<string, string> = {
   retry_not_due: 'autopay.chargeRefused.retry_not_due', not_payable: 'autopay.chargeRefused.not_payable',
   nothing_to_pay: 'autopay.chargeRefused.nothing_to_pay', enrollment_inactive: 'autopay.chargeRefused.enrollment_inactive',
   schedule_inactive: 'autopay.chargeRefused.schedule_inactive', schedule_required: 'autopay.chargeRefused.schedule_inactive',
+  excluded_contract: 'autopay.chargeRefused.excluded_contract', no_eligible_notice: 'autopay.chargeRefused.no_eligible_notice',
   // The route's own fence answers INVALID_STATE with this message as `error`.
   'Invoice has no eligible notice': 'autopay.chargeRefused.no_eligible_notice',
 };
@@ -44,10 +48,20 @@ function chargeBody(body: unknown): { outcome?: string; reason: string; code?: s
   return { outcome: typeof value.outcome === 'string' ? value.outcome : undefined,
     reason: code && code !== 'INVALID_STATE' ? code : error, code };
 }
+/** FP-17: why a disabled Charge now is disabled (the API's chargeBlockedReason), or null. */
+export function chargeBlockedKey(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  return refusedKeys[reason] ?? reasonKeys[reason] ?? null;
+}
 /** A decline, confirmation request, cancellation or capture changed the invoice: refresh it. */
 export function chargeNowAttempted(body: unknown): boolean {
   const { outcome } = chargeBody(body);
   return !!outcome && ATTEMPTED_OUTCOMES.has(outcome);
+}
+/** No usable answer from Charge now (network failure, 5xx, unreadable or missing body): whether
+ * the provider charged is unknown, so the caller must not suggest retrying and must refresh. */
+export function chargeNowResultUnknown(error: { status: number; body?: unknown }): boolean {
+  return error.status !== 401 && (error.status === 0 || error.status >= 500 || error.body == null);
 }
 export function chargeNowSuccessKey(body: unknown): string {
   const state = (body as { data?: { state?: unknown } } | null)?.data?.state;
@@ -60,7 +74,8 @@ export function chargeNowFailureKey(body: unknown): string | undefined {
   // Stripe reports 3DS as requires_payment_method + authentication_required.
   if (outcome === 'requires_action' || reason === 'authentication_required') return 'autopay.chargeOutcome.requiresAction';
   if (outcome === 'failed') return declineKeys[reason] ?? 'autopay.chargeOutcome.declined';
-  if (outcome === 'canceled') return 'autopay.chargeOutcome.canceled';
+  // A cancel before confirm carries its reason (a cap or authorization check): name it (R3).
+  if (outcome === 'canceled') return refusedKeys[reason] ?? reasonKeys[reason] ?? 'autopay.chargeOutcome.canceled';
   if (outcome === 'unapplied') return 'autopay.chargeOutcome.unapplied';
   if (refusedKeys[reason]) return refusedKeys[reason];
   if (reasonKeys[reason]) return reasonKeys[reason];

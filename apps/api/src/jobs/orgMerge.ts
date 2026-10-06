@@ -16,6 +16,13 @@
  *      order (cosmetic — a stale id left there is merely ignored by the list
  *      endpoint's ordering, matching no row, never a correctness bug).
  *
+ * Before any of that, and before `executeOrgMerge` fences anything, the job
+ * re-checks the stored requester against live rows
+ * (`services/orgMergePerformerAuthority.ts`): a user who was deactivated,
+ * removed from the partner, or lost `organizations:write` or reach over either
+ * org since enqueueing fails the job terminally with an `org.merge.failed`
+ * audit and no data touched.
+ *
  * Module shape mirrors `jobs/tenantErasure.ts` verbatim: a lazily-created
  * Queue/Worker singleton pair, `jobId = org-merge-<loserOrgId>` so a
  * double-trigger (a second admin click, a route retry) collapses into the
@@ -45,7 +52,8 @@
  * getting that backwards would resurrect an already-emptied org.
  */
 
-import { Queue, Worker, Job } from 'bullmq';
+import { Queue, Worker, Job, UnrecoverableError } from 'bullmq';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
 import { enqueueOrReplaceStale } from '../services/bullmqUtils';
@@ -53,6 +61,7 @@ import { executeOrgMerge, type ExecuteOrgMergeInput, type OrgMergeResult } from 
 import { enqueueTenantErasure } from './tenantErasure';
 import { createAuditLog, type CreateAuditLogParams } from '../services/auditService';
 import { removeOrgFromPartnerOrder } from '../services/orgOrdering';
+import { resolveMergePerformerRefusal } from '../services/orgMergePerformerAuthority';
 import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'org-merge';
@@ -127,72 +136,101 @@ async function writeAudit(entry: CreateAuditLogParams): Promise<void> {
   }
 }
 
-export function createOrgMergeWorker(): Worker {
-  return new Worker(
-    QUEUE_NAME,
-    async (job: Job<OrgMergeJobPayload>) => {
-      if (job.name !== JOB_NAME) {
-        console.warn(`[OrgMerge] Ignoring unknown job name: ${job.name}`);
-        return { skipped: true };
-      }
-      const { loserOrgId, survivorOrgId, partnerId, performedBy, performedByEmail } = job.data;
-      const input: ExecuteOrgMergeInput = { loserOrgId, survivorOrgId, partnerId, performedBy, performedByEmail };
+/** The worker's job processor. Exported so it can be driven without a live queue. */
+export async function processOrgMergeJob(job: Pick<Job<OrgMergeJobPayload>, 'name' | 'id' | 'data'>) {
+  if (job.name !== JOB_NAME) {
+    console.warn(`[OrgMerge] Ignoring unknown job name: ${job.name}`);
+    return { skipped: true };
+  }
+  const { loserOrgId, survivorOrgId, partnerId, performedBy, performedByEmail } = job.data;
+  const input: ExecuteOrgMergeInput = { loserOrgId, survivorOrgId, partnerId, performedBy, performedByEmail };
 
-      // Phase B. A throw here propagates untouched — see the failure-mode
-      // note in the module docstring. Nothing below this line may run for a
-      // merge that did not commit.
-      const result: OrgMergeResult = await executeOrgMerge(input);
-
-      // Phase C — dispose.
-      await writeAudit({
-        orgId: null,
-        actorType: 'user',
-        actorId: performedBy,
-        actorEmail: performedByEmail,
-        action: 'org.merge.completed',
-        resourceType: 'organization',
-        resourceId: loserOrgId,
-        details: {
-          survivorOrgId,
-          mergeEventId: result.mergeEventId,
-          tables: result.tables,
-          warnings: result.warnings,
-        },
-        result: 'success',
-      });
-
-      const erasureJob = await enqueueTenantErasure({ orgId: loserOrgId, performedBy, performedByEmail });
-
-      await writeAudit({
-        orgId: null,
-        actorType: 'user',
-        actorId: performedBy,
-        actorEmail: performedByEmail,
-        action: 'org.merge.erasure_enqueued',
-        resourceType: 'organization',
-        resourceId: loserOrgId,
-        details: { erasureJobId: erasureJob.id },
-        result: 'success',
-      });
-
-      // Cosmetic, best-effort: never lets a failure here mask a completed
-      // merge + enqueued erasure, which are the parts that actually matter.
-      try {
-        await removeOrgFromPartnerOrder(partnerId, loserOrgId);
-      } catch (err) {
-        console.error(
-          `[OrgMerge] failed to remove org ${loserOrgId} from partner ${partnerId}'s saved order:`,
-          err,
-        );
-      }
-
-      return { ...result, jobId: job.id };
-    },
-    {
-      connection: getBullMQConnection(),
-      concurrency: 1,
-    },
+  // The route authorized the requester when it enqueued this job; the job
+  // may run later. Re-check the stored performer against live rows (still
+  // active, still in this partner or a platform admin, still holding
+  // organizations:write over both orgs) before anything is fenced. A
+  // lookup failure throws out of here with nothing touched. A refusal is
+  // terminal: re-running the job cannot make the performer qualify again.
+  const refusal = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => resolveMergePerformerRefusal(input)),
   );
+  if (refusal) {
+    await writeAudit({
+      orgId: null,
+      actorType: 'user',
+      actorId: performedBy,
+      actorEmail: performedByEmail,
+      action: 'org.merge.failed',
+      resourceType: 'organization',
+      resourceId: loserOrgId,
+      details: {
+        survivorOrgId,
+        reason: 'performer_no_longer_authorized',
+        performerCheck: refusal,
+      },
+      result: 'failure',
+    });
+    throw new UnrecoverableError(
+      `Organization merge not run: the requesting user is no longer authorized to merge these organizations (${refusal})`,
+    );
+  }
+
+  // Phase B. A throw here propagates untouched — see the failure-mode
+  // note in the module docstring. Nothing below this line may run for a
+  // merge that did not commit.
+  const result: OrgMergeResult = await executeOrgMerge(input);
+
+  // Phase C — dispose.
+  await writeAudit({
+    orgId: null,
+    actorType: 'user',
+    actorId: performedBy,
+    actorEmail: performedByEmail,
+    action: 'org.merge.completed',
+    resourceType: 'organization',
+    resourceId: loserOrgId,
+    details: {
+      survivorOrgId,
+      mergeEventId: result.mergeEventId,
+      tables: result.tables,
+      warnings: result.warnings,
+    },
+    result: 'success',
+  });
+
+  const erasureJob = await enqueueTenantErasure({ orgId: loserOrgId, performedBy, performedByEmail });
+
+  await writeAudit({
+    orgId: null,
+    actorType: 'user',
+    actorId: performedBy,
+    actorEmail: performedByEmail,
+    action: 'org.merge.erasure_enqueued',
+    resourceType: 'organization',
+    resourceId: loserOrgId,
+    details: { erasureJobId: erasureJob.id },
+    result: 'success',
+  });
+
+  // Cosmetic, best-effort: never lets a failure here mask a completed
+  // merge + enqueued erasure, which are the parts that actually matter.
+  try {
+    await removeOrgFromPartnerOrder(partnerId, loserOrgId);
+  } catch (err) {
+    console.error(
+      `[OrgMerge] failed to remove org ${loserOrgId} from partner ${partnerId}'s saved order:`,
+      err,
+    );
+  }
+
+  return { ...result, jobId: job.id };
+}
+
+export function createOrgMergeWorker(): Worker {
+  return new Worker(QUEUE_NAME, processOrgMergeJob, {
+    connection: getBullMQConnection(),
+    concurrency: 1,
+  });
 }
 
 export async function initializeOrgMergeWorker(): Promise<void> {

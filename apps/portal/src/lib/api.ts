@@ -528,9 +528,14 @@ export function invoiceAutopayInput(saveForAutopay: boolean, disclosure?: Invoic
 import type { AutopayConfirmationRelease, BankAutopayOffer, BankPayInput, InvoicePayResult } from '@breeze/shared';
 export type { AutopayConfirmationRelease, BankAutopayOffer, BankPayInput, InvoicePayResult } from '@breeze/shared';
 
+import type { CustomerInvoiceAutopayStatus } from '@breeze/shared';
 export interface InvoiceDetail {
   bankAutopay?: BankAutopayOffer | null;
   autopay?: InvoiceAutopayDisclosure | null;
+  /** D-4: how this invoice will be paid automatically, if it will be. */
+  autopayStatus?: CustomerInvoiceAutopayStatus | null;
+  /** Automatic payments are on with a usable method: the page offers no setup. */
+  autopayEnrolled?: boolean;
   // The detail header is a separate serialization boundary on the API and
   // does not carry the list's derived `title`.
   invoice: Omit<InvoiceSummary, 'title'> & {
@@ -735,6 +740,8 @@ export interface PublicQuoteDetail {
 export interface PublicInvoiceDetail {
   bankAutopay?: BankAutopayOffer | null;
   autopay?: InvoiceAutopayDisclosure | null;
+  autopayStatus?: CustomerInvoiceAutopayStatus | null;
+  autopayEnrolled?: boolean;
   invoice: {
     id: string;
     invoiceNumber: string | null;

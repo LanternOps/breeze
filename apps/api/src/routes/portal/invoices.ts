@@ -1,12 +1,15 @@
+import { captureException } from '../../services/sentry';
 import {invoicePaySchema,getBankAutopayOffer,startInvoiceBankSetup,collectAfterBankSetup} from '../../services/autopay/bankPayment';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
-import { getInvoiceAutopayOffer, prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave } from '../../services/autopay/payAndSave';
-import { assertNoActiveCollection, readInFlightCollection } from '../../services/autopay/reservation';
+import { getInvoiceAutopayOffer, prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave, withPaymentDescription } from '../../services/autopay/payAndSave';
+import { paymentIntentDescription } from '../../services/autopay/paymentDescription';
+import { assertNoActiveCollection, holdsClientMoney, readInFlightCollection } from '../../services/autopay/reservation';
 import { releaseInvoiceConfirmation } from '../../services/autopay/confirmPayment';
+import { getCustomerInvoiceAutopay } from '../../services/autopay/customerInvoiceStatus';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { and, desc, eq, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, getTableColumns, ne, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { invoices, invoiceStripePayments, partners, stripeConnectAccounts } from '../../db/schema';
 import { portalBranding } from '../../db/schema/portal';
@@ -178,13 +181,28 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
     console.error('[portal/invoices] in-flight collection lookup failed', { invoiceId: id, err });
   }
 
+  // D-4: how this invoice will be paid; an enrolled client is not offered setup again.
+  // R9: when the status can't be read, enrollment is unknown, so fail closed: offer nothing
+  // that saves a method (it could silently replace an enrolled client's).
+  let customerAutopay: Awaited<ReturnType<typeof getCustomerInvoiceAutopay>> = { enrolled: false, status: null };
+  let autopayKnown = true;
+  try {
+    customerAutopay = await getCustomerInvoiceAutopay(db, { invoiceId: id, orgId: auth.user.orgId });
+  } catch (err) {
+    autopayKnown = false;
+    console.error('[portal/invoices] autopay status lookup failed', { invoiceId: id, err });
+    captureException(err, undefined, { autopay_phase: 'invoice_status' });
+  }
+
   return c.json({
     invoice: result.invoice,
     lines: result.lines.map(toCustomerInvoiceLine),
     onlinePaymentAvailable,
     collectionInProgress,
-    autopay: await getInvoiceAutopayOffer(auth.user.orgId),
-    bankAutopay: await runOutsideDbContext(()=>getBankAutopayOffer(id,auth.user.orgId)),
+    autopayStatus: customerAutopay.status,
+    autopayEnrolled: customerAutopay.enrolled,
+    autopay: customerAutopay.enrolled || !autopayKnown ? null : await getInvoiceAutopayOffer(auth.user.orgId, id),
+    bankAutopay: autopayKnown ? await runOutsideDbContext(()=>getBankAutopayOffer(id,auth.user.orgId)) : null,
     branding: {
       partnerName: partner?.name ?? null,
       logoUrl: brand?.logoUrl ?? null,
@@ -261,7 +279,8 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   const { id } = c.req.valid('param');
 
   const [inv] = await withSystemDbAccessContext(() =>
-    db.select().from(invoices)
+    db.select({ ...getTableColumns(invoices), partnerName: partners.name }).from(invoices)
+      .leftJoin(partners, eq(partners.id, invoices.partnerId))
       .where(and(eq(invoices.id, id), eq(invoices.orgId, auth.user.orgId), ne(invoices.status, 'draft')))
       .limit(1)
   );
@@ -283,7 +302,13 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   // the customer is asked to retry rather than handed a link nobody can kill.
   // Elects its own system scope — never wrap it in a bare context here (#5611).
   try {
-    await withSystemDbAccessContext(() => assertNoActiveCollection(db, inv.id));
+    await withSystemDbAccessContext(async () => {
+      await assertNoActiveCollection(db, inv.id);
+      // Twin of createInvoicePayLink's guard: no card Pay while captured money is unapplied (B1-2).
+      if (await holdsClientMoney(db, inv.id)) {
+        throw new InvoiceServiceError('A payment for this invoice was received and is being reviewed', 409, 'COLLECTION_IN_PROGRESS');
+      }
+    });
     await assertNoPendingRevocation(inv.id);
   } catch (err) {
     if (err instanceof InvoiceServiceError && (err.code === REVOCATION_PENDING_CODE || err.code === 'COLLECTION_IN_PROGRESS')) {
@@ -371,7 +396,8 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     // to `revoked` on the strength of this pin. Adding a delayed method here
     // requires changing that mapping first. Mirror: services/invoiceCheckout.ts.
     payment_method_types: ['card'],
-    ...cardSaveStripeFields(capture),
+    // FP-20: the PaymentIntent names the invoice and MSP, as autopay ones do.
+    ...withPaymentDescription(cardSaveStripeFields(capture), paymentIntentDescription(inv.invoiceNumber, inv.partnerName)),
     line_items: [{
       price_data: {
         currency: inv.currencyCode.toLowerCase(),
@@ -408,7 +434,8 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     // `_e<quantum>` (SEC-150): `expires_at` is part of the request and Stripe
     // refuses an idempotent replay whose parameters moved, so the hour quantum
     // is folded into the key — see checkoutSessionExpiry().
-    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${capture ? `_save_${capture.id}` : ''}_e${expiryQuantum}`,
+    // `_pd`: the request carries a PaymentIntent description (see services/invoiceCheckout.ts).
+    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${capture ? `_save_${capture.id}` : ''}_e${expiryQuantum}_pd`,
   }));
   } catch (err) {
     // Customer-facing path (spec §10): a currency the partner's account cannot

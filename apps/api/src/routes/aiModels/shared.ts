@@ -16,6 +16,9 @@ import { ByoEndpointRejected } from '../../services/aiModels/gateway/byoEndpoint
 import { enqueueConnectionSync, enqueueOfferingVerification } from '../../jobs/aiModelDiscoveryWorker';
 import { ConnectionCheckError } from '../../services/aiModels/connectionProbe';
 import { captureException } from '../../services/sentry';
+import { runOutsideDbContext } from '../../db';
+import { getRedis } from '../../services/redis';
+import { rateLimiter } from '../../services/rate-limit';
 
 // Fixed-length tuples, not MiddlewareHandler[]: Hono's typed route overloads
 // only accept a spread whose length is known.
@@ -30,6 +33,26 @@ export const partnerWrite: readonly [MiddlewareHandler, MiddlewareHandler] = [
   requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action),
   requireMfa(),
 ];
+
+/**
+ * Per-partner sliding-window limit for registry actions that queue upstream
+ * work (discovery, fidelity harness). Runs after `partnerWrite`; a request with
+ * no partner context falls through to the handler, whose `requirePartnerWide`
+ * refuses it. The Redis round-trip runs outside the request's DB transaction.
+ */
+export function partnerRateLimit(bucket: string, limit: number, windowSeconds: number): MiddlewareHandler {
+  return async (c, next) => {
+    const partnerId = c.get('auth')?.partnerId;
+    if (partnerId) {
+      const result = await runOutsideDbContext(() => rateLimiter(getRedis(), `rl:ai-models:${bucket}:${partnerId}`, limit, windowSeconds));
+      if (!result.allowed) {
+        c.header('Retry-After', String(Math.max(1, Math.ceil((result.resetAt.getTime() - Date.now()) / 1000))));
+        return c.json({ error: 'Too many requests. Try again later.', code: 'rate_limited' }, 429);
+      }
+    }
+    await next();
+  };
+}
 
 /** The gate the retired /ai/provider API used: a partner token with orgAccess 'all' (or system with a partner context). */
 export function requirePartnerWide(c: Context): { partnerId: string; userId: string } {

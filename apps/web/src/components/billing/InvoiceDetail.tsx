@@ -1,4 +1,4 @@
-import { autopayReasonKey, chargeNowAttempted, chargeNowFailureKey, chargeNowSuccessKey } from './autopayReason';
+import { autopayReasonKey, chargeBlockedKey, chargeNowAttempted, chargeNowFailureKey, chargeNowResultUnknown, chargeNowSuccessKey } from './autopayReason';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
@@ -106,16 +106,25 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     // The charge already happened (or was attempted): a failed refetch must not read as a failed charge.
     const reloadAfterCharge = () => Promise.allSettled([Promise.resolve(onChanged()), loadPayments()]);
     try {
+      // The route confirms with Stripe synchronously: a lost or unreadable response can follow
+      // money moving, so it is reported as an unknown result, never "try again" (R4).
       await runAction({ request: () => fetchWithAuth(`/invoices/${invoice.id}/autopay/charge-now`, { method: 'POST' }),
-        errorFallback: t('autopay.chargeFailed'),
+        errorFallback: t('autopay.chargeResultUnknown'),
         successMessage: data => t(/* i18n-dynamic */ chargeNowSuccessKey(data)),
         friendly: (_code, _message, body) => {
           const key = chargeNowFailureKey(body);
           return key ? t(/* i18n-dynamic */ key) : undefined;
         },
+        suppressErrorToast: status => status >= 500,
         onUnauthorized: UNAUTHORIZED });
       await reloadAfterCharge();
     } catch (error) {
+      if (error instanceof ActionError && chargeNowResultUnknown(error)) {
+        // Network failures and unreadable bodies were already toasted with the fallback.
+        if (error.status >= 500) showToast({ message: t('autopay.chargeResultUnknown'), type: 'warning' });
+        await reloadAfterCharge();
+        return;
+      }
       if (error instanceof ActionError && chargeNowAttempted(error.body)) await reloadAfterCharge();
       handleActionError(error, t('autopay.chargeFailed'));
     }
@@ -242,6 +251,8 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const canVoid = invoice.status !== 'void' && invoice.status !== 'draft';
   // Same statuses the collection service accepts; a paid or void invoice has nothing to charge.
   const autopayChargeable = ['sent', 'partially_paid', 'overdue'].includes(invoice.status) && Number(invoice.balance) > 0;
+  const autopayStateText = detail.autopay ? t(/* i18n-dynamic */ `autopay.states.${detail.autopay.state}`, { defaultValue: detail.autopay.state }) : '';
+  const autopayReasonText = detail.autopay?.reason ? t(/* i18n-dynamic */ autopayReasonKey(detail.autopay.reason), {nsSeparator:false}) : '';
 
   // Deposit-aware charge amount — matches what the server's pay route charges
   // (computeChargeNow, the single source of truth), so the deposit strip never
@@ -549,8 +560,9 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
         <div className="space-y-4">
           {detail.autopay && <section className="space-y-2 rounded-lg border bg-card p-4" data-testid="autopay-invoice-panel" aria-label={t('autopay.title')} aria-busy={autopaySaving}>
             <h3 className="font-semibold">{t('autopay.title')}</h3>
-            <p className="text-sm">{t(/* i18n-dynamic */ `autopay.states.${detail.autopay.state}`, { defaultValue: detail.autopay.state })}</p>
-            {detail.autopay.reason && <p className="text-sm text-muted-foreground">{t(/* i18n-dynamic */ autopayReasonKey(detail.autopay.reason), {nsSeparator:false})}</p>}
+            <p className="text-sm">{autopayStateText}</p>
+            {/* FP-18 (P-16): never repeat the state line (excluded: "Excluded by provider" once). */}
+            {autopayReasonText && autopayReasonText !== autopayStateText && <p className="text-sm text-muted-foreground">{autopayReasonText}</p>}
             {detail.autopay.collectOn && <p className="text-sm">{t('autopay.chargeDate', { date: formatDate(detail.autopay.collectOn) })}</p>}
             <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" data-testid="autopay-invoice-excluded"
               checked={detail.autopay.excluded} disabled={autopaySaving || !can('invoices', 'write') || !detail.autopay.canExclude}
@@ -558,6 +570,9 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             {autopayChargeable && <button type="button" data-testid="autopay-charge-now" className="rounded-md border px-3 py-2 text-sm disabled:opacity-50"
               disabled={chargePending || !can('invoices', 'write') || !detail.autopay.canChargeNow || !detail.autopay.chargePreview}
               onClick={() => setChargeConfirmOpen(true)}>{t('autopay.chargeNow')}</button>}
+            {autopayChargeable && !detail.autopay.canChargeNow && chargeBlockedKey(detail.autopay.chargeBlockedReason) && (
+              <p className="text-xs text-muted-foreground" data-testid="autopay-charge-blocked">
+                {t(/* i18n-dynamic */ chargeBlockedKey(detail.autopay.chargeBlockedReason)!, {nsSeparator:false})}</p>)}
           </section>}
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-detail-summary">
             <div className="mb-3 flex items-center justify-between">

@@ -1,3 +1,4 @@
+import { clientNameFor } from './billingEmail';
 import { isCollectionProgrammingError, reportCollectionError } from './collectionErrors';
 import { db, withSystemDbAccessContext } from '../../db';
 import { assertNoHeldDbContextForStripe } from '../stripeSettle';
@@ -13,6 +14,7 @@ import { enqueueBillingNotice } from './noticeOutbox';
 import { renderBillingNotice } from './renderBillingNotice';
 import { enqueueAutopayStaffNotifications, type AutopayStaffNotice } from './staffNotifications';
 import type { Tx } from './types';
+import { noticeChargeNotMade } from './notChargedNotice';
 
 // Controls may fence new collections, but terminal schedule outcomes are history.
 const CONTROL_SCHEDULE_STATES: Array<(typeof invoiceAutopaySchedules.$inferSelect)['state']> =
@@ -165,9 +167,14 @@ export async function finalizeInvoiceControl(tx: Tx, invoice: typeof invoices.$i
   if (!isControllableSchedule(schedule.state)) return { status: kind === 'skip' ? 'skipped' : 'excluded' };
   await tx.update(invoiceAutopaySchedules).set({ state, nextAttemptAt: null, stateReason: kind })
     .where(eq(invoiceAutopaySchedules.id, schedule.id));
-  if (kind === 'exclude') return { status: 'excluded' };
+  if (kind === 'exclude') {
+    // D-19: a charge the client was already told about will not happen (one shared notice shape).
+    await noticeChargeNotMade(tx, { invoiceId: invoice.id, reason: 'exclude' });
+    return { status: 'excluded' };
+  }
   await enqueueSkippedInvoiceConfirmation(tx, invoice);
-  const staffNotice: AutopayStaffNotice = { orgId: invoice.orgId, partnerId: invoice.partnerId,
+  // F-6: name the invoice (its number and link), like every invoice-scoped staff notice.
+  const staffNotice: AutopayStaffNotice = { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
     event: 'autopay.skipped', dedupeKey: `autopay:${invoice.id}:skipped`,
     message: 'The client skipped automatic payment for this invoice.' };
   await enqueueAutopayStaffNotifications(tx, staffNotice);
@@ -181,16 +188,15 @@ async function enqueueSkippedInvoiceConfirmation(tx: Tx, invoice: typeof invoice
   const recipient = resolveBillingEmail(org.billingContact);
   if (!recipient) return;
   const link = await getOrMintInvoiceLink(invoice, tx);
+  // A reminder-kind confirmation with locked wording (partner reminder copy would be untrue).
   const rendered = await renderBillingNotice('payment_reminder', { partnerId: invoice.partnerId, orgId: invoice.orgId,
     mandatory: {}, frozen: { amount: invoice.balance, currency: invoice.currencyCode, dueDate: invoice.dueDate },
     data: { invoiceNumber: invoice.invoiceNumber, balance: invoice.balance, currency: invoice.currencyCode,
       dueDate: invoice.dueDate, daysOverdue: 0, payLink: buildPublicInvoiceUrl(link.token),
-      partnerName: partner.name, orgName: org.name, partnerSettings: partner.settings } }, tx);
-  const prefix = 'Automatic payment has been skipped for this invoice. You can pay using the invoice link.';
+      partnerName: partner.name, orgName: org.name, clientName: clientNameFor(org.billingContact, org.name),
+      partnerSettings: partner.settings, variant: 'skipped' } }, tx);
   await enqueueBillingNotice(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
-    kind: 'payment_reminder', seq: 0, dedupeKey: `invoice:${invoice.id}:skip:1`, toEmail: recipient,
-    rendered: { ...rendered, subject: `Automatic payment skipped — ${invoice.invoiceNumber}`,
-      html: `<p>${prefix}</p>${rendered.html}`, text: `${prefix}\n\n${rendered.text}` } });
+    kind: 'payment_reminder', seq: 0, dedupeKey: `invoice:${invoice.id}:skip:1`, toEmail: recipient, rendered });
 }
 
 /** Recover fences using the same mapping-bound, outside-transaction provider path

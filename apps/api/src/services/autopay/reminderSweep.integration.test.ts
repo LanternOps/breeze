@@ -382,3 +382,42 @@ describe('stale reminder replacement', () => {
     expect(await reminderRows(f.created[0]!.id)).toHaveLength(0);
   });
 });
+
+// G1/G2: exclusive outcomes. While a schedule is active the invoice will still be charged, so
+// no reminder goes out, however late or deferred it is (a deferral that outlasts the grace is
+// ended by collection with the not-charged notice). Once it has ended, reminders resume.
+describe('an active automatic payment covers the invoice until it ends (G1, G2)', () => {
+  it.each([
+    ['scheduled', 'stripe_unavailable'], ['scheduled', 'method_not_usable'], ['scheduled', 'charging_disabled'], ['scheduled', null],
+    ['retry_scheduled', 'charging_disabled'], ['retry_scheduled', 'soft'],
+  ] as const)('%s for an earlier day (%s) gets no reminder', async (state, reason) => {
+    const f = await fixture([state]);
+    const target = f.created[0]!;
+    await withSystemDbAccessContext(() => db.update(invoiceAutopaySchedules).set({ collectOn: '2026-09-28', stateReason: reason })
+      .where(eq(invoiceAutopaySchedules.invoiceId, target.id)));
+    await withSystemDbAccessContext(() => db.update(invoices).set({ dueDate: '2026-09-28' }).where(eq(invoices.id, target.id)));
+    expect((await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'))).enqueued).toBe(0);
+    expect(await reminderRows(target.id)).toEqual([]);
+  });
+  it.each(['charging_on_hold', 'service_unavailable', 'bank_unverified'] as const)('an automatic payment ended past the grace (%s) is followed by reminders', async reason => {
+    const f = await fixture(['scheduled']);
+    const target = f.created[0]!;
+    await withSystemDbAccessContext(() => db.update(invoiceAutopaySchedules).set({ state: 'cancelled', stateReason: reason, collectOn: '2026-09-28' })
+      .where(eq(invoiceAutopaySchedules.invoiceId, target.id)));
+    await withSystemDbAccessContext(() => db.update(invoices).set({ dueDate: '2026-09-28' }).where(eq(invoices.id, target.id)));
+    expect((await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'))).enqueued).toBe(1);
+    const [row] = await reminderRows(target.id);
+    expect(row).toMatchObject({ kind: 'payment_overdue', seq: 1 });
+  });
+  it('a reminder queued before the automatic payment was re-planned is cancelled at send', async () => {
+    const f = await fixture(['failed']);
+    const target = f.created[0]!;
+    expect((await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'))).enqueued).toBe(1);
+    await withSystemDbAccessContext(() => db.update(invoiceAutopaySchedules).set({ state: 'scheduled', stateReason: null })
+      .where(eq(invoiceAutopaySchedules.invoiceId, target.id)));
+    expect(await dispatchPendingBillingNotices(new Date(Date.now() + 1000))).toEqual({ sent: 0, failed: 0 });
+    expect(send).not.toHaveBeenCalled();
+    const [row] = await reminderRows(target.id);
+    expect(row).toMatchObject({ status: 'cancelled', lastError: 'Automatic payment scheduled' });
+  });
+});

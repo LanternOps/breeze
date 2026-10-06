@@ -1154,11 +1154,13 @@ export async function updateContract(contractId: string, patch: UpdateContractIn
   return getOwnedContractOr404(contractId, actor);
 }
 
-export async function deleteDraftContract(contractId: string, actor: ContractActor) {
+/** Returns the deleted contract's id, org and name so the caller can audit the delete. */
+export async function deleteDraftContract(contractId: string, actor: ContractActor): Promise<{ id: string; orgId: string; name: string }> {
   const c = await getOwnedContractOr404(contractId, actor);
   await requireWholeContractSiteAccess(actor, contractId);
   assertDraft(c);
   await db.delete(contracts).where(eq(contracts.id, contractId)); // lines cascade
+  return { id: c.id, orgId: c.orgId, name: c.name };
 }
 
 // ---------------------------------------------------------------------------
