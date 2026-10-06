@@ -25,8 +25,10 @@ function activeMembers(partnerId: string) {
   );
 }
 
-async function hasTicketRead(userId: string, partnerId: string, bypassCache: boolean): Promise<boolean> {
-  const perms = await getUserPermissions(userId, { partnerId }, { bypassCache });
+// Uncached, for the list and the save alike, so the picker never offers a
+// user the save would refuse because a cached permission set was stale.
+async function hasTicketRead(userId: string, partnerId: string): Promise<boolean> {
+  const perms = await getUserPermissions(userId, { partnerId }, { bypassCache: true });
   return !!perms && hasPermission(perms, PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action);
 }
 
@@ -40,7 +42,7 @@ export async function isAssignableInboundDefaultUser(userId: string, partnerId: 
     .where(and(eq(users.id, userId), activeMembers(partnerId)))
     .limit(1);
   if (!member) return false;
-  return hasTicketRead(userId, partnerId, true);
+  return hasTicketRead(userId, partnerId);
 }
 
 /** Every user `partnerId` may pick as its default inbound assignee (the card's picker). */
@@ -55,7 +57,7 @@ export async function listAssignableInboundDefaultUsers(
     .orderBy(asc(users.name), asc(users.email));
   const out: Array<{ id: string; name: string | null; email: string }> = [];
   for (const m of members) {
-    if (await hasTicketRead(m.id, partnerId, false)) out.push(m);
+    if (await hasTicketRead(m.id, partnerId)) out.push(m);
   }
   return out;
 }
