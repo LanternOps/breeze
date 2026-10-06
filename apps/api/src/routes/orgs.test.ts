@@ -15,6 +15,11 @@ import { orgRoutes, createOrganizationSchema, updateOrganizationSchema } from '.
 
 vi.mock('../services', () => ({}));
 
+const { isAssignableInboundDefaultUserMock } = vi.hoisted(() => ({ isAssignableInboundDefaultUserMock: vi.fn() }));
+vi.mock('../services/inboundEmail/defaultAssigneeEligibility', () => ({
+  isAssignableInboundDefaultUser: isAssignableInboundDefaultUserMock,
+}));
+
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
   isSentryEnabled: vi.fn().mockReturnValue(false)
@@ -1790,6 +1795,79 @@ describe('org routes', () => {
 
       expect(res.status).toBe(200);
       expect(getCaptured().settings.ticketing.inbound.defaultTriageOrgId).toBe(orgId);
+    });
+
+    // defaultAssigneeUserId: a CHANGED value must pass isAssignableInboundDefaultUser
+    // (an active member of this partner with ticket access; its own real-Postgres
+    // suite covers the predicate). The route's job is to call it with the
+    // caller's partner and refuse before writing.
+    describe('defaultAssigneeUserId', () => {
+      const USER = '44444444-4444-4444-8444-444444444444';
+      beforeEach(() => {
+        isAssignableInboundDefaultUserMock.mockReset();
+      });
+
+      it('rejects a user the partner cannot assign (400, nothing written)', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        mockCurrentPartnerSelect({ ticketing: { inbound: { enabled: true } } });
+        isAssignableInboundDefaultUserMock.mockResolvedValue(false);
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchMe({ settings: { ticketing: { inbound: { enabled: true, defaultAssigneeUserId: USER } } } });
+
+        expect(res.status).toBe(400);
+        expect((await res.json()).code).toBe('DEFAULT_ASSIGNEE_NOT_ASSIGNABLE');
+        expect(isAssignableInboundDefaultUserMock).toHaveBeenCalledWith(USER, 'partner-123');
+        expect(getCaptured()).toBeUndefined();
+      });
+
+      it('stores an assignable user and reads it back in the written settings (200)', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        mockCurrentPartnerSelect({ ticketing: { inbound: { enabled: true } } });
+        isAssignableInboundDefaultUserMock.mockResolvedValue(true);
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchMe({ settings: { ticketing: { inbound: { enabled: true, defaultAssigneeUserId: USER } } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.ticketing.inbound.defaultAssigneeUserId).toBe(USER);
+      });
+
+      it('does not re-check an unchanged value, so an unrelated save is never blocked', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        mockCurrentPartnerSelect({ ticketing: { inbound: { enabled: true, defaultAssigneeUserId: USER } } });
+        isAssignableInboundDefaultUserMock.mockResolvedValue(false);
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchMe({ settings: { ticketing: { inbound: { enabled: false, defaultAssigneeUserId: USER } } } });
+
+        expect(res.status).toBe(200);
+        expect(isAssignableInboundDefaultUserMock).not.toHaveBeenCalled();
+        expect(getCaptured().settings.ticketing.inbound).toMatchObject({ enabled: false, defaultAssigneeUserId: USER });
+      });
+
+      it('clears the default with null without a check', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        mockCurrentPartnerSelect({ ticketing: { inbound: { enabled: true, defaultAssigneeUserId: USER } } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchMe({ settings: { ticketing: { inbound: { enabled: true, defaultAssigneeUserId: null } } } });
+
+        expect(res.status).toBe(200);
+        expect(isAssignableInboundDefaultUserMock).not.toHaveBeenCalled();
+        expect(getCaptured().settings.ticketing.inbound.defaultAssigneeUserId).toBeNull();
+      });
+
+      it('rejects a value that is not a uuid at the schema (400)', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        mockCurrentPartnerSelect({ ticketing: { inbound: { enabled: true } } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchMe({ settings: { ticketing: { inbound: { enabled: true, defaultAssigneeUserId: 'bob' } } } });
+
+        expect(res.status).toBe(400);
+        expect(getCaptured()).toBeUndefined();
+      });
     });
 
     it('skips the org check when defaultTriageOrgId is null (200)', async () => {

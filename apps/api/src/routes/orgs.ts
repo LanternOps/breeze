@@ -32,6 +32,7 @@ import { normalizeAlertThresholds } from '../services/aiBudgetAlerts';
 import { enqueueAiBudgetEvaluationForPartner } from '../jobs/aiBudgetAlertDelivery';
 import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import { isAssignableInboundDefaultUser } from '../services/inboundEmail/defaultAssigneeEligibility';
 import {
   restoreOrganizationTenantAccess,
   restorePartnerTenantAccess,
@@ -73,7 +74,7 @@ import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, readTicketingInboundSettings, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { ERROR_CODES } from '@breeze/shared';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
@@ -1168,6 +1169,24 @@ orgRoutes.patch(
       .limit(1);
     if (!orgOk) {
       return c.json({ error: 'defaultTriageOrgId must reference an organization in your partner' }, 400);
+    }
+  }
+
+  // Default inbound assignee: a CHANGED value must name an active member of THIS
+  // partner with ticket access (isAssignableInboundDefaultUser; its partner_id
+  // predicates are the tenant boundary). The card re-sends the complete inbound
+  // object on every save, so an unchanged value is not re-checked here: a user
+  // disabled after being picked must not block saving an unrelated switch, and
+  // ingest re-checks eligibility per ticket and leaves the ticket unassigned.
+  const nextDefaultAssignee = body.settings?.ticketing?.inbound?.defaultAssigneeUserId;
+  if (typeof nextDefaultAssignee === 'string') {
+    const storedDefaultAssignee = readTicketingInboundSettings(currentSettings).settings.defaultAssigneeUserId ?? null;
+    if (nextDefaultAssignee !== storedDefaultAssignee
+      && !(await isAssignableInboundDefaultUser(nextDefaultAssignee, auth.partnerId as string))) {
+      return c.json({
+        error: 'defaultAssigneeUserId must be an active member of your partner who can be assigned tickets',
+        code: 'DEFAULT_ASSIGNEE_NOT_ASSIGNABLE',
+      }, 400);
     }
   }
 

@@ -176,16 +176,16 @@ describe('loadPartnerInboundPolicy', () => {
   it('reads routing policy from partners.settings JSONB, defaulting absent to quarantine', async () => {
     const { p } = await seedPartnerOrg();
     const defaults = await withSystemDbAccessContext(() => loadPartnerInboundPolicy(p.id));
-    expect(defaults).toEqual({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false, staffForwardRouting: false });
+    expect(defaults).toEqual({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false, staffForwardRouting: false, defaultAssigneeUserId: null });
 
     const adminDb = getTestDb() as any;
     await adminDb
       .update(partners)
-      .set({ settings: { ticketing: { inbound: { unknownSenderMode: 'drop', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: true, staffForwardRouting: true } } } })
+      .set({ settings: { ticketing: { inbound: { unknownSenderMode: 'drop', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: true, staffForwardRouting: true, defaultAssigneeUserId: '33333333-3333-4333-8333-333333333333' } } } })
       .where(eq(partners.id, p.id));
 
     const set = await withSystemDbAccessContext(() => loadPartnerInboundPolicy(p.id));
-    expect(set).toEqual({ enabled: true, unknownSenderMode: 'drop', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: true, staffForwardRouting: true });
+    expect(set).toEqual({ enabled: true, unknownSenderMode: 'drop', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: true, staffForwardRouting: true, defaultAssigneeUserId: '33333333-3333-4333-8333-333333333333' });
   });
 
   // #3597. `enabled` is the ONE field here that defaults permissive: the toggle was
@@ -224,6 +224,6 @@ describe('loadPartnerInboundPolicy', () => {
       .where(eq(partners.id, p.id));
 
     const set = await withSystemDbAccessContext(() => loadPartnerInboundPolicy(p.id));
-    expect(set).toEqual({ enabled: true, unknownSenderMode: 'triage', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: false, staffForwardRouting: false });
+    expect(set).toEqual({ enabled: true, unknownSenderMode: 'triage', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: false, staffForwardRouting: false, defaultAssigneeUserId: null });
   });
 });

@@ -17,6 +17,7 @@ import { resolveOrgBySenderDomain, resolveEmailRequester, loadPartnerInboundPoli
 import { extractForwardedSender, domainOf } from './forwardParse';
 import { UNASSIGNED_POOL_ORG_TYPE } from '../unassignedPool/orgType';
 import { maybeSendAutoresponse } from './autoresponder';
+import { applyDefaultInboundAssignee } from './defaultAssignee';
 import { insertEmailAuthoredComment } from './emailComments';
 import { hasStoredAttachments, persistInboundAttachments, withInboundAttachmentNote } from './inboundAttachments';
 import { captureException, captureMessage } from '../sentry';
@@ -497,7 +498,7 @@ export async function processInboundEmail(
       await dependencies.afterTicketMatchLock?.(closedOriginal.id);
       // No requester and NO acknowledgement: a reply to a closed ticket spawns a
       // linked ticket, it is not a fresh submission (spec §5).
-      const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false);
+      const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false, policy.defaultAssigneeUserId);
       await logCreated(n, partnerId, t);
       return;
     }
@@ -537,7 +538,7 @@ export async function processInboundEmail(
       if (staffAccess) {
         const fwdOrg = await resolveOrgBySenderDomain(forwardedFrom, partnerId);
         if (fwdOrg && await staffCanReachOrg(staffAccess, fwdOrg.orgId, partnerId)) {
-          const t = await createFromEmail(n, partnerId, fwdOrg.orgId, null, null, null, false);
+          const t = await createFromEmail(n, partnerId, fwdOrg.orgId, null, null, null, false, policy.defaultAssigneeUserId);
           await logCreated(n, partnerId, t, `staff-forward: filed by original sender domain ${fwdDomain}`);
           return;
         }
@@ -551,7 +552,7 @@ export async function processInboundEmail(
     if (sender) {
       // A portal LOGIN. createTicket derives the person from its contact_id —
       // the inbound path must not resolve a second candidate by address.
-      const t = await createFromEmail(n, partnerId, sender.orgId, null, null, { kind: 'portal', portalUserId: sender.id }, true);
+      const t = await createFromEmail(n, partnerId, sender.orgId, null, null, { kind: 'portal', portalUserId: sender.id }, true, policy.defaultAssigneeUserId);
       // A login with no contact_id yields a ticket attributed to nobody. Not an
       // error (the ticket is right, the login's data is incomplete) — a note,
       // so the gap is visible instead of only showing up as a customer who
@@ -586,7 +587,7 @@ export async function processInboundEmail(
           requesterNote = unlinkedRequesterNote(resolved.reason, n.from);
         }
       }
-      const t = await createFromEmail(n, partnerId, domainMatch.orgId, null, null, requester, autoresponse);
+      const t = await createFromEmail(n, partnerId, domainMatch.orgId, null, null, requester, autoresponse, policy.defaultAssigneeUserId);
       await logCreated(n, partnerId, t, requesterNote);
       return;
     }
@@ -609,7 +610,7 @@ export async function processInboundEmail(
     if (policy.unknownSenderMode === 'triage' && policy.defaultTriageOrgId) {
       // Unknown sender: no requester and no acknowledgement (we would be
       // replying to an address the partner never vetted).
-      const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null, null, false);
+      const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null, null, false, policy.defaultAssigneeUserId);
       await logCreated(n, partnerId, t);
       return;
     }
@@ -697,12 +698,13 @@ function createSenderResolver(from: string, partnerId: string): SenderResolver {
 async function logCreated(
   n: NormalizedInboundEmail,
   partnerId: string,
-  result: { id: string; lostClaimTo: string | null },
+  result: { id: string; lostClaimTo: string | null; assigneeNote?: string | null },
   note?: string
 ): Promise<void> {
   const notes = [
     result.lostClaimTo ? `lost message-id claim to ticket ${result.lostClaimTo}` : null,
     note ?? null,
+    result.assigneeNote ?? null,
   ].filter((v): v is string => v !== null);
   await logInbound(n, partnerId, 'created', result.id, notes.length ? notes.join('; ') : undefined);
 }
@@ -833,7 +835,8 @@ async function createFromEmail(
   carryThreadKey: string | null,
   priorNumber: string | null,
   requester: EmailTicketRequester,
-  autoresponse: boolean
+  autoresponse: boolean,
+  defaultAssigneeUserId: string | null
 ) {
   // GUARD (spec §6 layer 2): the resolved org MUST belong to the resolved partner before create.
   const orgOk = await db
@@ -931,6 +934,18 @@ async function createFromEmail(
     await persistInboundAttachments(n, { ticketId: ticket.id, orgId, commentId });
   }
 
+  // Partner default assignee (settings.ticketing.inbound.defaultAssigneeUserId).
+  // Applies to every ticket this pipeline creates, and only when nothing else
+  // assigned it. Same transaction as the ticket: the assignment and its
+  // `ticket.assigned` outbox row commit or roll back with it, and the
+  // notification job is queued only from the committed row (#8040). A user who
+  // cannot own this ticket (disabled, removed, no access to this org) leaves it
+  // unassigned and is named in the inbound log; it never fails the message.
+  const defaultAssignee = await applyDefaultInboundAssignee(ticket, defaultAssigneeUserId, SYSTEM_ACTOR);
+  const assigneeNote = defaultAssignee.kind === 'skipped'
+    ? `default assignee not applied (${defaultAssignee.code}); ticket left unassigned`
+    : null;
+
   // One-time autoresponse — ONLY for an accepted known sender on a FRESH ticket.
   //
   // This used to be gated on `submittedBy && !priorNumber`, reading the presence
@@ -966,7 +981,7 @@ async function createFromEmail(
       subject: persisted[0]?.subject ?? '',
     });
   }
-  return { id: ticket.id, lostClaimTo };
+  return { id: ticket.id, lostClaimTo, assigneeNote };
 }
 
 /**

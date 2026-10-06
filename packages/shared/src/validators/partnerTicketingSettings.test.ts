@@ -59,6 +59,15 @@ describe('ticketingInboundSettingsSchema', () => {
     expect(ticketingInboundSettingsSchema.safeParse({ staffForwardRouting: true }).success).toBe(true);
     expect(ticketingInboundSettingsSchema.safeParse({ staffForwardRouting: 'yes' }).success).toBe(false);
   });
+
+  it('keeps defaultAssigneeUserId (a uuid or null) and rejects a non-uuid', () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    const parsed = ticketingInboundSettingsSchema.safeParse({ defaultAssigneeUserId: id });
+    expect(parsed.success && parsed.data.defaultAssigneeUserId).toBe(id);
+    const cleared = ticketingInboundSettingsSchema.safeParse({ defaultAssigneeUserId: null });
+    expect(cleared.success && cleared.data.defaultAssigneeUserId).toBeNull();
+    expect(ticketingInboundSettingsSchema.safeParse({ defaultAssigneeUserId: 'someone' }).success).toBe(false);
+  });
 });
 
 describe('timeTrackingSessionSuggestionsSchema', () => {

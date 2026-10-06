@@ -34,6 +34,7 @@ interface CfgShape {
   unknownSenderMode: 'quarantine' | 'triage' | 'drop';
   dropUnverifiedSenders: boolean;
   staffForwardRouting?: boolean;
+  defaultAssigneeUserId?: string | null;
   autoresponseSubject: string | null;
   autoresponseBody: string | null;
   slug: string;
@@ -57,9 +58,18 @@ const CFG: CfgShape = {
   domainConfigured: true,
 };
 
+// GET /users (partner scope): one assignable member, one disabled user and one
+// member with no org access. Only the first may appear in the picker.
+const USERS = [
+  { id: 'u-1', name: 'Tess Tech', email: 'tess@msp.example', status: 'active', orgAccess: 'all' },
+  { id: 'u-2', name: 'Old Hand', email: 'old@msp.example', status: 'disabled', orgAccess: 'all' },
+  { id: 'u-3', name: 'No Access', email: 'none@msp.example', status: 'active', orgAccess: 'none' },
+];
+
 function routeFetch(cfg: CfgShape = CFG) {
   fetchWithAuth.mockImplementation((url: string) => {
     if (url === '/ticket-config') return Promise.resolve(jsonRes({ data: { inbound: cfg } }));
+    if (url === '/users') return Promise.resolve(jsonRes({ data: USERS }));
     if (url === '/orgs/organizations?page=1&limit=100')
       return Promise.resolve(jsonRes({ data: [{ id: 'o-1', name: 'Acme Org' }] }));
     if (url === '/orgs/partners/me') return Promise.resolve(jsonRes({ id: 'p-1' }));
@@ -168,6 +178,60 @@ describe('InboundEmailCard', () => {
       expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me', expect.objectContaining({ method: 'PATCH' })),
     );
     expect(lastInboundPatch().staffForwardRouting).toBe(true);
+  });
+
+  it('lists only active members with org access as default-assignee choices', async () => {
+    routeFetch();
+    render(<InboundEmailCard />);
+    await screen.findByTestId('inbound-email-card');
+    const picker = screen.getByTestId('inbound-default-assignee') as HTMLSelectElement;
+    await waitFor(() => expect(Array.from(picker.options).map((o) => o.value)).toEqual(['', 'u-1']));
+    expect(picker.value).toBe('');
+  });
+
+  it('picking a default assignee PATCHes defaultAssigneeUserId in the complete inbound object', async () => {
+    routeFetch({ ...CFG, staffForwardRouting: true });
+    render(<InboundEmailCard />);
+    await screen.findByTestId('inbound-email-card');
+    const picker = screen.getByTestId('inbound-default-assignee') as HTMLSelectElement;
+    await waitFor(() => expect(picker.options.length).toBe(2));
+    fireEvent.change(picker, { target: { value: 'u-1' } });
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me', expect.objectContaining({ method: 'PATCH' })),
+    );
+    const inbound = lastInboundPatch();
+    expect(inbound.defaultAssigneeUserId).toBe('u-1');
+    // Other settings ride along unchanged (the sub-object is replaced wholesale).
+    expect(inbound.staffForwardRouting).toBe(true);
+    expect(inbound.unknownSenderMode).toBe('quarantine');
+  });
+
+  it('preserves the default assignee when another inbound setting is saved, even one the list no longer offers', async () => {
+    routeFetch({ ...CFG, defaultAssigneeUserId: 'u-2' });
+    render(<InboundEmailCard />);
+    await screen.findByTestId('inbound-email-card');
+    const picker = screen.getByTestId('inbound-default-assignee') as HTMLSelectElement;
+    // The stored user is not an assignable choice any more, but stays selected.
+    await waitFor(() => expect(Array.from(picker.options).map((o) => o.value)).toEqual(['', 'u-2', 'u-1']));
+    expect(picker.value).toBe('u-2');
+    fireEvent.click(screen.getByTestId('inbound-drop-unverified-toggle'));
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me', expect.objectContaining({ method: 'PATCH' })),
+    );
+    expect(lastInboundPatch().defaultAssigneeUserId).toBe('u-2');
+  });
+
+  it('clearing the default assignee PATCHes null', async () => {
+    routeFetch({ ...CFG, defaultAssigneeUserId: 'u-1' });
+    render(<InboundEmailCard />);
+    await screen.findByTestId('inbound-email-card');
+    const picker = screen.getByTestId('inbound-default-assignee') as HTMLSelectElement;
+    await waitFor(() => expect(picker.value).toBe('u-1'));
+    fireEvent.change(picker, { target: { value: '' } });
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me', expect.objectContaining({ method: 'PATCH' })),
+    );
+    expect(lastInboundPatch().defaultAssigneeUserId).toBeNull();
   });
 
   it('toggling enable PATCHes /orgs/partners/me with the COMPLETE ticketing.inbound (no address when override is null)', async () => {
