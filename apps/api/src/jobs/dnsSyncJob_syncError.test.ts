@@ -221,3 +221,53 @@ describe('processPolicySync catch block — tenant-visible syncError is body-fre
     expect(logged).toContain('[REDACTED]');
   });
 });
+
+describe('SsrfBlockedError is a configuration condition, not a job failure (#8023)', () => {
+  it('processSyncIntegration records a visible friendly error and does NOT throw (no Sentry per run)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { SsrfBlockedError } = await import('../services/urlSafety');
+    mockDb.select.mockReturnValue(
+      selectReturning([
+        { id: 'int-3', orgId: 'org-1', provider: 'pihole', apiKey: 'k', apiSecret: null, isActive: true, config: {}, lastSync: null },
+      ]),
+    );
+    createDnsProviderMock.mockReturnValue({
+      syncEvents: vi.fn().mockRejectedValue(
+        new SsrfBlockedError('blocked', { hostname: 'pihole.lan', resolvedIps: ['10.0.0.5'] }),
+      ),
+    });
+
+    await expect(
+      processSyncIntegration({ type: 'sync-integration', integrationId: 'int-3' }),
+    ).resolves.toMatchObject({ integrationId: 'int-3', fetched: 0, inserted: 0 });
+
+    const update = setCalls.find((p) => p.lastSyncStatus === 'error');
+    expect(update).toBeDefined();
+    expect(String(update!.lastSyncError)).toMatch(/private\/blocked address/i);
+    expect(String(update!.lastSyncError)).not.toContain('10.0.0.5');
+  });
+
+  it('processPolicySync records a visible friendly error and does NOT throw', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { SsrfBlockedError } = await import('../services/urlSafety');
+    mockDb.select.mockReturnValue(
+      selectReturning([
+        {
+          policy: { id: 'pol-2', type: 'blocklist', domains: [{ domain: 'evil.example.com' }] },
+          integration: { id: 'int-3', orgId: 'org-1', provider: 'pihole', apiKey: 'k', apiSecret: null, config: {} },
+        },
+      ]),
+    );
+    createDnsProviderMock.mockReturnValue({
+      addBlocklistDomain: vi.fn().mockRejectedValue(new SsrfBlockedError('blocked', { hostname: 'pihole.lan' })),
+      removeBlocklistDomain: vi.fn().mockResolvedValue(undefined),
+    });
+
+    await expect(
+      processPolicySync({ type: 'sync-policy', policyId: 'pol-2' }),
+    ).resolves.toMatchObject({ policyId: 'pol-2', added: 0, removed: 0 });
+
+    const update = setCalls.find((p) => p.syncStatus === 'error');
+    expect(String(update!.syncError)).toMatch(/private\/blocked address/i);
+  });
+});
