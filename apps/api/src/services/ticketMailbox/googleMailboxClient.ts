@@ -19,6 +19,8 @@
 import type { gmail_v1 } from '@googleapis/gmail';
 import { getInboundMailboxSession } from '../googleClient';
 import { MAX_BODY_B64_CHARS, MAX_BODY_BYTES } from './normalizeGmailMessage';
+import { assertUsableHandledLabelName, HandledLabelError } from './handledLabel';
+export { assertUsableHandledLabelName, HandledLabelError, HANDLED_LABEL_MAX_LENGTH, isUsableHandledLabelName } from './handledLabel';
 
 /** Which half of the connect-time probe failed, so the caller maps it to the right
  *  error code (a mailbox read failure vs a missing identity grant). */
@@ -364,5 +366,133 @@ export async function resolveReferencedTextBodies(
         ? data.slice(0, MAX_BODY_B64_CHARS)
         : data;
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Opt-in mark-handled (label + optional archive). Only reachable for a mailbox
+// connection whose gmail_handled_label is set, in which case the session was
+// minted with gmail.modify (GMAIL_INBOUND_MODIFY_SCOPES). Never called on the
+// default read-only connector.
+// ---------------------------------------------------------------------------
+
+/** Resolved label ids per (Google account, mailbox, labelName). Label ids are
+ *  per account, so the immutable account sub is part of the key: a mailbox
+ *  address that moves to a different Google account never reuses the old
+ *  account's id. Names are mutable, so a rename (no error) is bounded by the
+ *  TTL; a deleted/recreated label self-heals via the 400/404 retry in
+ *  markGmailHandled. */
+const handledLabelIdCache = new Map<string, { id: string; at: number }>();
+/** Hard bound on cached label ids per process. Entries are kept in insertion
+ *  order (a refresh re-inserts), so the oldest is evicted first. */
+export const HANDLED_LABEL_CACHE_MAX_ENTRIES = 1_000;
+const handledCacheKey = (accountSub: string, mailbox: string, labelName: string) =>
+  `${accountSub}::${mailbox.toLowerCase()}::${labelName}`;
+
+/** Test hook. */
+export function resetHandledLabelCache(): void {
+  handledLabelIdCache.clear();
+}
+
+/** Test hook: the number of cached label ids. */
+export function handledLabelCacheSize(): number {
+  return handledLabelIdCache.size;
+}
+
+/** Cache a resolved id. Expired entries are dropped first, then the oldest
+ *  entries while the cache is at its bound, so it never grows past it. */
+function cacheHandledLabelId(cacheKey: string, id: string, ttlMs: number): void {
+  const now = Date.now();
+  handledLabelIdCache.delete(cacheKey);
+  if (handledLabelIdCache.size >= HANDLED_LABEL_CACHE_MAX_ENTRIES) {
+    for (const [key, entry] of handledLabelIdCache) {
+      if (now - entry.at >= ttlMs) handledLabelIdCache.delete(key);
+    }
+  }
+  while (handledLabelIdCache.size >= HANDLED_LABEL_CACHE_MAX_ENTRIES) {
+    const oldest = handledLabelIdCache.keys().next().value;
+    if (oldest === undefined) break;
+    handledLabelIdCache.delete(oldest);
+  }
+  handledLabelIdCache.set(cacheKey, { id, at: now });
+}
+
+async function resolveHandledLabelId(
+  gmail: gmail_v1.Gmail,
+  mailbox: string,
+  o: MarkHandledOptions,
+): Promise<string> {
+  const { labelName, labelCacheTtlMs: ttlMs } = o;
+  assertUsableHandledLabelName(labelName);
+  const cacheKey = handledCacheKey(o.accountSub, mailbox, labelName);
+  const cached = handledLabelIdCache.get(cacheKey);
+  if (cached) {
+    if (Date.now() - cached.at < ttlMs) return cached.id;
+    handledLabelIdCache.delete(cacheKey);
+  }
+
+  const list = await gmail.users.labels.list({ userId: 'me' });
+  const labels = list.data.labels ?? [];
+  // Only a USER label may be the target; a same-named system label is refused.
+  let id = labels.find((l) => l.name === labelName && l.type === 'user')?.id ?? null;
+  if (!id) {
+    if (labels.some((l) => l.name === labelName && l.type !== 'user')) {
+      throw new HandledLabelError(`Gmail label "${labelName}" is a system label, not a usable user label`);
+    }
+    try {
+      const created = await gmail.users.labels.create({
+        userId: 'me',
+        requestBody: { name: labelName, labelListVisibility: 'labelShow', messageListVisibility: 'show' },
+      });
+      id = created.data.id ?? null;
+    } catch (err) {
+      // A concurrent create races to 409 (already exists): re-list for its id.
+      if (httpStatus(err) !== 409) throw err;
+      const relist = await gmail.users.labels.list({ userId: 'me' });
+      id = (relist.data.labels ?? []).find((l) => l.name === labelName && l.type === 'user')?.id ?? null;
+    }
+  }
+  if (!id) throw new Error(`Gmail label "${labelName}" could not be resolved or created`);
+  cacheHandledLabelId(cacheKey, id, ttlMs);
+  return id;
+}
+
+export interface MarkHandledOptions {
+  /** Immutable Google account id (`sub`) of the mailbox; scopes the label cache. */
+  accountSub: string;
+  labelName: string;
+  archive: boolean;
+  labelCacheTtlMs: number;
+}
+
+async function applyHandled(gmail: gmail_v1.Gmail, mailbox: string, messageId: string, o: MarkHandledOptions): Promise<void> {
+  const labelId = await resolveHandledLabelId(gmail, mailbox, o);
+  await gmail.users.messages.modify({
+    userId: 'me',
+    id: messageId,
+    requestBody: { addLabelIds: [labelId], removeLabelIds: o.archive ? ['INBOX'] : [] },
+  });
+}
+
+/**
+ * Mark an ingested Gmail message handled: apply the user label and, when
+ * `archive`, remove INBOX. Reversible (re-adding INBOX restores it; the sweep
+ * would then see a labelAdded(INBOX) change and re-dedup it). Best-effort: the
+ * caller catches and logs, so a failure never strands ingestion. One retry after
+ * invalidating the label cache on a 400/404 (deleted/recreated label).
+ */
+export async function markGmailHandled(
+  gmail: gmail_v1.Gmail,
+  mailbox: string,
+  messageId: string,
+  o: MarkHandledOptions,
+): Promise<void> {
+  try {
+    await applyHandled(gmail, mailbox, messageId, o);
+  } catch (err) {
+    const status = httpStatus(err);
+    if (status !== 400 && status !== 404) throw err;
+    handledLabelIdCache.delete(handledCacheKey(o.accountSub, mailbox, o.labelName));
+    await applyHandled(gmail, mailbox, messageId, o);
   }
 }

@@ -1499,7 +1499,28 @@
     "namePlaceholder": "Support",
     "connect": "Connect",
     "credentialOrg": "Credential: {{org}}'s Google Workspace connection",
-    "credentialOrgUnknown": "an organization you cannot view"
+    "credentialOrgUnknown": "an organization you cannot view",
+    "handling": {
+      "off": "Off: mail stays in the inbox after it becomes a ticket.",
+      "onArchive": "Mail that becomes a ticket gets the Gmail label \"{{label}}\" and is archived out of the inbox.",
+      "onLabelOnly": "Mail that becomes a ticket gets the Gmail label \"{{label}}\" and stays in the inbox.",
+      "edit": "Change mail handling",
+      "labelField": "Gmail label for ticketed mail (leave blank to turn off)",
+      "labelPlaceholder": "Breeze/Ticketed",
+      "archiveField": "Also archive it (remove it from the inbox)",
+      "scopeNote": "Labelling needs this extra scope in the organization's domain-wide delegation grant. Reading mail does not, so polling keeps working without it.",
+      "saved": "Mail handling saved",
+      "saveFailed": "Could not save mail handling.",
+      "error": {
+        "access_denied": "Labelling failed: Google denied access. Add the gmail.modify scope to the domain-wide delegation grant.",
+        "rate_limited": "Labelling failed: Gmail rate limit reached. New mail will be tried again.",
+        "unavailable": "Labelling failed: Gmail did not respond in time. New mail will be tried again.",
+        "label_invalid": "Labelling failed: this label cannot be used. Choose a different label name.",
+        "no_credential": "Labelling failed: this organization's Google Workspace connection is missing or inactive. Reconnect it under Integrations.",
+        "not_queued": "Labelling skipped: the labelling queue was unavailable or full, so some mail that became a ticket was left in the inbox without the label. New mail will be tried again.",
+        "failed": "Labelling failed. The mail stays in the inbox."
+      }
+    }
   },
   "orgApprovalSecurityTab": {
     "title": "Approval Security",

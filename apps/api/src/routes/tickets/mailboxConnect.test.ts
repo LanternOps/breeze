@@ -42,6 +42,7 @@ const { authRef, mocks, IdentityError } = vi.hoisted(() => ({
     bindVerifiedTenant: vi.fn(async () => {}),
     listMailboxConnections: vi.fn(async (): Promise<unknown[]> => []),
     disableConnection: vi.fn(async () => true),
+    updateGmailHandling: vi.fn(),
     createAdminConsentSession: vi.fn(),
     createIdentityVerificationSession: vi.fn(),
     consumeConsentSession: vi.fn(),
@@ -111,6 +112,7 @@ vi.mock('../../services/ticketMailbox/connectionService', () => ({
   bindVerifiedTenant: mocks.bindVerifiedTenant,
   listMailboxConnections: mocks.listMailboxConnections,
   disableConnection: mocks.disableConnection,
+  updateGmailHandling: mocks.updateGmailHandling,
   MAILBOX_VERIFICATION_FAILED: 'Mailbox verification failed',
 }));
 vi.mock('../../services/ticketMailbox/consentSessionService', () => ({
@@ -1298,6 +1300,83 @@ describe('POST /connect/gmail (production Gmail connect route, #6593)', () => {
     const response = await postGmail(app);
     expect(response.status).toBe(status);
     await expect(response.json()).resolves.toEqual({ error: `err:${code}` });
+    expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH /connections/:id/gmail-handling (per-mailbox mark handled, #7949)', () => {
+  let app: Hono;
+
+  const patch = (target: Hono, body: unknown, id = GMAIL_CONN_ID) =>
+    target.request(`/connections/${id}/gmail-handling`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authRef.current = adminAuth();
+    mocks.updateGmailHandling.mockResolvedValue({ id: GMAIL_CONN_ID, mailboxAddress: 'help@client.example', orgId: ORG_ID });
+    app = new Hono();
+    app.route('/', mailboxRoutes);
+  });
+
+  it('denies unauthenticated, read-only and non-MFA callers before the service', async () => {
+    authRef.current = null;
+    expect((await patch(app, { label: 'Breeze', archive: true })).status).toBe(401);
+    authRef.current = adminAuth({ permissions: new Set(['ticket_mailbox:read']) });
+    expect((await patch(app, { label: 'Breeze', archive: true })).status).toBe(403);
+    authRef.current = adminAuth({ mfa: false });
+    expect((await patch(app, { label: 'Breeze', archive: true })).status).toBe(403);
+    expect(mocks.updateGmailHandling).not.toHaveBeenCalled();
+  });
+
+  it.each(['selected', 'none'] as const)('denies partner orgAccess=%s before the service or audit', async (orgAccess) => {
+    authRef.current = adminAuth({ partnerOrgAccess: orgAccess });
+    const response = await patch(app, { label: 'Breeze', archive: true });
+    expect(response.status).toBe(403);
+    expect(mocks.updateGmailHandling).not.toHaveBeenCalled();
+    expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('sets a trimmed label and the archive flag, and audits once', async () => {
+    const response = await patch(app, { label: '  Breeze/Ticketed ', archive: false });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      ok: true, gmailHandling: { label: 'Breeze/Ticketed', archive: false, error: null, errorAt: null },
+    });
+    expect(mocks.updateGmailHandling).toHaveBeenCalledWith(GMAIL_CONN_ID, PARTNER_ID, { label: 'Breeze/Ticketed', archive: false });
+    expect(mocks.writeRouteAudit).toHaveBeenCalledTimes(1);
+    expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID, action: 'ticket_mailbox.gmail_handling_updated', resourceId: GMAIL_CONN_ID,
+      details: { provider: 'gmail', enabled: true, archive: false },
+    }));
+  });
+
+  it.each([null, '', '   '])('turns it off for label %j', async (label) => {
+    expect((await patch(app, { label, archive: true })).status).toBe(200);
+    expect(mocks.updateGmailHandling).toHaveBeenCalledWith(GMAIL_CONN_ID, PARTNER_ID, { label: null, archive: true });
+  });
+
+  it.each(['INBOX', 'trash', 'CATEGORY_SOCIAL', 'x'.repeat(101)])('refuses unusable label %s with 400 before the service', async (label) => {
+    const response = await patch(app, { label, archive: true });
+    expect(response.status).toBe(400);
+    expect(mocks.updateGmailHandling).not.toHaveBeenCalled();
+    expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed body and unknown fields', async () => {
+    expect((await patch(app, { label: 'Breeze' })).status).toBe(400);
+    expect((await patch(app, { label: 'Breeze', archive: 'yes' })).status).toBe(400);
+    expect((await patch(app, { label: 'Breeze', archive: true, gmailHandledError: null })).status).toBe(400);
+    expect((await patch(app, { label: 'Breeze', archive: true }, 'not-a-uuid')).status).toBe(400);
+    expect(mocks.updateGmailHandling).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 and does not audit when no live Gmail row of this partner matched', async () => {
+    mocks.updateGmailHandling.mockResolvedValue(null);
+    const response = await patch(app, { label: 'Breeze', archive: true });
+    expect(response.status).toBe(404);
     expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
   });
 });

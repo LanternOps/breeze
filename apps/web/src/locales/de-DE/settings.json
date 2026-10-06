@@ -1499,7 +1499,28 @@
     "namePlaceholder": "Unterstützung",
     "connect": "Verbinden",
     "credentialOrg": "Anmeldedaten: Google Workspace-Verbindung von {{org}}",
-    "credentialOrgUnknown": "eine Organisation, die Sie nicht sehen können"
+    "credentialOrgUnknown": "eine Organisation, die Sie nicht sehen können",
+    "handling": {
+      "off": "Aus: E-Mails bleiben im Posteingang, nachdem daraus ein Ticket wurde.",
+      "onArchive": "E-Mails, aus denen ein Ticket wird, erhalten das Gmail-Label \"{{label}}\" und werden aus dem Posteingang archiviert.",
+      "onLabelOnly": "E-Mails, aus denen ein Ticket wird, erhalten das Gmail-Label \"{{label}}\" und bleiben im Posteingang.",
+      "edit": "E-Mail-Behandlung ändern",
+      "labelField": "Gmail-Label für E-Mails mit Ticket (leer lassen zum Ausschalten)",
+      "labelPlaceholder": "Breeze/Ticket",
+      "archiveField": "Zusätzlich archivieren (aus dem Posteingang entfernen)",
+      "scopeNote": "Für das Labeln wird dieser zusätzliche Bereich in der domänenweiten Delegierung der Organisation benötigt. Das Lesen von E-Mails braucht ihn nicht, der Abruf funktioniert also auch ohne ihn.",
+      "saved": "E-Mail-Behandlung gespeichert",
+      "saveFailed": "E-Mail-Behandlung konnte nicht gespeichert werden.",
+      "error": {
+        "access_denied": "Labeln fehlgeschlagen: Google hat den Zugriff verweigert. Fügen Sie den Bereich gmail.modify zur domänenweiten Delegierung hinzu.",
+        "rate_limited": "Labeln fehlgeschlagen: Gmail-Ratenlimit erreicht. Neue E-Mails werden erneut versucht.",
+        "unavailable": "Labeln fehlgeschlagen: Gmail hat nicht rechtzeitig geantwortet. Neue E-Mails werden erneut versucht.",
+        "label_invalid": "Labeln fehlgeschlagen: Dieses Label kann nicht verwendet werden. Wählen Sie einen anderen Namen.",
+        "no_credential": "Labeln fehlgeschlagen: Die Google Workspace-Verbindung dieser Organisation fehlt oder ist inaktiv. Verbinden Sie sie unter Integrationen erneut.",
+        "not_queued": "Labeln übersprungen: Die Label-Warteschlange war nicht verfügbar oder voll, daher blieben einige E-Mails, aus denen ein Ticket wurde, ohne Label im Posteingang. Neue E-Mails werden erneut versucht.",
+        "failed": "Labeln fehlgeschlagen. Die E-Mail bleibt im Posteingang."
+      }
+    }
   },
   "orgApprovalSecurityTab": {
     "title": "Genehmigungssicherheit",

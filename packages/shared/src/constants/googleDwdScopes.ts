@@ -40,6 +40,20 @@ export const GMAIL_INBOUND_SCOPES = [
   'https://www.googleapis.com/auth/userinfo.email',
 ] as const;
 
+/**
+ * OPT-IN scope for deployments that mark ingested mail handled (apply a user
+ * label and optionally archive it out of INBOX). gmail.modify allows label
+ * changes; it cannot send or permanently delete. It is requested ONLY by the
+ * separate label call, never by the read session, so reading keeps using
+ * GMAIL_INBOUND_SCOPES and a missing modify grant can only stop the labelling,
+ * never ingestion. Not part of GOOGLE_DWD_SCOPES_CSV; an admin who turns the
+ * feature on for a mailbox adds it to the grant (the Gmail mailbox settings card
+ * lists it next to the setting).
+ */
+export const GMAIL_INBOUND_MODIFY_SCOPES = [
+  'https://www.googleapis.com/auth/gmail.modify',
+] as const;
+
 export const CALENDAR_SCOPES = [
   'https://www.googleapis.com/auth/calendar.acls', // share a calendar (ACL insert), nothing more
 ] as const;
