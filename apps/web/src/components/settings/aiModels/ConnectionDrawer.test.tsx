@@ -149,7 +149,7 @@ describe('ConnectionDrawer', () => {
   });
 
   describe('gateway create reports whether discovery was queued (#7781)', () => {
-    const create = async (discoveryQueued: boolean) => {
+    const create = async (discoveryQueued: boolean | undefined) => {
       fetchWithAuth.mockResolvedValueOnce(jsonRes({ id: CONN, discoveryQueued }, 201));
       const onClose = vi.fn();
       render(<ConnectionDrawer connection={null} catalog={[]} catalogEnabled={false} initialKind="openai_compatible" onClose={onClose} onSaved={vi.fn()} />);
@@ -160,10 +160,15 @@ describe('ConnectionDrawer', () => {
     };
     it('says models are being discovered when queued', async () => {
       await create(true);
-      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringMatching(/discover/i) }));
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringMatching(/discovering/i) }));
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/refresh/i) }));
     });
     it('says discovery could not be queued, and to Refresh, when not', async () => {
       await create(false);
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringMatching(/refresh/i) }));
+    });
+    it('never claims discovery is running when the flag is absent', async () => {
+      await create(undefined);
       expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringMatching(/refresh/i) }));
     });
   });
