@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { GATEWAY_MAX_TOOL_ARGS_BYTES, GATEWAY_MAX_TOOL_CALLS, GATEWAY_MAX_USAGE_TOKENS } from '../limits';
 import { GatewayError } from '../types';
+import { resolveToolName } from './toolNames';
 import type { OaiChatResponse, OaiUsage, ToolNameMap } from './types';
 
 export type AnthropicContentBlock =
@@ -188,8 +189,9 @@ export const genMessageId = (): string => `msg_gw_${randomBytes(12).toString('he
 /**
  * Validate a complete set of tool calls; any unsafe member rejects the whole
  * batch, so a caller never receives (and executes) part of a batch. Each call
- * must name an offered tool and carry arguments that satisfy that tool's
- * input_schema; a tool with no retained schema fails closed.
+ * must name exactly one offered tool (resolveToolName: the exact wire name, or
+ * an unambiguous wrapped/bare form of it, #8081) and carry arguments that
+ * satisfy that tool's input_schema; a tool with no retained schema fails closed.
  */
 export function validateToolCalls(
   calls: ReadonlyArray<{ id?: string; name?: string; arguments?: string }>,
@@ -200,8 +202,9 @@ export function validateToolCalls(
   const out: Array<Extract<AnthropicContentBlock, { type: 'tool_use' }>> = [];
   const seenIds = new Set<string>();
   for (const c of calls) {
-    const name = typeof c.name === 'string' && c.name ? tools.fromOai.get(c.name) : undefined;
-    if (!name) return null;
+    const resolved = typeof c.name === 'string' ? resolveToolName(c.name, tools) : null;
+    if (!resolved?.ok) return null;
+    const name = resolved.name;
     const schema = tools.schemas.get(name);
     if (!schema) return null;
     const args = c.arguments ?? '';
@@ -222,14 +225,15 @@ export function validateToolCalls(
 /**
  * A log-safe description of a refused tool-call batch: the count and up to 8
  * names, each cut to OpenAI's name alphabet and 64 characters (model output,
- * so no newlines or log-forging), marked when the name is not an offered alias.
- * Arguments are never logged.
+ * so no newlines or log-forging), marked when the name resolves to no offered
+ * tool ("not offered") or to more than one ("ambiguous"). Arguments are never logged.
  */
 export function describeRefusedToolCalls(calls: ReadonlyArray<{ name?: unknown }>, tools: ToolNameMap): string {
   const names = calls.slice(0, 8).map((c) => {
     const raw = typeof c.name === 'string' ? c.name : '';
     const safe = raw.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64) || '(none)';
-    return tools.fromOai.has(raw) ? safe : `${safe} (not offered)`;
+    const r = resolveToolName(raw, tools);
+    return r.ok ? safe : `${safe} (${r.reason === 'ambiguous' ? 'ambiguous' : 'not offered'})`;
   });
   return `refused ${calls.length} tool call(s): ${names.join(', ')}${calls.length > 8 ? ', …' : ''}`;
 }

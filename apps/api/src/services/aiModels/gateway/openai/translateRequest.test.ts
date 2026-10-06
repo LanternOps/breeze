@@ -70,11 +70,11 @@ describe('translateMessagesRequest', () => {
     }, 'qwen');
     expect(t.body.messages).toEqual([
       { role: 'user', content: 'weather?' },
-      { role: 'assistant', content: 'checking', tool_calls: [{ id: 'toolu_1', type: 'function', function: { name: 't_0_get_weather', arguments: '{"city":"Oslo"}' } }] },
+      { role: 'assistant', content: 'checking', tool_calls: [{ id: 'toolu_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Oslo"}' } }] },
       { role: 'tool', tool_call_id: 'toolu_1', content: 'sunny 21' },
       { role: 'user', content: 'thanks' },
     ]);
-    expect(t.body.tools).toEqual([{ type: 'function', function: { name: 't_0_get_weather', description: 'w', parameters: { type: 'object', properties: { city: { type: 'string' } } } } }]);
+    expect(t.body.tools).toEqual([{ type: 'function', function: { name: 'get_weather', description: 'w', parameters: { type: 'object', properties: { city: { type: 'string' } } } } }]);
   });
 
   it('an is_error tool_result is prefixed so the model sees it failed', () => {
@@ -125,33 +125,34 @@ describe('translateMessagesRequest', () => {
     expect(translateMessagesRequest({ ...base, tools, tool_choice: { type: 'any' } }, 'q').body.tool_choice).toBe('required');
     expect(translateMessagesRequest({ ...base, tools, tool_choice: { type: 'none' } }, 'q').body.tool_choice).toBe('none');
     expect(translateMessagesRequest({ ...base, tools, tool_choice: { type: 'tool', name: 'x' } }, 'q').body.tool_choice)
-      .toEqual({ type: 'function', function: { name: 't_0_x' } });
+      .toEqual({ type: 'function', function: { name: 'x' } });
     // A forced tool the request never offered is refused, not sent under a guessed name.
     expect(() => translateMessagesRequest({ ...base, tools, tool_choice: { type: 'tool', name: 'y' } }, 'q')).toThrowError(GatewayError);
   });
 
   // #7795: Ollama's tool-call parser drops a call whose name starts with `mcp`
-  // (every Breeze tool is mcp__<server>__<tool>), so EVERY offered tool goes on
-  // the wire under a generated alias, never under its caller name.
-  it('aliases every offered tool (t_<index>_<tool>) and maps each alias back exactly', () => {
+  // (every Breeze tool is mcp__<server>__<tool>), so no offered tool goes on the
+  // wire under its caller name. #8081: a unique bare name goes on the wire as-is;
+  // colliding bare names fall back to the indexed alias.
+  it('sends unique bare names, aliases collisions (t_<index>_<tool>), and maps each wire name back exactly', () => {
     const t = translateMessagesRequest({ ...base, tools: [
       { name: 'mcp__breeze__query_devices', input_schema: { type: 'object' } },
       { name: 'get_weather', input_schema: { type: 'object' } },
       { name: 'mcp__fidelity__get_weather', input_schema: { type: 'object' } },
     ] }, 'q');
-    const aliases = t.body.tools!.map((x) => x.function.name);
-    expect(aliases).toEqual(['t_0_query_devices', 't_1_get_weather', 't_2_get_weather']);
-    expect(t.tools.fromOai.get('t_0_query_devices')).toBe('mcp__breeze__query_devices');
+    const wire = t.body.tools!.map((x) => x.function.name);
+    expect(wire).toEqual(['query_devices', 't_1_get_weather', 't_2_get_weather']);
+    expect(t.tools.fromOai.get('query_devices')).toBe('mcp__breeze__query_devices');
     expect(t.tools.fromOai.get('t_1_get_weather')).toBe('get_weather');
     expect(t.tools.fromOai.get('t_2_get_weather')).toBe('mcp__fidelity__get_weather');
     expect(t.tools.toOai.get('mcp__fidelity__get_weather')).toBe('t_2_get_weather');
-    for (const a of aliases) expect(a).not.toMatch(/^mcp/i);
-    // Only aliases map back: a caller name is not accepted from the model.
+    for (const a of wire) expect(a).not.toMatch(/^mcp/i);
+    // fromOai holds wire names only; tolerant matching is resolveToolName's job (toolNames.test.ts).
     expect(t.tools.fromOai.has('mcp__breeze__query_devices')).toBe(false);
     expect(t.tools.fromOai.has('get_weather')).toBe(false);
   });
 
-  it('aliases never collide, even with a caller tool literally named like an alias', () => {
+  it('wire names never collide, even with a caller tool literally named like an alias', () => {
     const names = ['mcp__a__x', 'mcp__b__x', 't_1_x', 'x', 'mcp__a__x_', 'mcp__a__x!'];
     const t = translateMessagesRequest({ ...base, tools: names.map((name) => ({ name, input_schema: { type: 'object' } })) }, 'q');
     const aliases = t.body.tools!.map((x) => x.function.name);
@@ -160,7 +161,7 @@ describe('translateMessagesRequest', () => {
     names.forEach((n, i) => expect(t.tools.fromOai.get(aliases[i]!)).toBe(n));
   });
 
-  it("every alias satisfies OpenAI's function-name rule (64 chars, [A-Za-z0-9_-])", () => {
+  it("every wire name satisfies OpenAI's function-name rule (64 chars, [A-Za-z0-9_-])", () => {
     const odd = [
       `mcp__breeze__${'very_long_tool_name_'.repeat(8)}`, 'mcp__srv__dots.and spaces/slash', 'mcp__srv__', '日本語ツール',
       'mcp__x', 'z'.repeat(250),

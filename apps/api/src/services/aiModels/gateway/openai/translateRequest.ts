@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { GATEWAY_MAX_TOOLS } from '../limits';
 import { GatewayError } from '../types';
+import { assignWireNames } from './toolNames';
 import type { OaiChatRequest, OaiContentPart, OaiMessage, OaiTool, OaiToolCall, ToolNameMap } from './types';
 
 const bad = (message: string): GatewayError => new GatewayError(400, 'invalid_request_error', 'translate_invalid', message);
@@ -50,27 +51,8 @@ const requestSchema = z.object({
   tool_choice: z.object({ type: z.enum(['auto', 'any', 'none', 'tool']), name: z.string().optional() }).passthrough().optional(),
 }).passthrough();
 
-/** OpenAI's function-name rule. Every name the gateway puts on the wire satisfies it. */
-export const OAI_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
-const OAI_TOOL_NAME_MAX = 64;
-
-/**
- * The wire name of the `index`-th offered tool (#7795). Every offered tool is
- * aliased, legal name or not: Ollama's tool-call parser silently drops a call
- * whose name starts with `mcp`, which is every Breeze tool
- * (`mcp__<server>__<tool>`). The alias is `t_<index>_<tool>`: the `mcp__<server>__`
- * prefix is dropped (the model still sees a meaningful name), anything outside
- * `[A-Za-z0-9_-]` becomes `_`, and it is cut to OpenAI's 64 characters. The
- * index makes aliases unique within a request by construction, whatever the
- * caller names are; the per-request map (ToolNameMap) is the only way back.
- */
-export function toolAlias(index: number, name: string): string {
-  const head = `t_${index}`;
-  const bare = name.startsWith('mcp__') && name.indexOf('__', 5) > 5 ? name.slice(name.indexOf('__', 5) + 2) : name;
-  const tail = bare.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
-  if (tail === '') return head;
-  return `${head}_${tail}`.slice(0, OAI_TOOL_NAME_MAX);
-}
+// Wire naming (#7795, #8081) lives in ./toolNames; re-exported for existing importers.
+export { OAI_TOOL_NAME, toolAlias } from './toolNames';
 
 /**
  * Wire name for a history tool_use whose tool is not offered in THIS request.
@@ -125,15 +107,20 @@ export function translateMessagesRequest(input: unknown, wireModel: string): Tra
   let tools: OaiTool[] | undefined;
   if (req.tools && req.tools.length > 0) {
     if (req.tools.length > GATEWAY_MAX_TOOLS) throw bad('Too many tools for one request.');
-    tools = req.tools.map((raw, index) => {
+    const offered = req.tools.map((raw) => {
       const t = toolSchema.safeParse(raw);
       if (!t.success) throw bad(`Tool "${String(raw.name)}" is not supported on an OpenAI-compatible connection (server tools are not supported).`);
-      if (toOai.has(t.data.name)) throw bad(`Duplicate tool name "${t.data.name}".`);
-      const name = toolAlias(index, t.data.name);
-      toOai.set(t.data.name, name);
-      fromOai.set(name, t.data.name);
-      schemas.set(t.data.name, t.data.input_schema);
-      return { type: 'function', function: { name, ...(t.data.description ? { description: t.data.description } : {}), parameters: t.data.input_schema } };
+      return t.data;
+    });
+    // Bare name when unique and wire-safe, else the indexed alias; never `mcp…` (#7795, #8081).
+    const wireNames = assignWireNames(offered.map((t) => t.name));
+    tools = offered.map((t, index) => {
+      if (toOai.has(t.name)) throw bad(`Duplicate tool name "${t.name}".`);
+      const name = wireNames[index]!;
+      toOai.set(t.name, name);
+      fromOai.set(name, t.name);
+      schemas.set(t.name, t.input_schema);
+      return { type: 'function', function: { name, ...(t.description ? { description: t.description } : {}), parameters: t.input_schema } };
     });
   }
 
