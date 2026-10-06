@@ -913,3 +913,234 @@ describe('tunnelHttp error responses carry protective headers', () => {
     expect(csp).toContain("frame-ancestors 'self'");
   });
 });
+
+describe('tunnelHttp path-token auth (no cookie — opaque-origin subresources)', () => {
+  // Firefox does not attach the SameSite=None tunnel cookie to subresource
+  // requests issued from the sandboxed (opaque-origin) proxied document, so a
+  // device page's own CSS/JS arrives cookie-less. The per-(tunnel,user) path
+  // token alone must authenticate it, bounded by the same idle window the
+  // sliding cookie enforces.
+  const recent = () => new Date(Date.now() - 10_000);
+
+  it('serves a cookie-less request carrying the owner\'s path token on a recently active session', async () => {
+    setJoinRow(defaultJoinRow({ lastActivityAt: recent() }));
+    const app = makeApp();
+    const res = await app.request(`${TOKEN_BASE}/static/js/login.js`);
+    expect(res.status).toBe(200);
+    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    expect(sendCommandMock.mock.calls[0]![1].payload.path).toBe('/static/js/login.js');
+  });
+
+  it('falls back to startedAt when the session has no lastActivityAt yet', async () => {
+    setJoinRow(defaultJoinRow({ startedAt: recent(), lastActivityAt: null }));
+    const app = makeApp();
+    const res = await app.request(`${TOKEN_BASE}/`);
+    expect(res.status).toBe(200);
+  });
+
+  it('accepts a cookie-less Origin:null POST with the path token (sandboxed form submit)', async () => {
+    setJoinRow(defaultJoinRow({ lastActivityAt: recent() }));
+    const app = makeApp();
+    const res = await app.request(`${TOKEN_BASE}/login`, {
+      method: 'POST',
+      headers: { origin: 'null' },
+      body: 'x=1',
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('401s a cookie-less request once the session has been idle past the cookie TTL', async () => {
+    setJoinRow(defaultJoinRow({
+      startedAt: new Date(Date.now() - 3_600_000),
+      lastActivityAt: new Date(Date.now() - (HTTP_TUNNEL_COOKIE_TTL_SECONDS + 5) * 1000),
+    }));
+    const app = makeApp();
+    const res = await app.request(`${TOKEN_BASE}/`);
+    expect(res.status).toBe(401);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('401s a cookie-less request on a session that was never started', async () => {
+    setJoinRow(defaultJoinRow({ startedAt: null, lastActivityAt: null }));
+    const app = makeApp();
+    const res = await app.request(`${TOKEN_BASE}/`);
+    expect(res.status).toBe(401);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('401s a cookie-less request with a wrong path token', async () => {
+    setJoinRow(defaultJoinRow({ lastActivityAt: recent() }));
+    const app = makeApp();
+    const res = await app.request(`${BASE}/${'0'.repeat(32)}/`);
+    expect(res.status).toBe(401);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('401s a cookie-less request whose token belongs to a user who does not own the session', async () => {
+    setJoinRow(defaultJoinRow({ ownerId: 'someone-else', lastActivityAt: recent() }));
+    const app = makeApp();
+    const res = await app.request(`${TOKEN_BASE}/`);
+    expect(res.status).toBe(401);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('401s a cookie-less request on a terminal session', async () => {
+    setJoinRow(defaultJoinRow({ status: 'disconnected', lastActivityAt: recent() }));
+    const app = makeApp();
+    const res = await app.request(`${TOKEN_BASE}/`);
+    expect(res.status).toBe(401);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('still runs the live-authority gate on a path-token request', async () => {
+    setJoinRow(defaultJoinRow({ lastActivityAt: recent() }));
+    authorizeContinuationMock.mockResolvedValueOnce({ ok: false, status: 403, reason: 'permission_denied' });
+    const app = makeApp();
+    const res = await app.request(`${TOKEN_BASE}/`);
+    expect(res.status).toBe(403);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('tunnelHttp Referrer-Policy (path token must not leak via Referer)', () => {
+  it('sets no-referrer on a proxied 200', async () => {
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    const res = await app.request(`${TOKEN_BASE}/`, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+  });
+
+  it('overrides a device-supplied Referrer-Policy', async () => {
+    sendCommandMock.mockResolvedValueOnce(okAgentResult({
+      headers: { 'content-type': ['text/html'], 'referrer-policy': ['unsafe-url'] },
+    }));
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    const res = await app.request(`${TOKEN_BASE}/`, { headers: { cookie } });
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+  });
+
+  it('sets no-referrer on the ticket redirect and on error responses', async () => {
+    const app = makeApp();
+    consumeWsTicketMock.mockResolvedValueOnce({
+      ok: true, sessionId: TUNNEL_ID, sessionType: 'tunnel-http', userId: USER_ID, expiresAt: Date.now() + 60_000,
+    });
+    const redirect = await app.request(`${BASE}/?__bzt=goodticket`);
+    expect(redirect.status).toBe(302);
+    expect(redirect.headers.get('referrer-policy')).toBe('no-referrer');
+    const denied = await app.request(`${BASE}/`);
+    expect(denied.status).toBe(401);
+    expect(denied.headers.get('referrer-policy')).toBe('no-referrer');
+  });
+});
+
+describe('tunnelHttp sandboxed-origin CORS (Origin: null)', () => {
+  // Requests from the sandboxed document are cross-origin (opaque origin), so
+  // CORS-mode loads (`crossorigin` tags, fetch, XHR) need the response to
+  // admit Origin:null or the browser hides it from the page.
+  it('admits Origin:null on a proxied response, with credentials', async () => {
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    const res = await app.request(`${TOKEN_BASE}/api/status`, { headers: { cookie, origin: 'null' } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBe('null');
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    expect(res.headers.get('vary')?.toLowerCase()).toContain('origin');
+  });
+
+  it('does not emit CORS headers for a real foreign origin or a same-origin request', async () => {
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    for (const headers of [{ cookie, origin: 'https://other-origin.example' }, { cookie }] as Record<string, string>[]) {
+      const res = await app.request(`${TOKEN_BASE}/`, { headers });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    }
+  });
+
+  it('drops a device-supplied CORS grant', async () => {
+    sendCommandMock.mockResolvedValueOnce(okAgentResult({
+      headers: { 'content-type': ['text/plain'], 'access-control-allow-origin': ['*'] },
+    }));
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    const res = await app.request(`${TOKEN_BASE}/`, { headers: { cookie } });
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('answers a cookie-less Origin:null preflight locally (204) without contacting the agent', async () => {
+    setJoinRow(defaultJoinRow({ lastActivityAt: new Date() }));
+    const app = makeApp();
+    const res = await app.request(`${TOKEN_BASE}/api/sonicos/auth`, {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'null',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type,x-requested-with',
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe('null');
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    expect(res.headers.get('access-control-allow-methods')).toContain('POST');
+    expect(res.headers.get('access-control-allow-headers')).toBe('content-type,x-requested-with');
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a preflight without a valid path token', async () => {
+    setJoinRow(defaultJoinRow({ lastActivityAt: new Date() }));
+    const app = makeApp();
+    const res = await app.request(`${BASE}/${'0'.repeat(32)}/api`, {
+      method: 'OPTIONS',
+      headers: { origin: 'null', 'access-control-request-method': 'POST' },
+    });
+    expect(res.status).toBe(401);
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+});
+
+describe('tunnelHttp device cookies + caching under cookie partitioning', () => {
+  it('forces SameSite=None; Secure on device cookies so the sandbox can send them back', async () => {
+    sendCommandMock.mockResolvedValueOnce(okAgentResult({
+      headers: { 'content-type': ['text/plain'], 'set-cookie': ['sid=abc; Path=/; HttpOnly; SameSite=Strict'] },
+    }));
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    const res = await app.request(`${TOKEN_BASE}/`, { headers: { cookie } });
+    const deviceCookie = res.headers.getSetCookie().find((v) => v.startsWith('bzdev_sid='))!;
+    expect(deviceCookie).toBeDefined();
+    expect(deviceCookie).toMatch(/;\s*SameSite=None/i);
+    expect(deviceCookie).not.toMatch(/SameSite=Strict/i);
+    expect(deviceCookie).toMatch(/;\s*Secure/i);
+    expect(deviceCookie).toMatch(/HttpOnly/i);
+  });
+
+  it('marks proxied responses private so no shared cache stores token-addressed content', async () => {
+    sendCommandMock.mockResolvedValueOnce(okAgentResult({
+      headers: { 'content-type': ['text/javascript'], 'cache-control': ['public, max-age=31536000, s-maxage=600'] },
+    }));
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    const res = await app.request(`${TOKEN_BASE}/app.js`, { headers: { cookie } });
+    const cc = res.headers.get('cache-control') ?? '';
+    expect(cc).toMatch(/\bprivate\b/);
+    expect(cc).toContain('max-age=31536000');
+    expect(cc).not.toMatch(/\bpublic\b|s-maxage/);
+  });
+
+  it('marks a response private when the device sent no cache-control', async () => {
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    const res = await app.request(`${TOKEN_BASE}/`, { headers: { cookie } });
+    expect(res.headers.get('cache-control')).toBe('private');
+  });
+});
+
+it('401s a cookie-less request for a non-UUID tunnel id without querying the session', async () => {
+  const { db } = await import('../db');
+  const app = makeApp();
+  const res = await app.request(`/api/v1/tunnel-http/not-a-uuid/${'a'.repeat(32)}/`);
+  expect(res.status).toBe(401);
+  expect(db.select).not.toHaveBeenCalled();
+});
