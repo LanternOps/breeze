@@ -330,7 +330,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     if (busy) return;
     setBusy(true);
     try {
-      const result = await runAction<{ providerRecordUntouched?: boolean; quickbooksRecordUntouched?: boolean }>({
+      const result = await runAction<{ providerRecordUntouched?: boolean }>({
         request: () => fetchWithAuth(`/invoices/${invoice.id}/payments/${paymentId}`, { method: 'DELETE' }),
         errorFallback: t('invoiceDetail.payments.reverseError'),
         onUnauthorized: UNAUTHORIZED,
@@ -343,7 +343,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
       const reversalProviderName = reversePayment?.source && isAccountingProviderId(reversePayment.source)
         ? ACCOUNTING_PROVIDER_NAMES[reversePayment.source]
         : syncProviderName;
-      const untouched = result.providerRecordUntouched ?? result.quickbooksRecordUntouched ?? false;
+      const untouched = result.providerRecordUntouched ?? false;
       showToast(untouched
         ? { type: 'warning', message: t('invoiceDetail.payments.reverseInProviderToo', { provider: reversalProviderName }) }
         : { type: 'success', message: t('invoiceDetail.payments.reverseSuccess') });
