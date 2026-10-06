@@ -44,7 +44,7 @@ into compile errors (`resolveLineQty` `contractService.ts:674-708`, `generateDue
    `included_hours` → **`included_quantity`** (hours, `numeric(12,2)`), `overage_rate` →
    **`overage_unit_price`** (`numeric(12,2)`), plus `overage_mode`. Block-specific columns keep
    their spec names. The pure split uses `applyAllowance(consumed, spec, 'single_block')`
-   (`contractAllowance.ts:56`) — already shipped for exactly this.
+   (`contractAllowance.ts:57`) — already shipped for exactly this.
 2. **`overage_mode` on a block is `'bill'` only in this slice** (Open Decision 10). Spec Decision 3
    (approved A) made the overage rate required; `'flag'` would let a block silently absorb unlimited
    hours. The CHECK and the invariant table pin `hour_block ⇒ overage_mode = 'bill'`.
@@ -62,8 +62,10 @@ into compile errors (`resolveLineQty` `contractService.ts:674-708`, `generateDue
    any overage on a **new draft invoice** that is never auto-issued.
 5. **Expire/cancel retire the block line** (`hour_block_retired_at = now()`), so the
    one-live-block-per-org index frees up for a successor contract. Retired lines stop billing their
-   fee; their claimed-but-unclosed periods still close via the sweep (bounded by
-   `period_start < retired_at`).
+   fee; their claimed-but-unclosed periods still close via the sweep — **only periods claimed while
+   the line was live** (`contract_billing_periods.generated_at <= hour_block_retired_at`; retirement
+   stamps `now()`, the transaction time, so a final period claimed on the expiring run qualifies).
+   The claim is what billed the fee, so entitlement follows the claim, never a date comparison.
 6. **Org moves refuse block-drawn time** (Open Decision 11). `moveTicketOrg`
    (`ticketService.ts:3144` defers `time_entries_ticket_org_fk`) and the device mover
    (`routes/devices/core.ts:443`, `CUSTOM_ORG_REWRITE_TABLES`) rewrite `time_entries.org_id`. The new
@@ -84,8 +86,8 @@ into compile errors (`resolveLineQty` `contractService.ts:674-708`, `generateDue
    live (`billingRuleResolver.ts:90`).
 10. **Portal home** (Open Decision 7 amended → Open Decision 12). The portal already has a
    **Support usage** panel on the Tickets page (`services/portal/supportUsage.ts`,
-   `SupportUsagePanel.tsx`, gated by `enable_support_usage`). The block card renders **in that
-   panel's response and component** (one concept, one home), gated by its own fail-closed
+   `SupportUsagePanel.tsx`, gated by `enable_support_usage`). The block card renders **inside that panel's component**,
+   fed by its own endpoint `GET /portal/support-usage/hour-block` (the panel itself is served at `/tickets/usage`) — one concept, one home, gated by its own fail-closed
    `enable_hour_block` flag (approved Decision 7 A), not added to `PORTAL_VISIBILITY_FLAG_KEYS`
    ("Enable all").
 
@@ -252,12 +254,13 @@ export interface PeriodMath {
 }
 export function computePeriodMath(spec: HourBlockLineSpec, carriedInHours: number, consumedHours: number): PeriodMath;
 export interface ClosablePeriod { index: number; periodStart: string; periodEnd: string }
+export interface PeriodClaim { periodStart: string; generatedAt: Date }
 /** Earliest-first, contiguous from the first unclosed claimed period; capped. */
 export function selectClosablePeriods(args: {
   contractStartDate: string; intervalMonths: number;
   firstPeriodStart: string;           // hour_block_first_period_start
   retiredAt: Date | null;
-  claimedPeriodStarts: ReadonlySet<string>;
+  claims: readonly PeriodClaim[];     // { periodStart, generatedAt } from contract_billing_periods
   closedPeriodStarts: ReadonlySet<string>;
   todayISO: string;
   cap?: number;                       // default HOUR_BLOCK_CLOSE_CAP
@@ -265,8 +268,8 @@ export function selectClosablePeriods(args: {
 ```
 
 `selectClosablePeriods` walks periods from `firstPeriodStart`; a period is closable iff it has
-ended (`periodEnd <= todayISO`), is claimed, is not closed, and (if retired) `periodStart <
-retiredAt::date`. It **stops** at the first period that is claimed+ended+unclosed but preceded by an
+ended (`periodEnd <= todayISO`), is claimed, is not closed, and (if retired) its claim's
+`generatedAt <= retiredAt`. It **stops** at the first period that is claimed+ended+unclosed but preceded by an
 unclosed claimed period it could not close (contiguity), returning `blockedBy`. Unclaimed periods are
 **skipped** (paused stretches, drafts — never entitled), not blocking.
 
@@ -331,7 +334,7 @@ Changes to existing services (owner wave):
 | `updateContractLine` | `:1661` | W03 | patchable on a block: `description`, `unitPrice`, `taxable`, `includedQuantity`, `overageUnitPrice`, `rolloverPolicy`, `rolloverCapHours`, `hourBlockAlertPct`; `overageMode` cannot leave `'bill'`; first-period/retired never patchable (`HOUR_BLOCK_FIELD_LOCKED`) |
 | `removeContractLine` | `:1791` | W03 | block line with ≥1 ledger row **or** any claimed period ≥ first_period_start → retire (`hour_block_retired_at = now()`), else delete |
 | `computeContractEstimate` | `:858` | W03 | `+ hourBlock: HourBlockEstimate \| null` |
-| `runContractBillingSweep` | `jobs/contractWorker.ts:47` | W02 logs `hourBlockCloses` / truncation; W02 runs `runHourBlockCloseOutSweep` after the billing sweep in the same job; **W04** runs `runHourBlockAlertSweep` before it | |
+| `runContractBillingSweep` | `jobs/contractWorker.ts:47` | W02 logs `hourBlockCloses` / truncation; W02 runs `runHourBlockCloseOutSweep` after the billing sweep in the same job; **W04** runs `runHourBlockAlertSweep` last (renewal → billing → close-out → alerts) and skips any line with a claimed, ended, unclosed period (stale carry-in); alert dedupe uses a durable Redis `SET NX` marker because dismissing a notification deletes its row (`routes/notifications.ts:152`) | |
 
 ### C8. Estimate shape (W03), `packages/shared/src/types/contracts.ts` (or the existing contract types file)
 
@@ -358,12 +361,15 @@ export interface HourBlockEstimate {
   entitlement starts exactly where the fee starts (refined at plan time from the spec's "first period
   starting >= today", which under-delivers on arrears: the in-progress arrears period is still
   unclaimed and is billed the block fee at its end).
-  - **active** contract: `duePeriodStartFor(billingTiming, nextBillingAt, intervalMonths)`
-    (`contractMath.ts:74`) — advance: the next period (the current one was claimed without the fee);
-    arrears: the period in progress.
+  - **active** contract: the period the next run will claim, derived exactly as `generateDueInvoice`
+    does — `computePeriod(start, interval, max(0, timing === 'advance' ? idx : idx - 1))` with
+    `idx = periodIndexFor(start, interval, nextBillingAt)` (never `duePeriodStartFor`'s
+    `addMonthsClamped(-n)`, which drifts on month-end starts) — advance: the next period; arrears: the
+    period in progress. **If that period is already claimed** (pause → resume on an advance contract
+    resets the pointer onto a claimed period), advance one period at a time until unclaimed.
   - **draft** contract: provisional stamp = the contract's first period; **re-stamped inside
     `activateContract`** (`contractService.ts:1815`) to the first period activation will claim
-    (`duePeriodStartFor` over the `nextBillingAt` it sets), in the same transaction.
+    (same derivation over the `nextBillingAt` it sets), in the same transaction.
   - "today" is UTC (`todayISO`, moved to `contractMath.ts` by W03); contracts carry no timezone.
 - Entry eligibility for a period (the claim query, W02): `org_id = contract.org_id AND is_billable
   AND billing_status = 'not_billed' AND ended_at IS NOT NULL AND ended_at >= periodStart::timestamptz
@@ -440,19 +446,36 @@ and `time_entries` FKs are deferrable and repoint cleanly; this is only the live
   check in the merge engine's preflight beside the existing ones, with an `orgMerge.test.ts` case and an
   `orgMergeRegistry.integration.test.ts` case.
 
+**15. Editing a block's terms mid-period.** The close reads the line as it is at close time, so an
+edit to `included_quantity`, `overage_unit_price` or the rollover fields applies to the **open**
+period. On an advance contract that period's fee is already billed.
+- **A — Apply at the next close** (slice 1): the editor states "changes apply to the current open
+  period (dates) at its close"; the audit records before/after. Pro: no new table. Con: a mid-period
+  cut of included hours bills overage for a period already paid at the old terms.
+- **B — Snapshot terms at claim time** (a per-period terms row written by the claim; the close reads
+  it). Pro: a paid period's terms are frozen. Con: a new table + cascade/export registration.
+- **Recommend A for slice 1, B as a follow-up** if MSPs edit live blocks in practice. *Implemented
+  default: A (W03 Task 4).*
+
+**16. A removed overage invoice.** The ledger's `overage_invoice_id` is `ON DELETE SET NULL`, so
+deleting the draft that carried a period's overage leaves `overage_hours > 0` unbilled. *Implemented
+default:* W03's closed-period history flags such rows ("Overage invoice removed — hours not billed").
+A re-bill action is out of scope.
+
 ## Review Focus (program-level — the failure modes most likely to bite, each pinned by a named wave test)
 
 1. **A period closes twice or never** — re-run, worker + manual `/generate` race, close-out sweep vs.
-   billing run on the same contract. Pinned: W02 Task 6 (concurrent generate) + Task 8 (sweep vs. run).
-2. **An hour is billed twice** — ad-hoc issue vs. close (W02 Task 5 concurrency), ad-hoc assembly in an
-   open period (W02 Task 7), un-drawing via edit (W02 Task 4), org move (W02 Task 9), contract end
-   without close (W02 Task 8).
-3. **Free hours** — block added mid-period (first_period_start), pause/resume gap (unclaimed skipped),
-   retired line still billing its fee. Pinned: W02 Task 3 (selector) + Task 6.
+   billing run, expiry on the claim day. Pinned: W02 Task 5 (parallel runs), Task 7 (sweep race), Task 1
+   (expiry-on-claim-day selector case).
+2. **An hour is billed twice** — ad-hoc issue vs. close (W02 Task 5), ad-hoc assembly in an open or
+   just-ended arrears period (W02 Task 6), un-drawing via edit (W02 Task 2), org move (W02 Task 8),
+   contract end without close (W02 Task 7).
+3. **Free hours** — block added mid-period or after pause/resume (W03 Tasks 2–3 first-period rule),
+   pause gap (W02 Task 1 + Task 4), retired line (W02 Task 1 claim-while-live cases + Task 4).
 4. **Fractional-hour drift** — 20 min × 3 must be 0.99 h, not 1.00; consumed = Σ round(each).
-   Pinned: W02 Task 2.
-5. **Partner-axis read trap** — any drawdown read outside a system context sees zero `time_entries`.
-   Pinned: W02 Task 5 (org-scoped context returns 0) and W04 Task 2 (portal handler).
+   Pinned: W02 Task 1.
+5. **Partner-axis read trap** — any drawdown read under org scope sees zero `time_entries`. Pinned: W03
+   Task 14 (org-scoped context throws/returns 0) and W04 Task 2 (portal handler in system context).
 
 ## Verification bar (every wave)
 

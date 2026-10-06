@@ -28,7 +28,7 @@ blast_radius: high (row locks on time_entries inside the billing transaction; in
 - Claim query: `ORDER BY id FOR UPDATE` — the same lock class and order as `issueInvoice` (`invoiceService.ts:1482`).
 - Minutes: `COALESCE(billable_minutes, duration_minutes, 0)`. Hours per entry: `round(minutes / 60, 2)` **before** summing. All hours arithmetic in integer hundredths.
 - A period is closable iff ended (`periodEnd <= today`), `>= hour_block_first_period_start`, **claimed** (`contract_billing_periods` row), not closed, and, when the line is retired, `periodStart < retired_at::date`. Earliest first, contiguous, at most `HOUR_BLOCK_CLOSE_CAP = 12` per call.
-- Period boundary instants: `new Date(\`${periodStart}T00:00:00Z\`)` — the UTC convention `assembleDraftFromOrg` uses (`invoiceService.ts:1328-1329`).
+- Period boundary instants: `new Date(\`${periodStart}T00:00:00Z\`)` — UTC midnight, half-open — the same UTC-date convention `assembleDraftFromOrg` uses (`invoiceService.ts:1328`), but exclusive at the end rather than its inclusive `T23:59:59Z`.
 - Overage line: `source_type 'contract'`, `source_id` = block line, `source_contract_id` = contract, `parent_line_id NULL`, `catalog_item_id NULL`, `taxable` = the block line's `taxable`, `unit_price` = the line's `overage_unit_price`, quantity = overage hours `toFixed(2)`, description `"<line description> — hours over block, <periodStart> – <periodEnd>"`.
 - Close-out overage goes on a **new draft** invoice that is never auto-issued.
 - Error codes (index C10): `HOUR_BLOCK_CLOSE_MISMATCH` 500, `ENTRY_DRAWN_BY_BLOCK` 409, `HOUR_BLOCK_DRAWN_TIME` 409.
@@ -52,7 +52,7 @@ blast_radius: high (row locks on time_entries inside the billing transaction; in
 - Test: `apps/api/src/services/contractHourBlocks.test.ts`
 
 **Interfaces:**
-- Consumes: `computePeriod(startDate, intervalMonths, idx): { periodStart, periodEnd }` (`contractMath.ts:30`); `applyAllowance` (`contractAllowance.ts:56`) — used only in a parity test.
+- Consumes: `computePeriod(startDate, intervalMonths, idx): { periodStart, periodEnd }` (`contractMath.ts:30`); `applyAllowance` (`contractAllowance.ts:57`) — used only in a parity test.
 - Produces (index C7, exact): `HOUR_BLOCK_CLOSE_CAP`, `RolloverPolicy`, `HourBlockLineSpec`, `entryHours(minutes)`, `sumEntryHours(minutes[])`, `PeriodMath`, `computePeriodMath(spec, carriedInHours, consumedHours)`, `ClosablePeriod`, `selectClosablePeriods(args)`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -115,43 +115,56 @@ describe('selectClosablePeriods', () => {
     contractStartDate: '2026-01-01', intervalMonths: 1, firstPeriodStart: '2026-01-01',
     retiredAt: null, closedPeriodStarts: new Set<string>(),
   };
-  const claimed = (...s: string[]) => new Set(s);
+  /** Claims generated at 06:00 UTC on each period's start day (the worker's run time). */
+  const claimed = (...s: string[]) => s.map((periodStart) => ({ periodStart, generatedAt: new Date(`${periodStart}T06:00:00Z`) }));
 
   it('closes ended, claimed periods earliest first', () => {
-    const r = selectClosablePeriods({ ...base, claimedPeriodStarts: claimed('2026-01-01', '2026-02-01', '2026-03-01'), todayISO: '2026-03-01' });
+    const r = selectClosablePeriods({ ...base, claims: claimed('2026-01-01', '2026-02-01', '2026-03-01'), todayISO: '2026-03-01' });
     expect(r.periods.map((p) => p.periodStart)).toEqual(['2026-01-01', '2026-02-01']);
     expect(r).toMatchObject({ truncated: false, blockedBy: null });
   });
   it('a period ending today is ended (half-open)', () => {
-    const r = selectClosablePeriods({ ...base, claimedPeriodStarts: claimed('2026-01-01'), todayISO: '2026-02-01' });
+    const r = selectClosablePeriods({ ...base, claims: claimed('2026-01-01'), todayISO: '2026-02-01' });
     expect(r.periods.map((p) => p.periodEnd)).toEqual(['2026-02-01']);
   });
   it('skips unclaimed periods (pause gap) without blocking', () => {
-    const r = selectClosablePeriods({ ...base, claimedPeriodStarts: claimed('2026-01-01', '2026-04-01'), todayISO: '2026-06-01' });
+    const r = selectClosablePeriods({ ...base, claims: claimed('2026-01-01', '2026-04-01'), todayISO: '2026-06-01' });
     expect(r.periods.map((p) => p.periodStart)).toEqual(['2026-01-01', '2026-04-01']);
   });
   it('never closes a period before the first block period', () => {
-    const r = selectClosablePeriods({ ...base, firstPeriodStart: '2026-03-01', claimedPeriodStarts: claimed('2026-01-01', '2026-02-01', '2026-03-01'), todayISO: '2026-04-01' });
+    const r = selectClosablePeriods({ ...base, firstPeriodStart: '2026-03-01', claims: claimed('2026-01-01', '2026-02-01', '2026-03-01'), todayISO: '2026-04-01' });
     expect(r.periods.map((p) => p.periodStart)).toEqual(['2026-03-01']);
   });
   it('skips already-closed periods', () => {
-    const r = selectClosablePeriods({ ...base, closedPeriodStarts: claimed('2026-01-01'), claimedPeriodStarts: claimed('2026-01-01', '2026-02-01'), todayISO: '2026-03-01' });
+    const r = selectClosablePeriods({ ...base, closedPeriodStarts: new Set(['2026-01-01']), claims: claimed('2026-01-01', '2026-02-01'), todayISO: '2026-03-01' });
     expect(r.periods.map((p) => p.periodStart)).toEqual(['2026-02-01']);
   });
-  it('bounds a retired line to periods starting before retirement', () => {
-    const r = selectClosablePeriods({ ...base, retiredAt: new Date('2026-02-15T10:00:00Z'), claimedPeriodStarts: claimed('2026-01-01', '2026-02-01', '2026-03-01'), todayISO: '2026-05-01' });
+  it('a retired line closes only periods claimed while it was live', () => {
+    const r = selectClosablePeriods({ ...base, retiredAt: new Date('2026-02-15T10:00:00Z'), claims: claimed('2026-01-01', '2026-02-01', '2026-03-01'), todayISO: '2026-05-01' });
     expect(r.periods.map((p) => p.periodStart)).toEqual(['2026-01-01', '2026-02-01']);
+  });
+  it('expiry on the claim day: the final period claimed and retired in one transaction still closes', () => {
+    // generateDueInvoice claims 2026-03-01 and retires the line in the same transaction:
+    // generated_at and hour_block_retired_at are both now() — equal, so the claim counts.
+    const at = new Date('2026-03-01T06:00:00Z');
+    const r = selectClosablePeriods({ ...base, retiredAt: at, claims: [{ periodStart: '2026-03-01', generatedAt: at }], todayISO: '2026-04-01' });
+    expect(r.periods.map((p) => p.periodStart)).toEqual(['2026-03-01']);
+  });
+  it('arrears retire mid-period: the period claimed AFTER retirement (no fee billed) never closes', () => {
+    const r = selectClosablePeriods({ ...base, retiredAt: new Date('2026-06-20T10:00:00Z'),
+      claims: [{ periodStart: '2026-06-01', generatedAt: new Date('2026-07-01T06:00:00Z') }], contractStartDate: '2026-06-01', firstPeriodStart: '2026-06-01', todayISO: '2026-07-02' });
+    expect(r.periods).toEqual([]);
   });
   it('stops at the cap and reports truncation', () => {
     const starts = Array.from({ length: 15 }, (_, i) => `2025-${String(i + 1).padStart(2, '0')}-01`).slice(0, 12)
       .concat(['2026-01-01', '2026-02-01', '2026-03-01']);
-    const r = selectClosablePeriods({ ...base, contractStartDate: '2025-01-01', firstPeriodStart: '2025-01-01', claimedPeriodStarts: new Set(starts), todayISO: '2026-06-01' });
+    const r = selectClosablePeriods({ ...base, contractStartDate: '2025-01-01', firstPeriodStart: '2025-01-01', claims: starts.map((periodStart) => ({ periodStart, generatedAt: new Date(`${periodStart}T06:00:00Z`) })), todayISO: '2026-06-01' });
     expect(r.periods).toHaveLength(HOUR_BLOCK_CLOSE_CAP);
     expect(r.truncated).toBe(true);
     expect(r.periods[0]!.periodStart).toBe('2025-01-01');
   });
   it('works for quarterly intervals and month-end starts', () => {
-    const r = selectClosablePeriods({ ...base, contractStartDate: '2026-01-31', firstPeriodStart: '2026-01-31', intervalMonths: 3, claimedPeriodStarts: claimed('2026-01-31'), todayISO: '2026-05-01' });
+    const r = selectClosablePeriods({ ...base, contractStartDate: '2026-01-31', firstPeriodStart: '2026-01-31', intervalMonths: 3, claims: claimed('2026-01-31'), todayISO: '2026-05-01' });
     expect(r.periods).toEqual([{ index: 0, periodStart: '2026-01-31', periodEnd: '2026-04-30' }]);
   });
 });
@@ -227,28 +240,35 @@ export function computePeriodMath(spec: HourBlockLineSpec, carriedInHours: numbe
 }
 
 export interface ClosablePeriod { index: number; periodStart: string; periodEnd: string }
+/** One contract_billing_periods row: the period it claims and when it was claimed. */
+export interface PeriodClaim { periodStart: string; generatedAt: Date }
 
 /**
  * Earliest-first walk from the block's first period. A period is closable iff
- * ended, claimed, unclosed, and (retired line) started before retirement.
+ * ended, claimed, unclosed, and — for a retired line — CLAIMED WHILE THE LINE WAS
+ * LIVE (generated_at <= hour_block_retired_at). The claim is what billed the block
+ * fee, so entitlement follows the claim, never a date comparison: a period claimed
+ * and retired in the same transaction (expiry on the claim day) still closes, and
+ * an arrears period claimed after a mid-period retirement (no fee) never does.
  * Unclaimed periods are SKIPPED — never entitled (pause gaps, pre-activation).
  * Contiguity is guaranteed by walking in order and closing everything eligible:
  * a claimed+ended period is never left behind an older one that is still open.
  */
 export function selectClosablePeriods(args: {
   contractStartDate: string; intervalMonths: number; firstPeriodStart: string;
-  retiredAt: Date | null; claimedPeriodStarts: ReadonlySet<string>; closedPeriodStarts: ReadonlySet<string>;
+  retiredAt: Date | null; claims: readonly PeriodClaim[]; closedPeriodStarts: ReadonlySet<string>;
   todayISO: string; cap?: number;
 }): { periods: ClosablePeriod[]; truncated: boolean; blockedBy: string | null } {
   const cap = args.cap ?? HOUR_BLOCK_CLOSE_CAP;
-  const retiredDay = args.retiredAt ? args.retiredAt.toISOString().slice(0, 10) : null;
+  const entitled = new Set(args.claims
+    .filter((c) => args.retiredAt === null || c.generatedAt.getTime() <= args.retiredAt.getTime())
+    .map((c) => c.periodStart));
   const periods: ClosablePeriod[] = [];
   for (let idx = 0; ; idx++) {
     const p = computePeriod(args.contractStartDate, args.intervalMonths, idx);
     if (p.periodStart < args.firstPeriodStart) continue;
     if (p.periodEnd > args.todayISO) break;                 // not ended — nothing later has ended either
-    if (retiredDay !== null && p.periodStart >= retiredDay) break;
-    if (!args.claimedPeriodStarts.has(p.periodStart)) continue;
+    if (!entitled.has(p.periodStart)) continue;
     if (args.closedPeriodStarts.has(p.periodStart)) continue;
     if (periods.length === cap) return { periods, truncated: true, blockedBy: null };
     periods.push({ index: idx, periodStart: p.periodStart, periodEnd: p.periodEnd });
@@ -733,15 +753,15 @@ export async function closeHourBlockPeriods(args: {
     throw new ContractServiceError(`Contract line ${line.id} is not a block of hours`, 500, 'INVALID_STATE');
   }
 
-  const claimed = await db.select({ s: contractBillingPeriods.periodStart }).from(contractBillingPeriods)
-    .where(eq(contractBillingPeriods.contractId, contract.id));
+  const claims = await db.select({ periodStart: contractBillingPeriods.periodStart, generatedAt: contractBillingPeriods.generatedAt })
+    .from(contractBillingPeriods).where(eq(contractBillingPeriods.contractId, contract.id));
   const closed = await db.select({ s: contractHourPeriods.periodStart }).from(contractHourPeriods)
     .where(eq(contractHourPeriods.contractLineId, line.id));
   const { periods, truncated } = selectClosablePeriods({
     contractStartDate: contract.startDate, intervalMonths: contract.intervalMonths,
     firstPeriodStart: line.hourBlockFirstPeriodStart,
     retiredAt: line.hourBlockRetiredAt ?? null,
-    claimedPeriodStarts: new Set(claimed.map((r) => r.s)),
+    claims,
     closedPeriodStarts: new Set(closed.map((r) => r.s)),
     todayISO: todayUTC(args.asOf),
   });
@@ -1058,14 +1078,17 @@ In `generateDueInvoice`:
 ```
 
    and return `hourBlockCloses, hourBlockCloseTruncated` on the success path.
-4. Retirement. Add a module-private helper and call it in both expiry branches (`:2031`, `:2196`) and in `cancelContract`, inside the same transaction as the status change:
+4. Retirement. Add a module-private helper and call it as `retireLiveHourBlocks(contractId)` in both expiry branches (`:2031`, `:2196`) and in `cancelContract`, inside the same transaction as the status change:
 
 ```ts
 /** Expire/cancel end the block (#4547 plan-time amendment 5): stamp the live
  *  line retired so the one-live-block-per-org index frees for a successor.
  *  Pre-retirement claimed periods still close via runHourBlockCloseOutSweep. */
-async function retireLiveHourBlocks(contractId: string, at: Date): Promise<void> {
-  await db.update(contractLines).set({ hourBlockRetiredAt: at })
+async function retireLiveHourBlocks(contractId: string): Promise<void> {
+  // now() = transaction start, the same instant contract_billing_periods.generated_at
+  // (DEFAULT now()) gets for a claim in this transaction — so a final period claimed
+  // on the expiring run satisfies generated_at <= retired_at. Never pass asOf here.
+  await db.update(contractLines).set({ hourBlockRetiredAt: sql`now()` })
     .where(and(eq(contractLines.contractId, contractId), eq(contractLines.lineType, 'hour_block'), isNull(contractLines.hourBlockRetiredAt)));
 }
 ```
@@ -1221,8 +1244,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Produces: `hourBlockHoldWindows(orgId, asOf?)` (index C7); `AssemblyResult.heldForHourBlock: { count: number; hours: number }` (W03 renders it).
 
 Hold window definition (index delta 3), per block line `L` of the org:
-- **W1** — every claimed period `P` with `P.start >= L.first_period_start`, `(L.retired_at IS NULL OR P.start < L.retired_at::date)`, and no ledger row `(L, P.start)`: `[P.start, P.end)`.
-- **W2** — only when `L` is live and its contract is `active`: `[max(L.first_period_start, currentPeriodStart), ∞)`, where `currentPeriodStart = computePeriod(start, interval, periodIndexFor(start, interval, today)).periodStart`.
+- **W1** — every claimed period `P` with `P.start >= L.first_period_start`, `(L.retired_at IS NULL OR P.generated_at <= L.retired_at)` (claimed while live — the selector's rule), and no ledger row `(L, P.start)`: `[P.start, P.end)`.
+- **W2** — only when `L` is live and its contract is `active`: `[max(L.first_period_start, min(currentPeriodStart, duePeriodStart)), ∞)`, where `currentPeriodStart` is the period containing today and `duePeriodStart` is the period the next run will claim (`generateDueInvoice`'s rule: advance → `periodIndexFor(nextBillingAt)`, arrears → one back). The `min` closes the arrears gap between a period's end and the run that claims it.
 
 Entries in unclaimed past periods (pause gaps) and in closed periods (late entries) are **not** held — they bill ad hoc, which is the documented behaviour.
 
@@ -1278,9 +1301,17 @@ describe('ad-hoc assembly holds block-covered time (real DB) #4547', () => {
     expect(w).toEqual([{ start: new Date('2026-07-01T00:00:00Z'), end: new Date('2026-08-01T00:00:00Z'), contractLineId: f.blockLineId }]);
   });
 
+  it('arrears: holds the just-ended period until the run claims it', async () => {
+    const f = await seedBlockFixture({ timing: 'arrears', nextBillingAt: '2026-08-01' });   // July unclaimed until the 08-01 run
+    const julyWork = await seedEntry(f, { minutes: 60, endedAt: '2026-07-30T12:00:00Z' });
+    const r = await withSystemDbAccessContext(() => gatherOrgTimeEntries(f.orgId, FROM, TO, 'USD', new Date('2026-08-01T02:00:00Z')));
+    expect(r.included.map((l) => l.sourceId)).not.toContain(julyWork);
+    expect(r.heldForHourBlock.count).toBe(1);
+  });
+
   it('works in a partner-scoped request context (Shape-1 reads only)', async () => {
     const f = await seedBlockFixture({ timing: 'arrears' });
-    const w = await withDbAccessContext({ scope: 'partner', partnerId: f.partnerId, accessibleOrgIds: [f.orgId] } as never,
+    const w = await withDbAccessContext({ scope: 'partner', orgId: null, accessibleOrgIds: [f.orgId], accessiblePartnerIds: [f.partnerId] },
       () => hourBlockHoldWindows(f.orgId, new Date('2026-07-25T00:00:00Z')));
     expect(w).toHaveLength(1);
   });
@@ -1310,19 +1341,33 @@ export async function hourBlockHoldWindows(orgId: string, asOf: Date = new Date(
   const out: Array<{ start: Date; end: Date | null; contractLineId: string }> = [];
   for (const { line, contract } of blocks) {
     const first = line.hourBlockFirstPeriodStart!;
-    const retiredDay = line.hourBlockRetiredAt ? line.hourBlockRetiredAt.toISOString().slice(0, 10) : null;
-    const claimed = await db.select({ s: contractBillingPeriods.periodStart, e: contractBillingPeriods.periodEnd })
+    const retiredAt = line.hourBlockRetiredAt;
+    const claimed = await db.select({ s: contractBillingPeriods.periodStart, e: contractBillingPeriods.periodEnd, g: contractBillingPeriods.generatedAt })
       .from(contractBillingPeriods).where(eq(contractBillingPeriods.contractId, contract.id));
     const closed = new Set((await db.select({ s: contractHourPeriods.periodStart }).from(contractHourPeriods)
       .where(eq(contractHourPeriods.contractLineId, line.id))).map((r) => r.s));
     for (const p of claimed) {
-      if (p.s < first || closed.has(p.s) || (retiredDay !== null && p.s >= retiredDay)) continue;
+      // Same entitlement rule as selectClosablePeriods: claimed while the line was live.
+      if (p.s < first || closed.has(p.s) || (retiredAt !== null && p.g.getTime() > retiredAt.getTime())) continue;
       out.push({ start: dayStart(p.s), end: dayStart(p.e), contractLineId: line.id });            // W1
     }
-    if (retiredDay === null && contract.status === 'active') {
-      const idx = periodIndexFor(contract.startDate, contract.intervalMonths, today);
-      const current = computePeriod(contract.startDate, contract.intervalMonths, Math.max(0, idx)).periodStart;
-      out.push({ start: dayStart(current > first ? current : first), end: null, contractLineId: line.id }); // W2
+    if (retiredAt === null && contract.status === 'active') {
+      // W2 opens at the EARLIER of the calendar-current period and the period the
+      // next run will claim. On arrears the just-ended period stays unclaimed until
+      // the worker runs; without the second term its entries would be unheld in
+      // that gap and an ad-hoc invoice could bill them before the block fee does.
+      // Period starts come from computePeriod (never addMonthsClamped(-n)) so a
+      // 03-31 contract's periods line up with the claims.
+      const cur = computePeriod(contract.startDate, contract.intervalMonths,
+        Math.max(0, periodIndexFor(contract.startDate, contract.intervalMonths, today))).periodStart;
+      let due = cur;
+      if (contract.nextBillingAt) {
+        const idxAt = periodIndexFor(contract.startDate, contract.intervalMonths, contract.nextBillingAt);
+        due = computePeriod(contract.startDate, contract.intervalMonths,
+          Math.max(0, contract.billingTiming === 'advance' ? idxAt : idxAt - 1)).periodStart;   // generateDueInvoice's own rule
+      }
+      const open = [cur, due, first].reduce((a, b) => (a < b ? a : b));
+      out.push({ start: dayStart(open < first ? first : open), end: null, contractLineId: line.id }); // W2
     }
   }
   return out;
@@ -1357,7 +1402,7 @@ return result;
 ```
 
   `invoiceAssembly.ts` importing `contractHourBlockClose.ts` must not create an import cycle with `invoiceService.ts` (which `contractHourBlockClose.ts` imports for `addContractLine`). If it does, move `hourBlockHoldWindows` into a third file `contractHourBlockHolds.ts` that imports only `db`, schema and `contractMath`, and re-export it from `contractHourBlockClose.ts` so index C7's import path still works.
-- `finishAssembly` (`invoiceService.ts`, called at `:1352` and `:1372`): if an empty gather is an error ("No unbilled billable work in range"), make the error message say "— N entries (X h) are held for block hours" when `heldForHourBlock.count > 0`, and include `heldForHourBlock` in the success return so the route passes it through. Read `finishAssembly` first.
+- `finishAssembly` (`invoiceService.ts`, called at `:1352` and `:1372`): if an empty gather is an error ("No unbilled billable work in range"), make the error message say "— N entries (X h) are held for block hours" when `heldForHourBlock.count > 0`, and include `heldForHourBlock` both in the success return and in the empty-gather error's `details` (W03 Task 13 renders `details.heldForHourBlock` on the 409), so the route passes it through. Read `finishAssembly` first.
 
 - [ ] **Step 4: Run to verify pass**
 
@@ -1384,10 +1429,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Test: `apps/api/src/__tests__/integration/hourBlockCloseOut.integration.test.ts` (new); `apps/api/src/jobs/contractWorker.test.ts` (ordering)
 
 **Interfaces:**
-- Consumes: `closeHourBlockPeriods` with a lazy `overageInvoice` factory; `createManualInvoice`; `lockContractRow` (`contractService.ts:308`); `buildAutomationEligibleOrgPredicate` (see `contractWorker.ts:61` for its import).
+- Consumes: `closeHourBlockPeriods` with a lazy `overageInvoice` factory; `createManualInvoice`; `lockContractRow` (`contractService.ts:308`); `buildAutomationEligibleOrgPredicate` (imported at `contractWorker.ts:21`).
 - Produces: `runHourBlockCloseOutSweep(asOf?)` (index C7).
 
-Candidates: every `hour_block` line where **(contract `status <> 'active'`) OR (`hour_block_retired_at IS NOT NULL`)**, on an automation-eligible org, that has at least one claimed, ended period `>= first_period_start` with no ledger row (the selector decides; the SQL pre-filter only narrows). Per contract: own `runOutsideDbContext(() => withSystemDbAccessContext(...))` transaction, `lockContractRow` first, per-contract try/catch with Sentry capture exactly like `runContractBillingSweep` (`contractWorker.ts:93-98`).
+Candidates: every `hour_block` line where **(contract `status <> 'active'`) OR (`hour_block_retired_at IS NOT NULL`)**, on an automation-eligible org, that has at least one claimed, ended period `>= first_period_start` with no ledger row (the selector decides; the SQL pre-filter only narrows). Per contract: own `runOutsideDbContext(() => withSystemDbAccessContext(...))` transaction, `lockContractRow` first, per-contract try/catch with Sentry capture exactly like `runContractBillingSweep` (`captureException` at `contractWorker.ts:108`, `:128`).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1512,7 +1557,7 @@ export async function runHourBlockCloseOutSweep(asOf: Date = new Date()): Promis
     } catch (err) {
       errors += 1;
       console.error('[contractHourBlocks] close-out failed', { contractId, err });
-      captureException(err);   // same Sentry helper contractWorker.ts:93-98 uses — import it from there
+      captureException(err);   // same Sentry helper contractWorker.ts:108 uses — import it from there
     }
   }
   return { contracts: candidates.length, closes, errors };
@@ -1549,7 +1594,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Files:**
 - Create: `apps/api/src/services/ticketMoveHourBlockGuard.ts`
-- Modify: `apps/api/src/services/ticketService.ts:3432` (call before the currency guard), `apps/api/src/services/deviceOrgMove/moveDeviceOrgInTransaction.ts:883` (same), and every catch site of `TicketMoveCurrencyBlockedError`: `apps/api/src/routes/tickets/moveOrg.ts`, `apps/api/src/routes/devices/moveOrg.ts`, `apps/api/src/services/aiToolsTicketing.ts`, `apps/api/src/services/unassignedPool/assignParkedDevice.ts`
+- Modify: `apps/api/src/services/ticketService.ts:3434` (call before the currency guard), `apps/api/src/services/deviceOrgMove/moveDeviceOrgInTransaction.ts:883` (same), and every catch site of `TicketMoveCurrencyBlockedError`: `apps/api/src/routes/tickets/moveOrg.ts`, `apps/api/src/routes/devices/moveOrg.ts`, `apps/api/src/services/aiToolsTicketing.ts`, `apps/api/src/services/unassignedPool/assignParkedDevice.ts`
 - Test: `apps/api/src/__tests__/integration/hourBlockOrgMove.integration.test.ts` (new); route tests beside each route
 
 **Interfaces:**
@@ -1592,7 +1637,7 @@ describe('org moves and block-drawn time (real DB) #4547', () => {
 });
 ```
 
-Write `seedSiblingOrg`, `seedTicket` and `ticketMoveActor` in the same file by copying the setup from the existing ticket-move integration suite (`grep -rln "moveTicketOrg(" apps/api/src/__tests__/integration`) — `moveTicketOrg`'s signature and the `rowVersion` it needs (`ticketService.ts:3092`, `xmin` check at `:3384`) come from there. Add the device-move twin by copying the device-move integration suite's fixture (`billingEvidenceDeviceMove.integration.test.ts` moves a device; reuse its harness): a device whose ticket carries a drawn entry → 409 `HOUR_BLOCK_DRAWN_TIME`. Route tests: the tickets and devices move routes map the error to HTTP 409 with `code` and `details` in the body, like `TICKET_MOVE_CURRENCY_BLOCKED`.
+Write `seedSiblingOrg`, `seedTicket` and `ticketMoveActor` in the same file by copying the setup from the existing ticket-move integration suite (`grep -rln "moveTicketOrg(" apps/api/src/__tests__/integration`) — `moveTicketOrg`'s signature and the `rowVersion` it needs (`ticketService.ts:3094`, `xmin` check at `:3386`) come from there. Add the device-move twin by copying the device-move integration suite's fixture (`billingEvidenceDeviceMove.integration.test.ts` moves a device; reuse its harness): a device whose ticket carries a drawn entry → 409 `HOUR_BLOCK_DRAWN_TIME`. Route tests: the tickets and devices move routes map the error to HTTP 409 with `code` and `details` in the body, like `TICKET_MOVE_CURRENCY_BLOCKED`.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1639,7 +1684,7 @@ export async function assertNoHourBlockDrawnTime(tx: Tx, input: { ticketIds: str
 }
 ```
 
-Call it in `moveTicketOrg` immediately before `assertTicketMoveCurrencyCompatible` (`ticketService.ts:3432`) with `{ ticketIds: [ticketId] }`, and in `moveDeviceOrgInTransaction.ts` immediately before `:883` with the same `ticketIds` array it already computes. The currency guard then re-locks a subset of the same rows in the same order — a no-op for a lock already held. Add a concurrency case to the integration test: a ticket move and a `generateDueInvoice` over the same entry run concurrently (`Promise.allSettled`, two system transactions); assert the outcome is either (moved, entry `not_billed` in the target org) or (409 `HOUR_BLOCK_DRAWN_TIME`, entry drawn in the source org), never a 23503 or 40P01. In each catch site, add a branch for `TicketMoveHourBlockError` next to the `TicketMoveCurrencyBlockedError` one, returning the same 409 JSON shape (`{ error: message, code, details }`).
+Call it in `moveTicketOrg` immediately before `assertTicketMoveCurrencyCompatible` (`ticketService.ts:3434`) with `{ ticketIds: [ticketId] }`, and in `moveDeviceOrgInTransaction.ts` immediately before `:883` with the same `ticketIds` array it already computes. The currency guard then re-locks a subset of the same rows in the same order — a no-op for a lock already held. Add a concurrency case to the integration test: a ticket move and a `generateDueInvoice` over the same entry run concurrently (`Promise.allSettled`, two system transactions); assert the outcome is either (moved, entry `not_billed` in the target org) or (409 `HOUR_BLOCK_DRAWN_TIME`, entry drawn in the source org), never a 23503 or 40P01. In each catch site, add a branch for `TicketMoveHourBlockError` next to the `TicketMoveCurrencyBlockedError` one, returning the same 409 JSON shape (`{ error: message, code, details }`).
 
 - [ ] **Step 4: Run to verify pass**
 

@@ -30,7 +30,8 @@ These override the text below wherever they conflict. Full rationale and file:li
 9. **Prerequisites met:** #4596 composite `time_entries_org_partner_fk` shipped (the "pre-existing gap" paragraph below is closed); `billable_minutes` shipped; `resolveLineQty` is now exhaustive (`contractService.ts:704`).
 10. **`hour_block_first_period_start` = the first period whose block fee is not yet claimed** (refines §1's "first period starting on or after today", which on an arrears contract would bill the fee for the in-progress period without entitling its hours). Active: `duePeriodStartFor(timing, nextBillingAt, interval)`; draft: re-stamped at activation. Entitlement and fee always start together.
 11. **Org merge refuses when both organizations have a live block** *(OD 14)* — the one-live-block index would otherwise fail mid-merge.
-12. **Migrations** are renamed to sort after the current ceiling (`2026-12-13-110200-…`): `2026-12-14-1000NN-…` (W01) and `2026-12-14-1300NN-…` (W04); the `portal_branding` column moves to W04.
+12. **A retired line closes only periods claimed while it was live** (`generated_at <= hour_block_retired_at`) — the claim is what billed the fee. Mid-period term edits apply to the open period at its close *(OD 15)*; a deleted overage invoice is flagged on the period history *(OD 16)*.
+13. **Migrations** are renamed to sort after the current ceiling (`2026-12-13-110200-…`): `2026-12-14-1000NN-…` (W01) and `2026-12-14-1300NN-…` (W04); the `portal_branding` column moves to W04.
 
 ## Problem
 
@@ -244,6 +245,8 @@ Absorbed entries are stamped `contract_line_id` in the same UPDATE that sets `bi
 | `CORE_DEVICE_CASCADE_DELETE_TABLES` | `routes/devices/core.ts` | n/a — no `device_id`. |
 
 ### Migrations
+
+> **Superseded** by plan-time amendments 1 and 13 and index §C1: five block columns (`numeric(12,2)`, allowance columns reused), migrations `2026-12-14-1000NN-…`, and `portal_branding.enable_hour_block` moved to W04. The original text is kept below as the record.
 
 Named to sort after the newest committed file. At drafting, `origin/main`'s newest is `2026-10-04-100000-ticket-requester-contact.sql`, and the unmerged `billing-by-units` branch (#3205) holds `2026-10-04-100000-contract-line-type-per-device-role.sql` and `2026-10-04-100100-contract-lines-device-roles.sql`. **Re-check `ls apps/api/migrations | sort | tail -1` at implementation time and rename if the ceiling has moved** — CLAUDE.md's ratchet means today's date is not automatically sort-last.
 
