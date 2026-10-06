@@ -255,9 +255,9 @@ func numericEventID(entry EventLogEntry) int {
 // "The <ServiceName> service terminated unexpectedly".
 var reServiceName = regexp.MustCompile(`(?i)the (.+?) service\b`)
 
-// parseServiceName extracts the service name from an SCM message.
+// parseRawServiceName extracts the service name from an SCM message.
 // Falls back to fallback (typically entry.Source) if no match.
-func parseServiceName(message, fallback string) string {
+func parseRawServiceName(message, fallback string) string {
 	if m := reServiceName.FindStringSubmatch(message); len(m) >= 2 {
 		name := strings.TrimSpace(m[1])
 		if name != "" {
