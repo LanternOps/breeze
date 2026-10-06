@@ -1,7 +1,7 @@
 # Block Hours: Prepaid Hour Banks on Contracts
 
 **Date:** 2026-09-02
-**Status:** Draft — awaiting Todd's answers to the Open Decisions below
+**Status:** Approved (Gate A 2026-09-02; amended 2026-09-19 and 2026-10-06 — see the amendment sections)
 **Tracking issue:** LanternOps/breeze#4547
 **Sibling:** LanternOps/breeze#3205 `per_device_role` contract lines (same MSP conversation, built first; spec `docs/superpowers/specs/billing/2026-09-02-contract-lines-per-device-role-design.md` on branch `billing-by-units`)
 **Advisor quorum:** Fable design + Codex `gpt-5.6-sol` xhigh read-only review (2026-09-02). Codex found nine confirmed defects in the first draft, all folded in below; the one place we still disagree is Open Decision 8.
@@ -14,6 +14,21 @@ These override the text below wherever they conflict.
 1. **`contract` is terminal only when `contract_line_id IS NOT NULL`.** Billing profiles (#4628) mark a card-*included* entry `billing_status = 'contract'` at creation with no `contract_line_id`. That entry must stay editable by a holder of `time_entries:manage_billing` — it is how out-of-scope work on an otherwise-included work type gets billed. The guard in §2 ("`contract` must become a terminal disposition") therefore locks an entry only when a block close stamped a `contract_line_id` on it. The double-billing hole it closes is unchanged: every block-drawn entry carries the line id.
 2. **Drawdown reads `COALESCE(billable_minutes, duration_minutes)`.** #4628 W03 adds service-written `time_entries.billable_minutes` (minimums and rounding applied). The close query and the live open-period `SUM` both read the coalesced value, so a block is drawn by what the customer would have been billed, and the spec still works before that column exists.
 3. **Included hours do not draw down a block.** A card-included entry is born `contract`, so it never meets the `billing_status = 'not_billed'` eligibility test. "Included" means covered by the flat fee, not by the hour bank. No change to the eligibility rule — recorded so nobody "fixes" it.
+
+## Plan-time amendments — 2026-10-06 (re-verified against `origin/main` @ `9b9f3fc28d`)
+
+These override the text below wherever they conflict. Full rationale and file:line evidence: `docs/superpowers/plans/billing/2026-10-06-block-hours-index.md` §"Spec deltas". Items marked *(OD n)* are Open Decisions in that index with a recommended default.
+
+1. **Fields reuse the shipped allowance columns** (#3205 W04 / #4607; roadmap "settled"): `included_hours` → `included_quantity numeric(12,2)` (hours), `overage_rate` → `overage_unit_price numeric(12,2)`, plus `overage_mode`. The split is `applyAllowance(consumed, spec, 'single_block')` (`contractAllowance.ts:56`). Block-only columns are `rollover_policy`, `rollover_cap_hours`, `hour_block_alert_pct`, `hour_block_first_period_start`, `hour_block_retired_at`. `contract_lines_allowance_chk` is re-added with `hour_block` in its type list and exempt from integrality.
+2. **`overage_mode` must be `'bill'` on a block** *(OD 10)* — the CHECK enforces Decision 3 A.
+3. **Ad-hoc assembly holds block-covered entries** *(OD 9)* — `gatherOrgTimeEntries` / `gatherTicketBillables` exclude not-billed entries inside a block's pending window and report them, so an ad-hoc invoice cannot bill hours the block fee already pays for.
+4. **Final-period close is a daily sweep** (refines Decision 6 A): an advance contract's last period is claimed on the run that expires it and has not ended, so no transition hook can close it. `runHourBlockCloseOutSweep` closes ended, claimed, unclosed periods of block lines the billing path will not visit again; overage goes on a new draft invoice, never auto-issued.
+5. **Expire and cancel retire the block line**, freeing the one-live-block index for a successor contract; a retired line bills no fee and only its pre-retirement claimed periods close.
+6. **Ticket and device org moves refuse block-drawn time** *(OD 11)* with 409 — the new composite line FK would otherwise fail at commit, and detaching would make the entry re-billable.
+7. **Block overage is not added to the device-evidence totals** (`contract_billing_period_outcomes` counts are integers); closes are reported as `GenerateResult.hourBlockCloses` and evidenced by `contract_hour_periods`, which gains `foreign_currency_hours` (Decision 8 flag), `entry_count` and `close_source`.
+8. **Portal card lives in the existing Support usage panel** *(OD 12)*, behind its own fail-closed `enable_hour_block` flag (Decision 7 A), outside "Enable all".
+9. **Prerequisites met:** #4596 composite `time_entries_org_partner_fk` shipped (the "pre-existing gap" paragraph below is closed); `billable_minutes` shipped; `resolveLineQty` is now exhaustive (`contractService.ts:704`).
+10. **Migrations** are renamed to sort after the current ceiling (`2026-12-13-110200-…`): `2026-12-14-1000NN-…` (W01) and `2026-12-14-1300NN-…` (W04); the `portal_branding` column moves to W04.
 
 ## Problem
 
