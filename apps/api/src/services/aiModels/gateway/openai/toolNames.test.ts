@@ -124,19 +124,70 @@ describe('tolerant reverse lookup (#8081)', () => {
     expect(toolUseNames(['get_device_hardware_health', 'tool_agent_run'], t.tools)).toEqual([]);
   });
 
-  it('streamed: a functions.-prefixed name becomes a tool_use under the caller name', async () => {
-    const t = offer('mcp__breeze__get_device_hardware_health');
+  it('a tolerantly resolved name still has its arguments checked against that tool schema', () => {
+    const t = translateMessagesRequest({ ...base, tools: [{ name: 'mcp__breeze__get_device_hardware_health',
+      input_schema: { type: 'object', properties: { deviceId: { type: 'string' } }, required: ['deviceId'], additionalProperties: false } }] }, 'wire');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const send = (args: string) => translateChatResponse({ choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: null,
+      tool_calls: [{ id: 'c', type: 'function', function: { name: 'functions.get_device_hardware_health', arguments: args } }] } }] }, { model: 'm', tools: t.tools });
+    // Control: the same wrapped name with valid arguments IS accepted, so the refusals below are the schema check.
+    expect(send('{"deviceId":"d1"}').content).toEqual([{ type: 'tool_use', id: 'c', name: 'mcp__breeze__get_device_hardware_health', input: { deviceId: 'd1' } }]);
+    for (const args of ['{"deviceId":5}', '{}', '{"deviceId":"d1","x":1}']) {
+      expect(send(args).content, args).toEqual([{ type: 'text', text: UNSAFE_TOOL_CALL_NOTE }]);
+    }
+  });
+
+  it('the refusal log labels each name: resolvable names unmarked, (not offered) vs (ambiguous)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    toolUseNames(['get_device_hardware_health', 'tool_agent_run'], offer('mcp__breeze__get_device_hardware_health').tools);
+    toolUseNames(['mcp__c__z'], offer('mcp__a__x', 'mcp__b__x').tools);
+    const log = warn.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(log).toContain('get_device_hardware_health, tool_agent_run (not offered)');
+    expect(log).toContain('mcp__c__z (not offered)');
+  });
+
+  it('a missing or non-string name is refused without throwing', () => {
+    const t = offer('mcp__breeze__x');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    for (const name of [undefined, 42, '']) {
+      const m = translateChatResponse({ choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: null,
+        tool_calls: [{ id: 'c', type: 'function', function: { name, arguments: '{}' } }] } }] }, { model: 'm', tools: t.tools });
+      expect(m.content, String(name)).toEqual([{ type: 'text', text: UNSAFE_TOOL_CALL_NOTE }]);
+    }
+  });
+});
+
+describe('streamed tool-name resolution (#8081)', () => {
+  const stream = async (name: string, tools: ReturnType<typeof offer>['tools']) => {
     const enc = new TextEncoder();
     async function* sse() {
       for (const c of [
-        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'functions.get_device_hardware_health', arguments: '{"deviceId":"d1"}' } }] }, finish_reason: null }] },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'c1', function: { name, arguments: '{"deviceId":"d1"}' } }] }, finish_reason: null }] },
         { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] },
       ]) yield enc.encode(`data: ${JSON.stringify(c)}\n\n`);
       yield enc.encode('data: [DONE]\n\n');
     }
     let text = '';
-    for await (const b of translateChatStream(sse(), { model: 'm', tools: t.tools, messageId: 'msg_gw_1', estimatedInputTokens: 1 })) text += new TextDecoder().decode(b);
+    for await (const b of translateChatStream(sse(), { model: 'm', tools, messageId: 'msg_gw_1', estimatedInputTokens: 1 })) text += new TextDecoder().decode(b);
+    return text;
+  };
+
+  it('a functions.-prefixed name becomes a tool_use under the caller name', async () => {
+    const text = await stream('functions.get_device_hardware_health', offer('mcp__breeze__get_device_hardware_health').tools);
     expect(text).toContain('"name":"mcp__breeze__get_device_hardware_health"');
     expect(text).toContain('"stop_reason":"tool_use"');
+  });
+
+  it('an invented or ambiguous name is refused with the note and a labelled warning', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    for (const [name, tools, label] of [
+      ['tool_agent_run', offer('mcp__breeze__get_device_hardware_health').tools, 'tool_agent_run (not offered)'],
+      ['x', offer('mcp__a__x', 'mcp__b__x').tools, 'x (ambiguous)'],
+    ] as const) {
+      const text = await stream(name, tools);
+      expect(text, name).not.toContain('"type":"tool_use"');
+      expect(text, name).toContain(JSON.stringify(UNSAFE_TOOL_CALL_NOTE).slice(1, -1));
+      expect(warn.mock.calls.map((c) => c.map(String).join(' ')).join('\n'), name).toContain(label);
+    }
   });
 });
