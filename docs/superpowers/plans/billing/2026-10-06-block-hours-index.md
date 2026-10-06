@@ -296,6 +296,20 @@ export async function hourBlockHoldWindows(orgId: string, asOf?: Date): Promise<
 export async function runHourBlockCloseOutSweep(asOf?: Date): Promise<{ contracts: number; closes: number; errors: number }>;
 ```
 
+`apps/api/src/services/contractHourBlockEstimate.ts` (new, W03):
+
+```ts
+/** Live figures for the OPEN period of one block line. Caller supplies a SYSTEM
+ *  db context (time_entries is partner-axis RLS); this function opens none. */
+export async function computeOpenHourBlockPeriod(
+  contract: typeof contracts.$inferSelect,
+  line: typeof contractLines.$inferSelect,
+  asOf?: Date,
+): Promise<HourBlockEstimate>;
+```
+
+Reused by `computeContractEstimate` (W03), the portal endpoint and the alert sweep (W04).
+
 `overageInvoice` is an invoice id on the billing path (the run's draft) and a **lazy factory** on the
 close-out path (creates a draft via `createManualInvoice` only when the first overage > 0 appears).
 
