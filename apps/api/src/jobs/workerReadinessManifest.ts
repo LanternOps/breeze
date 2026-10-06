@@ -198,6 +198,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('callerVerificationPublisher'),
   consumers('ticketSlaWorker'),
   consumers('inboundEmailWorker'),
+  consumers('gmailMarkHandledWorker'),
   consumers('ticketMailboxPollWorker'),
   consumers('invoiceWorker'),
   consumers('autopayWorker'),

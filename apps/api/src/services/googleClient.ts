@@ -165,7 +165,7 @@ export function getInboundMailboxSession(
 }
 
 /** Per-request timeout for the best-effort mark-handled session: short, because
- *  it runs inline in the shared inbound worker. */
+ *  a slow request holds the (concurrency-1) mark-handled worker. */
 export const GMAIL_MODIFY_REQUEST_TIMEOUT_MS = 8_000;
 
 function buildInboundSession(

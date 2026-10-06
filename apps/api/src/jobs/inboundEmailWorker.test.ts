@@ -53,8 +53,13 @@ vi.mock('../services/ticketMailbox/fetchInboundAttachments', () => ({
   discardUnpersistedAttachments: discardMock,
 }));
 
-const { markHandledMock } = vi.hoisted(() => ({ markHandledMock: vi.fn(async () => 'marked') }));
+// Marking itself must never run on the intake job; it is enqueued instead.
+const { markHandledMock, enqueueMarkMock } = vi.hoisted(() => ({
+  markHandledMock: vi.fn(async () => 'marked'),
+  enqueueMarkMock: vi.fn(async (..._a: unknown[]) => {}),
+}));
 vi.mock('../services/ticketMailbox/markIngestedGmailHandled', () => ({ markIngestedGmailHandled: markHandledMock }));
+vi.mock('../services/gmailMarkHandledQueue', () => ({ enqueueGmailMarkHandled: enqueueMarkMock }));
 
 import * as workerModule from './inboundEmailWorker';
 
@@ -77,6 +82,7 @@ describe('inboundEmailWorker', () => {
     withSystemDbAccessContextMock.mockImplementation(<T>(fn: () => Promise<T>) => fn());
     runOutsideDbContextMock.mockImplementation(<T>(fn: () => T) => fn());
     processInboundEmailMock.mockResolvedValue(undefined);
+    enqueueMarkMock.mockImplementation(async () => {});
   });
 
   // Drive the REAL exported handleInboundEmail and verify the
@@ -127,31 +133,42 @@ describe('inboundEmailWorker', () => {
     expect(processInboundEmailMock).toHaveBeenCalledWith(email, undefined);
   });
 
-  it('gmail: runs mark-handled AFTER the pipeline, with the same generation', async () => {
+  it('gmail: enqueues mark-handled AFTER the pipeline, outside any DB context, and never calls Gmail inline', async () => {
+    const order: string[] = [];
+    runOutsideDbContextMock.mockImplementation(<T>(fn: () => T): T => { order.push('outside'); return fn(); });
+    enqueueMarkMock.mockImplementation(async () => { order.push('enqueue'); });
     const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m1' }), provider: 'gmail' as const };
     const gen = { provider: 'gmail', connectionId: 'c-1', partnerId: 'p-1', tenantId: null, consentAttemptId: 'a-1' };
     await workerModule.handleInboundEmail({ data: { email, mailboxGeneration: gen } } as any);
-    expect(markHandledMock).toHaveBeenCalledWith(email, gen);
-    expect(markHandledMock.mock.invocationCallOrder[0]!).toBeGreaterThan(processInboundEmailMock.mock.invocationCallOrder[0]!);
-  });
-
-  it('gmail: an infra failure in the pipeline rethrows and never marks', async () => {
-    processInboundEmailMock.mockRejectedValue(new Error('db down'));
-    const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m2' }), provider: 'gmail' as const };
-    await expect(workerModule.handleInboundEmail({ data: { email } } as any)).rejects.toThrow('db down');
+    expect(enqueueMarkMock).toHaveBeenCalledWith('gmail:sub:m1', gen);
+    expect(enqueueMarkMock.mock.invocationCallOrder[0]!).toBeGreaterThan(processInboundEmailMock.mock.invocationCallOrder[0]!);
+    // The enqueue runs inside its own runOutsideDbContext (the last one, after the pipeline's).
+    expect(order.slice(-2)).toEqual(['outside', 'enqueue']);
     expect(markHandledMock).not.toHaveBeenCalled();
   });
 
-  it('gmail: a mark-handled failure never fails the (already ticketed) job', async () => {
-    markHandledMock.mockRejectedValueOnce(new Error('sentry exploded'));
+  it('gmail: an infra failure in the pipeline rethrows and never enqueues a mark', async () => {
+    processInboundEmailMock.mockRejectedValue(new Error('db down'));
+    const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m2' }), provider: 'gmail' as const };
+    const gen = { provider: 'gmail', connectionId: 'c-1', partnerId: 'p-1', tenantId: null, consentAttemptId: 'a-1' };
+    await expect(workerModule.handleInboundEmail({ data: { email, mailboxGeneration: gen } } as any)).rejects.toThrow('db down');
+    expect(enqueueMarkMock).not.toHaveBeenCalled();
+    expect(markHandledMock).not.toHaveBeenCalled();
+  });
+
+  it('gmail: a failed enqueue never fails the (already ticketed) job', async () => {
+    enqueueMarkMock.mockRejectedValueOnce(new Error('redis down'));
     const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m3' }), provider: 'gmail' as const };
     const gen = { provider: 'gmail', connectionId: 'c-1', partnerId: 'p-1', tenantId: null, consentAttemptId: 'a-1' };
     await expect(workerModule.handleInboundEmail({ data: { email, mailboxGeneration: gen } } as any)).resolves.toBeUndefined();
     expect(processInboundEmailMock).toHaveBeenCalledTimes(1);
   });
 
-  it('non-gmail jobs never call mark-handled', async () => {
+  it('gmail without a gmail generation, and non-gmail jobs, never enqueue a mark', async () => {
+    const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m4' }), provider: 'gmail' as const };
+    await workerModule.handleInboundEmail({ data: { email } } as any);
     await workerModule.handleInboundEmail({ data: { email: makeEmail() } } as any);
+    expect(enqueueMarkMock).not.toHaveBeenCalled();
     expect(markHandledMock).not.toHaveBeenCalled();
   });
 

@@ -3,7 +3,8 @@
  * polled Gmail message into a ticket (created a new one or threaded onto an
  * existing one). Mail the pipeline quarantined, dropped, ignored or failed is
  * never labelled or archived, so the support inbox keeps everything that still
- * needs a human.
+ * needs a human. Runs on the dedicated gmail-mark-handled queue
+ * (jobs/gmailMarkHandledWorker, concurrency 1), never on the intake job.
  *
  * Per mailbox connection: off unless `ticket_mailbox_connections.gmail_handled_label`
  * is set (edited on the Gmail mailbox settings card). Uses a separate
@@ -99,7 +100,7 @@ export function handledErrorCode(err: unknown): GmailHandledErrorCode {
   }
 }
 
-/** Sentry reporting must never be the thing that throws into the inbound job. */
+/** Sentry reporting must never be the thing that throws out of the mark job. */
 function safeCapture(err: unknown, code: string): void {
   try {
     captureException(err, undefined, { component: 'gmailHandled', code }, { fingerprint: ['gmail-handled', code] });
@@ -140,7 +141,7 @@ type MarkContext =
   };
 
 export async function markIngestedGmailHandled(
-  email: NormalizedInboundEmail,
+  email: Pick<NormalizedInboundEmail, 'provider' | 'providerMessageId'>,
   generation: MailboxGenerationContext | undefined,
   deps: MarkIngestedDeps = {},
 ): Promise<MarkIngestedResult> {

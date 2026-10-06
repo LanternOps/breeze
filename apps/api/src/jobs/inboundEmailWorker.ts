@@ -31,7 +31,7 @@ import {
   prepareM365Attachments,
 } from '../services/ticketMailbox/fetchInboundAttachments';
 import { inboundQueueMaxPerSec } from '../config/env';
-import { markIngestedGmailHandled } from '../services/ticketMailbox/markIngestedGmailHandled';
+import { enqueueGmailMarkHandled } from '../services/gmailMarkHandledQueue';
 import { attachWorkerObservability } from './workerObservability';
 
 let worker: Worker<InboundEmailQueueJob> | null = null;
@@ -65,16 +65,22 @@ export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promis
   if (email.provider === 'gmail') {
     await run();
     // Opt-in per mailbox (ticket_mailbox_connections.gmail_handled_label):
-    // label/archive only mail that actually became a ticket. Never throws; runs
-    // after the pipeline's transaction has closed and opens no transaction
-    // across its Gmail calls.
-    // The ticket already exists: nothing the marking step does may fail the job
-    // (a rejected job would be retried and re-run the pipeline).
-    await markIngestedGmailHandled(email, mailboxGeneration).catch((err: unknown) => {
-      console.warn('[gmailHandled] mark-handled threw; ignored', {
-        err: err instanceof Error ? err.message : String(err),
+    // label/archive mail that became a ticket. That runs on its own queue and
+    // worker (jobs/gmailMarkHandledWorker), so intake never waits on Gmail; the
+    // consumer decides whether there is anything to do. Only a generation-bound
+    // Gmail job can be marked. Enqueued after the pipeline's transaction has
+    // closed, outside any DB context. The ticket already exists: a failed
+    // enqueue (Redis down) must not fail the job, which would be retried and
+    // re-run the pipeline; that message just stays unlabelled in the inbox.
+    if (mailboxGeneration?.provider !== 'gmail') return;
+    const generation = mailboxGeneration;
+    await dbModule.runOutsideDbContext(() => enqueueGmailMarkHandled(email.providerMessageId, generation))
+      .catch((err: unknown) => {
+        console.warn('[gmailHandled] could not enqueue mark-handled; message stays in the inbox', {
+          connectionId: generation.connectionId,
+          err: err instanceof Error ? err.message : String(err),
+        });
       });
-    });
     return;
   }
   // M365 attachments (#6688): Graph download + blob put happen HERE, before the
