@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
@@ -58,7 +59,7 @@ func GetStatus(name string) (ServiceInfo, error) {
 		return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: query %s: %w", name, err)
 	}
 
-	cfg, _ := s.Config()
+	cfg, _ := queryBaseConfig(s)
 
 	info := ServiceInfo{
 		Name:        name,
@@ -94,7 +95,7 @@ func ListServices() ([]ServiceInfo, error) {
 			s.Close()
 			continue
 		}
-		cfg, _ := s.Config()
+		cfg, _ := queryBaseConfig(s)
 		services = append(services, ServiceInfo{
 			Name:        name,
 			DisplayName: cfg.DisplayName,
@@ -126,7 +127,7 @@ func resolveDisplayName(m *mgr.Mgr, displayName string) (string, error) {
 			}
 			continue
 		}
-		cfg, err := s.Config()
+		cfg, err := queryBaseConfig(s)
 		s.Close()
 		if err != nil {
 			if uninspected == nil {
@@ -145,7 +146,7 @@ func resolveDisplayName(m *mgr.Mgr, displayName string) (string, error) {
 }
 
 // queryServiceAccess is the only access svcquery needs: Query() requires
-// SERVICE_QUERY_STATUS and Config() requires SERVICE_QUERY_CONFIG.
+// SERVICE_QUERY_STATUS and queryBaseConfig() requires SERVICE_QUERY_CONFIG.
 // mgr.(*Mgr).OpenService requests SERVICE_ALL_ACCESS, which services with a
 // restrictive DACL (e.g. WinDefend) refuse with "Access is denied" (#7967).
 const queryServiceAccess = windows.SERVICE_QUERY_STATUS | windows.SERVICE_QUERY_CONFIG
@@ -176,6 +177,38 @@ func classifyOpenError(err error) error {
 		return fmt.Errorf("%w: %w", ErrServiceNotFound, err)
 	}
 	return err
+}
+
+// baseConfig is the subset of a service's configuration svcquery reports.
+type baseConfig struct {
+	DisplayName    string
+	StartType      uint32
+	BinaryPathName string
+}
+
+// queryBaseConfig reads only QueryServiceConfig. mgr.(*Service).Config also
+// issues QueryServiceConfig2 for the description, delayed-start and SID info,
+// and fails outright when any of those fail — e.g. a description stored as an
+// unresolvable MUI resource returns ERROR_FILE_NOT_FOUND (seen on
+// WaaSMedicSvc). None of that is needed here, so it must not hide the display
+// name, start type or binary path.
+func queryBaseConfig(s *mgr.Service) (baseConfig, error) {
+	n := uint32(1024)
+	for {
+		b := make([]byte, n)
+		p := (*windows.QUERY_SERVICE_CONFIG)(unsafe.Pointer(&b[0]))
+		err := windows.QueryServiceConfig(s.Handle, p, n, &n)
+		if err == nil {
+			return baseConfig{
+				DisplayName:    windows.UTF16PtrToString(p.DisplayName),
+				StartType:      p.StartType,
+				BinaryPathName: windows.UTF16PtrToString(p.BinaryPathName),
+			}, nil
+		}
+		if !errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) || n <= uint32(len(b)) {
+			return baseConfig{}, err
+		}
+	}
 }
 
 func mapWindowsState(state svc.State) ServiceStatus {

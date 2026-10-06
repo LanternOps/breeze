@@ -145,3 +145,30 @@ func TestGetStatusDisplayNameScanWithUninspectableServiceIsNotNotFound(t *testin
 		t.Fatalf("GetStatus error = %v; want it to wrap the ERROR_ACCESS_DENIED that blocked the scan", err)
 	}
 }
+
+// Every service svcquery can open must yield its base config. mgr's Config()
+// also reads the description and fails on hosts where that resource is
+// unresolvable (WaaSMedicSvc on the GitHub runner returned
+// ERROR_FILE_NOT_FOUND), which poisoned the display-name scan.
+func TestQueryBaseConfigSucceedsForEveryOpenableService(t *testing.T) {
+	m, err := mgr.Connect()
+	if err != nil {
+		t.Skipf("cannot connect to SCM: %v", err)
+	}
+	defer m.Disconnect()
+	names, err := m.ListServices()
+	if err != nil {
+		t.Fatalf("ListServices: %v", err)
+	}
+	for _, name := range names {
+		s, err := openServiceForQuery(m, name)
+		if err != nil {
+			continue
+		}
+		_, cfgErr := queryBaseConfig(s)
+		s.Close()
+		if cfgErr != nil {
+			t.Errorf("queryBaseConfig(%s) = %v, want success", name, cfgErr)
+		}
+	}
+}
