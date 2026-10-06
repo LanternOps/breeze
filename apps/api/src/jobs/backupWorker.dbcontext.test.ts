@@ -282,6 +282,11 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       'deviceOrgSelect@depth1',
       'ctx:exit',
       'wsDispatch@depth0',
+      // Ownership re-read once the command is out (a move can land between
+      // the pre-send read and the send) — its own short context.
+      'ctx:enter',
+      'deviceOrgSelect@depth1',
+      'ctx:exit',
       // Phase 5 (settle): final cancellation guard + status flip — ONE short
       // context.
       'ctx:enter',

@@ -24,6 +24,7 @@ const mockDb = {
   insert: vi.fn(),
   update: vi.fn(),
   selectDistinct: vi.fn(),
+  transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(mockDb)),
 };
 
 // A device parked in a holding org is covered in backupWorker.test.ts; here
@@ -90,6 +91,18 @@ vi.mock('../services/backupStorageWriteDelivery', () => ({
     ? 'The backup was not started: a secure storage session could not be issued for it. Run the backup again.'
     : reason),
 }));
+
+const insertQueuedCommandMock = vi.fn(async (_tx: unknown, input: { id: string }) => ({ id: input.id }));
+vi.mock('../services/commandQueueInsert', () => ({
+  insertQueuedCommandInTransaction: insertQueuedCommandMock,
+}));
+/** The (deviceId, payload) of every backup_stop the worker persisted. */
+function queuedStops() {
+  return insertQueuedCommandMock.mock.calls
+    .map(([, input]) => input as unknown as { deviceId: string; type: string; payload: Record<string, unknown> })
+    .filter((input) => input.type === 'backup_stop')
+    .map((input) => ({ deviceId: input.deviceId, payload: input.payload }));
+}
 
 vi.mock('../services/agentCommandRelay', () => ({
   isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
@@ -166,12 +179,17 @@ function selectResult(rows: unknown[]) {
 }
 
 let currentDeviceOrgId = 'org-1';
+/** The config's approval generation as re-read immediately before a send. */
+let currentConfigGeneration = 1;
 
 function wireDb() {
   mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
     const keys = cols ? Object.keys(cols) : [];
     if (keys.length === 1 && keys[0] === 'orgId') return selectResult([{ orgId: currentDeviceOrgId }]);
     if (keys.length === 0) return selectResult([CONFIG_ROW]); // config load
+    if (keys.length === 1 && keys[0] === 'approvalGeneration') {
+      return selectResult([{ approvalGeneration: currentConfigGeneration }]);
+    }
     if (keys.length === 1 && keys[0] === 'status') {
       if (statusCallsSinceFirstInsert !== null) statusCallsSinceFirstInsert += 1;
       const cancelled =
@@ -225,6 +243,7 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
     cancelAfterInsertOnCheck = null;
     vmRows = [{ vmName: 'vm-a' }, { vmName: 'vm-b' }];
     currentDeviceOrgId = 'org-1';
+    currentConfigGeneration = 1;
     CONFIG_ROW = LOCAL_CONFIG_ROW;
     writeProtocol = 0;
     wireDb();
@@ -241,14 +260,53 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
     }
   });
 
-  it('rechecks ownership between target sends', async () => {
+  it('fails the job and stops the sent work when the device moves while a target is being sent', async () => {
     agentRelayMock.dispatchCommandToAgent.mockImplementationOnce(async () => {
       currentDeviceOrgId = 'org-2';
       return { status: 'sent', via: 'local' };
     });
-    expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: true });
+    expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: false });
     expect(agentRelayMock.dispatchCommandToAgent).toHaveBeenCalledTimes(1);
-    expect(updatesFor('child-1').some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'device_org_changed')).toBe(true);
+    // The target that did go out is stopped on the helper, by its job id.
+    expect(queuedStops()).toEqual([{ deviceId: 'device-1', payload: { reason: 'cancelled', jobId: 'job-1' } }]);
+    for (const id of ['job-1', 'child-1']) {
+      expect(updatesFor(id).some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'device_org_changed')).toBe(true);
+    }
+    expect(updatesFor('job-1').some((u) => u.payload.status === 'running')).toBe(false);
+  });
+
+  it('fails a single-target job whose device moves during the send', async () => {
+    vmRows = [{ vmName: 'vm-a' }];
+    agentRelayMock.dispatchCommandToAgent.mockImplementationOnce(async () => {
+      currentDeviceOrgId = 'org-2';
+      return { status: 'sent', via: 'local' };
+    });
+    expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: false });
+    expect(queuedStops()).toEqual([{ deviceId: 'device-1', payload: { reason: 'cancelled', jobId: 'job-1' } }]);
+    expect(updatesFor('job-1').some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'device_org_changed')).toBe(true);
+    expect(updatesFor('job-1').some((u) => u.payload.status === 'running')).toBe(false);
+  });
+
+  it('does not stop anything when the device stays put', async () => {
+    expect(await __testOnly.processDispatchBackup(DATA as never)).toEqual({ dispatched: true });
+    expect(queuedStops()).toEqual([]);
+  });
+
+  it('re-checks the config generation immediately before each send', async () => {
+    CONFIG_ROW = { ...LOCAL_CONFIG_ROW, approvalGeneration: 1 };
+    currentConfigGeneration = 2; // edited after the dispatch was prepared
+    const result = await __testOnly.processDispatchBackup({ ...DATA, configGeneration: 1 } as never);
+    expect(result).toEqual({ dispatched: false });
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(updatesFor('job-1').some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'backup_config_changed')).toBe(true);
+  });
+
+  it('sends when the config generation is unchanged', async () => {
+    CONFIG_ROW = { ...LOCAL_CONFIG_ROW, approvalGeneration: 1 };
+    currentConfigGeneration = 1;
+    const result = await __testOnly.processDispatchBackup({ ...DATA, configGeneration: 1 } as never);
+    expect(result).toEqual({ dispatched: true });
+    expect(agentRelayMock.dispatchCommandToAgent).toHaveBeenCalledTimes(2);
   });
 
   it('creates ONE child backup_jobs row for the second target and dispatches both', async () => {

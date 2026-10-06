@@ -34,7 +34,7 @@ vi.mock('../../services/recoveryAuthorizationSubject', () => ({
 }));
 
 import { recomputeRecoveryReadinessForDevice, runBackupVerification, runScheduledBackupVerification, processBackupVerificationResult, timeoutStaleVerifications, listRecoveryReadiness, getBackupHealthSummary, toVerificationListItem } from './verificationService';
-import { backupJobs, backupVerifications, jobOrgById, verificationOrgById } from './store';
+import { backupJobs, backupSnapshots, backupVerifications, jobOrgById, verificationOrgById } from './store';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { createAuditLogAsync } from '../../services/auditService';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
@@ -348,6 +348,35 @@ describe('backup verification service', () => {
       const idx = backupJobs.findIndex((j) => j.id === jobId);
       if (idx >= 0) backupJobs.splice(idx, 1);
       jobOrgById.delete(jobId);
+    }
+  });
+
+  it('records a snapshot that failed its integrity check as a failed verification without queueing a command', async () => {
+    const snapshot = backupSnapshots.find((row) => row.id === 'snap-001')!;
+    const priorStatus = snapshot.integrityStatus;
+    snapshot.integrityStatus = 'attestation_failed';
+    try {
+      const { verification } = await runBackupVerification({
+        orgId: 'org-123',
+        deviceId: 'dev-001',
+        snapshotId: 'snap-001',
+        verificationType: 'test_restore',
+        source: 'test',
+      });
+
+      expect(queueCommandForExecution).not.toHaveBeenCalled();
+      expect(verification.status).toBe('failed');
+      expect(verification.completedAt).not.toBeNull();
+      expect(toVerificationListItem(verification).details).toMatchObject({
+        reason: 'This backup did not match its integrity record and cannot be read from storage.',
+      });
+      expect(recordBackupDispatchFailure).toHaveBeenCalledWith('backup_verification', 'attestation_failed');
+
+      const idx = backupVerifications.findIndex((v) => v.id === verification.id);
+      if (idx >= 0) backupVerifications.splice(idx, 1);
+      verificationOrgById.delete(verification.id);
+    } finally {
+      snapshot.integrityStatus = priorStatus;
     }
   });
 
