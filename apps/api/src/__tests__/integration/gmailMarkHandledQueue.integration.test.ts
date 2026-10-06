@@ -199,6 +199,9 @@ describe('Gmail mark-handled queue (real DB + Redis)', () => {
     await handleInboundEmail({ data: { email, mailboxGeneration: generation } } as never);
 
     await initializeGmailMarkHandledWorker();
+    // The first start in this file sets the queue-wide (all processes)
+    // concurrency in Redis. Later tests' obliterate() clears it again.
+    expect(await getGmailMarkHandledQueue().getGlobalConcurrency()).toBe(1);
     const jobId = gmailMarkHandledJobId(email.providerMessageId, generation);
     const job = await waitFor(
       () => getGmailMarkHandledQueue().getJob(jobId),

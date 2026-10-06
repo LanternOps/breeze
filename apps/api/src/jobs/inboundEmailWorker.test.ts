@@ -173,6 +173,18 @@ describe('inboundEmailWorker', () => {
     expect(recordFailureMock).toHaveBeenCalledWith(gen, 'not_queued', redisDown);
   });
 
+  it('gmail: an enqueue that hangs (Redis unreachable) is abandoned after its timeout and recorded as not_queued', async () => {
+    enqueueMarkMock.mockImplementationOnce(() => new Promise(() => {}));
+    const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m8' }), provider: 'gmail' as const };
+    const gen = { provider: 'gmail', connectionId: 'c-1', partnerId: 'p-1', tenantId: null, consentAttemptId: 'a-1' };
+    const started = Date.now();
+    await expect(workerModule.handleInboundEmail({ data: { email, mailboxGeneration: gen } } as any)).resolves.toBeUndefined();
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(workerModule.GMAIL_MARK_ENQUEUE_TIMEOUT_MS - 50);
+    expect(elapsed).toBeLessThan(workerModule.GMAIL_MARK_ENQUEUE_TIMEOUT_MS + 1_500);
+    expect(recordFailureMock).toHaveBeenCalledWith(gen, 'not_queued', expect.objectContaining({ message: 'mark-handled enqueue timed out' }));
+  }, 8_000);
+
   it('gmail: a full mark queue skips the message and records not_queued', async () => {
     enqueueMarkMock.mockResolvedValueOnce('full');
     const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m5' }), provider: 'gmail' as const };

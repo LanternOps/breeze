@@ -93,12 +93,17 @@ export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promis
   }
 }
 
+/** Longest the intake job waits on Redis to queue a mark before recording
+ *  not_queued and moving on. */
+export const GMAIL_MARK_ENQUEUE_TIMEOUT_MS = 2_000;
+
 /**
  * Queue the mark for a message only when it can matter (the mailbox has a
- * handled label and the message became a ticket). A full queue or a Redis
- * failure leaves the message unlabelled in the inbox and is recorded on the
- * mailbox as `not_queued`, so the card shows it. A Redis failure that also
- * stops that record from being written is only logged. Never throws.
+ * handled label and the message became a ticket). A full queue, a Redis
+ * failure or an enqueue that does not finish within
+ * GMAIL_MARK_ENQUEUE_TIMEOUT_MS leaves the message unlabelled in the inbox and
+ * is recorded on the mailbox as `not_queued`, so the card shows it. If that
+ * database write also fails, it is only logged. Never throws.
  */
 async function queueGmailMark(providerMessageId: string, generation: MailboxGenerationContext): Promise<void> {
   try {
@@ -111,11 +116,22 @@ async function queueGmailMark(providerMessageId: string, generation: MailboxGene
     });
   }
   let failure: unknown = null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const queued = await dbModule.runOutsideDbContext(() => enqueueGmailMarkHandled(providerMessageId, generation));
+    // Bounded: the shared Redis client retries a lost connection indefinitely,
+    // so an outage must not hold this intake job. A late add may still land
+    // after the timeout; its job id keeps it to one mark.
+    const queued = await Promise.race([
+      dbModule.runOutsideDbContext(() => enqueueGmailMarkHandled(providerMessageId, generation)),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('mark-handled enqueue timed out')), GMAIL_MARK_ENQUEUE_TIMEOUT_MS);
+      }),
+    ]);
     if (queued === 'full') failure = new Error('mark-handled queue is at its cap');
   } catch (err) {
     failure = err;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
   if (failure === null) return;
   console.warn('[gmailHandled] mark not queued; message stays in the inbox', {

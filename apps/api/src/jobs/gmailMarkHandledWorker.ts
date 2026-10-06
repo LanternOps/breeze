@@ -8,14 +8,16 @@
  * budget, no Gmail call inside a DB transaction, failures recorded on the
  * connection and reported once per change).
  *
- * Concurrency 1: marking is cosmetic, so a Gmail slowdown or outage may delay
- * labels but must never hold more than one slot of anything. Ticket intake runs
- * on the separate inbound-email worker and never waits on this one.
+ * Concurrency 1, queue-wide: every API/worker process that starts global
+ * workers runs one of these, so the per-worker limit alone would allow one mark
+ * per process. The queue's BullMQ global concurrency caps all of them together.
+ * Marking is cosmetic: a Gmail slowdown may delay labels, not ticket intake,
+ * which runs on the separate inbound-email worker.
  */
 
 import { Worker, type Job } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
-import { GMAIL_MARK_HANDLED_QUEUE, type GmailMarkHandledJobData } from '../services/gmailMarkHandledQueue';
+import { GMAIL_MARK_HANDLED_QUEUE, getGmailMarkHandledQueue, type GmailMarkHandledJobData } from '../services/gmailMarkHandledQueue';
 import { markIngestedGmailHandled, type MarkIngestedResult } from '../services/ticketMailbox/markIngestedGmailHandled';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -44,8 +46,18 @@ export async function handleGmailMarkHandled(job: Job<GmailMarkHandledJobData>):
   return 'failed';
 }
 
-export function initializeGmailMarkHandledWorker(): Promise<void> {
-  if (worker) return Promise.resolve();
+export async function initializeGmailMarkHandledWorker(): Promise<void> {
+  if (worker) return;
+
+  // Queue-wide limit, stored in Redis and shared by every process. Best effort:
+  // if it cannot be set now, each worker still runs one job at a time.
+  try {
+    await getGmailMarkHandledQueue().setGlobalConcurrency(GMAIL_MARK_HANDLED_CONCURRENCY);
+  } catch (err) {
+    console.warn('[GmailMarkHandled] could not set the queue-wide concurrency', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   worker = new Worker<GmailMarkHandledJobData>(
     GMAIL_MARK_HANDLED_QUEUE,
@@ -68,7 +80,6 @@ export function initializeGmailMarkHandledWorker(): Promise<void> {
   });
 
   console.log('[GmailMarkHandled] Worker initialized');
-  return Promise.resolve();
 }
 
 export async function shutdownGmailMarkHandledWorker(): Promise<void> {

@@ -1,13 +1,17 @@
 import { describe, it, expect, vi } from 'vitest';
 
 const workerCtorArgs = vi.hoisted(() => [] as unknown[][]);
+const { setGlobalConcurrencyMock } = vi.hoisted(() => ({ setGlobalConcurrencyMock: vi.fn(async (..._a: unknown[]) => {}) }));
 vi.mock('bullmq', () => {
   class MockWorker {
     constructor(...args: unknown[]) { workerCtorArgs.push(args); }
     on() { return this; }
     async close() { return undefined; }
   }
-  return { Queue: vi.fn(() => ({ add: vi.fn() })), Worker: MockWorker };
+  return {
+    Queue: vi.fn(function Queue() { return { add: vi.fn(), setGlobalConcurrency: setGlobalConcurrencyMock }; }),
+    Worker: MockWorker,
+  };
 });
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
@@ -29,6 +33,8 @@ describe('gmailMarkHandledWorker', () => {
     const [queueName, , opts] = workerCtorArgs[0] as [string, unknown, { concurrency?: number }];
     expect(queueName).toBe('gmail-mark-handled');
     expect(opts.concurrency).toBe(1);
+    // ...and one at a time across every process: the queue-wide BullMQ limit.
+    expect(setGlobalConcurrencyMock).toHaveBeenCalledWith(1);
     expect(attachWorkerObservability).toHaveBeenCalledWith(expect.anything(), 'gmailMarkHandledWorker', expect.anything());
     // A retry-later attempt is reported only when attempts are exhausted; anything else as usual.
     const { classifyFailure } = (attachWorkerObservability as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]![2] as {
