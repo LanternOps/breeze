@@ -35,10 +35,12 @@ AS $$
       'backup-configuration:read',
       'custom-fields:read',
       'alerts:read',
+      'tickets:read',
       'device-status:read',
       'organizations:write',
       'sites:write',
       'enrollment-keys:write',
-      'contracts:write'
+      'contracts:write',
+      'tickets:write'
     ]::text[];
 $$;

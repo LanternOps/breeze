@@ -141,6 +141,7 @@ const DEVICE_FILES = [...FILES, ...walk(join(SRC, 'jobs')).map(rel)];
 /** Ephemeral-only filters where a parked device cannot appear, or must. */
 const EPHEMERAL_ONLY: Record<string, string> = {
   'routes/agents/enrollment.ts': 'enrollment identity match for a new agent; deploy-key enrollment owns its own admission',
+  'routes/partnerApi/deviceStatus.ts': 'partner API reach (partnerApiAuth) never includes the holding org; same org set as /devices',
   'routes/partnerApi/devices.ts': 'partner API reach (partnerApiAuth) never includes the holding org',
   'routes/portal/assets.ts': 'portal users belong to one customer org, never a holding org',
   'services/portal/deviceReadModel.ts': 'portal users belong to one customer org, never a holding org',
@@ -164,7 +165,7 @@ const EPHEMERAL_ONLY: Record<string, string> = {
 };
 
 /** Pinned: every file with an ephemeral-device filter, all buckets together. */
-const EPHEMERAL_DISCOVERED_FILES = 70;
+const EPHEMERAL_DISCOVERED_FILES = 71;
 
 describe('contract: device counts and listings leave parked devices out', () => {
   const found = DEVICE_FILES
