@@ -28,7 +28,12 @@ const ok = (ids: string[], total: number, page = 1): NetworkAssetsDto => ({
   pagination: { page, limit: 50, total },
 });
 
-const noFilters = { assetType: undefined, status: undefined };
+const SITES = [
+  { id: 's1', name: 'HQ' },
+  { id: 's2', name: 'Warehouse' },
+];
+
+const noFilters = { assetType: undefined, status: undefined, siteId: undefined };
 
 describe('NetworkAssetTable behavior (#6641)', () => {
   beforeEach(() => {
@@ -45,7 +50,7 @@ describe('NetworkAssetTable behavior (#6641)', () => {
     listMock.mockResolvedValueOnce({ statusCode: 200, data: ok(['p'], 10) });
     fireEvent.change(screen.getByTestId('portal-network-filter-type'), { target: { value: 'printer' } });
     await waitFor(() =>
-      expect(listMock).toHaveBeenLastCalledWith({ page: 1, limit: 50, assetType: 'printer', status: undefined }),
+      expect(listMock).toHaveBeenLastCalledWith({ page: 1, limit: 50, assetType: 'printer', status: undefined, siteId: undefined }),
     );
     await waitFor(() => expect(screen.getByTestId('portal-network-asset-p')).toBeTruthy());
     expect(window.location.hash).not.toContain('page=');
@@ -145,5 +150,47 @@ describe('NetworkAssetTable behavior (#6641)', () => {
     expect(screen.getByTestId('portal-network-asset-table').parentElement?.getAttribute('aria-busy')).toBe('true');
     resolve({ statusCode: 200, data: ok(['b'], 120, 2) });
     await waitFor(() => expect(screen.getByTestId('portal-network-asset-b')).toBeTruthy());
+  });
+
+  it('site filter maps to siteId, resets page, persists in the hash and clears (#7025)', async () => {
+    window.location.hash = '#page=2';
+    listMock.mockResolvedValueOnce({ statusCode: 200, data: ok(['x'], 120, 2) });
+    render(<NetworkAssetTable initial={ok(['a'], 120)} sites={SITES} timezone="UTC" />);
+    await waitFor(() => expect(screen.getByTestId('portal-network-asset-x')).toBeTruthy());
+
+    listMock.mockResolvedValueOnce({ statusCode: 200, data: ok(['w'], 3) });
+    fireEvent.change(screen.getByTestId('portal-network-filter-site'), { target: { value: 's2' } });
+    await waitFor(() =>
+      expect(listMock).toHaveBeenLastCalledWith({ page: 1, limit: 50, assetType: undefined, status: undefined, siteId: 's2' }),
+    );
+    await waitFor(() => expect(screen.getByTestId('portal-network-asset-w')).toBeTruthy());
+    expect(window.location.hash).toContain('site=s2');
+    expect(window.location.hash).not.toContain('page=');
+
+    listMock.mockResolvedValueOnce({ statusCode: 200, data: ok(['a'], 1) });
+    fireEvent.click(screen.getByTestId('portal-network-filter-clear'));
+    await waitFor(() => expect(listMock).toHaveBeenLastCalledWith({ page: 1, limit: 50, ...noFilters }));
+    expect(window.location.hash).not.toContain('site=');
+  });
+
+  it('restores the site filter from the hash on load (#7025)', async () => {
+    window.location.hash = '#site=s1';
+    listMock.mockResolvedValueOnce({ statusCode: 200, data: ok(['h'], 1) });
+    render(<NetworkAssetTable initial={ok(['a'], 5)} sites={SITES} timezone="UTC" />);
+    await waitFor(() =>
+      expect(listMock).toHaveBeenLastCalledWith({ page: 1, limit: 50, assetType: undefined, status: undefined, siteId: 's1' }),
+    );
+  });
+
+  it('ignores a hash site id that is not one of the org sites (#7025)', async () => {
+    window.location.hash = '#site=bogus';
+    render(<NetworkAssetTable initial={ok(['a'], 5)} sites={SITES} timezone="UTC" />);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(listMock).not.toHaveBeenCalled();
+  });
+
+  it('hides the site filter when the org has fewer than two sites (#7025)', () => {
+    render(<NetworkAssetTable initial={ok(['a'], 1)} sites={[SITES[0]]} timezone="UTC" />);
+    expect(screen.queryByTestId('portal-network-filter-site')).toBeNull();
   });
 });
