@@ -137,7 +137,9 @@ func main() {
 	fmt.Printf("\nProbe C (SDK layout, BEGIN): ret=%d callErr=%v desc=%q\n", rC, errC, descC)
 	stC.report("C-begin")
 
-	if rC != 0 {
+	// END only a BEGIN that actually succeeded; a throttled or failed BEGIN
+	// would make the END result meaningless.
+	if uint32(rC) != 0 && binary.LittleEndian.Uint32(stC[0:4]) == 0 {
 		end := restorePointInfoC{EventType: endSystemChange, RestorePointType: applicationInstall, SequenceNumber: stC.seqC()}
 		stE := newStatusBuf()
 		rE, _, errE := proc.Call(uintptr(unsafe.Pointer(&end)), uintptr(unsafe.Pointer(&stE)))

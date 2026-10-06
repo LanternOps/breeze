@@ -9,7 +9,7 @@ import "fmt"
 // the two failure shapes.
 func restorePointCallFailed(ret uintptr, nStatus uint32) (string, bool) {
 	switch {
-	case ret == 0:
+	case uint32(ret) == 0: // ret is a Win32 BOOL; only the low 32 bits are defined
 		return fmt.Sprintf("SRSetRestorePointW returned FALSE (nStatus=%d)", nStatus), true
 	case nStatus != 0:
 		return fmt.Sprintf("SRSetRestorePointW reported nStatus=%d", nStatus), true

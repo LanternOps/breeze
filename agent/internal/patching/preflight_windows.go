@@ -3,6 +3,7 @@
 package patching
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -354,11 +355,13 @@ func CreateRestorePoint(description string) error {
 		uintptr(unsafe.Pointer(&rpi)),
 		uintptr(unsafe.Pointer(&status)),
 	)
+	// BEGIN_SYSTEM_CHANGE without a matching END_SYSTEM_CHANGE is the existing
+	// behaviour; W02 of #4751 replaces this function with one that closes it.
 	if msg, failed := restorePointCallFailed(r, status.Status); failed {
-		if r == 0 {
-			return fmt.Errorf("%s: %v", msg, callErr)
+		if errno, ok := callErr.(windows.Errno); ok && errno != 0 {
+			return fmt.Errorf("%s: %w", msg, callErr)
 		}
-		return fmt.Errorf("%s", msg)
+		return errors.New(msg)
 	}
 
 	return nil

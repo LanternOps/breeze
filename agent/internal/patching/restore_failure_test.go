@@ -14,6 +14,7 @@ func TestRestorePointCallFailed(t *testing.T) {
 		{"call returned false with a status", 0, 5, true, "SRSetRestorePointW returned FALSE (nStatus=5)"},
 		{"call returned false with no status", 0, 0, true, "SRSetRestorePointW returned FALSE (nStatus=0)"},
 		{"call returned true but status nonzero", 1, 13, true, "SRSetRestorePointW reported nStatus=13"},
+		{"BOOL FALSE with garbage in the upper register half", uintptr(uint64(0xFFFFFFFF00000000) & uint64(^uintptr(0))), 0, true, "SRSetRestorePointW returned FALSE (nStatus=0)"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
