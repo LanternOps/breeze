@@ -32,12 +32,16 @@ export type DefaultAssigneeOutcome =
  * assignee, in the pipeline's own transaction.
  *
  * Runs only when no other assignment applied: a ticket that already has an
- * assignee is left alone. Goes through assignTicket, so the assignment writes
- * its feed comment, `ticket.assign` audit row and `ticket.assigned` outbox row
- * with the ticket. Since #8040 the `ticket.assigned` job is queued by
- * ticketOutboxPublisher from that committed row, so the assignee notification
- * cannot run before the ticket and its assignee are visible, and a rolled-back
- * ingest queues nothing.
+ * assignee is left alone. Goes through assignTicket, so the assignment's feed
+ * comment and `ticket.assigned` outbox row commit or roll back with the ticket.
+ * Since #8040 the `ticket.assigned` job is queued by ticketOutboxPublisher from
+ * that committed row, so the assignee notification cannot run before the
+ * ticket and its assignee are visible, and a rolled-back ingest queues nothing.
+ *
+ * Not transactional: the `ticket.assign` audit row. assignTicket writes it with
+ * createAuditLogAsync, which commits on its own connection, so it survives an
+ * ingest that rolls back after this step, exactly as createTicket's
+ * `ticket.create` audit row for the same ingest already does.
  *
  * An eligibility refusal returns 'skipped' (the ticket stays unassigned and the
  * caller records the code in the inbound log). Anything else propagates.
