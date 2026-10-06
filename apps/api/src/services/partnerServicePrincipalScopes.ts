@@ -40,11 +40,41 @@ export const PARTNER_SERVICE_PRINCIPAL_OPT_IN_READ_SCOPES = Object.freeze([
   'tickets:read',
 ] as const);
 
+// Opt-in MCP scopes: admit the principal to the MCP endpoint (/api/v1/mcp)
+// with PARTNER scope — every org of the partner its owner can reach. They are
+// the same ai:* transport gates an org API key carries and grant NOTHING on
+// /api/v1/partner-api. Never part of any default scope set. Per-tool RBAC,
+// the Tier 3 approval gate (MCP_UNATTENDED_TIER3_PRINCIPALS `partner_sp:<id>`),
+// rate limits, the execution ledger and the audit log still apply over MCP;
+// see middleware/partnerServicePrincipalMcpAuth.ts.
+export const PARTNER_SERVICE_PRINCIPAL_MCP_SCOPES = Object.freeze([
+  'ai:read',
+  'ai:write',
+  'ai:execute',
+  'ai:execute_admin',
+] as const);
+
 export const PARTNER_SERVICE_PRINCIPAL_SCOPES = Object.freeze([
   ...PARTNER_SERVICE_PRINCIPAL_READ_SCOPES,
   ...PARTNER_SERVICE_PRINCIPAL_OPT_IN_READ_SCOPES,
   ...PARTNER_SERVICE_PRINCIPAL_WRITE_SCOPES,
+  ...PARTNER_SERVICE_PRINCIPAL_MCP_SCOPES,
 ] as const);
+
+export type PartnerServicePrincipalMcpScope =
+  (typeof PARTNER_SERVICE_PRINCIPAL_MCP_SCOPES)[number];
+
+const PARTNER_SERVICE_PRINCIPAL_MCP_SCOPE_SET = new Set<string>(
+  PARTNER_SERVICE_PRINCIPAL_MCP_SCOPES,
+);
+
+/** The MCP (ai:*) subset of a principal's scopes, in their stored order. */
+export function partnerServicePrincipalMcpScopes(
+  scopes: readonly string[],
+): PartnerServicePrincipalMcpScope[] {
+  return scopes.filter((scope): scope is PartnerServicePrincipalMcpScope =>
+    PARTNER_SERVICE_PRINCIPAL_MCP_SCOPE_SET.has(scope));
+}
 
 export type PartnerServicePrincipalScope =
   (typeof PARTNER_SERVICE_PRINCIPAL_SCOPES)[number];

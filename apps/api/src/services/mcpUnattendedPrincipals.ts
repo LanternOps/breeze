@@ -10,6 +10,11 @@
  *                                            is free text and may contain '/',
  *                                            so the user id is the text after
  *                                            the LAST '/'.
+ *   partner_sp:<partner service principal id>
+ *                                            the PRINCIPAL id (a UUID), not a
+ *                                            key id, so key rotation keeps the
+ *                                            opt-in. Partner scope: applies in
+ *                                            every org the principal reaches.
  * UUIDs are compared case-insensitively (stored lowercase in Postgres); the
  * client_id is compared exactly. Anything else is malformed and never matches.
  */
@@ -26,6 +31,10 @@ function canonicalEntry(entry: string): string | null {
   if (entry.startsWith('api_key:')) {
     const id = entry.slice('api_key:'.length);
     return UUID_RE.test(id) ? `api_key:${id.toLowerCase()}` : null;
+  }
+  if (entry.startsWith('partner_sp:')) {
+    const id = entry.slice('partner_sp:'.length);
+    return UUID_RE.test(id) ? `partner_sp:${id.toLowerCase()}` : null;
   }
   if (entry.startsWith('oauth_client_user:')) {
     const rest = entry.slice('oauth_client_user:'.length);
@@ -51,8 +60,9 @@ export function parseUnattendedPrincipals(raw: string | undefined): ParsedUnatte
 }
 
 /** Canonical ref for a principal id pair, or null when the ids are not UUIDs. */
-export function canonicalPrincipalRef(kind: 'api_key', id: string): string | null;
+export function canonicalPrincipalRef(kind: 'api_key' | 'partner_sp', id: string): string | null;
 export function canonicalPrincipalRef(kind: 'oauth_client_user', clientId: string, userId: string): string | null;
-export function canonicalPrincipalRef(kind: 'api_key' | 'oauth_client_user', a: string, b?: string): string | null {
-  return kind === 'api_key' ? canonicalEntry(`api_key:${a}`) : canonicalEntry(`oauth_client_user:${a}/${b ?? ''}`);
+export function canonicalPrincipalRef(kind: 'api_key' | 'partner_sp' | 'oauth_client_user', a: string, b?: string): string | null {
+  if (kind === 'oauth_client_user') return canonicalEntry(`oauth_client_user:${a}/${b ?? ''}`);
+  return canonicalEntry(`${kind}:${a}`);
 }

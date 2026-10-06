@@ -7,7 +7,8 @@ import { zValidator } from '../lib/validation';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { isValidIpOrCidr } from '../services/ipMatch';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { validateApiKeyScopeDelegation } from '../services/apiKeyScopes';
 import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   canManagePartnerWidePolicies,
@@ -20,6 +21,7 @@ import {
 import {
   DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES,
   type PartnerServicePrincipalScope,
+  partnerServicePrincipalMcpScopes,
   validatePartnerServicePrincipalScopes,
 } from '../services/partnerServicePrincipalScopes';
 
@@ -141,6 +143,30 @@ function validateEnrollmentWriteRestrictions(
   return null;
 }
 
+/**
+ * MCP (ai:*) scopes admit the principal to the MCP endpoint, where its
+ * per-tool authority is bounded by its owner's live role. Granting one is a
+ * delegation, so the acting admin must hold the same baseline permissions an
+ * org API key's creator needs for that scope (services/apiKeyScopes.ts). The
+ * MCP auth path re-checks the OWNER on every request; this check only stops
+ * an admin from granting MCP authority they do not hold themselves.
+ */
+function validateMcpScopeDelegation(
+  c: any,
+  scopes: readonly string[] | undefined,
+): { response: Response } | null {
+  const mcpScopes = partnerServicePrincipalMcpScopes(scopes ?? []);
+  if (mcpScopes.length === 0) return null;
+  const delegation = validateApiKeyScopeDelegation(
+    mcpScopes,
+    c.get('permissions') as UserPermissions | undefined,
+  );
+  if (!delegation.ok) {
+    return { response: c.json({ error: delegation.error, details: delegation.details }, delegation.status) };
+  }
+  return null;
+}
+
 function keyError(c: any, error: unknown): Response {
   if (error instanceof PartnerServicePrincipalKeyError) {
     return c.json({ error: error.message, code: error.code }, error.status as 400 | 404 | 409);
@@ -242,6 +268,8 @@ partnerServicePrincipalRoutes.post(
     if (createDenial) return createDenial.response;
     const validated = validatePrincipalFields(c, input);
     if ('response' in validated) return validated.response;
+    const mcpDelegationError = validateMcpScopeDelegation(c, validated.scopes);
+    if (mcpDelegationError) return mcpDelegationError.response;
     const restrictionError = validateEnrollmentWriteRestrictions(c, {
       scopes: validated.scopes!,
       sourceCidrs: input.sourceCidrs,
@@ -309,6 +337,8 @@ partnerServicePrincipalRoutes.patch(
     if (changed.length === 0) return c.json({ error: 'No updates provided' }, 400);
     const validated = validatePrincipalFields(c, input);
     if ('response' in validated) return validated.response;
+    const mcpDelegationError = validateMcpScopeDelegation(c, validated.scopes);
+    if (mcpDelegationError) return mcpDelegationError.response;
     const [existing] = await db.select({
       scopes: partnerServicePrincipals.scopes,
       sourceCidrs: partnerServicePrincipals.sourceCidrs,

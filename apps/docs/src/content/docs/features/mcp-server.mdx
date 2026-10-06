@@ -118,6 +118,17 @@ When OAuth is enabled, the MCP endpoints accept an `Authorization: Bearer <acces
 
 API key authentication via the `X-API-Key` header continues to work for every client, and remains the only option for self-hosted MCP clients (Claude Desktop, Cursor) that don't implement OAuth.
 
+### Partner service principal keys (partner-wide automation)
+
+An organization API key reaches one organization, and an OAuth grant is tied to a signed-in user and expires. For an unattended automation that must work across every organization of the partner, use a **partner service principal** (the **Service principals** settings page, `/settings/partner-service-principals`) and send its `brz_sp_…` key in the same `X-API-Key` header.
+
+- The principal must be granted at least one of the opt-in MCP scopes `ai:read`, `ai:write`, `ai:execute`, `ai:execute_admin`. They are never selected by default, they grant nothing on the Partner API, and a principal without one is refused by the MCP endpoint with 403.
+- The key runs at **partner scope**: every organization of the partner that the principal's **owner** (the admin who created it) can reach, plus partner-wide rows, the same reach the owner's own partner-scope OAuth session has.
+- Per-tool permission checks use the owner's **live** partner role, exactly as they do for an organization service principal key. The owner never signs in with the key, so a logout or password change does not affect it. Removing the owner from the partner, disabling their account, or reducing their role below the principal's MCP scopes denies the next request.
+- Revoking the key, disabling the principal, letting either expire, or a source-CIDR mismatch denies the next request. Nothing is cached.
+- Tier 3 stays approval-only unless the operator names the principal in `MCP_UNATTENDED_TIER3_PRINCIPALS` as `partner_sp:<principal id>`. The entry names the principal, not a key, so rotating keys keeps it. It applies in every organization the principal reaches.
+- Every request is audited with the key id as actor and `principalType: "partner_service_principal"` plus the principal id in the details.
+
 ---
 
 ## Connecting Claude Code
@@ -272,7 +283,7 @@ To make sure `run_script` executes exactly the content you reviewed, take `conte
 
   A tool whose *every* action is Tier 3 is not listed at all, because advertising a tool that can only ever answer with a refusal is worse than omitting it. The practical contract for an MCP client is therefore: `analyze_disk_usage`, `disk_cleanup` preview and `system_cleanup` list/status give you a complete read-only diagnosis, and you hand the destructive step to a technician in the Breeze web app AI assistant, where it goes through the approval workflow. A key with only `ai:read` gets the stored results; a fresh scan (`analyze_disk_usage` with `refresh: true`) and `system_cleanup` list ask the device live and need `ai:write`.
 
-  **One operator-controlled exception:** principals named in `MCP_UNATTENDED_TIER3_PRINCIPALS` (`api_key:<id>` or `oauth_client_user:<client_id>/<user id>`) are exempt from this deny for core-registry Tier 3 tools, so the tools are listed and callable for them without the approval step. Everything else still applies to them: `ai:execute`, `ai:execute_admin` in production, the production allowlist, RBAC, rate limits, the Tier 3 execution ledger and the audit log. Tier 4, tenant (BYO MCP) and onboarding bootstrap tools stay approval-only for everyone. Every call that skipped approval this way is marked in its audit row (`approvalBypass: "unattended_principal"` plus the matched `approvalBypassPrincipal`), and the API logs the configured principals at startup. See [Environment variables](/deploy/environment/).
+  **One operator-controlled exception:** principals named in `MCP_UNATTENDED_TIER3_PRINCIPALS` (`api_key:<id>`, `oauth_client_user:<client_id>/<user id>` or `partner_sp:<partner service principal id>`) are exempt from this deny for core-registry Tier 3 tools, so the tools are listed and callable for them without the approval step. Everything else still applies to them: `ai:execute`, `ai:execute_admin` in production, the production allowlist, RBAC, rate limits, the Tier 3 execution ledger and the audit log. Tier 4, tenant (BYO MCP) and onboarding bootstrap tools stay approval-only for everyone. Every call that skipped approval this way is marked in its audit row (`approvalBypass: "unattended_principal"` plus the matched `approvalBypassPrincipal`), and the API logs the configured principals at startup. See [Environment variables](/deploy/environment/).
 </Aside>
 
 ### Security tools

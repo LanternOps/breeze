@@ -26,6 +26,11 @@ export interface ApiKeyContext {
     // a human creator's permissions.
     principalType?: string;
     principalId?: string | null;
+    // Set ONLY by partnerServicePrincipalMcpAuth (MCP endpoint, `brz_sp_`
+    // key): the partner service principal this request authenticated as.
+    // `id` is then the partner_service_principal_keys row id, never an
+    // api_keys id, and orgId is null (partner scope).
+    partnerServicePrincipalId?: string;
   };
   orgId: string;
 }

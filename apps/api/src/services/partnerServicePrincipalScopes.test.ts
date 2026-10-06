@@ -3,10 +3,28 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES,
+  PARTNER_SERVICE_PRINCIPAL_MCP_SCOPES,
   PARTNER_SERVICE_PRINCIPAL_SCOPES,
   hasPartnerServicePrincipalScope,
+  partnerServicePrincipalMcpScopes,
   validatePartnerServicePrincipalScopes,
 } from './partnerServicePrincipalScopes';
+
+describe('partner service principal MCP scopes', () => {
+  it('are grantable but never in the default scope set', () => {
+    expect(validatePartnerServicePrincipalScopes([...PARTNER_SERVICE_PRINCIPAL_MCP_SCOPES]).ok).toBe(true);
+    for (const scope of PARTNER_SERVICE_PRINCIPAL_MCP_SCOPES) {
+      expect(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES).not.toContain(scope);
+    }
+  });
+
+  it('partnerServicePrincipalMcpScopes keeps only the ai:* subset, in order', () => {
+    expect(partnerServicePrincipalMcpScopes(['devices:read', 'ai:execute', 'tickets:write', 'ai:read'])).toEqual(['ai:execute', 'ai:read']);
+    expect(partnerServicePrincipalMcpScopes(['devices:read', 'organizations:read'])).toEqual([]);
+    // Lookalikes are not MCP scopes.
+    expect(partnerServicePrincipalMcpScopes(['ai:*', 'AI:READ', 'mcp:read'])).toEqual([]);
+  });
+});
 
 describe('partner partner-service-principal scopes', () => {
   it('accepts the exact eight supported read scopes', () => {

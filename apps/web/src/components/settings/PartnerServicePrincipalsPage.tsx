@@ -16,7 +16,10 @@ const WRITE_SCOPES = ['organizations:write', 'sites:write', 'enrollment-keys:wri
 // titles/messages, tickets:read exposes ticket bodies/comments, across every
 // org the principal reaches).
 const OPT_IN_READ_SCOPES = ['alerts:read', 'tickets:read'] as const;
-const AVAILABLE_SCOPES = [...READ_SCOPES, ...OPT_IN_READ_SCOPES, ...WRITE_SCOPES] as const;
+// MCP scopes: opt-in, never pre-selected. They admit the principal's key to
+// the MCP endpoint across every org of the partner; nothing on the Partner API.
+const MCP_SCOPES = ['ai:read', 'ai:write', 'ai:execute', 'ai:execute_admin'] as const;
+const AVAILABLE_SCOPES = [...READ_SCOPES, ...OPT_IN_READ_SCOPES, ...WRITE_SCOPES, ...MCP_SCOPES] as const;
 
 type PrincipalKey = {
   id: string;

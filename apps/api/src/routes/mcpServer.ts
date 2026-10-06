@@ -23,6 +23,8 @@ import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import { breezeRegion, MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
+import { isPartnerServicePrincipalKeyFormat } from '../services/partnerServicePrincipalCredential';
+import { partnerServicePrincipalMcpAuthMiddleware } from '../middleware/partnerServicePrincipalMcpAuth';
 import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier, getToolDomain, aiTools, toolManagesDbContext } from '../services/aiTools';
 import { isTopologyAiToolName } from '../services/topology/aiToolGate';
@@ -108,8 +110,9 @@ function shouldRequireExecuteAdminInProd(): boolean {
  * specific principals for which the MCP interactive-approval gate is lifted,
  * so core-registry Tier 3 tools/actions (and MCP_APPROVAL_REQUIRED_EXTRA_TOOLS,
  * floored to Tier 3) are listed and callable without a human approval step.
- * Comma-separated entries: `api_key:<api key id>` or
- * `oauth_client_user:<OAuth client_id>/<user id>`. A public/DCR client_id is
+ * Comma-separated entries: `api_key:<api key id>`,
+ * `oauth_client_user:<OAuth client_id>/<user id>` or
+ * `partner_sp:<partner service principal id>`. A public/DCR client_id is
  * shared by every user and partner that consents to it, so OAuth entries bind
  * the client AND the signed-in user (the token's signed `sub`); a client_id
  * alone is never accepted. Every other principal keeps the default
@@ -122,6 +125,12 @@ function shouldRequireExecuteAdminInProd(): boolean {
  */
 function mcpPrincipalRef(apiKey: McpApiKeyContext | undefined | null): string | null {
   if (!apiKey) return null;
+  // A partner service principal is named by its PRINCIPAL id, never its key
+  // id: rotation keeps the opt-in, and its key ids live in a different table
+  // from api_keys, so an `api_key:` entry can never match one.
+  if (apiKey.partnerServicePrincipalId) {
+    return canonicalPrincipalRef('partner_sp', apiKey.partnerServicePrincipalId);
+  }
   if (apiKey.oauthClientId) {
     return apiKey.createdBy ? canonicalPrincipalRef('oauth_client_user', apiKey.oauthClientId, apiKey.createdBy) : null;
   }
@@ -304,8 +313,13 @@ async function mcpAuthMiddleware(c: Context, next: Next) {
     return bearerTokenAuthMiddleware(c, next);
   }
 
-  const hasKey = Boolean(c.req.header('X-API-Key'));
-  if (hasKey) {
+  const apiKeyHeader = c.req.header('X-API-Key');
+  if (apiKeyHeader) {
+    // A partner service principal key (exact `brz_sp_` + 43 shape) is
+    // partner-scoped; only principals granted an MCP (ai:*) scope get in.
+    if (isPartnerServicePrincipalKeyFormat(apiKeyHeader)) {
+      return partnerServicePrincipalMcpAuthMiddleware(c, next);
+    }
     return apiKeyAuthMiddleware(c, next);
   }
 
@@ -344,8 +358,12 @@ type McpApiKeyContext = {
   oauthGrantId?: string | null;
   // Set by bearerTokenAuth for OAuth callers (the token's client_id claim).
   oauthClientId?: string | null;
-  // API key creator, or the signed `sub` (user id) for OAuth bearers.
+  // API key creator, the signed `sub` (user id) for OAuth bearers, or the
+  // principal's owner for a partner service principal key.
   createdBy?: string;
+  // Partner service principal (`brz_sp_` key) this request authenticated as;
+  // `id` is then its partner_service_principal_keys row id.
+  partnerServicePrincipalId?: string | null;
 };
 
 type McpApiKeyWithAuthFields = McpApiKeyContext & {
@@ -377,8 +395,14 @@ const MAX_SSE_SESSIONS = 100;
 const MAX_SSE_SESSIONS_PER_KEY = envInt('MCP_MAX_SSE_SESSIONS_PER_KEY', 5);
 const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
-function mcpPrincipalKey(apiKey: { id: string; oauthGrantId?: string | null }): string {
-  return apiKey.oauthGrantId ? `oauth-grant:${apiKey.oauthGrantId}` : apiKey.id;
+function mcpPrincipalKey(apiKey: {
+  id: string;
+  oauthGrantId?: string | null;
+  partnerServicePrincipalId?: string | null;
+}): string {
+  if (apiKey.oauthGrantId) return `oauth-grant:${apiKey.oauthGrantId}`;
+  if (apiKey.partnerServicePrincipalId) return `partner-sp-key:${apiKey.id}`;
+  return apiKey.id;
 }
 
 const sseSessionQueues = new Map<string, { queue: Array<JsonRpcResponse>; principalKey: string; createdAt: number }>();
@@ -574,6 +598,7 @@ async function buildCheckedAuthFromApiKey(
     principalType: apiKey.principalType,
     principalId: apiKey.principalId ?? null,
     oauthGrantId: apiKey.oauthGrantId ?? null,
+    partnerServicePrincipalId: apiKey.partnerServicePrincipalId ?? null,
   });
 
   // SR2-15 fail-closed: buildAuthFromApiKey returns null when the key's creator
@@ -639,6 +664,9 @@ async function dispatchAndAudit(
       method: body.method,
       hasSession: Boolean(sessionId),
       hasParams: Boolean(body.params),
+      ...(apiKey.partnerServicePrincipalId
+        ? { principalType: 'partner_service_principal', partnerServicePrincipalId: apiKey.partnerServicePrincipalId }
+        : {}),
     },
     result: response.error ? 'failure' : 'success',
     errorMessage: response.error?.message,
@@ -1999,6 +2027,9 @@ function writeMcpToolAuditEvent(
         ? { approvalBypass: 'unattended_principal', approvalBypassPrincipal: event.approvalBypassPrincipal }
         : {}),
       oauthGrantId: event.apiKey.oauthGrantId ?? null,
+      ...(event.apiKey.partnerServicePrincipalId
+        ? { principalType: 'partner_service_principal', partnerServicePrincipalId: event.apiKey.partnerServicePrincipalId }
+        : {}),
       partnerId: event.auth.partnerId ?? event.apiKey.partnerId ?? null,
       orgId: orgId ?? null,
       toolName: event.toolName,
@@ -2818,7 +2849,19 @@ async function buildAuthFromApiKey(apiKey: {
    * Same discriminator `mcpPrincipalKey` already uses.
    */
   oauthGrantId?: string | null;
+  /**
+   * Set when this is a partner service principal key (`brz_sp_`, see
+   * middleware/partnerServicePrincipalMcpAuth.ts). Always partner scope:
+   * `id` is the key id, `createdBy` the principal's owner, orgId null.
+   */
+  partnerServicePrincipalId?: string | null;
 }): Promise<AuthContext | null> {
+  // A partner service principal is partner-scoped by construction. Anything
+  // else (an org pin, or no partner) is a malformed context: deny.
+  if (apiKey.partnerServicePrincipalId && (apiKey.orgId || !apiKey.partnerId)) {
+    return null;
+  }
+
   const principal: PrincipalKind = apiKey.oauthGrantId
     ? { kind: 'oauth_grant', grantId: apiKey.oauthGrantId }
     : { kind: 'api_key', apiKeyId: apiKey.id };
@@ -2826,7 +2869,9 @@ async function buildAuthFromApiKey(apiKey: {
   const user = {
     id: apiKey.createdBy,
     email: `apikey-${apiKey.name}@breeze.local`,
-    name: `API Key: ${apiKey.name}`,
+    name: apiKey.partnerServicePrincipalId
+      ? `Partner service principal: ${apiKey.name}`
+      : `API Key: ${apiKey.name}`,
     isPlatformAdmin: false
   };
 
@@ -2904,7 +2949,9 @@ async function buildAuthFromApiKey(apiKey: {
     };
   }
 
-  // Partner-scope caller (OAuth bearer token, or API key with no orgId).
+  // Partner-scope caller (OAuth bearer token, or a partner service principal
+  // key: its `createdBy` is the principal's owner, so the same live
+  // partner-role check and org resolver apply as for the owner's own bearer).
   //
   // SR2-15: this branch had no explicit null-perms deny — an off-boarded
   // partner admin's bearer key was only "data-starved" (accessibleOrgIds
