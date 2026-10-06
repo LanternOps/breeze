@@ -67,7 +67,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: What version of Breeze are you running? (check agent with `breeze-agent --version`)
+      description: What version of Breeze are you running? (check agent with `breeze-agent version`)
       placeholder: e.g., v0.5.0 or commit SHA
 
   - type: textarea
