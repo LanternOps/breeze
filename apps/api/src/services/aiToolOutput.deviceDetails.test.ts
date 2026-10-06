@@ -12,9 +12,9 @@ describe('get_device_details compaction (#7968)', () => {
   // Enough bulk to push past the first two tiers into the 15-key tier.
   const payload = JSON.stringify({
     device,
-    networkInterfaces: Array.from({ length: 16 }, (_, i) => ({ name: `eth${i}`, mac: 'x'.repeat(120) })),
-    disks: Array.from({ length: 16 }, (_, i) => ({ mount: `/d${i}`, note: 'y'.repeat(120) })),
-    memoryModules: Array.from({ length: 16 }, (_, i) => ({ slot: i, part: 'z'.repeat(120) })),
+    networkInterfaces: Array.from({ length: 16 }, (_, i) => ({ name: `eth${i}`, mac: 'x'.repeat(200) })),
+    disks: Array.from({ length: 16 }, (_, i) => ({ mount: `/d${i}`, note: 'y'.repeat(200) })),
+    memoryModules: Array.from({ length: 16 }, (_, i) => ({ slot: i, part: 'z'.repeat(200) })),
   });
 
   it('keeps core identity fields at every tier', () => {
@@ -22,6 +22,8 @@ describe('get_device_details compaction (#7968)', () => {
     const out = JSON.parse(compactToolResultForChat('get_device_details', payload));
     // Guard against the vacuous case: the structured (non-sentinel) tier was used.
     expect(out.device).toBeDefined();
+    // Pin the tier: the 15-key tier is the one that dropped the fields.
+    expect(Object.keys(out.device).length).toBeLessThanOrEqual(16); // 15 + _chat sentinel slack
     for (const k of ['hostname', 'osType', 'osVersion', 'status', 'lastSeenAt', 'agentVersion']) {
       expect(out.device[k], k).toBe(`v-${k}`);
     }
