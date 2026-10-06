@@ -342,6 +342,17 @@ describe('partner service principal key on MCP: fail closed', () => {
     expect((await mcp(p.key.rawKey, 'tools/list')).status).toBe(401);
   });
 
+  it('sees an owner demotion on the next request even when the permission cache was never invalidated', async () => {
+    const p = await partnerFixture(ALL_MCP_SCOPES);
+    // Warm the owner's cached permissions in this process.
+    expect((await mcp(p.key.rawKey, 'tools/list')).status).toBe(200);
+    // Demote by raw SQL with NO clearPermissionCache: models a lost
+    // cross-process invalidation. A cached owner gate would keep allowing.
+    await getTestDb().delete(rolePermissions).where(eq(rolePermissions.roleId, p.role.id));
+    await grantRolePermissions(p.role.id, READ_ONLY_ROLE_PERMS);
+    expect((await mcp(p.key.rawKey, 'tools/list')).status).toBe(401);
+  });
+
   it('an unknown well-formed brz_sp_ key is a 401', async () => {
     const res = await mcp(`brz_sp_${randomBytes(32).toString('base64url')}`, 'tools/list');
     expect(res.status).toBe(401);

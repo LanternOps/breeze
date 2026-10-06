@@ -172,6 +172,26 @@ function validateMcpScopeDelegation(
   return null;
 }
 
+/**
+ * Issuing or rotating a key hands out the principal's EXISTING authority, so
+ * it is the same delegation as granting the scopes: the acting admin must be
+ * able to delegate every MCP scope the principal already holds. A principal
+ * that is not found here is left to the key service's own 404.
+ */
+async function existingPrincipalMcpDelegationDenial(
+  c: any,
+  principalId: string,
+  partnerId: string,
+): Promise<{ response: Response } | null> {
+  const [principal] = await db
+    .select({ scopes: partnerServicePrincipals.scopes })
+    .from(partnerServicePrincipals)
+    .where(and(eq(partnerServicePrincipals.id, principalId), eq(partnerServicePrincipals.partnerId, partnerId)))
+    .limit(1);
+  if (!principal) return null;
+  return validateMcpScopeDelegation(c, principal.scopes);
+}
+
 function keyError(c: any, error: unknown): Response {
   if (error instanceof PartnerServicePrincipalKeyError) {
     return c.json({ error: error.message, code: error.code }, error.status as 400 | 404 | 409);
@@ -426,6 +446,8 @@ partnerServicePrincipalRoutes.post(
     if (issueDenial) return issueDenial.response;
     const expiresAt = input.expiresAt ? new Date(input.expiresAt) : null;
     if (expiresAt && expiresAt.getTime() <= Date.now()) return c.json({ error: 'Expiry must be in the future' }, 400);
+    const issueDelegationDenial = await existingPrincipalMcpDelegationDenial(c, id, resolved.partnerId);
+    if (issueDelegationDenial) return issueDelegationDenial.response;
     try {
       const issued = await issuePartnerServicePrincipalKey(db, {
         partnerServicePrincipalId: id, partnerId: resolved.partnerId, name: input.name,
@@ -457,6 +479,8 @@ partnerServicePrincipalRoutes.post(
     if ('response' in resolved) return resolved.response;
     const rotateDenial = partnerWideAdminDenial(c);
     if (rotateDenial) return rotateDenial.response;
+    const rotateDelegationDenial = await existingPrincipalMcpDelegationDenial(c, id, resolved.partnerId);
+    if (rotateDelegationDenial) return rotateDelegationDenial.response;
     try {
       const rotated = await db.transaction((tx) => rotatePartnerServicePrincipalKey(tx as unknown as Database, {
         partnerServicePrincipalId: id, keyId, partnerId: resolved.partnerId, actorId: auth.user.id,

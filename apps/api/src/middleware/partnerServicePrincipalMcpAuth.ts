@@ -95,7 +95,10 @@ async function authorizeOwner(input: {
   try {
     status = await loadOwnerStatus(input.ownerUserId);
     access = await resolvePartnerAccess(input.partnerId, input.ownerUserId);
-    permissions = await getUserPermissions(input.ownerUserId, { partnerId: input.partnerId });
+    // bypassCache: the owner gate must see a demotion on the very next request
+    // even if a cross-process cache invalidation was lost; a cached entry can
+    // otherwise outlive a downgrade by up to the 5-minute TTL.
+    permissions = await getUserPermissions(input.ownerUserId, { partnerId: input.partnerId }, { bypassCache: true });
   } catch {
     throw ownerNotAuthorized();
   }

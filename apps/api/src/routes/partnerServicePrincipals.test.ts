@@ -302,6 +302,38 @@ describe('service principal management routes', () => {
       expect(db.update).not.toHaveBeenCalled();
     });
 
+    it('refuses to ISSUE a key for a principal holding MCP scopes the acting admin cannot delegate', async () => {
+      permissionsOf(READ_ONLY);
+      selectRows([{ scopes: ['ai:read', 'ai:execute_admin'] }]);
+      mocks.issue.mockResolvedValue({ keyId: KEY_ID, rawKey: 'brz_sp_ONETIME', keyPrefix: 'brz_sp_ONE' });
+      const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}/keys`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'escalate' }),
+      });
+      expect(res.status).toBe(403);
+      expect(JSON.stringify(await res.json())).not.toContain('ONETIME');
+      expect(mocks.issue).not.toHaveBeenCalled();
+    });
+
+    it('refuses to ROTATE a key for a principal holding MCP scopes the acting admin cannot delegate', async () => {
+      permissionsOf(READ_ONLY);
+      selectRows([{ scopes: ['ai:read', 'ai:write'] }]);
+      mocks.rotate.mockResolvedValue({ keyId: KEY_ID, rawKey: 'brz_sp_NEW', keyPrefix: 'brz_sp_NEW' });
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({}));
+      const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}/keys/${KEY_ID}/rotate`, { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(mocks.rotate).not.toHaveBeenCalled();
+    });
+
+    it('lets a read-capable admin issue a key for an ai:read principal', async () => {
+      permissionsOf(READ_ONLY);
+      selectRows([{ scopes: ['ai:read'] }]);
+      mocks.issue.mockResolvedValue({ keyId: KEY_ID, rawKey: 'brz_sp_ONETIME', keyPrefix: 'brz_sp_ONE' });
+      const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}/keys`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'ok' }),
+      });
+      expect(res.status).toBe(201);
+    });
+
     it('lets a full admin grant every MCP scope', async () => {
       selectRows([]);
       const returning = vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, name: 'claude-automation', scopes: [] }]);
@@ -317,6 +349,7 @@ describe('service principal management routes', () => {
   });
 
   it('issues a key and audits only sanitized identifiers', async () => {
+    selectRows([{ scopes: ['devices:read'] }]); // principal's scopes for the delegation ceiling
     mocks.issue.mockResolvedValue({ keyId: KEY_ID, rawKey: 'brz_sp_ONETIME', keyPrefix: 'brz_sp_ONE' });
     const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}/keys`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Production' }),
@@ -331,6 +364,7 @@ describe('service principal management routes', () => {
   });
 
   it('rotates atomically and reveals only the successor plaintext', async () => {
+    selectRows([{ scopes: ['devices:read'] }]); // principal's scopes for the delegation ceiling
     mocks.rotate.mockResolvedValue({ keyId: '55555555-5555-4555-8555-555555555555', rawKey: 'brz_sp_NEW', keyPrefix: 'brz_sp_NEW' });
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({}));
     const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}/keys/${KEY_ID}/rotate`, { method: 'POST' });
