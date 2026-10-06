@@ -230,6 +230,8 @@
       "add": "Agregar conexión",
       "edit": "Editar",
       "created": "Conexión agregada",
+      "createdDiscoveryQueued": "Conexión agregada. Detectando sus modelos ahora.",
+      "createdDiscoveryNotQueued": "Conexión agregada, pero no se pudo programar la detección de modelos. Usa Actualizar para intentarlo de nuevo.",
       "saved": "Conexión guardada",
       "saveFailed": "No se pudo guardar la conexión.",
       "keyFailed": "No se pudo reemplazar la clave de API.",

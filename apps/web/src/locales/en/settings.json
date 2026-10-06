@@ -230,6 +230,8 @@
       "add": "Add connection",
       "edit": "Edit",
       "created": "Connection added",
+      "createdDiscoveryQueued": "Connection added. Discovering its models now.",
+      "createdDiscoveryNotQueued": "Connection added, but model discovery couldn't be queued. Use Refresh to try again.",
       "saved": "Connection saved",
       "saveFailed": "Couldn't save the connection.",
       "keyFailed": "Couldn't replace the API key.",

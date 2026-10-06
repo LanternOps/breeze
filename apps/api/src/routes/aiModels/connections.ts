@@ -110,8 +110,9 @@ aiModelConnectionRoutes.post('/', ...partnerWrite, zValidator('json', connection
         // The connection exists either way; a queue outage (captured inside)
         // must not turn a committed create into an error. The daily
         // sync-all-connections sweep discovers it, and Refresh retries now.
-        await queueConnectionSync(c, conn.id);
-        return c.json({ id: conn.id }, 201);
+        // `discoveryQueued` tells the UI which of the two it is (#7781).
+        const discoveryQueued = (await queueConnectionSync(c, conn.id)) === null;
+        return c.json({ id: conn.id, discoveryQueued }, 201);
       }
       default: {
         const never: never = body;

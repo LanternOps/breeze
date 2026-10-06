@@ -230,6 +230,8 @@
       "add": "Aggiungi connessione",
       "edit": "Modifica",
       "created": "Connessione aggiunta",
+      "createdDiscoveryQueued": "Connessione aggiunta. Rilevamento dei modelli in corso.",
+      "createdDiscoveryNotQueued": "Connessione aggiunta, ma non è stato possibile pianificare il rilevamento dei modelli. Usa Aggiorna per riprovare.",
       "saved": "Connessione salvata",
       "saveFailed": "Impossibile salvare la connessione.",
       "keyFailed": "Impossibile sostituire la chiave API.",
