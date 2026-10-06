@@ -73,7 +73,11 @@ describe('backup_configs.provider_config sealing (real Postgres)', () => {
     expect(JSON.stringify(stored)).not.toContain('plain-secret');
 
     expect(await readThroughDrizzle(inserted!.id)).toEqual(config);
-    const viaQuery = await getTestDb().query.backupConfigs.findFirst({ where: eq(backupConfigs.id, inserted!.id) });
+    const [viaQuery] = await getTestDb()
+      .select()
+      .from(backupConfigs)
+      .where(eq(backupConfigs.id, inserted!.id))
+      .limit(1);
     expect(viaQuery?.providerConfig).toEqual(config);
 
     const next = { ...config, secretKey: 'plain-secret-rotated' };

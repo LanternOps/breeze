@@ -2523,12 +2523,16 @@
       "method_not_usable": "Método de pago no disponible",
       "over_cap": "Supera el límite de pago automático",
       "above_authorized_cap": "Supera el límite autorizado por el cliente",
+      "issued_before_authorization": "Emitida antes de la autorización actualizada del cliente: cóbrala manualmente",
       "cap_currency_mismatch": "La moneda del límite no coincide",
       "ach_currency_unsupported": "Moneda no compatible con pagos bancarios",
       "excluded_contract": "Contrato excluido",
       "excluded_invoice": "Factura excluida",
       "charging_disabled": "Cobro automático desactivado",
       "stripe_unavailable": "Stripe no disponible",
+      "bank_unverified": "No cobrada: el banco del cliente no se verificó a tiempo. Cóbrala manualmente",
+      "charging_on_hold": "No cobrada: los pagos automáticos siguieron desactivados. Cóbrala manualmente",
+      "service_unavailable": "No cobrada: Stripe siguió sin estar disponible. Cóbrala manualmente",
       "control_pending:skip": "Omisión solicitada; deteniendo el pago pendiente",
       "control_pending:exclude": "Exclusión solicitada; deteniendo el pago pendiente",
       "control_pending:stop": "Cancelación solicitada; deteniendo el pago pendiente",
@@ -2560,7 +2564,10 @@
       "failed": "Pago fallido",
       "requires_action": "Se requiere confirmación",
       "canceled": "Cancelado",
-      "unapplied": "El pago requiere conciliación"
+      "unapplied": "El pago requiere conciliación",
+      "returned": "Devuelto",
+      "refunded": "Reembolsado",
+      "disputed": "Disputado"
     },
     "fees": {
       "title": "Comisiones de procesamiento",
@@ -2627,7 +2634,8 @@
       "nothing_to_pay": "No queda nada por pagar en esta factura.",
       "enrollment_inactive": "Los pagos automáticos no están activos para este cliente.",
       "schedule_inactive": "Esta factura ya no está programada para pago automático.",
-      "generic": "No se pudo iniciar el pago automático. Actualiza la factura para ver su estado actual."
+      "generic": "No se pudo iniciar el pago automático. Actualiza la factura para ver su estado actual.",
+      "excluded_contract": "El contrato de esta factura está excluido de los pagos automáticos, así que no se cobró. Si al cliente se le había avisado de este pago, se le envió un correo indicando que no se realizará."
     }
   },
   "reminders": {

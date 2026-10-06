@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
+  EMAIL_TEMPLATE_VARIANTS,
+  type EmailTemplateId,
   EMAIL_TEMPLATE_IDS,
   varsForEmailTemplate,
   emailTemplateLabel,
@@ -206,7 +208,7 @@ it.each([
 ] as const)('registers the closed %s variable set', (id, businessVars) => {
   expect(EMAIL_TEMPLATE_IDS).toContain(id);
   expect([...varsForEmailTemplate(id)].sort()).toEqual(
-    [...businessVars, 'org_name', 'partner_name', 'cta_button'].sort(),
+    [...businessVars, 'org_name', 'partner_name', 'client_name', 'cta_button'].sort(),
   );
   expect(emailTemplateHasCta(id)).toBe(true);
   expect(emailTemplateFieldDefaults(id).html).toContain('{{amount_due}}');
@@ -217,15 +219,53 @@ it('pins the invoice autopay variable contract', () => {
   expect(EMAIL_TEMPLATE_IDS).toContain('invoice_autopay');
   expect(varsForEmailTemplate('invoice_autopay')).toEqual([
     'org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date',
-    'charge_date', 'payment_method', 'fee_amount', 'charge_total', 'invoice_link',
+    'charge_date', 'payment_method', 'fee_amount', 'charge_total', 'invoice_link', 'client_name',
   ]);
 });
 
 it('pins the closed payment notice variable contracts', () => {
-  expect(varsForEmailTemplate('payment_receipt')).toEqual(['org_name','partner_name','invoice_number','amount_paid','fee_amount','total_charged','payment_method','paid_on','balance_remaining']);
-  expect(varsForEmailTemplate('payment_failed')).toEqual(['org_name','partner_name','invoice_number','amount_due','failure_text','action_link','action_label','payment_method','attempted_amount']);
+  expect(varsForEmailTemplate('payment_receipt')).toEqual(['org_name','partner_name','invoice_number','amount_paid','fee_amount','total_charged','payment_method','paid_on','balance_remaining','client_name']);
+  expect(varsForEmailTemplate('payment_failed')).toEqual(['org_name','partner_name','invoice_number','amount_due','failure_text','action_link','action_label','payment_method','attempted_amount','client_name']);
   expect(emailTemplateLabel('payment_receipt')).toBe('Online payment receipt');
   expect(emailTemplateLabel('payment_failed')).toBe('Payment could not be completed');
   expect(emailTemplateHasCta('payment_receipt')).toBe(false);
   expect(emailTemplateHasCta('payment_failed')).toBe(true);
+});
+
+describe('billing email defaults (wave 1 copy deck)', () => {
+  it('variant defaults exist for each kind that has variants, and every token in them is an insert chip', () => {
+    const tokenRe = /\{\{\s*([a-z0-9_]+)\s*\}\}/g;
+    for (const [id, variants] of Object.entries(EMAIL_TEMPLATE_VARIANTS)) {
+      for (const variant of variants) {
+        const fields = emailTemplateFieldDefaults(id as EmailTemplateId, variant);
+        expect(fields, `${id}/${variant} changes nothing`).not.toEqual(emailTemplateFieldDefaults(id as EmailTemplateId));
+        const chips = new Set(varsForEmailTemplate(id as EmailTemplateId));
+        for (const match of `${fields.subject}\n${fields.heading}\n${fields.html}`.matchAll(tokenRe)) {
+          expect(chips, `${id}/${variant} is missing chip {{${match[1]}}}`).toContain(match[1]);
+        }
+      }
+    }
+    expect(EMAIL_TEMPLATE_VARIANTS.payment_failed).toEqual(['confirm', 'update', 'nsf', 'returned', 'expired']);
+    expect(EMAIL_TEMPLATE_VARIANTS.autopay_enrolled).toEqual(['pending_verification', 'verified']);
+    expect(EMAIL_TEMPLATE_VARIANTS.autopay_stopped).toEqual(['msp', 'request_withdrawn']);
+  });
+  it('an unknown variant falls back to the base default', () => {
+    expect(emailTemplateFieldDefaults('payment_failed', 'nope')).toEqual(emailTemplateFieldDefaults('payment_failed'));
+  });
+  it('greets the client by name and restates no terms the locked blocks already carry', () => {
+    const billing: EmailTemplateId[] = ['invoice_autopay', 'autopay_request', 'autopay_enrolled', 'autopay_stopped', 'autopay_paused',
+      'autopay_resumed', 'card_expiring', 'payment_reminder', 'payment_overdue', 'payment_receipt', 'payment_failed'];
+    for (const id of billing) {
+      const fields = emailTemplateFieldDefaults(id);
+      expect(fields.html, id).toContain('Hi {{client_name}},');
+      expect(fields.html, id).not.toMatch(/\{\{(schedule_text|fee_text|open_invoices_text)\}\}/);
+      expect(`${fields.subject} ${fields.heading} ${fields.html}`, id).not.toMatch(/OVERDUE|eligible|Principal/);
+    }
+  });
+  it('the subjects read like a person wrote them', () => {
+    expect(emailTemplateFieldDefaults('payment_overdue').subject).toBe('Invoice {{invoice_number}} is overdue');
+    expect(emailTemplateFieldDefaults('payment_receipt').subject).toBe('Receipt for invoice {{invoice_number}} from {{partner_name}}');
+    expect(emailTemplateFieldDefaults('autopay_enrolled', 'pending_verification').subject).toBe('One more step: verify your bank account for {{partner_name}}');
+    expect(emailTemplateFieldDefaults('autopay_enrolled', 'verified').heading).toBe('Your bank account is verified');
+  });
 });

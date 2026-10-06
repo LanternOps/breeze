@@ -25,7 +25,7 @@ describe('autopay card expiry',()=>{
     expect(await checkExpiringAutopayCards(new Date('2026-10-02T06:28:00Z'))).toEqual({enqueued:1});
     expect(h.mint).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({purpose:'enroll',generation:4,ttlDays:30}));
     expect(h.enqueue).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({kind:'card_expiring',dedupeKey:`card-expiring:${methodId}`,seq:1}));
-    expect(h.render).toHaveBeenCalledWith('card_expiring',expect.objectContaining({autopay:expect.objectContaining({vars:expect.objectContaining({expires_on:'2026-10-31',payment_method:'Visa card ending in 1234'})})}));
+    expect(h.render).toHaveBeenCalledWith('card_expiring',expect.objectContaining({autopay:expect.objectContaining({vars:expect.objectContaining({expires_on:'October 2026',payment_method:'Visa card ending in 1234',client_name:'Example client'})})}));
   });
   it('does not mint another token or send another message on a repeated daily run',async()=>{
     h.rows.push([row],[row.org],[row.enrollment],[row.method],[{id:'66666666-6666-4666-8666-666666666666'}]);

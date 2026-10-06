@@ -51,7 +51,8 @@ export async function replayAutopayStripeEvents():Promise<number>{
       .innerJoin(orgAutopayEnrollments,eq(orgAutopayEnrollments.id,orgPaymentMethods.enrollmentId)).where(and(eq(orgPaymentMethods.stripePaymentMethodId,methodId!),eq(orgPaymentMethods.isAutopayMethod,true),inArray(orgPaymentMethods.status,['active','pending_verification','unusable']),
        eq(orgAutopayEnrollments.partnerId,row.partnerId),eq(orgAutopayEnrollments.stripeAccountId,row.stripeAccountId))));
      for(const method of methods){
-      await withSystemDbAccessContext(()=>markPaymentMethodUnusable(db,method.id,event.type));
+      // FP-13: a decline that already made it unusable already told staff.
+      if(!await withSystemDbAccessContext(()=>markPaymentMethodUnusable(db,method.id,event.type)))continue;
       await notifyAutopayStaff({orgId:method.orgId,partnerId:row.partnerId,event:'autopay.needs_attention',dedupeKey:row.stripeEventId,
        message:'Automatic payments need a new payment method.'});
      }

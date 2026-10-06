@@ -62,3 +62,12 @@ it('names why Charge now was canceled when the attempt carries a reason (R3)', (
     .toBe('autopay.reasons.above_authorized_cap');
   expect(chargeNowFailureKey({ error: 'canceled', code: 'canceled', outcome: 'canceled' })).toBe('autopay.chargeOutcome.canceled');
 });
+
+// F-8: an invoice issued before the client's updated authorization has its own staff wording.
+it('names an invoice issued before the updated authorization', () => {
+  expect(autopayReasonKey('issued_before_authorization')).toBe('autopay.reasons.issued_before_authorization');
+});
+// FP-17: Charge now on an excluded contract explains itself and what the client heard.
+it('an excluded contract refusal has its own explanation', () => {
+  expect(chargeNowFailureKey({ outcome: 'canceled', code: 'excluded_contract', error: 'excluded_contract' })).toBe('autopay.chargeRefused.excluded_contract');
+});

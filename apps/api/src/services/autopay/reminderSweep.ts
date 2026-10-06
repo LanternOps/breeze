@@ -1,3 +1,4 @@
+import { clientNameFor } from './billingEmail';
 import { and, eq, gt, inArray, isNotNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { ACTIVE_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
@@ -11,7 +12,7 @@ import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../invoiceLinkToken
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { renderBillingNotice } from './renderBillingNotice';
 import { enqueueBillingNotice } from './noticeOutbox';
-import { STALE_REMINDER_REASON } from './reminderValidation';
+import { REMINDER_COVERING_SCHEDULES, STALE_REMINDER_REASON } from './reminderValidation';
 
 const DAY_MS = 86_400_000;
 
@@ -58,7 +59,6 @@ export function reminderDueToday(input: ReminderCadence & { lastSentSeq: number 
   return step?.onDay && step.seq > input.lastSentSeq ? { kind: step.kind, seq: step.seq } : null;
 }
 
-const ACTIVE_SCHEDULES = ['awaiting_notice', 'scheduled', 'collecting', 'retry_scheduled'] as const;
 const ORG_PAGE = 100;
 const INVOICE_PAGE = 250;
 
@@ -69,11 +69,14 @@ function invoiceCandidate() {
   return and(
     sqlOpenAr(invoices), gt(invoices.balance, '0'), isNotNull(invoices.dueDate),
     buildPublicLinkLiveOrgPredicate(invoices.orgId),
+    // G1/G2: exclusive outcomes. An active automatic payment covers the invoice however late
+    // or deferred it is; one deferred past the grace is ended by collection (the client is
+    // told), and only then is the invoice reminded.
     sql`NOT EXISTS (
       SELECT 1 FROM ${invoiceAutopaySchedules}
       WHERE ${invoiceAutopaySchedules.invoiceId} = ${invoices.id}
         AND ${invoiceAutopaySchedules.orgId} = ${invoices.orgId}
-        AND ${inArray(invoiceAutopaySchedules.state, [...ACTIVE_SCHEDULES])}
+        AND ${inArray(invoiceAutopaySchedules.state, [...REMINDER_COVERING_SCHEDULES])}
     )`,
     // A payment already in flight (incl. unscheduled "pay by bank" attempts and a
     // processing debit whose schedule a pause cancelled): "View & pay" would 409.
@@ -181,7 +184,7 @@ export async function runInvoiceReminderSweep(now = new Date()): Promise<{ enque
                     currency: invoice.currencyCode, dueDate: invoice.dueDate,
                     daysOverdue: Math.max(0, utcDay(today) - utcDay(invoice.dueDate)),
                     payLink: buildPublicInvoiceUrl(link.token), partnerName: org.partnerName,
-                    orgName: org.name, partnerSettings: org.partnerSettings,
+                    orgName: org.name, clientName: clientNameFor(org.billingContact, org.name), partnerSettings: org.partnerSettings,
                   },
                 });
                 const result = await enqueueBillingNotice(db, {

@@ -1,3 +1,4 @@
+import { allowedCardFeeBps } from './processingFee';
 import {autopayFeeTermsSchema,autopayScheduleTermsSchema,type FeeAuthorizationGap,type PaymentSettingsView,type ResolvedPaymentSettings} from '@breeze/shared';
 import { toMinorUnits } from '../stripeMoney';
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
@@ -56,6 +57,7 @@ export async function feeAuthorizationGaps(connection: typeof db, partnerId: str
   const settings = await resolveBillingPaymentSettings(connection, { partnerId });
   const rows = await connection.selectDistinctOn([organizations.id], {
     orgId: organizations.id, orgName: organizations.name, methodType: orgPaymentMethods.type,
+    billingAddressCountry: organizations.billingAddressCountry, billingAddressRegion: organizations.billingAddressRegion,
     feeTerms: orgAutopayConsents.feeTerms, scheduleTerms: orgAutopayConsents.scheduleTerms, cardFeeBps: billingPaymentSettings.cardFeeBps,
     achFeeAmount: billingPaymentSettings.achFeeAmount, capEnabled: billingPaymentSettings.autopayCapEnabled,
     capAmount: billingPaymentSettings.autopayCapAmount, capCurrency: billingPaymentSettings.autopayCapCurrency,
@@ -85,7 +87,9 @@ export async function feeAuthorizationGaps(connection: typeof db, partnerId: str
     const authorizedCardFeeBps = onFile ? accepted?.cardFeeBps ?? 0 : null;
     const authorizedAchFeeAmount = !onFile ? null : accepted && /^(0|[1-9]\d?)\.\d{2}$/.test(accepted.achFeeAmount)
       ? accepted.achFeeAmount : '0.00';
-    const cardFeeBps = row.cardFeeBps ?? settings.cardFeeBps.value;
+    // F-7: the card fee the client's state allows (CO capped, CA and others banned), as the
+    // fee engine applies it. A client authorized at that maximum is not below the terms.
+    const cardFeeBps = allowedCardFeeBps(row.cardFeeBps ?? settings.cardFeeBps.value, row.billingAddressCountry, row.billingAddressRegion);
     const achFeeAmount = row.achFeeAmount ?? settings.achFeeAmount.value;
     // No authorization at all is listed whatever the configured fee: collection refuses it (consent_required).
     const lower = !onFile || (row.methodType === 'card' ? authorizedCardFeeBps! < cardFeeBps

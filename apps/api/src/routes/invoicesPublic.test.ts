@@ -1,3 +1,5 @@
+const sentryCapture=vi.hoisted(()=>vi.fn());
+vi.mock('../services/sentry',()=>({captureException:sentryCapture}));
 const bankRoutes=vi.hoisted(()=>({setup:vi.fn(),collect:vi.fn(),offer:vi.fn(async()=>null)}));
 vi.mock('../services/autopay/bankPayment',async original=>({
  ...await original<typeof import('../services/autopay/bankPayment')>(),
@@ -48,7 +50,9 @@ vi.mock('../services/invoiceService', async (importActual) => {
   };
 });
 
-const { inFlightMock, releaseMock } = vi.hoisted(() => ({ inFlightMock: vi.fn(), releaseMock: vi.fn() }));
+const { inFlightMock, releaseMock, customerAutopayMock, offerMock } = vi.hoisted(() => ({ inFlightMock: vi.fn(), releaseMock: vi.fn(),
+  customerAutopayMock: vi.fn(async () => ({ enrolled: false, status: null })), offerMock: vi.fn(async () => null) }));
+vi.mock('../services/autopay/customerInvoiceStatus', () => ({ getCustomerInvoiceAutopay: customerAutopayMock }));
 vi.mock('../services/autopay/confirmPayment', () => ({ releaseInvoiceConfirmation: releaseMock }));
 vi.mock('../services/autopay/reservation', () => ({ readInFlightCollection: inFlightMock }));
 
@@ -532,7 +536,48 @@ it('public pay returns the reservation conflict without exposing a payment URL',
 
 vi.mock('../services/autopay/payAndSave', async importOriginal => {
   const actual = await importOriginal<typeof import('../services/autopay/payAndSave')>();
-  return { ...actual, getInvoiceAutopayOffer: vi.fn(async () => null) };
+  return { ...actual, getInvoiceAutopayOffer: offerMock };
+});
+describe('the invoice page learns how this invoice will be paid (D-4)', () => {
+  const offer = { eligible: true, consentText: 'I authorize', consentVersion: 'v', disclosureHash: 'a'.repeat(64) };
+  const scheduled = { state: 'scheduled', chargeDate: '2026-11-04', amount: '50.00', fee: '1.50', currency: 'USD',
+    methodLabel: 'Visa credit card ending in 4242', methodType: 'card', reason: null, paidAt: null, canPayNow: true };
+  it('carries the automatic-payment status and stops offering setup to an enrolled client', async () => {
+    resolveMock.mockResolvedValue(invoice());
+    offerMock.mockResolvedValueOnce(offer as never);
+    customerAutopayMock.mockResolvedValueOnce({ enrolled: true, status: scheduled } as never);
+    dbResults.push(PARTNER_ROW, BRAND_ROW, []);
+    const { data } = await (await app().request(`/invoices/public/${TOKEN}`)).json();
+    expect(data.autopayStatus).toEqual(scheduled);
+    expect(data.autopayEnrolled).toBe(true);
+    expect(data.autopay).toBeNull();
+    expect(customerAutopayMock).toHaveBeenCalledWith(expect.anything(), { invoiceId: INV_ID, orgId: ORG_ID });
+  });
+  it('keeps the save-card offer for a client who is not enrolled', async () => {
+    resolveMock.mockResolvedValue(invoice());
+    offerMock.mockResolvedValueOnce(offer as never);
+    dbResults.push(PARTNER_ROW, BRAND_ROW, []);
+    const { data } = await (await app().request(`/invoices/public/${TOKEN}`)).json();
+    expect(data.autopay).toEqual(offer);
+    expect(data.autopayEnrolled).toBe(false);
+    expect(data.autopayStatus).toBeNull();
+  });
+  // R9: the page still renders, but without knowing whether the client is enrolled it must not
+  // offer setup or a bank payment that would replace their method: fail closed, and report it.
+  it('still renders when the status read fails, offering nothing that saves a method', async () => {
+    resolveMock.mockResolvedValue(invoice());
+    offerMock.mockResolvedValueOnce(offer as never);
+    bankRoutes.offer.mockResolvedValueOnce({ available: true } as never);
+    customerAutopayMock.mockRejectedValueOnce(new Error('db down'));
+    dbResults.push(PARTNER_ROW, BRAND_ROW, []);
+    const res = await app().request(`/invoices/public/${TOKEN}`);
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.autopayStatus).toBeNull();
+    expect(data.autopay).toBeNull();
+    expect(data.bankAutopay).toBeNull();
+    expect(sentryCapture).toHaveBeenCalledWith(expect.objectContaining({ message: 'db down' }), undefined, expect.objectContaining({ autopay_phase: 'invoice_status' }));
+  });
 });
 it('public invoice pay forwards only explicit card authorization', async () => {
   resolveMock.mockResolvedValue(invoice()); payLinkMock.mockResolvedValue({ url: 'https://checkout.stripe.com/c/cs_saved' });

@@ -40,7 +40,7 @@ async function lifecycleVerdict(tx: Parameters<NoticePreSendValidator>[0], row: 
   return typeof frozen === 'string' && frozen !== transition.at(enrollment)?.toISOString() ? superseded : null;
 }
 /** A pause or stop cancelled schedules whose charges the client had been told about, and
- * those schedules are never re-planned, so "the payment announced for … will not happen"
+ * those schedules are never re-planned, so "the automatic payment we planned … will not happen"
  * stays true after a resume or re-request supersedes the email that carried it (F2). Each
  * listed invoice that is still payable gets the per-invoice not-charged notice instead
  * (one per announcement; nothing if it was paid meanwhile). */

@@ -28,15 +28,29 @@ export async function mintBillingLinkToken(tx: Tx, input: {
   });
   return { token, id };
 }
-export async function resolveBillingLinkToken(db: Tx, token: string, purpose: BillingLinkPurpose): Promise<typeof billingLinkTokens.$inferSelect | null> {
-  if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
+export type BillingLinkFailure = 'invalid' | 'expired' | 'revoked' | 'consumed';
+/**
+ * Like resolveBillingLinkToken, but says why a matched link is unusable so a client
+ * page can explain it ("expired", "replaced", "already used"). `row` is null for an
+ * unknown, malformed or wrong-purpose token: callers must reveal nothing about those.
+ */
+export async function inspectBillingLinkToken(db: Tx, token: string, purpose: BillingLinkPurpose): Promise<{
+  row: typeof billingLinkTokens.$inferSelect | null; failure: BillingLinkFailure | null;
+}> {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return { row: null, failure: 'invalid' };
   const [row] = await db.select().from(billingLinkTokens).where(and(
     eq(billingLinkTokens.tokenHash, createHash('sha256').update(token, 'utf8').digest('hex')),
     eq(billingLinkTokens.purpose, purpose),
   )).limit(1);
-  if (!row || row.purpose !== purpose || row.expiresAt.getTime() <= Date.now() || row.revokedAt) return null;
-  if ((purpose === 'enroll' || purpose === 'confirm_payment') && row.consumedAt) return null;
-  return row;
+  if (!row || row.purpose !== purpose) return { row: null, failure: 'invalid' };
+  if (row.expiresAt.getTime() <= Date.now()) return { row, failure: 'expired' };
+  if (row.revokedAt) return { row, failure: 'revoked' };
+  if ((purpose === 'enroll' || purpose === 'confirm_payment') && row.consumedAt) return { row, failure: 'consumed' };
+  return { row, failure: null };
+}
+export async function resolveBillingLinkToken(db: Tx, token: string, purpose: BillingLinkPurpose): Promise<typeof billingLinkTokens.$inferSelect | null> {
+  const { row, failure } = await inspectBillingLinkToken(db, token, purpose);
+  return failure ? null : row;
 }
 export async function revokeBillingLinkTokens(tx: Tx, filter: {
   orgId: string; purpose?: BillingLinkPurpose; enrollmentId?: string; invoiceId?: string;

@@ -25,21 +25,25 @@ describe('enrollment notices', () => {
     expect(varsForEmailTemplate(id)).toEqual(['partner_name', 'org_name', ...(id === 'autopay_request' || id === 'card_expiring' ? ['cta_button'] : []), ...keys]);
     expect(emailTemplateFieldDefaults(id).html).not.toBe('');
   });
-  it('keeps schedule, stop and fee disclosures outside a custom body', async () => {
-    h.rows.push([{ settings: { emailTemplates: { autopay_request: { html: '<p>Hello only</p>' } } } }]);
-    const out = await renderAutopayNotice('autopay_request', ctx);
+  it('keeps the terms table and the stop link outside a custom body, and states each once', async () => {
+    h.rows.push([{ settings: { emailTemplates: { autopay_enrolled: { html: '<p>Hello only</p>' } } } }]);
+    const out = await renderAutopayNotice('autopay_enrolled', { ...ctx,
+      summary: [{ label: "When you're charged", value: "On each invoice's due date" }, { label: 'Processing fee', value: 'No fee' }],
+      terms: { title: 'Your authorization', paragraphs: ['I authorize Example MSP to save this card.'] } });
     expect(out.html).toContain('Hello only');
-    expect(out.html).toContain(ctx.scheduleText);
-    expect(out.html).toContain(ctx.feeText);
+    expect(out.html).toContain('>When you&#39;re charged</td>');
     expect(out.html).toContain(ctx.stopUrl);
-    expect(out.text).toContain(ctx.scheduleText);
-    expect(out.text).toContain(ctx.stopUrl);
+    for (const line of [`Stop automatic payments: ${ctx.stopUrl}`, "When you're charged: On each invoice's due date", 'I authorize Example MSP to save this card.']) {
+      expect(out.text.split(line).length - 1, line).toBe(1);
+    }
+    // The schedule and fee sentences are recorded, not printed again (D-9).
+    expect(out.text).not.toContain(ctx.scheduleText);
     expect(out.frozen).toMatchObject({ scheduleText: ctx.scheduleText, feeText: ctx.feeText });
   });
   it('escapes client-controlled text even in immutable blocks', async () => {
     h.rows.push([{ settings: {} }]);
     const out = await renderAutopayNotice('autopay_request', { ...ctx,
-      scheduleText: '<img src=x onerror=alert(1)>', stopUrl: 'javascript:alert(1)' });
+      summary: [{ label: 'When', value: '<img src=x onerror=alert(1)>' }], stopUrl: 'javascript:alert(1)' });
     expect(out.html).not.toContain('<img src=x');
     expect(out.html).not.toContain('href="javascript:');
     expect(out.html).toContain('&lt;img');

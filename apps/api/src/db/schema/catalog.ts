@@ -43,7 +43,7 @@ export const catalogItems = pgTable('catalog_items', {
   isBundle: boolean('is_bundle').notNull().default(false),
   attributes: jsonb('attributes').notNull().default({}),
   isActive: boolean('is_active').notNull().default(true),
-  createdBy: uuid('created_by').references(() => users.id),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (t) => [
@@ -158,7 +158,7 @@ export const tdSynnexEcExpressIntegrations = pgTable('td_synnex_ec_express_integ
   lastTestStatus: varchar('last_test_status', { length: 30 }),
   lastTestAt: timestamp('last_test_at'),
   lastTestError: text('last_test_error'),
-  createdBy: uuid('created_by').references(() => users.id),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (t) => [
@@ -182,7 +182,7 @@ export const tdSynnexDigitalBridgeIntegrations = pgTable('td_synnex_digital_brid
   lastTestError: text('last_test_error'),
   lastSyncAt: timestamp('last_sync_at'),
   lastError: text('last_error'),
-  createdBy: uuid('created_by').references(() => users.id),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (t) => [
@@ -211,7 +211,7 @@ export const tdSynnexSftpIntegrations = pgTable('td_synnex_sftp_integrations', {
   lastSyncError: text('last_sync_error'),
   lastFileName: text('last_file_name'),
   lastRowCount: integer('last_row_count'),
-  createdBy: uuid('created_by').references(() => users.id),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (t) => [

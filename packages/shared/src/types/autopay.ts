@@ -45,7 +45,16 @@ export const AUTOPAY_SETUP_OUTCOMES = ['activated','pending_verification','stale
 export type AutopaySetupSource = (typeof AUTOPAY_SETUP_SOURCES)[number];
 export type AutopaySetupOutcome = (typeof AUTOPAY_SETUP_OUTCOMES)[number];
 export interface AutopaySetupCompletion { outcome: AutopaySetupOutcome; orgId: string }
-export interface AutopaySetupResult extends AutopaySetupCompletion { methodLabel: string | null; feeText: string }
+/** Branding a client-facing autopay page shows: the MSP's name, logo and billing email. */
+export interface AutopayBranding { partnerName: string; logoUrl: string | null; supportEmail: string | null }
+export interface AutopaySetupResult extends AutopaySetupCompletion {
+ methodLabel: string | null; feeText: string;
+ /** Present on the client return: who the client is dealing with. */
+ branding?: AutopayBranding;
+ /** The enrollment as it stands now, so a superseded return can say whether the client is set up.
+  * `changed`: automatic payments were already on before this setup started (a method change). */
+ current?: { status: AutopayEnrollmentStatus; methodLabel: string | null; changed?: boolean } | null;
+}
 export interface InvoiceAutopayOffer { eligible: boolean; consentText: string; consentVersion: string; disclosureHash: string }
 export type AutopayScheduleTerms=z.infer<typeof autopayScheduleTermsSchema>;
 export type AutopayFeeTerms=z.infer<typeof autopayFeeTermsSchema>;
@@ -57,24 +66,34 @@ export interface AutopayMethodView {
  type:AutopayPaymentMethodType;cardBrand:string|null;cardFunding:CardFundingType|null;cardLast4:string|null;
  cardExpMonth:number|null;cardExpYear:number|null;bankName:string|null;bankLast4:string|null;status:OrgPaymentMethodStatus;
 }
-export interface AutopayEnrollmentView { status:AutopayEnrollmentStatus;generation:number;effectiveFrom:string|null;needsAttentionReason:AutopayNeedsAttentionReason|null }
+export interface AutopayEnrollmentView {
+ status:AutopayEnrollmentStatus;generation:number;effectiveFrom:string|null;needsAttentionReason:AutopayNeedsAttentionReason|null;
+ /** Customer pages: who stopped it and when, and when the MSP paused it. */
+ cancelSource?:AutopayCancelSource|null;cancelledAt?:string|null;pausedAt?:string|null;
+}
 export interface AutopayListRow {
  orgId:string;orgName:string;billingContact:{email?:string|null}|null;
  stripeReadiness:{ready:boolean;missing:string[]};status:AutopayEnrollmentStatus|'not_requested'|'needs_attention';
- enrollment:AutopayEnrollmentView|null;method:AutopayMethodView|null;lastCharge:{state:CollectionAttemptState;createdAt:string;principalAmount:string;currency:string}|null;
+ enrollment:AutopayEnrollmentView|null;method:AutopayMethodView|null;lastCharge:{state:CollectionAttemptState|'returned'|'refunded'|'disputed';createdAt:string;principalAmount:string;currency:string}|null;
  awaitingNotice:{count:number;oldestCreatedAt:string;reason:string|null;invoiceId:string}|null;requestNoticeStatus:BillingNoticeStatus|null;
 }
 export interface AutopayCustomerPage {
  stopOnly?:false;
  orgId:string;orgName:string;partnerName:string;logoUrl:string|null;primaryColor:string|null;contactEmail:string;
+ /** The MSP's billing email (the reply-to of every billing notice). */
+ supportEmail:string|null;
  scheduleText:string;achMode:AchMode|'card_only';consentVersion:string;consentText:Record<AutopayPaymentMethodType,string>;
  disclosures:Record<AutopayPaymentMethodType,AutopayDisclosure>;
  fees:Record<AutopayPaymentMethodType|'debit',{text:string;feeAmount:string;kind:'none'|'card_percent'|'ach_flat';appliedBps:number|null;reason:string}>;
  enrollment:AutopayEnrollmentView|null;method:AutopayMethodView|null;processingWarning:string;
+ /** FP-1: the authorization accepted for the method in use differs from the terms on offer now. */
+ termsChanged?:boolean;
+ /** F-1: a new bank account waiting for microdeposit verification while `method` stays in use. */
+ pendingMethod?:AutopayMethodView|null;
 }
 /** Minimal portal read model when enrollment setup is disabled. */
 export type AutopayStopOnlyPage = Pick<AutopayCustomerPage,
- 'orgId'|'orgName'|'partnerName'|'enrollment'|'method'|'processingWarning'> & {stopOnly:true};
+ 'orgId'|'orgName'|'partnerName'|'supportEmail'|'enrollment'|'method'|'processingWarning'> & {stopOnly:true};
 export type AutopayPortalPage = AutopayCustomerPage | AutopayStopOnlyPage;
 export interface PaymentValues {
  autopayOffsetDays:number|null;autopayOffsetRule:AutopayOffsetRule|null;autopayCapEnabled:boolean|null;
@@ -162,17 +181,20 @@ export interface InvoiceAutopayView {
  chargePreview?: { amount: string; currency: string; methodLabel: string } | null;
  state:AutopayScheduleState|'processing'|'unapplied';reason:string|null;collectOn:string|null;
  noticeSentAt:string|null;excluded:boolean;canExclude:boolean;canChargeNow:boolean;processing:boolean;unapplied:boolean;
+ /** Why Charge now is unavailable (a Charge now refusal code), or null (FP-17). */
+ chargeBlockedReason?:string|null;
 }
 /** What the public skip page may offer. Only 'ready' offers "Skip this payment";
  * 'paid' and 'not_needed' mean a stale link (paid, closed, void, or not scheduled for
  * automatic payment) that must not offer a skip (D-22). */
-export const AUTOPAY_SKIP_VIEW_STATUSES=['ready','skipped','pending','processing','action_required','paid','not_needed'] as const;
+/** 'reversed': the automatic payment succeeded, then was refunded or returned, so the invoice is open again. */
+export const AUTOPAY_SKIP_VIEW_STATUSES=['ready','skipped','pending','processing','action_required','paid','reversed','not_needed'] as const;
 export type AutopaySkipViewStatus=(typeof AUTOPAY_SKIP_VIEW_STATUSES)[number];
-export interface AutopaySkipView {
- status:AutopaySkipViewStatus;state:AutopayScheduleState;collectOn:string|null;control:ControlMarker|null;processing:boolean;
- /** Who the client contacts when a skip is refused. */
- partnerName:string|null;
-}
+/** Why a skip link has nothing to skip (status 'not_needed'), so the page can say so plainly. */
+/** 'cancelled': this payment was cancelled (bank confirmation released, an earlier pause,
+ * changed authority) while automatic payments stay on; 'stopped' is automatic payments off. */
+export const AUTOPAY_SKIP_NOT_NEEDED_REASONS=['void','nothing_due','excluded','failed','stopped','paused','replaced','cancelled','not_included','not_scheduled'] as const;
+export type AutopaySkipNotNeededReason=(typeof AUTOPAY_SKIP_NOT_NEEDED_REASONS)[number];
 export const bankPaySchema=bankPaymentConsentSchema.omit({invoiceId:true,orgId:true}).extend({
  methodType:z.literal('us_bank_account'),phase:z.enum(['setup','collect']),consentAccepted:z.literal(true),
  setupSessionId:z.string().regex(/^cs_[A-Za-z0-9_]+$/).max(255).optional(),
@@ -183,8 +205,68 @@ export type BankPayInput=z.infer<typeof bankPaySchema>;
 export interface BankAutopayOffer {
  available:boolean;principal:string;fee:string;currency:'USD';consentText:string;disclosureHash:string;
  methodStatus:Extract<OrgPaymentMethodStatus,'active'|'pending_verification'>|null;
+ /** The saved bank account ("Bank account ending in 6789") when methodStatus is set. */
+ methodLabel:string|null;
 }
 export type InvoicePayResult={url:string;outcome?:never;attemptId?:never;reason?:never}|(CollectionResult&{url?:never});
 /** Invoice-page exit from an off-session payment awaiting bank confirmation:
  * the original PaymentIntent is canceled so the client can pay on-session. */
 export type AutopayConfirmationRelease={outcome:'released'|'processing'|'paid'|'not_needed'};
+
+/** Why a public autopay link cannot be used. Partner fields only when the token
+ * matched a real link (its holder received it by email); never for an unknown token. */
+export const AUTOPAY_LINK_FAILURE_CODES=['link_invalid','link_expired','link_replaced','link_used','autopay_not_enabled'] as const;
+export type AutopayLinkFailureCode=(typeof AUTOPAY_LINK_FAILURE_CODES)[number];
+export interface AutopayLinkFailureDetails extends Partial<AutopayBranding> { enrollmentStatus?:AutopayEnrollmentStatus|null;
+ /** Skip and confirm links: the invoice they belong to (FP-4). */
+ invoiceUrl?:string|null }
+/** Error body: details ride under `data` (the portal client's errorData), like QUOTE_SUPERSEDED's branding. */
+export interface AutopayLinkFailure { error:string;code:AutopayLinkFailureCode;data?:AutopayLinkFailureDetails }
+/** GET /autopay/public/:token/stop */
+export interface AutopayStopView extends AutopayBranding {
+ orgName:string;processingWarning:string;enrollment:AutopayEnrollmentView|null;method:AutopayMethodView|null;openInvoiceCount:number;
+}
+/** GET /autopay/public/:token/skip: names the invoice, amount and charge date. */
+export interface AutopaySkipView extends AutopayBranding {
+ /** What the page may offer; only 'ready' offers "Skip this payment" (see AUTOPAY_SKIP_VIEW_STATUSES). */
+ status:AutopaySkipViewStatus;
+ /** Set only with status 'not_needed'. */
+ reason:AutopaySkipNotNeededReason|null;
+ /** The MSP has switched automatic payments off for now; a skip still works (Q4). */
+ onHold:boolean;
+ state:AutopayScheduleState|'not_needed';collectOn:string|null;control:ControlMarker|null;processing:boolean;
+ /** amount: the noticed principal; balance: what the invoice still owes now. */
+ invoiceNumber:string|null;invoiceStatus:string;dueDate:string|null;amount:string|null;balance:string;fee:string|null;currency:string;
+ methodLabel:string|null;methodType:AutopayPaymentMethodType|null;invoiceUrl:string|null;
+}
+/** GET /autopay/public/:token/confirm */
+export interface AutopayConfirmView extends AutopayBranding {
+ state:CollectionAttemptState|'not_needed';amount:string;currency:string;
+ /** The attempt's processing fee on top of amount (paying on the invoice page has none). */
+ fee:string;
+ /** The invoice now: a canceled confirmation can leave it open with money still due (V-3). */
+ invoiceNumber:string|null;invoiceStatus:string;balance:string;methodLabel:string|null;invoiceUrl:string|null;
+}
+
+/** The invoice pages' view of this invoice's automatic payment (client wording is the page's job). */
+/** 'paid_by_bank': the client paid it themselves by bank (FP-6); 'reversed': the automatic
+ * payment was refunded or returned and the invoice is due again; 'unapplied': money was
+ * captured but is not yet applied to the invoice (F-9: never offer to pay again). */
+export const CUSTOMER_INVOICE_AUTOPAY_STATES=['awaiting_notice','scheduled','delayed','processing','action_required','retry_scheduled',
+ 'failed','skipped','not_included','paid_automatically','paid_by_bank','reversed','unapplied'] as const;
+export type CustomerInvoiceAutopayState=(typeof CUSTOMER_INVOICE_AUTOPAY_STATES)[number];
+export interface CustomerInvoiceAutopayStatus {
+ state:CustomerInvoiceAutopayState;
+ /** YYYY-MM-DD: the scheduled charge date, or the next retry's date. */
+ chargeDate:string|null;
+ /** The noticed principal and maximum fee (collection may lower the fee). */
+ amount:string|null;fee:string|null;currency:string;
+ methodLabel:string|null;methodType:AutopayPaymentMethodType|null;
+ /** delayed: 'method_not_usable' | 'pending_verification' | 'on_hold'; not_included: the ineligible reason. */
+ reason:string|null;
+ paidAt:string|null;
+ /** False while money is reserved for this invoice (the pay routes would refuse). */
+ canPayNow:boolean;
+ /** The client's automatic payments are on (an active enrollment), even if this payment failed (FP-5). */
+ enrollmentActive?:boolean;
+}

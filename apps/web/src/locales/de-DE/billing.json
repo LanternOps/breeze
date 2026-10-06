@@ -2523,12 +2523,16 @@
       "method_not_usable": "Zahlungsmethode nicht verfügbar",
       "over_cap": "Über dem Limit für automatische Zahlungen",
       "above_authorized_cap": "Über dem vom Kunden autorisierten Limit",
+      "issued_before_authorization": "Vor der aktualisierten Autorisierung des Kunden ausgestellt: manuell einziehen",
       "cap_currency_mismatch": "Währung des Limits stimmt nicht überein",
       "ach_currency_unsupported": "Währung für Bankzahlungen nicht unterstützt",
       "excluded_contract": "Vertrag ausgeschlossen",
       "excluded_invoice": "Rechnung ausgeschlossen",
       "charging_disabled": "Automatischer Einzug deaktiviert",
       "stripe_unavailable": "Stripe nicht verfügbar",
+      "bank_unverified": "Nicht eingezogen: Das Bankkonto des Kunden wurde nicht rechtzeitig verifiziert. Manuell einziehen",
+      "charging_on_hold": "Nicht eingezogen: Automatische Zahlungen blieben ausgeschaltet. Manuell einziehen",
+      "service_unavailable": "Nicht eingezogen: Stripe blieb nicht erreichbar. Manuell einziehen",
       "control_pending:skip": "Überspringen angefordert; ausstehende Zahlung wird gestoppt",
       "control_pending:exclude": "Ausschluss angefordert; ausstehende Zahlung wird gestoppt",
       "control_pending:stop": "Stopp angefordert; ausstehende Zahlung wird gestoppt",
@@ -2560,7 +2564,10 @@
       "failed": "Zahlung fehlgeschlagen",
       "requires_action": "Bestätigung erforderlich",
       "canceled": "Abgebrochen",
-      "unapplied": "Zahlung muss zugeordnet werden"
+      "unapplied": "Zahlung muss zugeordnet werden",
+      "returned": "Zurückgebucht",
+      "refunded": "Erstattet",
+      "disputed": "Angefochten"
     },
     "fees": {
       "title": "Bearbeitungsgebühren",
@@ -2627,7 +2634,8 @@
       "nothing_to_pay": "Auf dieser Rechnung ist nichts mehr zu zahlen.",
       "enrollment_inactive": "Automatische Zahlungen sind für diesen Kunden nicht aktiv.",
       "schedule_inactive": "Diese Rechnung ist nicht mehr für eine automatische Zahlung geplant.",
-      "generic": "Die automatische Zahlung konnte nicht gestartet werden. Aktualisieren Sie die Rechnung, um ihren aktuellen Status zu sehen."
+      "generic": "Die automatische Zahlung konnte nicht gestartet werden. Aktualisieren Sie die Rechnung, um ihren aktuellen Status zu sehen.",
+      "excluded_contract": "Der Vertrag dieser Rechnung ist von automatischen Zahlungen ausgenommen, daher wurde nichts belastet. Wurde der Kunde über diese Zahlung informiert, hat er eine E-Mail erhalten, dass sie nicht stattfindet."
     }
   },
   "reminders": {

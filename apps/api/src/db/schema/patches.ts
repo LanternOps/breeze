@@ -180,7 +180,7 @@ export const patchApprovals = pgTable('patch_approvals', {
   policyId: uuid('policy_id').references(() => patchPolicies.id),
   ringId: uuid('ring_id').references(() => patchPolicies.id),
   status: patchApprovalStatusEnum('status').notNull().default('pending'),
-  approvedBy: uuid('approved_by').references(() => users.id),
+  approvedBy: uuid('approved_by').references(() => users.id, { onDelete: 'set null' }),
   approvedAt: timestamp('approved_at'),
   deferUntil: timestamp('defer_until'),
   notes: text('notes'),
@@ -264,8 +264,8 @@ export const patchJobs = pgTable('patch_jobs', {
 
 export const patchJobResults = pgTable('patch_job_results', {
   id: uuid('id').primaryKey().defaultRandom(),
-  jobId: uuid('job_id').notNull().references(() => patchJobs.id),
-  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  jobId: uuid('job_id').notNull().references(() => patchJobs.id, { onDelete: 'cascade' }),
+  deviceId: uuid('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),
   // NULL = a WHOLE-DEVICE summary row (the device was skipped, never
   // dispatched, or closed with no approved set), which is about the device's
   // outcome for the job rather than about any one patch. Nullable since
@@ -304,16 +304,16 @@ export const patchJobResults = pgTable('patch_job_results', {
 
 export const patchRollbacks = pgTable('patch_rollbacks', {
   id: uuid('id').primaryKey().defaultRandom(),
-  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  deviceId: uuid('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),
   patchId: uuid('patch_id').notNull().references(() => patches.id),
-  originalJobId: uuid('original_job_id').references(() => patchJobs.id),
+  originalJobId: uuid('original_job_id').references(() => patchJobs.id, { onDelete: 'set null' }),
   reason: text('reason'),
   status: patchRollbackStatusEnum('status').notNull().default('pending'),
   startedAt: timestamp('started_at'),
   completedAt: timestamp('completed_at'),
   output: text('output'),
   errorMessage: text('error_message'),
-  initiatedBy: uuid('initiated_by').references(() => users.id),
+  initiatedBy: uuid('initiated_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
 

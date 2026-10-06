@@ -6,6 +6,8 @@ vi.mock('./consentText',()=>({buildAutopayDisclosure:h.disclosure}));
 vi.mock('./paymentMethods',()=>({getAutopayMethod:h.method}));
 vi.mock('./stripeCapabilities',()=>({getAutopayStripeReadiness:h.readiness}));
 vi.mock('./enrollmentService',()=>({completeAutopaySetup:vi.fn()}));
+const consent=vi.hoisted(()=>vi.fn());
+vi.mock('./collectionFee',()=>({latestAutopayConsent:consent}));
 import { getAutopayCustomerPage } from './customerViews';
 const orgId='11111111-1111-4111-8111-111111111111';
 beforeEach(()=>{
@@ -75,4 +77,17 @@ it('keeps disclosed amounts from the accepted terms when configuration differs',
  const page=await getAutopayCustomerPage(orgId);
  expect(page.fees.card).toMatchObject({feeAmount:'1.00',appliedBps:100,kind:'card_percent',reason:'applied'});
  expect(page.fees.us_bank_account).toMatchObject({feeAmount:'2.00',kind:'ach_flat',reason:'applied'});
+});
+
+// FP-1: a re-authorization opens the Change page; it says the terms changed when the accepted
+// authorization for the current method is not the one on offer now.
+it.each([['old'.padEnd(64,'0'),true],['new'.padEnd(64,'0'),false]] as const)('terms changed is %s when the accepted hash differs (%s)',async(accepted,changed)=>{
+ seed('active',true);
+ h.rows.splice(3,1,[{id:'enrollment',status:'active',generation:1,effectiveFrom:null,needsAttentionReason:null}]);
+ h.method.mockResolvedValue({id:'method',type:'card',cardLast4:'1234',status:'active'});
+ const disclosure={partnerName:'Example MSP',scheduleText:'Due date',achMode:'card_only',version:'1',text:'Terms',textHash:'new'.padEnd(64,'0'),feeText:'No fee',
+  feeTerms:{cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false}};
+ h.disclosure.mockResolvedValue(disclosure);h.readiness.mockResolvedValue({accountCountry:'US'});
+ consent.mockResolvedValue({consentTextHash:accepted});
+ expect(await getAutopayCustomerPage(orgId)).toMatchObject({termsChanged:changed});
 });

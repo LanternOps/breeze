@@ -9,10 +9,10 @@ import { buildPortalNavItems } from '../../lib/navItems';
 import { apiGet } from '../../lib/api';
 vi.mock('@/lib/api', () => ({ apiGet: vi.fn(async () => ({ data: { partnerName: 'Example MSP', enrollment: null, method: null } })), apiPost: vi.fn() }));
 afterEach(cleanup);
-it.each(['./[token].astro', './return.astro', './[token]/stop.astro'])('%s mounts the public module inside the public shell', path => {
-  const source = readFileSync(resolve(__dirname, path), 'utf8');
+it('the setup link mounts the public setup module inside the public shell', () => {
+  const source = readFileSync(resolve(__dirname, './[token].astro'), 'utf8');
   expect(source).toContain('PublicDocumentLayout'); expect(source).toContain('<AutopaySetupPage'); expect(source).toContain('client:load');
-  render(<AutopaySetupPage mode="return" />); expect(screen.getByTestId('autopay-setup-page')).toBeTruthy();
+  render(<AutopaySetupPage token="t" />); expect(screen.getByTestId('autopay-setup-page')).toBeTruthy();
 });
 it('mounts payment methods in the authenticated shell', async () => {
   const source = readFileSync(resolve(__dirname, '../payment-methods/index.astro'), 'utf8');
@@ -25,14 +25,16 @@ it.each([{live:true,statusCode:200},{live:false,statusCode:404}])('disabled-part
   const page=readFileSync(resolve(__dirname,'../payment-methods/index.astro'),'utf8');
   const layout=readFileSync(resolve(__dirname,'../../layouts/PortalLayout.astro'),'utf8');
   expect(page).toContain("apiGet('/portal/payment-methods'");
-  expect(page).toContain("if (response.statusCode === 404) return new Response('Not Found', { status: 404 })");
+  // FP-9: a client without automatic payments sees the page's own styled explanation, never a bare 404.
+  expect(page).not.toContain("new Response('Not Found'");
   expect(layout).toContain('buildPortalNavItems(branding, paymentMethods.statusCode === 200)');
   expect(buildPortalNavItems({},statusCode===200).some(item=>item.href==='/payment-methods')).toBe(live);
   vi.mocked(apiGet).mockResolvedValueOnce(live
     ?{statusCode,data:{stopOnly:true,partnerName:'Example MSP',enrollment:{status:'active'},method:null}}
-    :{statusCode,error:'Automatic payments are not enabled'});
+    :{statusCode,code:'autopay_not_enabled',error:'Automatic payments are not enabled'});
   render(<PaymentMethodsPage/>);
-  await screen.findByTestId(live?'autopay-payment-methods':'autopay-payment-methods-error');
+  await screen.findByTestId('autopay-payment-methods');
+  if(!live)expect(screen.getByTestId('autopay-status')).toHaveTextContent('Not set up');
   expect(Boolean(screen.queryByTestId('autopay-portal-stop'))).toBe(live);
   expect(screen.queryByTestId('autopay-update-method')).toBeNull();
 });

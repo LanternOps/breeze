@@ -103,6 +103,13 @@ function reproduceToken(row: LinkColumns): string | null {
   return token;
 }
 
+/** The invoice's live public link, or null. Never mints: safe for read-only views. */
+export function peekInvoiceLink(row: LinkColumns): { token: string; expiresAt: Date } | null {
+  if (!row.publicLinkExpiresAt || row.publicLinkExpiresAt.getTime() <= Date.now()) return null;
+  const token = reproduceToken(row);
+  return token ? { token, expiresAt: row.publicLinkExpiresAt } : null;
+}
+
 /**
  * Return the invoice's public link, minting one if absent/expired/unreadable.
  *

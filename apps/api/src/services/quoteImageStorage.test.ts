@@ -13,7 +13,7 @@ vi.mock('./urlSafety', async (importActual) => {
 });
 
 import { fetchRemoteImage, RemoteImageError, MAX_QUOTE_IMAGE_SIZE_BYTES, QUOTE_IMAGE_WEBP_REJECTED_MESSAGE } from './quoteImageStorage';
-import { safeFetch, SsrfBlockedError } from './urlSafety';
+import { safeFetch, SsrfBlockedError, ResponseTooLargeError } from './urlSafety';
 
 const safeFetchMock = vi.mocked(safeFetch);
 
@@ -46,7 +46,13 @@ describe('fetchRemoteImage', () => {
     const out = await fetchRemoteImage('https://cdn.example.com/logo.png');
     expect(out.mime).toBe('image/png');
     expect(out.buffer.equals(PNG)).toBe(true);
-    expect(safeFetchMock).toHaveBeenCalledWith('https://cdn.example.com/logo.png', { timeoutMs: 8000 });
+    expect(safeFetchMock).toHaveBeenCalledWith('https://cdn.example.com/logo.png', { timeoutMs: 8000, maxBytes: MAX_QUOTE_IMAGE_SIZE_BYTES });
+  });
+
+  it('caps the body while it streams and maps the overrun to "too_large"', async () => {
+    safeFetchMock.mockRejectedValue(new ResponseTooLargeError(MAX_QUOTE_IMAGE_SIZE_BYTES));
+    await expect(fetchRemoteImage('https://cdn/huge.png')).rejects.toMatchObject({ reason: 'too_large' });
+    expect(safeFetchMock).toHaveBeenCalledWith('https://cdn/huge.png', expect.objectContaining({ maxBytes: MAX_QUOTE_IMAGE_SIZE_BYTES }));
   });
 
   it('maps an SSRF block to reason "unreachable"', async () => {

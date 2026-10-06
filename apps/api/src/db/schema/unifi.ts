@@ -32,7 +32,7 @@ export const unifiIntegrations = pgTable('unifi_integrations', {
   lastSyncAt: timestamp('last_sync_at'),
   lastSyncStatus: varchar('last_sync_status', { length: 20 }),
   lastSyncError: text('last_sync_error'),
-  createdBy: uuid('created_by').references(() => users.id),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({

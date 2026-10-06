@@ -24,6 +24,10 @@ const EXTRA_REQUIRED = [
   // org-erasure FK gap on reports.report_id was closed. Parent-keyed, so it
   // travels with its definition's repointed org_id.
   'report_runs',
+  // Joined ASSOCIATED_SYSTEM_SCOPED_TABLES so org erasure clears items naming
+  // the org's roles (role_id keeps NO ACTION). Review/role/user-keyed, so it
+  // travels with its parents through a merge.
+  'access_review_items',
   'partner_export_configuration_org_state', 'partner_export_device_material_state',
   'partner_export_site_material_state',
 ];

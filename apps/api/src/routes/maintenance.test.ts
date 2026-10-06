@@ -319,7 +319,7 @@ describe('maintenance routes', () => {
     });
   });
 
-  it('should delete a maintenance window and future occurrences', async () => {
+  it('should delete a maintenance window (its occurrences go with it by FK cascade)', async () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
@@ -342,6 +342,9 @@ describe('maintenance routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
+    // One DELETE (the window). maintenance_occurrences.window_id is
+    // ON DELETE CASCADE, so the route no longer deletes occurrences itself.
+    expect(db.delete).toHaveBeenCalledTimes(1);
   });
 
   it('should cancel a maintenance window and occurrences', async () => {

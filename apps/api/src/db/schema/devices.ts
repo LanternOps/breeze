@@ -576,7 +576,7 @@ export const deviceProcessSamples = pgTable('device_process_samples', {
 
 export const deviceSoftware = pgTable('device_software', {
   id: uuid('id').primaryKey().defaultRandom(),
-  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  deviceId: uuid('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 500 }).notNull(),
   version: varchar('version', { length: 100 }),
   publisher: varchar('publisher', { length: 255 }),

@@ -2,7 +2,7 @@ import type { RenderedNotice } from './types';
 import type {AutopayListRow} from '@breeze/shared';
 import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { organizations, orgAutopayEnrollments, billingNoticeOutbox, invoiceCollectionAttempts, invoiceAutopaySchedules } from '../../db/schema';
+import { organizations, orgAutopayEnrollments, billingNoticeOutbox, invoiceCollectionAttempts, invoiceAutopaySchedules, invoiceStripePayments } from '../../db/schema';
 import type { InvoiceActor } from '../invoiceTypes';
 import { getAutopayMethod } from './paymentMethods';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
@@ -23,9 +23,19 @@ export async function listAutopayEnrollments(actor: InvoiceActor, orgId?: string
       orgId: invoiceCollectionAttempts.orgId, state: invoiceCollectionAttempts.state,
       createdAt: invoiceCollectionAttempts.createdAt, principalAmount: invoiceCollectionAttempts.principalAmount,
       currency: invoiceCollectionAttempts.currency,
-    }).from(invoiceCollectionAttempts).where(inArray(invoiceCollectionAttempts.orgId, authorizedOrgIds))
+      paymentStatus: invoiceStripePayments.status, paymentMethodType: invoiceStripePayments.paymentMethodType,
+    }).from(invoiceCollectionAttempts)
+      .leftJoin(invoiceStripePayments, and(eq(invoiceStripePayments.id, invoiceCollectionAttempts.invoiceStripePaymentId),
+        eq(invoiceStripePayments.orgId, invoiceCollectionAttempts.orgId)))
+      .where(inArray(invoiceCollectionAttempts.orgId, authorizedOrgIds))
       .orderBy(invoiceCollectionAttempts.orgId, desc(invoiceCollectionAttempts.createdAt), desc(invoiceCollectionAttempts.id));
-    const lastByOrg = new Map(latest.map(({orgId,createdAt,...attempt}) => [orgId,{...attempt,createdAt:createdAt.toISOString()}]));
+    // FP-19: a succeeded charge later returned (bank), disputed or refunded is not "Payment received".
+    type LastChargeState = NonNullable<AutopayListRow['lastCharge']>['state'];
+    const settled = (state: LastChargeState, payment: string | null, type: string | null): LastChargeState => state !== 'succeeded' || !payment ? state
+      : payment === 'refunded' || payment === 'partially_refunded' ? 'refunded'
+      : payment === 'disputed' || payment === 'partially_disputed' ? (type === 'us_bank_account' ? 'returned' : 'disputed') : state;
+    const lastByOrg = new Map(latest.map(({orgId,createdAt,paymentStatus,paymentMethodType,state,...attempt}) =>
+      [orgId,{state:settled(state,paymentStatus??null,paymentMethodType??null),...attempt,createdAt:createdAt.toISOString()}]));
     const waiting = await db.select({orgId:invoiceAutopaySchedules.orgId,invoiceId:invoiceAutopaySchedules.invoiceId,
       reason:invoiceAutopaySchedules.stateReason,rendered:billingNoticeOutbox.rendered,status:billingNoticeOutbox.status,
     }).from(invoiceAutopaySchedules).leftJoin(billingNoticeOutbox,and(eq(billingNoticeOutbox.id,invoiceAutopaySchedules.noticeOutboxId),

@@ -15,12 +15,15 @@ export async function getAutopayMethod(db: Tx, orgId: string): Promise<typeof or
   return method ?? null;
 }
 
-export async function markPaymentMethodUnusable(tx: Tx, methodId: string, reason: string): Promise<void> {
+/** Returns whether staff should hear about it for this reason: the method became unusable
+ * now, or already was for this same reason (a retried event whose notice was lost). False
+ * when something else (a decline) already made it unusable and told staff (FP-13). */
+export async function markPaymentMethodUnusable(tx: Tx, methodId: string, reason: string): Promise<boolean> {
   const [method] = await tx.select().from(orgPaymentMethods).where(eq(orgPaymentMethods.id, methodId)).limit(1);
-  if (!method || method.status === 'removed') return;
+  if (!method || method.status === 'removed') return false;
   const [enrollment] = await tx.select().from(orgAutopayEnrollments)
     .where(eq(orgAutopayEnrollments.id, method.enrollmentId)).limit(1).for('update');
-  if (!enrollment) return;
+  if (!enrollment) return false;
   const [changed] = await tx.update(orgPaymentMethods).set({ status: 'unusable', unusableReason: reason })
     .where(and(eq(orgPaymentMethods.id, methodId), inArray(orgPaymentMethods.status, ['active', 'pending_verification'])))
     .returning();
@@ -28,6 +31,7 @@ export async function markPaymentMethodUnusable(tx: Tx, methodId: string, reason
     await tx.update(orgAutopayEnrollments).set({ needsAttentionReason: 'method_unusable' })
       .where(and(eq(orgAutopayEnrollments.id, enrollment.id), inArray(orgAutopayEnrollments.status, ['active', 'paused'])));
   }
+  return !!changed || (method.status === 'unusable' && method.unusableReason === reason);
 }
 
 /** Called via runAfterDbContextExit; the durable drain rechecks committed removal. */

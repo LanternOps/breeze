@@ -139,3 +139,18 @@ it.each([
  await waitFor(()=>expect(changed).toHaveBeenCalledOnce());
  await waitFor(()=>expect(paymentReads()).toBe(2));
 });
+
+// FP-17 (P-15): a disabled Charge now says why.
+it('a disabled Charge now names the reason', () => {
+  h.fetch.mockResolvedValue({ ok: true, json: async () => ({ data: [] }) });
+  render(<InvoiceDetail detail={{ ...detail, autopay: { ...autopay, canChargeNow: false, chargeBlockedReason: 'notice_lead' } }} onChanged={() => {}} />);
+  expect(screen.getByTestId('autopay-charge-now')).toBeDisabled();
+  expect(screen.getByTestId('autopay-charge-blocked')).toHaveTextContent("The client's notice period has not ended yet.");
+});
+// FP-18 (P-16): the reason line never repeats the state line.
+it('an excluded invoice states "Excluded by provider" once', () => {
+  h.fetch.mockResolvedValue({ ok: true, json: async () => ({ data: [] }) });
+  render(<InvoiceDetail detail={{ ...detail, autopay: { ...autopay, state: 'excluded_by_msp', reason: 'exclude', collectOn: null, excluded: true } }} onChanged={() => {}} />);
+  expect(screen.getByTestId('autopay-invoice-panel').textContent!.split('Excluded by provider').length - 1).toBe(1);
+  expect(screen.getByTestId('autopay-invoice-panel')).not.toHaveTextContent('Charge on or around');
+});

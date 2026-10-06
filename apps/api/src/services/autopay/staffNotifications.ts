@@ -8,7 +8,8 @@ import { escapeHtml } from '../emailLayout';
 import type { Tx } from './types';
 export interface AutopayStaffNotice {
   orgId: string; partnerId: string; invoiceId?: string; partnerOnly?: boolean;
-  event: 'autopay.enrolled' | 'autopay.method_updated' | 'autopay.stopped' | 'autopay.needs_attention' | 'autopay.skipped'
+  event: 'autopay.enrolled' | 'autopay.method_updated' | 'autopay.terms_accepted' | 'autopay.verification_failed'
+    | 'autopay.stopped' | 'autopay.needs_attention' | 'autopay.skipped'
     | 'payment.failed_final' | 'payment.ach_returned' | 'payment.unapplied' | 'payment.disputed';
   dedupeKey: string; message: string;
 }
@@ -16,6 +17,8 @@ const TITLE_MAX = 255;
 function eventTitle(event: AutopayStaffNotice['event']): string {
   return event === 'autopay.enrolled' ? 'Automatic payments enabled'
     : event === 'autopay.method_updated' ? 'Payment method updated'
+    : event === 'autopay.terms_accepted' ? 'Updated terms accepted'
+    : event === 'autopay.verification_failed' ? 'Bank verification failed'
     : event === 'autopay.skipped' ? 'Automatic payment skipped'
     : event === 'autopay.stopped' ? 'Automatic payments stopped'
     : event === 'payment.disputed' ? 'Payment disputed' : 'Payment needs attention';

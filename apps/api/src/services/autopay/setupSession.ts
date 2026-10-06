@@ -53,7 +53,7 @@ export async function prepareAutopayCapture(input:SetupInput,source:AutopaySetup
     stripeAccountCountry:ready.accountCountry,orgBillingCountry:org.billingAddressCountry,orgBillingRegion:org.billingAddressRegion,
     cardFeeBps:settings.cardFeeBps.value,achFeeAmount:settings.achFeeAmount.value,feeAttested:settings.feeAttested});
    if(invoice.balance!==bankPayment.principal||quote.feeAmount!==bankPayment.fee||invoice.currencyCode!==bankPayment.currency)
-    throw new InvoiceServiceError('The terms changed. Review them and try again.',409,'INVALID_STATE');
+    throw new InvoiceServiceError('The terms changed. Review them and try again.',409,'INVALID_STATE',{reason:'terms_changed'});
   }
   if((disclosure.achMode==='card_only'&&input.methodType!=='card')||(disclosure.achMode==='ach_only'&&input.methodType!=='us_bank_account'))
    throw new InvoiceServiceError('Payment method unavailable',409,'INVALID_STATE');
@@ -94,13 +94,32 @@ export async function prepareAutopayCapture(input:SetupInput,source:AutopaySetup
   return saved!;
  });
 }
+/**
+ * FP-15: Stripe's setup Checkout leaves Email blank and required when the Customer has none
+ * (Checkout then saves what the client types onto the Customer). Fill a blank one with the
+ * contact this setup was offered to. An email already on the Customer is never overwritten:
+ * Checkout shows it read-only and the client may have typed it. Best effort: if Stripe refuses,
+ * the client can still type it on Stripe's page.
+ */
+async function prefillCustomerEmail(stripe:Stripe,customerId:string,email:string|null|undefined){
+ if(!email||!/^[^\s@]+@[^\s@]+$/.test(email))return;
+ try{
+  const customer=await runOutsideDbContext(()=>stripe.customers.retrieve(customerId));
+  if(customer.deleted||customer.email)return;
+  await runOutsideDbContext(()=>stripe.customers.update(customerId,{email}));
+ }catch(error){
+  console.warn('[autopay] could not prefill the Stripe Customer email for setup',{customerId,error:error instanceof Error?error.message:String(error)});
+ }
+}
 export async function createHostedAutopaySession(attempt:{id:string;partnerId:string;orgId:string;enrollmentId:string;generation:number;tokenId:string|null;
  stripeCustomerId:string;stripeAccountId:string;methodType:AutopayPaymentMethodType;consentSnapshot:unknown},returnTo:'public'|'portal'){
  assertNoHeldDbContextForStripe('createHostedAutopaySession');
  const {stripe,stripeAccountId}=await withSystemDbAccessContext(()=>getPartnerStripeClient(attempt.partnerId));
  if(stripeAccountId!==attempt.stripeAccountId)throw new Error('Stripe account changed');
  const metadata={org_id:attempt.orgId,enrollment_id:attempt.enrollmentId,generation:String(attempt.generation),token_id:attempt.tokenId??'',setup_attempt_id:attempt.id};
- const bank=autopayConsentSnapshotSchema.parse(attempt.consentSnapshot).bankPayment;
+ const snapshot=autopayConsentSnapshotSchema.parse(attempt.consentSnapshot);
+ const bank=snapshot.bankPayment;
+ await prefillCustomerEmail(stripe,attempt.stripeCustomerId,snapshot.contactEmail);
  const paymentMetadata:Record<string,string>=bank?{invoice_id:bank.invoiceId,principal_minor:String(toMinorUnits(bank.principal,bank.currency)),
   fee_minor:String(toMinorUnits(bank.fee,bank.currency)),currency:bank.currency}:{};
  try{return await runOutsideDbContext(()=>stripe.checkout.sessions.create({mode:'setup',customer:attempt.stripeCustomerId,
@@ -108,7 +127,10 @@ export async function createHostedAutopaySession(attempt:{id:string;partnerId:st
   ...(attempt.methodType==='us_bank_account'?{currency:'usd',payment_method_options:{us_bank_account:{verification_method:'automatic' as const}}}:{}),
   metadata:{...metadata,...paymentMetadata},setup_intent_data:{metadata:{...metadata,...paymentMetadata}},
   success_url:`${portalBase()}/autopay/return?session_id={CHECKOUT_SESSION_ID}&target=${returnTo}${bank?'&bank=1':''}`,
-  cancel_url:returnTo==='portal'?`${portalBase()}/payment-methods`:`${portalBase()}/autopay/return?cancelled=1`
+  // A bank payment started on an invoice cancels back to the bank return page, which
+  // leads the client back to that invoice; a plain setup cancels to where it started.
+  cancel_url:bank?`${portalBase()}/autopay/return?cancelled=1&bank=1`
+   :returnTo==='portal'?`${portalBase()}/payment-methods`:`${portalBase()}/autopay/return?cancelled=1`
  },{idempotencyKey:`autopay_setup_${attempt.id}`}));
  }catch(error){throw mapStripeCheckoutError(error,'USD')??error;}
 }
