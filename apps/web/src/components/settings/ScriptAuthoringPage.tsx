@@ -9,7 +9,7 @@ import type {
   ScriptPolicyDto,
   TouchClass,
 } from '@breeze/shared';
-import { LANE_HARD_DENIED_CLASSES, TOUCH_CLASSES } from '@breeze/shared';
+import { LANE_HARD_DENIED_CLASSES, TOUCH_CLASSES, scriptLaneEnableGrantResource, type ScriptLaneEnableSaveBody } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { ActionError, runAction } from '@/lib/runAction';
@@ -265,7 +265,7 @@ export default function ScriptAuthoringPage() {
     }
   }, [orgPolicy, ensureReauthTier]);
 
-  const mintLaneGrant = useCallback(async (resource: Record<string, unknown>, code: string): Promise<string> => {
+  const mintLaneGrant = useCallback(async (resource: object, code: string): Promise<string> => {
     const tier = await ensureReauthTier();
     if (!tier || tier === 'password') {
       throw new StepUpMintError('unavailable', t('scriptAuthoringPage.stepUp.body'));
@@ -281,18 +281,8 @@ export default function ScriptAuthoringPage() {
     const wasEnabled = orgPolicy?.unattendedEnabled ?? false;
     const isEnabling = orgDraft.unattendedEnabled && !wasEnabled;
     try {
-      let stepUpGrant: string | undefined;
-      if (isEnabling) {
-        try {
-          stepUpGrant = await mintLaneGrant({ orgId, unattendedEnabled: true }, reauthCode);
-        } catch (err) {
-          setError(err instanceof Error ? err.message : t('scriptAuthoringPage.saveFailed'));
-          return;
-        }
-      }
-      const body: Record<string, unknown> = {
+      const values: ScriptLaneEnableSaveBody = {
         proposingEnabled: orgDraft.proposingEnabled,
-        unattendedEnabled: orgDraft.unattendedEnabled,
         maxUnattendedRiskTier: orgDraft.maxUnattendedRiskTier,
         unattendedAllowedClasses: orgDraft.unattendedAllowedClasses,
         maxUnattendedPerHour: orgDraft.maxUnattendedPerHour,
@@ -302,6 +292,24 @@ export default function ScriptAuthoringPage() {
           registryKeys: fromLines(orgDraft.protectedResources.registryKeys),
           deviceTags: fromLines(orgDraft.protectedResources.deviceTags),
         },
+      };
+      let stepUpGrant: string | undefined;
+      if (isEnabling) {
+        try {
+          // The server binds the enable grant to every value this save arms,
+          // so mint from the same `values` the PUT sends (#7873).
+          stepUpGrant = await mintLaneGrant(scriptLaneEnableGrantResource(orgId, values), reauthCode);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : t('scriptAuthoringPage.saveFailed'));
+          return;
+        }
+      }
+      const body: Record<string, unknown> = {
+        ...values,
+        // Only send the lane switch when it changes: the server treats any
+        // `unattendedEnabled: true` as the enable transition and requires a
+        // grant, so re-sending an unchanged `true` would 403 every later save.
+        ...(orgDraft.unattendedEnabled !== wasEnabled ? { unattendedEnabled: orgDraft.unattendedEnabled } : {}),
         ...(stepUpGrant ? { stepUpGrant } : {}),
       };
       const result = await runAction<OrgGetResponse | { policy: ScriptPolicyDto }>({

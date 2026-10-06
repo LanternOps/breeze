@@ -109,6 +109,8 @@ vi.mock('../../services/permissions', async (importOriginal) => {
 
 import { PERMISSIONS } from '../../services/permissions';
 import { scriptLanePolicyResourceDigest } from '../../services/mfaStepUpGrant';
+import { scriptLaneStepUpResource } from '../auth/schemas';
+import { scriptLaneEnableGrantResource } from '@breeze/shared';
 import { aiScriptPolicyRoutes, toScriptPolicyDto } from './scriptPolicy';
 import type { AiScriptPolicyRow } from '../../db/schema/aiScriptPolicies';
 import type { AiScriptLaneStateRow } from '../../db/schema/aiScriptLaneState';
@@ -424,6 +426,43 @@ describe('PUT /script-policy', () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
     expect(writes).toHaveLength(0);
+  });
+
+  it.each([
+    ['first-ever enable (no row yet)', false, ['C:\\Keep']],
+    ['re-enable over an existing row with different values', true, ['C:\\Keep']],
+    ['re-enable that empties protectedResources', true, []],
+  ])('round-trips the shared enable-grant resource: mint digest === redeem digest (#7873) — %s', async (_label, hasRow, paths) => {
+    resolvePartnerCeiling.mockResolvedValue({ ...DEFAULT_EFFECTIVE, maxUnattendedRiskTier: 'medium' });
+    if (hasRow) {
+      selectQueue = [[policyRow({
+        unattendedEnabled: false,
+        maxUnattendedRiskTier: 'low',
+        unattendedAllowedClasses: ['services'],
+        maxUnattendedPerHour: 5,
+        protectedResources: { services: ['spooler'], paths: [], registryKeys: [], deviceTags: [] },
+      })]];
+    }
+    // The exact body shape the web page PUTs (every field present).
+    const saveBody = {
+      proposingEnabled: true,
+      unattendedEnabled: true,
+      maxUnattendedRiskTier: 'medium' as const,
+      unattendedAllowedClasses: ['temp_files', 'dns_cache'],
+      maxUnattendedPerHour: 7,
+      protectedResources: { services: [], paths, registryKeys: [], deviceTags: [] },
+    };
+    // Mint side: the resource the web sends to /auth/mfa/step-up, parsed by
+    // the step-up route's schema and hashed exactly as that route hashes it.
+    const minted = scriptLaneStepUpResource.parse(scriptLaneEnableGrantResource(ORG_A, saveBody));
+    const mintDigest = scriptLanePolicyResourceDigest(minted);
+    consumeStepUpGrant.mockImplementation(async (_grantId: string, binding: { resourceDigest: string }) =>
+      binding.resourceDigest === mintDigest);
+
+    const res = await putReq({ ...saveBody, stepUpGrant: 'grant-1' });
+    expect(res.status).toBe(200);
+    expect(consumeStepUpGrant).toHaveBeenCalledTimes(1);
+    expect(writes).toHaveLength(1);
   });
 
   it('200s disabling without approvals:decide or a step-up grant, and audits ai.script_policy.updated', async () => {
