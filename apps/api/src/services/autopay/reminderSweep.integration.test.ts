@@ -6,7 +6,9 @@ import { db, withSystemDbAccessContext } from '../../db';
 import {
   partners, organizations, invoices, billingPaymentSettings,
   orgAutopayEnrollments, invoiceAutopaySchedules, billingNoticeOutbox, stripeConnectAccounts,
+  orgPaymentMethods, invoiceCollectionAttempts,
 } from '../../db/schema';
+import { STALE_REMINDER_REASON } from './reminderValidation';
 import { runInvoiceReminderSweep } from './reminderSweep';
 import { dispatchPendingBillingNotices } from './noticeOutbox';
 const { send } = vi.hoisted(() => ({ send: vi.fn().mockResolvedValue(undefined) }));
@@ -248,5 +250,174 @@ describe('reminder liveness and dispatch validation', () => {
       'payment_reminder:1:sent', 'payment_reminder:2:sent', 'payment_reminder:3:sent',
     ]);
     expect(send).toHaveBeenCalledTimes(5);
+  });
+});
+
+// G: a reminder must not say "View & pay" while a payment is already in flight
+// (e.g. "Pay by bank and set up autopay" creates an unscheduled ACH attempt).
+async function inFlightAttempt(f: Awaited<ReturnType<typeof fixture>>, label: string,
+  state: 'processing' | 'requires_action' = 'processing') {
+  const target = f.created.find(row => row.label === label)!;
+  return withSystemDbAccessContext(async () => {
+    const [connection] = await db.select().from(stripeConnectAccounts).where(eq(stripeConnectAccounts.partnerId, f.partnerId));
+    // An off-session attempt belongs to the fixture's own schedule (e.g. an 'action_required' 3DS wait).
+    const [schedule] = await db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.invoiceId, target.id));
+    const [enrollment] = schedule
+      ? await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.id, schedule.enrollmentId!))
+      : await db.insert(orgAutopayEnrollments).values({
+        partnerId: f.partnerId, orgId: target.orgId, status: 'active', generation: 1,
+        stripeConnectionId: connection!.id, stripeAccountId: connection!.stripeAccountId,
+        stripeCustomerId: `cus_${target.id}`, effectiveFrom: new Date('2026-01-01'), requestedAt: new Date('2026-01-01'),
+      }).returning();
+    const [method] = await db.insert(orgPaymentMethods).values({ orgId: target.orgId, enrollmentId: enrollment!.id,
+      stripePaymentMethodId: `pm_${target.id}`, type: 'us_bank_account', bankName: 'Test bank', bankLast4: '6789',
+      accountHolderType: 'company', status: 'active', isAutopayMethod: true }).returning();
+    const [attempt] = await db.insert(invoiceCollectionAttempts).values({ orgId: target.orgId, invoiceId: target.id,
+      scheduleId: schedule?.id ?? null, attemptNo: 1, paymentMethodId: method!.id, stripePaymentIntentId: `pi_${target.id}`,
+      idempotencyKey: `reminder_in_flight_${target.id}`, principalAmount: '100.00', feeAmount: '0.00', currency: 'EUR',
+      state, initiatedBy: schedule ? 'scheduler' : 'client_on_session' }).returning();
+    return { target, attemptId: attempt!.id };
+  });
+}
+describe('reminders while a payment is in flight', () => {
+  it('does not enqueue a reminder for an invoice with a processing bank payment', async () => {
+    const f = await fixture(['sent']);
+    await inFlightAttempt(f, 'sent');
+    expect(await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'))).toEqual({ enqueued: 0, skippedNoContact: 0 });
+  });
+  it('cancels a queued reminder at dispatch once a payment is in flight, then resumes after it fails', async () => {
+    const f = await fixture(['sent']);
+    expect(await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'))).toEqual({ enqueued: 1, skippedNoContact: 0 });
+    const { target, attemptId } = await inFlightAttempt(f, 'sent');
+    expect(await dispatchPendingBillingNotices(new Date(Date.now() + 1000))).toEqual({ sent: 0, failed: 0 });
+    expect(send).not.toHaveBeenCalled();
+    const [row] = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox)
+      .where(eq(billingNoticeOutbox.invoiceId, target.id)));
+    expect(row).toMatchObject({ status: 'cancelled', lastError: 'Payment in progress' });
+    await withSystemDbAccessContext(() => db.update(invoiceCollectionAttempts)
+      .set({ state: 'failed', failureClass: 'nsf' }).where(eq(invoiceCollectionAttempts.id, attemptId)));
+    expect(await runInvoiceReminderSweep(new Date('2026-10-06T06:18:00Z'))).toEqual({ enqueued: 1, skippedNoContact: 0 });
+  });
+  // A payment waiting on the client's bank (3DS) completes only if they act, and the
+  // invoice page offers "Continue to payment": the reminder must still go out.
+  it('still enqueues a reminder while an off-session payment waits on bank confirmation', async () => {
+    const f = await fixture(['action_required']);
+    await inFlightAttempt(f, 'action_required', 'requires_action');
+    expect(await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'))).toEqual({ enqueued: 1, skippedNoContact: 0 });
+    expect(await dispatchPendingBillingNotices(new Date(Date.now() + 1000))).toEqual({ sent: 1, failed: 0 });
+  });
+  it('sends a queued reminder at dispatch when the payment then waits on bank confirmation', async () => {
+    const f = await fixture(['action_required']);
+    expect(await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'))).toEqual({ enqueued: 1, skippedNoContact: 0 });
+    const { target } = await inFlightAttempt(f, 'action_required', 'requires_action');
+    expect(await dispatchPendingBillingNotices(new Date(Date.now() + 1000))).toEqual({ sent: 1, failed: 0 });
+    const [row] = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox)
+      .where(eq(billingNoticeOutbox.invoiceId, target.id)));
+    expect(row).toMatchObject({ status: 'sent', lastError: null });
+  });
+});
+
+// H: a reminder states the balance and due date frozen at enqueue. If they change
+// before dispatch it is cancelled, and the next sweep sends a current replacement.
+async function reminderRows(invoiceId: string) {
+  const rows = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox)
+    .where(eq(billingNoticeOutbox.invoiceId, invoiceId)));
+  return rows.sort((a, b) => a.dedupeKey.localeCompare(b.dedupeKey));
+}
+describe('stale reminder replacement', () => {
+  it('cancels an overdue reminder after a partial payment and replaces it on the next sweep', async () => {
+    const f = await fixture(['overdue']);
+    const target = f.created[0]!;
+    expect(await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'))).toEqual({ enqueued: 1, skippedNoContact: 0 });
+    await withSystemDbAccessContext(() => db.update(invoices).set({ amountPaid: '40.00', balance: '60.00' })
+      .where(eq(invoices.id, target.id)));
+    expect(await dispatchPendingBillingNotices(new Date(Date.now() + 1000))).toEqual({ sent: 0, failed: 0 });
+    expect(send).not.toHaveBeenCalled();
+    expect((await reminderRows(target.id))[0]).toMatchObject({ status: 'cancelled', lastError: STALE_REMINDER_REASON });
+
+    // 10-06 is not a cadence day, but the cancelled step is replaced with current values.
+    expect(await runInvoiceReminderSweep(new Date('2026-10-06T06:18:00Z'))).toEqual({ enqueued: 1, skippedNoContact: 0 });
+    const [, replacement] = await reminderRows(target.id);
+    expect(replacement).toMatchObject({ kind: 'payment_overdue', seq: 1, status: 'pending',
+      dedupeKey: `invoice:${target.id}:payment_overdue:1:r1`, rendered: { frozen: { amount: '60.00', daysOverdue: 8 } } });
+    expect(await dispatchPendingBillingNotices(new Date(Date.now() + 1000))).toEqual({ sent: 1, failed: 0 });
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('60.00') }));
+
+    expect(await runInvoiceReminderSweep(new Date('2026-10-07T06:18:00Z'))).toEqual({ enqueued: 0, skippedNoContact: 0 });
+    expect(await runInvoiceReminderSweep(new Date('2026-10-12T06:18:00Z'))).toEqual({ enqueued: 1, skippedNoContact: 0 });
+    const keys = (await reminderRows(target.id)).map(row => `${row.dedupeKey.split(':').slice(2).join(':')}:${row.status}`);
+    expect(keys).toEqual(['payment_overdue:1:cancelled', 'payment_overdue:1:r1:sent', 'payment_overdue:2:pending']);
+  });
+  it('replaces a stale reminder the same day when the sweep runs again', async () => {
+    const f = await fixture(['sent']);
+    const target = f.created[0]!;
+    await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'));
+    await withSystemDbAccessContext(() => db.update(invoices).set({ amountPaid: '10.00', balance: '90.00' }).where(eq(invoices.id, target.id)));
+    await dispatchPendingBillingNotices(new Date(Date.now() + 1000));
+    expect((await reminderRows(target.id))[0]).toMatchObject({ status: 'cancelled', lastError: STALE_REMINDER_REASON });
+    expect(await runInvoiceReminderSweep(new Date('2026-10-05T07:30:00Z'))).toEqual({ enqueued: 1, skippedNoContact: 0 });
+    const [, replacement] = await reminderRows(target.id);
+    expect(replacement).toMatchObject({ dedupeKey: `invoice:${target.id}:payment_reminder:1:r1`,
+      rendered: { frozen: { amount: '90.00', dueDate: '2026-10-08' } } });
+  });
+  it('cancels a reminder for a moved due date and reminds on the new cadence', async () => {
+    const f = await fixture(['sent']);
+    const target = f.created[0]!;
+    await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'));
+    await withSystemDbAccessContext(() => db.update(invoices).set({ dueDate: '2026-10-09' }).where(eq(invoices.id, target.id)));
+    await dispatchPendingBillingNotices(new Date(Date.now() + 1000));
+    expect(send).not.toHaveBeenCalled();
+    expect((await reminderRows(target.id))[0]).toMatchObject({ status: 'cancelled', lastError: STALE_REMINDER_REASON });
+    // Three days before the new due date is 10-06; nothing is due for it on 10-05.
+    expect(await runInvoiceReminderSweep(new Date('2026-10-05T07:30:00Z'))).toEqual({ enqueued: 0, skippedNoContact: 0 });
+    expect(await runInvoiceReminderSweep(new Date('2026-10-06T06:18:00Z'))).toEqual({ enqueued: 1, skippedNoContact: 0 });
+    const [, replacement] = await reminderRows(target.id);
+    expect(replacement).toMatchObject({ seq: 1, rendered: { frozen: { dueDate: '2026-10-09' } } });
+    await dispatchPendingBillingNotices(new Date(Date.now() + 1000));
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+  it('does not backfill a missed off-cadence step that was never cancelled as stale', async () => {
+    const f = await fixture(['overdue']);
+    expect(await runInvoiceReminderSweep(new Date('2026-10-06T06:18:00Z'))).toEqual({ enqueued: 0, skippedNoContact: 0 });
+    expect(await reminderRows(f.created[0]!.id)).toHaveLength(0);
+  });
+});
+
+// G1/G2: exclusive outcomes. While a schedule is active the invoice will still be charged, so
+// no reminder goes out, however late or deferred it is (a deferral that outlasts the grace is
+// ended by collection with the not-charged notice). Once it has ended, reminders resume.
+describe('an active automatic payment covers the invoice until it ends (G1, G2)', () => {
+  it.each([
+    ['scheduled', 'stripe_unavailable'], ['scheduled', 'method_not_usable'], ['scheduled', 'charging_disabled'], ['scheduled', null],
+    ['retry_scheduled', 'charging_disabled'], ['retry_scheduled', 'soft'],
+  ] as const)('%s for an earlier day (%s) gets no reminder', async (state, reason) => {
+    const f = await fixture([state]);
+    const target = f.created[0]!;
+    await withSystemDbAccessContext(() => db.update(invoiceAutopaySchedules).set({ collectOn: '2026-09-28', stateReason: reason })
+      .where(eq(invoiceAutopaySchedules.invoiceId, target.id)));
+    await withSystemDbAccessContext(() => db.update(invoices).set({ dueDate: '2026-09-28' }).where(eq(invoices.id, target.id)));
+    expect((await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'))).enqueued).toBe(0);
+    expect(await reminderRows(target.id)).toEqual([]);
+  });
+  it.each(['charging_on_hold', 'service_unavailable', 'bank_unverified'] as const)('an automatic payment ended past the grace (%s) is followed by reminders', async reason => {
+    const f = await fixture(['scheduled']);
+    const target = f.created[0]!;
+    await withSystemDbAccessContext(() => db.update(invoiceAutopaySchedules).set({ state: 'cancelled', stateReason: reason, collectOn: '2026-09-28' })
+      .where(eq(invoiceAutopaySchedules.invoiceId, target.id)));
+    await withSystemDbAccessContext(() => db.update(invoices).set({ dueDate: '2026-09-28' }).where(eq(invoices.id, target.id)));
+    expect((await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'))).enqueued).toBe(1);
+    const [row] = await reminderRows(target.id);
+    expect(row).toMatchObject({ kind: 'payment_overdue', seq: 1 });
+  });
+  it('a reminder queued before the automatic payment was re-planned is cancelled at send', async () => {
+    const f = await fixture(['failed']);
+    const target = f.created[0]!;
+    expect((await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'))).enqueued).toBe(1);
+    await withSystemDbAccessContext(() => db.update(invoiceAutopaySchedules).set({ state: 'scheduled', stateReason: null })
+      .where(eq(invoiceAutopaySchedules.invoiceId, target.id)));
+    expect(await dispatchPendingBillingNotices(new Date(Date.now() + 1000))).toEqual({ sent: 0, failed: 0 });
+    expect(send).not.toHaveBeenCalled();
+    const [row] = await reminderRows(target.id);
+    expect(row).toMatchObject({ status: 'cancelled', lastError: 'Automatic payment scheduled' });
   });
 });

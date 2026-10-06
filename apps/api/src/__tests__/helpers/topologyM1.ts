@@ -157,10 +157,11 @@ export async function seedTopologyCommandFixture(
     /** Claim through the real transport seam and report what the agent got. */
     async claimThrough(transport: 'http' | 'websocket') {
       const claimed = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-        const rows = transport === 'http'
-          ? await claimPendingCommandsForDevice(scope.deviceId, 10, 'agent')
-          : [await claimPendingCommandForDelivery(commandId)];
-        return rows.flatMap((row) => (row ? [row.id] : []));
+        if (transport === 'http') {
+          return (await claimPendingCommandsForDevice(scope.deviceId, 10, 'agent')).map((row) => row.id);
+        }
+        const outcome = await claimPendingCommandForDelivery(commandId);
+        return outcome.status === 'claimed' ? [outcome.id] : [];
       }));
       const row = await commandRow();
       return {

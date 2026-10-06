@@ -1354,7 +1354,9 @@
       "action_link": "Aktionslink",
       "action_label": "Aktionsbezeichnung",
       "days_overdue": "Überfällige Tage",
-      "pay_link": "Zahlungslink"
+      "pay_link": "Zahlungslink",
+      "charge_total": "Abbuchungsbetrag gesamt",
+      "attempted_amount": "Versuchter Zahlungsbetrag"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",

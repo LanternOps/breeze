@@ -3092,7 +3092,7 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     expect(updateArg.pamLifetimeProtocolVersion).toBe(expectedPam);
   });
 
-  // SEC-038 W06 (#5537): desktopFenceProtocolVersion is recorded non-sticky on
+  // #5537 — desktopFenceProtocolVersion is recorded non-sticky on
   // every beat exactly like revocationLeaseProtocolVersion — omitted, zero,
   // unknown, fractional and string values all persist as 0 so an agent
   // downgrade stops the fence gate trusting a stale claim.
@@ -7506,7 +7506,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     });
 
     expect(resp.status).toBe(401);
-    expect(await resp.json()).toMatchObject({ code: 're_enrollment_required' });
+    expect(await resp.json()).toMatchObject({ code: 'RE_ENROLLMENT_REQUIRED' });
     expect(claimPendingCommandsForDeviceMock).not.toHaveBeenCalled();
     expect(setSpy).not.toHaveBeenCalled();
   });

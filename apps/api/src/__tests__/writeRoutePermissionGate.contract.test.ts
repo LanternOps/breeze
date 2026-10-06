@@ -250,8 +250,6 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/dev/push': 'equivalent check: devPushAuth wraps requirePermission(DEVICES_EXECUTE)+requireMfa for API key',
   // routes/devices/customFieldValues.ts
   'PATCH /api/v1/devices/:id/custom-fields': 'equivalent check: dualAuth with devices:write permission (+MFA) in-route',
-  // routes/eventWs.ts
-  'POST /api/v1/events/ws-ticket': 'own account: Mints caller own read-only event-stream ticket; scoped to caller orgs/sites',
   // routes/externalServices.ts
   'POST /api/v1/support': 'own account: emails support as caller; rate limited, no tenant data written',
   // routes/helper/index.ts
@@ -271,6 +269,7 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/internal/synthetic/purge-partner': 'webhook: Bearer secret plus IP allowlist; canary partners only',
   'POST /api/v1/internal/synthetic/purge-stale-canaries': 'webhook: Bearer secret plus IP allowlist; canary partners only',
   // routes/invoicesPublic.ts
+  'POST /api/v1/invoices/public/:token/autopay-confirmation': 'public: public invoice token link; releases only a payment awaiting bank confirmation',
   'POST /api/v1/invoices/public/:token/pay': 'public: public invoice token link / Stripe session id',
   'POST /api/v1/invoices/public/settle-return': 'public: public invoice token link / Stripe session id',
   // routes/lifecycle.ts
@@ -309,6 +308,7 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/portal/auth/accept-invite': 'public: pre-login portal auth endpoint',
   'POST /api/v1/portal/auth/logout': 'portal session: portal session auth (portalAuthMiddleware)',
   // routes/portal/invoices.ts
+  'POST /api/v1/portal/invoices/:id/autopay-confirmation': 'portal session: portal session auth (portalAuthMiddleware)',
   'POST /api/v1/portal/invoices/:id/pay': 'portal session: portal session auth (portalAuthMiddleware)',
   'POST /api/v1/portal/invoices/:id/settle': 'portal session: portal session auth (portalAuthMiddleware)',
   // routes/portal/paymentMethods.ts

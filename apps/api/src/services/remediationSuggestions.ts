@@ -1,9 +1,11 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNotNull, or } from 'drizzle-orm';
 
 import { db } from '../db';
 import {
   alertCorrelationGroups,
+  alertCorrelationMembers,
   alerts,
+  devices,
   metricAnomalies,
   remediationSuggestions,
 } from '../db/schema';
@@ -13,6 +15,18 @@ import { captureException } from './sentry';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
 
 export const REMEDIATION_SUGGESTION_VERSION = 'remediation-suggestions-v1';
+
+/**
+ * A caller-supplied `deviceId` for an RCA source is not one of the source's
+ * devices. Alert/anomaly/correlation sources derive their device from the
+ * source row and never take it from the caller.
+ */
+export class RemediationSourceDeviceError extends Error {
+  constructor(message = 'The device is not part of this suggestion source') {
+    super(message);
+    this.name = 'RemediationSourceDeviceError';
+  }
+}
 
 export type RemediationSourceType = 'alert' | 'anomaly' | 'correlation' | 'rca';
 
@@ -66,6 +80,32 @@ function rcaContextFromCorrelationGroup(
   };
 }
 
+/**
+ * True when `deviceId` is the device of the correlation group's root alert or
+ * of one of its member alerts, and the device is still in the group's org.
+ * The device lookup runs in the caller's DB context, so a device the caller
+ * cannot read does not match either.
+ */
+async function deviceBelongsToCorrelationGroup(
+  group: Pick<typeof alertCorrelationGroups.$inferSelect, 'id' | 'orgId' | 'rootAlertId'>,
+  deviceId: string,
+): Promise<boolean> {
+  const inGroup = group.rootAlertId
+    ? or(isNotNull(alertCorrelationMembers.id), eq(alerts.id, group.rootAlertId))
+    : isNotNull(alertCorrelationMembers.id);
+  const [match] = await db
+    .select({ id: alerts.id })
+    .from(alerts)
+    .innerJoin(devices, and(eq(devices.id, alerts.deviceId), eq(devices.orgId, group.orgId)))
+    .leftJoin(
+      alertCorrelationMembers,
+      and(eq(alertCorrelationMembers.alertId, alerts.id), eq(alertCorrelationMembers.groupId, group.id)),
+    )
+    .where(and(eq(alerts.orgId, group.orgId), eq(alerts.deviceId, deviceId), inGroup))
+    .limit(1);
+  return Boolean(match);
+}
+
 async function resolveSourceContext(input: GenerateRemediationSuggestionsInput): Promise<SourceContext | null> {
   if (input.sourceType === 'anomaly') {
     const [row] = await db.select().from(metricAnomalies).where(eq(metricAnomalies.id, input.sourceId)).limit(1);
@@ -117,10 +157,22 @@ async function resolveSourceContext(input: GenerateRemediationSuggestionsInput):
 
   if (input.sourceType === 'rca') {
     const [row] = await db.select().from(alertCorrelationGroups).where(eq(alertCorrelationGroups.id, input.sourceId)).limit(1);
-    if (row) return rcaContextFromCorrelationGroup(row, input);
+    if (row) {
+      // The device is the only field an RCA source takes from the caller:
+      // it must be one of the group's alert devices.
+      if (input.deviceId && !(await deviceBelongsToCorrelationGroup(row, input.deviceId))) {
+        throw new RemediationSourceDeviceError();
+      }
+      return rcaContextFromCorrelationGroup(row, input);
+    }
   }
 
   if (!input.orgId) return null;
+  // An RCA that is not tied to a correlation group has no devices to check a
+  // caller-supplied one against, so it cannot carry one.
+  if (input.deviceId) {
+    throw new RemediationSourceDeviceError();
+  }
   return {
     sourceType: 'rca',
     sourceId: input.sourceId,
@@ -218,4 +270,5 @@ export async function generateRemediationSuggestions(
 
 export const __testOnly = {
   rcaContextFromCorrelationGroup,
+  resolveSourceContext,
 };

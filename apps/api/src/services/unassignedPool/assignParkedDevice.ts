@@ -51,6 +51,7 @@ import { disconnectAgent } from '../../routes/agentWs';
 import { raiseDeviceIdentityCollisionAlert } from '../deviceIdentityCollisionAlert';
 import { writeAuditEvent, type RequestLike } from '../auditEvents';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
+import { expireDiagnosticApprovalsForMovedDevice } from '../diagnosticAccess/deviceMove';
 import { captureException } from '../sentry';
 import { isUnassignedPoolOrgType } from './orgType';
 import { isParkedDeviceExpired } from './limits';
@@ -445,6 +446,11 @@ function afterCommit(
       invalidateOrgDeviceCount(redis, committed.holdingOrgId),
       invalidateOrgDeviceCount(redis, item.targetOrgId),
     ]);
+  });
+  safely(item.deviceId, 'diagnostic approval expiry', () => {
+    void expireDiagnosticApprovalsForMovedDevice(item.deviceId).catch((error) => {
+      console.error(`[parkedAssignment] failed to expire diagnostic access approvals for ${item.deviceId}:`, error);
+    });
   });
   safely(item.deviceId, 'peripheral reconciliation', () => {
     void schedulePeripheralPolicyDevice(item.deviceId, 'device_org_changed').catch((error) => {

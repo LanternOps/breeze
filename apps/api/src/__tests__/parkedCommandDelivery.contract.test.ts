@@ -154,6 +154,10 @@ const CLASSIFICATION: Record<string, Classification> = {
     kind: 'eligibility',
     reason: 'Threshold filesystem scans and the continuation fallback skip a parked device before inserting',
   },
+  'jobs/backupWorker.ts': {
+    kind: 'eligibility',
+    reason: 'Dispatch refuses a parked device at precheck and before every send; the post-send backup_stop persists only through the gated insert',
+  },
   'routes/devPush.ts': {
     kind: 'eligibility',
     reason: 'Dev push refuses a parked target before staging; the agent-token download re-checks the org',
@@ -226,7 +230,6 @@ const CLASSIFICATION: Record<string, Classification> = {
   'routes/remote/sessions.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
 
   // --- socket_only: rowless probes over the live socket ---------------------
-  'jobs/backupWorker.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
   'jobs/discoveryWorker.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
   'jobs/monitorWorker.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
   'jobs/snmpWorker.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
@@ -391,10 +394,10 @@ const GUARDS: Array<{ name: string; file: string; anchor: string; markers: strin
     markers: ['conn.parked', 'isParkedDeliverableCommandType('],
   },
   {
-    name: 'the single-row push claim cancels non-removal rows for a parked device',
+    name: 'the single-row push claim hands the device org type to the shared claim-time eligibility (which cancels non-removal rows for a parked device)',
     file: 'services/commandDispatch.ts',
-    anchor: 'export async function claimPendingCommandForDelivery(',
-    markers: ['organizations.type', 'isUnassignedPoolOrgType(', 'isParkedDeliverableCommandType('],
+    anchor: 'async function claimInSavepoint(',
+    markers: ['orgType: organizations.type', 'orgType: candidate.orgType', 'partitionClaimable('],
   },
   {
     name: 'the batch claim reads the device org type',

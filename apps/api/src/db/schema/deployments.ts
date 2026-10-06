@@ -52,8 +52,8 @@ export const deployments = pgTable('deployments', {
 
 export const deploymentDevices = pgTable('deployment_devices', {
   id: uuid('id').primaryKey().defaultRandom(),
-  deploymentId: uuid('deployment_id').notNull().references(() => deployments.id),
-  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  deploymentId: uuid('deployment_id').notNull().references(() => deployments.id, { onDelete: 'cascade' }),
+  deviceId: uuid('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),
   batchNumber: integer('batch_number'),
   status: deploymentDeviceStatusEnum('status').notNull().default('pending'),
   retryCount: integer('retry_count').notNull().default(0),

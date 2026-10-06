@@ -1692,7 +1692,7 @@ describe('assignTicket', () => {
     assigneeEligibleMock.mockResolvedValue(true);
   });
 
-  it('updates assignee, writes an assignment feed entry, emits ticket.assigned', async () => {
+  it('updates assignee and writes an assignment feed entry, without queuing ticket.assigned in-transaction (#7963)', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', assignedTo: null }])  // ticket
       .mockResolvedValueOnce([{ id: 'u-2', partnerId: 'p-1' }]);                                                 // assignee
@@ -1708,10 +1708,9 @@ describe('assignTicket', () => {
       newValue: 'u-2'
     });
 
-    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'ticket.assigned',
-      payload: expect.objectContaining({ assigneeId: 'u-2' })
-    }));
+    // #7963: the job is queued by ticketOutboxPublisher from the committed
+    // outbox row, never from inside the request transaction.
+    expect(emitMock).not.toHaveBeenCalled();
     expect(emitTriageFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
       eventType: 'ticket.assignee_changed',
       dedupeKey: 'assignedTo:null:"u-2"',
@@ -1752,7 +1751,9 @@ describe('assignTicket', () => {
     expect(valuesMock).toHaveBeenCalledTimes(2);
     const outboxPayload = valuesMock.mock.calls[1]![0];
     expect(outboxPayload).toMatchObject({ orgId: 'o-1', ticketId: 't-1', eventType: 'ticket.assigned' });
-    expect(outboxPayload.payload).toEqual({ assigneeId: 'u-2' });
+    expect(outboxPayload.payload).toEqual({
+      assigneeId: 'u-2', actorUserId: actor.userId, actorPrincipalId: null, partnerId: 'p-1',
+    });
   });
 
   it('throws 409 on concurrent modification and does NOT write a feed entry or emit', async () => {
@@ -2735,6 +2736,56 @@ describe('createTicketFromAlert', () => {
   it('404s on a missing alert', async () => {
     dbMocks.selectResult.mockResolvedValueOnce([]);
     await expect(createTicketFromAlert('missing', actor)).rejects.toThrow(/alert not found/i);
+  });
+
+  // Consistent with #7920's endpoint display: text copied from an alert shows
+  // endpoints as scheme + host, including alerts stored before that change.
+  function primeAlertCreate(alert: Record<string, unknown>) {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'a-3', orgId: 'o-1', deviceId: null, severity: 'high', ...alert }])
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 't-11', orgId: 'o-1', partnerId: 'p-1', status: 'new' }])
+      .mockResolvedValueOnce([{ id: 'a-3', orgId: 'o-1', title: 'x' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-11', orgId: 'o-1', internalNumber: 'T-2026-0042' }]);
+  }
+
+  it('shows endpoint URLs copied from the alert title and message as scheme + host', async () => {
+    primeAlertCreate({
+      title: 'Check https://status.example.com/hook?token=abc failed',
+      message: 'Monitor API is offline. Target: https://u:pw@api.example.com:8443/v1/health?key=k1. Status: offline.'
+    });
+
+    await createTicketFromAlert('a-3', actor);
+
+    const payload = valuesMock.mock.calls[0]![0];
+    expect(payload.subject).toBe('Check https://status.example.com failed');
+    expect(payload.description).toBe('Monitor API is offline. Target: https://api.example.com:8443. Status: offline.');
+  });
+
+  it('reduces a scheme-less network-monitor target in a stored alert message to its host', async () => {
+    primeAlertCreate({
+      title: 'API offline',
+      message: 'Monitor API is offline. Target: admin:pw@db.example.com/status?k=1. Status: offline.',
+      context: { source: 'network_monitor', target: 'admin:pw@db.example.com/status?k=1' }
+    });
+
+    await createTicketFromAlert('a-3', actor);
+
+    const payload = valuesMock.mock.calls[0]![0];
+    expect(payload.description).toBe('Monitor API is offline. Target: db.example.com. Status: offline.');
+  });
+
+  it('keeps a subject and description supplied by the user as typed', async () => {
+    primeAlertCreate({ title: 'https://a.example.com/x?t=1', message: 'https://a.example.com/y?t=2' });
+
+    await createTicketFromAlert('a-3', actor, {
+      subject: 'See https://kb.example.com/article/42',
+      description: 'Runbook: https://kb.example.com/runbooks/api?step=3'
+    });
+
+    const payload = valuesMock.mock.calls[0]![0];
+    expect(payload.subject).toBe('See https://kb.example.com/article/42');
+    expect(payload.description).toBe('Runbook: https://kb.example.com/runbooks/api?step=3');
   });
 
   it('link failure after create → rejects with plain Error (not TicketServiceError), making create+link atomic', async () => {
@@ -4905,7 +4956,10 @@ describe('service-principal actor (Partner API tickets, Wave 1)', () => {
 
     await assignTicket('t-1', 'u-tech', spActor);
     expect(valuesMock.mock.calls[0]![0]).toMatchObject({ commentType: 'assignment', userId: null, originPrincipalKind: 'service_principal', originPrincipalId: SP_PRINCIPAL_ID });
-    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.assigned', actorUserId: null, actorPrincipalId: SP_PRINCIPAL_ID }));
+    expect(valuesMock.mock.calls[1]![0]).toMatchObject({
+      eventType: 'ticket.assigned',
+      payload: { assigneeId: 'u-tech', actorUserId: null, actorPrincipalId: SP_PRINCIPAL_ID, partnerId: 'p-1' },
+    });
     expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({ action: 'ticket.assign', actorType: 'api_key', actorId: SP_PRINCIPAL_ID }));
 
     valuesMock.mockClear(); setMock.mockClear(); auditMock.mockClear();

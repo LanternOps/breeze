@@ -657,6 +657,52 @@ const fenceScriptProposals: CustomMergeExecutor = async (loser) => {
 const moveScriptProposals: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
 
 // ---------------------------------------------------------------------------
+// diagnostic_access_grants — FENCE, then leave for erasure.
+//
+// A grant is one source-org administrator's approval of read-only file access
+// on one device for one requester. `devices` repoints in the move phase and
+// breeze_cascade_device_org_id() restamps every device_id+org_id table with it,
+// grants included — so a live grant left alone would arrive in the survivor org
+// still active and authorize reads there on an approval nobody in that org
+// gave. Resolve phase therefore expires pending requests (and their approval
+// fan-out rows) and revokes active grants before anything moves.
+// ---------------------------------------------------------------------------
+const fenceDiagnosticAccessGrants: CustomMergeExecutor = async (loser) => {
+  await run(sql`
+    UPDATE approval_requests
+       SET status = 'expired', decided_at = now()
+     WHERE status = 'pending'
+       AND diagnostic_access_grant_id IN (
+         SELECT id FROM diagnostic_access_grants
+          WHERE org_id = ${uuid(loser)} AND status = 'pending_approval')`);
+  const expired = await run(sql`
+    UPDATE diagnostic_access_grants
+       SET status = 'expired', updated_at = now()
+     WHERE org_id = ${uuid(loser)}
+       AND status = 'pending_approval'`);
+  const revoked = await run(sql`
+    UPDATE diagnostic_access_grants
+       SET status = 'revoked', revoked_at = now(),
+           revoke_reason = 'organization merged away', updated_at = now()
+     WHERE org_id = ${uuid(loser)}
+       AND status = 'active'`);
+  return {
+    moved: 0,
+    dropped: 0,
+    notes: expired + revoked > 0
+      ? [
+        `diagnostic_access_grants: revoked ${revoked} active grant(s) and expired ${expired} pending request(s) `
+        + 'from the merged-away org. Their approvals were given by that org\'s administrators and do not '
+        + 'carry over; request access again under the surviving organization if it is still needed.',
+      ]
+      : [],
+  };
+};
+
+/** diagnostic_access_grants, MOVE half — a no-op; the resolve half did the disposition. */
+const moveDiagnosticAccessGrants: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
+
+// ---------------------------------------------------------------------------
 // plugin_installations — `plugin_installations_org_catalog_unique (org_id,
 // catalog_id)`. `plugin_logs.installation_id` is NOT NULL with a NO ACTION FK,
 // so the old dedupe DELETE aborted the merge for any plugin that had ever
@@ -898,7 +944,7 @@ const mergeContacts: CustomMergeExecutor = async (loser, survivor) => {
 // backup_configs — `backup_configs_org_default_uq ON backup_configs(org_id)
 // WHERE is_default`. Clear the loser's default flag when the survivor
 // already has one, then repoint. NEVER delete: the row carries org-owned
-// storage credentials (provider_config / encryption_key) and backup_chains,
+// storage credentials (provider_config) and backup_chains,
 // backup_snapshots and restore_jobs all reference it.
 // ---------------------------------------------------------------------------
 const mergeBackupConfigs: CustomMergeExecutor = async (loser, survivor) => {
@@ -1759,6 +1805,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   ai_run_artifacts: moveAiRunArtifacts,
   script_executions: moveScriptExecutionsDetachingAiOrigin,
   script_proposals: moveScriptProposals,
+  diagnostic_access_grants: moveDiagnosticAccessGrants,
   m365_sync_state: moveM365SnapshotTable,
   m365_users: moveM365SnapshotTable,
   m365_intune_devices: moveM365SnapshotTable,
@@ -1792,6 +1839,9 @@ export const CUSTOM_RESOLVE_EXECUTORS: Readonly<Record<string, CustomMergeExecut
   // Must run in resolve, not move: `devices` repoints in the move phase and a
   // live proposal targeting one of them would still be consumable.
   script_proposals: fenceScriptProposals,
+  // Must run in resolve: `devices` repoints in the move phase and its trigger
+  // restamps grants into the survivor org.
+  diagnostic_access_grants: fenceDiagnosticAccessGrants,
   // Must run in resolve: m365_sync_state's composite FK targets
   // m365_connections (repoint-dedupe) and m365_intune_devices's targets
   // devices (plain repoint) — both parents move in the `move` phase.
@@ -1834,6 +1884,10 @@ export const CUSTOM_WOULD_REVOKE_COUNTS: Readonly<Record<string, (loser: string)
     SELECT count(*)::int AS n FROM script_proposals
      WHERE org_id = ${uuid(loser)}
        AND status IN ${SCRIPT_PROPOSAL_LIVE_STATUSES}`,
+  diagnostic_access_grants: (loser) => sql`
+    SELECT count(*)::int AS n FROM diagnostic_access_grants
+     WHERE org_id = ${uuid(loser)}
+       AND status IN ('pending_approval', 'active')`,
 };
 
 /**

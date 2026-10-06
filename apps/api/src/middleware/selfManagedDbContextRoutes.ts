@@ -106,6 +106,11 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // SECOND pooled connection for that (the #6671 double-hold) while the first
   // sat idle-in-transaction across the Stripe round-trip.
   { method: 'POST', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/settle\/?$/ },
+  // Invoice-page exit from an off-session 3DS autopay payment (portal + public
+  // link): releaseInvoiceConfirmation cancels the PaymentIntent in Stripe and
+  // asserts no DB context is held across that call.
+  { method: 'POST', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/autopay-confirmation\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/invoices\/public\/[^/]+\/autopay-confirmation\/?$/ },
   // #6175 Network Visibility overview. Portal auth has already resolved the
   // owning partner, so the handler opens one org-scoped context with
   // currentPartnerId populated for SELECT-only partner-wide network_monitors

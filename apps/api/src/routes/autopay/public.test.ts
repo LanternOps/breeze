@@ -1,19 +1,24 @@
 import { beforeEach,describe,expect,it,vi } from 'vitest';
 import { Hono } from 'hono';
-const h=vi.hoisted(()=>({identity:vi.fn(),returnIdentity:vi.fn(),stopToken:vi.fn(),page:vi.fn(),complete:vi.fn(),create:vi.fn(),stop:vi.fn()}));
-vi.mock('../../db',()=>({db:{},withSystemDbAccessContext:(fn:()=>unknown)=>fn()}));
-vi.mock('../../services/autopay/customerViews',()=>({resolveAutopayLinkIdentity:h.identity,resolveAutopayReturnIdentity:h.returnIdentity,getAutopayCustomerPage:h.page,completeOwnedAutopaySetup:h.complete}));
+const h=vi.hoisted(()=>({identity:vi.fn(),returnIdentity:vi.fn(),stopToken:vi.fn(),page:vi.fn(),complete:vi.fn(),create:vi.fn(),stop:vi.fn(),describe:vi.fn(),stopView:vi.fn(),branding:vi.fn(),skipView:vi.fn(),skip:vi.fn()}));
+vi.mock('../../db',()=>({db:{transaction:(fn:(tx:unknown)=>unknown)=>fn({})},withSystemDbAccessContext:(fn:()=>unknown)=>fn(),runOutsideDbContext:(fn:()=>unknown)=>fn()}));
+vi.mock('../../services/autopay/customerViews',()=>({resolveAutopayLinkIdentity:h.identity,resolveAutopayReturnIdentity:h.returnIdentity,getAutopayCustomerPage:h.page,completeOwnedAutopaySetup:h.complete,
+  describeAutopayLinkFailure:h.describe,getAutopayStopView:h.stopView}));
+vi.mock('../../services/autopay/customerBranding',()=>({loadAutopayBranding:h.branding}));
+vi.mock('../../services/autopay/invoiceControls',()=>({getSkipInvoiceView:h.skipView,skipInvoice:h.skip}));
 vi.mock('../../services/autopay/enrollmentService',()=>({createAutopaySetupSession:h.create,stopAutopayByClient:h.stop}));
 vi.mock('../../services/autopay/consentText',()=>({withAcceptedAutopayDisclosure:(_hash:string,fn:()=>unknown)=>fn()}));
 vi.mock('../../services/autopay/autopayGate',()=>({requireAutopayEnabled:()=>async(c:any,next:any)=>c.req.header('x-disabled')?c.json({code:'autopay_not_enabled'},404):next()}));
 vi.mock('../../services/clientIp',()=>({getTrustedClientIpOrUndefined:()=>undefined}));
+const sentry=vi.hoisted(()=>vi.fn());
+vi.mock('../../services/sentry',()=>({captureException:sentry}));
 vi.mock('../../services/autopay/enrollmentLifecycle',()=>({withAutopayStopToken:h.stopToken}));
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { publicAutopayRoutes } from './public';
 const app=new Hono().route('/autopay/public',publicAutopayRoutes);
 const identity={orgId:'11111111-1111-4111-8111-111111111111',partnerId:'22222222-2222-4222-8222-222222222222',tokenId:'33333333-3333-4333-8333-333333333333',enrollmentId:'44444444-4444-4444-8444-444444444444',generation:1};
 const headers={'content-type':'application/json'};
-beforeEach(()=>{vi.clearAllMocks();h.identity.mockResolvedValue(identity);h.returnIdentity.mockResolvedValue(identity);h.stop.mockResolvedValue(undefined);h.stopToken.mockImplementation((_token:string,fn:()=>unknown)=>fn());h.page.mockResolvedValue({contactEmail:'billing@example.test',partnerName:'Example MSP'});h.create.mockResolvedValue({url:'https://checkout.stripe.com/c/test'});h.complete.mockResolvedValue({outcome:'activated',orgId:identity.orgId,methodLabel:'Visa debit ••1234',feeText:'No fee applies.'});});
+beforeEach(()=>{vi.clearAllMocks();h.describe.mockResolvedValue({error:'This link has expired.',code:'link_expired',data:{partnerName:'Example MSP'}});h.stopView.mockResolvedValue({partnerName:'Example MSP',enrollment:{status:'active'},openInvoiceCount:1});h.branding.mockResolvedValue({partnerName:'Example MSP',logoUrl:null,supportEmail:'billing@msp.example'});h.skipView.mockResolvedValue({state:'scheduled',skippable:true,invoiceNumber:'INV-1'});h.skip.mockResolvedValue({status:'skipped'});h.identity.mockResolvedValue(identity);h.returnIdentity.mockResolvedValue(identity);h.stop.mockResolvedValue(undefined);h.stopToken.mockImplementation((_token:string,fn:()=>unknown)=>fn());h.page.mockResolvedValue({contactEmail:'billing@example.test',partnerName:'Example MSP'});h.create.mockResolvedValue({url:'https://checkout.stripe.com/c/test'});h.complete.mockResolvedValue({outcome:'activated',orgId:identity.orgId,methodLabel:'Visa debit ••1234',feeText:'No fee applies.'});});
 describe('public autopay token boundaries',()=>{
   it('GET setup and stop never create sessions or cancel enrollment',async()=>{
     expect((await app.request('/autopay/public/token')).status).toBe(200);
@@ -52,10 +57,20 @@ describe('public autopay token boundaries',()=>{
   });
   it('only POST stop cancels and source is link',async()=>{
     const res=await app.request('/autopay/public/token/stop',{method:'POST',headers,body:'{}'});
-    expect(res.status).toBe(200);expect(h.stopToken).toHaveBeenCalledWith('token',expect.any(Function));expect(h.stop).toHaveBeenCalledWith({}, {orgId:identity.orgId,source:'link'});
+    expect(res.status).toBe(200);expect(h.stopToken).toHaveBeenCalledWith('token',expect.any(Function));expect(h.stop).toHaveBeenCalledWith(expect.anything(), {orgId:identity.orgId,source:'link'});
   });
 });
 
+// R10: a branding read that fails while switched off still refuses, without a name, and is reported.
+it('a failed branding read on a switched-off refusal is logged and reported, and still refuses',async()=>{
+  h.branding.mockRejectedValueOnce(new Error('branding down'));
+  const error=vi.spyOn(console,'error').mockImplementation(()=>{});
+  const res=await app.request('/autopay/public/token',{headers:{'x-disabled':'1'}});
+  expect(res.status).toBe(404);expect(await res.json()).toMatchObject({code:'autopay_not_enabled',data:{}});
+  expect(error).toHaveBeenCalledWith(expect.stringContaining('Branding'),expect.objectContaining({message:'branding down'}));
+  expect(sentry).toHaveBeenCalledWith(expect.objectContaining({message:'branding down'}),undefined,expect.objectContaining({autopay_phase:'gate_branding'}));
+  error.mockRestore();
+});
 describe('public domain errors and validation',()=>{
   it.each([
     ['The terms changed. Review them and try again.',409],
@@ -103,5 +118,38 @@ describe('public mutation authentication precedes validation',()=>{
     expect((await app.request('/autopay/public/setup-return',{method:'POST',headers,body:JSON.stringify({token:'token',checkoutSessionId:'cs_test',orgId:identity.orgId})})).status).toBe(400);
     expect(h.returnIdentity).toHaveBeenCalledWith('token','cs_test');
     expect(h.complete).not.toHaveBeenCalled();
+  });
+});
+
+describe('client pages are told why a link cannot be used',()=>{
+  it.each([['/token','enroll'],['/token/stop','stop_autopay'],['/token/skip','skip_invoice'],['/token/confirm','confirm_payment']] as const)
+  ('GET %s explains an unusable %s link instead of "not found"',async(path,purpose)=>{
+    h.identity.mockResolvedValue(null);
+    const res=await app.request('/autopay/public'+path);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({error:'This link has expired.',code:'link_expired',data:{partnerName:'Example MSP'}});
+    expect(h.describe).toHaveBeenCalledWith('token',purpose);
+  });
+  it('mutations keep the bare refusal and never describe the link',async()=>{
+    h.identity.mockResolvedValue(null);
+    expect((await app.request('/autopay/public/token/stop',{method:'POST',headers,body:'{}'})).status).toBe(401);
+    expect(h.describe).not.toHaveBeenCalled();
+  });
+  it('setup while switched off names the MSP so the page can say who to contact',async()=>{
+    const res=await app.request('/autopay/public/token',{headers:{'x-disabled':'1'}});
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({code:'autopay_not_enabled',data:{partnerName:'Example MSP',supportEmail:'billing@msp.example'}});
+    expect(h.branding).toHaveBeenCalledWith(expect.anything(),{orgId:identity.orgId,partnerId:identity.partnerId});
+  });
+  it('the stop page reads the stop view (method, status, open invoices)',async()=>{
+    const res=await app.request('/autopay/public/stop-token/stop');
+    expect(await res.json()).toEqual({partnerName:'Example MSP',enrollment:{status:'active'},openInvoiceCount:1});
+    expect(h.stopView).toHaveBeenCalledWith(identity.orgId);
+  });
+  it('skip still works while automatic payments are switched off (it only reduces charging)',async()=>{
+    const view=await app.request('/autopay/public/token/skip',{headers:{'x-disabled':'1'}});
+    expect(view.status).toBe(200);expect(await view.json()).toMatchObject({invoiceNumber:'INV-1'});
+    const skipped=await app.request('/autopay/public/token/skip',{method:'POST',headers:{...headers,'x-disabled':'1'},body:'{}'});
+    expect(skipped.status).toBe(200);expect(h.skip).toHaveBeenCalledOnce();
   });
 });

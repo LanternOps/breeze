@@ -6,10 +6,12 @@ describe('pay-and-save request',()=>{
   expect(payAndSaveSchema.safeParse({saveForAutopay:true}).success).toBe(false);
   expect(payAndSaveSchema.safeParse({saveForAutopay:true,consentAccepted:false,disclosureHash:'a'.repeat(64)}).success).toBe(false);
  });
- it('adds only customer and off-session card authority',()=>{
+ it('adds customer, off-session card authority and hides Link only when saving',()=>{
   expect(cardSaveStripeFields(null)).toEqual({});
+  // A Link wallet card can never be collected (#7894), so a saving Checkout never offers it.
   expect(cardSaveStripeFields({id:'attempt',stripeCustomerId:'cus_one'})).toEqual({customer:'cus_one',
-   payment_intent_data:{setup_future_usage:'off_session',metadata:{autopay_setup_attempt_id:'attempt'}}});
+   payment_intent_data:{setup_future_usage:'off_session',metadata:{autopay_setup_attempt_id:'attempt'}},
+   wallet_options:{link:{display:'never'}}});
  });
 });
 

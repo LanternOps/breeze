@@ -177,3 +177,17 @@ it('queues a failed verification without changing its unusable status',async()=>
  await drainAutopayMethodDetaches();
  expect(query(m.execute.mock.calls[0]![0]).sql).toContain("m.status='unusable' AND m.removed_at IS NOT NULL AND m.detach_stripe_account_id IS NOT NULL");
 });
+
+// FP-13: whether the caller should tell staff: the method became unusable now, or already was
+// for this same reason (a retried event whose notice was lost); not when a decline already did it.
+describe('markPaymentMethodUnusable reports whether this reason is the recorded one', () => {
+  it.each([
+    ['newly unusable', { status: 'active', unusableReason: null }, [{ id: 'method', isAutopayMethod: false }], true],
+    ['already unusable for the same reason', { status: 'unusable', unusableReason: 'mandate.updated' }, [], true],
+    ['already unusable after a decline', { status: 'unusable', unusableReason: 'card_declined' }, [], false],
+    ['removed', { status: 'removed', unusableReason: null }, [], false],
+  ] as const)('%s', async (_label, method, changed, expected) => {
+    m.rows = [[{ id: 'method', enrollmentId: 'enrollment', ...method }], [{ id: 'enrollment' }], [...changed]];
+    expect(await markPaymentMethodUnusable(db, 'method', 'mandate.updated')).toBe(expected);
+  });
+});

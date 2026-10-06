@@ -51,6 +51,7 @@ import {
 import { listMonitorDeviceActivity, listMonitorEpisodes } from './monitors/episodeQueries';
 import { resetMonitorEscalation } from './monitors/episodeReset';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
+import { auditPartnerScopeId } from './auditReadScope';
 import {
   createMonitorDefinitionSchema,
   updateMonitorDefinitionSchema,
@@ -60,6 +61,7 @@ import {
 } from '@breeze/shared';
 import { z } from 'zod';
 import { presentEndpointTarget } from '../utils/endpointDisplay';
+import { definitionReplacesCondition, resolveMonitorDefinitionInput } from './aiToolsMonitorEndpointInput';
 
 /**
  * A network_check target may be a URL carrying credentials (userinfo, a
@@ -156,6 +158,9 @@ function auditMonitorToolEvent(
   try {
     writeAuditEvent(requestLikeFromSnapshot({}), {
       orgId: entry.orgId,
+      // The snapshot shim carries no auth, so attribute explicitly — same rule
+      // as the HTTP route (partner-scope callers only, #7696).
+      partnerId: auditPartnerScopeId(auth),
       actorId: auth.user.id,
       actorEmail: auth.user.email,
       action: entry.action,
@@ -461,7 +466,10 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
-        const parsed = createMonitorDefinitionSchema.safeParse(input.definition ?? {});
+        // Nothing is stored yet, so a displayed endpoint or masked value is refused.
+        const resolvedInput = resolveMonitorDefinitionInput(input.definition ?? {}, null);
+        if (!resolvedInput.ok) return JSON.stringify({ error: resolvedInput.error });
+        const parsed = createMonitorDefinitionSchema.safeParse(resolvedInput.definition);
         if (!parsed.success) {
           return JSON.stringify({
             error: definitionErrorMessage(input.definition, describeFirstZodIssue(parsed.error), true),
@@ -473,12 +481,26 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'update' || action === 'enable' || action === 'disable') {
         if (!input.monitorId) return JSON.stringify({ error: 'monitorId is required' });
-        const patch: unknown =
+        let patch: unknown =
           action === 'enable'
             ? { enabled: true }
             : action === 'disable'
               ? { enabled: false }
               : (input.definition ?? {});
+        let keptStored: string[] = [];
+        if (action === 'update') {
+          // A condition copied from get_monitor carries the displayed target
+          // and masked header values; resolve them against the stored row.
+          let stored: Awaited<ReturnType<typeof getMonitorDefinition>> = null;
+          if (definitionReplacesCondition(patch)) {
+            stored = await getMonitorDefinition(input.monitorId as string, auth);
+            if (!stored) return JSON.stringify({ error: 'Monitor not found' });
+          }
+          const resolved = resolveMonitorDefinitionInput(patch, stored);
+          if (!resolved.ok) return JSON.stringify({ error: resolved.error });
+          patch = resolved.definition;
+          keptStored = resolved.keptStored;
+        }
         const parsed = updateMonitorDefinitionSchema.safeParse(patch);
         if (!parsed.success) {
           return JSON.stringify({
@@ -486,7 +508,13 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
           });
         }
         const updated = await updateMonitorDefinition(input.monitorId as string, parsed.data, auth);
-        return JSON.stringify({ success: true, monitor: { ...presentMonitorDefinition(updated), ownerScope: ownerScopeOf(updated) } });
+        return JSON.stringify({
+          success: true,
+          monitor: { ...presentMonitorDefinition(updated), ownerScope: ownerScopeOf(updated) },
+          ...(keptStored.length > 0
+            ? { note: `${keptStored.join(' and ')} matched the displayed value, so the stored value was kept.` }
+            : {}),
+        });
       }
 
       if (action === 'delete') {

@@ -1,6 +1,7 @@
 export * from './accountDeletion';
 export * from './actionIntents';
 export * from './approvals';
+export * from './diagnosticAccess';
 export * from './elevations';
 export * from './pam';
 export * from './orgs';
@@ -189,6 +190,7 @@ export * from './backupProviders';
 export * from './callerVerification';
 export * from './hardwareAlertRetirementOutbox';
 export * from './backupSnapshotIdReservations';
+export * from './backupErasureFences';
 export * from './backupStorageSessions';
 export * from './backupStorageCredentialHistory';
 export * from './backupSnapshotAttestations';

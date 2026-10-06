@@ -12,7 +12,6 @@ import {
   numeric,
   uniqueIndex,
   check,
-  customType,
   foreignKey
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -21,14 +20,8 @@ import type { AlertResolutionReason } from '@breeze/shared';
 import { organizations, partners, sites } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
+import { xid8 } from './columnTypes';
 
-// Postgres 64-bit transaction id. Kept as a decimal STRING end to end: xid8
-// values exceed Number.MAX_SAFE_INTEGER over a database's lifetime.
-const xid8 = customType<{ data: string; driverData: string }>({
-  dataType() {
-    return 'xid8';
-  },
-});
 
 export const alertSeverityEnum = pgEnum('alert_severity', ['critical', 'high', 'medium', 'low', 'info']);
 // 'dismissed' is terminal: hidden from list views by default and honored by
@@ -208,8 +201,8 @@ export const alerts = pgTable('alerts', {
 
 export const alertCorrelations = pgTable('alert_correlations', {
   id: uuid('id').primaryKey().defaultRandom(),
-  parentAlertId: uuid('parent_alert_id').notNull().references(() => alerts.id),
-  childAlertId: uuid('child_alert_id').notNull().references(() => alerts.id),
+  parentAlertId: uuid('parent_alert_id').notNull().references(() => alerts.id, { onDelete: 'cascade' }),
+  childAlertId: uuid('child_alert_id').notNull().references(() => alerts.id, { onDelete: 'cascade' }),
   correlationType: varchar('correlation_type', { length: 50 }).notNull(),
   confidence: numeric('confidence', { precision: 3, scale: 2 }),
   metadata: jsonb('metadata'),
@@ -378,8 +371,8 @@ export const escalationPolicies = pgTable('escalation_policies', {
 // rls-coverage.integration.test.ts — "no org_id column" is not "no RLS".
 export const alertNotifications = pgTable('alert_notifications', {
   id: uuid('id').primaryKey().defaultRandom(),
-  alertId: uuid('alert_id').notNull().references(() => alerts.id),
-  channelId: uuid('channel_id').notNull().references(() => notificationChannels.id),
+  alertId: uuid('alert_id').notNull().references(() => alerts.id, { onDelete: 'cascade' }),
+  channelId: uuid('channel_id').references(() => notificationChannels.id, { onDelete: 'set null' }),
   escalationStep: integer('escalation_step').notNull().default(0),
   status: varchar('status', { length: 20 }).notNull().default('pending'),
   sentAt: timestamp('sent_at'),

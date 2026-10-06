@@ -432,6 +432,7 @@ const BINDINGS: readonly Binding[] = [
   },
   { tool: 'query_custom_fields', action: 'list_definitions', routeFile: 'customFields.ts', method: 'get', path: '/' },
   { tool: 'query_psa_status', routeFile: 'psa.ts', method: 'get', path: '/connections' },
+  { tool: 'query_webhooks', routeFile: 'webhooks.ts', method: 'get', path: '/' },
   { tool: 'search_script_library', routeFile: 'scripts.ts', method: 'get', path: '/' },
   { tool: 'list_scripts', routeFile: 'scripts.ts', method: 'get', path: '/' },
   { tool: 'get_script_details', routeFile: 'scripts.ts', method: 'get', path: '/:id' },
@@ -454,10 +455,6 @@ const UNBOUND: ReadonlyArray<{ tool: string; action?: string; reason: string }> 
   {
     tool: 'computer_control',
     reason: 'no single HTTP route: it rides an already-established remote session over the signalling channel, so its remote:access extra is inherited from create_remote_session rather than from a route of its own',
-  },
-  {
-    tool: 'query_webhooks',
-    reason: 'GET /webhooks (routes/webhooks.ts) carries no requirePermission at all — requireScope only — so there is no route permission set to bind against; the tool keeps its devices:read gate regardless. Route gap filed as a follow-up (#6755 PR).',
   },
   {
     tool: 'list_script_templates',

@@ -1,5 +1,5 @@
 /**
- * SEC-2026-09-05-146 review F4 — the authority envelope is an internal
+ * Review F4 — the authority envelope is an internal
  * enforcement record, not baseline data. `devices:read` is granted to every
  * device-viewing role, so spreading the whole row would hand every such caller
  * the arming user's permission/MFA epochs and the effect fingerprint. The UI

@@ -40,6 +40,18 @@ const PATH_FIELDS: Record<string, Classification> = {
     why: 'Only file_list/file_read read it; the execute_command schema applies aiPathRefusal to it for those two command types (and requires it).',
   },
 
+  'request_diagnostic_access.paths.path': {
+    kind: 'exempt',
+    why: 'Requests an administrator-approved read-only exception to the default restriction, so it cannot be refused by it. services/diagnosticAccess/grants.ts enforces path form (diagnosticPathFormError: absolute, no traversal, UNC, stream or trailing-dot names), sensitive-store classes and a minimum depth (MIN_DIAGNOSTIC_SCOPE_DEPTH) when the request is created; nothing is read until an approver grants it.',
+  },
+  'diagnostic_list_directory.path': {
+    kind: 'exempt',
+    why: 'Reads only under an approved diagnostic grant: the server checks grant coverage and sensitive classes, signs a per-command authorization, and the agent re-checks containment on the opened handle.',
+  },
+  'diagnostic_read_file.path': {
+    kind: 'exempt',
+    why: 'Reads only under an approved diagnostic grant: the server checks grant coverage and sensitive classes, signs a per-command authorization, and the agent re-checks containment on the opened handle.',
+  },
   'disk_cleanup.paths': {
     kind: 'exempt',
     why: 'Execute-only selection; each entry must be a candidate of the pinned preview run (filesystemCleanupExecution), anything else is rejected and never dispatched.',

@@ -87,6 +87,9 @@ export function useEventStream(options: EventStreamOptions) {
       });
       if (!isCurrent()) return;
       if (!res.ok) {
+        // 403 = the caller lacks the read permission the stream requires.
+        // Retrying cannot change that; pages fall back to their own polling.
+        if (res.status === 403) return;
         ticketFailuresRef.current++;
         // Stop retrying after repeated ticket failures to avoid burning refresh tokens
         if (ticketFailuresRef.current >= MAX_TICKET_RETRIES) {

@@ -3,11 +3,11 @@ import { expect, it, vi } from 'vitest';
 import type Stripe from 'stripe';
 vi.mock('./staffNotifications', () => ({ notifyAutopayStaff: vi.fn() }));
 import { and, asc, eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext as system } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext as system } from '../../db';
 import { partners, organizations, stripeConnectAccounts, orgAutopayEnrollments, orgPaymentMethods,
   orgAutopayConsents, billingPaymentSettings, billingNoticeOutbox, billingLinkTokens } from '../../db/schema';
 import { createPartner, createOrganization, createUser } from '../../__tests__/integration/db-utils';
-import { feeAuthorizationGaps } from './paymentSettingsView';
+import { feeAuthorizationGaps, paymentSettingsView } from './paymentSettingsView';
 import { persistCapturedAutopayMethod } from './setupCompletion';
 import { requestAutopay } from './enrollmentLifecycle';
 import { mintBillingLinkToken } from './linkTokens';
@@ -137,7 +137,8 @@ it('appends consent for distinct A → B → A setups and makes each completion 
       contactEmail: 'billing@example.test', ip: null, userAgent: null,
     }, 'setup_page'));
     const method = { id: `pm_${f.org.id}`, type: 'card', customer: f.enrollment.stripeCustomerId,
-      card: { brand: 'visa', funding: 'credit', last4: '1234', exp_month: 12, exp_year: 2030, country: 'US' } } as Stripe.PaymentMethod;
+      card: { brand: 'visa', funding: 'credit', last4: '1234', exp_month: 12, exp_year: 2030, country: 'US',
+        wallet: null, networks: { available: ['visa'], preferred: null } } } as Stripe.PaymentMethod;
     await Promise.all([1, 2].map(() => persistCapturedAutopayMethod(captured.id, method, 'activated', `seti_${captured.id}`, null)));
     acceptedHashes.push(disclosure.textHash);
     const consents = await system(() => db.select().from(orgAutopayConsents)
@@ -148,4 +149,85 @@ it('appends consent for distinct A → B → A setups and makes each completion 
   expect(acceptedHashes[2]).toBe(acceptedHashes[0]);
   expect(acceptedHashes[1]).not.toBe(acceptedHashes[0]);
   expect(await system(() => feeAuthorizationGaps(db, f.partner.id))).toEqual([]);
+});
+
+it('reports the attestation on file with the attester name under the partner context (#7897)', async () => {
+  const f = await fixture();
+  const user = await createUser({ partnerId: f.partner.id, name: 'Pat Attester' });
+  const attestedAt = new Date('2026-10-05T03:58:34.000Z');
+  await system(() => db.update(billingPaymentSettings).set({ feeAttestedBy: user.id, feeAttestedAt: attestedAt })
+    .where(eq(billingPaymentSettings.partnerId, f.partner.id)));
+  const view = await withDbAccessContext({ scope: 'partner', orgId: null, currentPartnerId: f.partner.id,
+    accessiblePartnerIds: [f.partner.id], accessibleOrgIds: [f.org.id] }, () => paymentSettingsView(db, f.partner.id));
+  expect(view.feeAttestation).toEqual({ attestedAt: attestedAt.toISOString(), attestedByName: 'Pat Attester' });
+  expect(view.effective.feeAttested).toBe(true);
+  const orgView = await withDbAccessContext({ scope: 'partner', orgId: null, currentPartnerId: f.partner.id,
+    accessiblePartnerIds: [f.partner.id], accessibleOrgIds: [f.org.id] }, () => paymentSettingsView(db, f.partner.id, f.org.id));
+  expect('feeAttestation' in orgView).toBe(false);
+});
+it('reports a current method with no consent on file as null authorization (#7897)', async () => {
+  const f = await fixture();
+  // Consents are append-only; a new generation leaves the current method with none on file.
+  await system(() => db.update(orgAutopayEnrollments).set({ generation: 2 }).where(eq(orgAutopayEnrollments.id, f.enrollment.id)));
+  expect(await system(() => feeAuthorizationGaps(db, f.partner.id))).toEqual([expect.objectContaining({
+    orgId: f.org.id, authorizedCardFeeBps: null, authorizedAchFeeAmount: null, cardFeeBps: 300 })]);
+});
+
+it('lists a client with no authorization on file when the configured fee is zero', async () => {
+  const f = await fixture();
+  await system(async () => {
+    await db.update(billingPaymentSettings).set({ cardFeeBps: 0, achFeeAmount: '0.00' }).where(eq(billingPaymentSettings.partnerId, f.partner.id));
+    // The fixture's consent authorizes 0 bps: equal to the configured fee, so not listed.
+    expect(await feeAuthorizationGaps(db, f.partner.id)).toEqual([]);
+    await db.update(orgAutopayEnrollments).set({ generation: 2 }).where(eq(orgAutopayEnrollments.id, f.enrollment.id));
+    expect(await feeAuthorizationGaps(db, f.partner.id)).toEqual([expect.objectContaining({
+      orgId: f.org.id, authorizedCardFeeBps: null, authorizedAchFeeAmount: null, cardFeeBps: 0 })]);
+  });
+});
+
+// 2a-1: the effective cap is the lower of the accepted and the configured one, so an MSP who
+// raises or removes the cap needs the client to accept the new terms through the same flow.
+it('a cap change issues one new reauthorization with generic payment-terms copy (2a-1)', async () => {
+  const f = await fixture();
+  const actor = { userId: null, partnerId: f.partner.id, accessibleOrgIds: [f.org.id] };
+  const request = () => system(() => requestAutopay(db, actor, { orgIds: [f.org.id], mode: 'reauthorize' }));
+  const notices = () => system(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId, f.org.id)));
+  await request(); await request();
+  expect(await notices()).toHaveLength(1);
+  await system(() => db.update(billingPaymentSettings).set({ autopayCapEnabled: true, autopayCapAmount: '500.00', autopayCapCurrency: 'USD' })
+    .where(eq(billingPaymentSettings.partnerId, f.partner.id)));
+  await request(); await request();
+  const all = await notices();
+  expect(all).toHaveLength(2);
+  for (const notice of all) {
+    const text = (notice.rendered as { text: string }).text;
+    expect(text).toContain('updated the terms of your automatic payments'); expect(text).not.toContain('processing fee terms');
+  }
+});
+it('lists a client whose accepted cap is narrower than the configured one, and only then (2a-1)', async () => {
+  const f = await fixture();
+  await system(async () => {
+    // Equal fees: only the cap can make the client appear.
+    await db.update(billingPaymentSettings).set({ cardFeeBps: 0, achFeeAmount: '0.00' }).where(eq(billingPaymentSettings.partnerId, f.partner.id));
+    await db.insert(orgAutopayConsents).values({ ...f.consent, consentTextHash: 'capped', createdAt: new Date('2026-10-04'),
+      scheduleTerms: { offsetDays: 0, rule: 'later', cap: { enabled: true, amount: '100.00', currency: 'USD' } } });
+    // The cap the client accepted is still the configured one: nothing to re-authorize.
+    await db.update(billingPaymentSettings).set({ autopayCapEnabled: true, autopayCapAmount: '100.00', autopayCapCurrency: 'USD' })
+      .where(eq(billingPaymentSettings.partnerId, f.partner.id));
+    expect(await feeAuthorizationGaps(db, f.partner.id)).toEqual([]);
+    const cases: Array<[Record<string, unknown>, unknown]> = [
+      [{ autopayCapEnabled: true, autopayCapAmount: '500.00', autopayCapCurrency: 'USD' }, { enabled: true, amount: '500.00', currency: 'USD' }],
+      [{ autopayCapEnabled: false, autopayCapAmount: null, autopayCapCurrency: null }, { enabled: false }],
+    ];
+    for (const [settings, configured] of cases) {
+      await db.update(billingPaymentSettings).set(settings).where(eq(billingPaymentSettings.partnerId, f.partner.id));
+      expect(await feeAuthorizationGaps(db, f.partner.id)).toEqual([expect.objectContaining({ orgId: f.org.id,
+        authorizedCardFeeBps: 0, cardFeeBps: 0,
+        capGap: { authorized: { enabled: true, amount: '100.00', currency: 'USD' }, configured } })]);
+    }
+    // A configured cap below the accepted one is not a gap: re-authorizing would not widen anything.
+    await db.update(billingPaymentSettings).set({ autopayCapEnabled: true, autopayCapAmount: '50.00', autopayCapCurrency: 'USD' })
+      .where(eq(billingPaymentSettings.partnerId, f.partner.id));
+    expect(await feeAuthorizationGaps(db, f.partner.id)).toEqual([]);
+  });
 });

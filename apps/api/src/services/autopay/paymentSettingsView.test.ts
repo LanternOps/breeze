@@ -69,15 +69,17 @@ it('returns raw zero fee overrides and partner values without flattening them', 
 });
 
 import { feeAuthorizationGaps } from './paymentSettingsView';
+// A US state with no surcharge rule: the engine applies the configured card fee as is (G4).
+const ny = { billingAddressCountry: 'US', billingAddressRegion: 'NY' };
 import { PgDialect } from 'drizzle-orm/pg-core';
 it('reports only lower current-method authorization with zero overrides and tenant predicates', async () => {
   mocks.resolve.mockResolvedValue({ ...inherited, cardFeeBps: { value: 300 }, achFeeAmount: { value: '2.50' } });
   const terms = { methodType: 'card', cardFeeBps: 100, achFeeAmount: '0.00', feeAttested: true, currency: 'USD' };
   const rows = [
-    { orgId, orgName: 'Card client', methodType: 'card', feeTerms: terms, cardFeeBps: null, achFeeAmount: null },
-    { orgId: 'zero', orgName: 'Exempt', methodType: 'card', feeTerms: terms, cardFeeBps: 0, achFeeAmount: null },
-    { orgId: 'bank', orgName: 'Bank client', methodType: 'us_bank_account', feeTerms: { ...terms, methodType: 'us_bank_account', achFeeAmount: '1.00' }, cardFeeBps: null, achFeeAmount: null },
-    { orgId: 'equal', orgName: 'Equal', methodType: 'card', feeTerms: { ...terms, cardFeeBps: 300 }, cardFeeBps: null, achFeeAmount: null },
+    { orgId, orgName: 'Card client', methodType: 'card', feeTerms: terms, cardFeeBps: null, achFeeAmount: null, ...ny },
+    { orgId: 'zero', orgName: 'Exempt', methodType: 'card', feeTerms: terms, cardFeeBps: 0, achFeeAmount: null, ...ny },
+    { orgId: 'bank', orgName: 'Bank client', methodType: 'us_bank_account', feeTerms: { ...terms, methodType: 'us_bank_account', achFeeAmount: '1.00' }, cardFeeBps: null, achFeeAmount: null, ...ny },
+    { orgId: 'equal', orgName: 'Equal', methodType: 'card', feeTerms: { ...terms, cardFeeBps: 300 }, cardFeeBps: null, achFeeAmount: null, ...ny },
   ];
   const where = vi.fn();
   const chain: any = { from: () => chain, innerJoin: () => chain, leftJoin: () => chain,
@@ -90,4 +92,81 @@ it('reports only lower current-method authorization with zero overrides and tena
   const query = new PgDialect().sqlToQuery(where.mock.calls[0]![0]);
   expect(query.params).toContain(partnerId); expect(query.params).toContain(orgId);
   expect(query.params).toContain('active'); expect(query.params).toContain('paused');
+});
+
+function queuedConnection(results: unknown[][]) {
+  const limit = vi.fn(async () => results.shift() ?? []);
+  const where = vi.fn(() => ({ limit }));
+  const from = vi.fn(() => ({ where }));
+  const gapChain: any = { from: () => gapChain, innerJoin: () => gapChain, leftJoin: () => gapChain, where: () => gapChain, orderBy: async () => [] };
+  return { value: { selectDistinctOn: () => gapChain, select: vi.fn(() => ({ from })) } as unknown as typeof db, from, where };
+}
+it('reports the partner fee attestation on file with who and when (#7897)', async () => {
+  const attestedAt = new Date('2026-10-05T03:58:34.000Z');
+  const cx = queuedConnection([[{ feeAttestedBy: 'user-1', feeAttestedAt: attestedAt }], [{ name: 'Pat Partner' }]]);
+  const view = await paymentSettingsView(cx.value, partnerId);
+  expect(view.feeAttestation).toEqual({ attestedAt: '2026-10-05T03:58:34.000Z', attestedByName: 'Pat Partner' });
+});
+it('keeps an attestation on file when the attesting user can no longer be read', async () => {
+  const cx = queuedConnection([[{ feeAttestedBy: 'user-1', feeAttestedAt: new Date('2026-10-05T03:58:34.000Z') }], []]);
+  expect((await paymentSettingsView(cx.value, partnerId)).feeAttestation)
+    .toEqual({ attestedAt: '2026-10-05T03:58:34.000Z', attestedByName: null });
+});
+it('reports no attestation on file as null and never exposes it on an organization view', async () => {
+  expect((await paymentSettingsView(queuedConnection([[{ feeAttestedBy: null, feeAttestedAt: null }]]).value, partnerId)).feeAttestation).toBeNull();
+  expect((await paymentSettingsView(queuedConnection([[]]).value, partnerId)).feeAttestation).toBeNull();
+  expect('feeAttestation' in await paymentSettingsView(queuedConnection([[{ cardFeeBps: 0 }]]).value, partnerId, orgId)).toBe(false);
+});
+
+it('reports a method with no consent on file as null, not as a zero authorization (#7897)', async () => {
+  mocks.resolve.mockResolvedValue({ ...inherited, cardFeeBps: { value: 300 }, achFeeAmount: { value: '2.50' } });
+  const terms = { methodType: 'card', cardFeeBps: 0, achFeeAmount: '0.00', feeAttested: true, currency: 'USD' };
+  const rows = [
+    { orgId: 'none', orgName: 'No consent', methodType: 'card', feeTerms: null, cardFeeBps: null, achFeeAmount: null, ...ny },
+    { orgId: 'other-method', orgName: 'Card consent, bank method', methodType: 'us_bank_account', feeTerms: terms, cardFeeBps: null, achFeeAmount: null, ...ny },
+    { orgId: 'zero', orgName: 'Real zero', methodType: 'card', feeTerms: terms, cardFeeBps: null, achFeeAmount: null, ...ny },
+  ];
+  const chain: any = { from: () => chain, innerJoin: () => chain, leftJoin: () => chain, where: () => chain, orderBy: async () => rows };
+  expect(await feeAuthorizationGaps({ selectDistinctOn: () => chain } as unknown as typeof db, partnerId)).toEqual([
+    { orgId: 'none', orgName: 'No consent', methodType: 'card', authorizedCardFeeBps: null, authorizedAchFeeAmount: null, cardFeeBps: 300, achFeeAmount: '2.50' },
+    { orgId: 'other-method', orgName: 'Card consent, bank method', methodType: 'us_bank_account', authorizedCardFeeBps: null, authorizedAchFeeAmount: null, cardFeeBps: 300, achFeeAmount: '2.50' },
+    { orgId: 'zero', orgName: 'Real zero', methodType: 'card', authorizedCardFeeBps: 0, authorizedAchFeeAmount: '0.00', cardFeeBps: 300, achFeeAmount: '2.50' },
+  ]);
+});
+
+it('lists a client with no authorization on file even when the configured fee is zero (collection refuses it)', async () => {
+  mocks.resolve.mockResolvedValue({ ...inherited, cardFeeBps: { value: 0 }, achFeeAmount: { value: '0.00' } });
+  const zeroTerms = { methodType: 'card', cardFeeBps: 0, achFeeAmount: '0.00', feeAttested: true, currency: 'USD' };
+  const rows = [
+    { orgId: 'none-card', orgName: 'No consent card', methodType: 'card', feeTerms: null, cardFeeBps: null, achFeeAmount: null },
+    { orgId: 'none-bank', orgName: 'No consent bank', methodType: 'us_bank_account', feeTerms: null, cardFeeBps: null, achFeeAmount: null },
+    { orgId: 'other-method', orgName: 'Card consent, bank method', methodType: 'us_bank_account', feeTerms: zeroTerms, cardFeeBps: null, achFeeAmount: null },
+    { orgId: 'real-zero', orgName: 'Real zero', methodType: 'card', feeTerms: zeroTerms, cardFeeBps: null, achFeeAmount: null },
+  ];
+  const chain: any = { from: () => chain, innerJoin: () => chain, leftJoin: () => chain, where: () => chain, orderBy: async () => rows };
+  expect((await feeAuthorizationGaps({ selectDistinctOn: () => chain } as unknown as typeof db, partnerId)).map(gap =>
+    [gap.orgId, gap.authorizedCardFeeBps, gap.authorizedAchFeeAmount])).toEqual([
+    ['none-card', null, null], ['none-bank', null, null], ['other-method', null, null],
+  ]);
+});
+
+// F-7: state law caps (CO 2%) or bans (CA) card fees; a client authorized at that legal
+// maximum is not "below the configured terms", and re-authorizing them changes nothing.
+it('compares card authorizations against the fee the client\'s state allows', async () => {
+  mocks.resolve.mockResolvedValue({ ...inherited, cardFeeBps: { value: 300 }, achFeeAmount: { value: '0.00' } });
+  const card = (bps: number) => ({ methodType: 'card', cardFeeBps: bps, achFeeAmount: '0.00', feeAttested: true, currency: 'USD' });
+  const rows = [
+    { orgId: 'co', orgName: 'CO-Card', methodType: 'card', feeTerms: card(200), cardFeeBps: null, achFeeAmount: null, billingAddressCountry: 'US', billingAddressRegion: 'CO' },
+    { orgId: 'ca', orgName: 'CA-Card', methodType: 'card', feeTerms: card(0), cardFeeBps: null, achFeeAmount: null, billingAddressCountry: 'US', billingAddressRegion: 'CA' },
+    { orgId: 'co-low', orgName: 'CO below cap', methodType: 'card', feeTerms: card(100), cardFeeBps: null, achFeeAmount: null, billingAddressCountry: 'US', billingAddressRegion: 'CO' },
+    { orgId: 'ny', orgName: 'NY-Card', methodType: 'card', feeTerms: card(200), cardFeeBps: null, achFeeAmount: null, billingAddressCountry: 'US', billingAddressRegion: 'NY' },
+    // G4: the fee engine charges no card fee outside the US or without a US state, so a client
+    // there authorized at 0 is not below the terms.
+    { orgId: 'ca-country', orgName: 'Canada', methodType: 'card', feeTerms: card(0), cardFeeBps: null, achFeeAmount: null, billingAddressCountry: 'CA', billingAddressRegion: 'ON' },
+    { orgId: 'no-state', orgName: 'US, no state', methodType: 'card', feeTerms: card(0), cardFeeBps: null, achFeeAmount: null, billingAddressCountry: 'US', billingAddressRegion: null },
+    { orgId: 'no-country', orgName: 'No address', methodType: 'card', feeTerms: card(0), cardFeeBps: null, achFeeAmount: null, billingAddressCountry: null, billingAddressRegion: null },
+  ];
+  const chain: any = { from: () => chain, innerJoin: () => chain, leftJoin: () => chain, where: () => chain, orderBy: async () => rows };
+  expect((await feeAuthorizationGaps({ selectDistinctOn: () => chain } as unknown as typeof db, partnerId)).map(gap => [gap.orgId, gap.cardFeeBps]))
+    .toEqual([['co-low', 200], ['ny', 300]]);
 });

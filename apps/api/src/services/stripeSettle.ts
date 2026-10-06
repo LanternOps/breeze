@@ -58,7 +58,7 @@ export function assertNoHeldDbContextForStripe(operation: string): void {
  *   2. the Stripe retrieve runs outside any context;
  *   3. `recordStripePayment` opens and COMMITS its own transaction, so its
  *      post-commit events / accounting push really do run after the commit;
- *   4. the SEC-150 charged-repair park rides inside that same transaction.
+ *   4. the charged-repair park rides inside that same transaction.
  * System scope is needed throughout: the key row is partner-axis, which an
  * org-scoped portal context cannot see (the #1375 class).
  */
@@ -89,7 +89,7 @@ export async function settleCheckoutSession(
     amount: fromMinorUnits(amountCents, currency),
     currency,
   }, {
-    // SEC-150 charged-repair, stamped INSIDE the capture's transaction so the
+    // Charged-repair, stamped INSIDE the capture's transaction so the
     // park commits atomically with whatever the capture decided — see
     // recordStripePayment. A separate transaction afterwards could lose the
     // park after the capture (or its terminal-fail) had already committed.

@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { describeEndpointUrl, presentEndpointTarget, scrubUrlsInText } from './endpointDisplay';
+import {
+  describeEndpointUrl,
+  findDisplayPlaceholderPath,
+  presentEndpointTarget,
+  resolveEndpointTargetInput,
+  resolveHeaderValuesInput,
+  scrubAlertText,
+  scrubUrlsInText,
+} from './endpointDisplay';
 
 describe('describeEndpointUrl', () => {
   it('keeps only scheme + host and fingerprints the full URL', () => {
@@ -72,5 +80,160 @@ describe('scrubUrlsInText', () => {
 
   it('replaces a URL it cannot reduce with a placeholder', () => {
     expect(scrubUrlsInText('failed: foo://secret-token-here/x')).not.toContain('secret-token-here');
+  });
+});
+
+describe('resolveEndpointTargetInput', () => {
+  const stored = 'https://ops:pw@status.example.com/hooks/T1/B1/abc123?token=xyz';
+  const shown = presentEndpointTarget(stored);
+
+  it('keeps the stored URL when the displayed origin is written back', () => {
+    expect(resolveEndpointTargetInput(shown.target, { stored, field: 'target' }))
+      .toEqual({ ok: true, value: stored, keptStored: true });
+  });
+
+  it('keeps the stored URL when the displayed origin comes back with its matching fingerprint', () => {
+    expect(resolveEndpointTargetInput(shown.target, { stored, fingerprint: shown.fingerprint, field: 'target' }))
+      .toEqual({ ok: true, value: stored, keptStored: true });
+  });
+
+  it('accepts a genuinely new full URL', () => {
+    expect(resolveEndpointTargetInput('https://other.example.com/health', { stored, field: 'target' }))
+      .toEqual({ ok: true, value: 'https://other.example.com/health', keptStored: false });
+  });
+
+  it('accepts a target identical to the stored one, and a bare host whose display is itself', () => {
+    expect(resolveEndpointTargetInput(stored, { stored, field: 'target' })).toEqual({ ok: true, value: stored, keptStored: false });
+    expect(resolveEndpointTargetInput('10.0.0.1', { stored: '10.0.0.1', field: 'target' }))
+      .toEqual({ ok: true, value: '10.0.0.1', keptStored: false });
+  });
+
+  it('accepts a plain origin on create when no fingerprint is attached', () => {
+    expect(resolveEndpointTargetInput('https://status.example.com', { field: 'target' }))
+      .toEqual({ ok: true, value: 'https://status.example.com', keptStored: false });
+  });
+
+  it('rejects a placeholder with nothing stored to match', () => {
+    for (const value of ['[invalid-url]', '[encrypted]', '[REDACTED]', '********']) {
+      const r = resolveEndpointTargetInput(value, { field: 'target' });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/full URL/);
+    }
+  });
+
+  it('rejects a fingerprinted value on create', () => {
+    const r = resolveEndpointTargetInput(shown.target, { fingerprint: shown.fingerprint, field: 'target' });
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects a displayed value whose fingerprint does not match the stored URL', () => {
+    const r = resolveEndpointTargetInput(shown.target, { stored, fingerprint: '000000', field: 'target' });
+    expect(r.ok).toBe(false);
+    const other = resolveEndpointTargetInput('https://other.example.com', { stored, fingerprint: shown.fingerprint, field: 'target' });
+    expect(other.ok).toBe(false);
+  });
+});
+
+describe('resolveHeaderValuesInput', () => {
+  const stored = { Authorization: 'Bearer abc', 'X-Trace': 'on' };
+
+  it('keeps stored values for headers written back as [REDACTED]', () => {
+    expect(resolveHeaderValuesInput({ Authorization: '[REDACTED]', 'X-Trace': 'off' }, stored, 'headers'))
+      .toEqual({ ok: true, value: { Authorization: 'Bearer abc', 'X-Trace': 'off' }, keptStored: true });
+  });
+
+  it('keeps all stored headers when the whole map comes back masked', () => {
+    expect(resolveHeaderValuesInput('[REDACTED]', stored, 'headers'))
+      .toEqual({ ok: true, value: stored, keptStored: true });
+  });
+
+  it('passes new header values through unchanged', () => {
+    expect(resolveHeaderValuesInput({ Authorization: 'Bearer new' }, stored, 'headers'))
+      .toEqual({ ok: true, value: { Authorization: 'Bearer new' }, keptStored: false });
+  });
+
+  it('rejects a masked value for a header that has no stored value', () => {
+    const r = resolveHeaderValuesInput({ 'X-Api-Key': '[REDACTED]' }, stored, 'headers');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('X-Api-Key');
+    expect(resolveHeaderValuesInput({ Authorization: '[REDACTED]' }, undefined, 'headers').ok).toBe(false);
+    expect(resolveHeaderValuesInput('[REDACTED]', undefined, 'headers').ok).toBe(false);
+  });
+});
+
+describe('resolveHeaderValuesInput when the endpoint changes', () => {
+  const stored = { Authorization: 'Bearer abc' };
+  const storedUrl = 'https://status.example.com/hooks/a?token=1';
+
+  it('rejects a masked header when the endpoint moves to another origin', () => {
+    const r = resolveHeaderValuesInput({ Authorization: '[REDACTED]' }, stored, 'headers', {
+      storedEndpoint: storedUrl, nextEndpoint: 'https://other.example.net/hooks/a',
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/endpoint/);
+    expect(resolveHeaderValuesInput('[REDACTED]', stored, 'headers', {
+      storedEndpoint: storedUrl, nextEndpoint: 'not a url',
+    }).ok).toBe(false);
+  });
+
+  it('keeps a masked header when only the path changes on the same origin', () => {
+    expect(resolveHeaderValuesInput({ Authorization: '[REDACTED]' }, stored, 'headers', {
+      storedEndpoint: storedUrl, nextEndpoint: 'https://status.example.com/other',
+    })).toEqual({ ok: true, value: stored, keptStored: true });
+  });
+
+  it('keeps a masked header when the endpoint is unchanged', () => {
+    expect(resolveHeaderValuesInput({ Authorization: '[REDACTED]' }, stored, 'headers', {
+      storedEndpoint: storedUrl, nextEndpoint: storedUrl,
+    })).toEqual({ ok: true, value: stored, keptStored: true });
+  });
+
+  it('still accepts new header values on a new origin', () => {
+    expect(resolveHeaderValuesInput({ Authorization: 'Bearer new' }, stored, 'headers', {
+      storedEndpoint: storedUrl, nextEndpoint: 'https://other.example.net',
+    }).ok).toBe(true);
+  });
+});
+
+describe('findDisplayPlaceholderPath', () => {
+  it('finds a masked value anywhere in a nested value', () => {
+    expect(findDisplayPlaceholderPath({ a: [{ b: 'x' }, { c: '[REDACTED]' }] })).toBe('a[1].c');
+    expect(findDisplayPlaceholderPath({ token: '[encrypted]' })).toBe('token');
+  });
+
+  it('returns null when nothing is masked', () => {
+    expect(findDisplayPlaceholderPath({ a: [1, 'x', { b: null }] })).toBeNull();
+  });
+});
+
+describe('scrubAlertText', () => {
+  it('reduces every URL in alert text to its origin', () => {
+    expect(scrubAlertText('Target: https://api.example.com/v1?token=abc. Status: offline.', null))
+      .toBe('Target: https://api.example.com. Status: offline.');
+  });
+
+  it('reduces the raw scheme-less target of a network-monitor alert to its host', () => {
+    const context = { source: 'network_monitor', target: 'admin:pw@db.example.com/status?k=1' };
+    expect(scrubAlertText('Target: admin:pw@db.example.com/status?k=1. Status: offline.', context))
+      .toBe('Target: db.example.com. Status: offline.');
+  });
+
+  it('leaves a scheme-less target alone for alerts from other sources', () => {
+    const context = { source: 'agent', target: 'admin:pw@db.example.com/status' };
+    expect(scrubAlertText('x admin:pw@db.example.com/status', context)).toBe('x admin:pw@db.example.com/status');
+  });
+
+  it('does not rewrite the message for a target that is not host-shaped', () => {
+    for (const target of ['@', '/', '?', '#', 'x@']) {
+      const context = { source: 'network_monitor', target };
+      expect(scrubAlertText('Check a@b/c?d#e failed. Target: ' + target + '.', context))
+        .toBe('Check a@b/c?d#e failed. Target: ' + target + '.');
+    }
+  });
+
+  it('passes null and empty text through', () => {
+    expect(scrubAlertText(null, null)).toBeNull();
+    expect(scrubAlertText(undefined, {})).toBeUndefined();
+    expect(scrubAlertText('', {})).toBe('');
   });
 });

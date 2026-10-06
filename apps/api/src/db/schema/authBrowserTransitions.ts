@@ -53,7 +53,7 @@ export const authBrowserTransitions = pgTable(
       columns: [table.currentFamilyId, table.currentUserId],
       foreignColumns: [refreshTokenFamilies.familyId, refreshTokenFamilies.userId],
       name: 'auth_browser_transitions_current_family_owner_fk',
-    }),
+    }).onDelete('set null'),
     generationCheck: check(
       'auth_browser_transitions_generation_chk',
       sql`${table.generation} >= 1`,
@@ -137,7 +137,7 @@ export const ssoTokenExchangeGrants = pgTable(
       columns: [table.familyId, table.userId],
       foreignColumns: [refreshTokenFamilies.familyId, refreshTokenFamilies.userId],
       name: 'sso_token_exchange_grants_family_owner_fk',
-    }),
+    }).onDelete('cascade'),
     lifecycleCheck: check(
       'sso_token_exchange_grants_lifecycle_chk',
       sql`${table.codeDigest} ~ '^[0-9a-f]{64}$'

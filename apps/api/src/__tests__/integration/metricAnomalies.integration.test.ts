@@ -515,6 +515,48 @@ describe('metric anomaly detector tuning (2026-09-26)', () => {
     expect(byMetric.get('ram_used_mb')!.confidence).toBeLessThan(0.95);
   });
 
+  it('growth only fires on a new 7-day high: a daily climb back to a level already reached is not an anomaly', async () => {
+    const RAM = { sourceTable: 'device_metrics', metricType: 'ram', metricName: 'ram_percent' } as const;
+    const base = new Date('2026-06-18T18:00:00.000Z');
+    const climb = [50, 54, 58, 62, 66, 70]; // +20 points, clears the 15-point gate
+    const yesterday = new Date(base.getTime() - 24 * 60 * 60_000);
+    const lastWeek = new Date(base.getTime() - 8 * 24 * 60 * 60_000);
+
+    const seen = await insertDevice({ orgId: org, siteId: site, hostname: 'ram-sawtooth' });
+    const fresh = await insertDevice({ orgId: org, siteId: site, hostname: 'ram-new-high' });
+    const stale = await insertDevice({ orgId: org, siteId: site, hostname: 'ram-old-high' });
+    await insertRollup({ orgId: org, deviceId: seen, ...RAM, bucketStart: yesterday, avgValue: 75 });
+    await insertRollup({ orgId: org, deviceId: fresh, ...RAM, bucketStart: yesterday, avgValue: 65 });
+    // Outside the 7-day window: no longer the device's recent high.
+    await insertRollup({ orgId: org, deviceId: stale, ...RAM, bucketStart: lastWeek, avgValue: 90 });
+    for (const device of [seen, fresh, stale]) {
+      for (let i = 0; i < MIN_TREND_BUCKETS; i++) {
+        await insertRollup({ orgId: org, deviceId: device, ...RAM, bucketStart: bucketAt(base, i), avgValue: climb[i]! });
+      }
+    }
+
+    await runDetection(org, base, bucketAt(base, MIN_TREND_BUCKETS));
+
+    expect(await selectAnomaliesByType(org, seen, 'memory_growth')).toHaveLength(0);
+    expect(await selectAnomaliesByType(org, fresh, 'memory_growth')).toHaveLength(1);
+    expect(await selectAnomaliesByType(org, stale, 'memory_growth')).toHaveLength(1);
+  });
+
+  it('disk growth is not novelty-gated: a disk filling back up after a cleanup still fires', async () => {
+    const DISK = { sourceTable: 'device_metrics', metricType: 'disk', metricName: 'disk_percent' } as const;
+    const base = new Date('2026-06-18T18:00:00.000Z');
+    const device = await insertDevice({ orgId: org, siteId: site, hostname: 'disk-refill' });
+    await insertRollup({ orgId: org, deviceId: device, ...DISK, bucketStart: new Date(base.getTime() - 24 * 60 * 60_000), avgValue: 90 });
+    const climb = [50, 54, 58, 62, 66, 70];
+    for (let i = 0; i < MIN_TREND_BUCKETS; i++) {
+      await insertRollup({ orgId: org, deviceId: device, ...DISK, bucketStart: bucketAt(base, i), avgValue: climb[i]! });
+    }
+
+    await runDetection(org, base, bucketAt(base, MIN_TREND_BUCKETS));
+
+    expect(await selectAnomaliesByType(org, device, 'disk_growth')).toHaveLength(1);
+  });
+
   it('a pending (not yet episode) bucket is excluded from the baseline, so a return inside the gap still counts', async () => {
     const device = await insertDevice({ orgId: org, siteId: site, hostname: 'pending-return' });
     const anchor = new Date('2026-06-18T18:00:00.000Z');
@@ -669,7 +711,7 @@ describe('metric anomaly overlap guard (#5283)', () => {
       bucketStart: anchor,
       avgValue: 99,
     });
-    // A second consecutive bucket: a lone bucket stays pending under the
+    // Two more consecutive buckets: a shorter run stays pending under the
     // persistence gate and the episodes/incidents stages would write nothing.
     await insertRollup({
       orgId: orgA,
@@ -680,6 +722,15 @@ describe('metric anomaly overlap guard (#5283)', () => {
       bucketStart: bucketAt(anchor, 1),
       avgValue: 99,
     });
+    await insertRollup({
+      orgId: orgA,
+      deviceId: device,
+      sourceTable: 'device_metrics',
+      metricType: 'cpu',
+      metricName: 'cpu_percent',
+      bucketStart: bucketAt(anchor, 2),
+      avgValue: 99,
+    });
 
     const readTxid = async (): Promise<number> => {
       const rows = await getTestDb().execute(sql`SELECT txid_current()::text AS "txid"`);
@@ -687,7 +738,7 @@ describe('metric anomaly overlap guard (#5283)', () => {
     };
 
     const before = await readTxid();
-    const result = await detectMetricAnomaliesRange({ orgId: orgA, from: anchor, to: bucketAt(anchor, 2) });
+    const result = await detectMetricAnomaliesRange({ orgId: orgA, from: anchor, to: bucketAt(anchor, 3) });
     const after = await readTxid();
 
     // Guard against a vacuous pass: if the seed stopped producing writes the
@@ -700,7 +751,7 @@ describe('metric anomaly overlap guard (#5283)', () => {
       'completed',
       'completed',
     ]);
-    expect(await selectAnomaliesByType(orgA, device, 'spike')).toHaveLength(2);
+    expect(await selectAnomaliesByType(orgA, device, 'spike')).toHaveLength(3);
 
     expect(after - before).toBeGreaterThanOrEqual(3);
   });

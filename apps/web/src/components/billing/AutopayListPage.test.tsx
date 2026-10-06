@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 import AutopayListPage from './AutopayListPage';
@@ -59,4 +59,61 @@ it.each(['processing','failed'])('shows the last %s charge and aged notice on th
  awaitingNotice:{count:1,oldestCreatedAt:'2026-09-30T00:00:00Z',reason:'delivery_failed',invoiceId:'inv-1'}}]}));
  render(<AutopayListPage/>);expect(await screen.findByTestId('autopay-last-charge')).toHaveTextContent(state==='processing'?'Processing':'Failed');
  expect(screen.getByTestId('autopay-notice-stuck')).toHaveAttribute('href','/billing/invoices/inv-1');
+});
+
+const activeRow = { orgId: id, orgName: 'Example client', billingContact: { email: 'billing@example.test' }, status: 'not_requested',
+  enrollment: null, requestNoticeStatus: 'failed',
+  method: { type: 'card', cardBrand: 'visa', cardFunding: 'credit', cardLast4: '4242', cardExpMonth: 12, cardExpYear: 2031, bankName: null, bankLast4: null, status: 'active' },
+  lastCharge: { state: 'succeeded', createdAt: '2026-10-01T00:00:00Z', principalAmount: '100.00', currency: 'USD' },
+  awaitingNotice: { count: 1, oldestCreatedAt: '2026-09-30T00:00:00Z', reason: 'delivery_failed', invoiceId: 'inv-1' } };
+it('renders inside the dashboard layout without a second <main>', async () => {
+  const { container } = render(<AutopayListPage />);
+  await screen.findByTestId('autopay-list');
+  expect(container.querySelector('main')).toBeNull();
+  expect(screen.getByRole('heading', { level: 1, name: 'Automatic payment' })).toHaveAttribute('data-testid', 'autopay-heading');
+});
+it('stacks each client as a card at phone width with the same facts and actions as the table row', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async (_url, init) => Response.json(init?.method === 'POST'
+    ? { requested: [id], skipped: [] } : { data: [activeRow] }));
+  render(<AutopayListPage />);
+  const desktop = await screen.findByTestId('responsive-table-desktop');
+  expect(within(desktop).getByTestId('autopay-table')).toBeInTheDocument();
+  const card = within(screen.getByTestId('responsive-table-cards')).getByTestId(`autopay-card-${id}`);
+  expect(card).toHaveTextContent('Example client');
+  expect(card).toHaveTextContent('Not requested');
+  expect(card).toHaveTextContent('Visa ••4242 12/2031');
+  expect(card).toHaveTextContent('Payment received');
+  expect(within(card).getByTestId(`autopay-card-notice-stuck-${id}`)).toHaveAttribute('href', '/billing/invoices/inv-1');
+  expect(within(card).getByTestId(`autopay-card-delivery-${id}`)).toHaveTextContent('Request email could not be delivered');
+  // Selecting on the card selects the same client the table row does.
+  fireEvent.click(within(card).getByTestId(`autopay-card-select-${id}`));
+  expect(screen.getByTestId(`autopay-select-${id}`)).toBeChecked();
+  fireEvent.click(screen.getByTestId('autopay-bulk-send'));
+  await waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(true));
+  const call = vi.mocked(fetchWithAuth).mock.calls.find(([, init]) => init?.method === 'POST')!;
+  expect(JSON.parse(call[1]!.body as string)).toEqual({ orgIds: [id] });
+});
+it('uses the styled autopay buttons', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async () => Response.json({ data: [activeRow] }));
+  render(<AutopayListPage />);
+  expect(await screen.findByTestId('autopay-bulk-send')).toHaveClass('bg-primary');
+  expect(screen.getByTestId('autopay-send-now')).toHaveClass('bg-primary');
+  expect(screen.getByTestId('autopay-dismiss')).toHaveClass('border');
+  expect(screen.getByTestId(`autopay-resend-${id}`)).toHaveClass('border');
+  expect(screen.getByTestId(`autopay-card-resend-${id}`)).toHaveClass('border');
+});
+
+// FP-19: a needs-attention row says why in the Attention column; a returned or refunded last
+// charge is not "Payment received".
+it('names why a client needs attention, and a returned last charge as returned', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async () => Response.json({ data: [
+    { orgId: id, orgName: 'Fail-Card', billingContact: null, status: 'needs_attention',
+      enrollment: { status: 'active', generation: 1, effectiveFrom: null, needsAttentionReason: 'method_unusable' }, method: null,
+      lastCharge: { state: 'returned', amount: '100.00', currency: 'USD', createdAt: '2026-10-05T00:00:00Z' } },
+  ], notRequestedCount: 0 }));
+  render(<AutopayListPage />);
+  const row = await screen.findByTestId(`autopay-row-${id}`);
+  expect(row).toHaveTextContent("The saved payment method can't be charged.");
+  expect(row).toHaveTextContent('Returned');
+  expect(row).not.toHaveTextContent('Payment received');
 });

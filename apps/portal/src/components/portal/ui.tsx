@@ -21,11 +21,31 @@ export const CELL = 'block sm:table-cell sm:px-4 sm:py-3.5';
 export const TH =
   'px-4 pb-2.5 pt-1 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground';
 
+/** Every button is the same height side by side (the border keeps primary level with
+ *  secondary) and a 44px tap target on phones (V-24). */
 export const BTN_PRIMARY =
-  'inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50';
+  'inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-transparent bg-primary px-4 py-2 sm:min-h-9 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50';
 
 export const BTN_SECONDARY =
-  'inline-flex items-center justify-center gap-2 rounded-md border border-border bg-card px-4 py-2 text-sm font-semibold text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50';
+  'inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-border bg-card px-4 py-2 sm:min-h-9 text-sm font-semibold text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50';
+
+/** Hand-styled checkbox and radio: contrasty border (a faint hairline once hid the
+ *  signature checkbox from real customers), the one green ink, a visible ring. */
+export const CHECKBOX =
+  'mt-0.5 h-5 w-5 shrink-0 cursor-pointer rounded border border-muted-foreground/50 accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed';
+export const RADIO =
+  'mt-0.5 h-5 w-5 shrink-0 cursor-pointer accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed';
+
+/** The portal has no ghost or tertiary button: a quieter action is a real link. */
+export const LINK =
+  'rounded-sm font-medium text-primary-on-tint underline decoration-primary-on-tint/40 underline-offset-4 transition-colors hover:decoration-primary-on-tint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background';
+
+/** A primary action that ends something the client can't undo themselves
+ *  (precedent: SignaturePanel's decline). */
+export const BTN_DANGER = cn(BTN_PRIMARY, 'bg-destructive text-destructive-foreground hover:bg-destructive/90');
+
+/** Phone-first: a primary action spans the column on phones, sizes to its label from sm. */
+export const BTN_BLOCK = 'w-full sm:w-auto';
 
 export const INPUT =
   'mt-1.5 block w-full rounded-md border border-input bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground transition-colors focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary';
@@ -94,6 +114,7 @@ export function StatusMark({
   const t = MARK_TONES[tone];
   return (
     <span
+      data-tone={tone}
       {...rest}
       className={cn('inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold uppercase tracking-[0.08em]', t.text, className)}
     >
@@ -131,6 +152,37 @@ export function ErrorNotice({ children }: { children: React.ReactNode }) {
   return (
     <div role="alert" className="rounded-lg bg-destructive/10 p-4 text-center text-sm font-medium text-destructive-on-tint">
       {children}
+    </div>
+  );
+}
+
+/**
+ * Inline notice, left-aligned, for a message inside a page or panel (ErrorNotice
+ * stays the centered list banner). Text always wears the tone's AA-safe -on-tint
+ * foreground. Destructive is an alert; every other tone is a polite status.
+ */
+export function Notice({
+  tone,
+  title,
+  children,
+  action,
+  className,
+  ...rest
+}: {
+  tone: MarkTone;
+  title?: React.ReactNode;
+  children?: React.ReactNode;
+  action?: React.ReactNode;
+} & Omit<React.HTMLAttributes<HTMLDivElement>, 'title'>) {
+  return (
+    <div
+      role={tone === 'destructive' ? 'alert' : 'status'}
+      {...rest}
+      className={cn('rounded-lg p-4 text-sm', MARK_TONES[tone].chip, className)}
+    >
+      {title && <p className="font-semibold">{title}</p>}
+      {children && <div className={cn('space-y-1.5 leading-relaxed', title && 'mt-1')}>{children}</div>}
+      {action && <div className="mt-3 flex flex-wrap items-center gap-3">{action}</div>}
     </div>
   );
 }

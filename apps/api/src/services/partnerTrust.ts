@@ -77,6 +77,8 @@ export const GATED_COMMAND_TYPES = [
   'desktop_input',
   'desktop_stream_start',
   'dev_update',
+  'diag_file_list',
+  'diag_file_read',
   'download_patches',
   'encrypt_file',
   'encryption_collect_keys',

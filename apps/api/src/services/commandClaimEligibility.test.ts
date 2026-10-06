@@ -59,9 +59,12 @@ vi.mock('./commandCancelPropagation', () => ({
 
 import {
   POWER_STATE_BARRIER_TYPES,
+  TEARDOWN_CLAIM_EXEMPT_TYPES,
   partitionClaimable,
+  registerCommandRevalidation,
   registerTypeHold,
   typeHolds,
+  __resetCommandRevalidationsForTests,
   __resetEligibilityFaultThrottleForTests,
   __resetTypeHoldsForTests,
 } from './commandClaimEligibility';
@@ -356,6 +359,75 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     expect(r.claimable.map((x) => x.id)).toEqual(['c']);
   });
 
+  it('a SQL error inside a revalidation is confined to that row\'s savepoint — later rows still resolve and cancel on the live claim transaction', async () => {
+    // Models Postgres: an error raised OUTSIDE a savepoint aborts the whole
+    // transaction (every later statement fails); one raised inside a savepoint
+    // is rolled back with it and the transaction stays usable.
+    const state = { depth: 0, aborted: false };
+    const guard = () => {
+      if (state.aborted) throw new Error('current transaction is aborted, commands ignored until end of transaction block');
+    };
+    returningMock.mockResolvedValue([{ id: 'flipped' }]);
+    whereMock.mockReturnValue({ returning: (...a: unknown[]) => returningMock(...(a as [])) });
+    setMock.mockReturnValue({ where: (...a: unknown[]) => whereMock(...(a as [])) });
+    const conn: Record<string, unknown> = {
+      update: (...a: unknown[]) => { guard(); return updateMock.mockReturnValue({ set: (...b: unknown[]) => setMock(...(b as [])) })(...(a as [])); },
+      execute: async (q: unknown) => { guard(); return requesterActiveMock(q); },
+      select: () => {
+        guard();
+        if (state.depth === 0) state.aborted = true;
+        throw new Error('relation "devices" does not exist');
+      },
+      transaction: async (fn: (sp: unknown) => Promise<unknown>) => {
+        guard();
+        state.depth += 1;
+        try {
+          return await fn(conn);
+        } finally {
+          state.depth -= 1;
+        }
+      },
+    };
+
+    __resetCommandRevalidationsForTests();
+    registerCommandRevalidation('script', async (reader) => {
+      await (reader as unknown as { select: () => unknown }).select();
+      return null;
+    });
+    try {
+      const r = await partitionClaimable(conn as never, device, [
+        row({ id: 'bad', type: 'script', createdBy: USER }),
+        row({ id: 'ok', createdBy: OTHER_USER }),
+        row({ id: 'moved', submittedOrgId: OTHER_ORG }),
+      ]);
+      expect(r.held).toEqual([{ id: 'bad', reason: 'eligibility_check_failed' }]);
+      expect(r.claimable.map((x) => x.id)).toEqual(['ok']);
+      expect(r.cancelled).toEqual([{ id: 'moved', reason: 'device_moved_org' }]);
+      expect(state.aborted).toBe(false);
+    } finally {
+      __resetCommandRevalidationsForTests();
+    }
+  });
+
+  it('a delivery-revalidation fault HOLDS the row (fail closed, recoverable) and spares siblings', async () => {
+    __resetCommandRevalidationsForTests();
+    registerCommandRevalidation('script', async () => {
+      throw new Error('function breeze_command_requester_authority does not exist');
+    });
+    try {
+      const r = await partitionClaimable(tx(), device, [
+        row({ id: 'bad', type: 'script', createdBy: USER }),
+        row({ id: 'ok' }),
+      ]);
+      expect(r.held).toEqual([{ id: 'bad', reason: 'eligibility_check_failed' }]);
+      expect(r.cancelled).toEqual([]);
+      expect(r.claimable.map((x) => x.id)).toEqual(['ok']);
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    } finally {
+      __resetCommandRevalidationsForTests();
+    }
+  });
+
   it('a registered type hold keeps the row pending without cancelling it', async () => {
     typeHolds.install_patches = async () => true;
     const r = await partitionClaimable(tx(), device, [row({ type: 'install_patches' })]);
@@ -507,6 +579,56 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     expect(updateMock).not.toHaveBeenCalled();
     // The trust check is not even consulted — the drain short-circuits first.
     expect(assertAllowedMock).not.toHaveBeenCalled();
+  });
+
+  // ── Teardown exemption ──────────────────────────────────────────────────
+
+  it('a desktop_stream_stop queued by a since-deactivated starter is still delivered', async () => {
+    // Cancelling the stop would leave the deactivated user's live session
+    // running — the opposite of what deactivation intends.
+    requesterActiveMock.mockResolvedValue([{ active: false }]);
+    const r = await partitionClaimable(tx(), device, [
+      row({ id: 'stop', type: 'desktop_stream_stop', createdBy: USER }),
+      row({ id: 'other', createdBy: USER }),
+    ]);
+    expect(r.claimable.map((x) => x.id)).toEqual(['stop']);
+    expect(r.cancelled).toEqual([{ id: 'other', reason: 'requester_inactive' }]);
+  });
+
+  it.each([...TEARDOWN_CLAIM_EXEMPT_TYPES])(
+    '%s survives inactive requester + org drift + erased submitter org + lifecycle + trust denial',
+    async (type) => {
+      const { TrustDeniedError } = await import('./partnerTrust.commands');
+      assertAllowedMock.mockRejectedValue(new TrustDeniedError('TRUST_RESTRICTED', 'suspended', 'd1', type));
+      requesterActiveMock.mockResolvedValue([{ active: false }]);
+
+      const r = await partitionClaimable(tx(), { ...device, status: 'quarantined' }, [
+        row({ id: 'moved', type, createdBy: USER, submittedOrgId: OTHER_ORG }),
+        row({ id: 'erased', type, createdBy: USER, submittedOrgId: null, deliverBy: new Date(Date.now() + 3600_000) }),
+      ]);
+
+      expect(r.claimable.map((x) => x.id)).toEqual(['moved', 'erased']);
+      expect(r.cancelled).toEqual([]);
+      expect(updateMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a teardown command to a PARKED device is still cancelled (parked delivery is unchanged)', async () => {
+    const r = await partitionClaimable(tx(), { ...device, orgType: 'unassigned_pool' }, [
+      row({ id: 'stop', type: 'desktop_stream_stop' }),
+    ]);
+    expect(r.cancelled).toEqual([{ id: 'stop', reason: 'device_pending_assignment' }]);
+  });
+
+  it('the teardown exemption covers no type that starts, executes or reveals', () => {
+    const forbidden = [
+      'script', 'terminal_start', 'terminal_data', 'terminal_resize', 'take_screenshot', 'computer_action',
+      'file_read', 'file_write', 'registry_set', 'kill_process', 'stop_service', 'task_run', 'task_disable',
+      'software_install', 'software_uninstall', 'update_agent', 'pam_apply_v2', 'actuate_elevation',
+      'backup_run', 'backup_restore', 'backup_cleanup', 'system_cleanup_run', 'security_threat_remove',
+      'network_diagnostic', 'restart_agent', 'reboot', 'shutdown',
+    ];
+    for (const type of forbidden) expect(TEARDOWN_CLAIM_EXEMPT_TYPES.has(type)).toBe(false);
   });
 
   // ── Registry guard + Sentry throttle ────────────────────────────────────

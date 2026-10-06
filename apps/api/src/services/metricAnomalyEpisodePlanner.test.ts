@@ -275,3 +275,32 @@ describe('persistence gate (minBuckets)', () => {
     ]);
   });
 });
+
+describe('planEpisodeAssembly peak representative (2026-10-02)', () => {
+  it('reports a ram/disk episode in percent when a percent member exists, even if the MB member scored higher', () => {
+    const ram = { anomalyType: 'memory_growth', metricName: 'ram_used_mb' } as const;
+    const rows = [
+      row(0, { ...ram, score: 9, observedValue: 11657, baselineValue: 8774 }),
+      row(5, { anomalyType: 'memory_growth', metricName: 'ram_percent', score: 5, observedValue: 84, baselineValue: 67 }),
+      row(10, { anomalyType: 'memory_growth', metricName: 'ram_percent', score: 6, observedValue: 86, baselineValue: 67 }),
+    ];
+    const [episode] = plan(rows).creates;
+    expect(episode).toMatchObject({
+      metricFamily: 'ram',
+      metricNames: ['ram_percent', 'ram_used_mb'],
+      peakMetricName: 'ram_percent',
+      peakValue: 86,
+      peakBaselineValue: 67,
+      peakScore: 6,
+      peakAt: m(10),
+    });
+  });
+
+  it('falls back to the highest-scoring row when the family has no percent member', () => {
+    const rows = [
+      row(0, { anomalyType: 'memory_growth', metricName: 'ram_used_mb', score: 5, observedValue: 10000 }),
+      row(5, { anomalyType: 'memory_growth', metricName: 'ram_used_mb', score: 7, observedValue: 11000 }),
+    ];
+    expect(plan(rows).creates[0]).toMatchObject({ peakMetricName: 'ram_used_mb', peakValue: 11000, peakScore: 7 });
+  });
+});

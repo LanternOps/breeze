@@ -53,6 +53,17 @@ import { deleteObjects } from './s3Storage';
 import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
 import { deleteOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
 import { captureMessage } from './sentry';
+import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from './authLifecycle';
+import {
+  captureBackupErasureFence,
+  setBackupErasureContext,
+  type BackupErasureFenceCounts,
+} from './backupErasureFence';
+import {
+  findActiveBackupLegalHold,
+  findPolicyBackupLegalHoldInContext,
+  type BackupLegalHoldSource,
+} from './erasureBackupLegalHold';
 
 type StorageKeyRow = { storageKey: string | null };
 type CountRow = { count: number | string };
@@ -280,7 +291,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // DELETE CASCADE. No cross-references to ai_budgets, so its position is
   // pure alphabetization ('_' sorts before letters under localeCompare).
   'ai_budget_alert_events',
-  // ai_budget_reservations (SEC-142/143): durable pre-dispatch spend fence,
+  // ai_budget_reservations: durable pre-dispatch spend fence,
   // Shape 1 with NOT NULL org_id ON DELETE CASCADE. It also carries a
   // composite (session_id, org_id) FK to ai_sessions with a column-scoped
   // ON DELETE SET NULL (session_id) — that FK has an explicit ON DELETE, so
@@ -553,6 +564,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_vulnerabilities',
   'device_warranty',
   'devices',
+  'diagnostic_access_grants',
   'discovered_assets',
   'discovery_jobs',
   'discovery_profiles',
@@ -1036,6 +1048,22 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
       WHERE provider_id IN (SELECT id FROM sso_providers WHERE org_id = ${orgId})
     `,
   },
+  // access_review_items has no org_id of its own (its tenancy is its review's,
+  // which may be partner-wide), and its role_id FK deliberately has NO
+  // ON DELETE action: outside erasure a completed review's items are evidence
+  // and must survive a later role delete (routes/roles.ts answers 409). Org
+  // erasure deletes the org's own roles, so it clears the items that name
+  // them first -- including items for users who survive the erasure (e.g. a
+  // detached partner tech reviewed against this org's custom role). Items
+  // naming another org's or a partner role are untouched. Items for a user
+  // erasure deletes also go by ON DELETE CASCADE on user_id.
+  {
+    table: 'access_review_items',
+    clearSql: (orgId) => sql`
+      DELETE FROM access_review_items
+      WHERE role_id IN (SELECT id FROM roles WHERE org_id = ${orgId})
+    `,
+  },
   // psa_ticket_mappings has NO org_id/partner_id column, so neither the org
   // cascade list nor the partner-axis sweep reaches it — yet it holds THREE
   // FKs into the cascade set, every one of them declared without an explicit
@@ -1386,6 +1414,98 @@ export interface CascadeStats {
    * `tablesDeleted.alerts`; broken out because they are not this org's rows.
    */
   foreignTopologyAlertsDeleted: number;
+  /**
+   * Users whose home org was this org but who hold a partner membership that
+   * still grants access without it, and were therefore detached to
+   * partner-level staff (org_id -> NULL) instead of being deleted (step
+   * 1a-ter, detachSharedIdentitiesFromOrg). Not counted in `totalRowsDeleted`.
+   */
+  usersDetached: number;
+}
+
+/**
+ * Step 1a-ter of `cascadeDeleteOrg`: separate the partner's shared identities
+ * from the org being erased, BEFORE anything keyed on a user is cleared.
+ *
+ * `users` is dual-axis (CLAUDE.md shape 4): `partner_id` is always set and
+ * `org_id` names a home org for customer users and for the MSP's own
+ * internal-org staff. The walk erases users by `org_id`, which is right for a
+ * customer user and wrong for a user who is ALSO the partner's staff -- that
+ * identity belongs to the partner (it signs in to manage the orgs its
+ * membership grants), not to the erased org. Deleting it would take an MSP
+ * technician's account, and through `partner_users ON DELETE CASCADE` their
+ * partner access, down with one customer's erasure.
+ *
+ * A user is detached (kept, with `org_id` -> NULL, the shape of partner-level
+ * staff -- see routes/users.ts invite tenancy) only when it holds a
+ * membership in its OWN partner that still grants something once this org is
+ * gone: `org_access` 'all' or 'none' (partner-level access), or 'selected'
+ * naming at least one OTHER org. A membership whose only selected org is the
+ * erased one (e.g. a co-managed customer contact) grants nothing afterwards,
+ * so keeping the identity would only retain personal data with zero access;
+ * such users, and users with no membership at all, are left for the walk to
+ * delete, and their FK-only children (partner_users, mobile_devices,
+ * push_notifications, mobile_sessions, sessions, ...) go with them by
+ * ON DELETE CASCADE.
+ *
+ * For a detached user the org-bound rows still go -- the `organization_users`
+ * row for this org and everything else keyed on `org_id` is erased by the
+ * walk -- while the identity, its partner membership and its own mobile
+ * registrations survive. Its home org changed, so it goes through the same
+ * session cutoff as a membership removal (routes/users.ts
+ * removeMembershipForScope): `auth_epoch` advances and every refresh family
+ * is revoked in the detach transaction, then `runPostCommitCleanup` (Redis
+ * token cutoff, permission-cache clear, MCP OAuth grant sweep) runs after the
+ * commit, best-effort, exactly as that path does.
+ *
+ * The same transaction then drops this org from every `partner_users.org_ids`
+ * selection that lists it, so no membership keeps naming a tenant that no
+ * longer exists. Rows that do not list this org are not touched. The strip
+ * runs AFTER the detach decision, which reads the selection.
+ *
+ * This step COMMITS before the walk starts (erasure is fail-fast and
+ * re-runnable, not atomic -- see the step-2 catch in cascadeDeleteOrg). If
+ * the walk later aborts, detached users stay detached and the stripped
+ * selections stay stripped while the org still partly exists, until the
+ * erasure is re-run. Both statements are idempotent, so a re-run is a no-op
+ * here.
+ */
+async function detachSharedIdentitiesFromOrg(orgId: string): Promise<string[]> {
+  const detachedIds = await dbModule.withSystemDbAccessContext(() =>
+    dbModule.db.transaction(async (tx) => {
+      const detached = rowsFromExecute<{ id: string }>(await tx.execute(sql`
+        UPDATE users u
+        SET org_id = NULL,
+            updated_at = now()
+        WHERE u.org_id = ${orgId}::uuid
+          AND EXISTS (
+            SELECT 1 FROM partner_users pu
+            WHERE pu.user_id = u.id
+              AND pu.partner_id = u.partner_id
+              AND NOT (
+                pu.org_access = 'selected'
+                AND COALESCE(pu.org_ids, '{}'::uuid[]) <@ ARRAY[${orgId}::uuid]
+              )
+          )
+        RETURNING u.id
+      `));
+      const ids = detached.map((row) => row.id).sort();
+      for (const userId of ids) {
+        await advanceUserEpochs(tx, userId, { auth: true });
+        await revokeAllRefreshFamilies(tx, userId, 'home-org-erased');
+      }
+      await tx.execute(sql`
+        UPDATE partner_users
+        SET org_ids = array_remove(org_ids, ${orgId}::uuid)
+        WHERE ${orgId}::uuid = ANY(org_ids)
+      `);
+      return ids;
+    }),
+  );
+  for (const userId of detachedIds) {
+    await runPostCommitCleanup(userId);
+  }
+  return detachedIds;
 }
 
 export type TenantCascadeRefusalCode = 'LEGAL_HOLD_ACTIVE';
@@ -1408,8 +1528,8 @@ export class TenantCascadeRefusalError extends Error {
 }
 
 export const LEGAL_HOLD_ACTIVE_MESSAGE =
-  'This organization has one or more backup snapshots under legal hold. '
-  + 'Release the hold before erasing the organization.';
+  'This organization\'s backups are under legal hold (on a backup snapshot, a backup policy or a '
+  + 'configuration policy). Release the hold before erasing the organization.';
 
 /**
  * True if any `backup_snapshots` row for this org still carries an active
@@ -1454,9 +1574,39 @@ export async function deleteBackupSnapshotsCascadeStep(orgId: string): Promise<n
     if (rows.some((row) => row.legal_hold === true)) {
       throw new TenantCascadeRefusalError('LEGAL_HOLD_ACTIVE', LEGAL_HOLD_ACTIVE_MESSAGE);
     }
+    // Policy-level holds (legacy backup policy, effective configuration
+    // policy) are re-checked here too, under FOR SHARE locks on every row that
+    // could carry one. Both policy kinds are still present at this point: the
+    // walk deletes backup_snapshots before backup_jobs/backup_policies (FK
+    // order) and before the configuration_policies family (pinned by
+    // backupErasureFence.integration.test.ts).
+    if (await findPolicyBackupLegalHoldInContext(orgId, { lockForShare: true })) {
+      throw new TenantCascadeRefusalError('LEGAL_HOLD_ACTIVE', LEGAL_HOLD_ACTIVE_MESSAGE);
+    }
+    // The on-delete fence trigger records any row the up-front capture did
+    // not see (a backup that finished mid-erasure), in this transaction.
+    await setBackupErasureContext(orgId);
     const result = await deleteOrgRows('backup_snapshots', orgId);
     return extractRowCount(result);
   });
+}
+
+/**
+ * Test seams for the erasure scenarios in backupErasureFence.integration.test.ts.
+ * Never set in production code.
+ */
+export const __tenantCascadeTestHooks: {
+  /** After a walk step for `table` has committed. */
+  afterTableStep?: (table: string, orgId: string) => Promise<void>;
+} = {};
+
+/**
+ * True if ANY backup legal hold applies to the org: a snapshot hold, a legacy
+ * backup-policy hold, or a hold from a configuration policy effective for one
+ * of its devices (see erasureBackupLegalHold.ts).
+ */
+export async function hasActiveBackupLegalHold(orgId: string): Promise<boolean> {
+  return (await findActiveBackupLegalHold(orgId)) !== null;
 }
 
 /**
@@ -1478,8 +1628,10 @@ export async function cascadeDeleteOrg(
   orgId: string,
   performedBy: string,
   performedByEmail?: string,
+  opts: { erasureJobId?: string | null } = {},
 ): Promise<CascadeStats> {
-  if (await hasActiveLegalHoldSnapshots(orgId)) {
+  const holdSource: BackupLegalHoldSource | null = await findActiveBackupLegalHold(orgId);
+  if (holdSource) {
     await createAuditLog({
       orgId: null,
       actorType: 'user',
@@ -1488,7 +1640,7 @@ export async function cascadeDeleteOrg(
       action: 'tenant.erasure.refused_legal_hold',
       resourceType: 'organization',
       resourceId: orgId,
-      details: { reason: 'LEGAL_HOLD_ACTIVE' },
+      details: { reason: 'LEGAL_HOLD_ACTIVE', holdSource },
       result: 'failure',
       errorMessage: LEGAL_HOLD_ACTIVE_MESSAGE,
     });
@@ -1512,6 +1664,7 @@ export async function cascadeDeleteOrg(
     tablesDeleted: {},
     totalRowsDeleted: 0,
     foreignTopologyAlertsDeleted: 0,
+    usersDetached: 0,
   };
 
   // Write the tenant.erasure audit row FIRST so it survives the cascade.
@@ -1532,6 +1685,47 @@ export async function cascadeDeleteOrg(
   // Compute the FK-safe order from the actual catalog. If a cycle is
   // detected we throw and abort BEFORE deleting anything.
   const order = await topologicalCascadeOrder();
+
+  // 0. Fence the org's backup storage BEFORE the first destructive step.
+  //    Erasure deletes backup rows but never backup OBJECTS — deleting backup
+  //    data is a separate, explicit decision. Storage GC decides ownership of
+  //    a (possibly shared) bucket from exactly the rows this cascade deletes,
+  //    so the record of what the org owned must be durable first: one
+  //    committed transaction, captured while every source row (snapshots,
+  //    retirements, reservations, recovery media and boot media — the walk
+  //    deletes the media children BEFORE their snapshots) and every
+  //    destination still exists. Idempotent, so a re-run after a partial
+  //    cascade keeps every earlier target. A failure aborts the erasure before
+  //    anything is deleted; it is re-runnable.
+  let fenceCounts: BackupErasureFenceCounts;
+  try {
+    fenceCounts = await captureBackupErasureFence(orgId, { erasureJobId: opts.erasureJobId ?? null });
+  } catch (err) {
+    await writeErasureFailedAudit(orgId, performedBy, performedByEmail, 'backup_storage_fence', stats, err);
+    throw new Error(
+      `[tenantCascade] backup storage fence capture failed for org=${orgId}; erasure aborted before any row was deleted and is rerunnable: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  await createAuditLog({
+    orgId: null,
+    actorType: 'user',
+    actorId: performedBy,
+    actorEmail: performedByEmail,
+    action: 'tenant.erasure.backup_manifest_captured',
+    resourceType: 'organization',
+    resourceId: orgId,
+    details: {
+      // Erasure deletes the org's backup ROWS but keeps every backup OBJECT
+      // (expired ones included) until an explicit deletion removes them.
+      objectsRetained: true,
+      snapshotPrefixes: fenceCounts.snapshotPrefixes,
+      recoveryMediaKeys: fenceCounts.recoveryMediaKeys,
+      unresolvedIdentity: fenceCounts.unresolvedIdentity,
+    },
+    result: 'success',
+  });
 
   // 1a. Clear customer OBJECTS before ANY row is deleted anywhere (W08 #3902
   //     spec D9; widened to org_documents by service deliverables W03 spec
@@ -1648,6 +1842,27 @@ export async function cascadeDeleteOrg(
     );
   }
 
+  // 1a-ter. Detach shared identities (users of this org who also hold a
+  //    partner membership) BEFORE step 1b, whose user_sso_identities clear
+  //    keys off `users.org_id` and would otherwise strip a detached user's
+  //    partner-level SSO links. See detachSharedIdentitiesFromOrg.
+  try {
+    stats.usersDetached = (await detachSharedIdentitiesFromOrg(orgId)).length;
+    if (stats.usersDetached > 0) {
+      console.warn(
+        `[tenantCascade] org=${orgId}: detached ${stats.usersDetached} user(s) holding a partner `
+        + 'membership to partner-level staff instead of deleting them',
+      );
+    }
+  } catch (err) {
+    await writeErasureFailedAudit(orgId, performedBy, performedByEmail, 'users (detach shared identities)', stats, err);
+    throw new Error(
+      `[tenantCascade] detaching shared identities failed for org=${orgId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
   // 1b. Clear system-scoped associated tables (e.g. device_commands, the
   //    SSO FK children) that hold FKs into the cascade set. One system
   //    context per table so the audit write in the catch below never runs
@@ -1655,6 +1870,7 @@ export async function cascadeDeleteOrg(
   for (const assoc of ASSOCIATED_SYSTEM_SCOPED_TABLES) {
     try {
       const count = await dbModule.withSystemDbAccessContext(async () => {
+        await setBackupErasureContext(orgId);
         const result = await dbModule.db.execute(assoc.clearSql(orgId));
         return extractRowCount(result);
       });
@@ -1740,6 +1956,10 @@ export async function cascadeDeleteOrg(
         : table === 'backup_snapshots'
         ? await deleteBackupSnapshotsCascadeStep(orgId)
         : await dbModule.withSystemDbAccessContext(async () => {
+            // Every walk transaction is marked as this org's erasure, so the
+            // on-delete fence trigger records any backup source row deleted in
+            // it — including through an ON DELETE CASCADE from this table.
+            await setBackupErasureContext(orgId);
             if(table==='invoice_stripe_payments')await dbModule.db.execute(sql`SET LOCAL breeze.tenant_erasure = '1'`);
             const isAuditAdmin = AUDIT_ADMIN_REQUIRED_TABLES.has(table);
             if (isAuditAdmin) {
@@ -1755,6 +1975,7 @@ export async function cascadeDeleteOrg(
           });
       stats.tablesDeleted[table] = (stats.tablesDeleted[table] ?? 0) + count;
       stats.totalRowsDeleted += count;
+      await __tenantCascadeTestHooks.afterTableStep?.(table, orgId);
     } catch (err) {
       // A precondition refusal (the `backup_snapshots` re-check above found a
       // hold that appeared mid-walk) is not a failure — it's the same
@@ -1832,6 +2053,7 @@ export async function cascadeDeleteOrg(
       ...(stats.foreignTopologyAlertsDeleted > 0
         ? { foreignTopologyAlertsDeleted: stats.foreignTopologyAlertsDeleted }
         : {}),
+      ...(stats.usersDetached > 0 ? { usersDetached: stats.usersDetached } : {}),
     },
     result: 'success',
   });
@@ -1914,6 +2136,21 @@ function quoteIdent(table: string): string {
   }
   return `"${table}"`;
 }
+
+/**
+ * Tables with a `partner_id` column that the partner sweep in
+ * cascadeDeletePartner must NOT delete from.
+ *
+ * - `audit_logs` (#7696): `partner_id` there is FK-less attribution on
+ *   partner-scoped (org_id NULL) rows, not ownership. Those rows sit in the ONE
+ *   shared NULL-org hash chain (audit_log_chain is keyed on org_id) alongside
+ *   platform rows and every other partner's partner-level rows, so deleting a
+ *   partner's slice would punch holes in a chain other tenants' evidence depends
+ *   on. They also need the breeze_audit_admin path, not this breeze_app sweep.
+ *   They are retained, exactly like the partner's purge_started/purged rows.
+ *   The partner's child orgs' audit_logs are still erased by cascadeDeleteOrg.
+ */
+const PARTNER_SWEEP_RETAINED_TABLES: ReadonlySet<string> = new Set<string>(['audit_logs']);
 
 export interface PartnerCascadeStats {
   orgsDeleted: number;
@@ -2140,7 +2377,9 @@ export async function cascadeDeletePartner(
       AND column_name = 'partner_id'
       AND table_name <> 'organizations'
   `)) as unknown as Array<{ table_name: string }>;
-  const partnerTables = partnerTableRows.map((r) => r.table_name);
+  const partnerTables = partnerTableRows
+    .map((r) => r.table_name)
+    .filter((t) => !PARTNER_SWEEP_RETAINED_TABLES.has(t));
   const order = await self.topologicalCascadeOrder(partnerTables);
   const orderedSet = new Set(order);
   const sweep = [...order, ...partnerTables.filter((t) => !orderedSet.has(t))];

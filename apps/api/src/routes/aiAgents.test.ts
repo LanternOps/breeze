@@ -4921,6 +4921,17 @@ describe('POST /ai-agents (create)', () => {
     }
     expect(vi.mocked(createAgent)).not.toHaveBeenCalled();
   });
+
+  it('answers a site-restricted create refusal with 403 and the standard message, not a 404', async () => {
+    const { createAgent } = await import('../services/aiAgents/agentService');
+    const { AgentSiteCeilingDeniedError } = await import('../services/aiAgents/access');
+    vi.mocked(createAgent).mockRejectedValueOnce(new AgentSiteCeilingDeniedError());
+
+    const res = await createAgentRequest(buildApp(), { kind: 'triage', name: 'Triage' });
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/Site-restricted users cannot modify/);
+  });
 });
 
 describe('POST /ai-agents/preview', () => {

@@ -1739,7 +1739,11 @@
     },
     "schedule": {
       "everyHours": "A cada {{hours}}h",
-      "manual": "Manual"
+      "manual": "Manual",
+      "reapprovalRequired": "Requer nova aprovação",
+      "reapprovalTitle": "As verificações agendadas estão pausadas até que um usuário com a permissão devices:execute salve esta linha de base novamente.",
+      "approverInvalidTitle": "As verificações agendadas foram interrompidas: o aprovador {{name}} não tem mais acesso devices:execute. Um usuário com essa permissão precisa salvar esta linha de base novamente.",
+      "unknownApprover": "(usuário desconhecido)"
     },
     "status": {
       "active": "Ativa",

@@ -308,6 +308,8 @@ The legacy fallback list is, in order, every non-empty value of:
 
 There is no re-hash migration script for enrollment keys -- the fallback path plus natural TTL turnover is the expected migration mechanism. Forced rotation of all peppers without waiting for TTL drain will invalidate every unexpired enrollment key (devices in flight will need a fresh key).
 
+**Installer bootstrap tokens have no fallback.** The same pepper keys the HMAC that `installer_bootstrap_tokens.token_hash` stores (`hashBootstrapToken` in `apps/api/src/services/installerBootstrapToken.ts`), and that lookup consults only the current `ENROLLMENT_KEY_PEPPER`. Rotating it invalidates every outstanding installer link and every already-downloaded installer that has not yet enrolled (Windows MSI, macOS, Linux), for the full installer TTL (30 days by default). Re-issue installers from Add Device or the Enrollment Keys page after rotating.
+
 ### MFA_RECOVERY_CODE_PEPPER (no fallback chain)
 
 `MFA_RECOVERY_CODE_PEPPER` is read directly by `getRecoveryCodePepper()` in `apps/api/src/routes/auth/helpers.ts` with **no** legacy fallback -- this is intentional, because recovery codes are a high-value last-resort credential and the operational risk of rotating them is bounded (users regenerate via the UI). Rotation invalidates every existing recovery code.

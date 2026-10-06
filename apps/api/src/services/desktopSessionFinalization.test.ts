@@ -6,7 +6,7 @@ const state = vi.hoisted(() => ({
     commandId: '22222222-2222-4222-8222-222222222222',
     outcome: 'stopped' as const,
   },
-  // SEC-038 W03: `commitDesktopTerminalIntent` (real, unmocked) normalizes this
+  // `commitDesktopTerminalIntent` (real, unmocked) normalizes this
   // RETURNING row via `toTerminalSessionRow`, which throws without a
   // `terminalGeneration` — so every default row needs the full contract shape.
   updatedRows: [{
@@ -58,7 +58,7 @@ vi.mock('../db/schema', () => ({
     type: 'remote_sessions.type',
     deviceId: 'remote_sessions.device_id',
     status: 'remote_sessions.status',
-    // SEC-038 W03 terminal-intent contract columns, read by
+    // Terminal-intent contract columns, read by
     // `terminalIntentSet`/`terminalSessionReturning` (real, unmocked here).
     desktopStartGeneration: 'remote_sessions.desktop_start_generation',
     terminalGeneration: 'remote_sessions.terminal_generation',

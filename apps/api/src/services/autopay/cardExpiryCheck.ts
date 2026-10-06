@@ -1,3 +1,5 @@
+import {formatPaymentMethod,formatMonthYear,paymentMethodInSentence} from '@breeze/shared';
+import {clientNameFor} from './billingEmail';
 import {and,eq,inArray,isNull} from 'drizzle-orm';
 import {db,runOutsideDbContext,withSystemDbAccessContext} from '../../db';
 import {organizations,partners,orgAutopayEnrollments,orgPaymentMethods,billingNoticeOutbox} from '../../db/schema';
@@ -43,11 +45,13 @@ export async function checkExpiringAutopayCards(now:Date=new Date()):Promise<{en
         const link=await mintBillingLinkToken(db,{orgId:row.org.id,purpose:'enroll',enrollmentId:row.enrollment.id,generation:row.enrollment.generation,ttlDays:30});
         const url=buildBillingLinkUrl('enroll',link.token);
         const terms=await buildAutopayDisclosure(db,row.org.id,'card');
-        const expiresOn=new Date(Date.UTC(current.cardExpYear!,current.cardExpMonth!,0)).toISOString().slice(0,10);
+        // "October 2026": a card runs to the end of its expiry month (not "2026-10-31").
+        const expiresOn=formatMonthYear(current.cardExpMonth,current.cardExpYear);
         const rendered=await renderBillingNotice('card_expiring',{autopay:{
           partnerId:row.org.partnerId,orgId:row.org.id,ctaUrl:url,scheduleText:terms.scheduleText,feeText:terms.feeText,
-          vars:{partner_name:terms.partnerName,org_name:row.org.name,client_name:row.org.name,
-            payment_method:`${current.cardBrand??'Card'} ••${current.cardLast4??'----'}`,expires_on:expiresOn,update_link:url},
+          vars:{partner_name:terms.partnerName,org_name:row.org.name,client_name:clientNameFor(row.org.billingContact,row.org.name),
+            payment_method:paymentMethodInSentence(formatPaymentMethod(current)),expires_on:expiresOn,update_link:url},
+          notes:['This link works for 30 days.'],
         }});
         return (await enqueueBillingNotice(db,{orgId:row.org.id,partnerId:row.org.partnerId,enrollmentId:row.enrollment.id,
           kind:'card_expiring',seq:1,dedupeKey,toEmail,rendered})).created;

@@ -77,3 +77,42 @@ describe('dispatchWake for a device parked in a holding org', () => {
     expect(sendCommandToAgent).not.toHaveBeenCalled();
   });
 });
+
+describe('dispatchWake when the push claim cancels the wake command', () => {
+  it('reports COMMAND_CANCELLED with the reason and sends nothing', async () => {
+    const { claimPendingCommandForDelivery, releaseClaimedCommandDelivery } = await import('./commandDispatch');
+    vi.clearAllMocks();
+    parkedDeviceIds.clear();
+    const RELAY = '22222222-2222-4222-8222-222222222222';
+    const chain = (rows: unknown[]) => {
+      const where = () => Object.assign(Promise.resolve(rows), {
+        limit: async () => rows,
+        orderBy: () => Object.assign(Promise.resolve(rows), { limit: async () => rows }),
+      });
+      return { from: () => ({ where }) };
+    };
+    selectMock
+      .mockReturnValueOnce(chain([{ id: TARGET, orgId: 'org-1', siteId: 'site-1', hostname: 'target' }]))
+      .mockReturnValueOnce(chain([{ mac: 'aa:bb:cc:dd:ee:ff', isPrimary: true, updatedAt: new Date() }]))
+      .mockReturnValueOnce(chain([{ ip: '192.168.1.20', mask: '255.255.255.0', lastSeen: new Date() }]))
+      .mockReturnValueOnce(chain([{ id: RELAY, agentId: 'relay-agent', hostname: 'relay', siteId: 'site-1', status: 'online' }]));
+    insertMock.mockReturnValue({
+      values: () => Object.assign(Promise.resolve(undefined), {
+        returning: async () => [{ id: 'wake-cmd' }],
+      }),
+    });
+    vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({
+      status: 'cancelled', id: 'wake-cmd', reason: 'requester_inactive',
+    });
+
+    const result = await dispatchWake(TARGET, 'user-1', { relayDeviceIdOverride: RELAY });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'COMMAND_CANCELLED',
+      message: expect.stringContaining('requester_inactive'),
+    });
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(releaseClaimedCommandDelivery).not.toHaveBeenCalled();
+  });
+});

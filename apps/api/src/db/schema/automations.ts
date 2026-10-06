@@ -134,7 +134,7 @@ export const automationResourceBindings = pgTable('automation_resource_bindings'
 
 export const automationRuns = pgTable('automation_runs', {
   id: uuid('id').primaryKey().defaultRandom(),
-  automationId: uuid('automation_id').references(() => automations.id),
+  automationId: uuid('automation_id').references(() => automations.id, { onDelete: 'cascade' }),
   configPolicyId: uuid('config_policy_id'),
   configItemName: varchar('config_item_name', { length: 200 }),
   triggeredBy: varchar('triggered_by', { length: 255 }).notNull(),
@@ -284,10 +284,10 @@ export const automationPolicies = pgTable('automation_policies', {
 
 export const automationPolicyCompliance = pgTable('automation_policy_compliance', {
   id: uuid('id').primaryKey().defaultRandom(),
-  policyId: uuid('policy_id').references(() => automationPolicies.id),
+  policyId: uuid('policy_id').references(() => automationPolicies.id, { onDelete: 'cascade' }),
   configPolicyId: uuid('config_policy_id'),
   configItemName: varchar('config_item_name', { length: 200 }),
-  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  deviceId: uuid('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),
   status: complianceStatusEnum('status').notNull().default('pending'),
   details: jsonb('details'),
   lastCheckedAt: timestamp('last_checked_at'),

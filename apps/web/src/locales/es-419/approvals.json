@@ -120,5 +120,32 @@
     "activeBody": "Desde el {{date}}, el predeterminado de la plataforma exige un dispositivo de aprobación registrado para aprobar solicitudes de riesgo alto y crítico, porque no se guardó ninguna opción de seguridad de aprobaciones para su cuenta de partner. Por eso estas aprobaciones piden su dispositivo.",
     "settingsLink": "Revisar la seguridad de aprobaciones",
     "registerLink": "Registrar un dispositivo de aprobación"
+  },
+  "diagnosticAccess": {
+    "title": "Acceso de diagnóstico de solo lectura",
+    "organization": "Organización",
+    "device": "Dispositivo",
+    "access": "Acceso",
+    "readOnlyOps": "Solo lectura: {{operations}}. Sin escrituras, eliminaciones, cambios de nombre, scripts ni cambios en el registro.",
+    "duration": "Duración",
+    "durationValue": "{{minutes}} minutos desde la aprobación",
+    "purpose": "Propósito",
+    "requestedBy": "Solicitado por",
+    "principalUser": "Chat de IA de Breeze",
+    "principalApiKey": "Clave de API de MCP",
+    "principalOauth": "Conexión OAuth de MCP",
+    "paths": "Rutas",
+    "recursive": "Todo el subárbol",
+    "thisFolderOnly": "Esta carpeta y los archivos que contiene directamente",
+    "sensitiveHeading": "Almacenes sensibles solicitados explícitamente",
+    "noSensitive": "Las ubicaciones conocidas de contraseñas y cookies del navegador, almacenes de credenciales, claves privadas y tokens guardados se retienen, incluso dentro de estas rutas. Es una lista fija; todo lo demás dentro de estas rutas se puede leer.",
+    "opList": "listar",
+    "opRead": "leer",
+    "classes": {
+      "browser_secrets": "Contraseñas, cookies del navegador y sus claves",
+      "credential_store": "Almacenes de credenciales del sistema operativo",
+      "private_keys": "Claves privadas (SSH, GnuPG, TLS)",
+      "session_tokens": "Tokens de sesión y credenciales de nube guardados"
+    }
   }
 }

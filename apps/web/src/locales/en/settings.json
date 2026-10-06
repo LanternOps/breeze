@@ -1354,7 +1354,9 @@
       "action_link": "Action link",
       "action_label": "Action label",
       "days_overdue": "Days overdue",
-      "pay_link": "Payment link"
+      "pay_link": "Payment link",
+      "charge_total": "Total charge",
+      "attempted_amount": "Attempted payment amount"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",

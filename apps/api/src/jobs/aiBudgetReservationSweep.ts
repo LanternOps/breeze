@@ -15,7 +15,7 @@ import { debitSettledCredits } from '../services/aiModels/settleInvocation';
 import { attachWorkerObservability } from './workerObservability';
 
 /**
- * Expiry sweep for durable AI budget reservations (SEC-142/143, review B3).
+ * Expiry sweep for durable AI budget reservations.
  *
  * An admission reserves the organization's ENTIRE remaining daily/monthly cap
  * and every unknown provider outcome is deliberately kept `indeterminate`, so

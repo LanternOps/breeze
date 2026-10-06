@@ -137,7 +137,7 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
-	// SEC-038 start fence. Checked before ANY side effect — before leases,
+	// Start fence. Checked before ANY side effect — before leases,
 	// before the consent prompt, before capture — so a superseded or
 	// post-terminal start cannot spawn a helper, show a banner, or take a
 	// lease on its way to being refused.
@@ -555,7 +555,7 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		return *errResult
 	}
 
-	// SEC-038 terminal tombstone. Installed FIRST, and unconditionally —
+	// Terminal tombstone. Installed FIRST, and unconditionally —
 	// including when no session is running under this id. A stop can overtake
 	// the start it was meant to cancel, and before this the unknown-session
 	// stop was a silent no-op that let the late start run. A malformed

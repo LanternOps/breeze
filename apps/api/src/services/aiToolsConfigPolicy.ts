@@ -1,4 +1,5 @@
 import { db } from '../db';
+import { securitySettingsAutoQuarantine, withoutFeatureLinkAuthority } from './securityScanQuarantineAuthority';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES, isRetiredConfigFeatureType, ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
 import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments, automationPolicyCompliance } from '../db/schema';
@@ -1154,7 +1155,11 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         if (!link) {
           return JSON.stringify({ error: `Feature type "${featureType}" already exists on this policy. Use update action instead.` });
         }
-        return JSON.stringify({ success: true, featureLink: link });
+        return JSON.stringify({
+          success: true,
+          featureLink: withoutFeatureLinkAuthority(link),
+          ...autoQuarantineReapprovalWarning(featureType, inlineSettings ?? null),
+        });
       }
 
       if (action === 'update') {
@@ -1186,7 +1191,13 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           throw err;
         }
         if (!updated) return JSON.stringify({ error: 'Feature link not found' });
-        return JSON.stringify({ success: true, featureLink: updated });
+        return JSON.stringify({
+          success: true,
+          featureLink: withoutFeatureLinkAuthority(updated),
+          ...(updates.inlineSettings !== undefined
+            ? autoQuarantineReapprovalWarning(existingFeatureType, updates.inlineSettings)
+            : {}),
+        });
       }
 
       if (action === 'remove') {
@@ -1203,4 +1214,21 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       return JSON.stringify({ error: `Unknown action: ${action}` });
     }),
   });
+}
+
+/**
+ * This tool cannot capture an execution authority (it has no MFA session and
+ * does not check devices:execute), so saving a `security` feature clears the
+ * stored auto-quarantine approval (services/securityScanQuarantineAuthority.ts).
+ * The edit is still allowed; when the resulting settings have auto-quarantine
+ * on, tell the model that quarantine is paused until a person re-approves it.
+ */
+function autoQuarantineReapprovalWarning(featureType: string | null | undefined, inlineSettings: unknown) {
+  if (featureType !== 'security' || !securitySettingsAutoQuarantine(inlineSettings)) return {};
+  return {
+    warning:
+      'Auto-quarantine is on for this security feature, but changes made here cannot approve it. '
+      + 'Scans now run detect-only (no files are quarantined) until a user with the devices:execute '
+      + 'permission and MFA saves the policy\'s security settings in the web UI. Tell the user.',
+  };
 }

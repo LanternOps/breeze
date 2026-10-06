@@ -6,7 +6,7 @@ import {
   resolveAnswerTimeoutMs,
 } from './answerPoll';
 
-// SEC-038 W06 (#5537): a server-side End commits before the agent acknowledges
+// #5537 — a server-side End commits before the agent acknowledges
 // the stop, leaving the session terminal with terminationPhase='pending'. The
 // answer poll must treat that as ended — never as an answer to connect with.
 describe('classifyAnswerPoll', () => {

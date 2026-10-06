@@ -117,7 +117,9 @@ export const orgPaymentMethods = pgTable('org_payment_methods', {
   check('org_payment_methods_account_holder_type_check', sql`${t.accountHolderType} IN ('individual','company')`),
   unique().on(t.id,t.orgId),
   foreignKey({name:'org_payment_methods_enrollment_org_fk',columns:[t.enrollmentId,t.orgId],foreignColumns:[orgAutopayEnrollments.id,orgAutopayEnrollments.orgId]}),
-  uniqueIndex('org_payment_methods_autopay_uq').on(t.orgId).where(sql`${t.isAutopayMethod} AND ${t.status} IN ('active','pending_verification')`),
+  // One autopay-method row per org whatever its status: a retained unusable row must
+  // never sit beside its replacement (D-17, 2026-12-11-130000).
+  uniqueIndex('org_payment_methods_one_autopay_uq').on(t.orgId).where(sql`${t.isAutopayMethod}`),
 ]);
 
 export const orgAutopayConsents = pgTable('org_autopay_consents', {
@@ -190,7 +192,7 @@ export const invoiceAutopaySchedules = pgTable('invoice_autopay_schedules', {
 }, (t) => [
   check('invoice_autopay_schedules_eligible_chk', sql`${t.eligible} = (${t.ineligibleReason} IS NULL)`),
   check('invoice_autopay_schedules_collect_on_chk', sql`${t.state} NOT IN ('scheduled','retry_scheduled') OR ${t.collectOn} IS NOT NULL`),
-  check('invoice_autopay_schedules_ineligible_reason_check', sql`${t.ineligibleReason} IN ('not_enrolled','enrolled_after_issue','consent_required','method_not_usable','over_cap','cap_currency_mismatch','ach_currency_unsupported','excluded_contract','excluded_invoice','charging_disabled','stripe_unavailable')`),
+  check('invoice_autopay_schedules_ineligible_reason_check', sql`${t.ineligibleReason} IN ('not_enrolled','enrolled_after_issue','consent_required','method_not_usable','over_cap','cap_currency_mismatch','ach_currency_unsupported','excluded_contract','excluded_invoice','charging_disabled','stripe_unavailable','above_authorized_cap')`),
   check('invoice_autopay_schedules_attempt_count_check', sql`${t.attemptCount} >= 0`),
   check('invoice_autopay_schedules_authority_chk', sql`${t.enrollmentId} IS NOT NULL OR ${t.state} IN ('succeeded','failed','skipped_by_client','excluded_by_msp','cancelled','not_needed')`),
   unique().on(t.invoiceId),

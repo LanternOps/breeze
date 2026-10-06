@@ -213,6 +213,11 @@ export const TIER2_READONLY_TOOLS = new Set<string>([
   'list_quotes',
   'lookup_distributor_product',
   'search_catalog',
+  // Reads under an administrator-approved diagnostic grant: the approval
+  // already happened (on the grant), so a covered read runs without a second
+  // per-step prompt; an uncovered one is refused by the handler, never escalated.
+  'diagnostic_list_directory',
+  'diagnostic_read_file',
 ]);
 
 /**
@@ -1454,10 +1459,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   get_service_monitoring_status: { resource: 'devices', action: 'read' },
   // Integration & webhook tools
-  // query_webhooks keeps devices:read though REST GET /webhooks (routes/
-  // webhooks.ts) carries no requirePermission of its own (requireScope only)
-  // — the tool requires more than the route; see the routeBinding UNBOUND entry.
-  query_webhooks: { resource: 'devices', action: 'read' },
+  // Matches REST GET /webhooks (routes/webhooks.ts — organizations:read),
+  // bound in aiGuardrails.routeBinding.contract.test.ts.
+  query_webhooks: { resource: 'organizations', action: 'read' },
   // Route requires organizations:read (routes/psa.ts:435); the tool matches
   // it (aiGuardrails.routeBinding.contract.test.ts).
   query_psa_status: { resource: 'organizations', action: 'read' },
@@ -1624,6 +1628,17 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   revoke_elevation: { resource: 'pam', action: 'approve' },    // routes/pam.ts revoke gates on requirePamApprove (fix/pam-dedicated-permissions)
   get_elevation_history: { resource: 'devices', action: 'read' },  // requirePamRead, unchanged
 
+  // Administrator-approved read-only diagnostic access (aiToolsDiagnosticAccess.ts).
+  // Requesting and using need devices:execute (the same bar as file_operations —
+  // the agent reads as root/LocalSystem); APPROVING is decided per grant by the
+  // approvals flow, which requires devices:execute + approvals:decide on the
+  // device's org and site (services/diagnosticAccess/grants.ts isEligibleApprover).
+  request_diagnostic_access: { resource: 'devices', action: 'execute' },
+  list_diagnostic_access_grants: { resource: 'devices', action: 'read' },
+  revoke_diagnostic_access: { resource: 'devices', action: 'read' }, // revoking only removes access; handler limits it to the requester or an eligible approver
+  diagnostic_list_directory: { resource: 'devices', action: 'execute' },
+  diagnostic_read_file: { resource: 'devices', action: 'execute' },
+
   // Compliance / software / peripheral (analogy: query_compliance_policies policies:read;
   // manage_configuration_policy map)
   get_software_compliance: { resource: 'devices', action: 'read' },
@@ -1777,7 +1792,7 @@ export const TOOL_ACTION_EXTRA_PERMISSIONS: Record<
     create_pay_link: [{ resource: 'quotes', action: 'read' }],
   },
   manage_invoices: {
-    // SEC-145 — materializing a contract line reads the contract, so the
+    // Materializing a contract line reads the contract, so the
     // caller needs contracts:read on top of invoices:write. Per-action so
     // unrelated invoice edits are not raised to contract-read authority.
     add_contract_line: [{ resource: 'contracts', action: 'read' }],

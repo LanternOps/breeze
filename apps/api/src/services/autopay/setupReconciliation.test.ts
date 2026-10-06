@@ -33,11 +33,22 @@ describe('enrollment event dispatch',()=>{
    [{id:'method',orgId}],[]);
   m.event.mockResolvedValue({id:'evt_one',type,livemode:false,data:{object:{id:type==='mandate.updated'?'mandate_one':'pm_one'}}});
   m.mandate.mockResolvedValue({id:'mandate_one',status:'inactive',payment_method:'pm_one'});
+  m.unusable.mockResolvedValueOnce(true);
   expect(await replayAutopayStripeEvents()).toBe(1);
   expect(m.event).toHaveBeenCalledWith('evt_one');
   expect(m.unusable).toHaveBeenCalledWith(expect.anything(),'method',type);
   expect(m.notify).toHaveBeenCalledWith(expect.objectContaining({event:'autopay.needs_attention',orgId,partnerId}));
   expect(m.updates).toContainEqual(expect.objectContaining({status:'applied'}));
+ });
+ // FP-13: a method a decline already made unusable (and told staff about) sends no second email.
+ it('does not email staff again for a method that was already unusable',async()=>{
+  m.rows.push([{id:'inbox',stripeEventId:'evt_one',partnerId,stripeAccountId:'acct_one',eventType:'mandate.updated',livemode:false,attemptCount:0}],
+   [{id:'method',orgId}],[]);
+  m.event.mockResolvedValue({id:'evt_one',type:'mandate.updated',livemode:false,data:{object:{id:'mandate_one'}}});
+  m.mandate.mockResolvedValue({id:'mandate_one',status:'inactive',payment_method:'pm_one'});
+  m.unusable.mockResolvedValueOnce(false);
+  expect(await replayAutopayStripeEvents()).toBe(1);
+  expect(m.notify).not.toHaveBeenCalled();
  });
  it('never processes an old event using a replacement account',async()=>{
   m.rows.push([{id:'inbox',stripeEventId:'evt_one',partnerId,stripeAccountId:'acct_old',eventType:'payment_method.detached',livemode:false,attemptCount:0}],[]);
@@ -83,6 +94,8 @@ describe('durable replay retries',()=>{
  it('retries notification after the method was already marked unusable',async()=>{
   m.rows.push([inbox()],[{id:'method',orgId}],[]);
   m.event.mockResolvedValue({id:'evt_one',type:'payment_method.detached',livemode:false,data:{object:{id:'pm_one'}}});
+  // Already unusable for this same reason (an earlier run whose notice was lost): still notify.
+  m.unusable.mockResolvedValueOnce(true);
   await replayAutopayStripeEvents();
   expect(query(m.queries[1]!).params).toContain('unusable');expect(m.notify).toHaveBeenCalled();
  });

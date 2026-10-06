@@ -14,12 +14,12 @@ describe('audit trigger envelope', () => {
   it.each([createAuditLog, createAuditLogAsync])('merges top-level provenance without changing caller details', async (write) => {
     const details = { deviceId: 'd1' };
     await write({ ...base, details, trigger: { kind: 'sweep_finding', refId: 'r1', key: 'sweep:service_down:Spooler' } });
-    expect(values).toHaveBeenCalledWith({ ...base, actorType: 'user', details: { deviceId: 'd1', triggerKind: 'sweep_finding', triggerRefId: 'r1', triggerKey: 'sweep:service_down:Spooler' } });
+    expect(values).toHaveBeenCalledWith({ ...base, actorType: 'user', partnerId: null, details: { deviceId: 'd1', triggerKind: 'sweep_finding', triggerRefId: 'r1', triggerKey: 'sweep:service_down:Spooler' } });
     expect(details).toEqual({ deviceId: 'd1' });
   });
   it('preserves legacy details', async () => {
     await createAuditLog({ ...base, details: { deviceId: 'd1' } });
-    expect(values).toHaveBeenCalledWith({ ...base, actorType: 'user', details: { deviceId: 'd1' } });
+    expect(values).toHaveBeenCalledWith({ ...base, actorType: 'user', partnerId: null, details: { deviceId: 'd1' } });
   });
   // Review fix (PR #5780) — a bare `{ kind: 'automation' }` trigger (no
   // `refId`/`key`) must write both as explicit `null`, not omit them: a
@@ -31,6 +31,7 @@ describe('audit trigger envelope', () => {
     expect(values).toHaveBeenCalledWith({
       ...base,
       actorType: 'user',
+      partnerId: null,
       details: { triggerKind: 'automation', triggerRefId: null, triggerKey: null },
     });
     const written = values.mock.calls[0]![0] as { details: Record<string, unknown> };

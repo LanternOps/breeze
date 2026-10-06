@@ -60,6 +60,8 @@ import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry'
 import {
   LOG_FORWARDING_ORIGIN_CHANGE_MESSAGE,
   LOG_FORWARDING_SECRET_DESTINATIONS,
+  REMOTE_ACCESS_LAUNCHER_ORIGIN_CHANGE_MESSAGE,
+  REMOTE_ACCESS_LAUNCHER_SECRET_DESTINATIONS,
   SettingsSecretInputError,
   maskSettingsSecrets,
   restoreMaskedSettingsSecrets,
@@ -73,6 +75,7 @@ import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
+import { ERROR_CODES } from '@breeze/shared';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
@@ -437,9 +440,9 @@ async function ensureOrgAccess(
 /**
  * Resolve an incoming `settings` value (organization, partner or site) against
  * the stored one before it is sealed and written: masked markers and omitted
- * secret keys keep the stored secret, and a log-forwarding destination may not
- * move to a new origin while a stored credential is kept rather than
- * re-entered. `stored` is undefined on create, where there is nothing to keep.
+ * secret keys keep the stored secret, and a log-forwarding destination or a
+ * remote-access launcher may not move to a new origin while a stored
+ * credential is kept rather than re-entered. `stored` is undefined on create, where there is nothing to keep.
  */
 function resolveIncomingSettingsSecrets(
   incoming: unknown,
@@ -447,6 +450,9 @@ function resolveIncomingSettingsSecrets(
 ): { ok: true; settings: unknown } | { ok: false; error: string } {
   if (settingsSecretWouldFollowNewOrigin(incoming, stored, LOG_FORWARDING_SECRET_DESTINATIONS, isMaskedIntegrationSecret)) {
     return { ok: false, error: LOG_FORWARDING_ORIGIN_CHANGE_MESSAGE };
+  }
+  if (settingsSecretWouldFollowNewOrigin(incoming, stored, REMOTE_ACCESS_LAUNCHER_SECRET_DESTINATIONS, isMaskedIntegrationSecret)) {
+    return { ok: false, error: REMOTE_ACCESS_LAUNCHER_ORIGIN_CHANGE_MESSAGE };
   }
   try {
     return { ok: true, settings: restoreMaskedSettingsSecrets(incoming, stored) };
@@ -600,7 +606,7 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
     ))
     .limit(1);
   if (clash[0]) {
-    return c.json({ error: 'That partner identifier is already in use' }, 409);
+    return c.json({ error: 'That partner identifier is already in use', code: ERROR_CODES.CONFLICT }, 409);
   }
 
   const [partner] = await db.transaction(async (tx) => {
@@ -989,7 +995,7 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOr
     .limit(1);
 
   if (!partner) {
-    return c.json({ error: 'Partner not found' }, 404);
+    return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   return c.json(withMaskedSettings(partner));
@@ -1023,7 +1029,7 @@ orgRoutes.patch(
   requireMfa(),
   async (c, next) => {
     if (!canManagePartnerWidePolicies(c.get('auth'))) {
-      return c.json({ error: 'Full partner access required' }, 403);
+      return c.json({ error: 'Full partner access required', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     await next();
   },
@@ -1055,7 +1061,7 @@ orgRoutes.patch(
     .limit(1);
 
   if (!current) {
-    return c.json({ error: 'Partner not found' }, 404);
+    return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   // Merge settings (top-level shallow merge, except `security` and `ticketing` below)
@@ -1260,7 +1266,7 @@ orgRoutes.patch(
         ))
         .limit(1);
       if (clash[0]) {
-        return c.json({ error: 'That inbound address is already taken' }, 409);
+        return c.json({ error: 'That inbound address is already taken', code: ERROR_CODES.CONFLICT }, 409);
       }
       updateData.inboundLocalPart = candidate;
     }
@@ -1285,7 +1291,7 @@ orgRoutes.patch(
     .returning(partnerPublicColumns());
 
   if (!partner) {
-    return c.json({ error: 'Partner not found' }, 404);
+    return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   // Invalidate the OAuth scope-policy cache so a change to
@@ -1337,7 +1343,7 @@ orgRoutes.get('/partners/:id', requireScope('system'), requireOrgRead, async (c)
     .limit(1);
 
   if (!partner) {
-    return c.json({ error: 'Partner not found' }, 404);
+    return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   return c.json(withMaskedSettings(partner));
@@ -1351,7 +1357,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   const updates: Record<string, unknown> = { ...data, updatedAt: new Date() };
 
   if (Object.keys(data).length === 0) {
-    return c.json({ error: 'No updates provided' }, 400);
+    return c.json({ error: 'No updates provided', code: ERROR_CODES.NO_UPDATES_PROVIDED }, 400);
   }
 
   if (data.slug !== undefined) {
@@ -1365,7 +1371,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
       ))
       .limit(1);
     if (clash[0]) {
-      return c.json({ error: 'That partner identifier is already in use' }, 409);
+      return c.json({ error: 'That partner identifier is already in use', code: ERROR_CODES.CONFLICT }, 409);
     }
   }
 
@@ -1464,7 +1470,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     : await runPartnerUpdate();
 
   if (!partner) {
-    return c.json({ error: 'Partner not found' }, 404);
+    return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   // Invalidate the OAuth scope-policy cache (settings may have changed).
@@ -1530,7 +1536,7 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
   );
 
   if (!partner) {
-    return c.json({ error: 'Partner not found' }, 404);
+    return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   await revokePartnerTenantAccess(partner.id);
@@ -1863,7 +1869,7 @@ orgRoutes.patch(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     if (!canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: 'Full partner access required' }, 403);
+      return c.json({ error: 'Full partner access required', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     const { orderedIds } = c.req.valid('json');
     const partnerId = auth.partnerId as string;
@@ -1894,7 +1900,7 @@ orgRoutes.patch(
       .where(and(eq(partners.id, partnerId), isNull(partners.deletedAt)))
       .limit(1);
     if (!current) {
-      return c.json({ error: 'Partner not found' }, 404);
+      return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
     }
     const currentSettings = (current.settings as Record<string, unknown>) || {};
     const newSettings = { ...currentSettings, organizationOrder: sanitized };
@@ -1908,7 +1914,7 @@ orgRoutes.patch(
       .where(and(eq(partners.id, partnerId), isNull(partners.deletedAt)))
       .returning();
     if (!partner) {
-      return c.json({ error: 'Partner not found' }, 404);
+      return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
     }
 
     const auditOrgId = await resolveAuditOrgIdForPartner(partnerId);
@@ -1965,7 +1971,7 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
       return c.json({ error: 'Partner context required to create organizations' }, 400);
     }
     if (data.partnerId && data.partnerId !== auth.partnerId) {
-      return c.json({ error: 'Access denied to this partner' }, 403);
+      return c.json({ error: 'Access denied to this partner', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     targetPartnerId = auth.partnerId;
   } else {
@@ -1981,7 +1987,7 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
     .where(and(eq(partners.id, targetPartnerId), isNull(partners.deletedAt)))
     .limit(1);
   if (!partnerRow) {
-    return c.json({ error: 'Partner not found' }, 404);
+    return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   // Same cap `POST /partner-api/organizations` already enforces
@@ -1995,7 +2001,7 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   if (partnerRow.maxOrganizations != null) {
     const orgCount = await countPartnerOrganizations(targetPartnerId);
     if (orgCount >= partnerRow.maxOrganizations) {
-      return c.json({ error: 'Organization quota reached for this partner' }, 409);
+      return c.json({ error: 'Organization quota reached for this partner', code: ERROR_CODES.LIMIT_REACHED }, 409);
     }
   }
 
@@ -2003,7 +2009,7 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   // 23505 catch below, which is what actually closes the race.
   const slugConflict = await findOrgSlugConflict(targetPartnerId, data.slug);
   if (slugConflict) {
-    return c.json({ error: orgSlugConflictMessage(slugConflict) }, 409);
+    return c.json({ error: orgSlugConflictMessage(slugConflict), code: ERROR_CODES.CONFLICT }, 409);
   }
 
   const insertValues = {
@@ -2072,7 +2078,7 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   } catch (error) {
     if (error instanceof OrgQuotaExceededError) {
       // The transaction (including the over-cap insert) has already rolled back.
-      return c.json({ error: 'Organization quota reached for this partner' }, 409);
+      return c.json({ error: 'Organization quota reached for this partner', code: ERROR_CODES.LIMIT_REACHED }, 409);
     }
     if (isPgUniqueViolation(error, ORG_SLUG_UNIQUE_INDEX)) {
       // Only reachable when a concurrent write claimed the slug between the
@@ -2080,7 +2086,7 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
       // pre-check has stopped working, and a bare 409 would look identical to
       // ordinary user error in Sentry.
       console.warn(`[orgs] ${ORG_SLUG_UNIQUE_INDEX} race lost — duplicate slug rejected by the index, not the pre-check`);
-      return c.json({ error: 'That organization slug is already in use' }, 409);
+      return c.json({ error: 'That organization slug is already in use', code: ERROR_CODES.CONFLICT }, 409);
     }
     throw error;
   }
@@ -2109,7 +2115,7 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
 const requireFullPartnerOrgImportAccess = async (c: Context, next: Next) => {
   const auth = c.get('auth') as AuthContext;
   if (!canManagePartnerWidePolicies(auth)) {
-    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
   }
   return next();
 };
@@ -2179,7 +2185,7 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
   // A malformed id cannot name a real org, so it is a 404, same as a valid id
   // for an org that doesn't exist.
   if (!PG_UUID_REGEX.test(id)) {
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   // An archive-lifecycle org (`archived`, or mid-archive-drain `offboarding` —
@@ -2195,7 +2201,7 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
       ? await loadArchivedOrg({ orgId: id, scope: archivedScope })
       : null;
     if (archived) return c.json(withMaskedSettings(archived));
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   const conditions = and(eq(organizations.id, id), isNull(organizations.deletedAt));
@@ -2207,7 +2213,7 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
     .limit(1);
 
   if (!organization) {
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   // System scope never fails `canAccessOrg`, so an archive-lifecycle org
@@ -2246,10 +2252,10 @@ orgRoutes.get('/organizations/:id/effective-settings',
     const id = c.req.param('id')!;
 
     if (auth.scope === 'organization' && id !== auth.orgId) {
-      return c.json({ error: 'Access denied' }, 403);
+      return c.json({ error: 'Access denied', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
-      return c.json({ error: 'Organization not found' }, 404);
+      return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
     }
 
     const result = await getEffectiveOrgSettings(id);
@@ -2425,7 +2431,7 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
     suspendedLifecycleOverride = await canApplySuspendedOrgLifecycleTransition(auth, id, data);
     if (!suspendedLifecycleOverride) {
-      return c.json({ error: 'Organization not found' }, 404);
+      return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
     }
   }
 
@@ -2540,7 +2546,7 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   }
 
   if (Object.keys(data).length === 0) {
-    return c.json({ error: 'No updates provided' }, 400);
+    return c.json({ error: 'No updates provided', code: ERROR_CODES.NO_UPDATES_PROVIDED }, 400);
   }
 
   // #3967 — same per-partner slug guard as create. The org's own partner is
@@ -2558,11 +2564,11 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
       )
     );
     if (!target) {
-      return c.json({ error: 'Organization not found' }, 404);
+      return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
     }
     const slugConflict = await findOrgSlugConflict(target.partnerId, data.slug, id);
     if (slugConflict) {
-      return c.json({ error: orgSlugConflictMessage(slugConflict) }, 409);
+      return c.json({ error: orgSlugConflictMessage(slugConflict), code: ERROR_CODES.CONFLICT }, 409);
     }
   }
 
@@ -2731,7 +2737,7 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
       // pre-check has stopped working, and a bare 409 would look identical to
       // ordinary user error in Sentry.
       console.warn(`[orgs] ${ORG_SLUG_UNIQUE_INDEX} race lost — duplicate slug rejected by the index, not the pre-check`);
-      return c.json({ error: 'That organization slug is already in use' }, 409);
+      return c.json({ error: 'That organization slug is already in use', code: ERROR_CODES.CONFLICT }, 409);
     }
     throw error;
   }
@@ -2750,7 +2756,7 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
         return c.json({ error: frozen, code: 'ORG_LIFECYCLE_FROZEN', currentStatus: raced }, 409);
       }
     }
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   if (data.status === 'offboarding') {
@@ -2808,7 +2814,7 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
   const id = c.req.param('id')!;
 
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   // The unassigned-device holding org is managed by Breeze.
@@ -2835,7 +2841,7 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
   );
 
   if (!organization) {
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   await revokeOrganizationTenantAccess(organization.id);
@@ -2874,7 +2880,7 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
     // Specific org requested - check access
     const allowed = await ensureOrgAccess(effectiveOrgId, auth);
     if (!allowed) {
-      return c.json({ error: 'Access to this organization denied' }, 403);
+      return c.json({ error: 'Access to this organization denied', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     conditions = eq(sites.orgId, effectiveOrgId);
   } else {
@@ -3040,7 +3046,7 @@ orgRoutes.post('/sites', requireScope('organization', 'partner', 'system'), requ
 
   const allowed = await ensureOrgAccess(data.orgId, auth);
   if (!allowed) {
-    return c.json({ error: 'Access to this organization denied' }, 403);
+    return c.json({ error: 'Access to this organization denied', code: ERROR_CODES.ACCESS_DENIED }, 403);
   }
 
   // The unassigned-device holding org is managed by Breeze.
@@ -3094,17 +3100,17 @@ orgRoutes.get('/sites/:id', requireScope('organization', 'partner', 'system'), r
     .limit(1);
 
   if (!site) {
-    return c.json({ error: 'Site not found' }, 404);
+    return c.json({ error: 'Site not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   const allowed = await ensureOrgAccess(site.orgId, auth);
   if (!allowed) {
-    return c.json({ error: 'Access to this site denied' }, 403);
+    return c.json({ error: 'Access to this site denied', code: ERROR_CODES.ACCESS_DENIED }, 403);
   }
 
   const permissions = c.get('permissions') as UserPermissions | undefined;
   if (permissions?.allowedSiteIds && !canAccessSite(permissions, site.id)) {
-    return c.json({ error: 'Access to this site denied' }, 403);
+    return c.json({ error: 'Access to this site denied', code: ERROR_CODES.ACCESS_DENIED }, 403);
   }
 
   return c.json(withMaskedSettings(site));
@@ -3116,7 +3122,7 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
   const data = c.req.valid('json');
 
   if (Object.keys(data).length === 0) {
-    return c.json({ error: 'No updates provided' }, 400);
+    return c.json({ error: 'No updates provided', code: ERROR_CODES.NO_UPDATES_PROVIDED }, 400);
   }
 
   const [site] = await db
@@ -3126,12 +3132,12 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
     .limit(1);
 
   if (!site) {
-    return c.json({ error: 'Site not found' }, 404);
+    return c.json({ error: 'Site not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   const allowed = await ensureOrgAccess(site.orgId, auth);
   if (!allowed) {
-    return c.json({ error: 'Access to this site denied' }, 403);
+    return c.json({ error: 'Access to this site denied', code: ERROR_CODES.ACCESS_DENIED }, 403);
   }
 
   // The unassigned-device holding org is managed by Breeze.
@@ -3141,7 +3147,7 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
 
   const permissions = c.get('permissions') as UserPermissions | undefined;
   if (permissions?.allowedSiteIds && !canAccessSite(permissions, site.id)) {
-    return c.json({ error: 'Access to this site denied' }, 403);
+    return c.json({ error: 'Access to this site denied', code: ERROR_CODES.ACCESS_DENIED }, 403);
   }
 
   // Encrypt secret-bearing fields inside sites.settings before writing —
@@ -3199,12 +3205,12 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
     .limit(1);
 
   if (!site) {
-    return c.json({ error: 'Site not found' }, 404);
+    return c.json({ error: 'Site not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
   const allowed = await ensureOrgAccess(site.orgId, auth);
   if (!allowed) {
-    return c.json({ error: 'Access to this site denied' }, 403);
+    return c.json({ error: 'Access to this site denied', code: ERROR_CODES.ACCESS_DENIED }, 403);
   }
 
   // The unassigned-device holding org is managed by Breeze.
@@ -3214,7 +3220,7 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
 
   const permissions = c.get('permissions') as UserPermissions | undefined;
   if (permissions?.allowedSiteIds && !canAccessSite(permissions, site.id)) {
-    return c.json({ error: 'Access to this site denied' }, 403);
+    return c.json({ error: 'Access to this site denied', code: ERROR_CODES.ACCESS_DENIED }, 403);
   }
 
   // The site's topology domain cascades with it, but two kinds of row point at
@@ -3251,7 +3257,7 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
     return { removedTopologyAlerts, topologyAiSessions };
   });
   if (removed === null) {
-    return c.json({ error: 'Site not found' }, 404);
+    return c.json({ error: 'Site not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
   if (removed.blocked) {
     const { removedDevices, otherDevices } = removed.blocked;

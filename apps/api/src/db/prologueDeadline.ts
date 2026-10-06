@@ -8,7 +8,8 @@
  * See `db/wedgedBackends.ts` for the full failure anatomy.
  *
  * WHAT THIS BOUNDS, AND WHAT IT DELIBERATELY DOES NOT. The deadline covers ONLY
- * the six `set_config` statements. It is armed inside the transaction callback,
+ * the RLS prologue — one `set_config` statement carrying all seven GUCs since
+ * #8052 (six statements before). It is armed inside the transaction callback,
  * after the pool has already handed over a connection and `BEGIN` has already
  * landed, so queueing for a slot is not charged against it (that is a different
  * problem with a different fix). It is DISARMED the instant the prologue
@@ -81,21 +82,22 @@ export class DbAccessContextPrologueTimeoutError extends Error {
 }
 
 /**
- * Thrown by {@link PrologueDeadline.throwIfAborted} at the next statement
- * boundary after expiry.
+ * Thrown by {@link PrologueDeadline.throwIfAborted} at the first check after
+ * expiry (before or after the prologue statement).
  *
  * This error never reaches the caller — the race has already settled with the
- * timeout error by the time it is thrown. Its job is to stop the prologue from
- * issuing MORE `set_config` statements on a connection we have given up on:
- * `Promise.race` does not cancel the loser, so without this check a statement
- * that finally resolved late would queue the next five onto a connection that
- * is being torn down or has already been recycled to another request.
+ * timeout error by the time it is thrown. Its job is to stop the opener from
+ * carrying on — issuing the prologue statement, or running the caller's `fn` —
+ * on a connection we have given up on: `Promise.race` does not cancel the
+ * loser, so without this check a statement that finally resolved late would let
+ * the opener proceed onto a connection that is being torn down or has already
+ * been recycled to another request.
  */
 export class DbAccessContextPrologueAbortedError extends Error {
   constructor(contextLabel: string) {
     super(
       `RLS GUC prologue for ${contextLabel} was aborted after its deadline expired; `
-        + 'no further set_config statements will be issued on this connection (#6048).',
+        + 'the opener will not proceed on this connection (#6048).',
     );
     this.name = 'DbAccessContextPrologueAbortedError';
   }

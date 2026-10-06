@@ -26,7 +26,7 @@ const stripeMocks = vi.hoisted(() => ({
   // structurally unreachable. Per-test knob; default 'USD'.
   defaultCurrency: 'USD' as string | null,
   // createInvoicePayLink re-checks the durable stripe_connect_accounts row inside
-  // the mapping transaction (SEC-151): the account the mock reports must exist
+  // the mapping transaction: the account the mock reports must exist
   // for the seeded partner, and stripe_account_id is globally unique, so each
   // seeded partner gets its own id and the mock follows it.
   accountId: 'acct_test' as string,

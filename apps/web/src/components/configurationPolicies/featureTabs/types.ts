@@ -23,6 +23,14 @@ export type FeatureLink = {
   featureType: FeatureType;
   featurePolicyId: string | null;
   inlineSettings: Record<string, unknown> | null;
+  /**
+   * `security` links only (list/detail reads): 'reapproval_required' = auto-
+   * quarantine is on but has no stored approval, so scans run detect-only
+   * until a user with devices:execute saves the link.
+   */
+  autoQuarantineApproval?: 'approved' | 'legacy_grandfathered' | 'reapproval_required' | 'not_enabled';
+  /** Why re-approval is required; 'approver_invalid' = the approver lost devices:execute or left. */
+  autoQuarantineApprovalReason?: 'approver_invalid' | 'not_approved' | 'invalid_approval' | null;
   createdAt?: string;
   updatedAt?: string;
 };

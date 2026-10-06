@@ -180,7 +180,7 @@ export async function finalizeDesktopSessionOnce(
   const frameBytes = clampNonnegativeInteger(input.frameBytes);
 
   return withSystemDbAccessContext(async () => {
-    // Through the terminal-intent contract (SEC-038 W03). The phase is
+    // Through the terminal-intent contract. The phase is
     // 'confirmed' straight away: `ensureDesktopStreamStopped` above only
     // returns once the agent's stop proof is in hand, so there is nothing left
     // for the endpoint to acknowledge.

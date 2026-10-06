@@ -59,8 +59,10 @@ describe('theme token parity', () => {
   });
 
   it('light and dark define the same token names', () => {
-    // --radius is layout, not colour, and is intentionally light-only.
-    const lightNames = [...light.keys()].filter((n) => n !== 'radius').sort();
+    // --radius is layout, not colour, and is intentionally light-only. --paper-primary
+    // is the light primary kept for document paper in dark mode: light-only by
+    // definition (paperTokens.test.ts).
+    const lightNames = [...light.keys()].filter((n) => n !== 'radius' && n !== 'paper-primary').sort();
     const darkNames = [...dark.keys()].sort();
     expect(darkNames).toEqual(lightNames);
   });

@@ -22,12 +22,12 @@ export const accessReviews = pgTable('access_reviews', {
 export const accessReviewItems = pgTable('access_review_items', {
   id: uuid('id').primaryKey().defaultRandom(),
   reviewId: uuid('review_id').notNull().references(() => accessReviews.id, { onDelete: 'cascade' }),
-  userId: uuid('user_id').notNull().references(() => users.id),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   roleId: uuid('role_id').notNull().references(() => roles.id),
   decision: accessReviewDecisionEnum('decision').notNull().default('pending'),
   notes: text('notes'),
   reviewedAt: timestamp('reviewed_at'),
-  reviewedBy: uuid('reviewed_by').references(() => users.id),
+  reviewedBy: uuid('reviewed_by').references(() => users.id, { onDelete: 'set null' }),
   // True when the current decision was made by the user the item is about,
   // under the single-admin exception (services/accessReviewSelfDecision.ts).
   selfDecided: boolean('self_decided').notNull().default(false),

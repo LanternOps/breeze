@@ -9,6 +9,7 @@ import type { AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { canManagePartnerWidePolicies } from '../../services/partnerWideAccess';
+import { ERROR_CODES } from '@breeze/shared';
 
 export const ticketResponseTemplateRoutes = new Hono();
 
@@ -25,7 +26,7 @@ const scopes = requireScope('partner', 'system');
 const partnerGlobalDeniedMessage = 'Full partner organization access is required to manage partner-wide ticket response templates';
 const requirePartnerGlobalAccess = async (c: Context, next: Next) => {
   if (!canManagePartnerWidePolicies(c.get('auth') as AuthContext)) {
-    return c.json({ error: partnerGlobalDeniedMessage }, 403);
+    return c.json({ error: partnerGlobalDeniedMessage, code: ERROR_CODES.ACCESS_DENIED }, 403);
   }
   return next();
 };
@@ -44,7 +45,7 @@ const idParam = z.object({ id: z.string().guid() });
 ticketResponseTemplateRoutes.get('/ticket-response-templates', authMiddleware, scopes, requireTicketRead, requirePartnerGlobalAccess, async (c) => {
   const auth = c.get('auth') as AuthContext;
   const partnerId = auth.partnerId;
-  if (!partnerId) return c.json({ error: 'Partner context required' }, 403);
+  if (!partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
   const rows = await db
     .select()
     .from(ticketResponseTemplates)
@@ -68,7 +69,7 @@ ticketResponseTemplateRoutes.post(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const partnerId = auth.partnerId;
-    if (!partnerId) return c.json({ error: 'Partner context required' }, 403);
+    if (!partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
     const data = c.req.valid('json');
     const [row] = await db.insert(ticketResponseTemplates).values({
       partnerId,
@@ -104,7 +105,7 @@ ticketResponseTemplateRoutes.patch(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const partnerId = auth.partnerId;
-    if (!partnerId) return c.json({ error: 'Partner context required' }, 403);
+    if (!partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
     const { id } = c.req.valid('param');
     const data = c.req.valid('json');
     const patch: Record<string, unknown> = { updatedAt: new Date() };
@@ -117,7 +118,7 @@ ticketResponseTemplateRoutes.patch(
       .set(patch)
       .where(and(eq(ticketResponseTemplates.id, id), eq(ticketResponseTemplates.partnerId, partnerId)))
       .returning();
-    if (!row) return c.json({ error: 'Template not found' }, 404);
+    if (!row) return c.json({ error: 'Template not found', code: ERROR_CODES.NOT_FOUND }, 404);
     writeRouteAudit(c, {
       orgId: null,
       action: 'ticket_response_template.update',
@@ -141,12 +142,12 @@ ticketResponseTemplateRoutes.delete(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const partnerId = auth.partnerId;
-    if (!partnerId) return c.json({ error: 'Partner context required' }, 403);
+    if (!partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
     const { id } = c.req.valid('param');
     const [row] = await db.delete(ticketResponseTemplates)
       .where(and(eq(ticketResponseTemplates.id, id), eq(ticketResponseTemplates.partnerId, partnerId)))
       .returning();
-    if (!row) return c.json({ error: 'Template not found' }, 404);
+    if (!row) return c.json({ error: 'Template not found', code: ERROR_CODES.NOT_FOUND }, 404);
     writeRouteAudit(c, {
       orgId: null,
       action: 'ticket_response_template.delete',

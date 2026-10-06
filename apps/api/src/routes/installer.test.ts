@@ -39,6 +39,8 @@ vi.mock("../services/enrollmentDefaults", () => ({
 import { Hono } from "hono";
 import { installerRoutes, childEnrollmentKeyTtlMinutes } from "./installer";
 import { db } from "../db";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { hashBootstrapToken } from "../services/installerBootstrapToken";
 
 function makeApp() {
   const app = new Hono();
@@ -209,6 +211,34 @@ describe("POST /api/v1/installer/bootstrap", () => {
     expect(body.backupServerUrl ?? "").toBe("");
   });
 
+  it("looks the token up by its keyed hash, with a plaintext fallback only for unhashed legacy rows", async () => {
+    let capturedWhere: unknown;
+    vi.mocked(db.select).mockReturnValue({
+      from: () => ({
+        where: (w: unknown) => {
+          capturedWhere = w;
+          return { limit: () => Promise.resolve([]) };
+        },
+      }),
+    } as any);
+
+    const RAW = "KKKKKKKKKK";
+    const res = await makeApp().request("/api/v1/installer/bootstrap", {
+      method: "POST",
+      headers: { "X-Breeze-Bootstrap-Token": RAW },
+    });
+    expect(res.status).toBe(404);
+
+    const { sql, params } = new PgDialect().sqlToQuery(capturedWhere as any);
+    // Primary match: token_hash = HMAC(raw).
+    expect(sql).toMatch(/"installer_bootstrap_tokens"\."token_hash" = \$\d+/);
+    expect(params).toContain(hashBootstrapToken(RAW));
+    // Legacy fallback is confined to rows that have no hash at all.
+    expect(sql).toMatch(/"installer_bootstrap_tokens"\."token_hash" is null/);
+    expect(sql).toMatch(/"installer_bootstrap_tokens"\."token" = \$\d+/);
+    expect(sql.indexOf("is null")).toBeLessThan(sql.lastIndexOf('"token" ='));
+  });
+
   it("returns 400 for malformed token", async () => {
     const app = makeApp();
     const res = await app.request("/api/v1/installer/bootstrap", {
@@ -263,6 +293,32 @@ describe("POST /api/v1/installer/bootstrap", () => {
     expect(allArgs.some((s) => s.includes("tokenHash"))).toBe(true);
 
     errSpy.mockRestore();
+  });
+
+  it("a no_row miss logs a distinct warn hint (rollback / other server / rotated pepper) without the token", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(db.select).mockReturnValue({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }),
+    } as any);
+
+    const RAW = "YYYYYYYYYY";
+    const res = await makeApp().request("/api/v1/installer/bootstrap", {
+      method: "POST",
+      headers: { "X-Breeze-Bootstrap-Token": RAW },
+    });
+    expect(res.status).toBe(404);
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const warned = JSON.stringify(warnSpy.mock.calls);
+    expect(warned).toMatch(/ENROLLMENT_KEY_PEPPER/);
+    expect(warned).toMatch(/rollback|rolled back/i);
+    expect(warned).toContain("tokenHash");
+    expect(warned).not.toContain(RAW);
+    expect(warned).not.toContain(hashBootstrapToken(RAW));
+
+    errSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 
   it("returns 404 for exhausted token (consumed_count >= max_usage)", async () => {

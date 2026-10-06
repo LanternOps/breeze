@@ -1001,7 +1001,7 @@ describe('sentinel one routes', () => {
       expect(res.status).toBe(403);
     });
 
-    // SEC-2026-09-05-064. Site is an app-layer axis that organization RLS does
+    // Site is an app-layer axis that organization RLS does
     // not enforce. The org-scoped shape of GET /status was already narrowed by
     // a site subquery; these two cover the CROSS-ORG shape (partner/system
     // caller, no `orgId` selector), where the ceiling used to be dropped

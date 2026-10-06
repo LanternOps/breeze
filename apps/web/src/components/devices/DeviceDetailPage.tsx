@@ -375,6 +375,19 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           // 'queued_live' means the device IS online — only the immediate
           // socket push missed, and the next heartbeat (seconds away) claims
           // it. Only 'queued_offline' means "wait for it to reconnect".
+          // 'cancelled' — the server refused it before delivery (e.g. the
+          // requester's access changed); it will never run, so never "sent".
+          if (result.delivery === "cancelled") {
+            showToast({
+              type: "error",
+              message: t("devicesPage.toasts.commandCancelled", {
+                action: label,
+                hostname: device.hostname,
+                reason: result.cancelReason ?? "unknown",
+              }),
+            });
+            break;
+          }
           showToast({
             type: "success",
             message: result.delivery !== "queued_offline"

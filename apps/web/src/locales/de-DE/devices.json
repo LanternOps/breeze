@@ -2436,6 +2436,7 @@
       "bulkWakeSomeFailed": "Aufwecken einiger Geräte fehlgeschlagen",
       "commandQueued": "{{action}} eingereiht — wird ausgeführt, wenn {{hostname}} wieder verbunden ist",
       "commandSent": "{{action}} an {{hostname}} gesendet",
+      "commandCancelled": "{{action}} wurde nicht an {{hostname}} gesendet: Befehl abgebrochen ({{reason}})",
       "compareNeedsTwo": "Der Vergleich benötigt mindestens 2 Agent-Geräte.",
       "decommissionCancelled": "Entfernen abgebrochen",
       "decommissionFailed": "Entfernen fehlgeschlagen",
@@ -2824,7 +2825,8 @@
     "submitStepUp": "Bestätigen und verschieben",
     "submitting": "Wird ausgeführt…",
     "cancel": "Abbrechen",
-    "genericError": "Das Gerät konnte nicht verschoben werden."
+    "genericError": "Das Gerät konnte nicht verschoben werden.",
+    "timeout": "Das Verschieben dauert länger als erwartet und wird auf dem Server möglicherweise noch abgeschlossen. Warten Sie eine Minute und laden Sie die Seite dann neu, um zu prüfen, in welcher Organisation sich das Gerät befindet, bevor Sie es erneut versuchen."
   },
   "networkDeviceDetailPage": {
     "approval": {

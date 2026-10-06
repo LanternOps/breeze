@@ -134,7 +134,7 @@ export default function AccountingConnectionPanel({ provider, onConnectionChange
   const canWriteInvoices = usePermissions().can("invoices", "write");
 
   /**
-   * SEC-2026-09-05-057: the QuickBooks routes now carry dedicated
+   * The QuickBooks routes now carry dedicated
    * `accounting:read` / `accounting:manage` capabilities on top of the
    * full-partner authority check. Every mutating control below is disabled or
    * hidden without `accounting:manage`, matching the server gate (the panel

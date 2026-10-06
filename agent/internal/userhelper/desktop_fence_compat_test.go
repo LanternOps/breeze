@@ -7,7 +7,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
-// SEC-038 W05 mixed-fleet compatibility. Agents and helpers roll
+// Mixed-fleet compatibility. Agents and helpers roll
 // independently (the helper binary is updated by the agent, not atomically
 // with it), so both directions must fail CLOSED on the fence and neither may
 // crash.

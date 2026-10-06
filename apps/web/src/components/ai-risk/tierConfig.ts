@@ -115,6 +115,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_alert_rules (list_rules/get_rule/test_rule)', description: 'View alert rules', category: 'Alerts & Notifications' },
       // Files, Disk & Registry
       { name: 'analyze_disk_usage', description: 'Filesystem analysis from the latest stored scan', category: 'Files, Disk & Registry' },
+      { name: 'list_diagnostic_access_grants', description: 'List diagnostic access requests and grants', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (preview)', description: 'Preview cleanup candidates', category: 'Files, Disk & Registry' },
       { name: 'system_cleanup (status)', description: 'Read the progress and result of a native cleanup run', category: 'Files, Disk & Registry' },
       // Logs & Audit
@@ -245,6 +246,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'file_operations (list)', description: 'List directory contents on device', category: 'Files, Disk & Registry' },
       { name: 'analyze_disk_usage (refresh)', description: 'Run a fresh filesystem scan on the device', category: 'Files, Disk & Registry' },
       { name: 'system_cleanup (list)', description: 'List OS-native cleaners and their estimated reclaim', category: 'Files, Disk & Registry' },
+      { name: 'request_diagnostic_access', description: 'Ask an administrator to approve read-only diagnostic access to specific paths', category: 'Files, Disk & Registry' },
+      { name: 'revoke_diagnostic_access', description: 'Withdraw a diagnostic access request or grant', category: 'Files, Disk & Registry' },
+      { name: 'diagnostic_list_directory', description: 'List a folder under an administrator-approved read-only grant', category: 'Files, Disk & Registry' },
+      { name: 'diagnostic_read_file', description: 'Read part of a file under an administrator-approved read-only grant', category: 'Files, Disk & Registry' },
       { name: 'registry_operations (read_key/get_value)', description: 'Read Windows registry values on device', category: 'Files, Disk & Registry' },
       // Logs & Audit
       { name: 'detect_log_correlations', description: 'Log correlation detection', category: 'Logs & Audit' },
@@ -377,6 +382,9 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'analyze_screen', tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
   { toolName: 'create_remote_session', tier: 3, permission: 'devices.execute + remote.access', category: 'Remote Access & Control' },
   { toolName: 'set_device_context', tier: 2, permission: 'devices.write', category: 'Devices & Hardware' },
+  { toolName: 'request_diagnostic_access', tier: 2, permission: 'devices.execute', category: 'Files, Disk & Registry' },
+  { toolName: 'diagnostic_list_directory', tier: 2, permission: 'devices.execute', category: 'Files, Disk & Registry' },
+  { toolName: 'diagnostic_read_file', tier: 2, permission: 'devices.execute', category: 'Files, Disk & Registry' },
   { toolName: 'resolve_device_context', tier: 2, permission: 'devices.write', category: 'Devices & Hardware' },
   // Services & Processes
   { toolName: 'manage_services', tier: 3, permission: 'devices.execute', category: 'Services & Processes' },
@@ -498,6 +506,11 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   analyze_boot_performance: { stored: 'devices.read', triggerCollection: 'devices.execute' },
   analyze_disk_usage: { stored: 'devices.read', refresh: 'devices.execute' },
   manage_processes: { list: 'devices.execute', kill: 'devices.execute' },
+  request_diagnostic_access: 'devices.execute',
+  list_diagnostic_access_grants: 'devices.read',
+  revoke_diagnostic_access: 'devices.read',
+  diagnostic_list_directory: 'devices.execute',
+  diagnostic_read_file: 'devices.execute',
   // Network
   get_network_changes: 'devices.read',
   get_ip_history: 'devices.read',
@@ -604,7 +617,8 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   query_analytics: 'devices.read',
   get_executive_summary: 'devices.read',
   // Integrations
-  query_webhooks: 'devices.read',
+  // Route requires organizations:read (routes/webhooks.ts GET /).
+  query_webhooks: 'organizations.read',
   // Route requires organizations:read (routes/psa.ts:435).
   query_psa_status: 'organizations.read',
   test_webhook: 'organizations.write',

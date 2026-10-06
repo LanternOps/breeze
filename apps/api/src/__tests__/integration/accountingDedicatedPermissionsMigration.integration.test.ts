@@ -1,7 +1,7 @@
 /**
  * Live-DB replay test for
- * 2026-10-15-150500-accounting-dedicated-permissions.sql (SEC-2026-09-05-057,
- * owner decision Option A). Exercises the migration file directly against a
+ * 2026-10-15-150500-accounting-dedicated-permissions.sql
+ * (owner decision Option A). Exercises the migration file directly against a
  * real Postgres instance — not the seeded state a fresh `autoMigrate` run
  * leaves behind — covering the properties the PR description promises:
  *

@@ -9,7 +9,7 @@ import { devices, elevationAudit, elevationRequests, mlFeedbackEvents, remediati
 import { authMiddleware, type AuthContext, requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { emitRemediationSuggestionFeedback } from '../services/mlFeedbackEmitters';
-import { generateRemediationSuggestions } from '../services/remediationSuggestions';
+import { generateRemediationSuggestions, RemediationSourceDeviceError } from '../services/remediationSuggestions';
 import { canAccessSite, hasPermission, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { executeScriptOnDevices } from '../services/scriptExecution';
 import { requestResearch, researchSourceDeviceId, researchStatusForSource } from '../services/fixMemory/research';
@@ -731,14 +731,26 @@ remediationSuggestionRoutes.post(
       if (researchOrgId && !(await runInDbContext(() => researchSourceSiteAllowed(researchOrgId, sourceType, input.sourceId, perms)))) {
         return c.json({ error: 'Suggestion source not found' }, 404);
       }
+    } else if (input.deviceId && !(await runInDbContext(() => siteAllowedForSuggestion({ deviceId: input.deviceId! }, perms)))) {
+      // An RCA takes its device from the caller; it must be a device the
+      // caller can see (the service separately proves it belongs to the source).
+      return c.json({ error: 'Suggestion source not found' }, 404);
     }
 
-    const result = await generateRemediationSuggestions({
-      ...input,
-      actorUserId: auth.user.id,
-      allowResearch: Array.isArray(perms?.permissions)
-        && hasPermission(perms, PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action),
-    }, { runInDbContext });
+    let result: Awaited<ReturnType<typeof generateRemediationSuggestions>>;
+    try {
+      result = await generateRemediationSuggestions({
+        ...input,
+        actorUserId: auth.user.id,
+        allowResearch: Array.isArray(perms?.permissions)
+          && hasPermission(perms, PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action),
+      }, { runInDbContext });
+    } catch (err) {
+      if (err instanceof RemediationSourceDeviceError) {
+        return c.json({ error: err.message }, 400);
+      }
+      throw err;
+    }
     const { visible, outcomes } = await runInDbContext(async () => {
       const rows = await filterSiteAllowedSuggestions(result.suggestions, perms);
       return { visible: rows, outcomes: await loadOutcomeSummaries(rows.map((row) => row.id)) };

@@ -27,7 +27,7 @@ const { legalHoldMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../services/tenantCascade', () => ({
-  hasActiveLegalHoldSnapshots: legalHoldMock,
+  hasActiveBackupLegalHold: legalHoldMock,
   LEGAL_HOLD_ACTIVE_MESSAGE:
     'This organization has one or more backup snapshots under legal hold. '
     + 'Release the hold before erasing the organization.',

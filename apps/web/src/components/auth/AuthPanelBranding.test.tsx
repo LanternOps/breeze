@@ -34,6 +34,11 @@ describe('AuthPanelBranding', () => {
     await Promise.resolve();
     expect(screen.getByText('10,000+ endpoints')).toBeInTheDocument();
     expect(screen.queryByTestId('partner-logo')).not.toBeInTheDocument();
+
+    // The stock Breeze mark keeps its original size (only partner logos grew).
+    const stockMark = screen.getByText('Breeze').previousElementSibling as SVGElement;
+    expect(stockMark.tagName.toLowerCase()).toBe('svg');
+    expect(stockMark.getAttribute('class')).toBe('h-8 w-8');
   });
 
   it('renders partner branding and drops marketing copy when branding is present', async () => {
@@ -54,6 +59,18 @@ describe('AuthPanelBranding', () => {
     const logo = screen.getByTestId('partner-logo') as HTMLImageElement;
     expect(logo).toBeInTheDocument();
     expect(logo.getAttribute('src')).toBe('https://x/logo.png');
+
+    // #7899: the logo was a fixed 32px tall (h-8), capped at 180px wide, so a
+    // round badge logo rendered unreadably small. It must render larger, scale
+    // to fit (object-contain), and cap its width at min(panel width, 280px) so a
+    // wide wordmark cannot overflow the ~242px-wide panel at the md breakpoint.
+    const logoClasses = logo.className.split(/\s+/);
+    expect(logoClasses).not.toContain('h-8');
+    expect(logoClasses).toContain('h-16');
+    expect(logoClasses).toContain('lg:h-20');
+    expect(logoClasses).toContain('object-contain');
+    expect(logoClasses).toContain('max-w-[min(100%,280px)]');
+    expect(logoClasses).not.toContain('max-w-[180px]');
 
     // Accent color applied to the panel background.
     const panel = container.firstElementChild as HTMLElement;

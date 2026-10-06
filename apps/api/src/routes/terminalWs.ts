@@ -415,7 +415,7 @@ async function closeExactTerminalConnection(
       (endedAt.getTime() - session.startedAt.getTime()) / 1000,
     );
     try {
-      // Through the terminal-intent contract (SEC-038 W03). This also adds the
+      // Through the terminal-intent contract. This also adds the
       // live-status guard the bare UPDATE never had: a row a teardown or
       // revocation already made terminal keeps its recorded verdict and
       // endedAt instead of being rewritten with the socket's close time.

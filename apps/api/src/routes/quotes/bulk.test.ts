@@ -32,13 +32,21 @@ vi.mock('../../db', async (importActual) => {
   };
 });
 
+// Per-item audits: assert the call, not the persistence path.
+vi.mock('../../services/auditEvents', async (importActual) => ({
+  ...(await importActual<typeof import('../../services/auditEvents')>()),
+  writeRouteAudit: vi.fn(),
+}));
+
 import { quoteRoutes } from './index';
+import { writeRouteAudit } from '../../services/auditEvents';
 import { deleteDraftQuote } from '../../services/quoteService';
 import { sendQuote } from '../../services/quoteLifecycle';
 import { QuoteServiceError } from '../../services/quoteTypes';
 
 const A = '11111111-1111-1111-1111-111111111111';
 const B = '22222222-2222-2222-2222-222222222222';
+const ORG = '33333333-3333-3333-3333-333333333333';
 
 function post(path: string, body: unknown) {
   return quoteRoutes.request(path, {
@@ -52,22 +60,31 @@ describe('quote bulk routes', () => {
   beforeEach(() => { vi.clearAllMocks(); gate.permGate = async (_c: any, next: any) => next(); });
 
   it('bulk-delete deletes each id and reports counts', async () => {
-    (deleteDraftQuote as any).mockResolvedValue(undefined);
+    (deleteDraftQuote as any).mockImplementation(async (id: string) => ({ id, orgId: ORG }));
     const res = await post('/bulk-delete', { ids: [A, B] });
     expect(res.status).toBe(200);
     expect((await res.json()).data).toMatchObject({ total: 2, succeeded: 2, skipped: 0, failed: 0 });
     expect(deleteDraftQuote).toHaveBeenCalledTimes(2);
+    expect(writeRouteAudit).toHaveBeenCalledTimes(2);
+    for (const id of [A, B]) {
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        orgId: ORG, action: 'quote.delete', resourceType: 'quote', resourceId: id,
+      }));
+    }
   });
 
   it('bulk-delete tallies non-draft skips without failing the request', async () => {
     (deleteDraftQuote as any)
-      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ id: A, orgId: ORG })
       .mockRejectedValueOnce(new QuoteServiceError('Quote is not a draft', 409, 'NOT_A_DRAFT'));
     const res = await post('/bulk-delete', { ids: [A, B] });
     expect(res.status).toBe(200);
     const data = (await res.json()).data;
     expect(data).toMatchObject({ succeeded: 1, skipped: 1 });
     expect(data.skippedReasons).toEqual({ NOT_A_DRAFT: 1 });
+    // Only the quote that was actually deleted is audited.
+    expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'quote.delete', resourceId: A }));
   });
 
   it('bulk-send sends each draft, then delivers its email after that item committed', async () => {
@@ -80,6 +97,9 @@ describe('quote bulk routes', () => {
     expect((await res.json()).data).toMatchObject({ succeeded: 1 });
     expect(sendQuote).toHaveBeenCalledWith(A, expect.anything());
     expect(deliverEmail).toHaveBeenCalledTimes(1);
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: 'org1', action: 'quote.send', resourceType: 'quote', resourceId: A, details: expect.objectContaining({ bulk: true, emailed: true }),
+    }));
   });
 
   it('counts a bulk-send item as succeeded even when its deferred email fails', async () => {

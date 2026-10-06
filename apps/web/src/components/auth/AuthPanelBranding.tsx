@@ -45,7 +45,10 @@ export default function AuthPanelBranding({ tagline }: { tagline: string }) {
               src={safeLogo}
               alt=""
               data-testid="partner-logo"
-              className="h-8 max-w-[180px] object-contain"
+              // Sized for badge-style logos too (#7899): h-8 left a round
+              // badge unreadable. The width cap is min(panel, 280px) because
+              // the panel's content box is only ~242px wide at md.
+              className="h-16 w-auto max-w-[min(100%,280px)] object-contain lg:h-20"
             />
           ) : (
             <>

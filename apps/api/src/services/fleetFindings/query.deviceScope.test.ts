@@ -28,6 +28,7 @@ const h = vi.hoisted(() => {
     chain.leftJoin = pass;
     chain.where = (arg: unknown) => { whereArgs.push(arg); return chain; };
     chain.orderBy = pass;
+    chain.groupBy = pass;
     chain.limit = pass;
     chain.offset = pass;
     chain.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
@@ -42,7 +43,7 @@ const h = vi.hoisted(() => {
 vi.mock('../../db', () => ({ db: { select: h.mockSelect } }));
 
 vi.mock('../../db/schema', () => ({
-  devices: { id: 'd.id', siteId: 'd.siteId', hostname: 'd.hostname', displayName: 'd.displayName', osType: 'd.osType' },
+  devices: { id: 'd.id', orgId: 'd.orgId', siteId: 'd.siteId', hostname: 'd.hostname', displayName: 'd.displayName', osType: 'd.osType' },
   organizations: { id: 'o.id', name: 'o.name' },
 }));
 
@@ -54,7 +55,7 @@ vi.mock('../../db/schema/fleetFindings', () => ({
     firstSeenAt: 'ffd.firstSeenAt', lastSeenAt: 'ffd.lastSeenAt',
   },
   fleetRemediationRuns: { id: 'frr.id', orgId: 'frr.orgId', createdAt: 'frr.createdAt', findingId: 'frr.findingId' },
-  fleetRemediationRunTargets: { runId: 'frt.runId' },
+  fleetRemediationRunTargets: { runId: 'frt.runId', targetDeviceUuid: 'frt.targetDeviceUuid', status: 'frt.status' },
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -62,6 +63,7 @@ vi.mock('drizzle-orm', () => ({
   eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
   inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
   desc: (column: unknown) => ({ op: 'desc', column }),
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', strings, values }),
 }));
 
 import { getFleetFinding, getFleetFindingCounts, getRemediationRun, listFleetFindings } from './query';
@@ -143,11 +145,14 @@ describe('listFleetFindings — exact-device axis', () => {
     expect((out.findings[0] as any).deviceCount).toBe(1);
   });
 
-  it('issues NO member scan and narrows nothing for an unrestricted caller', async () => {
+  it('applies no device-axis condition for an unrestricted caller (current-member scan only)', async () => {
     h.selectQueue.push([findingRow()]);
+    h.selectQueue.push([{ findingId: FINDING_1, deviceId: DEVICE_1 }, { findingId: FINDING_1, deviceId: DEVICE_2 }]);
     const out = await listFleetFindings(agentAuth(undefined, undefined), LIST_FILTERS);
     expect(out.total).toBe(1);
-    expect(h.mockSelect).toHaveBeenCalledTimes(1);
+    expect(h.mockSelect).toHaveBeenCalledTimes(2);
+    const memberWhere = h.whereArgs[1] as { args: Array<{ column?: unknown }> };
+    expect(memberWhere.args.some((arg) => arg.column === 'ffd.deviceId')).toBe(false);
   });
 });
 

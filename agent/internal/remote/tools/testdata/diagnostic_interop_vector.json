@@ -1,0 +1,59 @@
+{
+  "_comment": "Cross-language interop vector for diagnostic access. authorization: signed by the API side (Ed25519 seed 0x07*32, publicKey below); sealed: produced by the agent side for serverPrivateKey. Both apps/api and agent tests read this file. Regenerate only together with a deliberate wire-format change.",
+  "authorizationVector": {
+    "publicKey": "6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw=",
+    "authorization": {
+      "v": 1,
+      "authorizationId": "5b0c1e2a-9f3d-4c61-8a77-0d2f6e9b1c34",
+      "commandId": "0e7d7c55-8a1b-4b0e-9d52-6f4a2b1c9e80",
+      "grantId": "9a3f2c1d-6b4e-4f8a-a1c2-3d4e5f6a7b8c",
+      "deviceId": "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+      "orgId": "2d3e4f5a-6b7c-4d8e-9f0a-1b2c3d4e5f6a",
+      "operation": "read",
+      "requestPath": "C:\\Users\\alice\\AppData\\Local\\Battle.net\\Logs\\Agent.log",
+      "offset": 4096,
+      "maxBytes": 65536,
+      "limit": 0,
+      "encoding": "text",
+      "resultPublicKey": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=",
+      "roots": [
+        {
+          "path": "C:\\Users\\alice\\AppData\\Local\\Battle.net\\Logs",
+          "recursive": true
+        },
+        {
+          "path": "C:\\Users\\alice\\AppData\\Local\\NVIDIA Corporation\\GeForceNOW",
+          "recursive": false
+        }
+      ],
+      "sensitiveClasses": [
+        "session_tokens",
+        "browser_secrets"
+      ],
+      "approvedBy": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7",
+      "issuedAt": "2026-09-28T17:00:00Z",
+      "expiresAt": "2026-09-28T17:02:00Z",
+      "keyId": "test-key-1",
+      "signature": "QVETZLW1FQYIRhowpkVhGbYKGwEve/iEDYpCtrsBAN4ExAISnJ81qEoKvuFoE7glNDFrCRjxvOn+FdXjhuUBAg=="
+    },
+    "canonicalB64": "YnJlZXplLWFnZW50LWRpYWdub3N0aWMtcmVhZC12MQo1YjBjMWUyYS05ZjNkLTRjNjEtOGE3Ny0wZDJmNmU5YjFjMzQKMGU3ZDdjNTUtOGExYi00YjBlLTlkNTItNmY0YTJiMWM5ZTgwCjlhM2YyYzFkLTZiNGUtNGY4YS1hMWMyLTNkNGU1ZjZhN2I4YwoxYzJkM2U0Zi01YTZiLTRjN2QtOGU5Zi0wYTFiMmMzZDRlNWYKMmQzZTRmNWEtNmI3Yy00ZDhlLTlmMGEtMWIyYzNkNGU1ZjZhCnJlYWQKQzpcVXNlcnNcYWxpY2VcQXBwRGF0YVxMb2NhbFxCYXR0bGUubmV0XExvZ3NcQWdlbnQubG9nCjQwOTYKNjU1MzYKMAp0ZXh0CkNRa0pDUWtKQ1FrSkNRa0pDUWtKQ1FrSkNRa0pDUWtKQ1FrSkNRa0pDUWs9CjIKMTpDOlxVc2Vyc1xhbGljZVxBcHBEYXRhXExvY2FsXEJhdHRsZS5uZXRcTG9ncwowOkM6XFVzZXJzXGFsaWNlXEFwcERhdGFcTG9jYWxcTlZJRElBIENvcnBvcmF0aW9uXEdlRm9yY2VOT1cKYnJvd3Nlcl9zZWNyZXRzLHNlc3Npb25fdG9rZW5zCjNlNGY1YTZiLTdjOGQtNGU5Zi1hMGIxLWMyZDNlNGY1YTZiNwoyMDI2LTA5LTI4VDE3OjAwOjAwWgoyMDI2LTA5LTI4VDE3OjAyOjAwWgp0ZXN0LWtleS0x"
+  },
+  "sealVector": {
+    "plaintext": {
+      "bytesRead": 22,
+      "content": "line one\nline two ☃\n",
+      "encoding": "text",
+      "eof": true,
+      "offset": 0,
+      "path": "C:\\Users\\alice\\AppData\\Local\\Battle.net\\Logs\\Agent.log"
+    },
+    "sealed": {
+      "v": 1,
+      "authorizationId": "5b0c1e2a-9f3d-4c61-8a77-0d2f6e9b1c34",
+      "epk": "0T4Y7zg5bPhtV4bFRXj+lx3XuK1kU6YSNAtjKK6jyUI=",
+      "nonce": "KSZmVpPR/uU6h8TS",
+      "ct": "ERj0NJmS3/7bOShsfUpNIEdD/Bhw9uZWsPUKE1woZgC/60KB96HFxrlc/w2E2yGA2ORFEfvFCaIz+8HKekzUqpygq/J983Y4a+My/uCdcpE2MJImUU7DGOBRkBV+N3wrPxOxLEYyBbcPcrc9e6pSSNDAOn9hE0wwa764vCFm3E437chcXYG+WI/p61pLypgxTzB98JMy7gGsbvHvM6xrUe18txNlOiB5+cwHdg9gYYH5lytd"
+    },
+    "serverPrivateKey": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws="
+  }
+}

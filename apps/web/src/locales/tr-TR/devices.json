@@ -2439,6 +2439,7 @@
       "bulkWakeSomeFailed": "Toplu Uyandırma Bazıları Başarısız Oldu",
       "commandQueued": "{{action}} sıraya alındı — {{hostname}} yeniden bağlandığında çalışacak",
       "commandSent": "{{action}}, {{hostname}} adlı kişiye gönderildi",
+      "commandCancelled": "{{action}}, {{hostname}} cihazına gönderilmedi: komut iptal edildi ({{reason}})",
       "compareNeedsTwo": "Karşılaştırma en az 2 aracı cihaza ihtiyaç duyar.",
       "decommissionCancelled": "Çıkarma İptal Edildi",
       "decommissionFailed": "Çıkarma Başarısız",
@@ -2824,7 +2825,8 @@
     "submitStepUp": "Doğrula ve taşı",
     "submitting": "İşleniyor…",
     "cancel": "İptal",
-    "genericError": "Cihaz taşınamadı."
+    "genericError": "Cihaz taşınamadı.",
+    "timeout": "Taşıma beklenenden uzun sürüyor ve sunucuda hâlâ tamamlanıyor olabilir. Bir dakika bekleyin, ardından yeniden denemeden önce cihazın hangi kuruluşta olduğunu kontrol etmek için sayfayı yenileyin."
   },
   "networkDeviceDetailPage": {
     "approval": {

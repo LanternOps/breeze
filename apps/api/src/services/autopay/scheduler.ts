@@ -1,17 +1,17 @@
-import { autopayTermsSnapshotSchema } from '@breeze/shared';
+import { autopayTermsSnapshotSchema, formatPaymentMethod } from '@breeze/shared';
 import { collectionFenced, pendingInvoiceControl } from './collectionControl';
 import { and, eq, inArray, sql, asc, gt } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { invoices, invoiceLines, contracts, organizations, orgAutopayEnrollments,
   invoiceAutopaySchedules, billingNoticeOutbox, invoiceCollectionAttempts } from '../../db/schema';
 import type { AutopayIneligibleReason } from '@breeze/shared';
-import { toMinorUnits } from '../stripeMoney';
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { isAutopayEnabledForPartner } from './autopayGate';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { getAutopayMethod } from './paymentMethods';
 import { quoteProcessingFee } from './processingFee';
 import { acceptedCollectionFee } from './collectionFee';
+import { acceptedAutopayCap, autopayCapReason } from './authorizedCap';
 import { enqueueAutopayNotice, type AutopayTerms } from './chargingNotice';
 type Tx = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -56,7 +56,7 @@ export function noticeLeadDays(method: {
 export interface Eligibility {
   active: boolean; effective: boolean; methodUsable: boolean; charging: boolean;
   stripeReady: boolean; sameAccount: boolean; achCurrency: boolean; capCurrency: boolean;
-  underCap: boolean; excludedContract: boolean; excludedInvoice: boolean;
+  underCap: boolean; underAuthorizedCap: boolean; excludedContract: boolean; excludedInvoice: boolean;
 }
 export function eligibilityReason(e: Eligibility): AutopayIneligibleReason | null {
   if (!e.active) return 'not_enrolled';
@@ -67,6 +67,7 @@ export function eligibilityReason(e: Eligibility): AutopayIneligibleReason | nul
   if (!e.achCurrency) return 'ach_currency_unsupported';
   if (!e.capCurrency) return 'cap_currency_mismatch';
   if (!e.underCap) return 'over_cap';
+  if (!e.underAuthorizedCap) return 'above_authorized_cap';
   if (e.excludedContract) return 'excluded_contract';
   if (e.excludedInvoice) return 'excluded_invoice';
   return null;
@@ -105,7 +106,11 @@ export async function planAutopayForInvoice(tx: Tx, invoiceId: string, refresh =
     eq(invoiceLines.sourceContractId, contracts.id), eq(invoiceLines.orgId, contracts.orgId),
   )).where(and(eq(invoiceLines.invoiceId, invoiceId), eq(contracts.autopayExcluded, true))).limit(1);
   const cap = settings.autopayCap.value;
-  const capCurrency = !cap.enabled || cap.currency.toUpperCase() === invoice.currencyCode;
+  // The cap the client accepted for this method still binds when the MSP raises or removes theirs.
+  const acceptedCap = method ? await acceptedAutopayCap(tx, { orgId: invoice.orgId, enrollmentId: enrollment.id,
+    generation: enrollment.generation, methodId: method.id }) : null;
+  const capReason = autopayCapReason({ current: cap, accepted: acceptedCap ?? { enabled: false },
+    total: invoice.total, currency: invoice.currencyCode });
   let reason = eligibilityReason({ active: enrollment.status === 'active' && !org.deletedAt && ['active','trial'].includes(org.status),
     effective: !!enrollment.effectiveFrom && enrollment.effectiveFrom <= (previous ? new Date(previous.issuedAt) : invoice.updatedAt),
     methodUsable: !!method && ['active', 'pending_verification'].includes(method.status)
@@ -113,8 +118,8 @@ export async function planAutopayForInvoice(tx: Tx, invoiceId: string, refresh =
     charging, stripeReady: readiness.ready,
     sameAccount: readiness.stripeAccountId === enrollment.stripeAccountId,
     achCurrency: method?.type !== 'us_bank_account' || invoice.currencyCode === 'USD',
-    capCurrency, underCap: !cap.enabled || (capCurrency &&
-      toMinorUnits(invoice.total, invoice.currencyCode) <= toMinorUnits(cap.amount, invoice.currencyCode)),
+    capCurrency: capReason !== 'cap_currency_mismatch', underCap: capReason !== 'over_cap',
+    underAuthorizedCap: capReason !== 'above_authorized_cap',
     excludedContract: excluded.length > 0, excludedInvoice: invoice.autopayExcluded,
   });
   const leadDays = method ? noticeLeadDays(method) : 1;
@@ -130,14 +135,12 @@ export async function planAutopayForInvoice(tx: Tx, invoiceId: string, refresh =
     orgId:invoice.orgId,partnerId:invoice.partnerId,enrollmentId:enrollment.id,generation:enrollment.generation,
     methodId:method.id,methodType:method.type,principal:invoice.balance,currency:invoice.currencyCode,quote:lawfulFee,
   }) : null;
-  if (!reason && !fee) reason = 'consent_required';
+  if (!reason && (!fee || !acceptedCap)) reason = 'consent_required';
   const snapshot = method ? {
     issuedAt: previous?.issuedAt ?? invoice.updatedAt.toISOString(), offsetDays: settings.autopayOffsetDays.value,
     rule: settings.autopayOffsetRule.value, cap, methodType: method.type, methodId: method.id,
     last4: method.type === 'card' ? method.cardLast4 ?? '' : method.bankLast4 ?? '',
-    methodLabel: method.type === 'card'
-      ? `${method.cardBrand ?? 'Card'} ••${method.cardLast4 ?? ''}`
-      : `${method.bankName ?? 'Bank'} ••${method.bankLast4 ?? ''}`,
+    methodLabel: formatPaymentMethod(method),
     accountHolderType: method.accountHolderType, noticeLeadDays: leadDays,
     principal: invoice.balance, currency: invoice.currencyCode, feeAmount: fee?.feeAmount ?? '0.00',
     feeKind: fee?.kind ?? 'none', cardFeeBps: settings.cardFeeBps.value,

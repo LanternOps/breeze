@@ -1354,7 +1354,9 @@
       "action_link": "İşlem bağlantısı",
       "action_label": "İşlem etiketi",
       "days_overdue": "Gecikme günü",
-      "pay_link": "Ödeme bağlantısı"
+      "pay_link": "Ödeme bağlantısı",
+      "charge_total": "Toplam tahsilat",
+      "attempted_amount": "Denenen ödeme tutarı"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",

@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { requireScope, requirePermission, requireMfa } from '../../middleware/auth';
 import { hasPermission, PERMISSIONS } from '../../services/permissions';
-import { moveTicketOrgSchema } from '@breeze/shared';
+import { moveTicketOrgSchema, ERROR_CODES } from '@breeze/shared';
 import { moveTicketOrg } from '../../services/ticketService';
 import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
 import { getScopedTicketOr404, actorFrom, handleServiceError } from './tickets';
@@ -29,10 +29,10 @@ ticketMoveOrgRoutes.post(
     const { orgId: targetOrgId, acceptCurrencyMismatch } = c.req.valid('json');
 
     const found = await getScopedTicketOr404(auth, id);
-    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+    if (!found) return c.json({ error: 'Ticket not found', code: ERROR_CODES.NOT_FOUND }, 404);
 
     if (!auth.canAccessOrg(targetOrgId)) {
-      return c.json({ error: 'Access to target organization denied' }, 403);
+      return c.json({ error: 'Access to target organization denied', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
 
     // Multi-currency (#3776): accepting that unbilled monetary rows stay in the
@@ -42,7 +42,7 @@ ticketMoveOrgRoutes.post(
       acceptCurrencyMismatch === true &&
       !hasPermission(c.get('permissions'), PERMISSIONS.INVOICES_WRITE.resource, PERMISSIONS.INVOICES_WRITE.action)
     ) {
-      return c.json({ error: 'Accepting a currency mismatch requires invoices:write' }, 403);
+      return c.json({ error: 'Accepting a currency mismatch requires invoices:write', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
 
     try {

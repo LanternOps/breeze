@@ -12,7 +12,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/websocket"
 )
 
-// SEC-038 W05 — the agent half of the fence resync.
+// The agent half of the fence resync.
 //
 // The durable fence (desktop_fence.go) refuses a generation-carrying start for
 // any session it has not confirmed with the control plane IN THIS PROCESS.

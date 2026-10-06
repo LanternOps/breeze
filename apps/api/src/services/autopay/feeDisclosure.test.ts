@@ -1,6 +1,6 @@
 import type Stripe from 'stripe';
 import { expect, it } from 'vitest';
-import { prospectiveFeeText, verifiedFeeText, paymentFeeLine } from './feeDisclosure';
+import { prospectiveFeeText, verifiedFeeText, paymentFeeLine, chargeTotalLine } from './feeDisclosure';
 it('explains the maximum and excludes every non-credit funding result', () => {
   const text = prospectiveFeeText({ feeAmount: '2.00', kind: 'card_percent', appliedBps: 200, reason: 'state_capped' }, 'USD');
   expect(text).toContain('2.00%'); expect(text).toContain('Debit, prepaid and unknown-funding cards have no fee');
@@ -36,4 +36,11 @@ it('preserves bank terms and formats non-USD and zero-fee amounts', () => {
   expect(verifiedFeeText('us_bank_account', null, 'Bank fee')).toBe('Bank fee');
   expect(prospectiveFeeText({feeAmount:'0.00',kind:'none',appliedBps:null,reason:'disabled'},'USD')).toBe('No processing fee applies.');
   expect(paymentFeeLine('100.00','0','EUR','card')).toBe('EUR 100.00; no processing fee');
+});
+
+it('states the total that will be charged, principal plus fee (D-26)', () => {
+  expect(chargeTotalLine('100.00','3.00','USD','card')).toBe('Total charge: $103.00 ($100.00 + $3.00 card processing fee)');
+  expect(chargeTotalLine('150.00','1.00','USD','us_bank_account')).toBe('Total charge: $151.00 ($150.00 + $1.00 bank processing fee)');
+  expect(chargeTotalLine('100.00','0.00','USD','card')).toBe('Total charge: $100.00 (no processing fee)');
+  expect(chargeTotalLine('100.00','0','EUR','card')).toBe('Total charge: EUR 100.00 (no processing fee)');
 });

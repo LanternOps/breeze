@@ -15,7 +15,7 @@ export const officeAddinUserBindings = pgTable('office_addin_user_bindings', {
   id: uuid('id').primaryKey().defaultRandom(),
   entraTenantId: uuid('entra_tenant_id').notNull(),
   entraOid: uuid('entra_oid').notNull(),
-  userId: uuid('user_id').notNull().references(() => users.id),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
   boundAuthEpoch: integer('bound_auth_epoch').notNull(),
   // DEFAULT 0 is a DB-level safety net only: an old API replica mid-rollout
@@ -28,7 +28,7 @@ export const officeAddinUserBindings = pgTable('office_addin_user_bindings', {
   mfaVerifiedAt: timestamp('mfa_verified_at', { withTimezone: true }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
-  revokedBy: uuid('revoked_by').references(() => users.id),
+  revokedBy: uuid('revoked_by').references(() => users.id, { onDelete: 'set null' }),
 }, (t) => [
   uniqueIndex('office_addin_bindings_identity_active_uq')
     .on(t.entraTenantId, t.entraOid).where(sql`revoked_at IS NULL`),

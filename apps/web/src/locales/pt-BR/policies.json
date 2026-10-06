@@ -1003,6 +1003,8 @@
         "addPathOrProcess": "Adicionar caminho ou processo",
         "autoQuarantine": "Quarentena automática",
         "moveThreatsToQuarantineImmediately": "Mover ameaças imediatamente para a quarentena.",
+        "autoQuarantineReapproval": "A quarentena automática está pausada: as verificações apenas detectam até que um usuário com a permissão devices:execute salve estas configurações novamente.",
+        "autoQuarantineApproverInvalid": "A quarentena automática está pausada: o usuário que a aprovou não tem mais acesso devices:execute. As verificações apenas detectam até que um usuário com essa permissão salve estas configurações novamente.",
         "autoQuarantine2": "autoQuarantine",
         "scheduledScans2": "scheduledScans",
         "scanMinute": "scanMinute",

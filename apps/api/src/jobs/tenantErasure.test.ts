@@ -84,7 +84,7 @@ const { FakeTenantCascadeRefusalError } = vi.hoisted(() => ({
 
 vi.mock('../services/tenantCascade', () => ({
   cascadeDeleteOrg: (...args: unknown[]) => cascadeDeleteOrgMock(...(args as [])),
-  hasActiveLegalHoldSnapshots: (...args: unknown[]) => legalHoldMock(...(args as [])),
+  hasActiveBackupLegalHold: (...args: unknown[]) => legalHoldMock(...(args as [])),
   TenantCascadeRefusalError: FakeTenantCascadeRefusalError,
 }));
 
@@ -229,7 +229,7 @@ describe('tenantErasure worker', () => {
       id: 'tenant-erasure-org-xyz',
       data: { orgId: 'org-xyz', performedBy: 'admin-1', performedByEmail: 'admin@example.com' },
     });
-    expect(cascadeDeleteOrgMock).toHaveBeenCalledWith('org-xyz', 'admin-1', 'admin@example.com');
+    expect(cascadeDeleteOrgMock).toHaveBeenCalledWith('org-xyz', 'admin-1', 'admin@example.com', { erasureJobId: 'tenant-erasure-org-xyz' });
     expect(result).toMatchObject({
       orgId: 'org-xyz',
       totalRowsDeleted: 2,

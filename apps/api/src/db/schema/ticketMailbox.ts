@@ -17,7 +17,7 @@ import { users } from './users';
 export const ticketMailboxTenantOwnerships = pgTable('ticket_mailbox_tenant_ownerships', {
   tenantId: uuid('tenant_id').primaryKey(),
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
-  verifiedBy: uuid('verified_by').references(() => users.id),
+  verifiedBy: uuid('verified_by').references(() => users.id, { onDelete: 'set null' }),
   verifiedMicrosoftOid: uuid('verified_microsoft_oid').notNull(),
   verifiedAt: timestamp('verified_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -115,7 +115,7 @@ export const ticketMailboxConsentSessions = pgTable('ticket_mailbox_consent_sess
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
   connectionId: uuid('connection_id').notNull(),
   consentAttemptId: uuid('consent_attempt_id').notNull(),
-  userId: uuid('user_id').references(() => users.id),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
   tenantHintHash: text('tenant_hint_hash'),
   nonce: text('nonce'),
   codeVerifier: text('code_verifier'),

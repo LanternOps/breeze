@@ -313,6 +313,8 @@ Enrollment keys are hashed using SHA-256 with a server-side pepper before storag
 
 `APP_ENCRYPTION_KEY`, `SSO_ENCRYPTION_KEY`, `SECRET_ENCRYPTION_KEY`, `JWT_SECRET`, and `SESSION_SECRET` are consulted only as legacy fallbacks on the *read* path, so enrollment keys hashed before `ENROLLMENT_KEY_PEPPER` became mandatory still match after an upgrade — they are never used to hash a newly created or rotated key.
 
+Installer bootstrap tokens (the short token embedded in a downloaded installer's filename or bundle) are also stored only as a hash keyed by `ENROLLMENT_KEY_PEPPER`. They have **no** legacy-pepper fallback: rotating `ENROLLMENT_KEY_PEPPER` invalidates every outstanding installer link and every downloaded installer that has not enrolled yet, so re-issue installers after a rotation.
+
 The hash is computed as:
 
 ```

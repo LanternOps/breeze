@@ -17,6 +17,7 @@ import {
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
 import { refreshClaimedPayloadForPush } from './commandDelivery';
+import { cancelledCommandError } from './commandCancelMessage';
 import { BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES } from './backupCommandCredentials';
 import { commandAuditDetails } from './commandAudit';
 import {
@@ -210,7 +211,7 @@ export type RearmIdempotentCommandResult =
   | { delivered: true }
   | {
       delivered: false;
-      reason: 'agent_disconnected' | 'delivery_failed' | 'command_conflict';
+      reason: 'agent_disconnected' | 'delivery_failed' | 'command_conflict' | 'command_cancelled';
     };
 
 /**
@@ -289,7 +290,12 @@ export async function rearmIdempotentCommandForDelivery(input: {
   const claimed = await withSystemDbAccessContext(() =>
     claimPendingCommandForDelivery(input.commandId),
   );
-  if (!claimed) {
+  // Claim-time eligibility terminalised the row: it will never be delivered,
+  // so do not report it as a retryable delivery failure.
+  if (claimed.status === 'cancelled') {
+    return { delivered: false, reason: 'command_cancelled' };
+  }
+  if (claimed.status !== 'claimed') {
     return { delivered: false, reason: 'delivery_failed' };
   }
   const delivered = sendCommandToAgent(prepared.agentId, {
@@ -418,6 +424,8 @@ const INTERACTIVE_COMMAND_TYPES: Set<string> = new Set([
   CommandTypes.FILE_LIST,
   CommandTypes.FILE_LIST_DRIVES,
   CommandTypes.FILE_READ,
+  CommandTypes.DIAG_FILE_LIST,
+  CommandTypes.DIAG_FILE_READ,
   CommandTypes.FILE_WRITE,
   CommandTypes.FILE_DELETE,
   CommandTypes.FILE_MKDIR,
@@ -824,8 +832,11 @@ export async function waitForCommandResult(
 
     lastObservedCommand = command as QueuedCommand;
 
-    // Check if command is complete
-    if (command.status === 'completed' || command.status === 'failed') {
+    // Check if command is complete. `cancelled` is terminal too (a claim-time
+    // refusal, an operator cancel): nothing will ever complete it, so waiting
+    // out the timeout would only stall the caller and then overwrite the
+    // cancellation with a timeout.
+    if (command.status === 'completed' || command.status === 'failed' || command.status === 'cancelled') {
       return command as QueuedCommand;
     }
 
@@ -927,6 +938,11 @@ export async function queueCommandForExecution(
       : { error: res.error };
   }
 
+  if (res.delivery === 'cancelled') {
+    // The push's claim-time eligibility check cancelled the row: it exists but
+    // will never run. Report it as the refusal it is, with the reason.
+    return { command: res.command, error: cancelledCommandError(res.cancelReason) };
+  }
   return { command: res.command, delivery: res.delivery, deliverBy: res.deliverBy };
 }
 
@@ -942,6 +958,11 @@ export async function queueCommandForExecutionWithSystemPrecheck(
     return res.code === 'trust_denied' && res.trust
       ? { error: res.error, trust: res.trust }
       : { error: res.error };
+  }
+  if (res.delivery === 'cancelled') {
+    // The push's claim-time eligibility check cancelled the row: it exists but
+    // will never run. Report it as the refusal it is, with the reason.
+    return { command: res.command, error: cancelledCommandError(res.cancelReason) };
   }
   return { command: res.command, delivery: res.delivery, deliverBy: res.deliverBy };
 }
@@ -1492,7 +1513,13 @@ async function dispatchPreparedCommand(
     // and is picked up by the heartbeat claim query in heartbeat.ts.
     if (device.agentId && dispatchViaWs) {
       const claimed = await claimPendingCommandForDelivery(command.id);
-      if (claimed) {
+      if (claimed.status === 'cancelled') {
+        // Claim-time eligibility refused and terminalised the row: it will
+        // never reach the agent, so fail now with the reason instead of
+        // polling a terminal row until `timeoutMs`.
+        return { status: 'failed' as const, error: cancelledCommandError(claimed.reason), commandId: command.id };
+      }
+      if (claimed.status === 'claimed') {
         // Same late-binding preparation as the heartbeat claim and the
         // enqueue-time push: the registered refresher runs FIRST (it resolves
         // anything the row stores only by reference, e.g. a storage
@@ -1569,6 +1596,13 @@ async function dispatchPreparedCommand(
 
     // Poll for result
     const result = await waitForCommandResult(command.id, timeoutMs);
+
+    if (result.status === 'cancelled') {
+      // Cancelled while we waited (e.g. by the heartbeat claim's eligibility
+      // check). Its `result` is a cancellation record, not a CommandResult.
+      const reason = (result.result as { reason?: string } | null)?.reason;
+      return { status: 'failed' as const, error: cancelledCommandError(reason), commandId: command.id };
+    }
 
     const finalResult = result.result ?? {
       status: 'failed' as const,
