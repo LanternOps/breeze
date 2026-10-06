@@ -193,6 +193,7 @@ const EXEMPT: Record<string, string> = {
   'jobs/removedDevicePurge.ts': 'lifecycle removal must reach every device',
   'jobs/s1Sync.ts': 'partner-scoped integration; devices are matched only inside orgs named by s1_org_mappings, which only a person sets through the SentinelOne mapping route',
   'jobs/staleCommandReaper.ts': 'lifecycle: reaps stale command rows',
+  'jobs/ticketNotifyWorker.ts': 'reads the name of the one device already linked to an existing ticket (by id, within the ticket org) for the assignee email; selects no targets',
   'jobs/topologyCollectionRetentionWorker.ts': 'retention, not target selection',
   'jobs/userRiskJobs.ts': 'scores users, not devices; the holding org has no users',
   'services/aiToolsTicketing.ts': 'identity match pinned to the ticket\'s own org',
