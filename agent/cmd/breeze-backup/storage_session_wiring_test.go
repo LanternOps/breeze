@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -265,16 +266,19 @@ func checkStatus(want string) func(t *testing.T, result backupipc.BackupCommandR
 }
 
 // TestStorageSessionWiring_PlanBatchesRestore: a restore resolves the
-// manifest, then the planned files as one batch rather than one call per
-// file.
+// manifest, then the planned files in batches rather than one call per file.
+// The restore downloads concurrently (#5623), so the first few downloads may
+// each open a batch before one covers the rest; the invariants are that no
+// key is resolved twice and the call count stays far below one per file.
 func TestStorageSessionWiring_PlanBatchesRestore(t *testing.T) {
 	origWorkRoot := backupRestoreWorkRoot
 	backupRestoreWorkRoot = func() string { return t.TempDir() }
 	t.Cleanup(func() { backupRestoreWorkRoot = origWorkRoot })
 	e := newBrokeredEnv(t)
+	const n = 40
 	files := map[string][]byte{}
-	for _, n := range []string{"1", "2", "3", "4", "5", "6"} {
-		files["f"+n] = []byte("v" + n)
+	for i := 0; i < n; i++ {
+		files[fmt.Sprintf("f%02d", i)] = []byte(fmt.Sprintf("v%d", i))
 	}
 	e.seedBrokeredSnapshot("snap-plan", files)
 	var calls int
@@ -293,10 +297,24 @@ func TestStorageSessionWiring_PlanBatchesRestore(t *testing.T) {
 	if !result.Success {
 		t.Fatalf("restore failed: %q", result.Stderr)
 	}
+	seen := map[string]int{}
+	for _, k := range e.resolved() {
+		seen[k]++
+	}
+	for k, c := range seen {
+		if c != 1 {
+			t.Errorf("key %s resolved %d times, want once", k, c)
+		}
+	}
+	if len(seen) != n+1 {
+		t.Errorf("resolved %d distinct keys, want the manifest plus %d files", len(seen), n)
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if calls != 2 {
-		t.Fatalf("resolve calls = %d, want 2 (manifest, then one planned batch)", calls)
+	// Manifest + at most one batch per download that starts before any
+	// batch covers it (bounded by the restore's download concurrency, 8).
+	if calls-1 > n/4 {
+		t.Fatalf("resolve calls = %d for %d files; want batching, not one call per file", calls, n)
 	}
 }
 
