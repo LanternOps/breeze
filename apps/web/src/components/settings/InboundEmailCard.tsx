@@ -22,6 +22,9 @@ interface InboundConfig {
   autoresponderEnabled: boolean;
   unknownSenderMode: UnknownSenderMode;
   dropUnverifiedSenders: boolean;
+  // File a staff member's forward under the ORIGINAL sender's customer org.
+  // Absent on an older API -> treated as off.
+  staffForwardRouting?: boolean;
   autoresponseSubject: string | null;
   autoresponseBody: string | null;
   // Reply-content mode. Not yet edited by this card, but carried through so a save
@@ -112,6 +115,7 @@ export default function InboundEmailCard() {
           | 'autoresponderEnabled'
           | 'unknownSenderMode'
           | 'dropUnverifiedSenders'
+          | 'staffForwardRouting'
           | 'autoresponseSubject'
           | 'autoresponseBody'
         >
@@ -131,6 +135,7 @@ export default function InboundEmailCard() {
         autoresponderEnabled: next.autoresponderEnabled,
         unknownSenderMode: next.unknownSenderMode,
         dropUnverifiedSenders: next.dropUnverifiedSenders,
+        staffForwardRouting: next.staffForwardRouting === true,
         autoresponseSubject: next.autoresponseSubject,
         autoresponseBody: next.autoresponseBody,
         // Preserve reply mode across a wholesale-replace save, even though this
@@ -332,6 +337,23 @@ export default function InboundEmailCard() {
             {t('inboundEmail.dropUnverified')}
             <span className="block text-xs text-muted-foreground">
               <Trans i18nKey="inboundEmail.dropUnverifiedDescription" t={t} components={{ all: <em /> }} />
+            </span>
+          </span>
+        </label>
+
+        <label className="mt-3 flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={cfg.staffForwardRouting === true}
+            disabled={saving}
+            onChange={(e) => void saveConfig({ staffForwardRouting: e.target.checked })}
+            data-testid="inbound-staff-forward-toggle"
+          />
+          <span>
+            {t('inboundEmail.staffForwardRouting')}
+            <span className="block text-xs text-muted-foreground">
+              {t('inboundEmail.staffForwardRoutingDescription')}
             </span>
           </span>
         </label>

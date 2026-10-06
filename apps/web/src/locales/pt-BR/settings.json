@@ -1400,6 +1400,8 @@
     "dropDescription": "Sem chamado, entrada na fila de revisão ou resposta automática. Uma linha de auditoria ainda é registrada. Use para manter spam não mapeado fora da triagem e da fila de revisão.",
     "dropUnverified": "Descartar mensagens que falham na autenticação do remetente (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Quando desativado, mensagens não verificadas ficam em quarentena para revisão. Quando ativado, são descartadas silenciosamente. Isso se aplica a <all>todos</all> os remetentes não verificados — inclusive clientes mapeados cuja mensagem falhe na verificação.",
+    "staffForwardRouting": "Registrar encaminhamentos da equipe no cliente do remetente original",
+    "staffForwardRoutingDescription": "Quando um membro da sua equipe no nível de parceiro encaminha o e-mail de um cliente para o endereço de suporte, o novo ticket é registrado na organização vinculada ao domínio do remetente original, e não na sua. O membro da equipe precisa ter acesso a essa organização. Funciona apenas para encaminhamentos feitos no Gmail e recebidos por uma caixa do Gmail conectada; não para o endereço de entrada nativo, caixas do Microsoft 365 nem encaminhamentos do Outlook.",
     "enableAutoresponse": "Enviar resposta automática confirmando novos chamados por e-mail",
     "editEmailTemplates": "O e-mail de confirmação é editado em Modelos de e-mail.",
     "editEmailTemplatesLink": "Editar modelos de e-mail",

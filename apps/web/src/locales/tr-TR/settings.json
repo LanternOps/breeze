@@ -1400,6 +1400,8 @@
     "dropDescription": "Bilet yok, inceleme kuyruğuna giriş yok, otomatik yanıt yok. Bir denetim satırı hâlâ kayıtlıdır. Eşlenmemiş spam'ı önceliklendirmenin ve inceleme kuyruğunun dışında tutmak için bunu kullanın.",
     "dropUnverified": "Gönderen kimlik doğrulamasını geçemeyen postaları bırakın (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Kapatıldığında, doğrulanmamış postalar incelenmek üzere karantinaya alınır. Açıkken sessizce bırakılır. Bu, <all>tümü</all> doğrulanmamış gönderenler için geçerlidir; bireysel mesajları kontrolde başarısız olan eşlenen müşteriler de dahil.",
+    "staffForwardRouting": "Personelin ilettiği e-postaları asıl gönderenin müşterisine kaydet",
+    "staffForwardRoutingDescription": "İş ortağı düzeyindeki personelinizden biri bir müşterinin e-postasını destek adresine ilettiğinde, yeni talep sizin kuruluşunuz yerine asıl gönderenin alan adıyla eşlenen kuruluşa kaydedilir. Personelin o kuruluşa erişimi olmalıdır. Yalnızca Gmail'de yapılan ve bağlı bir Gmail posta kutusuna ulaşan iletmelerde çalışır; yerel gelen adres, Microsoft 365 posta kutuları ve Outlook iletmeleri için çalışmaz.",
     "enableAutoresponse": "Yeni e-posta bildirimlerini onaylayan bir otomatik yanıt gönderin",
     "editEmailTemplates": "Onay e-postası E-posta şablonları altında düzenlenir.",
     "editEmailTemplatesLink": "E-posta şablonlarını düzenle",

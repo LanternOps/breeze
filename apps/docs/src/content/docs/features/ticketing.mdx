@@ -228,6 +228,24 @@ Pick the **Default triage organization** from the dropdown above the Unknown sen
 
 A separate checkbox on the same card, **Drop mail that fails sender authentication (SPF/DKIM/DMARC)**, controls mail that fails those checks -- independently of the Unknown senders setting above. When it's off (the default), unverified mail is quarantined for review. When it's on, unverified mail is dropped silently instead -- no ticket, no review-queue entry, no autoresponse. This applies to **all** unverified senders, including a message from an otherwise-recognized customer that individually fails the check, and takes priority over whatever you've chosen for unknown senders.
 
+#### Filing staff forwards under the original sender's customer
+
+Customers often email a technician directly, and the technician forwards that message to the support address. By default the new ticket is filed by the forwarder's address, which usually means your own organization. Turn on **File staff forwards under the original sender's customer** on the same card to file it under the customer instead. It's off by default.
+
+When it's on, a new ticket is filed under the organization mapped to the **original** sender's domain when all of these hold:
+
+- The forward arrives at a connected Gmail mailbox (see the caution below).
+- The forward passes the sender-authentication check above.
+- It comes from an **active partner-level** user of your account, not a customer-organization user, and that user has access to the customer's organization (all organizations, or a selected list that includes it).
+- It doesn't reply to an existing ticket. Replies still thread onto their ticket as usual.
+- The original sender's domain is mapped to a customer organization, and it isn't the forwarder's own domain.
+
+Anything else is routed exactly as it would be with the setting off. The original sender is never emailed: there's no autoresponse and no contact is created. Breeze uses the original address only to pick the organization, never to verify who sent it.
+
+<Aside type="caution" title="Connected Gmail mailboxes only">
+  Staff forwards are routed only for mail received by a **connected Gmail mailbox**. Mail sent to the native inbound address or a connected **Microsoft 365** mailbox always routes normally, because Breeze can't confirm it has the sender's own plain-text copy there. Breeze recognizes an inline forward by Gmail's `---------- Forwarded message ---------` line (or Outlook's older `-----Original Message-----` line) followed by a `From:` header block, read from the message's plain-text part. Modern Outlook marks a forward differently, and messages forwarded as attachments are never recognized. Because recognition is textual, a staff user who types the same marker and header block gets the same routing.
+</Aside>
+
 ### Who the requester is
 
 A ticket records **who asked** separately from **who signed in**. The requester is an organization [contact](/reference/organizations-and-sites/#contacts) — a person in the customer's business, whether or not they have ever logged into anything. The submitter is a portal login, and only exists when the ticket came in through the portal.

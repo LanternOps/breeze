@@ -1400,6 +1400,8 @@
     "dropDescription": "Aucun billet, aucune entrée dans la file de revue et aucune réponse automatique. Une ligne d’audit reste enregistrée. Utilisez cette option pour écarter les courriers indésirables non associés de la qualification et de la file de revue.",
     "dropUnverified": "Envoi de courrier qui échoue à l’authentification de l’expéditeur (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Lorsque cette option est désactivée, les courriels non vérifiés sont mis en quarantaine pour examen. Lorsqu’elle est activée, ils sont supprimés silencieusement. Cela s’applique à <all>tous</all> les expéditeurs non vérifiés, y compris les clients associés dont le message échoue à la vérification.",
+    "staffForwardRouting": "Classer les transferts du personnel sous le client de l’expéditeur d’origine",
+    "staffForwardRoutingDescription": "Lorsqu’un membre de votre personnel au niveau partenaire transfère le courriel d’un client à l’adresse de soutien, le nouveau billet est classé sous l’organisation associée au domaine de l’expéditeur d’origine plutôt que sous la vôtre. Ce membre du personnel doit avoir accès à cette organisation. Fonctionne seulement pour les transferts faits dans Gmail et reçus par une boîte Gmail connectée; pas pour l’adresse de réception native, les boîtes Microsoft 365 ni les transferts d’Outlook.",
     "enableAutoresponse": "Envoyez une réponse automatique pour accuser réceptionné des nouveaux billets par courriel",
     "editEmailTemplates": "Le courriel d'accusé de réception s'édite sous Modèles de courriel.",
     "editEmailTemplatesLink": "Modifier les modèles de courriel",

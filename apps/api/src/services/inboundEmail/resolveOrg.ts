@@ -174,6 +174,12 @@ export interface PartnerInboundPolicy {
    * sender matching. Default false (preserves the quarantine-for-review behavior).
    */
   dropUnverifiedSenders: boolean;
+  /**
+   * When true, a new ticket forwarded in by one of the partner's own staff is
+   * filed under the customer org mapped to the ORIGINAL sender's domain (see the
+   * staff-forward step in inboundEmailService). Default false.
+   */
+  staffForwardRouting: boolean;
   // NB: fullMessageReply is deliberately NOT part of this policy. It is a purely
   // outbound-notification concern, read from the partner settings by
   // ticketNotifyWorker on its own send path; the ingest consumer of this policy
@@ -222,5 +228,6 @@ export async function loadPartnerInboundPolicy(
     unknownSenderMode: mode,
     defaultTriageOrgId: inbound.defaultTriageOrgId ?? null,
     dropUnverifiedSenders: inbound.dropUnverifiedSenders === true,
+    staffForwardRouting: inbound.staffForwardRouting === true,
   };
 }

@@ -1,7 +1,8 @@
 import type { gmail_v1 } from '@googleapis/gmail';
 import type { InboundEmailAttachment, NormalizedInboundEmail } from '../inboundEmail/types';
 import { htmlToText } from '../inboundEmail/htmlToText';
-import { buildSenderAuth, stripComments } from '../inboundEmail/authenticationResults';
+import { buildSenderAuth } from '../inboundEmail/authenticationResults';
+import { parseMailboxes } from '../inboundEmail/addressParse';
 import { BREEZE_OUTBOUND_HEADER } from '../emailDomains/outboundMarker';
 
 // Cap decoded body size defensively (a hostile message must not let us decode an
@@ -216,23 +217,15 @@ export function isAddressedToMailbox(
   return matches != null && matches.some((m) => baseAddress(m) === target);
 }
 
-function parseEmail(raw: string | undefined): { address: string; name?: string } {
-  if (!raw) return { address: '' };
-  // Strip RFC 5322 CFWS comments FIRST so a valid `user@example.com (Display)` does
-  // not leave "(display)" glued to the address — resolveOrg does an exact domain
-  // compare and would otherwise drop a known customer.
-  const cleaned = stripComments(raw).trim();
-  // The address is inside the angle brackets, whatever the display name contains
-  // (commas, escaped quotes: `"Doe, \"John\"" <john@x.com>`). Extract the LAST
-  // <addr> so a display name can never leak into the address. A `[^"<]*?` regex
-  // over the whole header failed on escaped quotes and returned the whole header.
-  const angle = /<([^<>]+)>\s*$/.exec(cleaned) ?? /<([^<>]+)>/.exec(cleaned);
-  if (angle) {
-    const address = (angle[1] ?? '').trim().toLowerCase();
-    const name = cleaned.slice(0, angle.index).trim().replace(/^"(.*)"$/, '$1').trim() || undefined;
-    return { address, name };
-  }
-  return { address: cleaned.toLowerCase() };
+// The From header's RFC 5322 mailbox (first one; see addressParse.ts). An address
+// inside a quoted display name or a comment is never taken as the sender, and
+// commas or escaped quotes in a display name (`"Doe, \"John\"" <john@x.com>`)
+// stay in the name. `single` is false when the header does not hold exactly one
+// mailbox, so identity-sensitive steps can fail closed.
+function parseEmail(raw: string | undefined): { address: string; name?: string; single: boolean } {
+  const all = parseMailboxes(raw);
+  const first = all[0];
+  return first ? { address: first.address, name: first.name, single: all.length === 1 } : { address: '', single: false };
 }
 
 /**
@@ -262,11 +255,14 @@ export function normalizeGmailMessage(
   // filename): walkParts already recorded it as attachment metadata and left the
   // body empty on purpose, so decoding it here would copy the attachment's contents
   // into the ticket description. isAttachmentPart is the same check walkParts uses.
+  // walkParts only ever fills acc.text from a real text/plain part.
+  let textIsPlain = !!acc.text;
   if (!acc.text && !acc.html && msg.payload?.body?.data
       && !(msg.payload && isAttachmentPart(msg.payload))) {
     const mime = (msg.payload.mimeType ?? '').toLowerCase();
     const decoded = decodeBody(msg.payload.body.data, partCharset(msg.payload ?? undefined));
     if (mime === 'text/html') acc.html = decoded; else acc.text = decoded;
+    textIsPlain = mime === 'text/plain';
   }
   // An HTML-only message has no text/plain part. Derive the FULL body text from
   // the HTML (the consumer persists only `text`), not just Gmail's truncated
@@ -285,6 +281,8 @@ export function normalizeGmailMessage(
     fromName: from.name,
     subject: header(headers, 'Subject') ?? '',
     text,
+    // Staff-forward detection only for a single, unambiguous From mailbox.
+    forwardScanText: textIsPlain && acc.text && from.single ? acc.text : undefined,
     html: acc.html,
     messageId: header(headers, 'Message-ID') ?? header(headers, 'Message-Id'),
     inReplyTo: header(headers, 'In-Reply-To'),

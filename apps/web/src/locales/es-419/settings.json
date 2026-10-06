@@ -1400,6 +1400,8 @@
     "dropDescription": "Sin ticket, sin entrada a la cola de revisión, sin respuesta automática. Todavía se registra una fila de auditoría. Utilice esto para mantener el spam no asignado fuera de la clasificación y de la cola de revisión.",
     "dropUnverified": "Descartar correo que falla en la autenticación del remitente (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Cuando está desactivado, el correo no verificado se pone en cuarentena para su revisión. Cuando está encendido, cae silenciosamente. Esto se aplica a <all>all</all> remitentes no verificados, incluidos los clientes asignados cuyo mensaje individual no pasa la verificación.",
+    "staffForwardRouting": "Asignar los reenvíos del personal al cliente del remitente original",
+    "staffForwardRoutingDescription": "Cuando un miembro de su personal a nivel de socio reenvía el correo de un cliente a la dirección de soporte, el nuevo ticket se asigna a la organización vinculada al dominio del remitente original y no a la suya. El miembro del personal debe tener acceso a esa organización. Solo funciona con reenvíos hechos en Gmail y recibidos en un buzón de Gmail conectado; no con la dirección de entrada nativa, los buzones de Microsoft 365 ni los reenvíos de Outlook.",
     "enableAutoresponse": "Enviar una respuesta automática reconociendo nuevos tickets por correo electrónico",
     "editEmailTemplates": "El correo de acuse se edita en Plantillas de correo.",
     "editEmailTemplatesLink": "Editar plantillas de correo",

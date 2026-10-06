@@ -1400,6 +1400,8 @@
     "dropDescription": "Kein Ticket, kein Eintrag in der Prüfwarteschlange, keine automatische Antwort. Es wird weiterhin eine Auditzeile aufgezeichnet. Verwenden Sie diese Option, um nicht zugeordneten Spam von der Triage und der Prüfwarteschlange fernzuhalten.",
     "dropUnverified": "E-Mails verwerfen, die die Absenderauthentifizierung nicht bestehen (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Ist diese Option deaktiviert, werden nicht verifizierte E-Mails zur Prüfung in Quarantäne gestellt. Ist sie aktiviert, werden sie ohne Benachrichtigung verworfen. Dies gilt für <all>alle</all> nicht verifizierten Absender – einschließlich zugeordneter Kunden, deren einzelne Nachricht die Prüfung nicht besteht.",
+    "staffForwardRouting": "Weitergeleitete E-Mails von Mitarbeitern dem ursprünglichen Kunden zuordnen",
+    "staffForwardRoutingDescription": "Leitet ein Mitarbeiter auf Partnerebene die E-Mail eines Kunden an die Support-Adresse weiter, wird das neue Ticket der Organisation zugeordnet, die der Domain des ursprünglichen Absenders zugewiesen ist, statt Ihrer eigenen. Der Mitarbeiter muss Zugriff auf diese Organisation haben. Funktioniert nur für in Gmail erstellte Weiterleitungen, die in einem verbundenen Gmail-Postfach eingehen; nicht für die native Eingangsadresse, Postfächer von Microsoft 365 oder Weiterleitungen aus Outlook.",
     "enableAutoresponse": "Senden Sie eine automatische Antwort zur Bestätigung neuer E-Mail-Tickets",
     "editEmailTemplates": "Die Bestätigungs-E-Mail wird unter E-Mail-Vorlagen bearbeitet.",
     "editEmailTemplatesLink": "E-Mail-Vorlagen bearbeiten",
