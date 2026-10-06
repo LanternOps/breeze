@@ -36,7 +36,7 @@ export default function SnapshotIntegrityBadge({ status, className }: { status?:
       data-status={status}
       className={cn('inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium', TONE_CLASS[tone], className)}
     >
-      {t(`snapshotIntegrityBadge.${tone}`)}
+      {t(/* i18n-dynamic */ `snapshotIntegrityBadge.${tone}`)}
     </span>
   );
 }
