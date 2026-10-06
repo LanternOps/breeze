@@ -395,6 +395,17 @@ const MAX_SSE_SESSIONS = 100;
 const MAX_SSE_SESSIONS_PER_KEY = envInt('MCP_MAX_SSE_SESSIONS_PER_KEY', 5);
 const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
+/**
+ * Per-tool rate-limit bucket identity. A partner service principal borrows its
+ * owner as `auth.user` for RBAC only; it gets its own bucket so one principal
+ * cannot exhaust another principal's, or its owner's own sessions', budget.
+ */
+function toolRateLimitIdentity(auth: AuthContext): string {
+  return auth.principal.kind === 'partner_service_principal'
+    ? `partner_sp:${auth.principal.principalId}`
+    : auth.user.id;
+}
+
 function mcpPrincipalKey(apiKey: {
   id: string;
   oauthGrantId?: string | null;
@@ -1638,7 +1649,7 @@ async function handleToolsCall(
     // #6476: the API key's org picks the toolRateLimitMultiplier (partner
     // fallback for an org-less partner-scope caller). The counter stays per
     // user per tool across orgs.
-    const rateLimitErr = await checkToolRateLimit(toolName, auth.user.id, {
+    const rateLimitErr = await checkToolRateLimit(toolName, toolRateLimitIdentity(auth), {
       orgId: apiKey?.orgId ?? auth.orgId ?? null,
       partnerId: apiKey?.partnerId ?? auth.partnerId ?? null,
     });
@@ -1913,7 +1924,7 @@ async function handleTenantToolCall(
 
   // Per-source rate limit
   try {
-    const rateLimitErr = await checkTenantToolRateLimit(d, auth.user.id);
+    const rateLimitErr = await checkTenantToolRateLimit(d, toolRateLimitIdentity(auth));
     if (rateLimitErr) {
       return jsonRpcError(id, -32000, rateLimitErr);
     }
@@ -2862,9 +2873,11 @@ async function buildAuthFromApiKey(apiKey: {
     return null;
   }
 
-  const principal: PrincipalKind = apiKey.oauthGrantId
-    ? { kind: 'oauth_grant', grantId: apiKey.oauthGrantId }
-    : { kind: 'api_key', apiKeyId: apiKey.id };
+  const principal: PrincipalKind = apiKey.partnerServicePrincipalId
+    ? { kind: 'partner_service_principal', principalId: apiKey.partnerServicePrincipalId, keyId: apiKey.id }
+    : apiKey.oauthGrantId
+      ? { kind: 'oauth_grant', grantId: apiKey.oauthGrantId }
+      : { kind: 'api_key', apiKeyId: apiKey.id };
 
   const user = {
     id: apiKey.createdBy,

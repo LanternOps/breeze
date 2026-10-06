@@ -578,6 +578,10 @@ function stablePrincipalFor(auth: AuthContext): {
       throw new RecoveryAuthorizationDeniedError('unknown_principal');
     case 'agent':
     case 'helper':
+    // No recovery-subject rehydration path exists for a partner service
+    // principal (its key is not an api_keys row); refuse at capture rather
+    // than queue a job that can never be re-authorized.
+    case 'partner_service_principal':
       throw new RecoveryAuthorizationDeniedError('principal_kind_not_supported');
   }
 }

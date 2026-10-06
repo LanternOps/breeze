@@ -28,8 +28,9 @@ import {
  * the same shape a partner-scope MCP OAuth bearer produces
  * (bearerTokenAuth.ts), so mcpServer.ts's existing partner branch builds the
  * AuthContext and no route has to handle a new auth shape:
- *   - accessibleOrgIds: every org of the partner the principal's OWNER can
- *     reach (resolvePartnerAccess — the same resolver the OAuth bearer uses);
+ *   - accessibleOrgIds: every org of the partner (resolvePartnerAccess, the
+ *     same resolver the OAuth bearer uses, for an owner who must hold
+ *     all-org access);
  *   - accessiblePartnerIds: [partnerId] (partner-axis access, as a partner
  *     admin session gets); currentPartnerId: partnerId.
  *
@@ -45,7 +46,8 @@ import {
  * Fail closed everywhere: an unknown, revoked or expired key, a disabled or
  * expired principal, an inactive or deleted partner, a source-CIDR mismatch,
  * no MCP scope, an inactive or non-member owner, an owner who can no longer
- * delegate the principal's MCP scopes, or any lookup error is denied before
+ * delegate the principal's MCP scopes, an owner without all-org access, or
+ * any lookup error is denied before
  * the request reaches a handler. Nothing is cached: revocation and disable
  * take effect on the next request.
  *
@@ -100,6 +102,14 @@ async function authorizeOwner(input: {
   // The partner role must be the one that resolved: a principal is partner
   // scoped by construction and must never borrow an org-only role.
   if (permissions.scope !== 'partner' || permissions.partnerId !== input.partnerId) {
+    throw ownerNotAuthorized();
+  }
+  // A partner principal is partner-WIDE by construction (minting one already
+  // requires all-org access, routes/partnerServicePrincipals.ts). Its reach is
+  // never silently narrowed to a subset: if the owner no longer holds
+  // all-org access, the principal is denied outright, so it can neither
+  // exceed the owner nor degrade into a partial view of the partner.
+  if (permissions.orgAccess !== 'all') {
     throw ownerNotAuthorized();
   }
 

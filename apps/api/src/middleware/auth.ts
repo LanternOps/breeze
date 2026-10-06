@@ -57,6 +57,13 @@ export type PrincipalKind =
   | { kind: 'client_user' }
   | { kind: 'api_key'; apiKeyId?: string }
   | { kind: 'oauth_grant'; grantId?: string }
+  // A partner service principal (`brz_sp_` key) on the MCP endpoint. Its own
+  // kind, never `api_key`: its key id lives in partner_service_principal_keys,
+  // so consumers that resolve an `api_key` id against api_keys (recovery
+  // subjects, diagnostic grants, action intents) must not see it as one.
+  // `auth.user` carries the principal's OWNER for per-tool RBAC only; it never
+  // reaches breeze.user_id (dbAccessContextFromAuth).
+  | { kind: 'partner_service_principal'; principalId: string; keyId: string }
   | { kind: 'agent'; deviceId?: string }
   | { kind: 'helper'; deviceId?: string }
   // An AI operator agent acting as itself (spec 2026-08-22 §3). Built only by
@@ -568,7 +575,12 @@ export function dbAccessContextFromAuth(auth: AuthContext): DbAccessContext {
     // every tool call rather than a benign null user id.
     // AI agents carry a synthetic user record for audit attribution only. It
     // must never reach breeze.user_id or satisfy Shape-6 user-scoped RLS.
-    userId: auth.principal?.kind === 'ai_agent' ? null : auth.user?.id ?? null,
+    // A partner service principal's `user` is its owner, borrowed for per-tool
+    // RBAC only; the machine must never read or write the owner's private
+    // (user-scoped) rows, so it gets no user id either.
+    userId: auth.principal?.kind === 'ai_agent' || auth.principal?.kind === 'partner_service_principal'
+      ? null
+      : auth.user?.id ?? null,
     // #6771: re-entering the request's context re-enters its report-history
     // grant too (only ever set on the report-history GET routes).
     reportHistoryOrgIds: auth.reportHistory?.orgIds,

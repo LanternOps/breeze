@@ -192,6 +192,7 @@ describe('captureRecoveryAuthorizationSubject', () => {
     [{ kind: 'unknown' } as const, 'unknown_principal'],
     [{ kind: 'agent', deviceId: PRINCIPAL_ID } as const, 'principal_kind_not_supported'],
     [{ kind: 'helper', deviceId: PRINCIPAL_ID } as const, 'principal_kind_not_supported'],
+    [{ kind: 'partner_service_principal', principalId: PRINCIPAL_ID, keyId: PRINCIPAL_ID } as const, 'principal_kind_not_supported'],
     [{ kind: 'api_key' } as const, 'principal_id_missing'],
   ])('rejects unsupported or incomplete principal %#', async (principal, code) => {
     await expect(captureRecoveryAuthorizationSubject(

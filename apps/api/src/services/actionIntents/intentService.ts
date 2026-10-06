@@ -1235,6 +1235,15 @@ export async function createActionIntent(
   // Captured here, at the top level, on purpose: TypeScript discards property
   // narrowing inside the transaction closure below, so reading
   // `auth.principal.kind` at the insert site would widen the type back out.
+  // A partner service principal (MCP `brz_sp_` key) never creates intents:
+  // it has no interactive approval surface and no storable origin kind.
+  // Refuse before anything is written rather than record it as someone else.
+  if (auth.principal.kind === 'partner_service_principal') {
+    throw new ActionIntentError(
+      'Partner service principals cannot create action intents',
+      'principal_not_supported',
+    );
+  }
   const originPrincipalKind: ActionIntentOriginPrincipalKind = auth.principal.kind;
   // Same reasoning, for the scope union: every later use site (idempotency
   // key, the insert values, the ticket-autonomy evaluation) needs a plain

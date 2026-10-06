@@ -251,6 +251,19 @@ Every mutation is recorded in the audit log (`service_principal.create`, `servic
 
 The `:write` scopes exist for unattended provisioning and integrations -- migration scripts, scheduled syncs, and partner-built tools. They are **opt-in at principal creation and never part of the default scope set**: a default-scoped principal stays read-only. Grant them only to credentials that genuinely need them, and prefer a dedicated principal so rotation and revocation stay surgical. Tenancy writes are create-only -- deleting organizations, sites, or enrollment keys remains a human, MFA-gated action.
 
+#### MCP scopes (partner-wide MCP access)
+
+A partner service principal can also authenticate the [MCP server](/features/mcp-server/#partner-service-principal-keys-partner-wide-automation) with the same `brz_sp_` key in `X-API-Key`. These scopes grant nothing on the Partner API:
+
+| Scope | Grants over MCP |
+|--------|--------|
+| `ai:read` | Required for any MCP access; Tier 1 (read) tools |
+| `ai:write` | Tier 2 tools |
+| `ai:execute` | Tier 3 tools (still approval-only unless the principal is listed in `MCP_UNATTENDED_TIER3_PRINCIPALS` as `partner_sp:<id>`) |
+| `ai:execute_admin` | Tier 3 tools in production when `MCP_REQUIRE_EXECUTE_ADMIN` is on |
+
+They are opt-in and never default. Granting one requires the acting admin to hold the permissions an organization API key's creator needs for the same scope. Over MCP the principal reaches every organization of its partner; its per-tool permissions are its owner's (the admin who created it) live partner role, and the owner must keep all-organization access or the key is refused.
+
 ---
 
 ## Enrollment Keys

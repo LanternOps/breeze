@@ -27,11 +27,13 @@ import './setup';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Hono } from 'hono';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
+import { db } from '../../db';
 import {
   apiKeys,
   auditLogs,
+  organizations,
   devices,
   partnerServicePrincipalKeys,
   partnerServicePrincipals,
@@ -62,12 +64,23 @@ const READ_ONLY_ROLE_PERMS = [
 ];
 
 let app: Hono;
+let probe: Hono;
 
 beforeAll(async () => {
   const { Hono: HonoCtor } = await import('hono');
   const { mcpServerRoutes } = await import('../../routes/mcpServer');
+  const { partnerServicePrincipalMcpAuthMiddleware } = await import('../../middleware/partnerServicePrincipalMcpAuth');
   app = new HonoCtor();
   app.route('/api/v1/mcp', mcpServerRoutes);
+  // RLS-only probe: the REAL middleware opens the request's DB context, then
+  // the handler reads `organizations` with NO application filter at all, so
+  // only Postgres RLS decides what is visible.
+  probe = new HonoCtor();
+  probe.get('/probe', partnerServicePrincipalMcpAuthMiddleware, async (c) => {
+    const rows = await db.select({ id: organizations.id, partnerId: organizations.partnerId }).from(organizations);
+    const [gucs] = await db.execute(sql`SELECT current_setting('breeze.user_id', true) AS user_id`) as unknown as Array<{ user_id: string | null }>;
+    return c.json({ rows, userId: gucs?.user_id ?? null });
+  });
 });
 
 afterEach(() => {
@@ -201,6 +214,20 @@ describe('partner service principal key on MCP: partner-wide reach', () => {
     expect(seenByP2).not.toContain(p1.orgA.name);
   });
 
+  it('RLS alone (no app filter) confines the key to its own partner, with no user id in the context', async () => {
+    const p1 = await partnerFixture(['ai:read']);
+    const p2 = await partnerFixture(['ai:read']);
+    const res = await probe.request('/probe', { headers: { 'X-API-Key': p1.key.rawKey } });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { rows: Array<{ id: string; partnerId: string }>; userId: string | null };
+    const ids = body.rows.map((r) => r.id);
+    expect(ids).toEqual(expect.arrayContaining([p1.orgA.id, p1.orgB.id]));
+    expect(ids).not.toContain(p2.orgA.id);
+    expect(ids).not.toContain(p2.orgB.id);
+    expect(body.rows.every((r) => r.partnerId === p1.partner.id)).toBe(true);
+    expect(body.userId ?? '').toBe('');
+  });
+
   it('a new org of the partner is reachable on the next request without re-keying', async () => {
     const p = await partnerFixture(['ai:read']);
     const later = await createOrganization({ partnerId: p.partner.id, name: `SP-late-${randomUUID()}` });
@@ -294,6 +321,16 @@ describe('partner service principal key on MCP: fail closed', () => {
     expect((await mcp(readOnlyKey.rawKey, 'tools/list')).status).toBe(200);
   });
 
+  it('denies (never narrows) when the owner loses all-org access', async () => {
+    const p = await partnerFixture(['ai:read']);
+    expect((await mcp(p.key.rawKey, 'tools/list')).status).toBe(200);
+    await getTestDb().update(partnerUsers)
+      .set({ orgAccess: 'selected', orgIds: [p.orgA.id] })
+      .where(eq(partnerUsers.id, p.membership.id));
+    await clearPermissionCache(p.owner.id);
+    expect((await mcp(p.key.rawKey, 'tools/list')).status).toBe(401);
+  });
+
   it('an unknown well-formed brz_sp_ key is a 401', async () => {
     const res = await mcp(`brz_sp_${randomBytes(32).toString('base64url')}`, 'tools/list');
     expect(res.status).toBe(401);
@@ -351,6 +388,13 @@ describe('partner service principal key on MCP: Tier 3 approval gate', () => {
     // then refuses another partner's device before any ledger or dispatch.
     expect(toolText(res.body)).not.toContain('MCP_APPROVAL_REQUIRED');
     expect(res.body.error).toMatchObject({ code: -32602, message: 'Invalid params' });
+
+    // The per-tool limit was charged to the PRINCIPAL's own bucket, never the
+    // owner's user id (which the owner's own sessions share).
+    const { getRedis } = await import('../../services/redis');
+    const redis = getRedis()!;
+    expect(await redis.exists(`ai:tool:partner_sp:${p.principal.id}:execute_command`)).toBe(1);
+    expect(await redis.exists(`ai:tool:${p.owner.id}:execute_command`)).toBe(0);
   });
 
   it('listing one principal does not lift another principal of the same partner', async () => {
