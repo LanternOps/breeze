@@ -6,7 +6,8 @@
 -- gmail_archive_on_handle: also remove INBOX from that mail.
 -- gmail_handled_error / gmail_handled_error_at: the last marking failure for the
 --   mailbox, as a fixed code the mailbox settings card shows. Cleared on the next
---   successful mark, on a settings change and on reconnect.
+--   successful mark (except not_queued, which is about other messages), on a
+--   settings change and on reconnect.
 --
 -- Schema only, no row writes. Idempotent: ADD COLUMN IF NOT EXISTS, and each
 -- CHECK is dropped and re-added.

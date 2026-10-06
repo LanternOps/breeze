@@ -66,8 +66,9 @@ export const ticketMailboxConnections = pgTable('ticket_mailbox_connections', {
   gmailHandledLabel: text('gmail_handled_label'),
   gmailArchiveOnHandle: boolean('gmail_archive_on_handle').notNull().default(true),
   // Last marking failure as a fixed code (GmailHandledErrorCode), shown on the
-  // mailbox card; cleared by the next successful mark, a settings change or a
-  // reconnect. Never raw upstream text.
+  // mailbox card; cleared by the next successful mark (except not_queued, which
+  // is about other messages), a settings change or a reconnect. Never raw
+  // upstream text.
   gmailHandledError: varchar('gmail_handled_error', { length: 32 }),
   gmailHandledErrorAt: timestamp('gmail_handled_error_at', { withTimezone: true }),
   createdBy: uuid('created_by').references(() => users.id),
