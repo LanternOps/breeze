@@ -34,15 +34,29 @@ see the top of [`CONTRIBUTING.md`](https://github.com/LanternOps/breeze/blob/mai
 
 </Steps>
 
-The project skills you'll use most:
+The repo ships 15 project skills in `.claude/skills/`. Claude Code loads them all,
+but they aren't all meant for you. Some run maintainer workflows (triage,
+merging, releases, production deploys).
+
+**Use these:**
 
 | Skill | Use it for |
 |---|---|
 | `breeze-testing` | Test conventions: Drizzle mocks, Go table tests, the coverage checklist |
-| `issue-to-pr` | Runbook for carrying one issue from claim to a reviewed PR |
-| `worktree-stack` | A running, seeded stack (API, web, portal) for your worktree, for browser checks |
-| `feature-testing` | End-to-end verification of a feature across UI, API and agent |
-| `agent-info`, `ai-agent`, `breeze-helper` | Architecture quick references for the agent, AI, and Helper subsystems |
+| `worktree-stack` | A running, seeded local stack (API, web, portal) for your worktree, for browser checks |
+| `agent-info`, `ai-agent`, `breeze-helper` | Architecture references for the Go agent, the AI agent, and the Helper desktop app |
+| `agent-log-debugging` | Reading agent diagnostic logs on your local stack |
+
+**Use these with care:**
+
+| Skill | Caveat |
+|---|---|
+| `issue-to-pr` | A good runbook from issue to reviewed PR, but it assumes write access: it self-assigns the issue and pushes to `origin`. Without write access, comment on the issue instead and push to your fork. |
+| `feature-testing` | End-to-end checks across UI, API and agent. Point it at your local stack, never at a hosted URL. |
+| `security-review` | Fine for reviewing code. Report anything you find privately (see `SECURITY.md`), never in a public issue or PR. |
+
+**Ignore these** — they're maintainer tooling: `gh-queue`, `feature-delivery`,
+`release`, `pre-release-sweep`, `e2e-coverage`, `ui-qa-sweep`.
 
 ## The one idea to internalize
 
