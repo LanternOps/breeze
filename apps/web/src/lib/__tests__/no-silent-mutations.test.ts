@@ -33,6 +33,7 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
+  'src/components/settings/TicketPushoverSettings.tsx',
   'src/components/billing/PaymentsSettingsTab.tsx',
   'src/components/billing/autopayClient.ts',
   'src/components/monitoring/conversion/ConversionLedger.tsx',
@@ -901,7 +902,8 @@ describe('no silent mutations in targeted set', () => {
     // W02 autopay adds the settings writer and shared transport.
     // M365 identity-first W03 #7913 adds M365ConfirmTenantPanel.tsx and the
     // two Customer Graph cards that host it: 216 → 219.
-    expect(absoluteFiles.length).toBe(219);
+    // Ticket-assignment Pushover adds settings/TicketPushoverSettings.tsx: 219 → 220.
+    expect(absoluteFiles.length).toBe(220);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

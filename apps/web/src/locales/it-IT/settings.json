@@ -877,6 +877,8 @@
     "slackChannelPlaceholder": "#alerts",
     "pushoverDefaults": "Valori predefiniti Pushover",
     "pushoverDescription": "Ereditati da qualsiasi canale Pushover per organizzazione che lascia vuoto il campo corrispondente.",
+    "pushoverTicketAssignmentFallback": "Invia le assegnazioni dei ticket alla chiave predefinita se l’assegnatario non ha una chiave Pushover",
+    "pushoverTicketAssignmentFallbackHelp": "Ogni tecnico può aggiungere la propria chiave utente Pushover nel profilo; le assegnazioni raggiungono solo lui. Attiva questa opzione per inviare le assegnazioni dei tecnici senza chiave alla chiave utente o gruppo predefinita indicata sopra.",
     "applicationToken": "Token applicazione",
     "defaultUserKey": "Chiave utente o gruppo predefinita",
     "defaultSound": "Suono predefinito",
@@ -6578,5 +6580,19 @@
     "sourceDefault": "predefinito del prodotto",
     "range": "Scegli tra {{min}} e {{max}} minuti.",
     "save": "Salva"
+  },
+  "ticketPushover": {
+    "title": "Pushover per le assegnazioni dei ticket",
+    "description": "Aggiungi la tua chiave utente Pushover per ricevere una notifica quando ti viene assegnato un ticket. La ricevi solo tu. Il tuo MSP deve aver configurato un token applicazione Pushover in Notifiche.",
+    "statusSet": "È salvata una chiave Pushover.",
+    "statusNotSet": "Nessuna chiave Pushover salvata.",
+    "placeholder": "Chiave utente Pushover di 30 caratteri",
+    "save": "Salva chiave",
+    "remove": "Rimuovi chiave",
+    "saved": "Chiave Pushover salvata.",
+    "removed": "Chiave Pushover rimossa.",
+    "invalidKey": "Una chiave utente Pushover è composta da 30 lettere o cifre.",
+    "loadFailed": "Impossibile caricare l’impostazione Pushover.",
+    "saveFailed": "Impossibile salvare l’impostazione Pushover."
   }
 }

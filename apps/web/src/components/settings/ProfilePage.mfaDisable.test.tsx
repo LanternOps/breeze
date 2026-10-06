@@ -49,6 +49,13 @@ vi.mock('./ApproverDevicesSection', () => ({
   default: () => null,
 }));
 
+// TicketPushoverSettings fetches /users/me/ticket-pushover on mount; stub it so
+// it doesn't consume from this file's fetchWithAuth mocks. Its own behavior is
+// covered by TicketPushoverSettings.test.tsx.
+vi.mock('./TicketPushoverSettings', () => ({
+  default: () => null,
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>

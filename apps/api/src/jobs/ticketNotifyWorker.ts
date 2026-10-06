@@ -42,6 +42,10 @@ import { TICKET_EVENTS_QUEUE, type TicketEvent } from '../services/ticketEvents'
 import { attachWorkerObservability } from './workerObservability';
 import { createNotification } from '../services/userNotifications';
 import { buildTicketPush, dispatchPushToTokens } from '../services/expoPush';
+import { sendPushoverNotification, validatePushoverConfig, type PushoverConfig, type PushoverNotificationPayload } from '../services/notificationSenders';
+import { applyPartnerPushoverDefaults, readPartnerPushoverDefaults } from '../services/partnerPushoverDefaults';
+import { loadUserPushoverKey } from '../services/ticketPushover';
+import type { AlertSeverity } from '../services/email';
 import {
   admitPush,
   assertSamePartner,
@@ -319,6 +323,10 @@ interface Collected {
    * collection context closes — see handleTicketEvent (#1105).
    */
   pushes: PendingPush[];
+  /** Ticket-assignment Pushover to the assignee's own key (see collectAssignmentPushover). */
+  /** Ticket-assignment Pushover still to be resolved; its DB reads happen only
+   *  after the email has been sent (see handleTicketEvent). */
+  pushover?: PendingAssignmentPushover;
 }
 
 /**
@@ -403,7 +411,85 @@ async function collectAssigneeNotification(
       }),
     });
   }
-  return { emails, pushes };
+  // Pushover is resolved later, after the email is sent: nothing it reads can
+  // delay or fail the email.
+  const pushover: PendingAssignmentPushover = { partnerId, assigneeId, ticket, label: String(label), orgName, deviceName };
+  return { emails, pushes, pushover };
+}
+
+function ticketPriorityToSeverity(priority: string | null | undefined): AlertSeverity {
+  switch ((priority ?? '').toLowerCase()) {
+    case 'urgent':
+    case 'high':
+      return 'high';
+    case 'low':
+      return 'low';
+    default:
+      return 'medium';
+  }
+}
+
+/**
+ * Ticket-assignment Pushover. The application token comes from the partner's
+ * existing Pushover defaults (Settings > Notifications). The recipient is the
+ * ASSIGNEE's own Pushover user key (Profile, sealed per user). Only when the
+ * assignee has none AND the partner turned on `pushoverTicketAssignmentFallback`
+ * does the push go to the partner's default user or group key. A value that
+ * cannot be opened, or an incomplete config, sends nothing.
+ *
+ * The partner's default sound applies, but its default priority does not: the
+ * Pushover priority always comes from the ticket priority (via the severity
+ * below), so an alert-channel default such as 2 (emergency) never turns an
+ * assignment into a repeating emergency push.
+ */
+interface PendingAssignmentPushover {
+  partnerId: string;
+  assigneeId: string;
+  ticket: TicketRow;
+  label: string;
+  orgName: string;
+  deviceName: string | null;
+}
+
+async function collectAssignmentPushover(
+  { partnerId, assigneeId, ticket, label, orgName, deviceName }: PendingAssignmentPushover,
+): Promise<{ config: PushoverConfig; payload: PushoverNotificationPayload } | undefined> {
+  const rows = await db.select({ settings: partners.settings }).from(partners).where(eq(partners.id, partnerId)).limit(1);
+  const settings = rows?.[0]?.settings as { notifications?: { pushoverTicketAssignmentFallback?: unknown } } | undefined;
+  const fallback = settings?.notifications?.pushoverTicketAssignmentFallback === true;
+  let config: PushoverConfig;
+  try {
+    const defaults = readPartnerPushoverDefaults(settings);
+    if (!defaults.appToken) return undefined;
+    const personalKey = await loadUserPushoverKey(assigneeId);
+    if (personalKey) {
+      config = applyPartnerPushoverDefaults({ user: personalKey }, defaults);
+    } else if (fallback) {
+      config = applyPartnerPushoverDefaults({}, defaults);
+    } else {
+      return undefined;
+    }
+  } catch (err) {
+    console.warn('[TicketNotify] Pushover credentials could not be opened', { partnerId, err: err instanceof Error ? err.message : String(err) });
+    return undefined;
+  }
+  delete config.priority;
+  if (!validatePushoverConfig(config).valid) return undefined;
+  return {
+    config,
+    payload: {
+      alertId: ticket.id,
+      alertName: `${orgName || 'Ticket'}: ticket assigned`,
+      severity: ticketPriorityToSeverity(ticket.priority),
+      summary: `${ticket.subject}\n${label}`,
+      deviceId: ticket.deviceId ?? undefined,
+      deviceName: deviceName ?? undefined,
+      orgId: ticket.orgId,
+      orgName: orgName || undefined,
+      triggeredAt: new Date().toISOString(),
+      dashboardUrl: `${dashboardBaseUrl()}/tickets/${ticket.id}`,
+    },
+  };
 }
 
 /**
@@ -720,6 +806,7 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
   const eventId = event.eventId ?? jobId ?? `legacy:${event.ticketId}:${event.type}`;
   let emailPayloads: EmailPayload[] = [];
   let pending: PendingPush[] = [];
+  let pushover: Collected['pushover'];
 
   await runWithSystemDbAccess(async () => {
     switch (event.type) {
@@ -730,6 +817,7 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
           const collected = await collectAssigneeNotification(event, assigneeId, eventId);
           emailPayloads = collected.emails;
           pending = collected.pushes;
+          pushover = collected.pushover;
         }
         return;
       }
@@ -830,6 +918,24 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
   }
 
   // Send emails OUTSIDE the DB context to avoid idle-in-transaction pool poison (#1105).
+  await sendEmailPayloads(emailPayloads);
+
+  // Pushover after email, best-effort: a slow or failing Pushover call never
+  // delays or suppresses the email, and never fails the job.
+  if (pushover) {
+    try {
+      const pending = pushover;
+      const resolved = await runWithSystemDbAccess(() => collectAssignmentPushover(pending));
+      if (!resolved) return;
+      const result = await sendPushoverNotification(resolved.config, resolved.payload);
+      if (!result.success) console.warn('[TicketNotify] ticket-assignment Pushover failed', result.error);
+    } catch (err) {
+      console.warn('[TicketNotify] ticket-assignment Pushover failed', err instanceof Error ? err.message : err);
+    }
+  }
+}
+
+async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<void> {
   if (emailPayloads.length === 0) return;
   // getEmailService() may be null (no platform transport configured). Graph payloads
   // must still send in that case, so the null-guard moved inside the loop's EmailService

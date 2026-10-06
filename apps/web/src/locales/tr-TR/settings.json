@@ -877,6 +877,8 @@
     "slackChannelPlaceholder": "#uyarılar",
     "pushoverDefaults": "Pushover Varsayılanlar",
     "pushoverDescription": "Eşleşme alanını boş bırakan herhangi bir kuruluş başına Pushover kanalı tarafından devralındı.",
+    "pushoverTicketAssignmentFallback": "Atanan kişinin Pushover anahtarı yoksa bilet atamalarını varsayılan anahtara gönder",
+    "pushoverTicketAssignmentFallbackHelp": "Her teknisyen profiline kendi Pushover kullanıcı anahtarını ekleyebilir; atamalar yalnızca ona ulaşır. Anahtarı olmayan teknisyenlerin atamalarını yukarıdaki varsayılan kullanıcı veya grup anahtarına göndermek için bunu açın.",
     "applicationToken": "Uygulama Jetonu",
     "defaultUserKey": "Varsayılan Kullanıcı veya Grup Anahtarı",
     "defaultSound": "Varsayılan Ses",
@@ -6578,5 +6580,19 @@
     "sourceDefault": "ürün varsayılanı",
     "range": "{{min}}-{{max}} dakika arasında seçin.",
     "save": "Kaydet"
+  },
+  "ticketPushover": {
+    "title": "Bilet atamaları için Pushover",
+    "description": "Size bir bilet atandığında bildirim almak için Pushover kullanıcı anahtarınızı ekleyin. Bildirimi yalnızca siz alırsınız. MSP'nizin Bildirimler altında bir Pushover uygulama belirteci ayarlamış olması gerekir.",
+    "statusSet": "Bir Pushover anahtarı kayıtlı.",
+    "statusNotSet": "Kayıtlı Pushover anahtarı yok.",
+    "placeholder": "30 karakterlik Pushover kullanıcı anahtarı",
+    "save": "Anahtarı kaydet",
+    "remove": "Anahtarı kaldır",
+    "saved": "Pushover anahtarı kaydedildi.",
+    "removed": "Pushover anahtarı kaldırıldı.",
+    "invalidKey": "Pushover kullanıcı anahtarı 30 harf veya rakamdan oluşur.",
+    "loadFailed": "Pushover ayarınız yüklenemedi.",
+    "saveFailed": "Pushover ayarınız kaydedilemedi."
   }
 }

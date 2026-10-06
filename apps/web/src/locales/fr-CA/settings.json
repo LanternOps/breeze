@@ -877,6 +877,8 @@
     "slackChannelPlaceholder": "#alerts",
     "pushoverDefaults": "Défauts de Pushover",
     "pushoverDescription": "Hérité par tout canal Pushover par organisation qui laisse le champ correspondant vide.",
+    "pushoverTicketAssignmentFallback": "Envoyer les assignations de billets à la clé par défaut si la personne assignée n’a pas de clé Pushover",
+    "pushoverTicketAssignmentFallbackHelp": "Chaque technicien peut ajouter sa propre clé d’utilisateur Pushover dans son profil; les assignations ne parviennent alors qu’à lui. Activez cette option pour envoyer les assignations des techniciens sans clé à la clé d’utilisateur ou de groupe par défaut ci-dessus.",
     "applicationToken": "Jeton d’application",
     "defaultUserKey": "Clé utilisateur ou de groupe par défaut",
     "defaultSound": "Son par défaut",
@@ -6578,5 +6580,19 @@
     "sourceDefault": "valeur par défaut du produit",
     "range": "Choisissez {{min}}-{{max}} minutes.",
     "save": "Enregistrer"
+  },
+  "ticketPushover": {
+    "title": "Pushover pour les assignations de billets",
+    "description": "Ajoutez votre clé d’utilisateur Pushover pour recevoir une notification quand un billet vous est assigné. Vous seul la recevez. Votre MSP doit avoir configuré un jeton d’application Pushover sous Notifications.",
+    "statusSet": "Une clé Pushover est enregistrée.",
+    "statusNotSet": "Aucune clé Pushover enregistrée.",
+    "placeholder": "Clé d’utilisateur Pushover de 30 caractères",
+    "save": "Enregistrer la clé",
+    "remove": "Retirer la clé",
+    "saved": "Clé Pushover enregistrée.",
+    "removed": "Clé Pushover retirée.",
+    "invalidKey": "Une clé d’utilisateur Pushover compte 30 lettres ou chiffres.",
+    "loadFailed": "Impossible de charger votre réglage Pushover.",
+    "saveFailed": "Impossible d’enregistrer votre réglage Pushover."
   }
 }

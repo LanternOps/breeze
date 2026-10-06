@@ -792,6 +792,7 @@ const partnerSettingsSchema = z.object({
     pushoverDefaultUser: z.string().max(30).optional(),
     pushoverDefaultSound: z.string().max(40).optional(),
     pushoverDefaultPriority: z.number().int().min(-2).max(2).optional(),
+    pushoverTicketAssignmentFallback: z.boolean().optional(),
   }).optional(),
   eventLogs: z.object({
     enabled: z.boolean().optional(),
