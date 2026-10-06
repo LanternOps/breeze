@@ -469,4 +469,23 @@ describe('organization API key on MCP is unchanged', () => {
     const seen = await listedOrgNames(rawKey);
     expect(seen).toEqual([p.orgA.name]);
   });
+
+  it('a product-shaped org key whose random part starts with sp_ still reaches the org-key path', async () => {
+    // routes/apiKeys.ts mints `brz_` + 32 base64url chars, so a real org key
+    // can read `brz_sp_` + 29 chars. It must never be routed as a partner key.
+    const p = await partnerFixture(['ai:read']);
+    const rawKey = `brz_sp_${randomBytes(32).toString('base64url').slice(0, 29)}`;
+    expect(rawKey).toHaveLength(36);
+    await getTestDb().insert(apiKeys).values({
+      orgId: p.orgB.id,
+      createdBy: p.owner.id,
+      name: `org-key-sp-prefix-${randomUUID()}`,
+      keyHash: sha256(rawKey),
+      keyPrefix: rawKey.slice(0, 12),
+      scopes: ['ai:read'],
+      status: 'active',
+    });
+
+    expect(await listedOrgNames(rawKey)).toEqual([p.orgB.name]);
+  });
 });
