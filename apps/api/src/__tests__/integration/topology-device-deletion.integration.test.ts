@@ -37,14 +37,14 @@ async function snapshot(siteId: string) {
   const database = getTestDb();
   return {
     state: (await database.select().from(topologySiteState).where(eq(topologySiteState.siteId, siteId)))[0]!,
-    devices: await database.select().from(devices).where(eq(devices.siteId, siteId)),
-    nodes: await database.select().from(topologyNodes).where(eq(topologyNodes.siteId, siteId)),
-    bindings: await database.select().from(topologyNodeBindings).where(eq(topologyNodeBindings.siteId, siteId)),
-    relationships: await database.select().from(topologyRelationships).where(eq(topologyRelationships.siteId, siteId)),
-    layouts: await database.select().from(topologyLayouts).where(eq(topologyLayouts.siteId, siteId)),
-    positions: await database.select().from(topologyNodePositions).where(eq(topologyNodePositions.siteId, siteId)),
-    outbox: await database.select().from(topologyChangeOutbox).where(eq(topologyChangeOutbox.siteId, siteId)),
-    audits: await database.select().from(auditLogs).where(eq(auditLogs.action, 'topology.binding_detached')),
+    devices: await database.select().from(devices).where(eq(devices.siteId, siteId)).orderBy(devices.id),
+    nodes: await database.select().from(topologyNodes).where(eq(topologyNodes.siteId, siteId)).orderBy(topologyNodes.id),
+    bindings: await database.select().from(topologyNodeBindings).where(eq(topologyNodeBindings.siteId, siteId)).orderBy(topologyNodeBindings.id),
+    relationships: await database.select().from(topologyRelationships).where(eq(topologyRelationships.siteId, siteId)).orderBy(topologyRelationships.id),
+    layouts: await database.select().from(topologyLayouts).where(eq(topologyLayouts.siteId, siteId)).orderBy(topologyLayouts.id),
+    positions: await database.select().from(topologyNodePositions).where(eq(topologyNodePositions.siteId, siteId)).orderBy(topologyNodePositions.layoutId, topologyNodePositions.nodeId),
+    outbox: await database.select().from(topologyChangeOutbox).where(eq(topologyChangeOutbox.siteId, siteId)).orderBy(topologyChangeOutbox.id),
+    audits: await database.select().from(auditLogs).where(eq(auditLogs.action, 'topology.binding_detached')).orderBy(auditLogs.id),
   };
 }
 const cascade = (deviceId: string) => system(() => db.transaction(tx => deleteDeviceCascade(tx as unknown as DeviceDeletionTx, deviceId)));
