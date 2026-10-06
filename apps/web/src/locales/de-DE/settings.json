@@ -230,6 +230,8 @@
       "add": "Verbindung hinzufügen",
       "edit": "Bearbeiten",
       "created": "Verbindung hinzugefügt",
+      "createdDiscoveryQueued": "Verbindung hinzugefügt. Ihre Modelle werden jetzt ermittelt.",
+      "createdDiscoveryNotQueued": "Verbindung hinzugefügt, aber die Modellermittlung konnte nicht eingeplant werden. Klicken Sie auf „Aktualisieren“, um es erneut zu versuchen.",
       "saved": "Verbindung gespeichert",
       "saveFailed": "Die Verbindung konnte nicht gespeichert werden.",
       "keyFailed": "Der API-Schlüssel konnte nicht ersetzt werden.",

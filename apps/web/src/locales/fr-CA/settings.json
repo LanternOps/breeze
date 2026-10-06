@@ -230,6 +230,8 @@
       "add": "Ajouter une connexion",
       "edit": "Modifier",
       "created": "Connexion ajoutée",
+      "createdDiscoveryQueued": "Connexion ajoutée. Détection de ses modèles en cours.",
+      "createdDiscoveryNotQueued": "Connexion ajoutée, mais la détection des modèles n’a pas pu être planifiée. Utilisez Actualiser pour réessayer.",
       "saved": "Connexion enregistrée",
       "saveFailed": "Impossible d'enregistrer la connexion.",
       "keyFailed": "Impossible de remplacer la clé API.",

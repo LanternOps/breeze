@@ -230,6 +230,8 @@
       "add": "Bağlantı ekle",
       "edit": "Düzenle",
       "created": "Bağlantı eklendi",
+      "createdDiscoveryQueued": "Bağlantı eklendi. Modelleri şimdi keşfediliyor.",
+      "createdDiscoveryNotQueued": "Bağlantı eklendi ancak model keşfi sıraya alınamadı. Tekrar denemek için Yenile'yi kullanın.",
       "saved": "Bağlantı kaydedildi",
       "saveFailed": "Bağlantı kaydedilemedi.",
       "keyFailed": "API anahtarı değiştirilemedi.",

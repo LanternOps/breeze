@@ -230,6 +230,8 @@
       "add": "Adicionar conexão",
       "edit": "Editar",
       "created": "Conexão adicionada",
+      "createdDiscoveryQueued": "Conexão adicionada. Descobrindo seus modelos agora.",
+      "createdDiscoveryNotQueued": "Conexão adicionada, mas não foi possível agendar a descoberta de modelos. Use Atualizar para tentar novamente.",
       "saved": "Conexão salva",
       "saveFailed": "Não foi possível salvar a conexão.",
       "keyFailed": "Não foi possível substituir a chave de API.",
