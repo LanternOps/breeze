@@ -19,7 +19,7 @@ vi.mock('../db/schema', () => ({
   ticketSourceEnum: { enumValues: ['portal', 'email', 'alert', 'manual', 'api', 'ai'] }
 }));
 
-import { emitTicketEvent } from './ticketEvents';
+import { emitTicketEvent, enqueueTicketEvent } from './ticketEvents';
 
 describe('emitTicketEvent', () => {
   beforeEach(() => {
@@ -104,5 +104,34 @@ describe('emitTicketEvent', () => {
     });
     const [, , opts] = addMock.mock.calls[0]!;
     expect((opts as { jobId?: string }).jobId).toBeUndefined();
+  });
+});
+
+describe('enqueueTicketEvent', () => {
+  beforeEach(() => {
+    addMock.mockClear();
+    captureExceptionMock.mockClear();
+  });
+
+  it('enqueues with the same job options as emitTicketEvent', async () => {
+    await enqueueTicketEvent({
+      type: 'ticket.assigned', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', eventId: 'ticket-outbox-7', payload: { assigneeId: 'u-2' }
+    });
+    expect(addMock).toHaveBeenCalledWith(
+      'ticket.assigned',
+      expect.objectContaining({ ticketId: 't-1', eventId: 'ticket-outbox-7' }),
+      expect.objectContaining({ attempts: 3, removeOnComplete: expect.anything() })
+    );
+  });
+
+  // #7963: ticketOutboxPublisher relies on the throw to leave its row unpublished.
+  it('throws to the caller when the queue is down, without reporting it itself', async () => {
+    addMock.mockRejectedValueOnce(new Error('redis down'));
+    await expect(enqueueTicketEvent({
+      type: 'ticket.assigned', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', payload: { assigneeId: 'u-2' }
+    })).rejects.toThrow('redis down');
+    expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 });
