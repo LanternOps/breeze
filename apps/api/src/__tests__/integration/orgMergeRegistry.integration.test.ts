@@ -298,6 +298,7 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // NEW.partner_feed_xid := pg_current_xact_id(). Never reads or blocks org_id;
   // an org repoint restamps the row, which correctly re-delivers it in the feed.
   'alerts.breeze_alerts_partner_feed_xid': 'only stamps partner_feed_xid; never reads or reverts org_id',
+  'tickets.breeze_tickets_partner_feed_xid': 'only stamps partner_feed_xid; never reads or reverts org_id',
   // #6488 (2026-10-31-100700): fires on an actual org_id/device_id change and
   // only drops a complete/hydrating file_index_status to 'none', so the
   // snapshot's origin provenance is re-verified under the new org. Never
