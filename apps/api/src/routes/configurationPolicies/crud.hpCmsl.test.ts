@@ -40,7 +40,7 @@ vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
-  // Route-level MFA (SEC-107) stand-in; crud.test.ts exercises the real one.
+  // Route-level MFA stand-in; crud.test.ts exercises the real one.
   requireMfa: vi.fn(() => async (c: any, next: any) => {
     if (!mfaState.satisfied) return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
     await next();

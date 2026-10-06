@@ -936,7 +936,7 @@ const revocationLeaseRenewSchema = z.object({
   type: z.literal('revocation_lease_renew'),
   sessionId: z.string().uuid(),
   /**
-   * SEC-038 W05: an opaque correlator the agent generates for a fence resync
+   * An opaque correlator the agent generates for a fence resync
    * and echoes back on the answer, so a stalled answer to an EARLIER renewal
    * can never satisfy a later resync. Optional — the watchdog's ordinary
    * renewals send none, and older agents do not send it at all.
@@ -3185,7 +3185,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               hardDeadline: leaseResult.hardDeadline,
               renewEverySec: leaseResult.renewEverySec,
               graceSec: leaseResult.graceSec,
-              // SEC-038: the agent's durable start fence resyncs from these.
+              // The agent's durable start fence resyncs from these.
               ...(leaseResult.startGeneration !== undefined
                 ? { startGeneration: leaseResult.startGeneration }
                 : {}),
@@ -3409,7 +3409,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               ) || null;
               try {
                 await runWithAgentDbAccess('agentWs.desktop.peerDisconnected', async () => {
-                  // Through the terminal-intent contract (SEC-038 W03). The
+                  // Through the terminal-intent contract. The
                   // endpoint is the source of this terminal fact — the agent
                   // has already stopped — so the phase is 'confirmed' at once.
                   const result = await commitDesktopTerminalIntent({
@@ -3450,7 +3450,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             }
           }
 
-          // SEC-038 W03: the agent acknowledged a generation-bound stop. Move
+          // The agent acknowledged a generation-bound stop. Move
           // the row's teardown phase pending → confirmed — but only when the
           // result's identity names the exact terminal generation the row is
           // waiting on and the reporting agent owns the device. A legacy
@@ -3497,7 +3497,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             if (sessionId) {
               try {
                 await runWithAgentDbAccess('agentWs.desktop.consentDenied', async () => {
-                  // Through the terminal-intent contract (SEC-038 W03); the
+                  // Through the terminal-intent contract; the
                   // endpoint refused the start, so the phase is 'confirmed'.
                   const denied = await commitDesktopTerminalIntent({
                     sessionId,
@@ -3798,7 +3798,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             if (sessionId) {
               try {
                 await runWithAgentDbAccess('agentWs.desktop.captureFailed', async () => {
-                  // Through the terminal-intent contract (SEC-038 W03); the
+                  // Through the terminal-intent contract; the
                   // capture never started, so the phase is 'confirmed'.
                   const result = await commitDesktopTerminalIntent({
                     sessionId,

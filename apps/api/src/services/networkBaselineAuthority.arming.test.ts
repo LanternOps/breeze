@@ -1,5 +1,5 @@
 /**
- * SEC-2026-09-05-146 — arming contract: what gets persisted when a user arms a
+ * Arming contract: what gets persisted when a user arms a
  * recurring network-baseline schedule.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';

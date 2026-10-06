@@ -2558,7 +2558,7 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
     // schema superRefine. No warning needed here; the validator throws if
     // it's missing or weak.)
 
-    // Integration compatibility settings ↔ APP_ENCRYPTION_KEY_ID (SEC-065).
+    // Integration compatibility settings ↔ APP_ENCRYPTION_KEY_ID.
     //
     // /integrations/{communication,monitoring,ticketing,psa} seal every
     // credential-shaped provider field with AAD-bound enc:v3 ciphertext and

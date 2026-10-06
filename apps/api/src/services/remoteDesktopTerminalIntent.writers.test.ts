@@ -1,5 +1,5 @@
 /**
- * SEC-038 W03 (#5534) — static guard: every terminal writer uses the contract.
+ * #5534 — static guard: every terminal writer uses the contract.
  *
  * The real-row proof lives in
  * `src/__tests__/integration/remoteDesktopTerminalIntent.integration.test.ts`,
@@ -77,7 +77,7 @@ function scan(): Violation[] {
   return violations;
 }
 
-describe('SEC-038 W03 — every remote_sessions terminal writer goes through the contract', () => {
+describe('every remote_sessions terminal writer goes through the contract', () => {
   it('finds no update(remoteSessions).set({status: <terminal>}) outside terminalIntentSet', () => {
     const violations = scan();
     expect(

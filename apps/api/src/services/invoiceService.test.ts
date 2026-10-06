@@ -24,7 +24,7 @@ function queueResult(rows: unknown[]) { results.push(rows); }
 // KEY, not a missing call.
 const setCalls = vi.hoisted(() => ({ calls: [] as Array<Record<string, unknown>> }));
 
-// SEC-150: the fail-closed Checkout-session revocation phases run BEFORE this
+// The fail-closed Checkout-session revocation phases run BEFORE this
 // suite's transaction and issue their own queries. This file drives a
 // hand-rolled Drizzle mock whose result queue would be consumed by them, so the
 // revocation is stubbed out here and proved for real — against Postgres, with a
@@ -288,7 +288,7 @@ describe('invoiceService guards', () => {
     ).rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
   });
 
-  // #5611 item 2: the SEC-150 revocation (phases 1-2) used to run BEFORE the
+  // #5611 item 2: the revocation (phases 1-2) used to run BEFORE the
   // draft/void status check, so a mistaken recordPayment on a draft or a void
   // invoice irreversibly expired its live pay links and THEN 409'd. The status is
   // now pre-checked on an unlocked read before any revocation intent is written;

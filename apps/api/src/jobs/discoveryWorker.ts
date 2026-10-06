@@ -1067,7 +1067,7 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
           orgId: data.orgId,
           siteId: data.siteId,
           subnet,
-          // SEC-2026-09-05-146: this baseline is created by the system on the
+          // This baseline is created by the system on the
           // back of a scan, so there is no principal whose revocation could ever
           // stop a recurring schedule on it. Leaving scan_schedule NULL was not
           // neutral: normalizeBaselineScanSchedule reads NULL back as

@@ -1,5 +1,5 @@
 /**
- * SEC-2026-09-05-146 — recurring network-baseline authority, against real
+ * Recurring network-baseline authority, against real
  * PostgreSQL as `breeze_app`.
  *
  * The unit suites cover the decision table. What only a real database can prove:
@@ -402,7 +402,7 @@ describe('recurring network-baseline authority against real PostgreSQL', () => {
   });
 });
 
-describe('SEC-146 review follow-ups against real PostgreSQL', () => {
+describe('review follow-ups against real PostgreSQL', () => {
   let fixture: Fixture;
   beforeEach(async () => {
     fixture = await seedArmedBaseline();

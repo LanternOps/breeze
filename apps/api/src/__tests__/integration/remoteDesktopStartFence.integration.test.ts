@@ -1,5 +1,5 @@
 /**
- * SEC-038 W02 (#5533) — start-intent ordering, against real Postgres.
+ * #5533 — start-intent ordering, against real Postgres.
  *
  * The property under test is an INTERLEAVING, so none of it can be proved by a
  * mocked Drizzle suite: a mock cannot hold a `FOR UPDATE` row lock, cannot show
@@ -242,7 +242,7 @@ function offer(app: Hono, sessionId: string, token: string) {
   });
 }
 
-describe('SEC-038 W02 — desktop start-intent generation fence', () => {
+describe('desktop start-intent generation fence', () => {
   beforeEach(() => {
     sendCommandToAgentMock.mockClear();
     prepareRevocationLeaseForStartMock.mockReset();

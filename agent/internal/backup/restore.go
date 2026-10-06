@@ -398,7 +398,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	// stand between the restore and a child it has yet to update. Each
 	// directory is reached by securefs's pinned, reparse-refusing walk from
 	// the volume root and the descriptor is set on THAT handle — never on a
-	// joined pathname a swapped-in junction could redirect (SEC-121).
+	// joined pathname a swapped-in junction could redirect.
 	sort.SliceStable(dirSecurity, func(i, j int) bool {
 		return strings.Count(dirSecurity[i].relative, string(filepath.Separator)) > strings.Count(dirSecurity[j].relative, string(filepath.Separator))
 	})

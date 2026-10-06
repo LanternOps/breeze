@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// The fence is the endpoint half of SEC-038: the agent refuses any desktop
+// The fence is the endpoint half of the desktop start fence: the agent refuses any desktop
 // start that is not strictly newer than everything it has already seen, and
 // refuses every start after a terminal.
 //

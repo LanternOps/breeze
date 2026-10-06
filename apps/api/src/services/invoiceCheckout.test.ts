@@ -20,7 +20,7 @@ const { dbResults, insertValuesMock, mappings } = vi.hoisted(() => ({
   insertValuesMock: vi.fn(),
   mappings: new Map<string,Record<string,unknown>>(),
 }));
-// SEC-150: the fail-closed Checkout-session revocation phases run BEFORE this
+// The fail-closed Checkout-session revocation phases run BEFORE this
 // suite's transaction and issue their own queries. This file drives a
 // hand-rolled Drizzle mock whose result queue would be consumed by them, so the
 // revocation is stubbed out here and proved for real — against Postgres, with a
@@ -105,7 +105,7 @@ const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
 
 /**
- * SEC-150: `expires_at` is now part of every sessions.create request, and Stripe
+ * `expires_at` is now part of every sessions.create request, and Stripe
  * refuses an idempotent replay whose parameters moved — so the hour quantum is
  * folded into the key too. Both are asserted through the real
  * `checkoutSessionExpiry`, not a hardcoded literal: a drift between the value
@@ -160,7 +160,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
   expect(sessionsCreateMock).not.toHaveBeenCalled();
 });
 
-  it('SEC-150: refuses to reach Stripe at all while a revocation is in flight', async () => {
+  it('refuses to reach Stripe at all while a revocation is in flight', async () => {
     // The gate has to fire BEFORE checkout.sessions.create, not after: a session
     // that exists on Stripe is payable the moment it is minted, so a gate placed
     // after the round-trip would still hand out a live capability during exactly

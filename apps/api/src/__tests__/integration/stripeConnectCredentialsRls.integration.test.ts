@@ -1,5 +1,5 @@
 /**
- * Real-driver cross-tenant forge tests for `stripe_connect_credentials` (SEC-150).
+ * Real-driver cross-tenant forge tests for `stripe_connect_credentials`.
  *
  * The table retains SUPERSEDED Stripe secret keys so an already-rotated
  * credential can still expire the Checkout sessions it minted. That makes its

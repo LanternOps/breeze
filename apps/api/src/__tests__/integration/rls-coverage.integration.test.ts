@@ -322,7 +322,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // auto-discovered as an ordinary shape-1 org-tenant table — not listed here.
   // Functional cross-partner forge proof: stripe-payments-rls.integration.test.ts.
   ['stripe_connect_accounts', 'partner_id'],
-  // stripe_connect_credentials (SEC-150): archive of SUPERSEDED partner Stripe
+  // stripe_connect_credentials: archive of SUPERSEDED partner Stripe
   // keys so an already-rotated credential can still expire the Checkout sessions
   // it minted. Same partner-axis shape as its parent (system-scope writes,
   // partner-scoped reads). No org_id, so no org-cascade / export-policy entry;

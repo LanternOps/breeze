@@ -31,7 +31,7 @@ const { dbMocks, accountsRetrieveMock, eventsListMock, sessionsExpireMock, syste
   },
   accountsRetrieveMock: vi.fn(),
   eventsListMock: vi.fn().mockResolvedValue({ data: [], has_more: false }),
-  // SEC-150: savePartnerStripeKey now also probes Checkout WRITE access —
+  // savePartnerStripeKey now also probes Checkout WRITE access —
   // a key that can create sessions but not expire them would collect money it
   // can never be told to stop collecting. `resource_missing` on a bogus
   // session id is the "you have the permission" answer.
@@ -263,14 +263,14 @@ describe('savePartnerStripeKey', () => {
     });
     // Pre-check ran inside the system context (partner-axis RLS would hide a
     // cross-partner claim from the request context). Four, not two, since
-    // SEC-150: the OUTGOING credential is read in its own short system context
+    // the OUTGOING credential is read in its own short system context
     // BEFORE the write transaction (so its open Checkout sessions can be expired
     // with the key that minted them), and blocked revocations are re-armed in
     // another one AFTER it — `revocation_blocked` is otherwise absorbing, and a
     // partner who just pasted a working key supplied exactly what was missing.
     expect(systemContextCalls.count).toBe(4);
-    // select(cross-partner acct claim pre-check), select(outgoing credential,
-    // SEC-150), select(current row FOR UPDATE), insert(upsert), update(re-arm
+    // select(cross-partner acct claim pre-check), select(outgoing credential),
+    // select(current row FOR UPDATE), insert(upsert), update(re-arm
     // blocked revocations). The outgoing read is what lets the OLD key expire its
     // sessions before it is destroyed; the trailing update is what stops one
     // transient auth blip from bricking an invoice for ever.
