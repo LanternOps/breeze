@@ -19,7 +19,9 @@
  */
 import './setup';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
+import { Hono } from 'hono';
 import type { gmail_v1 } from '@googleapis/gmail';
 
 type QueuedEvent = { type: string; ticketId: string; [k: string]: unknown };
@@ -48,6 +50,7 @@ import {
   partnerUsers,
   partners,
   ticketEmailInbound,
+  users,
   ticketMailboxConnections,
   tickets,
   userNotifications,
@@ -62,6 +65,10 @@ import {
   listAssignableInboundDefaultUsers,
 } from '../../services/inboundEmail/defaultAssigneeEligibility';
 import { processInboundEmail } from '../../services/inboundEmail/inboundEmailService';
+import { loadPartnerInboundPolicy } from '../../services/inboundEmail/resolveOrg';
+import { orgRoutes } from '../../routes/orgs';
+import { ticketConfigRoutes } from '../../routes/ticketConfig';
+import { createAccessToken } from '../../services/jwt';
 import { normalizeGmailMessage } from '../../services/ticketMailbox/normalizeGmailMessage';
 import {
   assignUserToPartner,
@@ -70,7 +77,9 @@ import {
   createRole,
   createUser,
   grantRolePermissions,
+  setupTestEnvironment,
 } from './db-utils';
+import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -233,20 +242,18 @@ describe('default inbound assignee (real DB)', () => {
   runDb('system partner writes: a changed value must be assignable for that partner', async () => {
     const fx = await seed();
     const u = fx.users;
-    const err = (userId: unknown, current: string | null, partnerId: string | null = fx.partnerId) =>
+    const err = (userId: unknown, partnerId: string | null = fx.partnerId) =>
       withSystemDbAccessContext(() => defaultAssigneeSettingsError(
-        { ticketing: { inbound: { defaultAssigneeUserId: userId } } }, current, partnerId));
+        { ticketing: { inbound: { defaultAssigneeUserId: userId } } }, partnerId));
 
-    expect(await err(u.tech.id, null)).toBeNull();
-    expect(await err(null, u.tech.id)).toBeNull();
-    // Unchanged is not re-checked, even for a user who no longer qualifies.
-    expect(await err(u.disabled.id, u.disabled.id)).toBeNull();
-    expect(await err(u.disabled.id, null)).toMatch(/active member/);
-    expect(await err(u.foreign.id, null)).toMatch(/active member/);
-    expect(await err(u.foreignLinked.id, null)).toMatch(/active member/);
-    expect(await err('bob', null)).toMatch(/user id/);
+    expect(await err(u.tech.id)).toBeNull();
+    expect(await err(null)).toBeNull();
+    expect(await err(u.disabled.id)).toMatch(/active member/);
+    expect(await err(u.foreign.id)).toMatch(/active member/);
+    expect(await err(u.foreignLinked.id)).toMatch(/active member/);
+    expect(await err('bob')).toMatch(/user id/);
     // A partner being created has no members.
-    expect(await err(u.tech.id, null, null)).toMatch(/active member/);
+    expect(await err(u.tech.id, null)).toMatch(/active member/);
   });
 
   runDb('ingest assigns a new ticket and queues ticket.assigned only after the ingest commits', async () => {
@@ -345,5 +352,78 @@ describe('default inbound assignee (real DB)', () => {
       await publishFromOutside();
       expect(assignedFor(inbound.ticketId!)).toEqual([]);
     }
+  });
+});
+
+// The full round trip through the production routes on the breeze_app request
+// pool: PATCH /orgs/partners/me stores the setting, GET /ticket-config and the
+// ingest policy reader read the same row back, and the candidates route lists
+// what the save accepts.
+describe('default inbound assignee: API round trip (real DB)', () => {
+  runDb('saves through PATCH /partners/me, reads back through GET /ticket-config and ingest, and refuses an ineligible user', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const adminDb = getTestDb();
+    await adminDb.update(users).set({ mfaEnabled: true, mfaMethod: 'totp' }).where(eq(users.id, env.user.id));
+    // An assignable colleague (tickets:read) and a disabled one.
+    const role = await createRole({ scope: 'partner', partnerId: env.partner.id });
+    await grantRolePermissions(role.id, [{ resource: 'tickets', action: 'read' }]);
+    const colleague = await createUser({ partnerId: env.partner.id, orgId: null, email: `${uniq('col')}@msp.test` });
+    await assignUserToPartner(colleague.id, env.partner.id, role.id, 'all');
+    const disabled = await createUser({ partnerId: env.partner.id, orgId: null, email: `${uniq('dis')}@msp.test`, status: 'disabled' });
+    await assignUserToPartner(disabled.id, env.partner.id, role.id, 'all');
+
+    const token = await createAccessToken({
+      sub: env.user.id, email: env.user.email, roleId: env.role.id, orgId: null, partnerId: env.partner.id,
+      scope: 'partner', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    });
+    // GET /ticket-config reads getConfig(); validate it the way the server does
+    // at startup (same approach as registerPartnerMfaPolicy.integration.test.ts).
+    process.env.APP_ENCRYPTION_KEY ||= 'integration-test-app-encryption-key-not-a-real-secret';
+    process.env.MFA_ENCRYPTION_KEY ||= 'integration-test-mfa-encryption-key-not-a-real-secret';
+    const { validateConfig } = await import('../../config/validate');
+    validateConfig();
+    const app = new Hono();
+    app.route('/orgs', orgRoutes);
+    app.route('/ticket-config', ticketConfigRoutes);
+    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+    const save = (defaultAssigneeUserId: string | null, extra: Record<string, unknown> = {}) =>
+      app.request('/orgs/partners/me', {
+        method: 'PATCH', headers,
+        body: JSON.stringify({ settings: { ticketing: { inbound: { enabled: true, ...extra, defaultAssigneeUserId } } } }),
+      });
+    const readBack = async () => {
+      const res = await app.request('/ticket-config', { headers });
+      expect(res.status).toBe(200);
+      const viaApi = ((await res.json()) as { data: { inbound: { defaultAssigneeUserId: string | null } } }).data.inbound.defaultAssigneeUserId;
+      const viaIngest = (await withSystemDbAccessContext(() => loadPartnerInboundPolicy(env.partner.id))).defaultAssigneeUserId;
+      expect(viaIngest).toBe(viaApi);
+      return viaApi;
+    };
+
+    expect(await readBack()).toBeNull();
+
+    // The picker's candidates come from the same rule the save enforces.
+    const cands = await app.request('/orgs/partners/me/default-assignee-candidates', { headers });
+    expect(cands.status).toBe(200);
+    const ids = ((await cands.json()) as { data: Array<{ id: string }> }).data.map((r) => r.id);
+    expect(ids).toContain(colleague.id);
+    expect(ids).not.toContain(disabled.id);
+
+    expect((await save(colleague.id)).status).toBe(200);
+    expect(await readBack()).toBe(colleague.id);
+
+    // A disabled user is refused and the stored value is untouched.
+    const refused = await save(disabled.id);
+    expect(refused.status).toBe(400);
+    expect(((await refused.json()) as { code: string }).code).toBe('DEFAULT_ASSIGNEE_NOT_ASSIGNABLE');
+    expect(await readBack()).toBe(colleague.id);
+
+    // The colleague stops qualifying: the next save that carries them is refused.
+    await adminDb.update(users).set({ status: 'disabled' }).where(eq(users.id, colleague.id));
+    expect((await save(colleague.id, { dropUnverifiedSenders: true })).status).toBe(400);
+    expect(await readBack()).toBe(colleague.id);
+
+    expect((await save(null)).status).toBe(200);
+    expect(await readBack()).toBeNull();
   });
 });

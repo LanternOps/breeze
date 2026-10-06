@@ -74,7 +74,7 @@ import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, readTicketingInboundSettings, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { ERROR_CODES } from '@breeze/shared';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
@@ -595,7 +595,7 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
   data.settings = applyNewPartnerDefaultSettings(data.settings);
   // A partner being created has no members, so it cannot have a default
   // inbound assignee yet (settings is free-form on this system route).
-  const createAssigneeError = await defaultAssigneeSettingsError(data.settings, null, null);
+  const createAssigneeError = await defaultAssigneeSettingsError(data.settings, null);
   if (createAssigneeError) {
     return c.json({ error: createAssigneeError, code: 'DEFAULT_ASSIGNEE_NOT_ASSIGNABLE' }, 400);
   }
@@ -1196,17 +1196,16 @@ orgRoutes.patch(
     }
   }
 
-  // Default inbound assignee: a CHANGED value must name an active member of THIS
-  // partner with ticket access (isAssignableInboundDefaultUser; its partner_id
-  // predicates are the tenant boundary). The card re-sends the complete inbound
-  // object on every save, so an unchanged value is not re-checked here: a user
-  // disabled after being picked must not block saving an unrelated switch, and
-  // ingest re-checks eligibility per ticket and leaves the ticket unassigned.
+  // Default inbound assignee: every save that carries a user must name an
+  // active member of THIS partner with ticket access
+  // (isAssignableInboundDefaultUser; its partner_id predicates are the tenant
+  // boundary), like defaultTriageOrgId above. The card re-sends the complete
+  // inbound object, so a user who stopped qualifying after being picked must be
+  // replaced or cleared before the card saves again; the card shows them as
+  // unavailable. Ingest also re-checks per ticket.
   const nextDefaultAssignee = body.settings?.ticketing?.inbound?.defaultAssigneeUserId;
   if (typeof nextDefaultAssignee === 'string') {
-    const storedDefaultAssignee = readTicketingInboundSettings(currentSettings).settings.defaultAssigneeUserId ?? null;
-    if (nextDefaultAssignee !== storedDefaultAssignee
-      && !(await isAssignableInboundDefaultUser(nextDefaultAssignee, auth.partnerId as string))) {
+    if (!(await isAssignableInboundDefaultUser(nextDefaultAssignee, auth.partnerId as string))) {
       return c.json({
         error: 'defaultAssigneeUserId must be an active member of your partner who can be assigned tickets',
         code: 'DEFAULT_ASSIGNEE_NOT_ASSIGNABLE',
@@ -1453,13 +1452,9 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
         const stored = (currentPartner.settings as Record<string, unknown> | null)?.ai;
         if (stored === undefined) delete next.ai; else next.ai = stored;
 
-        // Same contract as PATCH /partners/me: a CHANGED default inbound
-        // assignee must be an assignable member of THIS partner.
-        const assigneeError = await defaultAssigneeSettingsError(
-          next,
-          readTicketingInboundSettings(currentPartner.settings).settings.defaultAssigneeUserId ?? null,
-          id,
-        );
+        // Same contract as PATCH /partners/me: a default inbound assignee
+        // must be an assignable member of THIS partner.
+        const assigneeError = await defaultAssigneeSettingsError(next, id);
         if (assigneeError) {
           return c.json({ error: assigneeError, code: 'DEFAULT_ASSIGNEE_NOT_ASSIGNABLE' }, 400);
         }

@@ -63,19 +63,18 @@ export async function listAssignableInboundDefaultUsers(
 /**
  * Validation for the system-scoped partner writes (POST /partners,
  * PATCH /partners/:id), whose `settings` body is free-form. Returns an error
- * message, or null when the value is absent, unchanged, cleared, or assignable.
+ * message, or null when the value is absent, cleared, or assignable.
  * A partner being created has no members yet, so any user is refused there.
  */
 export async function defaultAssigneeSettingsError(
   incomingSettings: unknown,
-  currentValue: string | null,
   partnerId: string | null,
 ): Promise<string | null> {
   const asRecord = (v: unknown): Record<string, unknown> =>
     v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
   const inbound = asRecord(asRecord(incomingSettings).ticketing).inbound;
   const next = asRecord(inbound).defaultAssigneeUserId;
-  if (next === undefined || next === null || next === currentValue) return null;
+  if (next === undefined || next === null) return null;
   if (typeof next !== 'string' || !UUID_RE.test(next)) return 'defaultAssigneeUserId must be a user id';
   if (!partnerId || !(await isAssignableInboundDefaultUser(next, partnerId))) {
     return 'defaultAssigneeUserId must be an active member of the partner who can be assigned tickets';

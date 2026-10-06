@@ -646,7 +646,7 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(400);
-      expect(defaultAssigneeSettingsErrorMock.mock.calls[0]!.slice(1)).toEqual([null, null]);
+      expect(defaultAssigneeSettingsErrorMock.mock.calls[0]![1]).toBeNull();
       expect(db.transaction).not.toHaveBeenCalled();
     });
 
@@ -953,8 +953,8 @@ describe('org routes', () => {
 
       expect(res.status).toBe(400);
       expect((await res.json()).code).toBe('DEFAULT_ASSIGNEE_NOT_ASSIGNABLE');
-      // Checked against THIS partner and the stored value (an unchanged value passes).
-      expect(defaultAssigneeSettingsErrorMock).toHaveBeenCalledWith(expect.objectContaining(settings), null, 'partner-1');
+      // Checked against THIS partner.
+      expect(defaultAssigneeSettingsErrorMock).toHaveBeenCalledWith(expect.objectContaining(settings), 'partner-1');
       expect(db.update).not.toHaveBeenCalled();
     });
 
@@ -1886,7 +1886,7 @@ describe('org routes', () => {
         expect(getCaptured().settings.ticketing.inbound.defaultAssigneeUserId).toBe(USER);
       });
 
-      it('does not re-check an unchanged value, so an unrelated save is never blocked', async () => {
+      it('re-checks an unchanged value on every save: a user who stopped qualifying is refused', async () => {
         setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
         mockCurrentPartnerSelect({ ticketing: { inbound: { enabled: true, defaultAssigneeUserId: USER } } });
         isAssignableInboundDefaultUserMock.mockResolvedValue(false);
@@ -1894,9 +1894,9 @@ describe('org routes', () => {
 
         const res = await patchMe({ settings: { ticketing: { inbound: { enabled: false, defaultAssigneeUserId: USER } } } });
 
-        expect(res.status).toBe(200);
-        expect(isAssignableInboundDefaultUserMock).not.toHaveBeenCalled();
-        expect(getCaptured().settings.ticketing.inbound).toMatchObject({ enabled: false, defaultAssigneeUserId: USER });
+        expect(res.status).toBe(400);
+        expect(isAssignableInboundDefaultUserMock).toHaveBeenCalledWith(USER, 'partner-123');
+        expect(getCaptured()).toBeUndefined();
       });
 
       it('clears the default with null without a check', async () => {
