@@ -258,6 +258,41 @@ describe('ScriptAuthoringPage', () => {
     expect(mintStepUpGrant).not.toHaveBeenCalled();
   });
 
+  it('omits unattendedEnabled from a save that leaves an already-enabled lane on (#7873)', async () => {
+    // The server treats `unattendedEnabled: true` in a body as the enable
+    // transition and demands a step-up grant for it. Re-sending the unchanged
+    // value would 403 every later save of an enabled lane, even a tightening one.
+    mockRoutes({
+      org: orgGetBody({ policy: {
+        ownerScope: 'organization',
+        proposingEnabled: true,
+        unattendedEnabled: true,
+        maxUnattendedRiskTier: 'low',
+        unattendedAllowedClasses: ['temp_files'],
+        maxUnattendedPerHour: 5,
+        protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
+        unattendedEnabledAt: '2026-09-01T00:00:00.000Z',
+      } }),
+    });
+    const { getByTestId } = renderPage();
+    await waitFor(() => expect(getByTestId('script-authoring-org-card')).toBeInTheDocument());
+    expect((getByTestId('script-unattended-enabled') as HTMLInputElement).checked).toBe(true);
+
+    fireEvent.click(getByTestId('script-authoring-save'));
+
+    await waitFor(() => {
+      const putCall = fetchWithAuth.mock.calls.find(
+        ([url, init]) => url === '/ai/script-policy' && (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(putCall).toBeDefined();
+      const body = JSON.parse(String((putCall![1] as RequestInit).body));
+      expect(body).not.toHaveProperty('unattendedEnabled');
+      expect(body.stepUpGrant).toBeUndefined();
+      expect(body.maxUnattendedPerHour).toBe(5);
+    });
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
   it('shows the paused banner with the reason and a reset button when the lane is open', async () => {
     mockRoutes({ org: orgGetBody({ laneState: LANE_OPEN }) });
     const { getByTestId } = renderPage();

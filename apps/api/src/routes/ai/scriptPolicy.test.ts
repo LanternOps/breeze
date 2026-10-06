@@ -429,9 +429,10 @@ describe('PUT /script-policy', () => {
   });
 
   it.each([
-    ['first-ever enable (no row yet)', false],
-    ['re-enable over an existing row with different values', true],
-  ])('round-trips the shared enable-grant resource: mint digest === redeem digest (#7873) — %s', async (_label, hasRow) => {
+    ['first-ever enable (no row yet)', false, ['C:\\Keep']],
+    ['re-enable over an existing row with different values', true, ['C:\\Keep']],
+    ['re-enable that empties protectedResources', true, []],
+  ])('round-trips the shared enable-grant resource: mint digest === redeem digest (#7873) — %s', async (_label, hasRow, paths) => {
     resolvePartnerCeiling.mockResolvedValue({ ...DEFAULT_EFFECTIVE, maxUnattendedRiskTier: 'medium' });
     if (hasRow) {
       selectQueue = [[policyRow({
@@ -449,7 +450,7 @@ describe('PUT /script-policy', () => {
       maxUnattendedRiskTier: 'medium' as const,
       unattendedAllowedClasses: ['temp_files', 'dns_cache'],
       maxUnattendedPerHour: 7,
-      protectedResources: { services: [], paths: ['C:\\Keep'], registryKeys: [], deviceTags: [] },
+      protectedResources: { services: [], paths, registryKeys: [], deviceTags: [] },
     };
     // Mint side: the resource the web sends to /auth/mfa/step-up, parsed by
     // the step-up route's schema and hashed exactly as that route hashes it.

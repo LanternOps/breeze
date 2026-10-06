@@ -306,7 +306,10 @@ export default function ScriptAuthoringPage() {
       }
       const body: Record<string, unknown> = {
         ...values,
-        unattendedEnabled: orgDraft.unattendedEnabled,
+        // Only send the lane switch when it changes: the server treats any
+        // `unattendedEnabled: true` as the enable transition and requires a
+        // grant, so re-sending an unchanged `true` would 403 every later save.
+        ...(orgDraft.unattendedEnabled !== wasEnabled ? { unattendedEnabled: orgDraft.unattendedEnabled } : {}),
         ...(stepUpGrant ? { stepUpGrant } : {}),
       };
       const result = await runAction<OrgGetResponse | { policy: ScriptPolicyDto }>({
