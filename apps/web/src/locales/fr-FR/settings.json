@@ -1888,6 +1888,10 @@
           "label": "Cycle de vie du matériel",
           "description": "Affiche le plan de remplacement à jour des appareils de votre client."
         },
+        "enableHardwareHealth": {
+          "label": "État du matériel",
+          "description": "Affiche l'état des composants, les événements, les disques et la batterie des appareils de votre client."
+        },
         "enableNetworkVisibility": {
           "label": "Visibilité réseau",
           "description": "Affiche dans le portail client l’état du réseau et les actifs découverts en lecture seule."

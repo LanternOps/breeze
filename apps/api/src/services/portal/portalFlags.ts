@@ -17,12 +17,17 @@ export const PORTAL_VISIBILITY_FLAG_KEYS = [
   'enableService',
   'enableDocuments',
   'enableLifecycle',
+  'enableHardwareHealth',
   'enableNetworkVisibility'
 ] as const;
 
 export type PortalVisibilityFlag = typeof PORTAL_VISIBILITY_FLAG_KEYS[number];
 
 export type PortalVisibilityFlags = Record<PortalVisibilityFlag, boolean>;
+
+// Flags kept outside "Enable all" (shared with the web editor test).
+export { PORTAL_SENSITIVE_FLAG_KEYS } from '@breeze/shared';
+export type { PortalSensitiveFlag } from '@breeze/shared';
 
 // Called by the org portal-settings PATCH route whenever a visibility flag
 // was part of the request body, after the upsert has been persisted. It

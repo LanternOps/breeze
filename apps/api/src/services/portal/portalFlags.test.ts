@@ -13,12 +13,13 @@ vi.mock('../sentry', () => ({
   captureException: captureExceptionMock,
 }));
 import {
+  PORTAL_SENSITIVE_FLAG_KEYS,
   PORTAL_VISIBILITY_FLAG_KEYS,
   onPortalFlagsChanged
 } from './portalFlags';
 
 describe('PORTAL_VISIBILITY_FLAG_KEYS', () => {
-  it('lists exactly the nine visibility flags', () => {
+  it('lists exactly the ten visibility flags', () => {
     expect(PORTAL_VISIBILITY_FLAG_KEYS).toEqual([
       'enableDashboard',
       'enableSecurity',
@@ -28,8 +29,21 @@ describe('PORTAL_VISIBILITY_FLAG_KEYS', () => {
       'enableService',
       'enableDocuments',
       'enableLifecycle',
+      'enableHardwareHealth',
       'enableNetworkVisibility'
     ]);
+  });
+});
+
+describe('PORTAL_SENSITIVE_FLAG_KEYS', () => {
+  it('lists the flags that stay outside "Enable all"', () => {
+    expect(PORTAL_SENSITIVE_FLAG_KEYS).toEqual(['enableNetworkAlerts']);
+  });
+
+  it('never overlaps the flags that "Enable all" turns on', () => {
+    for (const key of PORTAL_SENSITIVE_FLAG_KEYS) {
+      expect(PORTAL_VISIBILITY_FLAG_KEYS).not.toContain(key);
+    }
   });
 });
 
@@ -43,6 +57,7 @@ describe('onPortalFlagsChanged', () => {
     enableService: false,
     enableDocuments: false,
     enableLifecycle: false,
+    enableHardwareHealth: false,
     enableNetworkVisibility: false,
   };
 
