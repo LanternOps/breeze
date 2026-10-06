@@ -87,12 +87,7 @@ var serviceInstallCmd = &cobra.Command{
 
 		var serviceExePath string
 		outcome, installErr := winsvcinstall.Install(m, winsvcinstall.Request{
-			Spec: winsvcinstall.Spec{
-				Name:        windowsServiceName,
-				DisplayName: "Breeze RMM Agent",
-				Description: "Breeze Remote Monitoring and Management Agent",
-				Args:        []string{"run"},
-			},
+			Spec: agentServiceSpec(windowsServiceName),
 			Stage: func() (string, error) {
 				path, copied, err := serviceinstall.InstallProtectedBinary(exePath, "breeze-agent.exe")
 				if err != nil {

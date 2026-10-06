@@ -59,12 +59,7 @@ func serviceInstallCmd() *cobra.Command {
 			// until the host next rebooted, and re-running it on a host that
 			// already had the service failed outright on CreateService.
 			outcome, installErr := winsvcinstall.Install(m, winsvcinstall.Request{
-				Spec: winsvcinstall.Spec{
-					Name:        windowsWatchdogServiceName,
-					DisplayName: "Breeze RMM Watchdog",
-					Description: "Breeze Agent Watchdog - monitors and recovers the agent process",
-					Args:        []string{"run"},
-				},
+				Spec: watchdogServiceSpec(windowsWatchdogServiceName),
 				Stage: func() (string, error) {
 					path, copied, err := serviceinstall.InstallProtectedBinary(exePath, "breeze-watchdog.exe")
 					if err != nil {
