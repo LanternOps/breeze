@@ -104,6 +104,14 @@ minting through this endpoint.
 No partner API scope permits command execution, remote access, secret reading,
 or user management.
 
+The opt-in MCP scopes (`ai:read`, `ai:write`, `ai:execute`, `ai:execute_admin`)
+grant nothing on `/api/v1/partner-api`. They only let the principal's key
+authenticate the MCP endpoint (`/api/v1/mcp`) at partner scope, where every tool
+call goes through the MCP guardrails: per-tool RBAC bounded by the principal
+owner's live role, the Tier 3 approval gate (`MCP_UNATTENDED_TIER3_PRINCIPALS`
+`partner_sp:<id>`), rate limits, the Tier 3 execution ledger and the audit log.
+See the MCP server documentation.
+
 | Endpoint | Required scope |
 |---|---|
 | `GET /api/v1/partner-api/organizations` | `organizations:read` |

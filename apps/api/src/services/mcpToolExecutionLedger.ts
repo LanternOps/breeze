@@ -12,6 +12,8 @@ export interface McpToolExecutionLedgerPrincipal {
   oauthGrantId?: string | null;
   partnerId?: string | null;
   actorUserId?: string | null;
+  /** Set for a partner service principal; `apiKeyId` is then its key id. */
+  partnerServicePrincipalId?: string | null;
 }
 
 export interface McpToolExecutionLedgerHandle {
@@ -57,8 +59,11 @@ function isUuid(value: string | null | undefined): value is string {
 
 function sanitizePrincipal(principal: McpToolExecutionLedgerPrincipal): Record<string, unknown> {
   return {
-    type: 'api_key',
+    type: principal.partnerServicePrincipalId ? 'partner_service_principal' : 'api_key',
     apiKeyId: principal.apiKeyId.slice(0, 256),
+    ...(principal.partnerServicePrincipalId
+      ? { partnerServicePrincipalId: principal.partnerServicePrincipalId.slice(0, 256) }
+      : {}),
     oauthGrantId: principal.oauthGrantId ?? null,
     partnerId: principal.partnerId ?? null,
     actorUserId: principal.actorUserId ?? null,

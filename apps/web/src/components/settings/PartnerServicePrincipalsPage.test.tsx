@@ -167,6 +167,10 @@ describe('PartnerServicePrincipalsPage', () => {
     // Ticket scopes: offered, opt-in, never pre-selected.
     expect(screen.getByTestId('scope-checkbox-tickets:read')).not.toBeChecked();
     expect(screen.getByTestId('scope-checkbox-tickets:write')).not.toBeChecked();
+    // MCP scopes are offered but never pre-selected.
+    for (const scope of ['ai:read', 'ai:write', 'ai:execute', 'ai:execute_admin']) {
+      expect(screen.getByTestId(`scope-checkbox-${scope}`)).not.toBeChecked();
+    }
     expect(screen.queryByTestId('write-scope-restrictions-required')).not.toBeInTheDocument();
 
     fireEvent.click(writeScope);

@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { markPermissionGate } from './permissionGate';
@@ -12,18 +11,17 @@ import {
 } from '../db';
 import {
   organizations,
-  partners,
   partnerServicePrincipalKeys,
-  partnerServicePrincipals,
 } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
 import { writeAuditEventAsync } from '../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
-import { ipMatchesAny, isValidIpOrCidr } from '../services/ipMatch';
 import {
-  type PartnerServicePrincipalScope,
-  validatePartnerServicePrincipalScopes,
-} from '../services/partnerServicePrincipalScopes';
+  hashPartnerApiKey,
+  isPartnerServicePrincipalKeyFormat,
+  loadPartnerServicePrincipalCredential,
+} from '../services/partnerServicePrincipalCredential';
+import type { PartnerServicePrincipalScope } from '../services/partnerServicePrincipalScopes';
 import { enforcePreLookupProbeRateLimit } from './apiKeyAuth';
 
 export interface PartnerApiPrincipalContext {
@@ -46,7 +44,6 @@ declare module 'hono' {
 
 type CredentialBootstrap = Omit<PartnerApiPrincipalContext, 'accessibleOrgIds'>;
 
-const PARTNER_API_KEY_PATTERN = /^brz_sp_[A-Za-z0-9_-]{43}$/;
 const AUTH_REQUIRED_MESSAGE = 'Partner API authentication required';
 const INVALID_CREDENTIALS_MESSAGE = 'Invalid partner API credentials';
 
@@ -64,95 +61,13 @@ function invalidCredentials(): HTTPException {
   return new HTTPException(401, { message: INVALID_CREDENTIALS_MESSAGE });
 }
 
-function hashPartnerApiKey(rawKey: string): string {
-  // Service-principal keys are generated high-entropy tokens. Persist and
-  // compare only their SHA-256 digest; never include plaintext or digest in
-  // errors, logs, context, or audit payloads.
-  // lgtm[js/insufficient-password-hash]
-  return createHash('sha256').update(rawKey).digest('hex');
-}
-
-function isExpired(value: Date | string | null | undefined, now: number): boolean {
-  if (!value) return false;
-  const timestamp = value instanceof Date ? value.getTime() : new Date(value).getTime();
-  return !Number.isFinite(timestamp) || timestamp <= now;
-}
-
 async function bootstrapCredential(
   keyHash: string,
   trustedClientIp: string | undefined,
 ): Promise<CredentialBootstrap> {
-  return withSystemDbAccessContext(async () => {
-    const [credential] = await db
-      .select({
-        keyId: partnerServicePrincipalKeys.id,
-        keyStatus: partnerServicePrincipalKeys.status,
-        keyExpiresAt: partnerServicePrincipalKeys.expiresAt,
-        rateLimit: partnerServicePrincipalKeys.rateLimit,
-        partnerServicePrincipalId: partnerServicePrincipals.id,
-        partnerId: partnerServicePrincipals.partnerId,
-        name: partnerServicePrincipals.name,
-        principalStatus: partnerServicePrincipals.status,
-        principalExpiresAt: partnerServicePrincipals.expiresAt,
-        scopes: partnerServicePrincipals.scopes,
-        sourceCidrs: partnerServicePrincipals.sourceCidrs,
-        partnerStatus: partners.status,
-        partnerDeletedAt: partners.deletedAt,
-      })
-      .from(partnerServicePrincipalKeys)
-      .innerJoin(
-        partnerServicePrincipals,
-        and(
-          eq(partnerServicePrincipals.id, partnerServicePrincipalKeys.partnerServicePrincipalId),
-          eq(partnerServicePrincipals.partnerId, partnerServicePrincipalKeys.partnerId),
-        ),
-      )
-      .innerJoin(partners, eq(partners.id, partnerServicePrincipals.partnerId))
-      .where(eq(partnerServicePrincipalKeys.keyHash, keyHash))
-      .limit(1);
-
-    const now = Date.now();
-    if (
-      !credential
-      || credential.keyStatus !== 'active'
-      || isExpired(credential.keyExpiresAt, now)
-      || credential.principalStatus !== 'active'
-      || isExpired(credential.principalExpiresAt, now)
-      || credential.partnerStatus !== 'active'
-      || credential.partnerDeletedAt
-    ) {
-      throw invalidCredentials();
-    }
-
-    const validatedScopes = validatePartnerServicePrincipalScopes(credential.scopes);
-    if (!validatedScopes.ok) {
-      throw invalidCredentials();
-    }
-
-    const sourceCidrs = credential.sourceCidrs ?? [];
-    if (sourceCidrs.some((entry) => !isValidIpOrCidr(entry))) {
-      throw invalidCredentials();
-    }
-    if (
-      sourceCidrs.length > 0
-      && (!trustedClientIp || !ipMatchesAny(trustedClientIp, sourceCidrs))
-    ) {
-      // A configured allowlist is authoritative. If proxy trust cannot
-      // resolve one canonical client address, fail closed.
-      throw invalidCredentials();
-    }
-
-    return {
-      partnerServicePrincipalId: credential.partnerServicePrincipalId,
-      keyId: credential.keyId,
-      partnerId: credential.partnerId,
-      name: credential.name,
-      scopes: validatedScopes.scopes,
-      rateLimit: credential.rateLimit,
-      principalExpiresAt: credential.principalExpiresAt,
-      sourceCidrs,
-    };
-  });
+  // Shared with the MCP endpoint (middleware/partnerServicePrincipalMcpAuth.ts)
+  // so both surfaces enforce one credential lifecycle.
+  return (await loadPartnerServicePrincipalCredential(keyHash, trustedClientIp)).credential;
 }
 
 // The hidden per-partner 'quick_support' org is an internal Quick Support
@@ -268,7 +183,7 @@ export async function partnerApiAuthMiddleware(c: Context, next: Next): Promise<
   // the same shared protection used by human-owned API keys.
   await enforcePreLookupProbeRateLimit(c);
 
-  if (!PARTNER_API_KEY_PATTERN.test(rawKey)) {
+  if (!isPartnerServicePrincipalKeyFormat(rawKey)) {
     throw invalidCredentials();
   }
 

@@ -2539,7 +2539,7 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
     if (malformed.length > 0) {
       warnings.push({
         key: 'MCP_UNATTENDED_TIER3_PRINCIPALS',
-        message: `ignoring ${malformed.length} malformed entr${malformed.length === 1 ? 'y' : 'ies'} that can never match: ${malformed.join(', ')}. Each entry must be api_key:<api key id> or oauth_client_user:<client_id>/<user id>.`,
+        message: `ignoring ${malformed.length} malformed entr${malformed.length === 1 ? 'y' : 'ies'} that can never match: ${malformed.join(', ')}. Each entry must be api_key:<api key id>, oauth_client_user:<client_id>/<user id> or partner_sp:<partner service principal id>.`,
       });
     }
   }

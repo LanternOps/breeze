@@ -26,6 +26,21 @@ describe('parseUnattendedPrincipals (shared by the boot warning and the runtime 
     expect(malformed).toEqual(['api_key:ok-1', 'apikey:typo', 'oauth_client_user:client-only', 'oauth_client_user:c/not-a-uuid', `oauth_client_user:/${USER}`, 'client-b/user']);
   });
 
+  it('accepts partner_sp:<principal id> and keeps it distinct from an api_key entry with the same id', () => {
+    const { principals, malformed } = parseUnattendedPrincipals(`partner_sp:${KEY.toUpperCase()}`);
+    expect(malformed).toEqual([]);
+    expect(principals.has(canonicalPrincipalRef('partner_sp', KEY)!)).toBe(true);
+    // A key id listed as api_key:<id> must never match a partner principal, and the reverse.
+    expect(principals.has(canonicalPrincipalRef('api_key', KEY)!)).toBe(false);
+    expect(parseUnattendedPrincipals(`api_key:${KEY}`).principals.has(canonicalPrincipalRef('partner_sp', KEY)!)).toBe(false);
+  });
+
+  it('reports a malformed partner_sp entry and matches nothing', () => {
+    const { principals, malformed } = parseUnattendedPrincipals('partner_sp:not-a-uuid, partner_sp:, partnersp:' + KEY);
+    expect(principals.size).toBe(0);
+    expect(malformed).toEqual(['partner_sp:not-a-uuid', 'partner_sp:', `partnersp:${KEY}`]);
+  });
+
   it('is empty for unset or blank input', () => {
     expect(parseUnattendedPrincipals(undefined)).toEqual({ principals: new Set(), malformed: [] });
     expect(parseUnattendedPrincipals(' , ')).toEqual({ principals: new Set(), malformed: [] });
@@ -33,6 +48,7 @@ describe('parseUnattendedPrincipals (shared by the boot warning and the runtime 
 
   it('canonicalPrincipalRef returns null for non-UUID ids (they can never be configured)', () => {
     expect(canonicalPrincipalRef('api_key', 'key-1')).toBeNull();
+    expect(canonicalPrincipalRef('partner_sp', 'principal-1')).toBeNull();
     expect(canonicalPrincipalRef('oauth_client_user', 'client', 'user-1')).toBeNull();
   });
 });
