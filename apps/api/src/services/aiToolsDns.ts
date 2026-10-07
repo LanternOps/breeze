@@ -21,6 +21,7 @@ import type { AuthContext } from '../middleware/auth';
 import { isAiAgentPrincipal } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { schedulePolicySync } from '../jobs/dnsSyncJob';
+import { canMutateOrgWideGovernance } from './siteCeilingAccess';
 import {
   deviceScopeCondition,
   resolveSiteAllowedDeviceIds,
@@ -442,7 +443,11 @@ export function registerDnsTools(aiTools: Map<string, AiTool>): void {
       // narrower than a site-restricted caller and has no per-row site check to
       // fall back on either — `runFrozenDeviceIds` is the axis the site flag
       // misses entirely for the device-less shape (#6086).
-      if ((auth.allowedSiteIds && auth.canAccessSite) || runFrozenDeviceIds(auth)) {
+      if (
+        !canMutateOrgWideGovernance(auth) ||
+        (auth.allowedSiteIds && auth.canAccessSite) ||
+        runFrozenDeviceIds(auth)
+      ) {
         return JSON.stringify({ error: 'DNS policy management requires full-organization access' });
       }
 

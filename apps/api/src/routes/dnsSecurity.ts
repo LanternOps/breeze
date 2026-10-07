@@ -24,6 +24,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { checkSsrfSafe, type SsrfMode } from '../services/ssrfGuard';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 
 import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
 import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
@@ -1012,6 +1013,11 @@ dnsSecurityRoutes.post(
   zValidator('json', createPolicySchema),
   async (c) => {
     const auth = c.get('auth');
+    // A DNS policy applies to the whole organization; a site- or
+    // device-restricted caller cannot create or edit it.
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const body = c.req.valid('json');
 
     const orgResult = resolveOrgId(auth, body.orgId);
@@ -1109,6 +1115,11 @@ dnsSecurityRoutes.patch(
   zValidator('json', patchPolicyDomainsSchema),
   async (c) => {
     const auth = c.get('auth');
+    // A DNS policy applies to the whole organization; a site- or
+    // device-restricted caller cannot create or edit it.
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const policyId = c.req.param('id')!;
     const body = c.req.valid('json');
 

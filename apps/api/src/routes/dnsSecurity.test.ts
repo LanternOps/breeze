@@ -623,4 +623,117 @@ describe('dns security routes', () => {
       expect(body.source).toBe('raw');
     });
   });
+
+  // ──────────────── Org-wide policy writes refuse a site ceiling ────────────────
+  // A DNS allow/block policy applies to the whole organization (it has no site
+  // axis), so a caller restricted to specific sites — or a device-bound run —
+  // may not create or edit one, regardless of orgs:write.
+  describe('policy writes — site ceiling', () => {
+    const ORG_ID = '11111111-1111-1111-1111-111111111111';
+    const INTEGRATION_ID = '22222222-2222-2222-2222-222222222222';
+    const POLICY_ID = '44444444-4444-4444-4444-444444444444';
+
+    function setCeilingAuth(ceiling: { allowedSiteIds?: string[]; allowedDeviceIds?: string[] }) {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          orgId: ORG_ID,
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID,
+          orgCondition: () => undefined,
+          user: { id: 'user-123', email: 'test@example.com' },
+          ...ceiling
+        });
+        return next();
+      });
+    }
+
+    const createBody = JSON.stringify({
+      integrationId: INTEGRATION_ID,
+      name: 'Block list',
+      type: 'blocklist',
+      domains: [{ domain: 'example.com' }]
+    });
+    const patchBody = JSON.stringify({ add: [{ domain: 'example.org' }] });
+
+    const ceilings: Array<[string, { allowedSiteIds?: string[]; allowedDeviceIds?: string[] }]> = [
+      ['a site allowlist', { allowedSiteIds: ['aaaaaaaa-0000-0000-0000-000000000001'] }],
+      ['an empty site allowlist', { allowedSiteIds: [] }],
+      ['an exact-device ceiling', { allowedDeviceIds: ['33333333-3333-3333-3333-333333333333'] }]
+    ];
+
+    for (const [label, ceiling] of ceilings) {
+      it(`POST /policies refuses a caller with ${label} before database access`, async () => {
+        setCeilingAuth(ceiling);
+
+        const res = await app.request('/dns-security/policies', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: createBody
+        });
+
+        expect(res.status).toBe(403);
+        const body = await res.json();
+        expect(body.error).toMatch(/Site-restricted users cannot modify organization-wide settings/);
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.insert).not.toHaveBeenCalled();
+      });
+
+      it(`PATCH /policies/:id/domains refuses a caller with ${label} before database access`, async () => {
+        setCeilingAuth(ceiling);
+
+        const res = await app.request(`/dns-security/policies/${POLICY_ID}/domains`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: patchBody
+        });
+
+        expect(res.status).toBe(403);
+        const body = await res.json();
+        expect(body.error).toMatch(/Site-restricted users cannot modify organization-wide settings/);
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+      });
+    }
+
+    it('POST /policies still lets an unrestricted org caller through to the integration lookup', async () => {
+      setCeilingAuth({});
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/dns-security/policies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: createBody
+      });
+
+      expect(res.status).toBe(404);
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+
+    it('PATCH /policies/:id/domains still lets an unrestricted org caller through to the policy lookup', async () => {
+      setCeilingAuth({});
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/dns-security/policies/${POLICY_ID}/domains`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: patchBody
+      });
+
+      expect(res.status).toBe(404);
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+  });
 });
