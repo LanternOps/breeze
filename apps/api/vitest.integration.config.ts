@@ -57,6 +57,8 @@ export default defineConfig({
       'src/services/portal/networkVisibilityReadModel.integration.test.ts',
       // #7731 portal hardware health: real-Postgres proof of org isolation.
       'src/services/portal/hardwareHealthReadModel.integration.test.ts',
+      // #7732 portal hardware inventory: real-Postgres proof of org isolation.
+      'src/services/portal/hardwareInventoryReadModel.integration.test.ts',
       // Co-located real-DB integration test for the platform-admin bootstrap
       // (#2655): the mocked unit suite executes no SQL, so it never caught the
       // prod-bundle `= ANY(::text[])` array-literal failure. This drives the
