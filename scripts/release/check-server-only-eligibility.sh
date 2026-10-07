@@ -75,6 +75,40 @@ done
 g() { git -C "$REPO" "$@"; }
 in_repo() { (cd "$REPO" && "$@"); }
 
+CHANGED=$(mktemp)
+AGENT_HITS=$(mktemp)
+OFFENDING=$(mktemp)
+TRAILER=$(mktemp)
+MANIFEST_DIR=""
+cleanup() {
+  rm -f "$CHANGED" "$AGENT_HITS" "$OFFENDING" "$TRAILER"
+  if [ -n "$MANIFEST_DIR" ]; then rm -rf "$MANIFEST_DIR"; fi
+}
+trap cleanup EXIT
+
+# Silence is never "clean". A helper CLI whose entry-point check misses loads,
+# prints nothing and exits 0, which would read as "no protected path changed"
+# or "no server-only tags". Every helper whose empty output is meaningful ends
+# with a stderr trailer; it must be the last line and its counts must agree
+# with what we fed in and got back.
+count_lines() {
+  if [ -s "$1" ]; then wc -l < "$1" | tr -d ' '; else echo 0; fi
+}
+require_trailer() {
+  local expected="$1" what="$2" actual
+  actual=$(sed -n '$p' "$TRAILER")
+  [ "$actual" = "$expected" ] || fail "$what did not confirm its result (expected trailer '$expected', got '${actual:-nothing}')"
+}
+# match_paths POLICY OUT: the CHANGED paths that POLICY protects, proven complete.
+match_paths() {
+  local policy="$1" out="$2"
+  if ! node "$PATH_TOOL" match --policy "$policy" < "$CHANGED" > "$out" 2> "$TRAILER"; then
+    cat "$TRAILER" >&2
+    fail "path policy tool failed on $policy"
+  fi
+  require_trailer "# matched=$(count_lines "$out") of $CHANGED_COUNT" "path policy tool ($policy)"
+}
+
 # 1. Full history, well-formed identifiers.
 SHALLOW=$(g rev-parse --is-shallow-repository 2>/dev/null) || fail "'$REPO' is not a Git repository"
 [ "$SHALLOW" != "true" ] || fail "shallow repository cannot prove release ancestry; fetch full history and tags"
@@ -136,8 +170,10 @@ fi
 g merge-base --is-ancestor "$COMMIT" "$MAIN_REF" || fail "commit $COMMIT is not reachable from '$MAIN_REF'"
 
 # 7. The base is the highest stable ancestor tag that is not itself server-only.
-LEDGER_TAGS=$(in_repo node "$LEDGER_TOOL" tags --ref "$LEDGER_REF") || \
-  fail "cannot read server-only ledger tags at '$LEDGER_REF'"
+LEDGER_TAGS=$(in_repo node "$LEDGER_TOOL" tags --ref "$LEDGER_REF" 2> "$TRAILER") || \
+  { cat "$TRAILER" >&2; fail "cannot read server-only ledger tags at '$LEDGER_REF'"; }
+LEDGER_TAG_COUNT=$(printf '%s' "$LEDGER_TAGS" | { grep -c . || true; })
+require_trailer "# tags=$LEDGER_TAG_COUNT" "server-only ledger tool (tags at '$LEDGER_REF')"
 if printf '%s\n' "$LEDGER_TAGS" | grep -qxF "$DECLARED_BASE"; then
   fail "declared base '$DECLARED_BASE' is itself a server-only release; chained hotfixes must name the last FULL release"
 fi
@@ -158,19 +194,23 @@ COMPUTED_BASE=$(first_line "$SORTED_BASES")
 
 # 8. Nothing binary-affecting changed since the base. --no-renames reports a
 #    move out of a protected directory as a deletion there.
-CHANGED=$(mktemp)
-AGENT_HITS=$(mktemp)
-OFFENDING=$(mktemp)
-trap 'rm -f "$CHANGED" "$AGENT_HITS" "$OFFENDING"' EXIT
-g -c core.quotePath=false diff --no-renames --name-only -z "$BASE_SHA" "$COMMIT" > "$CHANGED"
-node "$PATH_TOOL" match --policy "$POLICY" < "$CHANGED" > "$OFFENDING"
+#    Self-test first: the matcher must flag a path the policy is known to
+#    protect before an empty result is trusted as "nothing protected changed".
+SELF_TEST=$(printf 'agent/go.mod\0apps/web/src/self-test.tsx\0' | node "$PATH_TOOL" match --policy "$POLICY" 2> "$TRAILER") || \
+  { cat "$TRAILER" >&2; fail "path policy tool self-test failed to run"; }
+[ "$SELF_TEST" = "agent/go.mod" ] || \
+  fail "path policy tool self-test: $POLICY did not flag exactly agent/go.mod (got '${SELF_TEST:-nothing}')"
+require_trailer "# matched=1 of 2" "path policy tool self-test"
+g -c core.quotePath=false diff --no-renames --name-only -z "$BASE_SHA" "$COMMIT" > "$CHANGED" || \
+  fail "cannot diff $BASE_SHA..$COMMIT"
+CHANGED_COUNT=$(tr -cd '\0' < "$CHANGED" | wc -c | tr -d ' ')
+match_paths "$POLICY" "$OFFENDING"
 if [ -s "$OFFENDING" ]; then
   echo "server-only-guard: binary-affecting paths changed since $DECLARED_BASE:" >&2
   sed 's/^/  /' "$OFFENDING" >&2
   fail "cut a full release; ${TAG} cannot be server-only"
 fi
-node "$PATH_TOOL" match --policy "$AGENT_FACING" < "$CHANGED" > "$AGENT_HITS"
-CHANGED_COUNT=$(tr -cd '\0' < "$CHANGED" | wc -c | tr -d ' ')
+match_paths "$AGENT_FACING" "$AGENT_HITS"
 
 # 9. --online: the base must be a published, stable, signed FULL release built
 #    from exactly BASE_SHA.
@@ -182,7 +222,6 @@ if [ "$ONLINE" = true ]; then
     fail "cannot parse GitHub Release '$DECLARED_BASE'"
   [ "$RELEASE_STATE" = "false false" ] || fail "base release '$DECLARED_BASE' must be published and stable (isDraft isPrerelease = $RELEASE_STATE)"
   MANIFEST_DIR=$(mktemp -d)
-  trap 'rm -f "$CHANGED" "$AGENT_HITS" "$OFFENDING"; rm -rf "$MANIFEST_DIR"' EXIT
   gh release download "$DECLARED_BASE" --repo "$EXPECTED_REPOSITORY" --dir "$MANIFEST_DIR" \
     --pattern release-artifact-manifest.json --pattern release-artifact-manifest.json.ed25519 \
     || fail "cannot download the signed manifest of '$DECLARED_BASE'"

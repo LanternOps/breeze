@@ -120,3 +120,23 @@ test('CLI validate and changed', () => {
   assert.equal(invalid.status, 1);
   assert.match(invalid.stderr, /four non-empty tab-separated fields/u);
 });
+
+test('CLI tags and changed end with a count trailer; an empty ledger reports zero', () => {
+  const { repo, commit } = gitRepo();
+  const noLedger = commit({ 'x.txt': 'x\n' });
+  const empty = cli(repo, 'tags', '--ref', noLedger);
+  assert.equal(empty.status, 0, empty.stderr);
+  assert.equal(empty.stdout, '');
+  assert.equal(empty.stderr, '# tags=0\n', 'an empty ledger must be distinguishable from "did not run"');
+
+  const two = commit({ [LEDGER_PATH]: `# h\n${row('v0.118.1', A)}${row('v0.118.2', B)}` });
+  const listed = cli(repo, 'tags', '--ref', two);
+  assert.equal(listed.stdout, 'v0.118.1\nv0.118.2\n');
+  assert.equal(listed.stderr, '# tags=2\n');
+
+  const changed = cli(repo, 'changed', '--base-ref', noLedger, '--head-ref', two);
+  assert.equal(changed.stderr, '# changed=2\n');
+  const unchanged = cli(repo, 'changed', '--base-ref', two, '--head-ref', two);
+  assert.equal(unchanged.stdout, '');
+  assert.equal(unchanged.stderr, '# changed=0\n');
+});

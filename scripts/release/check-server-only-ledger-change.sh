@@ -40,16 +40,30 @@ summary() {
   fi
 }
 
+REPORT_DIR=$(mktemp -d)
+trap 'rm -rf "$REPORT_DIR"' EXIT
+TRAILER="$REPORT_DIR/changed.trailer"
+
 node "$SCRIPT_DIR/server-only-ledger.mjs" validate --ref "$HEAD_REF"
-CHANGES=$(node "$SCRIPT_DIR/server-only-ledger.mjs" changed --base-ref "$BASE_REF" --head-ref "$HEAD_REF")
+if ! CHANGES=$(node "$SCRIPT_DIR/server-only-ledger.mjs" changed --base-ref "$BASE_REF" --head-ref "$HEAD_REF" 2> "$TRAILER"); then
+  cat "$TRAILER" >&2
+  echo "::error::cannot diff the server-only ledger between $BASE_REF and $HEAD_REF"
+  exit 1
+fi
+# An empty diff must be proven, not inferred from silence: the ledger tool's
+# last stderr line reports how many rows it printed.
+CHANGE_COUNT=$(printf '%s' "$CHANGES" | { grep -c . || true; })
+TRAILER_LINE=$(sed -n '$p' "$TRAILER")
+if [ "$TRAILER_LINE" != "# changed=$CHANGE_COUNT" ]; then
+  echo "::error::server-only ledger tool did not confirm its result (expected trailer '# changed=$CHANGE_COUNT', got '${TRAILER_LINE:-nothing}')"
+  exit 1
+fi
 if [ -z "$CHANGES" ]; then
   echo "no server-only ledger changes between $BASE_REF and $HEAD_REF"
   exit 0
 fi
 
 failed=0
-REPORT_DIR=$(mktemp -d)
-trap 'rm -rf "$REPORT_DIR"' EXIT
 while IFS=$'\t' read -r kind tag commit base; do
   [ -n "$kind" ] || continue
   tag_exists=false

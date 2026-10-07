@@ -163,6 +163,21 @@ test('CLI reads NUL- or newline-separated paths and prints the matches', () => {
   assert.notEqual(usage.status, 0);
 });
 
+test('CLI always ends with a completion trailer on stderr, even with zero matches', () => {
+  const policy = join(HERE, 'binary-affecting-paths.txt');
+  const some = spawnSync('node', [CLI, 'match', '--policy', policy], {
+    input: 'apps/api/x.ts\0agent/go.mod\0apps/web/y.tsx\0',
+    encoding: 'utf8',
+  });
+  assert.equal(some.status, 0, some.stderr);
+  assert.equal(some.stderr, '# matched=1 of 3\n');
+
+  const none = spawnSync('node', [CLI, 'match', '--policy', policy], { input: '', encoding: 'utf8' });
+  assert.equal(none.status, 0, none.stderr);
+  assert.equal(none.stdout, '');
+  assert.equal(none.stderr, '# matched=0 of 0\n', 'an empty change set must still be distinguishable from "did not run"');
+});
+
 test('CLI still runs when invoked through a symlinked directory (fails closed, never silently exits 0)', () => {
   const linkParent = mkdtempSync(join(tmpdir(), 'policy-link-'));
   try {

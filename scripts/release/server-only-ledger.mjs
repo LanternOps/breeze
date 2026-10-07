@@ -6,6 +6,10 @@
 //   validate --ref REF                    parse the ledger at REF; exit 1 on error
 //   changed  --base-ref A --head-ref B    print "<added|changed|removed>\t<tag>\t<commit>\t<base>" per row
 //
+// `tags` and `changed` end with a stderr trailer ("# tags=N" / "# changed=N")
+// that callers must check: an empty ledger or an empty diff has to be
+// distinguishable from a CLI entry point that silently never ran.
+//
 // Exit 3 means exactly "this tag is not a server-only release". Every other
 // failure (unresolvable ref, malformed ledger) exits 1 so a caller can never
 // mistake an error for the safe full-release default.
@@ -121,7 +125,9 @@ function runCli(argv) {
   }
   if (command === 'tags') {
     const options = parseOptions(args, ['--ref']);
-    for (const entry of parseLedger(ledgerTextAt(options.ref))) process.stdout.write(`${entry.tag}\n`);
+    const rows = parseLedger(ledgerTextAt(options.ref));
+    for (const entry of rows) process.stdout.write(`${entry.tag}\n`);
+    process.stderr.write(`# tags=${rows.length}\n`);
     return 0;
   }
   if (command === 'validate') {
@@ -133,9 +139,14 @@ function runCli(argv) {
   if (command === 'changed') {
     const options = parseOptions(args, ['--base-ref', '--head-ref']);
     const diff = diffLedger(ledgerTextAt(options['base-ref']), ledgerTextAt(options['head-ref']));
+    let count = 0;
     for (const kind of ['added', 'changed', 'removed']) {
-      for (const entry of diff[kind]) process.stdout.write(`${kind}\t${entry.tag}\t${entry.commit}\t${entry.base}\n`);
+      for (const entry of diff[kind]) {
+        process.stdout.write(`${kind}\t${entry.tag}\t${entry.commit}\t${entry.base}\n`);
+        count += 1;
+      }
     }
+    process.stderr.write(`# changed=${count}\n`);
     return 0;
   }
   fail('usage: server-only-ledger.mjs <row --ref REF --tag TAG | tags --ref REF | validate --ref REF | changed --base-ref A --head-ref B>');
@@ -144,7 +155,8 @@ function runCli(argv) {
 
 // Compare real paths: the guard runs these helpers from a temporary directory
 // that may sit behind a symlink (/var -> /private/var on macOS). A plain URL
-// comparison would then silently skip the CLI and exit 0 with no output.
+// comparison would then silently skip the CLI and exit 0 with no output —
+// which callers catch by requiring the tags/changed trailer.
 function invokedAsCli() {
   if (!process.argv[1]) return false;
   try {

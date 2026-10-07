@@ -51,7 +51,10 @@ function releaseScripts() {
 }
 
 export class Fixture {
-  constructor({ baseHasGuard = true } = {}) {
+  // scriptOverrides replaces files under scripts/release/ in the BASE tree (and
+  // so, unchanged, in every later commit) — used to simulate a helper CLI that
+  // silently does nothing.
+  constructor({ baseHasGuard = true, scriptOverrides = {} } = {}) {
     this.repo = join(scratch, `repo-${nextFixtureNumber()}`);
     mkdirSync(this.repo, { recursive: true });
     this.git('init', '-q', '--initial-branch=main');
@@ -67,7 +70,8 @@ export class Fixture {
       'agent/main.go': 'package main\n',
       '.env.example': 'A=1\n',
     };
-    this.v117 = this.commit(baseHasGuard ? { ...common, ...releaseScripts() } : common, 'v0.117.0 tree');
+    const scripts = { ...releaseScripts(), ...scriptOverrides };
+    this.v117 = this.commit(baseHasGuard ? { ...common, ...scripts } : common, 'v0.117.0 tree');
     this.git('tag', 'v0.117.0');
     this.base = this.commit({ 'apps/api/src/app.ts': 'export const app = 2;\n' }, 'v0.118.0 tree');
     this.git('tag', 'v0.118.0');
@@ -195,10 +199,54 @@ export function onlineFixture() {
 }
 
 // ── PR CI: ledger-change check (append-only + guard on new rows) ────────────
-export function ledgerChange(fx, baseRef, headRef = 'main') {
+export function ledgerChange(fx, baseRef, headRef = 'main', { script = LEDGER_CHANGE } = {}) {
   const summary = join(scratch, `summary-${nextFixtureNumber()}.md`);
   writeFileSync(summary, '');
-  const result = run(fx.repo, 'bash', [LEDGER_CHANGE, '--base-ref', baseRef, '--head-ref', headRef, '--main-ref', 'main'],
+  const result = run(fx.repo, 'bash', [script, '--base-ref', baseRef, '--head-ref', headRef, '--main-ref', 'main'],
     { env: { ...process.env, GITHUB_STEP_SUMMARY: summary } });
   return { ...result, summary: readFileSync(summary, 'utf8'), output: `${result.stdout}\n${result.stderr}` };
+}
+
+// ── Helper CLIs that silently do nothing ────────────────────────────────────
+// What a helper looks like when its invokedAsCli() check misses: it loads,
+// prints nothing and exits 0.
+export const SILENT_CLI = '// simulated: the CLI entry point never ran\nexport {};\n';
+
+// A path-policy CLI that runs but never reports a match (a broken matcher that
+// still prints a plausible trailer).
+export const NEVER_MATCHES_CLI = `import { readFileSync } from 'node:fs';
+const text = readFileSync(0, 'utf8');
+const count = text.split(text.includes('\\0') ? '\\0' : '\\n').filter(Boolean).length;
+process.stderr.write(\`# matched=0 of \${count}\\n\`);
+`;
+
+// The real path-policy CLI with its stderr (and so its trailer) swallowed:
+// correct matches, but no proof that it processed the whole change set.
+export const PATH_CLI_WITHOUT_TRAILER = {
+  'scripts/release/release-path-policy.mjs': `import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+const real = fileURLToPath(new URL('./release-path-policy.real.mjs', import.meta.url));
+const result = spawnSync(process.execPath, [real, ...process.argv.slice(2)], {
+  input: readFileSync(0),
+  stdio: ['pipe', 'inherit', 'ignore'],
+});
+process.exit(result.status ?? 1);
+`,
+  'scripts/release/release-path-policy.real.mjs': readFileSync(join(HERE, 'release-path-policy.mjs')),
+};
+
+// The real ledger CLI, except that one subcommand silently does nothing.
+export function ledgerCliSilentOn(command) {
+  return {
+    'scripts/release/server-only-ledger.mjs': `import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+const args = process.argv.slice(2);
+if (args[0] === ${JSON.stringify(command)}) process.exit(0);
+const real = fileURLToPath(new URL('./server-only-ledger.real.mjs', import.meta.url));
+const result = spawnSync(process.execPath, [real, ...args], { stdio: 'inherit' });
+process.exit(result.status ?? 1);
+`,
+    'scripts/release/server-only-ledger.real.mjs': readFileSync(join(HERE, 'server-only-ledger.mjs')),
+  };
 }

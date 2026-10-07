@@ -100,13 +100,19 @@ function runCli(argv) {
     fail('usage: release-path-policy.mjs match --policy FILE < paths');
   }
   const rules = loadPolicy(readFileSync(args[1], 'utf8'));
-  const matches = matchPaths(rules, readPaths(readFileSync(0, 'utf8')));
+  const paths = readPaths(readFileSync(0, 'utf8'));
+  const matches = matchPaths(rules, paths);
   if (matches.length > 0) process.stdout.write(`${matches.join('\n')}\n`);
+  // Completion trailer: the guard refuses unless this is the last stderr line
+  // and its counts agree with what it fed in and got back, so "no output"
+  // can never be read as "nothing matched".
+  process.stderr.write(`# matched=${matches.length} of ${paths.length}\n`);
 }
 
 // Compare real paths: the guard runs these helpers from a temporary directory
 // that may sit behind a symlink (/var -> /private/var on macOS). A plain URL
-// comparison would then silently skip the CLI and exit 0 with no output.
+// comparison would then silently skip the CLI and exit 0 with no output —
+// which the guard catches by requiring the completion trailer from runCli.
 function invokedAsCli() {
   if (!process.argv[1]) return false;
   try {

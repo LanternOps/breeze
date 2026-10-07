@@ -1,6 +1,6 @@
 // Server-only guard: tag/row/base refusals and base-tree execution.
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -8,9 +8,15 @@ import {
   BOOTSTRAP,
   CANDIDATES,
   Fixture,
+  HERE,
   LEDGER,
+  NEVER_MATCHES_CLI,
+  PATH_CLI_WITHOUT_TRAILER,
   SIDE_BRANCH,
+  SILENT_CLI,
   assertRefused,
+  ledgerChange,
+  ledgerCliSilentOn,
   nextFixtureNumber,
   run,
   scratch,
@@ -161,4 +167,52 @@ test('the guard reads its policy from its own (base) tree, not the candidate tre
     '--main-ref', 'main', '--ledger-ref', 'main']);
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stderr, /^ {2}agent\/x\.go$/mu, 'the base policy (with agent/**) must be the one applied');
+});
+
+// ── Silence is never "clean": helper CLIs must prove they ran ───────────────
+test('refuses when the path-policy CLI silently does nothing (no completion trailer)', () => {
+  const fx = new Fixture({ scriptOverrides: { 'scripts/release/release-path-policy.mjs': SILENT_CLI } });
+  const commit = fx.commit({ 'agent/x.go': 'package main\n' });
+  fx.addRow('v0.118.1', commit);
+  assertRefused(fx.guard('v0.118.1', commit), /path policy tool/u);
+});
+
+test('refuses when the path-policy CLI matches correctly but omits its completion trailer', () => {
+  const fx = new Fixture({ scriptOverrides: PATH_CLI_WITHOUT_TRAILER });
+  const commit = fx.commit({ 'apps/api/src/fix.ts': 'fix\n' });
+  fx.addRow('v0.118.1', commit);
+  assertRefused(fx.guard('v0.118.1', commit), /path policy tool.*did not confirm/u);
+});
+
+test('refuses when the path-policy CLI runs but cannot match a known protected path', () => {
+  const fx = new Fixture({ scriptOverrides: { 'scripts/release/release-path-policy.mjs': NEVER_MATCHES_CLI } });
+  const commit = fx.commit({ 'agent/x.go': 'package main\n' });
+  fx.addRow('v0.118.1', commit);
+  assertRefused(fx.guard('v0.118.1', commit), /self-test.*agent\/go\.mod/u);
+});
+
+test('refuses when the ledger CLI silently prints no tags (an empty ledger must be provable)', () => {
+  const fx = new Fixture({ scriptOverrides: ledgerCliSilentOn('tags') });
+  const first = fx.commit({ 'apps/api/src/fix.ts': 'fix 1\n' });
+  fx.addRow('v0.118.1', first);
+  fx.git('tag', 'v0.118.1', first);
+  const second = fx.commit({ 'apps/api/src/fix.ts': 'fix 2\n' });
+  // Without the server-only tag list, v0.118.1 would pass as the "last full release".
+  fx.addRow('v0.118.2', second, 'v0.118.1');
+  assertRefused(fx.guard('v0.118.2', second), /ledger tool/u);
+});
+
+test('ledger PR check fails when the ledger CLI silently reports no changes', () => {
+  const fx = new Fixture();
+  const commit = fx.commit({ 'agent/x.go': 'package main\n' });
+  const before = fx.git('rev-parse', 'HEAD');
+  fx.addRow('v0.118.1', commit);
+  const dir = mkdtempSync(join(scratch, 'ledger-change-stub-'));
+  copyFileSync(join(HERE, 'check-server-only-ledger-change.sh'), join(dir, 'check-server-only-ledger-change.sh'));
+  for (const [path, contents] of Object.entries(ledgerCliSilentOn('changed'))) {
+    writeFileSync(join(dir, path.replace('scripts/release/', '')), contents);
+  }
+  const result = ledgerChange(fx, before, 'main', { script: join(dir, 'check-server-only-ledger-change.sh') });
+  assert.notEqual(result.status, 0, result.output);
+  assert.match(result.output, /ledger tool/u);
 });
