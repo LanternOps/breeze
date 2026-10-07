@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { and, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
-import { db } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import {
   devices,
@@ -72,6 +72,7 @@ import {
 } from '../../services/timeSync/configUpdate';
 import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
+import { orgAgentUpdateConfigCache } from '../../services/agentOrgSettingsCache';
 import { isParkedDevice } from '../../services/unassignedPool/deliveryEligibility';
 import { getBinaryEdition } from '../../services/binaryEdition';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
@@ -2856,6 +2857,21 @@ export async function getOrgAgentUpdateConfig(orgId: string): Promise<AgentUpdat
  */
 export async function getOrgAgentUpdatePolicy(orgId: string): Promise<AgentUpdateSettings> {
   return (await getOrgAgentUpdateConfig(orgId)).settings;
+}
+
+/**
+ * The heartbeat's read of {@link getOrgAgentUpdateConfig} (#8053): resolved in
+ * its OWN short system context (an org-scoped context cannot read the parent
+ * partners row, so a partner-locked policy would be invisible there), served
+ * from a per-org process cache for `AGENT_ORG_SETTINGS_CACHE_TTL_MS`. Must be
+ * called OUTSIDE any DB context — inside one the cache is bypassed and the read
+ * joins the caller's transaction. A thrown lookup is never cached, so the
+ * heartbeat's fail-closed gate re-resolves on the next beat.
+ */
+export async function getOrgAgentUpdateConfigCached(orgId: string): Promise<AgentUpdateConfig> {
+  return orgAgentUpdateConfigCache.getOrLoad(orgId, () =>
+    withSystemDbAccessContext(() => getOrgAgentUpdateConfig(orgId)),
+  );
 }
 
 /**

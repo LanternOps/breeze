@@ -30,6 +30,7 @@ import { getAiApprovalTimeout } from '../services/aiApprovalTimeout';
 import { normalizeAlertThresholds } from '../services/aiBudgetAlerts';
 import { enqueueAiBudgetEvaluationForPartner } from '../jobs/aiBudgetAlertDelivery';
 import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
+import { invalidateAgentOrgSettingsCaches } from '../services/agentOrgSettingsCache';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import {
   restoreOrganizationTenantAccess,
@@ -1292,6 +1293,9 @@ orgRoutes.patch(
   // next token mint without waiting for the 60s TTL.
   clearPartnerScopePolicyCache(partner.id);
   clearPartnerAllowlistCache(partner.id);
+  // Partner defaults feed every org's agent update policy and topology flags
+  // (#8053 heartbeat cache); a partner write can touch any of its orgs.
+  invalidateAgentOrgSettingsCaches();
 
   // Caps or rungs changed fleet-wide: re-evaluate every org off-request (spec
   // §4.2 #3). Compare the value actually PERSISTED (post-normalisation) against
@@ -1472,6 +1476,9 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   // enforcement picks up the new list immediately (mirrors /partners/me).
   if (data.settings !== undefined) {
     clearPartnerAllowlistCache(partner.id);
+    // Partner defaults feed every org's agent update policy and topology flags
+    // (#8053 heartbeat cache).
+    invalidateAgentOrgSettingsCaches();
   }
   // Only the terminal-ish states sever the fleet. `pending` is reversible
   // (signup/billing limbo) and is already blocked for agents by the live
@@ -2751,6 +2758,10 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     }
     return c.json({ error: 'Organization not found' }, 404);
   }
+
+  // The org's agent update policy and topology flags are served to its agents
+  // from a per-org heartbeat cache (#8053).
+  invalidateAgentOrgSettingsCaches(organization.id);
 
   if (data.status === 'offboarding') {
     // #2774 — terminal-intent drain: users/API keys/OAuth out now, agents kept

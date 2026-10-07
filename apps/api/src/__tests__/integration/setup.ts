@@ -28,6 +28,7 @@ import Redis, { type RedisOptions } from 'ioredis';
 import { assertTestDatabaseUrlSafe } from '../../testUtils/integrationDatabaseSafety';
 import { REDIS_CLIENT_BASE_OPTIONS } from '../../services/redis';
 import { __resetAgentAuthNegativeCacheForTests } from '../../middleware/agentAuthNegativeCache';
+import { __resetHotPathCachesForTests } from '../../services/hotPathCacheRegistry';
 
 // Load test environment variables
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
@@ -405,4 +406,8 @@ beforeEach(async () => {
   // the truncate above: a rejection cached against one test's (agentId, token)
   // must not answer the next test, which may seed that same pair as valid.
   __resetAgentAuthNegativeCacheForTests();
+  // #8053 — same for the agent hot-path caches (per-org settings, topology
+  // flags, manifest trust material, collector absence): a value cached for one
+  // test's org or device must not answer the next test.
+  __resetHotPathCachesForTests();
 });

@@ -5,9 +5,20 @@ const { order } = vi.hoisted(() => ({ order: [] as string[] }));
 vi.mock('../../db', () => ({
   db: { transaction: async (fn: () => unknown) => { order.push('tx:open'); try { return await fn(); } finally { order.push('tx:close'); } } },
   withSystemDbAccessContext: async (fn: () => unknown) => { order.push('ctx:open'); try { return await fn(); } finally { order.push('ctx:close'); } },
+  // The route's collector-absence cache is the real HotPathTtlCache; no
+  // ambient context is held when the route consults it.
+  hasDbAccessContext: () => false,
+  runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
 }));
 vi.mock('../../services/topology/flags', () => ({
   loadTopologyFlags: vi.fn(async () => { order.push('flags:loaded'); return { materialization: true }; }),
+  // #8053 — uncached pass-through with the real wrapper's shape (own system
+  // context, org-only scope); the per-org cache is covered in flags.test.ts.
+  loadAgentTopologyFlags: vi.fn(async (orgId: string) => {
+    const dbModule = await import('../../db');
+    const flags = await import('../../services/topology/flags');
+    return dbModule.withSystemDbAccessContext(() => flags.loadTopologyFlags({ scope: { orgId } }));
+  }),
   withResolvedTopologyFlags: vi.fn(async (_resolved: unknown, fn: () => unknown) => { order.push('flags:wrap'); try { return await fn(); } finally { order.push('flags:unwrap'); } }),
 }));
 vi.mock('../../services/topology/unifiAdapter', () => ({
@@ -18,8 +29,13 @@ vi.mock('../../services/topology/unifiAuthority', () => ({
   unifiTopologyAdvertisement: vi.fn(async () => null),
 }));
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
-vi.mock('../../services/unifi/unifiCollectorService', () => ({
+// Real module (the absence cache and its key are the code under test); only
+// the two DB reads are mocked. The probe defaults to "has collectors" so the
+// legacy-delivery tests below exercise the full list path.
+vi.mock('../../services/unifi/unifiCollectorService', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/unifi/unifiCollectorService')>()),
   listCollectorsForDevice: vi.fn(),
+  deviceHasAgentCollectors: vi.fn(async () => { order.push('probe'); return true; }),
 }));
 vi.mock('../../jobs/unifiTelemetryWorker', () => ({
   enqueueUnifiTelemetry: vi.fn(async () => undefined),
@@ -31,6 +47,7 @@ import * as worker from '../../jobs/unifiTelemetryWorker';
 import * as adapter from '../../services/topology/unifiAdapter';
 import * as authority from '../../services/topology/unifiAuthority';
 import * as flagsModule from '../../services/topology/flags';
+import { __resetHotPathCachesForTests } from '../../services/hotPathCacheRegistry';
 import vectors from '../../../../../packages/shared/src/testing/topology-unifi-v1.json';
 
 const AGENT_ID = 'agent-1';
@@ -49,7 +66,12 @@ function appWithRole(role: 'agent' | 'watchdog') {
 }
 
 describe('agent unifi telemetry routes', () => {
-  beforeEach(() => { vi.clearAllMocks(); order.length = 0; });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    order.length = 0;
+    __resetHotPathCachesForTests();
+    (collectorSvc.deviceHasAgentCollectors as any).mockImplementation(async () => { order.push('probe'); return true; });
+  });
 
   it('GET /agents/:id/unifi-collectors returns this device\'s collector configs', async () => {
     (collectorSvc.listCollectorsForDevice as any).mockResolvedValue([
@@ -60,6 +82,83 @@ describe('agent unifi telemetry routes', () => {
     expect(await res.json()).toMatchObject({ collectors: [{ collectorId: 'c1', apiKey: 'K' }] });
     // Looks up by the token-resolved deviceId, not the :id path param.
     expect(collectorSvc.listCollectorsForDevice).toHaveBeenCalledWith(expect.anything(), 'dev-1', expect.any(String), expect.any(Object));
+  });
+
+  describe('collector absence (#8053)', () => {
+    const get = (agent: { deviceId: string; orgId: string } = { deviceId: 'dev-1', orgId: 'org-1' }) => {
+      const app = new Hono();
+      app.use('*', async (c, next) => {
+        c.set('agent', { ...agent, agentId: AGENT_ID, siteId: 'site-1', role: 'agent' } as never);
+        return next();
+      });
+      app.route('/agents', unifiTelemetryRoutes);
+      return app.request(`/agents/${AGENT_ID}/unifi-collectors`, { method: 'GET' });
+    };
+
+    it('answers [] for a device with no collectors without resolving flags or listing', async () => {
+      (collectorSvc.deviceHasAgentCollectors as any).mockImplementation(async () => { order.push('probe'); return false; });
+      const res = await get();
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ collectors: [] });
+      expect(order).toEqual(['ctx:open', 'probe', 'ctx:close']);
+      expect(collectorSvc.deviceHasAgentCollectors).toHaveBeenCalledWith(expect.anything(), 'dev-1', 'org-1');
+      expect(flagsModule.loadAgentTopologyFlags).not.toHaveBeenCalled();
+      expect(collectorSvc.listCollectorsForDevice).not.toHaveBeenCalled();
+    });
+
+    it('caches "no collectors" per device: the next poll opens no context at all', async () => {
+      (collectorSvc.deviceHasAgentCollectors as any).mockResolvedValue(false);
+      await get();
+      order.length = 0;
+      const res = await get();
+      expect(await res.json()).toEqual({ collectors: [] });
+      expect(collectorSvc.deviceHasAgentCollectors).toHaveBeenCalledTimes(1);
+      expect(order).toEqual([]);
+    });
+
+    it('keys the absence by org AND device: another device, or the same device in another org, still probes', async () => {
+      (collectorSvc.deviceHasAgentCollectors as any).mockResolvedValue(false);
+      await get({ deviceId: 'dev-1', orgId: 'org-1' });
+      await get({ deviceId: 'dev-2', orgId: 'org-1' });
+      await get({ deviceId: 'dev-1', orgId: 'org-2' });
+      expect(collectorSvc.deviceHasAgentCollectors).toHaveBeenCalledTimes(3);
+    });
+
+    it('never caches presence: a collector device probes and lists on every poll', async () => {
+      (collectorSvc.listCollectorsForDevice as any).mockResolvedValue([{ collectorId: 'c1', apiKey: 'K' }]);
+      await get();
+      await get();
+      expect(collectorSvc.deviceHasAgentCollectors).toHaveBeenCalledTimes(2);
+      expect(collectorSvc.listCollectorsForDevice).toHaveBeenCalledTimes(2);
+    });
+
+    it('a cached absence is dropped when a collector is created for that device', async () => {
+      (collectorSvc.deviceHasAgentCollectors as any).mockResolvedValue(false);
+      await get();
+      // What upsertCollector / upsertSelfHostedController do after their insert.
+      collectorSvc.agentCollectorAbsenceCache.invalidateAroundCommit(collectorSvc.agentCollectorAbsenceKey('dev-1', 'org-1'));
+      (collectorSvc.deviceHasAgentCollectors as any).mockResolvedValue(true);
+      (collectorSvc.listCollectorsForDevice as any).mockResolvedValue([{ collectorId: 'c1', apiKey: 'K' }]);
+      const res = await get();
+      expect(await res.json()).toMatchObject({ collectors: [{ collectorId: 'c1' }] });
+    });
+
+    it('a cached absence expires after its TTL', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(new Date('2026-10-07T12:00:00Z'));
+        (collectorSvc.deviceHasAgentCollectors as any).mockResolvedValue(false);
+        await get();
+        vi.setSystemTime(new Date(Date.parse('2026-10-07T12:00:00Z') + collectorSvc.AGENT_COLLECTOR_ABSENCE_TTL_MS - 1));
+        await get();
+        expect(collectorSvc.deviceHasAgentCollectors).toHaveBeenCalledTimes(1);
+        vi.setSystemTime(new Date(Date.parse('2026-10-07T12:00:00Z') + collectorSvc.AGENT_COLLECTOR_ABSENCE_TTL_MS));
+        await get();
+        expect(collectorSvc.deviceHasAgentCollectors).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('POST /agents/:id/unifi-telemetry enqueues the payload, stamping the token deviceId', async () => {
@@ -221,7 +320,8 @@ describe('agent unifi telemetry routes', () => {
       const res = await post({ ...legacy, topologyV1: report });
       expect(res.status).toBe(202);
       expect(flagsModule.loadTopologyFlags).toHaveBeenCalledTimes(1);
-      expect(flagsModule.loadTopologyFlags).toHaveBeenCalledWith({ scope: { orgId: 'org-1', siteId: 'site-1' } });
+      // Flags are a function of the org only (#8053); the site is not passed.
+      expect(flagsModule.loadTopologyFlags).toHaveBeenCalledWith({ scope: { orgId: 'org-1' } });
       expect(flagsModule.withResolvedTopologyFlags).toHaveBeenCalledWith({ orgId: 'org-1', flags: { materialization: true } }, expect.any(Function));
       expect(order).toEqual([
         'ctx:open', 'flags:loaded', 'ctx:close',
@@ -248,7 +348,9 @@ describe('agent unifi telemetry routes', () => {
       const res = await appWithRole('agent').request(`/agents/${AGENT_ID}/unifi-collectors`, { method: 'GET' });
       expect(res.status).toBe(200);
       expect(flagsModule.loadTopologyFlags).toHaveBeenCalledTimes(1);
-      expect(order.slice(0, 4)).toEqual(['ctx:open', 'flags:loaded', 'ctx:close', 'flags:wrap']);
+      // #8053: the presence probe (its own short context) comes first; flags
+      // are resolved only once the device is known to have collectors.
+      expect(order.slice(0, 7)).toEqual(['ctx:open', 'probe', 'ctx:close', 'ctx:open', 'flags:loaded', 'ctx:close', 'flags:wrap']);
       expect(order.indexOf('collectors')).toBeGreaterThan(order.indexOf('flags:wrap'));
       expect(authority.unifiTopologyAdvertisement).toHaveBeenCalledTimes(2);
     });

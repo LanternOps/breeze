@@ -12,6 +12,7 @@ vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { orgRoutes, createOrganizationSchema, updateOrganizationSchema } from './orgs';
+import { invalidateAgentOrgSettingsCaches } from '../services/agentOrgSettingsCache';
 
 vi.mock('../services', () => ({}));
 
@@ -186,6 +187,11 @@ vi.mock('../services/tenantOffboarding', async (importOriginal) => ({
 vi.mock('../services/monitors/builtInMonitors', () => ({
   ensureBuiltInMonitorsForPartner: vi.fn(async () => ({ provisioned: true, monitorIds: [] })),
   ensureBuiltInMonitorsForAllPartners: vi.fn(async () => ({ provisioned: 0, skipped: 0, failed: 0 })),
+}));
+// #8053 — org/partner settings writes invalidate the agent heartbeat's per-org
+// caches; the cache itself is covered in hotPathCache.test.ts.
+vi.mock('../services/agentOrgSettingsCache', () => ({
+  invalidateAgentOrgSettingsCaches: vi.fn(),
 }));
 vi.mock('../db', () => ({
   db: {
@@ -931,6 +937,8 @@ describe('org routes', () => {
       // #3996 — a name-only patch ends no drain: no tenant-row lock, no
       // device enumeration. See the org-side twin of this assertion.
       expect(abortPartnerOffboardingAroundStatusChange).not.toHaveBeenCalled();
+      // #8053 — no settings change, so the agent per-org caches are kept.
+      expect(invalidateAgentOrgSettingsCaches).not.toHaveBeenCalled();
     });
 
     it("returns 409 when the updated slug collides with another partner's inbound local part", async () => {
@@ -991,6 +999,8 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       expect(capturedUpdateData.timezone).toBe('America/New_York');
       expect(capturedUpdateData.settings.timezone).toBe('America/New_York');
+      // #8053 — a partner settings write feeds every org: all per-org caches drop.
+      expect(invalidateAgentOrgSettingsCaches).toHaveBeenCalledWith();
     });
 
     // #1318 cosmetic: a lowercase 'utc' settings value canonicalizes to the
@@ -1514,6 +1524,8 @@ describe('org routes', () => {
       // The key guarantee is that the db write does NOT carry aiForOfficeEnabled.
       expect(res.status).toBe(200);
       expect(capturedUpdateData?.aiForOfficeEnabled).toBeUndefined();
+      // #8053 — a partner write feeds every org: all per-org caches drop.
+      expect(invalidateAgentOrgSettingsCaches).toHaveBeenCalledWith();
     });
 
     describe('contact.website scheme allowlist', () => {
@@ -3892,6 +3904,8 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.name).toBe('Updated');
+      // #8053 — the org's agents re-read its update policy / topology flags.
+      expect(invalidateAgentOrgSettingsCaches).toHaveBeenCalledWith('org-1');
     });
 
     // ── lifecycle-internal settings keys (review r3) ───────────────────────

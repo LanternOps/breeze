@@ -20,6 +20,7 @@ import {
 } from '@breeze/shared/validators';
 import { ORG_SCOPED_ONLY_FEATURE_TYPES, isRetiredConfigFeatureType } from '@breeze/shared/constants';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import {
@@ -147,6 +148,13 @@ const rejectRetiredFeatureType = async (c: Context, next: Next) => {
   if (isRetiredConfigFeatureType(ft)) return c.json(RETIRED_FEATURE_TYPE_GONE(ft), 410);
   await next();
 };
+
+// A remote_access link write changes what resolveRemoteAccessForDevice returns;
+// its cache (served to the heartbeat for up to HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS,
+// #8053) must drop, as the policy CRUD and assignment routes already do.
+function invalidateRemoteAccessCacheFor(featureType: string): void {
+  if (featureType === 'remote_access') invalidateRemoteAccessCache();
+}
 
 featureLinkRoutes.post(
   '/:id/features',
@@ -414,6 +422,7 @@ featureLinkRoutes.post(
       resourceName: policy.name,
       details: { featureType: data.featureType, featurePolicyId: data.featurePolicyId },
     });
+    invalidateRemoteAccessCacheFor(data.featureType);
 
     return c.json(link, 201);
   }
@@ -650,6 +659,7 @@ featureLinkRoutes.patch(
       resourceName: policy.name,
       details: { linkId, changedFields: Object.keys(data) },
     });
+    invalidateRemoteAccessCacheFor(existingLink.featureType);
 
     return c.json(updated);
   }
@@ -704,6 +714,7 @@ featureLinkRoutes.delete(
       resourceName: policy.name,
       details: { linkId, featureType: deleted.featureType },
     });
+    invalidateRemoteAccessCacheFor(deleted.featureType);
 
     return c.json(deleted.kept ? { success: true, kept: true, reason: deleted.reason } : { success: true });
   }

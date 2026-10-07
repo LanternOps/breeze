@@ -13,7 +13,7 @@ import { resolveEffectiveConfig } from './configurationPolicy';
 import { remoteAccessInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import { getRemoteAccessBaseline } from './policyBaselineDefaults';
-import { db } from '../db';
+import { db, runAfterDbContextExit } from '../db';
 import { isParkedDevice, PARKED_DEVICE_COMMAND_REFUSAL_CODE } from './unassignedPool/deliveryEligibility';
 
 // ---------------------------------------------------------------------------
@@ -143,33 +143,73 @@ export function clampSettings(
 }
 
 // ---------------------------------------------------------------------------
-// Cache — simple in-memory TTL (30 s)
+// Cache — in-memory, max age chosen per caller
 // ---------------------------------------------------------------------------
 
 interface CacheEntry {
   settings: RemoteAccessSettings;
   policyName: string | null;
   policyId: string | null;
-  expiresAt: number;
+  resolvedAt: number;
 }
 
 const cache = new Map<string, CacheEntry>();
-const CACHE_TTL_MS = 30_000;
+
+/**
+ * Default max age (30 s). Capability checks (`checkRemoteAccess`) and the
+ * desktop-session policy use it: a policy that switches a capability OFF must
+ * bite quickly.
+ */
+const DEFAULT_CACHE_MAX_AGE_MS = 30_000;
+
+/**
+ * #8053 — the heartbeat's max age. The heartbeat reads only `vncRelay` (whether
+ * the agent manages the remote-management tunnel), on a 60 s beat, so the 30 s
+ * default could never hit and every beat re-ran the full effective-config
+ * resolution inside the org transaction. Three minutes lets two beats in three
+ * reuse it. The policy CRUD, assignment and remote_access feature-link routes
+ * call `invalidateRemoteAccessCache()`, so on this process those changes land
+ * on the next beat. Everything else that can change a device's effective
+ * policy (device-group membership, a device moving site/org, writes on another
+ * API instance) is bounded by this max age instead. Never pass it from a
+ * capability gate.
+ */
+export const HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS = 180_000;
+
+// Entries are kept for the longest max age any caller may ask for.
+const CACHE_RETENTION_MS = Math.max(DEFAULT_CACHE_MAX_AGE_MS, HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS);
 
 // Sweep stale entries every 60 s
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of cache) {
-    if (entry.expiresAt <= now) cache.delete(key);
+    if (now - entry.resolvedAt >= CACHE_RETENTION_MS) cache.delete(key);
   }
 }, 60_000).unref();
 
-export function invalidateRemoteAccessCache(deviceId?: string): void {
+// Bumped on every invalidation. A resolution that started before a bump still
+// answers its own caller but is not stored, so a read that saw pre-change rows
+// cannot repopulate the cache after the change invalidated it.
+let cacheGeneration = 0;
+
+function dropCached(deviceId?: string): void {
+  cacheGeneration += 1;
   if (deviceId) {
     cache.delete(deviceId);
   } else {
     cache.clear();
   }
+}
+
+/**
+ * Drop cached resolutions now AND again once the caller's DB transaction has
+ * settled. Policy routes call this from inside their request transaction,
+ * before COMMIT; without the second drop, a heartbeat resolving in that window
+ * would re-cache the pre-change policy for the heartbeat's whole max age.
+ */
+export function invalidateRemoteAccessCache(deviceId?: string): void {
+  dropCached(deviceId);
+  runAfterDbContextExit('remoteAccessPolicy.invalidateCache', () => dropCached(deviceId));
 }
 
 // ---------------------------------------------------------------------------
@@ -200,16 +240,18 @@ interface ResolvedRemoteAccess {
 
 export async function resolveRemoteAccessForDevice(
   deviceId: string,
-  options: { bypassCache?: boolean } = {},
+  options: { bypassCache?: boolean; maxAgeMs?: number } = {},
 ): Promise<ResolvedRemoteAccess> {
   // Check cache
   const now = Date.now();
+  const maxAgeMs = Math.min(options.maxAgeMs ?? DEFAULT_CACHE_MAX_AGE_MS, CACHE_RETENTION_MS);
   const cached = options.bypassCache ? undefined : cache.get(deviceId);
-  if (cached && cached.expiresAt > now) {
+  if (cached && now - cached.resolvedAt < maxAgeMs) {
     return { settings: cached.settings, policyName: cached.policyName, policyId: cached.policyId };
   }
 
   // Resolve via the generic config policy engine
+  const generationAtStart = cacheGeneration;
   const effective = await resolveEffectiveConfig(deviceId, systemAuth);
 
   let settings = { ...DEFAULTS };
@@ -240,9 +282,10 @@ export async function resolveRemoteAccessForDevice(
     policyId = feature.sourcePolicyId ?? null;
   }
 
-  // Only cache successful resolutions (don't cache when device not found)
-  if (effective) {
-    cache.set(deviceId, { settings, policyName, policyId, expiresAt: now + CACHE_TTL_MS });
+  // Only cache successful resolutions (don't cache when device not found), and
+  // only when no invalidation landed while this one was in flight.
+  if (effective && generationAtStart === cacheGeneration) {
+    cache.set(deviceId, { settings, policyName, policyId, resolvedAt: now });
   }
 
   return { settings, policyName, policyId };

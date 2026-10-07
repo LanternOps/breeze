@@ -64,6 +64,9 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  // #8053 per-org cache (services/hotPathCache.ts); no ambient context here.
+  hasDbAccessContext: () => false,
+  runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
   db: dbMock,
 }));
 
@@ -143,11 +146,15 @@ vi.mock('./policyProbeSafety', () => ({ isAllowedPolicyConfigProbe: vi.fn(() => 
 import {
   getOrgAgentUpdatePolicy,
   getOrgAgentUpdateConfig,
+  getOrgAgentUpdateConfigCached,
   resolvePinnedUpgradeTarget,
   agentAcceptsServedEdition,
   __resetMalformedWindowWarnCache,
 } from './helpers';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { withSystemDbAccessContext } from '../../db';
+import { AGENT_ORG_SETTINGS_CACHE_TTL_MS, invalidateAgentOrgSettingsCaches } from '../../services/agentOrgSettingsCache';
+import { __resetHotPathCachesForTests } from '../../services/hotPathCacheRegistry';
 
 const ORG_ID = '00000000-0000-4000-8000-000000000001';
 
@@ -421,6 +428,72 @@ describe('getOrgAgentUpdateConfig — version pins', () => {
     const cfg = await getOrgAgentUpdateConfig(ORG_ID);
     expect(cfg.settings).toEqual({ policy: 'manual', maintenanceWindow: null });
     expect(cfg.pins).toEqual({ agent: '0.88.0', watchdog: null });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getOrgAgentUpdateConfigCached — the heartbeat's per-org cache (#8053).
+// ---------------------------------------------------------------------------
+describe('getOrgAgentUpdateConfigCached (#8053)', () => {
+  const ORG_A = '00000000-0000-4000-8000-00000000000a';
+  const ORG_B = '00000000-0000-4000-8000-00000000000b';
+  const T0 = Date.parse('2026-10-07T12:00:00Z');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetMalformedWindowWarnCache();
+    __resetHotPathCachesForTests();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(T0);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('resolves in its own system context, then serves the org from cache for the TTL', async () => {
+    orgDefaults({ agentUpdatePolicy: 'manual' });
+    await expect(getOrgAgentUpdateConfigCached(ORG_A)).resolves.toMatchObject({ settings: { policy: 'manual' } });
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+
+    orgDefaults({ agentUpdatePolicy: 'auto' });
+    vi.setSystemTime(T0 + AGENT_ORG_SETTINGS_CACHE_TTL_MS - 1);
+    await expect(getOrgAgentUpdateConfigCached(ORG_A)).resolves.toMatchObject({ settings: { policy: 'manual' } });
+    expect(dbMock.select).toHaveBeenCalledTimes(1);
+
+    // Stale config never outlives the TTL.
+    vi.setSystemTime(T0 + AGENT_ORG_SETTINGS_CACHE_TTL_MS);
+    await expect(getOrgAgentUpdateConfigCached(ORG_A)).resolves.toMatchObject({ settings: { policy: 'auto' } });
+    expect(dbMock.select).toHaveBeenCalledTimes(2);
+  });
+
+  it('keys by org: one org\'s policy is never served to another', async () => {
+    orgDefaults({ agentUpdatePolicy: 'manual' });
+    await getOrgAgentUpdateConfigCached(ORG_A);
+    orgDefaults({ agentUpdatePolicy: 'auto' });
+    await expect(getOrgAgentUpdateConfigCached(ORG_B)).resolves.toMatchObject({ settings: { policy: 'auto' } });
+    await expect(getOrgAgentUpdateConfigCached(ORG_A)).resolves.toMatchObject({ settings: { policy: 'manual' } });
+  });
+
+  it('an explicit invalidation (org/partner settings write) lands on the next read', async () => {
+    orgDefaults({ agentUpdatePolicy: 'auto' });
+    await getOrgAgentUpdateConfigCached(ORG_A);
+    orgDefaults({ agentUpdatePolicy: 'manual' });
+
+    invalidateAgentOrgSettingsCaches(ORG_A);
+    await expect(getOrgAgentUpdateConfigCached(ORG_A)).resolves.toMatchObject({ settings: { policy: 'manual' } });
+
+    // A partner write drops every org.
+    orgDefaults({ agentUpdatePolicy: 'auto' });
+    invalidateAgentOrgSettingsCaches();
+    await expect(getOrgAgentUpdateConfigCached(ORG_A)).resolves.toMatchObject({ settings: { policy: 'auto' } });
+  });
+
+  it('never caches a failed lookup (the heartbeat gate fails closed and must re-resolve)', async () => {
+    dbMock.select.mockImplementationOnce(() => { throw new Error('pool exhausted'); });
+    await expect(getOrgAgentUpdateConfigCached(ORG_A)).rejects.toThrow('pool exhausted');
+    orgDefaults({ agentUpdatePolicy: 'manual' });
+    await expect(getOrgAgentUpdateConfigCached(ORG_A)).resolves.toMatchObject({ settings: { policy: 'manual' } });
   });
 });
 

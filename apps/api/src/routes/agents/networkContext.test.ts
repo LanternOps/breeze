@@ -110,6 +110,10 @@ vi.mock('../../db', () => {
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
     runOutsideDbContext: vi.fn((fn: any) => fn()),
     assertInTransaction: vi.fn(),
+    // #8053: hot-path caches + the savepoints in the shared policy context.
+    hasDbAccessContext: () => false,
+    runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
+    withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
   };
 });
 
@@ -122,10 +126,13 @@ vi.mock('../../services/topology/heartbeat', () => ({
 // enable materialization so these tests still reach topology collection.
 vi.mock('../../services/topology/flags', () => ({
   loadTopologyFlags: vi.fn(async () => ({ materialization: true, ui: false, physical: false, interfaceHealth: false, diagnostics: false, ai: false })),
+  // #8053 — the heartbeat's cached per-org reader.
+  loadAgentTopologyFlags: vi.fn(async () => ({ materialization: true, ui: false, physical: false, interfaceHealth: false, diagnostics: false, ai: false })),
   withResolvedTopologyFlags: vi.fn(async (_resolved: unknown, fn: () => Promise<unknown>) => fn()),
 }));
 
 const { agentRoutes } = await import('./index');
+const { __resetHotPathCachesForTests } = await import('../../services/hotPathCacheRegistry');
 
 function buildApp(): Hono {
   const app = new Hono();
@@ -151,6 +158,9 @@ describe('heartbeat route — topology report tolerance (M1 Task 6)', () => {
   beforeEach(() => {
     topologyHeartbeatMock.mockReset();
     selectCallState.count = 0;
+    // #8053 — the org's update config is cached per process; a hit would skip
+    // the first .limit() this proxy counts on, so start every test cold.
+    __resetHotPathCachesForTests();
   });
 
   it('does not fail the heartbeat when topology collection throws an unexpected error', async () => {
