@@ -5986,7 +5986,12 @@
       "messagePrefix": "Silmek istediğinizden emin misiniz?",
       "messageSuffix": "Bu, alan tanımını ve cihazlarda depolanan tüm değerleri kaldıracaktır."
     },
-    "typeFilterLabel": "Alan türü"
+    "typeFilterLabel": "Alan türü",
+    "toasts": {
+      "created": "Özel alan oluşturuldu",
+      "updated": "Özel alan güncellendi",
+      "deleted": "Özel alan silindi"
+    }
   },
   "knownGuestsSettings": {
     "title": "Bilinen Misafirler",

@@ -5933,7 +5933,12 @@
       "messagePrefix": "Sind Sie sicher, dass Sie löschen möchten?",
       "messageSuffix": "Dadurch werden die Felddefinition und alle auf den Geräten gespeicherten Werte entfernt."
     },
-    "typeFilterLabel": "Feldtyp"
+    "typeFilterLabel": "Feldtyp",
+    "toasts": {
+      "created": "Benutzerdefiniertes Feld erstellt",
+      "updated": "Benutzerdefiniertes Feld aktualisiert",
+      "deleted": "Benutzerdefiniertes Feld gelöscht"
+    }
   },
   "knownGuestsSettings": {
     "title": "Bekannte Gäste",

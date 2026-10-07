@@ -5933,7 +5933,12 @@
       "messagePrefix": "¿Está seguro de que desea eliminar?",
       "messageSuffix": "Esto eliminará la definición del campo y todos los valores almacenados en los dispositivos."
     },
-    "typeFilterLabel": "Tipo de campo"
+    "typeFilterLabel": "Tipo de campo",
+    "toasts": {
+      "created": "Campo personalizado creado",
+      "updated": "Campo personalizado actualizado",
+      "deleted": "Campo personalizado eliminado"
+    }
   },
   "knownGuestsSettings": {
     "title": "Invitados conocidos",

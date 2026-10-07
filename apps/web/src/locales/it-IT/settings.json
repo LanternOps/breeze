@@ -5981,7 +5981,12 @@
       "messagePrefix": "Sei sicuro di voler eliminare",
       "messageSuffix": " Questo rimuoverà la definizione del campo e tutti i valori archiviati sui dispositivi."
     },
-    "typeFilterLabel": "Tipo di campo"
+    "typeFilterLabel": "Tipo di campo",
+    "toasts": {
+      "created": "Campo personalizzato creato",
+      "updated": "Campo personalizzato aggiornato",
+      "deleted": "Campo personalizzato eliminato"
+    }
   },
   "knownGuestsSettings": {
     "title": "Ospiti noti",
