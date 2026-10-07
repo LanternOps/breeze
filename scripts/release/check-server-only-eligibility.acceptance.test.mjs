@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  ENV_EXAMPLE,
   Fixture,
   HERE,
   LEDGER,
@@ -40,11 +41,16 @@ test('accepts a server-only change set and reports the pairing', () => {
   assert.match(result.stdout, /agent-facing server changes: none/u);
 });
 
-test('by design: a root .env.example change is still server-only eligible', () => {
+test('by design: a root .env.example change that leaves the trust anchor alone is eligible and listed for review', () => {
   const fx = new Fixture();
-  const commit = fx.commit({ '.env.example': 'A=1\nNEW_SERVER_VAR=\n', 'apps/api/src/fix.ts': 'fix\n' });
+  const commit = fx.commit({
+    '.env.example': `# a documented server var\nNEW_SERVER_VAR=\n${ENV_EXAMPLE}# RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: comment-only mention\n`,
+    'apps/api/src/fix.ts': 'fix\n',
+  });
   fx.addRow('v0.118.1', commit);
-  assertEligible(fx.guard('v0.118.1', commit));
+  const result = fx.guard('v0.118.1', commit);
+  assertEligible(result);
+  assert.deepEqual(result.report.agentFacing, ['.env.example']);
 });
 
 test('agent-facing server changes are accepted and listed for required review', () => {

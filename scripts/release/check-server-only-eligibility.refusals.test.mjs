@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   BOOTSTRAP,
   CANDIDATES,
+  ENV_EXAMPLE,
   Fixture,
   HERE,
   LEDGER,
@@ -216,3 +217,21 @@ test('ledger PR check fails when the ledger CLI silently reports no changes', ()
   assert.notEqual(result.status, 0, result.output);
   assert.match(result.output, /ledger tool/u);
 });
+
+// ── The release trust anchor in the root .env.example ───────────────────────
+for (const [label, envExample] of [
+  ['rotates the manifest public key', ENV_EXAMPLE.replace('base-key=', 'attacker-key=')],
+  ['adds a second manifest public key', ENV_EXAMPLE.replace('base-key=', 'base-key=,attacker-key=')],
+  ['flips the signing-key-id requirement', ENV_EXAMPLE.replace('KEY_ID=false', 'KEY_ID=true')],
+  ['drops the manifest key line', ENV_EXAMPLE.replace(/^RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=.*\n/mu, '')],
+  ['adds an indented override of the key', `${ENV_EXAMPLE}  RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=attacker-key=\n`],
+  ['adds an exported override of the key', `${ENV_EXAMPLE}export RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=attacker-key=\n`],
+]) {
+  test(`refuses a .env.example change that ${label}`, () => {
+    const fx = new Fixture();
+    assert.notEqual(envExample, ENV_EXAMPLE, 'the fixture mutation must actually change the file');
+    const commit = fx.commit({ '.env.example': envExample, 'apps/api/src/fix.ts': 'fix\n' });
+    fx.addRow('v0.118.1', commit);
+    assertRefused(fx.guard('v0.118.1', commit), /release trust anchor in \.env\.example changed since v0\.118\.0/u);
+  });
+}

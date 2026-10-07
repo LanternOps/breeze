@@ -31,6 +31,8 @@ export const LEDGER_CHANGE = join(HERE, 'check-server-only-ledger-change.sh');
 export const LEDGER = '.github/release-provenance/server-only-tags.tsv';
 export const CANDIDATES = '.github/release-provenance/candidate-tags.tsv';
 export const SIDE_BRANCH = '.github/release-provenance/side-branch-tags.tsv';
+// The root .env.example carries the release-manifest trust anchor.
+export const ENV_EXAMPLE = 'A=1\nRELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=base-key=\nAGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID=false\n';
 export const scratch = mkdtempSync(join(tmpdir(), 'server-only-guard-test-'));
 let fixtureNumber = 0;
 export const nextFixtureNumber = () => fixtureNumber++;
@@ -68,7 +70,7 @@ export class Fixture {
       [SIDE_BRANCH]: '# header\n',
       'apps/api/src/app.ts': 'export const app = 1;\n',
       'agent/main.go': 'package main\n',
-      '.env.example': 'A=1\n',
+      '.env.example': ENV_EXAMPLE,
     };
     const scripts = { ...releaseScripts(), ...scriptOverrides };
     this.v117 = this.commit(baseHasGuard ? { ...common, ...scripts } : common, 'v0.117.0 tree');

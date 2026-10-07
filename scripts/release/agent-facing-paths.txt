@@ -27,3 +27,8 @@ apps/api/src/services/agentEditionAutoMigrate.ts
 apps/api/src/services/topology/heartbeat.ts
 apps/api/src/db/schema/agentVersions.ts
 packages/shared/src/**
+# Root .env.example: carries the release-manifest trust anchor that installs
+# copy from the release tag. The guard separately refuses any change to the
+# RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS / AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID
+# lines; every other change here is listed for review.
+.env.example

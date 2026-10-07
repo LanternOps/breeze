@@ -32,7 +32,9 @@ selfhost-signing-template/**
 
 # Install/deploy templates fetched by operators and guided setup.
 # The root .env.example is deliberately NOT listed (by design): a server
-# fix that documents a new server env var may still ship server-only.
+# fix that documents a new server env var may still ship server-only. It is
+# agent-facing (listed for review), and the guard refuses any change to its
+# release trust-anchor lines.
 # deploy/.env.example stays protected through deploy/**.
 docker-compose*.yml
 docker-compose.override.yml.*

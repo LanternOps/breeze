@@ -67,6 +67,10 @@ test('by design: .github/scripts is protected wholesale; the root .env.example i
   assert.ok(protectedPath('.github/scripts/check-workflow-security.mjs'));
   assert.ok(protectedPath('.github/scripts/anything/new.sh'));
   assert.ok(!protectedPath('.env.example'));
+  // ...but it carries the release-manifest trust anchor, so every change is
+  // listed for the required agent-facing review (and the guard separately
+  // refuses any change to the key lines themselves).
+  assert.deepEqual(matchPaths(agentFacingPolicy, ['.env.example', 'apps/api/.env.example']), ['.env.example']);
 });
 
 test('the protected set covers every binary and machinery class from the design', () => {
