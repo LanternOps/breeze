@@ -14,8 +14,8 @@ import (
 func watchdogServiceSpec(name string) winsvcinstall.Spec {
 	return winsvcinstall.Spec{
 		Name:        name,
-		DisplayName: branding.Or(branding.WatchdogServiceDisplayName, "Breeze RMM Watchdog"),
-		Description: branding.Or(branding.WatchdogServiceDescription, "Breeze Agent Watchdog - monitors and recovers the agent process"),
+		DisplayName: branding.OrValid(branding.WatchdogServiceDisplayName, "Breeze RMM Watchdog"),
+		Description: branding.OrValid(branding.WatchdogServiceDescription, "Breeze Agent Watchdog - monitors and recovers the agent process"),
 		Args:        []string{"run"},
 	}
 }

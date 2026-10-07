@@ -230,9 +230,11 @@ esac
 # control character (a newline would inject directives into a systemd unit),
 # a single quote or backslash (they break the -ldflags quoting), a double
 # quote (PowerShell drops it on the way to wix, so the MSI would carry
-# altered text), a percent sign (systemd expands it as a specifier) or is longer than 256 bytes
-# (Windows caps service display names at 256 characters; bytes are counted so
-# the rule does not depend on the shell's locale). The value is never echoed.
+# altered text), a percent sign (systemd expands it as a specifier) or is
+# longer than 256 bytes (Windows caps service display names at 256 characters;
+# bytes are counted so the rule does not depend on the shell's locale). The
+# value is never echoed in an error message (--print-ldflags does show it: a
+# brand is not a secret).
 # eval, not ${!name}: indirect expansion with a default is not reliable on
 # bash 3.2; env_name always comes from the fixed calls below.
 add_brand_flag() {

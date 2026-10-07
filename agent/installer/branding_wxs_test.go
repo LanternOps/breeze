@@ -163,8 +163,25 @@ func withoutDefines(wxs string) string {
 // wix.exe, so the validation must refuse it.
 func TestBuildMsiRefusesDoubleQuotes(t *testing.T) {
 	ps1 := readBuildMsi(t)
-	re := regexp.MustCompile(`-match '\[[^\]]*"[^\]]*\]'`)
+	re := regexp.MustCompile(`-match '\[[^\n]*''"[^\n]*\]'`)
 	if !re.MatchString(ps1) {
 		t.Error(`the build-msi.ps1 validation must refuse a double quote`)
+	}
+}
+
+// ServiceInstall.DisplayName and Description are MSI Formatted columns:
+// Windows Installer expands [PROP] at install time, so a brand such as
+// "Acme [IT]" would silently turn into "Acme ". The WiX preprocessor expands
+// $( and !( at build time. Keep these cases beside the quote regression test
+// because all three protect build-msi.ps1 from silently altering display text.
+func TestBuildMsiRefusesFormattedColumnAndPreprocessorSyntax(t *testing.T) {
+	ps1 := readBuildMsi(t)
+	if !strings.Contains(ps1, `\[\]\{\}`) {
+		t.Error(`the build-msi.ps1 validation must refuse [, ], { and }`)
+	}
+	for _, token := range []string{`'$('`, `'!('`} {
+		if !strings.Contains(ps1, token) {
+			t.Errorf("the build-msi.ps1 validation must refuse the sequence %s", token)
+		}
 	}
 }

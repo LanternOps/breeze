@@ -14,8 +14,8 @@ import (
 func agentServiceSpec(name string) winsvcinstall.Spec {
 	return winsvcinstall.Spec{
 		Name:        name,
-		DisplayName: branding.Or(branding.AgentServiceDisplayName, "Breeze RMM Agent"),
-		Description: branding.Or(branding.AgentServiceDescription, "Breeze Remote Monitoring and Management Agent"),
+		DisplayName: branding.OrValid(branding.AgentServiceDisplayName, "Breeze RMM Agent"),
+		Description: branding.OrValid(branding.AgentServiceDescription, "Breeze Remote Monitoring and Management Agent"),
 		Args:        []string{"run"},
 	}
 }
