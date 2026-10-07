@@ -45,8 +45,17 @@ describe('openai_compatible adapter (real Anthropic client through the gateway)'
     expect(msg.usage.input_tokens).toBe(20);
   });
 
-  it('a tool call under the caller name (not the alias) or an unknown alias never becomes a tool_use', async () => {
-    for (const name of ['mcp__breeze__get_weather', 'get_weather', 't_1_get_weather', 't_0_other']) {
+  it('a wrapped or caller-name form of the offered tool resolves to it (#8081)', async () => {
+    for (const name of ['mcp__breeze__get_weather', 'functions.get_weather', 't_1_get_weather']) {
+      reply = () => toolCall(name);
+      const msg = await clientFor().messages.create({ model: 'qwen', max_tokens: 256, tools, messages: [{ role: 'user', content: 'weather in Oslo?' }] });
+      expect(msg.content[0], name).toMatchObject({ type: 'tool_use', name: 'mcp__breeze__get_weather', input: { city: 'Oslo' } });
+      expect(msg.stop_reason).toBe('tool_use');
+    }
+  });
+
+  it('an unknown or invented tool name never becomes a tool_use', async () => {
+    for (const name of ['t_0_other', 'tool_agent_run', 'weather', 'functions.tool_breeze_run']) {
       reply = () => toolCall(name);
       const msg = await clientFor().messages.create({ model: 'qwen', max_tokens: 256, tools, messages: [{ role: 'user', content: 'weather in Oslo?' }] });
       expect(msg.content.some((b) => b.type === 'tool_use')).toBe(false);

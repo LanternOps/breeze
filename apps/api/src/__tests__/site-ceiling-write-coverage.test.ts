@@ -74,6 +74,9 @@ const GOVERNANCE_TABLE_NAMES = [
   // organization at once, and there is no per-site slice of it.
   'm365Connections',
   'googleWorkspaceConnections',
+  // A DNS allow/block policy is pushed to the org's DNS filtering provider and
+  // applies to every device behind it; the table has no site axis.
+  'dnsPolicies',
 ] as const;
 
 /**
@@ -167,6 +170,14 @@ const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
   // which the walk itself excludes.
   'services/m365ControlPlane/__testHelpers__/seedActionsConnection.ts':
     'test-only fixture seeder for integration suites — inserts a connection row directly and is imported exclusively by *.test.ts files, so no caller-scoped auth ever reaches it',
+
+  // DNS policy sync worker: records syncStatus/lastSynced/syncError after
+  // pushing an already-saved policy to the provider. Runs in system context
+  // from the BullMQ job, reloading the policy by id; no caller-scoped auth
+  // object reaches it. The caller-facing writers (routes/dnsSecurity.ts,
+  // services/aiToolsDns.ts) gate before enqueueing.
+  'jobs/dnsSyncJob.ts':
+    'updates only syncStatus/lastSynced/syncError on a saved DNS policy from the sync worker in system context (runWithSystemDbAccess) — no caller-scoped auth object reaches this path',
 
   'modules/mcpInvites/tools/configureDefaults.ts':
     'creates the default admin-email notification channel during MCP-invite partner bootstrap — the caller is a partner-bootstrap key, not a site-restricted org-scope caller, and the target org is fixed by the bootstrap context, not caller-chosen',
@@ -318,6 +329,11 @@ describe('site-ceiling write coverage (contract-site-ceiling-gate)', () => {
       // route and its AI-tool twin.
       'routes/monitorDefinitions.ts',
       'services/aiToolsMonitors.ts',
+      // Org-wide user-risk policy (weights, thresholds, interventions).
+      'routes/userRisk.ts',
+      // Org-wide DNS allow/block policies (route + AI-tool twin).
+      'routes/dnsSecurity.ts',
+      'services/aiToolsDns.ts',
     ];
 
     for (const rel of fixed) {

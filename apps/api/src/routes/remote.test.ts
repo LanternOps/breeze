@@ -283,8 +283,8 @@ function mockInsertReturning(result: unknown) {
 }
 
 // select().from().where().limit().for('update') — the row-locked read
-// commitDesktopStartIntent/commitDesktopStreamStartIntent issue (SEC-038 W02,
-// real impl in remoteDesktopStartIntent.ts, not mocked in this file).
+// commitDesktopStartIntent/commitDesktopStreamStartIntent issue
+// (real impl in remoteDesktopStartIntent.ts, not mocked in this file).
 function mockSelectLimitForChain(result: unknown) {
   return {
     from: vi.fn().mockReturnValue({
@@ -897,7 +897,7 @@ describe('remote routes', () => {
       } as any);
 
       // update stale sessions
-      // The sweep writes through the terminal-intent contract (SEC-038 W03),
+      // The sweep writes through the terminal-intent contract,
       // whose RETURNING row must carry the terminal generation.
       const terminalRow = (id: string) => ({
         id, type: 'desktop', deviceId: 'device-1', orgId: 'org-1', userId: 'user-1',

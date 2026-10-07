@@ -24,6 +24,7 @@ import {
   DIRECTORY_SCOPES,
   GMAIL_USER_SCOPES,
   GMAIL_INBOUND_SCOPES,
+  GMAIL_INBOUND_MODIFY_SCOPES,
   CALENDAR_SCOPES,
   LICENSING_SCOPES,
   GOOGLE_DWD_SCOPES_CSV,
@@ -31,7 +32,7 @@ import {
 
 // Least-privilege DWD scope sets live in @breeze/shared (one list shared with the
 // web integration page). Re-exported here for existing API callers.
-export { DIRECTORY_SCOPES, GMAIL_USER_SCOPES, GMAIL_INBOUND_SCOPES, CALENDAR_SCOPES, LICENSING_SCOPES };
+export { DIRECTORY_SCOPES, GMAIL_USER_SCOPES, GMAIL_INBOUND_SCOPES, GMAIL_INBOUND_MODIFY_SCOPES, CALENDAR_SCOPES, LICENSING_SCOPES };
 export const ALL_DWD_SCOPES_CSV = GOOGLE_DWD_SCOPES_CSV;
 
 // Explicit per-request deadline for every Gmail/UserInfo call. gaxios has no
@@ -135,19 +136,56 @@ export interface InboundMailboxSession {
   identity(): Promise<MailboxIdentity>;
 }
 
+/**
+ * DWD session used ONLY to mark an ingested message handled (label + optional
+ * archive). Requests gmail.modify plus the identity scopes the read session
+ * already uses (openid, userinfo.email) and never gmail.readonly, and is separate
+ * from the read session so a missing modify grant fails only the best-effort
+ * label call, never ingestion. Its identity() reads the account sub through the
+ * SAME token that performs the modify, so the caller can prove the mailbox is
+ * still the account the message was ingested from. Only built for a mailbox
+ * connection that has a handled label set.
+ */
+export function getInboundModifyGmailClient(
+  decryptedKeyJson: string,
+  targetMailboxEmail: string,
+  signal?: AbortSignal,
+): InboundMailboxSession {
+  return buildInboundSession(decryptedKeyJson, targetMailboxEmail, [
+    ...GMAIL_INBOUND_MODIFY_SCOPES,
+    ...GMAIL_INBOUND_SCOPES.filter((sc) => sc !== 'https://www.googleapis.com/auth/gmail.readonly'),
+  ], GMAIL_MODIFY_REQUEST_TIMEOUT_MS, signal);
+}
+
 export function getInboundMailboxSession(
   decryptedKeyJson: string,
   targetMailboxEmail: string,
+): InboundMailboxSession {
+  return buildInboundSession(decryptedKeyJson, targetMailboxEmail, [...GMAIL_INBOUND_SCOPES]);
+}
+
+/** Per-request timeout for the best-effort mark-handled session: short, because
+ *  a slow request holds the (concurrency-1) mark-handled worker. */
+export const GMAIL_MODIFY_REQUEST_TIMEOUT_MS = 8_000;
+
+function buildInboundSession(
+  decryptedKeyJson: string,
+  targetMailboxEmail: string,
+  scopes: string[],
+  timeoutMs: number = GMAIL_REQUEST_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): InboundMailboxSession {
   const key = parseServiceAccountKey(decryptedKeyJson);
   const auth = new gmailAuth.JWT({
     email: key.client_email,
     key: key.private_key,
-    scopes: [...GMAIL_INBOUND_SCOPES],
+    scopes,
     subject: targetMailboxEmail, // DWD: impersonate the mailbox
   });
   return {
-    gmail: gmail({ version: 'v1', auth, timeout: GMAIL_REQUEST_TIMEOUT_MS }),
+    // `signal` (optional) aborts every request of this session at once, so a
+    // caller can bound the whole operation, not just each request.
+    gmail: gmail({ version: 'v1', auth, timeout: timeoutMs, ...(signal ? { signal } : {}) }),
     async identity(): Promise<MailboxIdentity> {
       // `openid` makes the DWD token carry the impersonated user's identity; the
       // OpenID UserInfo endpoint returns that account's immutable `sub`. Uses the
@@ -155,7 +193,8 @@ export function getInboundMailboxSession(
       // extra @googleapis package is pulled in.
       const res = await auth.request<{ sub?: unknown; email?: unknown }>({
         url: 'https://openidconnect.googleapis.com/v1/userinfo',
-        timeout: GMAIL_REQUEST_TIMEOUT_MS,
+        timeout: timeoutMs,
+        ...(signal ? { signal } : {}),
       });
       const sub = res.data?.sub;
       if (typeof sub !== 'string' || sub.length === 0) {

@@ -2539,7 +2539,7 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
     if (malformed.length > 0) {
       warnings.push({
         key: 'MCP_UNATTENDED_TIER3_PRINCIPALS',
-        message: `ignoring ${malformed.length} malformed entr${malformed.length === 1 ? 'y' : 'ies'} that can never match: ${malformed.join(', ')}. Each entry must be api_key:<api key id> or oauth_client_user:<client_id>/<user id>.`,
+        message: `ignoring ${malformed.length} malformed entr${malformed.length === 1 ? 'y' : 'ies'} that can never match: ${malformed.join(', ')}. Each entry must be api_key:<api key id>, oauth_client_user:<client_id>/<user id> or partner_sp:<partner service principal id>.`,
       });
     }
   }
@@ -2558,7 +2558,7 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
     // schema superRefine. No warning needed here; the validator throws if
     // it's missing or weak.)
 
-    // Integration compatibility settings ↔ APP_ENCRYPTION_KEY_ID (SEC-065).
+    // Integration compatibility settings ↔ APP_ENCRYPTION_KEY_ID.
     //
     // /integrations/{communication,monitoring,ticketing,psa} seal every
     // credential-shaped provider field with AAD-bound enc:v3 ciphertext and

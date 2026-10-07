@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { episodeKeyFor, type AttributionDimensionOrNull } from './metricAnomalyEpisodeKeys';
+import { EPISODE_PEAK_PREFERRED_METRICS, episodeKeyFor, type AttributionDimensionOrNull } from './metricAnomalyEpisodeKeys';
 
 /**
  * Pure planner for the `episodes` stage (spec §5, §6). No DB, no clock.
@@ -146,6 +146,16 @@ function chooseAnchor(candidates: readonly AnchorEpisode[]): AnchorEpisode | und
   return [...candidates].sort((a, b) => b.lastSeenAt.getTime() - a.lastSeenAt.getTime())[0];
 }
 
+const PREFERRED_PEAK = new Set(EPISODE_PEAK_PREFERRED_METRICS);
+
+/** EPISODE_PEAK_PREFERRED_METRICS first, then score DESC, window_start ASC. */
+function peakRankBefore(candidate: UnassignedAnomalyRow, peak: UnassignedAnomalyRow): boolean {
+  const candidatePreferred = PREFERRED_PEAK.has(candidate.metricName);
+  if (candidatePreferred !== PREFERRED_PEAK.has(peak.metricName)) return candidatePreferred;
+  if (candidate.score !== peak.score) return candidate.score > peak.score;
+  return candidate.windowStart < peak.windowStart;
+}
+
 function summarize(rows: readonly UnassignedAnomalyRow[]) {
   const first = rows[0]!;
   let firstSeen = first.windowStart;
@@ -156,9 +166,7 @@ function summarize(rows: readonly UnassignedAnomalyRow[]) {
   for (const candidate of rows) {
     if (candidate.windowStart < firstSeen) firstSeen = candidate.windowStart;
     if (candidate.windowEnd > lastSeen) lastSeen = candidate.windowEnd;
-    if (candidate.score > peak.score || (candidate.score === peak.score && candidate.windowStart < peak.windowStart)) {
-      peak = candidate;
-    }
+    if (peakRankBefore(candidate, peak)) peak = candidate;
     names.add(candidate.metricName);
     buckets.add(candidate.windowStart.getTime());
   }

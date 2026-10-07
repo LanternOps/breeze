@@ -14,6 +14,12 @@ vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
 
+const resizeToDataUrl = vi.fn();
+vi.mock('@/lib/logoDataUrl', async (orig) => ({
+  ...(await orig<typeof import('@/lib/logoDataUrl')>()),
+  resizeToDataUrl: (...args: unknown[]) => resizeToDataUrl(...args),
+}));
+
 const fetchMock = vi.mocked(fetchWithAuth);
 
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
@@ -68,12 +74,30 @@ describe('OrgBrandingEditor', () => {
     expect(fetchMock).toHaveBeenCalledWith(`/orgs/organizations/${ORG_ID}/portal-settings`);
   });
 
-  it('keeps the seeded placeholder when the persisted customCss is null', async () => {
+  it('shows the sample CSS as a placeholder, never as the value, when none is saved', async () => {
     fetchMock.mockResolvedValue(makeJsonResponse({ data: { customCss: null } }));
     render(<OrgBrandingEditor organizationName="Acme Systems" orgId={ORG_ID} />);
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(getCustomCssTextarea().value).toContain('Add custom portal styling here');
+    expect(getCustomCssTextarea().value).toBe('');
+    expect(getCustomCssTextarea().placeholder).toContain('letter-spacing');
+  });
+
+  it('Save with untouched CSS sends customCss: null, not the sample', async () => {
+    fetchMock.mockImplementation(async (_input, init) =>
+      makeJsonResponse({ data: { customCss: null } }, true));
+    render(<OrgBrandingEditor organizationName="Acme Systems" orgId={ORG_ID} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'Save branding' }));
+    await screen.findByText('Branding settings saved.');
+    const patch = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patch![1]!.body))).toEqual({ customCss: null });
+  });
+
+  it('logo hint matches the accepted formats (not SVG/512)', () => {
+    render(<OrgBrandingEditor organizationName="Acme Systems" />);
+    expect(screen.queryByText(/512x512/)).toBeNull();
+    expect(screen.getByText(/PNG, JPEG, or WebP/)).toBeTruthy();
   });
 
   it('saves customCss via PATCH /orgs/organizations/:id/portal-settings, decoupled from other branding fields', async () => {
@@ -261,5 +285,53 @@ describe('OrgBrandingEditor coordinated save (#6030)', () => {
     await waitFor(() => expect(screen.getByTestId('branding-save')).not.toBeDisabled());
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
     expect(screen.queryByTestId('branding-save-status')).toBeNull();
+  });
+});
+
+describe('OrgBrandingEditor logo upload (#8017)', () => {
+  const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==';
+  beforeEach(() => {
+    vi.clearAllMocks();
+    URL.createObjectURL = vi.fn(() => 'blob:http://localhost/abc');
+    URL.revokeObjectURL = vi.fn();
+  });
+
+  const pickLogo = (container: HTMLElement) => {
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(['x'], 'logo.png', { type: 'image/png' })] } });
+  };
+
+  it('persists an encoded data URI, never a session-local blob: URL', async () => {
+    resizeToDataUrl.mockResolvedValue(DATA_URL);
+    const onSave = vi.fn();
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" onSave={onSave} />);
+    pickLogo(container);
+    await waitFor(() => expect(resizeToDataUrl).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: 'Save branding' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    expect(onSave.mock.calls[0][0].logoUrl).toBe(DATA_URL);
+  });
+
+  it('toasts and keeps the previous logo when the image cannot be decoded', async () => {
+    resizeToDataUrl.mockRejectedValue(new Error('Invalid image file'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onSave = vi.fn();
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" branding={{ logoUrl: 'https://cdn.example.com/old.png' }} onSave={onSave} />);
+    pickLogo(container);
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    fireEvent.click(screen.getByRole('button', { name: 'Save branding' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    expect(onSave.mock.calls[0][0].logoUrl).toBe('https://cdn.example.com/old.png');
+  });
+
+  it('rejects an oversized logo and keeps the previous logo', async () => {
+    resizeToDataUrl.mockResolvedValue('data:image/png;base64,' + 'A'.repeat(400_001));
+    const onSave = vi.fn();
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" branding={{ logoUrl: 'https://cdn.example.com/old.png' }} onSave={onSave} />);
+    pickLogo(container);
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    fireEvent.click(screen.getByRole('button', { name: 'Save branding' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    expect(onSave.mock.calls[0][0].logoUrl).toBe('https://cdn.example.com/old.png');
   });
 });

@@ -120,6 +120,8 @@
     "revoked": "Anahtar iptal edildi",
     "revokeFailed": "Anahtar iptal edilemedi",
     "copyNow": "Bu anahtarı şimdi kopyalayın",
+    "copy": "Kopyala",
+    "copied": "Kopyalandı",
     "oneTimeWarning": "Bu düz metin anahtarı bir kez gösterilir ve daha sonra alınamaz.",
     "done": "Bitti"
   },
@@ -230,6 +232,8 @@
       "add": "Bağlantı ekle",
       "edit": "Düzenle",
       "created": "Bağlantı eklendi",
+      "createdDiscoveryQueued": "Bağlantı eklendi. Modelleri şimdi keşfediliyor.",
+      "createdDiscoveryNotQueued": "Bağlantı eklendi ancak model keşfi sıraya alınamadı. Tekrar denemek için Yenile'yi kullanın.",
       "saved": "Bağlantı kaydedildi",
       "saveFailed": "Bağlantı kaydedilemedi.",
       "keyFailed": "API anahtarı değiştirilemedi.",
@@ -456,6 +460,7 @@
     "offering": {
       "displayName": "Görünen ad",
       "displayNameHint": "Sağlayıcının adını kullanmak için boş bırakın. Model kimliği: {{modelId}}",
+      "envManaged": "Bu model MCP_LLM_* ortam değişkenleriyle yönetiliyor. Adı ve fiyatı orada belirlenir ve burada değiştirilemez.",
       "pricesTitle": "Fiyat",
       "pricesHint": "1 milyon token başına sent. Dördünü de doldurun veya fiyatsız bırakmak için hepsini boş bırakın (model etkinleştirilemez).",
       "prices": {
@@ -874,6 +879,8 @@
     "slackChannelPlaceholder": "#uyarılar",
     "pushoverDefaults": "Pushover Varsayılanlar",
     "pushoverDescription": "Eşleşme alanını boş bırakan herhangi bir kuruluş başına Pushover kanalı tarafından devralındı.",
+    "pushoverTicketAssignmentFallback": "Atanan kişinin Pushover anahtarı yoksa bilet atamalarını varsayılan anahtara gönder",
+    "pushoverTicketAssignmentFallbackHelp": "Her teknisyen profiline kendi Pushover kullanıcı anahtarını ekleyebilir; atamalar yalnızca ona ulaşır. Anahtarı olmayan teknisyenlerin atamalarını yukarıdaki varsayılan kullanıcı veya grup anahtarına göndermek için bunu açın.",
     "applicationToken": "Uygulama Jetonu",
     "defaultUserKey": "Varsayılan Kullanıcı veya Grup Anahtarı",
     "defaultSound": "Varsayılan Ses",
@@ -1400,6 +1407,12 @@
     "dropDescription": "Bilet yok, inceleme kuyruğuna giriş yok, otomatik yanıt yok. Bir denetim satırı hâlâ kayıtlıdır. Eşlenmemiş spam'ı önceliklendirmenin ve inceleme kuyruğunun dışında tutmak için bunu kullanın.",
     "dropUnverified": "Gönderen kimlik doğrulamasını geçemeyen postaları bırakın (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Kapatıldığında, doğrulanmamış postalar incelenmek üzere karantinaya alınır. Açıkken sessizce bırakılır. Bu, <all>tümü</all> doğrulanmamış gönderenler için geçerlidir; bireysel mesajları kontrolde başarısız olan eşlenen müşteriler de dahil.",
+    "staffForwardRouting": "Personelin ilettiği e-postaları asıl gönderenin müşterisine kaydet",
+    "staffForwardRoutingDescription": "İş ortağı düzeyindeki personelinizden biri bir müşterinin e-postasını destek adresine ilettiğinde, yeni talep sizin kuruluşunuz yerine asıl gönderenin alan adıyla eşlenen kuruluşa kaydedilir. Personelin o kuruluşa erişimi olmalıdır. Yalnızca Gmail'de yapılan ve bağlı bir Gmail posta kutusuna ulaşan iletmelerde çalışır; yerel gelen adres, Microsoft 365 posta kutuları ve Outlook iletmeleri için çalışmaz.",
+    "defaultAssignee": "Yeni gelen talepler için varsayılan atanan kişi",
+    "defaultAssigneeDescription": "Gelen e-postadan oluşturulan her yeni talep, başka bir şekilde atanmadıysa bu kişiye atanır. Talebin kuruluşuna erişimi yoksa talep atanmamış kalır.",
+    "defaultAssigneeUnavailable": "Kullanılamayan kullanıcı",
+    "defaultAssigneeNotAssignable": "Bu kullanıcı varsayılan atanan kişi olamaz. Talep erişimi olan etkin bir ekip üyesi seçin.",
     "enableAutoresponse": "Yeni e-posta bildirimlerini onaylayan bir otomatik yanıt gönderin",
     "editEmailTemplates": "Onay e-postası E-posta şablonları altında düzenlenir.",
     "editEmailTemplatesLink": "E-posta şablonlarını düzenle",
@@ -1496,7 +1509,28 @@
     "namePlaceholder": "Destek",
     "connect": "Bağlan",
     "credentialOrg": "Kimlik bilgisi: {{org}} kuruluşunun Google Workspace bağlantısı",
-    "credentialOrgUnknown": "göremediğiniz bir kuruluş"
+    "credentialOrgUnknown": "göremediğiniz bir kuruluş",
+    "handling": {
+      "off": "Kapalı: posta, talebe dönüştükten sonra gelen kutusunda kalır.",
+      "onArchive": "Talebe dönüşen posta \"{{label}}\" Gmail etiketini alır ve gelen kutusundan arşivlenir.",
+      "onLabelOnly": "Talebe dönüşen posta \"{{label}}\" Gmail etiketini alır ve gelen kutusunda kalır.",
+      "edit": "Posta işlemeyi değiştir",
+      "labelField": "Talebe dönüşen posta için Gmail etiketi (kapatmak için boş bırakın)",
+      "labelPlaceholder": "Breeze/Talep",
+      "archiveField": "Ayrıca arşivle (gelen kutusundan kaldır)",
+      "scopeNote": "Etiketleme, kuruluşun alan genelinde yetkilendirmesinde bu ek kapsamı gerektirir. Posta okumak bunu gerektirmez, bu nedenle yoklama onsuz da çalışmaya devam eder.",
+      "saved": "Posta işleme kaydedildi",
+      "saveFailed": "Posta işleme kaydedilemedi.",
+      "error": {
+        "access_denied": "Etiketleme başarısız: Google erişimi reddetti. gmail.modify kapsamını alan genelinde yetkilendirmeye ekleyin.",
+        "rate_limited": "Etiketleme başarısız: Gmail hız sınırına ulaşıldı. Yeni postalar yeniden denenecek.",
+        "unavailable": "Etiketleme başarısız: Gmail zamanında yanıt vermedi. Yeni postalar yeniden denenecek.",
+        "label_invalid": "Etiketleme başarısız: bu etiket kullanılamaz. Farklı bir ad seçin.",
+        "no_credential": "Etiketleme başarısız: bu kuruluşun Google Workspace bağlantısı eksik veya etkin değil. Entegrasyonlar altında yeniden bağlayın.",
+        "not_queued": "Etiketleme atlandı: etiketleme kuyruğu kullanılamıyordu veya doluydu, bu nedenle bilete dönüşen bazı postalar etiketsiz olarak gelen kutusunda kaldı. Yeni postalar yeniden denenecek.",
+        "failed": "Etiketleme başarısız. Posta gelen kutusunda kalır."
+      }
+    }
   },
   "orgApprovalSecurityTab": {
     "title": "Onay Güvenliği",
@@ -1863,6 +1897,10 @@
         "enableLifecycle": {
           "label": "Donanım yaşam döngüsü",
           "description": "Müşterinizin cihazları için güncel değişim planını gösterir."
+        },
+        "enableHardwareHealth": {
+          "label": "Donanım sağlığı",
+          "description": "Müşterinizin makinelerindeki bileşen sağlığını, olayları, diskleri ve pil durumunu gösterir."
         },
         "enableNetworkVisibility": {
           "label": "Ağ görünürlüğü",
@@ -5948,7 +5986,12 @@
       "messagePrefix": "Silmek istediğinizden emin misiniz?",
       "messageSuffix": "Bu, alan tanımını ve cihazlarda depolanan tüm değerleri kaldıracaktır."
     },
-    "typeFilterLabel": "Alan türü"
+    "typeFilterLabel": "Alan türü",
+    "toasts": {
+      "created": "Özel alan oluşturuldu",
+      "updated": "Özel alan güncellendi",
+      "deleted": "Özel alan silindi"
+    }
   },
   "knownGuestsSettings": {
     "title": "Bilinen Misafirler",
@@ -6435,7 +6478,10 @@
     },
     "stepUp": {
       "title": "Sizin olduğunuzu doğrulayın",
-      "body": "Gözetimsiz çalıştırmaları etkinleştirmek yeni bir güvenlik kontrolü gerektirir."
+      "body": "Gözetimsiz çalıştırmaları etkinleştirmek yeni bir güvenlik kontrolü gerektirir.",
+      "ceilingBody": "Kuruluşlarınız için gözetimsiz çalıştırmalara izin vermek veya bunları genişletmek yeni bir güvenlik denetimi gerektirir. Onaylayın, ardından Kaydet'i yeniden seçin.",
+      "wideningBody": "Gözetimsiz çalıştırmaların yapabileceklerini genişletmek yeni bir güvenlik denetimi gerektirir. Onaylayın, ardından Kaydet'i yeniden seçin.",
+      "noFactor": "Bu değişiklik bir güvenlik denetimi gerektirir, ancak hesabınızda kimlik doğrulayıcı uygulaması veya geçiş anahtarı yok. Profilinizden birini ayarlayıp yeniden deneyin."
     },
     "save": "Kaydet",
     "saving": "Kaydediliyor…",
@@ -6548,5 +6594,19 @@
     "sourceDefault": "ürün varsayılanı",
     "range": "{{min}}-{{max}} dakika arasında seçin.",
     "save": "Kaydet"
+  },
+  "ticketPushover": {
+    "title": "Bilet atamaları için Pushover",
+    "description": "Size bir bilet atandığında bildirim almak için Pushover kullanıcı anahtarınızı ekleyin. Bildirimi yalnızca siz alırsınız. MSP'nizin Bildirimler altında bir Pushover uygulama belirteci ayarlamış olması gerekir.",
+    "statusSet": "Bir Pushover anahtarı kayıtlı.",
+    "statusNotSet": "Kayıtlı Pushover anahtarı yok.",
+    "placeholder": "30 karakterlik Pushover kullanıcı anahtarı",
+    "save": "Anahtarı kaydet",
+    "remove": "Anahtarı kaldır",
+    "saved": "Pushover anahtarı kaydedildi.",
+    "removed": "Pushover anahtarı kaldırıldı.",
+    "invalidKey": "Pushover kullanıcı anahtarı 30 harf veya rakamdan oluşur.",
+    "loadFailed": "Pushover ayarınız yüklenemedi.",
+    "saveFailed": "Pushover ayarınız kaydedilemedi."
   }
 }

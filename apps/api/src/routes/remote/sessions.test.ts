@@ -318,7 +318,7 @@ function makeRemoteSessionRow(deviceId: string) {
 
 // DELETE /sessions/stale, no deviceId: the device/site subquery is embedded in
 // the one atomic update().where().returning() claim.
-// terminalSessionReturning's shape (SEC-038 W03): every stale/teardown UPDATE
+// terminalSessionReturning's shape: every stale/teardown UPDATE
 // runs through toTerminalSessionRow, which throws on a missing generation.
 function staleTerminalRow(id: string) {
   return {
@@ -363,7 +363,7 @@ function rigStaleUnrestricted(staleIds: string[]) {
 
 // Rigs the full commitDesktopStartIntent / assertDesktopStartIntentCurrent DB
 // sequence that a successful desktop offer now drives through
-// remoteDesktopStartIntent.ts's real implementation (SEC-038 W02, not mocked
+// remoteDesktopStartIntent.ts's real implementation (not mocked
 // in this file): the row-locked read, the generation-bump update, and the
 // pre-publication re-read. `includeHardwareLookup` covers the REST route's
 // extra device-hardware gpu select that runs before the commit.
@@ -584,7 +584,7 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(listWhere).toHaveBeenCalledTimes(1);
     });
 
-    // SEC-038 W06 (#5537): the list serializer carries terminationPhase
+    // #5537 — the list serializer carries terminationPhase
     // through from the row and defaults a missing value to 'none'.
     it('serializes terminationPhase on every list row', async () => {
       rigListSessionsUnrestricted([
@@ -724,7 +724,7 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(listWhere).toHaveBeenCalledTimes(1);
     });
 
-    // SEC-038 W06 (#5537): this is the endpoint SessionHistory.tsx renders, so
+    // #5537 — this is the endpoint SessionHistory.tsx renders, so
     // a pending teardown must reach the wire distinctly from a confirmed end.
     it('serializes terminationPhase on every history row', async () => {
       rigSessionHistoryUnrestricted([
@@ -1118,7 +1118,7 @@ describe('remote sessions — site-scope enforcement', () => {
       expect((await res.json()).id).toBe(SESSION_ID);
     });
 
-    // SEC-038 W06 (#5537): the web ConnectDesktopButton polls this route and
+    // #5537 — the web ConnectDesktopButton polls this route and
     // must never read a session whose teardown is still pending at the
     // endpoint as "connected", so the phase has to be on the wire.
     it.each(['none', 'pending', 'confirmed'] as const)('surfaces terminationPhase=%s so the viewer/UI can tell a pending teardown from a live session', async (terminationPhase) => {
@@ -1814,7 +1814,7 @@ describe('POST /remote/sessions/:id/lease/renew', () => {
 
 // ---------------------------------------------------------------------------
 // POST /remote/sessions/:id/end — transition reauthorization + terminal-write
-// safety (SEC-2026-09-05-038 wave 0).
+// safety.
 // ---------------------------------------------------------------------------
 
 describe('POST /remote/sessions/:id/end', () => {
@@ -1897,7 +1897,7 @@ describe('POST /remote/sessions/:id/end', () => {
     // sendCommandToAgent silently returns false and the stream keeps running.
     expect(sendCommandToAgent).not.toHaveBeenCalled();
     // The generation is bound into both the command id and the payload
-    // (SEC-038 W03) so the agent's fence and the API's confirm can bind the
+    // so the agent's fence and the API's confirm can bind the
     // stop back to this exact terminal decision.
     expect(dispatchCommandToAgent).toHaveBeenCalledWith('agent-1', {
       id: `desk-stop-${SESSION_ID}-1`,

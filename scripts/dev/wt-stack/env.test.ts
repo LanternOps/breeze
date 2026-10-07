@@ -192,3 +192,29 @@ describe('writeEnvStack — DOCKER_PLATFORM', () => {
     expect(env).not.toContain('DOCKER_PLATFORM=');
   });
 });
+
+// A wt-stack is a throwaway QA stack: the developer's root .env carries a real
+// RESEND_API_KEY, which must never reach the stack's containers.
+describe('writeEnvStack — no live outbound mail', () => {
+  afterEach(() => { delete process.env.BREEZE_WT_STACK_LIVE_MAIL; });
+
+  it('blanks the mail provider keys over the root .env, across rewrites', () => {
+    writeFileSync(path.join(dir, '.env'),
+      'RESEND_API_KEY=re_live\nMAILGUN_API_KEY=mg_live\nSMTP_HOST=smtp.example.com\n');
+    writeEnvStack(dir);
+    for (const k of ['RESEND_API_KEY', 'MAILGUN_API_KEY', 'SMTP_HOST']) {
+      expect(readStackEnvValue(dir, k)).toBe('');
+    }
+    writeEnvStack(dir);
+    expect(readStackEnvValue(dir, 'RESEND_API_KEY')).toBe('');
+    expect(readFileSync(path.join(dir, '.env.stack'), 'utf8').match(/^RESEND_API_KEY=/gm)).toHaveLength(1);
+  });
+
+  it('leaves them untouched when BREEZE_WT_STACK_LIVE_MAIL=1', () => {
+    process.env.BREEZE_WT_STACK_LIVE_MAIL = '1';
+    writeFileSync(path.join(dir, '.env'), 'RESEND_API_KEY=re_live\n');
+    writeEnvStack(dir);
+    expect(readStackEnvValue(dir, 'RESEND_API_KEY')).toBe('re_live');
+    expect(readFileSync(path.join(dir, '.env.stack'), 'utf8')).not.toContain('RESEND_API_KEY');
+  });
+});

@@ -46,6 +46,8 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  // #8053 — invalidateRemoteAccessCache drops again after the request commits.
+  runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
 }));
 
 // Configure the db.select().from().where().limit() chain to report whether the

@@ -330,7 +330,7 @@ describe('patch compliance report site-scope boundary', () => {
   });
 
   runDb('serves a legacy envelope to an unrestricted reader and hides it from a site-restricted one', async () => {
-    // The post-migration shape of a pre-SEC-095 report: classified
+    // The post-migration shape of a report: classified
     // `legacy_unscoped`, no site list, fingerprint over the legacy envelope.
     // `persistedSiteScopeValues` cannot produce this (it only writes live
     // user/portal authorities), so the columns are written by hand — which is

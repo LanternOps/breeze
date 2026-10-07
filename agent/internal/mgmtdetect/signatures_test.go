@@ -2,6 +2,7 @@ package mgmtdetect
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -160,5 +161,73 @@ func TestEndpointSecuritySignatures_AVProviders(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// genericProcessNames are process names shared by many unrelated products.
+// Matching on them alone (no path check) produces false positives (#8084).
+var genericProcessNames = []string{"agent", "agent.exe", "service.exe", "client.exe", "daemon"}
+
+func TestSignaturesAvoidGenericProcessNames(t *testing.T) {
+	denied := make(map[string]bool, len(genericProcessNames))
+	for _, n := range genericProcessNames {
+		denied[strings.ToLower(n)] = true
+	}
+	for _, sig := range AllSignatures() {
+		for _, c := range sig.Checks {
+			if c.Type == CheckProcessRunning && denied[strings.ToLower(c.Value)] {
+				t.Errorf("signature %s uses generic process name %q (%s); process checks match by name only, use a service, path or launch-daemon check", sig.Name, c.Value, c.OS)
+			}
+		}
+	}
+}
+
+// Regression for #8084: an unrelated product's agent.exe / agent process must
+// not make N-able show as active. The data-level assertion holds on every host
+// OS; the behavioral one exercises the real dispatcher for the host OS.
+func TestNableNotDetectedFromGenericAgentProcess(t *testing.T) {
+	var nable *Signature
+	for _, sig := range AllSignatures() {
+		if sig.Name == "N-able" {
+			s := sig
+			nable = &s
+		}
+	}
+	if nable == nil {
+		t.Fatal("N-able signature not found")
+	}
+
+	for _, c := range nable.Checks {
+		if c.Type == CheckProcessRunning {
+			t.Errorf("N-able must not have a process check, found %q (%s)", c.Value, c.OS)
+		}
+	}
+
+	// Hermetic: drop the host-state probes (service, file, launch daemon,
+	// registry, command) so real N-able artifacts on the machine running the
+	// test cannot match. Only the injected process snapshot can detect.
+	hermetic := *nable
+	hermetic.Checks = nil
+	for _, c := range nable.Checks {
+		if c.Type == CheckProcessRunning {
+			hermetic.Checks = append(hermetic.Checks, c)
+		}
+	}
+
+	snap := &processSnapshot{names: map[string]bool{"agent.exe": true, "agent": true}}
+	d := &checkDispatcher{processSnap: snap}
+	if det, ok := evaluateSignature(d, hermetic); ok {
+		t.Errorf("N-able detected from generic agent process on %s: %+v", runtime.GOOS, det)
+	}
+
+	// Positive control: the same snapshot DOES activate a signature that has a
+	// process check for the host OS, so the assertion above is not vacuous
+	// plumbing (an empty signature never reaches the dispatcher).
+	control := Signature{
+		Name: "control", Category: CategoryRMM, OS: []string{runtime.GOOS},
+		Checks: []Check{{Type: CheckProcessRunning, Value: "agent", OS: runtime.GOOS}},
+	}
+	if det, ok := evaluateSignature(d, control); !ok || det.Status != StatusActive {
+		t.Errorf("positive control: process snapshot did not activate a process check (ok=%v det=%+v)", ok, det)
 	}
 }

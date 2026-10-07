@@ -28,14 +28,16 @@ import { withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
  * so on a partner-wide or body-targeted route it names whichever org the user
  * happened to have selected, not the org the request acted on.
  *
- * Returns null when nothing resolves, and the fallback then writes no row: a
- * row filed under a guessed org is worse than none. Not resolved here:
+ * Returns null when nothing resolves — never a guessed org. Not resolved here:
  *   - requests without a user `auth` context (agent-authenticated calls and
- *     unauthenticated ones);
+ *     unauthenticated ones) — the fallback writes no row for these;
  *   - routes whose org arrives only in the request body or query string, and
- *     partner-wide writes that have no org at all. Those need a semantic audit
- *     (`writeRouteAudit`) in the handler, which knows the org and the action;
- *     `/partner/billing-settings` is the model for a partner-wide one.
+ *     partner-wide writes that have no org at all. For a signed-in user the
+ *     fallback still records these as a partner-level row (org_id NULL,
+ *     attributed to the caller's partner when partner-scoped), so no write is
+ *     silent. A route acting on an org-owned record should still write a
+ *     semantic audit (`writeRouteAudit`) with the record's org so the org's own
+ *     users see it; quote/invoice/contract create and delete are the model.
  */
 export async function resolveFallbackOrgId(c: Context, path: string): Promise<string | null> {
   const auth = c.get('auth') as AuthContext | undefined;

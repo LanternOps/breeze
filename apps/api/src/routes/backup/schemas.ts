@@ -400,6 +400,9 @@ export const bmrExchangeSchema = z.object({
   // too-old ISO before the one-time code is claimed. Optional — media that
   // predates this field is still gated only by the console after exchange.
   helperVersion: z.string().min(1).max(64).optional(),
+  // W07a: the OS the recovery media boots, so a code issued for the other
+  // platform is refused (409 media_platform_mismatch) before it is claimed.
+  mediaPlatform: z.enum(['linux', 'windows']).optional(),
 });
 
 // W09a (#6464) Task 6: bound the agent-reported `result` payload so an

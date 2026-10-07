@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import * as svc from './unifiCollectorService';
 
 vi.mock('../secretCrypto', () => ({
@@ -99,5 +99,74 @@ describe('upsertSelfHostedController', () => {
     const inserted = values.mock.calls[0]![0];
     expect(inserted.unifiHostId ?? null).toBeNull();
     expect(inserted.localApiKeyEncrypted).toBe('ENC');
+  });
+});
+
+describe('agent collector absence (#8053)', () => {
+  const row = {
+    id: 'col-1', integrationId: 'int-1', orgId: 'org-1', siteId: 'site-1', unifiHostId: 'h1',
+    collectorDeviceId: 'dev-1', controllerUrl: 'https://192.168.1.1', isEnabled: true,
+    pollIntervalSeconds: 60, status: 'pending', firmwareOk: null, lastPollAt: null, lastPollStatus: null, lastPollError: null,
+  };
+
+  beforeEach(() => {
+    svc.agentCollectorAbsenceCache.invalidate();
+  });
+
+  async function cacheAbsence(deviceId: string, orgId: string) {
+    await svc.agentCollectorAbsenceCache.getOrLoad(svc.agentCollectorAbsenceKey(deviceId, orgId), async () => false);
+  }
+
+  async function isCachedAbsent(deviceId: string, orgId: string): Promise<boolean> {
+    // A cached entry answers without calling the loader.
+    const load = vi.fn(async () => true);
+    const value = await svc.agentCollectorAbsenceCache.getOrLoad(svc.agentCollectorAbsenceKey(deviceId, orgId), load);
+    return load.mock.calls.length === 0 && value === false;
+  }
+
+  it('deviceHasAgentCollectors probes with exactly the list predicate, LIMIT 1, and no decryption', async () => {
+    const listWhere = vi.fn((_cond: unknown) => []);
+    await svc.listCollectorsForDevice({ select: vi.fn(() => ({ from: () => ({ where: listWhere }) })) } as never, 'dev-1', 'org-1');
+
+    const limit = vi.fn(async () => [{ id: 'col-1' }]);
+    const probeWhere = vi.fn((_cond: unknown) => ({ limit }));
+    const present = await svc.deviceHasAgentCollectors({ select: vi.fn(() => ({ from: () => ({ where: probeWhere }) })) } as never, 'dev-1', 'org-1');
+
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const render = (cond: unknown) => new PgDialect().sqlToQuery(cond as never);
+    expect(render(probeWhere.mock.calls[0]![0])).toEqual(render(listWhere.mock.calls[0]![0]));
+    expect(limit).toHaveBeenCalledWith(1);
+    expect(present).toBe(true);
+  });
+
+  it('deviceHasAgentCollectors is false when the probe finds nothing', async () => {
+    const db = { select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [] }) }) })) } as never;
+    await expect(svc.deviceHasAgentCollectors(db, 'dev-1', 'org-1')).resolves.toBe(false);
+  });
+
+  it('upsertCollector drops the cached absence for that device in that org, and only that one', async () => {
+    await cacheAbsence('dev-1', 'org-1');
+    await cacheAbsence('dev-2', 'org-1');
+    const { db } = mockInsertDb([row]);
+
+    await svc.upsertCollector(db, {
+      integrationId: 'int-1', orgId: 'org-1', siteId: 'site-1', unifiHostId: 'h1',
+      collectorDeviceId: 'dev-1', controllerUrl: 'https://192.168.1.1', apiKey: 'secret',
+    });
+
+    expect(await isCachedAbsent('dev-1', 'org-1')).toBe(false);
+    expect(await isCachedAbsent('dev-2', 'org-1')).toBe(true);
+  });
+
+  it('upsertSelfHostedController drops the cached absence for the collector device', async () => {
+    await cacheAbsence('dev-1', 'org-1');
+    const { db } = mockInsertDb([{ ...row, unifiHostId: null }]);
+
+    await svc.upsertSelfHostedController(db, {
+      integrationId: 'int-1', orgId: 'org-1', siteId: 'site-1', collectorDeviceId: 'dev-1',
+      controllerUrl: 'https://192.168.1.1', apiKey: 'secret',
+    });
+
+    expect(await isCachedAbsent('dev-1', 'org-1')).toBe(false);
   });
 });

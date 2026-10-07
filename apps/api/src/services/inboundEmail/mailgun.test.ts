@@ -86,7 +86,7 @@ describe('MailgunInboundProvider.parse', () => {
     'Message-Id': '<msg-2@customer.com>',
     'In-Reply-To': '<msg-1@tickets.example.com>',
     'References': '<msg-0@x> <msg-1@tickets.example.com>',
-    'message-headers': '[["Auto-Submitted","no"]]'
+    'message-headers': '[["Auto-Submitted","no"],["Content-Type","text/plain; charset=UTF-8"]]'
   };
   it('maps recipient/sender/subject and prefers stripped-text', async () => {
     const n = await provider.parse({ parseBody: async () => fields } as any);
@@ -97,6 +97,45 @@ describe('MailgunInboundProvider.parse', () => {
     expect(n.text).toBe('It is still broken.'); // stripped-text wins over body-plain
     expect(n.references).toEqual(['<msg-0@x>', '<msg-1@tickets.example.com>']);
     expect(n.providerMessageId).toBe('<msg-2@customer.com>');
+  });
+
+  // Staff-forward routing runs only for connected Gmail mailboxes: Mailgun's
+  // body-plain may be its own text rendering of HTML, so it is never scanned,
+  // even for a staff sender whose plain-text forward carries the marker.
+  it.each([
+    ['text/plain; charset=UTF-8'],
+    ['multipart/alternative; boundary="b1"'],
+    ['text/html; charset=UTF-8'],
+  ])('never exposes forwardScanText (top-level %s, staff sender, forward marker)', async (contentType) => {
+    const forward = 'See below.\n\n---------- Forwarded message ---------\nFrom: Jane <jane@client.example>\nDate: Sun, Sep 20, 2026\nSubject: Printer\n\nBroken.';
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields, sender: 'tech@msp.example', from: 'Tech <tech@msp.example>',
+      'body-plain': forward, 'stripped-text': 'See below.',
+      'message-headers': JSON.stringify([['Content-Type', contentType]]),
+    }) } as any);
+    expect(n.forwardScanText).toBeUndefined();
+  });
+
+  // The From display name comes from the RFC 5322 mailbox, never from an address
+  // that merely appears inside a quoted display name or a comment.
+  it.each([
+    ['a quoted display name containing an address', '"Tech <tech@msp.example>" <attacker@evil.example>', 'Tech <tech@msp.example>'],
+    ['a comment containing an address', 'attacker@evil.example (Tech <tech@msp.example>)', 'Tech <tech@msp.example>'],
+    ['a normal display name', 'Tech <tech@msp.example>', 'Tech'],
+    ['a bare address', 'tech@msp.example', undefined],
+    ['a quoted display name with escapes and a comma', '"Doe, \\"Tech\\"" <tech@msp.example>', 'Doe, "Tech"'],
+  ])('reads the display name for %s', async (_label, from, name) => {
+    const { sender: _omit, ...withoutSender } = fields;
+    const n = await provider.parse({ parseBody: async () => ({ ...withoutSender, from }) } as any);
+    expect(n.fromName).toBe(name);
+  });
+
+  it('routes by the From mailbox when there is no envelope sender, never a display-name address', async () => {
+    const { sender: _omit, ...withoutSender } = fields;
+    const quoted = await provider.parse({ parseBody: async () => ({ ...withoutSender, from: '"Tech <tech@msp.example>" <attacker@evil.example>' }) } as any);
+    expect(quoted.from).toBe('attacker@evil.example');
+    const plain = await provider.parse({ parseBody: async () => withoutSender } as any);
+    expect(plain.from).toBe('jane@customer.com');
   });
 
   it('reads a null Return-Path header as the bounce marker', async () => {

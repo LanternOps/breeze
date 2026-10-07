@@ -19,7 +19,10 @@ describe('action_intents origin principal', () => {
     // Wave 3: 'ai_agent' is now a first-class origin. The CHECK constraint
     // (2026-09-05-a-agent-originated-intents.sql) admits it, and an agent
     // intent records it alongside a NULL requester and a requesting_agent_run_id.
-    const everyRuntimeKind: ReadonlyArray<PrincipalKind['kind']> = [
+    // 'partner_service_principal' is deliberately absent: createActionIntent
+    // refuses that principal before insert (intentService.ts), so it is never
+    // a stored origin. See the dedicated test below.
+    const everyRuntimeKind: ReadonlyArray<Exclude<PrincipalKind['kind'], 'partner_service_principal'>> = [
       'user_session',
       'client_user',
       'api_key',

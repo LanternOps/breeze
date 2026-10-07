@@ -1,5 +1,5 @@
 /**
- * SEC-2026-09-05-026 — local_vaults must not pair one tenant's org_id with
+ * local_vaults must not pair one tenant's org_id with
  * another tenant's device_id. Org-axis RLS checks only the row's org_id, so a
  * composite FK is the database backstop for every present and future writer.
  */
@@ -70,7 +70,7 @@ afterAll(async () => {
   }
 });
 
-describe('local_vaults device/org composite FK (SEC-026)', () => {
+describe('local_vaults device/org composite FK', () => {
   it('rejects a caller-org row that references another tenant device while allowing the matching pair', async () => {
     const { orgA, orgB, siteB, deviceA, deviceB } = await seed();
     let mismatchError: unknown;
@@ -120,12 +120,12 @@ describe('local_vaults device/org composite FK (SEC-026)', () => {
 });
 
 /**
- * Forward-migration behaviour (SEC-026 review BLOCKER 1). The repair for a
+ * Forward-migration behaviour. The repair for a
  * historical mismatched row is RESTAMP-AND-DEACTIVATE, never DELETE:
  *
  *  - restamping from the device is what breeze_cascade_device_org_id() has
  *    done on every device move since 2026-05-18, so a pre-trigger benign move
- *    and the SEC-026 abuse path are indistinguishable here;
+ *    and the abuse path are indistinguishable here;
  *  - deleting would cascade vault_snapshot_inventory, which is recovery
  *    metadata for data on the VICTIM org's device;
  *  - deactivating stops an attacker-chosen vault_path from syncing under the
@@ -134,7 +134,7 @@ describe('local_vaults device/org composite FK (SEC-026)', () => {
  * vault_snapshot_inventory keys on vault_id (not device_id), so the device
  * trigger never covers it — the migration restamps it explicitly.
  */
-describe('local_vaults device/org migration repair (SEC-026)', () => {
+describe('local_vaults device/org migration repair', () => {
   const MIGRATION = '2026-10-15-160110-local-vault-device-org-fk.sql';
   const migrationSql = readFileSync(join(__dirname, '../../../migrations', MIGRATION), 'utf8');
 
@@ -148,7 +148,7 @@ describe('local_vaults device/org migration repair (SEC-026)', () => {
   async function replay(): Promise<string> {
     notices.length = 0;
     await replaySql.unsafe(migrationSql);
-    return notices.find((m) => m.includes('SEC-026 cleanup')) ?? '';
+    return notices.find((m) => m.includes('cleanup restamped')) ?? '';
   }
 
   it('restamps and deactivates a mismatched vault, restamps its inventory, and re-applies as a no-op', async () => {

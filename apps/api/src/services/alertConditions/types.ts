@@ -235,6 +235,10 @@ export interface EvaluationResult {
     threshold?: number;
     operator?: string;
     durationMinutes?: number;
+    /** #7966 — from the first service_stopped leaf, for {{serviceName}}. */
+    serviceName?: string;
+    /** #7966 — from the first leaf carrying a processName, for {{processName}}. */
+    processName?: string;
     deviceId: string;
     evaluatedAt: string;
   };

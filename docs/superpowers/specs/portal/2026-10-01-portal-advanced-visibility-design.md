@@ -90,13 +90,13 @@ Flag names are proposals.
 **Include**
 - Device-level: overall `health` (`ok`, `warning`, `critical`, `unknown`), counts per state computed from the returned components, and `lastCollectedAt`.
 - Per component (`deviceHardwareComponents`, current rows only): type (`controller`, `virtual_disk`, `physical_disk`, `cache_battery`, `enclosure`), name, model, `health`, `state`, `sizeBytes`, `temperatureC`, `predictiveFailure`, `progressPercent` (rebuild).
-- Events (`deviceHardwareEvents`): `eventType`, `fromHealth`, `toHealth`, `occurredAt`.
-- File systems (`deviceDisks`): `mountPoint`, `totalGb`, `usedGb`, `freeGb`, `usedPercent`, `health`.
+- Events (`deviceHardwareEvents`): `eventType`, `fromHealth`, `toHealth`, `fromState`, `toState`, `occurredAt`.
+- File systems (`deviceDisks`): `mountPoint`, `fsType`, `totalGb`, `usedGb`, `freeGb`, `usedPercent`, `health`.
 - Notebook battery (`devices.batteryStatus`): `present`, `percent`, `chargingState`, `pluggedIn`, `timeRemainingMinutes`, `timeToFullMinutes`, `reportedAt`.
 
 **Exclude**
 - `bmc` components (remote-management interface), and the `collector` component type (collector mechanics, no value to the customer).
-- `serial`, `firmware`, `attributes`, `source`, `alertExempt`, all `*Streak` counters, `sources`, `agentVersion`, event `detail`, `deviceDisks.device`.
+- `serial`, `firmware`, `attributes`, `source`, `alertExempt`, all `*Streak` counters, `sources`, `agentVersion`, event `detail`, `deviceDisks.device`, `deviceDisks.updatedAt`, component `lastSeenAt`, component `stateDetail` (raw vendor tool text), and `componentKey` / `parentKey` (agent keys such as `smart:<serial>` embed the disk serial and the collector source; a component whose name equals its key is returned with a null name).
 - Components with `stale = true`.
 
 **Notes**
@@ -250,5 +250,5 @@ Open for the maintainer:
 
 - **Flag names.** All names in section 5 are proposals.
 - **Gate typing.** Whether the strict gate type includes only the 403-gated sensitive flags (section 3).
-- **Overall health (wave 1).** The device-level `health` is the stored value, as in the console, and can reflect a component the portal does not list (such as `bmc`). The alternative is the worst state among the components returned. Default: the stored value.
+- **Overall health (wave 1).** Resolved: the device-level `health` is the worst state among the components returned (`ok` < `unknown` < `warning` < `critical`; `unknown` when none is returned), not the stored value, which can be driven by a component the portal does not list (such as `bmc`).
 - **Listening ports (wave 2).** Whether connections should also expose local listening ports, which point at exposed services. Currently out.

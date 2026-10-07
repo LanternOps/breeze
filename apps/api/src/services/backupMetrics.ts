@@ -248,6 +248,7 @@ export type BackupAttestationMetricOutcome =
   | 'invalid'
   | 'missing_from_capable'
   | 'not_offered'
+  | 'capability_unknown'
   | 'missing_expectation'
   | 'job_reuse_refused'
   | 'verified'

@@ -52,7 +52,9 @@ vi.mock('../../services/permissions', () => ({
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
-vi.mock('../../db', () => ({ db: {}, runOutsideDbContext: vi.fn(), withSystemDbAccessContext: vi.fn() }));
+vi.mock('../../db', () => ({ db: {}, runOutsideDbContext: vi.fn((fn: () => unknown) => fn()), withSystemDbAccessContext: vi.fn() }));
+vi.mock('../../services/redis', () => ({ getRedis: vi.fn(() => ({})) }));
+vi.mock('../../services/rate-limit', () => ({ rateLimiter: vi.fn() }));
 
 vi.mock('../../services/aiModels/registryCutover', () => ({ ensurePartnerCutover: vi.fn() }));
 vi.mock('../../services/aiModels/registryView', () => ({ buildPartnerModelsSnapshot: vi.fn() }));
@@ -124,6 +126,7 @@ import {
 } from '../../services/aiModels/anthropicConnectionWrites';
 import { ConnectionCheckError } from '../../services/aiModels/connectionProbe';
 import { RegistryWriteError } from '../../services/aiModels/registryWriteErrors';
+import { rateLimiter } from '../../services/rate-limit';
 
 const chatRow = {
   surface: 'chat', role: 'default', defaultOfferingId: A, permittedOfferingIds: null,
@@ -184,6 +187,7 @@ beforeEach(() => {
   permissionsState.approvalsDecide = true;
   authState.value = baseAuth();
   vi.mocked(ensurePartnerCutover).mockResolvedValue(true);
+  vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 10, resetAt: new Date(Date.now() + 60_000) });
   vi.mocked(buildPartnerModelsSnapshot).mockResolvedValue({ connections: [] } as any);
   // The partner already has its Anthropic connection C (getConnection below
   // resolves it, live): creating another is the R1-cap 409.
@@ -588,6 +592,17 @@ describe('/ai/models partner routes — refresh and verify (Task 8b)', () => {
       details: { offeringId: A, connectionId: C },
     }));
   });
+  it('POST /offerings/:id/verify is rate limited per partner → 429 with Retry-After, nothing queued', async () => {
+    vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 120_000) });
+    const res = await call('POST', `/offerings/${A}/verify`);
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ code: 'rate_limited' });
+    expect(Number(res.headers.get('Retry-After'))).toBeGreaterThan(0);
+    expect(rateLimiter).toHaveBeenCalledWith(expect.anything(), `rl:ai-models:offering-verify:${P}`, expect.any(Number), expect.any(Number));
+    expect(getOffering).not.toHaveBeenCalled();
+    expect(enqueueConnectionSync).not.toHaveBeenCalled();
+    expect(enqueueOfferingVerification).not.toHaveBeenCalled();
+  });
   it('POST /offerings/:id/verify on a platform offering is 409 (operator-verified), no enqueue', async () => {
     vi.mocked(getOffering).mockResolvedValue({ id: A, partnerId: P, connectionId: null } as any);
     const res = await call('POST', `/offerings/${A}/verify`);
@@ -657,7 +672,7 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
     it('creates with the partner id from auth, enqueues discovery after the write, audits host/hasKey but never the key or URL path', async () => {
       const res = await call('POST', '/connections', BYO_BODY);
       expect(res.status).toBe(201);
-      expect(await res.json()).toEqual({ id: G });
+      expect(await res.json()).toEqual({ id: G, discoveryQueued: true });
       expect(createGatewayConnection).toHaveBeenCalledWith({
         partnerId: P, name: 'Office vLLM', baseUrl: 'https://llm.example.com/v1', apiKey: BYO_KEY, connectedBy: baseAuth().user.id,
       });
@@ -688,6 +703,7 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       vi.mocked(enqueueConnectionSync).mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
       const res = await call('POST', '/connections', BYO_BODY);
       expect(res.status).toBe(201);
+      expect(await res.json()).toEqual({ id: G, discoveryQueued: false });
       expect(captureException).toHaveBeenCalled();
       expect(audits().map((a) => a.action)).toEqual(['ai_models.connection.created']);
     });
@@ -702,6 +718,33 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       expect(writeRouteAudit).not.toHaveBeenCalled();
       expect(enqueueConnectionSync).not.toHaveBeenCalled();
       expect(captureException).not.toHaveBeenCalled();
+    });
+    it.each([
+      ['ENOTFOUND on the error (dns.lookup)', Object.assign(new Error('getaddrinfo ENOTFOUND llm.example.com'), { code: 'ENOTFOUND' })],
+      ['ENOTFOUND on the cause (undici)', new TypeError('fetch failed', { cause: Object.assign(new Error('getaddrinfo ENOTFOUND llm.example.com'), { code: 'ENOTFOUND' }) })],
+      ['ECONNREFUSED', new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:443'), { code: 'ECONNREFUSED' }) })],
+      ['ETIMEDOUT', Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' })],
+      ['a TLS failure', new TypeError('fetch failed', { cause: Object.assign(new Error('self-signed certificate'), { code: 'DEPTH_ZERO_SELF_SIGNED_CERT' }) })],
+    ])('a network-level failure reaching the endpoint (%s) → 400 baseUrl field error; raw error logged, never returned', async (_l, err) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(createGatewayConnection).mockRejectedValueOnce(err);
+      const res = await call('POST', '/connections', BYO_BODY);
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body).toEqual({
+        error: 'The endpoint host could not be resolved or reached. Check the base URL.',
+        code: 'endpoint_unreachable',
+        details: { field: 'baseUrl' },
+      });
+      expect(JSON.stringify(body)).not.toMatch(/getaddrinfo|ENOTFOUND|ECONNREFUSED|certificate/);
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+      expect(enqueueConnectionSync).not.toHaveBeenCalled();
+    });
+    it('a programmer error from the create is still rethrown (500), not masked as a 400', async () => {
+      vi.mocked(createGatewayConnection).mockRejectedValueOnce(new TypeError("Cannot read properties of undefined (reading 'x')"));
+      expect((await call('POST', '/connections', BYO_BODY)).status).toBe(500);
     });
     it.each([
       ['inferenceGeo (never residency-eligible, D7)', { ...BYO_BODY, inferenceGeo: 'eu' }],

@@ -52,7 +52,7 @@ type ReconcileOutcome =
  */
 export interface RecordStripePaymentOptions {
   /**
-   * SEC-150 charged-repair (the settle-from-Checkout paths): once the capture
+   * Charged-repair (the settle-from-Checkout paths): once the capture
    * has decided, park the session for a human when its mapping is no longer
    * `active`/`legacy_unbounded` — i.e. a session we asked Stripe to kill that
    * Stripe nonetheless reports paid. Provider truth still wins: the capture is
@@ -187,7 +187,7 @@ export async function recordStripePayment(
       throw new Error(`Mapping for stripe object ${input.stripeObjectId} changed under the payment lock`);
     }
 
-    // SEC-150: the capture just cleared the balance every OTHER open Checkout
+    // The capture just cleared the balance every OTHER open Checkout
     // session on this invoice was minted to collect, so each of them is now a
     // second charge waiting to happen. Intent is stamped HERE, under the invoice
     // lock this transaction already holds — see markSiblingRevocationIntentInTx

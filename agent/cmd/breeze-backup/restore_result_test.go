@@ -5,21 +5,28 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
+// flakyRestoreProvider is called from the restore's concurrent download
+// workers (#5623), so its counters are guarded.
 type flakyRestoreProvider struct {
 	*providers.LocalProvider
 	failOnce   string
+	mu         sync.Mutex
 	callCounts map[string]int
 }
 
 func (p *flakyRestoreProvider) Download(key, dest string) error {
+	p.mu.Lock()
 	p.callCounts[key]++
-	if key == p.failOnce && p.callCounts[key] == 1 {
+	first := p.callCounts[key] == 1
+	p.mu.Unlock()
+	if key == p.failOnce && first {
 		return os.ErrNotExist
 	}
 	return p.LocalProvider.Download(key, dest)

@@ -120,5 +120,32 @@
     "activeBody": "Desde {{date}}, o padrão da plataforma exige um dispositivo de aprovador cadastrado para aprovar solicitações de risco alto e crítico, porque nenhuma opção de segurança de aprovações foi salva para sua conta de parceiro. Por isso estas aprovações pedem seu dispositivo.",
     "settingsLink": "Revisar a segurança de aprovações",
     "registerLink": "Registrar um dispositivo de aprovador"
+  },
+  "diagnosticAccess": {
+    "title": "Acesso de diagnóstico somente leitura",
+    "organization": "Organização",
+    "device": "Dispositivo",
+    "access": "Acesso",
+    "readOnlyOps": "Somente leitura: {{operations}}. Sem gravações, exclusões, renomeações, scripts ou alterações no registro.",
+    "duration": "Duração",
+    "durationValue": "{{minutes}} minutos a partir da aprovação",
+    "purpose": "Finalidade",
+    "requestedBy": "Solicitado por",
+    "principalUser": "Chat de IA do Breeze",
+    "principalApiKey": "Chave de API do MCP",
+    "principalOauth": "Conexão OAuth do MCP",
+    "paths": "Caminhos",
+    "recursive": "Subárvore inteira",
+    "thisFolderOnly": "Esta pasta e os arquivos diretamente nela",
+    "sensitiveHeading": "Armazenamentos sensíveis solicitados explicitamente",
+    "noSensitive": "Locais conhecidos de senhas e cookies do navegador, armazenamentos de credenciais, chaves privadas e tokens salvos são retidos, mesmo dentro destes caminhos. É uma lista fixa; todo o resto dentro destes caminhos pode ser lido.",
+    "opList": "listar",
+    "opRead": "ler",
+    "classes": {
+      "browser_secrets": "Senhas, cookies do navegador e suas chaves",
+      "credential_store": "Armazenamentos de credenciais do sistema operacional",
+      "private_keys": "Chaves privadas (SSH, GnuPG, TLS)",
+      "session_tokens": "Tokens de sessão e credenciais de nuvem salvos"
+    }
   }
 }

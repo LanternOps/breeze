@@ -1,0 +1,23 @@
+# Stable release tags built as SERVER-ONLY releases: API, web, portal and the
+# M365 executor images are rebuilt from the tagged commit; the agent family,
+# Viewer, Helper, installers, recovery media and the binaries image are carried
+# forward unchanged from a named full-release base.
+#
+# FORMAT  <tag><TAB><exact tag commit><TAB><base full-release tag><TAB><note>
+#
+# A row authorizes a server-only build of exactly that commit against exactly
+# that base. The eligibility guard (scripts/release/run-server-only-guard.sh)
+# is executed from the BASE release's tree, never the candidate's, and refuses
+# unless: the tag is the globally highest stable version; the commit is on
+# main; the base is the highest stable non-server-only ancestor tag; and no
+# path in the base's scripts/release/binary-affecting-paths.txt changed between
+# the base and the commit.
+#
+# Release creation and promotion read the authoritative copy from origin/main;
+# an unmerged branch cannot declare itself. A tag that is not listed is a full
+# release. A server-only release is always created as a draft and is published
+# only through release-promotion.yml, which re-runs the guard.
+#
+# Append-only once the tag exists on the remote: PR CI refuses edits to, or
+# removal of, a row whose tag has been pushed. A row for a tag that has not been
+# pushed yet may be removed.

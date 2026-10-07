@@ -103,7 +103,11 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
               ...(d.apiKey.trim() ? { apiKey: d.apiKey.trim() } : {}),
             }),
           }),
-          successMessage: t('aiModels.connections.created'),
+          // Only an explicit `true` claims discovery is running; a false or missing flag
+          // (queue down, or an older API) points at Refresh instead (#7781).
+          successMessage: (data: { discoveryQueued?: boolean } | null) => (data?.discoveryQueued === true
+            ? t('aiModels.connections.createdDiscoveryQueued')
+            : t('aiModels.connections.createdDiscoveryNotQueued')),
           errorFallback: t('aiModels.connections.saveFailed'),
           friendly,
           onUnauthorized,

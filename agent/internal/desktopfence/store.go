@@ -1,4 +1,4 @@
-// Package desktopfence persists the SEC-038 remote-desktop start fence across
+// Package desktopfence persists the remote-desktop start fence across
 // agent restarts.
 //
 // The fence itself (high-water generation + terminal tombstone per session)

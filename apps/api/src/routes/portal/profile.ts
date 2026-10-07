@@ -101,7 +101,7 @@ profileRoutes.patch('/profile', zValidator('json', updateProfileSchema), async (
     },
   });
 
-  return c.json({ user: buildPortalUserPayload(user) });
+  return c.json({ user: buildPortalUserPayload({ ...user, orgName: auth.user.orgName }) });
 });
 
 profileRoutes.post('/profile/password', zValidator('json', changePasswordSchema), async (c) => {

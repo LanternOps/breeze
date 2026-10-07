@@ -69,6 +69,12 @@ vi.mock('../../db', () => ({
   // a rejection for exactly one call site via mockImplementationOnce.
   withSystemDbAccessContext: (...args: unknown[]) =>
     withSystemDbAccessContextMock(...(args as [() => Promise<unknown>])),
+  // #8053 — the helper-settings and policy-probe readers now run in savepoints
+  // inside the shared policy context; a savepoint is a pass-through here.
+  withDbTransaction: async (fn: () => Promise<unknown>) => {
+    callOrder.push('savepoint');
+    return fn();
+  },
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -199,6 +205,14 @@ vi.mock('./helpers', () => ({
     settings: { policy: 'staged', maintenanceWindow: null },
     pins: { agent: null, watchdog: null },
   })),
+  // #8053 — the heartbeat reads the cached wrapper. Modelled as an uncached
+  // pass-through with the real wrapper's shape (its own system context around
+  // getOrgAgentUpdateConfig), so per-test overrides of getOrgAgentUpdateConfig
+  // keep working; the cache itself is covered in helpers.agentUpdatePolicy.test.ts.
+  getOrgAgentUpdateConfigCached: async (orgId: string) => {
+    const helpers = await import('./helpers');
+    return withSystemDbAccessContextMock(() => helpers.getOrgAgentUpdateConfig(orgId));
+  },
   // Default target mirrors the `selectMock` '0.66.0' convention used across the
   // upgrade tests: the resolver returns the candidate target version, and the
   // gate + compareAgentVersions (default 0 = no newer) decide whether to send it.
@@ -271,6 +285,10 @@ const { loadTopologyFlagsMock, withResolvedTopologyFlagsMock } = vi.hoisted(() =
 }));
 vi.mock('../../services/topology/flags', () => ({
   loadTopologyFlags: (...args: unknown[]) => loadTopologyFlagsMock(...args),
+  // #8053 — uncached pass-through with the real wrapper's shape (own system
+  // context, org-only scope).
+  loadAgentTopologyFlags: (orgId: string) =>
+    withSystemDbAccessContextMock(() => loadTopologyFlagsMock({ scope: { orgId } }) as Promise<unknown>),
   withResolvedTopologyFlags: (...args: unknown[]) => withResolvedTopologyFlagsMock(...args),
 }));
 
@@ -284,6 +302,7 @@ vi.mock('../../services/agentHealthObservations', () => ({
 }));
 
 vi.mock('../../services/remoteAccessPolicy', () => ({
+  HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS: 180_000,
   resolveRemoteAccessForDevice: vi.fn(async () => ({
     helperEnabled: false,
     helperSettings: null,
@@ -294,12 +313,14 @@ vi.mock('../../services/remoteAccessPolicy', () => ({
 const getActiveTrustKeysetMock = vi.fn();
 const getActiveManifestKeyDelegationsMock = vi.fn();
 
+// #8053 — the heartbeat reads the cached variants; the cache itself is covered
+// in manifestSigning.test.ts.
 vi.mock('../../services/manifestSigning', () => ({
-  getActiveTrustKeyset: (...args: unknown[]) => {
+  getActiveTrustKeysetCached: (...args: unknown[]) => {
     callOrder.push('trustKeyset:fetched');
     return getActiveTrustKeysetMock(...(args as []));
   },
-  getActiveManifestKeyDelegations: (...args: unknown[]) => {
+  getActiveManifestKeyDelegationsCached: (...args: unknown[]) => {
     callOrder.push('delegations:fetched');
     return getActiveManifestKeyDelegationsMock(...(args as []));
   },
@@ -569,7 +590,8 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
 
     expect(response.status).toBe(200);
     expect(loadTopologyFlagsMock).toHaveBeenCalledTimes(1);
-    expect(loadTopologyFlagsMock).toHaveBeenCalledWith({ scope: { orgId: 'org-1', siteId: 'site-1' } });
+    // Flags are a function of the org only (#8053); the site is not passed.
+    expect(loadTopologyFlagsMock).toHaveBeenCalledWith({ scope: { orgId: 'org-1' } });
     const loaded = callOrder.indexOf('topologyFlags:loaded');
     const opened = callOrder.indexOf('dbContext:opened');
     expect(loaded).toBeGreaterThan(-1);
@@ -3092,7 +3114,7 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     expect(updateArg.pamLifetimeProtocolVersion).toBe(expectedPam);
   });
 
-  // SEC-038 W06 (#5537): desktopFenceProtocolVersion is recorded non-sticky on
+  // #5537 — desktopFenceProtocolVersion is recorded non-sticky on
   // every beat exactly like revocationLeaseProtocolVersion — omitted, zero,
   // unknown, fractional and string values all persist as 0 so an agent
   // downgrade stops the fence gate trusting a stale claim.
@@ -3958,23 +3980,22 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
   // those already-delivered commands for no benefit, since every field this
   // block produces is re-resolved on the next heartbeat anyway. This test
   // pins the fail-safe: only the shared policy-config context is made to
-  // reject (targeted by call order — it is the 5th of 6 withSystemDbAccessContext
-  // calls per heartbeat: #2123 update-policy, topology flags, policy-probe,
-  // onedrive, THIS ONE, then helper-settings), and the response must still be 200 with all
-  // four policy config keys omitted and uacInterceptionEnabled defaulted to
-  // false, with the failure reported to Sentry.
+  // reject (targeted by call order — it is the 4th of 4 withSystemDbAccessContext
+  // calls per heartbeat: #2123 update-policy, topology flags, onedrive, THIS
+  // ONE; since #8053 the helper-settings and policy-probe readers run inside it),
+  // and the response must still be 200 with all four policy config keys
+  // omitted, uacInterceptionEnabled and helperEnabled defaulted to false, and
+  // the failure reported to Sentry.
   it('returns 200 and omits all four policy config keys when the shared policy-config system context itself fails', async () => {
     const { captureException } = await import('../../services/sentry');
 
     withSystemDbAccessContextMock
       .mockImplementationOnce(systemDbAccessContextPassthrough) // #2123 update-policy lookup
       .mockImplementationOnce(systemDbAccessContextPassthrough) // topology flags (before the org block)
-      .mockImplementationOnce(systemDbAccessContextPassthrough) // policy-probe config
       .mockImplementationOnce(systemDbAccessContextPassthrough) // onedrive settings
       .mockImplementationOnce(async () => {
         throw new Error('shared policy-config system context failed');
       }); // #2930 shared policy-config block — the one under test
-    // 5th call (helper settings) falls back to the default pass-through.
 
     const resp = await buildApp().request('/agents/device-1/heartbeat', {
       method: 'POST',
@@ -3989,7 +4010,130 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     expect(configUpdate?.monitoring_settings).toBeUndefined();
     expect(configUpdate?.patch_source_settings).toBeUndefined();
     expect(body.uacInterceptionEnabled).toBe(false);
+    expect(body.helperEnabled).toBe(false);
     expect(vi.mocked(captureException)).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------
+// #8053 — the post-commit readers share ONE system context. The helper
+// settings and policy-probe readers used to open their own; they now run
+// first inside the shared policy context, each in its own savepoint.
+// ---------------------------------------------------------------------
+
+describe('POST /agents/:id/heartbeat — shared post-commit policy context (#8053)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    callOrder.length = 0;
+    selectMock.mockReset();
+    selectMock.mockReturnValueOnce(selectChainResolving([{
+      id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host-1',
+      osType: 'windows', osVersion: 'Windows 11', osBuild: null, architecture: 'amd64',
+      agentVersion: '0.70.0', deviceRole: 'workstation', deviceRoleSource: 'auto',
+      agentTokenHash: 'hash', tokenIssuedAt: new Date(),
+    }]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })) });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+  });
+
+  async function beat() {
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(resp.status).toBe(200);
+    return (await resp.json()) as Record<string, unknown>;
+  }
+
+  it('opens four system contexts per beat, with helper and policy probe in savepoints of the shared one', async () => {
+    const helpers = await import('./helpers');
+    vi.mocked(helpers.buildHelperConfigUpdate).mockImplementationOnce(async () => {
+      callOrder.push('helper:resolved');
+      return { enabled: true } as never;
+    });
+    vi.mocked(helpers.buildPolicyProbeConfigUpdate).mockImplementationOnce(async () => {
+      callOrder.push('policyProbe:resolved');
+      return null;
+    });
+    vi.mocked(helpers.buildEventLogConfigUpdate).mockImplementationOnce(async () => {
+      callOrder.push('eventLog:resolved');
+      return undefined as never;
+    });
+
+    const body = await beat();
+
+    expect(body.helperEnabled).toBe(true);
+    // update policy, topology flags, onedrive, shared policy context — no more.
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(4);
+    const released = callOrder.indexOf('dbContext:released');
+    const sharedEnter = callOrder.lastIndexOf('systemCtx:enter');
+    expect(sharedEnter).toBeGreaterThan(released);
+    // Both run inside the shared context, each behind its own savepoint, and
+    // before any policy builder that could abort the shared transaction.
+    expect(callOrder.slice(sharedEnter)).toEqual(expect.arrayContaining(['savepoint', 'helper:resolved', 'policyProbe:resolved']));
+    expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(2);
+    expect(callOrder.indexOf('helper:resolved')).toBeLessThan(callOrder.indexOf('eventLog:resolved'));
+    expect(callOrder.indexOf('policyProbe:resolved')).toBeLessThan(callOrder.indexOf('eventLog:resolved'));
+    expect(callOrder.indexOf('eventLog:resolved')).toBeLessThan(callOrder.lastIndexOf('systemCtx:exit'));
+  });
+
+  it('a helper-settings failure stays inside its savepoint: pam and policy configs still deliver', async () => {
+    const helpers = await import('./helpers');
+    const { captureException } = await import('../../services/sentry');
+    vi.mocked(helpers.buildHelperConfigUpdate).mockRejectedValueOnce(new Error('helper read failed'));
+    vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: true });
+    vi.mocked(helpers.buildPatchSourceConfigUpdate).mockResolvedValueOnce({ exclusiveWindowsUpdate: true });
+
+    const body = await beat();
+
+    expect(body.helperEnabled).toBe(false);
+    expect(body.uacInterceptionEnabled).toBe(true);
+    expect((body.configUpdate as Record<string, unknown>).patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
+    expect(vi.mocked(captureException)).toHaveBeenCalled();
+  });
+
+  it('a policy-probe failure stays inside its savepoint: helper and pam still deliver', async () => {
+    const helpers = await import('./helpers');
+    const { captureException } = await import('../../services/sentry');
+    vi.mocked(helpers.buildPolicyProbeConfigUpdate).mockRejectedValueOnce(new Error('probe read failed'));
+    vi.mocked(helpers.buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: true } as never);
+    vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: true });
+
+    const body = await beat();
+
+    expect(body.helperEnabled).toBe(true);
+    expect(body.uacInterceptionEnabled).toBe(true);
+    // A persistently failing probe read must reach Sentry, like its siblings.
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(expect.objectContaining({ message: 'probe read failed' }));
+  });
+
+  it('helper settings read before a later failure aborts the shared context are still delivered', async () => {
+    const helpers = await import('./helpers');
+    vi.mocked(helpers.buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: true } as never);
+    vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: true });
+    // The shared context runs its callback (every reader resolves), then its
+    // COMMIT throws — what a resolver's caught SQL error does to the shared
+    // transaction in production.
+    withSystemDbAccessContextMock
+      .mockImplementationOnce(systemDbAccessContextPassthrough) // update policy
+      .mockImplementationOnce(systemDbAccessContextPassthrough) // topology flags
+      .mockImplementationOnce(systemDbAccessContextPassthrough) // onedrive
+      .mockImplementationOnce(async (fn: () => Promise<unknown>) => {
+        await fn();
+        throw new Error('current transaction is aborted');
+      });
+
+    const body = await beat();
+
+    // The helper's own read succeeded in its savepoint: it is kept, so the
+    // helper is not switched off by an unrelated resolver's failure.
+    expect(body.helperEnabled).toBe(true);
+    // The policy configs are the shared block's return value and degrade to
+    // "no update this cycle", exactly as before #8053.
+    expect(body.uacInterceptionEnabled).toBe(false);
   });
 });
 
@@ -7506,7 +7650,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     });
 
     expect(resp.status).toBe(401);
-    expect(await resp.json()).toMatchObject({ code: 're_enrollment_required' });
+    expect(await resp.json()).toMatchObject({ code: 'RE_ENROLLMENT_REQUIRED' });
     expect(claimPendingCommandsForDeviceMock).not.toHaveBeenCalled();
     expect(setSpy).not.toHaveBeenCalled();
   });

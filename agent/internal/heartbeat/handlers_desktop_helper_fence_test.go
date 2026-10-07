@@ -6,7 +6,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
-// SEC-038 W05: what the service puts on the IPC wire for the helper's own
+// What the service puts on the IPC wire for the helper's own
 // fence, and what it refuses to send until the helper has been seeded.
 
 func TestBuildHelperStartRequestCarriesGeneration(t *testing.T) {

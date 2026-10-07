@@ -15,3 +15,19 @@ Last release: **v0.121.0** (2026-10-03).
 ## Release to-do (pre-cut gates — see `/release` Step 0.2)
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
+
+- **Database migrations take brief exclusive locks on busy tables.** The
+  `2026-12-13-110000/110100/110200` migrations redefine foreign keys on child
+  tables of `users`, `devices`, `alerts`, `tickets`, `roles` and others. Each
+  swap briefly takes an ACCESS EXCLUSIVE lock on the child **and** the parent
+  table, and waits at most 5 s for it (`lock_timeout`). If a long-running
+  reader holds one of those tables (a large report, a `pg_dump`/backup window),
+  the migration stops, the API fails to boot with a lock-timeout error, and it
+  re-applies cleanly on the next restart. Avoid deploying this release during a
+  database backup window. No data is rewritten; the new constraints are
+  validated afterwards without blocking writes.
+- **Deleting a role that an access review covered now returns 409** ("Role is
+  referenced by access reviews") instead of a server error, so review evidence
+  is kept. Deleting a notification channel keeps the alert delivery history it
+  produced (shown without a channel name), and deleting a maintenance window
+  removes all of its occurrences.

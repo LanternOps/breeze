@@ -125,7 +125,7 @@ export type RenewRevocationLeaseResult =
       renewEverySec: number;
       graceSec: number;
       /**
-       * SEC-038: the session's current `desktop_start_generation`, as a
+       * The session's current `desktop_start_generation`, as a
        * canonical decimal string (it is a bigint — it must never pass through
        * a JS number). The agent's durable start fence resyncs from this, so a
        * renewal answer doubles as the fence's authority on what the server
@@ -162,7 +162,7 @@ export interface RevocationRecheckRow {
     startedAt: Date | null;
     createdAt: Date;
     permissionsEpochSnapshot: number | null;
-    /** SEC-038 monotonic start/terminal generation, bumped by both intents. */
+    /** monotonic start/terminal generation, bumped by both intents. */
     desktopStartGeneration: bigint;
     /** The generation at which the session was declared terminal. */
     terminalGeneration: bigint | null;
@@ -175,7 +175,7 @@ export interface RevocationRecheckRow {
     agentId: string | null;
     /** Agent-declared revocation-lease protocol version; 0 = not capable. */
     revocationLeaseProtocolVersion: number;
-    /** SEC-038 agent-declared desktop start/terminal fence version; 0 = unfenced. */
+    /** agent-declared desktop start/terminal fence version; 0 = unfenced. */
     desktopFenceProtocolVersion: number;
   };
   user: {
@@ -441,7 +441,7 @@ export async function loadRevocationRecheckRow(
             found.permissionsEpochSnapshot === undefined
               ? null
               : Number(found.permissionsEpochSnapshot),
-          // Generations stay bigint end to end — see the SEC-038 constraint:
+          // Generations stay bigint end to end — see the constraint:
           // they are produced, transported and compared as canonical decimal
           // strings and never as a JS number.
           desktopStartGeneration: BigInt(found.desktopStartGeneration ?? 0n),
@@ -528,7 +528,7 @@ export async function markSessionRevoked(
   sessionId: string,
   reason: RevocationReason,
 ): Promise<TerminalSessionRow | null> {
-  // Through the terminal-intent contract (SEC-038 W03): the revocation bumps
+  // Through the terminal-intent contract: the revocation bumps
   // the same generation every start bumps, and the row it returns carries the
   // terminal generation the follow-up stop must name.
   const result = await runOutsideDbContext(() =>
@@ -765,7 +765,7 @@ export async function renewRevocationLease(
       hardDeadline,
       renewEverySec: REVOCATION_LEASE_RENEW_EVERY_MS / 1000,
       graceSec: REVOCATION_LEASE_GRACE_MS / 1000,
-      // SEC-038 fence resync: this same row snapshot, not a second query.
+      // Fence resync: this same row snapshot, not a second query.
       ...(row
         ? {
             startGeneration: row.session.desktopStartGeneration.toString(),
@@ -809,7 +809,7 @@ export async function renewRevocationLease(
 // ---------------------------------------------------------------------------
 
 /**
- * SEC-038: the only desktop start/terminal fence protocol version this server
+ * The only desktop start/terminal fence protocol version this server
  * speaks. An agent reporting exactly this value keeps the durable per-session
  * generation fence (W04/W05); anything else is unfenced. Enforced while
  * REMOTE_DESKTOP_FENCE_REQUIRED is on, which is the default; agents from
@@ -914,7 +914,7 @@ export function isDesktopFenceCapable(desktopFenceProtocolVersion: number): bool
  * Cheap standalone capability probe for callers that only need to fail fast
  * (session creation) and have no session row yet. Covers both desktop-start
  * capability gates: the unconditional revocation lease (#5481) and the
- * flag-gated start fence (SEC-038 W06).
+ * flag-gated start fence.
  */
 export async function isDesktopStartCapable(deviceId: string): Promise<boolean> {
   const [row] = await runOutsideDbContext(() =>

@@ -37,6 +37,7 @@ import {
 } from '../ticketMoveCurrencyGuard';
 import { assertPamDeviceOrgMoveAllowed } from '../pamDeviceMoveGuard';
 import { revokeWorkstationGrantsForMove } from '../callerVerification/deviceMove';
+import { revokeDiagnosticGrantsForMove } from '../diagnosticAccess/deviceMove';
 import {
   checkPoolMembershipTransition,
   type PoolMembershipRefusal,
@@ -381,6 +382,7 @@ export async function moveDeviceOrgInTransaction(
   });
   if (poolRefusal) throw new DevicePoolMembershipRefusedError(poolRefusal);
   await revokeWorkstationGrantsForMove(tx, sourceOrgId, deviceId);
+  await revokeDiagnosticGrantsForMove(tx, sourceOrgId, deviceId, input.actor.userId);
 
   // Flip the device row first so any concurrent agent heartbeat
   // after this point resolves the new org_id.
@@ -794,6 +796,11 @@ export async function moveDeviceOrgInTransaction(
     // the trusted org-only restamp inside this transaction.
     if (DEVICE_ORG_FK_CASCADE_TABLES.includes(table)) continue;
     if (table === 'tickets') {
+      // Deliberately NOT filtered on `org_id IS DISTINCT FROM` like the
+      // generic branch below: breeze_cascade_device_org_id() has already
+      // re-stamped tickets.org_id but not partner_id, and the RETURNING ids
+      // drive assignee revalidation. A filter would skip every ticket the
+      // trigger moved. Tickets per device are few, so the rewrite is cheap.
       // Read the target partner live under the org SHARE lock above.
       const movedTickets = await tx.execute<{ id: string }>(
         sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid,
@@ -804,8 +811,16 @@ export async function moveDeviceOrgInTransaction(
         await revalidateTicketAssignee(ticket.id, { kind: 'user', userId: input.actor.userId }, tx);
       }
     } else {
+      // The devices UPDATE above already fired breeze_cascade_device_org_id(),
+      // which re-stamps every breeze_device_child_orgid_tables() row with the
+      // same IS DISTINCT FROM filter. Without it here, every child row
+      // (including high-volume telemetry such as device_metrics, agent_logs
+      // and device_event_logs) was rewritten a second time, which is what
+      // pushed online-device moves past the web client's timeout (#7988).
+      // The loop still re-stamps any row the trigger did not reach.
       await tx.execute(
-        sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE device_id = ${deviceId}::uuid`,
+        sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid
+            WHERE device_id = ${deviceId}::uuid AND org_id IS DISTINCT FROM ${targetOrgId}::uuid`,
       );
     }
   }

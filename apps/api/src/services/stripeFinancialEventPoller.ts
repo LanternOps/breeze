@@ -26,6 +26,7 @@ export const STRIPE_FINANCIAL_EVENT_TYPES = [
 const PAGE_SIZE = 100;
 const ACCOUNTS_PER_RUN = 25;
 const INITIAL_LOOKBACK_SECONDS = 29 * 24 * 60 * 60;
+const OPERATOR_REVIEW_ERROR = 'One or more Stripe payment reversals require operator review.';
 
 type PollConnection = {
   partnerId: string;
@@ -34,6 +35,9 @@ type PollConnection = {
   cursorCreated: number;
   pageAfter: string | null;
   scanUpperCreated: number | null;
+  /** Banner and poll stamp as the previous poll left them; read before this poll overwrites them. */
+  lastError: string | null;
+  lastPolledAt: Date | null;
 };
 
 function idOf(value: string | { id: string } | null | undefined): string | null {
@@ -134,6 +138,8 @@ async function readConnection(partnerId: string): Promise<PollConnection | null>
     cursorCreated: stripeConnectAccounts.financialEventCursorCreated,
     pageAfter: stripeConnectAccounts.financialEventPageAfter,
     scanUpperCreated: stripeConnectAccounts.financialEventScanUpperCreated,
+    lastError: stripeConnectAccounts.financialEventLastError,
+    lastPolledAt: stripeConnectAccounts.financialEventLastPolledAt,
   }).from(stripeConnectAccounts).where(and(
     eq(stripeConnectAccounts.partnerId, partnerId),
     canPollFinancialEvents(),
@@ -218,7 +224,16 @@ async function pollPartner(partnerId: string, now: Date): Promise<{ ingested: nu
   )).returning({ id: stripeConnectAccounts.id }));
   if (updated.length !== 1) throw new Error('Stripe connection changed while advancing financial event cursor');
 
-  const [blocked] = await withSystemDbAccessContext(() => db.select({ value: count() })
+  const previousPoll = connection.lastPolledAt;
+  const [blocked] = await withSystemDbAccessContext(() => db.select({
+    value: count(),
+    // Rows that became blocked since the previous poll. `blocked` is terminal,
+    // so updated_at is the moment it was blocked; a later touch would only
+    // cost one extra alert, never a missed one.
+    fresh: previousPoll
+      ? sql<number>`count(*) filter (where ${stripeFinancialEvents.updatedAt} > ${previousPoll.toISOString()}::timestamptz)`
+      : count(),
+  })
     .from(stripeFinancialEvents).where(and(
       eq(stripeFinancialEvents.partnerId, partnerId),
       eq(stripeFinancialEvents.stripeAccountId, stripeAccountId),
@@ -228,14 +243,24 @@ async function pollPartner(partnerId: string, now: Date): Promise<{ ingested: nu
       // short of manual SQL could ever clear.
       isNotNull(stripeFinancialEvents.paymentIntentId),
     )));
-  if (Number(blocked?.value ?? 0) > 0) {
-    captureException(new Error('Stripe payment reversal requires operator review'), undefined, {
-      partner_id: partnerId,
-      stripe_account_id: stripeAccountId,
-      blocked_events: String(Number(blocked?.value ?? 0)),
-    });
+  const blockedCount = Number(blocked?.value ?? 0);
+  if (blockedCount > 0) {
+    // Blocked reversals are a standing per-partner state that persists until an
+    // operator acts, and this runs every sweep. Page when the partner enters the
+    // state (the previous poll did not leave the review banner) or when another
+    // event is blocked — not on every sweep (#8021). The banner below is still
+    // re-asserted on each poll, since the cursor advance above cleared it.
+    const newlyBlocked = Number(blocked?.fresh ?? 0);
+    if (connection.lastError !== OPERATOR_REVIEW_ERROR || newlyBlocked > 0) {
+      captureException(new Error('Stripe payment reversal requires operator review'), undefined, {
+        partner_id: partnerId,
+        stripe_account_id: stripeAccountId,
+        blocked_events: String(blockedCount),
+        newly_blocked_events: String(newlyBlocked),
+      });
+    }
     await withSystemDbAccessContext(() => db.update(stripeConnectAccounts).set({
-      financialEventLastError: 'One or more Stripe payment reversals require operator review.',
+      financialEventLastError: OPERATOR_REVIEW_ERROR,
       updatedAt: new Date(),
     }).where(and(
       eq(stripeConnectAccounts.partnerId, partnerId),

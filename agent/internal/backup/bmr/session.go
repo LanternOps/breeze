@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"runtime"
 	"strings"
 	"time"
 
@@ -183,10 +184,24 @@ type exchangeCodeRequest struct {
 	// a helper that checks snapshot attestations on restore from one that
 	// does not. Older servers ignore it.
 	IntegrityProtocolVersion int `json:"integrityProtocolVersion"`
+	// MediaPlatform is the OS this recovery media boots ("linux" or
+	// "windows"), so the server can refuse a code issued for the other
+	// platform with 409 media_platform_mismatch BEFORE claiming it. Omitted
+	// for any other OS; older servers ignore it.
+	MediaPlatform string `json:"mediaPlatform,omitempty"`
+}
+
+// mediaPlatformFor maps a GOOS value to the server's mediaPlatform enum, or
+// "" (omitted) for an OS the server does not accept.
+func mediaPlatformFor(goos string) string {
+	if goos == "linux" || goos == "windows" {
+		return goos
+	}
+	return ""
 }
 
 func ExchangeRecoveryCode(ctx context.Context, serverURL, code, helperVersion string) (string, *BootstrapResponse, error) {
-	payload, err := json.Marshal(exchangeCodeRequest{Code: code, Capabilities: ClientCapabilities(), HelperVersion: helperVersion, IntegrityProtocolVersion: integrity.ProtocolVersion})
+	payload, err := json.Marshal(exchangeCodeRequest{Code: code, Capabilities: ClientCapabilities(), HelperVersion: helperVersion, IntegrityProtocolVersion: integrity.ProtocolVersion, MediaPlatform: mediaPlatformFor(runtime.GOOS)})
 	if err != nil {
 		return "", nil, fmt.Errorf("bmr: marshal exchange request: %w", err)
 	}

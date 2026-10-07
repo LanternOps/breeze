@@ -228,7 +228,7 @@ export const PERMISSION_GRANTS = {
   PAM_APPROVE: { resource: 'pam', action: 'approve' },
   PAM_MANAGE_POLICY: { resource: 'pam', action: 'manage_policy' },
 
-  // Accounting / QuickBooks integration (SEC-2026-09-05-057). The interactive
+  // Accounting / QuickBooks integration. The interactive
   // QuickBooks routes used to gate on partner authority alone, so any
   // full-partner member — however low their role — could read the shared
   // provider realm (customers, entity mappings, income accounts, remote

@@ -1696,7 +1696,7 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
   let stragglers: TerminalSessionRow[] = [];
   try {
     ({ session, stragglers } = await withSystemDbAccessContext(async () => {
-      // Through the terminal-intent contract (SEC-038 W03), returning the rows
+      // Through the terminal-intent contract, returning the rows
       // so each straggler's stop can name its terminal generation. The stop
       // itself is dispatched AFTER this context commits — the relay's ack wait
       // must not pin this connection idle-in-transaction.

@@ -7,6 +7,7 @@
  * - process-results: Updates job/snapshot rows from agent result payload
  */
 
+import { randomUUID } from 'node:crypto';
 import { Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import {
@@ -51,6 +52,8 @@ import { backupWriteRefusalMessage, brokerWorkerBackupPayload } from '../service
 import { BACKUP_HELPER_UNREPORTED_MESSAGE, backupHelperProtocolsUnreported } from '../services/backupHelperProtocols';
 import { backupWriteHelperRefusal } from '../services/backupWriteHelperGate';
 import { captureException } from '../services/sentry';
+import { insertQueuedCommandInTransaction } from '../services/commandQueueInsert';
+import { CommandTypes } from '../services/commandTypes';
 import { createAuditLogAsync } from '../services/auditService';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import {
@@ -817,6 +820,15 @@ async function loadBackupDispatchPrecheck(
 
   if (!config) {
     await markJobFailed(data.jobId, 'Backup config not found');
+    return { status: 'done', result: { dispatched: false } };
+  }
+
+  // The config is loaded by id alone under system scope, so its org is checked
+  // here: a job only ever runs a config of its own org (backup_configs is
+  // org-owned, never partner-wide). Fail before any destination credential is
+  // read into a payload.
+  if (config.orgId !== data.orgId) {
+    await refuseBackupDispatch(data, 'backup_config_org_mismatch');
     return { status: 'done', result: { dispatched: false } };
   }
 
@@ -1787,48 +1799,37 @@ async function processDispatchBackup(
   );
   let parentFailureDetail: string | null = preparedParentFailure;
   let dispatchRefusal: string | null = null;
+  // Set when ownership changed AFTER at least one target was sent: the sent
+  // targets are stopped on the helper and every row settles as failed.
+  let sentWorkRevoked = false;
+
+  const failUnattemptedTargets = (refusal: string): void => {
+    for (const pending of prepared) {
+      if (sendState.get(pending.commandJobId) !== 'not-attempted') continue;
+      sendState.set(pending.commandJobId, 'failed');
+      failedTargets.push(`${pending.commandType} (${refusal})`);
+      if (pending.commandJobId === data.jobId) {
+        parentFailureDetail = refusal;
+      } else {
+        failedChildJobs.push({ commandJobId: pending.commandJobId, detail: refusal });
+      }
+    }
+  };
 
   try {
     for (const target of prepared) {
       // Re-read after payload preparation and between sends: enqueue-time
-      // ownership cannot authorize a backup on a device moved to another org.
-      // Keep the relay acknowledgement wait outside the short DB context.
-      // A device parked in a holding org is refused here as well.
-      const refusal = await runWithSystemDbAccess(async (): Promise<string | null> => {
-        const [device] = await db.select({ orgId: devices.orgId }).from(devices)
-          .where(eq(devices.id, data.deviceId)).limit(1);
-        const reason = device?.orgId !== data.orgId
-          ? 'device_org_changed'
-          : (await isParkedDevice(db, data.deviceId)) ? PARKED_DEVICE_CANCEL_REASON : null;
-        if (reason === null) return null;
-
-        console.warn(`[BackupWorker] Refusing backup dispatch: ${reason}`, {
-          jobId: data.jobId, deviceId: data.deviceId, orgId: data.orgId,
-        });
-        createAuditLogAsync({
-          orgId: data.orgId,
-          actorType: 'system',
-          actorId: '00000000-0000-0000-0000-000000000000',
-          action: 'backup.dispatch.denied',
-          resourceType: 'backup_job',
-          resourceId: data.jobId,
-          result: 'failure',
-          details: { deviceId: data.deviceId, reason },
-        });
-        return reason;
-      });
+      // ownership cannot authorize a backup on a device moved to another org,
+      // and a config edited since the job was enqueued no longer describes
+      // what this send would run. Keep the relay acknowledgement wait outside
+      // the short DB context. A device parked in a holding org is refused here
+      // as well.
+      const refusal = await runWithSystemDbAccess(
+        () => readBackupDispatchRefusal(data, { checkConfigGeneration: true }),
+      );
       if (refusal !== null) {
         dispatchRefusal = refusal;
-        for (const pending of prepared) {
-          if (sendState.get(pending.commandJobId) !== 'not-attempted') continue;
-          sendState.set(pending.commandJobId, 'failed');
-          failedTargets.push(`${pending.commandType} (${refusal})`);
-          if (pending.commandJobId === data.jobId) {
-            parentFailureDetail = refusal;
-          } else {
-            failedChildJobs.push({ commandJobId: pending.commandJobId, detail: refusal });
-          }
-        }
+        failUnattemptedTargets(refusal);
         break;
       }
 
@@ -1846,6 +1847,22 @@ async function processDispatchBackup(
           target.writeDelivery.mode,
           target.writeDelivery.mode === 'brokered' ? 'ok' : 'no_credential',
         );
+
+        // The pre-send re-read cannot hold a lock across the send (the relay
+        // acknowledgement wait must not pin a pooled connection), so a move
+        // can land between that read and the send itself. Read ownership
+        // again now that the command is out: if the device left the job's
+        // organization meanwhile, the sent work is stopped on the helper and
+        // the job fails instead of running under the old organization.
+        const movedDuringSend = await runWithSystemDbAccess(
+          () => readBackupDispatchRefusal(data, { checkConfigGeneration: false }),
+        );
+        if (movedDuringSend !== null) {
+          dispatchRefusal = movedDuringSend;
+          sentWorkRevoked = true;
+          failUnattemptedTargets(movedDuringSend);
+          break;
+        }
         continue;
       }
 
@@ -1862,6 +1879,34 @@ async function processDispatchBackup(
         failedChildJobs.push({ commandJobId: target.commandJobId, detail });
       } else {
         parentFailureDetail = detail;
+      }
+    }
+
+    // Work that went out before the device left the job's organization is
+    // stopped on the helper, each target by its own job id. The stop is a
+    // durable device_commands row the device picks up on its next claim: this
+    // worker may run on an instance that holds no agent sockets, so it never
+    // goes through the socket-local queue (commandQueue.ts).
+    if (sentWorkRevoked) {
+      const revokeDetail = dispatchRefusal ?? 'device_org_changed';
+      for (const target of prepared) {
+        if (sendState.get(target.commandJobId) !== 'sent') continue;
+        try {
+          await runWithSystemDbAccess(() => db.transaction((tx) => insertQueuedCommandInTransaction(tx, {
+            id: randomUUID(),
+            deviceId: data.deviceId,
+            type: CommandTypes.BACKUP_STOP,
+            // jobId targets one workload on a queue-capable helper; older
+            // helpers ignore it and stop every backup on the device.
+            payload: { reason: 'cancelled', jobId: target.commandJobId },
+            createdBy: null,
+          })));
+        } catch (err) {
+          console.warn(`[BackupWorker] Failed to queue backup_stop for job ${target.commandJobId}:`, err);
+        }
+        if (target.commandJobId !== data.jobId) {
+          failedChildJobs.push({ commandJobId: target.commandJobId, detail: revokeDetail });
+        }
       }
     }
 
@@ -1882,7 +1927,7 @@ async function processDispatchBackup(
         return { dispatched: false };
       }
 
-      if (sentCount === 0) {
+      if (sentCount === 0 || sentWorkRevoked) {
         await markJobFailed(
           data.jobId,
           dispatchRefusal
@@ -1996,6 +2041,58 @@ async function processResults(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Why a prepared backup must not be (or must no longer be) dispatched: the
+ * device left the job's organization, was parked in a holding org, or — when
+ * asked — its config was edited since the job was enqueued. Null when it may
+ * proceed. A refusal is logged and audited here. The caller opens the short
+ * system DB context this runs in.
+ */
+async function readBackupDispatchRefusal(
+  data: DispatchBackupJobData,
+  options: { checkConfigGeneration: boolean },
+): Promise<string | null> {
+  const [device] = await db.select({ orgId: devices.orgId }).from(devices)
+    .where(eq(devices.id, data.deviceId)).limit(1);
+  let reason: string | null = device?.orgId !== data.orgId
+    ? 'device_org_changed'
+    : (await isParkedDevice(db, data.deviceId)) ? PARKED_DEVICE_CANCEL_REASON : null;
+
+  if (reason === null && options.checkConfigGeneration && data.configGeneration !== undefined) {
+    const [config] = await db.select({ approvalGeneration: backupConfigs.approvalGeneration })
+      .from(backupConfigs)
+      .where(eq(backupConfigs.id, data.configId))
+      .limit(1);
+    if (config?.approvalGeneration !== data.configGeneration) reason = 'backup_config_changed';
+  }
+  if (reason === null) return null;
+
+  logBackupDispatchRefusal(data, reason);
+  return reason;
+}
+
+/** Fail the job and record why its dispatch was refused. */
+async function refuseBackupDispatch(data: DispatchBackupJobData, reason: string): Promise<void> {
+  logBackupDispatchRefusal(data, reason);
+  await markJobFailed(data.jobId, reason);
+}
+
+function logBackupDispatchRefusal(data: DispatchBackupJobData, reason: string): void {
+  console.warn(`[BackupWorker] Refusing backup dispatch: ${reason}`, {
+    jobId: data.jobId, deviceId: data.deviceId, orgId: data.orgId,
+  });
+  createAuditLogAsync({
+    orgId: data.orgId,
+    actorType: 'system',
+    actorId: '00000000-0000-0000-0000-000000000000',
+    action: 'backup.dispatch.denied',
+    resourceType: 'backup_job',
+    resourceId: data.jobId,
+    result: 'failure',
+    details: { deviceId: data.deviceId, reason },
+  });
+}
 
 async function markJobFailed(jobId: string, error: string): Promise<void> {
   await db

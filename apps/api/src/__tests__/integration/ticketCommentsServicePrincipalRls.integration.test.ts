@@ -11,6 +11,11 @@
  *   3. it does NOT admit the same row on a ticket the principal cannot reach
  *      (cross-partner forge → 42501), nor a 'service_principal' row that
  *      still names a user (the policy is user_id IS NULL, not "or").
+ *   4. (2026-12-12-150000-ticket-comments-service-principal-partner-check.sql)
+ *      origin_principal_id must name a partner_service_principals row of the
+ *      ticket's own partner — another partner's principal, or an id that
+ *      names no principal, is a 42501. actorOwnsComment and echo
+ *      suppression trust that column.
  *
  * All authorization assertions run through the production `db` pool as the
  * non-BYPASSRLS `breeze_app` role; the seed/fixture rows go through the admin
@@ -21,8 +26,8 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { ticketComments, tickets } from '../../db/schema';
-import { createOrganization, createPartner } from './db-utils';
+import { partnerServicePrincipals, ticketComments, tickets } from '../../db/schema';
+import { createOrganization, createPartner, createUser } from './db-utils';
 import { replayMigration } from './replayMigration';
 import { getTestDb } from './setup';
 
@@ -30,6 +35,20 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 // replayMigration takes the shipped file NAME (it resolves the migrations
 // directory itself and re-applies every later file touching the same objects).
 const MIGRATION_FILE = '2026-12-04-101100-ticket-comments-service-principal-origin.sql';
+const PARTNER_CHECK_MIGRATION_FILE = '2026-12-12-150000-ticket-comments-service-principal-partner-check.sql';
+
+async function seedPrincipal(partnerId: string): Promise<string> {
+  const adminDb = getTestDb() as any;
+  const user = await createUser({ partnerId });
+  const [principal] = await adminDb.insert(partnerServicePrincipals).values({
+    partnerId,
+    name: `psa-bridge-${randomUUID().slice(0, 8)}`,
+    scopes: ['devices:read'],
+    createdBy: user.id,
+    updatedBy: user.id,
+  }).returning();
+  return principal.id as string;
+}
 
 /** The context `partnerApiAuth` / a Partner API write handler opens. */
 function partnerApiContext(partnerId: string, accessibleOrgIds: string[]): DbAccessContext {
@@ -80,6 +99,8 @@ describe('ticket_comments — service-principal author (Partner API, Wave 1)', (
   runDb('re-applies the migration idempotently', async () => {
     await replayMigration(MIGRATION_FILE);
     await replayMigration(MIGRATION_FILE);
+    await replayMigration(PARTNER_CHECK_MIGRATION_FILE);
+    await replayMigration(PARTNER_CHECK_MIGRATION_FILE);
   });
 
   runDb('the CHECK admits service_principal and still rejects an unknown kind', async () => {
@@ -105,9 +126,10 @@ describe('ticket_comments — service-principal author (Partner API, Wave 1)', (
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const ticket = await seedTicket(partner.id, org.id);
+    const principalId = await seedPrincipal(partner.id);
 
     const [row] = await withDbAccessContext(partnerApiContext(partner.id, [org.id]), () =>
-      db.insert(ticketComments).values(servicePrincipalRow(ticket.id)).returning(),
+      db.insert(ticketComments).values(servicePrincipalRow(ticket.id, { originPrincipalId: principalId })).returning(),
     );
     expect(row?.id).toBeDefined();
     expect(row?.userId).toBeNull();
@@ -169,5 +191,34 @@ describe('ticket_comments — service-principal author (Partner API, Wave 1)', (
 
     expect(rejected).toBeInstanceOf(Error);
     expect(pgCause(rejected)?.code).toBe('42501');
+  });
+
+  runDb('refuses a comment whose origin principal belongs to another partner (42501)', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const ticket = await seedTicket(partner.id, org.id);
+    const otherPartner = await createPartner();
+    const foreignPrincipalId = await seedPrincipal(otherPartner.id);
+
+    const forged = await withDbAccessContext(partnerApiContext(partner.id, [org.id]), () =>
+      db.insert(ticketComments).values(servicePrincipalRow(ticket.id, { originPrincipalId: foreignPrincipalId })).returning(),
+    ).then(() => null, (err: unknown) => err);
+
+    expect(forged).toBeInstanceOf(Error);
+    expect(pgCause(forged)?.code).toBe('42501');
+    expect(pgCause(forged)?.message).toContain('new row violates row-level security policy for table "ticket_comments"');
+  });
+
+  runDb('refuses a comment whose origin principal id names no principal (42501)', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const ticket = await seedTicket(partner.id, org.id);
+
+    const forged = await withDbAccessContext(partnerApiContext(partner.id, [org.id]), () =>
+      db.insert(ticketComments).values(servicePrincipalRow(ticket.id, { originPrincipalId: randomUUID() })).returning(),
+    ).then(() => null, (err: unknown) => err);
+
+    expect(forged).toBeInstanceOf(Error);
+    expect(pgCause(forged)?.code).toBe('42501');
   });
 });

@@ -12,8 +12,26 @@ vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { orgRoutes, createOrganizationSchema, updateOrganizationSchema } from './orgs';
+import { invalidateAgentOrgSettingsCaches } from '../services/agentOrgSettingsCache';
+
+beforeEach(() => {
+  defaultAssigneeSettingsErrorMock.mockReset();
+  defaultAssigneeSettingsErrorMock.mockResolvedValue(null);
+  listAssignableMock.mockReset();
+});
 
 vi.mock('../services', () => ({}));
+
+const { isAssignableInboundDefaultUserMock, listAssignableMock, defaultAssigneeSettingsErrorMock } = vi.hoisted(() => ({
+  isAssignableInboundDefaultUserMock: vi.fn(),
+  listAssignableMock: vi.fn(),
+  defaultAssigneeSettingsErrorMock: vi.fn(),
+}));
+vi.mock('../services/inboundEmail/defaultAssigneeEligibility', () => ({
+  isAssignableInboundDefaultUser: isAssignableInboundDefaultUserMock,
+  listAssignableInboundDefaultUsers: listAssignableMock,
+  defaultAssigneeSettingsError: defaultAssigneeSettingsErrorMock,
+}));
 
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
@@ -186,6 +204,11 @@ vi.mock('../services/tenantOffboarding', async (importOriginal) => ({
 vi.mock('../services/monitors/builtInMonitors', () => ({
   ensureBuiltInMonitorsForPartner: vi.fn(async () => ({ provisioned: true, monitorIds: [] })),
   ensureBuiltInMonitorsForAllPartners: vi.fn(async () => ({ provisioned: 0, skipped: 0, failed: 0 })),
+}));
+// #8053 — org/partner settings writes invalidate the agent heartbeat's per-org
+// caches; the cache itself is covered in hotPathCache.test.ts.
+vi.mock('../services/agentOrgSettingsCache', () => ({
+  invalidateAgentOrgSettingsCaches: vi.fn(),
 }));
 vi.mock('../db', () => ({
   db: {
@@ -616,6 +639,23 @@ describe('org routes', () => {
   });
 
   describe('POST /orgs/partners', () => {
+    it('refuses a default inbound assignee on a partner that has no members yet', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) })
+      } as any);
+      defaultAssigneeSettingsErrorMock.mockResolvedValue('nope');
+
+      const res = await app.request('/orgs/partners', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Partner', slug: 'newp', settings: { ticketing: { inbound: { defaultAssigneeUserId: '44444444-4444-4444-8444-444444444444' } } } })
+      });
+
+      expect(res.status).toBe(400);
+      expect(defaultAssigneeSettingsErrorMock.mock.calls[0]![1]).toBeNull();
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
     it("returns 409 when the new slug collides with an existing partner's inbound local part", async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
@@ -635,7 +675,7 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ error: 'That partner identifier is already in use' });
+      expect(await res.json()).toEqual({ error: 'That partner identifier is already in use', code: 'CONFLICT' });
       expect(db.transaction).not.toHaveBeenCalled();
     });
 
@@ -900,6 +940,30 @@ describe('org routes', () => {
   });
 
   describe('PATCH /orgs/partners/:id', () => {
+    it('refuses a default inbound assignee the partner cannot assign (free-form settings)', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-1', settings: { ticketing: { inbound: { defaultAssigneeUserId: null } } } }])
+          })
+        })
+      } as any);
+      defaultAssigneeSettingsErrorMock.mockResolvedValue('nope');
+      const settings = { ticketing: { inbound: { defaultAssigneeUserId: '44444444-4444-4444-8444-444444444444' } } };
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings })
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('DEFAULT_ASSIGNEE_NOT_ASSIGNABLE');
+      // Checked against THIS partner.
+      expect(defaultAssigneeSettingsErrorMock).toHaveBeenCalledWith(expect.objectContaining(settings), 'partner-1');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     it('should reject empty updates', async () => {
       const res = await app.request('/orgs/partners/partner-1', {
         method: 'PATCH',
@@ -931,6 +995,8 @@ describe('org routes', () => {
       // #3996 — a name-only patch ends no drain: no tenant-row lock, no
       // device enumeration. See the org-side twin of this assertion.
       expect(abortPartnerOffboardingAroundStatusChange).not.toHaveBeenCalled();
+      // #8053 — no settings change, so the agent per-org caches are kept.
+      expect(invalidateAgentOrgSettingsCaches).not.toHaveBeenCalled();
     });
 
     it("returns 409 when the updated slug collides with another partner's inbound local part", async () => {
@@ -949,7 +1015,7 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ error: 'That partner identifier is already in use' });
+      expect(await res.json()).toEqual({ error: 'That partner identifier is already in use', code: 'CONFLICT' });
       expect(db.update).not.toHaveBeenCalled();
     });
 
@@ -991,6 +1057,8 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       expect(capturedUpdateData.timezone).toBe('America/New_York');
       expect(capturedUpdateData.settings.timezone).toBe('America/New_York');
+      // #8053 — a partner settings write feeds every org: all per-org caches drop.
+      expect(invalidateAgentOrgSettingsCaches).toHaveBeenCalledWith();
     });
 
     // #1318 cosmetic: a lowercase 'utc' settings value canonicalizes to the
@@ -1514,6 +1582,8 @@ describe('org routes', () => {
       // The key guarantee is that the db write does NOT carry aiForOfficeEnabled.
       expect(res.status).toBe(200);
       expect(capturedUpdateData?.aiForOfficeEnabled).toBeUndefined();
+      // #8053 — a partner write feeds every org: all per-org caches drop.
+      expect(invalidateAgentOrgSettingsCaches).toHaveBeenCalledWith();
     });
 
     describe('contact.website scheme allowlist', () => {
@@ -1790,6 +1860,99 @@ describe('org routes', () => {
 
       expect(res.status).toBe(200);
       expect(getCaptured().settings.ticketing.inbound.defaultTriageOrgId).toBe(orgId);
+    });
+
+    // defaultAssigneeUserId: a CHANGED value must pass isAssignableInboundDefaultUser
+    // (an active member of this partner with ticket access; its own real-Postgres
+    // suite covers the predicate). The route's job is to call it with the
+    // caller's partner and refuse before writing.
+    describe('defaultAssigneeUserId', () => {
+      const USER = '44444444-4444-4444-8444-444444444444';
+      beforeEach(() => {
+        isAssignableInboundDefaultUserMock.mockReset();
+      });
+
+      it('rejects a user the partner cannot assign (400, nothing written)', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        mockCurrentPartnerSelect({ ticketing: { inbound: { enabled: true } } });
+        isAssignableInboundDefaultUserMock.mockResolvedValue(false);
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchMe({ settings: { ticketing: { inbound: { enabled: true, defaultAssigneeUserId: USER } } } });
+
+        expect(res.status).toBe(400);
+        expect((await res.json()).code).toBe('DEFAULT_ASSIGNEE_NOT_ASSIGNABLE');
+        expect(isAssignableInboundDefaultUserMock).toHaveBeenCalledWith(USER, 'partner-123');
+        expect(getCaptured()).toBeUndefined();
+      });
+
+      it('stores an assignable user and reads it back in the written settings (200)', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        mockCurrentPartnerSelect({ ticketing: { inbound: { enabled: true } } });
+        isAssignableInboundDefaultUserMock.mockResolvedValue(true);
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchMe({ settings: { ticketing: { inbound: { enabled: true, defaultAssigneeUserId: USER } } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.ticketing.inbound.defaultAssigneeUserId).toBe(USER);
+      });
+
+      it('re-checks an unchanged value on every save: a user who stopped qualifying is refused', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        mockCurrentPartnerSelect({ ticketing: { inbound: { enabled: true, defaultAssigneeUserId: USER } } });
+        isAssignableInboundDefaultUserMock.mockResolvedValue(false);
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchMe({ settings: { ticketing: { inbound: { enabled: false, defaultAssigneeUserId: USER } } } });
+
+        expect(res.status).toBe(400);
+        expect(isAssignableInboundDefaultUserMock).toHaveBeenCalledWith(USER, 'partner-123');
+        expect(getCaptured()).toBeUndefined();
+      });
+
+      it('clears the default with null without a check', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        mockCurrentPartnerSelect({ ticketing: { inbound: { enabled: true, defaultAssigneeUserId: USER } } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchMe({ settings: { ticketing: { inbound: { enabled: true, defaultAssigneeUserId: null } } } });
+
+        expect(res.status).toBe(200);
+        expect(isAssignableInboundDefaultUserMock).not.toHaveBeenCalled();
+        expect(getCaptured().settings.ticketing.inbound.defaultAssigneeUserId).toBeNull();
+      });
+
+      it('lists default-assignee candidates for a full-access partner admin', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        listAssignableMock.mockResolvedValue([{ id: USER, name: 'Tess', email: 't@msp.example' }]);
+
+        const res = await app.request('/orgs/partners/me/default-assignee-candidates');
+
+        expect(res.status).toBe(200);
+        expect((await res.json()).data).toEqual([{ id: USER, name: 'Tess', email: 't@msp.example' }]);
+        expect(listAssignableMock).toHaveBeenCalledWith('partner-123');
+      });
+
+      it('refuses the candidate list to a partner user without full partner access (403)', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', partnerOrgAccess: 'selected' });
+
+        const res = await app.request('/orgs/partners/me/default-assignee-candidates');
+
+        expect(res.status).toBe(403);
+        expect(listAssignableMock).not.toHaveBeenCalled();
+      });
+
+      it('rejects a value that is not a uuid at the schema (400)', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        mockCurrentPartnerSelect({ ticketing: { inbound: { enabled: true } } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchMe({ settings: { ticketing: { inbound: { enabled: true, defaultAssigneeUserId: 'bob' } } } });
+
+        expect(res.status).toBe(400);
+        expect(getCaptured()).toBeUndefined();
+      });
     });
 
     it('skips the org check when defaultTriageOrgId is null (200)', async () => {
@@ -3775,7 +3938,7 @@ describe('org routes', () => {
       const res = await app.request('/orgs/organizations/99999999-9999-9999-9999-999999999999');
 
       expect(res.status).toBe(404);
-      expect(await res.json()).toEqual({ error: 'Organization not found' });
+      expect(await res.json()).toEqual({ error: 'Organization not found', code: 'NOT_FOUND' });
       // The org row is never queried in the caller's own context. Since Wave 4
       // the handler does probe for an ARCHIVED org first — that probe is
       // hard-pinned to the caller's own partner and returns null here, so the
@@ -3910,7 +4073,7 @@ describe('org routes', () => {
       const res = await app.request('/orgs/organizations/not-a-uuid');
 
       expect(res.status).toBe(404);
-      expect(await res.json()).toEqual({ error: 'Organization not found' });
+      expect(await res.json()).toEqual({ error: 'Organization not found', code: 'NOT_FOUND' });
       expect(loadArchivedOrg).not.toHaveBeenCalled();
       expect(db.select).not.toHaveBeenCalled();
     });
@@ -3972,6 +4135,8 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.name).toBe('Updated');
+      // #8053 — the org's agents re-read its update policy / topology flags.
+      expect(invalidateAgentOrgSettingsCaches).toHaveBeenCalledWith('org-1');
     });
 
     // ── lifecycle-internal settings keys (review r3) ───────────────────────
@@ -4823,7 +4988,7 @@ describe('org routes', () => {
         const res = await patchOrg('org-draining', { status: 'active' });
 
         expect(res.status).toBe(404);
-        expect(await res.json()).toEqual({ error: 'Organization not found' });
+        expect(await res.json()).toEqual({ error: 'Organization not found', code: 'NOT_FOUND' });
         expect(db.update).not.toHaveBeenCalled();
         expect(restoreOrganizationTenantAccess).not.toHaveBeenCalled();
       });
@@ -4913,7 +5078,7 @@ describe('org routes', () => {
         const res = await app.request(`/orgs/organizations/${suspendedOrgId}`);
 
         expect(res.status).toBe(404);
-        expect(await res.json()).toEqual({ error: 'Organization not found' });
+        expect(await res.json()).toEqual({ error: 'Organization not found', code: 'NOT_FOUND' });
         expect(db.select).not.toHaveBeenCalled();
         // Wave 4's archived probe is the only extra lookup, and it is scoped to
         // ARCHIVED orgs of the caller's own partner — a SUSPENDED org resolves
@@ -8100,7 +8265,7 @@ describe('org routes', () => {
         });
 
         expect(res.status).toBe(403);
-        expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+        expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: 'ACCESS_DENIED' });
         expect(orgImportMocks.previewOrgImport).not.toHaveBeenCalled();
         expect(orgImportMocks.commitOrgImport).not.toHaveBeenCalled();
       },

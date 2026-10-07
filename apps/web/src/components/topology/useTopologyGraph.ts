@@ -92,6 +92,8 @@ export function useTopologyGraph(scope: { siteId: string }, query: { view: Topol
     } catch (cause) { if (current()) setError(cause instanceof Error ? cause.message : 'Unable to expand topology'); }
   };
   return { graph, loading, error, refreshGraph, expand, expanded: expansion !== null,
+    /** The active expansion token (null on the base read); changes on every expand and collapse so the canvas can re-fit. */
+    expansion,
     /** Leave the expansion and reload the base (overview or focused) read. */
     collapse: leave };
 }

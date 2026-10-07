@@ -89,6 +89,8 @@ export type BackupSnapshot = {
   configId?: string | null;
   jobId: string;
   providerSnapshotId?: string | null;
+  /** backup_snapshots.integrity_status (absent on in-memory rows). */
+  integrityStatus?: string | null;
   createdAt: string;
   sizeBytes: number | null;
   fileCount: number | null;

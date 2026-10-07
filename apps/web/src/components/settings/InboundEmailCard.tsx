@@ -22,6 +22,12 @@ interface InboundConfig {
   autoresponderEnabled: boolean;
   unknownSenderMode: UnknownSenderMode;
   dropUnverifiedSenders: boolean;
+  // File a staff member's forward under the ORIGINAL sender's customer org.
+  // Absent on an older API -> treated as off.
+  staffForwardRouting?: boolean;
+  // users.id every new inbound ticket is assigned to; null = unassigned.
+  // Absent on an older API -> treated as none.
+  defaultAssigneeUserId?: string | null;
   autoresponseSubject: string | null;
   autoresponseBody: string | null;
   // Reply-content mode. Not yet edited by this card, but carried through so a save
@@ -46,15 +52,28 @@ interface OrgOption {
   name: string;
 }
 
+// A row from GET /orgs/partners/me/default-assignee-candidates: exactly the
+// users the API accepts as the default assignee.
+interface AssigneeOption {
+  id: string;
+  name: string | null;
+  email: string;
+}
+
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
 export default function InboundEmailCard() {
   const { t } = useTranslation('settings');
   const saveError = t('inboundEmail.saveError');
   const friendlyCode = (code: string): string | undefined =>
-    code === 'ORG_NOT_ACCESSIBLE' ? t('inboundEmail.orgNotAccessible') : undefined;
+    code === 'ORG_NOT_ACCESSIBLE'
+      ? t('inboundEmail.orgNotAccessible')
+      : code === 'DEFAULT_ASSIGNEE_NOT_ASSIGNABLE'
+        ? t('inboundEmail.defaultAssigneeNotAssignable')
+        : undefined;
   const [cfg, setCfg] = useState<InboundConfig | null>(null);
   const [orgs, setOrgs] = useState<OrgOption[]>([]);
+  const [assignees, setAssignees] = useState<AssigneeOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -84,18 +103,31 @@ export default function InboundEmailCard() {
     }
   }, []);
 
+  // Candidates for the default assignee, filtered server-side by the same
+  // rule the save enforces (active member, org access, ticket permission).
+  const loadAssignees = useCallback(async () => {
+    try {
+      const res = await fetchWithAuth('/orgs/partners/me/default-assignee-candidates');
+      if (!res.ok) return;
+      const body = (await res.json()) as { data?: AssigneeOption[] };
+      if (Array.isArray(body.data)) setAssignees(body.data.filter((u) => u.id));
+    } catch {
+      // Degrade silently: the picker then lists only the current value.
+    }
+  }, []);
+
   const loadAll = useCallback(
     async () => {
       setLoading(true);
       setError(false);
       try {
-        await Promise.all([loadConfig(), loadOrgs()]);
+        await Promise.all([loadConfig(), loadOrgs(), loadAssignees()]);
       } catch {
         setError(true);
       }
       setLoading(false);
     },
-    [loadConfig, loadOrgs],
+    [loadConfig, loadOrgs, loadAssignees],
   );
 
   useEffect(() => {
@@ -112,6 +144,8 @@ export default function InboundEmailCard() {
           | 'autoresponderEnabled'
           | 'unknownSenderMode'
           | 'dropUnverifiedSenders'
+          | 'staffForwardRouting'
+          | 'defaultAssigneeUserId'
           | 'autoresponseSubject'
           | 'autoresponseBody'
         >
@@ -131,6 +165,8 @@ export default function InboundEmailCard() {
         autoresponderEnabled: next.autoresponderEnabled,
         unknownSenderMode: next.unknownSenderMode,
         dropUnverifiedSenders: next.dropUnverifiedSenders,
+        staffForwardRouting: next.staffForwardRouting === true,
+        defaultAssigneeUserId: next.defaultAssigneeUserId ?? null,
         autoresponseSubject: next.autoresponseSubject,
         autoresponseBody: next.autoresponseBody,
         // Preserve reply mode across a wholesale-replace save, even though this
@@ -260,6 +296,31 @@ export default function InboundEmailCard() {
           </select>
         </div>
 
+        <div className="mt-3">
+          <label className="text-xs font-medium" htmlFor="inbound-default-assignee">
+            {t('inboundEmail.defaultAssignee')}
+          </label>
+          <select
+            id="inbound-default-assignee"
+            value={cfg.defaultAssigneeUserId ?? ''}
+            disabled={saving}
+            onChange={(e) => void saveConfig({ defaultAssigneeUserId: e.target.value || null })}
+            className="mt-0.5 block w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
+            data-testid="inbound-default-assignee"
+          >
+            <option value="">{t('common:labels.none')}</option>
+            {cfg.defaultAssigneeUserId && !assignees.some((u) => u.id === cfg.defaultAssigneeUserId) && (
+              <option value={cfg.defaultAssigneeUserId}>{t('inboundEmail.defaultAssigneeUnavailable')}</option>
+            )}
+            {assignees.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name || u.email}
+              </option>
+            ))}
+          </select>
+          <p className="mt-0.5 text-xs text-muted-foreground">{t('inboundEmail.defaultAssigneeDescription')}</p>
+        </div>
+
         <fieldset className="mt-4" data-testid="inbound-unknown-sender-mode">
           <legend className="text-xs font-medium">{t('inboundEmail.unknownSenders')}</legend>
           <p className="mb-1.5 text-xs text-muted-foreground">
@@ -332,6 +393,23 @@ export default function InboundEmailCard() {
             {t('inboundEmail.dropUnverified')}
             <span className="block text-xs text-muted-foreground">
               <Trans i18nKey="inboundEmail.dropUnverifiedDescription" t={t} components={{ all: <em /> }} />
+            </span>
+          </span>
+        </label>
+
+        <label className="mt-3 flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={cfg.staffForwardRouting === true}
+            disabled={saving}
+            onChange={(e) => void saveConfig({ staffForwardRouting: e.target.checked })}
+            data-testid="inbound-staff-forward-toggle"
+          />
+          <span>
+            {t('inboundEmail.staffForwardRouting')}
+            <span className="block text-xs text-muted-foreground">
+              {t('inboundEmail.staffForwardRoutingDescription')}
             </span>
           </span>
         </label>

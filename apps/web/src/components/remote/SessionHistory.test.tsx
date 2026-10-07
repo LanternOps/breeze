@@ -70,7 +70,7 @@ describe('SessionHistory', () => {
     expect(await screen.findByText('alex@example.com')).toBeTruthy();
   });
 
-  // SEC-038 W06 (#5537): a session whose terminal decision committed but whose
+  // #5537 — a session whose terminal decision committed but whose
   // stop the agent has not yet acknowledged (terminationPhase = 'pending') is
   // labelled distinctly from a confirmed end.
   it('labels a pending teardown distinctly from a confirmed end', async () => {

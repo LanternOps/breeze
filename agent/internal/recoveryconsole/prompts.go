@@ -4,18 +4,19 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
 	"time"
 )
 
 // termIO is the real IO implementation: line I/O over the given
 // reader/writer (in production, os.Stdin/os.Stdout — the console runs
-// directly on a getty-owned tty, so no terminal framework is needed), and
-// single-keypress reads for the reboot countdown via `stty` (agent/go.mod
-// carries no golang.org/x/term dependency, and adding one for a single
-// raw-mode read is not worth it on media that already ships `stty` as part
-// of util-linux/coreutils).
+// directly on a getty-owned tty on Linux media, or on the winpeshl-started
+// console on WinPE media, so no terminal framework is needed), and
+// single-keypress reads for the reboot countdown via the per-OS readOneKey:
+// `stty` on Linux (prompts_unix.go — agent/go.mod carries no
+// golang.org/x/term dependency, and adding one for a single raw-mode read is
+// not worth it on media that already ships `stty` as part of
+// util-linux/coreutils), the console input handle on Windows
+// (prompts_windows.go).
 type termIO struct {
 	r *bufio.Reader
 	w io.Writer
@@ -44,12 +45,13 @@ func (t *termIO) ReadLine(prompt string) (string, error) {
 	return line, nil
 }
 
-// ReadKeyWithTimeout waits up to d for a single keypress on the controlling
-// tty using `stty -echo -icanon min 0 time <deciseconds>` plus `dd`, which
-// is available on every recovery-media image (util-linux/coreutils). It
-// polls in <=1s slices so the countdown display (owned by the caller) can
-// still advance; any error (not a tty, stty missing) degrades to "no key
-// pressed" rather than failing the whole console.
+// ReadKeyWithTimeout waits up to d for a single keypress on the process's
+// console via readOneKey (Linux: `stty -echo -icanon min 0 time
+// <deciseconds>` plus a one-byte read, prompts_unix.go; Windows: a timed
+// wait on the console input handle, prompts_windows.go). It polls in <=1s
+// slices so the countdown display (owned by the caller) can still advance;
+// any error (not a tty/console, stty missing) degrades to "no key pressed"
+// rather than failing the whole console.
 func (t *termIO) ReadKeyWithTimeout(d time.Duration) (rune, bool) {
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
@@ -64,34 +66,4 @@ func (t *termIO) ReadKeyWithTimeout(d time.Duration) (rune, bool) {
 		}
 	}
 	return 0, false
-}
-
-// readOneKey reads at most one byte within d using stty's non-canonical
-// timed read mode. Returns ok=false on timeout or any error.
-// sttyCommand builds an stty invocation that acts on the console this
-// process is reading from. stty configures the terminal on ITS stdin, so
-// Stdin must be os.Stdin; with Stdin left nil (the original W04b code) it
-// configured /dev/null, the console stayed in canonical mode, and
-// readOneKey's os.Stdin.Read blocked until a newline — the "Rebooting in
-// 10 s" countdown on the KIT proof never fired (2026-09-12).
-func sttyCommand(args ...string) *exec.Cmd {
-	cmd := exec.Command("stty", args...)
-	cmd.Stdin = os.Stdin
-	return cmd
-}
-
-func readOneKey(d time.Duration) (rune, bool) {
-	deciseconds := int(d / (100 * time.Millisecond))
-	if deciseconds < 1 {
-		deciseconds = 1
-	}
-	_ = sttyCommand("-echo", "-icanon", "min", "0", "time", fmt.Sprintf("%d", deciseconds)).Run() // best-effort; a failure here just means we won't detect a keypress
-
-	buf := make([]byte, 1)
-	n, err := os.Stdin.Read(buf)
-	_ = sttyCommand("sane").Run()
-	if err != nil || n == 0 {
-		return 0, false
-	}
-	return rune(buf[0]), true
 }

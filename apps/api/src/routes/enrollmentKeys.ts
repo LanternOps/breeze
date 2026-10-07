@@ -21,7 +21,7 @@ import {
   type AuthContext,
 } from "../middleware/auth";
 import { userRateLimit } from "../middleware/userRateLimit";
-import { randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { createAuditLogAsync } from "../services/auditService";
 import { ANONYMOUS_ACTOR_ID } from "../services/auditEvents";
 import {
@@ -263,6 +263,16 @@ async function loadVisibleEnrollmentKey(
   if (!(await ensureOrgAccess(row.orgId, auth))) return null;
   if (!canUseEnrollmentKeySite(auth, row.siteId)) return null;
   return row;
+}
+
+/**
+ * Audit-safe reference to a short-link code (#7974). The code itself is an
+ * enrollment-capable secret and audit logs are long-retained and exported, so
+ * record a truncated SHA-256 instead: enough to correlate with downloads,
+ * useless as a link.
+ */
+function shortCodeAuditRef(shortCode: string): string {
+  return createHash("sha256").update(shortCode).digest("hex").slice(0, 12);
 }
 
 function writeEnrollmentKeyAudit(
@@ -2320,7 +2330,7 @@ enrollmentKeyRoutes.get(
         details: {
           platform,
           childKeyId: childKey.id,
-          shortCode,
+          shortCodeRef: shortCodeAuditRef(shortCode),
           count: childMaxUsage,
           ...(macosLegacyFallbackReason
             ? { fallbackReason: macosLegacyFallbackReason }
@@ -2663,7 +2673,7 @@ enrollmentKeyRoutes.post(
       details: {
         platform,
         childKeyId: childKey.id,
-        shortCode,
+        shortCodeRef: shortCodeAuditRef(shortCode),
         count: childMaxUsage,
       },
     });

@@ -26,7 +26,7 @@ vi.mock('../jobs/networkBaselineWorker', () => ({
   enqueueBaselineScan: vi.fn().mockResolvedValue('job-123'),
 }));
 
-// SEC-2026-09-05-146: these suites cover route/tool behaviour, not the authority
+// These suites cover route/tool behaviour, not the authority
 // envelope. Arming is asserted directly in networkBaselineAuthority.arming.test.ts.
 vi.mock('../services/networkBaselineAuthority', () => ({
   BaselineAuthorityUnsupportedError: class extends Error {},

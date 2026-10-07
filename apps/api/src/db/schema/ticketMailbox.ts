@@ -17,7 +17,7 @@ import { users } from './users';
 export const ticketMailboxTenantOwnerships = pgTable('ticket_mailbox_tenant_ownerships', {
   tenantId: uuid('tenant_id').primaryKey(),
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
-  verifiedBy: uuid('verified_by').references(() => users.id),
+  verifiedBy: uuid('verified_by').references(() => users.id, { onDelete: 'set null' }),
   verifiedMicrosoftOid: uuid('verified_microsoft_oid').notNull(),
   verifiedAt: timestamp('verified_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -60,6 +60,17 @@ export const ticketMailboxConnections = pgTable('ticket_mailbox_connections', {
   lastPolledAt: timestamp('last_polled_at', { withTimezone: true }),
   lastMessageAt: timestamp('last_message_at', { withTimezone: true }),
   lastError: text('last_error'),
+  // Gmail only: per-mailbox "mark handled" (#7949). NULL label = off. When set,
+  // mail that became (or joined) a ticket gets this USER label and, if
+  // gmailArchiveOnHandle, leaves INBOX. Edited on the mailbox settings card.
+  gmailHandledLabel: text('gmail_handled_label'),
+  gmailArchiveOnHandle: boolean('gmail_archive_on_handle').notNull().default(true),
+  // Last marking failure as a fixed code (GmailHandledErrorCode), shown on the
+  // mailbox card; cleared by the next successful mark (except not_queued, which
+  // is about other messages), a settings change or a reconnect. Never raw
+  // upstream text.
+  gmailHandledError: varchar('gmail_handled_error', { length: 32 }),
+  gmailHandledErrorAt: timestamp('gmail_handled_error_at', { withTimezone: true }),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -104,6 +115,16 @@ export const ticketMailboxConnections = pgTable('ticket_mailbox_connections', {
          AND ${table.historyId} IS NULL AND ${table.eligibleAfter} IS NULL)
       OR (${table.provider} = 'gmail' AND ${table.tenantId} IS NULL)`,
   ),
+  gmailHandledLabelCheck: check(
+    'ticket_mailbox_connections_gmail_handled_label_check',
+    sql`${table.gmailHandledLabel} IS NULL
+      OR (${table.provider} = 'gmail' AND char_length(${table.gmailHandledLabel}) BETWEEN 1 AND 100)`,
+  ),
+  gmailHandledErrorCheck: check(
+    'ticket_mailbox_connections_gmail_handled_error_check',
+    sql`${table.gmailHandledError} IS NULL
+      OR ${table.gmailHandledError} IN ('access_denied', 'rate_limited', 'unavailable', 'label_invalid', 'no_credential', 'not_queued', 'failed')`,
+  ),
 }));
 
 export type TicketMailboxConsentPhase = 'admin_consent' | 'identity_verification';
@@ -115,7 +136,7 @@ export const ticketMailboxConsentSessions = pgTable('ticket_mailbox_consent_sess
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
   connectionId: uuid('connection_id').notNull(),
   consentAttemptId: uuid('consent_attempt_id').notNull(),
-  userId: uuid('user_id').references(() => users.id),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
   tenantHintHash: text('tenant_hint_hash'),
   nonce: text('nonce'),
   codeVerifier: text('code_verifier'),

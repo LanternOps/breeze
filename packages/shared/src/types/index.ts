@@ -680,6 +680,8 @@ export interface InheritableNotificationSettings {
   pushoverDefaultUser?: string;
   pushoverDefaultSound?: string;
   pushoverDefaultPriority?: -2 | -1 | 0 | 1 | 2;
+  /** Ticket assignments for users with no personal Pushover key go to the default user or group key. */
+  pushoverTicketAssignmentFallback?: boolean;
 }
 
 export interface InheritableEventLogSettings {

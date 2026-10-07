@@ -64,6 +64,7 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
 });
 
 import { users, organizationUsers, refreshTokenFamilies } from '../../db/schema';
+import { userIsMfaProtected } from '../../routes/auth/helpers';
 import {
   createPartner,
   createOrganization,
@@ -254,5 +255,50 @@ describe('org admin manages a member homed in another org', () => {
 
     expect(await membership(outsider.id, orgA.id)).toEqual({ roleId: targetRoleA.id });
     expect(await membership(outsider.id, orgB.id)).toBeNull();
+  });
+
+  it('POST /:id/mfa/reset resets a cross-homed org-B member', async () => {
+    const { target } = await seedCrossHomed();
+    await getTestDb().update(users).set({ mfaEnabled: true, mfaMethod: 'totp', mfaSecret: 'enc:seeded' }).where(eq(users.id, target.id));
+    const before = await readUser(target.id);
+
+    const app = await buildApp();
+    const res = await app.request(`/users/${target.id}/mfa/reset`, { method: 'POST' });
+    expect(res.status).toBe(200);
+
+    expect(await userIsMfaProtected(target.id)).toBe(false);
+    const after = await readUser(target.id);
+    expect(after.mfaSecret).toBeNull();
+    expect(after.mfaEpoch).toBeGreaterThan(before.mfaEpoch);
+  });
+
+  it('POST /:id/mfa/reset refuses a lower-ranked org-B admin for a cross-homed member', async () => {
+    const { target } = await seedCrossHomed({
+      callerPerms: [{ resource: 'users', action: 'read' }],
+      targetPerms: ADMIN_PERMS,
+    });
+    await getTestDb().update(users).set({ mfaEnabled: true, mfaMethod: 'totp', mfaSecret: 'enc:seeded' }).where(eq(users.id, target.id));
+
+    const app = await buildApp();
+    const res = await app.request(`/users/${target.id}/mfa/reset`, { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect((await readUser(target.id)).mfaSecret).toBe('enc:seeded');
+  });
+
+  it('POST /:id/mfa/reset stays 404 for a user with no org-B membership', async () => {
+    const { partner, orgA, targetRoleA } = await seedCrossHomed();
+    const outsider = await createUser({
+      partnerId: partner.id,
+      orgId: orgA.id,
+      email: `outsider-${randomUUID().slice(0, 8)}@example.com`,
+      status: 'active',
+    });
+    await assignUserToOrganization(outsider.id, orgA.id, targetRoleA.id);
+    await getTestDb().update(users).set({ mfaEnabled: true, mfaMethod: 'totp', mfaSecret: 'enc:seeded' }).where(eq(users.id, outsider.id));
+
+    const app = await buildApp();
+    const res = await app.request(`/users/${outsider.id}/mfa/reset`, { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect((await readUser(outsider.id)).mfaSecret).toBe('enc:seeded');
   });
 });

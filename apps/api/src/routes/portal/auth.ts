@@ -137,6 +137,14 @@ async function isPortalPasswordResetEnabled(orgId: string): Promise<boolean> {
 // Auth middleware
 // ============================================
 
+/**
+ * Scalar subquery for the organization's display name, folded into the portal
+ * user selects so login, session hydration and invite-accept all carry it
+ * without an extra round trip. A genuinely missing org yields null and
+ * buildPortalUserPayload falls back to the generic label.
+ */
+const portalOrgNameSql = () => sql<string | null>`(select o.name from organizations o where o.id = ${portalUsers.orgId})`;
+
 export async function portalAuthMiddleware(c: Context, next: Next) {
   sweepPortalState();
 
@@ -223,6 +231,7 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
         receiveNotifications: portalUsers.receiveNotifications,
         status: portalUsers.status,
         authEpoch: portalUsers.authEpoch,
+        orgName: portalOrgNameSql(),
         // Signed out at logout (durable record, see sessionRevocation.ts).
         sessionRevoked: portalSessionRevokedSql(token),
       })
@@ -463,6 +472,7 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
         receiveNotifications: portalUsers.receiveNotifications,
         status: portalUsers.status,
         authEpoch: portalUsers.authEpoch,
+        orgName: portalOrgNameSql(),
       })
       .from(portalUsers)
       .where(
@@ -822,6 +832,7 @@ authRoutes.post('/auth/accept-invite', zValidator('json', acceptInviteSchema), a
         receiveNotifications: portalUsers.receiveNotifications,
         status: portalUsers.status,
         authEpoch: portalUsers.authEpoch,
+        orgName: portalOrgNameSql(),
       })
       .from(portalUsers)
       .where(eq(portalUsers.id, portalUserId))

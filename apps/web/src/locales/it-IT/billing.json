@@ -2523,12 +2523,16 @@
       "method_not_usable": "Metodo di pagamento non disponibile",
       "over_cap": "Limite di pagamento automatico superato",
       "above_authorized_cap": "Oltre il limite autorizzato dal cliente",
+      "issued_before_authorization": "Emessa prima dell'autorizzazione aggiornata del cliente: incassare manualmente",
       "cap_currency_mismatch": "La valuta del limite non corrisponde",
       "ach_currency_unsupported": "Valuta non supportata per i pagamenti bancari",
       "excluded_contract": "Contratto escluso",
       "excluded_invoice": "Fattura esclusa",
       "charging_disabled": "Addebito automatico disattivato",
       "stripe_unavailable": "Stripe non disponibile",
+      "bank_unverified": "Non addebitata: il conto bancario del cliente non è stato verificato in tempo. Incassare manualmente",
+      "charging_on_hold": "Non addebitata: i pagamenti automatici sono rimasti disattivati. Incassare manualmente",
+      "service_unavailable": "Non addebitata: Stripe è rimasto irraggiungibile. Incassare manualmente",
       "control_pending:skip": "Richiesta di salto ricevuta; arresto del pagamento in sospeso",
       "control_pending:exclude": "Esclusione richiesta; arresto del pagamento in sospeso",
       "control_pending:stop": "Interruzione richiesta; arresto del pagamento in sospeso",
@@ -2560,7 +2564,10 @@
       "failed": "Pagamento non riuscito",
       "requires_action": "Conferma richiesta",
       "canceled": "Annullato",
-      "unapplied": "Il pagamento richiede riconciliazione"
+      "unapplied": "Il pagamento richiede riconciliazione",
+      "returned": "Stornato",
+      "refunded": "Rimborsato",
+      "disputed": "Contestato"
     },
     "fees": {
       "title": "Commissioni di elaborazione",
@@ -2627,7 +2634,8 @@
       "nothing_to_pay": "Non resta nulla da pagare su questa fattura.",
       "enrollment_inactive": "I pagamenti automatici non sono attivi per questo cliente.",
       "schedule_inactive": "Questa fattura non è più programmata per il pagamento automatico.",
-      "generic": "Impossibile avviare il pagamento automatico. Aggiorna la fattura per vederne lo stato attuale."
+      "generic": "Impossibile avviare il pagamento automatico. Aggiorna la fattura per vederne lo stato attuale.",
+      "excluded_contract": "Il contratto di questa fattura è escluso dai pagamenti automatici, quindi non è stato addebitato nulla. Se il cliente era stato avvisato di questo pagamento, ha ricevuto un'email che non avverrà."
     }
   },
   "reminders": {

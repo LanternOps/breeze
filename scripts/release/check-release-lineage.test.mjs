@@ -297,7 +297,7 @@ test('candidate channel always creates a draft release', () => {
   const createReleaseText = jobText(requiredReleaseJob('create-release'));
 
   assert.ok(createReleaseText.includes(
-    "draft: ${{ needs.validate-release-lineage.outputs.channel == 'candidate' || vars.RELEASE_DRAFT_FIRST == 'true' }}",
+    "draft: ${{ needs.validate-release-lineage.outputs.channel == 'candidate' || vars.RELEASE_DRAFT_FIRST == 'true' || needs.classify-release.outputs.release_kind == 'server-only' }}",
   ));
 });
 

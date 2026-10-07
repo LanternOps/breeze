@@ -2523,12 +2523,16 @@
       "method_not_usable": "Ödeme yöntemi kullanılamıyor",
       "over_cap": "Otomatik ödeme limiti aşıldı",
       "above_authorized_cap": "Müşterinin onayladığı limitin üzerinde",
+      "issued_before_authorization": "Müşterinin güncellenmiş onayından önce düzenlendi: manuel olarak tahsil edin",
       "cap_currency_mismatch": "Limit para birimi eşleşmiyor",
       "ach_currency_unsupported": "Banka ödemesi para birimi desteklenmiyor",
       "excluded_contract": "Sözleşme hariç tutuldu",
       "excluded_invoice": "Fatura hariç tutuldu",
       "charging_disabled": "Otomatik tahsilat devre dışı",
       "stripe_unavailable": "Stripe kullanılamıyor",
+      "bank_unverified": "Tahsil edilmedi: müşterinin banka hesabı zamanında doğrulanmadı. Manuel olarak tahsil edin",
+      "charging_on_hold": "Tahsil edilmedi: otomatik ödemeler kapalı kaldı. Manuel olarak tahsil edin",
+      "service_unavailable": "Tahsil edilmedi: Stripe'a ulaşılamadı. Manuel olarak tahsil edin",
       "control_pending:skip": "Atlama istendi; bekleyen ödeme durduruluyor",
       "control_pending:exclude": "Hariç tutma istendi; bekleyen ödeme durduruluyor",
       "control_pending:stop": "Durdurma istendi; bekleyen ödeme durduruluyor",
@@ -2560,7 +2564,10 @@
       "failed": "Ödeme başarısız",
       "requires_action": "Onay gerekli",
       "canceled": "İptal edildi",
-      "unapplied": "Ödeme mutabakat gerektiriyor"
+      "unapplied": "Ödeme mutabakat gerektiriyor",
+      "returned": "İade edildi (banka)",
+      "refunded": "İade edildi",
+      "disputed": "İtiraz edildi"
     },
     "fees": {
       "title": "İşlem ücretleri",
@@ -2627,7 +2634,8 @@
       "nothing_to_pay": "Bu faturada ödenecek tutar kalmadı.",
       "enrollment_inactive": "Bu müşteri için otomatik ödemeler etkin değil.",
       "schedule_inactive": "Bu fatura artık otomatik ödeme için planlanmış değil.",
-      "generic": "Otomatik ödeme başlatılamadı. Güncel durumunu görmek için faturayı yenileyin."
+      "generic": "Otomatik ödeme başlatılamadı. Güncel durumunu görmek için faturayı yenileyin.",
+      "excluded_contract": "Bu faturanın sözleşmesi otomatik ödemelerin dışında tutulduğu için tahsilat yapılmadı. Müşteriye bu ödeme bildirildiyse, ödemenin gerçekleşmeyeceğine dair bir e-posta gönderildi."
     }
   },
   "reminders": {

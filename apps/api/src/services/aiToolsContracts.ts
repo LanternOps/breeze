@@ -152,7 +152,7 @@ const CONTRACT_SITE_SCOPE_NOTE =
 
 function partnerScopeRefusal(auth: AuthContext): string | null {
   if (auth.scope === 'system') return null;
-  // SEC-144: a partner-scoped context with no partner identity is malformed —
+  // A partner-scoped context with no partner identity is malformed —
   // fail closed rather than hand the contract service a null-partner actor.
   if (auth.scope === 'partner' && auth.partnerId) return null;
   return JSON.stringify({

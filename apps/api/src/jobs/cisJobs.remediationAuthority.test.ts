@@ -60,6 +60,7 @@ const ACTION = {
   status: 'queued',
   approvalStatus: 'approved',
   approvedBy: 'approver-1',
+  approvedAt: new Date(),
   requestedBy: 'user-1',
   details: {},
 };
@@ -152,5 +153,60 @@ describe('CIS remediation device organization authority', () => {
 
     expect(result.queued).toBe(false);
     expect(queueCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('returns an approval older than the max age to pending without dispatching', async () => {
+    const stale = {
+      ...ACTION,
+      approvedAt: new Date(Date.now() - __testOnly.REMEDIATION_APPROVAL_MAX_AGE_MS - 60_000),
+    };
+    selectMock
+      .mockReturnValueOnce(selectRows([stale]))
+      .mockReturnValueOnce(selectRows([{ id: ACTION.deviceId, orgId: ACTION.orgId, siteId: 'site-1' }], true))
+      .mockReturnValueOnce(selectRows([stale], true));
+
+    const result = await __testOnly.processRemediationAction({ type: 'remediate-action', actionId: ACTION.id });
+
+    expect(result).toEqual({ actionId: ACTION.id, queued: false, commandId: null });
+    expect(queueCommandMock).not.toHaveBeenCalled();
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'pending_approval',
+      approvalStatus: 'pending',
+      approvedBy: null,
+      approvedAt: null,
+      details: expect.objectContaining({ returnedForReapprovalReason: 'approval_expired' }),
+    }));
+  });
+
+  it('treats an approved action with no approval time as expired', async () => {
+    const undated = { ...ACTION, approvedAt: null };
+    selectMock
+      .mockReturnValueOnce(selectRows([undated]))
+      .mockReturnValueOnce(selectRows([{ id: ACTION.deviceId, orgId: ACTION.orgId, siteId: 'site-1' }], true))
+      .mockReturnValueOnce(selectRows([undated], true));
+
+    const result = await __testOnly.processRemediationAction({ type: 'remediate-action', actionId: ACTION.id });
+
+    expect(result.queued).toBe(false);
+    expect(queueCommandMock).not.toHaveBeenCalled();
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      details: expect.objectContaining({ returnedForReapprovalReason: 'approval_expired' }),
+    }));
+  });
+
+  it('still dispatches an approval just inside the max age', async () => {
+    const fresh = {
+      ...ACTION,
+      approvedAt: new Date(Date.now() - __testOnly.REMEDIATION_APPROVAL_MAX_AGE_MS + 60_000),
+    };
+    selectMock
+      .mockReturnValueOnce(selectRows([fresh]))
+      .mockReturnValueOnce(selectRows([{ id: ACTION.deviceId, orgId: ACTION.orgId, siteId: 'site-1' }], true))
+      .mockReturnValueOnce(selectRows([fresh], true));
+
+    const result = await __testOnly.processRemediationAction({ type: 'remediate-action', actionId: ACTION.id });
+
+    expect(result.queued).toBe(true);
+    expect(queueCommandMock).toHaveBeenCalledOnce();
   });
 });

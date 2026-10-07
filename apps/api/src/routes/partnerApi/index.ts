@@ -8,6 +8,7 @@ import { partnerConfigurationRoutes } from './configuration';
 import { partnerProvisioningRoutes } from './provisioning';
 import { partnerContractRoutes } from './contracts';
 import { partnerAlertRoutes } from './alerts';
+import { partnerTicketRoutes } from './tickets';
 import { partnerExportAuditMiddleware } from './audit';
 
 export const partnerApiRoutes = new Hono();
@@ -29,3 +30,4 @@ partnerApiRoutes.route('/', partnerProvisioningRoutes);
 partnerApiRoutes.route('/', partnerContractRoutes);
 // alerts:read (opt-in scope). Read-only latest-state feed; see alerts.ts.
 partnerApiRoutes.route('/', partnerAlertRoutes);
+partnerApiRoutes.route('/', partnerTicketRoutes);

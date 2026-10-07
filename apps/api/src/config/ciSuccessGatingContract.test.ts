@@ -55,12 +55,6 @@ const UNGATED_JOBS = new Set([
   // criterion — a week of green, then move it into ci-success needs: with an env var and a
   // blocking assertion — is recorded at its job definition in ci.yml.
   'portal-dev-e2e',
-  // check-migrations is in ci-success needs: so its result can be read, but it is asserted ONLY
-  // on the tooling-only path (APP_CHANGED == 'false'), where it is the sole validation of the
-  // release-lineage / migration-immutability guards. For an application PR it remains
-  // non-blocking, exactly as before. #4227 (the reason it was left non-blocking) is closed and
-  // the job is green today, so promoting it for every PR is a reasonable follow-up — but that
-  // is a policy change to make deliberately, not as a side effect of a CI speed-up.
   'lint-agent', // KNOWN GAP
   'test-agent-race', // KNOWN GAP
   'agent-windows-manifest-guard', // KNOWN GAP
@@ -188,9 +182,9 @@ describe('ci-success gating contract', () => {
       'changes', 'docs-check', 'ci-success', 'main-red-alert', 'build-mobile-ios', 'recovery-media-e2e',
       'topology-browser-gate',
     ]);
-    // lint/security-audit validate CI plumbing itself and must keep running on a
+    // lint/security-audit/release-ledger validate CI plumbing itself and must keep running on a
     // tooling-only PR, so they stay gated on `code` alone — never additionally on `app`.
-    const codeOnly = new Set(['lint', 'security-audit']);
+    const codeOnly = new Set(['lint', 'security-audit', 'release-ledger']);
     // Per-area gating (.github/scripts/ci-area-gating.test.mjs pins the exact per-job
     // lines): an area-gated job appends ONE area clause to the code+app gate, so a
     // docs-only or tooling-only PR still skips it. check-migrations is code AND api —

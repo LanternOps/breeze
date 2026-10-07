@@ -17,7 +17,7 @@
     "@breeze/extension-web-sdk": "workspace:*",
     "@breeze/shared": "workspace:*",
     "drizzle-orm": "0.45.3",
-    "hono": "4.13.9",
+    "hono": "4.13.12",
     "mailparser": "^3.9.31",
     "re2-wasm": "^1.0.2",
     "v9u-smb2": "^1.0.6",
@@ -26,7 +26,7 @@
   "devDependencies": {
     "@breeze/extension-testkit": "workspace:*",
     "@types/mailparser": "^3.4.6",
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.4",
     "dotenv": "17.4.2",
     "happy-dom": "^20.11.0",
     "postgres": "3.4.9",

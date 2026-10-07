@@ -29,6 +29,9 @@ type WinSystem interface {
 	// (HKLM\SYSTEM\CurrentControlSet\Control\MiniNT exists) — gates disk:
 	// targets (Global Constraint "Refuse before destructive work").
 	InWinPE() bool
+	// HostBuild is this host's Windows build number (RtlGetVersion) — in
+	// WinPE, the WinPE build; preflight compares it with the guest's.
+	HostBuild() (uint32, error)
 	// SystemDiskNumber is the disk holding %SystemRoot%'s volume, or -1
 	// when %SystemRoot% is on a RAM disk (WinPE's X:).
 	SystemDiskNumber() (int, error)

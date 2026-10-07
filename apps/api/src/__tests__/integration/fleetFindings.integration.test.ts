@@ -18,9 +18,9 @@
  */
 import './setup';
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
@@ -35,8 +35,15 @@ import {
 import { metricAnomalies } from '../../db/schema/analytics';
 import { logCorrelationRules, logCorrelations } from '../../db/schema/eventLogs';
 import { deviceReliability } from '../../db/schema/reliability';
+import type { AuthContext } from '../../middleware/auth';
 import { fleetFindingsRoutes } from '../../routes/fleetFindings';
 import { dispatchRunChunk, pollRunProgress } from '../../services/fleetFindings/dispatch';
+import {
+  applyFleetFindingLifecycle,
+  getFleetFinding,
+  getFleetFindingCounts,
+  listFleetFindings,
+} from '../../services/fleetFindings/query';
 import {
   produceLogCorrelationFindings,
   produceMetricAnomalyPatterns,
@@ -79,6 +86,28 @@ const SYSTEM_CTX: DbAccessContext = {
 
 function orgContext(orgId: string): DbAccessContext {
   return { scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
+}
+
+/** A hand-built partner AuthContext (optionally site-restricted) for direct service calls. */
+function lifecycleAuth(f: Fixture, allowedSiteIds?: string[]): AuthContext {
+  return {
+    principal: { kind: 'unknown' },
+    token: null,
+    user: { id: f.partnerUser.userId, email: 'lifecycle@example.test', name: 'Lifecycle', isPlatformAdmin: false },
+    partnerId: f.partner.id,
+    orgId: null,
+    scope: 'partner',
+    accessibleOrgIds: [f.orgA.id, f.orgB.id],
+    allowedSiteIds,
+    orgCondition: () => undefined,
+    canAccessOrg: (id) => id === f.orgA.id || id === f.orgB.id,
+  } as AuthContext;
+}
+
+function releaseGate() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
 }
 
 interface TokenSubject {
@@ -421,6 +450,105 @@ describe('fleet findings — end-to-end (Task 11)', () => {
     // only devA2 (site A1) is in scope — recomputed down to 1.
     const anomaly = byKind.get('metric_anomaly_pattern');
     expect(anomaly?.deviceCount).toBe(1);
+    // The producer's cached title/summary/evidence describe both members
+    // (including devA3's id/hostname); the restricted caller gets metadata
+    // rebuilt from what it can see.
+    expect(anomaly).toEqual(expect.objectContaining({
+      title: 'Metric anomaly pattern: 1 device', summary: null, evidence: { totalDevices: 1 },
+    }));
+    expect(JSON.stringify(body)).not.toContain(f.devA3);
+    expect(JSON.stringify(body)).not.toContain(f.devA4);
+  });
+
+  runDb('(a2) a device moved to another org stops counting as a member of its old finding', async () => {
+    const f = await buildFixture();
+    const app = buildApp();
+
+    const findingRows = await withSystemDbAccessContext(() =>
+      db
+        .select({ id: fleetFindings.id, kind: fleetFindings.kind })
+        .from(fleetFindings)
+        .where(eq(fleetFindings.orgId, f.orgA.id))
+    );
+    const reliabilityFinding = findingRows.find((row) => row.kind === 'reliability_offenders');
+    const mixedFinding = findingRows.find((row) => row.kind === 'metric_anomaly_pattern');
+    if (!reliabilityFinding || !mixedFinding) throw new Error('expected org-A fixture findings');
+
+    // The partner can read BOTH orgs, so RLS alone does not hide a membership
+    // row that followed its device to org B. Move the sole member of one
+    // finding and one member of the mixed finding.
+    await getTestDb().update(devices).set({ orgId: f.orgB.id, siteId: f.siteB1.id }).where(eq(devices.id, f.devA1));
+    await getTestDb().update(devices).set({ orgId: f.orgB.id, siteId: f.siteB1.id }).where(eq(devices.id, f.devA3));
+
+    const headers = await tokenHeaders(f.partnerUser, { mfa: true });
+    const listResponse = await app.request('/fleet/findings', { headers });
+    expect(listResponse.status).toBe(200);
+    const listBody = (await listResponse.json()) as { findings: ListedFinding[]; total: number };
+    expect(listBody.findings.some((finding) => finding.id === reliabilityFinding.id)).toBe(false);
+    expect(listBody.findings.find((finding) => finding.id === mixedFinding.id)).toEqual(
+      expect.objectContaining({ orgId: f.orgA.id, deviceCount: 1 })
+    );
+    expect(JSON.stringify(listBody)).not.toContain(f.devA1);
+    expect(JSON.stringify(listBody)).not.toContain(f.devA3);
+
+    const countsResponse = await app.request('/fleet/findings/counts', { headers });
+    expect(countsResponse.status).toBe(200);
+    const counts = (await countsResponse.json()) as { total: number; byOrg: Record<string, number> };
+    expect(counts.total).toBe(3);
+    expect(counts.byOrg[f.orgA.id]).toBe(2);
+    expect(counts.byOrg[f.orgB.id]).toBe(1);
+
+    const movedOnlyDetail = await app.request(`/fleet/findings/${reliabilityFinding.id}`, { headers });
+    expect(movedOnlyDetail.status).toBe(404);
+
+    const mixedDetail = await app.request(`/fleet/findings/${mixedFinding.id}`, { headers });
+    expect(mixedDetail.status).toBe(200);
+    const mixedBody = (await mixedDetail.json()) as { deviceCount: number; members: Array<{ deviceId: string }> };
+    expect(mixedBody.deviceCount).toBe(1);
+    expect(mixedBody.members.map((member) => member.deviceId)).toEqual([f.devA2]);
+    expect(mixedBody).toEqual(expect.objectContaining({
+      title: 'Metric anomaly pattern: 1 device', summary: null, evidence: { totalDevices: 1 },
+    }));
+    expect(JSON.stringify(mixedBody)).not.toContain(f.devA3);
+
+    // System scope gets the same current-member view.
+    const systemAuth = {
+      principal: { kind: 'unknown' },
+      user: { id: f.partnerUser.userId, email: 'system@example.test', name: 'System', isPlatformAdmin: true },
+      token: null,
+      partnerId: null,
+      orgId: null,
+      scope: 'system',
+      accessibleOrgIds: null,
+      orgCondition: () => undefined,
+      canAccessOrg: () => true,
+    } as AuthContext;
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      expect(await getFleetFinding(systemAuth, reliabilityFinding.id)).toBeNull();
+      const detail = await getFleetFinding(systemAuth, mixedFinding.id);
+      expect(detail?.members.map((member) => member.deviceId)).toEqual([f.devA2]);
+      const list = await listFleetFindings(systemAuth, { statuses: ['open'], limit: 100, offset: 0 });
+      expect(list.findings.find((finding) => finding.id === mixedFinding.id)?.deviceCount).toBe(1);
+      expect(list.findings.some((finding) => finding.id === reliabilityFinding.id)).toBe(false);
+      const systemCounts = await getFleetFindingCounts(systemAuth);
+      expect(systemCounts.byOrg[f.orgA.id]).toBe(2);
+    });
+
+    // Implicit expansion uses the same current-member projection, so the
+    // moved device never reaches the run even for a partner who can see both orgs.
+    const remediateResponse = await app.request(`/fleet/findings/${mixedFinding.id}/remediate`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ actionKind: 'command', commandType: 'restart_service', parameters: {} }),
+    });
+    expect(remediateResponse.status).toBe(202);
+    const remediation = (await remediateResponse.json()) as { runId: string; targetCount: number };
+    expect(remediation.targetCount).toBe(1);
+    const persistedTargets = await getTestDb()
+      .select({ deviceId: fleetRemediationRunTargets.targetDeviceUuid })
+      .from(fleetRemediationRunTargets)
+      .where(eq(fleetRemediationRunTargets.runId, remediation.runId));
+    expect(persistedTargets).toEqual([{ deviceId: f.devA2 }]);
   });
 
   runDb('(b2) POST /remediate is gated on MFA and devices:execute, before any run row is created', async () => {
@@ -476,6 +604,268 @@ describe('fleet findings — end-to-end (Task 11)', () => {
       .from(fleetRemediationRuns)
       .where(eq(fleetRemediationRuns.findingId, findingRow.id));
     expect(runs).toHaveLength(0);
+  });
+
+  runDb('(b3) site-restricted remediation and run history cover only the visible members', async () => {
+    const f = await buildFixture();
+    const app = buildApp();
+
+    const [findingRow] = await withSystemDbAccessContext(() =>
+      db
+        .select()
+        .from(fleetFindings)
+        .where(and(eq(fleetFindings.orgId, f.orgA.id), eq(fleetFindings.kind, 'metric_anomaly_pattern')))
+    );
+    if (!findingRow) throw new Error('metric_anomaly_pattern finding not found');
+
+    // No deviceIds: the finding has devA2 (visible site) and devA3 (hidden
+    // site); the run must expand to devA2 only.
+    const response = await app.request(`/fleet/findings/${findingRow.id}/remediate`, {
+      method: 'POST',
+      headers: await tokenHeaders(f.siteRestrictedUser, { mfa: true }),
+      body: JSON.stringify({ actionKind: 'command', commandType: 'restart_service', parameters: {} }),
+    });
+    expect(response.status).toBe(202);
+    const body = (await response.json()) as { runId: string; targetCount: number; skipped: unknown[] };
+    expect(body.targetCount).toBe(1);
+    expect(body.skipped).toEqual([]);
+
+    const persistedTargets = await getTestDb()
+      .select()
+      .from(fleetRemediationRunTargets)
+      .where(eq(fleetRemediationRunTargets.runId, body.runId));
+    expect(persistedTargets.map((target) => target.targetDeviceUuid)).toEqual([f.devA2]);
+
+    // Explicitly naming the hidden device: reported like a non-member, with
+    // no hostname/site recorded for it.
+    const explicitResponse = await app.request(`/fleet/findings/${findingRow.id}/remediate`, {
+      method: 'POST',
+      headers: await tokenHeaders(f.siteRestrictedUser, { mfa: true }),
+      body: JSON.stringify({ actionKind: 'command', commandType: 'restart_service', parameters: {}, deviceIds: [f.devA3] }),
+    });
+    expect(explicitResponse.status).toBe(202);
+    const explicitBody = (await explicitResponse.json()) as { runId: string; skipped: unknown[] };
+    expect(explicitBody.skipped).toEqual([{ deviceId: f.devA3, reason: 'not_member' }]);
+    const [explicitTarget] = await getTestDb()
+      .select()
+      .from(fleetRemediationRunTargets)
+      .where(eq(fleetRemediationRunTargets.runId, explicitBody.runId));
+    expect(explicitTarget).toEqual(expect.objectContaining({ hostnameSnapshot: null, siteIdSnapshot: null }));
+
+    // Eleven newer hidden-only runs: visibility must be applied before the
+    // ten-row history cap, or the older visible run would be crowded out.
+    const hiddenRuns = await getTestDb()
+      .insert(fleetRemediationRuns)
+      .values(
+        Array.from({ length: 11 }, (_, index) => ({
+          orgId: f.orgA.id,
+          findingId: findingRow.id,
+          findingRevision: findingRow.revision,
+          actionKind: 'command' as const,
+          commandType: 'restart_service',
+          status: 'succeeded' as const,
+          targetCount: 1,
+          succeededCount: 1,
+          failedCount: 0,
+          skippedCount: 0,
+          createdBy: f.siteRestrictedUser.userId,
+          createdAt: new Date(Date.now() + (index + 1) * 1_000),
+        }))
+      )
+      .returning({ id: fleetRemediationRuns.id });
+    await getTestDb().insert(fleetRemediationRunTargets).values(
+      hiddenRuns.map((run) => ({
+        runId: run.id,
+        orgId: f.orgA.id,
+        targetDeviceUuid: f.devA3,
+        hostnameSnapshot: 'H-AT-CREATION',
+        siteIdSnapshot: f.siteA2.id,
+        status: 'succeeded' as const,
+      }))
+    );
+
+    const findingResponse = await app.request(`/fleet/findings/${findingRow.id}`, {
+      headers: await tokenHeaders(f.siteRestrictedUser),
+    });
+    expect(findingResponse.status).toBe(200);
+    const findingBody = (await findingResponse.json()) as {
+      runs: Array<{ id: string; targetCount: number; succeededCount: number; failedCount: number; skippedCount: number }>;
+    };
+    expect(findingBody.runs).toHaveLength(1);
+    expect(findingBody.runs[0]).toEqual(
+      expect.objectContaining({ id: body.runId, targetCount: 1, succeededCount: 0, failedCount: 0, skippedCount: 0 })
+    );
+
+    const runResponse = await app.request(`/fleet/findings/runs/${body.runId}`, {
+      headers: await tokenHeaders(f.siteRestrictedUser),
+    });
+    expect(runResponse.status).toBe(200);
+    const runBody = (await runResponse.json()) as { targetCount: number; targets: Array<{ deviceId: string }> };
+    expect(runBody.targetCount).toBe(1);
+    expect(runBody.targets.map((target) => target.deviceId)).toEqual([f.devA2]);
+
+    // A run that touched both a visible and a hidden device reports only the
+    // visible part, counts included.
+    await getTestDb().insert(fleetRemediationRunTargets).values({
+      runId: hiddenRuns[0]!.id,
+      orgId: f.orgA.id,
+      targetDeviceUuid: f.devA2,
+      hostnameSnapshot: 'V-AT-CREATION',
+      siteIdSnapshot: f.siteA1.id,
+      status: 'failed' as const,
+    });
+    const mixedRunResponse = await app.request(`/fleet/findings/runs/${hiddenRuns[0]!.id}`, {
+      headers: await tokenHeaders(f.siteRestrictedUser),
+    });
+    expect(mixedRunResponse.status).toBe(200);
+    const mixedRun = (await mixedRunResponse.json()) as {
+      targetCount: number; succeededCount: number; failedCount: number; targets: Array<{ deviceId: string }>;
+    };
+    expect(mixedRun).toEqual(expect.objectContaining({ targetCount: 1, succeededCount: 0, failedCount: 1 }));
+    expect(JSON.stringify(mixedRun)).not.toContain(f.devA3);
+    expect(JSON.stringify(mixedRun)).not.toContain('H-AT-CREATION');
+
+    // The device's CURRENT site decides visibility, not the snapshot.
+    await getTestDb().update(devices).set({ siteId: f.siteA2.id }).where(eq(devices.id, f.devA2));
+    const movedOutResponse = await app.request(`/fleet/findings/runs/${body.runId}`, {
+      headers: await tokenHeaders(f.siteRestrictedUser),
+    });
+    expect(movedOutResponse.status).toBe(404);
+
+    await getTestDb().update(devices).set({ siteId: f.siteA1.id }).where(eq(devices.id, f.devA3));
+    const movedInResponse = await app.request(`/fleet/findings/runs/${hiddenRuns[1]!.id}`, {
+      headers: await tokenHeaders(f.siteRestrictedUser),
+    });
+    expect(movedInResponse.status).toBe(200);
+    const movedInBody = (await movedInResponse.json()) as { targetCount: number; targets: Array<{ deviceId: string; siteId: string }> };
+    expect(movedInBody.targetCount).toBe(1);
+    expect(movedInBody.targets).toEqual([expect.objectContaining({ deviceId: f.devA3, siteId: f.siteA1.id })]);
+
+    // And a target device moved to another org drops out of its old run.
+    await getTestDb().update(devices).set({ orgId: f.orgB.id, siteId: f.siteB1.id }).where(eq(devices.id, f.devA3));
+    const movedOrgResponse = await app.request(`/fleet/findings/runs/${hiddenRuns[1]!.id}`, {
+      headers: await tokenHeaders(f.siteRestrictedUser),
+    });
+    expect(movedOrgResponse.status).toBe(404);
+  });
+
+  runDb('(b4) PATCH lifecycle requires MFA and access to every member device', async () => {
+    const f = await buildFixture();
+    const app = buildApp();
+    const rows = await getTestDb().select().from(fleetFindings).where(eq(fleetFindings.orgId, f.orgA.id));
+    // devA2 (site A1, visible) + devA3 (site A2, hidden from the restricted user).
+    const mixed = rows.find((row) => row.kind === 'metric_anomaly_pattern')!;
+    // devA1 only (site A1) — fully visible to the restricted user.
+    const sole = rows.find((row) => row.kind === 'reliability_offenders')!;
+    const patchBody = JSON.stringify({ action: 'acknowledge' });
+
+    // Without an MFA-stamped token the gate refuses before any write.
+    const noMfa = await app.request(`/fleet/findings/${sole.id}`, {
+      method: 'PATCH', headers: await tokenHeaders(f.orgAUser, { mfa: false }), body: patchBody,
+    });
+    expect([401, 403]).toContain(noMfa.status);
+
+    // A transition is one shared row for every member: a caller who can see
+    // only devA2 must not acknowledge it for devA3 as well.
+    const partial = await app.request(`/fleet/findings/${mixed.id}`, {
+      method: 'PATCH', headers: await tokenHeaders(f.siteRestrictedUser, { mfa: true }), body: patchBody,
+    });
+    expect(partial.status).toBe(403);
+    expect(JSON.stringify(await partial.json())).not.toContain(f.devA3);
+
+    const [mixedAfter] = await getTestDb().select().from(fleetFindings).where(eq(fleetFindings.id, mixed.id));
+    const [soleAfterNoMfa] = await getTestDb().select().from(fleetFindings).where(eq(fleetFindings.id, sole.id));
+    expect(mixedAfter?.status).toBe('open');
+    expect(soleAfterNoMfa?.status).toBe('open');
+
+    // Every member visible: allowed.
+    const full = await app.request(`/fleet/findings/${sole.id}`, {
+      method: 'PATCH', headers: await tokenHeaders(f.siteRestrictedUser, { mfa: true }), body: patchBody,
+    });
+    expect(full.status).toBe(200);
+    expect(await full.json()).toEqual(expect.objectContaining({ status: 'acknowledged' }));
+
+    // An unrestricted org user with MFA can still act on the mixed finding.
+    const orgWide = await app.request(`/fleet/findings/${mixed.id}`, {
+      method: 'PATCH', headers: await tokenHeaders(f.orgAUser, { mfa: true }), body: patchBody,
+    });
+    expect(orgWide.status).toBe(200);
+  });
+
+  runDb('(b5) lifecycle denies a finding whose only member moved to another org the caller can also read', async () => {
+    const f = await buildFixture();
+    const [sole] = await getTestDb().select().from(fleetFindings).where(and(
+      eq(fleetFindings.orgId, f.orgA.id), eq(fleetFindings.kind, 'reliability_offenders')
+    ));
+    if (!sole) throw new Error('sole-member fixture missing');
+
+    // Same-partner destination: RLS alone still shows the membership row to
+    // this partner, so the current-org check is what has to refuse it.
+    await getTestDb().update(devices).set({ orgId: f.orgB.id, siteId: f.siteB1.id }).where(eq(devices.id, f.devA1));
+    for (const siteCeiling of [[f.siteB1.id], undefined]) {
+      const result = await withDbAccessContext(SYSTEM_CTX, () => applyFleetFindingLifecycle(
+        lifecycleAuth(f, siteCeiling), sole.id, 'acknowledge', undefined, f.partnerUser.userId
+      ));
+      expect(result).toEqual({ ok: false, status: 404, error: 'Finding not found' });
+    }
+    const [unchanged] = await getTestDb().select().from(fleetFindings).where(eq(fleetFindings.id, sole.id));
+    expect(unchanged?.status).toBe('open');
+  });
+
+  runDb.each(['move', 'lifecycle'] as const)('(b6) lifecycle vs site move ordering: %s wins the row lock', async (winner) => {
+    const f = await buildFixture();
+    const [finding] = await getTestDb().select().from(fleetFindings).where(and(
+      eq(fleetFindings.orgId, f.orgA.id), eq(fleetFindings.kind, 'reliability_offenders')
+    ));
+    if (!finding) throw new Error('sole-member fixture missing');
+    const auth = lifecycleAuth(f, [f.siteA1.id]);
+    const held = releaseGate();
+    const release = releaseGate();
+    let holderPid = 0;
+    const transition = () => applyFleetFindingLifecycle(auth, finding.id, 'acknowledge', undefined, f.partnerUser.userId);
+
+    // Each barrier holds a real PostgreSQL transaction open. Observed
+    // blocking (pg_blocking_pids), not a timing sleep, proves the contending
+    // statement reached the lock before the winner is released.
+    const first = winner === 'move'
+      ? getTestDb().transaction(async (tx) => {
+          const [backend] = await tx.execute(sql`SELECT pg_backend_pid() AS pid`);
+          holderPid = Number(backend!.pid);
+          await tx.update(devices).set({ siteId: f.siteA2.id }).where(eq(devices.id, f.devA1));
+          held.release();
+          await release.promise;
+        })
+      : withDbAccessContext(SYSTEM_CTX, async () => {
+          const [backend] = await db.execute(sql`SELECT pg_backend_pid() AS pid`);
+          holderPid = Number(backend!.pid);
+          const result = await transition();
+          held.release();
+          await release.promise;
+          return result;
+        });
+    await Promise.race([held.promise, first]);
+    const second = winner === 'move'
+      ? withDbAccessContext(SYSTEM_CTX, transition)
+      : getTestDb().update(devices).set({ siteId: f.siteA2.id }).where(eq(devices.id, f.devA1)).execute();
+    try {
+      await vi.waitFor(async () => {
+        const blocked = await getTestDb().execute(sql`
+          SELECT pid FROM pg_stat_activity WHERE ${holderPid} = ANY(pg_blocking_pids(pid))
+        `);
+        expect(blocked.length).toBeGreaterThan(0);
+      }, { timeout: 10000, interval: 20 });
+    } finally {
+      release.release();
+      await Promise.allSettled([first, second]);
+    }
+    const result = winner === 'move' ? await second : await first;
+    expect(result).toEqual(winner === 'move'
+      ? { ok: false, status: 404, error: 'Finding not found' }
+      : expect.objectContaining({ ok: true }));
+    const [stored] = await getTestDb().select().from(fleetFindings).where(eq(fleetFindings.id, finding.id));
+    expect(stored?.status).toBe(winner === 'move' ? 'open' : 'acknowledged');
+    const [device] = await getTestDb().select().from(devices).where(eq(devices.id, f.devA1));
+    expect(device?.siteId).toBe(f.siteA2.id);
   });
 
   runDb('(c) createRemediationRun + dispatchRunChunk against the real device_commands table', async () => {

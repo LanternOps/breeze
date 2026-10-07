@@ -212,6 +212,10 @@ Each route requires the listed scope on the principal.
 | `GET` | `/partner-api/custom-fields` | `custom-fields:read` | Export custom field definitions |
 | `GET` | `/partner-api/custom-field-values` | `custom-fields:read` | Export custom field values |
 | `GET` | `/partner-api/alerts` | `alerts:read` | Latest-state alert feed with signed cursor and checkpoint |
+| `GET` | `/partner-api/tickets` | `tickets:read` | Latest-state ticket feed with signed cursor and checkpoint; soft-deletes arrive as tombstones. Filters: `orgId`, `status`, `priority`, `assigneeId`, `externalId` (this principal's ref). |
+| `GET` | `/partner-api/tickets/ids` | `tickets:read` | Reconciliation list of live ticket ids + `changeVersion` in the accessible set, keyset-paged. |
+| `GET` | `/partner-api/tickets/:id` | `tickets:read` | Read one ticket (404 outside the principal's partner/organizations, or when soft-deleted). |
+| `GET` | `/partner-api/tickets/:id/comments` | `tickets:read` | The ticket's comments and feed entries in creation order, keyset-paged; edits change `revision`, deletes are tombstones. |
 | `POST` | `/partner-api/organizations` | `organizations:write` | Create an organization under the principal's partner. Enforces the partner's `maxOrganizations` cap (409 when reached). Body: `name`, `slug`, `type?`, `status?` (`active`/`trial`). |
 | `POST` | `/partner-api/sites` | `sites:write` | Create a site. `orgId` must be in the principal's accessible organizations (403 otherwise). Body: `orgId`, `name`, `timezone?`, `address?`, `contact?`. |
 | `POST` | `/partner-api/enrollment-keys` | `enrollment-keys:write` | Create an enrollment key. Body: `orgId`, `name`, `siteId?`, `maxUsage?`, `issueEnrollmentSecret?`, and `ttlMinutes` **or** `expiresAt` (never both). The raw key is returned once in the 201 body. `issueEnrollmentSecret: true` additionally mints a per-key `enrollmentSecret`, returned once; omitted, the key enrolls with the global `AGENT_ENROLLMENT_SECRET`. Supports `X-Idempotency-Key`. |
@@ -241,6 +245,25 @@ neither `ttlMinutes` nor `expiresAt` is supplied the key gets the same default
 lifetime as one created in the UI (30 days unless
 `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` says otherwise), clamped by
 `PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES` and by the organization's own cap.
+
+### Schema versioning and compatibility
+
+Every export response carries a `schemaVersion` (currently `"1"`). Within one
+`schemaVersion`, Breeze makes **additive changes only**:
+
+- **May change without a version bump:** new fields on a record or on a nested
+  object, new arrays, new keys under `collections`, and new optional envelope
+  keys. Existing fields keep their names, types, and nullability.
+- **Bumps `schemaVersion`:** removing or renaming a field, changing its type,
+  making a nullable field non-null or a non-null field nullable, or changing what
+  an existing field means.
+
+**Consumers must ignore keys they do not recognize.** A client that rejects a
+whole page on an unknown key breaks on the next Breeze release that adds a field.
+If you validate responses strictly, validate the fields you read and strip the
+rest, rather than failing the page. The authoritative record shapes are the Zod
+schemas in
+[`apps/api/src/routes/partnerApi/schemas.ts`](https://github.com/LanternOps/breeze/blob/main/apps/api/src/routes/partnerApi/schemas.ts).
 
 ## Alerts
 

@@ -60,6 +60,19 @@ export interface MailboxConnectionListItem {
    * AADSTS50011 redirect URI mismatch), or the callback was turned away before
    * it could touch the row (#6936). Always false for any other status. */
   consentExpired: boolean;
+  /** Gmail rows only (null for m365): the per-mailbox "mark handled" setting
+   * and the last marking failure as a fixed code (never upstream text). */
+  gmailHandling: GmailHandlingSettings | null;
+}
+
+export interface GmailHandlingSettings {
+  /** User label added to mail that became a ticket; null = off. */
+  label: string | null;
+  /** Also remove INBOX from that mail. */
+  archive: boolean;
+  /** Last marking failure code (see GMAIL_HANDLED_ERROR_CODES), or null. */
+  error: string | null;
+  errorAt: Date | null;
 }
 
 export const MAILBOX_VERIFICATION_FAILED = 'Mailbox verification failed';
@@ -92,6 +105,10 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
     lastPolledAt: ticketMailboxConnections.lastPolledAt,
     lastMessageAt: ticketMailboxConnections.lastMessageAt,
     lastError: ticketMailboxConnections.lastError,
+    gmailHandledLabel: ticketMailboxConnections.gmailHandledLabel,
+    gmailArchiveOnHandle: ticketMailboxConnections.gmailArchiveOnHandle,
+    gmailHandledError: ticketMailboxConnections.gmailHandledError,
+    gmailHandledErrorAt: ticketMailboxConnections.gmailHandledErrorAt,
     // Whether the row's CURRENT attempt still has a live state (either phase).
     // Sessions are single-use and TTL-bound, so none left means the flow is
     // dead. Read under the caller's RLS context like the rest of this query;
@@ -126,7 +143,49 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
     // lastError with raw upstream error text that must not reach the client.
     verificationError: row.lastError?.startsWith(MAILBOX_VERIFICATION_FAILED) ? row.lastError : null,
     consentExpired: row.status === 'pending_consent' && row.consentSessionLive !== true,
+    gmailHandling: row.provider === 'gmail'
+      ? {
+        label: row.gmailHandledLabel,
+        archive: row.gmailArchiveOnHandle,
+        error: row.gmailHandledError,
+        errorAt: row.gmailHandledErrorAt,
+      }
+      : null,
   }));
+}
+
+/**
+ * Set a Gmail mailbox's "mark handled" setting (label name or null to turn it
+ * off, and whether to archive). Runs in the caller's request DB context like
+ * disableConnection. Clears the recorded marking failure, which described the
+ * previous setting. Only a non-disabled Gmail row of this partner matches;
+ * returns null when none did.
+ */
+export async function updateGmailHandling(
+  id: string,
+  partnerId: string,
+  input: { label: string | null; archive: boolean },
+): Promise<{ id: string; mailboxAddress: string; orgId: string | null } | null> {
+  const rows = await db.update(ticketMailboxConnections)
+    .set({
+      gmailHandledLabel: input.label,
+      gmailArchiveOnHandle: input.archive,
+      gmailHandledError: null,
+      gmailHandledErrorAt: null,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(ticketMailboxConnections.id, id),
+      eq(ticketMailboxConnections.partnerId, partnerId),
+      eq(ticketMailboxConnections.provider, 'gmail'),
+      sql`${ticketMailboxConnections.status} <> 'disabled'`,
+    ))
+    .returning({
+      id: ticketMailboxConnections.id,
+      mailboxAddress: ticketMailboxConnections.mailboxAddress,
+      orgId: ticketMailboxConnections.orgId,
+    });
+  return rows[0] ?? null;
 }
 
 /**
@@ -211,6 +270,11 @@ export async function createPendingConnection(input: {
       // (an m365 row must not carry Gmail eligibility state) and is meaningless
       // for the Graph delta cursor.
       eligibleAfter: null,
+      // Gmail-only "mark handled" setting; the CHECK refuses it on an m365 row.
+      gmailHandledLabel: null,
+      gmailArchiveOnHandle: true,
+      gmailHandledError: null,
+      gmailHandledErrorAt: null,
       status: 'pending_consent',
       consentAttemptId,
       tenantId: null,
@@ -406,6 +470,10 @@ export async function createGmailConnection(input: {
           tenantId: null,
           deltaLink: null,
           lastError: null,
+          // A marking failure recorded against the previous binding no longer
+          // describes this one. The handled-label setting itself is kept.
+          gmailHandledError: null,
+          gmailHandledErrorAt: null,
           displayName: input.displayName ?? null,
           // Generation (consent_attempt_id) rotation is CONDITIONAL, keyed on the
           // SAME sub test as the cursor above:

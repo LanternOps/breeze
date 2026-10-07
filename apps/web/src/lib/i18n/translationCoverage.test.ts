@@ -98,7 +98,10 @@ const namespaceDuplicateBaselines = {
     // +3 (W03 #6011): integrationsPage.backup ("Backup" is spelled identically
     // in pt-BR), backupProviders.cove and backupProviders.namePlaceholder are
     // protected proper nouns pinned byte-identical by localeParity.
-    'integrations.json': 26,
+    // +3 (#7728): vendor names that were wrongly translated in pt-BR
+    // (Huntress, SentinelOne, Slack, Discord) are now pinned literal, so they
+    // match English exactly, as vendor names should.
+    'integrations.json': 29,
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name", "Monitor" (list/policy-tab column + label), "Hardware",
     // "System" (event-log categories), "CPU" (resource select) are identical
@@ -254,7 +257,13 @@ const namespaceDuplicateBaselines = {
     // +5 (Part of #3859, Wave E2c): SCHEME_NOT_ALLOWED, INVALID_CUSTOM_FIELD_VALUE,
     // RACE_LOST, RE_ENROLLMENT_REQUIRED and SOFTWARE_INVENTORY_LOCK_TIMEOUT added as
     // English placeholders too.
-    'errors.json': 21,
+    // +5 (Part of #3859, Wave E3a): TICKET_TRIAGE_DISABLED, TICKET_TRIAGE_UNAVAILABLE,
+    // TICKET_TRIAGE_PRIORITY_MISMATCH, TICKET_TRIAGE_CATEGORY_MISMATCH and
+    // MAILBOX_RECONSENT_REQUIRED added as English placeholders too.
+    // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
+    // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
+    // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
+    'errors.json': 29,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in es-419.
     'fleetDesign.json': 2,
@@ -415,7 +424,13 @@ const namespaceDuplicateBaselines = {
     // +5 (Part of #3859, Wave E2c): SCHEME_NOT_ALLOWED, INVALID_CUSTOM_FIELD_VALUE,
     // RACE_LOST, RE_ENROLLMENT_REQUIRED and SOFTWARE_INVENTORY_LOCK_TIMEOUT added as
     // English placeholders too.
-    'errors.json': 21,
+    // +5 (Part of #3859, Wave E3a): TICKET_TRIAGE_DISABLED, TICKET_TRIAGE_UNAVAILABLE,
+    // TICKET_TRIAGE_PRIORITY_MISMATCH, TICKET_TRIAGE_CATEGORY_MISMATCH and
+    // MAILBOX_RECONSENT_REQUIRED added as English placeholders too.
+    // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
+    // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
+    // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
+    'errors.json': 29,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-FR.
@@ -595,7 +610,13 @@ const namespaceDuplicateBaselines = {
     // +5 (Part of #3859, Wave E2c): SCHEME_NOT_ALLOWED, INVALID_CUSTOM_FIELD_VALUE,
     // RACE_LOST, RE_ENROLLMENT_REQUIRED and SOFTWARE_INVENTORY_LOCK_TIMEOUT added as
     // English placeholders too.
-    'errors.json': 21,
+    // +5 (Part of #3859, Wave E3a): TICKET_TRIAGE_DISABLED, TICKET_TRIAGE_UNAVAILABLE,
+    // TICKET_TRIAGE_PRIORITY_MISMATCH, TICKET_TRIAGE_CATEGORY_MISMATCH and
+    // MAILBOX_RECONSENT_REQUIRED added as English placeholders too.
+    // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
+    // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
+    // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
+    'errors.json': 29,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-CA.
@@ -792,7 +813,13 @@ const namespaceDuplicateBaselines = {
     // +5 (Part of #3859, Wave E2c): SCHEME_NOT_ALLOWED, INVALID_CUSTOM_FIELD_VALUE,
     // RACE_LOST, RE_ENROLLMENT_REQUIRED and SOFTWARE_INVENTORY_LOCK_TIMEOUT added as
     // English placeholders too.
-    'errors.json': 21,
+    // +5 (Part of #3859, Wave E3a): TICKET_TRIAGE_DISABLED, TICKET_TRIAGE_UNAVAILABLE,
+    // TICKET_TRIAGE_PRIORITY_MISMATCH, TICKET_TRIAGE_CATEGORY_MISMATCH and
+    // MAILBOX_RECONSENT_REQUIRED added as English placeholders too.
+    // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
+    // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
+    // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
+    'errors.json': 29,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
@@ -937,7 +964,13 @@ const namespaceDuplicateBaselines = {
     // +5 (Part of #3859, Wave E2c): SCHEME_NOT_ALLOWED, INVALID_CUSTOM_FIELD_VALUE,
     // RACE_LOST, RE_ENROLLMENT_REQUIRED and SOFTWARE_INVENTORY_LOCK_TIMEOUT added as
     // English placeholders too.
-    'errors.json': 21,
+    // +5 (Part of #3859, Wave E3a): TICKET_TRIAGE_DISABLED, TICKET_TRIAGE_UNAVAILABLE,
+    // TICKET_TRIAGE_PRIORITY_MISMATCH, TICKET_TRIAGE_CATEGORY_MISMATCH and
+    // MAILBOX_RECONSENT_REQUIRED added as English placeholders too.
+    // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
+    // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
+    // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
+    'errors.json': 29,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in it-IT.
     'fleetDesign.json': 2,
@@ -1063,7 +1096,13 @@ const namespaceDuplicateBaselines = {
     // +5 (Part of #3859, Wave E2c): SCHEME_NOT_ALLOWED, INVALID_CUSTOM_FIELD_VALUE,
     // RACE_LOST, RE_ENROLLMENT_REQUIRED and SOFTWARE_INVENTORY_LOCK_TIMEOUT added as
     // English placeholders too.
-    'errors.json': 21,
+    // +5 (Part of #3859, Wave E3a): TICKET_TRIAGE_DISABLED, TICKET_TRIAGE_UNAVAILABLE,
+    // TICKET_TRIAGE_PRIORITY_MISMATCH, TICKET_TRIAGE_CATEGORY_MISMATCH and
+    // MAILBOX_RECONSENT_REQUIRED added as English placeholders too.
+    // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
+    // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
+    // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
+    'errors.json': 29,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder

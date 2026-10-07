@@ -15,6 +15,7 @@ import {
   APPROVALS_DECIDE_REQUIRED,
   canDecideApprovals,
   idParamSchema,
+  partnerRateLimit,
   partnerWrite,
   platformModelIdParamSchema,
   queueConnectionSync,
@@ -80,7 +81,12 @@ aiModelOfferingRoutes.patch('/:id', ...partnerWrite, zValidator('param', idParam
 // discovery, which re-reads its capabilities and lifecycle; for a gateway
 // connection (W06) it queues the fidelity-harness verification. Platform
 // offerings (no connection) are verified by the operator on /admin/ai-models.
-aiModelOfferingRoutes.post('/:id/verify', ...partnerWrite, zValidator('param', idParamSchema), async (c) => {
+// Each verify queues upstream calls against the partner's endpoint, so it is
+// bounded per partner.
+const VERIFY_LIMIT_PER_WINDOW = 20;
+const VERIFY_WINDOW_SECONDS = 60 * 60;
+
+aiModelOfferingRoutes.post('/:id/verify', ...partnerWrite, partnerRateLimit('offering-verify', VERIFY_LIMIT_PER_WINDOW, VERIFY_WINDOW_SECONDS), zValidator('param', idParamSchema), async (c) => {
   const { partnerId } = requirePartnerWide(c);
   const { id: offeringId } = c.req.valid('param');
   return registryWrite(c, partnerId, async () => {

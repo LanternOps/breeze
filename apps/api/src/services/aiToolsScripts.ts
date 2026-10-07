@@ -47,9 +47,10 @@ import { scriptNeedsVariableScope } from './sourcedParameters';
 import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
 import { shrinkToJsonBudget } from './aiToolOutput';
 import { sha256Content } from './scriptVersions';
-import { isDeniedRegistryTarget } from '../routes/systemTools/sensitiveTargets';
+import { isAgentConfigPath, isDeniedRegistryTarget } from '../routes/systemTools/sensitiveTargets';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { inToolDbPhase } from './aiToolDbContext';
+import { aiPathRefusal, PATH_BLOCKED_MESSAGE } from './aiPathRestriction';
 
 // Fix 4b: headroom under MAX_TOOL_RESULT_CHARS (8000) for the rest of the
 // get_script_execution envelope once stdout/stderr are counted at their
@@ -721,6 +722,36 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         if (payload.name === undefined) payload.name = payload.serviceName;
         delete payload.serviceName;
       }
+
+      // file_list / file_read through execute_command used to skip BOTH the
+      // default AI path restriction (file_operations applies it in its schema)
+      // and the agent-config deny. Apply the same rules here, so the only
+      // route past the restriction is an approved diagnostic access grant.
+      // A diagnostic authorization can never be supplied by a caller either:
+      // it is minted by the server at delivery for diag_file_* only.
+      if (commandType === 'file_list' || commandType === 'file_read') {
+        const path = typeof payload.path === 'string' ? payload.path : '';
+        if (path.includes('\0') || path.split(/[\\/]/).includes('..')) {
+          return JSON.stringify({ error: 'Invalid path' });
+        }
+        if (isAgentConfigPath(path)) {
+          return JSON.stringify({ error: 'Access to this path is not permitted', condition: 'policy_denied' });
+        }
+        // Same check as the tool schema (aiPathRefusal), repeated here for
+        // callers that reach the handler directly. A restricted location gets
+        // the pointer to the approval flow; any other refusal (relative, UNC,
+        // short-name or stream spellings, empty) is returned as is.
+        const refusal = aiPathRefusal(path);
+        if (refusal === PATH_BLOCKED_MESSAGE) {
+          return JSON.stringify({
+            error:
+              'Access to this path is blocked by the default AI path restriction. For read-only troubleshooting, ask an administrator to approve it with request_diagnostic_access, then use diagnostic_list_directory / diagnostic_read_file.',
+            condition: 'policy_denied',
+          });
+        }
+        if (refusal) return JSON.stringify({ error: refusal, condition: 'policy_denied' });
+      }
+      delete payload.diagnosticAuthorization;
 
       // Import and use executeCommand from commandQueue
       const result = await aiExecuteCommand(auth, 'execute_command', deviceId, commandType, payload, {

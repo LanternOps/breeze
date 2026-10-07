@@ -28,6 +28,15 @@ describe('OfferingDrawer', () => {
     expect(fetchWithAuth.mock.calls[0][1].method).toBe('PATCH');
   });
 
+  it('locks name and price inputs on an env-managed offering and explains why', () => {
+    render(<OfferingDrawer offering={row({ id: OFF, connectionId: CONN, funding: 'partner_key', pricesEditable: true, priceSource: 'offering', rates: RATES, ownPrices: RATES })}
+      offerings={[]} envManaged onClose={vi.fn()} onSaved={vi.fn()} />);
+    expect((screen.getByTestId('ai-offering-display-name') as HTMLInputElement).disabled).toBe(true);
+    expect(screen.queryByTestId('ai-offering-price-input')).toBeNull();
+    expect(screen.getByTestId('ai-offering-env-managed').textContent).toMatch(/MCP_LLM_/);
+    expect(screen.getByTestId('ai-offering-price-readonly')).toBeTruthy();
+  });
+
   it('disables Save until something changed', () => {
     render(<OfferingDrawer offering={row()} offerings={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
     expect((screen.getByTestId('ai-offering-save') as HTMLButtonElement).disabled).toBe(true);

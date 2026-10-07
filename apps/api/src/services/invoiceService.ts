@@ -561,10 +561,12 @@ export async function removeLine(invoiceId: string, lineId: string, actor: Invoi
   });
 }
 
-export async function deleteDraftInvoice(invoiceId: string, actor: InvoiceActor) {
+/** Returns the deleted invoice's id and org so the caller can audit the delete. */
+export async function deleteDraftInvoice(invoiceId: string, actor: InvoiceActor): Promise<{ id: string; orgId: string }> {
   return db.transaction(async (tx) => {
     const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
     await tx.delete(invoices).where(eq(invoices.id, invoiceId)); // lines cascade
+    return { id: inv.id, orgId: inv.orgId };
   });
 }
 
@@ -1738,7 +1740,7 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
   if (pre.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
   if (pre.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
 
-  // SEC-150 FAIL-CLOSED, phases 1-2, BEFORE the transaction.
+  // FAIL-CLOSED, phases 1-2, BEFORE the transaction.
   //
   // Recording an alternate payment clears the balance a Stripe Checkout session
   // was minted to collect. Leaving that session payable is the worst outcome in
@@ -1774,7 +1776,7 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
     if (inv.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
     if (inv.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
     await assertCollectionAmountAvailable(tx, invoiceId, String(input.amount));
-    // SEC-150 phase 3, under the invoice lock so a session minted between phase
+    // Phase 3, under the invoice lock so a session minted between phase
     // 2 and here cannot slip through. Refuses with 503 STRIPE_REVOCATION_PENDING
     // and rolls the whole payment back; the durable intent stays and the sweep
     // retries. `tx`, never the global db — a global call would escape this
@@ -2232,7 +2234,7 @@ function chunksOf<T>(items: readonly T[], size: number): T[][] {
  * issue validation is never bypassed (owner-fixed: no conversion, snapshots rule).
  */
 export async function voidInvoice(invoiceId: string, reason: string, opts: { reissue?: boolean }, actor: InvoiceActor) {
-  // SEC-150 FAIL-CLOSED, phases 1-2, BEFORE the transaction. #5180 already
+  // FAIL-CLOSED, phases 1-2, BEFORE the transaction. #5180 already
   // refuses a void with applied payments, so a voidable invoice has no
   // legitimate open payment capability — a Checkout session that survives the
   // void can still collect money for work nobody will bill. Same three-phase
@@ -2291,7 +2293,7 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
       );
     }
 
-    // SEC-150 phase 3, under the invoice lock taken above. `db` IS this
+    // Phase 3, under the invoice lock taken above. `db` IS this
     // transaction's handle inside withSystemDbAccessContext.
     await assertInvoiceSessionsRevoked(invoiceId, db);
 

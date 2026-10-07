@@ -9,6 +9,7 @@ import ChangePasswordForm from './ChangePasswordForm';
 import ConnectSsoCard from './ConnectSsoCard';
 import MFASettings from './MFASettings';
 import RemoteToolSettings from './RemoteToolSettings';
+import TicketPushoverSettings from './TicketPushoverSettings';
 import ApproverDevicesSection from './ApproverDevicesSection';
 import ThemingSettings from './ThemingSettings';
 import { pickReauthTier, type ReauthTier } from './StepUpPrompt';
@@ -1865,6 +1866,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         preferences={user?.preferences}
         onSaved={(preferences) => setUser(prev => (prev ? { ...prev, preferences } : prev))}
       />
+      <TicketPushoverSettings />
 
       {/* Onboarding */}
       <div className="rounded-lg border bg-card p-6 shadow-xs">

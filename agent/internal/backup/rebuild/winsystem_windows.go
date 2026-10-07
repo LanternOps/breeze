@@ -143,6 +143,12 @@ func (w *winSystemWindows) InWinPE() bool {
 	return true
 }
 
+// HostBuild is RtlGetVersion's build number (GetVersionEx lies without a
+// manifest).
+func (w *winSystemWindows) HostBuild() (uint32, error) {
+	return windows.RtlGetVersion().BuildNumber, nil
+}
+
 // openDevice opens a disk or volume device path. access 0 is enough for
 // the FILE_ANY_ACCESS query IOCTLs and needs no elevation.
 func openDevice(devPath string, access uint32) (windows.Handle, error) {

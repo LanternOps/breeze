@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -268,16 +269,21 @@ func TestRestoreStoredBytesChecks(t *testing.T) {
 	}
 }
 
-// countingProvider counts downloads per key.
+// countingProvider counts downloads per key. The restore downloads on
+// several goroutines (#5623), so the counter is mutex-guarded.
 type countingProvider struct {
 	providers.BackupProvider
+	mu     sync.Mutex
 	counts map[string]int
 	fail   map[string]int // key -> number of initial downloads that fail
 }
 
 func (c *countingProvider) Download(remote, local string) error {
+	c.mu.Lock()
 	c.counts[remote]++
-	if c.fail[remote] >= c.counts[remote] {
+	failNow := c.fail[remote] >= c.counts[remote]
+	c.mu.Unlock()
+	if failNow {
 		return errors.New("download interrupted")
 	}
 	return c.BackupProvider.Download(remote, local)

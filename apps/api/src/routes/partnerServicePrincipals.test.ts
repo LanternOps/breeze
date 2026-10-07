@@ -57,7 +57,23 @@ vi.mock('../services/permissions', () => ({
   PERMISSIONS: {
     ORGS_READ: { resource: 'organizations', action: 'read' },
     ORGS_WRITE: { resource: 'organizations', action: 'write' },
+    DEVICES_READ: { resource: 'devices', action: 'read' },
+    DEVICES_WRITE: { resource: 'devices', action: 'write' },
+    DEVICES_EXECUTE: { resource: 'devices', action: 'execute' },
+    SCRIPTS_READ: { resource: 'scripts', action: 'read' },
+    SCRIPTS_WRITE: { resource: 'scripts', action: 'write' },
+    SCRIPTS_EXECUTE: { resource: 'scripts', action: 'execute' },
+    ALERTS_READ: { resource: 'alerts', action: 'read' },
+    ALERTS_WRITE: { resource: 'alerts', action: 'write' },
+    AUTOMATIONS_READ: { resource: 'automations', action: 'read' },
+    AUTOMATIONS_WRITE: { resource: 'automations', action: 'write' },
+    REPORTS_READ: { resource: 'reports', action: 'read' },
+    REPORTS_WRITE: { resource: 'reports', action: 'write' },
+    USERS_READ: { resource: 'users', action: 'read' },
+    ADMIN_ALL: { resource: '*', action: '*' },
   },
+  hasPermission: (perms: { permissions: Array<{ resource: string; action: string }> }, resource: string, action: string) =>
+    perms.permissions.some((p) => (p.resource === '*' || p.resource === resource) && (p.action === '*' || p.action === action)),
 }));
 
 import { db } from '../db';
@@ -220,7 +236,161 @@ describe('service principal management routes', () => {
     expect((await res.json()).error).toMatch(new RegExp(message, 'i'));
   });
 
+  describe('MCP (ai:*) scopes are a delegation the acting admin must hold', () => {
+    function permissionsOf(perms: Array<{ resource: string; action: string }>) {
+      mocks.authMiddleware.mockImplementation((c: any, next: any) => {
+        c.set('auth', { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all', user: { id: USER_ID }, token: { mfa: true } });
+        c.set('permissions', { permissions: perms });
+        return next();
+      });
+    }
+    const READ_ONLY = [
+      { resource: 'organizations', action: 'write' },
+      { resource: 'devices', action: 'read' }, { resource: 'alerts', action: 'read' },
+      { resource: 'scripts', action: 'read' }, { resource: 'automations', action: 'read' },
+    ];
+
+    it('refuses to create an ai:execute_admin principal for an admin without admin:all, before any write', async () => {
+      permissionsOf(READ_ONLY);
+      const res = await app.request('/partner-service-principals', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'claude-automation', scopes: ['ai:read', 'ai:execute_admin'], sourceCidrs: [] }),
+      });
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/ai:execute_admin/);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('lets a read-capable admin create an ai:read principal', async () => {
+      permissionsOf(READ_ONLY);
+      selectRows([]);
+      const returning = vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, name: 'reader', scopes: ['ai:read'] }]);
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn(() => ({ onConflictDoNothing: vi.fn(() => ({ returning })) })),
+      } as any);
+      const res = await app.request('/partner-service-principals', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'reader', scopes: ['ai:read'], sourceCidrs: [] }),
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it('refuses a PATCH that adds ai:write for an admin without the write baseline, before any update', async () => {
+      permissionsOf(READ_ONLY);
+      const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scopes: ['ai:read', 'ai:write'] }),
+      });
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it.each([['ai:write'], ['ai:execute'], ['ai:execute_admin']])('rejects %s without ai:read on create and update, before any write', async (scope) => {
+      const created = await app.request('/partner-service-principals', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'no-read', scopes: [scope], sourceCidrs: [] }),
+      });
+      expect(created.status).toBe(400);
+      expect(await created.json()).toMatchObject({ code: 'MCP_SCOPE_REQUIRES_AI_READ' });
+      const updated = await app.request(`/partner-service-principals/${PRINCIPAL_ID}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scopes: ['devices:read', scope] }),
+      });
+      expect(updated.status).toBe(400);
+      expect(await updated.json()).toMatchObject({ code: 'MCP_SCOPE_REQUIRES_AI_READ' });
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses to ISSUE a key for a principal holding MCP scopes the acting admin cannot delegate', async () => {
+      permissionsOf(READ_ONLY);
+      selectRows([{ scopes: ['ai:read', 'ai:execute_admin'] }]);
+      mocks.issue.mockResolvedValue({ keyId: KEY_ID, rawKey: 'brz_sp_ONETIME', keyPrefix: 'brz_sp_ONE' });
+      const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}/keys`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'escalate' }),
+      });
+      expect(res.status).toBe(403);
+      expect(JSON.stringify(await res.json())).not.toContain('ONETIME');
+      expect(mocks.issue).not.toHaveBeenCalled();
+    });
+
+    it('refuses to ROTATE a key for a principal holding MCP scopes the acting admin cannot delegate', async () => {
+      permissionsOf(READ_ONLY);
+      selectRows([{ scopes: ['ai:read', 'ai:write'] }]);
+      mocks.rotate.mockResolvedValue({ keyId: KEY_ID, rawKey: 'brz_sp_NEW', keyPrefix: 'brz_sp_NEW' });
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({}));
+      const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}/keys/${KEY_ID}/rotate`, { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(mocks.rotate).not.toHaveBeenCalled();
+    });
+
+    it('lets a read-capable admin issue a key for an ai:read principal', async () => {
+      permissionsOf(READ_ONLY);
+      selectRows([{ scopes: ['ai:read'] }]);
+      mocks.issue.mockResolvedValue({ keyId: KEY_ID, rawKey: 'brz_sp_ONETIME', keyPrefix: 'brz_sp_ONE' });
+      const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}/keys`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'ok' }),
+      });
+      expect(res.status).toBe(201);
+    });
+
+    const EXISTING_STRONG = {
+      scopes: ['ai:read', 'ai:execute_admin'], sourceCidrs: ['203.0.113.0/24'],
+      expiresAt: new Date(Date.now() + 86_400_000), status: 'disabled',
+    };
+
+    it.each([
+      ['re-enables', { status: 'active' }],
+      ['removes the expiry', { expiresAt: null }],
+      ['extends the expiry', { expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString() }],
+      ['removes the CIDR restriction', { sourceCidrs: [] }],
+      ['adds a CIDR', { sourceCidrs: ['203.0.113.0/24', '198.51.100.0/24'] }],
+    ])('refuses a scope-omitting PATCH that %s a principal the admin cannot delegate', async (_label, body) => {
+      permissionsOf(READ_ONLY);
+      selectRows([EXISTING_STRONG]);
+      const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/ai:execute_admin/);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['disables', { status: 'disabled' }, 'active'],
+      ['shortens the expiry', { expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, 'active'],
+      ['narrows the CIDRs', { sourceCidrs: ['203.0.113.0/25'] }, 'active'],
+    ])('still lets a lower-privileged admin tighten: %s', async (_label, body, status) => {
+      permissionsOf(READ_ONLY);
+      selectRows([{ ...EXISTING_STRONG, status, sourceCidrs: ['203.0.113.0/24', '203.0.113.0/25'] }]);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, name: 'p' }]) })),
+        })),
+      } as any);
+      vi.mocked(db.transaction).mockImplementation(async (callback: any) => callback({ update: db.update }));
+      const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it('lets a full admin grant every MCP scope', async () => {
+      selectRows([]);
+      const returning = vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, name: 'claude-automation', scopes: [] }]);
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn(() => ({ onConflictDoNothing: vi.fn(() => ({ returning })) })),
+      } as any);
+      const res = await app.request('/partner-service-principals', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'claude-automation', scopes: ['ai:read', 'ai:write', 'ai:execute', 'ai:execute_admin'], sourceCidrs: [] }),
+      });
+      expect(res.status).toBe(201);
+    });
+  });
+
   it('issues a key and audits only sanitized identifiers', async () => {
+    selectRows([{ scopes: ['devices:read'] }]); // principal's scopes for the delegation ceiling
     mocks.issue.mockResolvedValue({ keyId: KEY_ID, rawKey: 'brz_sp_ONETIME', keyPrefix: 'brz_sp_ONE' });
     const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}/keys`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Production' }),
@@ -235,6 +405,7 @@ describe('service principal management routes', () => {
   });
 
   it('rotates atomically and reveals only the successor plaintext', async () => {
+    selectRows([{ scopes: ['devices:read'] }]); // principal's scopes for the delegation ceiling
     mocks.rotate.mockResolvedValue({ keyId: '55555555-5555-4555-8555-555555555555', rawKey: 'brz_sp_NEW', keyPrefix: 'brz_sp_NEW' });
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({}));
     const res = await app.request(`/partner-service-principals/${PRINCIPAL_ID}/keys/${KEY_ID}/rotate`, { method: 'POST' });

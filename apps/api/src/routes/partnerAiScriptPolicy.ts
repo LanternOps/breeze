@@ -182,6 +182,9 @@ partnerAiScriptPolicyRoutes.get('/', async (c) => {
   return c.json({
     policy: policy ? toScriptPolicyDto(policy) : null,
     canManage: canManagePartnerWidePolicies(auth),
+    // The web binds the ceiling's step-up grant to this id (#8112) and has no
+    // other source for it on a partner-scope session.
+    partnerId: auth.partnerId,
   });
 });
 

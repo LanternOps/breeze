@@ -329,7 +329,7 @@ vi.mock('../services/authLifecycle', async (importOriginal) => {
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { inArray } from 'drizzle-orm';
-import { users, userPasskeys, organizations } from '../db/schema';
+import { users, userPasskeys, organizations, partnerUsers } from '../db/schema';
 import { getRedis } from '../services/redis';
 import { clearPermissionCache, getUserPermissions } from '../services/permissions';
 import { authMiddleware } from '../middleware/auth';
@@ -3177,18 +3177,14 @@ describe('user routes', () => {
   describe('POST /users/:id/mfa/reset (admin recovery: clear factor + invalidate assurance)', () => {
     const TARGET = '11111111-1111-1111-1111-111111111111';
 
-    // getScopedUser (partner scope) reads partnerUsers ⋈ users ⋈ roles; return a
-    // membership so the target resolves inside the caller's tenant.
+    // getScopedMembership (partner scope) reads partnerUsers ⋈ roles only —
+    // never `users`, which org-scoped RLS hides for a member homed elsewhere.
     function mockScopedUser(found: boolean) {
       return {
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
-            innerJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue(
-                  found ? [{ id: TARGET, email: 'target@example.com', name: 'Target', status: 'active', roleId: 'r1', roleName: 'Tech' }] : []
-                )
-              })
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue(found ? [{ roleId: 'r1', roleIsSystem: false }] : [])
             })
           })
         })
@@ -3203,13 +3199,29 @@ describe('user routes', () => {
     function mockFactorChangeTx(opts: {
       inventory?: Partial<{ mfaEnabled: boolean; mfaMethod: string | null; mfaSecret: string | null; mfaRecoveryCodes: unknown; phoneNumber: string | null; phoneVerified: boolean }>;
       passkeyRows?: Array<{ id: string; credentialId: string; name: string | null }>;
+      // The target's membership as re-read under the row lock inside the
+      // reset transaction. Defaults to the row the rank check saw.
+      lockedMembership?: Array<{ roleId: string; siteIds?: string[] | null }>;
     } = {}) {
-      const inventoryRow = { mfaEnabled: false, mfaMethod: null, mfaSecret: null, mfaRecoveryCodes: null, phoneNumber: null, phoneVerified: false, ...opts.inventory };
+      const inventoryRow = { email: 'target@example.com', mfaEnabled: false, mfaMethod: null, mfaSecret: null, mfaRecoveryCodes: null, phoneNumber: null, phoneVerified: false, ...opts.inventory };
+      const lockedMembership = opts.lockedMembership ?? [{ roleId: 'r1' }];
       const passkeyRows = opts.passkeyRows ?? [];
       const capturedUpdates: Array<Record<string, unknown>> = [];
       const calls: string[] = [];
       const txSelect = vi.fn(() => ({
-        from: vi.fn(() => ({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([inventoryRow]) }) }))
+        from: vi.fn((table: unknown) => ({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn(() => {
+              const rows = table === partnerUsers ? lockedMembership : [inventoryRow];
+              const ret: any = Promise.resolve(rows);
+              ret.for = vi.fn(() => {
+                calls.push(table === partnerUsers ? 'lock-membership' : 'lock');
+                return Promise.resolve(rows);
+              });
+              return ret;
+            })
+          })
+        }))
       }));
       const txUpdate = vi.fn((_table: any) => ({
         set: (values: Record<string, unknown>) => {
@@ -3262,9 +3274,10 @@ describe('user routes', () => {
       // Cross-user write went through the system-context escape.
       expect(runOutsideDbContext).toHaveBeenCalled();
       expect(withSystemDbAccessContext).toHaveBeenCalled();
-      // One transaction: mfa_epoch bump → families → Office binding revoke →
-      // users clear → passkey delete.
-      expect(calls).toEqual(['epochs', 'families', 'office-binding', 'clear-factors', 'delete-passkeys']);
+      // One transaction: target membership locked FIRST (rank check made
+      // atomic with the reset) → mfa_epoch bump → families → Office binding
+      // revoke → users clear → passkey delete.
+      expect(calls).toEqual(['lock-membership', 'epochs', 'families', 'office-binding', 'clear-factors', 'delete-passkeys']);
       expect(capturedUpdates.some((v) => v.mfaEnabled === false && v.mfaSecret === null && v.phoneNumber === null && v.phoneVerified === false)).toBe(true);
       expect(capturedUpdates.some((v) => 'mfaEpoch' in v)).toBe(true);
       expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(true);
@@ -3342,6 +3355,35 @@ describe('user routes', () => {
     // Rank + scope check runs BEFORE the factor-inventory
     // probe — a caller who may not manage the target must never learn whether
     // MFA is even enabled for them.
+    it('aborts with 409 and writes nothing when the target membership changed after the rank check', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(mockScopedUser(true));
+      userIsMfaProtectedMock.mockResolvedValue(true);
+      const { calls } = mockFactorChangeTx({
+        inventory: { mfaEnabled: true, mfaMethod: 'totp', mfaSecret: 'enc' },
+        lockedMembership: [{ roleId: 'r-promoted' }],
+      });
+
+      const res = await app.request(`/users/${TARGET}/mfa/reset`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(409);
+      expect(calls).toEqual(['lock-membership']);
+      expect(createAuditLogAsyncMock).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'user.mfa_reset' }));
+    });
+
+    it('aborts with 404 when the target membership was removed after the rank check', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(mockScopedUser(true));
+      userIsMfaProtectedMock.mockResolvedValue(true);
+      const { calls } = mockFactorChangeTx({
+        inventory: { mfaEnabled: true, mfaMethod: 'totp', mfaSecret: 'enc' },
+        lockedMembership: [],
+      });
+
+      const res = await app.request(`/users/${TARGET}/mfa/reset`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(404);
+      expect(calls).toEqual(['lock-membership']);
+    });
+
     it('rejects the reset when the caller may not manage the target (rank/scope check)', async () => {
       vi.mocked(db.select).mockReturnValueOnce(mockScopedUser(true));
       assertCanManageTargetMock.mockResolvedValueOnce('Cannot manage a user outside your site access');
@@ -4020,5 +4062,61 @@ describe('PATCH /me/ticket-push-preferences', () => {
     expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'user.ticket_push_preferences.update', resourceId: 'user-123',
     }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-user Pushover key for ticket assignments: /me/ticket-pushover
+// ---------------------------------------------------------------------------
+
+describe('/me/ticket-pushover', () => {
+  const KEY = 'u'.repeat(30);
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authAsDefaultPartner();
+  });
+  const call = (method: string, body?: unknown) =>
+    new Hono().route('/users', userRoutes).request('/users/me/ticket-pushover', {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+
+  it('GET reports only whether a key is set, never the key', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([{ pushoverUserKeyEncrypted: 'enc:v3:sealed' }]) }) }),
+    } as never);
+    const res = await call('GET');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ userKeySet: true });
+  });
+
+  it('PUT rejects a malformed key and a smuggled userId', async () => {
+    expect((await call('PUT', { userKey: 'short' })).status).toBe(400);
+    expect((await call('PUT', { userKey: KEY, userId: 'someone-else' })).status).toBe(400);
+  });
+
+  it('PUT seals the key for auth.user.id, never echoes it, and keeps it out of the audit', async () => {
+    const valuesMock = vi.fn((_v: Record<string, unknown>) => ({ onConflictDoUpdate: vi.fn(() => Promise.resolve()) }));
+    vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as never);
+    const res = await call('PUT', { userKey: KEY });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain(KEY);
+    expect(JSON.parse(text)).toEqual({ userKeySet: true });
+    const stored = valuesMock.mock.calls[0]![0] as { userId: string; pushoverUserKeyEncrypted: string };
+    expect(stored.userId).toBe('user-123');
+    expect(stored.pushoverUserKeyEncrypted).not.toBe(KEY);
+    expect(JSON.stringify(writeRouteAuditMock.mock.calls)).not.toContain(KEY);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'user.ticket_pushover.set', resourceId: 'user-123' }));
+  });
+
+  it('DELETE clears the key for auth.user.id', async () => {
+    const setMock = vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }));
+    vi.mocked(db.update).mockReturnValueOnce({ set: setMock } as never);
+    const res = await call('DELETE');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ userKeySet: false });
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ pushoverUserKeyEncrypted: null }));
   });
 });

@@ -120,6 +120,8 @@
     "revoked": "Key revoked",
     "revokeFailed": "Failed to revoke key",
     "copyNow": "Copy this key now",
+    "copy": "Copy",
+    "copied": "Copied",
     "oneTimeWarning": "This plaintext key is shown once and cannot be retrieved later.",
     "done": "Done"
   },
@@ -230,6 +232,8 @@
       "add": "Add connection",
       "edit": "Edit",
       "created": "Connection added",
+      "createdDiscoveryQueued": "Connection added. Discovering its models now.",
+      "createdDiscoveryNotQueued": "Connection added, but model discovery couldn't be queued. Use Refresh to try again.",
       "saved": "Connection saved",
       "saveFailed": "Couldn't save the connection.",
       "keyFailed": "Couldn't replace the API key.",
@@ -456,6 +460,7 @@
     "offering": {
       "displayName": "Display name",
       "displayNameHint": "Leave blank to use the provider’s name. Model id: {{modelId}}",
+      "envManaged": "This model is managed by the MCP_LLM_* environment variables. Its name and price are set there and can’t be changed here.",
       "pricesTitle": "Price",
       "pricesHint": "Cents per 1M tokens. Fill in all four, or leave all blank for no price (the model then cannot be enabled).",
       "prices": {
@@ -874,6 +879,8 @@
     "slackChannelPlaceholder": "#alerts",
     "pushoverDefaults": "Pushover Defaults",
     "pushoverDescription": "Inherited by any per-org Pushover channel that leaves the matching field blank.",
+    "pushoverTicketAssignmentFallback": "Send ticket assignments to the default key when the assignee has no Pushover key",
+    "pushoverTicketAssignmentFallbackHelp": "Each technician can add their own Pushover user key in their profile; assignments then reach only them. Turn this on to send assignments for technicians without a key to the default user or group key above.",
     "applicationToken": "Application Token",
     "defaultUserKey": "Default User or Group Key",
     "defaultSound": "Default Sound",
@@ -1400,6 +1407,12 @@
     "dropDescription": "No ticket, no review-queue entry, no autoresponse. An audit row is still recorded. Use this to keep unmapped spam out of triage and the review queue.",
     "dropUnverified": "Drop mail that fails sender authentication (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "When off, unverified mail is quarantined for review. When on, it's dropped silently. This applies to <all>all</all> unverified senders — including mapped customers whose individual message fails the check.",
+    "staffForwardRouting": "File staff forwards under the original sender's customer",
+    "staffForwardRoutingDescription": "When one of your partner-level staff forwards a customer's email to the support address, the new ticket is filed under the organization mapped to the original sender's domain, not your own. The staff member must have access to that organization. Works only for forwards made in Gmail and received by a connected Gmail mailbox; not for the native inbound address, Microsoft 365 mailboxes or Outlook forwards.",
+    "defaultAssignee": "Default assignee for new inbound tickets",
+    "defaultAssigneeDescription": "Every new ticket created from inbound email is assigned to this person, unless something else already assigned it. If they can't access the ticket's organization, the ticket stays unassigned.",
+    "defaultAssigneeUnavailable": "Unavailable user",
+    "defaultAssigneeNotAssignable": "That user can't be the default assignee. Pick an active member of your team who has ticket access.",
     "enableAutoresponse": "Send an autoresponse acknowledging new email tickets",
     "editEmailTemplates": "The acknowledgement email is edited under Email templates.",
     "editEmailTemplatesLink": "Edit email templates",
@@ -1496,7 +1509,28 @@
     "namePlaceholder": "Support",
     "connect": "Connect",
     "credentialOrg": "Credential: {{org}}'s Google Workspace connection",
-    "credentialOrgUnknown": "an organization you cannot view"
+    "credentialOrgUnknown": "an organization you cannot view",
+    "handling": {
+      "off": "Off: mail stays in the inbox after it becomes a ticket.",
+      "onArchive": "Mail that becomes a ticket gets the Gmail label \"{{label}}\" and is archived out of the inbox.",
+      "onLabelOnly": "Mail that becomes a ticket gets the Gmail label \"{{label}}\" and stays in the inbox.",
+      "edit": "Change mail handling",
+      "labelField": "Gmail label for ticketed mail (leave blank to turn off)",
+      "labelPlaceholder": "Breeze/Ticketed",
+      "archiveField": "Also archive it (remove it from the inbox)",
+      "scopeNote": "Labelling needs this extra scope in the organization's domain-wide delegation grant. Reading mail does not, so polling keeps working without it.",
+      "saved": "Mail handling saved",
+      "saveFailed": "Could not save mail handling.",
+      "error": {
+        "access_denied": "Labelling failed: Google denied access. Add the gmail.modify scope to the domain-wide delegation grant.",
+        "rate_limited": "Labelling failed: Gmail rate limit reached. New mail will be tried again.",
+        "unavailable": "Labelling failed: Gmail did not respond in time. New mail will be tried again.",
+        "label_invalid": "Labelling failed: this label cannot be used. Choose a different label name.",
+        "no_credential": "Labelling failed: this organization's Google Workspace connection is missing or inactive. Reconnect it under Integrations.",
+        "not_queued": "Labelling skipped: the labelling queue was unavailable or full, so some mail that became a ticket was left in the inbox without the label. New mail will be tried again.",
+        "failed": "Labelling failed. The mail stays in the inbox."
+      }
+    }
   },
   "orgApprovalSecurityTab": {
     "title": "Approval Security",
@@ -1863,6 +1897,10 @@
         "enableLifecycle": {
           "label": "Hardware lifecycle",
           "description": "Show the live replacement plan for your customer's machines."
+        },
+        "enableHardwareHealth": {
+          "label": "Hardware health",
+          "description": "Show component health, events, disks and battery for your customer's machines."
         },
         "enableNetworkVisibility": {
           "label": "Network visibility",
@@ -5844,6 +5882,11 @@
     }
   },
   "customFieldsPage": {
+    "toasts": {
+      "created": "Custom field created",
+      "updated": "Custom field updated",
+      "deleted": "Custom field deleted"
+    },
     "title": "Custom Fields",
     "description": "Define custom attributes to track additional information on devices.",
     "searchPlaceholder": "Search fields...",
@@ -6430,7 +6473,10 @@
     },
     "stepUp": {
       "title": "Confirm it is you",
-      "body": "Enabling unattended runs needs a fresh security check."
+      "body": "Enabling unattended runs needs a fresh security check.",
+      "ceilingBody": "Allowing or widening unattended runs for your organizations needs a fresh security check. Confirm, then select Save again.",
+      "wideningBody": "Widening what unattended runs may do needs a fresh security check. Confirm, then select Save again.",
+      "noFactor": "This change needs a security check, but your account has no authenticator app or passkey. Set one up in your profile, then try again."
     },
     "save": "Save",
     "saving": "Saving…",
@@ -6548,5 +6594,19 @@
     "sourceDefault": "product default",
     "range": "Choose {{min}}-{{max}} minutes.",
     "save": "Save"
+  },
+  "ticketPushover": {
+    "title": "Pushover for ticket assignments",
+    "description": "Add your Pushover user key to get a push when a ticket is assigned to you. Only you receive it. Your MSP must have set a Pushover application token under Notifications.",
+    "statusSet": "A Pushover key is saved.",
+    "statusNotSet": "No Pushover key saved.",
+    "placeholder": "30-character Pushover user key",
+    "save": "Save key",
+    "remove": "Remove key",
+    "saved": "Pushover key saved.",
+    "removed": "Pushover key removed.",
+    "invalidKey": "A Pushover user key is 30 letters or digits.",
+    "loadFailed": "Could not load your Pushover setting.",
+    "saveFailed": "Could not save your Pushover setting."
   }
 }

@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
+import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, NetworkSitesDto, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
 import type { HardwareLifecycleSummary, PortalRunDto, PortalRunsDto } from '@breeze/shared';
 import type { PortalDocumentsDto, PortalOccurrencesDto, PortalServiceOverviewDto } from '@breeze/shared';
 
@@ -306,6 +306,7 @@ export type NetworkAssetStatusFilter = 'online' | 'offline' | 'unverified';
 export interface NetworkAssetsParams {
   page?: number;
   limit?: number;
+  siteId?: string;
   assetType?: string;
   status?: NetworkAssetStatusFilter;
 }
@@ -528,9 +529,14 @@ export function invoiceAutopayInput(saveForAutopay: boolean, disclosure?: Invoic
 import type { AutopayConfirmationRelease, BankAutopayOffer, BankPayInput, InvoicePayResult } from '@breeze/shared';
 export type { AutopayConfirmationRelease, BankAutopayOffer, BankPayInput, InvoicePayResult } from '@breeze/shared';
 
+import type { CustomerInvoiceAutopayStatus } from '@breeze/shared';
 export interface InvoiceDetail {
   bankAutopay?: BankAutopayOffer | null;
   autopay?: InvoiceAutopayDisclosure | null;
+  /** D-4: how this invoice will be paid automatically, if it will be. */
+  autopayStatus?: CustomerInvoiceAutopayStatus | null;
+  /** Automatic payments are on with a usable method: the page offers no setup. */
+  autopayEnrolled?: boolean;
   // The detail header is a separate serialization boundary on the API and
   // does not carry the list's derived `title`.
   invoice: Omit<InvoiceSummary, 'title'> & {
@@ -735,6 +741,8 @@ export interface PublicQuoteDetail {
 export interface PublicInvoiceDetail {
   bankAutopay?: BankAutopayOffer | null;
   autopay?: InvoiceAutopayDisclosure | null;
+  autopayStatus?: CustomerInvoiceAutopayStatus | null;
+  autopayEnrolled?: boolean;
   invoice: {
     id: string;
     invoiceNumber: string | null;
@@ -813,6 +821,7 @@ export interface BrandingConfig {
   enableService?: boolean;
   enableDocuments?: boolean;
   enableLifecycle?: boolean;
+  enableHardwareHealth?: boolean;
   enableNetworkVisibility?: boolean;
   /** Curated chrome accent key (packages/shared/src/types/portalChromeAccent.ts).
    *  null/unset/unrecognized means the default ('spruce') — nothing to apply. */
@@ -1279,8 +1288,13 @@ export const portalApi = {
   ): Promise<ApiResponse<NetworkOverviewDto>> =>
     apiGet<NetworkOverviewDto>('/portal/network/overview', config),
 
-  // #6641 — per-asset list. `siteId` is accepted by the endpoint but is not
-  // exposed here yet: the portal has no site list to pick from (follow-up).
+  // #7025 — sites that own portal-visible assets, for the Site filter.
+  getNetworkSites: (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<NetworkSitesDto>> =>
+    apiGet<NetworkSitesDto>('/portal/network/sites', config),
+
+  // #6641 — per-asset list.
   getNetworkAssets: (
     params: NetworkAssetsParams = {},
     config: ApiRequestConfig = {}
@@ -1289,6 +1303,7 @@ export const portalApi = {
       `/portal/network/assets${buildQueryString({
         page: params.page ?? 1,
         limit: params.limit ?? 50,
+        siteId: params.siteId,
         assetType: params.assetType,
         status: params.status,
       })}`,

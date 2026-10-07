@@ -132,13 +132,21 @@ class TombstoneAlreadyResurrected extends Error {}
 /**
  * Admin-path composite (cross-user by definition, so the system-context
  * escalation lives here; authorization — requirePermission, requireMfa,
- * getScopedUser — stays in the route BEFORE this call). One transaction:
+ * getScopedMembership — stays in the route BEFORE this call). One transaction:
  * mfa_epoch bump → family revoke → resetAllFactors; then post-commit cleanup,
  * remote-session teardown, and the best-effort pending-artifact sweep.
  */
-export function resetAllFactorsAndInvalidate(userId: string, reason: string): Promise<AdminFactorResetResult>;
-export function resetAllFactorsAndInvalidate(userId: string, reason: string, options: { onlyIfTombstone: true }): Promise<AdminFactorResetResult | null>;
-export async function resetAllFactorsAndInvalidate(userId: string, reason: string, options?: { onlyIfTombstone: true }): Promise<AdminFactorResetResult | null> {
+export interface AdminFactorResetOptions {
+  /**
+   * Runs first in the reset transaction (before the user-row lock). Lock and
+   * re-verify whatever the caller's authorization read; throw to abort the
+   * whole reset with nothing written.
+   */
+  lockTarget?: (tx: Tx) => Promise<void>;
+}
+export function resetAllFactorsAndInvalidate(userId: string, reason: string, options?: AdminFactorResetOptions): Promise<AdminFactorResetResult>;
+export function resetAllFactorsAndInvalidate(userId: string, reason: string, options: AdminFactorResetOptions & { onlyIfTombstone: true }): Promise<AdminFactorResetResult | null>;
+export async function resetAllFactorsAndInvalidate(userId: string, reason: string, options?: AdminFactorResetOptions & { onlyIfTombstone?: true }): Promise<AdminFactorResetResult | null> {
   let inventory: MfaFactorInventory | undefined;
   let result: FactorChangeResult;
   try {
@@ -156,7 +164,7 @@ export async function resetAllFactorsAndInvalidate(userId: string, reason: strin
             }
           }
           inventory = await resetAllFactors(tx, userId);
-        }),
+        }, undefined, options?.lockTarget),
       ),
     );
   } catch (error) {

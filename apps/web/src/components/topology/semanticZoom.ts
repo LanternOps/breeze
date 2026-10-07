@@ -139,3 +139,19 @@ export function chipModes(chips: readonly ChipInput[]): Map<string, ChipMode> {
   }
   return mode;
 }
+
+/**
+ * The canvas fits once per fit key (view, network toggle, grouping, expansion). When the key changes
+ * while mounted, the positions on hand still belong to the previous drawing (Expand swaps the graph
+ * before its layout runs; Collapse changes the key before the base graph even arrives), so the fit
+ * waits for the first non-empty positions array that is not the one seen when the key changed.
+ * The first key after mount fits as soon as there are positions: they are this drawing's.
+ */
+export type FitState = { fitted?: string; pending?: { key: string; stale: readonly unknown[] } };
+export function nextFit(state: FitState, key: string, positions: readonly unknown[]): { fit: boolean; state: FitState } {
+  if (state.fitted === key) return { fit: false, state };
+  if (state.fitted === undefined) return positions.length ? { fit: true, state: { fitted: key } } : { fit: false, state };
+  const pending = state.pending?.key === key ? state.pending : { key, stale: positions };
+  if (positions.length && positions !== pending.stale) return { fit: true, state: { fitted: key } };
+  return { fit: false, state: { ...state, pending } };
+}

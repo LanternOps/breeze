@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 // Central route matrix for the dedicated accounting permission family
-// (`accounting:read` / `accounting:manage`, SEC-2026-09-05-057 Option A).
+// (`accounting:read` / `accounting:manage`).
 //
 // Every interactive QuickBooks route is listed exactly once below with the
 // accounting capability it requires. The parameterized cases prove, for every

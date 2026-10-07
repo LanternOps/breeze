@@ -6,6 +6,7 @@ import { bulkInvoiceIdsSchema, bulkVoidInvoicesSchema } from '@breeze/shared';
 import { runBulkIsolated } from '../../lib/bulkOps';
 import { deleteDraftInvoice, issueInvoice, voidInvoice } from '../../services/invoiceService';
 import { invoiceActorFrom, handleServiceError } from './invoices';
+import { auditBillingDocument } from '../../services/billingDocumentAudit';
 
 export const invoiceBulkRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
@@ -17,7 +18,9 @@ invoiceBulkRoutes.post('/bulk-delete', scopes, writePerm, zValidator('json', bul
     const ctx = dbAccessContextFromAuth(c.get('auth') as AuthContext);
     const actor = invoiceActorFrom(c);
     const { ids } = c.req.valid('json');
-    return c.json({ data: await runBulkIsolated(ctx, ids, (id) => deleteDraftInvoice(id, actor)) });
+    // Each item is audited after its own transaction commits; skipped/failed ids are not.
+    return c.json({ data: await runBulkIsolated(ctx, ids, (id) => deleteDraftInvoice(id, actor),
+      async (_id, deleted) => auditBillingDocument(c, 'invoice', 'delete', deleted, { bulk: true })) });
   } catch (err) { return handleServiceError(c, err); }
 });
 
@@ -26,7 +29,8 @@ invoiceBulkRoutes.post('/bulk-issue', scopes, sendPerm, zValidator('json', bulkI
     const ctx = dbAccessContextFromAuth(c.get('auth') as AuthContext);
     const actor = invoiceActorFrom(c);
     const { ids } = c.req.valid('json');
-    return c.json({ data: await runBulkIsolated(ctx, ids, (id) => issueInvoice(id, actor)) });
+    return c.json({ data: await runBulkIsolated(ctx, ids, (id) => issueInvoice(id, actor),
+      async (_id, issued) => auditBillingDocument(c, 'invoice', 'issue', issued, { bulk: true })) });
   } catch (err) { return handleServiceError(c, err); }
 });
 
@@ -35,6 +39,7 @@ invoiceBulkRoutes.post('/bulk-void', scopes, sendPerm, zValidator('json', bulkVo
     const ctx = dbAccessContextFromAuth(c.get('auth') as AuthContext);
     const actor = invoiceActorFrom(c);
     const { ids, reason } = c.req.valid('json');
-    return c.json({ data: await runBulkIsolated(ctx, ids, (id) => voidInvoice(id, reason, { reissue: false }, actor)) });
+    return c.json({ data: await runBulkIsolated(ctx, ids, (id) => voidInvoice(id, reason, { reissue: false }, actor),
+      async (_id, voided) => auditBillingDocument(c, 'invoice', 'void', voided.invoice, { bulk: true })) });
   } catch (err) { return handleServiceError(c, err); }
 });

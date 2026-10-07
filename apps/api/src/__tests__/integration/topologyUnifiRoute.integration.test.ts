@@ -27,6 +27,7 @@ import { createOrganization, createSite } from './db-utils';
 import { topologyIngestFixture } from '../helpers/topologyIngest';
 import { unifiTelemetryRoutes } from '../../routes/agents/unifiTelemetry';
 import { currentUnifiCollectorTopology, loadUnifiCollector } from '../../services/topology/unifiAuthority';
+import { __resetHotPathCachesForTests } from '../../services/hotPathCacheRegistry';
 
 const sys = <T>(fn: () => Promise<T>) => withSystemDbAccessContext(() => db.transaction(fn));
 const vector = vectors.vectors[0]!;
@@ -78,6 +79,10 @@ describe('UniFi telemetry route topology companion (self-managed DB context)', (
       WHERE org_id=${f.orgId}::uuid AND producer_kind='unifi' AND revoked_at IS NULL ORDER BY site_id`));
     expect(sites.map(r => r.site_id).sort()).toEqual([f.siteId, siteB].sort());
 
+    // #8053: the POST above left this org's flags in the agent hot-path cache,
+    // which would answer the GET with no read at all. Drop it so this measures a
+    // cold resolution — still exactly one read, never one per collector.
+    __resetHotPathCachesForTests();
     partnerAxisReads.count = 0;
     const list = await app.request('/agents/agent-1/unifi-collectors', { method: 'GET' });
     expect(list.status).toBe(200);

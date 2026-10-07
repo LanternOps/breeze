@@ -2523,12 +2523,16 @@
       "method_not_usable": "Payment method unavailable",
       "over_cap": "Above automatic payment limit",
       "above_authorized_cap": "Above the limit the client authorized",
+      "issued_before_authorization": "Issued before the client's updated authorization: collect manually",
       "cap_currency_mismatch": "Limit currency does not match",
       "ach_currency_unsupported": "Bank payment currency unsupported",
       "excluded_contract": "Contract excluded",
       "excluded_invoice": "Invoice excluded",
       "charging_disabled": "Automatic charging disabled",
       "stripe_unavailable": "Stripe unavailable",
+      "bank_unverified": "Not charged: the client's bank was not verified in time. Collect manually",
+      "charging_on_hold": "Not charged: automatic payments stayed switched off. Collect manually",
+      "service_unavailable": "Not charged: Stripe stayed unreachable. Collect manually",
       "control_pending:skip": "Skip requested; stopping the pending payment",
       "control_pending:exclude": "Exclusion requested; stopping the pending payment",
       "control_pending:stop": "Stop requested; stopping the pending payment",
@@ -2560,7 +2564,10 @@
       "failed": "Failed",
       "requires_action": "Confirmation required",
       "canceled": "Cancelled",
-      "unapplied": "Payment needs reconciliation"
+      "unapplied": "Payment needs reconciliation",
+      "returned": "Returned",
+      "refunded": "Refunded",
+      "disputed": "Disputed"
     },
     "fees": {
       "title": "Processing fees",
@@ -2627,7 +2634,8 @@
       "nothing_to_pay": "Nothing is left to pay on this invoice.",
       "enrollment_inactive": "Automatic payments are not active for this client.",
       "schedule_inactive": "This invoice is no longer scheduled for automatic payment.",
-      "generic": "Automatic payment could not be started. Refresh the invoice to see its current status."
+      "generic": "Automatic payment could not be started. Refresh the invoice to see its current status.",
+      "excluded_contract": "This invoice's contract is excluded from automatic payments, so it was not charged. If the client had been told about this payment, they were emailed that it won't happen."
     }
   },
   "reminders": {

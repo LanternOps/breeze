@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Eye, Globe, Image, Palette, Save, Wand2, X } from 'lucide-react';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
+import { MAX_LOGO_BYTES, LOGO_ACCEPT, resizeToDataUrl } from '@/lib/logoDataUrl';
 import { resolveUiColorToken, sanitizeHexColor } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
@@ -42,7 +43,7 @@ const defaultBranding: BrandingData = {
   portalSubdomain: ''
 };
 
-const DEFAULT_CUSTOM_CSS = '/* Add custom portal styling here */\n.portal-header {\n  letter-spacing: 0.04em;\n}';
+const CUSTOM_CSS_PLACEHOLDER = '/* Add custom portal styling here */\n.portal-header {\n  letter-spacing: 0.04em;\n}';
 
 const themeOptions = [
   { value: 'light', labelKey: 'orgBrandingEditor.theme.options.light' },
@@ -69,7 +70,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
   const [primaryColor, setPrimaryColor] = useState(initialData.primaryColor || defaultBranding.primaryColor || '#2563eb');
   const [secondaryColor, setSecondaryColor] = useState(initialData.secondaryColor || defaultBranding.secondaryColor || '#14b8a6');
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(initialData.theme || 'system');
-  const [customCss, setCustomCss] = useState(DEFAULT_CUSTOM_CSS);
+  const [customCss, setCustomCss] = useState('');
   const [savingCustomCss, setSavingCustomCss] = useState(false);
   // Tracks whether the initial customCss GET failed (network error, non-2xx,
   // or an unparsable body) — reviewed data-loss risk: without this, a failed
@@ -86,20 +87,10 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
   const primaryToken = resolveUiColorToken(resolvedPrimaryColor, defaultBranding.primaryColor || '#2563eb');
   const secondaryToken = resolveUiColorToken(resolvedSecondaryColor, defaultBranding.secondaryColor || '#14b8a6');
 
-  useEffect(() => {
-    if (!logoPreview || !logoPreview.startsWith('blob:')) {
-      return;
-    }
-
-    return () => {
-      URL.revokeObjectURL(logoPreview);
-    };
-  }, [logoPreview]);
-
   // customCss lives in portal_branding (#5952), not organizations.settings —
   // load its current persisted value independently of the `branding` prop.
-  // A missing/null value keeps the seeded placeholder rather than blanking
-  // the textarea, matching the pre-#5952 first-run UX. Any failure to load
+  // A missing/null value leaves the textarea empty (the sample CSS is only a
+  // placeholder, never a saved value). Any failure to load
   // (network error, non-2xx, unparsable body) is treated the same way and
   // flips customCssLoadFailed so Save refuses to clobber real data with the
   // placeholder — see the state declaration above.
@@ -138,15 +129,31 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
     onDirty?.();
   };
 
-  const handleLogoChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+  // The logo is persisted inline (organizations.settings.branding.logoUrl, 400 KB
+  // cap) — there is no upload endpoint. Encode the file to a data URI; a blob:
+  // URL only resolves in this tab and breaks on reload (#8017).
+  const handleLogoChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const input = event.target;
+    const file = input.files?.[0];
     if (!file) {
       return;
     }
 
-    setLogoPreview(URL.createObjectURL(file));
-    setLogoName(file.name);
-    markDirty();
+    try {
+      const dataUrl = await resizeToDataUrl(file);
+      if (dataUrl.length > MAX_LOGO_BYTES) {
+        showToast({ message: t('partnerBranding.imageTooLarge'), type: 'error' });
+        input.value = '';
+        return;
+      }
+      setLogoPreview(dataUrl);
+      setLogoName(file.name);
+      markDirty();
+    } catch (err) {
+      console.error('[OrgBrandingEditor] Logo file processing failed:', err);
+      showToast({ message: t('partnerBranding.readError'), type: 'error' });
+      input.value = '';
+    }
   };
 
   const handlePreview = () => {
@@ -165,7 +172,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
 
     if (customCssLoadFailed) {
       // The initial load never confirmed what's actually persisted, so
-      // `customCss` may still be the seeded placeholder rather than the
+      // `customCss` may still be the empty initial state rather than the
       // admin's real saved value — writing it now would silently clobber
       // their real CSS. Refuse and tell them, instead of "succeeding".
       showToast({ message: t('orgBrandingEditor.customCss.saveBlockedByLoadError'), type: 'error' });
@@ -261,14 +268,14 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
               <div className="space-y-1">
                 <p className="text-sm font-medium">{t('orgBrandingEditor.logo.uploadNew')}</p>
                 <p className="text-xs text-muted-foreground">
-                  {t('orgBrandingEditor.logo.recommendation')}
+                  {t('partnerBranding.imageHelp')}
                 </p>
                 {logoName ? (
                   <p className="text-xs text-muted-foreground">{t('orgBrandingEditor.logo.selected', { name: logoName })}</p>
                 ) : null}
               </div>
               <label className={`ml-auto inline-flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium transition hover:bg-muted ${isLocked('logoUrl') ? 'opacity-60 pointer-events-none' : ''}`}>
-                <input type="file" accept="image/*" className="hidden" disabled={isLocked('logoUrl')} onChange={handleLogoChange} />
+                <input type="file" accept={LOGO_ACCEPT} className="hidden" disabled={isLocked('logoUrl')} onChange={handleLogoChange} />
                 {t('common:actions.upload')}
               </label>
               {isLocked('logoUrl') && (
@@ -404,6 +411,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
             <textarea
               data-testid="branding-custom-css"
               value={customCss}
+              placeholder={CUSTOM_CSS_PLACEHOLDER}
               disabled={isLocked('customCss') || customCssLoadFailed}
               onChange={event => {
                 setCustomCss(event.target.value);

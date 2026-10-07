@@ -7,7 +7,8 @@ import { zValidator } from '../lib/validation';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { isValidIpOrCidr } from '../services/ipMatch';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { validateApiKeyScopeDelegation } from '../services/apiKeyScopes';
 import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   canManagePartnerWidePolicies,
@@ -20,6 +21,9 @@ import {
 import {
   DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES,
   type PartnerServicePrincipalScope,
+  PARTNER_SERVICE_PRINCIPAL_MCP_READ_REQUIRED_ERROR,
+  partnerServicePrincipalMcpScopes,
+  partnerServicePrincipalMcpScopesMissingRead,
   validatePartnerServicePrincipalScopes,
 } from '../services/partnerServicePrincipalScopes';
 
@@ -111,6 +115,9 @@ function validatePrincipalFields(
   if (input.scopes) {
     const validated = validatePartnerServicePrincipalScopes(input.scopes);
     if (!validated.ok) return { response: c.json({ error: validated.error, details: validated.details }, validated.status) };
+    if (partnerServicePrincipalMcpScopesMissingRead(validated.scopes)) {
+      return { response: c.json({ error: PARTNER_SERVICE_PRINCIPAL_MCP_READ_REQUIRED_ERROR, code: 'MCP_SCOPE_REQUIRES_AI_READ' }, 400) };
+    }
     scopes = validated.scopes;
   }
   if (input.sourceCidrs?.some((entry) => !isValidIpOrCidr(entry))) {
@@ -139,6 +146,71 @@ function validateEnrollmentWriteRestrictions(
     };
   }
   return null;
+}
+
+/**
+ * MCP (ai:*) scopes admit the principal to the MCP endpoint, where its
+ * per-tool authority is bounded by its owner's live role. Granting one is a
+ * delegation, so the acting admin must hold the same baseline permissions an
+ * org API key's creator needs for that scope (services/apiKeyScopes.ts). The
+ * MCP auth path re-checks the OWNER on every request; this check only stops
+ * an admin from granting MCP authority they do not hold themselves.
+ */
+function validateMcpScopeDelegation(
+  c: any,
+  scopes: readonly string[] | undefined,
+): { response: Response } | null {
+  const mcpScopes = partnerServicePrincipalMcpScopes(scopes ?? []);
+  if (mcpScopes.length === 0) return null;
+  const delegation = validateApiKeyScopeDelegation(
+    mcpScopes,
+    c.get('permissions') as UserPermissions | undefined,
+  );
+  if (!delegation.ok) {
+    return { response: c.json({ error: delegation.error, details: delegation.details }, delegation.status) };
+  }
+  return null;
+}
+
+/**
+ * Issuing or rotating a key hands out the principal's EXISTING authority, so
+ * it is the same delegation as granting the scopes: the acting admin must be
+ * able to delegate every MCP scope the principal already holds. A principal
+ * that is not found here is left to the key service's own 404.
+ */
+async function existingPrincipalMcpDelegationDenial(
+  c: any,
+  principalId: string,
+  partnerId: string,
+): Promise<{ response: Response } | null> {
+  const [principal] = await db
+    .select({ scopes: partnerServicePrincipals.scopes })
+    .from(partnerServicePrincipals)
+    .where(and(eq(partnerServicePrincipals.id, principalId), eq(partnerServicePrincipals.partnerId, partnerId)))
+    .limit(1);
+  if (!principal) return null;
+  return validateMcpScopeDelegation(c, principal.scopes);
+}
+
+/**
+ * True when a PATCH restores or widens a principal's reach: re-enables it,
+ * removes or extends its expiry, or removes / adds source CIDRs.
+ */
+function patchLoosensPrincipal(
+  input: { status?: 'active' | 'disabled'; sourceCidrs?: string[] },
+  nextExpiresAt: Date | null | undefined,
+  existing: { status: string; expiresAt: Date | null; sourceCidrs: string[] },
+): boolean {
+  if (input.status === 'active' && existing.status !== 'active') return true;
+  if (nextExpiresAt !== undefined && existing.expiresAt !== null) {
+    if (nextExpiresAt === null || nextExpiresAt.getTime() > existing.expiresAt.getTime()) return true;
+  }
+  if (input.sourceCidrs !== undefined) {
+    const before = new Set(existing.sourceCidrs);
+    if (before.size > 0 && input.sourceCidrs.length === 0) return true;
+    if (before.size > 0 && input.sourceCidrs.some((cidr) => !before.has(cidr))) return true;
+  }
+  return false;
 }
 
 function keyError(c: any, error: unknown): Response {
@@ -242,6 +314,8 @@ partnerServicePrincipalRoutes.post(
     if (createDenial) return createDenial.response;
     const validated = validatePrincipalFields(c, input);
     if ('response' in validated) return validated.response;
+    const mcpDelegationError = validateMcpScopeDelegation(c, validated.scopes);
+    if (mcpDelegationError) return mcpDelegationError.response;
     const restrictionError = validateEnrollmentWriteRestrictions(c, {
       scopes: validated.scopes!,
       sourceCidrs: input.sourceCidrs,
@@ -309,15 +383,29 @@ partnerServicePrincipalRoutes.patch(
     if (changed.length === 0) return c.json({ error: 'No updates provided' }, 400);
     const validated = validatePrincipalFields(c, input);
     if ('response' in validated) return validated.response;
+    const mcpDelegationError = validateMcpScopeDelegation(c, validated.scopes);
+    if (mcpDelegationError) return mcpDelegationError.response;
     const [existing] = await db.select({
       scopes: partnerServicePrincipals.scopes,
       sourceCidrs: partnerServicePrincipals.sourceCidrs,
       expiresAt: partnerServicePrincipals.expiresAt,
+      status: partnerServicePrincipals.status,
     }).from(partnerServicePrincipals).where(and(
       eq(partnerServicePrincipals.id, id),
       eq(partnerServicePrincipals.partnerId, resolved.partnerId),
     )).limit(1);
     if (!existing) return c.json({ error: 'Service principal not found' }, 404);
+
+    // Re-enabling the principal or loosening its expiry / source CIDRs restores
+    // or widens the authority of keys that already exist, so it is the same
+    // delegation as issuing one: check the ceiling against the EFFECTIVE MCP
+    // scopes (the existing ones when this PATCH omits scopes). Tightening
+    // (disable, shorter expiry, narrower CIDRs) never needs it, so a lower-
+    // privileged admin can still shut a principal down.
+    if (patchLoosensPrincipal(input, validated.expiresAt, existing)) {
+      const loosenDenial = validateMcpScopeDelegation(c, validated.scopes ?? existing.scopes);
+      if (loosenDenial) return loosenDenial.response;
+    }
 
     const restrictionError = validateEnrollmentWriteRestrictions(c, {
       scopes: validated.scopes ?? existing.scopes,
@@ -391,6 +479,8 @@ partnerServicePrincipalRoutes.post(
     if (issueDenial) return issueDenial.response;
     const expiresAt = input.expiresAt ? new Date(input.expiresAt) : null;
     if (expiresAt && expiresAt.getTime() <= Date.now()) return c.json({ error: 'Expiry must be in the future' }, 400);
+    const issueDelegationDenial = await existingPrincipalMcpDelegationDenial(c, id, resolved.partnerId);
+    if (issueDelegationDenial) return issueDelegationDenial.response;
     try {
       const issued = await issuePartnerServicePrincipalKey(db, {
         partnerServicePrincipalId: id, partnerId: resolved.partnerId, name: input.name,
@@ -422,6 +512,8 @@ partnerServicePrincipalRoutes.post(
     if ('response' in resolved) return resolved.response;
     const rotateDenial = partnerWideAdminDenial(c);
     if (rotateDenial) return rotateDenial.response;
+    const rotateDelegationDenial = await existingPrincipalMcpDelegationDenial(c, id, resolved.partnerId);
+    if (rotateDelegationDenial) return rotateDelegationDenial.response;
     try {
       const rotated = await db.transaction((tx) => rotatePartnerServicePrincipalKey(tx as unknown as Database, {
         partnerServicePrincipalId: id, keyId, partnerId: resolved.partnerId, actorId: auth.user.id,

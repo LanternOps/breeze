@@ -114,6 +114,9 @@ async function writePartnerExportAudit(
     // an exact bounded metadata allowlist, not a copy of request provenance.
     await writeAuditEventAsync(requestLikeFromSnapshot({}), {
       orgId: null,
+      // Partner attribution (#7696): makes this partner-level export visible in
+      // the owning partner's Audit Trail.
+      partnerId: principal.partnerId,
       actorType: 'api_key',
       actorId: principal.keyId,
       action: 'partner_api.export',

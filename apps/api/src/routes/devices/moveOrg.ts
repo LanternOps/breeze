@@ -28,6 +28,7 @@ import {
   type MoveCurrencyGuardDetails,
 } from '../../services/ticketMoveCurrencyGuard';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
+import { expireDiagnosticApprovalsForMovedDevice } from '../../services/diagnosticAccess/deviceMove';
 import { PamDeviceMoveBlockedError } from '../../services/pamDeviceMoveGuard';
 import { pgErrorNode } from '../../utils/pgErrors';
 import { checkPoolMembershipTransition } from '../../services/unassignedPool/orgType';
@@ -308,6 +309,10 @@ moveOrgRoutes.post(
     }
 
     const { updated, linkGroupDissolved, currencyGuard, alertChildRewrite, customFieldRehome } = moved!;
+
+    await expireDiagnosticApprovalsForMovedDevice(deviceId).catch((error) => {
+      console.error(`[devices.moveOrg] failed to expire diagnostic access approvals for ${deviceId}:`, error);
+    });
 
     await schedulePeripheralPolicyDevice(deviceId, 'device_org_changed').catch((error) => {
       console.error(`[devices.moveOrg] failed to schedule peripheral reconciliation for ${deviceId}:`, error);

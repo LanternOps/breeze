@@ -159,7 +159,7 @@ invoiceLifecycleRoutes.post('/:id/reset-link', scopes, sendPerm, zValidator('par
   const id = c.req.valid('param').id;
   try {
     const inv = await loadLinkableInvoice(id, invoiceActorFrom(c));
-    // SEC-150 FAIL-CLOSED. Reset exists precisely to kill an issued capability;
+    // FAIL-CLOSED. Reset exists precisely to kill an issued capability;
     // a reset that leaves a payable Stripe Checkout session IS the finding. The
     // intent is recorded and Stripe is called BEFORE the local reset, and the
     // reset is refused (503 STRIPE_REVOCATION_PENDING) until every open session

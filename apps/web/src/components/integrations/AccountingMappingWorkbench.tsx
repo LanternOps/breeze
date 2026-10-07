@@ -155,7 +155,7 @@ export default function AccountingMappingWorkbench({
   const tabs = useMemo<readonly WorkbenchTab[]>(() => [customersTab, itemsTab], [customersTab, itemsTab]);
 
   /**
-   * SEC-2026-09-05-057 (PR review finding): every mutating control in this
+   * (PR review finding): every mutating control in this
    * workbench drives a route that now requires `accounting:manage` — Save
    * income account (PATCH /settings), Confirm/Create/Unlink (PUT /mappings)
    * and Sync now (POST /mappings/sync). Disable them without the grant so a

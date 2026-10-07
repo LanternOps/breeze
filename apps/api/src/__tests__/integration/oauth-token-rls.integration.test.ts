@@ -37,9 +37,11 @@ async function seedTwoUserOauthRows() {
     partnerId: partner.id,
     metadata: { client_name: 'RLS OAuth test client' },
   });
-  const client = await getTestDb().query.oauthClients.findFirst({
-    where: eq(oauthClients.partnerId, partner.id),
-  });
+  const [client] = await getTestDb()
+    .select()
+    .from(oauthClients)
+    .where(eq(oauthClients.partnerId, partner.id))
+    .limit(1);
   if (!client) throw new Error('failed to seed OAuth client');
 
   const expiresAt = new Date(Date.now() + 60 * 60 * 1000);

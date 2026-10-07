@@ -353,7 +353,7 @@ export default function NetworkBaselinesPanel({
     );
   };
 
-  // SEC-2026-09-05-146: a schedule whose arming authority no longer resolves is
+  // A schedule whose arming authority no longer resolves is
   // held, not silently running. Re-saving it through the existing edit control
   // re-arms it under the current user's authority.
   const renderScheduleBlocked = (baseline: NetworkBaseline) =>

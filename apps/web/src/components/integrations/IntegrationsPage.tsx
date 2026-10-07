@@ -412,7 +412,7 @@ export default function IntegrationsPage({
   // scope is blocked; everything else falls through to the server's own check.
   const isOrgScoped = claims.scope === "organization";
 
-  // SEC-2026-09-05-057: the accounting provider routes require the dedicated
+  // The accounting provider routes require the dedicated
   // `accounting:read` capability. Gate the provider cards and every provider
   // panel on it so a caller without the grant gets the standard
   // permission-denied state instead of a screen of 403s. The Stripe payments

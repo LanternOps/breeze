@@ -310,26 +310,6 @@ describe('InvoiceDetail', () => {
     }
   });
 
-  // Stale-server compatibility: a browser tab loaded before the provider-neutral
-  // field shipped still gets a server response carrying only the deprecated
-  // `quickbooksRecordUntouched` alias. The warning must still show.
-  it('falls back to the deprecated quickbooksRecordUntouched alias from a stale server', async () => {
-    const onChanged = vi.fn();
-    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
-      if (opts?.method === 'DELETE') return json({ data: issued.invoice, quickbooksRecordUntouched: true });
-      if (input.endsWith('/payments')) return json({ data: [
-        { id: 'p-qb', invoiceId: 'inv-1', amount: '40.00', method: 'check', reference: null, receivedAt: '2026-06-11', note: null, createdAt: '', source: 'quickbooks' },
-      ] });
-      return json({ data: {} });
-    });
-    render(<InvoiceDetail detail={issued} onChanged={onChanged} />);
-    fireEvent.click(await screen.findByTestId('invoice-payment-void-p-qb'));
-    fireEvent.click(screen.getByTestId('invoice-payment-reverse-confirm'));
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
-    expect(showToast).toHaveBeenCalledWith({ type: 'warning', message: 'Reverse this in QuickBooks too' });
-    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
-  });
-
   it('surfaces the server refusal when QuickBooks pull would re-import a reversed payment', async () => {
     const onChanged = vi.fn();
     fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {

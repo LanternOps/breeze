@@ -1,5 +1,5 @@
 /**
- * SEC-2026-09-05-146 — the recurring-dispatch gate.
+ * The recurring-dispatch gate.
  *
  * These controls assert the NEGATIVE space that the finding is about: when the
  * authority that armed a recurring schedule no longer resolves, the worker must
@@ -182,7 +182,7 @@ describe('processExecuteScan authority gate', () => {
   });
 
   /**
-   * SEC-146 review F1. The recurring-authority envelope answers "may this
+   * Review F1. The recurring-authority envelope answers "may this
    * schedule keep firing with nobody watching". An interactive "Scan Now" is a
    * live request that POST /network/baselines/:id/scan already authorized
    * (org + site ceiling + devices:write). Running the recurring gate on it made

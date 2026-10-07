@@ -50,6 +50,8 @@ const SHORT_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.REGISTRY_KEY_DELETE,
   CommandTypes.FILE_LIST,
   CommandTypes.FILE_READ,
+  CommandTypes.DIAG_FILE_LIST,
+  CommandTypes.DIAG_FILE_READ,
   CommandTypes.FILE_WRITE,
   CommandTypes.FILE_DELETE,
   CommandTypes.FILE_MKDIR,

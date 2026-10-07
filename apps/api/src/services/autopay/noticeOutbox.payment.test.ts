@@ -146,10 +146,18 @@ function reminder(frozen:Record<string,unknown>={amount:'100.00',currency:'USD',
  h.row.kind='payment_overdue';h.row.invoiceId='invoice';h.row.rendered.frozen=frozen;
  h.rows.set(invoices,[{id:'invoice',orgId:'org',status:'overdue',balance:'100.00',currencyCode:'USD',dueDate:'2026-10-08'}]);
  h.rows.set(invoiceCollectionAttempts,[]);
+ h.rows.set(invoiceAutopaySchedules,[]);
 }
 it('sends a reminder whose frozen amount and due date are still current',async()=>{
  reminder({amount:'100',currency:'USD',dueDate:'2026-10-08',daysOverdue:0});
  expect(await dispatchPendingBillingNotices()).toEqual({sent:1,failed:0});expect(h.send).toHaveBeenCalledOnce();
+});
+// G1/G2: an invoice that will still be charged automatically is never reminded; a reminder
+// queued before the automatic payment was (re)planned is cancelled at send.
+it.each(['awaiting_notice','scheduled','collecting','retry_scheduled'])('cancels a reminder while the automatic payment is %s',async state=>{
+ reminder();h.rows.set(invoiceAutopaySchedules,[{id:'schedule',invoiceId:'invoice',orgId:'org',state}]);
+ await dispatchPendingBillingNotices();
+ expect(h.row).toMatchObject({status:'cancelled',lastError:'Automatic payment scheduled'});expect(h.send).not.toHaveBeenCalled();
 });
 it('cancels a reminder while a collection attempt is in flight',async()=>{
  reminder();h.rows.set(invoiceCollectionAttempts,[{id:'attempt',invoiceId:'invoice',state:'processing'}]);

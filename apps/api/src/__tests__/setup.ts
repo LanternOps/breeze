@@ -1,4 +1,5 @@
-import { vi } from 'vitest';
+import { beforeEach, vi } from 'vitest';
+import { __resetAgentAuthNegativeCacheForTests } from '../middleware/agentAuthNegativeCache';
 
 // Set up test environment variables before any imports
 // JWT_SECRET must be at least 32 characters
@@ -83,3 +84,11 @@ vi.mock('../services/redis', () => {
  * const res = await client.get('/devices');
  * ```
  */
+
+// #8050 — the agent-auth negative cache is process-wide module state. Without
+// a reset, one test's cached terminal rejection (same agentId + token) would
+// answer the next test's request with a replayed 401/403 before any of its
+// mocks run. Suites that test the cache itself rely on this reset too.
+beforeEach(() => {
+  __resetAgentAuthNegativeCacheForTests();
+});

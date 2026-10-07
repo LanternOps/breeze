@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// Route audits: assert the call, not the persistence path.
+vi.mock('../../services/auditEvents', async (importActual) => ({
+  ...(await importActual<typeof import('../../services/auditEvents')>()),
+  writeRouteAudit: vi.fn(),
+}));
+
 // Mock the service layer — routes are thin; we assert wiring, validation, error mapping.
 vi.mock('../../services/quoteService', () => ({
   createQuote: vi.fn(),
@@ -128,6 +134,7 @@ import { eq } from 'drizzle-orm';
 import { partners } from '../../db/schema/orgs';
 import { quoteRoutes } from './index';
 import * as svc from '../../services/quoteService';
+import { writeRouteAudit } from '../../services/auditEvents';
 import { QuoteServiceError } from '../../services/quoteTypes';
 import { renderContractBlocksForClient, loadContractBlockAuthoring, loadContractPdfInputs } from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
@@ -165,7 +172,7 @@ describe('quote crud + lines routes', () => {
   });
 
   it('POST / creates a quote', async () => {
-    (svc.createQuote as any).mockResolvedValue({ id: QUOTE_ID, status: 'draft' });
+    (svc.createQuote as any).mockResolvedValue({ id: QUOTE_ID, orgId: ORG_ID, status: 'draft' });
     const res = await app().request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -175,6 +182,9 @@ describe('quote crud + lines routes', () => {
     const body = await res.json();
     expect(body.data.id).toBe(QUOTE_ID);
     expect(svc.createQuote).toHaveBeenCalledOnce();
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID, action: 'quote.create', resourceType: 'quote', resourceId: QUOTE_ID,
+    }));
   });
 
   it('POST /:id/clone clones a quote into a new draft (bodyless legacy call → no retarget)', async () => {
@@ -424,12 +434,15 @@ describe('quote crud + lines routes', () => {
   });
 
   it('DELETE /:id deletes a draft quote', async () => {
-    (svc.deleteDraftQuote as any).mockResolvedValue(undefined);
+    (svc.deleteDraftQuote as any).mockResolvedValue({ id: QUOTE_ID, orgId: ORG_ID });
     const res = await app().request(`/${QUOTE_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.ok).toBe(true);
     expect(svc.deleteDraftQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything());
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID, action: 'quote.delete', resourceType: 'quote', resourceId: QUOTE_ID,
+    }));
   });
 
   it('PATCH /:id/blocks/:blockId updates a heading block (200, forwards body)', async () => {

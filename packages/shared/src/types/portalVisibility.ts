@@ -375,6 +375,22 @@ export interface NetworkAssetRowDto {
   openTicketCount?: number;
 }
 
+/** A site that has at least one portal-visible network asset (#7025). */
+export interface NetworkSiteDto {
+  id: string;
+  name: string;
+}
+
+/**
+ * Sites to offer in the per-asset table's Site filter (#7025). Only sites with
+ * portal-visible (non-dismissed) assets are listed, so every option can match
+ * rows. `not_enabled` carries an empty list, mirroring NetworkAssetsDto.
+ */
+export interface NetworkSitesDto {
+  dataStatus: 'ok' | 'not_enabled';
+  data: NetworkSiteDto[];
+}
+
 /**
  * Customer-safe Network Visibility per-asset list (#5861, PR 2).
  *

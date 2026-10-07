@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { cardBrandLabel, formatPaymentMethod, paymentMethodInSentence } from './paymentMethodLabel';
+import {
+  autopayScheduleSummary, bankNameLabel, cardBrandLabel, formatCalendarDate, formatMonthYear, formatPaymentMethod, formatPercentBps, paymentMethodInSentence,
+} from './paymentMethodLabel';
 
 describe('cardBrandLabel', () => {
   it.each([
@@ -57,4 +59,47 @@ describe('paymentMethodInSentence', () => {
     ['Credit card ending in 4242', 'credit card ending in 4242'], ['Online payment', 'online payment'],
     ['Visa credit card ending in 4242', 'Visa credit card ending in 4242'], ['Link ending in 0000', 'Link ending in 0000'],
   ])('%s reads as %s mid-sentence', (label, expected) => expect(paymentMethodInSentence(label)).toBe(expected));
+});
+
+describe('formatPercentBps', () => {
+  it.each([[300, '3%'], [250, '2.5%'], [299, '2.99%'], [0, '0%'], [10, '0.1%']])('%i bps → %s', (bps, text) => {
+    expect(formatPercentBps(bps)).toBe(text);
+  });
+});
+
+describe('formatCalendarDate', () => {
+  it('renders a date-only value as that calendar day in any timezone', () => {
+    expect(formatCalendarDate('2026-11-04')).toBe('November 4, 2026');
+    expect(formatCalendarDate('2026-01-01', 'en-US')).toBe('January 1, 2026');
+  });
+  it('renders a timestamp in the requested zone and leaves bad input untouched', () => {
+    expect(formatCalendarDate('2026-10-05T04:05:08.366Z', 'en-US', 'UTC')).toBe('October 5, 2026');
+    expect(formatCalendarDate('not a date')).toBe('not a date');
+    expect(formatCalendarDate(null)).toBe('');
+  });
+});
+
+describe('formatMonthYear', () => {
+  it('names the month', () => {
+    expect(formatMonthYear(12, 2031)).toBe('December 2031');
+    expect(formatMonthYear(null, 2031)).toBe('');
+  });
+});
+
+describe('autopayScheduleSummary', () => {
+  it.each([
+    [{ offsetDays: 0, rule: 'later' }, "On each invoice's due date"],
+    [{ offsetDays: 0, rule: 'earlier' }, 'On the day each invoice is issued'],
+    [{ offsetDays: 1, rule: 'later' }, "On the due date, or 1 day after the invoice is issued if that's later"],
+    [{ offsetDays: 14, rule: 'later' }, "On the due date, or 14 days after the invoice is issued if that's later"],
+    [{ offsetDays: 7, rule: 'earlier' }, "7 days after the invoice is issued, or on the due date if that's sooner"],
+  ] as const)('%j', (terms, text) => {
+    expect(autopayScheduleSummary(terms)).toBe(text);
+  });
+});
+
+// FP-19: Stripe reports some bank names in capitals; every surface shows them as names.
+describe('bankNameLabel', () => {
+  it.each([['STRIPE TEST BANK', 'Stripe Test Bank'], ['BANK OF AMERICA, N.A.', 'Bank of America, N.A.'], ['JPMORGAN CHASE BANK, NA', 'Jpmorgan Chase Bank, NA'],
+    ['Wells Fargo', 'Wells Fargo'], ['', '']])('%s reads as %s', (raw, shown) => expect(bankNameLabel(raw)).toBe(shown));
 });

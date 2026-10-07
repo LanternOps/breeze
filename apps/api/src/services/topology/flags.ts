@@ -2,10 +2,10 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { eq } from 'drizzle-orm';
 
 import { topologyGloballyDisabled } from '../../config/env';
-import { db } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
 import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
+import { orgTopologyFlagsCache } from '../agentOrgSettingsCache';
 import { organizations, partners } from '../../db/schema';
-import type { TopologyRequestContext } from './access';
 
 export const TOPOLOGY_FLAG_KEYS = [
   'materialization',
@@ -58,7 +58,9 @@ export interface TopologyCapabilities {
   ai: TopologyCapabilityState;
 }
 
-export type TopologyRequestContextLike = Pick<TopologyRequestContext, 'scope'>;
+// Flags are a function of the org (and its partner) only, so the site half of
+// a TopologyScope is never read.
+export type TopologyRequestContextLike = { scope: { orgId: string; siteId?: string } };
 
 const DEFAULT_TOPOLOGY_FLAGS: TopologyFlags = {
   materialization: false,
@@ -185,6 +187,22 @@ export async function loadTopologyFlags(
     orgSettings: org.settings,
     globallyDisabled: topologyGloballyDisabled(),
   });
+}
+
+/**
+ * Topology flags for an AGENT request path (heartbeat, unifi-collectors,
+ * unifi-telemetry), #8053. Resolved in its own short system context — the
+ * #6671 / 2026-09-22 rule: never inside a lock-holding transaction, because the
+ * partner read here escapes to a second pooled connection — and served from a
+ * per-org process cache for `AGENT_ORG_SETTINGS_CACHE_TTL_MS`. The flags are a
+ * function of the org row and its partner row only, so the org id is the whole
+ * key. Must be called OUTSIDE any DB context; inside one the cache is bypassed.
+ * A thrown lookup is never cached.
+ */
+export async function loadAgentTopologyFlags(orgId: string): Promise<TopologyFlags> {
+  return orgTopologyFlagsCache.getOrLoad(orgId, () =>
+    withSystemDbAccessContext(() => loadTopologyFlags({ scope: { orgId } })),
+  );
 }
 
 /**

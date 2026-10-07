@@ -38,7 +38,7 @@ const abandonSchema = z.object({
 });
 
 /**
- * POST /invoices/:id/stripe-sessions/abandon — SEC-150 operator override.
+ * POST /invoices/:id/stripe-sessions/abandon — operator override.
  *
  * An MSP whose Stripe account is gone forever (closed, credential destroyed,
  * key permanently revoked) can otherwise never void the invoice: the fail-closed

@@ -26,12 +26,15 @@ function detail(overrides: Partial<PublicInvoiceDetail> = {}): PublicInvoiceDeta
 
 
 it('loads the server bank offer and starts setup only after consent',async()=>{
- const offer={available:true,principal:'100.00',fee:'0.00',currency:'USD' as const,consentText:'Authorize bank payment.',disclosureHash:'a'.repeat(64),methodStatus:null};
+ const offer={available:true,principal:'100.00',fee:'0.00',currency:'USD' as const,consentText:'Authorize bank payment.',disclosureHash:'a'.repeat(64),methodStatus:null,methodLabel:null};
  vi.spyOn(portalApi,'getPublicInvoice').mockResolvedValue({data:{data:detail({bankAutopay:offer})}});
  const fetch=vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response(JSON.stringify({data:{url:'https://checkout.stripe.com/c/setup/example'}}),{status:200,headers:{'Content-Type':'application/json'}}));
  render(<PublicInvoiceView token="token-1"/>);
- const button=await screen.findByTestId('autopay-bank-pay');expect((button as HTMLButtonElement).disabled).toBe(true);
- fireEvent.click(screen.getByTestId('autopay-bank-consent'));fireEvent.click(button);
+ fireEvent.click(await screen.findByTestId('autopay-option-bank'));
+ const button=screen.getByTestId('autopay-bank-pay');expect((button as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.click(screen.getByTestId('autopay-bank-consent'));
+ // Click only once consent has committed: a click on a still-disabled button is a silent no-op.
+ await waitFor(()=>expect(button).toBeEnabled());fireEvent.click(button);
  await waitFor(()=>expect(fetch).toHaveBeenCalled());
  const payment=fetch.mock.calls.find(([url])=>String(url).endsWith('/invoices/public/token-1/pay'));
  expect(payment).toBeDefined();expect(JSON.parse(payment![1]!.body as string)).toMatchObject({phase:'setup',consentAccepted:true});
@@ -43,18 +46,22 @@ const cardOffer = {
 };
 
 describe('public invoice card consent', () => {
-  it('starts unchecked and keeps ordinary card payment free of consent', async () => {
+  it('pays by card once by default, with no consent asked', async () => {
     const pay = vi.spyOn(portalApi, 'payPublicInvoice').mockResolvedValue({ error: 'Try again' });
     render(<PublicInvoiceView token="token-1" initial={detail({ autopay: cardOffer })} />);
-    expect(screen.getByTestId('autopay-save-card')).not.toBeChecked();
+    expect(screen.queryByTestId('autopay-save-card')).toBeNull();
+    expect(screen.queryByText(cardOffer.consentText)).toBeNull();
     fireEvent.click(screen.getByTestId('public-invoice-pay'));
     await waitFor(() => expect(pay).toHaveBeenCalledWith('token-1', { saveForAutopay: false }));
   });
 
-  it('sends the displayed disclosure only after explicit acceptance', async () => {
+  it('saving the card shows the authorization, starts unticked and sends it only once accepted', async () => {
     const pay = vi.spyOn(portalApi, 'payPublicInvoice').mockResolvedValue({ error: 'Try again' });
     render(<PublicInvoiceView token="token-1" initial={detail({ autopay: cardOffer })} />);
+    fireEvent.click(screen.getByTestId('autopay-option-card_save'));
     expect(screen.getByTestId('autopay-save-card-text')).toHaveTextContent(cardOffer.consentText);
+    expect(screen.getByTestId('autopay-save-card')).not.toBeChecked();
+    expect(screen.getByTestId('public-invoice-pay')).toBeDisabled();
     fireEvent.click(screen.getByTestId('autopay-save-card'));
     fireEvent.click(screen.getByTestId('public-invoice-pay'));
     await waitFor(() => expect(pay).toHaveBeenCalledWith('token-1', {
@@ -62,13 +69,26 @@ describe('public invoice card consent', () => {
     }));
   });
 
-  it('does not send consent after the customer unchecks it', async () => {
+  it('does not send consent after the customer unticks it and goes back to a one-off payment', async () => {
     const pay = vi.spyOn(portalApi, 'payPublicInvoice').mockResolvedValue({ error: 'Try again' });
     render(<PublicInvoiceView token="token-1" initial={detail({ autopay: cardOffer })} />);
+    fireEvent.click(screen.getByTestId('autopay-option-card_save'));
     fireEvent.click(screen.getByTestId('autopay-save-card'));
     fireEvent.click(screen.getByTestId('autopay-save-card'));
+    expect(screen.getByTestId('public-invoice-pay')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('autopay-option-card'));
     fireEvent.click(screen.getByTestId('public-invoice-pay'));
     await waitFor(() => expect(pay).toHaveBeenCalledWith('token-1', { saveForAutopay: false }));
+  });
+
+  it('an enrolled client is told how the invoice will be paid and offered no setup', async () => {
+    const scheduled = { state: 'scheduled' as const, chargeDate: '2026-08-31', amount: '100.00', fee: '0.00', currency: 'USD',
+      methodLabel: 'Visa credit card ending in 4242', methodType: 'card' as const, reason: null, paidAt: null, canPayNow: true };
+    render(<PublicInvoiceView token="token-1" initial={detail({ autopay: null, autopayEnrolled: true, autopayStatus: scheduled,
+      bankAutopay: { available: true, principal: '100.00', fee: '1.00', currency: 'USD', consentText: 'x', disclosureHash: 'a'.repeat(64), methodStatus: 'active', methodLabel: 'Bank account ending in 6789' } })} />);
+    expect(screen.getByText('This invoice will be paid automatically on August 31, 2026 with your Visa credit card ending in 4242.')).toBeInTheDocument();
+    expect(screen.queryByRole('radio')).toBeNull();
+    expect(screen.getByTestId('public-invoice-pay')).toHaveTextContent('Pay now instead');
   });
 
   it('keeps ordinary card payment available when consent is unavailable', async () => {

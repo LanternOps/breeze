@@ -20,3 +20,9 @@ describe('card brand labels on staff screens', () => {
     expect(methodLabel(card('mastercard', null, null))).toBe('Mastercard ••4242');
   });
 });
+
+// FP-19: bank names read as names in the staff list and org card.
+import { it as itBank, expect as expectBank } from 'vitest';
+itBank('shows a capitalized Stripe bank name as a name', () => {
+  expectBank(methodLabel({ type: 'us_bank_account', bankName: 'STRIPE TEST BANK', bankLast4: '6789' } as never)).toBe('Stripe Test Bank ••6789');
+});

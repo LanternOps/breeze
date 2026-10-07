@@ -250,8 +250,6 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/dev/push': 'equivalent check: devPushAuth wraps requirePermission(DEVICES_EXECUTE)+requireMfa for API key',
   // routes/devices/customFieldValues.ts
   'PATCH /api/v1/devices/:id/custom-fields': 'equivalent check: dualAuth with devices:write permission (+MFA) in-route',
-  // routes/eventWs.ts
-  'POST /api/v1/events/ws-ticket': 'own account: Mints caller own read-only event-stream ticket; scoped to caller orgs/sites',
   // routes/externalServices.ts
   'POST /api/v1/support': 'own account: emails support as caller; rate limited, no tenant data written',
   // routes/helper/index.ts
@@ -362,6 +360,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/vnc-viewer/downgrade-to-vnc': 'device credential: Viewer token (requireViewerToken) plus live session authority re-check',
   // routes/users.ts
   'PATCH /api/v1/users/me/ticket-push-preferences': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
+  'PUT /api/v1/users/me/ticket-pushover': 'own account: Caller sets own Pushover key only (auth.user.id)',
+  'DELETE /api/v1/users/me/ticket-pushover': 'own account: Caller clears own Pushover key only (auth.user.id)',
   'PATCH /api/v1/users/me': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
   'POST /api/v1/users/me/avatar': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
   'DELETE /api/v1/users/me/avatar': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',

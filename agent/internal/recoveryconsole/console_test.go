@@ -290,6 +290,172 @@ func TestConsole_RefusedPlanPostsRefusedAndOffersRetry(t *testing.T) {
 	}
 }
 
+func diskHasWindowsDeps(t *testing.T) *fakeDeps {
+	return &fakeDeps{
+		exchangeFn: happyExchange(t),
+		collectFn:  func(ctx context.Context) (*layout.Manifest, error) { return singleDiskLayout(), nil },
+		rebuildFn: func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
+			if opts.DryRun && !opts.ForceDisk {
+				return &rebuild.Result{
+					Status:      "refused",
+					Refusal:     "target disk 0 contains a Windows installation; pass --force-disk to overwrite it",
+					RefusalCode: rebuild.RefusalCodeDiskHasWindows,
+				}, &rebuild.RefusalError{
+					Reason: "target disk 0 contains a Windows installation; pass --force-disk to overwrite it",
+					Code:   rebuild.RefusalCodeDiskHasWindows,
+				}
+			}
+			if opts.DryRun {
+				return samplePlan(), nil
+			}
+			return &rebuild.Result{Status: "completed"}, nil
+		},
+	}
+}
+
+func TestConsole_DiskHasWindowsOffersOverwrite(t *testing.T) {
+	// Order: dry run refused -> OVERWRITE -> dry run (ForceDisk) -> serial confirm -> real run.
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "OVERWRITE", "6002248"}}
+	deps := diskHasWindowsDeps(t)
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	calls := deps.rebuildCalls
+	if len(calls) != 3 || calls[0].ForceDisk || !calls[1].ForceDisk || !calls[1].DryRun || !calls[2].ForceDisk || calls[2].DryRun {
+		t.Fatalf("calls = %+v", calls)
+	}
+	if !strings.Contains(io.transcript.String(), "already contains a Windows installation") {
+		t.Fatal(io.transcript.String())
+	}
+	// refused is terminal server-side: it must NOT be posted before the operator decides.
+	if got := strings.Join(statusesOf(deps.progressCalls), ","); got != "planned,restoring,validated,rebooted" {
+		t.Fatalf("progress statuses = %s", got)
+	}
+}
+
+func TestConsole_DiskHasWindowsWrongSerialStillBlocksAfterOverwrite(t *testing.T) {
+	// OVERWRITE is in addition to the serial confirmation, never instead of it.
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "OVERWRITE", "wrong", "wrong", "6002248"}}
+	deps := diskHasWindowsDeps(t)
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if n := len(deps.rebuildCalls); n != 3 {
+		t.Fatalf("rebuild calls = %d, want 3", n)
+	}
+	if got := strings.Count(io.transcript.String(), "That does not match. Try again."); got != 2 {
+		t.Fatalf("serial-mismatch message printed %d times, want 2:\n%s", got, io.transcript.String())
+	}
+}
+
+// After a decline the `refused` post is terminal server-side; OVERWRITE must
+// never be offered again for this recovery, or the disk would be erased while
+// the server record stays refused.
+func TestConsole_DiskHasWindowsNoOverwriteAfterRefusedPosted(t *testing.T) {
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "", "r", "OVERWRITE", "p"}}
+	deps := diskHasWindowsDeps(t)
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	for _, o := range deps.rebuildCalls {
+		if o.ForceDisk || !o.DryRun {
+			t.Fatalf("no forced/real run after a posted refusal: %+v", deps.rebuildCalls)
+		}
+	}
+	if n := strings.Count(io.transcript.String(), "Type OVERWRITE"); n != 1 {
+		t.Fatalf("OVERWRITE offered %d times, want 1:\n%s", n, io.transcript.String())
+	}
+	if got := strings.Join(statusesOf(deps.progressCalls), ","); got != "refused" {
+		t.Fatalf("progress statuses = %s, want a single refused", got)
+	}
+}
+
+func TestConsole_DiskHasWindowsDeclineMessageIsConsoleAppropriate(t *testing.T) {
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "", "p"}}
+	deps := diskHasWindowsDeps(t)
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	out := io.transcript.String()
+	if strings.Contains(out, "--force-disk") {
+		t.Fatalf("console must not mention the CLI flag:\n%s", out)
+	}
+	if !strings.Contains(out, "new recovery code") {
+		t.Fatalf("missing new-code guidance:\n%s", out)
+	}
+}
+
+func TestConsole_DiskHasWindowsCIModeNeverOverwrites(t *testing.T) {
+	io := &fakeIO{FailReadLine: true}
+	deps := diskHasWindowsDeps(t)
+	cmdline := "breeze.media=1 breeze.ci=1 breeze.server=https://breeze.example breeze.code=abc-def-ghj breeze.target=/dev/sda breeze.confirm=6002248 breeze.after=poweroff"
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: cmdline}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if io.readLineCalls != 0 {
+		t.Fatalf("ReadLine called %d times in CI mode", io.readLineCalls)
+	}
+	for _, o := range deps.rebuildCalls {
+		if o.ForceDisk {
+			t.Fatalf("CI must never force: %+v", deps.rebuildCalls)
+		}
+	}
+	if got := strings.Join(statusesOf(deps.progressCalls), ","); got != "refused" {
+		t.Fatalf("progress statuses = %s, want refused", got)
+	}
+}
+
+func TestConsole_DiskHasWindowsDeclineFallsThroughAndPostsRefused(t *testing.T) {
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "overwrite", "p"}}
+	deps := diskHasWindowsDeps(t)
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	for _, o := range deps.rebuildCalls {
+		if o.ForceDisk {
+			t.Fatalf("lowercase overwrite must not force: %+v", deps.rebuildCalls)
+		}
+	}
+	if got := strings.Join(statusesOf(deps.progressCalls), ","); got != "refused" {
+		t.Fatalf("progress statuses = %s, want refused", got)
+	}
+	if strings.Join(deps.powerCalls, ",") != "poweroff" {
+		t.Fatalf("power = %v", deps.powerCalls)
+	}
+}
+
+func TestConsole_OtherRefusalNoOverwrite(t *testing.T) {
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "OVERWRITE", "p"}}
+	deps := &fakeDeps{
+		exchangeFn: happyExchange(t),
+		collectFn:  func(ctx context.Context) (*layout.Manifest, error) { return singleDiskLayout(), nil },
+		rebuildFn: func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
+			return &rebuild.Result{Status: "refused", Refusal: "disk /dev/sda is currently in use"}, &rebuild.RefusalError{Reason: "disk /dev/sda is currently in use"}
+		},
+	}
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	for _, o := range deps.rebuildCalls {
+		if o.ForceDisk {
+			t.Fatalf("other refusals must never force: %+v", deps.rebuildCalls)
+		}
+	}
+	if !strings.Contains(io.transcript.String(), "Please choose r, s, or p.") {
+		t.Fatalf("OVERWRITE should be an invalid choice:\n%s", io.transcript.String())
+	}
+	if strings.Join(deps.powerCalls, ",") != "poweroff" {
+		t.Fatalf("power = %v", deps.powerCalls)
+	}
+}
+
 func TestConsole_OldMediaRefused(t *testing.T) {
 	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj"}}
 	deps := &fakeDeps{
@@ -362,6 +528,38 @@ func TestConsole_ServerRefusesOldMediaBeforeClaim(t *testing.T) {
 	}
 	if len(deps.progressCalls) != 0 {
 		t.Errorf("progress calls = %v, want none (no token was minted)", statusesOf(deps.progressCalls))
+	}
+}
+
+// TestConsole_MediaPlatformMismatchIsTerminal: a 409 media_platform_mismatch
+// (W07a) goes through the same terminal refusal path as helper_version_too_old.
+func TestConsole_MediaPlatformMismatchIsTerminal(t *testing.T) {
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "abc-def-ghj"}}
+	var exchangeCalls int
+	deps := &fakeDeps{
+		exchangeFn: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
+			exchangeCalls++
+			return "", nil, &bmr.RecoveryNegotiationError{
+				Code:    "media_platform_mismatch",
+				Message: "This recovery is for a Windows backup; boot the Breeze Windows recovery media instead. The recovery code was not used.",
+			}
+		},
+	}
+	c := &Console{IO: io, Deps: deps.build("0.120.0"), Cmdline: "breeze.media=1"}
+
+	err := c.Run(context.Background())
+	var negErr *bmr.RecoveryNegotiationError
+	if !errors.As(err, &negErr) || negErr.Code != "media_platform_mismatch" {
+		t.Fatalf("Run() error = %v, want wrapping RecoveryNegotiationError{media_platform_mismatch}", err)
+	}
+	if exchangeCalls != 1 {
+		t.Errorf("exchange calls = %d, want 1 (no re-prompt on a terminal refusal)", exchangeCalls)
+	}
+	if !strings.Contains(io.transcript.String(), "The recovery code was not used") {
+		t.Errorf("transcript missing the server's message; got:\n%s", io.transcript.String())
+	}
+	if len(deps.progressCalls) != 0 {
+		t.Errorf("progress calls = %v, want none", statusesOf(deps.progressCalls))
 	}
 }
 

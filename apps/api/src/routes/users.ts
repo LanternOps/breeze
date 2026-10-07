@@ -11,6 +11,7 @@ import { nanoid } from 'nanoid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { users, userPasskeys, partnerUsers, organizationUsers, roles, organizations, partners, ticketPushPreferences } from '../db/schema';
+import { PUSHOVER_USER_KEY_PATTERN, sealPushoverUserKey } from '../services/ticketPushover';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import {
   MAX_AVATAR_SIZE_BYTES,
@@ -77,14 +78,14 @@ userRoutes.use('*', async (c, next) => {
   // is the field technician this feature exists for.
   //
   // A route may be added here ONLY if its subject is derived from auth.user.id
-  // and never from a path param or request body. Both /me/ticket-push-preferences
-  // handlers satisfy that: the id is auth.user.id and the PATCH schema is
+  // and never from a path param or request body. The /me/ticket-push-preferences
+  // and /me/ticket-pushover handlers satisfy that: the id is auth.user.id and the PATCH schema is
   // .strict(), so a smuggled `userId` is a 400. Do NOT widen this to
   // /\/me(\/.*)?$/ — that would auto-exempt every future /me/* route,
   // including ones whose subject is not auth.user.id. The allowlist is the point.
   const path = c.req.path;
   const isSelfServiceRoute =
-    /\/me(\/avatar|\/ticket-push-preferences)?$/.test(path) ||
+    /\/me(\/avatar|\/ticket-push-preferences|\/ticket-pushover)?$/.test(path) ||
     (c.req.method === 'GET' && /\/avatar$/.test(path));
   if (isSelfServiceRoute) {
     await next();
@@ -280,6 +281,56 @@ async function getScopedMembership(
     .where(and(eq(organizationUsers.orgId, scopeContext.orgId), eq(organizationUsers.userId, userId)))
     .limit(1);
   return row ?? null;
+}
+
+/** Thrown inside the MFA-reset transaction when the target's membership no
+ * longer matches the row the rank + scope check was made against. */
+class ScopedMembershipChangedError extends Error {
+  constructor(readonly removed: boolean) {
+    super(removed ? 'membership removed' : 'membership changed');
+  }
+}
+
+function sameSiteIds(a: string[] | null | undefined, b: string[] | null | undefined): boolean {
+  if (a == null || b == null) return (a ?? null) === (b ?? null);
+  if (a.length !== b.length) return false;
+  const sorted = [...b].sort();
+  return [...a].sort().every((v, i) => v === sorted[i]);
+}
+
+/**
+ * Lock the target's membership row in the caller's tenant (FOR UPDATE, inside
+ * the mutation's own transaction) and require it to still carry the role and
+ * site allowlist the rank + scope check saw. A concurrent role change takes
+ * the same row lock first, so check and write become atomic.
+ */
+async function lockAndVerifyScopedMembership(
+  tx: Pick<typeof db, 'select'>,
+  userId: string,
+  scopeContext: ScopeContext,
+  checked: { roleId: string; siteIds?: string[] | null },
+): Promise<void> {
+  if (scopeContext.scope === 'partner') {
+    const [row] = await tx
+      .select({ roleId: partnerUsers.roleId })
+      .from(partnerUsers)
+      .where(and(eq(partnerUsers.partnerId, scopeContext.partnerId), eq(partnerUsers.userId, userId)))
+      .limit(1)
+      .for('update');
+    if (!row) throw new ScopedMembershipChangedError(true);
+    if (row.roleId !== checked.roleId) throw new ScopedMembershipChangedError(false);
+    return;
+  }
+  const [row] = await tx
+    .select({ roleId: organizationUsers.roleId, siteIds: organizationUsers.siteIds })
+    .from(organizationUsers)
+    .where(and(eq(organizationUsers.orgId, scopeContext.orgId), eq(organizationUsers.userId, userId)))
+    .limit(1)
+    .for('update');
+  if (!row) throw new ScopedMembershipChangedError(true);
+  if (row.roleId !== checked.roleId || !sameSiteIds(row.siteIds, checked.siteIds)) {
+    throw new ScopedMembershipChangedError(false);
+  }
 }
 
 function resolveAuditOrgId(auth: { orgId: string | null }, scopeContext: ScopeContext): string | null {
@@ -625,6 +676,58 @@ userRoutes.patch(
     return c.json({ settings: resolveTicketPushPrefs(row ?? set) });
   }
 );
+
+// Per-user Pushover key for ticket-assignment pushes. Write-only: the key is
+// sealed at rest and never returned; reads report only whether one is set.
+// Subject is always auth.user.id (self-service exemption above).
+const setTicketPushoverSchema = z.object({
+  userKey: z.string().trim().regex(PUSHOVER_USER_KEY_PATTERN, 'Pushover user key must be 30 letters or digits'),
+}).strict();
+
+userRoutes.get('/me/ticket-pushover', async (c) => {
+  const auth = c.get('auth');
+  const rows = await db
+    .select({ pushoverUserKeyEncrypted: ticketPushPreferences.pushoverUserKeyEncrypted })
+    .from(ticketPushPreferences)
+    .where(eq(ticketPushPreferences.userId, auth.user.id))
+    .limit(1);
+  return c.json({ userKeySet: !!rows[0]?.pushoverUserKeyEncrypted });
+});
+
+userRoutes.put('/me/ticket-pushover', zValidator('json', setTicketPushoverSchema), async (c) => {
+  const auth = c.get('auth');
+  const { userKey } = c.req.valid('json');
+  const sealed = sealPushoverUserKey(auth.user.id, userKey);
+  const set = { pushoverUserKeyEncrypted: sealed, updatedAt: new Date() };
+  await db
+    .insert(ticketPushPreferences)
+    .values({ userId: auth.user.id, ...set })
+    .onConflictDoUpdate({ target: ticketPushPreferences.userId, set });
+  writeRouteAudit(c, {
+    orgId: auth.orgId ?? null,
+    action: 'user.ticket_pushover.set',
+    resourceType: 'user',
+    resourceId: auth.user.id,
+    details: { userKeySet: true },
+  });
+  return c.json({ userKeySet: true });
+});
+
+userRoutes.delete('/me/ticket-pushover', async (c) => {
+  const auth = c.get('auth');
+  await db
+    .update(ticketPushPreferences)
+    .set({ pushoverUserKeyEncrypted: null, updatedAt: new Date() })
+    .where(eq(ticketPushPreferences.userId, auth.user.id));
+  writeRouteAudit(c, {
+    orgId: auth.orgId ?? null,
+    action: 'user.ticket_pushover.clear',
+    resourceType: 'user',
+    resourceId: auth.user.id,
+    details: { userKeySet: false },
+  });
+  return c.json({ userKeySet: false });
+});
 
 userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
   const auth = c.get('auth');
@@ -2111,10 +2214,11 @@ userRoutes.post(
       );
     }
 
-    // Tenant boundary: getScopedUser only resolves a target that has a
+    // Tenant boundary: getScopedMembership only resolves a target that has a
     // membership in the caller's org/partner, so an admin cannot reset a user
-    // outside their tenant (RLS on `users` is the second line of defense).
-    const record = await getScopedUser(userId, scopeContext);
+    // outside their tenant. It reads the membership row, never `users`, so a
+    // member homed in another org is still found under org-scoped RLS.
+    const record = await getScopedMembership(userId, scopeContext);
     if (!record) {
       return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
     }
@@ -2124,7 +2228,7 @@ userRoutes.post(
     const mfaResetManageError = await assertCanManageTarget(c, auth, scopeContext, {
       roleId: record.roleId,
       isSystem: record.roleIsSystem,
-      siteIds: 'siteIds' in record ? record.siteIds : undefined,
+      siteIds: record.siteIds,
     });
     if (mfaResetManageError) {
       return c.json({ error: mfaResetManageError }, 403);
@@ -2159,13 +2263,38 @@ userRoutes.post(
     // context — the target's `refresh_token_families` and `user_passkeys` rows
     // are user-scoped RLS and the admin's ambient context would write zero of
     // them (see services/mfaFactorReset.ts).
-    const result = await resetAllFactorsAndInvalidate(userId, 'admin-mfa-reset');
+    //
+    // lockTarget makes the rank + scope check above atomic with the reset: the
+    // membership row is locked first in the same transaction and must still
+    // carry the role/site allowlist that was checked, else nothing is written.
+    const lockedTarget: { email: string | null } = { email: null };
+    let result: Awaited<ReturnType<typeof resetAllFactorsAndInvalidate>>;
+    try {
+      result = await resetAllFactorsAndInvalidate(userId, 'admin-mfa-reset', {
+        lockTarget: async (tx) => {
+          await lockAndVerifyScopedMembership(tx, userId, scopeContext, record);
+          const [target] = await tx
+            .select({ email: users.email })
+            .from(users)
+            .where(eq(users.id, userId))
+            .limit(1);
+          lockedTarget.email = target?.email ?? null;
+        },
+      });
+    } catch (err) {
+      if (err instanceof ScopedMembershipChangedError) {
+        return err.removed
+          ? jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found')
+          : c.json({ error: 'User membership changed; retry the reset' }, 409);
+      }
+      throw err;
+    }
     const { inventory } = result;
 
     writeUserAudit(c, auth, scopeContext, {
       action: 'user.mfa_reset',
       resourceId: userId,
-      resourceName: record.email,
+      resourceName: lockedTarget.email ?? undefined,
       details: {
         method: inventory.previousMethod ?? (inventory.passkeysDeleted > 0 ? 'passkey' : 'totp'),
         factors: {

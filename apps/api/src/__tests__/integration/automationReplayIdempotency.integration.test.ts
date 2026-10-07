@@ -21,11 +21,12 @@ import './setup';
 
 import { randomUUID } from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { withSystemDbAccessContext } from '../../db';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   automationActionResults,
+  automationRunDeviceResults,
   automationRuns,
   automations,
   deviceCommands,
@@ -41,6 +42,31 @@ import { getTestDb } from './setup';
 
 const { publishEventMock } = vi.hoisted(() => ({ publishEventMock: vi.fn().mockResolvedValue('event-id') }));
 vi.mock('../../services/eventBus', () => ({ publishEvent: publishEventMock }));
+
+// #8104 — a deterministic interleaving hook. When set, it runs once, right
+// before the Nth ledger seed (counted from when it was armed), so a test can
+// commit a cancel in the exact window between the runtime's pre-seed fence
+// check and a device's ledger insert.
+const seedHook = vi.hoisted(() => ({
+  beforeSeed: null as null | { remaining: number; run: () => Promise<void> },
+}));
+vi.mock('../../services/automationActionResults', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/automationActionResults')>();
+  return {
+    ...actual,
+    seedAutomationActionResults: async (...args: Parameters<typeof actual.seedAutomationActionResults>) => {
+      const hook = seedHook.beforeSeed;
+      if (hook) {
+        hook.remaining -= 1;
+        if (hook.remaining === 0) {
+          seedHook.beforeSeed = null;
+          await hook.run();
+        }
+      }
+      return actual.seedAutomationActionResults(...args);
+    },
+  };
+});
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -160,6 +186,58 @@ describe('automation replay idempotency — real PostgreSQL (#3189)', () => {
     }
     const commands = await commandsFor(f.deviceIds);
     expect(commands).toHaveLength(ledger.filter((row) => row.status === 'queued').length);
+  });
+
+  afterEach(() => {
+    seedHook.beforeSeed = null;
+  });
+
+  it.each([
+    { seedsBeforeCancel: 0, label: 'before the first device seed' },
+    { seedsBeforeCancel: 1, label: 'between two device seeds' },
+  ])('a cancel committing $label strands no pending action or device (#8104)', async ({ seedsBeforeCancel }) => {
+    if (!process.env.DATABASE_URL) return;
+    const f = await fixture(3);
+
+    // The cancel commits (on its own connection, as the route would) after the
+    // runtime's pre-seed fence check passed and right before device N+1's
+    // ledger seed — the window the 15 ms race above only sometimes lands in.
+    let cancel: Awaited<ReturnType<typeof cancelAutomationRun>> | undefined;
+    seedHook.beforeSeed = {
+      remaining: seedsBeforeCancel + 1,
+      run: async () => {
+        cancel = await runOutsideDbContext(() =>
+          cancelAutomationRun({ runId: f.run.id, actorId: null, actorLabel: 'replay-integration' }));
+      },
+    };
+
+    const outcome = await executeAutomationRun(f.run.id, f.deviceIds);
+
+    expect(seedHook.beforeSeed).toBeNull();
+    expect(cancel?.kind).toBe('cancelled');
+    expect(outcome.status).toBe('cancelled');
+    const ledger = await ledgerFor(f.run.id);
+    // Only the devices seeded before the cancel have rows (2 actions each);
+    // the cancel's own sweep terminalised them and no later seed inserted.
+    expect(ledger).toHaveLength(seedsBeforeCancel * 2);
+    expect(new Set(ledger.map((row) => row.deviceId)).size).toBe(seedsBeforeCancel);
+    for (const row of ledger) {
+      expect(row.status).toBe('cancelled');
+    }
+    expect(await commandsFor(f.deviceIds)).toHaveLength(0);
+    // Every device row was seeded `pending` up front; the ones with no action
+    // rows must still close, or the run aggregate stays `running` forever.
+    const deviceRows = await getTestDb()
+      .select({ status: automationRunDeviceResults.status })
+      .from(automationRunDeviceResults)
+      .where(eq(automationRunDeviceResults.runId, f.run.id));
+    expect(deviceRows.map((row) => row.status)).toEqual(['cancelled', 'cancelled', 'cancelled']);
+    const [runRow] = await getTestDb()
+      .select({ status: automationRuns.status, completedAt: automationRuns.completedAt })
+      .from(automationRuns)
+      .where(eq(automationRuns.id, f.run.id));
+    expect(runRow!.status).toBe('cancelled');
+    expect(runRow!.completedAt).not.toBeNull();
   });
 
   runDb('two trigger attempts for one schedule slot yield one run; manual runs are never deduplicated', async () => {
