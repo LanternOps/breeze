@@ -43,7 +43,7 @@ const defaultBranding: BrandingData = {
   portalSubdomain: ''
 };
 
-const DEFAULT_CUSTOM_CSS = '/* Add custom portal styling here */\n.portal-header {\n  letter-spacing: 0.04em;\n}';
+const CUSTOM_CSS_PLACEHOLDER = '/* Add custom portal styling here */\n.portal-header {\n  letter-spacing: 0.04em;\n}';
 
 const themeOptions = [
   { value: 'light', labelKey: 'orgBrandingEditor.theme.options.light' },
@@ -70,7 +70,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
   const [primaryColor, setPrimaryColor] = useState(initialData.primaryColor || defaultBranding.primaryColor || '#2563eb');
   const [secondaryColor, setSecondaryColor] = useState(initialData.secondaryColor || defaultBranding.secondaryColor || '#14b8a6');
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(initialData.theme || 'system');
-  const [customCss, setCustomCss] = useState(DEFAULT_CUSTOM_CSS);
+  const [customCss, setCustomCss] = useState('');
   const [savingCustomCss, setSavingCustomCss] = useState(false);
   // Tracks whether the initial customCss GET failed (network error, non-2xx,
   // or an unparsable body) — reviewed data-loss risk: without this, a failed
@@ -268,7 +268,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
               <div className="space-y-1">
                 <p className="text-sm font-medium">{t('orgBrandingEditor.logo.uploadNew')}</p>
                 <p className="text-xs text-muted-foreground">
-                  {t('orgBrandingEditor.logo.recommendation')}
+                  {t('partnerBranding.imageHelp')}
                 </p>
                 {logoName ? (
                   <p className="text-xs text-muted-foreground">{t('orgBrandingEditor.logo.selected', { name: logoName })}</p>
@@ -411,6 +411,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
             <textarea
               data-testid="branding-custom-css"
               value={customCss}
+              placeholder={CUSTOM_CSS_PLACEHOLDER}
               disabled={isLocked('customCss') || customCssLoadFailed}
               onChange={event => {
                 setCustomCss(event.target.value);

@@ -74,12 +74,30 @@ describe('OrgBrandingEditor', () => {
     expect(fetchMock).toHaveBeenCalledWith(`/orgs/organizations/${ORG_ID}/portal-settings`);
   });
 
-  it('keeps the seeded placeholder when the persisted customCss is null', async () => {
+  it('shows the sample CSS as a placeholder, never as the value, when none is saved', async () => {
     fetchMock.mockResolvedValue(makeJsonResponse({ data: { customCss: null } }));
     render(<OrgBrandingEditor organizationName="Acme Systems" orgId={ORG_ID} />);
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(getCustomCssTextarea().value).toContain('Add custom portal styling here');
+    expect(getCustomCssTextarea().value).toBe('');
+    expect(getCustomCssTextarea().placeholder).toContain('letter-spacing');
+  });
+
+  it('Save with untouched CSS sends customCss: null, not the sample', async () => {
+    fetchMock.mockImplementation(async (_input, init) =>
+      makeJsonResponse({ data: { customCss: null } }, true));
+    render(<OrgBrandingEditor organizationName="Acme Systems" orgId={ORG_ID} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'Save branding' }));
+    await screen.findByText('Branding settings saved.');
+    const patch = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patch![1]!.body))).toEqual({ customCss: null });
+  });
+
+  it('logo hint matches the accepted formats (not SVG/512)', () => {
+    render(<OrgBrandingEditor organizationName="Acme Systems" />);
+    expect(screen.queryByText(/512x512/)).toBeNull();
+    expect(screen.getByText(/PNG, JPEG, or WebP/)).toBeTruthy();
   });
 
   it('saves customCss via PATCH /orgs/organizations/:id/portal-settings, decoupled from other branding fields', async () => {
