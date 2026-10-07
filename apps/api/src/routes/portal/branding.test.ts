@@ -77,6 +77,7 @@ describe('GET /branding (authenticated)', () => {
       enableDocuments: false,
       enableLifecycle: true,
       enableHardwareHealth: true,
+      enableHardwareInventory: true,
       enableNetworkVisibility: true,
     }];
 
@@ -94,6 +95,7 @@ describe('GET /branding (authenticated)', () => {
         enableDocuments: false,
         enableLifecycle: true,
         enableHardwareHealth: true,
+        enableHardwareInventory: true,
       },
     });
 
@@ -117,6 +119,7 @@ describe('GET /branding (authenticated)', () => {
         'enableDocuments',
         'enableLifecycle',
         'enableHardwareHealth',
+        'enableHardwareInventory',
         'enableNetworkVisibility',
       ]),
     );
@@ -149,6 +152,7 @@ describe('GET /branding (authenticated)', () => {
     expect(body).not.toHaveProperty('enableDocuments');
     expect(body).not.toHaveProperty('enableLifecycle');
     expect(body).not.toHaveProperty('enableHardwareHealth');
+    expect(body).not.toHaveProperty('enableHardwareInventory');
     expect(body).not.toHaveProperty('enableNetworkVisibility');
   });
 
@@ -215,6 +219,7 @@ describe('GET /branding/:domain (public)', () => {
     expect(body.branding).not.toHaveProperty('enableDocuments');
     expect(body.branding).not.toHaveProperty('enableLifecycle');
     expect(body.branding).not.toHaveProperty('enableHardwareHealth');
+    expect(body.branding).not.toHaveProperty('enableHardwareInventory');
     expect(body.branding).not.toHaveProperty('enableNetworkVisibility');
     expect(response.headers.get('Cache-Control')).toContain('public');
 
@@ -233,6 +238,7 @@ describe('GET /branding/:domain (public)', () => {
       'enableDocuments',
       'enableLifecycle',
       'enableHardwareHealth',
+      'enableHardwareInventory',
       'enableNetworkVisibility',
     ]) {
       expect(Object.keys(dbState.selected ?? {})).not.toContain(flag);

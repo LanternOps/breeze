@@ -117,6 +117,8 @@ export const updatePortalSettingsSchema = z.object({
   enableLifecycle: z.boolean().optional(),
   // Portal advanced visibility W01 (#7731): hardware health, fail closed.
   enableHardwareHealth: z.boolean().optional(),
+  // Portal advanced visibility W02 (#7732): hardware inventory, fail closed.
+  enableHardwareInventory: z.boolean().optional(),
   // Customer Portal Network Visibility (#5861): fail closed by default.
   enableNetworkVisibility: z.boolean().optional(),
   enableNetworkAlerts: z.boolean().optional(),

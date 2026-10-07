@@ -121,6 +121,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/portal/backupReadModel.ts': 'read model: portal backups',
   'services/portal/deviceReadModel.ts': 'read model: portal devices',
   'services/portal/hardwareHealthReadModel.ts': 'read model: portal hardware health',
+  'services/portal/hardwareInventoryReadModel.ts': 'read model: portal hardware inventory',
   'services/portal/securityReadModel.ts': 'read model: portal security',
   'services/reportGenerationService.ts': 'report: per-org report builders',
   'services/reportScope.ts': 'report: scope (already excludes the holding org)',

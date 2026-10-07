@@ -117,6 +117,10 @@ const STRICT_PORTAL_FEATURES: Record<StrictPortalVisibilityFlag, { error: string
     error: 'Hardware health is not enabled for this portal',
     code: 'PORTAL_HARDWARE_HEALTH_DISABLED',
   },
+  enableHardwareInventory: {
+    error: 'Hardware inventory is not enabled for this portal',
+    code: 'PORTAL_HARDWARE_INVENTORY_DISABLED',
+  },
 };
 
 export function createPortalFeatureGateStrict(flag: StrictPortalVisibilityFlag): MiddlewareHandler {

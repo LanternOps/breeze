@@ -1902,6 +1902,10 @@
           "label": "Hardware-Zustand",
           "description": "Zeigt Komponentenzustand, Ereignisse, Laufwerke und Akku der Geräte Ihres Kunden an."
         },
+        "enableHardwareInventory": {
+          "label": "Hardware-Inventar",
+          "description": "Zeigt Hersteller, Modell, Prozessor, Arbeitsspeicher, Netzwerkadapter und Verbindungsanzahl der Geräte Ihres Kunden an."
+        },
         "enableNetworkVisibility": {
           "label": "Netzwerksichtbarkeit",
           "description": "Zeigt im Kundenportal den Netzwerkzustand und erkannte Assets schreibgeschützt an."

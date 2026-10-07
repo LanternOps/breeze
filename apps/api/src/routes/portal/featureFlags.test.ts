@@ -68,6 +68,7 @@ describe('createPortalFeatureGateStrict', () => {
     ['enableDocuments', 'PORTAL_DOCUMENTS_DISABLED'],
     ['enableLifecycle', 'PORTAL_LIFECYCLE_DISABLED'],
     ['enableHardwareHealth', 'PORTAL_HARDWARE_HEALTH_DISABLED'],
+    ['enableHardwareInventory', 'PORTAL_HARDWARE_INVENTORY_DISABLED'],
   ] as const)(
     'fails closed for %s',
     async (flag, code) => {

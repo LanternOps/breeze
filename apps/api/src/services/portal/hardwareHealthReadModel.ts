@@ -66,6 +66,23 @@ async function deviceAggregates(orgId: string, deviceIds?: string[]) {
     .groupBy(deviceHardwareComponents.deviceId);
 }
 
+// Devices of the whole organization that report at least one customer-visible
+// component. The list's dataStatus uses it so it does not depend on which page
+// was requested.
+async function reportingDevices(orgId: string): Promise<number> {
+  const rows = await db
+    .select({ reporting: sql<number>`count(distinct ${deviceHardwareComponents.deviceId})::int` })
+    .from(deviceHardwareComponents)
+    .innerJoin(devices, eq(devices.id, deviceHardwareComponents.deviceId))
+    .where(and(
+      eq(deviceHardwareComponents.orgId, orgId),
+      eq(devices.isEphemeral, false),
+      eq(deviceHardwareComponents.stale, false),
+      notInArray(deviceHardwareComponents.componentType, [...EXCLUDED_COMPONENT_TYPES]),
+    ));
+  return rows[0]?.reporting ?? 0;
+}
+
 async function deviceTotal(orgId: string): Promise<number> {
   const rows = await db
     .select({ total: sql<number>`count(*)::int` })
@@ -95,8 +112,9 @@ export async function hardwareHealthDevicesPage(
   args: { page: number; limit: number; now: Date },
 ) {
   const offset = (args.page - 1) * args.limit;
-  const [total, pageRows] = await Promise.all([
+  const [total, reporting, pageRows] = await Promise.all([
     deviceTotal(orgId),
+    reportingDevices(orgId),
     db
       .select({
         id: devices.id,
@@ -146,7 +164,7 @@ export async function hardwareHealthDevicesPage(
 
   return {
     asOf: args.now.toISOString(),
-    dataStatus: aggregates.length > 0 ? ('ok' as const) : ('no_data' as const),
+    dataStatus: reporting > 0 ? ('ok' as const) : ('no_data' as const),
     data,
     pagination: { page: args.page, limit: args.limit, total },
   };

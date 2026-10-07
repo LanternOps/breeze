@@ -19,7 +19,7 @@ import {
 } from './portalFlags';
 
 describe('PORTAL_VISIBILITY_FLAG_KEYS', () => {
-  it('lists exactly the ten visibility flags', () => {
+  it('lists exactly the eleven visibility flags', () => {
     expect(PORTAL_VISIBILITY_FLAG_KEYS).toEqual([
       'enableDashboard',
       'enableSecurity',
@@ -30,6 +30,7 @@ describe('PORTAL_VISIBILITY_FLAG_KEYS', () => {
       'enableDocuments',
       'enableLifecycle',
       'enableHardwareHealth',
+      'enableHardwareInventory',
       'enableNetworkVisibility'
     ]);
   });
@@ -58,6 +59,7 @@ describe('onPortalFlagsChanged', () => {
     enableDocuments: false,
     enableLifecycle: false,
     enableHardwareHealth: false,
+    enableHardwareInventory: false,
     enableNetworkVisibility: false,
   };
 

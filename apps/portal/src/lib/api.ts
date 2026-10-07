@@ -822,6 +822,7 @@ export interface BrandingConfig {
   enableDocuments?: boolean;
   enableLifecycle?: boolean;
   enableHardwareHealth?: boolean;
+  enableHardwareInventory?: boolean;
   enableNetworkVisibility?: boolean;
   /** Curated chrome accent key (packages/shared/src/types/portalChromeAccent.ts).
    *  null/unset/unrecognized means the default ('spruce') — nothing to apply. */

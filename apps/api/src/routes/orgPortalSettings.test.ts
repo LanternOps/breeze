@@ -85,6 +85,7 @@ vi.mock('../db/schema', () => ({
     enableDocuments: 'enableDocuments',
     enableLifecycle: 'enableLifecycle',
     enableHardwareHealth: 'enableHardwareHealth',
+    enableHardwareInventory: 'enableHardwareInventory',
     enableNetworkVisibility: 'enableNetworkVisibility',
     chromeAccent: 'chromeAccent',
     supportEmail: 'supportEmail',
@@ -123,6 +124,7 @@ const FULL_ROW = {
   enableDocuments: false,
   enableLifecycle: false,
   enableHardwareHealth: false,
+  enableHardwareInventory: false,
   enableNetworkVisibility: false,
   chromeAccent: 'navy',
   supportEmail: 'help@msp.example',
@@ -182,6 +184,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableDocuments: false,
       enableLifecycle: false,
       enableHardwareHealth: false,
+      enableHardwareInventory: false,
       enableNetworkVisibility: false,
       chromeAccent: 'navy',
       supportEmail: 'help@msp.example',
@@ -217,6 +220,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableDocuments: false,
       enableLifecycle: false,
       enableHardwareHealth: false,
+      enableHardwareInventory: false,
       enableNetworkVisibility: false,
       enableNetworkAlerts: false,
       chromeAccent: null,
@@ -385,6 +389,7 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableDocuments: false,
       enableLifecycle: true,
       enableHardwareHealth: true,
+      enableHardwareInventory: true,
       enableNetworkVisibility: true
     }]);
 
@@ -394,6 +399,7 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableService: true,
       enableLifecycle: true,
       enableHardwareHealth: true,
+      enableHardwareInventory: true,
       enableNetworkVisibility: true
     });
 
@@ -408,6 +414,7 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableDocuments: false,
       enableLifecycle: true,
       enableHardwareHealth: true,
+      enableHardwareInventory: true,
       enableNetworkVisibility: true
     });
     expect(onPortalFlagsChanged).toHaveBeenCalledWith({
@@ -419,6 +426,7 @@ describe('PATCH /organizations/:id/portal-settings', () => {
         enableService: true,
         enableLifecycle: true,
         enableHardwareHealth: true,
+        enableHardwareInventory: true,
         enableNetworkVisibility: true
       },
       current: {
@@ -431,6 +439,7 @@ describe('PATCH /organizations/:id/portal-settings', () => {
         enableDocuments: false,
         enableLifecycle: true,
         enableHardwareHealth: true,
+        enableHardwareInventory: true,
         enableNetworkVisibility: true
       }
     });

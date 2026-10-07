@@ -35,6 +35,7 @@ const SETTINGS = {
   enableDocuments: false,
   enableLifecycle: false,
   enableHardwareHealth: false,
+  enableHardwareInventory: false,
   enableNetworkVisibility: false,
   supportEmail: 'help@msp.example',
   supportPhone: null,
@@ -131,6 +132,7 @@ describe('OrgPortalSettingsEditor', () => {
       'enableDocuments',
       'enableLifecycle',
       'enableHardwareHealth',
+      'enableHardwareInventory',
       'enableNetworkVisibility',
     ]) {
       expect((screen.getByTestId(
@@ -185,6 +187,7 @@ describe('OrgPortalSettingsEditor', () => {
       enableDocuments: true,
       enableLifecycle: true,
       enableHardwareHealth: true,
+      enableHardwareInventory: true,
       enableNetworkVisibility: true,
     });
   });
