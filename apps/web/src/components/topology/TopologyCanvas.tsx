@@ -7,7 +7,7 @@ import type { RenderNode, TopologyRender } from './renderProjection';
 import { glyphTileUri } from './topologyGlyphs';
 import { cardSummaries, sectionHeaders } from './cardSections';
 import { routeEdgesToCards } from './edgeRouting';
-import { canvasFillHeight, chipModes, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, summarySlot, type Bounds, type ZoomTier } from './semanticZoom';
+import { canvasFillHeight, chipModes, edgeEnd, fitFocus, nextFit, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, summarySlot, type Bounds, type FitState, type ZoomTier } from './semanticZoom';
 import CardSummaryOverlay, { type SummaryCard } from './CardSummaryOverlay';
 import NodeChipOverlay, { overviewChips, type NodeChip } from './NodeChipOverlay';
 
@@ -163,7 +163,7 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
   const container = useRef<HTMLDivElement>(null), overlay = useRef<HTMLDivElement>(null), chipLayer = useRef<HTMLDivElement>(null), cy = useRef<Core | null>(null);
   const callbacks = useRef({ onSelect, onMove }); callbacks.current = { onSelect, onMove };
   const insetRef = useRef(fitInsetTop); insetRef.current = fitInsetTop;
-  const fitted = useRef<string | undefined>(undefined);
+  const fitState = useRef<FitState>({});
   const tierRef = useRef<ZoomTier>('detail'), [tier, setTier] = useState<ZoomTier>('detail');
   /** The summary tier and chips belong to the grouped overview only (nextZoomTier, overviewChips). */
   const groupedRef = useRef(render.grouped); groupedRef.current = render.grouped;
@@ -422,7 +422,8 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
     });
     // Card titles left-align on the card's border (compound bounds are final only after the batch).
     renderer.nodes(':parent').forEach((card) => { card.data('titleShift', 4 - card.outerWidth()); });
-    if (fitted.current !== fitKey && positions.length) { fitRef.current?.(); fitted.current = fitKey; }
+    const fit = nextFit(fitState.current, fitKey, positions); fitState.current = fit.state;
+    if (fit.fit) fitRef.current?.();
     schedule.current();
   }, [render, positions, boxes, selection, editable, fitKey, t]);
 

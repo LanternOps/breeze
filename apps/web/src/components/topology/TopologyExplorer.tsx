@@ -114,9 +114,6 @@ export default function TopologyExplorer({ siteId, siteName, focusNodeId, settin
   useEffect(() => {
     setPositions([]); setBoxes([]); setConflict(false); setWarning(undefined); setDiagnostic(undefined);
   }, [siteId, view]);
-  // Expand/Collapse swaps the drawn subgraph: drop the stale positions so the canvas fits once the new layout lands
-  // (its fitKey changes with the expansion), instead of leaving the camera on the old subgraph's coordinates.
-  useEffect(() => { setPositions([]); }, [expansion]);
   useEffect(() => {
     if (graph && selection && !selected && !hiddenSelected) { navigate({ ...navigation, selection: undefined }); setAnnouncement(t('selectionRemoved')); }
   }, [graph?.revisions.graph]);
