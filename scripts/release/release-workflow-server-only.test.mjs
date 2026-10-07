@@ -672,6 +672,79 @@ test('promotion revalidates the ledger row and the signed kind before publishing
   assert.doesNotMatch(step, /\$\{\{ (?!secrets\.|github\.token|inputs\.tag|steps\.lineage\.outputs\.tag_sha)/u);
 });
 
+// Executes the real "Revalidate server-only ledger row" script with the gh
+// CLI, the manifest verifier and the guard bootstrap stubbed.
+function promotionRevalidateScript() {
+  const lines = readFileSync(PROMOTION_WORKFLOW, 'utf8').split('\n');
+  const start = lines.findIndex((line) => line.trim() === '- name: Revalidate server-only ledger row');
+  assert.notEqual(start, -1);
+  const stepIndent = lines[start].match(/^ */u)[0].length;
+  const runAt = lines.findIndex((line, index) => index > start && line.trim() === 'run: |');
+  const body = [];
+  for (let index = runAt + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.trim() && line.match(/^ */u)[0].length <= stepIndent) break;
+    body.push(line);
+  }
+  const indent = Math.min(...body.filter((line) => line.trim()).map((line) => line.match(/^ */u)[0].length));
+  return body.map((line) => line.slice(indent)).join('\n');
+}
+
+test('promotion requires the signed pairing and source commit to match the ledger row and the tag', () => {
+  const script = promotionRevalidateScript();
+  const TAG_SHA = 'a'.repeat(40);
+  const BASE_SHA = 'b'.repeat(40);
+  const serverOnly = { releaseKind: 'server-only', sourceCommit: TAG_SHA, binariesRelease: 'v1.2.0', binariesSourceCommit: BASE_SHA };
+  const full = { releaseKind: 'full', sourceCommit: TAG_SHA };
+  const cases = [
+    ['server-only, row and tag agree', 0, serverOnly, 0],
+    ['server-only, signed binariesRelease is another base', 0, { ...serverOnly, binariesRelease: 'v1.1.0' }, 1],
+    ['server-only, signed binariesSourceCommit is another commit', 0, { ...serverOnly, binariesSourceCommit: 'c'.repeat(40) }, 1],
+    ['server-only, signed binariesRelease missing', 0, { ...serverOnly, binariesRelease: undefined }, 1],
+    ['server-only, signed sourceCommit is not the tag commit', 0, { ...serverOnly, sourceCommit: 'c'.repeat(40) }, 1],
+    ['full, tag agrees', 3, full, 0],
+    ['full, signed sourceCommit is not the tag commit', 3, { ...full, sourceCommit: 'c'.repeat(40) }, 1],
+    ['kind mismatch: listed but full', 0, full, 1],
+    ['kind mismatch: unlisted but server-only', 3, serverOnly, 1],
+    ['guard refused', 1, serverOnly, 1],
+  ];
+  for (const [label, guardExit, identity, status] of cases) {
+    const work = mkdtempSync(join(scratch, 'promote-'));
+    const bin = join(work, 'bin');
+    mkdirSync(join(work, 'scripts', 'release'), { recursive: true });
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'gh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(work, 'identity.json'), JSON.stringify(identity));
+    writeFileSync(join(work, 'scripts', 'release', 'release-image-manifest.mjs'), `import { copyFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+copyFileSync(${JSON.stringify(join(work, 'identity.json'))}, args[args.indexOf('--output') + 1]);
+`);
+    writeFileSync(join(work, 'scripts', 'release', 'run-server-only-guard.sh'), `#!/usr/bin/env bash
+report=""
+while [ $# -gt 0 ]; do case "$1" in --report) report="$2"; shift 2 ;; *) shift ;; esac; done
+if [ "${guardExit}" = 0 ] && [ -n "$report" ]; then
+  printf '{"tag":"v1.2.3","commit":"${TAG_SHA}","base":"v1.2.0","baseSha":"${BASE_SHA}","binariesVersion":"1.2.0","changedPathCount":1,"online":true,"agentFacing":[]}\\n' > "$report"
+fi
+exit ${guardExit}
+`, { mode: 0o755 });
+    const result = spawnSync('bash', ['-e', '-c', script], {
+      cwd: work,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        RUNNER_TEMP: work,
+        GITHUB_REPOSITORY: 'LanternOps/breeze',
+        TAG: 'v1.2.3',
+        EXPECTED_TAG_SHA: TAG_SHA,
+        GH_TOKEN: 'x',
+        RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'x',
+      },
+    });
+    assert.equal(result.status, status, `${label}\n${result.stdout}\n${result.stderr}`);
+  }
+});
+
 // ── ci.yml release-ledger job ──────────────────────────────────────────────
 test('ci.yml runs the release-ledger job for every code change and CI Success requires it', () => {
   const ciText = readFileSync(CI_WORKFLOW, 'utf8');

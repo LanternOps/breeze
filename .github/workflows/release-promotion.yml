@@ -44,7 +44,9 @@ jobs:
 
       # Server-only releases (.github/release-provenance/server-only-tags.tsv):
       # re-run the base-executed eligibility guard against main as it is NOW,
-      # and require the draft's signed release kind to agree with the ledger.
+      # and require the draft's signed release kind, source commit and (for a
+      # server-only release) binaries pairing to agree with the tag and the
+      # ledger row.
       # Catches a row removed after the build, a newer stable tag published in
       # the meantime (no longer globally highest), and a full-built draft for a
       # listed tag (or the reverse).
@@ -67,8 +69,20 @@ jobs:
             --expected-repository "$GITHUB_REPOSITORY" \
             --expected-release "$TAG" \
             --output "$draft_dir/identity.json"
-          kind=$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).releaseKind)' "$draft_dir/identity.json")
+          # A string field of a JSON file, or "" when it is absent.
+          field() {
+            node -e 'const v = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]]; console.log(typeof v === "string" ? v : "")' "$1" "$2"
+          }
+          kind=$(field "$draft_dir/identity.json" releaseKind)
 
+          # The signed draft must have been built from exactly the tag commit.
+          signed_source=$(field "$draft_dir/identity.json" sourceCommit)
+          if [ "$signed_source" != "$EXPECTED_TAG_SHA" ]; then
+            echo "::error::the draft of $TAG is signed for source commit '$signed_source', but $TAG peels to $EXPECTED_TAG_SHA; refusing to publish."
+            exit 1
+          fi
+
+          guard_report="$draft_dir/server-only-guard.json"
           set +e
           bash scripts/release/run-server-only-guard.sh \
             --tag "$TAG" \
@@ -76,7 +90,8 @@ jobs:
             --ledger-ref origin/main \
             --main-ref origin/main \
             --online \
-            --expected-repository "$GITHUB_REPOSITORY"
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --report "$guard_report"
           status=$?
           set -e
 
@@ -85,7 +100,17 @@ jobs:
               echo "$TAG is a full release (not listed in the server-only ledger; signed kind full)."
               ;;
             0:server-only)
-              echo "$TAG is a server-only release; ledger row and eligibility revalidated against main."
+              # The kind alone is not enough: the signed pairing must name the
+              # base the ledger row on main names (and that base's commit).
+              row_base=$(field "$guard_report" base)
+              row_base_sha=$(field "$guard_report" baseSha)
+              signed_base=$(field "$draft_dir/identity.json" binariesRelease)
+              signed_base_sha=$(field "$draft_dir/identity.json" binariesSourceCommit)
+              if [ -z "$row_base" ] || [ "$signed_base" != "$row_base" ] || [ "$signed_base_sha" != "$row_base_sha" ]; then
+                echo "::error::the draft of $TAG is signed with binaries from '$signed_base' ($signed_base_sha), but the server-only ledger on main names base '$row_base' ($row_base_sha); refusing to publish."
+                exit 1
+              fi
+              echo "$TAG is a server-only release; ledger row, eligibility and signed pairing ($row_base) revalidated against main."
               ;;
             3:server-only)
               echo "::error::the draft of $TAG is signed as a server-only release, but $TAG is not listed in the server-only ledger on main; refusing to publish."
