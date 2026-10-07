@@ -257,6 +257,10 @@ vi.mock('../services/mfaStepUpGrant', () => ({
   parkedAssignResourceDigest: vi.fn(() => 'sha256:9a7ked0a551900000000000000000000000000000000000000000000000000001'),
   parkedBulkAssignResourceDigest: vi.fn(() => 'sha256:9a7ked0b01k000000000000000000000000000000000000000000000000000002'),
   preAssignmentEnableResourceDigest: vi.fn(() => 'sha256:9reass19ne00000000000000000000000000000000000000000000000000000003'),
+  // Script lane / partner ceiling (#8112): two more distinct constants, so a
+  // mint dispatch that swapped the two digest functions fails below.
+  scriptLanePolicyResourceDigest: vi.fn(() => 'sha256:5c719710a9e000000000000000000000000000000000000000000000000000004'),
+  partnerScriptCeilingResourceDigest: vi.fn(() => 'sha256:9a7c3111n9000000000000000000000000000000000000000000000000000005'),
   // NB: the MAINTENANCE_MAX_* maxima are deliberately NOT restated here. They
   // live in services/maintenanceStepUpLimits.ts, which nothing mocks, so the
   // schemas under test bind the REAL 168/500 rather than a copy in this
@@ -479,7 +483,7 @@ import { hashRecoveryCode, encryptMfaSecret } from './auth/helpers';
 import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 import * as mfaPolicyModule from '../services/mfaPolicy';
 import { enforceIpAllowlist } from '../services/ipAllowlist';
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest } from '../services/mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest } from '../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { getTwilioService } from '../services/twilio';
 import { authMiddleware } from '../middleware/auth';
@@ -5191,6 +5195,31 @@ describe('auth routes', () => {
 				operation: 'pre_assignment_enable',
 				resourceDigest: 'sha256:9reass19ne00000000000000000000000000000000000000000000000000000003',
 			}));
+		});
+
+		it.each([
+			['ai_partner_script_ceiling_grant', { partnerId: '00000000-0000-4000-8000-000000000040', unattendedAllowed: true }, 'sha256:9a7c3111n9000000000000000000000000000000000000000000000000000005'],
+			['ai_script_lane_grant', { orgId: '00000000-0000-4000-8000-000000000041', unattendedEnabled: true }, 'sha256:5c719710a9e000000000000000000000000000000000000000000000000000004'],
+		] as const)('mints a %s grant with that operation\'s own digest of the resource (#8112)', async (operation, base, digest) => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-lane');
+			const widening = {
+				maxUnattendedRiskTier: 'medium',
+				unattendedAllowedClasses: ['temp_files'],
+				maxUnattendedPerHour: 7,
+				protectedResourcesEmptied: false,
+				proposingEnabled: true,
+			};
+			const resource = { ...base, widening };
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation, resource }),
+			});
+			expect(res.status).toBe(200);
+			const digestFn = operation === 'ai_partner_script_ceiling_grant' ? partnerScriptCeilingResourceDigest : scriptLanePolicyResourceDigest;
+			expect(digestFn).toHaveBeenCalledWith(expect.objectContaining({ ...base, widening }));
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({ operation, resourceDigest: digest }));
 		});
 
 		it('refuses a pre_assignment_enable grant for enabled=false (disabling needs no step-up)', async () => {

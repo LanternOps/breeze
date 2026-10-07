@@ -412,9 +412,24 @@ describe('mint → redeem round-trip with the shared partner ceiling resource (#
   function armConsumeFor(resource: unknown) {
     const minted = partnerScriptCeilingStepUpResource.parse(resource);
     const mintDigest = partnerScriptCeilingResourceDigest(minted);
-    consumeStepUpGrant.mockImplementation(async (_grantId: string, binding: { resourceDigest: string }) =>
-      binding.resourceDigest === mintDigest);
+    consumeStepUpGrant.mockImplementation(async (_grantId: string, binding: { operation: string; resourceDigest: string }) =>
+      binding.operation === 'ai_partner_script_ceiling_grant' && binding.resourceDigest === mintDigest);
   }
+
+  it('a grant minted for one set of values does not redeem a save of wider ones', async () => {
+    armConsumeFor(partnerScriptCeilingGrantResource({ partnerId: PARTNER, allowed: true, saved: null, body: FULL_BODY }));
+    const res = await putReq({ ...FULL_BODY, maxUnattendedPerHour: FULL_BODY.maxUnattendedPerHour + 1, unattendedAllowed: true, stepUpGrant: 'grant-1' });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
+    expect(writes).toHaveLength(0);
+  });
+
+  it('a grant minted for another partner does not redeem', async () => {
+    armConsumeFor(partnerScriptCeilingGrantResource({ partnerId: '44444444-4444-4444-8444-444444444444', allowed: true, saved: null, body: FULL_BODY }));
+    const res = await putReq({ ...FULL_BODY, unattendedAllowed: true, stepUpGrant: 'grant-1' });
+    expect(res.status).toBe(403);
+    expect(writes).toHaveLength(0);
+  });
 
   it.each([
     ['first-ever enable (no row yet)', null, FULL_BODY],

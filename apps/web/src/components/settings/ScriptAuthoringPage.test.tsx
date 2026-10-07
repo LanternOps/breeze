@@ -589,6 +589,39 @@ describe('ScriptAuthoringPage', () => {
       expect(queryByTestId('script-partner-stepup')).toBeNull();
     });
 
+    it('surfaces a repeat STEP_UP_REQUIRED instead of silently re-opening the prompt', async () => {
+      // No partnerId from the GET (version skew): the page cannot build a grant,
+      // so the second Save is grant-less again and the server 403s again.
+      mockRoutes({ partner: { ...partnerGetBody(true), partnerId: undefined }, partnerPutGated: true, usersMe: { mfaMethod: null }, passkeys: { passkeys: [{ id: 'pk-1' }] } });
+      const { getByTestId } = renderPage();
+      await waitFor(() => expect(getByTestId('script-partner-save')).toBeInTheDocument());
+
+      fireEvent.click(getByTestId('script-partner-unattended-allowed'));
+      fireEvent.click(getByTestId('script-partner-save'));
+      await waitFor(() => expect(getByTestId('script-partner-stepup')).toBeInTheDocument());
+      expect(showToast).not.toHaveBeenCalled();
+
+      fireEvent.click(getByTestId('script-partner-save'));
+      await waitFor(() => expect(putCalls('/partner/ai/script-policy')).toHaveLength(2));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      expect(getByTestId('script-authoring-error')).toBeInTheDocument();
+      expect(mintStepUpGrant).not.toHaveBeenCalled();
+    });
+
+    it('does not blame the account when factor discovery itself fails', async () => {
+      mockRoutes({ partner: partnerGetBody(true), partnerPutGated: true, usersMe: { mfaMethod: 'totp' } });
+      const base = fetchWithAuth.getMockImplementation()!;
+      fetchWithAuth.mockImplementation((url: string, init?: RequestInit) =>
+        url === '/users/me' ? Promise.resolve(jsonRes({}, 500)) : base(url, init));
+      const { getByTestId } = renderPage();
+      await waitFor(() => expect(getByTestId('script-partner-save')).toBeInTheDocument());
+
+      fireEvent.click(getByTestId('script-partner-unattended-allowed'));
+      fireEvent.click(getByTestId('script-partner-save'));
+      await waitFor(() => expect(getByTestId('script-authoring-error')).toBeInTheDocument());
+      expect(getByTestId('script-authoring-error').textContent).not.toMatch(/authenticator app or passkey/);
+    });
+
     it('tells an account with no usable factor why instead of showing an unusable prompt', async () => {
       mockRoutes({ partner: partnerGetBody(true), partnerPutGated: true, usersMe: { mfaMethod: null }, passkeys: { passkeys: [] } });
       const { getByTestId, queryByTestId } = renderPage();

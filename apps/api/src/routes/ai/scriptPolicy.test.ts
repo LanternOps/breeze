@@ -496,8 +496,8 @@ describe('PUT /script-policy', () => {
     const resource = scriptLaneWideningGrantResource(ORG_A, saved, saveBody);
     expect(resource).not.toBeNull();
     const mintDigest = scriptLanePolicyResourceDigest(scriptLaneStepUpResource.parse(resource));
-    consumeStepUpGrant.mockImplementation(async (_grantId: string, binding: { resourceDigest: string }) =>
-      binding.resourceDigest === mintDigest);
+    consumeStepUpGrant.mockImplementation(async (_grantId: string, binding: { operation: string; resourceDigest: string }) =>
+      binding.operation === 'ai_script_lane_grant' && binding.resourceDigest === mintDigest);
 
     const res = await putReq({ ...saveBody, stepUpGrant: 'grant-1' });
     expect(res.status).toBe(200);

@@ -318,7 +318,8 @@ export default function ScriptAuthoringPage() {
   ): Promise<string> => {
     const tier = await ensureReauthTier();
     if (!tier || tier === 'password') {
-      throw new StepUpMintError('unavailable', t('scriptAuthoringPage.stepUp.noFactor'));
+      // null = factor discovery itself failed, not "no factor".
+      throw new StepUpMintError('unavailable', t(tier ? 'scriptAuthoringPage.stepUp.noFactor' : 'scriptAuthoringPage.saveFailed'));
     }
     const reauth: StepUpReauth = tier === 'passkey' ? { method: 'passkey' } : { method: 'totp', code };
     return mintStepUpGrant({ operation, resource, reauth });
@@ -330,7 +331,9 @@ export default function ScriptAuthoringPage() {
   const revealStepUp = useCallback(async (open: () => void) => {
     const tier = await ensureReauthTier();
     if (!tier || tier === 'password') {
-      setError(t('scriptAuthoringPage.stepUp.noFactor'));
+      // null = factor discovery itself failed (network, /users/me error), which
+      // must not read as "your account has no factor".
+      setError(t(tier ? 'scriptAuthoringPage.stepUp.noFactor' : 'scriptAuthoringPage.saveFailed'));
       return;
     }
     open();
@@ -384,10 +387,14 @@ export default function ScriptAuthoringPage() {
       await load();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
-      if (!stepUpGrant && !isEnabling && isStepUpRequired(err)) {
+      // Only the FIRST grant-less 403 opens the prompt. A repeat one means the
+      // page could not build a grant the server accepts (e.g. its copy of the
+      // saved row is stale) — re-opening the same prompt would loop silently.
+      if (!stepUpGrant && !isEnabling && !orgWideningStepUpOpen && isStepUpRequired(err)) {
         await revealStepUp(() => setOrgWideningStepUpOpen(true));
         return;
       }
+      if (isStepUpRequired(err) && !stepUpGrant) showToast({ message: t('scriptAuthoringPage.saveFailed'), type: 'error' });
       if (!(err instanceof ActionError)) showToast({ message: t('scriptAuthoringPage.saveFailed'), type: 'error' });
       setError(err instanceof ActionError ? err.message : t('scriptAuthoringPage.saveFailed'));
     } finally {
@@ -441,10 +448,12 @@ export default function ScriptAuthoringPage() {
       await load();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
-      if (!stepUpGrant && isStepUpRequired(err)) {
+      // Only the FIRST grant-less 403 opens the prompt; see handleOrgSave.
+      if (!stepUpGrant && !partnerStepUpOpen && isStepUpRequired(err)) {
         await revealStepUp(() => setPartnerStepUpOpen(true));
         return;
       }
+      if (isStepUpRequired(err) && !stepUpGrant) showToast({ message: t('scriptAuthoringPage.saveFailed'), type: 'error' });
       if (!(err instanceof ActionError)) showToast({ message: t('scriptAuthoringPage.saveFailed'), type: 'error' });
       setError(err instanceof ActionError ? err.message : t('scriptAuthoringPage.saveFailed'));
     } finally {

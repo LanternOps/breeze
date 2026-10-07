@@ -1,3 +1,5 @@
+import { riskTierRank } from '../validators/scriptProposals';
+import type { RiskTier } from './assuranceLevel';
 /**
  * The step-up `resource` for turning the unattended script lane ON (#7873).
  *
@@ -73,8 +75,6 @@ export interface ScriptLaneSavedValues {
   protectedResources: ScriptLaneEnableSaveBody['protectedResources'];
 }
 
-const WIDENING_TIER_RANK: Record<string, number> = { low: 0, medium: 1, high: 2, critical: 3 };
-
 /**
  * Client mirror of `computeWidening` in apps/api/src/routes/ai/scriptPolicy.ts
  * and apps/api/src/routes/partnerAiScriptPolicy.ts, for a body that carries
@@ -90,7 +90,7 @@ export function scriptLaneWidening(
   saved: ScriptLaneSavedValues,
   body: ScriptLaneEnableSaveBody,
 ): ScriptLaneEnableGrantResource['widening'] | null {
-  const tierWidened = (WIDENING_TIER_RANK[body.maxUnattendedRiskTier] ?? 0) > (WIDENING_TIER_RANK[saved.maxUnattendedRiskTier] ?? 0);
+  const tierWidened = riskTierRank(body.maxUnattendedRiskTier) > riskTierRank(saved.maxUnattendedRiskTier as RiskTier);
   const classesWidened = body.unattendedAllowedClasses.some((cl) => !saved.unattendedAllowedClasses.includes(cl));
   const rateWidened = body.maxUnattendedPerHour > saved.maxUnattendedPerHour;
   const protectedResourcesEmptied = !protectedResourcesEmpty(saved.protectedResources)
