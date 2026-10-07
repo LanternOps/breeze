@@ -95,6 +95,8 @@ it('keeps an expanded group on screen through structural polls and collapses bac
   expect(result.current.expanded).toBe(false);
   await act(async () => { await result.current.expand('group-token'); });
   expect(result.current.expanded).toBe(true);
+  // The canvas re-fits on every expand/collapse transition, keyed on this token.
+  expect(result.current.expansion).toBe('group-token');
   vi.mocked(fetchWithAuth).mockClear();
   await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
   const structural = vi.mocked(fetchWithAuth).mock.calls.map(([url]) => String(url)).filter((url) => !url.includes('/health'));
@@ -103,6 +105,7 @@ it('keeps an expanded group on screen through structural polls and collapses bac
   await act(async () => { result.current.collapse(); });
   await waitFor(() => expect(result.current.graph!.nodes.map((n) => n.label)).not.toContain('Group member'));
   expect(result.current.expanded).toBe(false);
+  expect(result.current.expansion).toBeNull();
 });
 
 it('falls back to the overview when a polled expansion is refused (revision changed or token expired)', async () => {

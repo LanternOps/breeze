@@ -40,6 +40,12 @@ vi.mock('../../lib/authScope', () => ({
   loginPathWithNext: () => '/login',
 }));
 
+const showToast = vi.hoisted(() => vi.fn());
+// runAction.ts imports the same resolved module, so this intercepts its toasts.
+vi.mock('../shared/Toast', () => ({
+  showToast: (...args: unknown[]) => showToast(...args),
+}));
+
 import { fetchWithAuth } from '../../stores/auth';
 import CustomFieldsPage from './CustomFieldsPage';
 
@@ -77,15 +83,42 @@ beforeEach(() => {
 });
 
 describe('CustomFieldsPage partner-wide gating (#2135 step 6)', () => {
-  it('badges a partner-wide row as All organizations', async () => {
+  it('shows All organizations exactly once on a partner-wide row (column only, no name badge)', async () => {
     render(<CustomFieldsPage />);
-    expect(await screen.findByTestId('custom-field-all-orgs-badge')).toBeInTheDocument();
+    const orgCell = await screen.findByTestId('custom-field-org');
+    expect(orgCell).toHaveTextContent('All organizations');
+    expect(screen.queryByTestId('custom-field-all-orgs-badge')).toBeNull();
+    const row = orgCell.closest('tr')!;
+    expect(row.textContent!.match(/All organizations/g)).toHaveLength(1);
+  });
+
+  it('toasts success when a create succeeds', async () => {
+    state.canManagePartnerWide = true;
+    render(<CustomFieldsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /add custom field/i }));
+    fireEvent.change(await screen.findByPlaceholderText('e.g., Asset Tag'), {
+      target: { value: 'Contract Tier' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /create field/i }));
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })),
+    );
+  });
+
+  it('toasts success when a delete succeeds', async () => {
+    state.canManagePartnerWide = true;
+    render(<CustomFieldsPage />);
+    fireEvent.click(await screen.findByTestId('custom-field-delete'));
+    fireEvent.click(await screen.findByRole('button', { name: /delete field/i }));
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })),
+    );
   });
 
   it('hides Edit and Delete on a partner-wide row from a user who cannot manage partner-wide state', async () => {
     state.canManagePartnerWide = false;
     render(<CustomFieldsPage />);
-    await screen.findByTestId('custom-field-all-orgs-badge');
+    await screen.findByTestId('custom-field-org');
     expect(screen.queryByTestId('custom-field-edit')).toBeNull();
     expect(screen.queryByTestId('custom-field-delete')).toBeNull();
   });
@@ -93,7 +126,7 @@ describe('CustomFieldsPage partner-wide gating (#2135 step 6)', () => {
   it('shows Edit and Delete on a partner-wide row to a user who can manage partner-wide state', async () => {
     state.canManagePartnerWide = true;
     render(<CustomFieldsPage />);
-    await screen.findByTestId('custom-field-all-orgs-badge');
+    await screen.findByTestId('custom-field-org');
     expect(screen.getByTestId('custom-field-edit')).toBeInTheDocument();
     expect(screen.getByTestId('custom-field-delete')).toBeInTheDocument();
   });

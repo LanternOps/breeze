@@ -120,6 +120,8 @@
     "revoked": "Clé révoquée",
     "revokeFailed": "Échec de la révocation de la clé",
     "copyNow": "Copiez cette clé maintenant",
+    "copy": "Copier",
+    "copied": "Copié",
     "oneTimeWarning": "Cette clé en clair n'est affichée qu'une seule fois et ne pourra pas être récupérée ultérieurement.",
     "done": "Terminé"
   },
@@ -5931,7 +5933,12 @@
       "messagePrefix": "Êtes-vous sûr de vouloir supprimer ?",
       "messageSuffix": " Cela supprimera la définition du champ et toutes les valeurs stockées sur les appareils."
     },
-    "typeFilterLabel": "Type de champ"
+    "typeFilterLabel": "Type de champ",
+    "toasts": {
+      "created": "Champ personnalisé créé",
+      "updated": "Champ personnalisé mis à jour",
+      "deleted": "Champ personnalisé supprimé"
+    }
   },
   "knownGuestsSettings": {
     "title": "Invités connus",

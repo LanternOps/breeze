@@ -116,6 +116,38 @@ export async function registryWrite(c: Context, partnerId: string, fn: () => Pro
   }
 }
 
+const NETWORK_ERROR_CODES = new Set([
+  'ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH',
+  'UND_ERR_CONNECT_TIMEOUT', 'ERR_TLS_CERT_ALTNAME_INVALID',
+]);
+// OpenSSL verification failures surface as plain string codes (CERT_HAS_EXPIRED,
+// DEPTH_ZERO_SELF_SIGNED_CERT, UNABLE_TO_VERIFY_LEAF_SIGNATURE, ...).
+const TLS_CODE = /CERT|SSL|TLS|SELF_SIGNED|UNABLE_TO_(GET|VERIFY)/;
+
+/** True for a network-level failure (DNS, connect, timeout, TLS) in the error or its cause chain; never for a programmer error. */
+export function isNetworkFailure(error: unknown): boolean {
+  for (let e: unknown = error, depth = 0; e && typeof e === 'object' && depth < 4; e = (e as { cause?: unknown }).cause, depth++) {
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === 'string' && (NETWORK_ERROR_CODES.has(code) || TLS_CODE.test(code))) return true;
+  }
+  return false;
+}
+
+/**
+ * A BYO endpoint that cannot be resolved or reached is the admin's input
+ * problem: a 400 on `baseUrl`, not a 500. The raw error (it carries the
+ * resolver / socket text) goes to the server log only.
+ */
+export function endpointUnreachableResponse(c: Context, error: unknown, stage: string): Response | null {
+  if (!isNetworkFailure(error)) return null;
+  console.warn(`[aiModels] ${stage}: endpoint unreachable`, error instanceof Error ? error.message : String(error));
+  return c.json({
+    error: 'The endpoint host could not be resolved or reached. Check the base URL.',
+    code: 'endpoint_unreachable',
+    details: { field: 'baseUrl' },
+  }, 400);
+}
+
 /** A live connection the partner can change: missing, foreign and W03 soft-disconnected rows are all "absent". */
 export type OwnedConnection = PartnerAiConnection & { status: Exclude<PartnerAiConnection['status'], 'disconnected'> };
 

@@ -120,6 +120,8 @@
     "revoked": "Anahtar iptal edildi",
     "revokeFailed": "Anahtar iptal edilemedi",
     "copyNow": "Bu anahtarı şimdi kopyalayın",
+    "copy": "Kopyala",
+    "copied": "Kopyalandı",
     "oneTimeWarning": "Bu düz metin anahtarı bir kez gösterilir ve daha sonra alınamaz.",
     "done": "Bitti"
   },
@@ -5984,7 +5986,12 @@
       "messagePrefix": "Silmek istediğinizden emin misiniz?",
       "messageSuffix": "Bu, alan tanımını ve cihazlarda depolanan tüm değerleri kaldıracaktır."
     },
-    "typeFilterLabel": "Alan türü"
+    "typeFilterLabel": "Alan türü",
+    "toasts": {
+      "created": "Özel alan oluşturuldu",
+      "updated": "Özel alan güncellendi",
+      "deleted": "Özel alan silindi"
+    }
   },
   "knownGuestsSettings": {
     "title": "Bilinen Misafirler",

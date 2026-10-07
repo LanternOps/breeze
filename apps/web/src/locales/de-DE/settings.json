@@ -120,6 +120,8 @@
     "revoked": "Schlüssel widerrufen",
     "revokeFailed": "Schlüssel konnte nicht widerrufen werden",
     "copyNow": "Diesen Schlüssel jetzt kopieren",
+    "copy": "Kopieren",
+    "copied": "Kopiert",
     "oneTimeWarning": "Dieser Klartextschlüssel wird nur einmal angezeigt und kann später nicht abgerufen werden.",
     "done": "Fertig"
   },
@@ -5931,7 +5933,12 @@
       "messagePrefix": "Sind Sie sicher, dass Sie löschen möchten?",
       "messageSuffix": "Dadurch werden die Felddefinition und alle auf den Geräten gespeicherten Werte entfernt."
     },
-    "typeFilterLabel": "Feldtyp"
+    "typeFilterLabel": "Feldtyp",
+    "toasts": {
+      "created": "Benutzerdefiniertes Feld erstellt",
+      "updated": "Benutzerdefiniertes Feld aktualisiert",
+      "deleted": "Benutzerdefiniertes Feld gelöscht"
+    }
   },
   "knownGuestsSettings": {
     "title": "Bekannte Gäste",

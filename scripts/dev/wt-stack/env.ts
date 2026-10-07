@@ -101,6 +101,14 @@ const DEV_ENV: Record<string, string> = {
   // values already present in the developer's root .env via compose interpolation.
 };
 
+/**
+ * A wt-stack is a throwaway QA stack and must never send outbound mail, but a
+ * developer's root .env carries a real RESEND_API_KEY (EMAIL_PROVIDER=auto).
+ * .env.stack is passed to compose last, so empty values here blank the root
+ * ones. Opt out with BREEZE_WT_STACK_LIVE_MAIL=1.
+ */
+const NO_LIVE_MAIL_KEYS = ['RESEND_API_KEY', 'MAILGUN_API_KEY', 'SMTP_HOST'] as const;
+
 /** Keys set after compose runs (see setStackEnvValues); a rewrite keeps them. */
 const RUNTIME_KEYS = ['WEBAUTHN_ORIGIN', 'WEBAUTHN_RP_ID'] as const;
 
@@ -129,8 +137,13 @@ export function writeEnvStack(worktreePath: string, opts: { arch?: string } = {}
   const kept = previous.filter((line) =>
     RUNTIME_KEYS.some((k) => new RegExp(`^\\s*${k}\\s*=`).test(line)));
   const platform = nativeDockerPlatform(worktreePath, opts.arch ?? process.arch);
+  const blankMail = process.env.BREEZE_WT_STACK_LIVE_MAIL !== '1';
+  if (blankMail) {
+    console.log('[wt-stack] outbound mail disabled (RESEND_API_KEY/MAILGUN_API_KEY/SMTP_HOST blanked; set BREEZE_WT_STACK_LIVE_MAIL=1 to keep them)');
+  }
   const body = [
     ...Object.entries(DEV_ENV).map(([k, v]) => `${k}=${v}`),
+    ...(blankMail ? NO_LIVE_MAIL_KEYS.map((k) => `${k}=`) : []),
     ...(platform ? [`DOCKER_PLATFORM=${platform}`] : []),
     ...kept,
   ].join('\n') + '\n';
