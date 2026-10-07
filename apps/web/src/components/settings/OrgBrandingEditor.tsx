@@ -89,8 +89,8 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
 
   // customCss lives in portal_branding (#5952), not organizations.settings —
   // load its current persisted value independently of the `branding` prop.
-  // A missing/null value keeps the seeded placeholder rather than blanking
-  // the textarea, matching the pre-#5952 first-run UX. Any failure to load
+  // A missing/null value leaves the textarea empty (the sample CSS is only a
+  // placeholder, never a saved value). Any failure to load
   // (network error, non-2xx, unparsable body) is treated the same way and
   // flips customCssLoadFailed so Save refuses to clobber real data with the
   // placeholder — see the state declaration above.
@@ -172,7 +172,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
 
     if (customCssLoadFailed) {
       // The initial load never confirmed what's actually persisted, so
-      // `customCss` may still be the seeded placeholder rather than the
+      // `customCss` may still be the empty initial state rather than the
       // admin's real saved value — writing it now would silently clobber
       // their real CSS. Refuse and tell them, instead of "succeeding".
       showToast({ message: t('orgBrandingEditor.customCss.saveBlockedByLoadError'), type: 'error' });
