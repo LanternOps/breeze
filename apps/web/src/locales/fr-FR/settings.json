@@ -6471,7 +6471,10 @@
     },
     "stepUp": {
       "title": "Confirmez que c'est bien vous",
-      "body": "L'activation des exécutions non supervisées nécessite une nouvelle vérification de sécurité."
+      "body": "L'activation des exécutions non supervisées nécessite une nouvelle vérification de sécurité.",
+      "ceilingBody": "Autoriser ou élargir les exécutions sans surveillance pour vos organisations nécessite une nouvelle vérification de sécurité. Confirmez, puis sélectionnez à nouveau Enregistrer.",
+      "wideningBody": "Élargir ce que les exécutions sans surveillance peuvent faire nécessite une nouvelle vérification de sécurité. Confirmez, puis sélectionnez à nouveau Enregistrer.",
+      "noFactor": "Cette modification nécessite une vérification de sécurité, mais votre compte n'a ni application d'authentification ni clé d'accès. Configurez-en une dans votre profil, puis réessayez."
     },
     "save": "Enregistrer",
     "saving": "Enregistrement…",

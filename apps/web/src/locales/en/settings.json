@@ -6466,7 +6466,10 @@
     },
     "stepUp": {
       "title": "Confirm it is you",
-      "body": "Enabling unattended runs needs a fresh security check."
+      "body": "Enabling unattended runs needs a fresh security check.",
+      "ceilingBody": "Allowing or widening unattended runs for your organizations needs a fresh security check. Confirm, then select Save again.",
+      "wideningBody": "Widening what unattended runs may do needs a fresh security check. Confirm, then select Save again.",
+      "noFactor": "This change needs a security check, but your account has no authenticator app or passkey. Set one up in your profile, then try again."
     },
     "save": "Save",
     "saving": "Saving…",
