@@ -333,7 +333,7 @@ export default function ScriptAuthoringPage() {
     if (!tier || tier === 'password') {
       // null = factor discovery itself failed (network, /users/me error), which
       // must not read as "your account has no factor".
-      setError(t(tier ? 'scriptAuthoringPage.stepUp.noFactor' : 'scriptAuthoringPage.saveFailed'));
+      setError(tier ? t('scriptAuthoringPage.stepUp.noFactor') : t('scriptAuthoringPage.saveFailed'));
       return;
     }
     open();
