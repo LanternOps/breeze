@@ -226,6 +226,11 @@ for (const [label, envExample] of [
   ['drops the manifest key line', ENV_EXAMPLE.replace(/^RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=.*\n/mu, '')],
   ['adds an indented override of the key', `${ENV_EXAMPLE}  RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=attacker-key=\n`],
   ['adds an exported override of the key', `${ENV_EXAMPLE}export RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=attacker-key=\n`],
+  // docker compose and dotenv also accept `KEY: value` (last assignment wins),
+  // while guided-setup's get_env_value only reads `KEY=` lines.
+  ['adds a colon-form override of the key', `${ENV_EXAMPLE}RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: attacker-key=\n`],
+  ['adds an exported colon-form override of the key', `${ENV_EXAMPLE}export RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: attacker-key=\n`],
+  ['adds a colon-form override of the key-id switch', `${ENV_EXAMPLE}AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID:true\n`],
 ]) {
   test(`refuses a .env.example change that ${label}`, () => {
     const fx = new Fixture();

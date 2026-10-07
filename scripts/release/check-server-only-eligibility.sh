@@ -215,10 +215,13 @@ fi
 #     (it may document new server env vars), but it carries the release-manifest
 #     public key and the signing-key-id switch that installs copy from the
 #     release tag. A server-only release ships the BASE's signed binaries, so it
-#     must not change the key those binaries are verified under. Any active
-#     assignment of either variable, in any spelling the env loaders accept,
-#     must be byte-identical to the base.
-TRUST_ANCHOR_RE='^[[:space:]]*(export[[:space:]]+)?(RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS|AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID)[[:space:]]*='
+#     must not change the key those binaries are verified under. Every line
+#     that assigns either variable must be byte-identical to the base. That
+#     covers `KEY=`, `KEY:` (docker compose and dotenv accept both, and the
+#     LAST assignment wins, while guided-setup's get_env_value reads only
+#     `KEY=` lines), each with optional leading whitespace and `export`.
+#     Comments are not assignments and stay free to change.
+TRUST_ANCHOR_RE='^[[:space:]]*(export[[:space:]]+)?(RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS|AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID)[[:space:]]*[=:]'
 trust_anchor_lines() {
   if g cat-file -e "$1:.env.example" 2>/dev/null; then
     g show "$1:.env.example" | { grep -E "$TRUST_ANCHOR_RE" || true; }
