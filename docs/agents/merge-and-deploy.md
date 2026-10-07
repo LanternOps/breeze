@@ -17,13 +17,19 @@ Droplets pull from `/opt/breeze` and use mutable image tags driven by `BREEZE_VE
 ssh root@<droplet> "cd /opt/breeze && \
   cp .env .env.bak-pre-<new-version> && \
   sed -i 's/^BREEZE_VERSION=.*/BREEZE_VERSION=<new-version>/' .env && \
-  docker compose pull api web portal && \
-  docker compose up -d binaries-init api web portal && \
+  sed -i '/^BREEZE_API_IMAGE_TAG=/d' .env && \
+  W=\$(grep -qE '^COMPOSE_PROFILES=.*worker-split' .env && echo worker || true) && \
+  docker compose pull api web portal \$W && \
+  docker compose up -d binaries-init api web portal \$W && \
   docker image prune -af --filter 'until=168h' && \
   docker builder prune -af"
 ```
 
 Then `curl -sf https://<region>.2breeze.app/health` to verify (200 = healthy).
+
+**Two droplet-local overrides the line above handles** (both added 2026-10-07):
+- **Worker split.** A droplet running the optional `worker` container (`COMPOSE_PROFILES=worker-split` in `.env`, see `apps/docs/src/content/docs/deploy/worker-split.mdx`) must roll it with the API, or it keeps running the old image's job code against the new schema. `W` adds it to the pull/up only where the profile is on.
+- **API hotfix pin.** `BREEZE_API_IMAGE_TAG` in `.env` pins the API (and worker) image to a hotfix tag independently of `BREEZE_VERSION`. A full release must drop it, or the API stays on the hotfix image while `/health` reports the new version (compose sets `APP_VERSION` from `BREEZE_VERSION`); only the parity check below shows it, as SKEW. The `sed` deletes it.
 
 **The two prune lines are part of the deploy, not optional cleanup.** Every release pulls a fresh set of images and nothing removes the previous ones. On 2026-09-22 stale images held 18 GB on US and 20 GB on EU (about 75% of all image storage), and the US root disk had already hit 100% twice (09-04, 09-06). `prune -a` only removes images no container references, running or stopped, so the locally built `breeze-billing:local` survives. The `until=168h` filter keeps last week's images so a rollback to the previous `BREEZE_VERSION` needs no re-pull.
 

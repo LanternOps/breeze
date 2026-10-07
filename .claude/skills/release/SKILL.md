@@ -316,8 +316,10 @@ Per droplet:
 ssh root@<droplet> "cd /opt/breeze && \
   cp .env .env.bak-pre-$NEW && \
   sed -i 's/^BREEZE_VERSION=.*/BREEZE_VERSION=0.X.Y/' .env && \
-  docker compose pull api web portal && \
-  docker compose up -d binaries-init api web portal && \
+  sed -i '/^BREEZE_API_IMAGE_TAG=/d' .env && \
+  W=\$(grep -qE '^COMPOSE_PROFILES=.*worker-split' .env && echo worker || true) && \
+  docker compose pull api web portal \$W && \
+  docker compose up -d binaries-init api web portal \$W && \
   docker image prune -af --filter 'until=168h' && \
   docker builder prune -af"
 # then verify:
@@ -327,6 +329,10 @@ ssh root@<droplet> "docker logs breeze-api 2>&1 | grep -aE 'auto-migrate' | tail
 # expect "[auto-migrate] Applied N migration(s)" and the unprivileged app-user line
 # the two prune lines keep stale release images from filling the root disk (US hit 100% twice in Sept 2026)
 ```
+
+**Two droplet-local overrides the line above handles** (both added 2026-10-07):
+- **Worker split.** A droplet running the optional `worker` container (`COMPOSE_PROFILES=worker-split` in `.env`, see `apps/docs/src/content/docs/deploy/worker-split.mdx`) must roll it with the API, or it keeps running the old image's job code against the new schema. `W` adds it to the pull/up only where the profile is on.
+- **API hotfix pin.** `BREEZE_API_IMAGE_TAG` in `.env` pins the API (and worker) image to a hotfix tag independently of `BREEZE_VERSION`. A full release must drop it, or the API stays on the hotfix image while `/health` reports the new version (compose sets `APP_VERSION` from `BREEZE_VERSION`); only the parity check below shows it, as SKEW. The `sed` deletes it.
 
 **Then assert version parity across EVERY first-party container — `/health` does NOT cover this.**
 
