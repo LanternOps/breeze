@@ -523,14 +523,16 @@ If any existing API contract depends on stable role ordering, the projection ord
 
 ### 8.4 Hard Gate for Scoped Writes
 
-No normal application path may write a non-Organization scope until authorization-sensitive consumers have migrated away from `contacts.roles[]` and read explicit `contact_roles` scope. At minimum this gate covers:
+No write path except the migration backfill may write a non-Organization scope until all legacy writers are dual-writing to `contact_roles` and the authorization/routing-sensitive readers have migrated away from `contacts.roles[]` to explicit scope-aware reads. This gate covers at minimum:
 
 ```text
 Caller Verification
 Org Account Readiness
+Billing contact resolution
+Report Series recipients
 ```
 
-This prevents `admin @ Site X` from being flattened to `roles[] = ['admin']` and interpreted by legacy code as organization-wide authorization. An alternative implementation may keep Site/Group rows out of the legacy projection, but the default contract is to migrate the sensitive readers first.
+Writer migration and atomic dual-write must land before any of these readers switch to `contact_roles`; otherwise `contact_roles` can become stale while a migrated reader treats it as authoritative. After the readers switch, this gate prevents a scoped assignment such as `admin @ Site X` or `billing @ Site X` from being flattened into `roles[]` and interpreted as organization-wide authority or routing.
 
 ## 9. Writer Inventory
 
@@ -538,11 +540,13 @@ Before implementation is considered complete, perform a repository-wide sweep of
 
 Known production writers are explicitly:
 
-- `apps/api/src/routes/contacts/crud.ts`;
-- `compat.ts` around the legacy JSONB synchronization paths (including `array_remove`, currently around lines 345 and 374);
-- `loginLink.ts` role writes (currently around lines 157 and 164);
-- `import.ts` contact-role import path (currently around line 872);
-- AI tool paths in `aiAgentSdkTools.ts` and `aiToolSchemas.ts`.
+- `apps/api/src/services/contacts/crud.ts`;
+- `compat.ts:159-163`, which directly inserts Site contacts with `roles: ['site']`;
+- the direct legacy JSONB synchronization paths in `compat.ts`, including `array_remove`;
+- `loginLink.ts` direct role writes;
+- `import.ts:864-872`, which directly inserts contacts.
+
+`aiToolsOrgs.ts`, `routes/orgContacts.ts`, and `routes/reports/recipients.ts` call the Contacts service's `createContact` path and are therefore not separate direct writers.
 
 Implementation must still perform a repository-wide sweep so this list is verified against the branch at implementation time rather than treated as permanently exhaustive.
 
@@ -652,6 +656,10 @@ Assignments from unrelated groups at the same effective specificity are consider
 
 Dynamic group membership is evaluated at resolution time. Responsibility remains attached to the Device Group entity and is not snapshotted onto individual devices.
 
+### 10.6 Local (`site`) at Organization Scope
+
+A `site` responsibility at Organization scope means **the Organization's default Local contact**. It is used only when no more-specific `site` assignment exists for the target Site. A Site-scoped Local assignment therefore overrides the Organization default for that Site. This preserves existing unpinned `site` contacts without inventing a Site association during backfill.
+
 ## 11. Existing Consumer Semantics
 
 Adding scope changes the meaning of current roles. Existing consumers must not infer semantics independently.
@@ -685,6 +693,8 @@ For example, `Carlos admin @ Site Rio` must not gain organization-wide authoriza
 
 Caller verification must therefore migrate away from the legacy roles projection for authorization decisions and use explicit scope semantics **before Site- or Device-Group-scoped writes are enabled anywhere in the application**.
 
+After this migration, an explicit `admin @ Organization` assignment is authoritative even when the contact has `contacts.site_id` set. The Site pin remains contact affiliation/primacy metadata; it does not suppress an explicitly Organization-scoped admin responsibility. This is an intentional change from the legacy `contact.siteId === null` authorization check and must be covered by regression tests.
+
 ### 11.2 Account Readiness
 
 If readiness asks whether an organization has a billing contact, the consumer must define whether that means specifically `billing @ Organization` or any billing assignment.
@@ -695,7 +705,7 @@ This migration must land before Site- or Device-Group-scoped writes are enabled.
 
 ### 11.3 Billing Compatibility
 
-Where billing logic needs an organization-level billing identity, it should resolve `billing @ Organization` rather than treating any billing role as organization-wide.
+Where billing logic needs an organization-level billing identity, it must resolve `billing @ Organization` rather than treating any billing role as organization-wide. The current billing-contact reader in `apps/api/src/services/contacts/compat.ts` must migrate before Site- or Device-Group-scoped writes are enabled so `billing @ Site X` cannot become the Organization invoice recipient through the legacy projection.
 
 ### 11.4 Portal Linking
 
@@ -703,7 +713,7 @@ The existence of a `portal` responsibility does not itself change authentication
 
 ### 11.5 Report Series
 
-Report Series is a recommended initial consumer.
+Report Series is the V1 operational consumer. Its current recipient lookup reads `contacts.roles[]` without scope, so it must migrate to the canonical resolver before Site- or Device-Group-scoped writes are enabled.
 
 Conceptually:
 
@@ -1228,7 +1238,7 @@ Future consumers must call the canonical resolver rather than introduce another 
 
 The sequence is security-significant. Scoped editing must not be enabled early.
 
-### Phase 1 — Persistence and Safe Backfill
+### Phase 1 — Persistence, Safe Backfill, and Writer Compatibility
 
 ```text
 contact_roles
@@ -1239,27 +1249,30 @@ composite DEFERRABLE FKs
 Site/Group ON DELETE CASCADE
 migration/backfill
 cascade/export/merge contracts
+explicit legacy-writer migration/classification
+atomic dual-write / compatibility projection
 ```
 
-No general Site/Group scoped editing is exposed in this phase.
+All production writers must maintain `contact_roles` and `contacts.roles[]` consistently before any reader is switched to `contact_roles`. No general Site/Group scoped editing is exposed in this phase.
 
-### Phase 2 — Resolver and Authorization-Sensitive Readers
+### Phase 2 — Resolver and Scope-Sensitive Readers
 
 ```text
 canonical resolver
 caller verification scope semantics
 Org Account Readiness scope semantics
-readiness/billing consumer semantics
+Billing contact resolution
+Report Series recipient resolution
 ```
 
-This phase must complete before any non-Organization write path is enabled.
+This phase must complete before any write path except migration backfill may create a non-Organization scope.
 
-### Phase 3 — Writer Migration, Compatibility, and Real Consumer
+### Phase 3 — V1 Consumer Validation and Compatibility Verification
 
 ```text
-explicit legacy-writer migration/classification
-atomic compatibility projection
-Report Series consumer
+Report Series V1 consumer validation
+legacy writer re-sweep
+dual-write consistency verification
 ```
 
 ### Phase 4 — Product Surface
@@ -1290,7 +1303,8 @@ Implementation is complete only when all applicable statements are true:
 - [ ] changing `contacts.site_id` does not silently move responsibility assignments.
 - [ ] `contact_roles` is the canonical responsibility source.
 - [ ] `contacts.roles[]` remains compatible during transition.
-- [ ] every existing role writer has been inventoried and migrated/classified, including the known `crud.ts`, `compat.ts`, `loginLink.ts`, `import.ts`, and AI tool paths.
+- [ ] every existing role writer has been inventoried and migrated/classified, including the known Contacts service, direct `compat.ts`, `loginLink.ts`, and `import.ts` paths.
+- [ ] all production writers dual-write consistently before any reader switches to `contact_roles`.
 - [ ] there is one canonical resolver.
 - [ ] precedence is Group → Site → Organization.
 - [ ] all same-level matches are returned.
@@ -1298,8 +1312,9 @@ Implementation is complete only when all applicable statements are true:
 - [ ] a direct/nearer Group assignment outranks a more distant ancestor assignment.
 - [ ] duplicate contacts across matching Groups are deduplicated in resolved output.
 - [ ] Caller Verification cannot widen Site/Group admins into organization admins.
-- [ ] Org Account Readiness is migrated to explicit scope semantics before scoped writes are enabled.
-- [ ] no non-Organization application write path is exposed before the authorization gate is satisfied.
+- [ ] `admin @ Organization` remains authoritative even for a site-pinned contact after Caller Verification migration.
+- [ ] Org Account Readiness, Billing contact resolution, and Report Series recipients are migrated to explicit scope semantics before scoped writes are enabled.
+- [ ] no write path except migration backfill can create a non-Organization scope before the security gate is satisfied.
 - [ ] `contact_roles` participates in organization cascade/erasure.
 - [ ] `contact_roles` participates in tenant export.
 - [ ] organization merge behavior is verified.
