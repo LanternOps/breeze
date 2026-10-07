@@ -34,6 +34,13 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$BASE_REF" ] && [ -n "$HEAD_REF" ] && [ -n "$MAIN_REF" ] || usage
 
+# Every node helper runs with the runner's NODE_OPTIONS removed and warnings
+# off: helpers end with a completion trailer that must be the LAST stderr line,
+# and this file is frozen into every base release, so a future runner whose
+# Node prints a late warning (or preloads something) must not be able to
+# refuse every server-only release from then on.
+run_node() { env -u NODE_OPTIONS node --no-warnings "$@"; }
+
 summary() {
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     printf '%s\n' "$@" >> "$GITHUB_STEP_SUMMARY"
@@ -44,8 +51,8 @@ REPORT_DIR=$(mktemp -d)
 trap 'rm -rf "$REPORT_DIR"' EXIT
 TRAILER="$REPORT_DIR/changed.trailer"
 
-node "$SCRIPT_DIR/server-only-ledger.mjs" validate --ref "$HEAD_REF"
-if ! CHANGES=$(node "$SCRIPT_DIR/server-only-ledger.mjs" changed --base-ref "$BASE_REF" --head-ref "$HEAD_REF" 2> "$TRAILER"); then
+run_node "$SCRIPT_DIR/server-only-ledger.mjs" validate --ref "$HEAD_REF"
+if ! CHANGES=$(run_node "$SCRIPT_DIR/server-only-ledger.mjs" changed --base-ref "$BASE_REF" --head-ref "$HEAD_REF" 2> "$TRAILER"); then
   cat "$TRAILER" >&2
   echo "::error::cannot diff the server-only ledger between $BASE_REF and $HEAD_REF"
   exit 1
@@ -101,7 +108,7 @@ while IFS=$'\t' read -r kind tag commit base; do
     summary "### Server-only release $tag (base $base)" "" \
       "#### Agent-facing server changes — required review" \
       "A reviewer must confirm each change stays compatible with $base agents and that emitted scripts still match the $base binaries." ""
-    agent_facing=$(node -e 'for (const path of JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).agentFacing) console.log(`- \`${path}\``)' "$report")
+    agent_facing=$(run_node -e 'for (const path of JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).agentFacing) console.log(`- \`${path}\``)' "$report")
     summary "${agent_facing:-none}" ""
   else
     echo "::endgroup::"

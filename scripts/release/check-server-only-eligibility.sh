@@ -29,6 +29,13 @@ EOF
   exit 2
 }
 
+# Every node helper runs with the runner's NODE_OPTIONS removed and warnings
+# off: helpers end with a completion trailer that must be the LAST stderr line,
+# and this file is frozen into every base release, so a future runner whose
+# Node prints a late warning (or preloads something) must not be able to
+# refuse every server-only release from then on.
+run_node() { env -u NODE_OPTIONS node --no-warnings "$@"; }
+
 fail() {
   echo "server-only-guard: REFUSED: $*" >&2
   exit 1
@@ -102,7 +109,7 @@ require_trailer() {
 # match_paths POLICY OUT: the CHANGED paths that POLICY protects, proven complete.
 match_paths() {
   local policy="$1" out="$2"
-  if ! node "$PATH_TOOL" match --policy "$policy" < "$CHANGED" > "$out" 2> "$TRAILER"; then
+  if ! run_node "$PATH_TOOL" match --policy "$policy" < "$CHANGED" > "$out" 2> "$TRAILER"; then
     cat "$TRAILER" >&2
     fail "path policy tool failed on $policy"
   fi
@@ -120,9 +127,9 @@ g rev-parse --verify --quiet "$MAIN_REF^{commit}" >/dev/null || fail "cannot res
 g rev-parse --verify --quiet "$LEDGER_REF^{commit}" >/dev/null || fail "cannot resolve ledger ref '$LEDGER_REF'"
 
 # 2. The row, read from the ledger ref (never the candidate tree).
-in_repo node "$LEDGER_TOOL" validate --ref "$LEDGER_REF" >/dev/null || fail "server-only ledger at '$LEDGER_REF' is invalid"
+in_repo run_node "$LEDGER_TOOL" validate --ref "$LEDGER_REF" >/dev/null || fail "server-only ledger at '$LEDGER_REF' is invalid"
 set +e
-ROW=$(in_repo node "$LEDGER_TOOL" row --ref "$LEDGER_REF" --tag "$TAG")
+ROW=$(in_repo run_node "$LEDGER_TOOL" row --ref "$LEDGER_REF" --tag "$TAG")
 ROW_STATUS=$?
 set -e
 [ "$ROW_STATUS" -eq 0 ] || fail "'$TAG' is not listed in the server-only ledger at '$LEDGER_REF'"
@@ -151,7 +158,7 @@ done
 # Sorting never runs behind `head` or `|| true`: a sorter failure must refuse,
 # not silently yield an empty "highest" and skip the check.
 sort_desc() {
-  node "$SEMVER_TOOL" --sort-desc || fail "cannot order release tags"
+  run_node "$SEMVER_TOOL" --sort-desc || fail "cannot order release tags"
 }
 first_line() {
   printf '%s\n' "$1" | sed -n '1p'
@@ -170,7 +177,7 @@ fi
 g merge-base --is-ancestor "$COMMIT" "$MAIN_REF" || fail "commit $COMMIT is not reachable from '$MAIN_REF'"
 
 # 7. The base is the highest stable ancestor tag that is not itself server-only.
-LEDGER_TAGS=$(in_repo node "$LEDGER_TOOL" tags --ref "$LEDGER_REF" 2> "$TRAILER") || \
+LEDGER_TAGS=$(in_repo run_node "$LEDGER_TOOL" tags --ref "$LEDGER_REF" 2> "$TRAILER") || \
   { cat "$TRAILER" >&2; fail "cannot read server-only ledger tags at '$LEDGER_REF'"; }
 LEDGER_TAG_COUNT=$(printf '%s' "$LEDGER_TAGS" | { grep -c . || true; })
 require_trailer "# tags=$LEDGER_TAG_COUNT" "server-only ledger tool (tags at '$LEDGER_REF')"
@@ -196,7 +203,7 @@ COMPUTED_BASE=$(first_line "$SORTED_BASES")
 #    move out of a protected directory as a deletion there.
 #    Self-test first: the matcher must flag a path the policy is known to
 #    protect before an empty result is trusted as "nothing protected changed".
-SELF_TEST=$(printf 'agent/go.mod\0apps/web/src/self-test.tsx\0' | node "$PATH_TOOL" match --policy "$POLICY" 2> "$TRAILER") || \
+SELF_TEST=$(printf 'agent/go.mod\0apps/web/src/self-test.tsx\0' | run_node "$PATH_TOOL" match --policy "$POLICY" 2> "$TRAILER") || \
   { cat "$TRAILER" >&2; fail "path policy tool self-test failed to run"; }
 [ "$SELF_TEST" = "agent/go.mod" ] || \
   fail "path policy tool self-test: $POLICY did not flag exactly agent/go.mod (got '${SELF_TEST:-nothing}')"
@@ -245,14 +252,14 @@ if [ "$ONLINE" = true ]; then
   command -v gh >/dev/null 2>&1 || fail "--online requires the gh CLI"
   RELEASE_JSON=$(gh release view "$DECLARED_BASE" --repo "$EXPECTED_REPOSITORY" --json isDraft,isPrerelease) || \
     fail "cannot read GitHub Release '$DECLARED_BASE'"
-  RELEASE_STATE=$(node -e 'const r = JSON.parse(process.argv[1]); console.log(`${r.isDraft} ${r.isPrerelease}`)' "$RELEASE_JSON") || \
+  RELEASE_STATE=$(run_node -e 'const r = JSON.parse(process.argv[1]); console.log(`${r.isDraft} ${r.isPrerelease}`)' "$RELEASE_JSON") || \
     fail "cannot parse GitHub Release '$DECLARED_BASE'"
   [ "$RELEASE_STATE" = "false false" ] || fail "base release '$DECLARED_BASE' must be published and stable (isDraft isPrerelease = $RELEASE_STATE)"
   MANIFEST_DIR=$(mktemp -d)
   gh release download "$DECLARED_BASE" --repo "$EXPECTED_REPOSITORY" --dir "$MANIFEST_DIR" \
     --pattern release-artifact-manifest.json --pattern release-artifact-manifest.json.ed25519 \
     || fail "cannot download the signed manifest of '$DECLARED_BASE'"
-  node "$MANIFEST_TOOL" verify \
+  run_node "$MANIFEST_TOOL" verify \
     --manifest "$MANIFEST_DIR/release-artifact-manifest.json" \
     --signature "$MANIFEST_DIR/release-artifact-manifest.json.ed25519" \
     --expected-repository "$EXPECTED_REPOSITORY" \
@@ -260,13 +267,13 @@ if [ "$ONLINE" = true ]; then
     --require-kind full \
     --output "$MANIFEST_DIR/identity.json" >/dev/null \
     || fail "the signed manifest of '$DECLARED_BASE' does not verify as a full release"
-  MANIFEST_SOURCE=$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).sourceCommit)' "$MANIFEST_DIR/identity.json")
+  MANIFEST_SOURCE=$(run_node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).sourceCommit)' "$MANIFEST_DIR/identity.json")
   [ "$MANIFEST_SOURCE" = "$BASE_SHA" ] || fail "the signed manifest of '$DECLARED_BASE' names sourceCommit $MANIFEST_SOURCE, but the tag peels to $BASE_SHA"
 fi
 
 BINARIES_VERSION="${DECLARED_BASE#v}"
 if [ -n "$REPORT" ]; then
-  node - "$REPORT" "$AGENT_HITS" "$TAG" "$COMMIT" "$DECLARED_BASE" "$BASE_SHA" "$BINARIES_VERSION" "$CHANGED_COUNT" "$ONLINE" <<'NODE'
+  run_node - "$REPORT" "$AGENT_HITS" "$TAG" "$COMMIT" "$DECLARED_BASE" "$BASE_SHA" "$BINARIES_VERSION" "$CHANGED_COUNT" "$ONLINE" <<'NODE'
 const { readFileSync, writeFileSync } = require('node:fs');
 const [reportPath, hitsPath, tag, commit, base, baseSha, binariesVersion, changed, online] = process.argv.slice(2);
 const agentFacing = readFileSync(hitsPath, 'utf8').split('\n').filter(Boolean);

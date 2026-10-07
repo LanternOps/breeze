@@ -201,11 +201,11 @@ export function onlineFixture() {
 }
 
 // ── PR CI: ledger-change check (append-only + guard on new rows) ────────────
-export function ledgerChange(fx, baseRef, headRef = 'main', { script = LEDGER_CHANGE } = {}) {
+export function ledgerChange(fx, baseRef, headRef = 'main', { script = LEDGER_CHANGE, env = {} } = {}) {
   const summary = join(scratch, `summary-${nextFixtureNumber()}.md`);
   writeFileSync(summary, '');
   const result = run(fx.repo, 'bash', [script, '--base-ref', baseRef, '--head-ref', headRef, '--main-ref', 'main'],
-    { env: { ...process.env, GITHUB_STEP_SUMMARY: summary } });
+    { env: { ...process.env, ...env, GITHUB_STEP_SUMMARY: summary } });
   return { ...result, summary: readFileSync(summary, 'utf8'), output: `${result.stdout}\n${result.stderr}` };
 }
 

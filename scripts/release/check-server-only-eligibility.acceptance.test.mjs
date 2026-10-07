@@ -1,6 +1,6 @@
 // Server-only guard: acceptance, --online base verification, PR ledger check.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -15,6 +15,7 @@ import {
   onlineFixture,
   onlineStub,
   run,
+  scratch,
 } from './__fixtures__/server-only-guard.mjs';
 
 // ── Acceptance ─────────────────────────────────────────────────────────────
@@ -215,6 +216,36 @@ test('ledger PR check: an unchanged ledger is a no-op', () => {
   const result = ledgerChange(fx, head);
   assert.equal(result.status, 0, result.output);
   assert.match(result.stdout, /no server-only ledger changes/u);
+});
+
+// A runner whose NODE_OPTIONS makes node print something after a helper's
+// completion trailer must not permanently refuse every server-only release.
+function lateStderrNodeOptions() {
+  const preload = join(scratch, `late-stderr-${process.pid}.cjs`);
+  writeFileSync(preload, "process.on('exit', () => process.stderr.write('(node:1) Warning: printed after everything else\\n'));\n");
+  return { NODE_OPTIONS: `--require ${preload}` };
+}
+
+test('the guard and the ledger PR check ignore the runner NODE_OPTIONS', () => {
+  const fx = new Fixture();
+  const commit = fx.commit({ 'apps/api/src/fix.ts': 'fix\n' });
+  const before = fx.git('rev-parse', 'HEAD');
+  fx.addRow('v0.118.1', commit);
+  const env = lateStderrNodeOptions();
+  assertEligible(fx.guard('v0.118.1', commit, { env }));
+  const result = ledgerChange(fx, before, 'main', { env });
+  assert.equal(result.status, 0, result.output);
+});
+
+test('every node helper in the guard and the ledger PR check runs without NODE_OPTIONS or warnings', () => {
+  for (const file of ['check-server-only-eligibility.sh', 'check-server-only-ledger-change.sh']) {
+    const text = readFileSync(join(HERE, file), 'utf8');
+    assert.match(text, /^run_node\(\) \{ env -u NODE_OPTIONS node --no-warnings "\$@"; \}$/mu, `${file} must define run_node`);
+    for (const [index, line] of text.split('\n').entries()) {
+      if (/^\s*#/u.test(line) || /^run_node\(\)/u.test(line)) continue;
+      assert.doesNotMatch(line, /(?:^|[\s(|!$])node\s/u, `${file}:${index + 1} calls node directly: ${line.trim()}`);
+    }
+  }
 });
 
 test('the committed bootstrap and guard are executable shell with strict modes', () => {
