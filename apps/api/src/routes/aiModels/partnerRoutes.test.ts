@@ -720,6 +720,33 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       expect(captureException).not.toHaveBeenCalled();
     });
     it.each([
+      ['ENOTFOUND on the error (dns.lookup)', Object.assign(new Error('getaddrinfo ENOTFOUND llm.example.com'), { code: 'ENOTFOUND' })],
+      ['ENOTFOUND on the cause (undici)', new TypeError('fetch failed', { cause: Object.assign(new Error('getaddrinfo ENOTFOUND llm.example.com'), { code: 'ENOTFOUND' }) })],
+      ['ECONNREFUSED', new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:443'), { code: 'ECONNREFUSED' }) })],
+      ['ETIMEDOUT', Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' })],
+      ['a TLS failure', new TypeError('fetch failed', { cause: Object.assign(new Error('self-signed certificate'), { code: 'DEPTH_ZERO_SELF_SIGNED_CERT' }) })],
+    ])('a network-level failure reaching the endpoint (%s) → 400 baseUrl field error; raw error logged, never returned', async (_l, err) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(createGatewayConnection).mockRejectedValueOnce(err);
+      const res = await call('POST', '/connections', BYO_BODY);
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body).toEqual({
+        error: 'The endpoint host could not be resolved or reached. Check the base URL.',
+        code: 'endpoint_unreachable',
+        details: { field: 'baseUrl' },
+      });
+      expect(JSON.stringify(body)).not.toMatch(/getaddrinfo|ENOTFOUND|ECONNREFUSED|certificate/);
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+      expect(enqueueConnectionSync).not.toHaveBeenCalled();
+    });
+    it('a programmer error from the create is still rethrown (500), not masked as a 400', async () => {
+      vi.mocked(createGatewayConnection).mockRejectedValueOnce(new TypeError("Cannot read properties of undefined (reading 'x')"));
+      expect((await call('POST', '/connections', BYO_BODY)).status).toBe(500);
+    });
+    it.each([
       ['inferenceGeo (never residency-eligible, D7)', { ...BYO_BODY, inferenceGeo: 'eu' }],
       ['a capabilities claim', { ...BYO_BODY, capabilities: { tool_use: { supported: true } } }],
       ['a credential in the URL', { ...BYO_BODY, baseUrl: 'https://u:p@llm.example.com/v1' }],
