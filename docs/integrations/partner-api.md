@@ -545,7 +545,7 @@ Three companion routes:
 |---|---|
 | `GET /partner-api/tickets/ids` | `{ schemaVersion, data: [{ id, orgId, changeVersion }], nextCursor, hasMore }` — every **live** ticket in the accessible set, keyset-paged by `id`; `orgId` narrows it. A mirror diffs it on a schedule (daily is enough) and drops anything it holds that is absent — the only way to observe a ticket that moved to an organization outside the principal's set |
 | `GET /partner-api/tickets/<ticket-uuid>` | `{ schemaVersion, data }` — one ticket record, or `404 partner_ticket_not_found` for a ticket that is soft-deleted, in another partner, or in an organization the principal cannot reach |
-| `GET /partner-api/tickets/<ticket-uuid>/comments` | `{ schemaVersion, ticketId, data, nextCursor, hasMore }` — the ticket's comments and feed entries (status changes, assignments, system notes) in creation order, keyset-paged with a signed `cursor`; `since` (offset ISO timestamp) returns only comments created strictly after that instant |
+| `GET /partner-api/tickets/<ticket-uuid>/comments` | `{ schemaVersion, ticketId, data, nextCursor, hasMore }` — the ticket's comments and feed entries (status changes, assignments, system notes) in creation order, keyset-paged with a signed `cursor`. Includes the principal's **internal notes** (`isPublic: false`) alongside public replies. `since` (offset ISO timestamp) returns only comments **created** strictly after that instant, so it never surfaces an edit or a delete of an older comment |
 
 `tickets:read` is an opt-in scope: ticket subjects, descriptions and
 comments are customer-authored data, so it is never part of the default
@@ -599,8 +599,10 @@ Guarantees and limits, in addition to the alerts feed's:
   when several integrations share one partner. An edited comment carries
   `editedAt` and a changed `revision`; a deleted one is returned in its
   creation-order slot as `{ id, ticketId, orgId, removed: true, deletedAt,
-  createdAt }` with no content. Re-read the (bounded) list whenever the
-  ticket is re-delivered and you converge exactly.
+  createdAt }` with no content. Re-read the (bounded) list **without `since`**
+  whenever the ticket is re-delivered and you converge exactly: `since` keys on
+  creation time, so an edited or deleted older comment re-delivers the ticket but
+  never appears in a `since` page.
 - Filters apply to the ticket's current row, so a filtered feed does not
   report a ticket leaving the filter.
 - A ticket (or comment) whose text contains a detected secret is withheld and

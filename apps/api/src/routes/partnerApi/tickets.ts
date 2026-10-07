@@ -61,7 +61,11 @@ import {
  *
  * Contract for pollers: page with `cursor` until `hasMore` is false, then
  * persist `checkpoint` and pass it as `since` next time. A 409
- * `partner_tickets_resync_required` means start again without `since`.
+ * `partner_tickets_resync_required` means start again without `since`. On
+ * /comments, `since` keys on `created_at`, so an edited or deleted older
+ * comment re-delivers its ticket but never appears in a `since` page: re-read
+ * a re-delivered ticket's comments WITHOUT `since`. The list carries this
+ * principal's internal notes (`isPublic: false`) as well as public replies.
  * Filters apply to the ticket's CURRENT row. Raw `custom_fields` /
  * `field_provenance` are not exported. `externalTicketId`/`externalTicketUrl`
  * are THIS principal's ref (ticket_external_refs), never another
@@ -120,7 +124,9 @@ const idsQuerySchema = z.object({
 }).strict();
 
 const commentsQuerySchema = z.object({
-  // Only comments created strictly after this instant.
+  // Only comments CREATED strictly after this instant: it keys on created_at, so
+  // an edit or a delete of an older comment is never in a `since` page. A ticket
+  // re-delivered by the feed is re-read without `since` (see the header).
   since: partnerExportTimestampSchema.optional(),
   cursor: partnerExportCursorTokenSchema.optional(),
   limit: z.string().optional(),
