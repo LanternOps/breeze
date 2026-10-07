@@ -1,7 +1,7 @@
 # Contact Responsibility and Scope — Design
 
 **Date:** 2026-10-06  
-**Status:** Draft — awaiting maintainer review and approval before implementation  
+**Status:** Draft — revised after maintainer review; awaiting approval before implementation
 **Discussion:** #7891  
 **Related:** `2026-08-09-organization-contacts-design.md`
 
@@ -52,12 +52,9 @@ The most-specific level with one or more matches wins. If multiple contacts matc
 
 `contact_roles` becomes the canonical source for scoped responsibilities. `contacts.roles[]` remains temporarily as a compatibility projection while existing readers and writers are migrated.
 
-V1 must include at least one real operational consumer of the resolver so this does not land as unused infrastructure. Proposed initial consumers are:
+V1 must include at least one real operational consumer of the resolver so this does not land as unused infrastructure. **Report Series** is the named V1 consumer.
 
-1. a read-only **Who to Contact** view;
-2. scope-aware **Report Series recipients**.
-
-One product-scope question remains intentionally open for maintainer review: whether the minimum frontend belongs in the first implementation PR or in a follow-up PR (§14).
+The implementation order is now fixed: **backend/resolver and authorization-sensitive consumers first; scoped editing UI follows only after the authorization boundary is safe** (§14, §28).
 
 ## Context — verified against the current contact model and Discussion #7891
 
@@ -117,7 +114,11 @@ Discussion #7891 established that the right direction is to **evolve contacts**,
 | Resolution precedence | **Device Group → Site → Organization** | Most-specific assignment wins. |
 | Same-level matches | **Return all** | Multiple valid responsible contacts may intentionally exist. |
 | `contacts.roles[]` | **Temporary compatibility projection** | Existing consumers and writers must not break during transition. |
-| Existing site association | **Preserve during backfill** | Prevents accidental authority widening. |
+| Existing site association | **Preserve during backfill; keep `contacts.site_id` distinct from responsibility scope afterward** | Prevents accidental authority widening while allowing explicit responsibility scope. |
+| Scoped-write gate | **No Site/Group writes until authorization-sensitive consumers read `contact_roles`** | Prevents a scoped `admin` from becoming org-wide through the legacy projection. |
+| Scope deletion | **`ON DELETE CASCADE` for Site and Device Group assignment FKs** | Deleting a scope deletes the assignment instead of widening it to Organization. |
+| Nested groups | **Parent assignments apply transitively; nearest matching group wins** | Device groups nest via `parent_id`; inherited responsibility must be deterministic. |
+| Delivery order | **Backend/resolver first; UI follow-up** | Isolates migration and authorization-sensitive behavior before exposing scoped writes. |
 | `approver` role | **Deferred** | No concrete current consumer justifies adding it yet. |
 | Escalation model | **Reuse existing `escalation_policies`** | Do not create a parallel escalation subsystem. |
 | Editing home | **Organization → Contacts** | Follows “one concept, one home”. |
@@ -243,11 +244,13 @@ CREATE TABLE IF NOT EXISTS contact_roles (
   CONSTRAINT contact_roles_site_org_fk
     FOREIGN KEY (site_id, org_id)
     REFERENCES sites (id, org_id)
+    ON DELETE CASCADE
     DEFERRABLE INITIALLY IMMEDIATE,
 
   CONSTRAINT contact_roles_device_group_org_fk
     FOREIGN KEY (device_group_id, org_id)
     REFERENCES device_groups (id, org_id)
+    ON DELETE CASCADE
     DEFERRABLE INITIALLY IMMEDIATE
 );
 ```
@@ -285,6 +288,16 @@ site_id NULL + device_group_id SET   => Device Group
 
 V1 should not store a separate `scope_type` column because that would duplicate information already represented by the FK columns and create a second source of truth.
 
+### 4.2.1 Role Vocabulary Constraint
+
+The database must also protect the existing role vocabulary rather than relying only on application validation. Conceptually:
+
+```sql
+CHECK (role IN ('billing', 'technical', 'escalation', 'admin', 'site', 'after_hours', 'portal'))
+```
+
+If Breeze already exposes a canonical shared role definition, implementation must keep the application validator and database CHECK aligned.
+
 ### 4.3 Organization Scope
 
 Organization scope is represented by both subordinate FK columns being NULL.
@@ -309,20 +322,25 @@ Organization
 
 `device_groups.site_id` can be nullable, and groups may be dynamic. Group and Site therefore remain independent candidate scopes during resolution. A Group match outranks a Site match for specificity, but the model must not require every Device Group to belong to a Site.
 
-## 5. Uniqueness and Assignment Semantics
-
-The database should prevent accidental exact duplicate assignments where practical.
-
-The same combination of:
+Device Groups also nest through `device_groups.parent_id`. A responsibility assigned to a parent group applies transitively to devices in descendant groups. Within the Device Group specificity level, resolution prefers:
 
 ```text
-org
-contact
-role
-exact scope
+direct matching group
+> nearest matching ancestor
+> more distant ancestor
 ```
 
-should not need to appear twice.
+If multiple unrelated groups match at the same effective specificity, all applicable contacts are returned and deduplicated by contact identity.
+
+## 5. Uniqueness and Assignment Semantics
+
+The database must prevent accidental exact duplicate assignments. PostgreSQL 16 is the project floor, so use `UNIQUE NULLS NOT DISTINCT` over the exact assignment key:
+
+```sql
+UNIQUE NULLS NOT DISTINCT (org_id, contact_id, role, site_id, device_group_id)
+```
+
+The same combination of organization, contact, role, and exact scope therefore cannot appear twice.
 
 The model must still allow:
 
@@ -339,8 +357,6 @@ Contact A technical @ Site B
 ```
 
 Multiple contacts for the same responsibility and scope are valid. Multiple scopes for the same contact and role are also valid.
-
-The implementation must account for PostgreSQL NULL semantics when choosing the uniqueness strategy.
 
 ## 6. `is_primary`
 
@@ -360,6 +376,8 @@ Technical @ Site A
 This must not be conflated with legacy `contacts.is_primary`, whose existing compatibility semantics remain separate unless a later design explicitly changes them.
 
 If no current V1 consumer needs per-role primacy, the column may remain structurally available while resolution continues to return all same-level matches.
+
+V1 does **not** add a partial unique index for `is_primary`. If a future consumer requires one-primary-per-scope uniqueness, `contact_roles` must use a `custom` organization-merge policy comparable to `contacts` rather than plain repointing, because two source rows may otherwise collide during merge.
 
 ## 7. Migration and Backfill
 
@@ -442,6 +460,8 @@ Robert admin @ Organization
 
 because that would silently widen authority. This is a security-sensitive migration invariant.
 
+After backfill, `contacts.site_id` remains a contact-affiliation/primacy field, while `contact_roles` carries responsibility scope. A site-pinned contact may explicitly hold an Organization-scoped role, a role at its pinned Site, a role at another Site in the same Organization, or a Device-Group role. Changing `contacts.site_id` does **not** rewrite existing `contact_roles`; responsibility scope changes require an explicit responsibility mutation.
+
 ### 7.5 Backfill Observability
 
 The migration should report meaningful row counts according to Breeze migration conventions. At minimum, implementation should make it possible to determine:
@@ -501,18 +521,30 @@ DISTINCT roles from contact_roles for that contact
 
 If any existing API contract depends on stable role ordering, the projection order must be deterministic.
 
+### 8.4 Hard Gate for Scoped Writes
+
+No normal application path may write a non-Organization scope until authorization-sensitive consumers have migrated away from `contacts.roles[]` and read explicit `contact_roles` scope. At minimum this gate covers:
+
+```text
+Caller Verification
+Org Account Readiness
+```
+
+This prevents `admin @ Site X` from being flattened to `roles[] = ['admin']` and interpreted by legacy code as organization-wide authorization. An alternative implementation may keep Site/Group rows out of the legacy projection, but the default contract is to migrate the sensitive readers first.
+
 ## 9. Writer Inventory
 
 Before implementation is considered complete, perform a repository-wide sweep of every writer of `contacts.roles`.
 
-Known categories include:
+Known production writers are explicitly:
 
-- Contacts API create/update;
-- CSV/import paths;
-- AI tools;
-- organization/contact migration or importer flows;
-- tests, fixtures, and seeds;
-- bulk update or integration paths.
+- `apps/api/src/routes/contacts/crud.ts`;
+- `compat.ts` around the legacy JSONB synchronization paths (including `array_remove`, currently around lines 345 and 374);
+- `loginLink.ts` role writes (currently around lines 157 and 164);
+- `import.ts` contact-role import path (currently around line 872);
+- AI tool paths in `aiAgentSdkTools.ts` and `aiToolSchemas.ts`.
+
+Implementation must still perform a repository-wide sweep so this list is verified against the branch at implementation time rather than treated as permanently exhaustive.
 
 Each writer must be explicitly classified as:
 
@@ -610,11 +642,11 @@ Maria technical @ Servers
 
 both are returned. The resolver must not arbitrarily select the first database row.
 
-### 10.4 Multiple Device Groups
+### 10.4 Multiple and Nested Device Groups
 
-A device may match multiple groups. All matching assignments across those groups are considered the same specificity level.
+A device may match multiple groups, and groups may be nested. For each membership path, a direct assignment outranks an assignment inherited from a parent; among ancestors, the nearest matching ancestor wins.
 
-Resolved user-facing results must be deduplicated so a contact assigned to the same responsibility in two matching groups does not unintentionally appear twice.
+Assignments from unrelated groups at the same effective specificity are considered the same specificity level and are all returned. Resolved user-facing results must be deduplicated so a contact reached through multiple matching groups does not unintentionally appear twice.
 
 ### 10.5 Dynamic Groups
 
@@ -651,15 +683,15 @@ MUST NOT automatically become organization-level authorizers.
 
 For example, `Carlos admin @ Site Rio` must not gain organization-wide authorization simply because the compatibility projection contains `roles[] = ['admin']`.
 
-Caller verification must therefore migrate away from the legacy roles projection for authorization decisions and use explicit scope semantics.
+Caller verification must therefore migrate away from the legacy roles projection for authorization decisions and use explicit scope semantics **before Site- or Device-Group-scoped writes are enabled anywhere in the application**.
 
 ### 11.2 Account Readiness
 
 If readiness asks whether an organization has a billing contact, the consumer must define whether that means specifically `billing @ Organization` or any billing assignment.
 
-Recommended V1 contract: organization-level readiness checks require an Organization-scoped assignment unless the consumer is explicitly evaluating a Site.
+V1 contract: organization-level readiness checks require an Organization-scoped assignment unless the consumer is explicitly evaluating a Site.
 
-This prevents `billing @ one site` from implying organization-wide billing coverage.
+This migration must land before Site- or Device-Group-scoped writes are enabled. It prevents `billing @ one site` from implying organization-wide billing coverage.
 
 ### 11.3 Billing Compatibility
 
@@ -787,72 +819,32 @@ Step 3
 
 This integration is explicitly outside V1.
 
-## 14. Open Question — Frontend Scope
+## 14. Frontend Delivery Decision — Backend/Resolver First
 
-**Question for the maintainer: should the minimum frontend for this feature be part of the first implementation PR, or should frontend be delivered in a follow-up PR?**
+Maintainer review selects **backend/resolver first, frontend follow-up**. This is no longer an open product-scope question.
 
-### Option A — Backend + Frontend in the Same PR
-
-Include:
-
-```text
-contact_roles schema
-migration/backfill
-RLS/tenancy contracts
-compatibility projection
-resolver
-API changes
-Organization → Contacts responsibility editor
-read-only Who to Contact consumer
-scope-aware Report Series behavior where applicable
-```
-
-**Advantages:**
-
-- proves the model end-to-end;
-- ships a real resolver consumer immediately;
-- avoids landing unused infrastructure;
-- makes responsibility/scope behavior directly testable in the product.
-
-**Trade-off:**
-
-- materially larger PR;
-- combines migration, authorization-sensitive backend behavior, and frontend work;
-- broader review surface.
-
-### Option B — Backend/Resolver First, Frontend Follow-up
-
-First implementation PR:
+The first implementation PR contains:
 
 ```text
 schema
 migration/backfill
 RLS/tenancy
 compatibility
-resolver
-API
-scope-aware non-UI consumer
+canonical resolver
+Caller Verification migration
+Org Account Readiness migration
+API/backend contract
+Report Series as a real scope-aware consumer
 ```
 
-Follow-up PR:
+A follow-up PR may then add:
 
 ```text
 Organization → Contacts responsibility editor
-Who to Contact UI
+Who to Contact read-only UI
 ```
 
-**Advantages:**
-
-- smaller review surface;
-- isolates migration/resolver/security work from UI changes;
-- easier to validate tenancy and authorization contracts independently.
-
-**Trade-off:**
-
-- the first PR exposes the model primarily through API/internal consumers;
-- there is a temporary period where scoped responsibilities are not fully manageable from the UI.
-
-**Requested decision:** please confirm whether the minimum frontend is in scope for the first implementation PR. Neither option is assumed approved until maintainer review.
+The scoped editor must not be exposed until the authorization-sensitive consumers are reading `contact_roles`; this sequencing is a security invariant, not merely a review-size preference.
 
 ## 15. Approver — Deferred
 
@@ -880,39 +872,23 @@ Organization
 
 ## 17. Delete Semantics
 
-Scope deletion must never silently broaden responsibility.
+Scope deletion must never silently broaden responsibility. V1 pins the lifecycle behavior rather than leaving it open.
 
 ### 17.1 Contact Deleted
 
-Deleting a contact removes its responsibility assignments. The expected relationship is `contact_roles.contact_id ON DELETE CASCADE`, subject to existing Contact deletion contracts.
+Deleting a contact removes its responsibility assignments through `contact_roles.contact_id ON DELETE CASCADE`, subject to the existing Contact deletion contracts.
 
 ### 17.2 Site Deleted
 
-If this exists:
+`contact_roles.site_id` uses the composite `ON DELETE CASCADE` FK. Deleting a Site therefore deletes assignments scoped to that Site. It MUST NOT turn `technical @ Site A` into `technical @ Organization`.
 
-```text
-technical @ Site A
-```
-
-and Site A is deleted, the assignment MUST NOT become:
-
-```text
-technical @ Organization
-```
-
-A naïve `ON DELETE SET NULL` would be unsafe because NULL represents Organization scope.
-
-The implementation must align with current Site lifecycle behavior and choose one of the safe patterns supported by the repository, such as deleting the scoped assignment or preventing deletion while it is referenced.
-
-Required invariant:
-
-> deleting a scope must never widen the assignment's authority.
+Site deletion already cascades to site-pinned contacts through the existing `contacts_site_org_fk`; the new role assignment follows the same no-widening principle.
 
 ### 17.3 Device Group Deleted
 
-The same rule applies to Device Group. `technical @ Group A` must not become `technical @ Organization` when Group A disappears.
+`contact_roles.device_group_id` uses the composite `ON DELETE CASCADE` FK. Deleting a Device Group therefore deletes assignments scoped to that Group; the Contact and any other assignments remain.
 
-Before migration authoring, inspect current Site and Device Group deletion contracts and choose the FK/lifecycle behavior that preserves this invariant.
+All Device Group deletes already converge through `deleteDeviceGroup`; no separate ad-hoc cleanup path should be introduced.
 
 ## 18. Tenancy and RLS
 
@@ -952,6 +928,12 @@ Applicable composite FKs MUST be `DEFERRABLE INITIALLY IMMEDIATE` so organizatio
 ### 18.2 Organization Merge
 
 The table must preserve valid references when an organization merge/rewrite occurs under the existing lifecycle contract. This must be tested against real PostgreSQL, not only mocked/unit behavior.
+
+Because V1 does not add a partial unique index for `is_primary`, normal repoint semantics are sufficient unless implementation discovers another collision-producing constraint. If future work adds one-primary-per-scope uniqueness, `contact_roles` must move to a `custom` merge policy like `contacts`.
+
+### 18.3 Device Organization Moves
+
+No extra device-move integration is required. A Device that moves organizations already drops its Device Group memberships, and `contact_roles` has no `device_id`, so the table stays out of the device-move rewrite lists.
 
 ## 19. Tenant Cascade and Erasure
 
@@ -1085,6 +1067,9 @@ Cover at minimum:
 - composite FK behavior;
 - required deferrability;
 - scope constraint behavior;
+- role-vocabulary CHECK behavior;
+- `UNIQUE NULLS NOT DISTINCT` exact-duplicate behavior;
+- Site/Device Group `ON DELETE CASCADE` behavior;
 - tenant cascade registration;
 - tenant export registration;
 - organization merge behavior.
@@ -1103,6 +1088,9 @@ Organization fallback when no Group/Site match
 No match
 Multiple same-level contacts
 Multiple matching groups
+Parent Group assignment applies to descendant Group devices
+Direct child Group assignment overrides inherited parent assignment
+Nearest matching ancestor wins over a more distant ancestor
 Same contact across multiple matching groups is deduplicated
 Different roles resolve independently
 ```
@@ -1238,37 +1226,50 @@ Future consumers must call the canonical resolver rather than introduce another 
 
 ## 28. Recommended Implementation Sequence
 
-This section describes implementation milestones after spec approval. It does not require separate PRs unless the maintainer chooses that split.
+The sequence is security-significant. Scoped editing must not be enabled early.
 
-### Phase 1 — Persistence and Compatibility
+### Phase 1 — Persistence and Safe Backfill
 
 ```text
 contact_roles
+role vocabulary CHECK
+UNIQUE NULLS NOT DISTINCT
 RLS
+composite DEFERRABLE FKs
+Site/Group ON DELETE CASCADE
 migration/backfill
 cascade/export/merge contracts
-dual-write compatibility
 ```
 
-### Phase 2 — Resolver and Existing Consumer Migration
+No general Site/Group scoped editing is exposed in this phase.
+
+### Phase 2 — Resolver and Authorization-Sensitive Readers
 
 ```text
 canonical resolver
 caller verification scope semantics
+Org Account Readiness scope semantics
 readiness/billing consumer semantics
+```
+
+This phase must complete before any non-Organization write path is enabled.
+
+### Phase 3 — Writer Migration, Compatibility, and Real Consumer
+
+```text
+explicit legacy-writer migration/classification
+atomic compatibility projection
 Report Series consumer
 ```
 
-### Phase 3 — Product Surface
+### Phase 4 — Product Surface
 
-Depending on the answer to §14:
+Only after Phases 1–3:
 
 ```text
-Contacts responsibility editor
+Organization → Contacts responsibility editor
 Who to Contact read-only UI
 ```
-
-If frontend is approved for the first implementation PR, these are internal milestones of one implementation rather than mandatory separate PRs.
 
 ## 29. Acceptance Criteria
 
@@ -1280,25 +1281,35 @@ Implementation is complete only when all applicable statements are true:
 - [ ] applicable composite FKs are `DEFERRABLE INITIALLY IMMEDIATE`.
 - [ ] Organization, Site, and Device Group scopes are supported.
 - [ ] a row cannot target Site and Device Group simultaneously.
+- [ ] role vocabulary is protected by a database CHECK.
+- [ ] exact duplicate assignments are prevented with `UNIQUE NULLS NOT DISTINCT`.
+- [ ] Site and Device Group assignment FKs use `ON DELETE CASCADE`.
 - [ ] existing `contacts.roles[]` data is backfilled.
 - [ ] contacts currently associated with a Site remain Site-scoped during backfill.
+- [ ] `contacts.site_id` remains distinct from responsibility scope after backfill.
+- [ ] changing `contacts.site_id` does not silently move responsibility assignments.
 - [ ] `contact_roles` is the canonical responsibility source.
 - [ ] `contacts.roles[]` remains compatible during transition.
-- [ ] every existing role writer has been inventoried and migrated/classified.
+- [ ] every existing role writer has been inventoried and migrated/classified, including the known `crud.ts`, `compat.ts`, `loginLink.ts`, `import.ts`, and AI tool paths.
 - [ ] there is one canonical resolver.
 - [ ] precedence is Group → Site → Organization.
 - [ ] all same-level matches are returned.
+- [ ] nested Device Group inheritance is defined and tested.
+- [ ] a direct/nearer Group assignment outranks a more distant ancestor assignment.
 - [ ] duplicate contacts across matching Groups are deduplicated in resolved output.
 - [ ] Caller Verification cannot widen Site/Group admins into organization admins.
+- [ ] Org Account Readiness is migrated to explicit scope semantics before scoped writes are enabled.
+- [ ] no non-Organization application write path is exposed before the authorization gate is satisfied.
 - [ ] `contact_roles` participates in organization cascade/erasure.
 - [ ] `contact_roles` participates in tenant export.
 - [ ] organization merge behavior is verified.
+- [ ] device organization moves require no `contact_roles` rewrite integration.
 - [ ] deleting a Site/Group cannot broaden an assignment to Organization scope.
 - [ ] at least one real operational consumer uses the resolver.
 - [ ] Device-level responsibility remains outside V1.
 - [ ] `approver` remains outside V1.
 - [ ] no parallel escalation model is introduced.
-- [ ] frontend scope has been explicitly decided by the maintainer before implementation planning is finalized.
+- [ ] frontend delivery follows the backend/resolver-first decision; scoped editing is a follow-up after the security gate.
 
 ## 30. Deferred Follow-ups
 
