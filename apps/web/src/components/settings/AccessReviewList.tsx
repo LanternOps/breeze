@@ -42,6 +42,12 @@ function formatDate(dateString: string): string {
   return formatLocaleDate(dateString, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+// Due dates are date-only values stored as UTC midnight; format in UTC so a
+// US-timezone browser doesn't show the previous day (matches AccessReviewPage, #7805).
+function formatDueDate(dateString: string): string {
+  return formatLocaleDate(dateString, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
 function getDueStatus(dueDate?: string): { label: string; isOverdue: boolean } {
   if (!dueDate) {
     return { label: i18n.t('settings:accessReviewList.noDeadline'), isOverdue: false };
@@ -185,7 +191,7 @@ export default function AccessReviewList({
                   )}
                 >
                   <div>
-                    <span>{review.dueDate ? formatDate(review.dueDate) : '-'}</span>
+                    <span>{review.dueDate ? formatDueDate(review.dueDate) : '-'}</span>
                     {review.dueDate && (
                       <p
                         className={cn(
