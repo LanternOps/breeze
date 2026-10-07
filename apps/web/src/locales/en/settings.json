@@ -5882,6 +5882,11 @@
     }
   },
   "customFieldsPage": {
+    "toasts": {
+      "created": "Custom field created",
+      "updated": "Custom field updated",
+      "deleted": "Custom field deleted"
+    },
     "title": "Custom Fields",
     "description": "Define custom attributes to track additional information on devices.",
     "searchPlaceholder": "Search fields...",
