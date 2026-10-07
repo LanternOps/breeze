@@ -3,6 +3,7 @@ import { unifiCollectors } from '../../db/schema';
 import { encryptSecret, decryptForColumn } from '../secretCrypto';
 import type { DbExecutor } from './unifiConnectionService';
 import { notInHoldingOrgCondition } from '../unassignedPool/selectorPredicate';
+import { HotPathTtlCache } from '../hotPathCache';
 
 export type { DbExecutor } from './unifiConnectionService';
 
@@ -121,6 +122,7 @@ export async function upsertCollector(
     })
     .returning();
   if (!rows[0]) throw new Error('upsertCollector returned no unifi_collectors row');
+  agentCollectorAbsenceCache.invalidateAroundCommit(agentCollectorAbsenceKey(fields.collectorDeviceId, fields.orgId));
   return toCollector(rows[0]);
 }
 
@@ -168,6 +170,7 @@ export async function upsertSelfHostedController(
     })
     .returning();
   if (!rows[0]) throw new Error('upsertSelfHostedController returned no unifi_collectors row');
+  agentCollectorAbsenceCache.invalidateAroundCommit(agentCollectorAbsenceKey(fields.collectorDeviceId, fields.orgId));
   return toCollector(rows[0]);
 }
 
@@ -177,6 +180,56 @@ export async function deleteCollector(db: DbExecutor, integrationId: string, uni
     .where(and(eq(unifiCollectors.integrationId, integrationId), eq(unifiCollectors.unifiHostId, unifiHostId)))
     .returning({ id: unifiCollectors.id });
   return deleted.length > 0;
+}
+
+// The ONE predicate for "collectors this agent's device is served". Shared by
+// listCollectorsForDevice and the presence probe below so the two can never
+// disagree about which rows count.
+function agentCollectorCondition(deviceId: string, orgId: string) {
+  return and(
+    eq(unifiCollectors.collectorDeviceId, deviceId),
+    eq(unifiCollectors.orgId, orgId),
+    eq(unifiCollectors.isEnabled, true),
+    // Never hand a controller key to a device parked in a holding org.
+    notInHoldingOrgCondition(sql`(SELECT d.org_id FROM devices d WHERE d.id = ${unifiCollectors.collectorDeviceId})`),
+  );
+}
+
+/**
+ * Whether listCollectorsForDevice would return anything for this device — one
+ * indexed `LIMIT 1` probe, no decryption. The agent polls every 30 s and almost
+ * no device is a collector, so the route asks this first (#8053).
+ */
+export async function deviceHasAgentCollectors(db: DbExecutor, deviceId: string, orgId: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: unifiCollectors.id })
+    .from(unifiCollectors)
+    .where(agentCollectorCondition(deviceId, orgId))
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
+ * #8053 — NEGATIVE cache for the agent's collector poll, keyed by org AND
+ * device. Only "this device has no collectors" is ever stored (never a config:
+ * those carry decrypted controller keys), so the worst a stale entry can do is
+ * delay a NEW collector's first poll. Bounded by the TTL across instances, and
+ * cleared on this process by every collector create/re-point below
+ * (upsertCollector, upsertSelfHostedController), after their transaction
+ * commits. Deletes need no invalidation: they only ever make "none" truer.
+ */
+export const AGENT_COLLECTOR_ABSENCE_TTL_MS = 5 * 60_000;
+
+export const agentCollectorAbsenceCache = new HotPathTtlCache<string, boolean>({
+  name: 'unifi-agent-collector-absence',
+  ttlMs: AGENT_COLLECTOR_ABSENCE_TTL_MS,
+  // One small entry per collector-less agent; past the bound the oldest device
+  // just probes again on its next poll.
+  maxEntries: 50_000,
+});
+
+export function agentCollectorAbsenceKey(deviceId: string, orgId: string): string {
+  return `${orgId}:${deviceId}`;
 }
 
 // Agent-pull: configs for the agent whose device is the collector. Decrypts the key.
@@ -201,13 +254,7 @@ export async function listCollectorsForDevice(
       pollIntervalSeconds: unifiCollectors.pollIntervalSeconds,
     })
     .from(unifiCollectors)
-    .where(and(
-      eq(unifiCollectors.collectorDeviceId, deviceId),
-      eq(unifiCollectors.orgId, orgId),
-      eq(unifiCollectors.isEnabled, true),
-      // Never hand a controller key to a device parked in a holding org.
-      notInHoldingOrgCondition(sql`(SELECT d.org_id FROM devices d WHERE d.id = ${unifiCollectors.collectorDeviceId})`),
-    ));
+    .where(agentCollectorCondition(deviceId, orgId));
   const out: AgentCollectorConfig[] = [];
   for (const r of rows as any[]) {
     const topology = opts.topologyAdvertisement ? await opts.topologyAdvertisement(r.id) : null;

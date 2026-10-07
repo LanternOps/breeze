@@ -4,12 +4,17 @@ import { z } from 'zod';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 import { parseUnifiTopologyV1 } from '@breeze/shared';
 import { db, withSystemDbAccessContext } from '../../db';
-import { listCollectorsForDevice } from '../../services/unifi/unifiCollectorService';
+import {
+  agentCollectorAbsenceCache,
+  agentCollectorAbsenceKey,
+  deviceHasAgentCollectors,
+  listCollectorsForDevice,
+} from '../../services/unifi/unifiCollectorService';
 import { enqueueUnifiTelemetry } from '../../jobs/unifiTelemetryWorker';
 import { redactOptionalSecretText } from '../../services/secretRedaction';
 import { captureException } from '../../services/sentry';
 import { adaptUnifiTopology, type UnifiTopologyReceipt } from '../../services/topology/unifiAdapter';
-import { loadTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from '../../services/topology/flags';
+import { loadAgentTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from '../../services/topology/flags';
 import { loadUnifiCollector, unifiTopologyAdvertisement } from '../../services/topology/unifiAuthority';
 
 /**
@@ -88,7 +93,8 @@ async function resolveAgentTopologyFlags(agent: AgentContext): Promise<{ orgId: 
   if (!agent.orgId) return null;
   const orgId = agent.orgId;
   try {
-    return { orgId, flags: await withSystemDbAccessContext(() => loadTopologyFlags({ scope: { orgId, siteId: agent.siteId ?? '' } })) };
+    // Per-org process cache (#8053); its own short system context on a miss.
+    return { orgId, flags: await loadAgentTopologyFlags(orgId) };
   } catch (error) {
     console.error('[unifi-telemetry] topology flag resolution failed; topology skipped:', error instanceof Error ? error.message : error);
     captureException(error);
@@ -128,11 +134,23 @@ async function ingestTopologyCompanion(agent: AgentContext & { deviceId: string 
 // unprivileged-pool but reads org-scoped config rows it owns by construction.
 // A flag-resolution failure only drops the topology advertisement; legacy
 // collector config delivery never depends on it.
+//
+// #8053: every agent polls this every 30 s and almost no device is a collector.
+// So the route first asks whether the device has any collector at all — from
+// the per-device negative cache, or one LIMIT 1 probe on a miss — and answers
+// `[]` without resolving topology flags or opening a second transaction. Only a
+// device that has collectors pays for flags and the full (decrypting) list.
 unifiTelemetryRoutes.get('/:id/unifi-collectors', async (c) => {
   const agent = c.get('agent') as AgentContext | undefined;
   if (!agent?.deviceId || !agent.orgId) return c.json({ error: 'agent device context missing' }, 403);
   const deviceId = agent.deviceId;
   const orgId = agent.orgId;
+  const hasCollectors = await agentCollectorAbsenceCache.getOrLoad(
+    agentCollectorAbsenceKey(deviceId, orgId),
+    () => withSystemDbAccessContext(() => deviceHasAgentCollectors(db, deviceId, orgId)),
+    { shouldCache: (present) => !present },
+  );
+  if (!hasCollectors) return c.json({ collectors: [] });
   const resolved = await resolveAgentTopologyFlags(agent);
   const list = () => withSystemDbAccessContext(() => listCollectorsForDevice(db, deviceId, orgId, {
     topologyAdvertisement: async (collectorId) => (resolved ? unifiTopologyAdvertisement(deviceId, collectorId) : null),
