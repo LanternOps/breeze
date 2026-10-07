@@ -120,9 +120,10 @@ const DATA = {
   orgId: 'org-1',
   deviceId: 'device-1',
 };
-const LOCAL_CONFIG_ROW = { id: 'config-1', provider: 'local', providerConfig: {}, encryption: false };
+const LOCAL_CONFIG_ROW = { id: 'config-1', orgId: 'org-1', provider: 'local', providerConfig: {}, encryption: false };
 const S3_CONFIG_ROW = {
   id: 'config-1',
+  orgId: 'org-1',
   provider: 's3',
   providerConfig: { bucket: 'bucket-a', region: 'us-east-1', endpoint: 'https://storage.example', accessKey: 'AK', secretKey: 'synthetic-secret-value' },
   encryption: false,

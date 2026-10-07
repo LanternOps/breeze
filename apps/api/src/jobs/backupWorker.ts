@@ -823,6 +823,15 @@ async function loadBackupDispatchPrecheck(
     return { status: 'done', result: { dispatched: false } };
   }
 
+  // The config is loaded by id alone under system scope, so its org is checked
+  // here: a job only ever runs a config of its own org (backup_configs is
+  // org-owned, never partner-wide). Fail before any destination credential is
+  // read into a payload.
+  if (config.orgId !== data.orgId) {
+    await refuseBackupDispatch(data, 'backup_config_org_mismatch');
+    return { status: 'done', result: { dispatched: false } };
+  }
+
   // Site-ceiling gate contract §3: the job may carry a generation snapshot
   // from enqueue time. If the config was edited since (approval_generation
   // bumped on PATCH), this job's premise (dispatch against THAT config) no
@@ -2059,6 +2068,17 @@ async function readBackupDispatchRefusal(
   }
   if (reason === null) return null;
 
+  logBackupDispatchRefusal(data, reason);
+  return reason;
+}
+
+/** Fail the job and record why its dispatch was refused. */
+async function refuseBackupDispatch(data: DispatchBackupJobData, reason: string): Promise<void> {
+  logBackupDispatchRefusal(data, reason);
+  await markJobFailed(data.jobId, reason);
+}
+
+function logBackupDispatchRefusal(data: DispatchBackupJobData, reason: string): void {
   console.warn(`[BackupWorker] Refusing backup dispatch: ${reason}`, {
     jobId: data.jobId, deviceId: data.deviceId, orgId: data.orgId,
   });
@@ -2072,7 +2092,6 @@ async function readBackupDispatchRefusal(
     result: 'failure',
     details: { deviceId: data.deviceId, reason },
   });
-  return reason;
 }
 
 async function markJobFailed(jobId: string, error: string): Promise<void> {
