@@ -6478,7 +6478,10 @@
     },
     "stepUp": {
       "title": "Conferma che sei tu",
-      "body": "Abilitare le esecuzioni non presidiate richiede un nuovo controllo di sicurezza."
+      "body": "Abilitare le esecuzioni non presidiate richiede un nuovo controllo di sicurezza.",
+      "ceilingBody": "Consentire o ampliare le esecuzioni non presidiate per le tue organizzazioni richiede un nuovo controllo di sicurezza. Conferma, poi seleziona di nuovo Salva.",
+      "wideningBody": "Ampliare ciò che le esecuzioni non presidiate possono fare richiede un nuovo controllo di sicurezza. Conferma, poi seleziona di nuovo Salva.",
+      "noFactor": "Questa modifica richiede un controllo di sicurezza, ma il tuo account non ha un'app di autenticazione né una passkey. Configurane una nel tuo profilo, poi riprova."
     },
     "save": "Salva",
     "saving": "Salvataggio…",

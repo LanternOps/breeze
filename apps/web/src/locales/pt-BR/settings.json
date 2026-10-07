@@ -6478,7 +6478,10 @@
     },
     "stepUp": {
       "title": "Confirme que é você",
-      "body": "Habilitar execuções sem supervisão exige uma nova verificação de segurança."
+      "body": "Habilitar execuções sem supervisão exige uma nova verificação de segurança.",
+      "ceilingBody": "Permitir ou ampliar execuções autônomas para suas organizações exige uma nova verificação de segurança. Confirme e selecione Salvar novamente.",
+      "wideningBody": "Ampliar o que as execuções autônomas podem fazer exige uma nova verificação de segurança. Confirme e selecione Salvar novamente.",
+      "noFactor": "Esta alteração exige uma verificação de segurança, mas sua conta não tem um app autenticador nem uma chave de acesso. Configure um no seu perfil e tente novamente."
     },
     "save": "Salvar",
     "saving": "Salvando…",

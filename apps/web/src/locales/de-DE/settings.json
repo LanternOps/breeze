@@ -6478,7 +6478,10 @@
     },
     "stepUp": {
       "title": "Bestätigen Sie, dass Sie es sind",
-      "body": "Das Aktivieren unbeaufsichtigter Ausführungen erfordert eine erneute Sicherheitsprüfung."
+      "body": "Das Aktivieren unbeaufsichtigter Ausführungen erfordert eine erneute Sicherheitsprüfung.",
+      "ceilingBody": "Das Zulassen oder Erweitern unbeaufsichtigter Ausführungen für Ihre Organisationen erfordert eine erneute Sicherheitsprüfung. Bestätigen Sie und wählen Sie dann erneut Speichern.",
+      "wideningBody": "Das Erweitern dessen, was unbeaufsichtigte Ausführungen dürfen, erfordert eine erneute Sicherheitsprüfung. Bestätigen Sie und wählen Sie dann erneut Speichern.",
+      "noFactor": "Diese Änderung erfordert eine Sicherheitsprüfung, aber Ihr Konto hat keine Authenticator-App und keinen Passkey. Richten Sie eines davon in Ihrem Profil ein und versuchen Sie es erneut."
     },
     "save": "Speichern",
     "saving": "Wird gespeichert…",

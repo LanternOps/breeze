@@ -6478,7 +6478,10 @@
     },
     "stepUp": {
       "title": "Sizin olduğunuzu doğrulayın",
-      "body": "Gözetimsiz çalıştırmaları etkinleştirmek yeni bir güvenlik kontrolü gerektirir."
+      "body": "Gözetimsiz çalıştırmaları etkinleştirmek yeni bir güvenlik kontrolü gerektirir.",
+      "ceilingBody": "Kuruluşlarınız için gözetimsiz çalıştırmalara izin vermek veya bunları genişletmek yeni bir güvenlik denetimi gerektirir. Onaylayın, ardından Kaydet'i yeniden seçin.",
+      "wideningBody": "Gözetimsiz çalıştırmaların yapabileceklerini genişletmek yeni bir güvenlik denetimi gerektirir. Onaylayın, ardından Kaydet'i yeniden seçin.",
+      "noFactor": "Bu değişiklik bir güvenlik denetimi gerektirir, ancak hesabınızda kimlik doğrulayıcı uygulaması veya geçiş anahtarı yok. Profilinizden birini ayarlayıp yeniden deneyin."
     },
     "save": "Kaydet",
     "saving": "Kaydediliyor…",

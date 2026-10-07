@@ -6478,7 +6478,10 @@
     },
     "stepUp": {
       "title": "Confirme que es usted",
-      "body": "Habilitar las ejecuciones sin supervisión requiere una nueva verificación de seguridad."
+      "body": "Habilitar las ejecuciones sin supervisión requiere una nueva verificación de seguridad.",
+      "ceilingBody": "Permitir o ampliar las ejecuciones desatendidas para tus organizaciones requiere una nueva verificación de seguridad. Confirma y luego selecciona Guardar otra vez.",
+      "wideningBody": "Ampliar lo que pueden hacer las ejecuciones desatendidas requiere una nueva verificación de seguridad. Confirma y luego selecciona Guardar otra vez.",
+      "noFactor": "Este cambio requiere una verificación de seguridad, pero tu cuenta no tiene una app de autenticación ni una llave de acceso. Configura una en tu perfil e inténtalo de nuevo."
     },
     "save": "Guardar",
     "saving": "Guardando…",
