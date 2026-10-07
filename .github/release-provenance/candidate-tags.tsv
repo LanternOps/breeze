@@ -9,3 +9,4 @@
 # read the authoritative copy from origin/main; an unmerged branch cannot
 # authorize itself.
 v0.121.1-hotfix.1	2600d57eb543d53d2b8f9520aafaeca4064ef74e	#8052/#8050	Surgical US API perf hotfix on v0.121.0 (cherry-picks #8055, #8054); deployed API-only by explicit exception
+v0.121.1-hotfix.2	08f62107ff043eeb32fff6bf938f6e9d1829e2a1	#8053	API perf hotfix 2 on v0.121.1-hotfix.1 (backport of #8128); deployed API+worker only by explicit exception
