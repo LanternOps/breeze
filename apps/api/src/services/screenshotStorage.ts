@@ -113,25 +113,36 @@ export async function storeScreenshot(params: StoreScreenshotParams): Promise<St
   const storageKey = `screenshots/${orgId}/${deviceId}/${uuid}.jpg`;
 
   const fullPath = join(SCREENSHOT_DIR, orgId, deviceId);
+  const filePath = join(fullPath, `${uuid}.jpg`);
   await mkdir(fullPath, { recursive: true });
-  await writeFile(join(fullPath, `${uuid}.jpg`), imageBuffer);
+  await writeFile(filePath, imageBuffer);
 
   const expiresAt = new Date(Date.now() + retentionHours * 60 * 60 * 1000);
 
-  const [record] = await db.insert(aiScreenshots).values({
-    deviceId,
-    orgId,
-    sessionId,
-    storageKey,
-    width,
-    height,
-    sizeBytes,
-    capturedBy,
-    reason,
-    expiresAt,
-  }).returning();
-
-  if (!record) throw new Error('Failed to store screenshot record in database');
+  // The file is written first so a row never points at missing bytes. If the
+  // row cannot be recorded, remove the file again: nothing else references
+  // it, so the retention sweep (which walks rows) would never reclaim it.
+  let record: typeof aiScreenshots.$inferSelect | undefined;
+  try {
+    [record] = await db.insert(aiScreenshots).values({
+      deviceId,
+      orgId,
+      sessionId,
+      storageKey,
+      width,
+      height,
+      sizeBytes,
+      capturedBy,
+      reason,
+      expiresAt,
+    }).returning();
+    if (!record) throw new Error('Failed to store screenshot record in database');
+  } catch (err) {
+    await unlink(filePath).catch((cleanupErr: unknown) => {
+      console.error(`[ScreenshotStorage] Failed to remove screenshot file ${filePath} after insert failure:`, cleanupErr);
+    });
+    throw err;
+  }
 
   return {
     id: record.id,
@@ -180,7 +191,13 @@ export async function deleteExpiredScreenshots(): Promise<number> {
     try {
       await unlink(fullPath);
     } catch (err: unknown) {
-      console.error(`[ScreenshotStorage] Failed to delete expired screenshot file ${fullPath}:`, err);
+      const code = err instanceof Error && 'code' in err ? (err as NodeJS.ErrnoException).code : undefined;
+      if (code !== 'ENOENT') {
+        // Keep the row: it is the only pointer to these bytes, and the next
+        // retention run retries the delete.
+        console.error(`[ScreenshotStorage] Failed to delete expired screenshot file ${fullPath}; keeping row for retry:`, err);
+        continue;
+      }
     }
 
     await db.delete(aiScreenshots).where(eq(aiScreenshots.id, record.id));

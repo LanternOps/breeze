@@ -812,9 +812,10 @@ describe('processResults — malformed payload path rendering (#3260)', () => {
 
 describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () => {
   const DATA = { type: 'dispatch-backup' as const, jobId: 'job-1', configId: 'config-1', orgId: 'org-1', deviceId: 'device-1' };
-  const CONFIG_ROW = { id: 'config-1', provider: 'local', providerConfig: {}, encryption: false };
+  const CONFIG_ROW = { id: 'config-1', orgId: 'org-1', provider: 'local', providerConfig: {}, encryption: false };
   const S3_CONFIG_ROW = {
     id: 'config-1',
+    orgId: 'org-1',
     provider: 's3',
     providerConfig: { endpoint: 'https://storage.example.com', bucket: 'backups', region: 'us-east-1', accessKey: 'AK', secretKey: 'SK' },
     encryption: false,
@@ -1224,7 +1225,7 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
 
 describe('prepareBackupDispatchTargets — base pin + storage identity (D18 W01)', () => {
   const DATA = { type: 'dispatch-backup' as const, jobId: 'job-1', configId: 'config-1', orgId: 'org-1', deviceId: 'device-1' };
-  const CONFIG_ROW = { id: 'config-1', provider: 'local', providerConfig: { path: '/tmp/gc-test' }, encryption: false };
+  const CONFIG_ROW = { id: 'config-1', orgId: 'org-1', provider: 'local', providerConfig: { path: '/tmp/gc-test' }, encryption: false };
   const updateLog: Array<{ table: unknown; payload: Record<string, unknown> }> = [];
 
   function wireUpdates() {
@@ -1367,7 +1368,7 @@ describe('prepareBackupDispatchTargets — base pin + storage identity (D18 W01)
 });
 
 describe('processDispatchBackup — approval_generation mismatch (site-ceiling gate contract §3)', () => {
-  const CONFIG_ROW_GEN3 = { id: 'config-1', provider: 'local', providerConfig: {}, encryption: false, approvalGeneration: 3 };
+  const CONFIG_ROW_GEN3 = { id: 'config-1', orgId: 'org-1', provider: 'local', providerConfig: {}, encryption: false, approvalGeneration: 3 };
   const updateLog: Array<{ table: unknown; payload: Record<string, unknown> }> = [];
 
   function wireSelects(configRow: Record<string, unknown> = CONFIG_ROW_GEN3) {
@@ -1451,6 +1452,17 @@ describe('processDispatchBackup — approval_generation mismatch (site-ceiling g
     const result = await __testOnly.processDispatchBackup(DATA as any);
 
     expect(result).toEqual({ dispatched: true });
+  });
+
+  it('fails the job when the loaded config belongs to a different org than the job', async () => {
+    wireSelects({ ...CONFIG_ROW_GEN3, orgId: 'org-2' });
+    const DATA = { type: 'dispatch-backup' as const, jobId: 'job-1', configId: 'config-1', orgId: 'org-1', deviceId: 'device-1', configGeneration: 3 };
+
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: false });
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(updateLog.some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'backup_config_org_mismatch')).toBe(true);
   });
 
   it('dispatches normally when the job carries no generation (legacy payload, opt-in only)', async () => {
