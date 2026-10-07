@@ -1642,18 +1642,24 @@
         "friendly": {
           "adminRequired": "Zaman çizelgelerini onaylamak yönetici rolü gerektirir.",
           "approvedImmutable": "Onaylanan girişler yalnızca yönetici tarafından değiştirilebilir.",
-          "notOwnEntry": "Yalnızca kendi zaman girişlerinizi düzenleyebilirsiniz."
+          "notOwnEntry": "Yalnızca kendi zaman girişlerinizi düzenleyebilirsiniz.",
+          "entryBilled": "Bu giriş faturalandırıldığı için silinemez. Önce faturayı iptal et.",
+          "notOwnEntryDelete": "Yalnızca kendi zaman girişlerini silebilirsin.",
+          "entryDeleteLost": "Giriş silinirken değişti. Yeniden yükleyip tekrar dene.",
+          "entryNotFound": "Bu giriş artık mevcut değil."
         },
         "errors": {
           "bulkApprovalFailed": "Toplu onay başarısız oldu. Tekrar dene.",
           "saveEntryFailed": "Giriş kaydedilemedi. Tekrar dene.",
-          "loadTimesheetFailed": "Zaman çizelgesi yüklenemedi. Tekrar dene."
+          "loadTimesheetFailed": "Zaman çizelgesi yüklenemedi. Tekrar dene.",
+          "deleteEntryFailed": "Giriş silinemedi. Tekrar dene."
         },
         "toasts": {
           "bulkSkipped": "{{updated}} güncellendi, {{skipped}} atlandı ({{reasons}})",
           "bulkApproved": "{{count}} onaylandı",
           "bulkUnapproved": "{{count}} onaylanmadı",
-          "entryUpdated": "Giriş güncellendi"
+          "entryUpdated": "Giriş güncellendi",
+          "entryDeleted": "Giriş silindi"
         },
         "title": "Zaman Çizelgesi",
         "selectTechnician": "Teknisyeni seçin",
@@ -1678,7 +1684,11 @@
         "editEntry": "Girişi düzenle {{id}}",
         "total": "Toplam: {{duration}}",
         "billableTotal": "Faturalandırılabilir: {{duration}}",
-        "billedVsWorked": "{{worked}} sa çalışıldı · {{billed}} sa faturalandı"
+        "billedVsWorked": "{{worked}} sa çalışıldı · {{billed}} sa faturalandı",
+        "deleteEntry": "Girişi sil {{id}}",
+        "deleteConfirmTitle": "Zaman girişi silinsin mi?",
+        "deleteConfirmMessage": "Bu işlem {{ticket}} biletindeki {{duration}} girişini kalıcı olarak kaldırır. Geri alınamaz.",
+        "deleteConfirmMessageNoTicket": "Bu işlem {{duration}} girişini kalıcı olarak kaldırır. Geri alınamaz."
       },
       "sourceBadge": {
         "timer": "Zamanlayıcı",

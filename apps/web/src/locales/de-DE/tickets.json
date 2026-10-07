@@ -227,12 +227,25 @@
       "startTimerFailed": "Der Timer konnte nicht gestartet werden.",
       "logFailed": "Protokollierung der Zeit fehlgeschlagen",
       "logged": "Zeit protokolliert",
-      "logFailedSentence": "Protokollierung der Zeit fehlgeschlagen."
+      "logFailedSentence": "Protokollierung der Zeit fehlgeschlagen.",
+      "deleted": "Zeiteintrag gelöscht",
+      "deleteFailed": "Zeiteintrag konnte nicht gelöscht werden."
     },
     "billedVsWorked": "{{worked}} Std. gearbeitet · {{billed}} Std. abgerechnet",
     "includedMinutes": "{{hours}} Std. im Vertrag enthalten",
     "missingRateCount_one": "1 Eintrag hat keinen Stundensatz – nicht im obigen Betrag enthalten",
-    "missingRateCount_other": "{{count}} Einträge haben keinen Stundensatz – nicht im obigen Betrag enthalten"
+    "missingRateCount_other": "{{count}} Einträge haben keinen Stundensatz – nicht im obigen Betrag enthalten",
+    "deleteEntry": "Zeiteintrag über {{duration}} von {{tech}} löschen",
+    "deleteConfirmTitle": "Zeiteintrag löschen?",
+    "deleteConfirmMessage": "Damit wird der Eintrag über {{duration}} von {{tech}} endgültig entfernt. Dies kann nicht rückgängig gemacht werden.",
+    "deleteRefusal": {
+      "notOwnEntry": "Sie können nur Ihre eigenen Zeiteinträge löschen.",
+      "approvedImmutable": "Genehmigte Einträge können nur von einem Administrator gelöscht werden.",
+      "entryBilled": "Dieser Eintrag wurde bereits abgerechnet und kann nicht gelöscht werden. Stornieren Sie zuerst die Rechnung.",
+      "deleteLost": "Der Eintrag wurde während des Löschens geändert. Neu laden und erneut versuchen.",
+      "notFound": "Dieser Eintrag existiert nicht mehr."
+    },
+    "deleteEntryWithDescription": "Zeiteintrag über {{duration}} von {{tech}} löschen: {{description}}"
   },
   "inboundReviewQueue": {
     "title": "Prüfwarteschlange",

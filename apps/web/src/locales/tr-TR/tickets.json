@@ -227,12 +227,25 @@
       "startTimerFailed": "Zamanlayıcı başlatılamadı.",
       "logFailed": "Zaman kaydedilemedi",
       "logged": "Kaydedilen zaman",
-      "logFailedSentence": "Zaman kaydedilemedi."
+      "logFailedSentence": "Zaman kaydedilemedi.",
+      "deleted": "Zaman girişi silindi",
+      "deleteFailed": "Zaman girişi silinemedi."
     },
     "billedVsWorked": "{{worked}} sa çalışıldı · {{billed}} sa faturalandı",
     "includedMinutes": "{{hours}} sa sözleşmeye dahil",
     "missingRateCount_one": "1 kayıtta saatlik ücret yok — yukarıdaki tutara dahil değil",
-    "missingRateCount_other": "{{count}} kayıtta saatlik ücret yok — yukarıdaki tutara dahil değil"
+    "missingRateCount_other": "{{count}} kayıtta saatlik ücret yok — yukarıdaki tutara dahil değil",
+    "deleteEntry": "{{tech}} tarafından girilen {{duration}} zaman girişini sil",
+    "deleteConfirmTitle": "Zaman girişi silinsin mi?",
+    "deleteConfirmMessage": "Bu işlem {{tech}} tarafından girilen {{duration}} girişini kalıcı olarak kaldırır. Geri alınamaz.",
+    "deleteRefusal": {
+      "notOwnEntry": "Yalnızca kendi zaman girişlerini silebilirsin.",
+      "approvedImmutable": "Onaylanan girişler yalnızca yönetici tarafından silinebilir.",
+      "entryBilled": "Bu giriş faturalandırıldığı için silinemez. Önce faturayı iptal et.",
+      "deleteLost": "Giriş silinirken değişti. Yeniden yükleyip tekrar dene.",
+      "notFound": "Bu giriş artık mevcut değil."
+    },
+    "deleteEntryWithDescription": "{{tech}} tarafından girilen {{duration}} zaman girişini sil: {{description}}"
   },
   "inboundReviewQueue": {
     "title": "İnceleme kuyruğu",

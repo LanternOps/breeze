@@ -1642,18 +1642,24 @@
         "friendly": {
           "adminRequired": "L'approvazione delle schede attività richiede un ruolo di amministratore.",
           "approvedImmutable": "Le voci approvate possono essere modificate solo da un amministratore.",
-          "notOwnEntry": "Puoi modificare solo i tuoi orari."
+          "notOwnEntry": "Puoi modificare solo i tuoi orari.",
+          "entryBilled": "Questa voce è già stata fatturata e non può essere eliminata. Annulla prima la fattura.",
+          "notOwnEntryDelete": "Puoi eliminare solo le tue voci di tempo.",
+          "entryDeleteLost": "La voce è cambiata durante l’eliminazione. Ricarica e riprova.",
+          "entryNotFound": "Questa voce non esiste più."
         },
         "errors": {
           "bulkApprovalFailed": "L'approvazione collettiva non è riuscita. Riprova.",
           "saveEntryFailed": "Impossibile salvare la voce. Riprova.",
-          "loadTimesheetFailed": "Impossibile caricare la scheda attività. Riprova."
+          "loadTimesheetFailed": "Impossibile caricare la scheda attività. Riprova.",
+          "deleteEntryFailed": "Impossibile eliminare la voce. Riprova."
         },
         "toasts": {
           "bulkSkipped": "{{updated}} aggiornato, {{skipped}} saltato ({{reasons}})",
           "bulkApproved": "{{count}} approvato",
           "bulkUnapproved": "{{count}} non approvato",
-          "entryUpdated": "Voce aggiornata"
+          "entryUpdated": "Voce aggiornata",
+          "entryDeleted": "Voce eliminata"
         },
         "title": "Scheda attività",
         "selectTechnician": "Seleziona tecnico",
@@ -1678,7 +1684,11 @@
         "editEntry": "Modifica voce {{id}}",
         "total": "Totale: {{duration}}",
         "billableTotal": "Fatturabile: {{duration}}",
-        "billedVsWorked": "{{worked}} h lavorate · {{billed}} h fatturate"
+        "billedVsWorked": "{{worked}} h lavorate · {{billed}} h fatturate",
+        "deleteEntry": "Elimina voce {{id}}",
+        "deleteConfirmTitle": "Eliminare la voce di tempo?",
+        "deleteConfirmMessage": "Questa azione rimuove definitivamente la voce di {{duration}} dal ticket {{ticket}}. Non può essere annullata.",
+        "deleteConfirmMessageNoTicket": "Questa azione rimuove definitivamente la voce di {{duration}}. Non può essere annullata."
       },
       "sourceBadge": {
         "timer": "Timer",

@@ -227,12 +227,25 @@
       "startTimerFailed": "Falha ao iniciar timer.",
       "logFailed": "Falha ao registrar tempo",
       "logged": "Tempo registrado",
-      "logFailedSentence": "Falha ao registrar tempo."
+      "logFailedSentence": "Falha ao registrar tempo.",
+      "deleted": "Entrada de tempo excluída",
+      "deleteFailed": "Falha ao excluir entrada de tempo."
     },
     "billedVsWorked": "{{worked}} h trabalhadas · {{billed}} h faturadas",
     "includedMinutes": "{{hours}} h incluídas no contrato",
     "missingRateCount_one": "1 lançamento não tem tarifa por hora — não incluído no valor acima",
-    "missingRateCount_other": "{{count}} lançamentos não têm tarifa por hora — não incluídos no valor acima"
+    "missingRateCount_other": "{{count}} lançamentos não têm tarifa por hora — não incluídos no valor acima",
+    "deleteEntry": "Excluir a entrada de tempo de {{duration}} de {{tech}}",
+    "deleteConfirmTitle": "Excluir entrada de tempo?",
+    "deleteConfirmMessage": "Isso remove permanentemente a entrada de {{duration}} de {{tech}}. Não é possível desfazer.",
+    "deleteRefusal": {
+      "notOwnEntry": "Você só pode excluir suas próprias entradas de tempo.",
+      "approvedImmutable": "Entradas aprovadas só podem ser excluídas por um administrador.",
+      "entryBilled": "Esta entrada já foi faturada e não pode ser excluída. Anule a fatura primeiro.",
+      "deleteLost": "A entrada mudou enquanto era excluída. Recarregue e tente novamente.",
+      "notFound": "Esta entrada não existe mais."
+    },
+    "deleteEntryWithDescription": "Excluir a entrada de tempo de {{duration}} de {{tech}}: {{description}}"
   },
   "inboundReviewQueue": {
     "title": "Fila de revisão",

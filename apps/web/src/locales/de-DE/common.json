@@ -1642,18 +1642,24 @@
         "friendly": {
           "adminRequired": "Für die Genehmigung von Stundenzetteln ist eine Administratorrolle erforderlich.",
           "approvedImmutable": "Genehmigte Einträge können nur von einem Administrator geändert werden.",
-          "notOwnEntry": "Sie können nur Ihre eigenen Zeiteinträge bearbeiten."
+          "notOwnEntry": "Sie können nur Ihre eigenen Zeiteinträge bearbeiten.",
+          "entryBilled": "Dieser Eintrag wurde bereits abgerechnet und kann nicht gelöscht werden. Stornieren Sie zuerst die Rechnung.",
+          "notOwnEntryDelete": "Sie können nur Ihre eigenen Zeiteinträge löschen.",
+          "entryDeleteLost": "Der Eintrag wurde während des Löschens geändert. Neu laden und erneut versuchen.",
+          "entryNotFound": "Dieser Eintrag existiert nicht mehr."
         },
         "errors": {
           "bulkApprovalFailed": "Die Massengenehmigung ist fehlgeschlagen. Wiederholen.",
           "saveEntryFailed": "Eintrag konnte nicht gespeichert werden. Wiederholen.",
-          "loadTimesheetFailed": "Die Arbeitszeittabelle konnte nicht geladen werden. Wiederholen."
+          "loadTimesheetFailed": "Die Arbeitszeittabelle konnte nicht geladen werden. Wiederholen.",
+          "deleteEntryFailed": "Eintrag konnte nicht gelöscht werden. Wiederholen."
         },
         "toasts": {
           "bulkSkipped": "{{updated}} aktualisiert, {{skipped}} übersprungen ({{reasons}})",
           "bulkApproved": "{{count}} genehmigt",
           "bulkUnapproved": "{{count}} nicht genehmigt",
-          "entryUpdated": "Eintrag aktualisiert"
+          "entryUpdated": "Eintrag aktualisiert",
+          "entryDeleted": "Eintrag gelöscht"
         },
         "title": "Stundenzettel",
         "selectTechnician": "Techniker auswählen",
@@ -1678,7 +1684,11 @@
         "editEntry": "Eintrag {{id}} bearbeiten",
         "total": "Gesamt: {{duration}}",
         "billableTotal": "Abrechnungsfähig: {{duration}}",
-        "billedVsWorked": "{{worked}} Std. gearbeitet · {{billed}} Std. abgerechnet"
+        "billedVsWorked": "{{worked}} Std. gearbeitet · {{billed}} Std. abgerechnet",
+        "deleteEntry": "Eintrag {{id}} löschen",
+        "deleteConfirmTitle": "Zeiteintrag löschen?",
+        "deleteConfirmMessage": "Damit wird der Eintrag über {{duration}} im Ticket {{ticket}} endgültig entfernt. Dies kann nicht rückgängig gemacht werden.",
+        "deleteConfirmMessageNoTicket": "Damit wird der Eintrag über {{duration}} endgültig entfernt. Dies kann nicht rückgängig gemacht werden."
       },
       "sourceBadge": {
         "timer": "Timer",

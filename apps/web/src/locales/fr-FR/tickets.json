@@ -227,12 +227,25 @@
       "startTimerFailed": "Impossible de démarrer le minuteur.",
       "logFailed": "Impossible d’enregistrer le temps",
       "logged": "Temps enregistré",
-      "logFailedSentence": "Impossible de noter le temps."
+      "logFailedSentence": "Impossible de noter le temps.",
+      "deleted": "Entrée de temps supprimée",
+      "deleteFailed": "Impossible de supprimer l’entrée de temps."
     },
     "billedVsWorked": "{{worked}} h travaillées · {{billed}} h facturées",
     "includedMinutes": "{{hours}} h incluses au contrat",
     "missingRateCount_one": "1 entrée n'a pas de taux horaire — non comptée dans le montant ci-dessus",
-    "missingRateCount_other": "{{count}} entrées n'ont pas de taux horaire — non comptées dans le montant ci-dessus"
+    "missingRateCount_other": "{{count}} entrées n'ont pas de taux horaire — non comptées dans le montant ci-dessus",
+    "deleteEntry": "Supprimer l’entrée de temps de {{duration}} de {{tech}}",
+    "deleteConfirmTitle": "Supprimer l’entrée de temps ?",
+    "deleteConfirmMessage": "Cette action supprime définitivement l’entrée de {{duration}} de {{tech}}. Elle est irréversible.",
+    "deleteRefusal": {
+      "notOwnEntry": "Vous ne pouvez supprimer que vos propres entrées de temps.",
+      "approvedImmutable": "Les entrées approuvées ne peuvent être supprimées que par un administrateur.",
+      "entryBilled": "Cette entrée a été facturée et ne peut pas être supprimée. Annulez d’abord la facture.",
+      "deleteLost": "L’entrée a changé pendant sa suppression. Rechargez et réessayez.",
+      "notFound": "Cette entrée n’existe plus."
+    },
+    "deleteEntryWithDescription": "Supprimer l’entrée de temps de {{duration}} de {{tech}} : {{description}}"
   },
   "inboundReviewQueue": {
     "title": "File d’attente pour les révisions",

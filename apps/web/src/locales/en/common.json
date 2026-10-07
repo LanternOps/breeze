@@ -1642,18 +1642,24 @@
         "friendly": {
           "adminRequired": "Approving timesheets requires an admin role.",
           "approvedImmutable": "Approved entries can only be changed by an admin.",
-          "notOwnEntry": "You can only edit your own time entries."
+          "notOwnEntry": "You can only edit your own time entries.",
+          "entryBilled": "This entry has been invoiced and can't be deleted. Void the invoice first.",
+          "notOwnEntryDelete": "You can only delete your own time entries.",
+          "entryDeleteLost": "The entry changed while it was being deleted. Reload and try again.",
+          "entryNotFound": "This entry no longer exists."
         },
         "errors": {
           "bulkApprovalFailed": "Bulk approval failed. Retry.",
           "saveEntryFailed": "Failed to save entry. Retry.",
-          "loadTimesheetFailed": "Failed to load timesheet. Retry."
+          "loadTimesheetFailed": "Failed to load timesheet. Retry.",
+          "deleteEntryFailed": "Failed to delete entry. Retry."
         },
         "toasts": {
           "bulkSkipped": "{{updated}} updated, {{skipped}} skipped ({{reasons}})",
           "bulkApproved": "{{count}} approved",
           "bulkUnapproved": "{{count}} unapproved",
-          "entryUpdated": "Entry updated"
+          "entryUpdated": "Entry updated",
+          "entryDeleted": "Entry deleted"
         },
         "title": "Timesheet",
         "selectTechnician": "Select technician",
@@ -1678,7 +1684,11 @@
         "editEntry": "Edit entry {{id}}",
         "total": "Total: {{duration}}",
         "billableTotal": "Billable: {{duration}}",
-        "billedVsWorked": "{{worked}} h worked · {{billed}} h billed"
+        "billedVsWorked": "{{worked}} h worked · {{billed}} h billed",
+        "deleteEntry": "Delete entry {{id}}",
+        "deleteConfirmTitle": "Delete time entry?",
+        "deleteConfirmMessage": "This permanently removes the {{duration}} entry on ticket {{ticket}}. It can't be undone.",
+        "deleteConfirmMessageNoTicket": "This permanently removes the {{duration}} entry. It can't be undone."
       },
       "sourceBadge": {
         "timer": "Timer",

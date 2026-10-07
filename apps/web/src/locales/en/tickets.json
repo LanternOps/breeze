@@ -227,12 +227,25 @@
       "startTimerFailed": "Failed to start timer.",
       "logFailed": "Failed to log time",
       "logged": "Time logged",
-      "logFailedSentence": "Failed to log time."
+      "logFailedSentence": "Failed to log time.",
+      "deleted": "Time entry deleted",
+      "deleteFailed": "Failed to delete time entry."
     },
     "billedVsWorked": "{{worked}} h worked · {{billed}} h billed",
     "includedMinutes": "{{hours}} h included in contract",
     "missingRateCount_one": "1 entry has no hourly rate — not counted in the amount above",
-    "missingRateCount_other": "{{count}} entries have no hourly rate — not counted in the amount above"
+    "missingRateCount_other": "{{count}} entries have no hourly rate — not counted in the amount above",
+    "deleteEntry": "Delete {{duration}} time entry by {{tech}}",
+    "deleteConfirmTitle": "Delete time entry?",
+    "deleteConfirmMessage": "This permanently removes the {{duration}} entry by {{tech}}. It can't be undone.",
+    "deleteRefusal": {
+      "notOwnEntry": "You can only delete your own time entries.",
+      "approvedImmutable": "Approved entries can only be deleted by an admin.",
+      "entryBilled": "This entry has been invoiced and can't be deleted. Void the invoice first.",
+      "deleteLost": "The entry changed while it was being deleted. Reload and try again.",
+      "notFound": "This entry no longer exists."
+    },
+    "deleteEntryWithDescription": "Delete {{duration}} time entry by {{tech}}: {{description}}"
   },
   "inboundReviewQueue": {
     "title": "Review queue",
