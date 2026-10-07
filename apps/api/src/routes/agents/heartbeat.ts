@@ -1,11 +1,11 @@
 import { topologyHeartbeat } from '../../services/topology/heartbeat';
-import { loadTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from '../../services/topology/flags';
+import { loadAgentTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from '../../services/topology/flags';
 import { Hono } from 'hono';
 import { timingSafeEqual } from 'node:crypto';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '../../lib/validation';
 import { and, eq, notInArray } from 'drizzle-orm';
-import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import {
   maybeDispatchEditionMigration,
   shouldConsiderEditionMigration,
@@ -46,7 +46,7 @@ import {
   buildOnedriveHelperConfigUpdate,
   buildPatchSourceConfigUpdate,
   buildWarrantyConfigUpdate,
-  getOrgAgentUpdateConfig,
+  getOrgAgentUpdateConfigCached,
   resolvePinnedUpgradeTarget,
   agentAcceptsServedEdition,
   shouldAutoApplyAgentReportedDeviceRole,
@@ -64,10 +64,10 @@ import { computeCredentialMaintenance } from './heartbeatCredentialMaintenance';
 import { respondParkedHeartbeat } from './heartbeatParked';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { captureException } from '../../services/sentry';
-import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
+import { HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS, resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 import {
-  getActiveTrustKeyset,
-  getActiveManifestKeyDelegations,
+  getActiveTrustKeysetCached,
+  getActiveManifestKeyDelegationsCached,
   type ManifestTrustKey,
   type ManifestKeyDelegation,
 } from '../../services/manifestSigning';
@@ -579,6 +579,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // targets rather than bypass Manual mode / a maintenance window. Bootstrap
   // installs (a component not yet present) are NOT gated inside the block below.
   //
+  // #8053: served from a per-org process cache (60 s, invalidated by the
+  // org/partner settings routes), so the system context below opens once per
+  // org per TTL instead of once per agent per beat. A failed lookup is never
+  // cached, so the fail-closed default below still re-resolves next beat.
+  //
   // The SAME resolver also returns the effective per-component version pins
   // (issue #2124), so this one system-context round trip yields both the gate
   // decision and the pins. `versionPins` defaults to no-pin (track global
@@ -592,9 +597,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   let pinsResolved = false;
   let versionPins: AgentVersionPins = { agent: null, watchdog: null };
   try {
-    const updateConfig = await withSystemDbAccessContext(() =>
-      getOrgAgentUpdateConfig(agent.orgId),
-    );
+    const updateConfig = await getOrgAgentUpdateConfigCached(agent.orgId);
     versionPins = updateConfig.pins;
     pinsResolved = true;
     const gate = shouldSendAgentUpgrade(updateConfig.settings, new Date());
@@ -627,12 +630,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // holder never got its second connection — a pool deadlock broken only by
   // idle_in_transaction_session_timeout. Same #1105 ordering as the update
   // policy above. On failure topology is skipped for this beat, never
-  // re-resolved inside the transaction.
+  // re-resolved inside the transaction. Per-org process cache, same as the
+  // update policy (#8053).
   let topologyFlags: TopologyFlags | null = null;
   try {
-    topologyFlags = await withSystemDbAccessContext(() =>
-      loadTopologyFlags({ scope: { orgId: agent.orgId, siteId: agent.siteId } }),
-    );
+    topologyFlags = await loadAgentTopologyFlags(agent.orgId);
   } catch (err) {
     console.error(`[heartbeat] failed to resolve topology flags for ${agentId}; skipping topology collection:`, err);
     captureException(err);
@@ -1985,7 +1987,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   let manageRemoteManagement = false;
   try {
-    const remoteAccess = await resolveRemoteAccessForDevice(device.id);
+    // #8053: the heartbeat's own (longer) max age — the default 30 s is
+    // shorter than the 60 s beat, so it never hit and every beat re-ran the
+    // full effective-config resolution inside this org transaction.
+    const remoteAccess = await resolveRemoteAccessForDevice(device.id, {
+      maxAgeMs: HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS,
+    });
     manageRemoteManagement = remoteAccess.settings.vncRelay === true;
   } catch (err) {
     console.error('[heartbeat] Failed to resolve remote access policy:', err);
@@ -2126,9 +2133,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // acquires a second connection. (Returns the active signing keyset from
   // manifest_signing_keys; empty on hosted SaaS — see
   // docs/deploy/agent-update-trust-bootstrap.md, #625.)
+  //
+  // #8053: both this keyset and the delegations below are global, so they are
+  // served from a 60 s process cache — their system context opens once per
+  // process per TTL, not once per agent per beat. See MANIFEST_TRUST_CACHE_TTL_MS.
   let manifestTrustKeys: ManifestTrustKey[] = [];
   try {
-    manifestTrustKeys = await getActiveTrustKeyset();
+    manifestTrustKeys = await getActiveTrustKeysetCached();
   } catch (err) {
     console.error(`[heartbeat] Failed to load manifest trust keyset for agentId=${agentId}:`, err);
     captureException(err);
@@ -2149,25 +2160,18 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // The agent simply adopts on a later heartbeat.
   let manifestKeyDelegations: ManifestKeyDelegation[] = [];
   try {
-    manifestKeyDelegations = await getActiveManifestKeyDelegations();
+    manifestKeyDelegations = await getActiveManifestKeyDelegationsCached();
   } catch (err) {
     console.error(`[heartbeat] Failed to load manifest key delegations for agentId=${agentId}:`, err);
     captureException(err);
   }
 
-  // Policy probe config also runs OUTSIDE the org context (#1105 pattern
-  // above) — and MUST: partner-wide compliance policies (org_id NULL, #2129)
-  // are invisible to the org-scoped RLS context, and the agent has to collect
-  // registry/config state for them too. The system context here is anchored to
-  // the authenticated device's own org, so it cannot pivot tenants.
-  let policyProbeConfig: PolicyProbeConfigUpdate | null = null;
-  try {
-    policyProbeConfig = await withSystemDbAccessContext(() =>
-      buildPolicyProbeConfigUpdate(scoped.deviceOrgId)
-    );
-  } catch (err) {
-    console.error(`[agents] failed to build policy probe config update for ${agentId}:`, err);
-  }
+  // Policy probe config and helper settings are resolved in the shared policy
+  // context further down (#8053), but declared here because the merge below
+  // reads them. (Initialised via `as` so TypeScript does not narrow them to
+  // `null`: it cannot see the assignments made inside that callback.)
+  let policyProbeConfig = null as PolicyProbeConfigUpdate | null;
+  let helperSettings = null as HelperSettings | null;
 
   // #1105 — onedrive_helper config is built OUTSIDE the org transaction too.
   // Phase 4 added per-UPN Graph resolution inside resolveDeviceOnedriveSettings,
@@ -2206,8 +2210,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // reaches the partner-AXIS `partners` read in `resolveDeviceTimezone`, which
   // would then take a nested `readWithPartnerAxisVisibility` escape once per
   // heartbeat (see the long note at the `currentPartnerId` assignment above).
-  // Same treatment as policyProbeConfig /
-  // onedriveSettings / helperSettings above: resolved after the org tx is
+  // Same treatment as onedriveSettings above: resolved after the org tx is
   // released, under a system context anchored to `scoped.deviceId` — an id
   // derived from the device the agent already authenticated as, so this cannot
   // pivot tenants.
@@ -2218,6 +2221,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // system transaction would cost four connection acquisitions per heartbeat
   // against the 25-connection production ceiling for no isolation gain. The
   // per-resolver try/catch below keeps each feature's documented fallback.
+  //
+  // #8053 — the policy-probe and helper-settings readers used to open a system
+  // transaction each, after this one. They now run FIRST inside it, each in its
+  // own savepoint (withDbTransaction): a SQL error in either rolls back only its
+  // savepoint, and nothing that runs before them can have aborted the shared
+  // transaction. That keeps the isolation each had in its own transaction —
+  // which matters for the helper: a null `helperSettings` delivers
+  // helperEnabled:false, a plain Go bool, so a failure there turns the helper
+  // OFF for the beat. Both results are written straight to the outer variables,
+  // so a later resolver's error (which aborts the shared transaction and makes
+  // its COMMIT throw into the outer catch) cannot discard them. Both readers are
+  // anchored to `scoped` (the authenticated device and its org), as before.
+  //
+  // The policy-probe reader MUST stay out of the org-scoped context:
+  // partner-wide compliance policies (org_id NULL, #2129) are invisible there,
+  // and the agent has to collect registry/config state for them too.
   //
   // The whole block is ALSO wrapped in an outer catch. The per-resolver catches
   // below cannot see a transaction setup or COMMIT failure, and a SQL error
@@ -2247,6 +2266,27 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   };
   try {
     policyConfigs = await withSystemDbAccessContext(async (): Promise<PolicyConfigUpdates> => {
+      // #1105/#4673 W03: `buildHelperConfigUpdate` touches no partner-AXIS
+      // table and would be a safe drop-in for an org-scoped context; it shares
+      // this system one so the heartbeat's hoists convert to org scope as ONE
+      // reviewable change. See the note at the `currentPartnerId` assignment.
+      try {
+        helperSettings = await withDbTransaction(() =>
+          buildHelperConfigUpdate(scoped.deviceId, scoped.deviceOrgId),
+        );
+      } catch (err) {
+        console.error(`[agents] failed to read helper settings for ${agentId}:`, err);
+        captureException(err);
+      }
+
+      try {
+        policyProbeConfig = await withDbTransaction(() =>
+          buildPolicyProbeConfigUpdate(scoped.deviceOrgId),
+        );
+      } catch (err) {
+        console.error(`[agents] failed to build policy probe config update for ${agentId}:`, err);
+      }
+
       let eventLogSettings: Record<string, unknown> | null = null;
       let monitoringSettings: Record<string, unknown> | null = null;
       let pamSettings: { uacInterceptionEnabled: boolean } | null = null;
@@ -2398,31 +2438,6 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       ...(onedriveConfigUpdate ?? {}),
     }
     : null;
-
-  // #1105 — helper settings resolved OUTSIDE the org context too (same
-  // guarantee as policyProbeConfig/onedriveSettings above): a partner-wide
-  // helper policy (org_id NULL) was invisible under the org-scoped RLS context
-  // (accessiblePartnerIds: [] there), so it resolved under a system context
-  // anchored to this authenticated device's own org — cannot pivot tenants
-  // since both ids come from `scoped`, derived from the device the agent
-  // already authenticated as.
-  //
-  // #4673 W03: the invisibility half of that reason is gone —
-  // `config_policy_feature_links_partner_wide_select` covers the JSONB
-  // `inlineSettings` this resolves, and `buildHelperConfigUpdate` touches no
-  // partner-AXIS table, so this one IS a safe drop-in swap to an org-scoped
-  // context. It is left alone only so the heartbeat's five hoists are converted
-  // as ONE reviewable change with one integration proof each, rather than
-  // piecemeal. See the note at the `currentPartnerId` assignment above.
-  let helperSettings: HelperSettings | null = null;
-  try {
-    helperSettings = await withSystemDbAccessContext(() =>
-      buildHelperConfigUpdate(scoped.deviceId, scoped.deviceOrgId)
-    );
-  } catch (err) {
-    console.error(`[agents] failed to read helper settings for ${agentId}:`, err);
-    captureException(err);
-  }
 
   return c.json({
     ...scoped.mainResponse,
