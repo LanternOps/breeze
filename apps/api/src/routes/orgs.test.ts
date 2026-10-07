@@ -12,6 +12,7 @@ vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { orgRoutes, createOrganizationSchema, updateOrganizationSchema } from './orgs';
+import { invalidateAgentOrgSettingsCaches } from '../services/agentOrgSettingsCache';
 
 beforeEach(() => {
   defaultAssigneeSettingsErrorMock.mockReset();
@@ -203,6 +204,11 @@ vi.mock('../services/tenantOffboarding', async (importOriginal) => ({
 vi.mock('../services/monitors/builtInMonitors', () => ({
   ensureBuiltInMonitorsForPartner: vi.fn(async () => ({ provisioned: true, monitorIds: [] })),
   ensureBuiltInMonitorsForAllPartners: vi.fn(async () => ({ provisioned: 0, skipped: 0, failed: 0 })),
+}));
+// #8053 — org/partner settings writes invalidate the agent heartbeat's per-org
+// caches; the cache itself is covered in hotPathCache.test.ts.
+vi.mock('../services/agentOrgSettingsCache', () => ({
+  invalidateAgentOrgSettingsCaches: vi.fn(),
 }));
 vi.mock('../db', () => ({
   db: {
@@ -1572,6 +1578,8 @@ describe('org routes', () => {
       // The key guarantee is that the db write does NOT carry aiForOfficeEnabled.
       expect(res.status).toBe(200);
       expect(capturedUpdateData?.aiForOfficeEnabled).toBeUndefined();
+      // #8053 — a partner write feeds every org: all per-org caches drop.
+      expect(invalidateAgentOrgSettingsCaches).toHaveBeenCalledWith();
     });
 
     describe('contact.website scheme allowlist', () => {
@@ -4123,6 +4131,8 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.name).toBe('Updated');
+      // #8053 — the org's agents re-read its update policy / topology flags.
+      expect(invalidateAgentOrgSettingsCaches).toHaveBeenCalledWith('org-1');
     });
 
     // ── lifecycle-internal settings keys (review r3) ───────────────────────

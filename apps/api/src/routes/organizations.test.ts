@@ -33,6 +33,11 @@ vi.mock('../services/monitors/builtInMonitors', () => ({
   ensureBuiltInMonitorsForPartner: vi.fn(async () => ({ provisioned: true, monitorIds: [] })),
   ensureBuiltInMonitorsForAllPartners: vi.fn(async () => ({ provisioned: 0, skipped: 0, failed: 0 })),
 }));
+// #8053 — org/partner settings writes invalidate the agent heartbeat's per-org
+// caches (covered in orgs.test.ts and hotPathCache.test.ts).
+vi.mock('../services/agentOrgSettingsCache', () => ({
+  invalidateAgentOrgSettingsCaches: vi.fn(),
+}));
 vi.mock('../db', () => {
   const db: Record<string, unknown> = {
     select: vi.fn(() => ({
