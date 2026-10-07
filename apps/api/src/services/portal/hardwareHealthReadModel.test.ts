@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../db', () => {
   const kindOf = (keys: string[]): string => {
     if (keys.includes('total')) return 'total';
+    if (keys.includes('reporting')) return 'reporting';
     if (keys.includes('worstRank')) return 'aggregates';
     if (keys.includes('batteryStatus')) return 'device';
     if (keys.includes('eventType')) return 'events';
@@ -269,6 +270,7 @@ describe('hardwareHealthOverview', () => {
 describe('hardwareHealthDevicesPage', () => {
   it('maps a page of devices with their worst health', async () => {
     mocks.data.total = [{ total: 2 }];
+    mocks.data.reporting = [{ reporting: 1 }];
     mocks.data.devicePage = [
       leak({ id: 'a', hostname: 'h-a', displayName: 'A', osType: 'windows' }),
       leak({ id: 'b', hostname: 'h-b', displayName: null, osType: 'linux' }),
@@ -279,6 +281,7 @@ describe('hardwareHealthDevicesPage', () => {
     ];
     const dto = await hardwareHealthDevicesPage(ORG, { page: 2, limit: 25, now: NOW });
     expect(dto.pagination).toEqual({ page: 2, limit: 25, total: 2 });
+    expect(dto.dataStatus).toBe('ok');
     expect(dto.data).toEqual([
       {
         id: 'a', hostname: 'h-a', displayName: 'A', osType: 'windows',
@@ -291,5 +294,25 @@ describe('hardwareHealthDevicesPage', () => {
       },
     ]);
     for (const forbidden of FORBIDDEN) expect(allKeys(dto).has(forbidden)).toBe(false);
+  });
+});
+
+describe('hardwareHealthDevicesPage dataStatus', () => {
+  it('is ok when the organization reports data even if this page has none', async () => {
+    mocks.data.total = [{ total: 120 }];
+    mocks.data.reporting = [{ reporting: 3 }];
+    mocks.data.devicePage = [leak({ id: 'z', hostname: 'h-z', displayName: null, osType: 'linux' })];
+    mocks.data.aggregates = [];
+    const dto = await hardwareHealthDevicesPage(ORG, { page: 3, limit: 50, now: NOW });
+    expect(dto.dataStatus).toBe('ok');
+    expect(dto.data[0]!.health).toBe('unknown');
+  });
+
+  it('is no_data only when nothing in the organization reports', async () => {
+    mocks.data.total = [{ total: 2 }];
+    mocks.data.reporting = [{ reporting: 0 }];
+    mocks.data.devicePage = [];
+    const dto = await hardwareHealthDevicesPage(ORG, { page: 1, limit: 50, now: NOW });
+    expect(dto.dataStatus).toBe('no_data');
   });
 });
