@@ -474,7 +474,7 @@ describe('Accounting dedicated permissions (accounting:read / accounting:manage)
   });
 
   it('does NOT grant either accounting permission to any other built-in role', () => {
-    // SEC-2026-09-05-057: the finding is precisely that full-partner low-role
+    // The finding is precisely that full-partner low-role
     // members reached the shared QuickBooks realm. Partner Technician /
     // Partner Billing must NOT acquire that authority automatically.
     for (const role of SYSTEM_ROLES.filter((r) => !['Partner Admin', 'Org Admin'].includes(r.name))) {

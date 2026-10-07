@@ -43,7 +43,7 @@ function rigLaunch(pollBody: unknown) {
   fetchMock.mockResolvedValueOnce(jsonRes(pollBody));
 }
 
-// SEC-038 W06 (#5537): a server-side End commits its terminal decision before
+// #5537 — a server-side End commits its terminal decision before
 // the agent acknowledges the stop (terminationPhase = 'pending'). The button
 // must never read such a session as "viewer connected" — it is ended, and the
 // operator needs to know the device is still tearing the previous one down.

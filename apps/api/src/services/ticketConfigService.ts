@@ -419,6 +419,10 @@ export async function getTicketConfig(partnerId: string) {
     unknownSenderMode,
     triageUnknownSenders: unknownSenderMode === 'triage',
     dropUnverifiedSenders: inboundCfg.dropUnverifiedSenders ?? false,
+    staffForwardRouting: inboundCfg.staffForwardRouting ?? false,
+    // Emitted so the card can show and PRESERVE it (the inbound sub-object is
+    // replaced wholesale on save).
+    defaultAssigneeUserId: inboundCfg.defaultAssigneeUserId ?? null,
     autoresponseSubject: inboundCfg.autoresponseSubject ?? null,
     autoresponseBody: inboundCfg.autoresponseBody ?? null,
     // Reply-content mode. Emitted (default false) so the card can read it back and

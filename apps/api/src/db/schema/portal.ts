@@ -1,4 +1,6 @@
 import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum, index } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { xid8 } from './columnTypes';
 import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
@@ -54,6 +56,10 @@ export const portalBranding = pgTable('portal_branding', {
   // MSP can turn on generic report self-service before exposing the
   // replacement plan, which names specific machines.
   enableLifecycle: boolean('enable_lifecycle').notNull().default(false),
+  // Portal Advanced Visibility W01 (#7731): independent, fail-closed gate for
+  // the read-only hardware health surface (component state, events, disks,
+  // battery). Inside "Enable all" (low sensitivity).
+  enableHardwareHealth: boolean('enable_hardware_health').notNull().default(false),
   // Customer Portal Network Visibility (#5861): independent, fail-closed
   // visibility gate for the read-only networking surface.
   enableNetworkVisibility: boolean('enable_network_visibility').notNull().default(false),
@@ -196,7 +202,13 @@ export const tickets = pgTable('tickets', {
   fieldProvenance: jsonb('field_provenance')
     .$type<Record<string, 'user' | 'ai_agent' | 'system' | 'service_principal'>>()
     .notNull()
-    .default({})
+    .default({}),
+  // Partner API tickets feed change stamp (2026-12-13-120000): the xid8 of
+  // the writing transaction, set by a BEFORE INSERT OR UPDATE trigger on
+  // every write (app-supplied values are overwritten). Decimal string end to
+  // end — see schema/columnTypes.ts. Existing rows keep '1', which sorts
+  // before every real transaction id, so a first full sync covers them.
+  partnerFeedXid: xid8('partner_feed_xid').notNull().default(sql`'1'::xid8`),
 });
 
 export const ticketComments = pgTable('ticket_comments', {

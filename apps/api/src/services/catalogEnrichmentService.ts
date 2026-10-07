@@ -62,7 +62,7 @@ export class EnrichmentError extends Error {
  * `console.warn` when `actor.orgId` was null — and then dispatch anyway, with
  * paid Anthropic web-search turns on the platform key. A rate limit bounds the
  * RATE of unbudgeted spend; it does not make the spend accounted. No
- * reservation is taken on that path either, so nothing else in SEC-142's fence
+ * reservation is taken on that path either, so nothing else in the spend fence
  * applies to it.
  *
  * Fail closed, with one deliberate exemption the caller must DECLARE (see

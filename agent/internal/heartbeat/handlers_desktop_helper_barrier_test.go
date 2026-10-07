@@ -11,7 +11,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
-// SEC-038 W05 readiness barrier: a generation-bearing start must not reach a
+// Readiness barrier: a generation-bearing start must not reach a
 // helper that has not yet acknowledged this service's fence. The barrier lives
 // in startDesktopOnSession, and it is the mechanism that makes helper-restart
 // safety real — the helper-side fence logic alone cannot provide it, because a

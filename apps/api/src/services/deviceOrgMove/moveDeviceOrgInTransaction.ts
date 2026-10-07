@@ -37,6 +37,7 @@ import {
 } from '../ticketMoveCurrencyGuard';
 import { assertPamDeviceOrgMoveAllowed } from '../pamDeviceMoveGuard';
 import { revokeWorkstationGrantsForMove } from '../callerVerification/deviceMove';
+import { revokeDiagnosticGrantsForMove } from '../diagnosticAccess/deviceMove';
 import {
   checkPoolMembershipTransition,
   type PoolMembershipRefusal,
@@ -381,6 +382,7 @@ export async function moveDeviceOrgInTransaction(
   });
   if (poolRefusal) throw new DevicePoolMembershipRefusedError(poolRefusal);
   await revokeWorkstationGrantsForMove(tx, sourceOrgId, deviceId);
+  await revokeDiagnosticGrantsForMove(tx, sourceOrgId, deviceId, input.actor.userId);
 
   // Flip the device row first so any concurrent agent heartbeat
   // after this point resolves the new org_id.

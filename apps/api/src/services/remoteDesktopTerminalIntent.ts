@@ -1,5 +1,5 @@
 /**
- * SEC-038 W03 (#5534) — the one way to declare a remote session terminal.
+ * #5534 — the one way to declare a remote session terminal.
  *
  * W02 (`remoteDesktopStartIntent.ts`) made every desktop START a serialized
  * decision that bumps `desktop_start_generation`. That only orders starts

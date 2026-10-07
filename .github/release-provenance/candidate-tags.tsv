@@ -8,6 +8,4 @@
 # rollout, or latest/major/minor floating tags. Release creation and promotion
 # read the authoritative copy from origin/main; an unmerged branch cannot
 # authorize itself.
-v0.109.0-rc.1	d473815e434141135b23a6cf51fca715e8218938	#4105/#4060	Track E lab candidate
-v0.109.0-rc.2	fb1731e97c0d61a8c6d82420694daf186cfa44fa	#4105/#4060	Track E lab candidate
-v0.109.0-rc.3	a11d432a6e68288eceef050933483c231f5d40dc	#4105/#4060	Track E accepted lab-evidence candidate
+v0.121.1-hotfix.1	2600d57eb543d53d2b8f9520aafaeca4064ef74e	#8052/#8050	Surgical US API perf hotfix on v0.121.0 (cherry-picks #8055, #8054); deployed API-only by explicit exception

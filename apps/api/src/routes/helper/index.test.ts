@@ -715,6 +715,72 @@ describe('helper routes permission derivation', () => {
     expect(depth).toBe(0);
   });
 
+  it('#7783: subscribes to the session events BEFORE the turn is pushed: a transport that answers at once still reaches the helper', async () => {
+    // The real SessionEventBus has no replay: an event published while nobody
+    // is subscribed is gone. Model a transport fast enough to publish the
+    // whole turn synchronously when the message is pushed.
+    const subscribers = new Map<string, Array<{ type: string; message?: string }>>();
+    const waiters = new Map<string, () => void>();
+    const bus = {
+      subscribe: vi.fn((id: string) => {
+        subscribers.set(id, []);
+        return (async function* () {
+          for (;;) {
+            const queue = subscribers.get(id)!;
+            while (queue.length) {
+              const event = queue.shift()!;
+              yield event;
+              if (event.type === 'done') return;
+            }
+            await new Promise<void>((resolve) => { waiters.set(id, resolve); });
+          }
+        })();
+      }),
+      unsubscribe: vi.fn((id: string) => { subscribers.delete(id); }),
+      publish: vi.fn((event: { type: string; message?: string }) => {
+        for (const [id, queue] of subscribers) { queue.push(event); waiters.get(id)?.(); }
+      }),
+    };
+    mockHelperAuthDevice();
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'session-1', orgId: 'org-1', deviceId: 'device-1', sdkSessionId: null,
+            model: 'claude-sonnet-4-5-20250929', maxTurns: 50, turnCount: 0, status: 'active',
+            title: 'Existing title', systemPrompt: 'prompt', createdAt: new Date(),
+          }]),
+        }),
+      }),
+    } as never);
+    vi.mocked(db.insert).mockImplementationOnce(() => ({ values: vi.fn().mockResolvedValue(undefined) }) as never);
+    const activeSession = {
+      inputController: {
+        pushMessage: vi.fn(() => {
+          bus.publish({ type: 'error', message: 'helper turn failed fast' });
+          bus.publish({ type: 'done' });
+        }),
+      },
+      eventBus: bus,
+      state: 'processing',
+    };
+    vi.mocked(streamingSessionManager.get).mockReturnValue(undefined as never);
+    vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(activeSession as never);
+    vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
+
+    const apiApp = new Hono();
+    apiApp.route('/api/v1/helper', helperRoutes);
+    const res = await apiApp.request('/api/v1/helper/chat/sessions/session-1/messages', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'hello' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('helper turn failed fast');
+    expect(bus.unsubscribe).toHaveBeenCalled();
+  });
+
   it('an unusable connection on a turn is a recoverable 409 before touching the SDK manager; a client partnerId is ignored', async () => {
     mockHelperAuthDevice();
     resolveSessionTurnMock.mockResolvedValue({

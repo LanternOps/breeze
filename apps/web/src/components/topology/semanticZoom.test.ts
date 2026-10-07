@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SUMMARY_ENTER_ZOOM, SUMMARY_EXIT_ZOOM, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, canvasFillHeight, chipModes, summarySlot, CHIP_OVERLAP_LIMIT } from './semanticZoom';
+import { SUMMARY_ENTER_ZOOM, SUMMARY_EXIT_ZOOM, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, canvasFillHeight, chipModes, summarySlot, CHIP_OVERLAP_LIMIT, nextFit, type FitState } from './semanticZoom';
 
 describe('nextZoomTier', () => {
   it('never enters the summary tier for a flat (non-grouped) view, and leaves it if the view goes flat', () => {
@@ -143,5 +143,30 @@ describe('chipModes at scale (per-frame work stays bounded)', () => {
     const modes = chipModes(pile);
     expect(performance.now() - start).toBeLessThan(100);
     expect(modes.get('p0')).toBe('icon');
+  });
+});
+
+describe('nextFit', () => {
+  const run = (steps: Array<[string, readonly unknown[]]>) => {
+    let state: FitState = {}; const fits: boolean[] = [];
+    for (const [key, positions] of steps) { const result = nextFit(state, key, positions); state = result.state; fits.push(result.fit); }
+    return fits;
+  };
+  const old = [1, 2, 3], cleared: unknown[] = [], fresh = [4], later = [5];
+
+  it('fits the first layout after mount, once', () => {
+    expect(run([['a', cleared], ['a', fresh], ['a', later]])).toEqual([false, true, false]);
+  });
+  it('fits a remount that already has positions for its key', () => {
+    expect(run([['a', old]])).toEqual([true]);
+  });
+  it('on a key change (Expand/Collapse) waits for the new layout instead of fitting the stale positions', () => {
+    // Expand: the key changes while the previous subgraph's positions are still drawn, the explorer then clears them, then the layout lands.
+    expect(run([['a', old], ['b', old], ['b', cleared], ['b', fresh], ['b', later]])).toEqual([true, false, false, true, false]);
+    // Collapse: the base graph arrives later than the key; the positions do not change until its layout lands.
+    expect(run([['a', old], ['b', old], ['b', old], ['b', fresh]])).toEqual([true, false, false, true]);
+  });
+  it('never re-fits on a same-key relayout (health poll, drag)', () => {
+    expect(run([['a', old], ['a', fresh], ['a', later]])).toEqual([true, false, false]);
   });
 });

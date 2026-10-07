@@ -51,6 +51,7 @@ import {
 import { listMonitorDeviceActivity, listMonitorEpisodes } from './monitors/episodeQueries';
 import { resetMonitorEscalation } from './monitors/episodeReset';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
+import { auditPartnerScopeId } from './auditReadScope';
 import {
   createMonitorDefinitionSchema,
   updateMonitorDefinitionSchema,
@@ -96,6 +97,60 @@ function describeMonitorKind(kind: MonitorKind): Record<string, unknown> {
   return { kind, condition };
 }
 
+/**
+ * What the Windows agent collects per event_log category, and why an event_log
+ * monitor cannot detect app installs/uninstalls (#7060, ported from the retired
+ * alert_rule reference, #6669). Shown by `describe` and appended to rejected
+ * event_log level/type errors.
+ */
+const EVENT_LOG_COLLECTION_GUIDANCE =
+  'What the Windows agent collects for event_log: application = Application log error/critical only; ' +
+  'system = System log error/critical from providers other than the hardware ones, plus unexpected-shutdown events; ' +
+  'hardware = System log error/critical from disk, NTFS, volume/storage-controller, WHEA machine-check and thermal providers; ' +
+  'security = Security log warning and above.';
+
+const EVENT_LOG_APP_PRESENCE_HINT =
+  'Information-level events can never match (the lowest level is "warning"), so an event_log monitor cannot detect software installs or uninstalls (MsiInstaller events are Information). ' +
+  'To detect a missing or removed app, use a configuration policy compliance rule with featureType "compliance" and { type: "required_software", softwareName } instead';
+
+const EVENT_LOG_LEVELS: readonly string[] = ['warning', 'error', 'critical'];
+
+/**
+ * True when an event_log condition carries the shape the model gets wrong when
+ * it is trying to detect app presence: a `type` key (copied from the retired
+ * alert_rule shape) or a `level` outside the warning|error|critical floor.
+ * Judged from the input itself because the zod message for a rejected
+ * condition is only "condition does not match kind", with no field detail.
+ */
+function isRejectedEventLogCondition(condition: unknown): boolean {
+  if (!condition || typeof condition !== 'object' || Array.isArray(condition)) return false;
+  const c = condition as { type?: unknown; level?: unknown };
+  return c.type !== undefined || (c.level !== undefined && !EVENT_LOG_LEVELS.includes(String(c.level)));
+}
+
+function involvesBadEventLog(definition: unknown): boolean {
+  const def = definition as { kind?: unknown; condition?: unknown } | null | undefined;
+  if (def?.kind === 'event_log') return isRejectedEventLogCondition(def.condition);
+  if (def?.kind !== 'composite') return false;
+  const children = (def.condition as { children?: unknown } | null | undefined)?.children;
+  return (
+    Array.isArray(children) &&
+    children.some((c) => {
+      const child = c as { kind?: unknown; condition?: unknown } | null;
+      return child?.kind === 'event_log' && isRejectedEventLogCondition(child.condition);
+    })
+  );
+}
+
+/**
+ * Append the app-presence hint when an event_log level/type was rejected. The
+ * hint keys off input shape, not zod's first issue; that is safe because the
+ * event_log schema is strict, so a `type` key or bad level is itself a rejection.
+ */
+function withEventLogHint(definition: unknown, message: string): string {
+  return involvesBadEventLog(definition) ? `${message}. ${EVENT_LOG_APP_PRESENCE_HINT}` : message;
+}
+
 const KIND_LIST_HINT = `Valid kinds: ${MONITOR_KINDS.join(', ')}.`;
 
 /**
@@ -104,7 +159,7 @@ const KIND_LIST_HINT = `Valid kinds: ${MONITOR_KINDS.join(', ')}.`;
  * at `describe` for that kind's shape.
  */
 function definitionErrorMessage(definition: unknown, issue: string | null | undefined, isCreate: boolean): string {
-  const base = issue ?? 'Invalid monitor definition';
+  const base = withEventLogHint(definition, issue ?? 'Invalid monitor definition');
   const kind = (definition as { kind?: unknown } | null | undefined)?.kind;
   if (kind !== undefined && !isMonitorKind(kind)) {
     return `${base}. ${KIND_LIST_HINT} Use action "describe" (with kind) for each condition shape.`;
@@ -157,6 +212,9 @@ function auditMonitorToolEvent(
   try {
     writeAuditEvent(requestLikeFromSnapshot({}), {
       orgId: entry.orgId,
+      // The snapshot shim carries no auth, so attribute explicitly — same rule
+      // as the HTTP route (partner-scope callers only, #7696).
+      partnerId: auditPartnerScopeId(auth),
       actorId: auth.user.id,
       actorEmail: auth.user.email,
       action: entry.action,
@@ -448,7 +506,12 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
         if (!isMonitorKind(input.kind)) {
           return JSON.stringify({ error: `Unknown monitor kind. ${KIND_LIST_HINT}` });
         }
-        return JSON.stringify(describeMonitorKind(input.kind));
+        const described = describeMonitorKind(input.kind);
+        return JSON.stringify(
+          input.kind === 'event_log'
+            ? { ...described, guidance: `${EVENT_LOG_COLLECTION_GUIDANCE} ${EVENT_LOG_APP_PRESENCE_HINT}.` }
+            : described,
+        );
       }
 
       // Site-ceiling gate up front, before any branch: a monitor's responses

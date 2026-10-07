@@ -29,5 +29,6 @@
   "ASSIGNEE_PARTNER_MISMATCH": "The assignee must belong to the same partner as the ticket",
   "tool_source_unavailable": "Die Quelle dieses Tools ist derzeit nicht verfügbar",
   "ai_not_configured": "KI ist auf diesem Server nicht eingerichtet. Ein Administrator muss einen Schlüssel für einen Modellanbieter hinzufügen.",
-  "ACCESS_REVIEW_SELF_DECISION": "Sie können nicht über Ihren eigenen Zugriff entscheiden – ein anderer Administrator muss diesen Eintrag prüfen"
+  "ACCESS_REVIEW_SELF_DECISION": "Sie können nicht über Ihren eigenen Zugriff entscheiden – ein anderer Administrator muss diesen Eintrag prüfen",
+  "NO_UPDATES_PROVIDED": "No changes were provided"
 }

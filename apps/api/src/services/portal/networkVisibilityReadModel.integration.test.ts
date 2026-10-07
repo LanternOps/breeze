@@ -18,7 +18,7 @@ import {
   createSite,
 } from '../../__tests__/integration/db-utils';
 import { getTestDb } from '../../__tests__/integration/setup';
-import { networkAssets, networkOverview } from './networkVisibilityReadModel';
+import { networkAssets, networkOverview, networkSites } from './networkVisibilityReadModel';
 
 const NOW = new Date('2026-09-17T12:00:00.000Z');
 
@@ -498,6 +498,41 @@ describe('networkAssets (#5861, PR 2)', () => {
       expect(byStatus.data).toHaveLength(1);
       expect(byStatus.data[0]?.hostname).toBe('a-router-offline');
     }
+  });
+
+  it('networkSites lists distinct sites with visible assets only, name-ordered, isolated per org (#7025)', async () => {
+    const testDb = getTestDb();
+
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const otherOrg = await createOrganization({ partnerId: partner.id });
+    const siteB = await createSite({ orgId: org.id, name: 'Beta' });
+    const siteA = await createSite({ orgId: org.id, name: 'Alpha' });
+    const emptySite = await createSite({ orgId: org.id, name: 'No assets' });
+    const dismissedOnly = await createSite({ orgId: org.id, name: 'Dismissed only' });
+    const otherSite = await createSite({ orgId: otherOrg.id, name: 'Other org site' });
+    void emptySite;
+
+    const base = { source: 'manual', assetType: 'switch' } as const;
+    await testDb.insert(discoveredAssets).values([
+      { ...base, orgId: org.id, siteId: siteB.id, ipAddress: '10.60.0.1' },
+      { ...base, orgId: org.id, siteId: siteA.id, ipAddress: '10.60.0.2' },
+      { ...base, orgId: org.id, siteId: siteA.id, ipAddress: '10.60.0.3' },
+      { ...base, orgId: org.id, siteId: dismissedOnly.id, ipAddress: '10.60.0.4', approvalStatus: 'dismissed' },
+      { ...base, orgId: otherOrg.id, siteId: otherSite.id, ipAddress: '10.60.0.5' },
+    ]);
+
+    const result = await withDbAccessContext(
+      orgContext(org.id, partner.id),
+      () => networkSites(org.id),
+    );
+    expect(result).toEqual({
+      dataStatus: 'ok',
+      data: [
+        { id: siteA.id, name: 'Alpha' },
+        { id: siteB.id, name: 'Beta' },
+      ],
+    });
   });
 
   it('paginates results and reports the requested page/limit even when empty', async () => {

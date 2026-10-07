@@ -66,7 +66,7 @@ type Client struct {
 	scopes              []string
 	stopChan            chan struct{}
 	desktopMgr          *helperDesktopManager
-	// desktopFence is the helper half of the SEC-038 start fence: seeded from
+	// desktopFence is the helper half of the start fence: seeded from
 	// the service on connect, maintained from the starts and stops this helper
 	// sees. Zero value ready to use.
 	desktopFence helperDesktopFence
@@ -1222,7 +1222,7 @@ func (c *Client) handleDesktopStart(env *ipc.Envelope) {
 		return
 	}
 
-	// SEC-038 start fence, checked before ANY side effect: a superseded or
+	// Start fence, checked before ANY side effect: a superseded or
 	// post-terminal start must not reach capture even in the helper.
 	if d := c.desktopFence.admitStart(req.SessionID, req.StartGeneration); !d.admitted {
 		log.Warn("refusing desktop_start at the helper start fence",

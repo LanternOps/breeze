@@ -5842,7 +5842,7 @@ describe('superseded agent socket cannot submit results (delivery epoch)', () =>
 
     const sessionSetSpy = vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
-        // SEC-038 W03: `commitDesktopTerminalIntent` normalizes this RETURNING
+        // `commitDesktopTerminalIntent` normalizes this RETURNING
         // row via `toTerminalSessionRow`, which throws without a
         // `terminalGeneration` — the row needs the full contract shape for the
         // peer-disconnected handler to reach `result.ok` and revoke the token.
@@ -6200,7 +6200,7 @@ describe('agent websocket revocation_lease_renew', () => {
     expect(ws.send).not.toHaveBeenCalled();
   });
 
-  // SEC-038 W05: the renewal answer is also how an agent resyncs its durable
+  // The renewal answer is also how an agent resyncs its durable
   // desktop start fence, so it echoes the session's current start generation
   // and termination phase — as canonical decimal strings, never JSON numbers,
   // because the generation is a bigint.

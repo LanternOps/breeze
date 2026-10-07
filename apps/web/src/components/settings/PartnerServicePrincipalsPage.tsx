@@ -1,5 +1,6 @@
 import '@/lib/i18n';
 import { useCallback, useEffect, useState } from 'react';
+import { Check, Copy } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../stores/auth';
@@ -16,7 +17,10 @@ const WRITE_SCOPES = ['organizations:write', 'sites:write', 'enrollment-keys:wri
 // titles/messages, tickets:read exposes ticket bodies/comments, across every
 // org the principal reaches).
 const OPT_IN_READ_SCOPES = ['alerts:read', 'tickets:read'] as const;
-const AVAILABLE_SCOPES = [...READ_SCOPES, ...OPT_IN_READ_SCOPES, ...WRITE_SCOPES] as const;
+// MCP scopes: opt-in, never pre-selected. They admit the principal's key to
+// the MCP endpoint across every org of the partner; nothing on the Partner API.
+const MCP_SCOPES = ['ai:read', 'ai:write', 'ai:execute', 'ai:execute_admin'] as const;
+const AVAILABLE_SCOPES = [...READ_SCOPES, ...OPT_IN_READ_SCOPES, ...WRITE_SCOPES, ...MCP_SCOPES] as const;
 
 type PrincipalKey = {
   id: string;
@@ -63,6 +67,17 @@ export default function PartnerServicePrincipalsPage() {
   const [issueTarget, setIssueTarget] = useState<Principal | null>(null);
   const [keyName, setKeyName] = useState('');
   const [newKey, setNewKey] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const copyKey = async () => {
+    if (!newKey) return;
+    try {
+      await navigator.clipboard.writeText(newKey);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
 
   // enrollment-keys:write mints device-join credentials, so the API returns 403
   // and a SQL CHECK rejects the row unless the principal carries both a future
@@ -200,7 +215,7 @@ export default function PartnerServicePrincipalsPage() {
 
   // Keep the one-time secret outside list-state branches. A slow or failed
   // refresh must never unmount the reveal before the user explicitly closes it.
-  const keyReveal = newKey && <div className="fixed inset-0 z-50 grid place-items-center bg-background/80 p-4"><div className="w-full max-w-lg space-y-4 rounded-lg border bg-card p-6 shadow-lg"><h2 className="font-semibold">{t('partnerServicePrincipals.copyNow')}</h2><p className="text-sm text-muted-foreground">{t('partnerServicePrincipals.oneTimeWarning')}</p><pre className="overflow-x-auto rounded bg-muted p-3 text-sm">{newKey}</pre><div className="text-right"><button data-testid="close-key-reveal" className="rounded bg-primary px-3 py-2 text-primary-foreground" onClick={closeReveal}>{t('partnerServicePrincipals.done')}</button></div></div></div>;
+  const keyReveal = newKey && <div className="fixed inset-0 z-50 grid place-items-center bg-background/80 p-4"><div className="w-full max-w-lg space-y-4 rounded-lg border bg-card p-6 shadow-lg"><h2 className="font-semibold">{t('partnerServicePrincipals.copyNow')}</h2><p className="text-sm text-muted-foreground">{t('partnerServicePrincipals.oneTimeWarning')}</p><pre className="overflow-x-auto rounded bg-muted p-3 text-sm">{newKey}</pre><div className="flex justify-end gap-2"><button data-testid="copy-key" className="inline-flex items-center gap-1.5 rounded border px-3 py-2" onClick={() => void copyKey()}>{copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}{copied ? t('partnerServicePrincipals.copied') : t('partnerServicePrincipals.copy')}</button><button data-testid="close-key-reveal" className="rounded bg-primary px-3 py-2 text-primary-foreground" onClick={closeReveal}>{t('partnerServicePrincipals.done')}</button></div></div></div>;
 
   if (loading) return <><p className="py-10 text-center text-muted-foreground">{t('partnerServicePrincipals.loading')}</p>{keyReveal}</>;
   if (loadError) return <><div className="py-10 text-center"><p>{t('partnerServicePrincipals.loadFailed')}</p><button className="mt-3 rounded border px-3 py-2" onClick={() => void load()}>{t('partnerServicePrincipals.retry')}</button></div>{keyReveal}</>;

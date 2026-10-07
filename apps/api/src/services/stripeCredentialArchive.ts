@@ -12,7 +12,7 @@ import { decryptSecret } from './secretCrypto';
 import { requestLikeFromSnapshot, writeAuditEventAsync } from './auditEvents';
 
 /**
- * Superseded Stripe credential archive (SEC-150).
+ * Superseded Stripe credential archive.
  *
  * A Checkout session can only be expired with a key for the account that minted
  * it. `stripe_connect_accounts` holds exactly ONE key per partner, so a rotation

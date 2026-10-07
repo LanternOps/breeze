@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
@@ -200,98 +201,112 @@ func writeTree(t *testing.T, root string, files map[string][]byte) {
 // everything after it is, and the result is a complete, correct restore. A
 // torn final journal line costs exactly one re-download (the last completed
 // file), which is safe because re-installing a verified file is idempotent.
+//
+// The crash image is captured from the progress callback, which runs on the
+// install goroutine between installs: with concurrent downloads (#5623) the
+// objects after the crash point may already be downloading into staging, but
+// the target tree and the journal only change on that goroutine, so this is
+// the state a kill at that instant leaves behind. Run serially and
+// concurrently: the resume contract must not depend on download concurrency.
 func TestRestoreFromSnapshot_ResumesFromCrashAtArbitraryPoints(t *testing.T) {
 	const n = 12
 	contents := numberedTestFiles(n)
-	for _, crashAt := range []int{0, 1, 5, n - 1} {
-		for _, torn := range []bool{false, true} {
-			if torn && crashAt == 0 {
-				continue
-			}
-			t.Run(fmt.Sprintf("crashAt=%d/torn=%v", crashAt, torn), func(t *testing.T) {
-				baseProvider, snapID := setupRestoreTestSnapshot(t, contents)
-				snapshot, err := downloadManifest(baseProvider, snapID, t.TempDir())
-				if err != nil {
-					t.Fatalf("download manifest: %v", err)
+	for _, workers := range []int{1, 4} {
+		for _, crashAt := range []int{0, 1, 5, n - 1} {
+			for _, torn := range []bool{false, true} {
+				if torn && crashAt == 0 {
+					continue
 				}
-				targetDir := t.TempDir()
-				workRoot := t.TempDir()
-				cfg := RestoreConfig{SnapshotID: snapID, TargetPath: targetDir, WorkRoot: workRoot}
-				stagingDir, err := restoreStagingDir(cfg, filepath.Join(workRoot, "restore-work"))
-				if err != nil {
-					t.Fatal(err)
-				}
-
-				// Run 1: snapshot the disk the instant the agent starts on
-				// object crashAt, then fail everything from there on.
-				crashKey := snapshot.Files[crashAt].BackupPath
-				var image *crashImage
-				run1 := &hookedDownloadProvider{LocalProvider: baseProvider, counts: map[string]int{}}
-				run1.before = func(remotePath string) error {
-					if remotePath == crashKey && image == nil {
-						image = &crashImage{resume: resumeFilesOnDisk(t, stagingDir), target: captureTree(t, targetDir)}
+				t.Run(fmt.Sprintf("workers=%d/crashAt=%d/torn=%v", workers, crashAt, torn), func(t *testing.T) {
+					defer setRestoreConcurrencyForTest(workers)()
+					baseProvider, snapID := setupRestoreTestSnapshot(t, contents)
+					snapshot, err := downloadManifest(baseProvider, snapID, t.TempDir())
+					if err != nil {
+						t.Fatalf("download manifest: %v", err)
 					}
-					if image != nil {
-						return errors.New("agent is dead")
-					}
-					return nil
-				}
-				if _, err := RestoreFromSnapshot(run1, cfg, nil); err != nil {
-					t.Fatalf("run 1: %v", err)
-				}
-				if image == nil {
-					t.Fatal("crash point never reached")
-				}
-
-				// Rebuild exactly the crashed disk.
-				for _, dir := range []string{stagingDir, targetDir} {
-					if err := os.RemoveAll(dir); err != nil {
+					targetDir := t.TempDir()
+					workRoot := t.TempDir()
+					cfg := RestoreConfig{SnapshotID: snapID, TargetPath: targetDir, WorkRoot: workRoot}
+					stagingDir, err := restoreStagingDir(cfg, filepath.Join(workRoot, "restore-work"))
+					if err != nil {
 						t.Fatal(err)
 					}
-				}
-				if err := os.MkdirAll(stagingDir, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.MkdirAll(targetDir, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if torn {
-					journal, ok := image.resume[resumeJournalFile]
-					if !ok || len(journal) < 4 {
-						t.Fatalf("expected a journal in the crash image, got %v", keysOf(image.resume))
-					}
-					image.resume[resumeJournalFile] = journal[:len(journal)-4]
-				}
-				writeTree(t, stagingDir, image.resume)
-				writeTree(t, targetDir, image.target)
 
-				run2 := &hookedDownloadProvider{LocalProvider: baseProvider, counts: map[string]int{}}
-				result, err := RestoreFromSnapshot(run2, cfg, nil)
-				if err != nil {
-					t.Fatalf("run 2: %v", err)
-				}
-				if result.Status != "completed" || result.FilesRestored != n {
-					t.Fatalf("run 2: status=%s restored=%d failed=%v, want completed/%d", result.Status, result.FilesRestored, result.FailedFiles, n)
-				}
-				for i, f := range snapshot.Files {
-					want := 1
-					if i < crashAt {
-						want = 0
-						if torn && i == crashAt-1 {
-							want = 1
+					// Run 1: snapshot the disk the instant crashAt files are
+					// installed, then fail every download from there on.
+					var image *crashImage
+					var dead atomic.Bool
+					run1 := &hookedDownloadProvider{LocalProvider: baseProvider, counts: map[string]int{}}
+					run1.before = func(string) error {
+						if dead.Load() {
+							return errors.New("agent is dead")
+						}
+						return nil
+					}
+					progress := func(phase string, current, _ int64, _ string) {
+						atCrash := (crashAt == 0 && phase == "starting") || (phase == "restoring" && current == int64(crashAt))
+						if atCrash && image == nil {
+							image = &crashImage{resume: resumeFilesOnDisk(t, stagingDir), target: captureTree(t, targetDir)}
+							dead.Store(true)
 						}
 					}
-					if got := run2.count(f.BackupPath); got != want {
-						t.Errorf("file %d (%s) downloaded %d times on resume, want %d", i, f.BackupPath, got, want)
+					if _, err := RestoreFromSnapshot(run1, cfg, progress); err != nil {
+						t.Fatalf("run 1: %v", err)
 					}
-				}
-				for name, content := range contents {
-					got, err := os.ReadFile(resolveTargetPath(targetDir, filepath.Join("/original", name)))
-					if err != nil || string(got) != content {
-						t.Errorf("%s: got %q (err %v), want %q", name, got, err, content)
+					if image == nil {
+						t.Fatal("crash point never reached")
 					}
-				}
-			})
+
+					// Rebuild exactly the crashed disk.
+					for _, dir := range []string{stagingDir, targetDir} {
+						if err := os.RemoveAll(dir); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := os.MkdirAll(stagingDir, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.MkdirAll(targetDir, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if torn {
+						journal, ok := image.resume[resumeJournalFile]
+						if !ok || len(journal) < 4 {
+							t.Fatalf("expected a journal in the crash image, got %v", keysOf(image.resume))
+						}
+						image.resume[resumeJournalFile] = journal[:len(journal)-4]
+					}
+					writeTree(t, stagingDir, image.resume)
+					writeTree(t, targetDir, image.target)
+
+					run2 := &hookedDownloadProvider{LocalProvider: baseProvider, counts: map[string]int{}}
+					result, err := RestoreFromSnapshot(run2, cfg, nil)
+					if err != nil {
+						t.Fatalf("run 2: %v", err)
+					}
+					if result.Status != "completed" || result.FilesRestored != n {
+						t.Fatalf("run 2: status=%s restored=%d failed=%v, want completed/%d", result.Status, result.FilesRestored, result.FailedFiles, n)
+					}
+					for i, f := range snapshot.Files {
+						want := 1
+						if i < crashAt {
+							want = 0
+							if torn && i == crashAt-1 {
+								want = 1
+							}
+						}
+						if got := run2.count(f.BackupPath); got != want {
+							t.Errorf("file %d (%s) downloaded %d times on resume, want %d", i, f.BackupPath, got, want)
+						}
+					}
+					for name, content := range contents {
+						got, err := os.ReadFile(resolveTargetPath(targetDir, filepath.Join("/original", name)))
+						if err != nil || string(got) != content {
+							t.Errorf("%s: got %q (err %v), want %q", name, got, err, content)
+						}
+					}
+				})
+			}
 		}
 	}
 }

@@ -15,6 +15,7 @@ import {
 } from './featureFlags';
 import { portalDashboardRoutes } from './dashboard';
 import { portalSecurityRoutes } from './security';
+import { portalHardwareHealthRoutes } from './hardwareHealth';
 import { portalBackupRoutes } from './backups';
 import { portalReportRoutes } from './reports';
 import { portalServiceRoutes } from './service';
@@ -65,6 +66,9 @@ portalRoutes.use('/reports/lifecycle/*', createPortalFeatureGateStrict('enableLi
 // Service deliverables W04 — both new surfaces fail closed the same way.
 portalRoutes.use('/service/*', portalAuthMiddleware);
 portalRoutes.use('/service/*', createPortalFeatureGateStrict('enableService'));
+// Portal Advanced Visibility W01 (#7731): hardware health, fail-closed.
+portalRoutes.use('/hardware-health/*', portalAuthMiddleware);
+portalRoutes.use('/hardware-health/*', createPortalFeatureGateStrict('enableHardwareHealth'));
 // Network Visibility has its own fail-closed availability response:
 // disabled or missing settings return dataStatus: 'not_enabled'.
 portalRoutes.use('/network/*', portalAuthMiddleware);
@@ -105,6 +109,7 @@ portalRoutes.route('/', portalInvoiceRoutes);
 portalRoutes.route('/', portalQuoteRoutes);
 portalRoutes.route('/', portalDashboardRoutes);
 portalRoutes.route('/', portalSecurityRoutes);
+portalRoutes.route('/', portalHardwareHealthRoutes);
 portalRoutes.route('/', portalBackupRoutes);
 portalRoutes.route('/', portalReportRoutes);
 portalRoutes.route('/', portalServiceRoutes);

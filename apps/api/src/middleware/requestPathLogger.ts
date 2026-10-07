@@ -26,8 +26,10 @@ export function requestPathLogger(
     try {
       await next();
     } finally {
+      const reason = c.get('rejectReason');
       print(
         `--> ${method} route=${safeMatchedRouteLabel(c)} status=${c.res.status} ` +
+          (typeof reason === 'string' && /^[a-z0-9_]{1,64}$/.test(reason) ? `reason=${reason} ` : '') +
           `duration_ms=${Date.now() - startedAt} request_id=${requestId}`,
       );
     }

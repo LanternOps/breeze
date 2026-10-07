@@ -38,6 +38,7 @@ import { buildOutcomeSdkTools } from '../../aiAgents/outcomeTools';
 import { buildBreezeSdkTools, listChatSurfaceToolNames, createBreezeMcpServer, type PreToolUseCallback } from '../../aiAgentSdkTools';
 import { createScriptBuilderMcpServer, SCRIPT_BUILDER_MCP_TOOL_NAMES } from '../../scriptBuilderTools';
 import { createStreamObserver, type StreamObservation } from './streamObserver';
+import { SDK_CHILD_HOST_CONTEXT_GUARDS } from '../sdkChildEnvGuards';
 import { resolveToolSearchPolicy, type ToolSearchOverride, type ToolSearchPolicy } from '../../aiToolSearchPolicy';
 import { buildTenantSdkTools, tenantMcpToolNames } from '../../toolSources/sdkBridge';
 import type { TenantToolDescriptor } from '../../toolSources/resolver';
@@ -101,9 +102,12 @@ export const denyPreToolUse: PreToolUseCallback = async () => ({ allowed: false,
  * user message (`settingSources: []` does not cover auto-memory). That is not
  * production context: it inflated each captured request by ~9.7k tokens,
  * varied run to run as the memory changed, and sent private notes to whatever
- * `--base-url` was under test (#7429).
+ * `--base-url` was under test (#7429). It is the production guard set
+ * (`SDK_CHILD_HOST_CONTEXT_GUARDS`), forced here rather than trusted to the
+ * caller's env, so a capture always runs with production's child env guards
+ * (CLAUDE.md off, thinking display `updates` off).
  */
-export const CAPTURE_CHILD_ENV_ISOLATION = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' } as const;
+export const CAPTURE_CHILD_ENV_ISOLATION = SDK_CHILD_HOST_CONTEXT_GUARDS;
 
 /** Org the tenant bridge would dispatch under; never reached, handlers are denied first. */
 const CAPTURE_TENANT_ORG_ID = 'capture-org';

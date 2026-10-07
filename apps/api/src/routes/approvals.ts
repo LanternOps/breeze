@@ -11,6 +11,7 @@ import {
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { authMiddleware, isInteractiveUserSession } from '../middleware/auth';
 import { approvalRequests } from '../db/schema/approvals';
+import { diagnosticAccessGrants } from '../db/schema/diagnosticAccess';
 import { aiToolExecutions, aiSessions } from '../db/schema/ai';
 import { delegantM365Connections } from '../db/schema/delegant';
 import { organizations } from '../db/schema/orgs';
@@ -1306,6 +1307,47 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
       // above: a decide that committed after the pre-fetch (including an
       // approve stored as denied because the server refused it) keeps its
       // outcome. The report itself still revokes and audits below.
+      //
+      // A reported diagnostic access request is denied outright (and its
+      // sibling approval rows retired), the same strong DENY an intent gets.
+      if (existing.diagnosticAccessGrantId) {
+        const grantId = existing.diagnosticAccessGrantId;
+        try {
+          await runOutsideDbContext(() =>
+            withSystemDbAccessContext(async () => {
+              const now = new Date();
+              const denied = await db
+                .update(diagnosticAccessGrants)
+                .set({ status: 'denied', deniedByUserId: userId, deniedAt: now, denialReason: 'Reported as suspicious', updatedAt: now })
+                .where(and(eq(diagnosticAccessGrants.id, grantId), eq(diagnosticAccessGrants.status, 'pending_approval')))
+                .returning({ id: diagnosticAccessGrants.id });
+              if (denied.length === 0) {
+                // Lost the race to an approval: the report still ends the
+                // access, by revoking what was just activated.
+                await db
+                  .update(diagnosticAccessGrants)
+                  .set({ status: 'revoked', revokedAt: now, revokedByUserId: userId, revokeReason: 'Reported as suspicious', updatedAt: now })
+                  .where(and(eq(diagnosticAccessGrants.id, grantId), eq(diagnosticAccessGrants.status, 'active')));
+              }
+              await db
+                .update(approvalRequests)
+                .set({ status: 'expired', decidedAt: now })
+                .where(and(
+                  eq(approvalRequests.diagnosticAccessGrantId, grantId),
+                  eq(approvalRequests.status, 'pending'),
+                  ne(approvalRequests.id, existing.id),
+                ));
+            }),
+          );
+        } catch (err) {
+          // Deny FIRST and fail the report if it cannot be recorded: flipping
+          // this row alone would leave the grant pending and a sibling
+          // approver's card still able to activate it.
+          console.error('[approvals] report-suspicious: failed to deny diagnostic access request:', err);
+          captureException(err);
+          return c.json({ error: 'report_suspicious_failed', retryable: true }, 500);
+        }
+      }
       await db
         .update(approvalRequests)
         .set({

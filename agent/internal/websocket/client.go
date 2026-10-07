@@ -183,7 +183,7 @@ type Client struct {
 	// answers a revocation-lease renewal. `Revoked` is true for a
 	// `revocation_lease_revoked` frame (stop the session NOW).
 	//
-	// An `unavailable` answer IS delivered, as Unavailable=true (SEC-038 W05).
+	// An `unavailable` answer IS delivered, as Unavailable=true.
 	// It used to be swallowed on the theory that silence is what the grace
 	// window is for — true for an established session, and still how the
 	// caller treats it, but a session whose FIRST renewal cannot be served has
@@ -210,7 +210,7 @@ type RevocationLeaseMessage struct {
 	ExpiresAtUnixMs    int64
 	HardDeadlineUnixMs int64
 	// StartGeneration is the session's current desktop_start_generation as a
-	// canonical decimal string (SEC-038), empty from a pre-W05 API. The
+	// canonical decimal string, empty from a pre-W05 API. The
 	// agent's durable start fence resyncs from it.
 	StartGeneration string
 	// TerminationPhase is 'none' | 'pending' | 'confirmed', empty from a
@@ -1222,7 +1222,7 @@ func (c *Client) handleRevocationLeaseMessage(msgType string, raw []byte) {
 		Reason       string  `json:"reason"`
 		ExpiresAt    float64 `json:"expiresAt"`
 		HardDeadline float64 `json:"hardDeadline"`
-		// SEC-038 fence fields. Generations are STRINGS on the wire: they are
+		// Fence fields. Generations are STRINGS on the wire: they are
 		// bigint on the server and would round above 2^53 through a float.
 		StartGeneration    string `json:"startGeneration"`
 		TerminationPhase   string `json:"terminationPhase"`
@@ -1259,7 +1259,7 @@ func (c *Client) SendRevocationLeaseRenew(sessionID string) error {
 }
 
 // SendRevocationLeaseRenewWithNonce is the same request carrying a correlator
-// the server echoes on its answer. Used by the SEC-038 fence resync, where an
+// the server echoes on its answer. Used by the fence resync, where an
 // answer to an EARLIER renewal must not be mistaken for this one's.
 func (c *Client) SendRevocationLeaseRenewWithNonce(sessionID, nonce string) error {
 	payload := map[string]any{

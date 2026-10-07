@@ -40,7 +40,7 @@ export const remoteSessions = pgTable('remote_sessions', {
   // activate the session only when this is 'proceed'. NULL (pre-#6819 rows, or
   // a start with no prompt block) is treated as not-proceed.
   desktopConsentUnavailableBehavior: text('desktop_consent_unavailable_behavior').$type<'proceed' | 'block'>(),
-  // SEC-038 start/terminal fence (#5533). Monotonic generation bumped by BOTH
+  // Start/terminal fence (#5533). Monotonic generation bumped by BOTH
   // the start-intent commit and (W03) the terminal-intent commit, so every
   // start decision is linearized against every terminal decision. Carried to
   // the agent as a canonical decimal STRING and compared as bigint/int64 on

@@ -151,7 +151,7 @@ const { __testOnly } = await import('./backupWorker');
 
 describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#1105)', () => {
   const DATA = { type: 'dispatch-backup' as const, jobId: 'job-1', configId: 'config-1', orgId: 'org-1', deviceId: 'device-1' };
-  const CONFIG_ROW = { id: 'config-1', provider: 'local', providerConfig: {}, encryption: false };
+  const CONFIG_ROW = { id: 'config-1', orgId: 'org-1', provider: 'local', providerConfig: {}, encryption: false };
   const JOB_ROW = { featureLinkId: null, backupMode: 'file', modeTargets: { paths: ['/data'] } };
 
   // Route every db.select() call by the shape of its column-selector argument
@@ -282,6 +282,11 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       'deviceOrgSelect@depth1',
       'ctx:exit',
       'wsDispatch@depth0',
+      // Ownership re-read once the command is out (a move can land between
+      // the pre-send read and the send) — its own short context.
+      'ctx:enter',
+      'deviceOrgSelect@depth1',
+      'ctx:exit',
       // Phase 5 (settle): final cancellation guard + status flip — ONE short
       // context.
       'ctx:enter',

@@ -217,7 +217,7 @@ function mockUpdateNoReturn() {
 }
 
 // select().from().where().limit().for('update') — the row-locked read
-// commitDesktopStreamStartIntent issues (SEC-038 W02, real impl in
+// commitDesktopStreamStartIntent issues (real impl in
 // remoteDesktopStartIntent.ts, not mocked in this file).
 function mockSelectLimitForChain(result: unknown) {
   return {
@@ -300,7 +300,7 @@ function setupSuccessfulValidation() {
         })
       })
     } as any)
-    // commitDesktopStreamStartIntent: row-locked read (SEC-038 W02)
+    // commitDesktopStreamStartIntent: row-locked read
     .mockReturnValueOnce(mockSelectLimitForChain([{
       status: session.status,
       terminationPhase: 'none',

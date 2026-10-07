@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * SEC-2026-09-05-057 web gate: every mutating QuickBooks control mirrors the
+ * Web gate: every mutating QuickBooks control mirrors the
  * server's dedicated `accounting:manage` capability. A caller holding only
  * `accounting:read` (plus the pre-existing `invoices:write`) can still SEE the
  * panel but cannot operate connect, disconnect, refresh-settings, push mode,

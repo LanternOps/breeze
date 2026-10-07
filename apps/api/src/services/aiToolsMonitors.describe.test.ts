@@ -5,6 +5,11 @@ vi.mock('../db', async (importOriginal) => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn(), transaction: vi.fn() },
 }));
 
+vi.mock('./monitors/monitorService', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./monitors/monitorService')>()),
+  getMonitorDefinition: vi.fn(async () => ({ id: 'm', kind: 'event_log', condition: {} })),
+}));
+
 import { MONITOR_KINDS } from '@breeze/shared';
 import { registerMonitorTools } from './aiToolsMonitors';
 import { toolInputSchemas } from './aiToolSchemas';
@@ -130,5 +135,79 @@ describe('manage_monitor_definitions discoverability (#7826)', () => {
     const terse = await call({ action: 'update', monitorId: ORG, definition: { severity: 'nope' } });
     expect(terse.error).toBeTruthy();
     expect(terse.error).not.toContain('Valid kinds');
+  });
+
+  // #7060 — event_log monitors can never match Information-level events, so a
+  // rejected level/type must steer app-presence requests to compliance.
+  describe('event_log app-presence hint (#7060)', () => {
+    const base = { name: 'Installs', severity: 'high' };
+    const eventLog = (condition: Record<string, unknown>) => ({ ...base, kind: 'event_log', condition });
+
+    it('create with an Information level adds the hint', async () => {
+      const r = await call({ action: 'create', definition: eventLog({ category: 'application', level: 'information' }) });
+      expect(r.error).toContain('required_software');
+      expect(r.error).toContain('Information');
+    });
+
+    it('create with a condition type key adds the hint', async () => {
+      const r = await call({
+        action: 'create',
+        definition: eventLog({ type: 'event_log', category: 'application', level: 'warning' }),
+      });
+      expect(r.error).toContain('required_software');
+    });
+
+    it('composite with a bad event_log child level adds the hint', async () => {
+      const child = { kind: 'event_log', condition: { category: 'application', level: 'information' } };
+      const r = await call({
+        action: 'create',
+        definition: {
+          ...base,
+          kind: 'composite',
+          condition: { match: 'all', children: [child, { kind: 'offline', condition: {} }] },
+        },
+      });
+      expect(r.error).toContain('required_software');
+    });
+
+    it('update of an event_log level adds the hint', async () => {
+      const r = await call({
+        action: 'update',
+        monitorId: ORG,
+        definition: { kind: 'event_log', condition: { category: 'application', level: 'info' } },
+      });
+      expect(r.error).toContain('required_software');
+    });
+
+    it('does not add the hint to non-event_log errors or unrelated event_log errors', async () => {
+      const cpu = await call({ action: 'create', definition: { ...base, kind: 'cpu', condition: { operator: 'gt' } } });
+      expect(cpu.error).not.toContain('required_software');
+      const other = await call({ action: 'create', definition: eventLog({ category: 'bogus', level: 'error' }) });
+      expect(other.error).not.toContain('required_software');
+    });
+
+    it('describe event_log carries the per-category collection guidance', async () => {
+      const r = await call({ action: 'describe', kind: 'event_log' });
+      expect(r.guidance).toContain('required_software');
+      expect(r.guidance).toContain('Application log error/critical only');
+      expect(r.guidance).toContain('WHEA');
+      const cpu = await call({ action: 'describe', kind: 'cpu' });
+      expect(cpu.guidance).toBeUndefined();
+    });
+
+    it('error text reads cleanly (no doubled period)', async () => {
+      const r = await call({ action: 'create', definition: eventLog({ category: 'application', level: 'information' }) });
+      expect(r.error).not.toContain('..');
+      expect(r.error).toContain('Use action "describe"');
+    });
+
+    it('no hint when level and category are valid but another field is rejected', async () => {
+      const r = await call({
+        action: 'create',
+        definition: eventLog({ category: 'application', level: 'warning', windowMinutes: 99999 }),
+      });
+      expect(r.error).toBeTruthy();
+      expect(r.error).not.toContain('required_software');
+    });
   });
 });

@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
@@ -6,13 +6,18 @@ import {
   tickets,
   portalUsers,
   organizations,
+  partnerUsers,
   partners,
   ticketMailboxConnections,
+  users,
 } from '../../db/schema';
 import { changeTicketStatus, createTicket, type TicketActor } from '../ticketService';
 import { resolvePartnerByRecipient } from './resolvePartner';
 import { resolveOrgBySenderDomain, resolveEmailRequester, loadPartnerInboundPolicy } from './resolveOrg';
+import { extractForwardedSender, domainOf } from './forwardParse';
+import { UNASSIGNED_POOL_ORG_TYPE } from '../unassignedPool/orgType';
 import { maybeSendAutoresponse } from './autoresponder';
+import { applyDefaultInboundAssignee } from './defaultAssignee';
 import { insertEmailAuthoredComment } from './emailComments';
 import { hasStoredAttachments, persistInboundAttachments, withInboundAttachmentNote } from './inboundAttachments';
 import { captureException, captureMessage } from '../sentry';
@@ -493,9 +498,51 @@ export async function processInboundEmail(
       await dependencies.afterTicketMatchLock?.(closedOriginal.id);
       // No requester and NO acknowledgement: a reply to a closed ticket spawns a
       // linked ticket, it is not a fresh submission (spec §5).
-      const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false);
+      const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false, policy.defaultAssigneeUserId);
       await logCreated(n, partnerId, t);
       return;
+    }
+
+    // (4.5) STAFF-FORWARD INTAKE (before the portal-user step, so a staff member
+    // who also has a portal login still routes by the original sender). When one
+    // of the partner's own staff forwards a client's email into the support
+    // mailbox, route by the ORIGINAL sender's domain (the client the mail is
+    // really about), not the forwarder's (a staff address would otherwise file
+    // under the MSP's own org).
+    //
+    // Gates, all required:
+    //  - the partner turned it on (settings.ticketing.inbound.staffForwardRouting,
+    //    default off);
+    //  - the message came from a connected Gmail mailbox (provider 'gmail'). The
+    //    native Mailgun address and Microsoft 365 mailboxes never route this way:
+    //    neither gives a body known to be the sender's own text/plain part;
+    //  - the outer message already passed the sender-auth gate above, so an
+    //    external sender cannot reach this branch with a forged forwarded block;
+    //  - the outer sender is partner-level staff of THIS partner (see
+    //    loadPartnerStaffAccess) who could open the org the ticket would be filed
+    //    under (staffCanReachOrg). A customer-org user, staff limited to other
+    //    orgs, or a suspended or deleted target org routes normally.
+    // The extracted address is used for its DOMAIN ONLY, to pick an org bucket,
+    // never for authentication, and the client is never emailed (no
+    // autoresponse, no contact onboarded). Falls through to ordinary routing when
+    // there is no forward block, the original domain is unmapped, or it is the
+    // forwarder's own domain (then the message is handled exactly as it would be
+    // with this setting off). Only a provider-supplied, unstripped text/plain
+    // body is scanned (forwardScanText): mail without one routes normally.
+    const forwardedFrom = policy.staffForwardRouting && n.provider === 'gmail'
+      ? extractForwardedSender(n.forwardScanText)
+      : null;
+    const fwdDomain = domainOf(forwardedFrom);
+    if (forwardedFrom && fwdDomain && fwdDomain !== senderDomain(n.from)) {
+      const staffAccess = await loadPartnerStaffAccess(n.from, partnerId);
+      if (staffAccess) {
+        const fwdOrg = await resolveOrgBySenderDomain(forwardedFrom, partnerId);
+        if (fwdOrg && await staffCanReachOrg(staffAccess, fwdOrg.orgId, partnerId)) {
+          const t = await createFromEmail(n, partnerId, fwdOrg.orgId, null, null, null, false, policy.defaultAssigneeUserId);
+          await logCreated(n, partnerId, t, `staff-forward: filed by original sender domain ${fwdDomain}`);
+          return;
+        }
+      }
     }
 
     // (5) Known portal-user sender -> their home org. Most specific; wins over
@@ -505,7 +552,7 @@ export async function processInboundEmail(
     if (sender) {
       // A portal LOGIN. createTicket derives the person from its contact_id —
       // the inbound path must not resolve a second candidate by address.
-      const t = await createFromEmail(n, partnerId, sender.orgId, null, null, { kind: 'portal', portalUserId: sender.id }, true);
+      const t = await createFromEmail(n, partnerId, sender.orgId, null, null, { kind: 'portal', portalUserId: sender.id }, true, policy.defaultAssigneeUserId);
       // A login with no contact_id yields a ticket attributed to nobody. Not an
       // error (the ticket is right, the login's data is incomplete) — a note,
       // so the gap is visible instead of only showing up as a customer who
@@ -540,7 +587,7 @@ export async function processInboundEmail(
           requesterNote = unlinkedRequesterNote(resolved.reason, n.from);
         }
       }
-      const t = await createFromEmail(n, partnerId, domainMatch.orgId, null, null, requester, autoresponse);
+      const t = await createFromEmail(n, partnerId, domainMatch.orgId, null, null, requester, autoresponse, policy.defaultAssigneeUserId);
       await logCreated(n, partnerId, t, requesterNote);
       return;
     }
@@ -563,7 +610,7 @@ export async function processInboundEmail(
     if (policy.unknownSenderMode === 'triage' && policy.defaultTriageOrgId) {
       // Unknown sender: no requester and no acknowledgement (we would be
       // replying to an address the partner never vetted).
-      const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null, null, false);
+      const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null, null, false, policy.defaultAssigneeUserId);
       await logCreated(n, partnerId, t);
       return;
     }
@@ -651,12 +698,13 @@ function createSenderResolver(from: string, partnerId: string): SenderResolver {
 async function logCreated(
   n: NormalizedInboundEmail,
   partnerId: string,
-  result: { id: string; lostClaimTo: string | null },
+  result: { id: string; lostClaimTo: string | null; assigneeNote?: string | null },
   note?: string
 ): Promise<void> {
   const notes = [
     result.lostClaimTo ? `lost message-id claim to ticket ${result.lostClaimTo}` : null,
     note ?? null,
+    result.assigneeNote ?? null,
   ].filter((v): v is string => v !== null);
   await logInbound(n, partnerId, 'created', result.id, notes.length ? notes.join('; ') : undefined);
 }
@@ -712,6 +760,51 @@ function inboundDomainOrNull(): string | null {
   }
 }
 
+interface PartnerStaffAccess {
+  orgAccess: 'all' | 'selected' | 'none';
+  orgIds: string[] | null;
+}
+
+// The outer sender as partner-level staff of `partnerId`, or null. Staff means an
+// ACTIVE user of this partner with no home org (users.org_id IS NULL: partner
+// staff, not a customer-org user and not the MSP's own internal-org staff) and a
+// partner_users membership in this partner. The membership's org access is
+// returned so the caller can require it to cover the target org.
+async function loadPartnerStaffAccess(address: string, partnerId: string): Promise<PartnerStaffAccess | null> {
+  const rows = await db.select({ orgAccess: partnerUsers.orgAccess, orgIds: partnerUsers.orgIds })
+    .from(users)
+    .innerJoin(partnerUsers, and(eq(partnerUsers.userId, users.id), eq(partnerUsers.partnerId, partnerId)))
+    .where(and(
+      eq(sql`lower(${users.email})`, address.trim().toLowerCase()),
+      eq(users.partnerId, partnerId),
+      isNull(users.orgId),
+      eq(users.status, 'active'),
+    ))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+// Whether the staff member could open `orgId`, by the rules the auth middleware
+// uses to build a partner member's accessible orgs (middleware/auth.ts): the
+// membership covers it ('all', or 'selected' listing it) AND the org belongs to
+// this partner, is active or trial, is not deleted, and is not the
+// unassigned-device holding org.
+async function staffCanReachOrg(access: PartnerStaffAccess, orgId: string, partnerId: string): Promise<boolean> {
+  const covered = access.orgAccess === 'all'
+    || (access.orgAccess === 'selected' && (access.orgIds?.includes(orgId) ?? false));
+  if (!covered) return false;
+  const rows = await db.select({ id: organizations.id }).from(organizations)
+    .where(and(
+      eq(organizations.id, orgId),
+      eq(organizations.partnerId, partnerId),
+      inArray(organizations.status, ['active', 'trial']),
+      ne(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
+      isNull(organizations.deletedAt),
+    ))
+    .limit(1);
+  return rows.length > 0;
+}
+
 // Lower-cased domain part of an email address (everything after the last '@'),
 // or '' when the address is malformed. Used by the ingest-time self-loop drop.
 function senderDomain(addr: string): string {
@@ -742,7 +835,8 @@ async function createFromEmail(
   carryThreadKey: string | null,
   priorNumber: string | null,
   requester: EmailTicketRequester,
-  autoresponse: boolean
+  autoresponse: boolean,
+  defaultAssigneeUserId: string | null
 ) {
   // GUARD (spec §6 layer 2): the resolved org MUST belong to the resolved partner before create.
   const orgOk = await db
@@ -840,6 +934,18 @@ async function createFromEmail(
     await persistInboundAttachments(n, { ticketId: ticket.id, orgId, commentId });
   }
 
+  // Partner default assignee (settings.ticketing.inbound.defaultAssigneeUserId).
+  // Applies to every ticket this pipeline creates, and only when nothing else
+  // assigned it. Same transaction as the ticket: the assignment and its
+  // `ticket.assigned` outbox row commit or roll back with it, and the
+  // notification job is queued only from the committed row (#8040). A user who
+  // cannot own this ticket (disabled, removed, no access to this org) leaves it
+  // unassigned and is named in the inbound log; it never fails the message.
+  const defaultAssignee = await applyDefaultInboundAssignee(ticket, defaultAssigneeUserId, SYSTEM_ACTOR);
+  const assigneeNote = defaultAssignee.kind === 'skipped'
+    ? `default assignee not applied (${defaultAssignee.code}); ticket left unassigned`
+    : null;
+
   // One-time autoresponse — ONLY for an accepted known sender on a FRESH ticket.
   //
   // This used to be gated on `submittedBy && !priorNumber`, reading the presence
@@ -875,7 +981,7 @@ async function createFromEmail(
       subject: persisted[0]?.subject ?? '',
     });
   }
-  return { id: ticket.id, lostClaimTo };
+  return { id: ticket.id, lostClaimTo, assigneeNote };
 }
 
 /**

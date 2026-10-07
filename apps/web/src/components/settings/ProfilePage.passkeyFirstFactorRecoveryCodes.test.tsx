@@ -48,6 +48,7 @@ vi.mock('@/lib/avatarBlobCache', () => ({
 }));
 
 vi.mock('./ApproverDevicesSection', () => ({ default: () => null }));
+vi.mock('./TicketPushoverSettings', () => ({ default: () => null }));
 vi.mock('./ConnectSsoCard', () => ({ default: () => null }));
 
 import ProfilePage from './ProfilePage';

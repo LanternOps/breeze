@@ -234,6 +234,12 @@ export const recommendationActionSchema = z.object({
   id: z.string()
 });
 
+// Selected org for complete/dismiss — required in practice for multi-org
+// partner users, whose auth.orgId is null (#8086).
+export const recommendationActionQuerySchema = z.object({
+  orgId: z.string().guid().optional()
+});
+
 export const trendsQuerySchema = z.object({
   period: z.enum(['7d', '30d', '90d']).optional().default('30d')
 });

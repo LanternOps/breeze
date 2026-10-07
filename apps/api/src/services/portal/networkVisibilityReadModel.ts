@@ -1,4 +1,4 @@
-import type { NetworkOverviewDto, NetworkAssetsDto, NetworkAssetRowDto } from '@breeze/shared';
+import type { NetworkOverviewDto, NetworkAssetsDto, NetworkAssetRowDto, NetworkSitesDto } from '@breeze/shared';
 import { and, asc, desc, eq, gte, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
@@ -287,6 +287,23 @@ const ZERO_ALERT_ENRICHMENT: NetworkAssetAlertEnrichment = {
   highestAlertSeverity: null,
   openTicketCount: 0,
 };
+
+/**
+ * Sites for the portal Site filter (#7025): distinct sites that own at least
+ * one portal-visible asset (same dismissed exclusion as networkAssets), so
+ * every option can match rows and no empty/internal site leaks into the list.
+ * Org-scoped like the rest of this read model.
+ */
+export async function networkSites(orgId: string): Promise<NetworkSitesDto> {
+  const rows = await db
+    .selectDistinct({ id: sites.id, name: sites.name })
+    .from(discoveredAssets)
+    .innerJoin(sites, eq(discoveredAssets.siteId, sites.id))
+    .where(and(eq(discoveredAssets.orgId, orgId), ne(discoveredAssets.approvalStatus, 'dismissed')))
+    .orderBy(asc(sites.name), asc(sites.id));
+
+  return { dataStatus: 'ok', data: rows };
+}
 
 export async function networkAssets(
   orgId: string,

@@ -20,7 +20,7 @@ export type NetworkBaseline = {
   scanSchedule: NetworkBaselineScanSchedule;
   alertSettings: NetworkBaselineAlertSettings;
   /**
-   * SEC-2026-09-05-146: why the recurring scan was not dispatched. Non-null
+   * Why the recurring scan was not dispatched. Non-null
    * means the schedule is armed-but-blocked; re-saving it re-arms the authority.
    */
   scheduleBlockedReason: string | null;

@@ -34,6 +34,7 @@ import { captureException } from '../../services/sentry';
 import {
   auditHost,
   idParamSchema,
+  endpointUnreachableResponse,
   ownConnection,
   partnerWrite,
   queueConnectionSync,
@@ -101,17 +102,25 @@ aiModelConnectionRoutes.post('/', ...partnerWrite, zValidator('json', connection
         // (ByoEndpointRejected → 400, mapped by registryWrite) and commits in its
         // own registry transaction before it returns, so discovery queued below
         // always sees the row.
-        const conn = await createGatewayConnection({
-          partnerId, name: body.name, baseUrl: body.baseUrl, apiKey: body.apiKey, connectedBy: userId,
-        });
+        let conn: Awaited<ReturnType<typeof createGatewayConnection>>;
+        try {
+          conn = await createGatewayConnection({
+            partnerId, name: body.name, baseUrl: body.baseUrl, apiKey: body.apiKey, connectedBy: userId,
+          });
+        } catch (error) {
+          const refused = endpointUnreachableResponse(c, error, 'create_gateway_connection');
+          if (refused) return refused;
+          throw error;
+        }
         audit(c, partnerId, 'created', {
           kind: body.kind, connectionId: conn.id, host: auditHost(conn.baseUrl), hasKey: body.apiKey !== undefined,
         });
         // The connection exists either way; a queue outage (captured inside)
         // must not turn a committed create into an error. The daily
         // sync-all-connections sweep discovers it, and Refresh retries now.
-        await queueConnectionSync(c, conn.id);
-        return c.json({ id: conn.id }, 201);
+        // `discoveryQueued` tells the UI which of the two it is (#7781).
+        const discoveryQueued = (await queueConnectionSync(c, conn.id)) === null;
+        return c.json({ id: conn.id, discoveryQueued }, 201);
       }
       default: {
         const never: never = body;
@@ -127,9 +136,16 @@ aiModelConnectionRoutes.patch('/:id/gateway', ...partnerWrite, zValidator('param
   const body = c.req.valid('json');
   return registryWrite(c, partnerId, async () => {
     const conn = await ownGatewayConnection(partnerId, c.req.valid('param').id);
-    const updated = await updateGatewayConnection({
-      partnerId, connectionId: conn.id, baseUrl: body.baseUrl, apiKey: body.apiKey, expectedConfigVersion: body.expectedConfigVersion,
-    });
+    let updated: Awaited<ReturnType<typeof updateGatewayConnection>>;
+    try {
+      updated = await updateGatewayConnection({
+        partnerId, connectionId: conn.id, baseUrl: body.baseUrl, apiKey: body.apiKey, expectedConfigVersion: body.expectedConfigVersion,
+      });
+    } catch (error) {
+      const refused = endpointUnreachableResponse(c, error, 'update_gateway_connection');
+      if (refused) return refused;
+      throw error;
+    }
     audit(c, partnerId, 'endpoint_changed', {
       kind: conn.kind,
       connectionId: conn.id,

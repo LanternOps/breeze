@@ -150,6 +150,8 @@ export type UnknownSenderMode = 'quarantine' | 'triage' | 'drop';
 
 const UNKNOWN_SENDER_MODES: readonly UnknownSenderMode[] = ['quarantine', 'triage', 'drop'];
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export interface PartnerInboundPolicy {
   /**
    * The 'Enable email-to-ticket' master switch (settings.ticketing.inbound.enabled).
@@ -174,6 +176,19 @@ export interface PartnerInboundPolicy {
    * sender matching. Default false (preserves the quarantine-for-review behavior).
    */
   dropUnverifiedSenders: boolean;
+  /**
+   * When true, a new ticket forwarded in by one of the partner's own staff is
+   * filed under the customer org mapped to the ORIGINAL sender's domain (see the
+   * staff-forward step in inboundEmailService). Default false.
+   */
+  staffForwardRouting: boolean;
+  /**
+   * users.id that every NEW ticket created by the inbound pipeline is assigned
+   * to (settings.ticketing.inbound.defaultAssigneeUserId), or null to leave
+   * them unassigned. Validated at save; ingest still re-checks the user's
+   * eligibility for each ticket's org (applyDefaultInboundAssignee).
+   */
+  defaultAssigneeUserId: string | null;
   // NB: fullMessageReply is deliberately NOT part of this policy. It is a purely
   // outbound-notification concern, read from the partner settings by
   // ticketNotifyWorker on its own send path; the ingest consumer of this policy
@@ -222,5 +237,11 @@ export async function loadPartnerInboundPolicy(
     unknownSenderMode: mode,
     defaultTriageOrgId: inbound.defaultTriageOrgId ?? null,
     dropUnverifiedSenders: inbound.dropUnverifiedSenders === true,
+    staffForwardRouting: inbound.staffForwardRouting === true,
+    // The tolerant read can hand back an unvalidated row, so only a uuid-shaped
+    // string counts; anything else reads as "no default".
+    defaultAssigneeUserId: typeof inbound.defaultAssigneeUserId === 'string' && UUID_RE.test(inbound.defaultAssigneeUserId)
+      ? inbound.defaultAssigneeUserId
+      : null,
   };
 }

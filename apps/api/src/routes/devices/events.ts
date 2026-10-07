@@ -440,7 +440,7 @@ const REDACTED_DETAILS_KEYS = ['aiSessionId', 'aiAgentRunId'] as const;
 
 function redactAiProvenance(details: unknown): Record<string, unknown> | null {
   if (!details || typeof details !== 'object') return details as null;
-  // #6577: also run the shared secret redaction (the #5570 / SEC-050 admin
+  // #6577: also run the shared secret redaction (the #5570 admin
   // history helper) — legacy rows and direct createAuditLog writers can hold
   // raw credentials in details.
   const redacted = { ...(redactPersistedToolInput(details) as Record<string, unknown>) };

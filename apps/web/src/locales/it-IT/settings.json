@@ -120,6 +120,8 @@
     "revoked": "Chiave revocata",
     "revokeFailed": "Impossibile revocare la chiave",
     "copyNow": "Copia questa chiave ora",
+    "copy": "Copia",
+    "copied": "Copiato",
     "oneTimeWarning": "Questa chiave in chiaro viene mostrata una sola volta e non potrà essere recuperata in seguito.",
     "done": "Fatto"
   },
@@ -230,6 +232,8 @@
       "add": "Aggiungi connessione",
       "edit": "Modifica",
       "created": "Connessione aggiunta",
+      "createdDiscoveryQueued": "Connessione aggiunta. Rilevamento dei modelli in corso.",
+      "createdDiscoveryNotQueued": "Connessione aggiunta, ma non è stato possibile pianificare il rilevamento dei modelli. Usa Aggiorna per riprovare.",
       "saved": "Connessione salvata",
       "saveFailed": "Impossibile salvare la connessione.",
       "keyFailed": "Impossibile sostituire la chiave API.",
@@ -456,6 +460,7 @@
     "offering": {
       "displayName": "Nome visualizzato",
       "displayNameHint": "Lascia vuoto per usare il nome del provider. ID modello: {{modelId}}",
+      "envManaged": "Questo modello è gestito dalle variabili d'ambiente MCP_LLM_*. Nome e prezzo sono definiti lì e non possono essere modificati qui.",
       "pricesTitle": "Prezzo",
       "pricesHint": "Centesimi per 1 mln di token. Compila tutti e quattro o lasciali vuoti per nessun prezzo (il modello non potrà essere abilitato).",
       "prices": {
@@ -874,6 +879,8 @@
     "slackChannelPlaceholder": "#alerts",
     "pushoverDefaults": "Valori predefiniti Pushover",
     "pushoverDescription": "Ereditati da qualsiasi canale Pushover per organizzazione che lascia vuoto il campo corrispondente.",
+    "pushoverTicketAssignmentFallback": "Invia le assegnazioni dei ticket alla chiave predefinita se l’assegnatario non ha una chiave Pushover",
+    "pushoverTicketAssignmentFallbackHelp": "Ogni tecnico può aggiungere la propria chiave utente Pushover nel profilo; le assegnazioni raggiungono solo lui. Attiva questa opzione per inviare le assegnazioni dei tecnici senza chiave alla chiave utente o gruppo predefinita indicata sopra.",
     "applicationToken": "Token applicazione",
     "defaultUserKey": "Chiave utente o gruppo predefinita",
     "defaultSound": "Suono predefinito",
@@ -1400,6 +1407,12 @@
     "dropDescription": "Nessun ticket, nessuna voce nella coda di revisione, nessuna risposta automatica. Viene comunque registrata una riga di audit. Usa questa opzione per tenere lo spam non mappato fuori dal triage e dalla coda di revisione.",
     "dropUnverified": "Scarta le email che non superano l'autenticazione del mittente (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Quando disattivato, le email non verificate vengono messe in quarantena per revisione. Quando attivato, vengono scartate senza avviso. Si applica a <all>tutti</all> i mittenti non verificati, inclusi i clienti mappati il cui singolo messaggio non supera il controllo.",
+    "staffForwardRouting": "Assegna gli inoltri del personale al cliente del mittente originale",
+    "staffForwardRoutingDescription": "Quando un membro del personale a livello partner inoltra l'email di un cliente all'indirizzo di supporto, il nuovo ticket viene assegnato all'organizzazione associata al dominio del mittente originale anziché alla vostra. Il membro del personale deve avere accesso a quell'organizzazione. Funziona solo per gli inoltri fatti in Gmail e ricevuti da una casella Gmail collegata; non per l'indirizzo di ricezione nativo, le caselle Microsoft 365 né gli inoltri da Outlook.",
+    "defaultAssignee": "Assegnatario predefinito per i nuovi ticket in entrata",
+    "defaultAssigneeDescription": "Ogni nuovo ticket creato da un'email in entrata viene assegnato a questa persona, a meno che non sia già stato assegnato in altro modo. Se non ha accesso all'organizzazione del ticket, il ticket resta non assegnato.",
+    "defaultAssigneeUnavailable": "Utente non disponibile",
+    "defaultAssigneeNotAssignable": "Questo utente non può essere l'assegnatario predefinito. Scegli un membro attivo del team con accesso ai ticket.",
     "enableAutoresponse": "Invia una risposta automatica di conferma per i nuovi ticket email",
     "editEmailTemplates": "L'e-mail di conferma si modifica in Modelli e-mail.",
     "editEmailTemplatesLink": "Modifica modelli e-mail",
@@ -1496,7 +1509,28 @@
     "namePlaceholder": "Assistenza",
     "connect": "Connetti",
     "credentialOrg": "Credenziali: connessione Google Workspace di {{org}}",
-    "credentialOrgUnknown": "un'organizzazione che non puoi vedere"
+    "credentialOrgUnknown": "un'organizzazione che non puoi vedere",
+    "handling": {
+      "off": "Disattivato: la posta resta nella posta in arrivo dopo essere diventata un ticket.",
+      "onArchive": "La posta che diventa un ticket riceve l'etichetta Gmail \"{{label}}\" e viene archiviata fuori dalla posta in arrivo.",
+      "onLabelOnly": "La posta che diventa un ticket riceve l'etichetta Gmail \"{{label}}\" e resta nella posta in arrivo.",
+      "edit": "Modifica la gestione della posta",
+      "labelField": "Etichetta Gmail per la posta con ticket (lascia vuoto per disattivare)",
+      "labelPlaceholder": "Breeze/Ticket",
+      "archiveField": "Archiviala anche (rimuovila dalla posta in arrivo)",
+      "scopeNote": "L'etichettatura richiede questo ambito aggiuntivo nella delega a livello di dominio dell'organizzazione. La lettura della posta non lo richiede, quindi il polling continua a funzionare anche senza.",
+      "saved": "Gestione della posta salvata",
+      "saveFailed": "Impossibile salvare la gestione della posta.",
+      "error": {
+        "access_denied": "Etichettatura non riuscita: Google ha negato l'accesso. Aggiungi l'ambito gmail.modify alla delega a livello di dominio.",
+        "rate_limited": "Etichettatura non riuscita: raggiunto il limite di Gmail. La nuova posta verrà riprovata.",
+        "unavailable": "Etichettatura non riuscita: Gmail non ha risposto in tempo. La nuova posta verrà riprovata.",
+        "label_invalid": "Etichettatura non riuscita: questa etichetta non può essere usata. Scegli un altro nome.",
+        "no_credential": "Etichettatura non riuscita: la connessione Google Workspace di questa organizzazione manca o non è attiva. Ricollegala in Integrazioni.",
+        "not_queued": "Etichettatura saltata: la coda di etichettatura non era disponibile o era piena, quindi parte della posta diventata ticket è rimasta nella posta in arrivo senza etichetta. La nuova posta verrà riprovata.",
+        "failed": "Etichettatura non riuscita. La posta resta nella posta in arrivo."
+      }
+    }
   },
   "orgApprovalSecurityTab": {
     "title": "Sicurezza approvazioni",
@@ -1863,6 +1897,10 @@
         "enableLifecycle": {
           "label": "Ciclo di vita dell'hardware",
           "description": "Mostra il piano di sostituzione aggiornato dei dispositivi del cliente."
+        },
+        "enableHardwareHealth": {
+          "label": "Stato dell'hardware",
+          "description": "Mostra lo stato dei componenti, gli eventi, i dischi e la batteria dei dispositivi del cliente."
         },
         "enableNetworkVisibility": {
           "label": "Visibilità di rete",
@@ -5943,7 +5981,12 @@
       "messagePrefix": "Sei sicuro di voler eliminare",
       "messageSuffix": " Questo rimuoverà la definizione del campo e tutti i valori archiviati sui dispositivi."
     },
-    "typeFilterLabel": "Tipo di campo"
+    "typeFilterLabel": "Tipo di campo",
+    "toasts": {
+      "created": "Campo personalizzato creato",
+      "updated": "Campo personalizzato aggiornato",
+      "deleted": "Campo personalizzato eliminato"
+    }
   },
   "knownGuestsSettings": {
     "title": "Ospiti noti",
@@ -6435,7 +6478,10 @@
     },
     "stepUp": {
       "title": "Conferma che sei tu",
-      "body": "Abilitare le esecuzioni non presidiate richiede un nuovo controllo di sicurezza."
+      "body": "Abilitare le esecuzioni non presidiate richiede un nuovo controllo di sicurezza.",
+      "ceilingBody": "Consentire o ampliare le esecuzioni non presidiate per le tue organizzazioni richiede un nuovo controllo di sicurezza. Conferma, poi seleziona di nuovo Salva.",
+      "wideningBody": "Ampliare ciò che le esecuzioni non presidiate possono fare richiede un nuovo controllo di sicurezza. Conferma, poi seleziona di nuovo Salva.",
+      "noFactor": "Questa modifica richiede un controllo di sicurezza, ma il tuo account non ha un'app di autenticazione né una passkey. Configurane una nel tuo profilo, poi riprova."
     },
     "save": "Salva",
     "saving": "Salvataggio…",
@@ -6548,5 +6594,19 @@
     "sourceDefault": "predefinito del prodotto",
     "range": "Scegli tra {{min}} e {{max}} minuti.",
     "save": "Salva"
+  },
+  "ticketPushover": {
+    "title": "Pushover per le assegnazioni dei ticket",
+    "description": "Aggiungi la tua chiave utente Pushover per ricevere una notifica quando ti viene assegnato un ticket. La ricevi solo tu. Il tuo MSP deve aver configurato un token applicazione Pushover in Notifiche.",
+    "statusSet": "È salvata una chiave Pushover.",
+    "statusNotSet": "Nessuna chiave Pushover salvata.",
+    "placeholder": "Chiave utente Pushover di 30 caratteri",
+    "save": "Salva chiave",
+    "remove": "Rimuovi chiave",
+    "saved": "Chiave Pushover salvata.",
+    "removed": "Chiave Pushover rimossa.",
+    "invalidKey": "Una chiave utente Pushover è composta da 30 lettere o cifre.",
+    "loadFailed": "Impossibile caricare l’impostazione Pushover.",
+    "saveFailed": "Impossibile salvare l’impostazione Pushover."
   }
 }

@@ -85,7 +85,7 @@ const (
 	TypeDesktopLeaseRenew  = "desktop_lease_renew"  // helper -> agent
 	TypeDesktopLeaseUpdate = "desktop_lease_update" // agent -> helper
 
-	// SEC-038 start fence. The service seeds a connecting helper with its
+	// Start fence. The service seeds a connecting helper with its
 	// fence (desktop_fence_sync) and the helper acknowledges, so a start
 	// carrying a generation is never admitted by a helper that has not yet
 	// learned what the service already knows.
@@ -373,7 +373,7 @@ type TrayAction struct {
 type DesktopStartRequest struct {
 	SessionID string `json:"sessionId"`
 	// StartGeneration is the server's monotonic desktop_start_generation for
-	// this start, as a canonical decimal string (SEC-038). It is a bigint on
+	// this start, as a canonical decimal string. It is a bigint on
 	// the server and an int64 here, so it never travels as a JSON number —
 	// above 2^53 that silently rounds. Empty from an older service, which the
 	// helper admits exactly as the agent does (mixed-fleet rollout).
@@ -443,7 +443,7 @@ type DesktopLeaseUpdate struct {
 	Reason             string `json:"reason,omitempty"`
 	// Unavailable is the control plane's "I cannot answer right now". It is
 	// NOT a renewal: before a session's first successful renewal it ends the
-	// session (SEC-038 owner decision 2), afterwards the grace window governs.
+	// session, afterwards the grace window governs.
 	// Absent on an older service, where the answer was swallowed entirely.
 	Unavailable bool `json:"unavailable,omitempty"`
 }
@@ -452,14 +452,14 @@ type DesktopLeaseUpdate struct {
 type DesktopStopRequest struct {
 	SessionID string `json:"sessionId"`
 	// TerminalGeneration is the generation at which the session was declared
-	// terminal, as a canonical decimal string (SEC-038). Empty from an older
+	// terminal, as a canonical decimal string. Empty from an older
 	// service; the helper's tombstone is installed either way, since a stop is
 	// an unambiguous terminal decision whatever its generation says.
 	TerminalGeneration string `json:"terminalGeneration,omitempty"`
 }
 
 // DesktopFenceSync seeds a freshly connected helper with the service's
-// SEC-038 start fence, so a helper that restarts mid-session cannot be talked
+// start fence, so a helper that restarts mid-session cannot be talked
 // into replaying a start the service has already superseded or tombstoned.
 //
 // Sent agent -> helper on connect, before any start may be admitted for a

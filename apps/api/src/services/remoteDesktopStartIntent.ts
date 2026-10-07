@@ -1,5 +1,5 @@
 /**
- * SEC-038 W02 (#5533) — the single serialized start decision for a remote
+ * #5533 — the single serialized start decision for a remote
  * desktop session.
  *
  * Three sites publish a desktop start today (`POST /remote/sessions/:id/offer`,

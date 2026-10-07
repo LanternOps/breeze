@@ -26,6 +26,7 @@ type PortalSettings = {
   enableService: boolean;
   enableDocuments: boolean;
   enableLifecycle: boolean;
+  enableHardwareHealth: boolean;
   enableNetworkVisibility: boolean;
   enableNetworkAlerts: boolean;
   supportEmail: string | null;
@@ -70,6 +71,7 @@ type VisibilityToggleKey =
   | 'enableService'
   | 'enableDocuments'
   | 'enableLifecycle'
+  | 'enableHardwareHealth'
   | 'enableNetworkVisibility'
   | 'enableNetworkAlerts';
 
@@ -122,6 +124,11 @@ const VISIBILITY_TOGGLES: Array<{
     key: 'enableLifecycle',
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableLifecycle.label',
     descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableLifecycle.description',
+  },
+  {
+    key: 'enableHardwareHealth',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableHardwareHealth.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableHardwareHealth.description',
   },
   {
     key: 'enableNetworkVisibility',
@@ -198,6 +205,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
     enableService: true,
     enableDocuments: true,
     enableLifecycle: true,
+    enableHardwareHealth: true,
     enableNetworkVisibility: true,
   });
 
@@ -222,6 +230,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enableService: draft.enableService,
             enableDocuments: draft.enableDocuments,
             enableLifecycle: draft.enableLifecycle,
+            enableHardwareHealth: draft.enableHardwareHealth,
             enableNetworkVisibility: draft.enableNetworkVisibility,
             enableNetworkAlerts: draft.enableNetworkAlerts,
             supportEmail: draft.supportEmail?.trim() || null,

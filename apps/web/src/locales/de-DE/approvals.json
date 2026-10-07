@@ -120,5 +120,32 @@
     "activeBody": "Seit {{date}} verlangt der Plattformstandard ein registriertes Genehmigergerät, um Anfragen mit hohem und kritischem Risiko zu genehmigen, da für Ihr Partnerkonto keine Auswahl zur Genehmigungssicherheit gespeichert wurde. Deshalb fragen diese Genehmigungen nach Ihrem Gerät.",
     "settingsLink": "Genehmigungssicherheit prüfen",
     "registerLink": "Genehmigergerät registrieren"
+  },
+  "diagnosticAccess": {
+    "title": "Schreibgeschützter Diagnosezugriff",
+    "organization": "Organisation",
+    "device": "Gerät",
+    "access": "Zugriff",
+    "readOnlyOps": "Nur lesen: {{operations}}. Kein Schreiben, Löschen, Umbenennen, keine Skripte oder Registrierungsänderungen.",
+    "duration": "Dauer",
+    "durationValue": "{{minutes}} Minuten ab Genehmigung",
+    "purpose": "Zweck",
+    "requestedBy": "Angefordert von",
+    "principalUser": "Breeze-KI-Chat",
+    "principalApiKey": "MCP-API-Schlüssel",
+    "principalOauth": "MCP-OAuth-Verbindung",
+    "paths": "Pfade",
+    "recursive": "Gesamter Unterbaum",
+    "thisFolderOnly": "Dieser Ordner und die direkt darin liegenden Dateien",
+    "sensitiveHeading": "Ausdrücklich angeforderte sensible Speicher",
+    "noSensitive": "Bekannte Speicherorte von Browserpasswörtern und Cookies, Anmeldeinformationsspeichern, privaten Schlüsseln und gespeicherten Token werden zurückgehalten, auch innerhalb dieser Pfade. Dies ist eine feste Liste; alles andere in diesen Pfaden ist lesbar.",
+    "opList": "auflisten",
+    "opRead": "lesen",
+    "classes": {
+      "browser_secrets": "Browserpasswörter, Cookies und deren Schlüssel",
+      "credential_store": "Anmeldeinformationsspeicher des Betriebssystems",
+      "private_keys": "Private Schlüssel (SSH, GnuPG, TLS)",
+      "session_tokens": "Gespeicherte Sitzungstoken und Cloud-Anmeldedaten"
+    }
   }
 }

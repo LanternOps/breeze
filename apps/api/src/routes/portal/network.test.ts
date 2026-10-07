@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
-const { dbState, dbAccessContexts, networkOverviewMock, networkAssetsMock } = vi.hoisted(() => ({
+const { dbState, dbAccessContexts, networkOverviewMock, networkAssetsMock, networkSitesMock } = vi.hoisted(() => ({
   dbState: {
     rows: [] as unknown[],
     where: undefined as unknown,
@@ -12,6 +12,7 @@ const { dbState, dbAccessContexts, networkOverviewMock, networkAssetsMock } = vi
   dbAccessContexts: [] as unknown[],
   networkOverviewMock: vi.fn(),
   networkAssetsMock: vi.fn(),
+  networkSitesMock: vi.fn(),
 }));
 
 vi.mock('../../db', () => {
@@ -60,6 +61,7 @@ vi.mock('../../db', () => {
 vi.mock('../../services/portal/networkVisibilityReadModel', () => ({
   networkOverview: networkOverviewMock,
   networkAssets: networkAssetsMock,
+  networkSites: networkSitesMock,
 }));
 
 import { portalNetworkRoutes } from './network';
@@ -344,5 +346,43 @@ describe('GET /network/assets (#5861, PR 2)', () => {
     expect(response.status).toBe(401);
     expect(dbState.where).toBeUndefined();
     expect(networkAssetsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /network/sites (#7025)', () => {
+  const SITES = {
+    dataStatus: 'ok' as const,
+    data: [{ id: '11111111-1111-1111-1111-111111111111', name: 'HQ' }],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.rows = [];
+    dbState.contextDepth = 0;
+    dbAccessContexts.length = 0;
+    networkSitesMock.mockResolvedValue(SITES);
+  });
+
+  it('returns not_enabled with an empty list when the flag is false', async () => {
+    dbState.rows = [{ enableNetworkVisibility: false }];
+    const response = await makeApp().request('/network/sites');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ dataStatus: 'not_enabled', data: [] });
+    expect(networkSitesMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the org-scoped site list when the flag is true', async () => {
+    dbState.rows = [{ enableNetworkVisibility: true }];
+    const response = await makeApp().request('/network/sites');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(SITES);
+    expect(networkSitesMock).toHaveBeenCalledWith(ORG_ID);
+    expect(dbAccessContexts).toHaveLength(1);
+  });
+
+  it('401s without portal auth', async () => {
+    const response = await makeApp(false).request('/network/sites');
+    expect(response.status).toBe(401);
+    expect(networkSitesMock).not.toHaveBeenCalled();
   });
 });

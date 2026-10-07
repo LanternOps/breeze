@@ -224,6 +224,7 @@ export default function ModelsCard({
 
       {editing && (
         <OfferingDrawer key={editing.id} offering={editing} offerings={snapshot.offerings}
+          envManaged={snapshot.connections.some((c) => c.id !== null && c.id === editing.connectionId && c.managedBy === 'env')}
           onClose={() => setEditingId(null)} onSaved={onChanged} />
       )}
 

@@ -291,7 +291,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // DELETE CASCADE. No cross-references to ai_budgets, so its position is
   // pure alphabetization ('_' sorts before letters under localeCompare).
   'ai_budget_alert_events',
-  // ai_budget_reservations (SEC-142/143): durable pre-dispatch spend fence,
+  // ai_budget_reservations: durable pre-dispatch spend fence,
   // Shape 1 with NOT NULL org_id ON DELETE CASCADE. It also carries a
   // composite (session_id, org_id) FK to ai_sessions with a column-scoped
   // ON DELETE SET NULL (session_id) — that FK has an explicit ON DELETE, so
@@ -564,6 +564,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_vulnerabilities',
   'device_warranty',
   'devices',
+  'diagnostic_access_grants',
   'discovered_assets',
   'discovery_jobs',
   'discovery_profiles',
@@ -2136,6 +2137,21 @@ function quoteIdent(table: string): string {
   return `"${table}"`;
 }
 
+/**
+ * Tables with a `partner_id` column that the partner sweep in
+ * cascadeDeletePartner must NOT delete from.
+ *
+ * - `audit_logs` (#7696): `partner_id` there is FK-less attribution on
+ *   partner-scoped (org_id NULL) rows, not ownership. Those rows sit in the ONE
+ *   shared NULL-org hash chain (audit_log_chain is keyed on org_id) alongside
+ *   platform rows and every other partner's partner-level rows, so deleting a
+ *   partner's slice would punch holes in a chain other tenants' evidence depends
+ *   on. They also need the breeze_audit_admin path, not this breeze_app sweep.
+ *   They are retained, exactly like the partner's purge_started/purged rows.
+ *   The partner's child orgs' audit_logs are still erased by cascadeDeleteOrg.
+ */
+const PARTNER_SWEEP_RETAINED_TABLES: ReadonlySet<string> = new Set<string>(['audit_logs']);
+
 export interface PartnerCascadeStats {
   orgsDeleted: number;
   tablesSwept: number;
@@ -2361,7 +2377,9 @@ export async function cascadeDeletePartner(
       AND column_name = 'partner_id'
       AND table_name <> 'organizations'
   `)) as unknown as Array<{ table_name: string }>;
-  const partnerTables = partnerTableRows.map((r) => r.table_name);
+  const partnerTables = partnerTableRows
+    .map((r) => r.table_name)
+    .filter((t) => !PARTNER_SWEEP_RETAINED_TABLES.has(t));
   const order = await self.topologicalCascadeOrder(partnerTables);
   const orderedSet = new Set(order);
   const sweep = [...order, ...partnerTables.filter((t) => !orderedSet.has(t))];

@@ -1384,6 +1384,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Gmail mark-handled (#7949): its own queue so ticket intake never waits on Gmail.
+    name: 'gmailMarkHandledWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/gmailMarkHandledWorker');
+      return { init: m.initializeGmailMarkHandledWorker, shutdown: m.shutdownGmailMarkHandledWorker };
+    },
+  },
+  {
     name: 'ticketMailboxPollWorker',
     placement: 'global',
     load: async () => {
@@ -1606,7 +1615,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // SEC-142/143 (review B3): reclaims durable AI budget reservations whose
+    // Reclaims durable AI budget reservations whose
     // TTL passed without settling. `global` — the sweep is one UPDATE with no
     // socket-local state, and leaving it to the socket owner would mean a
     // worker-only deployment never reclaims a held cap. Its module closure

@@ -589,10 +589,9 @@ for (const [label, env, passes] of [
   ['tooling-only PR, release-ledger red', { ...toolingOnlyPassing, RELEASE_LEDGER_RESULT: 'failure' }, false],
   ['tooling-only PR, release-ledger skipped', { ...toolingOnlyPassing, RELEASE_LEDGER_RESULT: 'skipped' }, false],
   ['app change, all heavy jobs green', { ...appPassing }, true],
-  // check-migrations is NOT blocking for an application PR (unchanged policy: it
-  // is one of ciSuccessGatingContract's KNOWN GAP jobs). It is blocking only on
-  // the tooling-only path, where it is the sole validation of the release guards.
-  ['app change, check-migrations red: not blocking for an application PR', { ...appPassing, CHECK_MIGRATIONS_RESULT: 'failure' }, true],
+  // check-migrations blocks an application PR whenever api changed (#7032); `passing`
+  // sets API_CHANGED=true. The api=false/skipped legs live in ci-area-gating.test.mjs.
+  ['app change, check-migrations red: blocks an application PR (#7032)', { ...appPassing, CHECK_MIGRATIONS_RESULT: 'failure' }, false],
   ['tooling-only PR, a smoke job ran instead of skipping', { ...toolingOnlyPassing, SMOKE_TEST_RESULT: 'success' }, false],
   ['tooling-only PR, workspace-runtime ran instead of skipping', { ...toolingOnlyPassing, WORKSPACE_RUNTIME_RESULT: 'failure' }, false],
   // The topology gate is app-implying (every path it matches is outside the

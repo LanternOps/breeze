@@ -2,7 +2,7 @@ package heartbeat
 
 import "testing"
 
-// SEC-038 W05 — the two properties that separate this wave from W04, written
+// The two properties that separate this wave from W04, written
 // against ONLY the symbols W04 already had.
 //
 // That restraint is deliberate: this file is also the CONTROL suite for the

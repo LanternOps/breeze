@@ -76,6 +76,8 @@ export const REMOTE_TOOLS_COMMAND_TYPES: ReadonlySet<string> = new Set<string>([
   CommandTypes.FILE_LIST,
   CommandTypes.FILE_LIST_DRIVES,
   CommandTypes.FILE_READ,
+  CommandTypes.DIAG_FILE_LIST,
+  CommandTypes.DIAG_FILE_READ,
   CommandTypes.FILE_WRITE,
   CommandTypes.FILE_DELETE,
   CommandTypes.FILE_MKDIR,

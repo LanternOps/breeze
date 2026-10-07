@@ -32,12 +32,14 @@ Read the root `.env` file and confirm these are set:
 
 | Variable | Purpose | Example |
 |---|---|---|
-| `E2E_BASE_URL` | Web app URL | `https://2breeze.app` |
-| `E2E_API_URL` | API URL | `https://2breeze.app` |
+| `E2E_BASE_URL` | Web app URL | `http://localhost:4321` (or the `baseUrl` from `pnpm wt-stack up`) |
+| `E2E_API_URL` | API URL | `http://localhost:3001` |
 | `E2E_ADMIN_EMAIL` | Login email | `admin@breeze.local` |
 | `E2E_ADMIN_PASSWORD` | Login password | (set in .env) |
 | `E2E_MACOS_DEVICE_ID` | macOS test device | UUID |
 | `E2E_WINDOWS_DEVICE_ID` | Windows test device | UUID |
+
+Point these at a local or lab stack, never at a hosted production URL.
 
 ### Docker Services
 

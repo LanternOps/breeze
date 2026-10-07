@@ -350,7 +350,20 @@ describe('getTicketConfig inbound block', () => {
     const cfg = await getTicketConfig('p-1');
     expect(cfg.inbound.unknownSenderMode).toBe('quarantine');
     expect(cfg.inbound.dropUnverifiedSenders).toBe(false);
+    expect(cfg.inbound.staffForwardRouting).toBe(false);
     expect(cfg.inbound.triageUnknownSenders).toBe(false);
+  });
+  it('surfaces staffForwardRouting=true so the card can read it back and preserve it', async () => {
+    enqueueForInbound({ slug: 'acme', settings: { ticketing: { inbound: { staffForwardRouting: true } } } });
+    const cfg = await getTicketConfig(PARTNER);
+    expect(cfg.inbound.staffForwardRouting).toBe(true);
+  });
+  it('surfaces defaultAssigneeUserId (null when unset) so the card can show and preserve it', async () => {
+    enqueueForInbound({ slug: 'acme', settings: {} });
+    expect((await getTicketConfig(PARTNER)).inbound.defaultAssigneeUserId).toBeNull();
+    const user = '55555555-5555-4555-8555-555555555555';
+    enqueueForInbound({ slug: 'acme', settings: { ticketing: { inbound: { defaultAssigneeUserId: user } } } });
+    expect((await getTicketConfig(PARTNER)).inbound.defaultAssigneeUserId).toBe(user);
   });
   it('surfaces an explicit unknownSenderMode=drop and dropUnverifiedSenders=true', async () => {
     enqueueForInbound({ slug: 'acme', settings: { ticketing: { inbound: { unknownSenderMode: 'drop', dropUnverifiedSenders: true } } } });

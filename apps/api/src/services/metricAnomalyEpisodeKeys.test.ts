@@ -109,7 +109,7 @@ describe('episode constants (spec §5)', () => {
     expect(EPISODE_RECURRENCE_DAYS).toBe(7);
     expect(EPISODE_SNOOZE_DAYS).toBe(7);
     expect(EPISODE_ASSEMBLY_LOOKBACK_HOURS).toBe(24);
-    expect(EPISODE_MIN_BUCKETS).toBe(2);
+    expect(EPISODE_MIN_BUCKETS).toBe(3);
     expect(EPISODE_BUCKET_SECONDS).toBe(300);
   });
 

@@ -13,7 +13,7 @@ import type { AuthContext } from '../middleware/auth';
 import { normalizeBaselineScanSchedule } from './networkBaseline';
 
 /**
- * SEC-2026-09-05-146 — creator-bound versioned authority for recurring
+ * Creator-bound versioned authority for recurring
  * network-baseline scans.
  *
  * A `scan_schedule` is a standing effect: once armed, the scheduler keeps

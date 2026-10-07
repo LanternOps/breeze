@@ -3092,7 +3092,7 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     expect(updateArg.pamLifetimeProtocolVersion).toBe(expectedPam);
   });
 
-  // SEC-038 W06 (#5537): desktopFenceProtocolVersion is recorded non-sticky on
+  // #5537 — desktopFenceProtocolVersion is recorded non-sticky on
   // every beat exactly like revocationLeaseProtocolVersion — omitted, zero,
   // unknown, fractional and string values all persist as 0 so an agent
   // downgrade stops the fence gate trusting a stale claim.

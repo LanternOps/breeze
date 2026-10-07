@@ -5,6 +5,23 @@ import { getRedis } from './redis';
 import { PERMISSION_GRANTS } from '@breeze/shared';
 import { permissionGrantMatches } from './permissionMatching';
 import { normalizeSiteAllowlist } from './siteAllowlist';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+/**
+ * Request-scoped "never serve this user's permissions from cache". Used for a
+ * partner service principal's MCP request (middleware/
+ * partnerServicePrincipalMcpAuth.ts): its owner gate reads permissions
+ * uncached, and every per-tool check later in the SAME request
+ * (aiGuardrails.checkPermissionRequirements and the tools' own
+ * getUserPermissions(auth.user.id) reads) must see that same fresh state, not
+ * an in-process entry that a lost cross-process invalidation left stale. The
+ * fresh result is written back to the cache, which also heals the stale entry.
+ */
+const uncachedPermissionsFor = new AsyncLocalStorage<{ userId: string }>();
+
+export function runWithUncachedPermissionsFor<T>(userId: string, fn: () => Promise<T>): Promise<T> {
+  return uncachedPermissionsFor.run({ userId }, fn);
+}
 
 export interface Permission {
   resource: string;
@@ -193,7 +210,14 @@ export async function getUserPermissions(
   const versions = await getPermissionCacheVersions(userId);
   const cached = permissionCache.get(cacheKey);
 
-  if (!options?.bypassCache && cached && cached.expiresAt > Date.now() && cacheVersionsMatch(cached.versions, versions)) {
+  const forceFresh = uncachedPermissionsFor.getStore()?.userId === userId;
+  if (
+    !options?.bypassCache
+    && !forceFresh
+    && cached
+    && cached.expiresAt > Date.now()
+    && cacheVersionsMatch(cached.versions, versions)
+  ) {
     return cached.userPerms;
   }
 

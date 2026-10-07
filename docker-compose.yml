@@ -170,7 +170,7 @@ x-api-env: &api-env
   # Durable event dispatch (wave 3.5c, #4085; optional, defaults to off).
   EVENT_DISPATCH_MODE: ${EVENT_DISPATCH_MODE:-off}
   EVENT_DISPATCH_QUEUE_SUBSCRIBERS: ${EVENT_DISPATCH_QUEUE_SUBSCRIBERS:-}
-  # Fail-closed Stripe Checkout session revocation (SEC-150). enforce (default)
+  # Fail-closed Stripe Checkout session revocation. enforce (default)
   # refuses a reset/payment/void it cannot prove killed the open payment link;
   # observe de-escalates to log-only. Rollback is a flip to observe, never a
   # migration revert.

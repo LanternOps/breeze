@@ -158,6 +158,28 @@ describe('applyEpisodeAction (W02, spec §8)', () => {
     expect(feedback.every((f) => f.eventType === 'anomaly.promoted')).toBe(true);
   });
 
+  it('promote picks the same peak the card shows: a ram_percent member over a higher-scoring ram_used_mb one', async () => {
+    const { org, site, user } = await seedTenant();
+    const deviceId = await insertEpisodeDevice(org.id, site.id);
+    const start = new Date(Date.now() - HOUR);
+    const ep = await seedEpisode({
+      orgId: org.id, deviceId, memberCount: 3, start,
+      metricName: 'ram_percent', metricFamily: 'ram', anomalyType: 'memory_growth',
+    });
+    await getTestDb().insert(metricAnomalies).values({
+      orgId: org.id, deviceId, sourceTable: 'device_metrics', metricType: 'ram', metricName: 'ram_used_mb',
+      anomalyType: 'memory_growth', status: 'open', windowStart: start, windowEnd: new Date(start.getTime() + 300_000),
+      bucketSeconds: 300, observedValue: 11657, baselineValue: 8774, score: 50, confidence: 0.98, sampleCount: 1,
+      baselineSummary: {}, evidence: {}, episodeId: ep.episodeId,
+    });
+
+    const result = await act({ orgId: org.id, deviceId, episodeId: ep.episodeId, action: 'promote', actorUserId: user.id });
+
+    const alertId = (result as { alertId: string }).alertId;
+    const [alert] = await getTestDb().select().from(alerts).where(eq(alerts.id, alertId));
+    expect(alert!.context).toMatchObject({ anomalyId: ep.peakMemberId, episodeId: ep.episodeId });
+  });
+
   it('promote reusing an alert the peak member already carries stamps context.episodeId onto it', async () => {
     const { org, site, user } = await seedTenant();
     const deviceId = await insertEpisodeDevice(org.id, site.id);

@@ -32,7 +32,9 @@ it('loads the server bank offer and starts setup only after consent',async()=>{
  render(<PublicInvoiceView token="token-1"/>);
  fireEvent.click(await screen.findByTestId('autopay-option-bank'));
  const button=screen.getByTestId('autopay-bank-pay');expect((button as HTMLButtonElement).disabled).toBe(true);
- fireEvent.click(screen.getByTestId('autopay-bank-consent'));fireEvent.click(button);
+ fireEvent.click(screen.getByTestId('autopay-bank-consent'));
+ // Click only once consent has committed: a click on a still-disabled button is a silent no-op.
+ await waitFor(()=>expect(button).toBeEnabled());fireEvent.click(button);
  await waitFor(()=>expect(fetch).toHaveBeenCalled());
  const payment=fetch.mock.calls.find(([url])=>String(url).endsWith('/invoices/public/token-1/pay'));
  expect(payment).toBeDefined();expect(JSON.parse(payment![1]!.body as string)).toMatchObject({phase:'setup',consentAccepted:true});

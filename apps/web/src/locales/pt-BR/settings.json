@@ -120,6 +120,8 @@
     "revoked": "Chave revogada",
     "revokeFailed": "Falha ao revogar a chave",
     "copyNow": "Copie esta chave agora",
+    "copy": "Copiar",
+    "copied": "Copiado",
     "oneTimeWarning": "Esta chave em texto simples é exibida apenas uma vez e não poderá ser recuperada depois.",
     "done": "Concluído"
   },
@@ -230,6 +232,8 @@
       "add": "Adicionar conexão",
       "edit": "Editar",
       "created": "Conexão adicionada",
+      "createdDiscoveryQueued": "Conexão adicionada. Descobrindo seus modelos agora.",
+      "createdDiscoveryNotQueued": "Conexão adicionada, mas não foi possível agendar a descoberta de modelos. Use Atualizar para tentar novamente.",
       "saved": "Conexão salva",
       "saveFailed": "Não foi possível salvar a conexão.",
       "keyFailed": "Não foi possível substituir a chave de API.",
@@ -456,6 +460,7 @@
     "offering": {
       "displayName": "Nome de exibição",
       "displayNameHint": "Deixe em branco para usar o nome do provedor. ID do modelo: {{modelId}}",
+      "envManaged": "Este modelo é gerenciado pelas variáveis de ambiente MCP_LLM_*. Nome e preço são definidos lá e não podem ser alterados aqui.",
       "pricesTitle": "Preço",
       "pricesHint": "Centavos por 1 mi de tokens. Preencha os quatro ou deixe todos em branco para nenhum preço (o modelo não poderá ser ativado).",
       "prices": {
@@ -874,6 +879,8 @@
     "slackChannelPlaceholder": "#alertas",
     "pushoverDefaults": "Padrões do Pushover",
     "pushoverDescription": "Herdados por qualquer canal Pushover da organização que deixe o campo correspondente em branco.",
+    "pushoverTicketAssignmentFallback": "Enviar atribuições de chamados para a chave padrão quando o responsável não tiver chave do Pushover",
+    "pushoverTicketAssignmentFallbackHelp": "Cada técnico pode adicionar a própria chave de usuário do Pushover no perfil; as atribuições chegam somente a ele. Ative para enviar as atribuições de técnicos sem chave para a chave de usuário ou grupo padrão acima.",
     "applicationToken": "Token do aplicativo",
     "defaultUserKey": "Chave padrão de usuário ou grupo",
     "defaultSound": "Som padrão",
@@ -1400,6 +1407,12 @@
     "dropDescription": "Sem chamado, entrada na fila de revisão ou resposta automática. Uma linha de auditoria ainda é registrada. Use para manter spam não mapeado fora da triagem e da fila de revisão.",
     "dropUnverified": "Descartar mensagens que falham na autenticação do remetente (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Quando desativado, mensagens não verificadas ficam em quarentena para revisão. Quando ativado, são descartadas silenciosamente. Isso se aplica a <all>todos</all> os remetentes não verificados — inclusive clientes mapeados cuja mensagem falhe na verificação.",
+    "staffForwardRouting": "Registrar encaminhamentos da equipe no cliente do remetente original",
+    "staffForwardRoutingDescription": "Quando um membro da sua equipe no nível de parceiro encaminha o e-mail de um cliente para o endereço de suporte, o novo ticket é registrado na organização vinculada ao domínio do remetente original, e não na sua. O membro da equipe precisa ter acesso a essa organização. Funciona apenas para encaminhamentos feitos no Gmail e recebidos por uma caixa do Gmail conectada; não para o endereço de entrada nativo, caixas do Microsoft 365 nem encaminhamentos do Outlook.",
+    "defaultAssignee": "Responsável padrão para novos tickets recebidos",
+    "defaultAssigneeDescription": "Todo ticket novo criado a partir de um e-mail recebido é atribuído a essa pessoa, a menos que outra regra já o tenha atribuído. Se ela não tiver acesso à organização do ticket, o ticket fica sem responsável.",
+    "defaultAssigneeUnavailable": "Usuário indisponível",
+    "defaultAssigneeNotAssignable": "Esse usuário não pode ser o responsável padrão. Escolha um membro ativo da sua equipe com acesso a tickets.",
     "enableAutoresponse": "Enviar resposta automática confirmando novos chamados por e-mail",
     "editEmailTemplates": "O e-mail de confirmação é editado em Modelos de e-mail.",
     "editEmailTemplatesLink": "Editar modelos de e-mail",
@@ -1496,7 +1509,28 @@
     "namePlaceholder": "Suporte",
     "connect": "Conectar",
     "credentialOrg": "Credencial: conexão do Google Workspace de {{org}}",
-    "credentialOrgUnknown": "uma organização que você não pode ver"
+    "credentialOrgUnknown": "uma organização que você não pode ver",
+    "handling": {
+      "off": "Desativado: o e-mail continua na caixa de entrada depois de virar um ticket.",
+      "onArchive": "O e-mail que vira um ticket recebe o marcador do Gmail \"{{label}}\" e é arquivado fora da caixa de entrada.",
+      "onLabelOnly": "O e-mail que vira um ticket recebe o marcador do Gmail \"{{label}}\" e continua na caixa de entrada.",
+      "edit": "Alterar o tratamento de e-mails",
+      "labelField": "Marcador do Gmail para e-mails com ticket (deixe em branco para desativar)",
+      "labelPlaceholder": "Breeze/Ticket",
+      "archiveField": "Também arquivar (remover da caixa de entrada)",
+      "scopeNote": "A marcação precisa deste escopo adicional na delegação em todo o domínio da organização. A leitura dos e-mails não precisa dele, então a consulta continua funcionando sem ele.",
+      "saved": "Tratamento de e-mails salvo",
+      "saveFailed": "Não foi possível salvar o tratamento de e-mails.",
+      "error": {
+        "access_denied": "Falha ao marcar: o Google negou o acesso. Adicione o escopo gmail.modify à delegação em todo o domínio.",
+        "rate_limited": "Falha ao marcar: limite de taxa do Gmail atingido. Novos e-mails serão tentados novamente.",
+        "unavailable": "Falha ao marcar: o Gmail não respondeu a tempo. Novos e-mails serão tentados novamente.",
+        "label_invalid": "Falha ao marcar: este marcador não pode ser usado. Escolha outro nome.",
+        "no_credential": "Falha ao marcar: a conexão do Google Workspace desta organização está ausente ou inativa. Reconecte-a em Integrações.",
+        "not_queued": "Marcação ignorada: a fila de marcação estava indisponível ou cheia, então alguns e-mails que viraram chamados ficaram na caixa de entrada sem o marcador. Novos e-mails serão tentados novamente.",
+        "failed": "Falha ao marcar. O e-mail continua na caixa de entrada."
+      }
+    }
   },
   "orgApprovalSecurityTab": {
     "title": "Segurança de aprovação",
@@ -1863,6 +1897,10 @@
         "enableLifecycle": {
           "label": "Ciclo de vida do hardware",
           "description": "Mostra o plano de substituição atualizado dos equipamentos do seu cliente."
+        },
+        "enableHardwareHealth": {
+          "label": "Saúde do hardware",
+          "description": "Mostra a saúde dos componentes, eventos, discos e bateria das máquinas do seu cliente."
         },
         "enableNetworkVisibility": {
           "label": "Visibilidade de rede",
@@ -5948,7 +5986,12 @@
       "messagePrefix": "Tem certeza de que deseja excluir",
       "messageSuffix": "Isto removerá a definição do campo e todos os valores armazenados nos dispositivos."
     },
-    "typeFilterLabel": "Tipo de campo"
+    "typeFilterLabel": "Tipo de campo",
+    "toasts": {
+      "created": "Campo personalizado criado",
+      "updated": "Campo personalizado atualizado",
+      "deleted": "Campo personalizado excluído"
+    }
   },
   "knownGuestsSettings": {
     "title": "Convidados conhecidos",
@@ -6435,7 +6478,10 @@
     },
     "stepUp": {
       "title": "Confirme que é você",
-      "body": "Habilitar execuções sem supervisão exige uma nova verificação de segurança."
+      "body": "Habilitar execuções sem supervisão exige uma nova verificação de segurança.",
+      "ceilingBody": "Permitir ou ampliar execuções autônomas para suas organizações exige uma nova verificação de segurança. Confirme e selecione Salvar novamente.",
+      "wideningBody": "Ampliar o que as execuções autônomas podem fazer exige uma nova verificação de segurança. Confirme e selecione Salvar novamente.",
+      "noFactor": "Esta alteração exige uma verificação de segurança, mas sua conta não tem um app autenticador nem uma chave de acesso. Configure um no seu perfil e tente novamente."
     },
     "save": "Salvar",
     "saving": "Salvando…",
@@ -6548,5 +6594,19 @@
     "sourceDefault": "padrão do produto",
     "range": "Escolha entre {{min}} e {{max}} minutos.",
     "save": "Salvar"
+  },
+  "ticketPushover": {
+    "title": "Pushover para atribuições de chamados",
+    "description": "Adicione sua chave de usuário do Pushover para receber uma notificação quando um chamado for atribuído a você. Só você a recebe. Seu MSP precisa ter configurado um token de aplicativo do Pushover em Notificações.",
+    "statusSet": "Há uma chave do Pushover salva.",
+    "statusNotSet": "Nenhuma chave do Pushover salva.",
+    "placeholder": "Chave de usuário do Pushover com 30 caracteres",
+    "save": "Salvar chave",
+    "remove": "Remover chave",
+    "saved": "Chave do Pushover salva.",
+    "removed": "Chave do Pushover removida.",
+    "invalidKey": "Uma chave de usuário do Pushover tem 30 letras ou dígitos.",
+    "loadFailed": "Não foi possível carregar sua configuração do Pushover.",
+    "saveFailed": "Não foi possível salvar sua configuração do Pushover."
   }
 }

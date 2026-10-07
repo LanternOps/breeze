@@ -420,12 +420,13 @@ describe('ticket mailbox connection service', () => {
 
     const result = await listMailboxConnections(PARTNER_ID);
 
-    expect(result).toEqual([{ ...publicRow, verificationError: null, consentExpired: false }]);
+    expect(result).toEqual([{ ...publicRow, verificationError: null, consentExpired: false, gmailHandling: null }]);
     expect(Object.keys(result[0]!)).toEqual([
-      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError', 'consentExpired',
+      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError', 'consentExpired', 'gmailHandling',
     ]);
     expect(Object.keys(dbMocks.selectedFields[0] ?? {})).toEqual([
-      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'lastError', 'consentSessionLive',
+      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'lastError',
+      'gmailHandledLabel', 'gmailArchiveOnHandle', 'gmailHandledError', 'gmailHandledErrorAt', 'consentSessionLive',
     ]);
   });
 
@@ -437,6 +438,18 @@ describe('ticket mailbox connection service', () => {
     ]);
     const result = await listMailboxConnections(PARTNER_ID);
     expect(result.map((r) => [r.id, r.provider])).toEqual([['m', 'm365'], ['g', 'gmail']]);
+  });
+
+  it('exposes the Gmail mark-handled setting and failure code on gmail rows only', async () => {
+    const base = { mailboxAddress: 'help@example.com', displayName: null, status: 'connected', lastPolledAt: null, lastMessageAt: null, lastError: null };
+    const at = new Date('2026-10-05T07:00:00Z');
+    dbMocks.selectResults.push([
+      { ...base, id: 'm', provider: 'm365', gmailHandledLabel: null, gmailArchiveOnHandle: true, gmailHandledError: null, gmailHandledErrorAt: null },
+      { ...base, id: 'g', provider: 'gmail', gmailHandledLabel: 'Breeze', gmailArchiveOnHandle: false, gmailHandledError: 'access_denied', gmailHandledErrorAt: at },
+    ]);
+    const result = await listMailboxConnections(PARTNER_ID);
+    expect(result[0]!.gmailHandling).toBeNull();
+    expect(result[1]!.gmailHandling).toEqual({ label: 'Breeze', archive: false, error: 'access_denied', errorAt: at });
   });
 
   it('exposes lastError only when it is our sanitized verification reason, never poller error text', async () => {
