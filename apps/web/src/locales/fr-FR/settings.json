@@ -120,6 +120,8 @@
     "revoked": "Clé révoquée",
     "revokeFailed": "Échec de la révocation de la clé",
     "copyNow": "Copiez cette clé maintenant",
+    "copy": "Copier",
+    "copied": "Copié",
     "oneTimeWarning": "Cette clé en clair n'est affichée qu'une seule fois et ne pourra pas être récupérée ultérieurement.",
     "done": "Terminé"
   },

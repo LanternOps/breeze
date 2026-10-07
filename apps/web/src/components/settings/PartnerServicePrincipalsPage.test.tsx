@@ -127,6 +127,24 @@ describe('PartnerServicePrincipalsPage', () => {
     localStore.mockRestore();
   });
 
+  it('offers a Copy button on the one-time key reveal that writes the key to the clipboard', async () => {
+    mocks.fetchWithAuth.mockResolvedValue(principalListResponse());
+    mocks.runAction.mockResolvedValueOnce({ key: 'brz_sp_COPY_ME', keyId: KEY_ID, keyPrefix: 'brz_sp_COP' });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+
+    render(<PartnerServicePrincipalsPage />);
+    await screen.findByText('Weavestream');
+    fireEvent.click(screen.getByTestId(`issue-key-${PRINCIPAL_ID}`));
+    fireEvent.change(screen.getByLabelText('partnerServicePrincipals.keyName'), { target: { value: 'Secondary' } });
+    fireEvent.click(screen.getByTestId('confirm-issue-key'));
+    await screen.findByText('brz_sp_COPY_ME');
+
+    fireEvent.click(screen.getByRole('button', { name: 'partnerServicePrincipals.copy' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('brz_sp_COPY_ME'));
+    expect(await screen.findByRole('button', { name: 'partnerServicePrincipals.copied' })).toBeInTheDocument();
+  });
+
   it('keeps a rotated plaintext key visible when list refresh fails', async () => {
     mocks.fetchWithAuth
       .mockResolvedValueOnce(principalListResponse())

@@ -120,6 +120,8 @@
     "revoked": "Chave revogada",
     "revokeFailed": "Falha ao revogar a chave",
     "copyNow": "Copie esta chave agora",
+    "copy": "Copiar",
+    "copied": "Copiado",
     "oneTimeWarning": "Esta chave em texto simples é exibida apenas uma vez e não poderá ser recuperada depois.",
     "done": "Concluído"
   },

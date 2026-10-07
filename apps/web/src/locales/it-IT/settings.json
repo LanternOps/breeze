@@ -120,6 +120,8 @@
     "revoked": "Chiave revocata",
     "revokeFailed": "Impossibile revocare la chiave",
     "copyNow": "Copia questa chiave ora",
+    "copy": "Copia",
+    "copied": "Copiato",
     "oneTimeWarning": "Questa chiave in chiaro viene mostrata una sola volta e non potrà essere recuperata in seguito.",
     "done": "Fatto"
   },

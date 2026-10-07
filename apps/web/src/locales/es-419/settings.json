@@ -120,6 +120,8 @@
     "revoked": "Clave revocada",
     "revokeFailed": "No se pudo revocar la clave",
     "copyNow": "Copia esta clave ahora",
+    "copy": "Copiar",
+    "copied": "Copiado",
     "oneTimeWarning": "Esta clave en texto plano se muestra una sola vez y no se puede recuperar después.",
     "done": "Listo"
   },

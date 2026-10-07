@@ -120,6 +120,8 @@
     "revoked": "Anahtar iptal edildi",
     "revokeFailed": "Anahtar iptal edilemedi",
     "copyNow": "Bu anahtarı şimdi kopyalayın",
+    "copy": "Kopyala",
+    "copied": "Kopyalandı",
     "oneTimeWarning": "Bu düz metin anahtarı bir kez gösterilir ve daha sonra alınamaz.",
     "done": "Bitti"
   },

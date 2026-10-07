@@ -120,6 +120,8 @@
     "revoked": "Schlüssel widerrufen",
     "revokeFailed": "Schlüssel konnte nicht widerrufen werden",
     "copyNow": "Diesen Schlüssel jetzt kopieren",
+    "copy": "Kopieren",
+    "copied": "Kopiert",
     "oneTimeWarning": "Dieser Klartextschlüssel wird nur einmal angezeigt und kann später nicht abgerufen werden.",
     "done": "Fertig"
   },

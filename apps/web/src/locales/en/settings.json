@@ -120,6 +120,8 @@
     "revoked": "Key revoked",
     "revokeFailed": "Failed to revoke key",
     "copyNow": "Copy this key now",
+    "copy": "Copy",
+    "copied": "Copied",
     "oneTimeWarning": "This plaintext key is shown once and cannot be retrieved later.",
     "done": "Done"
   },
