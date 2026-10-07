@@ -351,6 +351,12 @@ test('the server-only asset allowlist runs before the manifest is signed; the ba
 
 test('build-docker-api bakes BREEZE_BINARIES_VERSION only for server-only releases', () => {
   assert.ok(currentGraph['build-docker-api'].needs.includes('classify-release'));
+  // Without a successful classification release_kind is empty: the image
+  // would be built and pushed with no pairing at all.
+  assert.ok(
+    ifConjuncts('build-docker-api').includes("needs.classify-release.result == 'success'"),
+    `build-docker-api must require a successful classification (got ${currentGraph['build-docker-api'].if})`,
+  );
   const text = jobText('build-docker-api');
   assert.ok(text.includes(
     "${{ needs.classify-release.outputs.release_kind == 'server-only' && format('BREEZE_BINARIES_VERSION={0}', needs.classify-release.outputs.binaries_version) || '' }}",
@@ -463,6 +469,10 @@ for (const statusModel of ['transitive', 'direct']) {
               assert.equal(before[name], 'skipped', `${name} ran before the change with failed lineage?`);
               assert.equal(now[name], 'skipped', `${name} must not run when classification failed`);
             }
+            // The API image reads release_kind/binaries_version from the
+            // classification; it used to be pushed anyway (for a release that
+            // could never be created) and is now skipped.
+            assert.equal(now['build-docker-api'], 'skipped', 'build-docker-api must not run when classification failed');
             continue;
           }
           for (const name of Object.keys(BASELINE)) {
@@ -500,11 +510,12 @@ for (const statusModel of ['transitive', 'direct']) {
     const carryFailed = simulate(currentGraph, scenario('tag push', vars, new Set(['carry-forward-binaries']), 'server-only'), statusModel);
     assert.equal(carryFailed['create-release'], 'skipped');
     const classifyFailed = simulate(currentGraph, scenario('tag push', vars, new Set(['classify-release']), 'server-only'), statusModel);
-    for (const name of [...BINARY_JOBS, 'carry-forward-binaries', 'create-release']) {
+    for (const name of [...BINARY_JOBS, 'carry-forward-binaries', 'build-docker-api', 'create-release']) {
       assert.equal(classifyFailed[name], 'skipped', `${name} must not run when classification failed`);
     }
     const lineageFailed = simulate(currentGraph, scenario('tag push', vars, new Set(['validate-release-lineage']), 'server-only'), statusModel);
     assert.equal(lineageFailed['classify-release'], 'failure');
+    assert.equal(lineageFailed['build-docker-api'], 'skipped');
     assert.equal(lineageFailed['create-release'], 'skipped');
   });
 }
