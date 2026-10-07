@@ -74,7 +74,7 @@ describe('GET /devices/:id/billing (#3205 W06)', () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SITE_ACCESS_DENIED as never);
     const res = await app.request('/devices/device-1/billing', { headers: { Authorization: 'Bearer t' } });
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Access to this site denied' });
+    expect(await res.json()).toEqual({ error: 'Access to this site denied', code: 'ACCESS_DENIED' });
     expect(coveringMock).not.toHaveBeenCalled();
   });
 

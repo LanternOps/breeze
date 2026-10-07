@@ -16,7 +16,7 @@ import {
 } from '../services/billingProfileService';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
-import { createWorkTypeSchema, updateWorkTypeSchema } from '@breeze/shared';
+import { createWorkTypeSchema, updateWorkTypeSchema, ERROR_CODES } from '@breeze/shared';
 import {
   listWorkTypes, createWorkType, updateWorkType, archiveWorkType, WorkTypeServiceError,
 } from '../services/workTypeService';
@@ -54,7 +54,7 @@ const partnerWideWrite = async (c: Context, next: () => Promise<void>) => {
 
 app.get('/work-types', readPerm, async (c) => {
   const auth = c.get('auth');
-  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
   const includeInactive = c.req.query('includeInactive') === 'true';
   const rows = await listWorkTypes(auth.partnerId, { includeInactive });
   return c.json({ workTypes: rows });
@@ -62,7 +62,7 @@ app.get('/work-types', readPerm, async (c) => {
 
 app.post('/work-types', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
-  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
   const parsed = createWorkTypeSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'Invalid work type', issues: parsed.error.issues }, 400);
   try {
@@ -72,7 +72,7 @@ app.post('/work-types', writePerm, requireMfa(), partnerWideWrite, async (c) => 
 
 app.patch('/work-types/:id', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
-  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
   const parsed = updateWorkTypeSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'Invalid work type', issues: parsed.error.issues }, 400);
   try {
@@ -89,7 +89,7 @@ app.patch('/work-types/:id', writePerm, requireMfa(), partnerWideWrite, async (c
 // work type the picker no longer offers).
 app.delete('/work-types/:id', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
-  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
   try {
     const { workType, clearedCategoryCount } = await archiveWorkType(auth, c.req.param('id')!, auth.partnerId);
     return c.json({ workType, clearedCategoryCount });
@@ -102,7 +102,7 @@ const cloneProfileSchema = createProfileSchema.pick({ name: true });
 // The price-list model picker (#7608). A read: no MFA, no partner-wide gate.
 app.get('/ai-model-choices', readPerm, async (c) => {
   const auth = c.get('auth');
-  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
   try {
     return c.json({ choices: await listAiModelChoices(auth.partnerId) });
   } catch (err) { return fail(c, err); }
@@ -110,7 +110,7 @@ app.get('/ai-model-choices', readPerm, async (c) => {
 
 app.get('/', readPerm, async (c) => {
   const auth = c.get('auth');
-  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
   try {
     return c.json({ profiles: await listProfiles(auth.partnerId) });
   } catch (err) { return fail(c, err); }
@@ -118,7 +118,7 @@ app.get('/', readPerm, async (c) => {
 
 app.post('/', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
-  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
   const parsed = createProfileSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'Invalid billing profile', issues: parsed.error.issues }, 400);
   try {
@@ -133,7 +133,7 @@ app.post('/', writePerm, requireMfa(), partnerWideWrite, async (c) => {
 
 app.patch('/:id', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
-  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
   const id = profileIdSchema.safeParse(c.req.param('id'));
   if (!id.success) return c.json({ error: 'Invalid billing profile ID' }, 400);
   const parsed = updateProfileSchema.safeParse(await c.req.json().catch(() => null));
@@ -151,7 +151,7 @@ app.patch('/:id', writePerm, requireMfa(), partnerWideWrite, async (c) => {
 
 app.delete('/:id', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
-  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
   const id = profileIdSchema.safeParse(c.req.param('id'));
   if (!id.success) return c.json({ error: 'Invalid billing profile ID' }, 400);
   try {
@@ -167,7 +167,7 @@ app.delete('/:id', writePerm, requireMfa(), partnerWideWrite, async (c) => {
 
 app.put('/:id/save', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
-  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
   const id = profileIdSchema.safeParse(c.req.param('id'));
   if (!id.success) return c.json({ error: 'Invalid billing profile ID' }, 400);
   const parsed = saveProfileSchema.safeParse(await c.req.json().catch(() => null));
@@ -185,7 +185,7 @@ app.put('/:id/save', writePerm, requireMfa(), partnerWideWrite, async (c) => {
 
 app.put('/:id/rows', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
-  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
   const id = profileIdSchema.safeParse(c.req.param('id'));
   if (!id.success) return c.json({ error: 'Invalid billing profile ID' }, 400);
   const parsed = profileRowsSchema.safeParse(await c.req.json().catch(() => null));
@@ -203,7 +203,7 @@ app.put('/:id/rows', writePerm, requireMfa(), partnerWideWrite, async (c) => {
 
 app.post('/:id/clone', writePerm, requireMfa(), partnerWideWrite, async (c) => {
   const auth = c.get('auth');
-  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
   const id = profileIdSchema.safeParse(c.req.param('id'));
   if (!id.success) return c.json({ error: 'Invalid billing profile ID' }, 400);
   const parsed = cloneProfileSchema.safeParse(await c.req.json().catch(() => null));
