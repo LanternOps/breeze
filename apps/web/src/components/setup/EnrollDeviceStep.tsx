@@ -54,6 +54,8 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
   const [cliInitialized, setCliInitialized] = useState(false);
   const [onboardingToken, setOnboardingToken] = useState('');
   const [enrollmentSecret, setEnrollmentSecret] = useState('');
+  // Server URL agents enroll against, as the API reports it at runtime (#8120).
+  const [tokenServerUrl, setTokenServerUrl] = useState('');
   const [tokenLoading, setTokenLoading] = useState(false);
   const [tokenError, setTokenError] = useState<string>();
   const [tokenCopied, setTokenCopied] = useState(false);
@@ -67,6 +69,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
     setTokenLoading(true);
     setOnboardingToken('');
     setEnrollmentSecret('');
+    setTokenServerUrl('');
     setTokenError(undefined);
 
     try {
@@ -83,6 +86,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
       }
       setOnboardingToken(data.token);
       if (data.enrollmentSecret) setEnrollmentSecret(data.enrollmentSecret);
+      if (typeof data.serverUrl === 'string' && data.serverUrl) setTokenServerUrl(data.serverUrl);
     } catch {
       setTokenError(stableT('setup.enroll.errors.tokenConnectionFailed'));
     } finally {
@@ -478,7 +482,8 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
             const command =
               onboardingToken && !tokenLoading && !tokenError
                 ? buildInstallCommands({
-                    apiUrl: import.meta.env.PUBLIC_API_URL || window.location.origin,
+                    // #8120: the server's runtime URL first (see AddDeviceModal).
+                    apiUrl: tokenServerUrl || import.meta.env.PUBLIC_API_URL || window.location.origin,
                     token: onboardingToken,
                     enrollmentSecret: enrollmentSecret || undefined,
                   })[selectedOS]
