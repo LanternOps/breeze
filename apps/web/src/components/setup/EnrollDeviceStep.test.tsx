@@ -199,3 +199,37 @@ describe('EnrollDeviceStep — CLI command needs a real token (#7628)', () => {
     });
   });
 });
+
+/**
+ * #8120 — the command used the build-time PUBLIC_API_URL (empty in the
+ * published image) or the page origin, which is the dashboard host on split
+ * dashboard/API deployments. The server's runtime URL wins when it sends one.
+ */
+describe('EnrollDeviceStep — CLI command server URL (#8120)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('builds the command from the serverUrl the token route returns', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ token: 'wizard-token-2', serverUrl: 'https://agents.example.test' })
+    );
+
+    render(<EnrollDeviceStep orgId="org-1" siteId="site-1" onFinish={vi.fn()} />);
+    fireEvent.click(screen.getByText('CLI Commands'));
+
+    const command = await screen.findByTestId('setup-cli-command');
+    expect(command.textContent).toContain('https://agents.example.test');
+    expect(command.textContent).not.toContain(window.location.origin);
+  });
+
+  it('falls back to the page origin when the server sends no serverUrl', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ token: 'wizard-token-3' }));
+
+    render(<EnrollDeviceStep orgId="org-1" siteId="site-1" onFinish={vi.fn()} />);
+    fireEvent.click(screen.getByText('CLI Commands'));
+
+    const command = await screen.findByTestId('setup-cli-command');
+    expect(command.textContent).toContain(window.location.origin);
+  });
+});

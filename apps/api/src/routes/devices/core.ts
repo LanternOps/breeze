@@ -698,6 +698,39 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+// #8120: the server URL agents should enroll against, for the web's
+// copy/paste install command. The web bundle cannot read PUBLIC_API_URL at
+// runtime (it is frozen in at image build, empty in the published image), so
+// the browser fell back to its own origin, which is the dashboard host on
+// split dashboard/API deployments. The server-built installers already use
+// PUBLIC_API_URL || API_URL, so the command now gets the same value. Never
+// derived from the request Host.
+//
+// The value is pasted inside double quotes into a bash and a PowerShell
+// command, and the startup URL checks only run when FORCE_HTTPS=true. So it
+// is rebuilt from the parsed URL (origin + path, trailing slash removed; the
+// parser percent-encodes spaces, quotes, backticks and non-ASCII), dropped
+// when it has userinfo, a query or a fragment, and dropped when what remains
+// still holds a character either shell expands inside double quotes ($, `,
+// ", \, bash's history !) or whitespace. Any other valid path prefix is kept.
+// Undefined leaves the web on its previous fallback.
+const SHELL_LIVE_IN_DOUBLE_QUOTES = /[\s$`"\\!]/;
+
+function onboardingServerUrl(): string | undefined {
+  const raw = (process.env.PUBLIC_API_URL || process.env.API_URL || '').trim();
+  if (!raw) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined;
+  if (url.username || url.password || url.search || url.hash) return undefined;
+  const canonical = `${url.origin}${url.pathname}`.replace(/\/+$/, '');
+  return SHELL_LIVE_IN_DOUBLE_QUOTES.test(canonical) ? undefined : canonical;
+}
+
 // #1108: caller-supplied onboarding-token limits. Count maps to maxUsage so one
 // copied CLI command can enroll a whole batch; TTL cap mirrors the enrollment-
 // keys route's 365-day ceiling.
@@ -868,6 +901,7 @@ coreRoutes.post(
 
     const configuredSecret = getGlobalEnrollmentSecret();
     const secretRequired = configuredSecret !== null;
+    const serverUrl = onboardingServerUrl();
 
     return c.json({
       token: key,
@@ -878,6 +912,7 @@ coreRoutes.post(
       enrollmentSecretMode: secretRequired ? 'global_env' : 'none',
       additionalSecretRequired: secretRequired,
       ...(secretRequired && { enrollmentSecret: configuredSecret }),
+      ...(serverUrl && { serverUrl }),
     });
   }
 );

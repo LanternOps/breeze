@@ -715,6 +715,46 @@ describe('AddDeviceModal', () => {
     expect(screen.getByText('Run in Terminal')).toBeDefined();
   });
 
+  // #8120: the command used the build-time PUBLIC_API_URL (empty in the
+  // published image) or the page origin, which is the dashboard host on split
+  // dashboard/API deployments. The server's runtime URL wins when it sends one.
+  it('builds the install command from the serverUrl the token route returns (#8120)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ token: 'test-token-xyz', serverUrl: 'https://agents.example.test' })
+    );
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByText('CLI Commands'));
+    fireEvent.click(screen.getByTestId('cli-regenerate-token'));
+
+    await waitFor(() => {
+      expect(screen.getByText('test-token-xyz')).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Linux/macOS' }));
+    expect(
+      screen.getByText(/https:\/\/agents\.example\.test\/api\/v1\/agents\/install\.sh/)
+    ).toBeDefined();
+    expect(screen.queryByText(new RegExp(`${window.location.origin}/api/v1/agents/install`))).toBeNull();
+  });
+
+  it('falls back to the page origin when the token route sends no serverUrl (#8120)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ token: 'test-token-xyz' }));
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByText('CLI Commands'));
+    fireEvent.click(screen.getByTestId('cli-regenerate-token'));
+
+    await waitFor(() => {
+      expect(screen.getByText('test-token-xyz')).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Linux/macOS' }));
+    expect(screen.getByText(new RegExp(`${window.location.origin}/api/v1/agents/install`))).toBeDefined();
+  });
+
   it('requests a multi-use token after the operator raises the device count (#1108)', async () => {
     // Initial single-device mint on the first Generate click.
     fetchWithAuthMock.mockResolvedValueOnce(

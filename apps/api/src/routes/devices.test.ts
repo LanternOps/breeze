@@ -637,6 +637,80 @@ describe('device routes', () => {
       expect(vi.mocked(db.insert)).toHaveBeenCalled();
     });
 
+    // #8120: the web's copy/paste install command needs the server URL the
+    // API sees at runtime; the web bundle's PUBLIC_API_URL is build-time only.
+    describe('serverUrl (#8120)', () => {
+      const mintWith = async (env: Record<string, string>) => {
+        for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              ...siteRows([{ id: 'site-1' }])
+            })
+          })
+        } as any);
+        vi.mocked(db.insert).mockReturnValueOnce({
+          values: vi.fn().mockResolvedValue(undefined)
+        } as any);
+        const res = await app.request('/devices/onboarding-token', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token', Host: 'control.example.test' }
+        });
+        expect(res.status).toBe(200);
+        return res.json();
+      };
+
+      it('returns PUBLIC_API_URL without a trailing slash', async () => {
+        const body = await mintWith({ PUBLIC_API_URL: 'https://agents.example.test/', API_URL: 'https://other.example.test' });
+        expect(body.serverUrl).toBe('https://agents.example.test');
+      });
+
+      it('falls back to API_URL like the server-built installers', async () => {
+        const body = await mintWith({ PUBLIC_API_URL: '', API_URL: 'https://api-only.example.test' });
+        expect(body.serverUrl).toBe('https://api-only.example.test');
+      });
+
+      it('omits serverUrl when neither is set, never using the request Host', async () => {
+        const body = await mintWith({ PUBLIC_API_URL: '', API_URL: '' });
+        expect(body).not.toHaveProperty('serverUrl');
+        expect(body.token).toContain('enroll_');
+      });
+
+      it.each([
+        ['a plain path prefix, host normalized', 'https://Agents.Example.test/breeze/', 'https://agents.example.test/breeze'],
+        ['a percent-encoded path prefix', 'https://agents.example.test/breeze%20rmm', 'https://agents.example.test/breeze%20rmm'],
+        ['a colon in the path prefix', 'https://agents.example.test/tenant:one', 'https://agents.example.test/tenant:one'],
+        ['an explicit port', 'http://10.0.0.5:3001', 'http://10.0.0.5:3001'],
+        // The URL parser percent-encodes these, so the shell sees plain text.
+        ['a backtick in the path', 'https://agents.example.test/a`id`', 'https://agents.example.test/a%60id%60'],
+        ['a double quote in the path', 'https://agents.example.test/a"b', 'https://agents.example.test/a%22b'],
+      ])('returns serverUrl for %s', async (_label, value, expected) => {
+        const body = await mintWith({ PUBLIC_API_URL: value, API_URL: '' });
+        expect(body.serverUrl).toBe(expected);
+      });
+
+      // The value is pasted inside double quotes into bash and PowerShell
+      // commands; FORCE_HTTPS-only startup checks do not cover it.
+      it.each([
+        ['a query string', 'https://agents.example.test?tenant=one'],
+        ['a fragment', 'https://agents.example.test/#frag'],
+        ['userinfo', 'https://user:pw@agents.example.test'],
+        ['command substitution in the path', 'https://agents.example.test/$(id)'],
+        ['a variable in the path', 'https://agents.example.test/$HOME'],
+        ['a history-expansion ! in the path', 'https://agents.example.test/a!b'],
+      ])('omits serverUrl when the configured value has %s', async (_label, value) => {
+        const body = await mintWith({ PUBLIC_API_URL: value, API_URL: '' });
+        expect(body).not.toHaveProperty('serverUrl');
+      });
+
+      it('omits serverUrl when the configured value is not an http(s) URL', async () => {
+        const body = await mintWith({ PUBLIC_API_URL: 'agents.example.test', API_URL: '' });
+        expect(body).not.toHaveProperty('serverUrl');
+        const ftp = await mintWith({ PUBLIC_API_URL: 'ftp://agents.example.test', API_URL: '' });
+        expect(ftp).not.toHaveProperty('serverUrl');
+      });
+    });
+
     it('returns the configured global enrollment secret when one is active', async () => {
       vi.stubEnv('AGENT_ENROLLMENT_SECRET', 'global-secret');
 

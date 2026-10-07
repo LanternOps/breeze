@@ -211,6 +211,9 @@ export default function AddDeviceModal({
   // Site the displayed token is bound to, as echoed by the server (#7035).
   const [tokenSiteId, setTokenSiteId] = useState<string | null>(null);
   const [enrollmentSecret, setEnrollmentSecret] = useState("");
+  // Server URL agents enroll against, as the API reports it at runtime
+  // (#8120). Empty when the server sent none.
+  const [tokenServerUrl, setTokenServerUrl] = useState("");
   const [tokenLoading, setTokenLoading] = useState(false);
   const [tokenError, setTokenError] = useState<string>();
   const [tokenCopied, setTokenCopied] = useState(false);
@@ -356,6 +359,7 @@ export default function AddDeviceModal({
     setOnboardingToken("");
     setTokenSiteId(null);
     setEnrollmentSecret("");
+    setTokenServerUrl("");
     setTokenError(undefined);
     setTokenMaxUsage(null);
     setTokenExpiresAt(null);
@@ -416,6 +420,9 @@ export default function AddDeviceModal({
       }
       if (data.enrollmentSecret) {
         setEnrollmentSecret(data.enrollmentSecret);
+      }
+      if (typeof data.serverUrl === "string" && data.serverUrl) {
+        setTokenServerUrl(data.serverUrl);
       }
     } catch (err) {
       setTokenError(
@@ -1274,7 +1281,12 @@ export default function AddDeviceModal({
               const command =
                 onboardingToken && !tokenLoading && !tokenError
                   ? buildInstallCommands({
+                      // #8120: the server's runtime URL first. The build-time
+                      // PUBLIC_API_URL is empty in the published image, and
+                      // the page origin is the dashboard host on split
+                      // dashboard/API deployments.
                       apiUrl:
+                        tokenServerUrl ||
                         import.meta.env.PUBLIC_API_URL ||
                         window.location.origin,
                       token: onboardingToken,
