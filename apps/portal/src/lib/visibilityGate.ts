@@ -26,6 +26,7 @@ export const PORTAL_DISABLED_CODES = [
   'PORTAL_LIFECYCLE_DISABLED',
   // Portal advanced visibility W01 (#7731): hardware health, strict fail-closed.
   'PORTAL_HARDWARE_HEALTH_DISABLED',
+  'PORTAL_HARDWARE_INVENTORY_DISABLED',
 ] as const;
 
 const DISABLED_CODE_SET: ReadonlySet<string> = new Set(PORTAL_DISABLED_CODES);

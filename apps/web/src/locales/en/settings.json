@@ -1900,6 +1900,10 @@
           "label": "Hardware health",
           "description": "Show component health, events, disks and battery for your customer's machines."
         },
+        "enableHardwareInventory": {
+          "label": "Hardware inventory",
+          "description": "Show make, model, processor, memory, network adapters and connection counts for your customer's machines."
+        },
         "enableNetworkVisibility": {
           "label": "Network visibility",
           "description": "Show read-only network health and discovered assets in the customer portal."

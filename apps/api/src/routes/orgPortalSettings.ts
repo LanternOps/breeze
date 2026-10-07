@@ -51,6 +51,7 @@ const PORTAL_SETTINGS_DEFAULTS = {
   enableDocuments: false,
   enableLifecycle: false,
   enableHardwareHealth: false,
+  enableHardwareInventory: false,
   enableNetworkVisibility: false,
   enableNetworkAlerts: false,
   chromeAccent: null,
@@ -76,6 +77,7 @@ type PortalSettingsRow = {
   enableDocuments: boolean;
   enableLifecycle: boolean;
   enableHardwareHealth: boolean;
+  enableHardwareInventory: boolean;
   enableNetworkVisibility: boolean;
   enableNetworkAlerts: boolean;
   chromeAccent: string | null;
@@ -109,6 +111,7 @@ const portalSettingsColumns = () => ({
   enableDocuments: portalBranding.enableDocuments,
   enableLifecycle: portalBranding.enableLifecycle,
   enableHardwareHealth: portalBranding.enableHardwareHealth,
+  enableHardwareInventory: portalBranding.enableHardwareInventory,
   enableNetworkVisibility: portalBranding.enableNetworkVisibility,
   enableNetworkAlerts: portalBranding.enableNetworkAlerts,
   chromeAccent: portalBranding.chromeAccent,
@@ -137,6 +140,7 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     enableDocuments: row.enableDocuments,
     enableLifecycle: row.enableLifecycle,
     enableHardwareHealth: row.enableHardwareHealth,
+    enableHardwareInventory: row.enableHardwareInventory,
     enableNetworkVisibility: row.enableNetworkVisibility,
     enableNetworkAlerts: row.enableNetworkAlerts,
     chromeAccent: row.chromeAccent,
@@ -246,6 +250,7 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
             enableDocuments: row.enableDocuments,
             enableLifecycle: row.enableLifecycle,
             enableHardwareHealth: row.enableHardwareHealth,
+            enableHardwareInventory: row.enableHardwareInventory,
             enableNetworkVisibility: row.enableNetworkVisibility
           }
         });

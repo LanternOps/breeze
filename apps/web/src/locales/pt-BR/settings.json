@@ -1900,6 +1900,10 @@
           "label": "Saúde do hardware",
           "description": "Mostra a saúde dos componentes, eventos, discos e bateria das máquinas do seu cliente."
         },
+        "enableHardwareInventory": {
+          "label": "Inventário de hardware",
+          "description": "Mostra fabricante, modelo, processador, memória, adaptadores de rede e contagem de conexões das máquinas do seu cliente."
+        },
         "enableNetworkVisibility": {
           "label": "Visibilidade de rede",
           "description": "Exibe no portal do cliente a integridade da rede e os ativos descobertos em modo somente leitura."

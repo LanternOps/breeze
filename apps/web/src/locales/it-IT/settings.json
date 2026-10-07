@@ -1900,6 +1900,10 @@
           "label": "Stato dell'hardware",
           "description": "Mostra lo stato dei componenti, gli eventi, i dischi e la batteria dei dispositivi del cliente."
         },
+        "enableHardwareInventory": {
+          "label": "Inventario hardware",
+          "description": "Mostra produttore, modello, processore, memoria, schede di rete e numero di connessioni delle macchine del cliente."
+        },
         "enableNetworkVisibility": {
           "label": "Visibilità di rete",
           "description": "Mostra nel portale cliente lo stato della rete e gli asset rilevati in sola lettura."
