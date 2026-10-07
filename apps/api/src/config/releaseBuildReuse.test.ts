@@ -99,8 +99,17 @@ describe.each(['api', 'web'])('release %s compilation reuse', (app) => {
   it('keeps publishing behind release integrity and lineage validation', () => {
     // main inverted the graph: the docker publishers depend only on their
     // build job and create-release depends on them, so the gate is the tag
-    // guard plus the build result.
-    expect(publish.needs).toEqual([`build-${app}`]);
+    // guard plus the build result. The API publisher also waits for
+    // classify-release, which supplies the binaries version a server-only
+    // image is paired with, and requires it to have succeeded: without a
+    // classification there is no release kind to bake. classify-release
+    // succeeds for every full release, build-only dispatch included.
+    expect(publish.needs).toEqual(app === 'api' ? ['build-api', 'classify-release'] : [`build-${app}`]);
+    if (app === 'api') {
+      expect(publish.if).toContain("needs.classify-release.result == 'success'");
+    } else {
+      expect(publish.if).not.toContain('classify-release');
+    }
     expect(publish.if).toContain("github.ref_type == 'tag'");
     expect(publish.if).toContain(`needs.build-${app}.result == 'success'`);
     expect(publish.if).not.toContain('create-release');

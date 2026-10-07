@@ -352,7 +352,7 @@ test('every code job is gated on the classifier', () => {
   // and must keep running on a tooling-only PR, so they are never gated on
   // `app`. check-migrations is additionally api-gated (a tooling-only change
   // always sets api — pinned in ci-area-gating.test.mjs).
-  const codeOnly = new Set(['lint', 'security-audit']);
+  const codeOnly = new Set(['lint', 'security-audit', 'release-ledger']);
   // Per-area jobs carry an extra area clause AFTER the code/app gate; the exact
   // per-area `if:` lines are pinned by ci-area-gating.test.mjs. The prefix is
   // still required here, so a docs-only or tooling-only PR still skips them.
@@ -569,7 +569,7 @@ const heavyResultVars = [
 ];
 const toolingOnlyPassing = {
   ...allOf('skipped'), // everything defaults to skipped for a tooling-only PR...
-  ...Object.fromEntries(['LINT_RESULT', 'CHECK_MIGRATIONS_RESULT', 'SECURITY_AUDIT_RESULT'].map((v) => [v, 'success'])),
+  ...Object.fromEntries(['LINT_RESULT', 'RELEASE_LEDGER_RESULT', 'CHECK_MIGRATIONS_RESULT', 'SECURITY_AUDIT_RESULT'].map((v) => [v, 'success'])),
   CHANGES_RESULT: 'success',
   CODE_CHANGED: 'true',
   APP_CHANGED: 'false',
@@ -586,6 +586,8 @@ for (const [label, env, passes] of [
   ['tooling-only PR, lint red', { ...toolingOnlyPassing, LINT_RESULT: 'failure' }, false],
   ['tooling-only PR, check-migrations red', { ...toolingOnlyPassing, CHECK_MIGRATIONS_RESULT: 'failure' }, false],
   ['tooling-only PR, security-audit red', { ...toolingOnlyPassing, SECURITY_AUDIT_RESULT: 'failure' }, false],
+  ['tooling-only PR, release-ledger red', { ...toolingOnlyPassing, RELEASE_LEDGER_RESULT: 'failure' }, false],
+  ['tooling-only PR, release-ledger skipped', { ...toolingOnlyPassing, RELEASE_LEDGER_RESULT: 'skipped' }, false],
   ['app change, all heavy jobs green', { ...appPassing }, true],
   // check-migrations blocks an application PR whenever api changed (#7032); `passing`
   // sets API_CHANGED=true. The api=false/skipped legs live in ci-area-gating.test.mjs.

@@ -1,0 +1,34 @@
+# Server code that agents, installers or recovery media talk to directly.
+#
+# ADVISORY: a server-only release may change these paths. The eligibility guard
+# lists every hit in its report; the list goes into the ledger-row PR's job
+# summary and the release body, and a reviewer must confirm the change stays
+# compatible with the base release's agents and that emitted scripts still match
+# the base binaries. Same syntax as binary-affecting-paths.txt.
+apps/api/src/routes/agents/**
+apps/api/src/routes/agentWs.ts
+apps/api/src/routes/agentVersions.ts
+apps/api/src/routes/viewers/**
+apps/api/src/routes/supportPublic.ts
+apps/api/src/routes/backup/bmr*.ts
+apps/api/src/services/installerBuilder.ts
+apps/api/src/services/recoveryMediaService.ts
+apps/api/src/services/recoveryBootstrap.ts
+apps/api/src/services/systemScriptLibrary.ts
+apps/api/src/services/commandQueue*.ts
+apps/api/src/services/agentWs*.ts
+apps/api/src/services/binarySync*.ts
+apps/api/src/services/binarySource.ts
+apps/api/src/services/releaseArtifactManifest.ts
+apps/api/src/services/releaseAssetTrust.ts
+apps/api/src/services/releaseSource.ts
+apps/api/src/services/promotedAgentVersion.ts
+apps/api/src/services/agentEditionAutoMigrate.ts
+apps/api/src/services/topology/heartbeat.ts
+apps/api/src/db/schema/agentVersions.ts
+packages/shared/src/**
+# Root .env.example: carries the release-manifest trust anchor that installs
+# copy from the release tag. The guard separately refuses any change to the
+# RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS / AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID
+# lines; every other change here is listed for review.
+.env.example

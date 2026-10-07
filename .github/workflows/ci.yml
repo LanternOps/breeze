@@ -1247,6 +1247,47 @@ jobs:
       - name: Typecheck Outlook Add-in
         run: pnpm --filter=@breeze/outlook-addin exec tsc --noEmit
 
+  # ─── Release ledger + release script suites ───────────────────────────
+  # Runs every scripts/release suite and, for any change to the server-only
+  # release ledger (.github/release-provenance/server-only-tags.tsv), the
+  # eligibility guard EXECUTED FROM EACH ROW'S BASE RELEASE TREE (offline), so
+  # an ineligible row is refused on its PR before any release minutes are
+  # spent. Tagged rows are append-only. Code-gated only — never api- or
+  # app-gated — so a ledger-only PR still runs it.
+  release-ledger:
+    name: Release Ledger
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    steps:
+      - name: Checkout full history and tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+
+      - name: Release script tests
+        run: node --test scripts/release/*.test.mjs
+
+      - name: Validate the server-only ledger
+        run: node scripts/release/server-only-ledger.mjs validate --ref HEAD
+
+      - name: Guard new server-only ledger rows
+        run: |
+          set -euo pipefail
+          git rev-parse --verify 'origin/main^{commit}' >/dev/null
+          base=$(git merge-base HEAD origin/main)
+          bash scripts/release/check-server-only-ledger-change.sh \
+            --base-ref "$base" \
+            --head-ref HEAD \
+            --main-ref origin/main
+
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
@@ -4284,7 +4325,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [changes, workspace-runtime, docs-check, lint, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
+    needs: [changes, workspace-runtime, docs-check, lint, release-ledger, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -4303,6 +4344,7 @@ jobs:
           DOCS_CHECK_RESULT: ${{ needs.docs-check.result }}
           WORKSPACE_RUNTIME_RESULT: ${{ needs.workspace-runtime.result }}
           LINT_RESULT: ${{ needs.lint.result }}
+          RELEASE_LEDGER_RESULT: ${{ needs.release-ledger.result }}
           CHECK_MIGRATIONS_RESULT: ${{ needs.check-migrations.result }}
           TYPECHECK_RESULT: ${{ needs.typecheck.result }}
           TEST_API_RESULT: ${{ needs.test-api.result }}
@@ -4369,6 +4411,7 @@ jobs:
              { [[ "${DOCS_CHANGED}" != "false" ]] && [[ "${DOCS_CHECK_RESULT}" != "success" ]]; } || \
              { [[ "${CODE_CHANGED}" != "false" ]] && { \
              [[ "${LINT_RESULT}" != "success" ]] || \
+             [[ "${RELEASE_LEDGER_RESULT}" != "success" ]] || \
              [[ "${SECURITY_AUDIT_RESULT}" != "success" ]] || \
              { [[ "${APP_CHANGED}" == "true" ]] && { \
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \

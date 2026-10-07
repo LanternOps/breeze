@@ -182,9 +182,9 @@ describe('ci-success gating contract', () => {
       'changes', 'docs-check', 'ci-success', 'main-red-alert', 'build-mobile-ios', 'recovery-media-e2e',
       'topology-browser-gate',
     ]);
-    // lint/security-audit validate CI plumbing itself and must keep running on a
+    // lint/security-audit/release-ledger validate CI plumbing itself and must keep running on a
     // tooling-only PR, so they stay gated on `code` alone — never additionally on `app`.
-    const codeOnly = new Set(['lint', 'security-audit']);
+    const codeOnly = new Set(['lint', 'security-audit', 'release-ledger']);
     // Per-area gating (.github/scripts/ci-area-gating.test.mjs pins the exact per-job
     // lines): an area-gated job appends ONE area clause to the code+app gate, so a
     // docs-only or tooling-only PR still skips it. check-migrations is code AND api —
