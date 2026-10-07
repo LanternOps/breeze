@@ -4097,6 +4097,7 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
 
   it('a policy-probe failure stays inside its savepoint: helper and pam still deliver', async () => {
     const helpers = await import('./helpers');
+    const { captureException } = await import('../../services/sentry');
     vi.mocked(helpers.buildPolicyProbeConfigUpdate).mockRejectedValueOnce(new Error('probe read failed'));
     vi.mocked(helpers.buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: true } as never);
     vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: true });
@@ -4105,6 +4106,8 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
 
     expect(body.helperEnabled).toBe(true);
     expect(body.uacInterceptionEnabled).toBe(true);
+    // A persistently failing probe read must reach Sentry, like its siblings.
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(expect.objectContaining({ message: 'probe read failed' }));
   });
 
   it('helper settings read before a later failure aborts the shared context are still delivered', async () => {

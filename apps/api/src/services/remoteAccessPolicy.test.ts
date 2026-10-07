@@ -16,11 +16,15 @@ vi.mock('./unassignedPool/deliveryEligibility', async (importOriginal) => {
   };
 });
 
+const dbState = vi.hoisted(() => ({ inContext: false, deferred: [] as Array<() => unknown> }));
 vi.mock('../db', () => ({
   db: { execute: vi.fn() },
-  // No context is ever held here, so deferred work runs at once (the real
-  // helper's behaviour outside a transaction).
-  runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
+  // Outside a context the real helper runs deferred work at once; inside one it
+  // waits for the transaction to settle — tests flush `deferred` to model COMMIT.
+  runAfterDbContextExit: (_label: string, work: () => unknown) => {
+    if (dbState.inContext) dbState.deferred.push(work);
+    else work();
+  },
 }));
 
 import { getRemoteAccessBaseline } from './policyBaselineDefaults';
@@ -334,5 +338,35 @@ describe('remote access cache max age (#8053)', () => {
     const next = await resolveRemoteAccessForDevice('race-device', { maxAgeMs: HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS });
     expect(next.settings.vncRelay).toBe(false);
     expect(resolveEffectiveConfig).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops again after the writer commits, so a read of pre-commit rows cannot outlive the change', async () => {
+    vi.mocked(resolveEffectiveConfig)
+      .mockResolvedValueOnce(policy(true)) // a concurrent heartbeat, still seeing pre-commit rows
+      .mockResolvedValueOnce(policy(false)); // after COMMIT
+
+    // The policy route invalidates from inside its own transaction...
+    dbState.inContext = true;
+    invalidateRemoteAccessCache();
+    dbState.inContext = false;
+    // ...a heartbeat resolves before that COMMIT lands and caches the old policy...
+    await resolveRemoteAccessForDevice('commit-device', { maxAgeMs: HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS });
+    // ...and the deferred second drop, run once the transaction settles, removes it.
+    for (const work of dbState.deferred.splice(0)) work();
+
+    const after = await resolveRemoteAccessForDevice('commit-device', { maxAgeMs: HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS });
+    expect(after.settings.vncRelay).toBe(false);
+  });
+
+  it('clamps a caller max age to the retention window (an entry is never served past it)', async () => {
+    vi.mocked(resolveEffectiveConfig)
+      .mockResolvedValueOnce(policy(true))
+      .mockResolvedValueOnce(policy(false));
+
+    await resolveRemoteAccessForDevice('clamp-device', { maxAgeMs: 1e9 });
+    vi.setSystemTime(new Date(Date.parse('2026-10-07T12:00:00Z') + HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS));
+
+    const result = await resolveRemoteAccessForDevice('clamp-device', { maxAgeMs: 1e9 });
+    expect(result.settings.vncRelay).toBe(false);
   });
 });

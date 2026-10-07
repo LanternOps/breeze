@@ -167,10 +167,12 @@ const DEFAULT_CACHE_MAX_AGE_MS = 30_000;
  * the agent manages the remote-management tunnel), on a 60 s beat, so the 30 s
  * default could never hit and every beat re-ran the full effective-config
  * resolution inside the org transaction. Three minutes lets two beats in three
- * reuse it. Policy CRUD and assignment routes call
- * `invalidateRemoteAccessCache()`, so on this process a change still lands on
- * the next beat; another API instance follows within this bound. Never pass it
- * from a capability gate.
+ * reuse it. The policy CRUD, assignment and remote_access feature-link routes
+ * call `invalidateRemoteAccessCache()`, so on this process those changes land
+ * on the next beat. Everything else that can change a device's effective
+ * policy (device-group membership, a device moving site/org, writes on another
+ * API instance) is bounded by this max age instead. Never pass it from a
+ * capability gate.
  */
 export const HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS = 180_000;
 

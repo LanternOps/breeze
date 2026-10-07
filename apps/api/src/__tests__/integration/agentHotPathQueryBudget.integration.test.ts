@@ -64,6 +64,24 @@ vi.mock('postgres', async (importOriginal) => {
   return { ...actual, default: wrapped };
 });
 
+// Lets one test make the helper-settings reader fail with a REAL SQL error
+// inside the heartbeat's shared policy transaction (see the savepoint test).
+const helperFault = vi.hoisted(() => ({ enabled: false }));
+vi.mock('../../services/helperSettings', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/helperSettings')>();
+  return {
+    ...actual,
+    buildHelperConfigUpdate: async (deviceId: string, orgId: string) => {
+      if (helperFault.enabled) {
+        const { db: faultDb } = await import('../../db');
+        const { sql: faultSql } = await import('drizzle-orm');
+        await faultDb.execute(faultSql`SELECT 1 / 0`); // division_by_zero
+      }
+      return actual.buildHelperConfigUpdate(deviceId, orgId);
+    },
+  };
+});
+
 import { db, withSystemDbAccessContext } from '../../db';
 import { enrollmentKeys } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
@@ -261,6 +279,33 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     // and say why; the remaining bulk is ~26 repeated device/org/group reads
     // across the policy resolvers (#8053 follow-up).
     expect(steady.statements).toBeLessThanOrEqual(70);
+  });
+
+  runDb('a real SQL error in the helper reader stays inside its savepoint: the shared policy transaction still commits', async () => {
+    const org = await seedOrg('savepoint');
+    const device = await enrollDevice(org, 'faulty');
+    helperFault.enabled = true;
+    try {
+      const measured = await measure(() => heartbeat(device));
+      expect(measured.status).toBe(200);
+      // The failed statement rolled back to its savepoint...
+      expect(recorder.statements.some((s) => /^rollback to /i.test(s.trim()))).toBe(true);
+    } finally {
+      helperFault.enabled = false;
+    }
+    // ...so every resolver after it still ran in a live transaction. Without the
+    // savepoint, the division_by_zero would abort the shared transaction, every
+    // later resolver would fail, and patch_source_settings (always present on a
+    // successful resolve, `false` with no policy) would be omitted.
+    helperFault.enabled = true;
+    try {
+      const res = await heartbeat(device);
+      const body = await res.json() as { helperEnabled: boolean; configUpdate: Record<string, unknown> | null };
+      expect(body.helperEnabled).toBe(false);
+      expect(body.configUpdate?.patch_source_settings).toEqual({ exclusiveWindowsUpdate: false });
+    } finally {
+      helperFault.enabled = false;
+    }
   });
 
   runDb('GET /agents/:id/unifi-collectors: a device with no collectors costs one probe, then nothing until the TTL', async () => {

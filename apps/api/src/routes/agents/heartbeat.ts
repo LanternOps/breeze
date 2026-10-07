@@ -2285,6 +2285,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         );
       } catch (err) {
         console.error(`[agents] failed to build policy probe config update for ${agentId}:`, err);
+        captureException(err);
       }
 
       let eventLogSettings: Record<string, unknown> | null = null;

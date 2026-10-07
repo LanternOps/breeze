@@ -7,11 +7,20 @@ const {
   addFeatureLinkMock,
   updateFeatureLinkMock,
   validateFeaturePolicyExistsMock,
+  removeFeatureLinkMock,
+  invalidateRemoteAccessCacheMock,
 } = vi.hoisted(() => ({
   getConfigPolicyMock: vi.fn(),
   addFeatureLinkMock: vi.fn(),
   updateFeatureLinkMock: vi.fn(),
   validateFeaturePolicyExistsMock: vi.fn(),
+  removeFeatureLinkMock: vi.fn(),
+  invalidateRemoteAccessCacheMock: vi.fn(),
+}));
+
+vi.mock('../../services/remoteAccessPolicy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/remoteAccessPolicy')>()),
+  invalidateRemoteAccessCache: invalidateRemoteAccessCacheMock,
 }));
 
 vi.mock('../../services/configurationPolicy', async (importOriginal) => {
@@ -21,7 +30,7 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
     getConfigPolicy: getConfigPolicyMock,
     addFeatureLink: addFeatureLinkMock,
     updateFeatureLink: updateFeatureLinkMock,
-    removeFeatureLink: vi.fn(),
+    removeFeatureLink: removeFeatureLinkMock,
     listFeatureLinks: vi.fn(),
     validateFeaturePolicyExists: validateFeaturePolicyExistsMock,
   };
@@ -332,6 +341,52 @@ describe('featureLinks routes — remote_access inlineSettings validation', () =
 
       expect(res.status).toBe(200);
       expect(updateFeatureLinkMock).toHaveBeenCalled();
+    });
+  });
+
+  // #8053 — the heartbeat serves `vncRelay` from the remote-access cache for up
+  // to HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS, so the link writes that change it
+  // must drop that cache, as the policy CRUD and assignment routes do.
+  describe('remote access cache invalidation (#8053)', () => {
+    it('adding a remote_access link drops the cache', async () => {
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+      validateFeaturePolicyExistsMock.mockResolvedValue({ valid: true });
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'remote_access' });
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'remote_access', inlineSettings: { vncRelay: false } }),
+      });
+      expect(res.status).toBe(201);
+      expect(invalidateRemoteAccessCacheMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('updating a remote_access link drops the cache', async () => {
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY_WITH_REMOTE_ACCESS_LINK);
+      updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'remote_access' });
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { vncRelay: false } }),
+      });
+      expect(res.status).toBe(200);
+      expect(invalidateRemoteAccessCacheMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('removing a remote_access link drops the cache', async () => {
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY_WITH_REMOTE_ACCESS_LINK);
+      removeFeatureLinkMock.mockResolvedValue({ featureType: 'remote_access' });
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+      expect(res.status).toBe(200);
+      expect(invalidateRemoteAccessCacheMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('a write to another feature type leaves the cache alone', async () => {
+      getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, featureLinks: [{ id: LINK_ID, featureType: 'event_log' }] });
+      removeFeatureLinkMock.mockResolvedValue({ featureType: 'event_log' });
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+      expect(res.status).toBe(200);
+      expect(invalidateRemoteAccessCacheMock).not.toHaveBeenCalled();
     });
   });
 });
