@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { PERMISSIONS } from '../../services/permissions';
+import { ERROR_CODES } from '@breeze/shared';
 import { contractLinesCoveringDevice, DeviceCoverageError } from '../../services/deviceCoverage';
 
 export const billingRoutes = new Hono();
@@ -29,7 +30,7 @@ billingRoutes.get(
     // not in accessibleOrgIds). The service re-checks the org for non-route callers.
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) {
-      return c.json({ error: 'Access to this site denied' }, 403);
+      return c.json({ error: 'Access to this site denied', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     if (!device) {
       // One 404 body shape for BOTH sources (here and the service's own org

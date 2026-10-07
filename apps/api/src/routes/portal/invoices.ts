@@ -29,7 +29,7 @@ import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { getPartnerStripeClient, isPartnerOnlinePaymentAvailable, PartnerStripeError } from '../../services/partnerStripe';
 import { assertNoHeldDbContextForStripe, HeldDbContextForStripeError, settleCheckoutSession } from '../../services/stripeSettle';
 import { toMinorUnits } from '../../services/stripeMoney';
-import { computeChargeNow } from '@breeze/shared';
+import { computeChargeNow, ERROR_CODES } from '@breeze/shared';
 import { mapStripeCheckoutError, CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../../services/stripeCheckoutErrors';
 import { checkoutSessionExpiry, checkCheckoutPublicationInTx } from '../../services/invoiceCheckout';
 import {
@@ -126,7 +126,7 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
   }
 
   // Drafts are never customer-visible even though getCustomerInvoice is org-scoped.
-  if (result.invoice.status === 'draft') return c.json({ error: 'Invoice not found' }, 404);
+  if (result.invoice.status === 'draft') return c.json({ error: 'Invoice not found', code: ERROR_CODES.NOT_FOUND }, 404);
 
   // Best-effort view stamp — never fail the read if the stamp write hiccups.
   try {
@@ -240,7 +240,7 @@ invoiceRoutes.get('/invoices/:id/pdf', zValidator('param', ticketParamSchema), a
     if (err instanceof InvoiceServiceError) return c.json({ error: err.message }, err.status);
     throw err;
   }
-  if (invoice.status === 'draft') return c.json({ error: 'Invoice not found' }, 404);
+  if (invoice.status === 'draft') return c.json({ error: 'Invoice not found', code: ERROR_CODES.NOT_FOUND }, 404);
 
   let pdf = await getInvoicePdf(id);
   if (!pdf) {
@@ -284,8 +284,8 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
       .where(and(eq(invoices.id, id), eq(invoices.orgId, auth.user.orgId), ne(invoices.status, 'draft')))
       .limit(1)
   );
-  if (!inv) return c.json({ error: 'Invoice not found' }, 404);
-  if (!PAYABLE.has(inv.status)) return c.json({ error: 'Invoice is not payable' }, 409);
+  if (!inv) return c.json({ error: 'Invoice not found', code: ERROR_CODES.NOT_FOUND }, 404);
+  if (!PAYABLE.has(inv.status)) return c.json({ error: 'Invoice is not payable', code: ERROR_CODES.CONFLICT }, 409);
 
   if('methodType' in body && body.methodType==='us_bank_account'){
     try{
@@ -293,7 +293,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
         ? await startInvoiceBankSetup({invoiceId:inv.id,orgId:inv.orgId,terms:body,returnTo:'portal',
           ip:getTrustedClientIpOrUndefined(c)??null,userAgent:c.req.header('user-agent')??null})
         : await collectAfterBankSetup({invoiceId:inv.id,orgId:inv.orgId,setupSessionId:body.setupSessionId!});
-      if ('outcome' in result && result.outcome !== 'created') return c.json({error:'Payment has not started. Review the invoice payment status.',data:result},409);
+      if ('outcome' in result && result.outcome !== 'created') return c.json({error:'Payment has not started. Review the invoice payment status.',data:result,code:ERROR_CODES.CONFLICT},409);
       return c.json(result);
     }catch(error){if(error instanceof InvoiceServiceError)return c.json({error:error.message,code:error.code},error.status);throw error;}
   }
@@ -326,7 +326,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   // Currency-aware minor units: zero-decimal currencies (JPY, KRW, …) must NOT be
   // multiplied by 100, or the customer is over-charged 100x (see stripeMoney.ts).
   const chargeMinor = toMinorUnits(chargeNow.amount, inv.currencyCode);
-  if (chargeMinor <= 0) return c.json({ error: 'Nothing to pay' }, 409);
+  if (chargeMinor <= 0) return c.json({ error: 'Nothing to pay', code: ERROR_CODES.CONFLICT }, 409);
   const { expiresAt: providerExpiresAtEpoch, quantum: expiryQuantum } = checkoutSessionExpiry();
   let capture: Awaited<ReturnType<typeof prepareCardPayAndSave>>;
   try {
@@ -362,7 +362,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     // A decrypt/unreadable-key fault is a real 500 — don't lie "not available" when
     // the key is actually corrupt/misconfigured (it's already logged in the service).
     if (err instanceof PartnerStripeError && err.code === 'NO_STRIPE_KEY') {
-      return c.json({ error: 'Online payment is not available' }, 409);
+      return c.json({ error: 'Online payment is not available', code: ERROR_CODES.CONFLICT }, 409);
     }
     if (err instanceof PartnerStripeError) {
       return c.json({ error: 'Could not initialize payment — please contact support' }, 500);
@@ -563,7 +563,7 @@ invoiceRoutes.post('/invoices/:id/settle',
         .limit(1);
       return { inv, hasMapping: !!mapping };
     });
-    if (!owned) return c.json({ error: 'Invoice not found' }, 404);
+    if (!owned) return c.json({ error: 'Invoice not found', code: ERROR_CODES.NOT_FOUND }, 404);
     if (!owned.hasMapping) return c.json({ settled: false });
     const { inv } = owned;
 

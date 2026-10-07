@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 import { and, eq, sql, isNull } from 'drizzle-orm';
-import { computeChargeNow } from '@breeze/shared';
+import { computeChargeNow, ERROR_CODES } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { invoices, invoiceLines, invoiceStripePayments, tickets } from '../db/schema';
 import { partners } from '../db/schema/orgs';
@@ -223,8 +223,8 @@ invoicesPublicRoutes.get('/:token/pdf', zValidator('param', tokenParam), async (
   const inv = await resolve(c.req.valid('param').token);
   if (!inv) return c.json(invalidLink, 401);
   if (await orgLinkGone(inv)) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
-  if (inv.status === 'void') return c.json({ error: 'This invoice is no longer available' }, 409);
-  if (await overPublicOpLimit('pdf', inv.id, 10)) return c.json({ error: 'Too many requests' }, 429);
+  if (inv.status === 'void') return c.json({ error: 'This invoice is no longer available', code: ERROR_CODES.CONFLICT }, 409);
+  if (await overPublicOpLimit('pdf', inv.id, 10)) return c.json({ error: 'Too many requests', code: ERROR_CODES.RATE_LIMITED }, 429);
 
   // System context like every other handler here — these reads/renders run
   // with NO auth middleware, so a bare call would execute without a DB access
@@ -267,7 +267,7 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), zValid
   const inv = await resolve(c.req.valid('param').token);
   if (!inv) return c.json(invalidLink, 401);
   if (await orgLinkGone(inv)) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
-  if (await overPublicOpLimit('pay', inv.id, 10)) return c.json({ error: 'Too many requests' }, 429);
+  if (await overPublicOpLimit('pay', inv.id, 10)) return c.json({ error: 'Too many requests', code: ERROR_CODES.RATE_LIMITED }, 429);
 
   const returnBase = `${portalBase()}/invoice/return`;
   try {
@@ -276,7 +276,7 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), zValid
         ? await startInvoiceBankSetup({invoiceId:inv.id,orgId:inv.orgId,terms:body,returnTo:'public',
           ip:getTrustedClientIpOrUndefined(c)??null,userAgent:c.req.header('user-agent')??null})
         : await collectAfterBankSetup({invoiceId:inv.id,orgId:inv.orgId,setupSessionId:body.setupSessionId!});
-      if ('outcome' in result && result.outcome !== 'created') return c.json({error:'Payment has not started. Review the invoice payment status.',data:result},409);
+      if ('outcome' in result && result.outcome !== 'created') return c.json({error:'Payment has not started. Review the invoice payment status.',data:result,code:ERROR_CODES.CONFLICT},409);
       return c.json({data:result});
     }
     // The producer owns short committed contexts. Do not hide a caller's held
@@ -325,7 +325,7 @@ invoicesPublicRoutes.post('/:token/autopay-confirmation', zValidator('param', to
   const inv = await resolve(c.req.valid('param').token);
   if (!inv) return c.json(invalidLink, 401);
   if (await orgLinkGone(inv)) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
-  if (await overPublicOpLimit('autopay-confirmation', inv.id, 10)) return c.json({ error: 'Too many requests' }, 429);
+  if (await overPublicOpLimit('autopay-confirmation', inv.id, 10)) return c.json({ error: 'Too many requests', code: ERROR_CODES.RATE_LIMITED }, 429);
   try {
     return c.json({ data: await releaseInvoiceConfirmation({ invoiceId: inv.id, orgId: inv.orgId }) });
   } catch (err) {
@@ -341,7 +341,7 @@ invoicesPublicRoutes.post('/:token/autopay-confirmation', zValidator('param', to
 invoicesPublicRoutes.post('/settle-return', zValidator('json', settleReturnSchema), async (c) => {
   applyPublicLinkHeaders(c);
   const { sessionId } = c.req.valid('json');
-  if (await overPublicOpLimit('settle', sessionId, 20)) return c.json({ error: 'Too many requests' }, 429);
+  if (await overPublicOpLimit('settle', sessionId, 20)) return c.json({ error: 'Too many requests', code: ERROR_CODES.RATE_LIMITED }, 429);
 
   // #7065 — three phases so no transaction spans the Stripe call. This route
   // is unauthenticated, so no ambient request transaction is held and
@@ -373,7 +373,7 @@ invoicesPublicRoutes.post('/settle-return', zValidator('json', settleReturnSchem
   }));
 
   if (pre === 'org_gone') return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
-  if (!pre) return c.json({ error: 'Unknown payment session' }, 404);
+  if (!pre) return c.json({ error: 'Unknown payment session', code: ERROR_CODES.NOT_FOUND }, 404);
   const { mapping, inv } = pre;
 
   // Phase 2 (NO context): settle. settleCheckoutSession owns its own short
