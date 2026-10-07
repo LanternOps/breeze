@@ -2369,7 +2369,7 @@ jobs:
           NODE
               ;;
             *)
-              echo "::error::$REF_NAME is listed in the server-only ledger but the eligibility guard refused it; refusing to fall back to a full release. Fix or remove the ledger row and push a new tag."
+              echo "::error::$REF_NAME is listed in the server-only ledger but the eligibility guard refused it; refusing to fall back to a full release. The row for an existing tag cannot be edited or removed: add a corrected row for a new tag (or cut a full release) and push that new tag."
               exit 1
               ;;
           esac

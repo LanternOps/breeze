@@ -181,6 +181,18 @@ test('ledger PR check: rows are append-only once their tag exists', () => {
   assert.match(removed.output, /append-only/u);
 });
 
+test('ledger PR check: refuses an added row whose tag already exists', () => {
+  const fx = new Fixture();
+  const commit = fx.commit({ 'apps/api/src/fix.ts': 'fix\n' });
+  fx.git('tag', 'v0.118.1', commit);
+  const before = fx.git('rev-parse', 'HEAD');
+  fx.addRow('v0.118.1', commit);
+  const result = ledgerChange(fx, before);
+  assert.notEqual(result.status, 0, result.output);
+  assert.match(result.output, /::error::server-only ledger row for v0\.118\.1 was added, but v0\.118\.1 already exists; rows must be added before the tag is pushed/u);
+  assert.doesNotMatch(result.output, /ELIGIBLE/u, 'the guard must not run for a row refused up front');
+});
+
 test('ledger PR check: a row for a tag that was never pushed may be removed', () => {
   const fx = new Fixture();
   const commit = fx.commit({ 'apps/api/src/fix.ts': 'fix\n' });

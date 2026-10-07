@@ -219,6 +219,17 @@ exit "\${GUARD_EXIT}"
   }
 });
 
+test('classify-release refusal tells the operator what is actually possible once the tag exists', () => {
+  const script = stepRun('classify-release', 'Classify release kind');
+  const refusal = script.split('\n').find((line) => /eligibility guard refused it/u.test(line));
+  assert.ok(refusal, 'classify-release must explain a guard refusal');
+  // The tag already exists when this runs, so check-server-only-ledger-change.sh
+  // refuses any edit or removal of its row: never tell the operator to do that.
+  assert.doesNotMatch(refusal, /remove the ledger row|fix or remove/iu);
+  assert.match(refusal, /new tag/u);
+  assert.match(refusal, /cannot be edited or removed/u);
+});
+
 test('carry-forward-binaries: server-only only, read-only, verifies the base before carrying anything', () => {
   const carry = currentGraph['carry-forward-binaries'];
   assert.deepEqual(carry.needs, ['classify-release']);

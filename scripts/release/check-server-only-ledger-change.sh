@@ -4,7 +4,8 @@
 #   check-server-only-ledger-change.sh --base-ref A --head-ref B --main-ref M
 #
 # - the ledger at B must parse;
-# - a row whose tag already exists may not be edited or removed (append-only);
+# - a row whose tag already exists may not be added, edited or removed (rows
+#   precede their tag and are append-only once it exists);
 # - every added row (and every edited row whose tag does not exist yet) is run
 #   through the base-executed guard, offline, so a refusal shows up on the
 #   ledger PR before any release minutes are spent;
@@ -56,6 +57,14 @@ while IFS=$'\t' read -r kind tag commit base; do
     tag_exists=true
   fi
 
+  if [ "$kind" = "added" ] && [ "$tag_exists" = true ]; then
+    # Listing an already-pushed (full) release after the fact would make base
+    # selection skip it, so the next hotfix would carry an older base's
+    # binaries. The row must exist before the tag does.
+    echo "::error::server-only ledger row for $tag was added, but $tag already exists; rows must be added before the tag is pushed"
+    failed=1
+    continue
+  fi
   if [ "$kind" != "added" ] && [ "$tag_exists" = true ]; then
     echo "::error::server-only ledger row for $tag was $kind, but $tag already exists; rows are append-only once tagged"
     failed=1
