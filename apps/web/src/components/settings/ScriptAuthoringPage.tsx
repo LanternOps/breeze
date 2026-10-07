@@ -319,7 +319,7 @@ export default function ScriptAuthoringPage() {
     const tier = await ensureReauthTier();
     if (!tier || tier === 'password') {
       // null = factor discovery itself failed, not "no factor".
-      throw new StepUpMintError('unavailable', t(tier ? 'scriptAuthoringPage.stepUp.noFactor' : 'scriptAuthoringPage.saveFailed'));
+      throw new StepUpMintError('unavailable', tier ? t('scriptAuthoringPage.stepUp.noFactor') : t('scriptAuthoringPage.saveFailed'));
     }
     const reauth: StepUpReauth = tier === 'passkey' ? { method: 'passkey' } : { method: 'totp', code };
     return mintStepUpGrant({ operation, resource, reauth });
