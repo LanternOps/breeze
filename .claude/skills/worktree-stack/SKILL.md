@@ -21,6 +21,7 @@ Loop for testing the current worktree end to end:
 
 Notes:
 - Requires Node v22.20.0 on PATH and a populated root `.env` (image refs).
+- `.env.stack` pins `RESEND_API_KEY`, `MAILGUN_API_KEY` and `SMTP_HOST` to empty so a QA stack never sends real email even though the root `.env` carries live keys; set `BREEZE_WT_STACK_LIVE_MAIL=1` to keep the root values.
 - Caddy serves plain HTTP in dev; `baseUrl` is `http://localhost:<port>`.
 - OrbStack is recommended for speed but not required — the CLI uses only the
   standard `docker compose` interface.
