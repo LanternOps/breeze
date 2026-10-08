@@ -702,7 +702,10 @@ export async function updateContact(
   // behind it, on a call the route answers 404.
   if (!updated) return null;
 
-  if (patch.roles !== undefined || patch.siteId !== undefined) {
+  // After legacy-writer retirement, siteId-only changes are affiliation/primacy
+  // changes. Only an explicit legacy roles payload is adapted into a canonical
+  // responsibility replacement.
+  if (patch.roles !== undefined) {
     await reconcileLegacyContactResponsibilities(exec, {
       contactId,
       orgId,

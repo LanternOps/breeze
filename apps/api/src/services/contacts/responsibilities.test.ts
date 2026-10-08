@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { contactRoles } from '../../db/schema/contactRoles';
+import { contacts } from '../../db/schema/contacts';
+import { sites } from '../../db/schema/orgs';
 import { deviceGroupMemberships, deviceGroups } from '../../db/schema/devices';
 import type { ContactExecutor } from './compat';
 import {
   reconcileLegacyContactResponsibilities,
+  replaceContactResponsibilities,
   resolveContactResponsibility,
 } from './responsibilities';
 
@@ -25,12 +28,14 @@ type Row = Record<string, unknown>;
 interface SelectCall { table: unknown; where?: unknown }
 interface InsertCall { table: unknown; values: Row[]; onConflict: boolean }
 interface DeleteCall { table: unknown; where?: unknown }
+interface UpdateCall { table: unknown; values: Row; where?: unknown }
 
 function makeExec(selectRows: Row[][] = []) {
   const queue = [...selectRows];
   const selects: SelectCall[] = [];
   const inserts: InsertCall[] = [];
   const deletes: DeleteCall[] = [];
+  const updates: UpdateCall[] = [];
 
   const exec = {
     select: () => ({
@@ -39,15 +44,16 @@ function makeExec(selectRows: Row[][] = []) {
         selects.push(call);
         const rows = queue.shift() ?? [];
         const settled = () => {
-          const promise = Promise.resolve(rows) as Promise<Row[]> & { orderBy?: (...args: unknown[]) => Promise<Row[]> };
+          const promise = Promise.resolve(rows) as Promise<Row[]> & { orderBy?: (...args: unknown[]) => Promise<Row[]>; limit?: (n: number) => Promise<Row[]> };
           promise.orderBy = () => promise;
+          promise.limit = () => promise;
           return promise;
         };
         return {
           where: (condition: unknown) => {
             call.where = condition;
             const promise = settled();
-            return Object.assign(promise, { orderBy: () => promise });
+            return Object.assign(promise, { orderBy: () => promise, limit: () => promise });
           },
         };
       },
@@ -64,9 +70,14 @@ function makeExec(selectRows: Row[][] = []) {
     delete: (table: unknown) => ({
       where: async (condition: unknown) => { deletes.push({ table, where: condition }); },
     }),
+    update: (table: unknown) => ({
+      set: (values: Row) => ({
+        where: async (condition: unknown) => { updates.push({ table, values, where: condition }); },
+      }),
+    }),
   } as unknown as ContactExecutor;
 
-  return { exec, selects, inserts, deletes };
+  return { exec, selects, inserts, deletes, updates };
 }
 
 function assignment(input: Partial<{
@@ -107,10 +118,12 @@ describe('reconcileLegacyContactResponsibilities', () => {
 
     expect(f.inserts).toHaveLength(1);
     expect(f.inserts[0]!.values).toEqual([
-      { contactId: CONTACT, orgId: ORG, role: 'admin', siteId: null, deviceGroupId: null },
-      { contactId: CONTACT, orgId: ORG, role: 'billing', siteId: null, deviceGroupId: null },
+      { contactId: CONTACT, orgId: ORG, role: 'admin', isPrimary: false, siteId: null, deviceGroupId: null },
+      { contactId: CONTACT, orgId: ORG, role: 'billing', isPrimary: false, siteId: null, deviceGroupId: null },
     ]);
-    expect(f.inserts[0]!.onConflict).toBe(true);
+    expect(f.inserts[0]!.onConflict).toBe(false);
+    expect(f.updates.at(-1)!.table).toBe(contacts);
+    expect(f.updates.at(-1)!.values.roles).toEqual(['billing', 'admin']);
   });
 
   it('re-pin derives every legacy responsibility to the exact resulting Site scope', async () => {
@@ -124,8 +137,8 @@ describe('reconcileLegacyContactResponsibilities', () => {
 
     expect(f.deletes).toHaveLength(1);
     expect(f.inserts[0]!.values).toEqual([
-      { contactId: CONTACT, orgId: ORG, role: 'admin', siteId: SITE, deviceGroupId: null },
-      { contactId: CONTACT, orgId: ORG, role: 'technical', siteId: SITE, deviceGroupId: null },
+      { contactId: CONTACT, orgId: ORG, role: 'admin', isPrimary: false, siteId: SITE, deviceGroupId: null },
+      { contactId: CONTACT, orgId: ORG, role: 'technical', isPrimary: false, siteId: SITE, deviceGroupId: null },
     ]);
   });
 
@@ -136,6 +149,67 @@ describe('reconcileLegacyContactResponsibilities', () => {
     });
     expect(f.deletes).toHaveLength(1);
     expect(f.inserts).toHaveLength(0);
+    expect(f.updates.at(-1)!.values.roles).toEqual([]);
+  });
+});
+
+describe('replaceContactResponsibilities', () => {
+  it('writes the canonical whole set and projects distinct legacy roles deterministically', async () => {
+    const f = makeExec([[{ id: CONTACT }], [{ id: SITE }]]);
+    await replaceContactResponsibilities(f.exec, {
+      contactId: CONTACT, orgId: ORG, responsibilities: [
+        { role: 'technical', scope: { type: 'organization' } },
+        { role: 'technical', scope: { type: 'site', siteId: SITE } },
+        { role: 'billing', scope: { type: 'organization' } },
+      ],
+    });
+    expect(f.inserts[0]!.values).toHaveLength(3);
+    expect(f.updates.at(-1)!.values.roles).toEqual(['billing', 'technical']);
+  });
+
+  it('keeps a projected role while any scoped assignment remains and removes it with the last one', async () => {
+    const first = makeExec([[{ id: CONTACT }], [{ id: SITE }]]);
+    await replaceContactResponsibilities(first.exec, {
+      contactId: CONTACT, orgId: ORG, responsibilities: [
+        { role: 'technical', scope: { type: 'site', siteId: SITE } },
+      ],
+    });
+    expect(first.updates.at(-1)!.values.roles).toEqual(['technical']);
+
+    const last = makeExec([[{ id: CONTACT }]]);
+    await replaceContactResponsibilities(last.exec, { contactId: CONTACT, orgId: ORG, responsibilities: [] });
+    expect(last.updates.at(-1)!.values.roles).toEqual([]);
+  });
+
+  it('rejects a Site that is not in the contact organization', async () => {
+    const f = makeExec([[{ id: CONTACT }], []]);
+    await expect(replaceContactResponsibilities(f.exec, {
+      contactId: CONTACT, orgId: ORG, responsibilities: [
+        { role: 'technical', scope: { type: 'site', siteId: SITE } },
+      ],
+    })).rejects.toMatchObject({ code: 'site-not-in-org' });
+    expect(f.deletes).toHaveLength(0);
+  });
+
+  it('rejects a Device Group that is not in the contact organization', async () => {
+    const f = makeExec([[{ id: CONTACT }], []]);
+    await expect(replaceContactResponsibilities(f.exec, {
+      contactId: CONTACT, orgId: ORG, responsibilities: [
+        { role: 'technical', scope: { type: 'device_group', deviceGroupId: GROUP } },
+      ],
+    })).rejects.toMatchObject({ code: 'device-group-not-in-org' });
+    expect(f.deletes).toHaveLength(0);
+  });
+
+  it('rejects an exact duplicate before writing', async () => {
+    const f = makeExec([[{ id: CONTACT }]]);
+    await expect(replaceContactResponsibilities(f.exec, {
+      contactId: CONTACT, orgId: ORG, responsibilities: [
+        { role: 'admin', scope: { type: 'organization' } },
+        { role: 'admin', scope: { type: 'organization' } },
+      ],
+    })).rejects.toMatchObject({ code: 'duplicate-assignment' });
+    expect(f.deletes).toHaveLength(0);
   });
 });
 

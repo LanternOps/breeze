@@ -683,6 +683,28 @@ describe('updateContact writes only what the patch names', () => {
     expect(Object.keys(write.set).sort()).toEqual(['notes', 'title', 'updatedAt']);
   });
 
+  it('treats a siteId-only patch as affiliation and does not rewrite canonical responsibilities', async () => {
+    const stored = { ...PLAIN_ORG_ROW, siteId: null, isPrimary: false, roles: [] };
+    const { exec } = makeExec([
+      [stored],          // getContact
+      [{ id: SITE }],    // assertSiteInOrg
+      [],                // organization pre-lock
+      [stored],          // locked target re-read
+    ]);
+    await updateContact(exec, CONTACT, ORG, { siteId: SITE }, ACTOR);
+    expect(responsibilityMocks.reconcileLegacyContactResponsibilities).not.toHaveBeenCalled();
+  });
+
+  it('adapts an explicit roles patch into the canonical responsibility set using the resulting site pin', async () => {
+    const updated = { ...PLAIN_ORG_ROW, siteId: SITE, roles: ['admin'] };
+    const { exec } = makeExec([[{ ...PLAIN_ORG_ROW, siteId: SITE }]], { updateReturns: [[updated]] });
+    await updateContact(exec, CONTACT, ORG, { roles: ['admin'] }, ACTOR);
+    expect(responsibilityMocks.reconcileLegacyContactResponsibilities).toHaveBeenCalledWith(
+      exec,
+      { contactId: CONTACT, orgId: ORG, siteId: SITE, roles: ['admin'] },
+    );
+  });
+
   it('still writes an explicit null, which is a real clear', async () => {
     const { exec, calls } = makeExec([[{ ...PLAIN_ORG_ROW, siteId: SITE }]]);
     await updateContact(exec, CONTACT, ORG, { email: null }, ACTOR);
