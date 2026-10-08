@@ -1,0 +1,16 @@
+---
+// Partner-scoped sign-in page for hosted deployments (#4017). The shared
+// /login page never names a partner's IdP on a multi-partner instance; here the
+// visitor supplies the partner in the URL, so the page can show that partner's
+// branding and "Sign in with {provider}" button. An unknown or inactive slug
+// gets the same null context from the API and renders exactly like /login.
+import AuthShellBranded from '../../layouts/AuthShellBranded.astro';
+import LoginPage from '../../components/auth/LoginPage';
+
+const { slug } = Astro.params;
+const next = Astro.url.searchParams.get('next') ?? undefined;
+---
+
+<AuthShellBranded titleKey="titles.login" partnerSlug={slug}>
+  <LoginPage client:load next={next} partnerSlug={slug} />
+</AuthShellBranded>

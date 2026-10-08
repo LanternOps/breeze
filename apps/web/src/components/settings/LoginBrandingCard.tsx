@@ -18,16 +18,17 @@ const inputClass = 'h-10 w-full rounded-md border bg-background px-3 text-sm';
 
 /**
  * Partner "Login Branding" settings card (#2183). Lets a partner admin brand
- * the technician login screen (logo, accent color, headline). The login page
- * shows the branding automatically when the instance resolves to exactly one
- * partner (typical self-hosted setup) — there is no `?partner=` route or
- * query param, and multi-partner instances show no branding (v2 slug
- * discovery). Reads/writes GET/PUT /api/v1/partners/me/login-branding.
+ * the technician login screen (logo, accent color, headline). The shared
+ * /login page shows the branding automatically when the instance resolves to
+ * exactly one partner (typical self-hosted setup); every partner also has its
+ * own /login/<partner-slug> page that shows it on any deployment (#4017), and
+ * this card displays that URL. Reads/writes GET/PUT
+ * /api/v1/partners/me/login-branding.
  *
  * PUT is FULL-REPLACE: we always send all three fields on every save, so an
  * omitted field is not treated as "unchanged" — it is nulled server-side.
  */
-export default function LoginBrandingCard() {
+export default function LoginBrandingCard({ partnerSlug }: { partnerSlug?: string } = {}) {
   const { t } = useTranslation('settings');
   const [logoUrl, setLogoUrl] = useState('');
   const [accentColor, setAccentColor] = useState('');
@@ -133,6 +134,24 @@ export default function LoginBrandingCard() {
           {t('loginBranding.description')}
         </p>
       </div>
+
+      {partnerSlug && (
+        <div className="mb-6 space-y-2">
+          <label htmlFor="login-branding-signin-url" className="text-sm font-medium">
+            {t('loginBranding.signInPage')}
+          </label>
+          <input
+            id="login-branding-signin-url"
+            data-testid="login-branding-signin-url"
+            type="text"
+            readOnly
+            value={`${window.location.origin}/login/${encodeURIComponent(partnerSlug)}`}
+            onFocus={(e) => e.currentTarget.select()}
+            className={`${inputClass} font-mono`}
+          />
+          <p className="text-xs text-muted-foreground">{t('loginBranding.signInPageHelp')}</p>
+        </div>
+      )}
 
       {loadFailed && (
         <div

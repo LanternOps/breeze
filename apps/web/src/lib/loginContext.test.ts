@@ -68,6 +68,31 @@ describe('loginContext', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('fetches the slug-scoped endpoint, URL-encoding the slug (#4017)', async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ branding: null, partnerSso: null }));
+
+    const { getLoginContext } = await import('./loginContext');
+    await getLoginContext('acme msp/x');
+
+    expect(String(vi.mocked(fetch).mock.calls[0]?.[0])).toMatch(
+      /\/api\/v1\/auth\/login-context\/partner\/acme%20msp%2Fx$/
+    );
+  });
+
+  it('memoizes per slug: the singleton and a slug each fetch once', async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ branding: null, partnerSso: null }));
+
+    const { getLoginContext } = await import('./loginContext');
+    await getLoginContext('acme-msp');
+    await getLoginContext('acme-msp');
+    await getLoginContext();
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const urls = vi.mocked(fetch).mock.calls.map((call) => String(call[0]));
+    expect(urls[0]).toMatch(/\/login-context\/partner\/acme-msp$/);
+    expect(urls[1]).toMatch(/\/login-context$/);
+  });
+
   it('coalesces missing body fields to null', async () => {
     vi.mocked(fetch).mockResolvedValue(jsonResponse({}));
 
