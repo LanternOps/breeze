@@ -85,6 +85,7 @@ import {
   OrgVanishedDuringMoveError,
 } from '../deviceOrgMove/moveDeviceOrgInTransaction';
 import { TicketMoveCurrencyBlockedError } from '../ticketMoveCurrencyGuard';
+import { TicketMoveHourBlockError } from '../ticketMoveHourBlockGuard';
 import { PamDeviceMoveBlockedError } from '../pamDeviceMoveGuard';
 import { TicketServiceError } from '../ticketService';
 import { admitPartnerDeviceCapacity, previewPartnerDeviceCapacity } from '../partnerDeviceCapacity';
@@ -487,6 +488,7 @@ describe('assignParkedDevice — refusals raised by the move engine', () => {
     ['target org gone', new OrgVanishedDuringMoveError('target'), 'TARGET_ORG_INVALID'],
     ['holding org gone', new OrgVanishedDuringMoveError('source'), 'DEVICE_NOT_FOUND'],
     ['currency block', new TicketMoveCurrencyBlockedError('m', {} as any), 'TICKET_MOVE_CURRENCY_BLOCKED'],
+    ['block-drawn time', new TicketMoveHourBlockError({ drawnTimeEntries: 1 }), 'HOUR_BLOCK_DRAWN_TIME'],
     ['PAM evidence', new PamDeviceMoveBlockedError(), 'PAM_DEVICE_MOVE_BLOCKED'],
     ['PAM evidence (database guard)', pgPamViolation, 'PAM_DEVICE_MOVE_BLOCKED'],
     ['a lock timeout', Object.assign(new Error('canceling statement due to lock timeout'), { cause: { code: '55P03' } }), 'ASSIGNMENT_BUSY'],

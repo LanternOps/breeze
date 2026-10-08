@@ -2628,7 +2628,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           '400': { description: 'Invalid input (e.g. target site not in target org, target org equals source)' },
           '403': { description: 'Access denied: target org or cross-partner move without system scope; `Interactive user session required` for machine principals; `MFA_REQUIRED` for a non-assured session; `STEP_UP_REQUIRED` when the step-up grant is missing, stale, mismatched or already consumed' },
           '404': { description: 'Device or target organization not found' },
-          '409': { description: 'Move blocked: `TICKET_MOVE_CURRENCY_BLOCKED` (unbilled ticket money in another currency; resend with acceptCurrencyMismatch), `DELIVERABLE_TICKET_PINNED`, or `PAM_DEVICE_MOVE_BLOCKED`' },
+          '409': { description: 'Move blocked: `TICKET_MOVE_CURRENCY_BLOCKED` (unbilled ticket money in another currency; resend with acceptCurrencyMismatch), `DELIVERABLE_TICKET_PINNED`, `HOUR_BLOCK_DRAWN_TIME` (a ticket carries time drawn from a block of prepaid hours), or `PAM_DEVICE_MOVE_BLOCKED`' },
           '503': { description: 'Step-up binding could not be established (auth state or session id unavailable); retry' },
         },
       },
