@@ -17,7 +17,7 @@ import { scriptParameterDefinitionsSchema } from '@breeze/shared';
 import { compactToolResultForChat } from './aiToolOutput';
 import { captureException } from './sentry';
 import type { PreToolUseCallback, PostToolUseCallback } from './aiAgentSdkTools';
-import { postToolUseForCall } from './aiToolUseCorrelation';
+import { postToolUseForCall, sdkToolUseIdFromExtra } from './aiToolUseCorrelation';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { normalizeScriptCode } from './scriptCodeNormalize';
@@ -128,7 +128,7 @@ function makeExistingHandler(
     if (onPreToolUse) {
       let check: Awaited<ReturnType<PreToolUseCallback>>;
       try {
-        check = await onPreToolUse(toolName, args, exposedToolName);
+        check = await onPreToolUse(toolName, args, exposedToolName, sdkToolUseIdFromExtra(extra));
       } catch (err) {
         captureException(err);
         console.error(`[ScriptBuilder] PreToolUse threw for ${toolName}:`, err);

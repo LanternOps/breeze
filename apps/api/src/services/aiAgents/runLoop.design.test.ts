@@ -298,7 +298,7 @@ const reserveAiBudget = vi.hoisted(() => vi.fn());
 const markAiBudgetReservationIndeterminate = vi.hoisted(() => vi.fn());
 vi.mock('../aiBudgetReservations', () => ({ reserveAiBudget, markAiBudgetReservationIndeterminate }));
 
-import { AgentRunError, createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun } from './runLoop';
+import { AgentRunError, createAgentRunCallPairing, createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun } from './runLoop';
 import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
 import type { AgentRunOutcome } from './runLoop';
 import { FleetDesignPersistConflictError } from './fleetDesignReport';
@@ -699,10 +699,8 @@ describe('design run read-only backstop', () => {
       },
       outcome,
       intentIds: [],
-      allowedPending: new Map<string, number>(),
       sessionId: null,
-      executionIdPending: new Map<string, Array<string | null>>(),
-      actPinPending: new Map<string, Array<unknown>>(),
+      pairing: createAgentRunCallPairing(),
       actReservation: { count: 0 },
       deadlineMs: Date.now() + 60_000,
     } as never);
@@ -724,9 +722,8 @@ describe('design run read-only backstop', () => {
         protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
         deviceId: null, deviceSiteId: null,
       },
-      outcome, intentIds: [], allowedPending: new Map<string, number>(), sessionId: null,
-      executionIdPending: new Map<string, Array<string | null>>(),
-      actPinPending: new Map<string, Array<unknown>>(),
+      outcome, intentIds: [], sessionId: null,
+      pairing: createAgentRunCallPairing(),
       actReservation: { count: 0 }, deadlineMs: Date.now() + 60_000,
       // The pre-hook's own validate-only check needs the SAME refs the SDK
       // tool handler gets (see `createAgentRunPreToolUse`'s `design` param
@@ -750,9 +747,8 @@ describe('design run read-only backstop', () => {
           protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
           deviceId: null, deviceSiteId: null,
         },
-        outcome: otherOutcome, intentIds: [], allowedPending: new Map<string, number>(), sessionId: null,
-        executionIdPending: new Map<string, Array<string | null>>(),
-        actPinPending: new Map<string, Array<unknown>>(),
+        outcome: otherOutcome, intentIds: [], sessionId: null,
+        pairing: createAgentRunCallPairing(),
         actReservation: { count: 0 }, deadlineMs: Date.now() + 60_000,
       } as never);
       const result = await denied('submit_fleet_design', VALID_FLEET_DESIGN_SUBMISSION);
