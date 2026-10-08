@@ -1906,6 +1906,10 @@
           "label": "Donanım envanteri",
           "description": "Müşterinizin makineleri için üretici, model, işlemci, bellek, ağ bağdaştırıcıları ve bağlantı sayılarını gösterir."
         },
+        "enablePerformanceMetrics": {
+          "label": "Performans metrikleri",
+          "description": "Müşterinizin makineleri için CPU, bellek, disk ve ağ performansı eğilimlerini salt okunur olarak gösterir."
+        },
         "enableNetworkVisibility": {
           "label": "Ağ görünürlüğü",
           "description": "Müşteri portalında ağ durumunu ve keşfedilen varlıkları salt okunur olarak gösterir."

@@ -70,6 +70,7 @@ const SITE_SCOPE_EXEMPT_HANDLERS: ReadonlySet<string> = new Set<string>([
   // portalAuth, never the request), portal users have no site scope, and the read
   // model filters devices by that orgId.
   'routes/portal/hardwareInventory.ts:GET /hardware-inventory/devices/:deviceId',
+  'routes/portal/performance.ts:GET /performance/devices/:deviceId',
   // -- routes/snmp -----------------------------------------------------------
   // Deprecated SNMP metric/threshold endpoints — every handler is a 4-line
   // stub that returns the deprecation payload (HTTP 410) and never reaches a

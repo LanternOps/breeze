@@ -1906,6 +1906,10 @@
           "label": "Hardware inventory",
           "description": "Show make, model, processor, memory, network adapters and connection counts for your customer's machines."
         },
+        "enablePerformanceMetrics": {
+          "label": "Performance metrics",
+          "description": "Show read-only CPU, memory, disk and network performance trends for your customer's machines."
+        },
         "enableNetworkVisibility": {
           "label": "Network visibility",
           "description": "Show read-only network health and discovered assets in the customer portal."

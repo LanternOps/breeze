@@ -119,6 +119,7 @@ brandingRoutes.get('/branding', async (c) => {
       enableLifecycle: portalBranding.enableLifecycle,
       enableHardwareHealth: portalBranding.enableHardwareHealth,
       enableHardwareInventory: portalBranding.enableHardwareInventory,
+      enablePerformanceMetrics: portalBranding.enablePerformanceMetrics,
       enableNetworkVisibility: portalBranding.enableNetworkVisibility
     })
     .from(portalBranding)
