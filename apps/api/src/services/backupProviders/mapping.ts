@@ -11,6 +11,7 @@ import { captureException } from '../sentry';
 import { resolveProviderAlertsForCustomer } from './alertsResolve';
 import type { ProviderSyncTx } from './persist';
 
+import { resolveAutoMapNameSuggestions, resolveAutoMappings } from '../externalTenantMapping';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
 import { notHiddenOrgType } from '../unassignedPool/visibility';
 export interface RemapCustomerActor {
@@ -194,12 +195,6 @@ export async function remapCustomer(
   };
 }
 
-/**
- * Version/variant-agnostic UUID shape — deliberately NOT the RFC-4122-strict
- * pattern, matching `PG_UUID_REGEX`'s rationale in apps/api/src/db/index.ts:634-641.
- */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 export interface AutoMapCustomerRow {
   id: string;
   vendorCustomerName: string;
@@ -221,12 +216,6 @@ export type AutoMapNameSuggestion = {
   customerId: string;
   orgId: string;
 };
-
-function normalizeName(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const normalized = value.trim().toLowerCase();
-  return normalized.length > 0 ? normalized : null;
-}
 
 /**
  * PURE auto-mapping rules (spec, `backup_provider_customers` section).
@@ -251,19 +240,10 @@ export function resolveCustomerAutoMappings(
   customers: AutoMapCustomerRow[],
   orgs: AutoMapOrgRow[],
 ): AutoMapDecision[] {
-  const orgById = new Map(orgs.map((o) => [o.id.toLowerCase(), o.id]));
-
-  const claimed = new Set<string>();
-  const out: AutoMapDecision[] = [];
-  for (const customer of customers) {
-    const code = customer.vendorExternalCode?.trim();
-    if (!code || !UUID_RE.test(code)) continue;
-    const orgId = orgById.get(code.toLowerCase());
-    if (!orgId || claimed.has(orgId)) continue;
-    claimed.add(orgId);
-    out.push({ customerId: customer.id, orgId, mappingSource: 'auto_external_code' });
-  }
-  return out;
+  return resolveAutoMappings(
+    customers.map((c) => ({ id: c.id, vendorName: c.vendorCustomerName, vendorExternalCode: c.vendorExternalCode })),
+    orgs,
+  ).map((d) => ({ customerId: d.tenantId, orgId: d.orgId, mappingSource: d.mappingSource }));
 }
 
 /**
@@ -281,28 +261,11 @@ export function resolveCustomerAutoMapNameSuggestions(
   orgs: AutoMapOrgRow[],
   alreadyClaimedOrgIds: ReadonlySet<string> = new Set(),
 ): AutoMapNameSuggestion[] {
-  const orgsByName = new Map<string, string[]>();
-  for (const org of orgs) {
-    const key = normalizeName(org.name);
-    if (!key) continue;
-    const bucket = orgsByName.get(key);
-    if (bucket) bucket.push(org.id);
-    else orgsByName.set(key, [org.id]);
-  }
-
-  const claimed = new Set(alreadyClaimedOrgIds);
-  const out: AutoMapNameSuggestion[] = [];
-  for (const customer of customers) {
-    const key = normalizeName(customer.vendorCustomerName);
-    if (!key) continue;
-    const candidates = orgsByName.get(key);
-    if (!candidates || candidates.length !== 1) continue;
-    const orgId = candidates[0]!;
-    if (claimed.has(orgId)) continue;
-    claimed.add(orgId);
-    out.push({ customerId: customer.id, orgId });
-  }
-  return out;
+  return resolveAutoMapNameSuggestions(
+    customers.map((c) => ({ id: c.id, vendorName: c.vendorCustomerName, vendorExternalCode: c.vendorExternalCode })),
+    orgs,
+    alreadyClaimedOrgIds,
+  ).map((s) => ({ customerId: s.tenantId, orgId: s.orgId }));
 }
 
 /**
