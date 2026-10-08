@@ -430,9 +430,12 @@ describe('phase-3 per-tenant fence (review #1)', () => {
     const results = m.persistInventory.mock.calls[0]![2] as Array<{ vendorTenantId: string }>;
     expect(results.map((r) => r.vendorTenantId)).toEqual(['v-mapped2']);
     expect(m.enqueueOrReplaceStale).toHaveBeenCalledWith(
-      expect.anything(), 'sync-inventory', `edr-inventory-${CONNECTION_ID}`,
+      expect.anything(), 'sync-inventory', `edr-inventory-${CONNECTION_ID}-rerun`,
       expect.anything(), expect.anything(), expect.any(String),
     );
+    // NOT the running job's own id: enqueueOrReplaceStale returns an ACTIVE job unchanged, so
+    // re-using it would queue nothing (review finding).
+    expect(m.enqueueOrReplaceStale.mock.calls.map((c) => c[2])).not.toContain(`edr-inventory-${CONNECTION_ID}`);
   });
 
   it('inventory: unchanged tenants are all persisted and nothing is re-enqueued', async () => {
@@ -461,7 +464,7 @@ describe('phase-3 per-tenant fence (review #1)', () => {
     const results = m.persistDetections.mock.calls[0]![2] as Array<{ vendorTenantId: string }>;
     expect(results.map((r) => r.vendorTenantId)).toEqual(['vc']);
     expect(m.enqueueOrReplaceStale).toHaveBeenCalledWith(
-      expect.anything(), 'sync-detections', `edr-detections-${CONNECTION_ID}`,
+      expect.anything(), 'sync-detections', `edr-detections-${CONNECTION_ID}-rerun`,
       expect.anything(), expect.anything(), expect.any(String),
     );
   });

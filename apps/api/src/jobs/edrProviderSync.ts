@@ -64,14 +64,23 @@ export function edrSyncJobId(stream: EdrSyncStream, connectionId: string): strin
   return `edr-${stream}-${connectionId}`;
 }
 
-/** Queue one stream for one connection (scheduled sync and "Sync now" coalesce on the job id). */
-export async function enqueueEdrSync(connectionId: string, stream: EdrSyncStream): Promise<string> {
+/**
+ * Queue one stream for one connection (scheduled sync and "Sync now" coalesce on the job id).
+ * `rerun` uses a separate id: a running job that dropped a tenant at its Phase-3 fence asks for a
+ * follow-up run, and under its own id enqueueOrReplaceStale would return the ACTIVE job itself
+ * and queue nothing. Both ids serialize on the Phase-3 advisory lock.
+ */
+export async function enqueueEdrSync(
+  connectionId: string,
+  stream: EdrSyncStream,
+  o: { rerun?: boolean } = {},
+): Promise<string> {
   if (!connectionId) throw new Error('enqueueEdrSync requires a connection id');
   const type = stream === 'inventory' ? 'sync-inventory' : 'sync-detections';
   const { id } = await enqueueOrReplaceStale(
     getEdrProviderSyncQueue(),
     type,
-    edrSyncJobId(stream, connectionId),
+    o.rerun ? `${edrSyncJobId(stream, connectionId)}-rerun` : edrSyncJobId(stream, connectionId),
     { type, connectionId } as EdrSyncJobData,
     EDR_PROVIDER_SYNC_JOB_OPTS,
     '[EdrProviderSync]',
@@ -235,7 +244,7 @@ async function readCurrentTenants(
 /** Best-effort re-run of a stream whose tenants were dropped by the per-tenant fence. */
 async function reenqueueStream(connectionId: string, stream: EdrSyncStream): Promise<void> {
   try {
-    await dbModule.runOutsideDbContext(() => enqueueEdrSync(connectionId, stream));
+    await dbModule.runOutsideDbContext(() => enqueueEdrSync(connectionId, stream, { rerun: true }));
   } catch (error) {
     console.error(`[EdrProviderSync] Failed to re-enqueue ${stream} sync for ${connectionId}:`, error);
   }
