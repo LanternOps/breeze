@@ -309,6 +309,7 @@ const EXEMPT: Record<string, string> = {
   'services/timeSync/settings.ts': 'derived: resolves policy settings for a single deviceId supplied by already-authorized callers (the calling agent\'s heartbeat/ingest, device view, fleet rows already filtered by notParkedDeviceCondition); selects no work',
   'services/timeSync/configUpdate.ts': 'agent self-service: builds the heartbeat time_sync_settings payload for the calling agent\'s own device id',
   'services/workloads/ingest.ts': 'agent self-service: ownership-checks device.id+orgId; mounted only under the agent\'s own workloads route',
+  'services/workloads/view.ts': 'derived: keyed on a single deviceId from already-authorized callers',
   'services/workloads/settings.ts': 'derived: resolves policy settings for a single deviceId supplied by already-authorized callers (the calling agent\'s heartbeat/ingest, the device view); selects no work',
   'services/timeSync/exports.ts':'derived: daily rows only for the device ids iterateFleetTimeRows already selected with notParkedDeviceCondition',
   'services/helperPermissions.ts': 'agent self-service: runs on the helper route for the calling device\'s own id',

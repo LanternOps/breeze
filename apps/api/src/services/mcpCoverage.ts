@@ -408,6 +408,10 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/tabCounts.ts': { exempt: 'internal_plumbing' },
   'devices/warranty.ts': { gap: '#6783' },
   'devices/watchdogLogs.ts': { gap: '#6783' },
+  // #3834 W01: the host axis (hostsWorkloads/workloadRuntimes) is part of the
+  // device projection that get_device_details returns. W04 adds
+  // query_device_workloads for the per-workload list and replaces this entry.
+  'devices/workloads.ts': { tools: ['get_device_details'] },
   'discovery.ts': { tools: ['list_network_assets', 'get_network_asset', 'network_discovery', 'get_network_asset_reachability'] },
   'discoveryAssetProbe.ts': { gap: '#6779' },
   'dnsSecurity.ts': { tools: ['get_dns_security', 'manage_dns_policy'] },
