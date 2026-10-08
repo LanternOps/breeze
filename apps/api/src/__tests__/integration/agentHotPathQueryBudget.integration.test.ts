@@ -46,7 +46,7 @@ import './setup';
 import { createHash, randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 
 const recorder = vi.hoisted(() => ({
   recording: false,
@@ -809,15 +809,26 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(cold.buckets.deviceLookup).toBe(0);
     expect(cold.buckets.topologyNegotiation).toBe(0);
     expect(cold.buckets.agentVersions).toBe(1);
+    // Cold has the set, plus exactly ONE other assignment read: the org block's
+    // effective-config assignment resolution (cold only; warm and steady skip it
+    // via hotPathCache). It is not a per-feature policy read.
+    expect(cold.buckets.policySetLoad).toBe(1);
+    expect(cold.buckets.perFeatureAssignmentRead).toBe(1);
 
-    // W1a-1 levers stay pulled.
+    // W1a-1 levers stay pulled: one hierarchy read replaces 33 per-resolver
+    // reads, on the steady AND the warm beat.
     expect(steady.buckets.hierarchyLoad).toBe(1);
     expect(steady.buckets.deviceLookup).toBe(0);
+    expect(warm.buckets.hierarchyLoad).toBe(1);
+    expect(warm.buckets.deviceLookup).toBe(0);
     expect(steady.buckets.orgPartnerLookup).toBe(0);
     expect(steady.buckets.groupLookup).toBe(0);
     expect(steady.buckets.siteLookup).toBe(0);
+    // Materialization is off for this org, so no topology negotiation runs.
     expect(steady.buckets.topologyNegotiation).toBe(0);
     expect(warm.buckets.topologyNegotiation).toBe(0);
+    // The sibling's beat warmed the org's probe, helper-legacy and PAM caches,
+    // so this beat reads none of them.
     expect(steady.buckets.automationPolicies).toBe(0);
     expect(steady.buckets.orgHelperSettings).toBe(0);
     expect(steady.buckets.pamOrgConfig).toBe(0);
@@ -857,6 +868,8 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(missed.buckets.automationPolicies).toBe(1);
     expect(missed.buckets.orgHelperSettings).toBe(1);
     expect(missed.buckets.pamOrgConfig).toBe(1);
+    expect(missed.buckets.policySetLoad).toBe(1);
+    expect(missed.buckets.perFeatureAssignmentRead).toBe(0);
     expect(missed.statements).toBeLessThanOrEqual(CACHES_MISS_STATEMENTS);
   });
 
@@ -874,6 +887,8 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(steady.status).toBe(200);
     expect(steady.transactions).toBe(2);
     expect(steady.buckets.peripheralCapabilityWrites).toBe(2);
+    expect(steady.buckets.policySetLoad).toBe(1);
+    expect(steady.buckets.perFeatureAssignmentRead).toBe(0);
     expect(steady.statements).toBeLessThanOrEqual(16);
   });
 
@@ -1151,14 +1166,25 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
   runDb('cross-tenant assignments forged onto this device never reach its heartbeat (#8142)', async () => {
     const org = await seedOrg('forge');
     const device = await enrollDevice(org, 'forge-target');
-    const sameParterOtherOrg = (await createOrganization({ partnerId: org.partnerId }))!;
+    const samePartnerOtherOrg = (await createOrganization({ partnerId: org.partnerId }))!;
     const foreignPartner = (await createPartner())!;
-    await seedPolicy({ owner: { orgId: sameParterOtherOrg.id, partnerId: null },
+    await seedPolicy({ owner: { orgId: samePartnerOtherOrg.id, partnerId: null },
       links: [{ featureType: 'helper', inlineSettings: { enabled: true, portalUrl: 'https://forged.example' } }],
       assignments: [{ level: 'device', targetId: device.deviceId }], forgeAssignments: true });
     await seedPolicy({ owner: { orgId: null, partnerId: foreignPartner.id },
       links: [{ featureType: 'event_log', maxEventsPerCycle: 999 }],
       assignments: [{ level: 'partner', targetId: org.partnerId, priority: -10 }], forgeAssignments: true });
+
+    // Non-vacuity: the forged rows really exist (system scope sees them), so
+    // the assertions below pass because RLS hides them, not because seeding failed.
+    const forged = await withSystemDbAccessContext(() =>
+      db.select({ policyId: configPolicyAssignments.configPolicyId, level: configPolicyAssignments.level })
+        .from(configPolicyAssignments)
+        .where(or(
+          and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, device.deviceId)),
+          and(eq(configPolicyAssignments.level, 'partner'), eq(configPolicyAssignments.targetId, org.partnerId)),
+        )));
+    expect(forged.map((r) => r.level).sort()).toEqual(['device', 'partner']);
 
     const res = await heartbeat(device);
     expect(res.status).toBe(200);
@@ -1224,6 +1250,8 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
         const captured = recorder.statements
           .map((q, i) => ({ q, p: recorder.params[i] ?? [] }))
           .filter(({ q }) => /"config_policy_assignments"/i.test(q));
+        // Non-vacuity: ten legacy per-feature statements (the policy-set replaces exactly these).
+        expect(captured.length).toBe(10);
         let legacyTotal = 0;
         for (const [i, { q, p }] of captured.entries()) {
           const t = planText(await db.execute(sql.raw(`EXPLAIN (ANALYZE, BUFFERS) ${inline(q, p)}`)));
