@@ -14,7 +14,18 @@ const siteDelete = vi.hoisted(() => ({
   calls: [] as string[],
   lockSiteForDelete: vi.fn(async () => true),
   deleteSiteOwnedTopologyAlerts: vi.fn(async () => 0),
-  deleteSiteTopologyAiSessions: vi.fn(async () => ({ investigations: 0, messages: 0, toolExecutions: 0, actionPlans: 0, screenshots: 0 })),
+  deleteSiteTopologyAiSessions: vi.fn(async () => ({
+    investigations: 0, messages: 0, toolExecutions: 0, actionPlans: 0, screenshots: 0, screenshotStorageKeys: [] as string[],
+  })),
+  removeUnreferencedScreenshotFiles: vi.fn(async (_keys: readonly string[], _context: string) => ({
+    removed: 0, missing: 0, failed: 0, unresolvable: 0, stillReferenced: 0,
+  })),
+  // Records when deferred work was handed over, then runs it (the real helper
+  // starts it once the request transaction has settled).
+  runAfterDbContextExit: vi.fn((_label: string, work: () => unknown) => {
+    siteDelete.calls.push('afterContextExit');
+    return work();
+  }),
 }));
 vi.mock('../services/siteOwnedAlerts', () => ({
   lockSiteForDelete: siteDelete.lockSiteForDelete,
@@ -22,6 +33,12 @@ vi.mock('../services/siteOwnedAlerts', () => ({
 }));
 vi.mock('../services/topology/siteTopologySessions', () => ({
   deleteSiteTopologyAiSessions: siteDelete.deleteSiteTopologyAiSessions,
+}));
+// #8117 — the deleted investigations' screenshot FILES are removed once the
+// request transaction settles, re-checked against the rows (file side proven in
+// screenshotStorage.files.test.ts).
+vi.mock('../services/screenshotStorage', () => ({
+  removeUnreferencedScreenshotFiles: siteDelete.removeUnreferencedScreenshotFiles,
 }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
@@ -80,6 +97,7 @@ vi.mock('../db', () => {
     withDbAccessContext: vi.fn(async (_ctx: any, fn: any) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: any) => fn()),
     runOutsideDbContext: vi.fn((fn: any) => fn()),
+    runAfterDbContextExit: siteDelete.runAfterDbContextExit,
     // tenantOffboarding's inCallerOrSystemDbContext (#2877) consults the
     // ambient-context metadata at runtime on the DELETE partner/org paths
     // (abort*Offboarding); undefined = no ambient context → fresh system
@@ -733,7 +751,14 @@ describe('organization routes', () => {
       siteDelete.deleteSiteOwnedTopologyAlerts.mockImplementation(async () => { siteDelete.calls.push('alerts'); return 2; });
       siteDelete.deleteSiteTopologyAiSessions.mockImplementation(async () => {
         siteDelete.calls.push('topologySessions');
-        return { investigations: 1, messages: 3, toolExecutions: 2, actionPlans: 0, screenshots: 0 };
+        return {
+          investigations: 1, messages: 3, toolExecutions: 2, actionPlans: 0, screenshots: 1,
+          screenshotStorageKeys: ['screenshots/o/d/f.jpg'],
+        };
+      });
+      siteDelete.removeUnreferencedScreenshotFiles.mockImplementation(async () => {
+        siteDelete.calls.push('screenshotFiles');
+        return { removed: 1, missing: 0, failed: 0, unresolvable: 0, stillReferenced: 0 };
       });
       vi.mocked(db.delete).mockReturnValue({
         where: vi.fn(async () => { siteDelete.calls.push('site'); })
@@ -749,15 +774,58 @@ describe('organization routes', () => {
       expect(body.success).toBe(true);
       // Pinned topology investigations and owned alerts go first, under the
       // site row lock, in the same transaction as the site row.
-      expect(siteDelete.calls).toEqual(['lock', 'alerts', 'topologySessions', 'site']);
+      // The screenshot files are handed to runAfterDbContextExit — i.e. removed
+      // only once the REQUEST transaction settles, not after the savepoint (#8117).
+      expect(siteDelete.calls).toEqual(['lock', 'alerts', 'topologySessions', 'site', 'afterContextExit', 'screenshotFiles']);
       expect(siteDelete.deleteSiteTopologyAiSessions).toHaveBeenCalledWith(db, { orgId, siteId: 'site-1' });
+      expect(siteDelete.removeUnreferencedScreenshotFiles).toHaveBeenCalledWith(['screenshots/o/d/f.jpg'], expect.stringContaining('site-1'));
+      // Counts only on the audit row — never the storage keys.
       expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
         action: 'site.delete',
         details: {
           removedTopologyAlerts: 2,
-          topologyInvestigationsDeleted: { investigations: 1, messages: 3, toolExecutions: 2, actionPlans: 0, screenshots: 0 },
+          topologyInvestigationsDeleted: { investigations: 1, messages: 3, toolExecutions: 2, actionPlans: 0, screenshots: 1 },
         },
       }));
+    });
+
+    it('schedules no screenshot file removal when the site delete is refused (#8117)', async () => {
+      const orgId = '11111111-1111-1111-1111-111111111111';
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: null,
+          orgId,
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (id: string) => id === orgId
+        });
+        return next();
+      });
+      const limitChain = {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1', orgId, name: 'HQ' }])
+          })
+        })
+      } as any;
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitChain)
+        .mockReturnValueOnce(limitChain)
+        // A device is still on the site → 409 before anything is deleted.
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ removed: 0, other: 1 }]) })
+        } as any);
+      siteDelete.runAfterDbContextExit.mockClear();
+      siteDelete.removeUnreferencedScreenshotFiles.mockClear();
+
+      const res = await app.request('/orgs/sites/site-1', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(409);
+      expect(siteDelete.runAfterDbContextExit).not.toHaveBeenCalled();
+      expect(siteDelete.removeUnreferencedScreenshotFiles).not.toHaveBeenCalled();
     });
   });
 
