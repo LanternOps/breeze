@@ -1,4 +1,5 @@
 import { deleteSiteTopologyAiSessions } from '../services/topology/siteTopologySessions';
+import { removeScreenshotFiles } from '../services/screenshotFiles';
 import { ensureDefaultProfile } from '../services/billingProfileService';
 import { lockMfaPolicySettings, countMfaPolicyLockouts, mfaPolicyLockoutResponse } from '../services/mfaPolicyActivation';
 import { MFA_ENROLLMENT_GRACE_DAYS_MAX } from '../services/mfaEnrollmentGrace';
@@ -3336,7 +3337,13 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
       deviceCount: otherDevices,
     }, 409);
   }
-  const { removedTopologyAlerts, topologyAiSessions } = removed;
+  const { removedTopologyAlerts, topologyAiSessions: { screenshotStorageKeys, ...topologyAiSessions } } = removed;
+  // #8117 — the deleted investigations' screenshot rows are gone; remove their
+  // files now that the delete transaction has finished. Never throws, and a
+  // leftover is retried by the screenshot orphan sweep.
+  if (screenshotStorageKeys.length > 0) {
+    await removeScreenshotFiles(screenshotStorageKeys, `site delete site=${site.id}`);
+  }
   const siteDeleteDetails = {
     ...(removedTopologyAlerts > 0 ? { removedTopologyAlerts } : {}),
     ...(topologyAiSessions.investigations > 0 ? { topologyInvestigationsDeleted: topologyAiSessions } : {}),

@@ -14,7 +14,10 @@ const siteDelete = vi.hoisted(() => ({
   calls: [] as string[],
   lockSiteForDelete: vi.fn(async () => true),
   deleteSiteOwnedTopologyAlerts: vi.fn(async () => 0),
-  deleteSiteTopologyAiSessions: vi.fn(async () => ({ investigations: 0, messages: 0, toolExecutions: 0, actionPlans: 0, screenshots: 0 })),
+  deleteSiteTopologyAiSessions: vi.fn(async () => ({
+    investigations: 0, messages: 0, toolExecutions: 0, actionPlans: 0, screenshots: 0, screenshotStorageKeys: [] as string[],
+  })),
+  removeScreenshotFiles: vi.fn(async (_keys: readonly string[], _context: string) => ({ removed: 0, missing: 0, failed: 0 })),
 }));
 vi.mock('../services/siteOwnedAlerts', () => ({
   lockSiteForDelete: siteDelete.lockSiteForDelete,
@@ -22,6 +25,11 @@ vi.mock('../services/siteOwnedAlerts', () => ({
 }));
 vi.mock('../services/topology/siteTopologySessions', () => ({
   deleteSiteTopologyAiSessions: siteDelete.deleteSiteTopologyAiSessions,
+}));
+// #8117 — the deleted investigations' screenshot FILES are removed after the
+// site-delete transaction (file side proven in screenshotStorage.files.test.ts).
+vi.mock('../services/screenshotFiles', () => ({
+  removeScreenshotFiles: siteDelete.removeScreenshotFiles,
 }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
@@ -733,7 +741,14 @@ describe('organization routes', () => {
       siteDelete.deleteSiteOwnedTopologyAlerts.mockImplementation(async () => { siteDelete.calls.push('alerts'); return 2; });
       siteDelete.deleteSiteTopologyAiSessions.mockImplementation(async () => {
         siteDelete.calls.push('topologySessions');
-        return { investigations: 1, messages: 3, toolExecutions: 2, actionPlans: 0, screenshots: 0 };
+        return {
+          investigations: 1, messages: 3, toolExecutions: 2, actionPlans: 0, screenshots: 1,
+          screenshotStorageKeys: ['screenshots/o/d/f.jpg'],
+        };
+      });
+      siteDelete.removeScreenshotFiles.mockImplementation(async () => {
+        siteDelete.calls.push('screenshotFiles');
+        return { removed: 1, missing: 0, failed: 0 };
       });
       vi.mocked(db.delete).mockReturnValue({
         where: vi.fn(async () => { siteDelete.calls.push('site'); })
@@ -749,13 +764,16 @@ describe('organization routes', () => {
       expect(body.success).toBe(true);
       // Pinned topology investigations and owned alerts go first, under the
       // site row lock, in the same transaction as the site row.
-      expect(siteDelete.calls).toEqual(['lock', 'alerts', 'topologySessions', 'site']);
+      // The screenshot files go only after the transaction (#8117).
+      expect(siteDelete.calls).toEqual(['lock', 'alerts', 'topologySessions', 'site', 'screenshotFiles']);
       expect(siteDelete.deleteSiteTopologyAiSessions).toHaveBeenCalledWith(db, { orgId, siteId: 'site-1' });
+      expect(siteDelete.removeScreenshotFiles).toHaveBeenCalledWith(['screenshots/o/d/f.jpg'], expect.stringContaining('site-1'));
+      // Counts only on the audit row — never the storage keys.
       expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
         action: 'site.delete',
         details: {
           removedTopologyAlerts: 2,
-          topologyInvestigationsDeleted: { investigations: 1, messages: 3, toolExecutions: 2, actionPlans: 0, screenshots: 0 },
+          topologyInvestigationsDeleted: { investigations: 1, messages: 3, toolExecutions: 2, actionPlans: 0, screenshots: 1 },
         },
       }));
     });
