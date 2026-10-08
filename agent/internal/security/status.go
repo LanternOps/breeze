@@ -35,6 +35,11 @@ type AVProduct struct {
 }
 
 // SecurityStatus is the agent payload for endpoint security posture.
+//
+// RealTimeProtection and FirewallEnabled are nil (omitted) when the collector
+// failed, so the API stores "unknown" instead of a fabricated false that fires
+// the antivirus not_protected/realtime_disabled checks (#7965). A genuine false
+// is still sent.
 type SecurityStatus struct {
 	DeviceID                       string      `json:"deviceId"`
 	DeviceName                     string      `json:"deviceName"`
@@ -46,9 +51,9 @@ type SecurityStatus struct {
 	DefinitionsUpdatedAt           string      `json:"definitionsDate,omitempty"`
 	LastScanAt                     string      `json:"lastScan,omitempty"`
 	LastScanType                   string      `json:"lastScanType,omitempty"`
-	RealTimeProtection             bool        `json:"realTimeProtection"`
+	RealTimeProtection             *bool       `json:"realTimeProtection,omitempty"`
 	ThreatCount                    int         `json:"threatCount"`
-	FirewallEnabled                bool        `json:"firewallEnabled"`
+	FirewallEnabled                *bool       `json:"firewallEnabled,omitempty"`
 	EncryptionStatus               string      `json:"encryptionStatus"`
 	EncryptionDetails              any         `json:"encryptionDetails,omitempty"`
 	LocalAdminSummary              any         `json:"localAdminSummary,omitempty"`
@@ -1035,19 +1040,29 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 	// separately whether an AV source actually resolved the provider (#3593).
 	providerIdentified := false
 
+	// realTime accumulates across AV sources. avCollected records that at least
+	// one AV source answered; avFailed that at least one applicable source
+	// errored. Both are needed to tell "no source applies on this OS" (a real
+	// false) from "every source failed" (unknown) — see avRealTimeProtectionState.
+	realTime := false
+	avCollected := false
+	avFailed := false
+
 	// Windows Security Center AV products (workstations) first.
 	if runtime.GOOS == "windows" {
 		products, wscErr := GetWindowsSecurityCenterProducts()
 		if wscErr != nil {
 			if !errors.Is(wscErr, ErrNotSupported) {
 				errs = append(errs, wscErr)
+				avFailed = true
 			}
 		} else {
+			avCollected = true
 			status.WindowsSecurityCenterAvailable = true
 			status.AVProducts = products
 			if primary, identified := resolveWSCPrimary(products); primary.Provider != "" {
 				status.Provider = primary.Provider
-				status.RealTimeProtection = primary.RealTimeProtection
+				realTime = primary.RealTimeProtection
 				status.DefinitionsUpdatedAt = primary.Timestamp
 				providerIdentified = identified
 			}
@@ -1060,8 +1075,10 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 		if macDefenderErr != nil {
 			if !errors.Is(macDefenderErr, ErrNotSupported) {
 				errs = append(errs, macDefenderErr)
+				avFailed = true
 			}
 		} else {
+			avCollected = true
 			if !providerIdentified && macDefenderStatus.Enabled {
 				status.Provider = "windows_defender"
 				providerIdentified = true
@@ -1073,7 +1090,7 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 				status.ProviderVersion = macDefenderStatus.ProviderVersion
 			}
 			if macDefenderStatus.RealTimeProtection {
-				status.RealTimeProtection = true
+				realTime = true
 			}
 			if status.DefinitionsVersion == "" {
 				status.DefinitionsVersion = macDefenderStatus.DefinitionsVersion
@@ -1099,8 +1116,10 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 		if elasticErr != nil {
 			if !errors.Is(elasticErr, ErrNotSupported) {
 				errs = append(errs, elasticErr)
+				avFailed = true
 			}
 		} else if elasticProduct != nil {
+			avCollected = true
 			status.AVProducts = append(status.AVProducts, *elasticProduct)
 			if !providerIdentified {
 				status.Provider = elasticProduct.Provider
@@ -1110,7 +1129,7 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 				status.ProviderVersion = elasticVersion
 			}
 			if elasticProduct.RealTimeProtection {
-				status.RealTimeProtection = true
+				realTime = true
 			}
 		}
 	}
@@ -1120,16 +1139,18 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 	if defErr != nil {
 		if !errors.Is(defErr, ErrNotSupported) {
 			errs = append(errs, defErr)
+			avFailed = true
 		}
 	} else {
-		if defenderOwnsProvider(providerIdentified, status.RealTimeProtection, defenderStatus.RealTimeProtection) {
+		avCollected = true
+		if defenderOwnsProvider(providerIdentified, realTime, defenderStatus.RealTimeProtection) {
 			status.Provider = "windows_defender"
 		}
 		if status.ProviderVersion == "" {
 			status.ProviderVersion = defenderStatus.ProviderVersion
 		}
 		if defenderStatus.RealTimeProtection {
-			status.RealTimeProtection = true
+			realTime = true
 		}
 		if status.DefinitionsVersion == "" {
 			status.DefinitionsVersion = defenderStatus.DefinitionsVersion
@@ -1145,11 +1166,13 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 		}
 	}
 
+	status.RealTimeProtection = avRealTimeProtectionState(realTime, avCollected, avFailed)
+
 	firewallEnabled, fwErr := GetFirewallStatus()
 	if fwErr != nil {
 		errs = append(errs, fwErr)
 	}
-	status.FirewallEnabled = firewallEnabled
+	status.FirewallEnabled = firewallState(firewallEnabled, fwErr)
 
 	encryptionEnabled, encDetails, encErr := collectEncryptionPosture()
 	if encErr != nil {
@@ -1179,6 +1202,27 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 	}
 
 	return status, errors.Join(errs...)
+}
+
+// avRealTimeProtectionState decides whether the accumulated real-time
+// protection value is a real reading. It is unknown (nil) only when an
+// applicable AV source errored and no source answered — e.g. both the Security
+// Center and Defender queries failed on Windows (#7965). When no source applies
+// and none failed (Linux without Elastic Defend), false is a real reading.
+func avRealTimeProtectionState(realTime, collected, failed bool) *bool {
+	if failed && !collected {
+		return nil
+	}
+	return boolPtr(realTime)
+}
+
+// firewallState reports the firewall reading only when the query succeeded;
+// a failed query is unknown (nil), not "disabled" (#7965).
+func firewallState(enabled bool, err error) *bool {
+	if err != nil {
+		return nil
+	}
+	return boolPtr(enabled)
 }
 
 // GetFirewallStatus returns whether a firewall is enabled on the host.

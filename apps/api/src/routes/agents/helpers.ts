@@ -514,15 +514,17 @@ export async function upsertSecurityStatusForDevice(
 ): Promise<{ provider: SecurityProviderValue; threatCount: number }> {
   const avProducts = Array.isArray(payload.avProducts) ? payload.avProducts : [];
   // `preferredProduct` only backfills the top-level summary when the payload
-  // omits it entirely. The current Go agent always marshals `provider` and
-  // `realTimeProtection` (non-pointer fields, no omitempty), so these fallbacks
-  // are unreachable from it — they exist for partial payloads from other
-  // producers (e.g. script-result ingestion via getSecurityStatusFromResult).
-  // The array itself is persisted below; it is the evidence behind the derived
-  // `realTimeProtection` boolean. See #3641 / #3593.
+  // omits it entirely. The Go agent always marshals `provider`; it omits
+  // `realTimeProtection` / `firewallEnabled` when that collector failed
+  // (#7965). A value that is still missing after the fallback is UNKNOWN and is
+  // stored as null — never coalesced to `false`, which the antivirus alert
+  // checks read as "protection is off". The array itself is persisted below;
+  // it is the evidence behind the derived `realTimeProtection` boolean. See
+  // #3641 / #3593.
   const preferredProduct = avProducts.find((p) => p.realTimeProtection) ?? avProducts[0];
   const provider = normalizeProvider(payload.provider ?? preferredProduct?.provider);
   const avProductsValue = payload.avProducts ?? null;
+  const realTimeProtection = payload.realTimeProtection ?? preferredProduct?.realTimeProtection ?? null;
   const threatCount = payload.threatCount ?? 0;
 
   await db
@@ -534,7 +536,7 @@ export async function upsertSecurityStatusForDevice(
       providerVersion: asString(payload.providerVersion) ?? null,
       definitionsVersion: asString(payload.definitionsVersion) ?? null,
       definitionsDate: parseDate(payload.definitionsDate),
-      realTimeProtection: payload.realTimeProtection ?? preferredProduct?.realTimeProtection ?? false,
+      realTimeProtection,
       lastScan: parseDate(payload.lastScan),
       lastScanType: asString(payload.lastScanType) ?? null,
       threatCount,
@@ -554,7 +556,7 @@ export async function upsertSecurityStatusForDevice(
         providerVersion: asString(payload.providerVersion) ?? null,
         definitionsVersion: asString(payload.definitionsVersion) ?? null,
         definitionsDate: parseDate(payload.definitionsDate),
-        realTimeProtection: payload.realTimeProtection ?? preferredProduct?.realTimeProtection ?? false,
+        realTimeProtection,
         lastScan: parseDate(payload.lastScan),
         lastScanType: asString(payload.lastScanType) ?? null,
         threatCount,
