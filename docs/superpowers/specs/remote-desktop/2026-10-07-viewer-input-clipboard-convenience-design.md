@@ -1,7 +1,7 @@
 # Remote Viewer: Input Correctness, Clipboard Sync v2, Convenience Features
 
 **Date:** 2026-10-07
-**Status:** Draft (design). W1 is implemented (#8237); W2 onward await approval.
+**Status:** Draft (design). W1 is implemented (#8237). W2 onward is approved; W2a is in progress (#8238).
 **Tracking:** LanternOps/breeze#8236
 **Related issues:** #966 (block local input), #1012 (clipboard audit to `audit_logs`), #3084 (in-session chat), #3595 (Caps Lock sync), #3920 (keyboard layout selector), #4089 (type_text), #5484 (UAC prompt hidden)
 
@@ -247,7 +247,7 @@ its own server-authorized design), UAC prompt visibility (#5484).
 | Wave | Scope | Ships to | Rigor |
 |---|---|---|---|
 | **W1** ✅ | Viewer-only fixes that work against today's agents (`apps/viewer/src/lib/inputSafety.ts`):<br>• Release keys **and mouse buttons** on window blur, hidden, or canvas blur (K1). Releases that hit a dead channel are kept and flushed first on the next live one (K4).<br>• Pointer capture for drags, with WS-canvas coordinates clamped (M2). Buttons 3/4 no longer click (M1).<br>• Cmd↔Ctrl remap defaults from viewer OS × remote OS; toggling it releases held keys (K6).<br>• Autorepeat forwarded on Windows/macOS remotes (K7).<br>• Chords whose modifiers are already held go as key_down/key_up — Windows remotes only, and not for a remapped `meta` (K5).<br>• Undelivered-input notice, focus ring, toolbar "Release stuck keys" (U1).<br>• A failed clipboard push no longer pastes stale content (C2).<br>• Clipboard focus rule plus a baseline-push skip (C1, C10).<br>• Host-key prefix for viewer shortcuts (K8). The local clipboard is pushed for Ctrl/Cmd+Shift+V and Shift+Insert too (C3). | Viewer | Standard |
-| **W2** | Agent: held-state tracker + `ReleaseAll` triggers, input worker, normalizer parity, `input-r` + `seq`, `input_reset`, `key_press` honours held modifiers, `code` → scancode, extended keys, back/forward, horizontal wheel, Num/Caps sync on Windows+Linux, macOS flags mask. Advertised via `input_capabilities`. | Agent (customer machines) | High |
+| **W2** (split: W2a #8238 tracker/worker/release/validation, plan `docs/superpowers/plans/remote-desktop/2026-10-08-viewer-input-clipboard.md`; W2b #8246 protocol; W2c #8247 key/pointer coverage) | Agent: held-state tracker + `ReleaseAll` triggers, input worker, normalizer parity, `input-r` + `seq`, `input_reset`, `key_press` honours held modifiers, `code` → scancode, extended keys, back/forward, horizontal wheel, Num/Caps sync on Windows+Linux, macOS flags mask. Advertised via `input_capabilities`. | Agent (customer machines) | High |
 | **W3** | Viewer adopts W2: route on `input-r`, send `seq`, `code`, `numLock`, `deltaX`, back/forward, `input_reset` on focus loss. | Viewer | Standard |
 | **W4** | Clipboard v2: focus rule, chunking, status + chip, Shift+Insert / Send-clipboard, images, VNC wiring, `type_text` worker, audit summary, defaults fix. | Agent + viewer + API | High |
 | **W5** | Convenience: Keyboard Lock / macOS menu, view-only, block-input UI, screenshot, scaling, stats overlay, per-device prefs. | Viewer | Standard |
