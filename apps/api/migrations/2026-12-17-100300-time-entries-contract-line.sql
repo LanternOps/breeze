@@ -17,17 +17,21 @@
 --      EXCLUSIVE (the FK also ROW SHARE on contract_lines), so writes continue
 --      during the scan. The column is new and entirely NULL, so every
 --      constraint passes trivially;
---   4. builds the partial index CONCURRENTLY.
--- lock_timeout bounds how long step 2 may queue behind a long-running
--- transaction: the statement fails after 5s instead of stalling every reader and
+--   4. builds the partial index CONCURRENTLY, then refuses to finish if that
+--      build left an INVALID index.
+-- lock_timeout bounds how long steps 1-3 may queue behind a long-running
+-- transaction: a statement fails after 5s instead of stalling every reader and
 -- writer of time_entries; autoMigrate aborts boot and the file re-runs cleanly
--- on the next start. It is set per session (each statement is sent on its own)
--- and RESET at the end. Precedent: 2026-12-13-110100-device-software-device-cascade.sql.
+-- on the next start. It is set per session (each statement is sent on its own,
+-- on one connection) and RESET before step 4: CREATE INDEX CONCURRENTLY waits
+-- for older transactions without blocking writers, so it must not be cut short
+-- by the timeout. Precedent: 2026-12-13-110100-device-software-device-cascade.sql.
 --
 -- Idempotent: re-applying re-swaps and re-validates the same definitions. A
--- failed CONCURRENTLY build leaves an INVALID index that IF NOT EXISTS would
--- skip; an operator must DROP INDEX it before the next deploy (same contract as
--- 2026-10-08-101100-billing-evidence-fk-targets.sql).
+-- failed CONCURRENTLY build (cancelled, deadlocked) leaves an INVALID index that
+-- IF NOT EXISTS would then skip, so the final DO block raises instead of letting
+-- the file be recorded as applied; an operator must DROP INDEX CONCURRENTLY it
+-- and restart (same contract as 2026-12-13-120100-tickets-partner-feed-index.sql).
 --
 -- No row is written, so no system-scope election is needed.
 
@@ -59,9 +63,23 @@ ALTER TABLE public.time_entries VALIDATE CONSTRAINT time_entries_contract_line_o
 ALTER TABLE public.time_entries VALIDATE CONSTRAINT time_entries_contract_line_org_chk;
 ALTER TABLE public.time_entries VALIDATE CONSTRAINT time_entries_contract_line_chk;
 
+RESET lock_timeout;
+
 -- The FK's child side (a line delete must find its entries) and the per-line
 -- drawdown read. Partial: nearly every entry has no line.
 CREATE INDEX CONCURRENTLY IF NOT EXISTS time_entries_contract_line_idx
   ON public.time_entries (contract_line_id) WHERE contract_line_id IS NOT NULL;
 
-RESET lock_timeout;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+     WHERE i.indrelid = 'public.time_entries'::regclass
+       AND c.relname = 'time_entries_contract_line_idx'
+       AND NOT i.indisvalid
+  ) THEN
+    RAISE EXCEPTION 'time_entries_contract_line_idx build left an INVALID index — DROP INDEX CONCURRENTLY it and re-apply this migration';
+  END IF;
+END $$;

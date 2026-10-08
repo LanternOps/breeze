@@ -699,6 +699,13 @@ describe('migration filename conventions', () => {
     expect(entries.filter((s) => /VALIDATE CONSTRAINT/.test(s))).toHaveLength(3);
     expect(entries.some((s) => /\bNOT VALID\b/.test(s))).toBe(true);
     expect(entries.some((s) => /^SET lock_timeout/i.test(s))).toBe(true);
+    // The CONCURRENTLY build runs without the timeout (RESET first), and an
+    // INVALID leftover makes the file fail instead of being recorded as applied.
+    const reset = entries.findIndex((s) => /^RESET lock_timeout/i.test(s));
+    const cic = entries.findIndex((s) => /CREATE INDEX CONCURRENTLY/i.test(s));
+    expect(reset).toBeGreaterThan(-1);
+    expect(cic).toBeGreaterThan(reset);
+    expect(entries.slice(cic + 1).some((s) => /NOT i\.indisvalid/.test(s) && /RAISE EXCEPTION/.test(s))).toBe(true);
     // No file writes a row (no scope election needed).
     for (const n of names) expect(body(n)).not.toMatch(/^\s*(INSERT\s+INTO|UPDATE\s+\w|DELETE\s+FROM)\b/im);
   });
