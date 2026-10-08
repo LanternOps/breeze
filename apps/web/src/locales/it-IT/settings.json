@@ -369,6 +369,7 @@
       "crossesFunding": "Quel modello di riserva è pagato da un’altra fonte. Consenti prima il passaggio tra crediti Breeze e la tua chiave API.",
       "egress_blocked": "Questo indirizzo non è consentito.",
       "invalid_url": "Questo URL non è valido.",
+      "endpoint_unreachable": "Impossibile risolvere o raggiungere l'host dell'endpoint. Controlla l'URL di base.",
       "managed_by_env": "Questa connessione è gestita dall'ambiente dell'istanza e non può essere modificata qui.",
       "connection_in_use": "Una funzione usa ancora un modello di questa connessione. Scegli prima un altro modello predefinito.",
       "duplicate_model": "Questo ID modello esiste già su questa connessione.",

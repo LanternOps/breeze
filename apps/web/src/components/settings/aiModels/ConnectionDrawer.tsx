@@ -8,7 +8,7 @@ import { showToast } from '../../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { Drawer } from '../../shared/Drawer';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
-import { registryFriendly } from './surfaceLabels';
+import { isBaseUrlRefusal, registryFriendly } from './surfaceLabels';
 import { ConnectionKindForm, type KindDraft } from './connectionForms/ConnectionKindForm';
 import type { OpenAiDraft as OpenAiDraftT } from './connectionForms/OpenAiCompatibleConnectionForm';
 import type { AddableConnectionKind } from './connectionForms/connectionKinds';
@@ -45,6 +45,9 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
   const [disconnecting, setDisconnecting] = useState(false);
 
   const [refreshing, setRefreshing] = useState(false);
+  // The last Base URL the server refused, and why (#7803). Keyed by the URL so the
+  // message goes away as soon as the admin edits it, and is never shown for another URL.
+  const [baseUrlRefusal, setBaseUrlRefusal] = useState<{ url: string; message: string } | null>(null);
   // Set when a Save stored a new endpoint but a later step failed: the prop may
   // still hold the old value until the parent reloads, and a retry must not re-post it.
   const [savedEndpoint, setSavedEndpoint] = useState<{ value: string | null } | null>(null);
@@ -71,6 +74,10 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
     || gatewayDraft.apiKey.trim() !== ''
     || gatewayDraft.removeKey);
 
+  const baseUrlError = baseUrlRefusal !== null && gatewayDraft !== null && gatewayDraft.baseUrl.trim() === baseUrlRefusal.url
+    ? baseUrlRefusal.message
+    : null;
+
   const canSave = isGateway
     ? gatewayDraft !== null && gatewayDraft.valid && gatewayDirty
     : connection === null
@@ -89,6 +96,7 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
 
   const handleGatewaySave = async (d: OpenAiDraftT) => {
     setSaving(true);
+    setBaseUrlRefusal(null);
     // Set once the endpoint/key PATCH committed, so a later failure can reload the new configVersion.
     let gatewaySaved = false;
     try {
@@ -111,6 +119,8 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
           errorFallback: t('aiModels.connections.saveFailed'),
           friendly,
           onUnauthorized,
+          // A refused Base URL is reported on the field (catch below), not as a toast.
+          suppressErrorToast: isBaseUrlRefusal,
         });
       } else {
         const base = `/ai/models/connections/${connection.id}`;
@@ -127,6 +137,7 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
             errorFallback: t('aiModels.connections.saveFailed'),
             friendly,
             onUnauthorized,
+            suppressErrorToast: isBaseUrlRefusal,
           });
           gatewaySaved = true;
         }
@@ -145,7 +156,11 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiModels.connections.saveFailed') });
-      // non-401 ActionError already toasted by runAction; the drawer stays open
+      // A refused Base URL (toast suppressed above) goes on the field; any other
+      // non-401 ActionError was already toasted by runAction. The drawer stays open.
+      if (err instanceof ActionError && isBaseUrlRefusal(err.status, err.code)) {
+        setBaseUrlRefusal({ url: d.baseUrl.trim(), message: err.message });
+      }
       if (gatewaySaved) {
         // The endpoint/key committed (configVersion moved) before the rename failed: reload and close so a
         // retry starts from the fresh version instead of failing as a stale write.
@@ -307,7 +322,7 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
           </div>
         )}
 
-        {isGateway && <ConnectionKindForm kind={kind} connection={connection} onDraftChange={onDraftChange} />}
+        {isGateway && <ConnectionKindForm kind={kind} connection={connection} onDraftChange={onDraftChange} baseUrlError={baseUrlError} />}
 
         {!isGateway && (<>
         <div className="space-y-1">

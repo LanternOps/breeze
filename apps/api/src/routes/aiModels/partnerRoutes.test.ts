@@ -823,6 +823,26 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       expect(clearConnectionCooldowns).not.toHaveBeenCalled();
       expect(writeRouteAudit).not.toHaveBeenCalled();
     });
+    it('an unresolvable new base URL → 400 baseUrl field error, resolver text never returned (#7803)', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(updateGatewayConnection).mockRejectedValueOnce(
+        Object.assign(new Error('getaddrinfo ENOTFOUND example.invalid'), { code: 'ENOTFOUND' }),
+      );
+      const res = await call('PATCH', `/connections/${G}/gateway`, { baseUrl: 'http://example.invalid/v1', apiKey: null, expectedConfigVersion: 3 });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body).toEqual({
+        error: 'The endpoint host could not be resolved or reached. Check the base URL.',
+        code: 'endpoint_unreachable',
+        details: { field: 'baseUrl' },
+      });
+      expect(JSON.stringify(body)).not.toMatch(/getaddrinfo|ENOTFOUND|example\.invalid/);
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+      expect(enqueueConnectionSync).not.toHaveBeenCalled();
+      expect(clearConnectionCooldowns).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
     it('rejects an empty patch and a missing expectedConfigVersion (400, no write)', async () => {
       expect((await call('PATCH', `/connections/${G}/gateway`, { expectedConfigVersion: 3 })).status).toBe(400);
       expect((await call('PATCH', `/connections/${G}/gateway`, { apiKey: null })).status).toBe(400);

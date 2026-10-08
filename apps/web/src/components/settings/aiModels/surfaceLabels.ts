@@ -49,6 +49,7 @@ export const REGISTRY_ERROR_KEYS: Record<string, string> = {
   APPROVALS_DECIDE_REQUIRED: 'aiModels.errors.approvals_decide_required',
   egress_blocked: 'aiModels.errors.egress_blocked',
   invalid_url: 'aiModels.errors.invalid_url',
+  endpoint_unreachable: 'aiModels.errors.endpoint_unreachable',
   managed_by_env: 'aiModels.errors.managed_by_env',
   connection_in_use: 'aiModels.errors.connection_in_use',
   duplicate_model: 'aiModels.errors.duplicate_model',
@@ -90,4 +91,15 @@ export function registryFriendly(t: TFunction) {
     const key = REGISTRY_ERROR_KEYS[code];
     return key ? t(/* i18n-dynamic */ key) : undefined;
   };
+}
+
+/**
+ * Codes the gateway create / endpoint PATCH use to refuse the Base URL itself
+ * (`endpoint_unreachable` carries `details.field: 'baseUrl'`; the egress-policy
+ * codes are always about the URL). The drawer shows these on the field (#7803).
+ */
+const BASE_URL_REFUSAL_CODES = new Set(['endpoint_unreachable', 'egress_blocked', 'invalid_url']);
+
+export function isBaseUrlRefusal(status: number, code: string | undefined): boolean {
+  return status === 400 && code !== undefined && BASE_URL_REFUSAL_CODES.has(code);
 }

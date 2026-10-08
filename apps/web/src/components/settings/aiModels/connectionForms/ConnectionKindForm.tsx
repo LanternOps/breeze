@@ -12,6 +12,8 @@ export function ConnectionKindForm(props: {
   kind: AddableConnectionKind;
   connection: AiConnectionDto | null;
   onDraftChange: (d: KindDraft) => void;
+  /** A server refusal of the draft's Base URL, already localised (#7803). */
+  baseUrlError?: string | null;
 }) {
   const { onDraftChange } = props;
   switch (props.kind) {
@@ -21,6 +23,7 @@ export function ConnectionKindForm(props: {
       return (
         <OpenAiCompatibleConnectionForm
           connection={props.connection}
+          baseUrlError={props.baseUrlError}
           onChange={(draft) => onDraftChange({ kind: 'openai_compatible', draft })}
         />
       );

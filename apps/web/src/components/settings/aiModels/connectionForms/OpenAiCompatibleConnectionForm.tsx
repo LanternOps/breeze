@@ -40,9 +40,12 @@ const inputClass = 'h-10 w-full rounded-md border bg-background px-3 text-sm dis
 export function OpenAiCompatibleConnectionForm({
   connection,
   onChange,
+  baseUrlError = null,
 }: {
   connection: AiConnectionDto | null;
   onChange: (d: OpenAiDraft) => void;
+  /** The server refused this Base URL (unresolvable / unreachable / egress policy); shown on the field. */
+  baseUrlError?: string | null;
 }) {
   const { t } = useTranslation('settings');
   const readOnly = connection?.managedBy === 'env';
@@ -83,8 +86,15 @@ export function OpenAiCompatibleConnectionForm({
         <label className="text-sm font-medium" htmlFor="ai-connection-openai-base-url">{t('aiModels.connections.openai.baseUrl')}</label>
         <input id="ai-connection-openai-base-url" data-testid="ai-connection-openai-base-url" className={inputClass} value={baseUrl}
           placeholder="https://llm.example.com/v1" inputMode="url" autoComplete="off" disabled={readOnly}
+          aria-invalid={baseUrlError ? true : undefined}
+          aria-describedby={baseUrlError ? 'ai-connection-openai-base-url-help ai-connection-openai-base-url-error' : 'ai-connection-openai-base-url-help'}
           onChange={(e) => setBaseUrl(e.target.value)} />
-        <p className="text-xs text-muted-foreground">{t('aiModels.connections.openai.baseUrlHelp')}</p>
+        <p id="ai-connection-openai-base-url-help" className="text-xs text-muted-foreground">{t('aiModels.connections.openai.baseUrlHelp')}</p>
+        {baseUrlError && (
+          <p id="ai-connection-openai-base-url-error" data-testid="ai-connection-openai-base-url-error" role="alert" className="text-xs text-destructive">
+            {baseUrlError}
+          </p>
+        )}
       </div>
       <div className="space-y-1">
         <label className="text-sm font-medium" htmlFor="ai-connection-openai-api-key">{t('aiModels.connections.openai.apiKey')}</label>

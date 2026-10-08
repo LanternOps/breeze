@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { SNAPSHOT, CONN, jsonRes } from './testFixtures';
+import { SNAPSHOT, CONN, GW, GATEWAY_CONNECTION, jsonRes } from './testFixtures';
 
 const fetchWithAuth = vi.fn();
 vi.mock('../../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
@@ -211,5 +211,80 @@ describe('ConnectionDrawer', () => {
     expect(screen.queryByTestId('ai-connection-refresh')).toBeNull();
     rerender(<ConnectionDrawer connection={null} catalog={[]} catalogEnabled={false} onClose={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.queryByTestId('ai-connection-refresh')).toBeNull();
+  });
+  describe('a refused base URL is a field error on Base URL, not a toast (#7803)', () => {
+    const UNREACHABLE = {
+      error: 'The endpoint host could not be resolved or reached. Check the base URL.',
+      code: 'endpoint_unreachable',
+      details: { field: 'baseUrl' },
+    };
+    const addGateway = (baseUrl: string) => {
+      const onClose = vi.fn();
+      render(<ConnectionDrawer connection={null} catalog={[]} catalogEnabled={false} initialKind="openai_compatible" onClose={onClose} onSaved={vi.fn()} />);
+      fireEvent.change(screen.getByTestId('ai-connection-openai-name'), { target: { value: 'Office vLLM' } });
+      fireEvent.change(screen.getByTestId('ai-connection-openai-base-url'), { target: { value: baseUrl } });
+      fireEvent.click(screen.getByTestId('ai-connection-save'));
+      return onClose;
+    };
+
+    it('create: an unresolvable host shows inline on Base URL, keeps the drawer open, and does not toast', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes(UNREACHABLE, 400));
+      const onClose = addGateway('http://example.invalid/v1');
+      const err = await screen.findByTestId('ai-connection-openai-base-url-error');
+      expect(err.textContent).toMatch(/could not be resolved or reached/i);
+      expect(err.getAttribute('role')).toBe('alert');
+      const input = screen.getByTestId('ai-connection-openai-base-url');
+      expect(input.getAttribute('aria-invalid')).toBe('true');
+      expect(input.getAttribute('aria-describedby')).toContain(err.id);
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it('create: never renders resolver text, even if a server echoed it', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ ...UNREACHABLE, error: 'getaddrinfo ENOTFOUND example.invalid' }, 400));
+      addGateway('http://example.invalid/v1');
+      const err = await screen.findByTestId('ai-connection-openai-base-url-error');
+      expect(err.textContent).not.toMatch(/getaddrinfo|ENOTFOUND/);
+    });
+
+    it('create: an egress-policy refusal keeps the policy message, inline', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'Hosted Breeze only connects to https endpoints.', code: 'egress_blocked' }, 400));
+      addGateway('http://llm.example.com/v1');
+      const err = await screen.findByTestId('ai-connection-openai-base-url-error');
+      expect(err.textContent).toBe('Hosted Breeze only connects to https endpoints.');
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+
+    it('the error clears once the Base URL is edited, and returns if the same URL is put back', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes(UNREACHABLE, 400));
+      addGateway('http://example.invalid/v1');
+      await screen.findByTestId('ai-connection-openai-base-url-error');
+      const input = screen.getByTestId('ai-connection-openai-base-url');
+      fireEvent.change(input, { target: { value: 'https://llm.example.com/v1' } });
+      expect(screen.queryByTestId('ai-connection-openai-base-url-error')).toBeNull();
+      expect(input.getAttribute('aria-invalid')).toBeNull();
+      fireEvent.change(input, { target: { value: 'http://example.invalid/v1' } });
+      expect(screen.getByTestId('ai-connection-openai-base-url-error')).toBeTruthy();
+    });
+
+    it('edit: the endpoint PATCH refusal lands on Base URL too', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes(UNREACHABLE, 400));
+      const onClose = vi.fn();
+      render(<ConnectionDrawer connection={GATEWAY_CONNECTION} catalog={[]} catalogEnabled={false} onClose={onClose} onSaved={vi.fn()} />);
+      fireEvent.change(screen.getByTestId('ai-connection-openai-base-url'), { target: { value: 'http://example.invalid/v1' } });
+      fireEvent.click(screen.getByTestId('ai-connection-openai-remove-key'));
+      fireEvent.click(screen.getByTestId('ai-connection-save'));
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(`/ai/models/connections/${GW}/gateway`, expect.objectContaining({ method: 'PATCH' })));
+      expect((await screen.findByTestId('ai-connection-openai-base-url-error')).textContent).toMatch(/could not be resolved or reached/i);
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it('a failure that is not about the URL still toasts and leaves Base URL clean', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'busy', code: 'registry_busy' }, 409));
+      addGateway('https://llm.example.com/v1');
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      expect(screen.queryByTestId('ai-connection-openai-base-url-error')).toBeNull();
+    });
   });
 });
