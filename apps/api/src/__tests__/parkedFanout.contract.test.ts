@@ -285,6 +285,7 @@ const EXEMPT: Record<string, string> = {
   'services/deviceConsentPromptCapability.ts': 'request path: reads one capability column of the one device a desktop start names, no enumeration',
   'services/deviceCoverage.ts': 'request path: single-device read enforcing actor.accessibleOrgIds from the request',
   'services/deviceDeletion.ts': 'lifecycle: removes one device and its referencing rows',
+  'services/deviceHierarchy.ts': 'request path: reads the one authenticated device\'s own hierarchy for a heartbeat; each resolver applies the parked-org rule to what it is handed, no enumeration',
   'services/deviceFunction.ts': 'org-pinned: membership check scoped to an explicit org and device pair',
   'services/deviceLifecycle.ts': 'lifecycle: restore/purge of one locked removed device',
   'services/deviceLinkGroups.ts': 'request path: mutations scoped to a link group or caller-supplied devices from link routes and the deletion cascade',
