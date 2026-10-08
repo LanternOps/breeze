@@ -3,6 +3,7 @@
 package patching
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -326,22 +327,8 @@ func CreateRestorePoint(description string) error {
 		return fmt.Errorf("SRSetRestorePoint not available: %w", err)
 	}
 
-	// RESTOREPOINTINFOW structure (must match Windows SDK RESTOREPOINTINFOW layout)
-	// SequenceNumber is DWORD (uint32), not int64. Using int64 would corrupt
-	// the Description field offset and cause SRSetRestorePoint to fail silently.
-	type restorePointInfo struct {
-		EventType        uint32
-		RestorePointType uint32
-		SequenceNumber   uint32
-		Description      [256]uint16
-	}
-
-	// STATEMGRSTATUS structure
-	type statemgrStatus struct {
-		Status         uint32
-		SequenceNumber uint32
-	}
-
+	// restorePointInfo / statemgrStatus are package-level (restorepoint_abi.go)
+	// so their SDK layout is pinned by a platform-neutral test (#4752).
 	const (
 		beginSystemChange  = 100
 		applicationInstall = 0
@@ -368,8 +355,13 @@ func CreateRestorePoint(description string) error {
 		uintptr(unsafe.Pointer(&rpi)),
 		uintptr(unsafe.Pointer(&status)),
 	)
-	if r == 0 {
-		return fmt.Errorf("SRSetRestorePoint failed: status=%d err=%v", status.Status, callErr)
+	// BEGIN_SYSTEM_CHANGE without a matching END_SYSTEM_CHANGE is the existing
+	// behaviour; W02 of #4751 replaces this function with one that closes it.
+	if msg, failed := restorePointCallFailed(r, status.Status); failed {
+		if errno, ok := callErr.(windows.Errno); ok && errno != 0 {
+			return fmt.Errorf("%s: %w", msg, callErr)
+		}
+		return errors.New(msg)
 	}
 
 	return nil
