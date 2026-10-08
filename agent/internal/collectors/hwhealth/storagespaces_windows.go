@@ -5,7 +5,6 @@ package hwhealth
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -42,7 +41,7 @@ func newStorageSpaces(remembered map[string]string) Source {
 		tier: TierRAID,
 		detect: func(ctx context.Context) Availability {
 			o, e := runPowerShell(ctx, 60*time.Second, spacesDetectScript)
-			return Availability{Path: "powershell.exe", Available: e != nil || o.ExitCode != 0 || number(strings.TrimSpace(string(o.Stdout))) > 0}
+			return Availability{Path: "powershell.exe", Available: spacesAvailable(o, e, remembered)}
 		},
 		collect: func(ctx context.Context, a Availability) (Result, error) {
 			o, e := runPowerShell(ctx, 60*time.Second, spacesScript)

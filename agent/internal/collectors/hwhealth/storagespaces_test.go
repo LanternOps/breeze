@@ -236,3 +236,34 @@ func TestWinPDLostCommunicationKeepsMemberKey(t *testing.T) {
 		t.Fatalf("winpd must not record members: %v", remembered)
 	}
 }
+
+// A failed pool probe must not invent Storage Spaces on a host that has never
+// reported a pool member: that turned every probe error on a pool-less laptop
+// into a failing collector flapping ok/failed/backing_off. On a host whose
+// pool members we remember, a probe error still counts as present so a broken
+// pool keeps failing visibly instead of going silent.
+func TestSpacesAvailable(t *testing.T) {
+	known := map[string]string{"{0b6e5c7a-1111-2222-3333-444455556666}": "uid"}
+	cases := []struct {
+		name       string
+		out        execResult
+		err        error
+		remembered map[string]string
+		want       bool
+	}{
+		{"pools present", execResult{Stdout: []byte("2\r\n")}, nil, nil, true},
+		{"no pools", execResult{Stdout: []byte("0\r\n")}, nil, nil, false},
+		{"probe error, never pooled", execResult{}, fmt.Errorf("timeout"), map[string]string{}, false},
+		{"probe exit 1, never pooled", execResult{ExitCode: 1}, nil, nil, false},
+		{"probe error, known pool members", execResult{}, fmt.Errorf("timeout"), known, true},
+		{"probe exit 1, known pool members", execResult{ExitCode: 1}, nil, known, true},
+		{"no pools now, known pool members", execResult{Stdout: []byte("0")}, nil, known, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := spacesAvailable(tc.out, tc.err, tc.remembered); got != tc.want {
+				t.Fatalf("spacesAvailable = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
