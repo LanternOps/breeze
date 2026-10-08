@@ -245,6 +245,10 @@ export async function runHourBlockCloseOutSweep(asOf: Date = new Date()): Promis
             },
           });
           n += r.closes.length;
+          if (r.truncated) {
+            console.warn('[contractHourBlocks] close-out backlog capped; remaining periods close on later sweeps',
+              { contractId, lineId: line.id });
+          }
         }
         return n;
       }));

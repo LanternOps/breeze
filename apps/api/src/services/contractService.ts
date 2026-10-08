@@ -1894,6 +1894,10 @@ export async function cancelContract(contractId: string, actor: ContractActor) {
   const c = await getOwnedContractOr404(contractId, actor);
   await requireWholeContractSiteAccess(actor, contractId);
   if (c.status === 'cancelled') return c;
+  // #8181: lock BEFORE retiring the block line. A billing run that claims a
+  // period while this request is in flight must commit first, so its claim's
+  // generated_at precedes the retirement instant below.
+  await lockContractRow(db, contractId);
   const [row] = await db.update(contracts)
     .set({ status: 'cancelled', nextBillingAt: null, updatedAt: new Date() })
     .where(eq(contracts.id, contractId)).returning();
@@ -1997,13 +2001,16 @@ const NO_ALLOWANCE = { includedQuantity: null, overageMode: null, overageUnitPri
 /**
  * Expire/cancel end the block (#8181, plan-time amendment 5): stamp the live
  * line retired so the one-live-block-per-org index frees for a successor.
- * Pre-retirement claimed periods still close via runHourBlockCloseOutSweep.
- * now() = transaction start — the same instant contract_billing_periods.generated_at
- * (DEFAULT now()) gets for a claim in this transaction — so a final period claimed
- * on the expiring run satisfies generated_at <= retired_at. Never pass asOf here.
+ * Pre-retirement claimed periods still close via runHourBlockCloseOutSweep —
+ * entitlement is generated_at <= retired_at. CALLER MUST HOLD THE CONTRACT ROW
+ * LOCK. clock_timestamp(), not now(): now() is the transaction START, which for
+ * a request that waited on the lock predates a claim committed while it waited.
+ * After the lock, clock_timestamp() is >= every committed claim's generated_at
+ * (DEFAULT now(), the claiming transaction's start) — including a final period
+ * claimed earlier in this same transaction. Never pass asOf here.
  */
 async function retireLiveHourBlocks(contractId: string): Promise<void> {
-  await db.update(contractLines).set({ hourBlockRetiredAt: sql`now()` })
+  await db.update(contractLines).set({ hourBlockRetiredAt: sql`clock_timestamp()` })
     .where(and(
       eq(contractLines.contractId, contractId),
       eq(contractLines.lineType, 'hour_block'),

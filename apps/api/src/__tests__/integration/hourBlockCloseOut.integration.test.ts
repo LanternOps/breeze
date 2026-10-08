@@ -5,9 +5,9 @@ vi.mock('../../services/contractEvents', () => ({ emitContractEvent: vi.fn().moc
 vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockResolvedValue(undefined) }));
 
 import { eq, sql } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { contractHourPeriods, contractLines, contracts, invoiceLines, invoices, organizations } from '../../db/schema';
-import { generateDueInvoice } from '../../services/contractService';
+import { cancelContract, generateDueInvoice } from '../../services/contractService';
 import { closeHourBlockPeriods, runHourBlockCloseOutSweep } from '../../services/contractHourBlockClose';
 import { entryState, seedBlockFixture, seedEntry } from './hourBlockFixtures';
 
@@ -76,6 +76,52 @@ describe('runHourBlockCloseOutSweep (real DB) #8181', () => {
       });
     });
     expect(s.closes.map((c) => c.periodStart)).toEqual(['2026-07-01']);
+  });
+
+  it('a cancel whose transaction began before a billing run\'s claim still entitles that claim', async () => {
+    // Review finding: retirement must be stamped AFTER the contract lock, not at
+    // the cancel transaction's start, or a period claimed by a run that slipped
+    // in between is judged "claimed after retirement" — fee billed, hours never
+    // closed and no longer held.
+    const f = await seedBlockFixture({ timing: 'advance', nextBillingAt: '2026-07-01' });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let started!: () => void;
+    const begun = new Promise<void>((r) => { started = r; });
+    const cancel = runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      await db.execute(sql`SELECT 1`);          // the cancel transaction (and its now()) has begun
+      started();
+      await gate;
+      return cancelContract(f.contractId, f.actor);
+    }));
+    await begun;
+    await new Promise((r) => setTimeout(r, 20));
+    const r = await runOutsideDbContext(() => withSystemDbAccessContext(() => generateDueInvoice(f.contractId, at('2026-07-01'))));
+    expect(r.generated).toBe(true);
+    release();
+    await cancel;
+    await seedEntry(f, { minutes: 60, endedAt: '2026-07-20T12:00:00Z' });
+    expect(await runHourBlockCloseOutSweep(at('2026-08-02'))).toMatchObject({ closes: 1, errors: 0 });
+  });
+
+  it('one failing contract does not stop the sweep; the failure rolls back that contract only', async () => {
+    const bad = await seedBlockFixture({ timing: 'advance', nextBillingAt: '2026-07-01', endDate: '2026-08-01' });
+    const good = await seedBlockFixture({ timing: 'advance', nextBillingAt: '2026-07-01', endDate: '2026-08-01' });
+    for (const f of [bad, good]) await withSystemDbAccessContext(() => generateDueInvoice(f.contractId, at('2026-07-01')));
+    // 2 h over at the numeric(12,2) maximum overflows the overage line_total -> 22003 inside the close.
+    await withSystemDbAccessContext(() => db.update(contractLines).set({ overageUnitPrice: '9999999999.99' })
+      .where(eq(contractLines.id, bad.blockLineId)));
+    const badEntry = await seedEntry(bad, { minutes: 720, endedAt: '2026-07-20T12:00:00Z' });
+    await seedEntry(good, { minutes: 60, endedAt: '2026-07-20T12:00:00Z' });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await runHourBlockCloseOutSweep(at('2026-08-02'))).toEqual({ contracts: 2, closes: 1, errors: 1 });
+    } finally { err.mockRestore(); }
+    const ledgerOf = (lineId: string) => withSystemDbAccessContext(() => db.select().from(contractHourPeriods)
+      .where(eq(contractHourPeriods.contractLineId, lineId)));
+    expect(await ledgerOf(bad.blockLineId)).toHaveLength(0);
+    expect(await ledgerOf(good.blockLineId)).toHaveLength(1);
+    expect(await entryState(badEntry)).toEqual({ billingStatus: 'not_billed', contractLineId: null });
   });
 
   it('skips a contract whose org is not automation-eligible', async () => {

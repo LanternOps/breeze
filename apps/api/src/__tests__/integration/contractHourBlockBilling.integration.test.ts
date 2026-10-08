@@ -6,7 +6,7 @@ vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mo
 
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { contractHourPeriods, contractLines, contracts, invoiceLines } from '../../db/schema';
+import { contractBillingPeriods, contractHourPeriods, contractLines, contracts, invoiceLines, invoices } from '../../db/schema';
 import { cancelContract, generateDueInvoice, pauseContract, resumeContract } from '../../services/contractService';
 import { claimPeriod, entryState, seedBlockFixture, seedEntry } from './hourBlockFixtures';
 
@@ -118,6 +118,21 @@ describe('generateDueInvoice with a block of hours (real DB) #8181', () => {
     expect(r.generated).toBe(true);
     expect(r.hourBlockCloses).toEqual([]);
     expect((await entryState(e)).billingStatus).toBe('not_billed');
+  });
+
+  it('a close that fails after flipping entries rolls back fee, claim, drawdown and ledger together', async () => {
+    const f = await seedBlockFixture({ timing: 'arrears' });
+    await withSystemDbAccessContext(() => db.update(contractLines).set({ overageUnitPrice: '9999999999.99' })
+      .where(eq(contractLines.id, f.blockLineId)));
+    const e = await seedEntry(f, { minutes: 720, endedAt: '2026-07-15T12:00:00Z' });   // 2 h over -> line_total overflow
+    await expect(run(f.contractId, '2026-08-01')).rejects.toBeDefined();
+    expect(await entryState(e)).toEqual({ billingStatus: 'not_billed', contractLineId: null });
+    const sysRead = <T>(fn: () => Promise<T>) => withSystemDbAccessContext(fn);
+    expect(await sysRead(() => db.select().from(contractHourPeriods).where(eq(contractHourPeriods.contractLineId, f.blockLineId)))).toHaveLength(0);
+    expect(await sysRead(() => db.select().from(contractBillingPeriods).where(eq(contractBillingPeriods.contractId, f.contractId)))).toHaveLength(0);
+    expect(await sysRead(() => db.select().from(invoices).where(eq(invoices.orgId, f.orgId)))).toHaveLength(0);
+    const [c] = await sysRead(() => db.select().from(contracts).where(eq(contracts.id, f.contractId)));
+    expect(c!.nextBillingAt).toBe('2026-08-01');
   });
 
   it('a re-run is already_billed and closes nothing twice', async () => {

@@ -115,6 +115,28 @@ describe('org moves and block-drawn time (real DB) #8181', () => {
     expect(await entryRow(e)).toEqual({ orgId: f.orgId, s: 'contract', l: f.blockLineId });
   });
 
+  it('ordered: a ticket move that commits first leaves the moved entry out of the source org\'s close', async () => {
+    const f = await seedBlockFixture({ timing: 'arrears' });
+    const target = await seedTarget(f);
+    const ticketId = await seedTicket(f);
+    const e = await seedEntry(f, { minutes: 60, endedAt: '2026-07-15T12:00:00Z', ticketId });
+    await sys(() => moveTicketOrg(ticketId, target.orgId, actorOf(f)));
+    const r = await sys(() => generateDueInvoice(f.contractId, new Date('2026-08-01T06:00:00Z')));
+    expect(r.hourBlockCloses).toMatchObject([{ entryCount: 0, consumedHours: 0 }]);
+    expect(await entryRow(e)).toEqual({ orgId: target.orgId, s: 'not_billed', l: null });
+  });
+
+  it('ordered: once a close drew the entry, the move is refused', async () => {
+    const f = await seedBlockFixture({ timing: 'arrears' });
+    const target = await seedTarget(f);
+    const ticketId = await seedTicket(f);
+    const e = await seedEntry(f, { minutes: 60, endedAt: '2026-07-15T12:00:00Z', ticketId });
+    await sys(() => generateDueInvoice(f.contractId, new Date('2026-08-01T06:00:00Z')));
+    await expect(sys(() => moveTicketOrg(ticketId, target.orgId, actorOf(f))))
+      .rejects.toMatchObject({ status: 409, code: 'HOUR_BLOCK_DRAWN_TIME' });
+    expect(await entryRow(e)).toEqual({ orgId: f.orgId, s: 'contract', l: f.blockLineId });
+  });
+
   it('a ticket move racing a block close: a clean move or a clean 409, never 23503 / 40P01', async () => {
     for (let i = 0; i < 3; i++) {
       const f = await seedBlockFixture({ timing: 'arrears' });
