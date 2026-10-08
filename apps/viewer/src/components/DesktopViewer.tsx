@@ -39,6 +39,7 @@ import {
   remoteClipboardDecision,
   viewerShortcut,
   isPasteChord,
+  isCopyChord,
 } from '../lib/inputSafety';
 import { isServiceModeRefusal, serviceModeRefusalMessage } from '../lib/serviceModeRefusal';
 import { shouldAutoHandoffToVnc, shouldAutoHandoffToWebRTC } from '../lib/autoHandoff';
@@ -177,10 +178,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
   // Releases that could not be sent because the input channel was down. Keys
   // are held at the OS level on the remote, not per session, so the next live
-  // channel sends them before anything else.
-  const strandedReleasesRef = useRef<Array<Record<string, unknown>>>([]);
+  // channel to the SAME device sends them before anything else. Bound to the
+  // device: a deep link that retargets this window must not release keys on a
+  // machine that never pressed them.
+  const strandedReleasesRef = useRef<{ destination: string; events: Array<Record<string, unknown>> } | null>(null);
+  const inputDestination = params.deviceId ?? (params.mode === 'desktop' ? params.sessionId : params.tunnelId);
+  const inputDestinationRef = useRef(inputDestination);
+  inputDestinationRef.current = inputDestination;
   // Inputs to the remote→local clipboard focus rule (remoteClipboardDecision).
-  const windowBlurAtRef = useRef<number | null>(null);
+  const lastCopyIntentAtRef = useRef<number | null>(null);
   const clipboardOpenedAtRef = useRef<number | null>(null);
   const clipboardPushesSeenRef = useRef(0);
   const wheelAccRef = useRef(DEFAULT_WHEEL_ACCUMULATOR);
@@ -631,6 +637,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         channel.onmessage = (msg) => {
           try {
             const payload = JSON.parse(msg.data);
+            // Every push counts toward the baseline, whatever its format: an
+            // image or empty baseline must not make the next real copy look
+            // like the baseline.
+            const pushesSeen = payload.type === 'ack' ? clipboardPushesSeenRef.current : clipboardPushesSeenRef.current++;
             if (payload.type === 'ack' && payload.hash) {
               const entry = clipboardAckMapRef.current.get(payload.hash);
               if (entry) {
@@ -648,9 +658,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
               const decision = remoteClipboardDecision({
                 now: Date.now(),
                 hasFocus: document.hasFocus(),
-                lastBlurAt: windowBlurAtRef.current,
+                lastCopyIntentAt: lastCopyIntentAtRef.current,
                 channelOpenedAt: clipboardOpenedAtRef.current,
-                pushesSeen: clipboardPushesSeenRef.current++,
+                pushesSeen,
               });
               if (decision !== 'apply') {
                 console.debug('[clipboard] remote clipboard not applied:', decision);
@@ -1608,10 +1618,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       if (wsSession) send = (data) => wsSession.inputChannel.send(data);
     }
     if (!send) return null;
-    if (strandedReleasesRef.current.length > 0) {
-      const stranded = strandedReleasesRef.current;
-      strandedReleasesRef.current = [];
-      for (const ev of stranded) send(JSON.stringify(ev));
+    const stranded = strandedReleasesRef.current;
+    if (stranded) {
+      strandedReleasesRef.current = null;
+      if (stranded.destination === inputDestinationRef.current) {
+        for (const ev of stranded.events) send(JSON.stringify(ev));
+      }
     }
     const live = send;
     return (event) => live(JSON.stringify(event));
@@ -1651,26 +1663,34 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const send = getInputSender();
     if (send) {
       for (const ev of releases) send(ev);
-    } else {
-      strandedReleasesRef.current.push(...releases);
+      return;
     }
+    const destination = inputDestinationRef.current;
+    const prior = strandedReleasesRef.current;
+    strandedReleasesRef.current = {
+      destination,
+      events: prior?.destination === destination ? [...prior.events, ...releases] : releases,
+    };
   }, [getInputSender]);
   releaseAllKeysRef.current = releaseAllKeys;
 
   // A new session's channel may open with releases still stranded from the
-  // last one; send them now rather than waiting for the next input event.
+  // last one; send them as soon as it can carry them rather than waiting for
+  // the next input event. 'connected' can precede the input channel opening.
   useEffect(() => {
-    if (status !== 'connected' || strandedReleasesRef.current.length === 0) return;
-    getInputSender();
-  }, [status, getInputSender]);
+    if (status !== 'connected' || !strandedReleasesRef.current) return;
+    if (getInputSender()) return;
+    const ch = transport === 'webrtc' ? webrtcRef.current?.inputChannel : null;
+    if (!ch) return;
+    const onOpen = () => { getInputSender(); };
+    ch.addEventListener('open', onOpen, { once: true });
+    return () => ch.removeEventListener('open', onOpen);
+  }, [status, transport, getInputSender]);
 
   // Focus leaving the window (Alt-Tab, Cmd-Tab, minimise) means key-ups for
   // anything held will be delivered elsewhere. Release now (gotcha K1).
   useEffect(() => {
-    const onWindowBlur = () => {
-      windowBlurAtRef.current = Date.now();
-      releaseAllKeysRef.current();
-    };
+    const onWindowBlur = () => releaseAllKeysRef.current();
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') releaseAllKeysRef.current();
     };
@@ -1701,9 +1721,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const maxBuffered = 512 * 1024;
     if (ch.bufferedAmount > maxBuffered) return; // wait for bufferedamountlow
 
+    // Stranded releases must reach the remote before any new motion.
+    if (strandedReleasesRef.current) getInputSender();
+
     webrtcMouseMovePendingRef.current = null;
     ch.send(JSON.stringify({ type: 'mouse_move', x: pending.x, y: pending.y }));
-  }, []);
+  }, [getInputSender]);
 
   // Native wheel handler to enable preventDefault on non-passive listener
   useEffect(() => {
@@ -1873,6 +1896,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   // ── Input: keyboard handlers ───────────────────────────────────────
 
+  // key_press presses its modifiers around the key and then releases them, so
+  // a modifier we had sent as key_down is no longer down on the remote.
+  // Forget it, or the next chord would take the 'held' route and lose it
+  // (Shift+A arriving as a lowercase a).
+  const forgetModifiersReleasedByKeyPress = useCallback((modifiers: string[]) => {
+    for (const m of modifiers) pressedKeysRef.current.delete(m);
+  }, []);
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
 
@@ -1937,6 +1968,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       return;
     }
 
+    // A copy the operator makes here may be read back after they switch
+    // away (copy, then Alt-Tab): see remoteClipboardDecision.
+    if (isCopyChord(ne)) lastCopyIntentAtRef.current = Date.now();
+
     // Paste chords (Ctrl/Cmd+V, Ctrl/Cmd+Shift+V, Shift+Insert) → push the
     // local clipboard to the remote before pasting. Must await the clipboard
     // sync BEFORE dispatching the keystroke, or it lands on the agent ahead of
@@ -1972,6 +2007,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           sendInputFn({ type: 'key_up', key: pasteKey, capsLock });
         } else {
           sendInputFn({ type: 'key_press', key: pasteKey, modifiers: pasteModifiers, capsLock });
+          forgetModifiersReleasedByKeyPress(pasteModifiers);
         }
       };
       const waitForAck = (hash: string, timeoutMs: number): Promise<void> => {
@@ -2024,6 +2060,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       remapActive: remapCmdCtrl,
     }) === 'key_press') {
       sendInputFn({ type: 'key_press', key, modifiers, capsLock });
+      forgetModifiersReleasedByKeyPress(modifiers);
       return;
     }
 
@@ -2040,7 +2077,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     pressedKeysRef.current.add(key);
     if (ne.code) heldKeyNameByCodeRef.current.set(ne.code, key);
     sendInputFn({ type: 'key_down', key, capsLock });
-  }, [sendInputFn, handlePasteAsKeystrokes, releaseAllKeys, remapCmdCtrl, keyNameMode, remoteOs]);
+  }, [sendInputFn, handlePasteAsKeystrokes, releaseAllKeys, forgetModifiersReleasedByKeyPress, remapCmdCtrl, keyNameMode, remoteOs]);
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();

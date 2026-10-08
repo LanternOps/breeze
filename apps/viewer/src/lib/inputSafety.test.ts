@@ -6,7 +6,8 @@ import {
   shouldForwardKeyRepeat,
   chordRouting,
   remoteClipboardDecision,
-  REMOTE_CLIPBOARD_BLUR_GRACE_MS,
+  REMOTE_CLIPBOARD_COPY_INTENT_MS,
+  isCopyChord,
   REMOTE_CLIPBOARD_BASELINE_WINDOW_MS,
   viewerShortcut,
   shortcutLabel,
@@ -127,47 +128,60 @@ describe('chordRouting', () => {
 describe('remoteClipboardDecision', () => {
   const opened = 10_000;
   const later = opened + REMOTE_CLIPBOARD_BASELINE_WINDOW_MS + 1;
+  const base = { now: later, hasFocus: true, lastCopyIntentAt: null, channelOpenedAt: opened, pushesSeen: 3 };
 
   it('applies a push to the focused window', () => {
-    expect(remoteClipboardDecision({
-      now: later, hasFocus: true, lastBlurAt: null, channelOpenedAt: opened, pushesSeen: 3,
-    })).toBe('apply');
+    expect(remoteClipboardDecision(base)).toBe('apply');
   });
 
   it('skips a push to a background window (no cross-session clipboard bleed)', () => {
-    expect(remoteClipboardDecision({
-      now: later, hasFocus: false, lastBlurAt: later - REMOTE_CLIPBOARD_BLUR_GRACE_MS - 1, channelOpenedAt: opened, pushesSeen: 3,
-    })).toBe('skip-unfocused');
+    expect(remoteClipboardDecision({ ...base, hasFocus: false })).toBe('skip-unfocused');
   });
 
-  it('skips a push to a window that has never been focused', () => {
-    expect(remoteClipboardDecision({
-      now: later, hasFocus: false, lastBlurAt: null, channelOpenedAt: opened, pushesSeen: 3,
-    })).toBe('skip-unfocused');
+  it('skips a background push even right after the operator switched away, absent a copy', () => {
+    // Switching from customer A's window to B's and A's user copying a moment
+    // later must not land A's data on the local clipboard.
+    expect(remoteClipboardDecision({ ...base, hasFocus: false, lastCopyIntentAt: null })).toBe('skip-unfocused');
   });
 
-  it('applies a push that lands just after the window lost focus (copy then Alt-Tab)', () => {
+  it('applies a push that lands after the operator copied in this window and switched away', () => {
     expect(remoteClipboardDecision({
-      now: later, hasFocus: false, lastBlurAt: later - 200, channelOpenedAt: opened, pushesSeen: 3,
+      ...base, hasFocus: false, lastCopyIntentAt: later - 400,
     })).toBe('apply');
+  });
+
+  it('skips a background push once the copy intent has expired', () => {
+    expect(remoteClipboardDecision({
+      ...base, hasFocus: false, lastCopyIntentAt: later - REMOTE_CLIPBOARD_COPY_INTENT_MS - 1,
+    })).toBe('skip-unfocused');
   });
 
   it('skips the baseline push the agent sends right after the channel opens', () => {
-    expect(remoteClipboardDecision({
-      now: opened + 600, hasFocus: true, lastBlurAt: null, channelOpenedAt: opened, pushesSeen: 0,
-    })).toBe('skip-baseline');
+    expect(remoteClipboardDecision({ ...base, now: opened + 600, pushesSeen: 0 })).toBe('skip-baseline');
   });
 
   it('applies a second push inside the baseline window (a real copy, not the baseline)', () => {
-    expect(remoteClipboardDecision({
-      now: opened + 1500, hasFocus: true, lastBlurAt: null, channelOpenedAt: opened, pushesSeen: 1,
-    })).toBe('apply');
+    expect(remoteClipboardDecision({ ...base, now: opened + 1500, pushesSeen: 1 })).toBe('apply');
   });
 
   it('applies a first push that arrives after the baseline window', () => {
-    expect(remoteClipboardDecision({
-      now: later, hasFocus: true, lastBlurAt: null, channelOpenedAt: opened, pushesSeen: 0,
-    })).toBe('apply');
+    expect(remoteClipboardDecision({ ...base, pushesSeen: 0 })).toBe('apply');
+  });
+});
+
+describe('isCopyChord', () => {
+  const ev = (code: string, m: Partial<Record<'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey', boolean>>) =>
+    ({ code, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, ...m });
+  it('covers Ctrl/Cmd+C, Ctrl/Cmd+X and Ctrl+Insert', () => {
+    expect(isCopyChord(ev('KeyC', { ctrlKey: true }))).toBe(true);
+    expect(isCopyChord(ev('KeyC', { metaKey: true }))).toBe(true);
+    expect(isCopyChord(ev('KeyX', { ctrlKey: true }))).toBe(true);
+    expect(isCopyChord(ev('KeyC', { ctrlKey: true, shiftKey: true }))).toBe(true);
+    expect(isCopyChord(ev('Insert', { ctrlKey: true }))).toBe(true);
+  });
+  it('is not a plain C or an Alt chord', () => {
+    expect(isCopyChord(ev('KeyC', {}))).toBe(false);
+    expect(isCopyChord(ev('KeyC', { ctrlKey: true, altKey: true }))).toBe(false);
   });
 });
 

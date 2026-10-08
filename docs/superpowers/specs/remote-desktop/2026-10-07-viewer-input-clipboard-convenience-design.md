@@ -165,8 +165,12 @@ Spike first: how `VK_PACKET` Unicode input behaves with single-key app shortcuts
 ### 5. Clipboard v2
 
 - **Focus rule (C1):** a session window applies remote→local pushes only while it is the focused
-  window. Background windows keep the latest remote item in memory and offer it via the toolbar
-  ("Copy remote clipboard"), never silently.
+  window, or within 2 s after the operator sent a copy chord (Ctrl/Cmd+C/X, Ctrl+Insert) in that
+  window (copy, then Alt-Tab). A plain "lost focus a moment ago" grace was rejected in review. It
+  cannot tell the operator's copy from an end-user copy made just after the operator switched to
+  another customer's window. Background windows keep the latest remote item in memory and offer it
+  via the toolbar ("Copy remote clipboard", W4), never silently. Shipped in W1, except the toolbar
+  action.
 - **Chunking (C2):** `input_capabilities` advertises `clipboard: {chunked: true, maxBytes, formats}`.
   Content is split so that each **serialized** frame `{type:"chunk", id, seq, last, data}` is at most
   48 KiB (base64 inflates raw bytes by a third, before JSON overhead). The sender applies
@@ -271,6 +275,15 @@ clipboard" action covers this case.
 - ~~Q2~~ Resolved: the focus rule shipped in W1 (conservative, reversible).
 
 ## Review log
+
+- 2026-10-08: W1 code review (Codex, `medium`). Fixed all five findings, each with a source guard
+  that fails on the earlier commit:
+  - The blur-grace clipboard leak. Replaced by copy intent.
+  - The baseline counter missed image and empty pushes.
+  - Stranded releases had no destination. They are now bound to the device.
+  - Releases were not flushed when the input channel opened after `connected`.
+  - Modifier bookkeeping desynced after a `key_press` fallback. Modifiers the agent released are now
+    forgotten.
 
 - 2026-10-07: independent design review (Codex, `xhigh`). Accepted all amendments:
   - the ordering barrier (`after`);

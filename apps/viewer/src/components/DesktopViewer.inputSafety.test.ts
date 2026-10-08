@@ -51,4 +51,21 @@ describe('DesktopViewer input safety wiring', () => {
   it('pushes the clipboard for every paste chord, not just Ctrl/Cmd+V', () => {
     expect(source).toMatch(/if \(isPasteChord\(ne\)\) \{/);
   });
+
+  it('forgets modifiers a key_press released, at both key_press fallbacks', () => {
+    expect(source.match(/forgetModifiersReleasedByKeyPress\((modifiers|pasteModifiers)\);/g)).toHaveLength(2);
+  });
+
+  it('binds stranded releases to the device they were pressed on', () => {
+    expect(source).toMatch(/stranded\.destination === inputDestinationRef\.current/);
+  });
+
+  it('flushes stranded releases when the input channel opens after connect', () => {
+    expect(source).toMatch(/ch\.addEventListener\('open', onOpen, \{ once: true \}\)/);
+  });
+
+  it('records copy intent instead of a blur grace for background clipboard pushes', () => {
+    expect(source).toMatch(/if \(isCopyChord\(ne\)\) lastCopyIntentAtRef\.current = Date\.now\(\);/);
+    expect(source).not.toMatch(/lastBlurAt/);
+  });
 });

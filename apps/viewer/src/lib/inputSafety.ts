@@ -99,15 +99,20 @@ export function chordRouting(input: ChordRoutingInput): 'key_press' | 'held' {
   return modifiers.every((m) => heldKeys.has(m)) ? 'held' : 'key_press';
 }
 
-/** A push this soon after the window lost focus still belongs to it (copy, then Alt-Tab). */
-export const REMOTE_CLIPBOARD_BLUR_GRACE_MS = 1500;
+/**
+ * A push this soon after the operator sent a copy chord in this window belongs
+ * to that copy, even if they have since switched away (copy, then Alt-Tab).
+ * The agent polls every 500 ms.
+ */
+export const REMOTE_CLIPBOARD_COPY_INTENT_MS = 2000;
 /** The agent pushes the remote clipboard's existing contents on its first poll after the channel opens. */
 export const REMOTE_CLIPBOARD_BASELINE_WINDOW_MS = 3000;
 
 export interface RemoteClipboardState {
   now: number;
   hasFocus: boolean;
-  lastBlurAt: number | null;
+  /** When the operator last sent a copy chord (isCopyChord) in this window. */
+  lastCopyIntentAt: number | null;
   channelOpenedAt: number | null;
   /** Remote pushes received on this channel before this one. */
   pushesSeen: number;
@@ -120,7 +125,9 @@ export interface RemoteClipboardState {
  * them from background windows lets one customer's clipboard reach the
  * technician's clipboard while they work in another customer's session, and
  * from there get pasted into that other customer's machine. Only the focused
- * window, or one that lost focus a moment ago, may write.
+ * window may write, or a background one whose operator just copied in it. A
+ * plain "lost focus a moment ago" grace is not enough: it cannot tell the
+ * operator's copy from the end user's copy made just after the switch.
  *
  * The first push right after the channel opens is whatever the end user had
  * copied before the session started, not something copied during it. Writing
@@ -137,7 +144,7 @@ export function remoteClipboardDecision(
     return 'skip-baseline';
   }
   if (s.hasFocus) return 'apply';
-  if (s.lastBlurAt !== null && s.now - s.lastBlurAt <= REMOTE_CLIPBOARD_BLUR_GRACE_MS) return 'apply';
+  if (s.lastCopyIntentAt !== null && s.now - s.lastCopyIntentAt <= REMOTE_CLIPBOARD_COPY_INTENT_MS) return 'apply';
   return 'skip-unfocused';
 }
 
@@ -178,5 +185,13 @@ export function isPasteChord(e: ModifierState): boolean {
   if (e.altKey) return false;
   if (e.code === 'KeyV') return e.ctrlKey || e.metaKey;
   if (e.code === 'Insert') return e.shiftKey && !e.ctrlKey && !e.metaKey;
+  return false;
+}
+
+/** Chords that copy on the remote: Ctrl/Cmd+C, Ctrl/Cmd+X, Ctrl+Insert. */
+export function isCopyChord(e: ModifierState): boolean {
+  if (e.altKey) return false;
+  if (e.code === 'KeyC' || e.code === 'KeyX') return e.ctrlKey || e.metaKey;
+  if (e.code === 'Insert') return e.ctrlKey && !e.shiftKey && !e.metaKey;
   return false;
 }
