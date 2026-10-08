@@ -398,6 +398,35 @@ describe('deleteDeviceCascade link detach (#3952)', () => {
   });
 });
 
+describe('deleteDeviceCascade EDR detection site snapshot (#8165, spec D14)', () => {
+  it('snapshots last_site_id on linked EDR detections after the lock and before the device delete', async () => {
+    // edr_detections.(breeze_device_id, org_id) -> devices(id, org_id) is
+    // ON DELETE SET NULL (breeze_device_id), so the hard delete itself clears
+    // the link. Without this snapshot the finding becomes a "never linked"
+    // null-device row that every site-restricted technician in the org can
+    // see — visibility widened as a side effect of a delete.
+    const { tx, statements } = captureTx();
+
+    await deleteDeviceCascade(tx, 'device-1');
+
+    const snapshots = statements.filter((s) => s.includes('edr_detections'));
+    expect(snapshots, 'expected exactly one edr_detections statement').toHaveLength(1);
+    const snapshot = snapshots[0]!;
+    expect(snapshot).toContain('last_site_id');
+    expect(snapshot).toContain('SELECT site_id FROM devices WHERE id =');
+    expect(snapshot).toContain('device_detached_at = COALESCE(device_detached_at, now())');
+    // Snapshot only: the FK's column-list SET NULL clears the link itself.
+    expect(snapshot).not.toContain('breeze_device_id = NULL');
+
+    const lockIdx = statements.findIndex((s) => s.includes('FOR UPDATE'));
+    const snapshotIdx = statements.indexOf(snapshot);
+    const deleteIdx = statements.indexOf('__DELETE_DEVICES_ROW__');
+    expect(lockIdx).toBeGreaterThanOrEqual(0);
+    expect(snapshotIdx).toBeGreaterThan(lockIdx);
+    expect(snapshotIdx).toBeLessThan(deleteIdx);
+  });
+});
+
 describe('deleteDeviceCascade when the parent lock is not acquired', () => {
   it('reports rather than aborting when FOR UPDATE matches no row', async () => {
     // Zero rows means the device is already gone (a re-run, or two reapers
