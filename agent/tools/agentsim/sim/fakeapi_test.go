@@ -216,7 +216,7 @@ func (f *fakeAPI) upgrade(w http.ResponseWriter, r *http.Request) {
 	}
 	go func() {
 		defer close(done)
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		for {
 			_, data, err := conn.ReadMessage()
 			if err != nil {

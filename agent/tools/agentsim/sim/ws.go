@@ -96,7 +96,7 @@ func (s *wsSession) dial(ctx context.Context) (*gws.Conn, error) {
 	if resp != nil {
 		status = resp.StatusCode
 		if resp.Body != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 	}
 	s.agent.rec.ObserveHTTP(RouteWSUpgrade, true, start, time.Since(start), status, err)
@@ -116,7 +116,7 @@ func (s *wsSession) serve(ctx context.Context, conn *gws.Conn) {
 		s.mu.Lock()
 		s.conn = nil
 		s.mu.Unlock()
-		conn.Close()
+		_ = conn.Close()
 	}()
 
 	conn.SetReadLimit(wsMaxMessage)
@@ -130,7 +130,7 @@ func (s *wsSession) serve(ctx context.Context, conn *gws.Conn) {
 		select {
 		case <-ctx.Done():
 			_ = conn.WriteControl(gws.CloseMessage, gws.FormatCloseMessage(gws.CloseNormalClosure, ""), time.Now().Add(time.Second))
-			conn.Close()
+			_ = conn.Close()
 		case <-stop:
 		}
 	}()
@@ -159,7 +159,7 @@ func (s *wsSession) pinger(ctx context.Context, conn *gws.Conn, stop <-chan stru
 		case <-t.C:
 			// WriteControl may run concurrently with other writers (gorilla docs).
 			if err := conn.WriteControl(gws.PingMessage, nil, time.Now().Add(wsWriteWait)); err != nil {
-				conn.Close()
+				_ = conn.Close()
 				return
 			}
 			s.agent.rec.WSControlPing()

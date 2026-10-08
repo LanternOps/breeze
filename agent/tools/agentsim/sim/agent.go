@@ -125,7 +125,7 @@ func (a *Agent) send(ctx context.Context, method, path string, payload any) (*ht
 	if err != nil {
 		return nil, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	return resp, data, err
 }

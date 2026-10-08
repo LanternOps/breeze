@@ -70,7 +70,7 @@ func (e *Enroller) Enroll(ctx context.Context, index int, hostname string) (Iden
 			continue
 		}
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		switch {
 		case resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated:
 			var out api.EnrollResponse

@@ -152,12 +152,12 @@ func (s *TokenStore) Save(path string) error {
 		return err
 	}
 	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
+		_ = os.Remove(tmp.Name())
 		return err
 	}
 	return os.Rename(tmp.Name(), path)

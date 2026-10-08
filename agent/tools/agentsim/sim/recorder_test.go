@@ -84,7 +84,7 @@ func TestRecordingTransportCountsOneRequestAcrossRetries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	st := rec.routes[RouteHeartbeat]
 	if st.requests != 1 || st.attempts != 2 || st.status[503] != 1 || st.status[200] != 1 {
 		t.Fatalf("want 1 request / 2 attempts / one 503 + one 200, got %+v", st)

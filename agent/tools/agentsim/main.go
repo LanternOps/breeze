@@ -55,14 +55,14 @@ func parseFlags(args []string, getenv func(string) string) (sim.Config, error) {
 }
 
 func printSummary(w io.Writer, path string, r sim.Report) {
-	fmt.Fprintf(w, "agentsim %s: %d/%d agents started, %.1f agent-minutes in the steady window\n",
+	_, _ = fmt.Fprintf(w, "agentsim %s: %d/%d agents started, %.1f agent-minutes in the steady window\n",
 		r.RunID, r.Agents.Started, r.Agents.Configured, r.Window.AgentMinutes)
-	fmt.Fprintf(w, "  requests/agent-min %.2f (model %.2f, %+.1f%%), non-2xx %d, transport errors %d\n",
+	_, _ = fmt.Fprintf(w, "  requests/agent-min %.2f (model %.2f, %+.1f%%), non-2xx %d, transport errors %d\n",
 		r.Totals.RequestsPerAgentMinute, r.Totals.ExpectedRequestsPerAgentMinute, r.Totals.DeviationPct,
 		r.Totals.Non2xx, r.Totals.TransportErrors)
-	fmt.Fprintf(w, "  ws connects %d (reconnects %d, failures %d); commands dispatched %d, results %v\n",
+	_, _ = fmt.Fprintf(w, "  ws connects %d (reconnects %d, failures %d); commands dispatched %d, results %v\n",
 		r.WS.Connects, r.WS.Reconnects, r.WS.ConnectFailures, r.Commands.Dispatched, r.Commands.ResultsSent)
-	fmt.Fprintf(w, "  report: %s\n", path)
+	_, _ = fmt.Fprintf(w, "  report: %s\n", path)
 }
 
 func main() {

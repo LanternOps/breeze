@@ -70,7 +70,7 @@ func (c *Commander) login(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("commander login: %w", err)
 		}
 		data, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		status = resp.StatusCode
 		if status != http.StatusPreconditionRequired {
 			break
@@ -100,6 +100,6 @@ func (c *Commander) dispatch(ctx context.Context, token, deviceID string) (int, 
 		return 0, err
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return resp.StatusCode, nil
 }
