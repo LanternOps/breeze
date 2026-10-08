@@ -12,6 +12,7 @@ import {
   patchPolicies,
 } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import { coerceAppRuleList, type PolicyAppRule } from './patchApprovalEvaluator';
 import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
 
 export type PatchInlineSettings = z.infer<typeof patchInlineSettingsSchema>;
@@ -47,6 +48,47 @@ export interface PatchRingResolution {
   categories: string[];
   excludeCategories: string[];
   autoApprove: Record<string, unknown> | boolean;
+  /**
+   * The ring's per-app block/pin rules (`patch_policies.app_rules`, #8184),
+   * normalised for the evaluator. `[]` for every classification other than
+   * `valid_ring`.
+   */
+  appRules: PolicyAppRule[];
+}
+
+/** A resolution with no usable ring: no ring config of any kind. */
+function noRingResolution(
+  classification: Exclude<PatchReferenceClassification, 'valid_ring'>,
+  valid: boolean
+): PatchRingResolution {
+  return {
+    classification,
+    valid,
+    ringId: null,
+    ringName: null,
+    categoryRules: [],
+    categories: [],
+    excludeCategories: [],
+    autoApprove: {},
+    appRules: [],
+  };
+}
+
+/**
+ * Normalise a ring row's stored `app_rules` with the job executor's
+ * fail-closed coercion. A non-array value (the column CHECK forbids it, so
+ * only reachable through drift) yields no ring rules, reported loudly.
+ */
+function coerceRingAppRules(raw: unknown, ringId: string): PolicyAppRule[] {
+  const context = `[configPolicyPatching] ring ${ringId}`;
+  const rules = coerceAppRuleList(raw, context);
+  if (rules === null) {
+    const message = `${context} has malformed app_rules (not an array); ignoring ring app rules`;
+    console.warn(`${message}:`, JSON.stringify(raw));
+    captureException(new Error(message));
+    return [];
+  }
+  return rules;
 }
 
 export interface PolicyLocalPatchConfig {
@@ -195,16 +237,7 @@ export async function resolvePatchPolicyReference(
   featurePolicyId: string | null
 ): Promise<PatchRingResolution> {
   if (!featurePolicyId || !partnerId) {
-    return {
-      classification: 'null',
-      valid: true,
-      ringId: null,
-      ringName: null,
-      categoryRules: [],
-      categories: [],
-      excludeCategories: [],
-      autoApprove: {},
-    };
+    return noRingResolution('null', true);
   }
 
   // #2822 / #7647. `patch_policies` is partner-axis, and the four routes in
@@ -228,6 +261,7 @@ export async function resolvePatchPolicyReference(
         categories: patchPolicies.categories,
         excludeCategories: patchPolicies.excludeCategories,
         autoApprove: patchPolicies.autoApprove,
+        appRules: patchPolicies.appRules,
       })
       .from(patchPolicies)
       .where(and(eq(patchPolicies.id, featurePolicyId), eq(patchPolicies.partnerId, partnerId)))
@@ -245,18 +279,10 @@ export async function resolvePatchPolicyReference(
         categories: coerceCategoryList(patchPolicy.categories),
         excludeCategories: coerceCategoryList(patchPolicy.excludeCategories),
         autoApprove: (patchPolicy.autoApprove ?? {}) as Record<string, unknown> | boolean,
+        appRules: coerceRingAppRules(patchPolicy.appRules, patchPolicy.id),
       };
     }
-    return {
-      classification: 'legacy_patch_policy',
-      valid: false,
-      ringId: null,
-      ringName: null,
-      categoryRules: [],
-      categories: [],
-      excludeCategories: [],
-      autoApprove: {},
-    };
+    return noRingResolution('legacy_patch_policy', false);
   }
 
   const [configPolicy] = await db
@@ -266,28 +292,10 @@ export async function resolvePatchPolicyReference(
     .limit(1);
 
   if (configPolicy) {
-    return {
-      classification: 'config_policy_uuid',
-      valid: false,
-      ringId: null,
-      ringName: null,
-      categoryRules: [],
-      categories: [],
-      excludeCategories: [],
-      autoApprove: {},
-    };
+    return noRingResolution('config_policy_uuid', false);
   }
 
-  return {
-    classification: 'missing_target',
-    valid: false,
-    ringId: null,
-    ringName: null,
-    categoryRules: [],
-    categories: [],
-    excludeCategories: [],
-    autoApprove: {},
-  };
+  return noRingResolution('missing_target', false);
 }
 
 export async function loadPolicyLocalPatchConfig(

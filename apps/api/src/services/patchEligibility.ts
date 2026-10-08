@@ -49,7 +49,7 @@ import {
   buildAppRuleMap,
   canonicalizePatchCategory,
   decidePatchApproval,
-  evaluateAppRule,
+  evaluateAppRuleSets,
   isCategoryAllowed,
   isThirdPartyPatchSource,
   parseRingAutoApprove,
@@ -234,11 +234,14 @@ export async function evaluatePatchInstallEligibility(args: {
 
   if (categoryFiltered.length === 0) return { eligible, ineligible, ringId: ringConfig.ringId, resolvedAt };
 
-  // App rules filter before manual approvals are loaded — a policy block/pin
+  // App rules filter before manual approvals are loaded — a block/pin
   // overrides even an explicit manual approval in the job flow; manual
-  // per-device installs bypass this evaluator entirely.
-  const appRuleMap = buildAppRuleMap(ringConfig.apps);
-  const finalCandidates = appRuleMap.size > 0
+  // per-device installs bypass this evaluator entirely. Ring rules and
+  // policy rules are both enforced (#8184 dual read); the stricter verdict
+  // wins.
+  const appRuleMaps = [buildAppRuleMap(ringConfig.ringAppRules), buildAppRuleMap(ringConfig.apps)]
+    .filter((m) => m.size > 0);
+  const finalCandidates = appRuleMaps.length > 0
     ? categoryFiltered.filter((p) => {
       if (!p.packageId && isThirdPartyPatchSource(p.source)) {
         // Deliberate allow-with-warn: holding every unidentified third-party
@@ -249,7 +252,7 @@ export async function evaluatePatchInstallEligibility(args: {
         );
         return true;
       }
-      const verdict = evaluateAppRule(p, appRuleMap);
+      const verdict = evaluateAppRuleSets(p, appRuleMaps);
       if (verdict !== 'allowed') {
         console.warn(
           `[PatchApproval] device ${deviceId}: patch ${p.patchId} (${p.source}/${p.packageId ?? '?'} v${p.version ?? '?'}) excluded by app rule (${verdict})`
@@ -442,6 +445,8 @@ export async function resolveDevicePatchEvaluation(
       rule.action === 'pin' && rule.pinnedVersion
         ? { source: rule.source, packageId: rule.packageId, action: 'pin', pinnedVersion: rule.pinnedVersion }
         : { source: rule.source, packageId: rule.packageId, action: 'block' }),
+    // The resolver already normalised these (coerceRingAppRules) — #8184.
+    ringAppRules: ringId ? ring.appRules : [],
   };
 
   if (ringId) {
@@ -466,7 +471,7 @@ export async function resolveDevicePatchEvaluation(
       console.warn(message);
       captureException(new Error(message));
       return {
-        config: { ...NO_POLICY_CONFIG, sources: config.sources, policyAutoApprove: config.policyAutoApprove, apps: config.apps },
+        config: { ...NO_POLICY_CONFIG, sources: config.sources, policyAutoApprove: config.policyAutoApprove, apps: config.apps, ringAppRules: [] },
         ringName: null,
       };
     }
