@@ -168,7 +168,7 @@ describe('location start and site filter (#4186)', () => {
   });
 
   it('POST /start forwards orgId/siteId/source and actor.allowedSiteIds', async () => {
-    permsRef.current = { permissions: [{ resource: 'time_entries', action: 'write' }], allowedSiteIds: [SITE] } as any;
+    (authRef.current as any).allowedSiteIds = [SITE];
     serviceMocks.startTimer.mockResolvedValue({ id: 'te-1', endedAt: null });
     const res = await post('/start', { orgId: ORG, siteId: SITE, source: 'location' });
     expect(res.status).toBe(201);
@@ -176,6 +176,7 @@ describe('location start and site filter (#4186)', () => {
       expect.objectContaining({ orgId: ORG, siteId: SITE, source: 'location' }),
       expect.objectContaining({ allowedSiteIds: [SITE] })
     );
+    delete (authRef.current as any).allowedSiteIds;
   });
 
   it('POST /start rejects server-only sources with 400', async () => {

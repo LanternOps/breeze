@@ -45,6 +45,8 @@ function addinTimeActorFrom(auth: OfficeAddinTechAuth): TimeEntryActor {
     // Add-in tokens are a separate principal, not a web session or OAuth grant.
     manageBilling: canManageTimeEntryBilling({ user: { isPlatformAdmin: false } }, auth.permissions),
     accessibleOrgIds: auth.accessibleOrgIds,
+    // #4186: a site-confined caller may not stamp a site outside its allowlist.
+    allowedSiteIds: auth.permissions.allowedSiteIds,
   };
 }
 

@@ -47,7 +47,7 @@ export function timeActorFrom(
     accessibleOrgIds: auth.accessibleOrgIds,
     // #4186: site allowlist of a site-confined user (defence-in-depth; only
     // organization-scope users carry it today).
-    allowedSiteIds: perms?.allowedSiteIds,
+    allowedSiteIds: auth.allowedSiteIds,
     // v1 admin proxy (plan decision): wildcard-permission roles approve + manage others
     manageAll: auth.user.isPlatformAdmin || (perms ? hasPermission(perms, '*', '*') : false),
     manageBilling: canManageTimeEntryBilling(auth, perms),
