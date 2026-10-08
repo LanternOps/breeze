@@ -109,25 +109,57 @@ describe('handleCtrlVPaste', () => {
     expect(dispatchPaste).toHaveBeenCalledOnce();
   });
 
-  it('dispatches paste and skips waitForAck when dc.send throws', async () => {
+  it('does NOT dispatch paste when dc.send throws — the remote would paste stale content', async () => {
     const dc = makeDC();
     (dc.send as ReturnType<typeof vi.fn>).mockImplementation(() => { throw new DOMException('channel closing', 'InvalidStateError'); });
     const dispatchPaste = vi.fn();
     const waitForAck = makeWaitForAck();
+    const lastHash = { current: 'older' };
 
     const deps: CtrlVPasteDeps = {
       dc,
       readText: async () => 'new content',
-      lastHash: { current: '' },
+      lastHash,
       dispatchPaste,
       waitForAck,
     };
 
-    await handleCtrlVPaste(deps);
+    const result = await handleCtrlVPaste(deps);
 
     expect(dc.send).toHaveBeenCalledOnce();
     expect(waitForAck).not.toHaveBeenCalled();
-    expect(dispatchPaste).toHaveBeenCalledOnce();
+    expect(dispatchPaste).not.toHaveBeenCalled();
+    expect(result).toBe('push-failed');
+    // Not cached as synced: the next Ctrl+V must try the push again.
+    expect(lastHash.current).toBe('older');
+  });
+
+  it('reports push-failed for an oversized payload the channel rejects', async () => {
+    const dc = makeDC();
+    (dc.send as ReturnType<typeof vi.fn>).mockImplementation(() => { throw new TypeError('Message too large'); });
+    const dispatchPaste = vi.fn();
+
+    const result = await handleCtrlVPaste({
+      dc,
+      readText: async () => 'x'.repeat(300_000),
+      lastHash: { current: '' },
+      dispatchPaste,
+      waitForAck: makeWaitForAck(),
+    });
+
+    expect(result).toBe('push-failed');
+    expect(dispatchPaste).not.toHaveBeenCalled();
+  });
+
+  it('reports pasted after a successful push', async () => {
+    const result = await handleCtrlVPaste({
+      dc: makeDC(),
+      readText: async () => 'hello',
+      lastHash: { current: '' },
+      dispatchPaste: vi.fn(),
+      waitForAck: makeWaitForAck(),
+    });
+    expect(result).toBe('pasted');
   });
 
   it('dispatches paste even when readText rejects', async () => {

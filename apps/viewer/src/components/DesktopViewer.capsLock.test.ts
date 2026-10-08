@@ -27,12 +27,6 @@ import source from './DesktopViewer.tsx?raw';
  */
 const SYNTHETIC_EMITS_WITHOUT_CAPS_STATE = new Map<string, string>([
   [
-    "sendInputFn({ type: 'key_up', key });",
-    'releaseAllKeys: a bulk release of keys stranded in pressedKeysRef. There ' +
-      'is no KeyboardEvent to read a state from, and releasing a key cannot ' +
-      'change casing.',
-  ],
-  [
     "sendInputFn({ type: 'key_press', key, modifiers });",
     'handleSendKeys: toolbar combos (Ctrl+Alt+Del and friends) are pressed by ' +
       'a button, not typed, so they are deliberately Caps Lock independent.',
