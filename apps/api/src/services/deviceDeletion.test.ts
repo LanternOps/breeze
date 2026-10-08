@@ -425,6 +425,19 @@ describe('deleteDeviceCascade EDR detection site snapshot (#8165, spec D14)', ()
     expect(snapshotIdx).toBeGreaterThan(lockIdx);
     expect(snapshotIdx).toBeLessThan(deleteIdx);
   });
+
+  it('clears the EDR endpoint link together with device_match_source before the device delete', async () => {
+    // The FK's SET NULL (breeze_device_id) alone would leave a 'manual'
+    // provenance on an unlinked endpoint, which the matcher never re-matches.
+    const { tx, statements } = captureTx();
+
+    await deleteDeviceCascade(tx, 'device-1');
+
+    const detaches = statements.filter((s) => s.includes('edr_endpoints'));
+    expect(detaches).toHaveLength(1);
+    expect(detaches[0]).toContain('breeze_device_id = NULL, device_match_source = NULL');
+    expect(statements.indexOf(detaches[0]!)).toBeLessThan(statements.indexOf('__DELETE_DEVICES_ROW__'));
+  });
 });
 
 describe('deleteDeviceCascade when the parent lock is not acquired', () => {

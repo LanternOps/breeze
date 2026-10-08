@@ -42,6 +42,7 @@ import { getTestDb } from './setup';
 import { executeOrgMerge } from '../../services/orgMerge';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
 import { deleteDeviceCascade, type DeviceDeletionTx } from '../../services/deviceDeletion';
+import { moveDeviceOrgInTransaction } from '../../services/deviceOrgMove/moveDeviceOrgInTransaction';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -606,7 +607,8 @@ describe('edr provider — lifecycle against real Postgres', () => {
     expect(det!.last_site_id).toBe(fx.a.site.id);
     expect(det!.device_detached_at).not.toBeNull();
     const [ep] = await adminRows<{ n: number }>(sql`
-      SELECT count(*)::int AS n FROM edr_endpoints WHERE id = ${rows.endpoint.id}::uuid AND breeze_device_id IS NULL
+      SELECT count(*)::int AS n FROM edr_endpoints
+      WHERE id = ${rows.endpoint.id}::uuid AND breeze_device_id IS NULL AND device_match_source IS NULL
     `);
     expect(ep!.n, 'the endpoint row did not survive the device delete detached').toBe(1);
   });
@@ -659,6 +661,46 @@ describe('edr provider — lifecycle against real Postgres', () => {
       SELECT org_id, breeze_device_id, last_site_id FROM edr_detections WHERE id = ${rows.detection.id}::uuid`);
     // Not re-homed, and the SOURCE site is what was snapshotted (D14).
     expect(det).toEqual({ org_id: fx.a.org.id, breeze_device_id: null, last_site_id: fx.a.site.id });
+  });
+
+  runDb('the real moveDeviceOrgInTransaction detaches all three links, keeps the rows and snapshots the source site', async () => {
+    // The premise test above runs hand-copied statements; this one runs the
+    // SHIPPED engine, so a wrong column, org id or placement in the service
+    // itself turns this red (a 23503 from the flip, or a wrong row state).
+    const fx = await withSystemDbAccessContext(async () => {
+      const a = await seedEdrTenant('move-engine');
+      const target = await createOrganization({ partnerId: a.partner.id });
+      const targetSite = await createSite({ orgId: target.id });
+      return { a, target, targetSite: targetSite! };
+    });
+    const rows = await seedLinkedRows(fx.a);
+
+    await withSystemDbAccessContext(() => db.transaction((tx) => moveDeviceOrgInTransaction(tx, {
+      deviceId: fx.a.device.id,
+      sourceOrgId: fx.a.org.id,
+      targetOrgId: fx.target.id,
+      targetSiteId: fx.targetSite.id,
+      targetOrgName: 'target',
+      deviceLinkGroupId: null,
+      acceptCurrencyMismatch: false,
+      actor: { userId: fx.a.user.id, allowedSiteIds: undefined },
+      stepUp: null,
+      via: 'generic_move',
+    })));
+
+    const [device] = await adminRows<{ org_id: string }>(sql`
+      SELECT org_id FROM devices WHERE id = ${fx.a.device.id}::uuid`);
+    expect(device!.org_id).toBe(fx.target.id);
+    const [ep] = await adminRows<Row>(sql`
+      SELECT org_id, breeze_device_id, device_match_source FROM edr_endpoints WHERE id = ${rows.endpoint.id}::uuid`);
+    expect(ep).toEqual({ org_id: fx.a.org.id, breeze_device_id: null, device_match_source: null });
+    const [det] = await adminRows<Row>(sql`
+      SELECT org_id, breeze_device_id, last_site_id, device_detached_at IS NOT NULL AS detached
+      FROM edr_detections WHERE id = ${rows.detection.id}::uuid`);
+    expect(det).toEqual({ org_id: fx.a.org.id, breeze_device_id: null, last_site_id: fx.a.site.id, detached: true });
+    const [act] = await adminRows<Row>(sql`
+      SELECT org_id, breeze_device_id FROM edr_actions WHERE id = ${rows.action.id}::uuid`);
+    expect(act).toEqual({ org_id: fx.a.org.id, breeze_device_id: null });
   });
 
   runDb('deleting a connection cascades tenants, endpoints, detections and actions', async () => {

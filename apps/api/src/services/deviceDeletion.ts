@@ -362,6 +362,12 @@ export async function deleteDeviceCascade(
     SET device_detached_at = COALESCE(device_detached_at, now()),
         last_site_id = (SELECT site_id FROM devices WHERE id = ${deviceId})
     WHERE breeze_device_id = ${deviceId}`);
+  // Clear the endpoint link WITH its provenance, as the org-move detach does:
+  // the FK's SET NULL (breeze_device_id) alone would leave e.g. 'manual' on an
+  // unlinked row, and manual links are never re-matched.
+  await tx.execute(sql`UPDATE edr_endpoints
+    SET breeze_device_id = NULL, device_match_source = NULL
+    WHERE breeze_device_id = ${deviceId}`);
 
   await tx.delete(devices).where(eq(devices.id, deviceId));
   return { removedTopologyAlerts };

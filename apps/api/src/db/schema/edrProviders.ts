@@ -330,8 +330,8 @@ export const edrDetections = pgTable('edr_detections', {
 }));
 
 /**
- * Audit + status ledger for EDR response actions (RLS shape 1; the generic
- * `s1_actions`). Not append-only — status advances — so not in
+ * Audit + status ledger for EDR response actions (RLS shape 1; the
+ * provider-neutral analogue of the SentinelOne `s1_actions` ledger). Not append-only — status advances — so not in
  * `AUDIT_ADMIN_REQUIRED_TABLES`. Written from W03.
  */
 export const edrActions = pgTable('edr_actions', {

@@ -5,8 +5,11 @@
  * apps/api/migrations/2026-12-16-100000-edr-provider-framework.sql, and
  * apps/api/src/__tests__/integration/edrProviderRls.integration.test.ts
  * compares the two. Extend both together: add the value here AND drop/re-add
- * the CHECK in a NEW migration. An unknown vendor value maps to the `unknown`
- * bucket (or `other` for OS platform) — adapters never throw on one.
+ * the CHECK in a NEW migration. For the sets that bucket VENDOR values
+ * (severity, detection status, endpoint health / type, isolation state, OS
+ * platform) an unknown vendor value maps to `unknown` (`other` for OS
+ * platform) — adapters never throw on one. The remaining sets are
+ * Breeze-originated and closed.
  */
 export const EDR_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info', 'unknown'] as const;
 export const EDR_DETECTION_STATUSES = [
