@@ -24,6 +24,6 @@ describe('edr provider registry', () => {
   });
 
   it('declares the incidents operation class budget', () => {
-    expect(getEdrProvider('bitdefender').capabilities.operationBudgets?.incidents).toEqual({ perMinute: 10 });
+    expect(getEdrProvider('bitdefender').capabilities.operationBudgets?.incidents).toEqual({ perMinute: 2 });
   });
 });
