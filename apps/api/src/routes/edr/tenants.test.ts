@@ -16,7 +16,7 @@ const { authState, gates, dbState, ctxState, remapState } = vi.hoisted(() => ({
     executed: [] as string[],
     txOpened: 0,
   },
-  ctxState: { enqueueInContext: [] as boolean[], inTx: false, remapInTx: null as boolean | null },
+  ctxState: { deferred: [] as Array<() => unknown>, deferredInTx: [] as boolean[], inTx: false, remapInTx: null as boolean | null },
   remapState: {
     error: null as null | { code: string; message: string },
     result: {
@@ -73,9 +73,10 @@ vi.mock('../../db', () => ({
       }
     }),
   },
-  runOutsideDbContext: vi.fn((fn: () => unknown) => {
-    ctxState.enqueueInContext.push(ctxState.inTx);
-    return fn();
+  // Records the deferred work; a test runs it to simulate "after commit".
+  runAfterDbContextExit: vi.fn((_label: string, work: () => unknown) => {
+    ctxState.deferredInTx.push(ctxState.inTx);
+    ctxState.deferred.push(work);
   }),
 }));
 
@@ -110,8 +111,14 @@ vi.mock('../../jobs/edrProviderSync', () => ({
 }));
 
 import { writeRouteAudit } from '../../services/auditEvents';
+import { captureException } from '../../services/sentry';
 import { remapEdrTenant } from '../../services/edrProviders/mapping';
 import { edrTenantRoutes } from './tenants';
+
+async function runDeferred(): Promise<void> {
+  const work = ctxState.deferred.splice(0);
+  for (const w of work) await w();
+}
 
 const JSON_HEADERS = { 'content-type': 'application/json' };
 const put = (app: Hono, body: unknown) =>
@@ -132,7 +139,8 @@ describe('EDR tenant routes', () => {
     dbState.tenantRows = [];
     dbState.executed = [];
     dbState.txOpened = 0;
-    ctxState.enqueueInContext = [];
+    ctxState.deferred = [];
+    ctxState.deferredInTx = [];
     ctxState.inTx = false;
     ctxState.remapInTx = null;
     remapState.error = null;
@@ -216,8 +224,12 @@ describe('EDR tenant routes', () => {
         action: 'edr.tenant.map',
         details: { previousOrgId: ORG_A, orgId: ORG_B, endpointsDeleted: 5, detectionsDetached: 2 },
       });
+      // Nothing is enqueued while the request transaction is open; the work is
+      // deferred until the outermost DB context exits (after commit).
+      expect(enqueueMock).not.toHaveBeenCalled();
+      expect(ctxState.deferred).toHaveLength(1);
+      await runDeferred();
       expect(enqueueMock.mock.calls.map((c) => c[1])).toEqual(['inventory', 'detections']);
-      expect(ctxState.enqueueInContext).toEqual([false]);
     });
 
     it('unmap (orgId null) audits edr.tenant.unmap against the previous org', async () => {
@@ -249,11 +261,12 @@ describe('EDR tenant routes', () => {
       expect((await put(app, { orgId: ORG_B })).status).toBe(404);
     });
 
-    it('a queue failure does not fail the mapping', async () => {
+    it('a queue failure after commit does not fail the mapping and is reported to Sentry', async () => {
       enqueueMock.mockRejectedValueOnce(new Error('redis down'));
       const res = await put(app, { orgId: ORG_B });
       expect(res.status).toBe(200);
-      expect((await res.json()).syncWarning).toBeTruthy();
+      await expect(runDeferred()).resolves.toBeUndefined();
+      expect(captureException).toHaveBeenCalledTimes(1);
     });
   });
 });

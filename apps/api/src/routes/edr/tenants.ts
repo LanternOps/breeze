@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { db, runOutsideDbContext } from '../../db';
+import * as dbModule from '../../db';
+import { db } from '../../db';
 import { edrConnections, edrTenants, organizations } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
@@ -132,20 +133,24 @@ edrTenantRoutes.put(
       },
     });
 
-    // After the remap, outside every DB context. A queue failure must not undo a
-    // committed-looking mapping; the next scheduled cycle picks it up.
-    let syncWarning: string | null = null;
-    try {
-      await runOutsideDbContext(async () => {
-        await enqueueEdrSync(tenant.connectionId, 'inventory');
-        await enqueueEdrSync(tenant.connectionId, 'detections');
-      });
-    } catch (error) {
-      console.error('[edrProvider] failed to queue a sync after a tenant remap:', error);
-      captureException(error instanceof Error ? error : new Error(String(error)));
-      syncWarning = 'Sync could not be queued. Data will refresh on the next scheduled cycle.';
-    }
+    // Enqueue only once the request transaction has COMMITTED
+    // (runAfterDbContextExit), outside every DB context (#1105). Enqueued inside
+    // the transaction, the sync's Phase 1 could read the pre-remap mapping and
+    // skip the newly mapped tenant until the next scheduled cycle (the #7187
+    // enqueue-before-commit hazard). On rollback the sync runs against unchanged
+    // state, which is harmless. A queue failure is logged; the next scheduled
+    // cycle picks the tenant up.
+    const connectionId = tenant.connectionId;
+    dbModule.runAfterDbContextExit(`edr: enqueue sync after tenant remap ${id}`, async () => {
+      try {
+        await enqueueEdrSync(connectionId, 'inventory');
+        await enqueueEdrSync(connectionId, 'detections');
+      } catch (error) {
+        console.error('[edrProvider] failed to queue a sync after a tenant remap:', error);
+        captureException(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
 
-    return c.json({ data: result, ...(syncWarning ? { syncWarning } : {}) });
+    return c.json({ data: result });
   },
 );
