@@ -3934,7 +3934,9 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
 
     expect(resp.status).toBe(200);
     const configUpdate = ((await resp.json()) as Record<string, any>).configUpdate as Record<string, unknown>;
+    // The exact wire key the agent reads — a rename here darkens the feature fleet-wide.
     expect(configUpdate.onedrive_helper_settings).toEqual(settings);
+    // And the merge must compose, not replace, the other config.
     expect(configUpdate.patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
     expect(helpers.finishOnedriveHelperConfig).toHaveBeenCalledWith(plan);
     // #1105: the plan is built inside the policy context; Graph runs only after it is released.
@@ -4380,6 +4382,40 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
     expect(helpers.loadOnedriveHelperConfigPlan).not.toHaveBeenCalled();
     // hierarchy/set savepoint + the probe's cache-miss savepoint; the helper resolves in memory.
     expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(2);
+  });
+
+  it('with a policy set holding a OneDrive settings link, the OneDrive DB phase runs with the set, in a savepoint, before monitoring (#8142)', async () => {
+    const helpers = await import('./helpers');
+    const { loadDevicePolicySet } = await import('../../services/devicePolicySet');
+    const set = {
+      deviceId: 'device-1',
+      hierarchy: { ...TEST_HIERARCHY },
+      candidates: [{
+        assignmentId: 'a-1', level: 'organization', targetId: 'org-1', priority: 0,
+        roleFilter: null, osFilter: null, assignmentCreatedAt: new Date(0),
+        policyId: 'p-1', policyName: 'OneDrive', policyOrgId: 'org-1', policyPartnerId: null, parentPolicyId: null,
+        links: { onedrive_helper: { id: 'l-1', featureType: 'onedrive_helper', onedrive: { id: 'od-1' } } },
+      }],
+    };
+    vi.mocked(loadDevicePolicySet).mockResolvedValueOnce(set as never);
+    vi.mocked(helpers.loadOnedriveHelperConfigPlan).mockImplementationOnce(async () => {
+      callOrder.push('onedrive:plan');
+      return null;
+    });
+    vi.mocked(helpers.buildMonitoringConfigUpdate).mockImplementationOnce(async () => {
+      callOrder.push('monitoring:resolved');
+      return null;
+    });
+    callOrder.length = 0;
+
+    await beat();
+
+    expect(vi.mocked(helpers.loadOnedriveHelperConfigPlan))
+      .toHaveBeenCalledWith('device-1', expect.objectContaining({ policySet: set }));
+    const plan = callOrder.indexOf('onedrive:plan');
+    expect(plan).toBeGreaterThan(callOrder.lastIndexOf('dbContext:opened'));
+    expect(callOrder[plan - 1]).toBe('savepoint');
+    expect(plan).toBeLessThan(callOrder.indexOf('monitoring:resolved'));
   });
 
   it('values read before a COMMIT failure are still delivered (read-only transaction) (#8142)', async () => {
@@ -7934,7 +7970,6 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       expect(helpers.buildPatchSourceConfigUpdate).not.toHaveBeenCalled();
       expect(helpers.buildOnedriveHelperConfigUpdate).not.toHaveBeenCalled();
       expect(helpers.loadOnedriveHelperConfigPlan).not.toHaveBeenCalled();
-    expect(helpers.loadOnedriveHelperConfigPlan).not.toHaveBeenCalled();
       expect(helpers.buildPolicyProbeConfigUpdate).not.toHaveBeenCalled();
       expect(helpers.buildHelperConfigUpdate).not.toHaveBeenCalled();
       expect(helpers.buildWarrantyConfigUpdate).not.toHaveBeenCalled();

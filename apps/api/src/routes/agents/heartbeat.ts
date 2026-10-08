@@ -2279,8 +2279,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   //      resolvers read their own assignments with it.
   // 2. Every result is written to an outer variable as soon as it is produced.
   //    The transaction is read-only, so a value read before a later statement
-  //    aborted it is still right; a failed COMMIT only skips the per-org cache
-  //    fills. (Before #8142 only helper and probe survived a COMMIT failure.)
+  //    aborted it is still right; a context that fails only skips the per-org
+  //    cache fills. (Before #8142 only helper and probe survived that.)
   // 3. Order: with the set, everything up to OneDrive is pure TypeScript except
   //    the per-org cache misses (each in its own savepoint). OneDrive's DB phase
   //    (own savepoint, only when the set holds a OneDrive link) runs before
@@ -2483,10 +2483,18 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
     });
     // Stored only now that the context has committed (fillIfCurrent refuses to
-    // run inside one); a failed commit throws past this line.
+    // run inside one). This line is reached ONLY on a real COMMIT: postgres.js
+    // remembers the first statement that failed in the context's own scope,
+    // even one the code above caught, and then sends ROLLBACK (never COMMIT)
+    // and rejects with that error, so the flush is skipped (verified against
+    // postgres 3.4.9, #8142). A failure inside a savepoint stays in the
+    // savepoint's scope; the context still commits and its fills are safe:
+    // every queued load ran in its own savepoint and returned, and a load
+    // attempted after an abort fails at SAVEPOINT and is never queued.
     orgCacheFills.flush();
   } catch (err) {
-    // Context setup or COMMIT failure. Values already written above are kept
+    // Context setup failure, a statement that aborted the context (rejected
+    // after ROLLBACK, see above), or a COMMIT failure. Values already written above are kept
     // (see 2.); anything not yet produced keeps its "no update this cycle"
     // null. By now the org transaction has committed and the claimed commands
     // are marked delivered, so this must never 500 the heartbeat.
