@@ -11,7 +11,7 @@
  *   referenced / fresh / foreign files, aborts on a DB failure
  */
 import { describe, expect, it, vi, beforeEach, afterAll } from 'vitest';
-import { mkdir, writeFile, rm, utimes, access, readdir } from 'fs/promises';
+import { chmod, mkdir, writeFile, rm, utimes, access, readdir } from 'fs/promises';
 import { join } from 'path';
 
 const state = vi.hoisted(() => {
@@ -60,10 +60,12 @@ import {
   deleteExpiredScreenshots,
   getScreenshot,
   removeScreenshotFiles,
+  removeUnreferencedScreenshotFiles,
   resolveScreenshotPath,
   sweepOrphanedScreenshotFiles,
 } from './screenshotStorage';
 import { db, withSystemDbAccessContext } from '../db';
+import { captureMessage } from './sentry';
 
 const OLD_ORG = '11111111-1111-4111-8111-111111111111';
 const NEW_ORG = '22222222-2222-4222-8222-222222222222';
@@ -172,33 +174,110 @@ describe('removeScreenshotFiles', () => {
       'test',
     );
 
-    expect(result).toEqual({ removed: 2, missing: 1, failed: 0 });
+    expect(result).toEqual({ removed: 2, missing: 1, failed: 0, unresolvable: 0 });
     expect(await exists(pathOf(OLD_ORG, DEVICE, FILE_A))).toBe(false);
     expect(await exists(pathOf(NEW_ORG, DEVICE, FILE_B))).toBe(false);
   });
 
-  it('logs a failed unlink with a count, keeps going, and does not throw', async () => {
+  it('logs a failed unlink with a count, reports it to Sentry, keeps going, and does not throw', async () => {
     // A directory where the file should be: unlink fails with EISDIR/EPERM.
     await mkdir(pathOf(OLD_ORG, DEVICE, FILE_A), { recursive: true });
     await put(pathOf(OLD_ORG, DEVICE, FILE_B));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await removeScreenshotFiles(
+        [keyOf(OLD_ORG, DEVICE, FILE_A), keyOf(OLD_ORG, DEVICE, FILE_B), 'screenshots/../../etc/passwd'],
+        'org erasure',
+      );
 
-    const result = await removeScreenshotFiles(
-      [keyOf(OLD_ORG, DEVICE, FILE_A), keyOf(OLD_ORG, DEVICE, FILE_B), 'screenshots/../../etc/passwd'],
-      'org erasure',
-    );
+      expect(result).toEqual({ removed: 1, missing: 0, failed: 1, unresolvable: 1 });
+      expect(await exists(pathOf(OLD_ORG, DEVICE, FILE_B))).toBe(false);
+      expect(errSpy).toHaveBeenCalledWith(expect.stringMatching(/org erasure.*1 of 3/), expect.anything());
+      expect(captureMessage).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ eventCode: 'screenshot_file_removal_failed' }),
+      );
+      // The unresolvable key is a warning, not a "will retry" error.
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/1 screenshot row\(s\) had an unrecognised storage key/), expect.anything());
+    } finally {
+      errSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
 
-    expect(result).toEqual({ removed: 1, missing: 0, failed: 2 });
-    expect(await exists(pathOf(OLD_ORG, DEVICE, FILE_B))).toBe(false);
-    expect(errSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/org erasure.*2 of 3/),
-      expect.anything(),
-    );
-    errSpy.mockRestore();
+  it('does not alert for unresolvable keys alone', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await removeScreenshotFiles(['legacy/key.png'], 'test');
+      expect(result).toEqual({ removed: 0, missing: 0, failed: 0, unresolvable: 1 });
+      expect(captureMessage).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('is a no-op for an empty list', async () => {
-    expect(await removeScreenshotFiles([], 'test')).toEqual({ removed: 0, missing: 0, failed: 0 });
+    expect(await removeScreenshotFiles([], 'test')).toEqual({ removed: 0, missing: 0, failed: 0, unresolvable: 0 });
+  });
+});
+
+describe('removeUnreferencedScreenshotFiles (request-path deletes, after the transaction settles)', () => {
+  it('removes files whose rows are gone and keeps files a row still references (rolled-back delete)', async () => {
+    await put(pathOf(OLD_ORG, DEVICE, FILE_A));
+    await put(pathOf(OLD_ORG, DEVICE, FILE_B));
+    // FILE_B's row is still there — e.g. the request transaction rolled back.
+    state.selectRows = [{ storageKey: keyOf(OLD_ORG, DEVICE, FILE_B) }];
+
+    const result = await removeUnreferencedScreenshotFiles(
+      [keyOf(OLD_ORG, DEVICE, FILE_A), keyOf(OLD_ORG, DEVICE, FILE_B)],
+      'site delete',
+    );
+
+    expect(await exists(pathOf(OLD_ORG, DEVICE, FILE_A))).toBe(false);
+    expect(await exists(pathOf(OLD_ORG, DEVICE, FILE_B))).toBe(true);
+    expect(result).toMatchObject({ removed: 1, stillReferenced: 1 });
+    expect(withSystemDbAccessContext).toHaveBeenCalled();
+  });
+
+  it('removes nothing when the row re-check fails', async () => {
+    await put(pathOf(OLD_ORG, DEVICE, FILE_A));
+    state.selectError = new Error('connection terminated');
+
+    await expect(removeUnreferencedScreenshotFiles([keyOf(OLD_ORG, DEVICE, FILE_A)], 'site delete'))
+      .rejects.toThrow('connection terminated');
+    expect(await exists(pathOf(OLD_ORG, DEVICE, FILE_A))).toBe(true);
+  });
+});
+
+describe('deleteExpiredScreenshots edge cases', () => {
+  it('deletes the row of an expired screenshot whose key is not one this service writes', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      state.selectRows = [{ id: 'row-bad', orgId: NEW_ORG, deviceId: DEVICE, storageKey: 'screenshots/../x.jpg' }];
+
+      expect(await deleteExpiredScreenshots()).toBe(1);
+      expect(db.delete).toHaveBeenCalledTimes(1);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('keeps the row and alerts when an expired file cannot be removed', async () => {
+    // A directory where the file should be: unlink fails with EISDIR/EPERM.
+    await mkdir(pathOf(OLD_ORG, DEVICE, FILE_A), { recursive: true });
+    state.selectRows = [{ id: 'row-1', orgId: OLD_ORG, deviceId: DEVICE, storageKey: keyOf(OLD_ORG, DEVICE, FILE_A) }];
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await deleteExpiredScreenshots()).toBe(0);
+      expect(db.delete).not.toHaveBeenCalled();
+      expect(captureMessage).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ eventCode: 'screenshot_file_removal_failed' }),
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });
 
@@ -266,5 +345,45 @@ describe('sweepOrphanedScreenshotFiles', () => {
   it('leaves the storage root itself in place', async () => {
     await sweepOrphanedScreenshotFiles();
     expect(await readdir(state.root)).toEqual([]);
+  });
+
+  it('checks every candidate across several lookup batches', async () => {
+    const files = Array.from({ length: 7 }, (_, i) => `0000000${i}-0000-4000-8000-000000000000`);
+    for (const f of files) await put(pathOf(OLD_ORG, DEVICE, f), TWO_HOURS);
+    // Every other file is still referenced.
+    const referenced = files.filter((_, i) => i % 2 === 0);
+    state.selectRows = referenced.map((f) => ({ storageKey: keyOf(OLD_ORG, DEVICE, f) }));
+
+    const result = await sweepOrphanedScreenshotFiles({ lookupBatchSize: 3 });
+
+    expect(db.select).toHaveBeenCalledTimes(3); // 3 + 3 + 1
+    for (const [i, f] of files.entries()) {
+      expect(await exists(pathOf(OLD_ORG, DEVICE, f))).toBe(i % 2 === 0);
+    }
+    expect(result).toMatchObject({ scanned: 7, removed: 3, failed: 0 });
+  });
+
+  it('counts, logs and alerts an orphan it cannot remove, and still removes the rest', async () => {
+    if (process.getuid?.() === 0) return; // root ignores directory permissions
+    const lockedDir = join(state.root, OLD_ORG, DEVICE);
+    const otherDevice = '44444444-4444-4444-8444-444444444444';
+    await put(pathOf(OLD_ORG, DEVICE, FILE_A), TWO_HOURS);
+    await put(pathOf(OLD_ORG, otherDevice, FILE_B), TWO_HOURS);
+    await chmod(lockedDir, 0o555); // unlink inside it fails with EACCES
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await sweepOrphanedScreenshotFiles();
+
+      expect(result).toMatchObject({ scanned: 2, removed: 1, failed: 1 });
+      expect(await exists(pathOf(OLD_ORG, DEVICE, FILE_A))).toBe(true);
+      expect(await exists(pathOf(OLD_ORG, otherDevice, FILE_B))).toBe(false);
+      expect(captureMessage).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ eventCode: 'screenshot_file_removal_failed' }),
+      );
+    } finally {
+      await chmod(lockedDir, 0o755);
+      errSpy.mockRestore();
+    }
   });
 });

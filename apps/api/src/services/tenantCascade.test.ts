@@ -945,6 +945,7 @@ describe('cascadeDeleteOrg — helper screenshot files (#8117)', () => {
     removeScreenshotFilesMock.mockReset();
     removeScreenshotFilesMock.mockResolvedValue({ removed: 0, missing: 0, failed: 0 });
     vi.mocked(withSystemDbAccessContext).mockImplementation(defaultSystemContextImpl);
+    vi.mocked(db.execute).mockImplementation(defaultExecuteImpl);
   });
 
   function stubScreenshotDelete(events: string[], keys: string[]) {

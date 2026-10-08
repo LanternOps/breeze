@@ -31,7 +31,9 @@ import {
   SCREENSHOT_DIR_SEGMENT_RE,
   SCREENSHOT_FILE_RE,
   errnoCode,
+  removeScreenshotFiles,
   resolveScreenshotPath,
+  type ScreenshotFileRemoval,
 } from './screenshotFiles';
 
 export { removeScreenshotFiles, resolveScreenshotPath, type ScreenshotFileRemoval } from './screenshotFiles';
@@ -252,6 +254,7 @@ export async function deleteExpiredScreenshots(): Promise<number> {
   );
 
   let deleted = 0;
+  let keptForRetry = 0;
   for (const record of expired) {
     // The stored key, not record.orgId: after an org move the recomputed path
     // misses the file, and the ENOENT below would orphan it (#8117).
@@ -264,6 +267,7 @@ export async function deleteExpiredScreenshots(): Promise<number> {
           // Keep the row: it is the only pointer to these bytes, and the next
           // retention run retries the delete.
           console.error(`[ScreenshotStorage] Failed to delete expired screenshot file ${fullPath}; keeping row for retry:`, err);
+          keptForRetry++;
           continue;
         }
       }
@@ -280,7 +284,50 @@ export async function deleteExpiredScreenshots(): Promise<number> {
     deleted++;
   }
 
+  if (keptForRetry > 0) {
+    // Each run retries these, but a permanent fault (EACCES, EROFS, EIO) would
+    // otherwise only ever surface as a log line per run while rows pile up.
+    console.error(`[ScreenshotStorage] expiry sweep:  expired screenshot file(s) could not be removed; rows kept for retry`);
+    captureMessage('[ScreenshotStorage] expired screenshot files could not be removed', {
+      eventCode: 'screenshot_file_removal_failed',
+      level: 'error',
+    });
+  }
+
   return deleted;
+}
+
+/**
+ * `removeScreenshotFiles` for callers that cannot tell whether their delete
+ * committed when they get to run — a REQUEST-path delete (site delete), whose
+ * `db.transaction` is only a savepoint in the request's transaction and whose
+ * real commit happens after the handler returns. Schedule it with
+ * `runAfterDbContextExit`, which runs once that transaction has settled,
+ * committed OR rolled back: it re-reads the keys in system scope and unlinks
+ * only those no row references any more. After a rollback every row is back,
+ * so nothing is removed.
+ *
+ * A failed lookup throws (the deferred-work runner logs it) and unlinks
+ * nothing; the files are then unreferenced and the orphan sweep reclaims them.
+ */
+export async function removeUnreferencedScreenshotFiles(
+  storageKeys: readonly string[],
+  context: string,
+): Promise<ScreenshotFileRemoval & { stillReferenced: number }> {
+  const referenced = new Set<string>();
+  for (let i = 0; i < storageKeys.length; i += ORPHAN_LOOKUP_BATCH) {
+    const batch = storageKeys.slice(i, i + ORPHAN_LOOKUP_BATCH);
+    const rows = await withSystemDbAccessContext(
+      () => db
+        .select({ storageKey: aiScreenshots.storageKey })
+        .from(aiScreenshots)
+        .where(inArray(aiScreenshots.storageKey, batch)),
+      'screenshotStorage.unreferencedCheck',
+    );
+    for (const row of rows) referenced.add(row.storageKey);
+  }
+  const removal = await removeScreenshotFiles(storageKeys.filter((key) => !referenced.has(key)), context);
+  return { ...removal, stillReferenced: referenced.size };
 }
 
 export interface OrphanSweepResult {
@@ -309,8 +356,9 @@ export interface OrphanSweepResult {
  * screenshot.
  */
 export async function sweepOrphanedScreenshotFiles(
-  opts: { now?: Date; minAgeMs?: number } = {},
+  opts: { now?: Date; minAgeMs?: number; lookupBatchSize?: number } = {},
 ): Promise<OrphanSweepResult> {
+  const batchSize = opts.lookupBatchSize ?? ORPHAN_LOOKUP_BATCH;
   const cutoffMs = (opts.now ?? new Date()).getTime() - (opts.minAgeMs ?? ORPHAN_MIN_AGE_MS);
   const result: OrphanSweepResult = { scanned: 0, removed: 0, failed: 0, directoriesRemoved: 0 };
   const failures: string[] = [];
@@ -378,8 +426,8 @@ export async function sweepOrphanedScreenshotFiles(
   }
 
   result.scanned = candidates.length;
-  for (let i = 0; i < candidates.length; i += ORPHAN_LOOKUP_BATCH) {
-    const batch = candidates.slice(i, i + ORPHAN_LOOKUP_BATCH);
+  for (let i = 0; i < candidates.length; i += batchSize) {
+    const batch = candidates.slice(i, i + batchSize);
     // System scope for the same reason as the expiry sweep: a contextless read
     // sees no rows, which here would make every file look orphaned.
     const rows = await withSystemDbAccessContext(

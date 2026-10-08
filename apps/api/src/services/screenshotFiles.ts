@@ -49,7 +49,14 @@ export interface ScreenshotFileRemoval {
   removed: number;
   /** Already absent — the outcome the caller wanted, not a failure. */
   missing: number;
+  /** A file exists (or may) but could not be removed; the orphan sweep retries it. */
   failed: number;
+  /**
+   * The key is not one the storage service writes, so there is no file this
+   * code can locate (and the orphan sweep, which only walks the layout it
+   * writes, never will). Logged, not alerted: nothing can be retried.
+   */
+  unresolvable: number;
 }
 
 /**
@@ -67,13 +74,14 @@ export async function removeScreenshotFiles(
   storageKeys: readonly string[],
   context: string,
 ): Promise<ScreenshotFileRemoval> {
-  const result: ScreenshotFileRemoval = { removed: 0, missing: 0, failed: 0 };
+  const result: ScreenshotFileRemoval = { removed: 0, missing: 0, failed: 0, unresolvable: 0 };
   const failures: string[] = [];
+  const unresolvable: string[] = [];
   for (const key of storageKeys) {
     const path = resolveScreenshotPath(key);
     if (!path) {
-      result.failed++;
-      failures.push(`unrecognised storage key ${JSON.stringify(key)}`);
+      result.unresolvable++;
+      unresolvable.push(JSON.stringify(key));
       continue;
     }
     try {
@@ -98,6 +106,12 @@ export async function removeScreenshotFiles(
       eventCode: 'screenshot_file_removal_failed',
       level: 'error',
     });
+  }
+  if (result.unresolvable > 0) {
+    console.warn(
+      `[ScreenshotStorage] ${context}: ${result.unresolvable} screenshot row(s) had an unrecognised storage key; no file to remove`,
+      unresolvable.slice(0, 20),
+    );
   }
   return result;
 }
