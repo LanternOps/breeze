@@ -74,7 +74,7 @@ comment on #4752 (and append a row to the table below).
 | Target | Build | Verdict | Run |
 |---|---|---|---|
 | Windows Server 2022 Standard (Evaluation) 21H2 | 20348.5256 | **System Restore unavailable** — `srclient.dll` not present, `root/default:SystemRestore` is an invalid class. Layout not observable on this SKU. | 2026-10-06, lab VM |
-| Windows 11 (24H2+) | — | **PENDING** | — |
+| Windows 11 Pro 25H2 (physical Dell, `dell70601`) | 26200.8653 | **Layout C (SDK, `pack(1)`) confirmed.** The status buffer had bytes 0–11 written and 12–15 still `cc`. Probe A's point enumerates as `EEZE-PROBE-A-…`. Probe C BEGIN `ret=1 nStatus=0 seq=4`, then END `ret=1 nStatus=0`, and its point enumerates intact as `BREEZE-PROBE-C-…` seq 4. With SR disabled (as found), both calls return `ret=0`, `nStatus=1058` (ERROR_SERVICE_DISABLED). | 2026-10-08, lab box |
 | Windows 10 22H2 | — | **PENDING** | — |
 | Windows Server 2025 | — | **PENDING** (expected to match Server 2022: no System Restore on Server SKUs) | — |
 
@@ -104,3 +104,87 @@ srprobe exit code: 2
 reads does not.) On this SKU the agent's patch-install path has always returned
 `SRSetRestorePoint not available` and logged it at debug level — no restore
 point was ever created there, independent of the layout question.
+
+### Windows 11 Pro 25H2 — raw output (2026-10-08)
+
+The machine is a physical Dell, build 26200.8653. Before the run, System Restore was **off** on `C:`: there were no restore points, no shadow-storage association, and no `SystemRestorePointCreationFrequency` value. The run went as follows:
+
+1. Ran the harness once as found, with System Restore disabled.
+2. Ran `Enable-ComputerRestore -Drive C:\` and set the creation frequency to 0.
+3. Ran the harness again.
+4. Removed the frequency override and ran `Disable-ComputerRestore`.
+5. Deleted the two probe shadows. The shadow-storage association went with them, so the box ended in its original state.
+
+The harness `OS:` line reads `Windows 10 Pro` because it reports the `ProductName` registry value, which still says "Windows 10" on Windows 11. `Win32_OperatingSystem.Caption` is `Microsoft Windows 11 Pro`.
+
+**Disabled (as found):**
+```
+srprobe — 2026-10-08T16:40:50Z
+Go struct sizes:
+  A: sizeof(RESTOREPOINTINFOW)=524 offsetof(szDescription)=12 sizeof(STATEMGRSTATUS)=8
+  C: sizeof(RESTOREPOINTINFOW)=528 offsetof(szDescription)=16 sizeof(STATEMGRSTATUS)=12 (SDK, pack(1))
+OS: Windows 10 Pro 25H2 (Client) build 26200.8653
+SystemRestorePointCreationFrequency: not set (default 1440 minutes)
+SRSetRestorePointW: found
+
+Probe A (shipped layout, BEGIN only): ret=0 callErr=The specified module could not be found. desc="BREEZE-PROBE-A-164050"
+  A status bytes: 220400000000000000000000cccccccc (highest offset changed from canary: 11)
+    decode A (uint32 seq @4):  nStatus=1058 seq=0
+    decode B (int64 seq @8):   nStatus=1058 seq=-3689348818177884160
+    decode C (int64 seq @4):   nStatus=1058 seq=0
+
+Probe C (SDK layout, BEGIN): ret=0 callErr=The specified module could not be found. desc="BREEZE-PROBE-C-164050"
+  C-begin status bytes: 220400000000000000000000cccccccc (highest offset changed from canary: 11)
+    decode A (uint32 seq @4):  nStatus=1058 seq=0
+    decode B (int64 seq @8):   nStatus=1058 seq=-3689348818177884160
+    decode C (int64 seq @4):   nStatus=1058 seq=0
+
+--- root\default:SystemRestore enumeration ---
+```
+
+**Enabled, frequency 0 (`Get-ComputerRestorePoint` before: empty):**
+```
+srprobe — 2026-10-08T16:40:52Z
+Go struct sizes:
+  A: sizeof(RESTOREPOINTINFOW)=524 offsetof(szDescription)=12 sizeof(STATEMGRSTATUS)=8
+  C: sizeof(RESTOREPOINTINFOW)=528 offsetof(szDescription)=16 sizeof(STATEMGRSTATUS)=12 (SDK, pack(1))
+OS: Windows 10 Pro 25H2 (Client) build 26200.8653
+SystemRestorePointCreationFrequency: 0 minutes
+SRSetRestorePointW: found
+
+Probe A (shipped layout, BEGIN only): ret=1 callErr=The operation completed successfully. desc="BREEZE-PROBE-A-164052"
+  A status bytes: 000000000200000000000000cccccccc (highest offset changed from canary: 11)
+    decode A (uint32 seq @4):  nStatus=0 seq=2
+    decode B (int64 seq @8):   nStatus=0 seq=-3689348818177884160
+    decode C (int64 seq @4):   nStatus=0 seq=2
+
+Probe C (SDK layout, BEGIN): ret=1 callErr=The operation completed successfully. desc="BREEZE-PROBE-C-164052"
+  C-begin status bytes: 000000000400000000000000cccccccc (highest offset changed from canary: 11)
+    decode A (uint32 seq @4):  nStatus=0 seq=4
+    decode B (int64 seq @8):   nStatus=0 seq=-3689348818177884160
+    decode C (int64 seq @4):   nStatus=0 seq=4
+
+Probe C (SDK layout, END seq=4): ret=1 callErr=The operation completed successfully.
+  C-end status bytes: 000000000400000000000000cccccccc (highest offset changed from canary: 11)
+    decode A (uint32 seq @4):  nStatus=0 seq=4
+    decode B (int64 seq @8):   nStatus=0 seq=-3689348818177884160
+    decode C (int64 seq @4):   nStatus=0 seq=4
+
+--- root\default:SystemRestore enumeration ---
+SequenceNumber   : 2
+Description      : EEZE-PROBE-A-164052
+CreationTime     : 20261008164052.938952-000
+RestorePointType : 0
+EventType        : 100
+```
+
+`root/default:SystemRestore` about 15 s later, after probe C's END had finalized:
+```
+SequenceNumber Description           RestorePointType EventType CreationTime
+-------------- -----------           ---------------- --------- ------------
+             2 EEZE-PROBE-A-164052                  0       100 20261008164052.938952-000
+             4 BREEZE-PROBE-C-164052                0       100 20261008164105.014630-000
+```
+The run immediately after the END enumerated only seq 2: probe C's point is not listed until its END finishes, which took about 13 s. Probe A was never ENDed, matching the shipped BEGIN-only call. It still produced a listed point, but the first two characters of the description are missing, as layout A predicts.
+
+The Windows test binary (`GOOS=windows go test -c ./internal/patching`) ran natively on this machine. `TestRestorePointInfoLayout`, `TestStatemgrStatusLayout`, `TestStatemgrStatusSequenceDecode`, and `TestRestorePointCallFailed` (5 subtests) all PASS.
