@@ -7,6 +7,7 @@
  */
 
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
+import { reportRunOwnerColumns } from './reportRunOwner';
 import type Anthropic from '@anthropic-ai/sdk';
 import { db } from '../db';
 import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
@@ -3079,9 +3080,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const reportId = reportDef?.id ?? null;
         let runId: string | null = null;
 
-        if (reportId) {
+        if (reportId && reportDef) {
           const [run] = await db.insert(reportRuns).values({
             reportId,
+            ...reportRunOwnerColumns(reportDef),
             status: 'pending',
             requestedByKind: 'user',
             requestedByUserId: auth.user.id,

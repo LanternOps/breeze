@@ -809,6 +809,14 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // reportsPartnerRls.integration.test.ts. Deliberately NOT in
   // XOR_OWNERSHIP_DUAL_AXIS_TABLES — see the exclusion note there.
   'reports',
+  // #4247: report_runs mirrors its parent — org_id XOR partner_id
+  // (report_runs_one_owner_chk), pinned to the parent's owner by DEFERRABLE
+  // composite FKs, one direct FOR ALL owner policy (no parent EXISTS join).
+  // Same exclusion from XOR_OWNERSHIP_DUAL_AXIS_TABLES as reports: a run of a
+  // partner-owned report is the same partner-private aggregate and must never
+  // carry an org-readable partner-wide SELECT branch. Partner branch, forge,
+  // XOR and history-read proof: reportRunsOwnerRls.integration.test.ts.
+  'report_runs',
 ]);
 
 // Wave 4 of #4673: the subset of DUAL_AXIS_TENANT_TABLES whose ownership
@@ -826,7 +834,8 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // (money, utilisation), and spec §2 forbids org-scope sessions from reading
 // it. The partner-wide SELECT branch this set asserts would grant exactly that
 // read, so reports must never carry one. Its partner branch is proven
-// functionally by reportsPartnerRls.integration.test.ts instead.
+// functionally by reportsPartnerRls.integration.test.ts instead. The same
+// holds for its runs, `report_runs` (#4247, reportRunsOwnerRls).
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   'billing_payment_settings',
   'caller_verification_policies',
@@ -1006,15 +1015,16 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // blind), so it is auto-discovered as an ordinary Shape 1 org-tenant table.
   ['role_permissions', ['roles']],
   ['plugin_logs', ['plugin_installations']],
-  ['report_runs', ['reports']],
+  // (report_runs left this list in #4247: it has its own org_id XOR
+  // partner_id and a direct policy — see DUAL_AXIS_TENANT_TABLES.)
   // #4248 W03: per-recipient narrative delivery. Declared parent is `reports`,
-  // NOT `report_runs` -- the strict per-command assertion below runs
-  // predicateCoversParent, which needs breeze_has_org_access(<alias>.org_id) on
-  // the DECLARED parent's alias, and report_runs has no org_id. The policy
-  // therefore reaches `reports` through a scalar subquery, exactly like the
-  // config_policy_* children do (2026-06-23-sec-review-1-fk-child-rls-backstop.sql).
-  // Its ONLY registration: the FK is ON DELETE CASCADE, so the existing
-  // report_runs pre-clear in tenantCascade.ts removes deliveries for free.
+  // NOT `report_runs` -- its policy (2026-10-27-130100) reaches `reports`
+  // through a scalar subquery on report_runs.report_id, exactly like the
+  // config_policy_* children do (2026-06-23-sec-review-1-fk-child-rls-backstop.sql),
+  // and predicateCoversParent checks the DECLARED parent's alias.
+  // Its ONLY registration: the FK is ON DELETE CASCADE from report_runs, which
+  // org erasure (CORE_ORG_CASCADE_DELETE_ORDER) and the partner sweep both
+  // delete, so deliveries go with their run.
   ['report_run_deliveries', ['reports']],
   ['maintenance_occurrences', ['maintenance_windows']],
   // 2026-06-23 security-review #1 backstop: five tenant child tables that

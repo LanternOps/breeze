@@ -228,9 +228,13 @@ describe('generate_report hides msp_staff types from an org-scope caller (ruling
 
   it('positive control: an org-scope caller still generates a device_inventory report', async () => {
     selectReturning(definition('device_inventory'));
+    const valuesSpy = vi.fn(() => ({ returning: () => Promise.resolve([{ id: 'new-run' }]) }));
+    mockDb.insert.mockReturnValue({ values: valuesSpy });
     const r = JSON.parse(await handlerFor('generate_report')({ action: 'generate', reportId: 'rep1' }, orgAuth()));
     expect(r.success).toBe(true);
     expect(mockDb.insert).toHaveBeenCalled();
+    // #4247: the run carries its parent definition's owner axis.
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ reportId: 'rep1', orgId: ORG_ID, partnerId: null }));
   });
 });
 

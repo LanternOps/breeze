@@ -41,6 +41,7 @@
  * nightly sweep does not spam the ticket.
  */
 import { and, eq } from 'drizzle-orm';
+import { reportRunOwnerColumns } from './reportRunOwner';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { reports, reportRuns } from '../db/schema/reports';
 import { serviceDeliverableEvidence, serviceDeliverableOccurrences } from '../db/schema/serviceDeliverables';
@@ -235,9 +236,9 @@ export async function generateAutoEvidenceForOccurrence(args: AutoEvidenceOccurr
 
     await db.insert(serviceDeliverableEvidence).values({
         orgId: args.orgId, occurrenceId: args.occurrenceId, kind: 'report_run',
-        // report_id proves org ownership: report_runs has no org_id of its own,
-        // so the composite FK (report_id, org_id) -> reports(id, org_id) is what
-        // keeps a foreign run out.
+        // report_id proves org ownership: the composite FK (report_id, org_id)
+        // -> reports(id, org_id) keeps a foreign run out (it predates
+        // report_runs.org_id, #4247, and still guards the evidence row).
         reportId: definition.id, reportRunId: runId, createdByUserId: null,
       }).returning({ id: serviceDeliverableEvidence.id });
 
@@ -260,6 +261,7 @@ export async function generateAutoEvidenceForOccurrence(args: AutoEvidenceOccurr
   ): Promise<AutoEvidenceOutcome> => {
     const [run] = await db.insert(reportRuns).values({
         reportId: definition.id, status: 'running', startedAt: new Date(),
+        ...reportRunOwnerColumns(definition),
         // The sweep requested this run; no human did.
         requestedByKind: 'system', requestedByUserId: null, requestedByPortalUserId: null,
         ...scopeValues,

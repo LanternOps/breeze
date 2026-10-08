@@ -1417,8 +1417,11 @@ const mergeOrganizationUsers: CustomMergeExecutor = async (loser, survivor) => {
 // dropping them is not on the table. The survivor's definition for the same
 // schedule is the same weekly narrative under a different id, so the loser's
 // run history simply continues there. `ai_agent_runs.report_run_id` keeps
-// pointing at the same (untouched) report_runs rows, so run traces stay
-// linked.
+// pointing at the same report_runs rows, so run traces stay linked. (#4247
+// deliberately did NOT add a same-org composite FK from ai_agent_runs to
+// report_runs: ai_agent_runs is leave-for-erasure with a trigger-immutable
+// org_id, while the runs it references are repointed to the survivor here —
+// such an FK would fail every merge of an org with a narrative run.)
 //
 // The narrative key deliberately carries no keyWhere: `keyMatch` compares with a plain
 // `=`, which is NULL-blind, so ordinary reports (NULL
@@ -1490,7 +1493,10 @@ async function rehomeReportChildrenThenDelete(
 }> {
   const reportRunsRehomed = await run(sql`
     UPDATE report_runs AS c
-       SET report_id = s.id
+       SET report_id = s.id,
+           -- #4247: the run's owner follows its new parent (composite
+           -- report_runs_report_org_fk; deferred until commit anyway).
+           org_id = s.org_id
       FROM reports t
       JOIN reports s
         ON s.org_id = ${uuid(survivor)}

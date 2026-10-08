@@ -77,6 +77,10 @@ describe('org merge — multi-org report series children', () => {
           await db.execute(statement);
         }
         await db.execute(buildRepoint('report_schedule_recipients', L, S));
+        // #4247: the archived child's runs keep its id, and their org_id follows
+        // the child's repointed org_id (report_runs is a plain registry repoint).
+        expect(getOrgMergePolicies().get('report_runs')).toEqual({ kind: 'repoint' });
+        await db.execute(buildRepoint('report_runs', L, S));
         await db.execute(sql`SET CONSTRAINTS ALL IMMEDIATE`);
 
         const children = (await db.execute(sql`

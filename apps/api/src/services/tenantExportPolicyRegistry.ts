@@ -697,6 +697,13 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // credential material — ordinary `included` customer data, same treatment as
   // permissions_epoch_snapshot above.
   "remote_sessions": tablePolicy("org_id", {"included":["id","device_id","org_id","user_id","type","status","webrtc_offer","webrtc_answer","started_at","ended_at","duration_seconds","bytes_transferred","recording_url","error_message","permissions_epoch_snapshot","desktop_start_generation","terminal_generation","termination_phase","created_at","desktop_consent_unavailable_behavior"],"reviewedIncluded":["desktop_start_command_id","desktop_prompt_mode"],"excludedSensitive":[],"excludedOpen":["ice_candidates"]}),
+  // #4247: report_runs gained org_id XOR partner_id (the parent report's
+  // owner); the exporter filters on org_id, so partner-owned runs are never
+  // emitted, same as their partner-owned definitions. output_url is an
+  // app-relative download route (/api/reports/runs/<id>/download), not a
+  // signed URL. `result` (jsonb) stays excludedOpen: it is the stored report
+  // payload and an open container.
+  "report_runs": tablePolicy("org_id", {"included":["id","report_id","org_id","partner_id","status","started_at","completed_at","output_url","error_message","row_count","execution_scope_version","execution_scope_kind","execution_scope_site_ids","execution_scope_user_id","execution_scope_fingerprint","execution_scope_captured_at","execution_scope_principal_kind","requested_by_kind","requested_by_user_id","requested_by_portal_user_id","artifact_id","delivery_status","recipient_count","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["result"]}),
   "report_schedule_recipients": tablePolicy("org_id", {"included":["id","report_id","org_id","contact_id","mode","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // Multi-org report series W02: shape-1 target rows (exclusion in 'all' mode,
   // inclusion in 'selected'). Plain identifiers; nothing open or secret.
@@ -705,8 +712,8 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // P2-3, #4190): the principal that produced a system-managed definition
   // ('user'|'system'|NULL) and the typed identity of the ai_agent_schedules
   // row that owns it — both plain non-secret scalars/identifiers, same
-  // treatment as the execution_scope_* columns above. report_runs has no
-  // org_id, so its matching principal_kind column needs no policy entry.
+  // treatment as the execution_scope_* columns above. report_runs' matching
+  // principal_kind column is classified in its own entry (#4247).
   "reports": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","type","schedule","format","last_generated_at","execution_scope_version","execution_scope_kind","execution_scope_site_ids","execution_scope_user_id","execution_scope_fingerprint","execution_scope_captured_at","execution_scope_principal_kind","source_ai_agent_schedule_id","portal_self_service","series_id","series_revision","archived_at","detached_from_series_id","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["config"]}),
   "restore_jobs": tablePolicy("org_id", {"included":["id","org_id","snapshot_id","device_id","restore_type","target_path","status","started_at","completed_at","restored_size","restored_files","initiated_by","command_id","created_at","updated_at"],"reviewedIncluded":["recovery_token_id","authorization_principal_kind","authorization_principal_id","authorization_grant_revision","authorization_state","authorization_denial_code","authorization_checked_at"],"excludedSensitive":[],"excludedOpen":["selected_paths","target_config"],"specific":{"restore_type_v2":{"decision":"include","rationale":"Versioned restore-type discriminator describes the tenant-owned restore operation and is required to interpret exported restore-job records."}}}),
   "roles": tablePolicy("org_id", {"included":["id","partner_id","org_id","parent_role_id","scope","name","description","is_system","created_at","updated_at"],"reviewedIncluded":["force_mfa"],"excludedSensitive":[],"excludedOpen":[]}),
