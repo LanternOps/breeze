@@ -234,6 +234,31 @@ describe('featureLinks routes', () => {
     },
   );
 
+  it.each(['POST', 'PATCH'])(
+    'validates workload inventory settings on %s before mutation',
+    async (method) => {
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY,
+        featureLinks: [{ id: LINK_ID, featureType: 'workload_inventory' }],
+      });
+      validateFeaturePolicyExistsMock.mockResolvedValue({ valid: true });
+      const res = await app.request(
+        `/${POLICY_ID}/features${method === 'PATCH' ? '/' + LINK_ID : ''}`,
+        {
+          method,
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            ...(method === 'POST' ? { featureType: 'workload_inventory' } : {}),
+            inlineSettings: { intervalMinutes: 5 },
+          }),
+        },
+      );
+      expect(res.status).toBe(400);
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+    },
+  );
+
   // ============================================================
   // POST /:id/features — pam inlineSettings validation (Fix A)
   // ============================================================

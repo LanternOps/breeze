@@ -15,6 +15,7 @@ import {
   onedriveHelperInlineSettingsSchema,
   patchInlineSettingsSchema,
   timeSyncInlineSettingsSchema,
+  workloadInventoryInlineSettingsSchema,
   warrantyHpCmslRequested,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
@@ -397,6 +398,17 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
+    if (data.featureType === 'workload_inventory' && data.inlineSettings) {
+      const parsed = workloadInventoryInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(
+          zodValidationErrorBody('Invalid workload inventory settings', parsed.error),
+          400
+        );
+      }
+      data.inlineSettings = parsed.data;
+    }
+
     if (data.featureType === 'compliance') {
       const refusal = duplicateComplianceNamesRefusal(data.inlineSettings);
       if (refusal) return c.json(refusal, 400);
@@ -669,6 +681,16 @@ featureLinkRoutes.patch(
         if (!parsed.success) {
           return c.json(
             zodValidationErrorBody('Invalid time sync settings', parsed.error),
+            400
+          );
+        }
+        data.inlineSettings = parsed.data;
+      }
+      if (existingLink.featureType === 'workload_inventory') {
+        const parsed = workloadInventoryInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(
+            zodValidationErrorBody('Invalid workload inventory settings', parsed.error),
             400
           );
         }

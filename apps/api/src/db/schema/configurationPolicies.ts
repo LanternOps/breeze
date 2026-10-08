@@ -59,6 +59,8 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'hardware_monitoring',
   // #7455. APPENDED, matching the migration's ADD VALUE order.
   'time_sync',
+  // #3834. APPENDED, matching the migration's ADD VALUE order.
+  'workload_inventory',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [
@@ -425,6 +427,34 @@ export const configPolicyTimeSyncSettings = pgTable(
     check(
       'config_policy_time_sync_enforce_chk',
       sql`NOT ${t.enforceNtp} OR cardinality(${t.ntpServers}) >= 1`,
+    ),
+  ],
+);
+
+// Single-item: one row per feature link (workload inventory enumeration
+// settings, #3834). Inline-only — no linked-policy variant. Detection is
+// always on; these gate enumeration only.
+export const configPolicyWorkloadInventorySettings = pgTable(
+  'config_policy_workload_inventory_settings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    featureLinkId: uuid('feature_link_id')
+      .notNull()
+      .unique()
+      .references(() => configPolicyFeatureLinks.id, { onDelete: 'cascade' }),
+    enabled: boolean('enabled').notNull().default(false),
+    dockerEnabled: boolean('docker_enabled').notNull().default(true),
+    podmanEnabled: boolean('podman_enabled').notNull().default(true),
+    hypervEnabled: boolean('hyperv_enabled').notNull().default(true),
+    proxmoxEnabled: boolean('proxmox_enabled').notNull().default(true),
+    intervalMinutes: integer('interval_minutes').notNull().default(60),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (t) => [
+    check(
+      'config_policy_workload_inventory_interval_chk',
+      sql`${t.intervalMinutes} BETWEEN 15 AND 1440`,
     ),
   ],
 );

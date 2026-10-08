@@ -46,7 +46,7 @@ describe('CONFIG_POLICY_FEATURE_TRUST_TIER', () => {
   });
 
   it('classifies protective/restrictive feature types as protective (never gated)', () => {
-    for (const ft of ['security', 'peripheral_control', 'compliance', 'vulnerability', 'event_log', 'sensitive_data', 'device_lifecycle', 'monitors', 'hardware_monitoring', 'warranty', 'time_sync'] as const) {
+    for (const ft of ['security', 'peripheral_control', 'compliance', 'vulnerability', 'event_log', 'sensitive_data', 'device_lifecycle', 'monitors', 'hardware_monitoring', 'warranty', 'time_sync', 'workload_inventory'] as const) {
       expect(CONFIG_POLICY_FEATURE_TRUST_TIER[ft]).toBe('protective');
       expect(isExecutionGatedFeatureType(ft)).toBe(false);
     }
