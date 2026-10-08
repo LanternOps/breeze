@@ -83,6 +83,21 @@ function Assert-BrandingValue {
     }
 }
 
+# Resolves one MSI display string against the BREEZE_BRAND_* variable the
+# binaries were built with. A blank value on either side defers to the other.
+# Two values that differ are refused, and they are compared exactly (case and
+# surrounding spaces included), because the collector only maps a display name
+# that is identical in the MSI and in the binary.
+function Resolve-BrandingValue {
+    param([string]$Name, [string]$Given, [string]$EnvName, [string]$FromEnv)
+    if ([string]::IsNullOrWhiteSpace($FromEnv)) { return $Given }
+    if ([string]::IsNullOrWhiteSpace($Given)) { return $FromEnv }
+    if ($Given -cne $FromEnv) {
+        throw "$Name differs from ${EnvName}: the MSI and the binaries must carry the same brand."
+    }
+    return $Given
+}
+
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $installerPath = Join-Path $PSScriptRoot "breeze.wxs"
 $taskXmlPath = Join-Path $repoRoot "service\\windows\\breeze-agent-user-task.xml"
@@ -250,15 +265,7 @@ $brandingEnv = [ordered]@{
 }
 foreach ($name in $brandingEnv.Keys) {
     $envName = $brandingEnv[$name]
-    $fromEnv = [Environment]::GetEnvironmentVariable($envName)
-    if ([string]::IsNullOrWhiteSpace($fromEnv)) { continue }
-    $given = $brandingDefines[$name]
-    if ([string]::IsNullOrWhiteSpace($given)) {
-        $brandingDefines[$name] = $fromEnv
-    }
-    elseif ($given.Trim() -ne $fromEnv.Trim()) {
-        throw "$name differs from ${envName}: the MSI and the binaries must carry the same brand."
-    }
+    $brandingDefines[$name] = Resolve-BrandingValue -Name $name -Given $brandingDefines[$name] -EnvName $envName -FromEnv ([Environment]::GetEnvironmentVariable($envName))
 }
 foreach ($name in $brandingDefines.Keys) {
     $value = $brandingDefines[$name]
