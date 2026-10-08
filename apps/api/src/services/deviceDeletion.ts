@@ -221,6 +221,43 @@ export async function deleteDeviceCascade(
     });
   }
 
+  // Keep the device's backup storage objects (#7982), exactly as org erasure
+  // keeps an erased org's (#7980). The cascade below deletes the device's
+  // backup_snapshots, backup_snapshot_retirements and
+  // backup_snapshot_id_reservations rows, and recovery_tokens' ON DELETE
+  // CASCADE takes its recovery-media rows. Storage GC (jobs/backupRetention.ts)
+  // decides ownership of a shared storage identity from exactly those rows, so
+  // without a record the device's `snapshots/<id>/` prefixes become unowned
+  // orphans and are reclaimed once past the orphan window.
+  //
+  // Naming the device's org in `breeze.backup_erasure_org` arms the
+  // `breeze_backup_erasure_fence_on_delete` trigger (migration
+  // 2026-12-11-100000, services/backupErasureFence.ts): every one of those
+  // rows deleted in this transaction, directly or through an FK cascade,
+  // writes a `backup_erasure_targets` fence first, and GC never reclaims a
+  // fenced prefix or key. This deletes no backup object; removing them stays
+  // an explicit, separate decision. The trigger matches on the row's own
+  // org_id, which the device-move trigger keeps equal to the device's.
+  //
+  // Armed only now, after the lock, so the org is read from the locked row,
+  // and before any child statement. The caller's prior value is put back at
+  // the end. No device row (a racing purge already ran) means '' — inert.
+  const priorFenceResult = await tx.execute(
+    sql`SELECT current_setting('breeze.backup_erasure_org', true) AS prior`
+  );
+  // postgres-js: a row array; node-postgres: `{ rows }`.
+  const priorFenceRows = (Array.isArray(priorFenceResult)
+    ? priorFenceResult
+    : (priorFenceResult as { rows?: unknown } | null)?.rows) as Array<{ prior?: string | null }> | undefined;
+  const priorFenceOrg = (Array.isArray(priorFenceRows) ? priorFenceRows[0]?.prior : null) ?? '';
+  await tx.execute(sql`
+    SELECT set_config(
+      'breeze.backup_erasure_org',
+      COALESCE((SELECT org_id::text FROM devices WHERE id = ${deviceId}), ''),
+      true
+    )
+  `);
+
   const hardwareRows = await tx.execute(sql`SELECT component_key FROM device_hardware_components WHERE device_id = ${deviceId} ORDER BY component_key`);
   // postgres-js execute returns the row array, not a { rows } wrapper.
   const componentKeys = (hardwareRows as { component_key: string }[]).map(row => row.component_key);
@@ -352,5 +389,11 @@ export async function deleteDeviceCascade(
   }
 
   await tx.delete(devices).where(eq(devices.id, deviceId));
+
+  // Disarm the backup fence (armed after the parent lock above) so later work
+  // in the caller's transaction is not fenced on this device's behalf. Success
+  // path only, like the lock_timeout restore: on error the rollback to the
+  // enclosing savepoint undoes the SET LOCAL anyway.
+  await tx.execute(sql`SELECT set_config('breeze.backup_erasure_org', ${priorFenceOrg}, true)`);
   return { removedTopologyAlerts };
 }

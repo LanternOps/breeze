@@ -22,6 +22,13 @@ vi.mock('./deviceUninstallDrain', async (orig) => {
   };
 });
 
+// #7982: device purge reuses org erasure's policy-level legal hold check,
+// narrowed to the device. Its own behaviour is pinned in
+// erasureBackupLegalHold.test.ts; here only the purge gate's use of it.
+vi.mock('./erasureBackupLegalHold', () => ({
+  findPolicyBackupLegalHoldInContext: vi.fn(async () => null),
+}));
+
 vi.mock('./partnerDeviceCapacity', async (orig) => {
   const actual = await orig<typeof import('./partnerDeviceCapacity')>();
   return {
@@ -45,6 +52,7 @@ import {
 import { deleteDeviceCascade } from './deviceDeletion';
 import { dissolveLinkGroupIfBelowMinimum } from './deviceLinkGroups';
 import { releaseDeviceRemoveReason } from './deviceUninstallDrain';
+import { findPolicyBackupLegalHoldInContext } from './erasureBackupLegalHold';
 import {
   admitPartnerDeviceCapacity,
   deviceTakesLicensedSlot,
@@ -110,6 +118,10 @@ function makeTx(script: Script) {
         calls.push('pending-check');
         return script.pendingUninstall ? [{ id: 'cmd' }] : [];
       }
+      if (text.includes('SELECT org_id FROM devices')) {
+        calls.push('device-org');
+        return script.lockRow ? [{ org_id: script.lockRow.org_id ?? ORG }] : [];
+      }
       if (text.includes('backup_snapshots')) {
         calls.push('backup-hold-check');
         return script.protectedBackupSnapshot ? [{ id: 'snap' }] : [];
@@ -148,6 +160,7 @@ beforeEach(() => {
   });
   vi.mocked(dissolveLinkGroupIfBelowMinimum).mockResolvedValue(true);
   vi.mocked(deleteDeviceCascade).mockResolvedValue({ removedTopologyAlerts: 0 });
+  vi.mocked(findPolicyBackupLegalHoldInContext).mockResolvedValue(null);
   vi.mocked(deviceTakesLicensedSlot).mockResolvedValue(true);
   vi.mocked(admitPartnerDeviceCapacity).mockResolvedValue({
     allowed: true,
@@ -405,6 +418,34 @@ describe('purgeRemovedDevice', () => {
       status: 409,
     });
     expect(deleteDeviceCascade).not.toHaveBeenCalled();
+  });
+
+  it.each(['backup_policy', 'configuration_policy'] as const)(
+    'refuses while a %s legal hold applies to the device, before any cascade (#7982)',
+    async (source) => {
+      vi.mocked(findPolicyBackupLegalHoldInContext).mockResolvedValue(source);
+      const { tx } = makeTx({
+        lockRow: { id: DEV, status: 'decommissioned', org_id: ORG, link_group_id: null },
+      });
+      await expect(purgeRemovedDevice(tx, DEV)).rejects.toMatchObject({
+        code: 'BACKUP_PROTECTED',
+        status: 409,
+      });
+      expect(deleteDeviceCascade).not.toHaveBeenCalled();
+      // Narrowed to THIS device, in the device's org, with the hold rows
+      // locked FOR SHARE so a concurrent "set hold" cannot slip in between
+      // this check and the cascade in the same transaction.
+      expect(findPolicyBackupLegalHoldInContext).toHaveBeenCalledWith(ORG, { deviceId: DEV, lockForShare: true });
+    },
+  );
+
+  it('purges when no snapshot- or policy-level hold applies', async () => {
+    const { tx } = makeTx({
+      lockRow: { id: DEV, status: 'decommissioned', org_id: ORG, link_group_id: null },
+    });
+    await purgeRemovedDevice(tx, DEV);
+    expect(findPolicyBackupLegalHoldInContext).toHaveBeenCalledWith(ORG, { deviceId: DEV, lockForShare: true });
+    expect(deleteDeviceCascade).toHaveBeenCalledTimes(1);
   });
 
   it('checks for a protected backup snapshot only AFTER the pending-uninstall check', async () => {

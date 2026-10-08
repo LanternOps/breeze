@@ -206,7 +206,7 @@ describe('deleteDeviceCascade lock ordering', () => {
     expect(String(sentry.captureMessage.mock.calls[0]?.[0])).toContain('lock_timeout');
     // The bound WAS applied (it rides on the same statement), so exactly one
     // set_config was issued and none afterwards to undo it.
-    expect(statements.filter((t) => t.includes('set_config')).length).toBe(1);
+    expect(statements.filter((t) => t.includes('set_config') && t.includes('lock_timeout')).length).toBe(1);
     expect(statements[0]).toContain('pg_settings');
     expect(statements.some((t) => t.includes('FOR UPDATE'))).toBe(true);
     expect(statements).toContain('__DELETE_DEVICES_ROW__');
@@ -244,7 +244,7 @@ describe('deleteDeviceCascade lock ordering', () => {
 
     // The SQL CASE keeps the caller's 500ms, and because nothing changed there
     // is no restore statement afterwards — one set_config total, not two.
-    expect(statements.filter((t) => t.includes('set_config')).length).toBe(1);
+    expect(statements.filter((t) => t.includes('set_config') && t.includes('lock_timeout')).length).toBe(1);
 
     // Assert the CONDITIONAL is actually in the generated SQL. The mock returns
     // prior_ms=500 whatever it is handed, so a count of set_config calls proves
@@ -273,7 +273,7 @@ describe('deleteDeviceCascade lock ordering', () => {
     // captureTx reports 7000ms > 3000ms, so the bound genuinely tightens and
     // must be applied — then restored to the caller's ORIGINAL value, not to a
     // hard-coded default.
-    const sets = statements.filter((t) => t.includes('set_config'));
+    const sets = statements.filter((t) => t.includes('set_config') && t.includes('lock_timeout'));
     expect(sets.length).toBe(2);
     expect(sets[0]).toContain('3000');
     expect(sets[1]).toContain('7000ms');
@@ -287,7 +287,12 @@ describe('deleteDeviceCascade lock ordering', () => {
 
     await deleteDeviceCascade(tx, 'device-1');
 
-    expect(statements[statements.length - 1]).toBe('__DELETE_DEVICES_ROW__');
+    // Only the backup-fence disarm (#7982) follows it: the devices-row delete
+    // itself FK-cascades into backup_snapshot_id_reservations, so the fence
+    // must stay armed through it.
+    expect(statements[statements.length - 2]).toBe('__DELETE_DEVICES_ROW__');
+    expect(statements[statements.length - 1]).toContain('breeze.backup_erasure_org');
+    expect(statements[statements.length - 1]).not.toContain('DELETE');
   });
 
   // #4371 fixup: agent_rollback_events and pam_actuation_results joined
@@ -332,6 +337,48 @@ describe('deleteDeviceCascade lock ordering', () => {
   });
 });
 
+
+describe('deleteDeviceCascade backup storage fence (#7982)', () => {
+  // Org erasure (#7980) keeps an erased org's backup objects by fencing every
+  // backup source row it deletes: the BEFORE DELETE trigger
+  // breeze_backup_erasure_fence_on_delete records a backup_erasure_targets row
+  // whenever `breeze.backup_erasure_org` names the deleted row's org. Device
+  // purge deletes the same rows (backup_snapshots, retirements, reservations,
+  // and recovery media through recovery_tokens' ON DELETE CASCADE), so it must
+  // arm the same trigger, or storage GC later sees the device's snapshot
+  // prefixes as unowned orphans on a shared bucket and reclaims them.
+  const isFenceSet = (t: string) => t.includes('set_config') && t.includes('breeze.backup_erasure_org');
+
+  it('arms the fence for the device org after the parent lock and before any child row is deleted', async () => {
+    const { tx, statements } = captureTx();
+    await deleteDeviceCascade(tx, 'device-1');
+
+    const lock = statements.findIndex((t) => t.includes('FOR UPDATE'));
+    const arm = statements.findIndex((t) => isFenceSet(t) && t.includes('FROM devices'));
+    const firstDelete = statements.findIndex((t) => t.includes('DELETE FROM') || t === '__DELETE_DEVICES_ROW__');
+    const firstBackup = statements.findIndex((t) => t.includes('backup_snapshots'));
+    expect(lock).toBeGreaterThanOrEqual(0);
+    expect(arm).toBeGreaterThan(lock);
+    expect(firstDelete).toBeGreaterThan(arm);
+    expect(firstBackup).toBeGreaterThan(arm);
+    expect(statements[arm]).toContain('org_id');
+  });
+
+  it("puts the caller's fence context back once the device row is gone", async () => {
+    const { tx, statements } = captureTx();
+    await deleteDeviceCascade(tx, 'device-1');
+
+    const deviceRow = statements.indexOf('__DELETE_DEVICES_ROW__');
+    const sets = statements.map((t, i) => [t, i] as const).filter(([t]) => isFenceSet(t));
+    expect(sets.length).toBe(2);
+    expect(sets[1]![1]).toBeGreaterThan(deviceRow);
+    // The prior value is read before arming, so an enclosing context is put
+    // back as it was rather than cleared.
+    const priorRead = statements.findIndex((t) => t.includes('current_setting') && t.includes('breeze.backup_erasure_org'));
+    expect(priorRead).toBeGreaterThanOrEqual(0);
+    expect(priorRead).toBeLessThan(sets[0]![1]);
+  });
+});
 
 describe('deleteDeviceCascade link detach (#3952)', () => {
   /** The UPDATE this cascade issues for one linked_device_id table. */

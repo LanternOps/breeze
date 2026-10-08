@@ -36,6 +36,7 @@ import { eq, sql } from 'drizzle-orm';
 import { devices } from '../db/schema';
 import { lockTimeoutWasChanged, tightenLockTimeout } from '../db/lockTimeout';
 import { deleteDeviceCascade } from './deviceDeletion';
+import { findPolicyBackupLegalHoldInContext } from './erasureBackupLegalHold';
 import {
   admitPartnerDeviceCapacity,
   deviceTakesLicensedSlot,
@@ -317,19 +318,24 @@ export const UNINSTALL_PENDING_MESSAGE =
  * `backup_snapshots`/`backup_snapshot_retirements` row for the device, so a
  * hold placed for legal/compliance reasons on a device slated for removal was
  * silently destroyed along with everything else. This predicate is the gate
- * `purgeRemovedDevice` checks before entering that cascade.
+ * `purgeRemovedDevice` (and jobs/quickSupportReaper.ts) checks before entering
+ * that cascade.
  *
- * Deliberately scoped to the device-purge path only (this function, and its
- * callers in jobs/quickSupportReaper.ts). Organization erasure
- * (services/tenantCascade.ts) is a distinct code path that does not call
- * `deleteDeviceCascade` or this predicate at all — it is the tenant's own
- * request to delete everything, including held snapshots, and gating it the
- * same way would silently break the erasure contract. That is a real policy
- * tension (a legal hold arguably should also block org-level erasure) left
- * as an open product question rather than resolved here.
+ * A hold is not only a flag on a snapshot row (#7982). It can also be set on
+ * the backup policy the device's jobs ran under, or come from a configuration
+ * policy in effect for the device — the sources org erasure refuses on
+ * (services/erasureBackupLegalHold.ts, #7980). Both are checked here through
+ * that same function, narrowed to this device, with the hold-bearing rows
+ * locked FOR SHARE so a hold set concurrently cannot commit between this
+ * check and the cascade.
+ *
+ * Must run inside a system DB context whose transaction `tx` belongs to
+ * (every caller: a `db.transaction` inside `withSystemDbAccessContext`): the
+ * policy check reads through the context's handle, so it sees and locks in
+ * the same transaction as the cascade.
  */
 export const BACKUP_PROTECTED_MESSAGE =
-  'This device has a backup snapshot under legal hold or inside its immutability window. Release the hold, or wait for the window to expire, before purging the device.';
+  'This device has backups under legal hold (on a snapshot, its backup policy or a configuration policy) or a snapshot inside its immutability window. Release the hold, or wait for the window to expire, before purging the device.';
 
 export async function hasProtectedBackupSnapshots(tx: Tx, deviceId: string): Promise<boolean> {
   const rows = (await tx.execute(sql`
@@ -341,7 +347,15 @@ export async function hasProtectedBackupSnapshots(tx: Tx, deviceId: string): Pro
        )
      LIMIT 1
   `)) as unknown as Array<{ id: string }>;
-  return Array.isArray(rows) && rows.length > 0;
+  if (Array.isArray(rows) && rows.length > 0) return true;
+
+  const [device] = (await tx.execute(sql`
+    SELECT org_id FROM devices WHERE id = ${deviceId}
+  `)) as unknown as Array<{ org_id: string }>;
+  // No device row: the cascade has nothing to delete, so nothing to protect.
+  if (!device?.org_id) return false;
+  const policyHold = await findPolicyBackupLegalHoldInContext(device.org_id, { deviceId, lockForShare: true });
+  return policyHold !== null;
 }
 
 /**

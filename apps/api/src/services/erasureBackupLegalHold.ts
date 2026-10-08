@@ -1,5 +1,6 @@
 /**
- * Every backup legal hold that must stop an org erasure.
+ * Every backup legal hold that must stop an org erasure — and, narrowed to one
+ * device, a device purge (#7982).
  *
  * A hold can come from three places, and erasure refuses on any of them:
  *   snapshot              backup_snapshots.legal_hold on one of the org's rows
@@ -30,11 +31,20 @@ function rowsOf<T>(result: unknown): T[] {
  * `lockForShare`, every row that could carry such a hold is locked FOR SHARE
  * first, so a concurrent "set hold" cannot commit between this check and the
  * end of the caller's transaction (the mid-cascade recheck uses this).
+ *
+ * With `deviceId` (device purge, #7982) the same check is narrowed to the
+ * holds that govern THAT device's backups, resolved the way its snapshots
+ * take their hold (backupResultPersistence):
+ *   backup_policy         a held policy one of the device's backup_jobs ran
+ *                         under (backup_jobs.policy_id)
+ *   configuration_policy  resolveBackupProtectionForDevice for this device only
+ * `orgId` must then be the device's org.
  */
 export async function findPolicyBackupLegalHoldInContext(
   orgId: string,
-  opts: { lockForShare?: boolean } = {},
+  opts: { lockForShare?: boolean; deviceId?: string } = {},
 ): Promise<BackupLegalHoldSource | null> {
+  const deviceId = opts.deviceId ?? null;
   const [org] = rowsOf<{ partner_id: string | null }>(await dbModule.db.execute(sql`
     SELECT partner_id FROM organizations WHERE id = ${orgId}::uuid
   `));
@@ -50,7 +60,10 @@ export async function findPolicyBackupLegalHoldInContext(
   }
 
   const [policyHold] = rowsOf<{ id: string }>(await dbModule.db.execute(sql`
-    SELECT id FROM backup_policies WHERE org_id = ${orgId}::uuid AND legal_hold = true LIMIT 1
+    SELECT id FROM backup_policies
+     WHERE org_id = ${orgId}::uuid AND legal_hold = true
+       ${deviceId ? sql`AND id IN (SELECT policy_id FROM backup_jobs WHERE device_id = ${deviceId}::uuid AND policy_id IS NOT NULL)` : sql``}
+     LIMIT 1
   `));
   if (policyHold) return 'backup_policy';
 
@@ -75,9 +88,11 @@ export async function findPolicyBackupLegalHoldInContext(
   // Loaded lazily: the resolver pulls in the whole configuration-policy graph,
   // which tenantCascade (imported by many lightweight paths) should not carry.
   const { resolveBackupProtectionForDevice } = await import('./featureConfigResolver');
-  const devices = rowsOf<{ id: string }>(await dbModule.db.execute(sql`
-    SELECT id FROM devices WHERE org_id = ${orgId}::uuid
-  `));
+  const devices = deviceId
+    ? [{ id: deviceId }]
+    : rowsOf<{ id: string }>(await dbModule.db.execute(sql`
+      SELECT id FROM devices WHERE org_id = ${orgId}::uuid
+    `));
   for (const device of devices) {
     const resolved = await resolveBackupProtectionForDevice(device.id);
     if (resolved?.legalHold) return 'configuration_policy';
