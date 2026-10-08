@@ -21,7 +21,9 @@ import {
 import { PG_UUID_REGEX } from '../utils/uuid';
 import {
   getDbAccessContextPrologueTimeoutMs,
+  withAcquireAndPrologueDeadline,
   withPrologueDeadline,
+  type PoolAcquisition,
   type PrologueDeadline,
 } from './prologueDeadline';
 import { requestWedgedBackendReclaim } from './wedgedBackends';
@@ -605,9 +607,29 @@ function onPrologueDeadlineExpired(expiry: {
 }
 
 /**
- * Run a context-opening transaction under the #6048 prologue deadline, with the
- * shared expiry reporting. Thin on purpose: every opener must get the SAME
- * bound, and a new one that forgets it would reintroduce the leak.
+ * Run a context-opening transaction that checks a connection out of the pool
+ * under the #8229 pool-acquire budget followed by the #6048 prologue deadline.
+ * The transaction callback MUST call `acquisition.acquired()` first: that is
+ * what stops the acquire clock, starts the prologue clock, and — when the
+ * connection arrived after the acquire budget expired — throws so the driver
+ * releases it. An acquire timeout requests no reclaim pass (nothing is
+ * wedged); only a prologue expiry reaches `onPrologueDeadlineExpired`.
+ */
+function withContextAcquireAndPrologueDeadline<T>(
+  opener: string,
+  context: DbAccessContext,
+  work: (acquisition: PoolAcquisition) => Promise<T>,
+): Promise<T> {
+  return withAcquireAndPrologueDeadline(prologueLabel(opener, context), work, {
+    onExpired: onPrologueDeadlineExpired,
+  });
+}
+
+/**
+ * Run a prologue on a connection the caller ALREADY holds under the #6048
+ * prologue deadline, with the shared expiry reporting. Thin on purpose: every
+ * opener must get the SAME bound, and a new one that forgets it would
+ * reintroduce the leak.
  */
 function withContextPrologueDeadline<T>(
   opener: string,
@@ -782,8 +804,12 @@ export async function withDbAccessContext<T>(
   // serialization, and only when the tripwire is armed at all.
   const opener = warnMs > 0 ? new Error('withDbAccessContext opened here') : undefined;
 
-  return withAfterContextExit(() => withContextPrologueDeadline('withDbAccessContext', context, (deadline) =>
+  return withAfterContextExit(() => withContextAcquireAndPrologueDeadline('withDbAccessContext', context, (acquisition) =>
     baseDb.transaction(async (tx) => {
+      // FIRST, before any statement: the pool has handed us a connection, so
+      // the prologue clock starts here, not at call time (#8229). Throws — and
+      // so releases the connection — if the acquire budget already expired.
+      const deadline = acquisition.acquired();
       await applyAccessContextGucs(tx as unknown as GucExecutor, context, deadline);
       // Disarmed the instant the prologue lands: `fn` below is the caller's own
       // work and must never be bounded by the prologue budget (#6048). A context
@@ -962,8 +988,10 @@ export async function withArchivedOrgReadContext<T>(
   // Captured at entry, before any await — see withDbAccessContext for why.
   const opener = warnMs > 0 ? new Error('withArchivedOrgReadContext opened here') : undefined;
 
-  return withAfterContextExit(() => withContextPrologueDeadline('withArchivedOrgReadContext', context, (deadline) =>
+  return withAfterContextExit(() => withContextAcquireAndPrologueDeadline('withArchivedOrgReadContext', context, (acquisition) =>
     baseDb.transaction(async (tx) => {
+      // Before any statement — see withDbAccessContext (#8229).
+      const deadline = acquisition.acquired();
       const executor = tx as unknown as GucExecutor;
       // FIRST statement in the transaction. `SET TRANSACTION` may not follow a
       // query or data-modification statement, so it has to precede even the
@@ -1324,7 +1352,10 @@ export {
 export {
   DbAccessContextPrologueTimeoutError,
   DbAccessContextPrologueAbortedError,
+  DbPoolAcquireTimeoutError,
+  DbPoolAcquireAbortedError,
   getDbAccessContextPrologueTimeoutMs,
+  getDbPoolAcquireTimeoutMs,
 } from './prologueDeadline';
 
 import { closeAuditAdminPool as closeAuditAdminPoolInternal } from './auditAdminPool';

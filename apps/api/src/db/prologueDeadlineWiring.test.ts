@@ -249,6 +249,145 @@ describe('#6048 prologue deadline wiring', () => {
     expect(fn).not.toHaveBeenCalled();
   });
 
+  // ---- #8229: the pool wait is its own clock --------------------------------
+
+  /**
+   * A `transaction` that queues for `waitMs` before the pool "hands over" the
+   * connection and runs the callback. Records the callback's own settlement so
+   * a refused late connection is observable (a throwing callback is what makes
+   * postgres.js roll back and release the connection).
+   */
+  function queuedTransaction(waitMs: number, tx: unknown) {
+    const callback = { entered: false, rejectedWith: undefined as unknown };
+    transactionImpl.mockImplementation(
+      (fn: (t: unknown) => Promise<unknown>) =>
+        new Promise((resolve, reject) => {
+          setTimeout(() => {
+            callback.entered = true;
+            Promise.resolve()
+              .then(() => fn(tx))
+              .then(resolve, (err: unknown) => {
+                callback.rejectedWith = err;
+                reject(err);
+              });
+          }, waitMs);
+        }),
+    );
+    return callback;
+  }
+
+  it('does not charge the pool wait to the prologue budget (#8229)', async () => {
+    // 10s queued for a slot + a prologue that then takes 10s: 20s total. The
+    // old single clock (armed before the pool handed over a connection)
+    // reported this as a wedged prologue and requested a reclaim pass.
+    process.env.DB_POOL_ACQUIRE_TIMEOUT_MS = '15000';
+    const issued: string[] = [];
+    const tx = {
+      execute: vi.fn((query: unknown) => {
+        issued.push(JSON.stringify(query ?? null).slice(0, 80));
+        return new Promise((resolve) => setTimeout(() => resolve([]), 10_000));
+      }),
+    };
+    queuedTransaction(10_000, tx);
+
+    const { withSystemDbAccessContext } = await loadDb();
+    const result = withSystemDbAccessContext(async () => 'rows', 'wiringTest');
+    const assertion = expect(result).resolves.toBe('rows');
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    await assertion;
+    expect(requestWedgedBackendReclaim).not.toHaveBeenCalled();
+  });
+
+  it('rejects with DbPoolAcquireTimeoutError, and requests NO reclaim, when the pool never frees a slot (#8229)', async () => {
+    process.env.DB_POOL_ACQUIRE_TIMEOUT_MS = '15000';
+    transactionImpl.mockImplementation(() => new Promise(() => {}));
+
+    const { withSystemDbAccessContext, DbPoolAcquireTimeoutError, DbAccessContextPrologueTimeoutError } =
+      await loadDb();
+    const fn = vi.fn(async () => 'rows');
+    let captured: unknown = null;
+    const result = withSystemDbAccessContext(fn, 'wiringTest').catch((err: unknown) => {
+      captured = err;
+    });
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    await result;
+
+    expect(captured).toBeInstanceOf(DbPoolAcquireTimeoutError);
+    expect(captured).not.toBeInstanceOf(DbAccessContextPrologueTimeoutError);
+    expect(fn).not.toHaveBeenCalled();
+    expect(requestWedgedBackendReclaim).not.toHaveBeenCalled();
+  });
+
+  it('refuses a connection that arrives after the acquire budget expired, issuing nothing on it (#8229)', async () => {
+    process.env.DB_POOL_ACQUIRE_TIMEOUT_MS = '15000';
+    const { tx, issued } = makeTx(null);
+    const callback = queuedTransaction(20_000, tx);
+
+    const { withSystemDbAccessContext, DbPoolAcquireTimeoutError, DbPoolAcquireAbortedError } =
+      await loadDb();
+    const fn = vi.fn(async () => 'rows');
+    const result = withSystemDbAccessContext(fn, 'wiringTest');
+    const assertion = expect(result).rejects.toBeInstanceOf(DbPoolAcquireTimeoutError);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    await assertion;
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    // The callback ran (the pool did hand the connection over) and threw, which
+    // is what makes the driver roll back and return it to the pool.
+    expect(callback.entered).toBe(true);
+    expect(callback.rejectedWith).toBeInstanceOf(DbPoolAcquireAbortedError);
+    expect(issued).toHaveLength(0);
+    expect(fn).not.toHaveBeenCalled();
+    expect(requestWedgedBackendReclaim).not.toHaveBeenCalled();
+  });
+
+  it('applies the same acquire budget to the archived-org opener (#8229)', async () => {
+    process.env.DB_POOL_ACQUIRE_TIMEOUT_MS = '15000';
+    const { tx, issued } = makeTx(null);
+    const callback = queuedTransaction(20_000, tx);
+
+    const { withArchivedOrgReadContext, DbPoolAcquireTimeoutError, DbPoolAcquireAbortedError } =
+      await loadDb();
+    const result = withArchivedOrgReadContext(
+      ['7f1b0a4e-0c2d-4c8a-9a0e-2f9c1b3d4e5f'],
+      async () => 'rows',
+    );
+    const assertion = expect(result).rejects.toBeInstanceOf(DbPoolAcquireTimeoutError);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    await assertion;
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(callback.rejectedWith).toBeInstanceOf(DbPoolAcquireAbortedError);
+    // Not even SET TRANSACTION READ ONLY went out on the refused connection.
+    expect(issued).toHaveLength(0);
+  });
+
+  it('times a wedged prologue from acquisition, after a slow pool wait (#8229)', async () => {
+    process.env.DB_POOL_ACQUIRE_TIMEOUT_MS = '15000';
+    const { tx } = makeTx(1);
+    queuedTransaction(10_000, tx);
+
+    const { withSystemDbAccessContext, DbAccessContextPrologueTimeoutError } = await loadDb();
+    let captured: unknown = null;
+    const result = withSystemDbAccessContext(async () => 'rows', 'wiringTest').catch((err: unknown) => {
+      captured = err;
+    });
+
+    // 15s after the call is only 5s into the prologue: not yet expired.
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(captured).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await result;
+    expect(captured).toBeInstanceOf(DbAccessContextPrologueTimeoutError);
+    // A genuine prologue wedge still asks for recovery, exactly as before.
+    expect(requestWedgedBackendReclaim).toHaveBeenCalledTimes(1);
+  });
+
   it('is a pass-through when the deadline is disabled', async () => {
     process.env.DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS = '0';
     const { tx } = makeTx(null);
