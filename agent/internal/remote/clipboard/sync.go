@@ -132,6 +132,7 @@ func (c *ClipboardSync) Watch() {
 	go func() {
 		defer ticker.Stop()
 		var lastErrMsg string
+		baselined := false
 		for {
 			select {
 			case <-ticker.C:
@@ -147,6 +148,20 @@ func (c *ClipboardSync) Watch() {
 				}
 				lastErrMsg = ""
 				hash := fingerprint(content)
+				// The first readable clipboard is what the end user had before
+				// the session. Remember it instead of sending it: pushing it
+				// would overwrite the technician's clipboard just for connecting,
+				// with whatever the end user last copied. A viewer→host write
+				// that landed before this poll has already set the hash; keep it.
+				if !baselined {
+					baselined = true
+					c.mu.Lock()
+					if c.lastSentHash == ([32]byte{}) {
+						c.lastSentHash = hash
+					}
+					c.mu.Unlock()
+					continue
+				}
 				c.mu.Lock()
 				shouldSend := hash != c.lastSentHash
 				c.mu.Unlock()
