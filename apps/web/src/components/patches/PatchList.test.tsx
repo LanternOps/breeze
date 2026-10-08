@@ -469,3 +469,26 @@ describe('PatchList install failure overlay (#4223)', () => {
     expect(desktop.getByText('Pending')).toBeTruthy();
   });
 });
+
+// #7800: a patch with no release date (every APT patch) said nothing true in
+// the Release column — it used to show the catalog import date instead.
+describe('PatchList release column (#7800)', () => {
+  it('renders "Unknown" for a patch with no release date, on both surfaces', () => {
+    const patch = makePatch({ id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee', releaseDate: '' });
+    render(<PatchList patches={[patch]} />);
+
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    expect(desktop.getByTestId(`patch-row-${patch.id}-release`).textContent).toBe('Unknown');
+    const mobile = within(screen.getByTestId('responsive-table-cards'));
+    expect(mobile.getByTestId(`patch-row-${patch.id}-release`).textContent).toBe('Unknown');
+  });
+
+  it('renders the formatted date when the patch has one', () => {
+    const patch = makePatch({ id: 'ffffffff-ffff-ffff-ffff-ffffffffffff', releaseDate: '2026-02-07T12:00:00.000Z' });
+    render(<PatchList patches={[patch]} />);
+
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    expect(desktop.getByTestId(`patch-row-${patch.id}-release`).textContent)
+      .toBe(new Date('2026-02-07T12:00:00.000Z').toLocaleDateString());
+  });
+});

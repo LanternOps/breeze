@@ -70,7 +70,7 @@ The **Approval** column on a device's **Patches** tab shows what the next schedu
 |-------|---------|
 | **Approved** | A technician approved the patch, either for all rings or for this device's ring. |
 | **Auto-approved** | The device's update ring approves the patch, through a category rule or the ring's auto-approve settings. The next scheduled run installs it. |
-| **Auto-approves *date*** | The ring will approve the patch once its deferral window ends on that date. The window is measured from the patch's release date. A third-party app with no release date is measured from when the device first reported it. If neither date is usable, the badge reads **Deferred** and the patch stays held until you approve it by hand. |
+| **Auto-approves *date*** | The ring will approve the patch once its deferral window ends on that date. The window is measured from the patch's release date. A third-party app or Linux package with no release date is measured from when the device first reported it (Linux package managers never report a release date). A Windows or macOS update with no release date has no fallback. If neither date is usable, the badge reads **Deferred** and the patch stays held until you approve it by hand. |
 | **Pending Approval** | Nothing approves the patch. The ring does not cover it, or no valid ring applies to the device. Approve it by hand to install it. |
 | **Excluded by policy** | The patch policy's sources, the ring's category filter, or an app block or pin rule keeps the patch out of scheduled runs. |
 
