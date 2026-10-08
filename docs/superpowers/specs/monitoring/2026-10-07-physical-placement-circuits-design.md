@@ -23,7 +23,7 @@ V1 keeps the existing ownership boundaries intact:
 - circuits are org-owned customer records associated with an existing interface;
 - the circuit's primary site is always derived from its current termination, never stored independently;
 - additional served sites are explicit org-scoped relationships and are described as **potentially impacted**, never automatically down;
-- V1 surfaces the context on asset detail and on alerts/tickets when Breeze can resolve the circuit unambiguously;
+- V1 surfaces placement and circuit context on asset/interface detail; alert/ticket enrichment is a second implementation wave after explicit alert-to-interface provenance exists;
 - topology rendering, cable plant, and provider automation remain separate future work.
 
 The design introduces four small org-owned data structures:
@@ -35,7 +35,7 @@ circuit_terminations
 circuit_served_sites
 ```
 
-`circuit_terminations` is deliberately a separate 0..1 relationship instead of a nullable interface FK on `circuits`. If a topology interface is deleted or replaced, deleting the relationship leaves the customer circuit record intact and explicitly unassigned rather than deleting the carrier service record or trying to store a stale primary site.
+`circuit_terminations` is deliberately a separate 0..1 relationship instead of a nullable interface FK on `circuits`. Routine topology coalescing/generation replacement must transfer operator-owned WAN role and circuit termination to the known successor interface before deleting the predecessor. If no deterministic successor exists, deleting the relationship leaves the customer circuit record intact in a visible `needs_reassociation` state rather than deleting the carrier service record or storing a stale primary site.
 
 ---
 
@@ -96,13 +96,13 @@ No circuit entity currently exists. A circuit is therefore genuinely new custome
 
 Discovered-asset site moves intentionally invalidate topology authority: the current move path deletes topology node bindings and later allows topology to be re-established in the target site. A stable asset record can therefore outlive the topology interface row that represented its old site/interface generation.
 
-That means a circuit must survive an interface disappearing or being replaced. V1 treats that as an explicit **unassigned termination** state rather than storing a stale site.
+That means a circuit must survive an interface disappearing or being replaced. When the topology lifecycle knows the predecessor/successor pair, V1 carries the operator-owned WAN role and termination to the successor. When no deterministic successor exists, V1 exposes **needs reassociation** rather than silently treating the circuit as an ordinary unassigned record.
 
 ### 0.6 Monitor/interface context
 
-Topology-managed monitors may carry an interface origin through `topology_monitor_bindings.origin_policy.interfaceId`. Generic asset monitors do not necessarily identify a specific interface.
+The current `bindTopologyMonitor` writer does not populate an interface identifier in `topology_monitor_bindings.origin_policy`, and `alerts` has no interface column. Therefore the repository does not currently provide a reliable alert -> interface source for circuit enrichment.
 
-V1 enriches alerts/tickets with a circuit only when the terminating interface can be resolved unambiguously. It must never guess a circuit merely because the asset has one or more WAN interfaces.
+Alert/ticket context is deferred to Wave 2. That wave must first define and test explicit interface provenance at monitor-bind/alert creation time; it must never guess a circuit merely because an asset has one or more WAN interfaces.
 
 ---
 
@@ -111,22 +111,22 @@ V1 enriches alerts/tickets with a circuit only when the terminating interface ca
 | # | Decision | Choice | Rationale |
 |---|---|---|---|
 | D1 | Inventory ownership | **No new asset inventory.** Placement points to existing `devices` / `discovered_assets`. | Maintains the asset-centred contract from Discussion #8134. |
-| D2 | Placement subject | **One row per `device_id` XOR `discovered_asset_id`.** | Works for managed and discovered network gear without coupling placement to ephemeral topology bindings. |
+| D2 | Placement subject | **One physical box has one authoritative placement.** Unlinked discovered assets may own placement; once linked through `discovered_assets.linked_device_id`, the managed `device` is authoritative. | Prevents a managed device and its linked discovered representation from carrying conflicting placements. |
 | D3 | Placement site | **Not stored.** Site is derived live from the subject asset. | Placement survives a same-org site move and cannot drift from asset assignment. |
 | D4 | Placement vocabulary | **Room, rack, rack unit, height U only.** | Typed V1 fields; no cable/patch-panel model and no generic JSON bag. |
 | D5 | WAN classification | **`topology_interfaces.role = 'wan'`, operator-owned.** | Reuses the existing interface record; no parallel interface entity. |
-| D6 | Discovery ownership | **Discovery never overwrites a non-NULL operator role.** | Prevents a refresh from erasing WAN classification. |
+| D6 | Discovery ownership | **Discovery never overwrites a non-NULL operator role; known topology successor paths transfer the role.** | Prevents refresh/coalesce/generation roll from erasing WAN classification. |
 | D7 | Circuit ownership | **Org-owned customer data.** | Circuits are customer service records, not partner-wide policy/config. |
 | D8 | Circuit identity | **Provider + CID are scalar fields; no provider table in V1.** | Avoids a second provider-management subsystem. |
 | D9 | Termination | **Separate `circuit_terminations`, max one active termination per circuit.** | Lets the circuit survive interface deletion/replacement while keeping cross-org linkage enforceable. |
 | D10 | Primary site | **Derived from the current terminating interface/site; never stored.** | Eliminates duplicate state and follows Todd's explicit requirement. |
 | D11 | Additional sites | **Separate `circuit_served_sites`.** | Same-org FK enforcement; represents dependency/use, not outage state. |
 | D12 | Primary site in served list | **Rejected on write and de-duplicated on read.** | Keeps “additional” semantically distinct from termination. |
-| D13 | Interface retirement | **Retired interface means no current termination context.** | A stale topology generation must not keep asserting a live primary site. |
-| D14 | Asset/site move | **Placement follows automatically; circuit termination may become unassigned if topology replaces the interface.** | Placement is asset-bound; topology interfaces are not stable inventory identities across every move. |
+| D13 | Interface lifecycle | **Known successor: transfer role + termination. Unknown successor: `needs_reassociation`.** | Routine topology churn must not silently erase operator-owned context, while uncertain replacement must not be guessed. |
+| D14 | Asset/site move | **Placement follows automatically; topology carries termination across a deterministic interface successor, otherwise the circuit becomes `needs_reassociation`.** | Placement is asset-bound; topology interfaces can rotate across moves/generations but known replacement paths can preserve operator context safely. |
 | D15 | Asset deletion | **Placement cascades; circuit survives; termination relation disappears with its interface.** | A carrier circuit can continue to exist after router replacement. |
 | D16 | Health semantics | **Circuit service metadata is administrative, not live outage health.** | Monitoring remains the source of operational health. |
-| D17 | Alert/ticket context | **Read-time enrichment only when circuit resolution is unambiguous.** | Avoids duplicating/snapshotting circuit data into alerts/tickets in V1. |
+| D17 | Alert/ticket context | **Wave 2 after explicit alert-to-interface provenance exists.** | The current monitor binding writer does not populate `interfaceId`, so Wave 1 must not promise enrichment that resolves zero alerts. |
 | D18 | Impact wording | **“Potentially impacted sites”.** | Served-site association does not model redundancy or prove an outage. |
 | D19 | Topology rendering | **Deferred.** | Todd requested a minimum V1 surface; topology rendering is a later wave. |
 | D20 | Cable plant / provider automation | **Explicitly out of V1.** | No future-only columns or structures. |
@@ -146,9 +146,9 @@ V1 must:
 7. reject cross-organization placement/circuit/site/interface relationships at the database layer;
 8. preserve placement when its asset changes site within the same organization;
 9. preserve the circuit record when its terminating interface/asset disappears;
-10. expose an explicit unassigned/needs-reassociation circuit state when no current termination exists;
+10. distinguish intentionally unassigned circuits from circuits that require reassociation after an unresolved topology lifecycle change;
 11. show placement and circuit context on asset detail;
-12. enrich alerts and tickets with circuit context only when the triggering context resolves to one circuit/interface without ambiguity;
+12. define Wave 2 alert/ticket enrichment only after an explicit alert-to-interface provenance contract is implemented and tested;
 13. use “potentially impacted” for served sites and never compute site outage from this relation;
 14. participate in RLS, org erasure, tenant export, org merge, and site-scoped authorization contracts;
 15. leave current topology physical links authoritative and untouched.
@@ -268,8 +268,8 @@ Required constraints/indexes:
 ```text
 UNIQUE(device_id) WHERE device_id IS NOT NULL
 UNIQUE(discovered_asset_id) WHERE discovered_asset_id IS NOT NULL
-(device_id, org_id) -> devices(id, org_id) ON DELETE CASCADE
-(discovered_asset_id, org_id) -> discovered_assets(id, org_id) ON DELETE CASCADE
+(device_id, org_id) -> devices(id, org_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE
+(discovered_asset_id, org_id) -> discovered_assets(id, org_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE
 index(org_id)
 ```
 
@@ -278,6 +278,8 @@ Implementation must verify or add the composite unique key required on the refer
 **No `site_id` column.** The route resolves the subject and uses its live site for authorization and display. A same-org site move therefore changes the placement's visible site automatically with no rewrite.
 
 The row may be partially populated. An empty placement (all four placement fields NULL) is not persisted; deleting the last value deletes the placement row.
+
+**Linked discovered-asset authority:** if `discovered_assets.linked_device_id` is NULL, the discovered asset may own its placement row. Once it is linked to a managed device, the managed device becomes the sole authoritative placement subject for that physical box. The link operation resolves placement atomically: if only the discovered asset has placement, move it to the device; if only the device has placement, keep it; if both are identical, keep the device row and remove the duplicate discovered row; if both exist and differ, reject the link with a placement-conflict response so an operator chooses which values survive. Unlinking does not clone placement back to the discovered asset; the device retains the authoritative row until an operator explicitly creates a new discovered placement after unlink.
 
 ### 5.2 `topology_interfaces.role`
 
@@ -295,7 +297,7 @@ Write contract:
 PATCH interface role -> `wan` or NULL
 ```
 
-The topology publication/materialization path must preserve the stored role when updating a current interface. Discovery may create a new interface row with `role = NULL`, but it must not reset a role already set by an operator on the same row.
+The topology publication/materialization path must preserve the stored role when updating a current interface. In addition, every repository path that replaces one interface row with a known successor, including coalescing and topology generation roll, must carry a non-NULL operator role to the successor before the predecessor is deleted/retired. Discovery may create a genuinely new interface with `role = NULL`; it must not reset a role on the same row or drop one during a deterministic replacement.
 
 V1 does not add speculative values such as `lan`, `uplink`, `trunk`, or `management`. Those can be specified separately if needed.
 
@@ -314,6 +316,7 @@ CREATE TABLE circuits (
   bandwidth_bps        bigint NULL,
   service_type         varchar(64) NULL,
   administrative_status varchar(24) NOT NULL DEFAULT 'active',
+  needs_reassociation boolean NOT NULL DEFAULT false,
   created_at           timestamptz NOT NULL DEFAULT now(),
   updated_at           timestamptz NOT NULL DEFAULT now(),
 
@@ -324,7 +327,7 @@ CREATE TABLE circuits (
 );
 ```
 
-`administrative_status` describes the service record lifecycle. It is not the live monitor result and must not be rendered as current reachability.
+`administrative_status` describes the service record lifecycle. It is not the live monitor result and must not be rendered as current reachability. `needs_reassociation` records lifecycle intent only: it is set to `true` when Breeze removes a termination because a topology/site lifecycle event has no deterministic successor, and reset to `false` when a termination is successfully assigned or when an authorized user intentionally leaves the circuit unassigned. It is not a stored primary-site field.
 
 Required indexes:
 
@@ -356,16 +359,18 @@ Required FKs:
 ```text
 (circuit_id, org_id) -> circuits(id, org_id)
   ON DELETE CASCADE
+  DEFERRABLE INITIALLY IMMEDIATE
 
 (interface_id, org_id) -> topology_interfaces(id, org_id)
   ON DELETE CASCADE
+  DEFERRABLE INITIALLY IMMEDIATE
 ```
 
 To make the second FK enforceable without storing the primary site, implementation may add a redundant unique key/index on `topology_interfaces(id, org_id)` if one does not already exist. `topology_interfaces.id` is already globally unique; the composite key exists only to make same-org linkage a database invariant.
 
-Deleting a topology interface deletes only the termination relationship. The circuit itself remains.
+Deleting a topology interface without a deterministic successor deletes only the termination relationship after setting the circuit's `needs_reassociation = true`. The circuit itself remains. A manual/intentional termination removal leaves `needs_reassociation = false`.
 
-An interface with `retired_at IS NOT NULL` is not considered a current termination even if a stale relation somehow remains during a transition. Readers return the circuit as `terminationState = 'unassigned'`; a repair/cleanup path removes the stale termination relation.
+An interface with `retired_at IS NOT NULL` is not considered a current termination even if a stale relation somehow remains during a transition. Deterministic predecessor/successor transitions transfer the termination first. If no safe successor is known, cleanup removes the stale relation and readers return `terminationState = 'needs_reassociation'` rather than silently presenting a normal unassigned circuit.
 
 The interface must be current (`retired_at IS NULL`) and `role = 'wan'` before a termination can be created.
 
@@ -390,6 +395,7 @@ Required FKs:
 ```text
 (circuit_id, org_id) -> circuits(id, org_id)
   ON DELETE CASCADE
+  DEFERRABLE INITIALLY IMMEDIATE
 
 (site_id, org_id) -> sites(id, org_id)
   ON DELETE CASCADE
@@ -433,27 +439,31 @@ placement site on read = asset's new current site
 Circuit:
 
 - If the same current interface row remains valid in the new topology scope, the primary site is re-derived from it.
-- If Breeze's topology lifecycle deletes/replaces the old interface (the normal invalidation path for moves), the FK cascade deletes `circuit_terminations` only.
-- The circuit remains as org-owned service data with `terminationState = 'unassigned'`.
-- The operator reattaches it to the new current WAN interface after topology is re-established.
+- If the topology lifecycle has a deterministic predecessor -> successor mapping (for example coalescing or generation roll), it must transfer `role = 'wan'` and the `circuit_terminations` row to the successor before deleting/retiring the predecessor. Existing relationship/observation re-pointing is the lifecycle precedent.
+- If the old interface disappears and Breeze cannot prove a unique successor, the termination relation is removed, the circuit remains durable, and readers surface `terminationState = 'needs_reassociation'`.
+- The operator reattaches that circuit to a current WAN interface after topology is re-established.
 
-V1 does **not** auto-match the replacement interface by `name`, `os_index`, MAC, or `interface_key`; those identifiers can change or collide and an incorrect circuit attachment is worse than an explicit reassociation task.
+V1 does **not** invent a successor by `name`, `os_index`, MAC, or `interface_key`; those values can change or collide. Carry-over is allowed only when the topology lifecycle itself already knows the old/new identity mapping.
 
 ### 6.3 Asset deletion
 
 Placement is deleted through the subject FK cascade.
 
-Topology lifecycle removes the interface/binding; `circuit_terminations` is deleted; the circuit survives unassigned.
+Topology lifecycle removes the interface/binding. If there is a deterministic replacement interface, role and termination are transferred first; otherwise `circuit_terminations` is deleted and the circuit survives as `needs_reassociation`.
 
 This is deliberate because deleting/replacing a router does not prove that the carrier circuit ceased to exist.
 
-### 6.4 Interface generation retirement
+### 6.4 Interface coalescing and generation roll
 
-A retired interface cannot be selected for a new termination.
+A retired interface cannot be selected for a new termination. Before a known predecessor interface is deleted or retired, coalescing/generation lifecycle code must re-point a current circuit termination and copy the operator-owned non-NULL role to the successor in the same lifecycle operation. The transfer must preserve same-org invariants and termination uniqueness.
 
-If an interface becomes retired while still referenced, readers treat the circuit as unassigned and cleanup removes the termination relation. The old interface row remains topology history, not live service authority.
+If no deterministic successor exists, the lifecycle transaction first sets `circuits.needs_reassociation = true` and then removes the termination relation. The old interface row remains topology history, not live service authority. A successful successor transfer or later reassociation sets the flag back to `false`.
 
-### 6.5 Circuit deletion
+### 6.5 Site deletion
+
+Deleting a site follows the existing site/topology cascade. Before a terminating interface is removed as part of that cascade, the lifecycle path sets the affected circuit's `needs_reassociation = true`; deletion then removes its `circuit_terminations` row. The circuit itself survives, while `circuit_served_sites` rows for the deleted site cascade independently. No stale primary site is retained because primary site is derived, not stored.
+
+### 6.6 Circuit deletion
 
 Deleting a circuit cascades its termination and additional served-site rows. It does not alter the topology interface, asset, monitor, alert, or ticket.
 
@@ -487,7 +497,8 @@ Circuit access:
 
 - org-level circuit list/detail is visible only through sites the caller can access;
 - a circuit with a current termination is visible when the caller can access its primary site;
-- an unassigned circuit is restricted to callers with org-wide/partner authority because there is no site through which to authorize a site-restricted user;
+- `needs_reassociation` circuits are discoverable to a site-restricted technician through the reassociation picker when the technician has write access to the target WAN interface/site; that picker exposes only the minimum circuit identity needed to select it (provider, CID, administrative status, termination state) and never inaccessible served-site names/counts;
+- intentionally unassigned circuits are not exposed through that exception; full org-level detail for any circuit without a current termination still requires org-wide/partner authority unless the caller can authorize through an accessible served site;
 - additional served-site names are included only for sites the caller can access;
 - writes require access to the current primary site when assigned, plus every site being added/removed from served sites;
 - assigning a termination requires write access to the terminating interface's site.
@@ -598,7 +609,8 @@ Server validates:
 - current interface;
 - `role = 'wan'`;
 - interface/site write authorization;
-- interface not already terminating another circuit.
+- interface not already terminating another circuit;
+- successful assignment/reassignment clears server-managed `needs_reassociation`; intentional `DELETE /circuits/:id/termination` also clears it, while topology/site lifecycle loss sets it as defined in §6.
 
 Served-sites write:
 
@@ -619,7 +631,8 @@ Server validates every site in the circuit org, every site is writable by the ca
   bandwidthBps,
   serviceType,
   administrativeStatus,
-  terminationState: 'assigned' | 'unassigned',
+  terminationState: 'assigned' | 'unassigned' | 'needs_reassociation', // derived from termination + needs_reassociation
+
   termination: null | {
     interfaceId,
     interfaceName,
@@ -693,37 +706,19 @@ Administrative status
 
 A site-restricted caller never receives inaccessible site names through the list.
 
-### 9.3 Alert context — required V1 surface
+### 9.3 Alert/ticket context — Wave 2
 
-When an alert can resolve an exact topology interface/circuit, show a context block such as:
+Alert and ticket enrichment are explicitly deferred from Wave 1 because the current monitor binding writer does not populate a reliable interface identifier and `alerts` has no interface column. Wave 2 must first add a concrete, tested alert -> interface provenance path (for example, populating an interface identifier at topology-monitor bind/alert creation time) and only then resolve interface -> circuit.
 
-```text
-Circuit
-Vivo · CID 12345678 · 1 Gbps
-RTR-RJ-01 / WAN1
-Termination site: Central IT Room
-Potentially impacted sites: Building A, Building B
-Placement: Main IT Room · Rack R01 · U38
-```
+Wave 2 invariants remain binding:
 
-Resolution rules:
+1. circuit context requires one exact current interface;
+2. the interface must have exactly one current circuit termination;
+3. asset-level ambiguity never guesses a circuit;
+4. stale/retired/unassigned context is omitted rather than presented as current authority;
+5. tickets derive circuit context from their linked alert provenance and do not snapshot provider/CID/site metadata.
 
-1. Prefer an explicit topology monitor/interface binding (`origin_policy.interfaceId`) when present and current.
-2. The interface must have exactly one current circuit termination.
-3. If no exact interface can be resolved, do not infer a circuit only from the asset.
-4. If data is stale/retired/unassigned, omit the circuit context rather than present stale authority.
-
-No alert schema column is added for provider/CID/site lists in V1.
-
-### 9.4 Ticket context — required V1 surface
-
-For a ticket linked to an alert through the existing ticket-alert relation, render the same current circuit context from the linked alert's resolvable interface.
-
-This is a read-time operational context view. It does not mutate or snapshot the ticket when provider/CID/served sites later change.
-
-If a ticket has several linked alerts resolving to different circuits, render them as separate circuit rows/cards. Do not collapse them into one guessed incident circuit.
-
-### 9.5 Wording contract
+### 9.4 Wording contract
 
 Allowed:
 
@@ -766,7 +761,7 @@ Circuits do not introduce another monitor type in V1.
 
 Operational health remains owned by existing monitors/interface measurements/alerts.
 
-A circuit may be shown alongside a monitor/alert only when the system can prove the exact interface linkage under §9.3.
+Wave 1 does not enrich monitors, alerts or tickets. Wave 2 may do so only after the system records and proves exact interface provenance under §9.3.
 
 `administrative_status` is never substituted for monitor health:
 
@@ -791,7 +786,7 @@ All four new tables must be added to:
 
 - `CORE_ORG_CASCADE_DELETE_ORDER` in `apps/api/src/services/tenantCascade.ts`, in alphabetical/FK-safe order;
 - `CORE_TENANT_EXPORT_POLICY` in `apps/api/src/services/tenantExportPolicyRegistry.ts` with every column classified;
-- the organization merge registry (`apps/api/src/services/orgMergeRegistry.ts`) with a repoint strategy appropriate to their keys;
+- the organization merge registry (`apps/api/src/services/orgMergeRegistry.ts`) with merge policy **`repoint`** for these org-owned rows;
 - schema exports in `apps/api/src/db/schema/index.ts`.
 
 Shape-1 tables do not require an RLS allowlist entry, but the RLS coverage integration suite must discover them and verify their policies.
@@ -860,13 +855,38 @@ V1 does not create a new audit subsystem.
 
 ---
 
-## 15. Acceptance criteria
+## 15. Delivery waves
+
+### Wave 1 — placement and circuits core
+
+Wave 1 implements the durable data/lifecycle contract only:
+
+```text
+schema + tenancy registrations
+placement authority + link/unlink behavior
+WAN role mutation
+coalesce/generation role + termination carry-over
+circuit CRUD + termination + served sites
+derived primary site
+unassigned vs needs_reassociation
+asset/interface circuit UI
+site-scoped reassociation picker
+```
+
+### Wave 2 — alert/ticket operational context
+
+Wave 2 starts only after an explicit interface provenance source is defined for topology-managed monitors/alerts. It adds the alert/ticket read-time enrichment described in §9.3 and no earlier.
+
+---
+
+## 16. Acceptance criteria
 
 ### Placement
 
 - [ ] A managed device can store room, rack, rack unit and height U.
-- [ ] A discovered asset can store the same placement fields.
+- [ ] An unlinked discovered asset can store the same placement fields.
 - [ ] The API cannot create one placement row pointing to both subject types or neither.
+- [ ] Linking a discovered asset to a managed device leaves exactly one authoritative placement on the device; conflicting non-identical placements reject the link until explicitly resolved; unlinking does not duplicate placement back.
 - [ ] Cross-org subject references fail at the database layer.
 - [ ] A same-org site move does not require rewriting the placement row.
 - [ ] Deleting the asset removes its placement.
@@ -876,6 +896,7 @@ V1 does not create a new audit subsystem.
 
 - [ ] An existing current topology interface can be marked `wan` and cleared to NULL.
 - [ ] Discovery/publication does not overwrite a non-NULL operator role.
+- [ ] Coalescing and generation-roll paths transfer a non-NULL operator role to the deterministic successor interface.
 - [ ] No extra interface record is created.
 - [ ] A retired interface cannot be selected as a circuit termination.
 - [ ] WAN cannot be cleared while a current termination still references the interface unless detachment occurs in the same action.
@@ -888,7 +909,9 @@ V1 does not create a new audit subsystem.
 - [ ] One current interface cannot terminate two circuits.
 - [ ] Cross-org termination is impossible at the database layer.
 - [ ] Primary site is returned from the current termination and is not stored on `circuits`.
-- [ ] Deleting/replacing the terminating interface leaves the circuit record intact and unassigned.
+- [ ] Deterministic interface replacement transfers the termination to the successor without losing the circuit association.
+- [ ] Interface deletion/replacement without a deterministic successor sets `needs_reassociation = true`, removes only the termination, and leaves the circuit record intact.
+- [ ] Manual termination removal leaves the circuit intentionally unassigned with `needs_reassociation = false`; successful reassociation resets the flag to `false`.
 - [ ] Asset deletion does not delete the circuit record.
 - [ ] Reassociation to a replacement WAN interface restores the derived primary site.
 
@@ -900,15 +923,21 @@ V1 does not create a new audit subsystem.
 - [ ] A site becoming the new primary is de-duplicated/removed from the additional list.
 - [ ] Deleting an additional site removes only that relationship, not the circuit.
 
-### Operational context
+### Wave 1 UI/context
 
-- [ ] Managed/discovered asset detail shows placement.
+- [ ] Managed/discovered asset detail shows authoritative placement.
 - [ ] A WAN interface shows its circuit details.
+- [ ] `needs_reassociation` is visibly distinct from an intentionally unassigned circuit.
+- [ ] A site-restricted technician with target-site write access can discover a reassociation candidate without receiving inaccessible served-site details.
+- [ ] Served sites are labelled **potentially impacted** and never automatically reported down.
+- [ ] Topology physical links remain unchanged.
+
+### Wave 2 operational context
+
+- [ ] Explicit alert -> interface provenance exists before circuit enrichment is enabled.
 - [ ] Alert context shows circuit data only when one exact current interface/circuit is resolved.
 - [ ] Generic asset-level monitoring with multiple possible WAN circuits does not guess.
 - [ ] A linked ticket shows the same current circuit context from its alert(s).
-- [ ] Served sites are labelled **potentially impacted** and never automatically reported down.
-- [ ] Topology physical links remain unchanged.
 
 ### Tenancy/lifecycle
 
@@ -921,7 +950,7 @@ V1 does not create a new audit subsystem.
 
 ---
 
-## 16. Required implementation tests
+## 17. Required implementation tests
 
 When implementation begins, the minimum test set is:
 
@@ -929,18 +958,18 @@ When implementation begins, the minimum test set is:
 
 - placement create/update/delete for device and discovered asset;
 - placement XOR validation;
+- linked discovered-asset/device placement authority on link/unlink, including conflicting-placement rejection;
 - site-scoped authorization for both subject kinds;
 - WAN role mutation and clearing guard;
 - publication/materialization regression proving operator role survives discovery refresh;
+- coalescing and generation-roll regressions proving WAN role and circuit termination transfer to a deterministic successor;
 - circuit CRUD validation;
 - termination requires current WAN interface;
 - termination uniqueness;
 - served-site same-org validation and primary-site exclusion;
 - primary-site derivation;
-- unassigned circuit after termination/interface removal;
-- alert context exact-interface success;
-- alert context ambiguous/no-interface omission;
-- ticket with one and multiple circuit-bearing alerts;
+- intentional unassigned vs `needs_reassociation` state and flag transitions;
+- site-scoped reassociation picker authorization/redaction;
 - `runAction` coverage for all new web mutations.
 
 ### Integration / real Postgres
@@ -952,21 +981,31 @@ When implementation begins, the minimum test set is:
 - organization merge with placement + circuit + termination + served sites;
 - tenant cascade deletion order;
 - tenant export policy coverage and export/erasure roundtrip;
-- topology interface deletion/retirement lifecycle leaves the circuit durable/unassigned;
+- topology interface deletion/retirement without a successor leaves the circuit durable as `needs_reassociation`;
+- deterministic interface replacement preserves termination and WAN role;
+- site deletion removes termination/served-site relations but preserves the circuit record;
 - discovery publication preserves `topology_interfaces.role = 'wan'`.
 
 ### Web
 
 - asset detail placement rendering/editing;
 - WAN role action;
-- circuit editor and unassigned state;
+- circuit editor plus distinct unassigned/`needs_reassociation` states;
 - served-site selector authorization filtering;
-- alert/ticket context wording contains “Potentially impacted” and does not claim outage;
+- Wave 1 served-site wording contains “Potentially impacted” and does not claim outage;
 - hidden/inaccessible sites do not appear in response/UI counts or labels.
+
+### Wave 2 tests (when that wave starts)
+
+- monitor binding/alert creation persists explicit interface provenance;
+- alert context exact-interface success;
+- alert context ambiguous/no-interface omission;
+- ticket with one and multiple circuit-bearing alerts;
+- alert/ticket wording uses “Potentially impacted” and never infers outage from served-site association.
 
 ---
 
-## 17. Implementation validation gates
+## 18. Implementation validation gates
 
 Because the eventual implementation touches tenancy, migrations, topology and web, it must run the full applicable local gate before a PR:
 
@@ -989,9 +1028,9 @@ Agent tests are not required unless implementation unexpectedly touches `agent/`
 
 ---
 
-## 18. V1 delivery boundary
+## 19. Wave 1 delivery boundary
 
-The implementation corresponding to this spec is complete when:
+The Wave 1 implementation corresponding to this spec is complete when:
 
 ```text
 existing asset
@@ -1000,8 +1039,8 @@ existing asset
   + circuit association
   + derived primary site
   + additional served sites
-  + asset-detail context
-  + unambiguous alert/ticket context
+  + asset/interface detail context
+  + lifecycle-safe reassociation
 ```
 
 works under the tenancy/lifecycle contracts above.
@@ -1023,16 +1062,16 @@ Those require independent specs and acceptance criteria.
 
 ---
 
-## 19. Maintainer-review traceability
+## 20. Maintainer-review traceability
 
 Todd's four explicit design points are resolved as follows:
 
 | Maintainer point | V1 resolution |
 |---|---|
-| **Tenancy:** org-owned, RLS, erasure/export, cross-org served-sites rejected | §§5, 7, 12, 13, 15–17. Shape 1, DB-enforced composite FKs, cascade/export/org-merge contracts. |
-| **Primary site derived, not stored; define move/delete** | §§5.4, 6. The termination relation disappears when the topology interface disappears; circuit remains unassigned; placement follows asset moves automatically. |
-| **“Potentially impacted” wording only** | §§9.3–9.5, 11, 15. No redundancy/outage inference. |
-| **Minimum V1 surface** | §9. Asset detail + alert/ticket context are required; topology rendering is explicitly deferred. |
+| **Tenancy:** org-owned, RLS, erasure/export, cross-org served-sites rejected | §§5, 7, 12, 13, 16–18. Shape 1, DB-enforced composite FKs, cascade/export/org-merge contracts. |
+| **Primary site derived, not stored; define move/delete** | §§5.4, 6. Known topology replacements transfer role/termination; unknown replacement or site deletion removes only the termination and surfaces `needs_reassociation`; placement follows asset moves automatically. |
+| **“Potentially impacted” wording only** | §§9.4, 11, 15–16. No redundancy/outage inference. |
+| **Minimum V1 surface** | §9. Wave 1 is schema + placement + WAN role + circuits API/UI. Alert/ticket context is Wave 2 after explicit interface provenance; topology rendering remains deferred. |
 
 The discussion's other core constraints are also preserved:
 
