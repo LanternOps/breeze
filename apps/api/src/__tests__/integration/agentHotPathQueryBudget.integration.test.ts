@@ -18,9 +18,12 @@
  * armed, around one request plus a short settle window for work the route
  * defers until after its transaction (`runAfterDbContextExit`).
  *
- * The agent-auth middleware is not mounted here (the agent context is set
- * directly, as in enrollmentReachability.integration.test.ts), so its one
- * transaction per request is outside these numbers; #8053 does not change it.
+ * The route-only cases below set the agent context directly (as in
+ * enrollmentReachability.integration.test.ts), so they isolate each route's
+ * own cost. The W0d cases (#8151) go through the production agent router with
+ * a real bearer token, so agentAuthMiddleware's device lookup, limiters,
+ * tenant gate and request-long transaction are counted too: that is the full
+ * per-request cost every simulated (and real) agent pays.
  *
  * The heartbeat budget is asserted on a STEADY-STATE beat, not on an immediate
  * re-beat: the clock moves 61 s (one beat interval), a sibling device in the
@@ -94,10 +97,11 @@ import {
   configPolicyEventLogSettings,
   configPolicyFeatureLinks,
   configurationPolicies,
+  deviceCommands,
   enrollmentKeys,
 } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
-import { getTestRedis } from './setup';
+import { getTestDb, getTestRedis } from './setup';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import {
   orgHelperSettingsCache,
@@ -107,6 +111,9 @@ import {
 import { enrollmentRoutes } from '../../routes/agents/enrollment';
 import { heartbeatRoutes } from '../../routes/agents/heartbeat';
 import { unifiTelemetryRoutes } from '../../routes/agents/unifiTelemetry';
+import { agentRoutes } from '../../routes/agents';
+import { agentAuthMiddleware } from '../../middleware/agentAuth';
+import { createAgentWsHandlers } from '../../routes/agentWs';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -289,11 +296,13 @@ async function enrollDevice(org: SeededOrg, hostname: string) {
     }),
   });
   expect(response.status).toBe(201);
-  const body = await response.json() as { deviceId: string; agentId: string };
+  const body = await response.json() as { deviceId: string; agentId: string; authToken: string };
   await waitForEnrollAuditCommitted(body.deviceId);
   return {
     deviceId: body.deviceId,
     agentId: body.agentId,
+    authToken: body.authToken,
+    hostname: `${hostname}-${org.suffix}`,
     orgId: org.orgId,
     siteId: org.siteId,
     partnerId: org.partnerId,
@@ -365,6 +374,276 @@ async function dropDeviceRedisCaches(deviceId: string): Promise<void> {
   const keys = await redis.keys(`*${deviceId}*`);
   if (keys.length > 0) await redis.del(...keys);
 }
+
+// ---------------------------------------------------------------------------
+// W0d (#8151) — full per-request DB cost of every request the agent simulator
+// (agent/tools/agentsim) sends, agent auth INCLUDED.
+// ---------------------------------------------------------------------------
+
+interface Budget {
+  transactions: number;
+  statements: number;
+}
+
+const AUTH_ONLY_SELF_MANAGED = 'agent auth only (self-managed route)';
+const AUTH_ONLY_WRAPPED = 'agent auth only (request-long org transaction)';
+const COMMAND_RESULT_KEY = 'POST /agents/:id/commands/:commandId/result';
+const WS_COMMAND_RESULT_KEY = 'WS command_result';
+const WS_PONG_KEY = 'WS pong';
+
+/** Budget keys outside HOT_ROUTES. */
+const W0D_EXTRA_KEYS: string[] = [COMMAND_RESULT_KEY, WS_COMMAND_RESULT_KEY, WS_PONG_KEY];
+
+/**
+ * The route-only steady-state heartbeat transaction count asserted in the
+ * #8053 test below. The full-chain heartbeat budget must not exceed it plus
+ * agent auth. Keep the two equal when either moves (#8142 W03 lowers it).
+ */
+const ROUTE_ONLY_STEADY_HEARTBEAT_TX = 3;
+
+// Declared after the key constants: its computed keys read them.
+/**
+ * Pinned per-request DB cost, keyed by the simulator's route key
+ * (agent/tools/agentsim/sim/routes.go). Both numbers are pinned at the
+ * measured steady-state value, not "plus one" (same rule as the #8053
+ * heartbeat budget above): one re-introduced per-request read is exactly the
+ * regression this gate exists for, and a one-statement slack would absorb it.
+ * A change that legitimately adds a query raises its number in the same PR and
+ * says why; a change that removes one lowers it. A budget is today's cost, not
+ * a blessing of it. agent/tools/agentsim/sim/budget_contract_test.go fails
+ * when the simulator gains a route with no entry here.
+ */
+const HOT_ROUTE_BUDGETS: Record<string, Budget> = {
+  // Measured 2026-10-08 on main 551bffd (after #8140 W01, before #8142 W03).
+  // Agent auth is 1 tx / 4 statements on every route below; wrapped routes add
+  // the request-long org transaction (1 tx / 3 statements) on top.
+  [AUTH_ONLY_SELF_MANAGED]: { transactions: 1, statements: 4 },
+  [AUTH_ONLY_WRAPPED]: { transactions: 2, statements: 7 },
+  'POST /agents/:id/heartbeat': { transactions: 4, statements: 31 },
+  'GET /agents/:id/unifi-collectors': { transactions: 1, statements: 4 },
+  'POST /agents/:id/process-sample': { transactions: 2, statements: 8 },
+  'PUT /agents/:id/security/status': { transactions: 2, statements: 12 },
+  'PUT /agents/:id/sessions': { transactions: 2, statements: 11 },
+  'PUT /agents/:id/software': { transactions: 3, statements: 23 },
+  'PUT /agents/:id/disks': { transactions: 2, statements: 12 },
+  'PUT /agents/:id/network': { transactions: 2, statements: 13 },
+  'PUT /agents/:id/connections': { transactions: 2, statements: 11 },
+  'PUT /agents/:id/registry-state': { transactions: 2, statements: 10 },
+  'PUT /agents/:id/config-state': { transactions: 2, statements: 10 },
+  'PUT /agents/:id/management/posture': { transactions: 2, statements: 11 },
+  // Self-managed; re-resolves the event-log policy per request (device, org
+  // partner and group reads) outside the heartbeat's hierarchy pass-through.
+  'PUT /agents/:id/eventlogs': { transactions: 4, statements: 22 },
+  [COMMAND_RESULT_KEY]: { transactions: 4, statements: 19 },
+  [WS_COMMAND_RESULT_KEY]: { transactions: 4, statements: 17 },
+  // Presence refresh is Redis-only.
+  [WS_PONG_KEY]: { transactions: 0, statements: 0 },
+};
+
+function expectWithinBudget(key: string, measured: Measurement): void {
+  const budget = HOT_ROUTE_BUDGETS[key];
+  const seen = JSON.stringify({ status: measured.status, transactions: measured.transactions, statements: measured.statements });
+  expect(budget, `no budget pinned for '${key}' — measured ${seen}`).toBeDefined();
+  expect(measured.transactions, `'${key}' transactions — measured ${seen}`).toBeLessThanOrEqual(budget!.transactions);
+  expect(measured.statements, `'${key}' statements — measured ${seen}`).toBeLessThanOrEqual(budget!.statements);
+}
+
+/**
+ * Mounted at the production prefix on purpose: agentAuthMiddleware decides
+ * self-managed vs. request-long-wrapped routes on the ABSOLUTE path
+ * `/api/v1/agents/<id>/<action>` (middleware/agentCorePath.ts). Any other
+ * mount wraps every route, heartbeat included, and mis-measures it.
+ */
+function fullChainApp(): Hono {
+  const app = new Hono();
+  app.route('/api/v1/agents', agentRoutes);
+  return app;
+}
+
+function agentRequest(device: EnrolledDevice, method: string, action: string, body?: unknown): Promise<Response> {
+  const headers: Record<string, string> = { authorization: `Bearer ${device.authToken}` };
+  if (body !== undefined) headers['content-type'] = 'application/json';
+  return Promise.resolve(fullChainApp().request(`/api/v1/agents/${device.agentId}/${action}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }));
+}
+
+/**
+ * agentAuthMiddleware in front of stub handlers that touch no database, so a
+ * measurement is the middleware's own cost. `heartbeat` is in
+ * SELF_MANAGED_DB_CONTEXT_ACTIONS (no request-long transaction); `software`
+ * is not, so its stub also pays the org transaction every wrapped route pays.
+ */
+function authOnlyRequest(device: EnrolledDevice, method: 'POST' | 'PUT', action: 'heartbeat' | 'software'): Promise<Response> {
+  const app = new Hono();
+  app.use('/api/v1/agents/:id/*', agentAuthMiddleware);
+  app.post('/api/v1/agents/:id/heartbeat', (c) => c.json({ ok: true }));
+  app.put('/api/v1/agents/:id/software', (c) => c.json({ ok: true }));
+  return Promise.resolve(app.request(`/api/v1/agents/${device.agentId}/${action}`, {
+    method,
+    headers: { authorization: `Bearer ${device.authToken}` },
+  }));
+}
+
+interface HotRoute {
+  key: string; // the simulator's route key
+  method: 'GET' | 'POST' | 'PUT';
+  action: string; // path after /agents/:id/
+  intervalMs: number; // the agent's mean interval for this request (plus 1 s)
+  body?: (device: EnrolledDevice) => unknown;
+}
+
+const nowIso = () => new Date().toISOString();
+const minutesAgoIso = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+
+// agentsim's softwareCatalog: 8 named packages padded to 40 items.
+const SIM_SOFTWARE_ITEMS = [
+  ['openssl', '3.0.13'], ['openssh-server', '9.6p1'], ['curl', '8.5.0'], ['python3', '3.12.3'],
+  ['systemd', '255.4'], ['bash', '5.2.21'], ['coreutils', '9.4'], ['git', '2.43.0'],
+].map(([name, version]) => ({ name, version, vendor: 'Ubuntu' }))
+  .concat(Array.from({ length: 32 }, (_, k) => ({
+    name: `libagentsim${String(k + 8).padStart(2, '0')}`, version: `1.0.${k + 8}`, vendor: 'Ubuntu',
+  })));
+
+/**
+ * Bodies mirror the JSON agent/tools/agentsim/sim/payloads.go marshals (the
+ * agent's own wire structs), including the keys the Go structs send without
+ * omitempty (rebootStatus, backup*ProtocolVersion: null).
+ */
+const HOT_ROUTES: HotRoute[] = [
+  {
+    key: 'POST /agents/:id/heartbeat', method: 'POST', action: 'heartbeat', intervalMs: 61_000,
+    body: (d) => ({
+      metrics: { cpuPercent: 17.2, ramPercent: 57.1, ramUsedMb: 9348, diskPercent: 41.5, diskUsedGb: 207.5, processCount: 200 },
+      metricsAvailable: true,
+      status: 'ok',
+      agentVersion: '1.0.0-test',
+      pendingReboot: false,
+      rebootStatus: null,
+      uptime: 3600,
+      backupReadProtocolVersion: null,
+      backupIntegrityProtocolVersion: null,
+      backupWriteProtocolVersion: null,
+      hostname: d.hostname,
+      osVersion: 'Ubuntu 24.04 LTS (agentsim)',
+      isHeadless: true,
+      securityCapabilities: {
+        outboundNetworkPolicyVersion: 1, scriptSecretEnvVersion: 1, peripheralPolicyProtocolVersion: 2,
+        rollbackProtocolVersion: 1, revocationLeaseProtocolVersion: 1, desktopFenceProtocolVersion: 1,
+        desktopWsFenceProtocolVersion: 1, consentPromptProtocolVersion: 2,
+      },
+    }),
+  },
+  { key: 'GET /agents/:id/unifi-collectors', method: 'GET', action: 'unifi-collectors', intervalMs: 31_000 },
+  {
+    key: 'POST /agents/:id/process-sample', method: 'POST', action: 'process-sample', intervalMs: 181_000,
+    body: () => ({
+      timestamp: nowIso(),
+      processes: ['breeze-agent', 'sshd', 'systemd', 'postgres', 'node', 'dockerd', 'containerd', 'chronyd']
+        .map((name, i) => ({ name, pid: 100 + i, cpu: 1.5, ramMb: 120 })),
+    }),
+  },
+  {
+    key: 'PUT /agents/:id/security/status', method: 'PUT', action: 'security/status', intervalMs: 331_000,
+    body: (d) => ({
+      deviceId: d.deviceId, deviceName: d.hostname, orgId: d.orgId, os: 'linux',
+      provider: 'none', threatCount: 0, firewallEnabled: true, encryptionStatus: 'encrypted',
+    }),
+  },
+  {
+    key: 'PUT /agents/:id/sessions', method: 'PUT', action: 'sessions', intervalMs: 331_000,
+    body: () => ({
+      collectedAt: nowIso(),
+      events: [],
+      sessions: [{
+        username: 'simuser', sessionType: 'ssh', sessionId: '1', loginAt: minutesAgoIso(120), idleMinutes: 3,
+        activityState: 'active', isActive: true, lastActivityAt: minutesAgoIso(3), principal: { uid: 1000, username: 'simuser' },
+      }],
+    }),
+  },
+  {
+    key: 'PUT /agents/:id/software', method: 'PUT', action: 'software', intervalMs: 931_000,
+    body: () => ({
+      schemaVersion: 2, observationId: randomUUID(), collectorVersion: 'agentsim-1', observedAt: nowIso(),
+      completeness: 'complete', expectedSources: ['dpkg'], succeededSources: ['dpkg'], failedSources: [], truncated: false,
+      itemCount: SIM_SOFTWARE_ITEMS.length, items: SIM_SOFTWARE_ITEMS,
+    }),
+  },
+  {
+    key: 'PUT /agents/:id/disks', method: 'PUT', action: 'disks', intervalMs: 931_000,
+    body: () => ({ disks: [{ mountPoint: '/', device: '/dev/sda1', fsType: 'ext4', totalGb: 500, usedGb: 207.5, freeGb: 292.5, usedPercent: 41.5, health: 'healthy' }] }),
+  },
+  {
+    key: 'PUT /agents/:id/network', method: 'PUT', action: 'network', intervalMs: 931_000,
+    body: () => ({ adapters: [{ interfaceName: 'eth0', macAddress: '02:42:00:00:00:01', ipAddress: '10.64.0.1', ipType: 'ipv4', isPrimary: true }], vpns: [] }),
+  },
+  {
+    key: 'PUT /agents/:id/connections', method: 'PUT', action: 'connections', intervalMs: 931_000,
+    body: () => ({
+      connections: ['sshd', 'breeze-agent', 'systemd-resolved', 'chronyd', 'postgres'].map((processName, i) => ({
+        protocol: 'tcp', localAddr: '10.64.0.1', localPort: 22 + i, remoteAddr: '10.0.0.1', remotePort: 40000 + i,
+        state: 'ESTABLISHED', pid: 800 + i, processName,
+      })),
+    }),
+  },
+  { key: 'PUT /agents/:id/registry-state', method: 'PUT', action: 'registry-state', intervalMs: 931_000, body: () => ({ entries: [], replace: true }) },
+  { key: 'PUT /agents/:id/config-state', method: 'PUT', action: 'config-state', intervalMs: 931_000, body: () => ({ entries: [], replace: true }) },
+  {
+    key: 'PUT /agents/:id/management/posture', method: 'PUT', action: 'management/posture', intervalMs: 931_000,
+    body: () => ({
+      collectedAt: nowIso(), scanDurationMs: 420, categories: {},
+      identity: { joinType: 'none', azureAdJoined: false, domainJoined: false, workplaceJoined: false, source: 'agentsim' },
+    }),
+  },
+  {
+    key: 'PUT /agents/:id/eventlogs', method: 'PUT', action: 'eventlogs', intervalMs: 931_000,
+    body: () => ({
+      events: [0, 1, 2].map((i) => ({
+        timestamp: minutesAgoIso(i), level: 'info', category: 'system', source: 'systemd',
+        eventId: String(1000 + i), message: 'agentsim: periodic system event',
+      })),
+    }),
+  },
+];
+
+async function steadyStateMeasure(route: HotRoute, device: EnrolledDevice, sibling: EnrolledDevice): Promise<Measurement> {
+  const send = (d: EnrolledDevice) => agentRequest(d, route.method, route.action, route.body?.(d));
+  const primed = await send(device); // first-ever send takes insert paths: not steady state
+  expect(primed.status, `${route.key} prime`).toBeLessThan(300);
+  advanceClock(route.intervalMs);
+  const warmed = await send(sibling); // org-wide caches warm, as in any org with more than one device
+  expect(warmed.status, `${route.key} sibling`).toBeLessThan(300);
+  await dropDeviceRedisCaches(device.deviceId);
+  return measure(() => send(device));
+}
+
+const wsStub = { send: vi.fn(), close: vi.fn() } as unknown as Parameters<
+  ReturnType<typeof createAgentWsHandlers>['onMessage']
+>[1];
+
+/** A `sent` command row, as dispatch leaves it; written by the uncounted test client. */
+async function insertSentCommand(deviceId: string): Promise<string> {
+  const [row] = await getTestDb()
+    .insert(deviceCommands)
+    .values({ deviceId, type: 'refresh_inventory', targetRole: 'agent', payload: {}, status: 'sent' })
+    .returning({ id: deviceCommands.id });
+  if (!row) throw new Error('insertSentCommand: no row');
+  return row.id;
+}
+
+async function commandStatus(commandId: string): Promise<string | undefined> {
+  const [row] = await getTestDb()
+    .select({ status: deviceCommands.status })
+    .from(deviceCommands)
+    .where(eq(deviceCommands.id, commandId))
+    .limit(1);
+  return row?.status;
+}
+
+/** What the simulator's command worker answers (agent.go). */
+const commandResultBody = { status: 'completed', exitCode: 0, stdout: 'agentsim' };
 
 describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
   beforeEach(() => {
@@ -552,6 +831,102 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(warm.transactions).toBe(0);
     expect(warm.statements).toBe(0);
     expect(nextPoll.statements).toBe(0);
+  });
+
+  it('W0d: the budget table pins exactly the simulator routes and the auth-only cases', () => {
+    const expected = [...HOT_ROUTES.map((r) => r.key), ...W0D_EXTRA_KEYS, AUTH_ONLY_SELF_MANAGED, AUTH_ONLY_WRAPPED].sort();
+    expect(Object.keys(HOT_ROUTE_BUDGETS).sort()).toEqual(expected);
+  });
+
+  runDb('W0d: agentAuthMiddleware alone stays inside its budget on both route classes', async () => {
+    const org = await seedOrg('w0d-auth');
+    const device = await enrollDevice(org, 'auth-target');
+    const sibling = await enrollDevice(org, 'auth-sibling');
+    // Org-wide caches (tenant state, org device count) warm, as for any org with more than one device.
+    expect((await authOnlyRequest(sibling, 'POST', 'heartbeat')).status).toBe(200);
+    const cold = await measure(() => authOnlyRequest(device, 'POST', 'heartbeat'));
+    const selfManaged = await measure(() => authOnlyRequest(device, 'POST', 'heartbeat'));
+    const wrapped = await measure(() => authOnlyRequest(device, 'PUT', 'software'));
+    console.log(
+      '[W0d budget] agent auth cold:', JSON.stringify(cold),
+      'self-managed:', JSON.stringify(selfManaged),
+      'wrapped:', JSON.stringify(wrapped),
+    );
+    expect(selfManaged.status).toBe(200);
+    expect(wrapped.status).toBe(200);
+    // The device lookup is unconditional: zero means the middleware never ran.
+    expect(selfManaged.statements).toBeGreaterThan(0);
+    // The request-long org transaction (opened eagerly by withDbAccessContext)
+    // is exactly what separates the two route classes.
+    expect(wrapped.transactions).toBe(selfManaged.transactions + 1);
+    expectWithinBudget(AUTH_ONLY_SELF_MANAGED, selfManaged);
+    expectWithinBudget(AUTH_ONLY_WRAPPED, wrapped);
+  });
+
+  for (const route of HOT_ROUTES) {
+    runDb(`W0d ${route.key}: a steady-state request, agent auth included, stays inside its budget`, async () => {
+      const org = await seedOrg(`w0d-${route.action.replace(/\//g, '-')}`);
+      const device = await enrollDevice(org, 'target');
+      const sibling = await enrollDevice(org, 'sibling');
+      const measured = await steadyStateMeasure(route, device, sibling);
+      console.log('[W0d budget]', route.key, JSON.stringify(measured));
+      expect(measured.status).toBeLessThan(300);
+      // Agent auth's device lookup is unconditional: zero statements means the
+      // request never reached the database and the budget would be vacuous.
+      expect(measured.statements).toBeGreaterThan(0);
+      expectWithinBudget(route.key, measured);
+    });
+  }
+
+  it('W0d: the full-chain heartbeat budget is the route-only beat plus agent auth, no more', () => {
+    const fullChain = HOT_ROUTE_BUDGETS['POST /agents/:id/heartbeat'];
+    const auth = HOT_ROUTE_BUDGETS[AUTH_ONLY_SELF_MANAGED];
+    expect(fullChain, 'heartbeat budget pinned').toBeDefined();
+    expect(auth, 'auth-only budget pinned').toBeDefined();
+    expect(fullChain!.transactions).toBeLessThanOrEqual(ROUTE_ONLY_STEADY_HEARTBEAT_TX + auth!.transactions);
+  });
+
+  runDb(`W0d ${COMMAND_RESULT_KEY}: the HTTP fallback result, agent auth included, stays inside its budget`, async () => {
+    const org = await seedOrg('w0d-cmd-http');
+    const device = await enrollDevice(org, 'target');
+    const sibling = await enrollDevice(org, 'sibling');
+    const warm = await agentRequest(sibling, 'POST', `commands/${await insertSentCommand(sibling.deviceId)}/result`, commandResultBody);
+    expect(warm.status).toBeLessThan(300);
+    const commandId = await insertSentCommand(device.deviceId);
+    const measured = await measure(() => agentRequest(device, 'POST', `commands/${commandId}/result`, commandResultBody));
+    console.log('[W0d budget]', COMMAND_RESULT_KEY, JSON.stringify(measured));
+    expect(measured.status).toBeLessThan(300);
+    expect(await commandStatus(commandId)).toBe('completed'); // accepted, not short-circuited
+    expect(measured.statements).toBeGreaterThan(0);
+    expectWithinBudget(COMMAND_RESULT_KEY, measured);
+  });
+
+  runDb('W0d WS frames: a pong and a command_result stay inside their budgets', async () => {
+    const org = await seedOrg('w0d-ws');
+    const device = await enrollDevice(org, 'ws-target');
+    const handlers = createAgentWsHandlers(device.agentId, {
+      deviceId: device.deviceId,
+      orgId: device.orgId,
+      partnerId: device.partnerId,
+    });
+    const frame = async (data: unknown): Promise<Response> => {
+      await handlers.onMessage({ data: JSON.stringify(data) } as MessageEvent, wsStub);
+      return new Response(null, { status: 204 });
+    };
+    await handlers.onOpen({}, wsStub);
+    try {
+      await frame({ type: 'pong', timestamp: Date.now() }); // the first pong after open is not steady state
+      const pong = await measure(() => frame({ type: 'pong', timestamp: Date.now() }));
+      const commandId = await insertSentCommand(device.deviceId);
+      const result = await measure(() => frame({ type: 'command_result', commandId, ...commandResultBody }));
+      console.log('[W0d budget] ws pong:', JSON.stringify(pong), 'ws command_result:', JSON.stringify(result));
+      expect(await commandStatus(commandId)).toBe('completed');
+      expect(result.statements).toBeGreaterThan(0);
+      expectWithinBudget(WS_PONG_KEY, pong);
+      expectWithinBudget(WS_COMMAND_RESULT_KEY, result);
+    } finally {
+      await handlers.onClose({}, wsStub);
+    }
   });
 });
 
