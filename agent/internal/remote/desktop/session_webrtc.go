@@ -115,7 +115,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	session := &Session{
 		id:           sessionID,
 		peerConn:     peerConn,
-		inputHandler: NewInputHandler(m.config.DesktopContext),
+		inputHandler: NewSafeInput(NewInputHandler(m.config.DesktopContext), sessionID),
 		done:         make(chan struct{}),
 		isActive:     true,
 		fps:          defaultFrameRate,
@@ -472,6 +472,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 				session.onViewerDataChannelMessage("input", msg.Data)
 			})
+			dc.OnClose(func() { session.onViewerDataChannelClosed("input") })
 		case "control":
 			session.mu.Lock()
 			session.controlDC = dc
@@ -479,6 +480,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 				session.onViewerDataChannelMessage("control", msg.Data)
 			})
+			dc.OnClose(func() { session.onViewerDataChannelClosed("control") })
 			dc.OnOpen(func() {
 				// Send the current cached desktop state to this viewer so it
 				// gets an initial state even if it connected after the watcher
@@ -574,6 +576,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			}
 
 		case webrtc.PeerConnectionStateDisconnected:
+			// Release now, not after the grace: a viewer that may never come
+			// back cannot send its key-ups. Off the pion callback goroutine,
+			// because the release waits on the input worker.
+			go session.onPeerDisconnected()
 			// Transient: a brief network blip enters this state. We deliberately
 			// do NOT fire OnSessionStopped (peer_disconnected) here — doing so
 			// would mark the server session disconnected+revoked on a hiccup.

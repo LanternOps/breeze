@@ -1092,6 +1092,9 @@ func (s *Session) handleDesktopSwitch() {
 		return
 	}
 
+	// Key-ups for anything held would land on the other desktop.
+	s.releaseHeldInput("desktop_switch")
+
 	if dsn.OnSecureDesktop() {
 		// Secure desktop is always at origin — reset offsets
 		slog.Info("Desktop switch: entering secure desktop, resetting offsets", "session", s.id)

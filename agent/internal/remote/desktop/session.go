@@ -584,6 +584,9 @@ func (s *Session) LastStopReason() string {
 
 func (s *Session) doCleanup() {
 	s.cleanupOnce.Do(func() {
+		// Before anything else is torn down: nothing this session pressed may
+		// stay pressed on the customer's machine.
+		s.closeInput()
 		if s.audioCapturer != nil {
 			s.audioCapturer.Stop()
 		}

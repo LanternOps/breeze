@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -149,6 +150,9 @@ func (s *Session) handleInputMessage(data []byte) {
 	// }
 
 	if err := s.inputHandler.HandleEvent(event); err != nil {
+		if errors.Is(err, errInputReset) || errors.Is(err, errInputClosed) {
+			return // discarded by a release or teardown; expected
+		}
 		slog.Warn("Failed to handle input event", "session", s.id, "error", err.Error())
 	}
 }
@@ -161,10 +165,15 @@ func (s *Session) handleInputMessage(data []byte) {
 // using per-character key synthesis. That fallback is why an updated viewer
 // talking to an old agent still pastes the way it does today rather than
 // pasting nothing at all.
+//
+// releasesHeldInput says this agent releases everything it pressed when the
+// viewer disconnects or a channel closes, so a viewer need not replay its own
+// releases across a reconnect.
 func buildInputCapabilities() map[string]any {
 	return map[string]any{
-		"type":     "input_capabilities",
-		"typeText": true,
+		"type":              "input_capabilities",
+		"typeText":          true,
+		"releasesHeldInput": true,
 	}
 }
 
@@ -250,7 +259,7 @@ func (s *Session) handleTypeText(data []byte) {
 	s.recordInputActivity()
 	s.inputActive.Store(true)
 
-	if err := InjectText(s.inputHandler, msg.Text); err != nil {
+	if err := s.injectText(msg.Text); err != nil {
 		// InjectText's messages are content-free by construction (see its doc
 		// comment), so this is safe to log and to return to the viewer.
 		slog.Warn("Text injection incomplete",
@@ -600,6 +609,8 @@ func (s *Session) handleControlMessage(data []byte) {
 			return
 		}
 		slog.Info("Switching monitor", "session", s.id, "display", msg.Value)
+		// Coordinates of a drag in progress belong to the old monitor.
+		s.releaseHeldInput("monitor_switch")
 		cfg := s.captureConfig
 		cfg.DisplayIndex = msg.Value
 		newCap, capErr := NewScreenCapturer(cfg)
