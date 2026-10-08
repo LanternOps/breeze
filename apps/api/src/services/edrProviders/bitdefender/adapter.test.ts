@@ -169,10 +169,21 @@ describe('listEndpoints / countEndpoints / enrichEndpoints', () => {
     const page = JSON.parse(fx('inventory-page2.json'));
     const managed = { ...page.result.items[0], details: { ...page.result.items[0].details, isManaged: true } };
     const foreign = { ...managed, id: '6a0000000000000000000f01', name: 'OTHER-CUSTOMER', companyId: C2 };
-    page.result.items.push(foreign, { ...foreign, id: '6a0000000000000000000f02', companyId: undefined });
+    page.result.items.push(foreign);
+    page.result.total = 4;
     const { ctx } = makeCtx({ 'network.getNetworkInventoryItems': [ok('inventory-page1.json'), { body: JSON.stringify(page) }] });
     const eps = await adapter.listEndpoints(ctx, { vendorTenantId: C1, apiHost: null });
     expect(eps.map((e) => e.vendorEndpointId)).toEqual(['6a0000000000000000000a01', '6a0000000000000000000a02']);
+  });
+
+  it('H1: a managed item with no companyId throws malformed_response (tenant) instead of being dropped', async () => {
+    const page = JSON.parse(fx('inventory-page2.json'));
+    const managed = { ...page.result.items[0], details: { ...page.result.items[0].details, isManaged: true } };
+    page.result.items.push({ ...managed, id: '6a0000000000000000000f02', companyId: undefined });
+    page.result.total = 4;
+    const { ctx } = makeCtx({ 'network.getNetworkInventoryItems': [ok('inventory-page1.json'), { body: JSON.stringify(page) }] });
+    await expect(adapter.listEndpoints(ctx, { vendorTenantId: C1, apiHost: null }))
+      .rejects.toMatchObject({ code: 'malformed_response', scope: 'tenant' });
   });
 
   it("countEndpoints counts the company's own managed endpoints (what a mapping would store)", async () => {
@@ -192,6 +203,22 @@ describe('listEndpoints / countEndpoints / enrichEndpoints', () => {
     });
     const out = await adapter.enrichEndpoints!(ctx, { vendorTenantId: C1, apiHost: null }, ['a', 'bad', 'c']);
     expect(out.map((d) => [d.vendorEndpointId, d.health])).toEqual([['a', 'unhealthy'], ['c', 'unhealthy']]);
+  });
+
+  it('M4: any other tenant/operation error stops enrichment, returns what was collected, warns the code only', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { ctx, count } = makeCtx({
+      'network.getManagedEndpointDetails': (p) =>
+        p.endpointId === 'b' ? { body: JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'Server error', data: { details: 'SECRET-BODY' } } }) } : ok('endpoint-details.json'),
+    });
+    const out = await adapter.enrichEndpoints!(ctx, { vendorTenantId: C1, apiHost: null }, ['a', 'b', 'c']);
+    expect(out.map((d) => d.vendorEndpointId)).toEqual(['a']);
+    expect(count('network.getManagedEndpointDetails')).toBe(2);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const msg = String(warn.mock.calls[0]!.join(' '));
+    expect(msg).toContain('vendor_error');
+    expect(msg).not.toContain('SECRET-BODY');
+    warn.mockRestore();
   });
 
   it('enrichment: a connection-scope failure (401) throws', async () => {
@@ -226,6 +253,19 @@ describe('listDetections', () => {
     expect(calls.find((c) => c.key === 'incidents.getIncidentsList')!.params.filters).not.toHaveProperty('companyId');
     expect(a.detections.length).toBe(3);
     expect(b.detections.map((d) => d.vendorDetectionId).sort()).toEqual(['6b0000000000000000000002', '6c0000000000000000000002']);
+  });
+
+  it('CR3: incidents with no company.id are counted and warned about once per memoized fetch (code only)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const inc = JSON.parse(fx('incidents-page.json'));
+    inc.result.items.push({ ...inc.result.items[0], incidentId: 'nocompany1', company: undefined }, { ...inc.result.items[0], incidentId: 'nocompany2', company: {} });
+    const { ctx } = makeCtx({ ...routes(), 'incidents.getIncidentsList': { body: JSON.stringify(inc) } });
+    await adapter.listDetections(ctx, tenant(C1), null, NOW);
+    await adapter.listDetections(ctx, tenant(C2), null, NOW);
+    const calls = warn.mock.calls.map((c) => String(c.join(' '))).filter((m) => m.includes('company'));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('2');
+    warn.mockRestore();
   });
 
   it('concurrent tenants share the same in-flight fetch', async () => {

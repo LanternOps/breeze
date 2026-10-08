@@ -178,6 +178,8 @@ export class GravityZoneClient {
         headers = res.headers;
         text = await res.text();
       } catch (error) {
+        // A guardedFetch refusal (host_not_allowed, ...) is a typed, non-retryable verdict.
+        if (error instanceof EdrProviderRequestError) throw error;
         networkError = error;
       }
 
@@ -217,10 +219,15 @@ export class GravityZoneClient {
 
       if (status === 403) {
         const detail = env?.error?.data?.details;
-        throw this.fail(
-          `${label}: API not enabled on this key (HTTP 403)${typeof detail === 'string' ? `: ${detail}` : ''}`,
-          { code: 'api_not_enabled', scope: 'operation' },
-        );
+        const msg = env?.error?.message;
+        if (typeof detail === 'string' && API_NOT_ENABLED.test(`${typeof msg === 'string' ? msg : ''} ${detail}`)) {
+          throw this.fail(
+            `${label}: API not enabled on this key (HTTP 403): ${detail}`,
+            { code: 'api_not_enabled', scope: 'operation' },
+          );
+        }
+        // Any other 403 (HTML from a WAF/proxy, an unrelated JSON error) says nothing about one API.
+        throw this.fail(`${label}: forbidden (HTTP 403)`, { code: 'forbidden', scope: 'connection' });
       }
       if (!env) {
         if (status >= 200 && status < 300) {
@@ -336,17 +343,34 @@ export class GravityZoneClient {
     };
   }
 
-  /** Every inventory item under `companyId`; any page failure throws (never a partial list). */
+  /**
+   * Every inventory item under `companyId`; any page failure throws (never a partial list).
+   * Fails closed: persist deletes endpoints missing from the list, so a short list must never
+   * be returned. Paging continues on `hasMoreRecords === true` OR `page < pagesCount`.
+   */
   async getInventoryAll(companyId: string): Promise<GzInventoryItem[]> {
     const out: GzInventoryItem[] = [];
+    let expectedTotal: number | undefined;
     for (let page = 1; page <= GZ_MAX_PAGES; page++) {
-      const r = await this.call<{ hasMoreRecords?: boolean; items?: GzInventoryItem[] }>(
+      const r = await this.call<{ hasMoreRecords?: boolean; pagesCount?: number; total?: number; items?: GzInventoryItem[] }>(
         'network', '1.1', 'getNetworkInventoryItems',
         this.inventoryParams(companyId, page, GZ_INVENTORY_PAGE_SIZE), { operationClass: 'inventory' },
       );
-      const items = Array.isArray(r?.items) ? r.items : [];
-      out.push(...items);
-      if (!r?.hasMoreRecords || items.length === 0) return out;
+      if (!r || !Array.isArray(r.items)) {
+        throw this.fail('GravityZone inventory page had no items list', { code: 'malformed_response', scope: 'tenant' });
+      }
+      if (page === 1 && typeof r.total === 'number') expectedTotal = r.total;
+      out.push(...r.items);
+      const more = r.hasMoreRecords === true || (typeof r.pagesCount === 'number' && page < r.pagesCount);
+      if (!more) {
+        if (expectedTotal !== undefined && out.length < expectedTotal) {
+          throw this.fail(
+            `GravityZone inventory returned ${out.length} of ${expectedTotal} items`,
+            { code: 'incomplete_enumeration', scope: 'tenant' },
+          );
+        }
+        return out;
+      }
     }
     throw this.fail(`GravityZone inventory exceeded ${GZ_MAX_PAGES} pages`, { code: 'too_many_pages', scope: 'tenant' });
   }
@@ -382,7 +406,15 @@ export class GravityZoneClient {
       );
       const items = Array.isArray(r?.items) ? r.items : [];
       out.push(...items);
-      if (items.length === 0 || page >= (r?.pagesCount ?? 0)) return out;
+      if (items.length === 0) return out;
+      if (typeof r?.pagesCount !== 'number') {
+        // A full page with no pagesCount might have a successor; never guess it is the last.
+        if (items.length >= GZ_INCIDENTS_PAGE_SIZE) {
+          throw this.fail('GravityZone incidents page had no pagesCount', { code: 'malformed_response', scope: 'operation' });
+        }
+        return out;
+      }
+      if (page >= r.pagesCount) return out;
     }
     throw this.fail(`GravityZone incidents exceeded ${GZ_MAX_PAGES} pages`, { code: 'too_many_pages', scope: 'operation' });
   }

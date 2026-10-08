@@ -30,12 +30,21 @@ describe('buildEdrAdapterContext', () => {
     expect(createGuardedFetch).toHaveBeenCalledWith(['.gravityzone.bitdefender.com']);
     expect(createEdrRateLimiter).toHaveBeenCalledWith({
       redis,
-      fingerprint: credentialFingerprint('bitdefender', 'root', creds),
+      fingerprint: credentialFingerprint('bitdefender', null, creds),
       budget: { perSecond: 10 },
       operationBudgets: { incidents: { perMinute: 2 } },
     });
     expect(a).toMatchObject({ creds, baseUrl: 'https://x', region: null, fetch: 'FETCH', limiter: 'LIMITER' });
     expect(a.runCache).toBeInstanceOf(Map);
     expect(a.runCache).not.toBe(b.runCache);
+  });
+
+  it('L1: one key -> one budget, regardless of vendorRootId (testConnection has none, sync has one)', () => {
+    const creds = { apiKey: 'k' };
+    createEdrRateLimiter.mockClear();
+    buildEdrAdapterContext(adapter, { creds, baseUrl: null, region: null, vendorRootId: null, redis: null });
+    buildEdrAdapterContext(adapter, { creds, baseUrl: null, region: null, vendorRootId: 'root', redis: null });
+    const [a, b] = createEdrRateLimiter.mock.calls.map((c) => (c as unknown as [{ fingerprint: string }])[0].fingerprint);
+    expect(a).toBe(b);
   });
 });

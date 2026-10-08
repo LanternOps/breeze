@@ -103,6 +103,33 @@ describe('GravityZoneClient pagination', () => {
     expect(calls.length).toBe(GZ_MAX_PAGES);
   });
 
+  it('H1: pages on pagesCount when hasMoreRecords is absent', async () => {
+    const pg = (p: number) => JSON.stringify({ jsonrpc: '2.0', id: 1, result: { page: p, pagesCount: 2, total: 2, items: [{ id: `x${p}` }] } });
+    const { impl, calls } = makeFetch([{ body: pg(1) }, { body: pg(2) }]);
+    const items = await makeClient(impl).client.getInventoryAll('c1');
+    expect(items.map((i) => i.id)).toEqual(['x1', 'x2']);
+    expect(calls.length).toBe(2);
+  });
+
+  it('H1: total larger than what was collected -> incomplete_enumeration (tenant), never a short list', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { page: 1, total: 3, items: [{ id: 'a' }, { id: 'b' }] } });
+    const err = await rejection(makeClient(makeFetch([{ body }]).impl).client.getInventoryAll('c1'));
+    expect(err).toMatchObject({ code: 'incomplete_enumeration', scope: 'tenant' });
+  });
+
+  it('H1: a 2xx inventory result without items -> malformed_response (tenant)', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { page: 1, total: 0, hasMoreRecords: false } });
+    const err = await rejection(makeClient(makeFetch([{ body }]).impl).client.getInventoryAll('c1'));
+    expect(err).toMatchObject({ code: 'malformed_response', scope: 'tenant' });
+  });
+
+  it('M6: an incidents page with no pagesCount that is full (items == perPage) -> malformed_response', async () => {
+    const items = Array.from({ length: 1000 }, (_, i) => ({ incidentId: `i${i}` }));
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { items } });
+    const err = await rejection(makeClient(makeFetch([{ body }]).impl).client.getIncidentsChangedBetween(new Date(0), new Date(1)));
+    expect(err).toMatchObject({ code: 'malformed_response', scope: 'operation' });
+  });
+
   it('paginates incidents by pagesCount (no hasMoreRecords), connection-wide, perPage 1000, class incidents', async () => {
     const page = (p: number) => JSON.stringify({ jsonrpc: '2.0', id: 1, result: { total: 2, page: p, perPage: 1000, pagesCount: 2, items: [{ incidentId: `i${p}` }] } });
     const { impl, calls } = makeFetch([{ body: page(1) }, { body: page(2) }]);
@@ -164,6 +191,27 @@ describe('GravityZoneClient classification', () => {
     const { impl } = makeFetch([{ status: 403, body: fx('error-api-not-enabled-quarantine-403.json') }]);
     const err = await rejection(makeClient(impl).client.getQuarantineBetween(new Date(0), new Date(1)));
     expect(err).toMatchObject({ reauth: false, scope: 'operation', code: 'api_not_enabled' });
+  });
+
+  it('M5: an HTML 403 (no JSON-RPC details) -> forbidden, connection, reauth=false', async () => {
+    const { impl } = makeFetch([{ status: 403, body: '<html>403 Forbidden</html>' }]);
+    const err = await rejection(makeClient(impl).client.getQuarantineBetween(new Date(0), new Date(1)));
+    expect(err).toMatchObject({ code: 'forbidden', scope: 'connection', reauth: false });
+  });
+
+  it('M5: a JSON 403 without the not-allowed-API text -> forbidden, connection', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'Server error', data: { details: 'IP blocked' } } });
+    const err = await rejection(makeClient(makeFetch([{ status: 403, body }]).impl).client.getQuarantineBetween(new Date(0), new Date(1)));
+    expect(err).toMatchObject({ code: 'forbidden', scope: 'connection', reauth: false });
+  });
+
+  it('H2: a guardedFetch EdrProviderRequestError is rethrown untouched, with no retry', async () => {
+    const impl = vi.fn(async () => {
+      throw new EdrProviderRequestError('blocked', { code: 'host_not_allowed', reauth: false, scope: 'connection' });
+    }) as unknown as GuardedFetch;
+    const err = await rejection(makeClient(impl).client.call('network', '1.0', 'x', {}));
+    expect(err).toMatchObject({ code: 'host_not_allowed', scope: 'connection' });
+    expect(impl).toHaveBeenCalledTimes(1);
   });
 
   it('api-not-enabled text wins even on a getOwnCompany (key-identity) call', async () => {
@@ -272,7 +320,7 @@ describe('GravityZoneClient rate limiting (DESIGN: honour 429 once)', () => {
 describe('GravityZoneClient operation classes and typed helpers', () => {
   it('acquires inventory for getNetworkInventoryItems, companies for getCompaniesList/getOwnCompany, default for details', async () => {
     const { impl } = makeFetch([
-      { body: fx('inventory-page2.json') },
+      { body: JSON.stringify({ jsonrpc: '2.0', id: 1, result: { page: 1, total: 1, hasMoreRecords: false, pagesCount: 1, items: [{ id: 'x' }] } }) },
       { body: fx('companies-list-root.json') },
       { body: fx('company-details-partner.json') },
       { body: fx('endpoint-details.json') },

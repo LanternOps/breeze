@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+
+const { safeFetch } = vi.hoisted(() => ({ safeFetch: vi.fn() }));
+vi.mock('../urlSafety', () => ({ safeFetch }));
+
 import { createGuardedFetch, hostAllowed, validateVendorUrl } from './guardedFetch';
 
 const GZ = ['.gravityzone.bitdefender.com'];
@@ -63,5 +67,23 @@ describe('createGuardedFetch', () => {
     expect(await res.text()).toBe('{}');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl.mock.calls[0]![1]).toMatchObject({ method: 'POST', maxBytes: 1234, timeoutMs: 30_000, body: '{}' });
+  });
+
+  it('defaults to safeFetch: one call with the allowed URL and a maxBytes cap', async () => {
+    safeFetch.mockReset();
+    safeFetch.mockResolvedValue({ status: 200, headers: new Headers(), text: async () => 'ok' });
+    const f = createGuardedFetch(GZ);
+    const res = await f('https://cloud.gravityzone.bitdefender.com/api/v1.0/jsonrpc/network', { method: 'POST', headers: {}, body: '{}' });
+    expect(await res.text()).toBe('ok');
+    expect(safeFetch).toHaveBeenCalledTimes(1);
+    expect(safeFetch.mock.calls[0]![0]).toBe('https://cloud.gravityzone.bitdefender.com/api/v1.0/jsonrpc/network');
+    expect(safeFetch.mock.calls[0]![1]).toMatchObject({ maxBytes: expect.any(Number) });
+  });
+
+  it('a safeFetch rejection propagates', async () => {
+    safeFetch.mockReset();
+    safeFetch.mockRejectedValue(new Error('dns refused'));
+    const f = createGuardedFetch(GZ);
+    await expect(f('https://cloud.gravityzone.bitdefender.com/api/x', { method: 'POST', headers: {} })).rejects.toThrow('dns refused');
   });
 });

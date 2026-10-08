@@ -199,8 +199,14 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
   async listEndpoints(ctx, tenant) {
     const items = await clientFor(ctx).getInventoryAll(tenant.vendorTenantId);
     // The inventory call is recursive, so for a PARTNER company it also returns every descendant
-    // company's endpoints. Keep only the tenant's own items (an item without a companyId is
-    // dropped, never guessed). Unmanaged network items carry no Bitdefender agent.
+    // company's endpoints. Keep only the tenant's own items. A MANAGED item with no companyId
+    // cannot be attributed, and dropping it would let persist delete its stored row as "gone",
+    // so it fails the tenant instead. Unmanaged network items carry no Bitdefender agent.
+    if (items.some((i) => i.details?.isManaged === true && !i.companyId)) {
+      throw new EdrProviderRequestError('GravityZone returned a managed endpoint without a companyId; refusing a partial list', {
+        code: 'malformed_response', reauth: false, scope: 'tenant',
+      });
+    }
     return items
       .filter((i) => i.companyId === tenant.vendorTenantId && i.details?.isManaged === true)
       .map((i) => toVendorEndpoint(i, tenant.vendorTenantId));
@@ -219,9 +225,12 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
       try {
         out.push(toEndpointDetail(id, await client.getEndpointDetails(id)));
       } catch (e) {
-        // tenant/operation scope (e.g. -32602 for a vanished endpoint): skip, it stays stale and is retried.
-        if (isReq(e) && (e.scope === 'tenant' || e.scope === 'operation')) continue;
-        throw e;
+        if (!isReq(e) || e.scope === 'connection') throw e;
+        // A vanished endpoint: skip it, it stays stale and is retried.
+        if (e.code === 'invalid_params' || e.code === 'not_found') continue;
+        // Anything else is systemic for this tenant: stop, keep what we have. Code only, never the body.
+        console.warn(`[edr:bitdefender] endpoint enrichment stopped early (${e.code})`);
+        return out;
       }
     }
     return out;
@@ -241,7 +250,13 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     const incFrom = windowFrom(cursor.incidentsChangedAfter, now, caps.firstSyncLookbackDays);
     try {
       const all = await memo<GzIncident[]>(
-        ctx, `gz:incidents:${incFrom.toISOString()}:${toIso}`, () => client.getIncidentsChangedBetween(incFrom, to),
+        ctx, `gz:incidents:${incFrom.toISOString()}:${toIso}`, async () => {
+          const fetched = await client.getIncidentsChangedBetween(incFrom, to);
+          const orphaned = fetched.filter((i) => !i.company?.id).length;
+          // Once per memoized fetch (not per tenant). Code-only: no incident content.
+          if (orphaned > 0) console.warn(`[edr:bitdefender] ${orphaned} incident(s) carried no company id and were not attributed`);
+          return fetched;
+        },
       );
       for (const i of all) {
         if (i.company?.id === tenant.vendorTenantId) detections.push(toIncidentDetection(i, tenant.vendorTenantId));

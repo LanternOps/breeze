@@ -18,7 +18,8 @@ export function buildEdrAdapterContext(
     creds: unknown;
     baseUrl: string | null;
     region: string | null;
-    vendorRootId: string | null;
+    /** Accepted for caller compatibility; deliberately NOT part of the budget identity (see below). */
+    vendorRootId?: string | null;
     redis?: Redis | null;
   },
 ): EdrAdapterContext {
@@ -27,9 +28,11 @@ export function buildEdrAdapterContext(
     baseUrl: o.baseUrl,
     region: o.region,
     fetch: createGuardedFetch(adapter.hostAllowlist),
+    // The vendor rate-limits per KEY, so the key alone identifies the budget. Mixing in the root id
+    // would give testConnection (no root yet) and sync (real root) separate Redis budgets for one key.
     limiter: createEdrRateLimiter({
       redis: o.redis === undefined ? getRedis() : o.redis,
-      fingerprint: credentialFingerprint(adapter.key, o.vendorRootId, o.creds),
+      fingerprint: credentialFingerprint(adapter.key, null, o.creds),
       budget: adapter.capabilities.requestBudget,
       operationBudgets: adapter.capabilities.operationBudgets,
     }),
