@@ -299,6 +299,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // future importer must resolve or null a dangling parent.
   "configuration_policies": tablePolicy("org_id", {"included":["id","org_id","partner_id","parent_policy_id","name","description","status","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "contact_external_links": tablePolicy("org_id", {"included":["id","contact_id","org_id","system","external_id","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "contact_roles": tablePolicy("org_id", {"included":["id","contact_id","org_id","role","is_primary","site_id","device_group_id","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // Every column `included` is the POINT of #3258: the same PII sat in
   // organizations.billing_contact / sites.contact as unshaped jsonb, was
   // therefore classified excludedOpen, and was silently dropped from every

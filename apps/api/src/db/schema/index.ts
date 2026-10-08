@@ -8,6 +8,7 @@ export * from './orgs';
 export * from './currency';
 export * from './orgExternalLinks';
 export * from './contacts';
+export * from './contactRoles';
 export * from './oauth';
 export * from './users';
 export * from './userPasskeys';

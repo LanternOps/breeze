@@ -37,6 +37,7 @@ import {
   type ContactExecutor,
 } from './compat';
 import { CONTACT_ROLES, type ContactRole } from './types';
+import { reconcileLegacyContactResponsibilities } from './responsibilities';
 import { recordDestinationChangeWithExecutor } from '../callerVerification/destinations';
 import type { DestinationSource } from '../callerVerification/types';
 
@@ -549,10 +550,17 @@ export async function createContact(
     .returning(contactColumns());
 
   if (created) {
+    const createdContact = created as ContactRecord;
+    await reconcileLegacyContactResponsibilities(exec, {
+      contactId: createdContact.id,
+      orgId: input.orgId,
+      siteId: createdContact.siteId,
+      roles: createdContact.roles,
+    });
     for (const kind of ['email', 'mobile'] as const) {
       await recordDestinationChangeWithExecutor(exec, {
-        orgId: input.orgId, contactId: (created as ContactRecord).id, kind,
-        value: (created as ContactRecord)[kind], source: actor.destinationSource ?? 'technician', userId: actor.userId,
+        orgId: input.orgId, contactId: createdContact.id, kind,
+        value: createdContact[kind], source: actor.destinationSource ?? 'technician', userId: actor.userId,
       });
     }
   }
@@ -693,6 +701,15 @@ export async function updateContact(
   // re-projecting after it would write a jsonb change with no row change
   // behind it, on a call the route answers 404.
   if (!updated) return null;
+
+  if (patch.roles !== undefined || patch.siteId !== undefined) {
+    await reconcileLegacyContactResponsibilities(exec, {
+      contactId,
+      orgId,
+      siteId: updated.siteId,
+      roles: updated.roles,
+    });
+  }
 
   // Provenance is keyed on the normalized value, so an unrelated-field patch
   // (or the same address re-saved) never renews a destination's age.

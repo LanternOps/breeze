@@ -6,9 +6,9 @@
  *
  * recipient_count is |customer| (INDEX ruling); internal CC is excluded.
  */
-import { and, arrayOverlaps, eq, inArray, isNotNull, isNull, or, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { contacts, reportScheduleRecipients } from '../../db/schema';
+import { contactRoles, contacts, reportScheduleRecipients } from '../../db/schema';
 import type { SeriesRecipientRule, SeriesTx } from './types';
 
 /** The same loose regex as ReportBuilder's chips and the schedule worker. */
@@ -66,7 +66,9 @@ function ruleCondition(rule: SeriesRecipientRule): SQL | undefined {
   const arms: SQL[] = [];
   // Org-level primary contact only (a site-level primary is a site's contact).
   if (rule.primaryContact) arms.push(and(eq(contacts.isPrimary, true), isNull(contacts.siteId))!);
-  if (rule.roles.length > 0) arms.push(arrayOverlaps(contacts.roles, rule.roles));
+  // Role-based recipients are organization-context recipients for report-series
+  // children. A Site/Device Group responsibility must not widen to the org.
+  if (rule.roles.length > 0) arms.push(isNotNull(contactRoles.id));
   if (arms.length === 0) return undefined;
   return arms.length === 1 ? arms[0] : or(...arms);
 }
@@ -78,10 +80,21 @@ async function loadRuleMatches(
 ): Promise<Array<RecipientContact & { orgId: string }>> {
   const condition = ruleCondition(rule);
   if (!condition || orgIds.length === 0) return [];
+  const roleJoin = rule.roles.length > 0
+    ? and(
+        eq(contactRoles.contactId, contacts.id),
+        eq(contactRoles.orgId, contacts.orgId),
+        inArray(contactRoles.role, rule.roles),
+        isNull(contactRoles.siteId),
+        isNull(contactRoles.deviceGroupId),
+      )!
+    : sql`false`;
   return tx
     .select({ orgId: contacts.orgId, contactId: contacts.id, email: contacts.email })
     .from(contacts)
-    .where(and(inArray(contacts.orgId, [...orgIds]), isNotNull(contacts.email), condition));
+    .leftJoin(contactRoles, roleJoin)
+    .where(and(inArray(contacts.orgId, [...orgIds]), isNotNull(contacts.email), condition))
+    .groupBy(contacts.orgId, contacts.id, contacts.email);
 }
 
 async function loadOverrides(

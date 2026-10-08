@@ -1,8 +1,10 @@
-import { and, arrayContains, asc, desc, eq, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { contacts } from '../../db/schema/contacts';
+import { contactRoles } from '../../db/schema/contactRoles';
 import { organizations, sites } from '../../db/schema/orgs';
 import { recordDestinationChangeWithExecutor } from '../callerVerification/destinations';
+import { reconcileLegacyContactResponsibilities } from './responsibilities';
 
 /**
  * Dual-write bridge between the `contacts` table and the legacy
@@ -163,7 +165,10 @@ async function applyToSiteContactRow(
     roles: ['site'],
     isPrimary: true,
     createdBy: actorId ?? null,
-  }).returning({ id: contacts.id });
+  }).returning({ id: contacts.id, siteId: contacts.siteId, roles: contacts.roles });
+  await reconcileLegacyContactResponsibilities(exec, {
+    contactId: created!.id, orgId, siteId: created!.siteId, roles: created!.roles,
+  });
   await recordDestinationChangeWithExecutor(exec, {
     orgId, contactId: created!.id, kind: 'email', value: next.email, source: 'technician', userId: actorId ?? null,
   });
@@ -183,8 +188,14 @@ function cleanEmail(value: unknown): string | null {
 function billingContactWhere(orgId: string): SQL {
   return and(
     eq(contacts.orgId, orgId),
-    isNull(contacts.siteId),
-    arrayContains(contacts.roles, [BILLING_ROLE]),
+    sql`EXISTS (
+      SELECT 1 FROM ${contactRoles}
+      WHERE ${contactRoles.contactId} = ${contacts.id}
+        AND ${contactRoles.orgId} = ${contacts.orgId}
+        AND ${contactRoles.role} = ${BILLING_ROLE}
+        AND ${contactRoles.siteId} IS NULL
+        AND ${contactRoles.deviceGroupId} IS NULL
+    )`,
   )!;
 }
 
@@ -340,10 +351,16 @@ async function applyToBillingContact(
   const unassign = isEmpty(next) || (!replace && patch.email === null);
   if (unassign) {
     if (existing) {
-      await exec
+      const [updated] = await exec
         .update(contacts)
         .set({ roles: sql`array_remove(${contacts.roles}, ${BILLING_ROLE})`, updatedAt: new Date() })
-        .where(and(eq(contacts.id, existing.id), eq(contacts.orgId, orgId)));
+        .where(and(eq(contacts.id, existing.id), eq(contacts.orgId, orgId)))
+        .returning({ id: contacts.id, siteId: contacts.siteId, roles: contacts.roles });
+      if (updated) {
+        await reconcileLegacyContactResponsibilities(exec, {
+          contactId: updated.id, orgId, siteId: updated.siteId, roles: updated.roles,
+        });
+      }
     }
     return null;
   }
@@ -374,7 +391,10 @@ async function applyToBillingContact(
     roles: [BILLING_ROLE],
     isPrimary: !primary,
     createdBy: actorId ?? null,
-  }).returning({ id: contacts.id });
+  }).returning({ id: contacts.id, siteId: contacts.siteId, roles: contacts.roles });
+  await reconcileLegacyContactResponsibilities(exec, {
+    contactId: created!.id, orgId, siteId: created!.siteId, roles: created!.roles,
+  });
   await recordDestinationChangeWithExecutor(exec, {
     orgId, contactId: created!.id, kind: 'email', value: next.email, source: 'technician', userId: actorId ?? null,
   });

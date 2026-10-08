@@ -3,6 +3,10 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 
 vi.mock('../../db', () => ({ db: {} }));
 vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWithExecutor: vi.fn().mockResolvedValue(undefined) }));
+const responsibilityMocks = vi.hoisted(() => ({
+  reconcileLegacyContactResponsibilities: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('./responsibilities', () => responsibilityMocks);
 
 import {
   ContactValidationError,
@@ -284,8 +288,10 @@ describe('createContact', () => {
 
     expect(orgBlobWrites(calls)).toEqual([billing]);
     const read = compile(billingProjectionRead(calls)!.where);
-    expect(read.sql).toContain('"roles" @>');
-    expect(read.sql).toContain('"site_id" is null');
+    expect(read.sql).toContain('EXISTS');
+    expect(read.sql).toContain('"contact_roles"."role"');
+    expect(read.sql).toContain('"contact_roles"."site_id" IS NULL');
+    expect(read.sql).toContain('"contact_roles"."device_group_id" IS NULL');
     expect(read.sql).not.toContain('"is_primary"');
     // Parent-first: the org is locked before the INSERT.
     expect(lockReads(calls)[0]!.table).toBe(organizations);
