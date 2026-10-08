@@ -632,7 +632,8 @@ remediationSuggestionRoutes.get(
           eq(elevationRequests.orgId, remediationSuggestions.orgId),
         ),
       )
-      .where(and(...suggestionFilters));
+      // executed only: a script claim (#7276) stamps executed_at on a still-gated row.
+      .where(and(...suggestionFilters, eq(remediationSuggestions.status, 'executed')));
 
     const status = {
       suggested: 0,
@@ -1406,12 +1407,20 @@ remediationSuggestionRoutes.post(
     const admission = execution.admission.targets.find(
       (target) => target.requestedDeviceId === deviceId,
     );
-    if (!admission || admission.admission !== 'admitted' || !admission.executionId) {
+    if (!admission || admission.admission !== 'admitted') {
       await releaseScriptClaim(auth, existing, claimedAt);
       return c.json({
         admission: admission?.admission ?? 'denied',
         reasonCode: admission?.reasonCode ?? 'not_found_or_inaccessible',
       }, 422);
+    }
+    if (!admission.executionId) {
+      // Admitted but no execution id: the command may have left. KEEP the claim
+      // (releasing would let a retry send it again) and surface it.
+      const err = new Error('script admitted without an execution id; claim kept');
+      console.error('[remediationSuggestions] admitted target has no executionId; claim kept', { suggestionId: existing.id });
+      captureException(err, undefined, { component: 'remediationSuggestions.scriptAdmitNoExecution', suggestionId: existing.id });
+      return c.json({ error: 'The script was dispatched but could not be linked to this suggestion' }, 500);
     }
     const scriptExecutionId = admission.executionId;
 
@@ -1475,6 +1484,10 @@ remediationSuggestionRoutes.post(
     });
 
     if (!phase3) {
+      console.error('[remediationSuggestions] script dispatched but suggestion not linked; claim kept', { suggestionId: existing.id, scriptExecutionId });
+      captureException(new Error('script dispatched but suggestion link matched no row'), undefined, {
+        component: 'remediationSuggestions.scriptLink', suggestionId: existing.id, scriptExecutionId,
+      });
       return c.json({ error: 'Failed to update suggestion' }, 500);
     }
     const { row: updated, outcome } = phase3;

@@ -1198,6 +1198,54 @@ describe('remediation suggestion routes', () => {
     expect(dbMocks.updateMock).toHaveBeenCalledTimes(1);
   });
 
+  it('#7276: a service refusal (ok:false) releases the claim and passes the status through', async () => {
+    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
+    mockScriptClaim();
+    mockScriptRelease();
+    dbMocks.executeScriptOnDevicesMock.mockResolvedValueOnce({ ok: false, error: 'forbidden', status: 403 });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(scriptUpdateCalls).toHaveLength(2);
+    expect(scriptUpdateCalls[1]).toMatchObject({ executedBy: null, executedAt: null });
+  });
+
+  it('#7276: an admitted target with no executionId KEEPS the claim (command may have left)', async () => {
+    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
+    mockScriptClaim();
+    const r = admittedForRace();
+    (r.admission.targets[0] as { executionId: string | null }).executionId = null;
+    dbMocks.executeScriptOnDevicesMock.mockResolvedValueOnce(r);
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(500);
+    expect(scriptUpdateCalls).toHaveLength(1);
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
+  it('#7276: a dispatch that throws KEEPS the claim (no release), so a retry cannot re-send', async () => {
+    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
+    mockScriptClaim();
+    dbMocks.executeScriptOnDevicesMock.mockRejectedValueOnce(new Error('boom'));
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(500);
+    expect(scriptUpdateCalls).toHaveLength(1);
+    expect(dbMocks.updateMock).toHaveBeenCalledTimes(1);
+  });
+
   it('#7276: two concurrent /execute calls dispatch exactly once', async () => {
     const accepted = { ...baseSuggestion, status: 'accepted' };
     mockSuggestionLoad(accepted);
