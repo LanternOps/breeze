@@ -34,6 +34,8 @@ export type TimeEntryServiceErrorCode =
   | 'BILLING_STATUS_RESERVED'
   /** 409 — issueInvoice already flipped the row to `billed`; only description-class fields may change. */
   | 'ENTRY_BILLED'
+  /** 409 — a block-of-hours period close drew this entry (#8181); as frozen as `billed`. */
+  | 'ENTRY_DRAWN_BY_BLOCK'
   | 'PART_BILLED'
   // Wave-6 release gate (W6-G4-2/3): a rate or part price that cannot be expressed
   // in the row's stamped currency (¥100.50). Refused, never silently rounded.
@@ -562,6 +564,12 @@ async function getPartnerCurrency(partnerId: string): Promise<string> {
 /** Fields a `billed` row refuses to change (issueInvoice froze the money). */
 const BILLED_LOCKED_ENTRY_FIELDS = ['startedAt', 'endedAt', 'isBillable', 'hourlyRate', 'billingStatus', 'ticketId',
   'workTypeId', 'billingProfileId', 'coverage', 'minimumMinutes', 'roundingIncrementMinutes', 'billingOverridden', 'resetBilling'] as const;
+/** A block close (#8181) stamped this entry: a prepaid hour bank consumed it, so
+ *  it is as frozen as an invoiced one. A card-INCLUDED entry is also 'contract'
+ *  but carries no line — it stays editable (billing-profiles #4628 §5). */
+function isBlockDrawn(entry: { billingStatus: string; contractLineId: string | null }): boolean {
+  return entry.billingStatus === 'contract' && entry.contractLineId != null;
+}
 const BILLED_LOCKED_PART_FIELDS = ['quantity', 'unitPrice', 'costBasis', 'isBillable', 'billingStatus', 'catalogItemId'] as const;
 
 /** "45m", "1h 30m", "2h" — shared wording for feed comments. */
@@ -1008,6 +1016,11 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
   if (entry.billingStatus === 'billed' && BILLED_LOCKED_ENTRY_FIELDS.some((k) => (input as Record<string, unknown>)[k] !== undefined)) {
     throw new TimeEntryServiceError('This entry has been invoiced; only its description can change', 409, 'ENTRY_BILLED');
   }
+  if (isBlockDrawn(entry) && BILLED_LOCKED_ENTRY_FIELDS.some((k) => (input as Record<string, unknown>)[k] !== undefined)) {
+    throw new TimeEntryServiceError(
+      'This entry was drawn from a block of prepaid hours; only its description can change',
+      409, 'ENTRY_DRAWN_BY_BLOCK');
+  }
 
   const startedAt = input.startedAt ?? entry.startedAt;
   const endedAt = input.endedAt !== undefined ? input.endedAt : entry.endedAt;
@@ -1175,6 +1188,10 @@ export async function deleteTimeEntry(id: string, actor: TimeEntryActor) {
       409,
       'ENTRY_BILLED',
     );
+  }
+  if (isBlockDrawn(entry)) {
+    throw new TimeEntryServiceError(
+      'This entry was drawn from a block of prepaid hours and cannot be deleted', 409, 'ENTRY_DRAWN_BY_BLOCK');
   }
   const [deletedRow] = await db
     .delete(timeEntries)

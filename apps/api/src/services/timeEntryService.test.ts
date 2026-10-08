@@ -2853,3 +2853,49 @@ describe('billable_minutes CHECK drift is a typed refusal, not an opaque 500 (#6
     expect([400, 404, 409, 422]).toContain(err.status);
   });
 });
+
+describe('block-drawn entries (#8181)', () => {
+  const base = { id: 'te-1', partnerId: 'p-1', orgId: 'o-1', ticketId: 't-1', userId: ACTOR.userId,
+    startedAt: new Date('2026-07-01T09:00:00Z'), endedAt: new Date('2026-07-01T10:00:00Z'),
+    durationMinutes: 60, isApproved: false, currencyCode: 'USD', workTypeId: null, billingProfileId: null,
+    coverage: 'included', isBillable: true, hourlyRate: null, minimumMinutes: null,
+    roundingIncrementMinutes: null, billingOverridden: false };
+  const drawn = { ...base, billingStatus: 'contract', contractLineId: 'line-1' };
+  const included = { ...base, billingStatus: 'contract', contractLineId: null };
+
+  it.each(['startedAt', 'endedAt', 'isBillable', 'hourlyRate', 'billingStatus', 'ticketId', 'workTypeId',
+    'minimumMinutes', 'resetBilling', 'billingOverridden'] as const)(
+    'refuses %s on a block-drawn entry, even for a billing manager', async (field) => {
+      dbMocks.selectResults.push([drawn]);
+      const value = field === 'billingStatus' ? 'not_billed' : field === 'isBillable' ? false
+        : field === 'resetBilling' ? true
+        : field.endsWith('At') ? new Date('2026-07-01T11:00:00Z') : field === 'hourlyRate' ? '1.00' : null;
+      await expect(updateTimeEntry('te-1', { [field]: value } as never, ADMIN))
+        .rejects.toMatchObject({ status: 409, code: 'ENTRY_DRAWN_BY_BLOCK' });
+      expect(dbMocks.updateSetArgs).toHaveLength(0);
+    });
+
+  it('allows a description edit on a block-drawn entry without touching the billing stamp', async () => {
+    dbMocks.selectResults.push([drawn]);
+    dbMocks.updateResult = [{ ...drawn, description: 'clarified' }];
+    await expect(updateTimeEntry('te-1', { description: 'clarified' }, ADMIN)).resolves.toBeDefined();
+    const set = dbMocks.updateSetArgs.at(-1)!;
+    expect(set.description).toBe('clarified');
+    for (const k of ['billingStatus', 'hourlyRate', 'coverage', 'billableMinutes', 'contractLineId']) {
+      expect(set).not.toHaveProperty(k);
+    }
+  });
+
+  it('still lets a billing manager flip a card-included entry (no block line)', async () => {
+    dbMocks.selectResults.push([included]);
+    dbMocks.updateResult = [{ ...included, billingStatus: 'not_billed' }];
+    await expect(updateTimeEntry('te-1', { billingStatus: 'not_billed' }, ADMIN)).resolves.toBeDefined();
+  });
+
+  it('refuses to delete a block-drawn entry before any write', async () => {
+    dbMocks.selectResults.push([drawn]);
+    await expect(deleteTimeEntry('te-1', ADMIN)).rejects.toMatchObject({ status: 409, code: 'ENTRY_DRAWN_BY_BLOCK' });
+    expect(dbMocks.deleteCalls).toBe(0);
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+});
