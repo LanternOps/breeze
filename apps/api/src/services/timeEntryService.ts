@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { timeEntries, ticketParts, tickets, ticketCategories, organizations, partners, users, ticketComments } from '../db/schema';
+import { timeEntries, ticketParts, tickets, ticketCategories, organizations, partners, users, ticketComments, sites } from '../db/schema';
+import { isHiddenOrgType } from './unassignedPool/visibility';
 import { workTypes } from '../db/schema/workTypes';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import { loadCardsForOrg } from './billingProfileService';
@@ -55,6 +56,10 @@ export type TimeEntryServiceErrorCode =
   | 'RANGE_OUTSIDE_SIGNAL'
   | 'INVALID_TZ'
   | 'ORG_DENIED'
+  /** 422 — #4186: the site is not in the resolved organization (or RLS hides it; no existence oracle). */
+  | 'SITE_ORG_MISMATCH'
+  /** 403 — #4186: a site-confined caller asked for a site outside their allowed set. */
+  | 'SITE_DENIED'
   /** 400 — a caller-supplied work_type_id that is not an ACTIVE row of the acting partner. */
   | 'WORK_TYPE_NOT_FOUND'
   | 'RATE_REQUIRES_BILLABLE'
@@ -229,6 +234,12 @@ export interface TimeEntryActor {
    * write onto a ticket the caller can't actually see.
    */
   accessibleOrgIds: string[] | null;
+  /**
+   * #4186: permissions.allowedSiteIds — the site allowlist of a site-confined
+   * user (undefined = unrestricted). Defence-in-depth on partner/system routes,
+   * where it is not populated today.
+   */
+  allowedSiteIds?: string[];
   recordAuditMutation?: (mutation: TimeEntryAuditMutation) => void;
 }
 
@@ -665,6 +676,65 @@ export async function resolveAndLockOrgLink(
   return { orgId, currencyCode: stamped.currencyCode };
 }
 
+/**
+ * #4186: the site must belong to `orgId` and (for site-confined callers) be in
+ * their allowed set. The read runs in the request DB context, so RLS hides a
+ * site in an inaccessible org — that collapses to SITE_ORG_MISMATCH on purpose
+ * (no existence oracle). Lives here, not in siteLocation.ts, because it throws
+ * TimeEntryServiceError and siteLocation.ts is a leaf the routes import.
+ */
+async function assertSiteInOrg(siteId: string, orgId: string, allowedSiteIds?: string[]): Promise<void> {
+  if (allowedSiteIds && !allowedSiteIds.includes(siteId)) {
+    throw new TimeEntryServiceError('Access to this site denied', 403, 'SITE_DENIED');
+  }
+  const [site] = await db.select({ orgId: sites.orgId }).from(sites).where(eq(sites.id, siteId)).limit(1);
+  if (!site || site.orgId !== orgId) {
+    throw new TimeEntryServiceError('Site does not belong to this organization', 422, 'SITE_ORG_MISMATCH');
+  }
+}
+
+/**
+ * #4186: org/site provenance for a client-supplied `orgId` / `siteId`.
+ * Ticket org always wins (the ticket path holds the ticket + org locks, creation
+ * barrier #3778); an `orgId` that disagrees with the ticket is ORG_MISMATCH.
+ * Without a ticket the org goes through resolveAndLockOrgLink, after a guard
+ * that rejects hidden (quick_support / unassigned pool) and soft-deleted orgs.
+ * That guard lives HERE, not in resolveAndLockOrgLink: remote-session callers
+ * legitimately link hidden orgs. It is an unlocked read, so the SHARE lock in
+ * resolveAndLockOrgLink is still this transaction's first lock.
+ */
+async function resolveLocationLink(
+  input: { ticketId?: string; orgId?: string; siteId?: string },
+  ticketOrgId: string | null,
+  actor: TimeEntryActor,
+): Promise<{ orgLink: { orgId: string; currencyCode: string } | null; siteId: string | null }> {
+  if (input.ticketId) {
+    if (input.orgId && input.orgId !== ticketOrgId) {
+      throw new TimeEntryServiceError('orgId does not match the ticket organization', 422, 'ORG_MISMATCH');
+    }
+    if (input.siteId) {
+      // tickets.org_id is NOT NULL; never store an unchecked site if that ever changes.
+      if (!ticketOrgId) {
+        throw new TimeEntryServiceError('Site does not belong to this organization', 422, 'SITE_ORG_MISMATCH');
+      }
+      await assertSiteInOrg(input.siteId, ticketOrgId, actor.allowedSiteIds);
+    }
+    return { orgLink: null, siteId: input.siteId ?? null };
+  }
+  if (!input.orgId) return { orgLink: null, siteId: null };
+  const [org] = await db
+    .select({ type: organizations.type, deletedAt: organizations.deletedAt })
+    .from(organizations)
+    .where(eq(organizations.id, input.orgId))
+    .limit(1);
+  if (!org || isHiddenOrgType(org.type) || org.deletedAt) {
+    throw new TimeEntryServiceError('Access to this organization denied', 403, 'ORG_DENIED');
+  }
+  const orgLink = await resolveAndLockOrgLink(input.orgId, actor);
+  if (input.siteId) await assertSiteInOrg(input.siteId, orgLink.orgId, actor.allowedSiteIds);
+  return { orgLink, siteId: input.siteId ?? null };
+}
+
 export async function createTimeEntry(
   input: CreateTimeEntryInput,
   actor: TimeEntryActor,
@@ -676,6 +746,7 @@ export async function createTimeEntry(
   let billing: BillingStamp | null = null;
   let workTypeId = input.workTypeId ?? null;
   let currencyCode: string | null = null;
+  let siteId: string | null = null;
 
   if (input.ticketId) {
     // Lock order tickets → time_entries: the ticket row is held until request
@@ -686,11 +757,23 @@ export async function createTimeEntry(
     currencyCode = link.currencyCode;
     billing = link.billing;
     workTypeId = link.workTypeId;
+    // #4186: ticket org wins; still verify a client orgId agrees and the site fits.
+    siteId = (await resolveLocationLink(input, orgId, actor)).siteId;
   } else if (provenance.orgLink) {
     // W06 (#3900): no ticket, but the signal knows its org — stamp org and the
     // org's locked currency so time_entries_currency_required_when_org_chk holds.
     orgId = provenance.orgLink.orgId;
     currencyCode = provenance.orgLink.currencyCode;
+    if (input.siteId) {
+      await assertSiteInOrg(input.siteId, orgId, actor.allowedSiteIds);
+      siteId = input.siteId;
+    }
+  } else if (input.orgId) {
+    // #4186: a client-supplied org (offline replay of a location visit).
+    const loc = await resolveLocationLink(input, null, actor);
+    orgId = loc.orgLink!.orgId;
+    currencyCode = loc.orgLink!.currencyCode;
+    siteId = loc.siteId;
   }
   if (!partnerId) {
     throw new TimeEntryServiceError('Partner is unresolvable for this entry', 400, 'PARTNER_UNRESOLVABLE');
@@ -743,8 +826,10 @@ export async function createTimeEntry(
       ...stamp,
       // Snapshot (spec §7): null only for standalone, money-less entries; never restamped.
       currencyCode,
-      // W06 (#3900): server-stamped provenance; no public schema accepts it.
-      source: provenance.source
+      // W06 (#3900): server-stamped provenance. #4186: a client may assert only
+      // 'location' (zod-restricted); internal callers pass it via provenance.
+      source: input.source ?? provenance.source,
+      siteId
     })
     .returning());
   const entry = rows[0]!;
@@ -855,7 +940,10 @@ async function stopRunningEntry(
   return rows[0] ?? null;
 }
 
-export async function startTimer(input: { ticketId?: string; description?: string; workTypeId?: string | null }, actor: TimeEntryActor) {
+export async function startTimer(
+  input: { ticketId?: string; orgId?: string; siteId?: string; source?: 'timer' | 'location'; description?: string; workTypeId?: string | null },
+  actor: TimeEntryActor,
+) {
   let partnerId = actor.partnerId;
   let orgId: string | null = null;
   let billing: BillingStamp | null = null;
@@ -870,6 +958,13 @@ export async function startTimer(input: { ticketId?: string; description?: strin
     currencyCode = link.currencyCode;
     billing = link.billing;
     workTypeId = link.workTypeId;
+  }
+  // #4186: client-supplied org/site (ticket org wins; no-ticket goes through
+  // resolveAndLockOrgLink). A no-op when neither orgId nor siteId is sent.
+  const loc = await resolveLocationLink(input, orgId, actor);
+  if (loc.orgLink) {
+    orgId = loc.orgLink.orgId;
+    currencyCode = loc.orgLink.currencyCode;
   }
   if (!partnerId) {
     throw new TimeEntryServiceError('Partner is unresolvable for this entry', 400, 'PARTNER_UNRESOLVABLE');
@@ -919,8 +1014,10 @@ export async function startTimer(input: { ticketId?: string; description?: strin
         // Snapshot (spec §7): the ticket org's currency, or null for a
         // standalone timer (no rate yet); never restamped.
         currencyCode,
-        // W06 (#3900): a timer-started entry is provenance 'timer'.
-        source: 'timer'
+        // W06 (#3900): a timer-started entry is provenance 'timer'; #4186: an
+        // arrival-prompt start asserts 'location' (zod-restricted).
+        source: input.source ?? 'timer',
+        siteId: loc.siteId
       })
       .onConflictDoNothing()
       .returning();
@@ -945,7 +1042,7 @@ export async function startTimer(input: { ticketId?: string; description?: strin
     partnerId,
     ticketId: entry.ticketId,
     actorUserId: actor.userId,
-    payload: { userId: actor.userId, durationMinutes: null, isBillable: entry.isBillable, source: 'timer' }
+    payload: { userId: actor.userId, durationMinutes: null, isBillable: entry.isBillable, source: entry.source }
   });
   return entry;
 }
@@ -1459,6 +1556,8 @@ export interface ListTimeEntriesFilters {
   userId?: string;
   ticketId?: string;
   orgId?: string;
+  /** #4186: rows started/logged at this site. */
+  siteId?: string;
   /**
    * The caller's org-axis allowlist (auth.accessibleOrgIds). `null`/omitted =
    * system scope (no org filter). For partner scope this confines the
@@ -1513,6 +1612,9 @@ function entrySelection() {
     // W06 (#3900): read-only provenance on GET /, /timesheet and the
     // per-ticket list. Never accepted on a write.
     source: timeEntries.source,
+    // #4186 OD-5: raw id; any reader that resolves the site must also require
+    // sites.org_id = time_entries.org_id (org moves do not rewrite site_id).
+    siteId: timeEntries.siteId,
     isApproved: timeEntries.isApproved,
     approvedBy: timeEntries.approvedBy,
     approvedAt: timeEntries.approvedAt,
@@ -1529,6 +1631,7 @@ function listConditions(filters: ListTimeEntriesFilters) {
   if (filters.userId) conditions.push(eq(timeEntries.userId, filters.userId));
   if (filters.ticketId) conditions.push(eq(timeEntries.ticketId, filters.ticketId));
   if (filters.orgId) conditions.push(eq(timeEntries.orgId, filters.orgId));
+  if (filters.siteId) conditions.push(eq(timeEntries.siteId, filters.siteId));
   // Org-axis allowlist (partner scope): RLS is partner-axis only, so confine
   // the list to the caller's granted orgs here. Skipped for system scope
   // (accessibleOrgIds null/undefined) and when a specific in-scope orgId is set.

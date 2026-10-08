@@ -160,6 +160,65 @@ describe('timer endpoints', () => {
   });
 });
 
+describe('location start and site filter (#4186)', () => {
+  const ORG = '3f2f1d8e-1111-4222-8333-444455557777';
+  const SITE = '3f2f1d8e-1111-4222-8333-444455558888';
+  const post = (path: string, body: unknown) => timeEntriesRoutes.request(path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  });
+
+  it('POST /start forwards orgId/siteId/source and actor.allowedSiteIds', async () => {
+    permsRef.current = { permissions: [{ resource: 'time_entries', action: 'write' }], allowedSiteIds: [SITE] } as any;
+    serviceMocks.startTimer.mockResolvedValue({ id: 'te-1', endedAt: null });
+    const res = await post('/start', { orgId: ORG, siteId: SITE, source: 'location' });
+    expect(res.status).toBe(201);
+    expect(serviceMocks.startTimer).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: ORG, siteId: SITE, source: 'location' }),
+      expect.objectContaining({ allowedSiteIds: [SITE] })
+    );
+  });
+
+  it('POST /start rejects server-only sources with 400', async () => {
+    const res = await post('/start', { orgId: ORG, source: 'remote_session' });
+    expect(res.status).toBe(400);
+    expect(serviceMocks.startTimer).not.toHaveBeenCalled();
+  });
+
+  it('POST /start rejects a siteId with neither orgId nor ticketId', async () => {
+    const res = await post('/start', { siteId: SITE });
+    expect(res.status).toBe(400);
+  });
+
+  it.each([
+    ['SITE_ORG_MISMATCH', 422], ['SITE_DENIED', 403], ['ORG_DENIED', 403], ['ORG_MISMATCH', 422],
+  ] as const)('POST /start maps service %s to HTTP %i with the code in the body', async (code, status) => {
+    serviceMocks.startTimer.mockRejectedValue(new TimeEntryServiceError('nope', status, code));
+    const res = await post('/start', { orgId: ORG, siteId: SITE });
+    expect(res.status).toBe(status);
+    expect((await res.json()).code).toBe(code);
+  });
+
+  it('POST / forwards orgId/siteId/source=location (offline replay) and rejects source=timer', async () => {
+    serviceMocks.createTimeEntry.mockResolvedValue({ id: 'te-2' });
+    const base = { startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:30:00Z' };
+    const ok = await post('/', { ...base, orgId: ORG, siteId: SITE, source: 'location' });
+    expect(ok.status).toBe(201);
+    expect(serviceMocks.createTimeEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: ORG, siteId: SITE, source: 'location' }),
+      expect.anything()
+    );
+    const bad = await post('/', { ...base, source: 'timer' });
+    expect(bad.status).toBe(400);
+  });
+
+  it('GET /?siteId= passes the filter to the service', async () => {
+    serviceMocks.listTimeEntries.mockResolvedValue({ entries: [], total: 0 });
+    const res = await timeEntriesRoutes.request(`/?siteId=${SITE}`);
+    expect(res.status).toBe(200);
+    expect(serviceMocks.listTimeEntries).toHaveBeenCalledWith(expect.objectContaining({ siteId: SITE }));
+  });
+});
+
 describe('POST /bulk-approve', () => {
   it('surfaces skippedReasons from the service', async () => {
     permsRef.current = ADMIN_PERMS;

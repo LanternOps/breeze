@@ -97,6 +97,31 @@ describe('startTimerSchema', () => {
   });
 });
 
+describe('startTimerSchema location fields (#4186)', () => {
+  const ORG = '3f2f1d8e-1111-4222-8333-444455557777';
+  const SITE = '3f2f1d8e-1111-4222-8333-444455558888';
+  it.each([
+    [{}, true],
+    [{ orgId: ORG, source: 'location' }, true],
+    [{ orgId: ORG, siteId: SITE, source: 'location' }, true],
+    [{ ticketId: UUID, siteId: SITE }, true],
+    [{ siteId: SITE }, false],
+    [{ orgId: ORG, source: 'remote_session' }, false],
+    [{ orgId: ORG, source: 'ai_suggested' }, false],
+  ])('startTimerSchema %j -> %s', (input, ok) => {
+    expect(startTimerSchema.safeParse(input).success).toBe(ok);
+  });
+  it('createTimeEntrySchema accepts orgId/siteId and requires org or ticket for a site', () => {
+    const base = { startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:30:00Z' };
+    expect(createTimeEntrySchema.safeParse({ ...base, orgId: ORG, siteId: SITE, source: 'location' }).success).toBe(true);
+    expect(createTimeEntrySchema.safeParse({ ...base, siteId: SITE }).success).toBe(false);
+  });
+  it('listTimeEntriesQuerySchema accepts a siteId filter', () => {
+    const r = listTimeEntriesQuerySchema.safeParse({ siteId: SITE });
+    expect(r.success && r.data.siteId).toBe(SITE);
+  });
+});
+
 describe('listTimeEntriesQuerySchema', () => {
   it('coerces running flag and dates', () => {
     const r = listTimeEntriesQuerySchema.safeParse({ running: 'true', from: '2026-06-01', limit: '10' });
@@ -254,11 +279,17 @@ describe('time entry sources (W06)', () => {
     expect(timeEntrySourceSchema.parse('ai_suggested')).toBe('ai_suggested');
   });
 
-  it('createTimeEntrySchema / startTimerSchema never accept source (D5)', () => {
-    const created = createTimeEntrySchema.safeParse({ startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:30:00Z', source: 'timer' });
-    expect(created.success && 'source' in created.data).toBe(false);
-    const started = startTimerSchema.safeParse({ source: 'location' });
-    expect(started.success && 'source' in started.data).toBe(false);
+  it('createTimeEntrySchema / startTimerSchema accept only the client source subset (#4186)', () => {
+    const base = { startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:30:00Z' };
+    for (const bad of ['timer', 'manual', 'remote_session', 'support_session', 'ai_suggested']) {
+      expect(createTimeEntrySchema.safeParse({ ...base, source: bad }).success).toBe(false);
+    }
+    const created = createTimeEntrySchema.safeParse({ ...base, source: 'location' });
+    expect(created.success && created.data.source).toBe('location');
+    for (const bad of ['manual', 'remote_session', 'support_session', 'ai_suggested']) {
+      expect(startTimerSchema.safeParse({ source: bad }).success).toBe(false);
+    }
+    expect(startTimerSchema.safeParse({ source: 'timer' }).success).toBe(true);
   });
 });
 
