@@ -1,4 +1,5 @@
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+import type { db } from '../../db';
 import { contactRoles } from '../../db/schema/contactRoles';
 import { contacts } from '../../db/schema/contacts';
 import { deviceGroupMemberships, deviceGroups } from '../../db/schema/devices';
@@ -324,7 +325,7 @@ export async function resolveContactResponsibility(
  * consumers such as Report Series.
  */
 export async function resolveOrganizationResponsibilitiesForOrgs(
-  exec: ContactExecutor,
+  exec: Pick<typeof db, 'select'>,
   input: { orgIds: readonly string[]; roles: readonly ContactRole[] },
 ): Promise<ResponsibilityRow[]> {
   if (input.orgIds.length === 0 || input.roles.length === 0) return [];
