@@ -62,3 +62,60 @@ describeIf.each(DRIVER_BUILDS)('postgres.js (%s): BEGIN pipelined behind a busy 
     }
   });
 });
+
+/**
+ * #8143 — the reconnect after a backend dies INSIDE `sql.begin()` (what the
+ * wedged-backend reclaimer does). Two breeze patch hunks, both builds:
+ *
+ * (a) execute() on a connection whose socket is already gone. `begin()` issues
+ *     its ROLLBACK there; upstream buffered it and threw from the write
+ *     Immediate (uncaughtException), leaving `chunk`/`nextWriteTimer` set, so
+ *     the reconnect's StartupMessage was never flushed: the next query hung
+ *     until connect_timeout.
+ * (b) closed() keeps no per-socket protocol state. The dead backend's FATAL
+ *     57P01 left `errorResponse`/`query` set, and the FIRST query on the new
+ *     socket was rejected with it.
+ */
+describeIf.each(DRIVER_BUILDS)('postgres.js (%s): backend terminated inside a transaction', (_name, postgres) => {
+  it('reconnects promptly, and the next query neither hangs nor inherits the dead backend\'s 57P01', async () => {
+    const sql = postgres(APP_URL!, { max: 1, connect_timeout: 10 });
+    const admin = postgres(APP_URL!, { max: 1 });
+    const uncaught: unknown[] = [];
+    const saved = process.listeners('uncaughtException');
+    process.removeAllListeners('uncaughtException');
+    process.on('uncaughtException', (err) => uncaught.push(err));
+    try {
+      await sql`select 1`;
+      const tx = sql.begin(async (t) => {
+        const pid = (await t<Array<{ pid: number }>>`select pg_backend_pid() as pid`)[0]!.pid;
+        const sleeping = t`select pg_sleep(5)`;
+        // Let the sleep reach the backend, then kill it from outside.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        await admin`select pg_terminate_backend(${pid})`;
+        await sleeping; // rejects; the error propagates, so begin() issues ROLLBACK
+      });
+      await expect(tx).rejects.toBeDefined();
+      // Give the ROLLBACK's write Immediate its turn (where upstream threw).
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const startedAt = Date.now();
+      const next = await Promise.race([
+        sql`select 7 as x`.then(
+          (rows) => ({ ok: true as const, x: rows[0]!.x as number }),
+          (err: { code?: string; message?: string }) => ({ ok: false as const, code: err.code, message: err.message }),
+        ),
+        new Promise<{ ok: false; code: string }>((resolve) =>
+          setTimeout(() => resolve({ ok: false, code: 'HUNG_PAST_3S' }), 3_000)),
+      ]);
+      // (a): without it this is HUNG_PAST_3S. (b): without it, code 57P01.
+      expect(next).toEqual({ ok: true, x: 7 });
+      expect(Date.now() - startedAt).toBeLessThan(3_000);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.removeAllListeners('uncaughtException');
+      for (const listener of saved) process.on('uncaughtException', listener);
+      await sql.end({ timeout: 1 });
+      await admin.end({ timeout: 1 });
+    }
+  });
+});

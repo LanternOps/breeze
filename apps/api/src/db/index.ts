@@ -150,7 +150,11 @@ const afterContextExitStorage = new AsyncLocalStorage<AfterContextExitTask[]>();
 // #8143. The pool permit of the OUTERMOST context in this async scope.
 // Deliberately NOT exited by runOutsideDbContext: a context opened from inside
 // runOutsideDbContext while this permit is still held is a NESTED acquisition
-// (the #1105 escalation) and is served from the nested reserve. Prologue expiry
+// (the #1105 escalation) and is served from the nested reserve. That includes
+// fire-and-forget runOutsideDbContext work started while the parent permit is
+// still held: it is queued ahead of top-level waiters and may take the reserve.
+// That is a fairness cost only; the gate never grants more than its permits.
+// A parent permit already released no longer counts. Prologue expiry
 // handlers do NOT read this store from inside their timer callback (timer ALS
 // propagation is not something to bet the abandon path on): each opener binds
 // the slot into its handler synchronously, when the prologue starts.
@@ -559,8 +563,9 @@ function prologueLabel(opener: string, context: DbAccessContext): string {
  * Prologue expiry (#6048, re-scoped by #8143). Works for BOTH prologue sites:
  * the opener's own (runInPoolSlot binds its permit) and the narrowing prologue
  * of withResolvedDbAccessContext (same connection, same permit, bound by
- * withContextPrologueDeadline when the prologue starts). Abandoning the permit releases the outermost caller at once through
- * `slot.abandonment` and makes COMMIT impossible. No reclaim pass is requested
+ * withContextPrologueDeadline when the prologue starts). Abandoning the permit
+ * releases the outermost caller at once through `slot.abandonment` and makes
+ * COMMIT impossible. No reclaim pass is requested
  * here: the set_config cannot be old enough yet. The scheduler asks if the
  * permit is still held one prologue budget + 1 s later; its outcome reporting
  * (log + throttled Sentry on failure) lives in abandonedSlotReclaim.ts.
@@ -776,6 +781,12 @@ function startAfterContextExitTask(task: AfterContextExitTask): void {
  * held, `work` starts immediately. `work` also runs when the transaction rolls
  * back, so it must be safe to run either way (e.g. an idempotent queue
  * request).
+ *
+ * "Settled" means the UNDERLYING transaction, not the caller's answer (#8143).
+ * When a prologue expiry abandons a wedged transaction, its caller is released
+ * at once but `work` waits until that transaction actually ends, which in
+ * practice is the wedged-backend reclaim. If the reclaim is disabled or keeps
+ * being declined, the transaction never settles and `work` never runs.
  */
 export function runAfterDbContextExit(label: string, work: () => unknown): void {
   const task = { label, run: work };
