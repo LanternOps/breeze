@@ -253,8 +253,17 @@ describe('breeze_rehome_device_custom_field_values authorization', () => {
             ${value.deviceId}::uuid, ${target.org.id}::uuid)`);
       await waitForAdvisoryLockWait(backend!.pid);
 
+      // Observe the outcome BEFORE committing: the helper rejects as soon as
+      // the lock releases, and a rejection with no handler attached yet is
+      // reported by vitest as an unhandled error (flaked CI shard 14/16).
+      const moverOutcome = mover.then(
+        () => ({ rejected: false as const }),
+        (err: unknown) => ({ rejected: true as const, err }),
+      );
       await admin`COMMIT`;
-      await expect(mover).rejects.toMatchObject({ code: '42501' });
+      const outcome = await moverOutcome;
+      expect(outcome.rejected).toBe(true);
+      expect((outcome as { err: { code?: string } }).err).toMatchObject({ code: '42501' });
       await app`ROLLBACK`;
     } finally {
       await admin`ROLLBACK`.catch(() => undefined);
