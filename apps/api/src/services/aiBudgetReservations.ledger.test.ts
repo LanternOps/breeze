@@ -45,6 +45,7 @@ vi.mock('./aiChargeback/stampChargeback', () => ({ stampChargeback: hoisted.stam
 import {
   AiBudgetBindingConflictError,
   AiBudgetPendingSettlementError,
+  attestUnboundRate,
   MAX_PENDING_SETTLEMENT_REPLAY_ATTEMPTS,
   readSdkUsageSnapshot,
   replayPendingAiSettlements,
@@ -396,6 +397,89 @@ describe('settleAiBudgetReservation with ledger rows', () => {
         invocations: [invocation({ requestedModel: 'claude-sonnet-4-6', fallbackUsed: true, rateSnapshot: OTHER_PLATFORM })],
       })).resolves.toMatchObject({ kind: 'settled' });
       expect(hoisted.readConnectionOfferingRate).not.toHaveBeenCalled();
+    });
+
+    describe('attested rate (unbound_rate_attestations)', () => {
+      const OFFERING_RATE = { source: 'offering' as const, standard: OTHER };
+      const attestedReservation = (over: Record<string, unknown> = {}) => reservationRow({
+        billing_source: 'partner_key', model_binding: BYOK,
+        unbound_rate_attestations: { 'claude-sonnet-4-6': { connectionId: CONN_ID, offeringId: 'off-x', rate: OFFERING_RATE } },
+        ...over,
+      });
+
+      it('a row at the attested rate settles with NO live re-read, even if the offering was since repriced or removed', async () => {
+        hoisted.readConnectionOfferingRate.mockResolvedValue({ rate: { source: 'offering', standard: { ...OTHER, inputCentsPerM: 1 } }, offeringId: 'off-x' });
+        primeSettle(attestedReservation());
+        await expect(settleAiBudgetReservation({
+          orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow(OFFERING_RATE)],
+        })).resolves.toMatchObject({ kind: 'settled' });
+
+        hoisted.readConnectionOfferingRate.mockResolvedValue({ rate: null, reason: 'no_enabled_offering' });
+        primeSettle(attestedReservation());
+        await expect(settleAiBudgetReservation({
+          orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow(OFFERING_RATE)],
+        })).resolves.toMatchObject({ kind: 'settled' });
+        expect(hoisted.readConnectionOfferingRate).not.toHaveBeenCalled();
+        expect(hoisted.recordInvocation).toHaveBeenCalledTimes(2);
+      });
+
+      it('an attestation for a different connection is not accepted: falls to the live re-read', async () => {
+        const other = { 'claude-sonnet-4-6': { connectionId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', offeringId: 'off-x', rate: OFFERING_RATE } };
+        hoisted.readConnectionOfferingRate.mockResolvedValue({ rate: { source: 'offering', standard: { ...OTHER, inputCentsPerM: 1 } }, offeringId: 'off-x' });
+        dbMock.execute.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([attestedReservation({ unbound_rate_attestations: other })]);
+        await expect(settleAiBudgetReservation({
+          orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow(OFFERING_RATE)],
+        })).rejects.toThrow(/does not match the turn binding/);
+        expect(hoisted.readConnectionOfferingRate).toHaveBeenCalledTimes(1);
+        expect(hoisted.recordInvocation).not.toHaveBeenCalled();
+      });
+
+      it('a tampered rate (differs from the attestation and from the live read) is rejected, nothing recorded', async () => {
+        const tampered = { source: 'offering' as const, standard: { ...OTHER, outputCentsPerM: 1 } };
+        hoisted.readConnectionOfferingRate.mockResolvedValue({ rate: OFFERING_RATE, offeringId: 'off-x' });
+        dbMock.execute.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([attestedReservation()]);
+        await expect(settleAiBudgetReservation({
+          orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow(tampered)],
+        })).rejects.toThrow(/does not match the turn binding/);
+        expect(hoisted.recordInvocation).not.toHaveBeenCalled();
+      });
+
+      it('the reservation FOR UPDATE select includes unbound_rate_attestations', async () => {
+        primeSettle(attestedReservation());
+        await settleAiBudgetReservation({
+          orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow(OFFERING_RATE)],
+        });
+        expect(q(1).sql).toMatch(/unbound_rate_attestations[\s\S]*FROM ai_budget_reservations[\s\S]*FOR UPDATE/);
+      });
+    });
+  });
+
+  describe('attestUnboundRate (#7773)', () => {
+    const CONN = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const ENTRY = { connectionId: CONN, offeringId: 'off-1', rate: { source: 'offering' as const, standard: STD } };
+    const input = { orgId: ORG_ID, reservationId: RESERVATION_ID, model: 'claude-sonnet-4-6', attestation: ENTRY };
+
+    it('one UPDATE, new entry on the LEFT of || (first write wins), scoped by id + org + settleable status; returns the parsed entry', async () => {
+      dbMock.execute.mockResolvedValueOnce([{ attestations: { 'claude-sonnet-4-6': ENTRY } }]);
+      await expect(attestUnboundRate(input)).resolves.toEqual(ENTRY);
+      expect(dbMock.execute).toHaveBeenCalledTimes(1);
+      const { sql: text, params } = q(0);
+      expect(text).toMatch(/UPDATE ai_budget_reservations/);
+      expect(text).toContain('|| COALESCE(unbound_rate_attestations');
+      expect(text).toMatch(/WHERE id = \$\d::uuid AND org_id = \$\d::uuid/);
+      expect(text).toMatch(/status IN \('active', 'indeterminate', 'expired'\)/);
+      expect(params).toEqual(expect.arrayContaining([RESERVATION_ID, ORG_ID, JSON.stringify({ 'claude-sonnet-4-6': ENTRY })]));
+    });
+
+    it('returns the STORED entry when an earlier write exists', async () => {
+      const stored = { ...ENTRY, offeringId: 'off-0', rate: { source: 'offering' as const, standard: FB } };
+      dbMock.execute.mockResolvedValueOnce([{ attestations: { 'claude-sonnet-4-6': stored } }]);
+      await expect(attestUnboundRate(input)).resolves.toEqual(stored);
+    });
+
+    it('returns null when no row comes back (settled, released or gone)', async () => {
+      dbMock.execute.mockResolvedValueOnce([]);
+      await expect(attestUnboundRate(input)).resolves.toBeNull();
     });
   });
 

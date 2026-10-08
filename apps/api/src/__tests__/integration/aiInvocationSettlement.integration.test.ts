@@ -779,6 +779,53 @@ describe.skipIf(!RUN)('an unbound BYOK refusal-fallback key at its own offering 
     expect(Number(row.cost_cents)).toBeCloseTo(priceInvocation(binding.rateSnapshot, T, {}), 6);
   });
 
+  // Round 2: a settlement deferred by org-lock contention replays later. A
+  // partner that reprices, disables or deletes the fallback offering in the
+  // meantime must not dead-letter it: it settles at the rate the turn ran at,
+  // verified in-tx against the attestation the turn wrote on its reservation.
+  it.each([
+    ['repriced', (id: string) => fixtureSql`UPDATE partner_ai_models SET price_input_cents_per_m = 999 WHERE id = ${id}`],
+    ['disabled', (id: string) => fixtureSql`UPDATE partner_ai_models SET enabled = false WHERE id = ${id}`],
+    ['deleted', (id: string) => fixtureSql`DELETE FROM partner_ai_models WHERE id = ${id}`],
+  ] as const)('a deferred settlement replays at the turn-time rate after the offering is %s, exactly once', async (_label, mutate) => {
+    const b = await seedRegistryPartner('byok');
+    const binding = await bindingFor(b);
+    const fbModel = `w7773-replay-${randomUUID()}`;
+    const offeringId = await seedOffering({ partnerId: b.partnerId, connectionId: b.connectionId, modelId: fbModel, source: 'manual', enabled: true });
+    await priceOffering(offeringId);
+    const id = await reserve(b, binding);
+
+    const blocker = await holdOrganizationLock(b.orgId);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const out = await settleInvocation(settleInput(b, binding, id, {
+        usage: [{ model: fbModel, tokens: T, webSearchRequests: 0, speedServed: 'standard', providerModel: null }],
+        outcome: swapped(fbModel),
+      }));
+      expect(out).toMatchObject({ deferred: true });
+      expect(out.unrecorded).toBeFalsy();
+    } finally {
+      await blocker.release();
+      error.mockRestore();
+    }
+    await mutate(offeringId);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = await replayPendingAiSettlements();
+    const second = await replayPendingAiSettlements();
+    warn.mockRestore();
+    expect(first.filter((r) => r.reservationId === id)).toMatchObject([{ kind: 'settled' }]);
+    expect(second.filter((r) => r.reservationId === id)).toEqual([]);
+    const expected = priceInvocation({ source: 'offering', standard: OWN }, T, {});
+    expect(await reservationState(id)).toMatchObject({ status: 'settled', pending_settlement: null });
+    expect(Number((await reservationState(id)).actual_cost_cents)).toBeCloseTo(expected, 6);
+    const rows = await q<{ rate_snapshot: unknown; cost_cents: string }>(sql`
+      SELECT rate_snapshot, cost_cents FROM ai_invocations WHERE org_id = ${b.orgId}::uuid AND requested_model = ${fbModel}`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.rate_snapshot).toEqual({ source: 'offering', standard: OWN });
+    expect(Number(rows[0]!.cost_cents)).toBeCloseTo(expected, 6);
+  }, 30_000);
+
   it('an enabled, priced offering of that model on ANOTHER connection of the same partner is never used', async () => {
     const b = await seedRegistryPartner('byok');
     const binding = await bindingFor(b);

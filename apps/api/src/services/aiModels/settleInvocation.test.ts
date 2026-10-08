@@ -9,6 +9,7 @@ const m = vi.hoisted(() => ({
   debit: vi.fn(),
   getPlatformModelByModelId: vi.fn(),
   readConnectionOfferingRate: vi.fn(),
+  attestUnboundRate: vi.fn(),
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
   captureMessage: vi.fn(),
   captureException: vi.fn(),
@@ -16,6 +17,7 @@ const m = vi.hoisted(() => ({
 }));
 vi.mock('../aiBudgetReservations', () => ({
   settleAiBudgetReservationDurably: m.settleDurably,
+  attestUnboundRate: m.attestUnboundRate,
   recordInvocationsWithRollups: m.recordWithRollups,
   markCreditsDebited: m.markDebited,
   recordCreditDebitFailure: m.recordFailure,
@@ -81,6 +83,7 @@ beforeEach(() => {
   m.recordRetry.mockResolvedValue({ attempts: 1, exhausted: false });
   m.getPlatformModelByModelId.mockResolvedValue(null);
   m.readConnectionOfferingRate.mockResolvedValue({ rate: null, reason: 'no_enabled_offering' });
+  m.attestUnboundRate.mockImplementation(async (i: { attestation: unknown }) => i.attestation);
   m.withSystemDbAccessContext.mockImplementation((fn: () => unknown) => fn());
   m.checkCostAnomalies.mockResolvedValue(undefined);
 });
@@ -594,7 +597,7 @@ describe('unbound BYOK refusal fallback priced at its own offering rate (#7773)'
   });
 
   it('settleInvocation reads the rate on the binding\'s own connection and writes it on the ledger row', async () => {
-    m.readConnectionOfferingRate.mockResolvedValue({ rate: OWN_RATE });
+    m.readConnectionOfferingRate.mockResolvedValue({ rate: OWN_RATE, offeringId: 'off-own' });
     m.settleDurably.mockResolvedValue({ kind: 'settled', reservationId: 'r1', actualCostCents: 450, invocationIds: ['i1'], billingSource: 'partner_key', creditsDebitDue: false });
     const out = await settleInvocation(base({ binding: BYOK, usage: [use('claude-sonnet-4-6')], outcome: swapped }));
     expect(m.readConnectionOfferingRate).toHaveBeenCalledWith({
@@ -612,7 +615,7 @@ describe('unbound BYOK refusal fallback priced at its own offering rate (#7773)'
   });
 
   it('only unbound keys are looked up: the bound model is never re-read', async () => {
-    m.readConnectionOfferingRate.mockResolvedValue({ rate: OWN_RATE });
+    m.readConnectionOfferingRate.mockResolvedValue({ rate: OWN_RATE, offeringId: 'off-own' });
     await settleInvocation(base({ binding: BYOK, usage: [use('claude-sonnet-5-5'), use('claude-sonnet-4-6')], outcome: swapped }));
     expect(m.readConnectionOfferingRate).toHaveBeenCalledTimes(1);
   });
@@ -646,8 +649,52 @@ describe('unbound BYOK refusal fallback priced at its own offering rate (#7773)'
     expect(m.settleDurably.mock.calls[0]![0].invocations[0]).toMatchObject({ rateSnapshot: { source: 'platform', standard: OTHER } });
   });
 
+  it('with a reservationId, attests the read rate on the reservation and prices at the RETURNED entry (first write wins)', async () => {
+    const STORED = { source: 'offering' as const, standard: { ...OTHER, inputCentsPerM: OTHER.inputCentsPerM + 7 } };
+    m.readConnectionOfferingRate.mockResolvedValue({ rate: OWN_RATE, offeringId: 'off-own' });
+    m.attestUnboundRate.mockResolvedValue({ connectionId: 'c1', offeringId: 'off-stored', rate: STORED });
+    await settleInvocation(base({ binding: BYOK, usage: [use('claude-sonnet-4-6')], outcome: swapped }));
+    expect(m.attestUnboundRate).toHaveBeenCalledTimes(1);
+    expect(m.attestUnboundRate).toHaveBeenCalledWith({
+      orgId: 'o1', reservationId: 'r1', model: 'claude-sonnet-4-6',
+      attestation: { connectionId: BYOK.connectionId, offeringId: 'off-own', rate: OWN_RATE },
+    });
+    expect(m.settleDurably.mock.calls[0]![0].invocations[0]).toMatchObject({
+      rateSnapshot: STORED, costCents: priceInvocation(STORED, T, {}),
+    });
+  });
+
+  it('attestUnboundRate returning null (reservation not settleable) -> bound rate, reason recorded', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    m.readConnectionOfferingRate.mockResolvedValue({ rate: OWN_RATE, offeringId: 'off-own' });
+    m.attestUnboundRate.mockResolvedValue(null);
+    await settleInvocation(base({ binding: BYOK, usage: [use('claude-sonnet-4-6')], outcome: swapped }));
+    expect(m.settleDurably.mock.calls[0]![0].invocations[0]).toMatchObject({ rateSnapshot: BYOK.rateSnapshot, costCents: 300 });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('bound rate'), expect.objectContaining({
+      eventCode: 'ai_unbound_byok_rate_bound_fallback', model: 'claude-sonnet-4-6', reason: 'reservation_not_settleable',
+    }));
+    warn.mockRestore();
+  });
+
+  it('attestUnboundRate throwing never fails the turn: bound rate, reason lookup_failed', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    m.readConnectionOfferingRate.mockResolvedValue({ rate: OWN_RATE, offeringId: 'off-own' });
+    m.attestUnboundRate.mockRejectedValue(new Error('lock timeout'));
+    await expect(settleInvocation(base({ binding: BYOK, usage: [use('claude-sonnet-4-6')], outcome: swapped })))
+      .resolves.toMatchObject({ costCents: 300 });
+    expect(err).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ reason: 'lookup_failed', model: 'claude-sonnet-4-6' }));
+    err.mockRestore();
+  });
+
+  it('no reservationId -> nothing attested; quoteInvocationCents never attests', async () => {
+    m.readConnectionOfferingRate.mockResolvedValue({ rate: OWN_RATE, offeringId: 'off-own' });
+    await settleInvocation(base({ binding: BYOK, usage: [use('claude-sonnet-4-6')], outcome: swapped, reservationId: undefined }));
+    await quoteInvocationCents(BYOK, [use('claude-sonnet-4-6')]);
+    expect(m.attestUnboundRate).not.toHaveBeenCalled();
+  });
+
   it('quoteInvocationCents quotes the same number settleInvocation bills', async () => {
-    m.readConnectionOfferingRate.mockResolvedValue({ rate: OWN_RATE });
+    m.readConnectionOfferingRate.mockResolvedValue({ rate: OWN_RATE, offeringId: 'off-own' });
     await expect(quoteInvocationCents(BYOK, [use('claude-sonnet-4-6')])).resolves.toBe(priceInvocation(OWN_RATE, T, {}));
   });
 });

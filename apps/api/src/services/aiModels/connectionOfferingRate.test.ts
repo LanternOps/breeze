@@ -13,6 +13,7 @@ import { readConnectionOfferingRate } from './connectionOfferingRate';
 const dialect = new PgDialect();
 const BASE = { partnerId: 'p1', connectionId: 'c1', connectionKind: 'anthropic_byok' as const, model: 'claude-sonnet-4-6' };
 const row = (over: Record<string, unknown> = {}) => ({
+  offering_id: 'off-1',
   price_input_cents_per_m: null, price_output_cents_per_m: null, price_cache_read_cents_per_m: null, price_cache_write_cents_per_m: null,
   linked_input_cents_per_m: null, linked_output_cents_per_m: null, linked_cache_read_cents_per_m: null, linked_cache_write_cents_per_m: null,
   ...over,
@@ -41,6 +42,7 @@ describe('readConnectionOfferingRate (#7773)', () => {
     dbMock.execute.mockResolvedValueOnce([row({ ...OWN, ...LINKED })]);
     await expect(readConnectionOfferingRate(BASE)).resolves.toEqual({
       rate: { source: 'offering', standard: { inputCentsPerM: 300, outputCentsPerM: 1500, cacheReadCentsPerM: 30, cacheWriteCentsPerM: 375 } },
+      offeringId: 'off-1',
     });
   });
 
@@ -48,6 +50,7 @@ describe('readConnectionOfferingRate (#7773)', () => {
     dbMock.execute.mockResolvedValueOnce([row(LINKED)]);
     await expect(readConnectionOfferingRate(BASE)).resolves.toEqual({
       rate: { source: 'linked_platform', standard: { inputCentsPerM: 250, outputCentsPerM: 1250, cacheReadCentsPerM: 25, cacheWriteCentsPerM: 312.5 } },
+      offeringId: 'off-1',
     });
   });
 

@@ -26,7 +26,7 @@ import type { TurnBinding } from './turnBinding';
 export type ConnectionOfferingRateMiss = 'no_connection' | 'catalog_connection' | 'no_enabled_offering' | 'unpriced_offering';
 
 export type ConnectionOfferingRate =
-  | { rate: RateSnapshot }
+  | { rate: RateSnapshot; offeringId: string }
   | { rate: null; reason: ConnectionOfferingRateMiss };
 
 export interface ConnectionOfferingRateInput {
@@ -38,6 +38,7 @@ export interface ConnectionOfferingRateInput {
 
 type Num = string | number | null;
 interface RateRow {
+  offering_id: string;
   price_input_cents_per_m: Num;
   price_output_cents_per_m: Num;
   price_cache_read_cents_per_m: Num;
@@ -62,7 +63,7 @@ export async function readConnectionOfferingRate(input: ConnectionOfferingRateIn
   if (!input.partnerId || !input.connectionId) return { rate: null, reason: 'no_connection' };
   if (input.connectionKind === 'catalog') return { rate: null, reason: 'catalog_connection' };
   const result = await db.execute<RateRow & Record<string, unknown>>(sql`
-    SELECT o.price_input_cents_per_m, o.price_output_cents_per_m,
+    SELECT o.id AS offering_id, o.price_input_cents_per_m, o.price_output_cents_per_m,
            o.price_cache_read_cents_per_m, o.price_cache_write_cents_per_m,
            p.input_cents_per_m AS linked_input_cents_per_m, p.output_cents_per_m AS linked_output_cents_per_m,
            p.cache_read_cents_per_m AS linked_cache_read_cents_per_m, p.cache_write_cents_per_m AS linked_cache_write_cents_per_m
@@ -81,13 +82,13 @@ export async function readConnectionOfferingRate(input: ConnectionOfferingRateIn
     row.price_input_cents_per_m, row.price_output_cents_per_m,
     row.price_cache_read_cents_per_m, row.price_cache_write_cents_per_m,
   );
-  if (own) return { rate: { source: 'offering', standard: own } };
+  if (own) return { rate: { source: 'offering', standard: own }, offeringId: String(row.offering_id) };
   if (input.connectionKind === 'anthropic_byok') {
     const linked = fourRates(
       row.linked_input_cents_per_m, row.linked_output_cents_per_m,
       row.linked_cache_read_cents_per_m, row.linked_cache_write_cents_per_m,
     );
-    if (linked) return { rate: { source: 'linked_platform', standard: linked } };
+    if (linked) return { rate: { source: 'linked_platform', standard: linked }, offeringId: String(row.offering_id) };
   }
   return { rate: null, reason: 'unpriced_offering' };
 }

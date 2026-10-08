@@ -12,7 +12,7 @@ import { recordInvocation, type NewInvocation } from './aiModels/invocationLedge
 import { stampChargeback } from './aiChargeback/stampChargeback';
 import { parseSdkUsageSnapshot, sdkUsageHighWater, type SdkUsageSnapshot } from './aiModels/invocationUsage';
 import { getPlatformModelByModelId } from './aiModels/platformModels';
-import { platformRateSnapshot } from './aiModels/pricing';
+import { platformRateSnapshot, type RateSnapshot } from './aiModels/pricing';
 import { safeErrorMessage } from './aiModels/safeDbError';
 import { parseTurnBinding, stableJson, type TurnBinding } from './aiModels/turnBinding';
 import { CHAT_TURN_KEY_PREFIX } from './aiModels/modelTransition';
@@ -296,6 +296,7 @@ type ReservationRow = Record<string, unknown> & {
   expires_at: string | Date;
   model_binding?: unknown;
   pending_settlement?: unknown;
+  unbound_rate_attestations?: unknown;
 };
 
 type UsageAndReservationsRow = Record<string, unknown> & {
@@ -943,6 +944,51 @@ function sameJson(a: unknown, b: unknown): boolean {
   return stableJson(a) === stableJson(b);
 }
 
+/** One #7773 attestation: what the turn read from its connection's offering. */
+export interface UnboundRateAttestation {
+  connectionId: string;
+  offeringId: string;
+  rate: RateSnapshot;
+}
+
+function attestedUnboundRate(raw: unknown, model: string): UnboundRateAttestation | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const entry = (raw as Record<string, unknown>)[model];
+  if (!entry || typeof entry !== 'object') return null;
+  const { connectionId, offeringId, rate } = entry as Record<string, unknown>;
+  if (typeof connectionId !== 'string' || typeof offeringId !== 'string' || !rate || typeof rate !== 'object') return null;
+  return { connectionId, offeringId, rate: rate as RateSnapshot };
+}
+
+/**
+ * #7773: record, on the reservation the turn holds, the rate settleInvocation
+ * read for an unbound BYOK key, and return the attested entry. FIRST WRITE
+ * WINS (the stored entry is kept when present), so a retried settleInvocation
+ * for the same turn prices at the same turn-time rate and keeps the same
+ * settlement fingerprint. Runs on the AMBIENT db, in the caller's short system
+ * context, right after the offering read; it never opens a context of its own.
+ * Returns null when the reservation can no longer settle (settled, released or
+ * gone): the caller then bills the bound rate, exactly as before #7773.
+ */
+export async function attestUnboundRate(input: {
+  orgId: string;
+  reservationId: string;
+  model: string;
+  attestation: UnboundRateAttestation;
+}): Promise<UnboundRateAttestation | null> {
+  await tightenLockTimeout(db as unknown as { execute(q: unknown): Promise<unknown> }, AI_BUDGET_LOCK_TIMEOUT_MS);
+  const entry = JSON.stringify({ [input.model]: input.attestation });
+  const row = rows<{ attestations: unknown }>(await db.execute(sql`
+    UPDATE ai_budget_reservations
+    SET unbound_rate_attestations = ${entry}::jsonb || COALESCE(unbound_rate_attestations, '{}'::jsonb),
+        updated_at = now()
+    WHERE id = ${input.reservationId}::uuid AND org_id = ${input.orgId}::uuid
+      AND status IN ('active', 'indeterminate', 'expired')
+    RETURNING unbound_rate_attestations AS attestations
+  `))[0];
+  return row ? attestedUnboundRate(row.attestations, input.model) : null;
+}
+
 /**
  * A settlement may only bill a rate the turn claim bound (spec §9.2, §8): the
  * primary or the refusal-fallback snapshot, or (W05) a carried snapshot for its
@@ -954,8 +1000,20 @@ function sameJson(a: unknown, b: unknown): boolean {
  * turn (#7773) its enabled, priced offering on the binding's own connection,
  * through readConnectionOfferingRate on THIS transaction's connection (never
  * loadOfferingCandidate, which would open a second pooled connection).
+ *
+ * A BYOK row is FIRST checked against the rate the turn attested on this
+ * reservation (`attestations`, read with the reservation FOR UPDATE in this
+ * transaction; written by attestUnboundRate from the same offering read). That
+ * is the rate in effect when the turn ran: a settlement deferred by lock
+ * contention and replayed after the partner repriced, disabled or deleted the
+ * offering, or one raced by such an edit after the pre-fetch, still settles at
+ * it rather than dead-lettering. Only then is the live offering re-read.
  */
-async function assertInvocationsMatchBinding(binding: TurnBinding, invocations: readonly NewInvocation[]): Promise<void> {
+async function assertInvocationsMatchBinding(
+  binding: TurnBinding,
+  invocations: readonly NewInvocation[],
+  attestations?: unknown,
+): Promise<void> {
   const boundModels = new Set([binding.wireModel, ...(binding.refusalFallback ? [binding.refusalFallback.wireModel] : [])]);
   for (const row of invocations) {
     if (row.offeringId !== binding.offeringId || row.fundingSource !== binding.funding) {
@@ -978,6 +1036,8 @@ async function assertInvocationsMatchBinding(binding: TurnBinding, invocations: 
     const rateSource = (rate as { source?: unknown } | null)?.source;
     if (row.fallbackUsed && binding.funding === 'partner_key' && !boundModels.has(row.requestedModel)
         && (rateSource === 'offering' || rateSource === 'linked_platform')) {
+      const attested = attestedUnboundRate(attestations, row.requestedModel);
+      if (attested && attested.connectionId === binding.connectionId && sameJson(rate, attested.rate)) continue;
       const current = await readConnectionOfferingRate({
         partnerId: binding.partnerId, connectionId: binding.connectionId,
         connectionKind: binding.connectionKind, model: row.requestedModel,
@@ -1201,7 +1261,8 @@ export async function settleAiBudgetReservation(
       SELECT id, org_id, idempotency_key, session_id, billing_source, namespace,
              daily_period_key, monthly_period_key, uncapped,
              reserved_cost_cents, actual_cost_cents, status, settlement_fingerprint,
-             expires_at, model_binding, pending_settlement
+             expires_at, model_binding, pending_settlement,
+             unbound_rate_attestations
       FROM ai_budget_reservations
       WHERE id = ${input.reservationId}::uuid AND org_id = ${input.orgId}::uuid
       FOR UPDATE
@@ -1257,7 +1318,7 @@ export async function settleAiBudgetReservation(
         throw new Error('Settlement invocation funding does not match the reservation billing source');
       }
       const binding = parseTurnBinding(reservation.model_binding);
-      if (binding) await assertInvocationsMatchBinding(binding, input.invocations);
+      if (binding) await assertInvocationsMatchBinding(binding, input.invocations, reservation.unbound_rate_attestations);
       for (const row of stamped!) {
         // Ambient db = this transaction (P10): the ledger row commits or rolls
         // back with the rollups derived from it below.

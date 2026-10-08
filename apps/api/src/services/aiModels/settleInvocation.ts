@@ -10,6 +10,7 @@
 import type { AiSurface, PromptProfile } from '@breeze/shared';
 import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
+  attestUnboundRate,
   creditDebitIdempotencyKey,
   markCreditsDebited,
   recordCreditDebitFailure,
@@ -308,10 +309,20 @@ async function loadUnboundPlatformRates(binding: TurnBinding, usage: readonly Bi
  * offering on the binding's own connection. Best effort, like the platform
  * lookup: a miss (or a failed read) bills the bound rate and is logged with
  * its reason, so a fallback billed at the primary rate is explainable later.
- * Read in its own short system context, outside any request transaction; the
- * settlement re-reads it inside its transaction (assertInvocationsMatchBinding).
+ * Read in its own short system context, outside any request transaction.
+ *
+ * With `attest` (a settlement against a reservation), the same short context
+ * also records what it read on the reservation (attestUnboundRate, first write
+ * wins) and prices at the ATTESTED entry. The settlement transaction verifies
+ * the row against that entry (assertInvocationsMatchBinding), so the rate the
+ * turn ran at survives a deferred replay or a reprice after this read. If the
+ * reservation can no longer take the attestation, the key bills the bound rate.
  */
-async function loadUnboundConnectionRates(binding: TurnBinding, usage: readonly BilledUsage[]): Promise<Map<string, RateSnapshot>> {
+async function loadUnboundConnectionRates(
+  binding: TurnBinding,
+  usage: readonly BilledUsage[],
+  attest?: { orgId: string; reservationId: string },
+): Promise<Map<string, RateSnapshot>> {
   const rates = new Map<string, RateSnapshot>();
   if (binding.funding !== 'partner_key') return rates;
   const bound = boundModels(binding);
@@ -322,9 +333,17 @@ async function loadUnboundConnectionRates(binding: TurnBinding, usage: readonly 
       connectionId: binding.connectionId, offeringId: binding.offeringId,
     };
     try {
-      const found = await runOutsideDbContext(() => withSystemDbAccessContext(() => readConnectionOfferingRate({
-        partnerId: binding.partnerId, connectionId: binding.connectionId, connectionKind: binding.connectionKind, model,
-      }), 'settleInvocation.connectionRate'));
+      const found = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+        const read = await readConnectionOfferingRate({
+          partnerId: binding.partnerId, connectionId: binding.connectionId, connectionKind: binding.connectionKind, model,
+        });
+        if (!read.rate || !attest || !binding.connectionId) return read;
+        const attested = await attestUnboundRate({
+          orgId: attest.orgId, reservationId: attest.reservationId, model,
+          attestation: { connectionId: binding.connectionId, offeringId: read.offeringId, rate: read.rate },
+        });
+        return attested ? { rate: attested.rate } : { rate: null, reason: 'reservation_not_settleable' as const };
+      }, 'settleInvocation.connectionRate'));
       if (found.rate) rates.set(model, found.rate);
       else console.warn('[settleInvocation] unbound BYOK model has no enabled priced offering on the connection; billing the bound rate', { ...detail, reason: found.reason });
     } catch (error) {
@@ -336,12 +355,16 @@ async function loadUnboundConnectionRates(binding: TurnBinding, usage: readonly 
   return rates;
 }
 
-async function loadUnboundRates(binding: TurnBinding, usage: readonly BilledUsage[]): Promise<{
+async function loadUnboundRates(
+  binding: TurnBinding,
+  usage: readonly BilledUsage[],
+  attest?: { orgId: string; reservationId: string },
+): Promise<{
   platformRates: Map<string, RateSnapshot>; connectionRates: Map<string, RateSnapshot>;
 }> {
   return {
     platformRates: await loadUnboundPlatformRates(binding, usage),
-    connectionRates: await loadUnboundConnectionRates(binding, usage),
+    connectionRates: await loadUnboundConnectionRates(binding, usage, attest),
   };
 }
 
@@ -408,7 +431,9 @@ function checkSpendThresholds(orgId: string, sessionId: string | null, costCents
 
 export async function settleInvocation(input: SettleInvocationInput): Promise<SettledInvocation> {
   reportUsageConfidence(input);
-  const priced = priceUsage(input.binding, input.usage, await loadUnboundRates(input.binding, input.usage));
+  const priced = priceUsage(input.binding, input.usage, await loadUnboundRates(
+    input.binding, input.usage, input.reservationId ? { orgId: input.orgId, reservationId: input.reservationId } : undefined,
+  ));
   const rows = toNewInvocations(input, priced);
   const costCents = sumCostCents(priced);
   const sdkUsage = input.sdkUsage
