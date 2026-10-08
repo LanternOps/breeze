@@ -1,6 +1,6 @@
 ---
 title: Horizontal API scaling and agent capacity program
-status: draft spec, awaiting owner review (decisions in §9). Advisor quorum 2026-10-07 (Fable author + Codex gpt-6-astra xhigh, read-only) agreed on W2 per-instance BullMQ queues, W3 owner-affinity, least-connections placement and server-paced drain. Its amendments are folded in: lease fencing (R7/W2a), the immediate first reconnect (§1, W1d), whole-lifecycle session routing, pre-send-only retry.
+status: approved by the owner 2026-10-07 (all five §9 decisions, as written). Advisor quorum 2026-10-07 (Fable author + Codex gpt-6-astra xhigh, read-only) agreed on W2 per-instance BullMQ queues, W3 owner-affinity, least-connections placement and server-paced drain. Its amendments are folded in: lease fencing (R7/W2a), the immediate first reconnect (§1, W1d), whole-lifecycle session routing, pre-send-only retry.
 date: 2026-10-07
 origin: production capacity incident on one hosted region, 2026-10-05..07, at v0.121.0
 related: "worker split (BREEZE_ROLE, docs deploy/worker-split.mdx; plan ai-mcp/2026-08-27-ai-agents-wave3.5b-socket-affinity-relay.md); #8053 heartbeat transactions; #8055 single set_config; #8054 negative agent-auth cache; #7235 server-only release lane"
@@ -158,11 +158,25 @@ new path is either the old path or unreachable.
 
 | Wave | Scope | Acceptance |
 |---|---|---|
-| W1a | Land #8053. Load device, org and groups once per heartbeat and pass them to every resolver; merge the post-commit system transactions; negative-cache unifi-collectors; narrow selects | ≤3 tx per heartbeat; ≤1 tx per unifi poll in the common case (W0d asserts both) |
+| W1a | Land #8053. Part 1 (shipped in #8128) took the steady-state heartbeat from 9 to 3 transactions and from 96 to 69 statements, and collector-less unifi polls to 0 transactions. Part 2 is two PRs, sized by the measured statement trace below. **W1a-1**: build the device, org and group hierarchy once per heartbeat from data that is already loaded and pass it explicitly to every resolver; skip topology negotiation when materialization is off; per-org caches for probe rules, org helper settings and `pam_org_config`; one `agent_versions` read instead of three; join the site timezone into the core device read; drop empty savepoints. **W1a-2**: one batched policy-assignment read for all feature types instead of one per resolver; fold the OneDrive context into the policy context; cache monitoring's "no policy applies" with invalidation | W1a-1: steady-state heartbeat ≤30 statements, ≤3 tx. W1a-2: ≤16 statements, ≤2 tx. ≤1 tx per unifi poll in the common case. The budget suite asserts each number |
 | W1b | A **cluster cache** primitive: in-process TTL cache plus Redis pub/sub invalidation by key (ids only, no payload). Use it for the trust keyset, delegations, per-org update config and topology flags | KPI ≤60 CPU-ms/agent-min (M1). A cache test proves a write on instance A invalidates instance B within 1 s |
 | W1c | API-side admission control. Shed by priority when event-loop lag or pool wait crosses a threshold: inventory and collector PUTs first, heartbeats last, with `503` + `Retry-After`. Rate-limit WS upgrades per instance with a token bucket, and refuse excess upgrades with close code 1013 and a delay hint. Remove the edge load-shedding | Under a W0b storm, p95 heartbeat stays ≤1 s and the pool never drops below 80 % of max |
 | W1d | Agent: (1) add jitter to the **first** reconnect after an established socket drops; today it is immediate. (2) Honour an application-level `drain` message `{reconnectWithinMs}` sent before the close; a close code alone cannot carry a delay. Spread the reconnect uniformly over that window. (3) Honour `Retry-After` **at the loop level**, deferring the next cycle rather than only the retry. (4) Jitter startup and periodic requests. *This ships to customer machines, so full rigor applies.* Old agents still rely on W1c | 10k simulated agents told "reconnect within 120 s" arrive spread over 120 s ±10 %. An unannounced API kill produces no reconnect spike above the W1c admission rate |
 | W1e | Prologue and pool reclamation. When the prologue deadline expires, the slot must return to the pool within a bound; the pool max is restored | W0b slow-loop chaos: pool returns to max within 30 s of the stall ending |
+
+**Heartbeat statement trace (W1a sizing, [M] on a test stack at `origin/main` `99bbbc7029`, 2026-10-07).** The steady-state beat is 69 statements over 3 transactions: the org block, the OneDrive system context and the shared policy context. With the per-device Redis caches warm it is 47; with the 120 s cache TTL and 60 s beats, a fleet averages about 58 [I]. Agent auth adds about 4 more and is not counted [I].
+
+| Bucket | Statements | W1a lever |
+|---|---|---|
+| Device, org and group lookups repeated by 11 resolvers | 32 | W1a-1 hierarchy pass-through (−31) |
+| Per-feature policy-assignment reads | 10 | W1a-2 batched read (−9) |
+| BEGIN/COMMIT, RLS prologue, savepoints | 14 | W1a-1 drops empty or redundant savepoints; W1a-2 removes one transaction |
+| Other config reads (probe rules, helper settings, PAM org config, site timezone) | 4 | W1a-1 per-org caches and join (−4) |
+| `agent_versions` (agent, helper, watchdog) | 3 | W1a-1 single read (−2); not cached, because the version offered must match the bytes served |
+| Topology lock read, with materialization off | 1 | W1a-1 skip (−3, counting its 2 savepoints from the row above) |
+| Writes, command claim, core device read | 5 | kept |
+
+Two findings from the trace: the monitoring resolver never caches "no policy applies" (`helpers.ts` ~2686), so a device without a monitoring policy pays 8 statements on every beat even when warm; and the budget suite's payload omits `securityCapabilities`, which adds 2 statements a current agent never causes. The realistic floor after W1a-1 and W1a-2 is about 12 statements over 2 transactions; a generation-stamped whole-config cache could take a warm beat to about 7, at the cost of bumping a generation on every config write surface.
 
 ### W2 — Multi-instance command routing
 
