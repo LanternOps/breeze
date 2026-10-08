@@ -32,10 +32,10 @@ const recordAgentHealthObservationMock = vi.hoisted(() => vi.fn(async (_input: u
 // it can be reinstalled via mockImplementationOnce for calls a test doesn't
 // care about, while a specific call (targeted by ordering) is made to reject.
 // A `vi.fn()` (rather than a bare async function) is required so a test can
-// override ONE of the several withSystemDbAccessContext call sites in
-// heartbeat.ts (agent-update-policy lookup, policy-probe config, onedrive
-// settings, the #2930 shared policy-config block, helper settings) without
-// touching the others.
+// override ONE of the withSystemDbAccessContext call sites in heartbeat.ts
+// (agent-update-policy lookup, topology flags) without touching the others.
+// Since #8142 the post-commit policy work runs in the org-scoped
+// withDbAccessContext seam below, not here.
 const systemDbAccessContextPassthrough = async (fn: () => Promise<unknown>) => {
   callOrder.push('systemCtx:enter');
   const result = await fn();
@@ -43,6 +43,16 @@ const systemDbAccessContextPassthrough = async (fn: () => Promise<unknown>) => {
   return result;
 };
 const withSystemDbAccessContextMock = vi.fn(systemDbAccessContextPassthrough);
+// #8142 — the post-commit policy context is now the SECOND org-scoped context
+// of a beat; a vi.fn so a test can fail exactly that call.
+const orgDbAccessContextPassthrough = async (ctx: unknown, fn: () => Promise<unknown>) => {
+  orgDbContexts.push(ctx as Record<string, unknown>);
+  callOrder.push('dbContext:opened');
+  const result = await fn();
+  callOrder.push('dbContext:released');
+  return result;
+};
+const withDbAccessContextMock = vi.fn(orgDbAccessContextPassthrough);
 
 vi.mock('../../db', () => ({
   db: {
@@ -53,7 +63,9 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: (...args: unknown[]) =>
     runOutsideDbContextMock(...(args as [any])),
   // #8053 W1a-1 — DeferredCacheFills / HotPathTtlCache consult these. The
-  // shared policy context is system-scoped; no ambient context at flush time.
+  // mock reports a system scope, so unit fills are always cacheable; the
+  // org-scoped fill rule (#8142) is proven against real Postgres in
+  // agentHotPathQueryBudget.integration.test.ts. No ambient context at flush.
   hasDbAccessContext: () => false,
   getCurrentDbAccessContext: () => ({ scope: 'system' }),
   runAfterDbContextExit: (label: string, work: () => unknown) => runAfterDbContextExitMock(label, work),
@@ -65,24 +77,17 @@ vi.mock('../../db', () => ({
   // request-long wrap and hand-builds this context itself; the only way to
   // prove it copies `currentPartnerId` across from the agent context is to
   // inspect what it passed.
-  withDbAccessContext: async (ctx: unknown, fn: () => Promise<unknown>) => {
-    orgDbContexts.push(ctx as Record<string, unknown>);
-    callOrder.push('dbContext:opened');
-    const result = await fn();
-    callOrder.push('dbContext:released');
-    return result;
-  },
+  withDbAccessContext: (...args: unknown[]) => withDbAccessContextMock(...(args as [unknown, () => Promise<unknown>])),
   // Pass-through by default: the effective agent-update-policy lookup (#2123,
-  // BEFORE the org block), the policy-probe read, the onedrive settings read,
-  // the shared #2930 policy-config block, and the helper-settings read all run
-  // in a system context, in that order. Invoke the callback so the mocked
+  // BEFORE the org block) and the topology flags run in a system context.
+  // Invoke the callback so the mocked
   // resolvers still run, and record enter/exit so tests can assert ordering
   // relative to the org context. A `vi.fn()` so an individual test can swap in
   // a rejection for exactly one call site via mockImplementationOnce.
   withSystemDbAccessContext: (...args: unknown[]) =>
     withSystemDbAccessContextMock(...(args as [() => Promise<unknown>])),
-  // #8053 — the helper-settings and policy-probe readers now run in savepoints
-  // inside the shared policy context; a savepoint is a pass-through here.
+  // #8053 / #8142 — SQL-issuing readers in the post-commit policy context run
+  // in savepoints; a savepoint is a pass-through here.
   withDbTransaction: async (fn: () => Promise<unknown>) => {
     callOrder.push('savepoint');
     return fn();
@@ -216,6 +221,10 @@ vi.mock('./helpers', () => ({
   // test silently exercise only the builder-throws path (undefined is not a
   // function) — which is how the delivery merge went untested pre-#2322-review.
   buildOnedriveHelperConfigUpdate: vi.fn(async () => null),
+  // #8142 — OneDrive is split: a DB phase inside the policy context, a Graph
+  // phase after it commits. Null plan = no onedrive policy for the device.
+  loadOnedriveHelperConfigPlan: vi.fn(async () => null),
+  finishOnedriveHelperConfig: vi.fn(async () => null),
   // Permissive default (staged + no window = upgrade anytime) and no version
   // pins (issue #2124), so the upgrade gating is transparent to tests that don't
   // care about the org policy. The heartbeat resolves BOTH from this one call.
@@ -325,11 +334,21 @@ vi.mock('../../services/topology/flags', () => ({
   withResolvedTopologyFlags: (...args: unknown[]) => withResolvedTopologyFlagsMock(...args),
 }));
 
-// #8053 W1a-1 — the hierarchy is loaded in the OneDrive system context. Null by
-// default: every mocked resolver then gets `undefined` opts, exactly as before.
+// #8053 W1a-1 / #8142 — the hierarchy is loaded first in the post-commit policy
+// context. By default it is the authenticated device's own (org-1 / partner-1),
+// so every builder runs; tests override it to exercise the skip paths.
+const TEST_HIERARCHY = vi.hoisted(() => ({
+  deviceId: 'device-1', orgId: 'org-1', siteId: 'site-1', deviceRole: 'workstation', osType: 'windows',
+  org: { partnerId: 'partner-1', type: 'customer' }, site: null, groupIds: [] as string[],
+}));
 vi.mock('../../services/deviceHierarchy', () => ({
-  loadDeviceHierarchy: vi.fn(async () => null),
+  loadDeviceHierarchy: vi.fn(async (deviceId: string) => ({ ...TEST_HIERARCHY, deviceId })),
   withHierarchy: (h: unknown) => (h ? { hierarchy: h } : undefined),
+}));
+vi.mock('../../services/devicePolicySet', () => ({
+  loadDevicePolicySet: vi.fn(async () => null),
+  withPolicySet: (set: { hierarchy: unknown } | null, h: unknown) =>
+    (set ? { hierarchy: set.hierarchy, policySet: set } : h ? { hierarchy: h } : undefined),
 }));
 
 vi.mock('../../services/sentry', () => ({
@@ -880,7 +899,7 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
         helpers.buildEventLogConfigUpdate, helpers.buildHardwareMonitoringConfigUpdate,
         helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
         helpers.buildPatchSourceConfigUpdate, helpers.buildWarrantyConfigUpdate,
-        helpers.buildTimeSyncConfigUpdate, helpers.buildOnedriveHelperConfigUpdate,
+        helpers.buildTimeSyncConfigUpdate, helpers.loadOnedriveHelperConfigPlan,
         helpers.buildWorkloadInventoryConfigUpdate,
       ]) {
         expect(vi.mocked(builder)).toHaveBeenCalledWith('device-1', expect.objectContaining({ hierarchy }));
@@ -890,15 +909,46 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
       expect(vi.mocked(helpers.buildPolicyProbeConfigUpdate)).toHaveBeenCalledWith('org-1', { partnerId: 'partner-1' });
     });
 
-    it('drops a hierarchy whose org is not the beat\'s org (device moved mid-beat): resolvers load their own', async () => {
+    for (const [label, override] of [
+      ['moved to another org', { orgId: 'org-2' }],
+      ['org re-parented to another partner', { org: { partnerId: 'partner-2', type: 'customer' } }],
+    ] as const) {
+      it(`device ${label} mid-beat: no policy builder runs, nothing is cached, Sentry is told (#8142)`, async () => {
+        const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
+        const helpers = await import('./helpers');
+        const { captureException } = await import('../../services/sentry');
+        vi.mocked(loadDeviceHierarchy).mockResolvedValueOnce({ ...hierarchy, ...override } as never);
+        arrangeBeat();
+
+        const res = await beat();
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as Record<string, unknown>;
+        for (const builder of [
+          helpers.buildEventLogConfigUpdate, helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
+          helpers.buildPatchSourceConfigUpdate, helpers.buildWarrantyConfigUpdate, helpers.buildTimeSyncConfigUpdate,
+          helpers.buildHelperConfigUpdate, helpers.buildPolicyProbeConfigUpdate, helpers.loadOnedriveHelperConfigPlan,
+        ]) {
+          expect(vi.mocked(builder)).not.toHaveBeenCalled();
+        }
+        expect(body.helperEnabled).toBe(false);
+        expect(body.uacInterceptionEnabled).toBe(false);
+        expect(vi.mocked(captureException)).toHaveBeenCalledWith(expect.objectContaining({
+          message: expect.stringContaining('not visible to its own org'),
+        }));
+      });
+    }
+
+    it('a policy-set load failure keeps the hierarchy: builders get it without a set (#8142)', async () => {
       const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
+      const { loadDevicePolicySet } = await import('../../services/devicePolicySet');
       const helpers = await import('./helpers');
-      vi.mocked(loadDeviceHierarchy).mockResolvedValueOnce({ ...hierarchy, orgId: 'org-2' } as never);
+      vi.mocked(loadDeviceHierarchy).mockResolvedValueOnce(hierarchy as never);
+      vi.mocked(loadDevicePolicySet).mockRejectedValueOnce(new Error('set read failed'));
       arrangeBeat();
 
       expect((await beat()).status).toBe(200);
-      expect(vi.mocked(helpers.buildEventLogConfigUpdate)).toHaveBeenCalledWith('device-1', undefined);
-      expect(vi.mocked(helpers.buildPolicyProbeConfigUpdate)).toHaveBeenCalledWith('org-1', undefined);
+      expect(vi.mocked(helpers.buildEventLogConfigUpdate)).toHaveBeenCalledWith('device-1', { hierarchy });
+      expect(vi.mocked(helpers.buildPolicyProbeConfigUpdate)).toHaveBeenCalledWith('org-1', { partnerId: 'partner-1' });
     });
   });
 });
@@ -3852,8 +3902,8 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     expect(configUpdate?.warranty_settings).toBeUndefined();
   });
 
-  it('delivers onedrive_helper_settings in configUpdate alongside other config (post-#1105 hoist merge)', async () => {
-    const { buildOnedriveHelperConfigUpdate, buildPatchSourceConfigUpdate } = await import('./helpers');
+  it('delivers onedrive_helper_settings: plan inside the policy context, Graph phase after it commits (#8142)', async () => {
+    const helpers = await import('./helpers');
     const settings = {
       base: {
         silentAccountConfig: true, filesOnDemand: true, kfmSilentOptIn: false,
@@ -3864,8 +3914,17 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
         groupId: 'g-1', groupName: null, hiveScope: 'hkcu', allowedUpns: ['u@contoso.com'],
       }],
     };
-    vi.mocked(buildOnedriveHelperConfigUpdate).mockResolvedValueOnce(settings as any);
-    vi.mocked(buildPatchSourceConfigUpdate).mockResolvedValueOnce({ exclusiveWindowsUpdate: true });
+    const plan = { deviceId: 'device-1', orgId: 'org-1' };
+    callOrder.length = 0;
+    vi.mocked(helpers.loadOnedriveHelperConfigPlan).mockImplementationOnce(async () => {
+      callOrder.push('onedrive:plan');
+      return plan as never;
+    });
+    vi.mocked(helpers.finishOnedriveHelperConfig).mockImplementationOnce(async () => {
+      callOrder.push('onedrive:finish');
+      return settings as never;
+    });
+    vi.mocked(helpers.buildPatchSourceConfigUpdate).mockResolvedValueOnce({ exclusiveWindowsUpdate: true });
 
     const resp = await buildApp().request('/agents/device-1/heartbeat', {
       method: 'POST',
@@ -3874,30 +3933,44 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     });
 
     expect(resp.status).toBe(200);
-    const body = (await resp.json()) as Record<string, unknown>;
-    const configUpdate = body.configUpdate as Record<string, unknown> | null;
-    // The exact wire key the agent reads — a rename here darkens the feature fleet-wide.
-    expect(configUpdate?.onedrive_helper_settings).toEqual(settings);
-    // And the three-way spread must compose, not replace, the other config.
-    expect(configUpdate?.patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
+    const configUpdate = ((await resp.json()) as Record<string, any>).configUpdate as Record<string, unknown>;
+    expect(configUpdate.onedrive_helper_settings).toEqual(settings);
+    expect(configUpdate.patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
+    expect(helpers.finishOnedriveHelperConfig).toHaveBeenCalledWith(plan);
+    // #1105: the plan is built inside the policy context; Graph runs only after it is released.
+    const policyOpened = callOrder.lastIndexOf('dbContext:opened');
+    const policyReleased = callOrder.lastIndexOf('dbContext:released');
+    expect(callOrder.indexOf('onedrive:plan')).toBeGreaterThan(policyOpened);
+    expect(callOrder.indexOf('onedrive:plan')).toBeLessThan(policyReleased);
+    expect(callOrder.indexOf('onedrive:finish')).toBeGreaterThan(policyReleased);
   });
 
-  it('omits onedrive_helper_settings when the builder throws — heartbeat still 200 with other config intact', async () => {
-    const { buildOnedriveHelperConfigUpdate, buildPatchSourceConfigUpdate } = await import('./helpers');
-    vi.mocked(buildOnedriveHelperConfigUpdate).mockRejectedValueOnce(new Error('graph down'));
-    vi.mocked(buildPatchSourceConfigUpdate).mockResolvedValueOnce({ exclusiveWindowsUpdate: true });
-
+  it('omits onedrive_helper_settings when the DB phase throws — other config intact', async () => {
+    const helpers = await import('./helpers');
+    vi.mocked(helpers.loadOnedriveHelperConfigPlan).mockRejectedValueOnce(new Error('libraries read failed'));
+    vi.mocked(helpers.buildPatchSourceConfigUpdate).mockResolvedValueOnce({ exclusiveWindowsUpdate: true });
     const resp = await buildApp().request('/agents/device-1/heartbeat', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(minimalHeartbeatBody),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(minimalHeartbeatBody),
     });
-
     expect(resp.status).toBe(200);
-    const body = (await resp.json()) as Record<string, unknown>;
-    const configUpdate = body.configUpdate as Record<string, unknown> | null;
-    expect(configUpdate?.onedrive_helper_settings).toBeUndefined();
-    expect(configUpdate?.patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
+    const configUpdate = ((await resp.json()) as Record<string, any>).configUpdate as Record<string, unknown>;
+    expect(configUpdate.onedrive_helper_settings).toBeUndefined();
+    expect(configUpdate.patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
+    expect(helpers.finishOnedriveHelperConfig).not.toHaveBeenCalled();
+  });
+
+  it('omits onedrive_helper_settings when the Graph phase throws — other config intact', async () => {
+    const helpers = await import('./helpers');
+    vi.mocked(helpers.loadOnedriveHelperConfigPlan).mockResolvedValueOnce({ deviceId: 'device-1' } as never);
+    vi.mocked(helpers.finishOnedriveHelperConfig).mockRejectedValueOnce(new Error('graph down'));
+    vi.mocked(helpers.buildPatchSourceConfigUpdate).mockResolvedValueOnce({ exclusiveWindowsUpdate: true });
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(resp.status).toBe(200);
+    const configUpdate = ((await resp.json()) as Record<string, any>).configUpdate as Record<string, unknown>;
+    expect(configUpdate.onedrive_helper_settings).toBeUndefined();
+    expect(configUpdate.patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
   });
 
   // #2930 coverage gap — event_log_settings and monitoring_settings were only
@@ -3966,7 +4039,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     expect(((await res.json()) as Record<string, any>).configUpdate ?? {}).not.toHaveProperty('hardware_monitoring_settings');
   });
 
-  it('delivers time settings after releasing org scope inside the shared system context', async () => {
+  it('delivers time settings after releasing org scope inside the post-commit policy context', async () => {
     const { buildTimeSyncConfigUpdate } = await import('./helpers');
     const payload = {
       enforce_ntp: false,
@@ -3978,9 +4051,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     callOrder.length = 0;
     vi.mocked(buildTimeSyncConfigUpdate).mockImplementationOnce(async () => {
       expect(callOrder).toContain('dbContext:released');
-      expect(callOrder.lastIndexOf('systemCtx:enter')).toBeGreaterThan(
-        callOrder.lastIndexOf('systemCtx:exit'),
-      );
+      expect(callOrder.lastIndexOf('dbContext:opened')).toBeGreaterThan(callOrder.lastIndexOf('dbContext:released'));
       return payload;
     });
     const res = await buildApp().request('/agents/device-1/heartbeat', {
@@ -4138,36 +4209,30 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     expect(body.uacInterceptionEnabled).toBe(true);
   });
 
-  // #2930 — the shared policy-config block (event_log / monitoring / pam /
-  // patch_source) runs AFTER the org transaction has already committed and
-  // its claimed commands are marked delivered. If the outer try/catch around
-  // `withSystemDbAccessContext(...)` were removed, a transaction setup/commit
-  // failure here (e.g. pool exhaustion under #1105-style connection pressure)
-  // would escape as an unhandled rejection and 500 the heartbeat — losing
-  // those already-delivered commands for no benefit, since every field this
-  // block produces is re-resolved on the next heartbeat anyway. This test
-  // pins the fail-safe: only the shared policy-config context is made to
-  // reject (targeted by call order — it is the 4th of 4 withSystemDbAccessContext
-  // calls per heartbeat: #2123 update-policy, topology flags, onedrive, THIS
-  // ONE; since #8053 the helper-settings and policy-probe readers run inside it),
-  // and the response must still be 200 with all four policy config keys
-  // omitted, uacInterceptionEnabled and helperEnabled defaulted to false, and
-  // the failure reported to Sentry.
-  it('returns 200 and omits all four policy config keys when the shared policy-config system context itself fails', async () => {
+  // #2930 — the post-commit policy context (helper, probe, event_log,
+  // monitoring, pam, patch_source, warranty, time sync, OneDrive DB phase)
+  // runs AFTER the org transaction has already committed and its claimed
+  // commands are marked delivered. If the outer try/catch around it were
+  // removed, a transaction setup/commit failure here (e.g. pool exhaustion
+  // under #1105-style connection pressure) would escape as an unhandled
+  // rejection and 500 the heartbeat — losing those already-delivered commands
+  // for no benefit, since every field this block produces is re-resolved on
+  // the next heartbeat anyway. This test pins the fail-safe: only the policy
+  // context is made to reject (targeted by call order — since #8142 it is the
+  // SECOND withDbAccessContext call per heartbeat: the org block, THIS ONE),
+  // and the response must still be 200 with every policy config key omitted,
+  // uacInterceptionEnabled and helperEnabled defaulted to false, and the
+  // failure reported to Sentry.
+  it('returns 200 and omits all policy config keys when the post-commit policy context itself fails to open', async () => {
     const { captureException } = await import('../../services/sentry');
-
-    withSystemDbAccessContextMock
-      .mockImplementationOnce(systemDbAccessContextPassthrough) // #2123 update-policy lookup
-      .mockImplementationOnce(systemDbAccessContextPassthrough) // topology flags (before the org block)
-      .mockImplementationOnce(systemDbAccessContextPassthrough) // onedrive settings
+    withDbAccessContextMock
+      .mockImplementationOnce(orgDbAccessContextPassthrough) // the org block
       .mockImplementationOnce(async () => {
-        throw new Error('shared policy-config system context failed');
-      }); // #2930 shared policy-config block — the one under test
+        throw new Error('policy context failed to open');
+      }); // the post-commit policy context — the one under test
 
     const resp = await buildApp().request('/agents/device-1/heartbeat', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(minimalHeartbeatBody),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(minimalHeartbeatBody),
     });
 
     expect(resp.status).toBe(200);
@@ -4176,6 +4241,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     expect(configUpdate?.event_log_settings).toBeUndefined();
     expect(configUpdate?.monitoring_settings).toBeUndefined();
     expect(configUpdate?.patch_source_settings).toBeUndefined();
+    expect(configUpdate?.onedrive_helper_settings).toBeUndefined();
     expect(body.uacInterceptionEnabled).toBe(false);
     expect(body.helperEnabled).toBe(false);
     expect(vi.mocked(captureException)).toHaveBeenCalled();
@@ -4183,15 +4249,17 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
 });
 
 // ---------------------------------------------------------------------
-// #8053 — the post-commit readers share ONE system context. The helper
-// settings and policy-probe readers used to open their own; they now run
-// first inside the shared policy context, each in its own savepoint.
+// #8053 / #8142 — the post-commit readers share ONE context. Since #8142 it
+// is org-scoped (the org block's own dbContext), not a system context; the
+// helper and policy-probe readers run first inside it, each behind its own
+// savepoint where it may issue SQL.
 // ---------------------------------------------------------------------
 
 describe('POST /agents/:id/heartbeat — shared post-commit policy context (#8053)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     callOrder.length = 0;
+    orgDbContexts.length = 0;
     selectMock.mockReset();
     selectMock.mockReturnValueOnce(selectChainResolving([{
       id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host-1',
@@ -4215,7 +4283,7 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
     return (await resp.json()) as Record<string, unknown>;
   }
 
-  it('opens four system contexts per beat, with helper and policy probe in savepoints of the shared one', async () => {
+  it('opens two system contexts and ONE org-scoped policy context per beat, carrying the agent partner (#8142)', async () => {
     const helpers = await import('./helpers');
     vi.mocked(helpers.buildHelperConfigUpdate).mockImplementationOnce(async () => {
       callOrder.push('helper:resolved');
@@ -4229,22 +4297,32 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
       callOrder.push('eventLog:resolved');
       return undefined as never;
     });
+    vi.mocked(helpers.loadOnedriveHelperConfigPlan).mockImplementationOnce(async () => {
+      callOrder.push('onedrive:plan');
+      return null;
+    });
+    vi.mocked(helpers.buildMonitoringConfigUpdate).mockImplementationOnce(async () => {
+      callOrder.push('monitoring:resolved');
+      return null;
+    });
 
     const body = await beat();
 
     expect(body.helperEnabled).toBe(true);
-    // update policy, topology flags, onedrive, shared policy context — no more.
-    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(4);
-    const released = callOrder.indexOf('dbContext:released');
-    const sharedEnter = callOrder.lastIndexOf('systemCtx:enter');
-    expect(sharedEnter).toBeGreaterThan(released);
-    // Both run inside the shared context, each behind its own savepoint, and
-    // before any policy builder that could abort the shared transaction.
-    expect(callOrder.slice(sharedEnter)).toEqual(expect.arrayContaining(['savepoint', 'helper:resolved', 'policyProbe:resolved']));
-    expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(2);
-    expect(callOrder.indexOf('helper:resolved')).toBeLessThan(callOrder.indexOf('eventLog:resolved'));
-    expect(callOrder.indexOf('policyProbe:resolved')).toBeLessThan(callOrder.indexOf('eventLog:resolved'));
-    expect(callOrder.indexOf('eventLog:resolved')).toBeLessThan(callOrder.lastIndexOf('systemCtx:exit'));
+    // update policy + topology flags only; no OneDrive or policy SYSTEM context any more.
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(2);
+    expect(orgDbContexts).toHaveLength(2);
+    expect(orgDbContexts[1]).toMatchObject({
+      scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'], accessiblePartnerIds: [], currentPartnerId: 'partner-1',
+      // fillScopeIsCacheable refuses every per-org fill under a userId-bearing context.
+      userId: null,
+    });
+    const policyOpened = callOrder.lastIndexOf('dbContext:opened');
+    const order = ['helper:resolved', 'policyProbe:resolved', 'eventLog:resolved', 'onedrive:plan', 'monitoring:resolved']
+      .map((e) => callOrder.indexOf(e));
+    expect(order.every((i) => i > policyOpened)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(order[order.length - 1]).toBeLessThan(callOrder.lastIndexOf('dbContext:released'));
   });
 
   it('a helper-settings failure stays inside its savepoint: pam and policy configs still deliver', async () => {
@@ -4277,30 +4355,53 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
     expect(vi.mocked(captureException)).toHaveBeenCalledWith(expect.objectContaining({ message: 'probe read failed' }));
   });
 
-  it('helper settings read before a later failure aborts the shared context are still delivered', async () => {
+  it('with a policy set, helper and the per-feature builders get it, and only the hierarchy/set savepoint opens (#8142)', async () => {
+    const helpers = await import('./helpers');
+    const { loadDevicePolicySet } = await import('../../services/devicePolicySet');
+    const set = { deviceId: 'device-1', hierarchy: { ...TEST_HIERARCHY }, candidates: [] };
+    vi.mocked(loadDevicePolicySet).mockResolvedValueOnce(set as never);
+    vi.mocked(helpers.buildPolicyProbeConfigUpdate).mockResolvedValueOnce(null);
+    const { orgPolicyProbeCache } = await import('../../services/agentOrgSettingsCache');
+    orgPolicyProbeCache.invalidate();
+    callOrder.length = 0;
+
+    await beat();
+
+    for (const builder of [
+      helpers.buildEventLogConfigUpdate, helpers.buildHardwareMonitoringConfigUpdate,
+      helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
+      helpers.buildPatchSourceConfigUpdate, helpers.buildWarrantyConfigUpdate, helpers.buildTimeSyncConfigUpdate,
+    ]) {
+      expect(vi.mocked(builder)).toHaveBeenCalledWith('device-1', expect.objectContaining({ policySet: set, hierarchy: set.hierarchy }));
+    }
+    expect(vi.mocked(helpers.buildHelperConfigUpdate))
+      .toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ policySet: set }));
+    // No onedrive link in the set → no OneDrive DB phase at all.
+    expect(helpers.loadOnedriveHelperConfigPlan).not.toHaveBeenCalled();
+    // hierarchy/set savepoint + the probe's cache-miss savepoint; the helper resolves in memory.
+    expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(2);
+  });
+
+  it('values read before a COMMIT failure are still delivered (read-only transaction) (#8142)', async () => {
     const helpers = await import('./helpers');
     vi.mocked(helpers.buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: true } as never);
     vi.mocked(helpers.buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: true });
-    // The shared context runs its callback (every reader resolves), then its
-    // COMMIT throws — what a resolver's caught SQL error does to the shared
-    // transaction in production.
-    withSystemDbAccessContextMock
-      .mockImplementationOnce(systemDbAccessContextPassthrough) // update policy
-      .mockImplementationOnce(systemDbAccessContextPassthrough) // topology flags
-      .mockImplementationOnce(systemDbAccessContextPassthrough) // onedrive
-      .mockImplementationOnce(async (fn: () => Promise<unknown>) => {
+    vi.mocked(helpers.buildPatchSourceConfigUpdate).mockResolvedValueOnce({ exclusiveWindowsUpdate: true });
+    withDbAccessContextMock
+      .mockImplementationOnce(orgDbAccessContextPassthrough) // org block
+      .mockImplementationOnce(async (_ctx: unknown, fn: () => Promise<unknown>) => {
         await fn();
         throw new Error('current transaction is aborted');
       });
 
     const body = await beat();
 
-    // The helper's own read succeeded in its savepoint: it is kept, so the
-    // helper is not switched off by an unrelated resolver's failure.
+    // Every value was read successfully before a later statement aborted the
+    // read-only transaction; delivering them is correct. (W01 kept only the
+    // helper and probe; #8142 keeps every result, written as it is produced.)
     expect(body.helperEnabled).toBe(true);
-    // The policy configs are the shared block's return value and degrade to
-    // "no update this cycle", exactly as before #8053.
-    expect(body.uacInterceptionEnabled).toBe(false);
+    expect(body.uacInterceptionEnabled).toBe(true);
+    expect((body.configUpdate as Record<string, unknown>).patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
   });
 });
 
@@ -6890,6 +6991,7 @@ describe('POST /agents/:id/heartbeat — device-remove uninstall drain (#3986)',
     expect(helpers.buildPamConfigUpdate).not.toHaveBeenCalled();
     expect(helpers.buildPatchSourceConfigUpdate).not.toHaveBeenCalled();
     expect(helpers.buildOnedriveHelperConfigUpdate).not.toHaveBeenCalled();
+    expect(helpers.loadOnedriveHelperConfigPlan).not.toHaveBeenCalled();
     expect(helpers.buildPolicyProbeConfigUpdate).not.toHaveBeenCalled();
     expect(helpers.buildHelperConfigUpdate).not.toHaveBeenCalled();
   });
@@ -7831,6 +7933,8 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       expect(helpers.buildPamConfigUpdate).not.toHaveBeenCalled();
       expect(helpers.buildPatchSourceConfigUpdate).not.toHaveBeenCalled();
       expect(helpers.buildOnedriveHelperConfigUpdate).not.toHaveBeenCalled();
+      expect(helpers.loadOnedriveHelperConfigPlan).not.toHaveBeenCalled();
+    expect(helpers.loadOnedriveHelperConfigPlan).not.toHaveBeenCalled();
       expect(helpers.buildPolicyProbeConfigUpdate).not.toHaveBeenCalled();
       expect(helpers.buildHelperConfigUpdate).not.toHaveBeenCalled();
       expect(helpers.buildWarrantyConfigUpdate).not.toHaveBeenCalled();

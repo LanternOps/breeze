@@ -5,7 +5,8 @@ import { timingSafeEqual } from 'node:crypto';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '../../lib/validation';
 import { and, eq, inArray, notInArray } from 'drizzle-orm';
-import { loadDeviceHierarchy, withHierarchy, type DeviceHierarchy } from '../../services/deviceHierarchy';
+import { loadDeviceHierarchy, type DeviceHierarchy } from '../../services/deviceHierarchy';
+import { loadDevicePolicySet, withPolicySet, type DevicePolicySet } from '../../services/devicePolicySet';
 import { db, runAfterDbContextExit, runOutsideDbContext, withDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import {
   maybeDispatchEditionMigration,
@@ -48,7 +49,8 @@ import {
   getOrgHelperSettings,
   readCachedHelperSettings,
   resolveOrgPamFallback,
-  buildOnedriveHelperConfigUpdate,
+  loadOnedriveHelperConfigPlan,
+  finishOnedriveHelperConfig,
   buildPatchSourceConfigUpdate,
   buildWarrantyConfigUpdate,
   getOrgAgentUpdateConfigCached,
@@ -57,6 +59,7 @@ import {
   agentAcceptsServedEdition,
   shouldAutoApplyAgentReportedDeviceRole,
   type AgentVersionPins,
+  type OnedriveConfigPlan,
   type OnedriveConfigUpdate,
   type HelperSettings,
 } from './helpers';
@@ -553,35 +556,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // rather than inherited. Without it the `breeze.current_partner_id` GUC is
     // empty here and Wave 1's SELECT-only partner-wide branches can never match.
     //
-    // Scope note, so nobody over-reads this: the field is still INERT on THIS
-    // route, and W03 did not change that — read the paragraph below before
-    // "cleaning up" the hoisted system contexts further down.
-    //
-    // W03 deleted the NESTED escapes (`withPartnerWideVisibility` and the
-    // direct `runOutsideDbContext(() => withSystemDbAccessContext(...))`
-    // wraps), so on every OTHER caller of these resolvers — agents/eventlogs,
-    // agents/commands, the backup routes, alertService, policyEvaluationService,
-    // pamBridge, the feature-link routes — the read now happens in the caller's
-    // own context and this GUC is exactly what carries it. The heartbeat is the
-    // one path where it does not, because the reads below are HOISTED into
-    // their own top-level system contexts (this route opts out of the
-    // request-long wrap). Those are not nested and cost no second connection,
-    // so W03 had no reason to touch them.
-    //
-    // Converting them to org-scoped contexts is a real follow-up — it would
-    // close the last RLS-bypass surface on the hottest path — but it is NOT a
-    // drop-in swap, which is why it is not in this wave:
-    // `buildPatchSourceConfigUpdate` reaches `resolveDeviceTimezone`, whose
-    // `partners` read is partner-AXIS and escapes through
-    // `readWithPartnerAxisVisibility` (#2822). Under a system wrapper that
-    // escape short-circuits; under an org wrapper it fires, uncached, once per
-    // heartbeat — turning one hoisted context into a genuinely NESTED
-    // double-hold on the fleet's hottest path, which is the #1105 shape this
-    // whole epic exists to remove. The timezone read has to be hoisted or
-    // batched first. Track it separately; do not do it by analogy with W03.
+    // #8142 (scaling W03 / W1a-2): this field is LOAD-BEARING on this route
+    // too. The post-commit policy context further down REUSES this context —
+    // it used to be two hoisted system contexts — so every partner-wide policy
+    // the beat delivers (helper, event log, hardware monitoring, monitoring,
+    // PAM, patch source, warranty, time sync, the policy probe) is read
+    // through the SELECT-only *_partner_wide_select branches keyed on
+    // breeze.current_partner_id. Drop it and those policies silently stop
+    // reaching agents, with no error. The patch-source partner-axis timezone
+    // read that used to block this was removed in W01 (#8222).
     //
     // Read-only widening to the device's own MSP; see agentAuth.ts.
     currentPartnerId: agent.partnerId,
+    // #8142 — an agent is not a user. Explicitly null: a userId would enable
+    // the users self-read RLS branch, and DeferredCacheFills refuses to store
+    // any per-org fill read under a context that carries one.
+    userId: null,
   };
 
   // Org > General > Agent update policy — governs whether we may hand the agent
@@ -1771,10 +1761,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   );
 
   // Policy probe config (buildPolicyProbeConfigUpdate) is deliberately NOT
-  // built here: partner-wide compliance policies (org_id NULL, #2129) are
-  // invisible to this org-scoped RLS context, so it runs AFTER this block
-  // closes, under a system context — same #1105 pattern as the manifest
-  // trust keyset below.
+  // built here: it runs AFTER this block commits, in the post-commit policy
+  // context (#8142), where automation_policies' partner-wide SELECT branch makes
+  // partner-wide compliance policies (org_id NULL, #2129) visible, and where a
+  // miss can be cached per org once the context commits.
 
   // `updateGateAllows` was resolved above (effective partner+org update policy,
   // issue #2123) in a system context BEFORE this org-scoped block opened — see
@@ -2255,112 +2245,48 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     captureException(err);
   }
 
-  // Policy probe config and helper settings are resolved in the shared policy
-  // context further down (#8053), but declared here because the merge below
-  // reads them. (Initialised via `as` so TypeScript does not narrow them to
-  // `null`: it cannot see the assignments made inside that callback.)
+  // Policy probe config and helper settings are resolved in the policy context
+  // below, but declared here because the merge below reads them. (Initialised
+  // via `as` so TypeScript does not narrow them to `null`: it cannot see the
+  // assignments made inside that callback.)
   let policyProbeConfig = null as PolicyProbeConfigUpdate | null;
   let helperSettings = null as HelperSettings | null;
 
-  // #1105 — onedrive_helper config is built OUTSIDE the org transaction too.
-  // Phase 4 added per-UPN Graph resolution inside resolveDeviceOnedriveSettings,
-  // where an uncached miss makes sequential external HTTP round-trips (token +
-  // Graph, each bounded by AbortSignal.timeout), per UPN — exactly the
-  // conn-hold class #1105 warns about. resolveDeviceOnedriveSettings filters
-  // every query explicitly (eq(configurationPolicies.orgId, device.orgId),
-  // deviceId-keyed state read, and the org-keyed m365_connections read inside
-  // the Graph token helper), so the system context here is org-safe and cannot
-  // pivot tenants (same guarantee as the policy-probe pattern above). The
-  // onedrive_device_state upsert happened inside scoped (ingest), and this
-  // build runs later, so the ingest-before-delivery ordering is preserved.
-  // #8053 W1a-1 — the device's policy hierarchy (device, org partner + type,
-  // site, group ids), read ONCE for the whole beat and passed explicitly to
-  // every post-commit resolver below. Before this, each of them re-read it:
-  // 33 statements per beat.
+  // #8142 (scaling W03 / W1a-2) — ONE post-commit context for every
+  // policy-derived field, ORG-SCOPED: the org block's own `dbContext`
+  // (accessibleOrgIds [org], accessiblePartnerIds [], currentPartnerId =
+  // the agent's partner). It replaces the OneDrive and shared-policy SYSTEM
+  // contexts, so RLS — not any WHERE clause — is the tenant boundary for every
+  // read here: rows of other orgs and of other partners are invisible, and a
+  // partner-wide policy is visible only through the SELECT-only
+  // *_partner_wide_select branches. Opened only after the org transaction has
+  // been released; it holds the only pooled connection (#1105), and nothing
+  // here makes an HTTP call (OneDrive's Graph phase runs after it commits).
   //
-  // It is read HERE, as the first statement of the OneDrive system context,
-  // rather than taken from the core device row or the agent context, because:
-  //   - the agent context carries no organization type (featureConfigResolver
-  //     and monitorResolver both need it);
-  //   - the core row predates this beat's own `UPDATE devices`, which can
-  //     change deviceRole — and role-filtered policies must see the new role,
-  //     as they always have (these resolvers ran after commit);
-  //   - the resolvers' own reads ran in SYSTEM scope; this does too, so RLS
-  //     visibility is identical.
-  // It is keyed on `scoped.deviceId` — the device the agent authenticated as,
-  // read in the org context by agent.deviceId — and every resolver re-checks
-  // that id (hierarchyFor throws on a mismatch).
-  //
-  // If the hierarchy load fails or the device's org changed, `beatHierarchy`
-  // stays null and every resolver loads its own, exactly as before this
-  // change; a later failure in the OneDrive build does not clear an
-  // already-loaded hierarchy.
-  let beatHierarchy = null as DeviceHierarchy | null;
-  let onedriveSettings: OnedriveConfigUpdate | null = null;
-  try {
-    onedriveSettings = await withSystemDbAccessContext(async () => {
-      const loaded = await loadDeviceHierarchy(scoped.deviceId);
-      beatHierarchy = loaded && loaded.orgId === scoped.deviceOrgId ? loaded : null;
-      return buildOnedriveHelperConfigUpdate(scoped.deviceId, withHierarchy(beatHierarchy));
-    });
-  } catch (err) {
-    console.error(`[agents] failed to load the device hierarchy or build onedrive_helper config update for ${agentId}:`, err);
-    captureException(err);
-  }
-  const hierarchyOpts = withHierarchy(beatHierarchy);
-  const onedriveConfigUpdate = onedriveSettings
-    ? { onedrive_helper_settings: onedriveSettings }
-    : null;
-
-  // #2930 — event_log / monitoring / pam / patch_source policy readers. These
-  // used to run inside the org transaction, where a partner-wide policy
-  // (org_id NULL) is RLS-invisible, so a partner-authored policy for any of the
-  // four never reached an agent.
-  //
-  // #4673 W03 kept this hoist deliberately. The resolvers themselves no longer
-  // escape internally — they read partner-wide rows through the
-  // `*_partner_wide_select` branch in whatever context they are given — so an
-  // org-scoped wrapper here WOULD work for event_log / monitoring / pam. It is
-  // not applied because `buildPatchSourceConfigUpdate` shares this wrapper and
-  // reaches the partner-AXIS `partners` read in `resolveDeviceTimezone`, which
-  // would then take a nested `readWithPartnerAxisVisibility` escape once per
-  // heartbeat (see the long note at the `currentPartnerId` assignment above).
-  // Same treatment as onedriveSettings above: resolved after the org tx is
-  // released, under a system context anchored to `scoped.deviceId` — an id
-  // derived from the device the agent already authenticated as, so this cannot
-  // pivot tenants.
-  //
-  // All of them (plus #5511's warranty reader) share ONE context on
-  // purpose. The first four previously shared the org
-  // transaction, so a DB error already poisoned the others; giving each its own
-  // system transaction would cost four connection acquisitions per heartbeat
-  // against the 25-connection production ceiling for no isolation gain. The
-  // per-resolver try/catch below keeps each feature's documented fallback.
-  //
-  // #8053 — the policy-probe and helper-settings readers used to open a system
-  // transaction each, after this one. They now run FIRST inside it, each in its
-  // own savepoint (withDbTransaction): a SQL error in either rolls back only its
-  // savepoint, and nothing that runs before them can have aborted the shared
-  // transaction. That keeps the isolation each had in its own transaction —
-  // which matters for the helper: a null `helperSettings` delivers
-  // helperEnabled:false, a plain Go bool, so a failure there turns the helper
-  // OFF for the beat. Both results are written straight to the outer variables,
-  // so a later resolver's error (which aborts the shared transaction and makes
-  // its COMMIT throw into the outer catch) cannot discard them. Both readers are
-  // anchored to `scoped` (the authenticated device and its org), as before.
-  //
-  // The policy-probe reader MUST stay out of the org-scoped context:
-  // partner-wide compliance policies (org_id NULL, #2129) are invisible there,
-  // and the agent has to collect registry/config state for them too.
-  //
-  // The whole block is ALSO wrapped in an outer catch. The per-resolver catches
-  // below cannot see a transaction setup or COMMIT failure, and a SQL error
-  // caught locally still leaves the shared transaction aborted — so its commit
-  // throws. By this point the org transaction has committed and the commands in
-  // `scoped.mainResponse` are already marked delivered, so letting that escape
-  // would 500 the heartbeat and lose the claimed commands. Degrading to "no
-  // config update this cycle" is the safe failure: every field here is
-  // re-resolved on the next heartbeat.
+  // 1. Hierarchy + policy set, in ONE savepoint. The hierarchy (W01) is read
+  //    by `scoped.deviceId`, the device the agent authenticated as. The set is
+  //    every candidate assignment for every heartbeat feature, in ONE statement
+  //    (devicePolicySet.ts); each resolver applies its own rules to it.
+  //    Outcomes:
+  //    - MISSING: the device is not visible to its own org's context, or its
+  //      org/partner is not the authenticated one (moved, deleted or
+  //      re-parented after the org transaction committed). Skip EVERY policy
+  //      builder: generating answers here would send defaults/reverts and cache
+  //      them. Helper and PAM read false for this one beat, as they do whenever
+  //      this context fails (the agent reads an absent value as off).
+  //    - hierarchy ERROR: every resolver reads its own (W01's fallback).
+  //    - set ERROR: the hierarchy is kept (it was read before the failure);
+  //      resolvers read their own assignments with it.
+  // 2. Every result is written to an outer variable as soon as it is produced.
+  //    The transaction is read-only, so a value read before a later statement
+  //    aborted it is still right; a failed COMMIT only skips the per-org cache
+  //    fills. (Before #8142 only helper and probe survived a COMMIT failure.)
+  // 3. Order: with the set, everything up to OneDrive is pure TypeScript except
+  //    the per-org cache misses (each in its own savepoint). OneDrive's DB phase
+  //    (own savepoint, only when the set holds a OneDrive link) runs before
+  //    monitoring's secondary reads and the workload-inventory read, which run
+  //    last: a SQL error there can then only lose monitoring and/or workload
+  //    inventory, whose failure answer (omit) is safe.
   type PolicyConfigUpdates = {
     eventLogSettings: Record<string, unknown> | null;
     monitoringSettings: Record<string, unknown> | null;
@@ -2371,7 +2297,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     timeSyncSettings: Awaited<ReturnType<typeof buildTimeSyncConfigUpdate>> | null;
     workloadInventorySettings: Awaited<ReturnType<typeof buildWorkloadInventoryConfigUpdate>> | null;
   };
-  let policyConfigs: PolicyConfigUpdates = {
+  const policyConfigs: PolicyConfigUpdates = {
     eventLogSettings: null,
     monitoringSettings: null,
     pamSettings: null,
@@ -2381,95 +2307,113 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     timeSyncSettings: null,
     workloadInventorySettings: null,
   };
-  // #8053 W1a-1 — per-org reads served from 60 s process caches. A miss loads
-  // inside the shared system context below, as before; the fills are stored
-  // only after that context commits (orgCacheFills.flush()).
+  let onedrivePlan = null as OnedriveConfigPlan | null;
+  // #8053 W1a-1 per-org caches; under this org-scoped context a miss is stored
+  // only for the exact org + partner the context was built for (#8142).
   const orgCacheFills = new DeferredCacheFills();
-  const probePartnerOpts = beatHierarchy?.org ? { partnerId: beatHierarchy.org.partnerId } : undefined;
   try {
-    policyConfigs = await withSystemDbAccessContext(async (): Promise<PolicyConfigUpdates> => {
-      // #1105/#4673 W03: `buildHelperConfigUpdate` touches no partner-AXIS
-      // table and would be a safe drop-in for an org-scoped context; it shares
-      // this system one so the heartbeat's hoists convert to org scope as ONE
-      // reviewable change. See the note at the `currentPartnerId` assignment.
-      // The Redis read runs BEFORE the savepoint, so a hit costs no SAVEPOINT
-      // statement. A miss resolves inside its own savepoint, as before (a SQL
-      // error there must not abort the shared transaction — see above).
+    await withDbAccessContext(dbContext, async () => {
+      let beatHierarchy = null as DeviceHierarchy | null;
+      let beatPolicySet = null as DevicePolicySet | null;
+      let hierarchyOutcome = 'error' as 'loaded' | 'missing' | 'error';
+      try {
+        await withDbTransaction(async () => {
+          const loaded = await loadDeviceHierarchy(scoped.deviceId);
+          if (
+            !loaded
+            || loaded.orgId !== scoped.deviceOrgId
+            || loaded.orgId !== agent.orgId
+            || (loaded.org?.partnerId ?? null) !== agent.partnerId
+          ) {
+            hierarchyOutcome = 'missing';
+            return;
+          }
+          beatHierarchy = loaded;
+          hierarchyOutcome = 'loaded';
+          beatPolicySet = await loadDevicePolicySet(loaded);
+        });
+      } catch (err) {
+        console.error(`[agents] failed to load the device hierarchy or policy set for ${agentId}; resolvers read their own:`, err);
+        captureException(err);
+      }
+      if (hierarchyOutcome === 'missing') {
+        console.warn(`[agents] device ${scoped.deviceId} is not visible to its own org context (moved, deleted or re-parented mid-beat); omitting policy config this heartbeat`);
+        captureException(new Error('heartbeat policy context: device hierarchy not visible to its own org'));
+        return;
+      }
+
+      const policyOpts = withPolicySet(beatPolicySet, beatHierarchy);
+      const fillScope = beatHierarchy?.org
+        ? { orgId: beatHierarchy.orgId, partnerId: beatHierarchy.org.partnerId }
+        : undefined;
+      const probePartnerOpts = beatHierarchy?.org ? { partnerId: beatHierarchy.org.partnerId } : undefined;
+
+      // Helper. Redis first (no statement on a hit). With the set the helper
+      // resolves in memory and only the legacy org flag can read (its own
+      // savepoint, on a per-org cache miss). Without it, the whole helper read
+      // keeps its own savepoint, as before: a null helper delivers
+      // helperEnabled:false, so its SQL error must not abort the context.
       try {
         const cachedHelper = await readCachedHelperSettings(scoped.deviceId);
-        helperSettings = cachedHelper ?? await withDbTransaction(() =>
-          buildHelperConfigUpdate(scoped.deviceId, scoped.deviceOrgId, {
-            ...hierarchyOpts,
+        if (cachedHelper) {
+          helperSettings = cachedHelper;
+        } else {
+          const helperOpts = {
+            ...policyOpts,
             skipCacheRead: true,
-            loadOrgHelperSettings: (orgId) =>
-              orgCacheFills.through(orgHelperSettingsCache, orgId, () => getOrgHelperSettings(orgId)),
-          }),
-        );
+            loadOrgHelperSettings: (orgId: string) =>
+              orgCacheFills.through(orgHelperSettingsCache, orgId, () => withDbTransaction(() => getOrgHelperSettings(orgId)), fillScope),
+          };
+          helperSettings = beatPolicySet
+            ? await buildHelperConfigUpdate(scoped.deviceId, scoped.deviceOrgId, helperOpts)
+            : await withDbTransaction(() => buildHelperConfigUpdate(scoped.deviceId, scoped.deviceOrgId, helperOpts));
+        }
       } catch (err) {
         console.error(`[agents] failed to read helper settings for ${agentId}:`, err);
         captureException(err);
       }
 
+      // Policy probe (per-org cache; savepoint only on a miss). automation_policies
+      // carries its own partner-wide SELECT branch, so partner-wide compliance
+      // policies (#2129) are visible in this org-scoped context.
       try {
         const cachedProbe = orgPolicyProbeCache.peek(scoped.deviceOrgId);
         policyProbeConfig = cachedProbe !== undefined
           ? cachedProbe
           : await withDbTransaction(() =>
             orgCacheFills.through(orgPolicyProbeCache, scoped.deviceOrgId, () =>
-              buildPolicyProbeConfigUpdate(scoped.deviceOrgId, probePartnerOpts)),
+              buildPolicyProbeConfigUpdate(scoped.deviceOrgId, probePartnerOpts), fillScope),
           );
       } catch (err) {
         console.error(`[agents] failed to build policy probe config update for ${agentId}:`, err);
         captureException(err);
       }
 
-      let eventLogSettings: Record<string, unknown> | null = null;
-      let monitoringSettings: Record<string, unknown> | null = null;
-      let pamSettings: { uacInterceptionEnabled: boolean } | null = null;
-      let patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null = null;
-      let warrantySettings: { hpCmslEnabled: boolean } | null = null;
-      let hardwareMonitoringSettings: Awaited<ReturnType<typeof buildHardwareMonitoringConfigUpdate>> | null = null;
-      let timeSyncSettings: Awaited<ReturnType<typeof buildTimeSyncConfigUpdate>> | null = null;
-      let workloadInventorySettings: Awaited<ReturnType<typeof buildWorkloadInventoryConfigUpdate>> | null = null;
-
-      // Sentry on all four, not just pam/patch_source. Losing an event_log or
-      // monitoring policy is precisely the invisible failure #2930 is about:
-      // the agent keeps collecting on stale defaults and nothing surfaces it.
-      // A stdout line is not an alerting channel.
+      // Sentry on every feature: losing a policy silently is exactly #2930.
       try {
-        eventLogSettings = await buildEventLogConfigUpdate(scoped.deviceId, hierarchyOpts);
+        policyConfigs.eventLogSettings = await buildEventLogConfigUpdate(scoped.deviceId, policyOpts);
       } catch (err) {
         console.error(`[agents] failed to build event log config update for ${agentId}:`, err);
         captureException(err);
       }
 
       try {
-        hardwareMonitoringSettings = await buildHardwareMonitoringConfigUpdate(scoped.deviceId, hierarchyOpts);
+        policyConfigs.hardwareMonitoringSettings = await buildHardwareMonitoringConfigUpdate(scoped.deviceId, policyOpts);
       } catch (err) {
         console.error(`[agents] failed to build hardware monitoring config update for ${agentId}:`, err);
         captureException(err);
       }
 
       try {
-        monitoringSettings = await buildMonitoringConfigUpdate(scoped.deviceId, hierarchyOpts) as Record<string, unknown> | null;
-      } catch (err) {
-        console.error(`[agents] failed to build monitoring config update for ${agentId}:`, err);
-        captureException(err);
-      }
-
-      try {
-        pamSettings = await buildPamConfigUpdate(scoped.deviceId, {
-          ...hierarchyOpts,
+        policyConfigs.pamSettings = await buildPamConfigUpdate(scoped.deviceId, {
+          ...policyOpts,
           loadOrgPamFallback: (orgId) =>
-            orgCacheFills.through(orgPamFallbackCache, orgId, () => resolveOrgPamFallback(orgId)),
+            orgCacheFills.through(orgPamFallbackCache, orgId, () => withDbTransaction(() => resolveOrgPamFallback(orgId)), fillScope),
         });
       } catch (err) {
-        // Opt-in default means a resolver failure leaves pamSettings null and we
-        // send uacInterceptionEnabled:false below. For an org that *enforces* PAM
-        // (grandfather flag or an explicit enabling policy) this momentarily drops
-        // elevation gating until the next successful heartbeat — call it out so the
-        // Sentry event isn't mistaken for a benign config-build hiccup. Not cached,
-        // so it self-heals on the next heartbeat.
+        // Opt-in default: a resolver failure sends uacInterceptionEnabled:false.
+        // For an org that ENFORCES PAM this momentarily drops elevation gating
+        // until the next successful heartbeat. Not cached; self-heals.
         console.error(
           `[agents] failed to build pam config update for ${agentId} — sending uacInterceptionEnabled:false this heartbeat:`,
           err,
@@ -2477,75 +2421,94 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         captureException(err);
       }
 
-      // #1872: sole-patch-source enforcement. Omit the block on a resolver error so
-      // a transient failure never reverts an endpoint already under enforcement;
-      // a successful resolve with no patch policy returns false → agent reverts.
+      // #1872 sole-patch-source enforcement: a resolver error omits the block
+      // (never a revert); a successful resolve with no policy returns false.
       try {
-        patchSourceSettings = await buildPatchSourceConfigUpdate(scoped.deviceId, hierarchyOpts);
+        policyConfigs.patchSourceSettings = await buildPatchSourceConfigUpdate(scoped.deviceId, policyOpts);
       } catch (err) {
         console.error(`[agents] failed to build patch_source config update for ${agentId}:`, err);
         captureException(err);
       }
 
-      // #5511 W02: device-side HP CMSL warranty collection. Same shape and same
-      // reason as patch_source above — omit the block on a resolver error so a
-      // transient failure never stops collection on a consented fleet; a
-      // successful resolve with no warranty policy (or a nearer policy that
-      // replaced the link without an hpCmsl block, contract D5) returns false
-      // → the agent stops. Last in the shared context on purpose: an earlier
-      // resolver's SQL error aborts the transaction, which makes this one throw
-      // too — and throwing here only ever omits the block, never revokes.
+      // #5511 W02 HP CMSL: same shape as patch_source — an error only omits.
       try {
-        warrantySettings = await buildWarrantyConfigUpdate(scoped.deviceId, hierarchyOpts);
+        policyConfigs.warrantySettings = await buildWarrantyConfigUpdate(scoped.deviceId, policyOpts);
       } catch (err) {
         console.error(`[agents] failed to build warranty config update for ${agentId}:`, err);
         captureException(err);
       }
 
-      // Time sync (index §F.2). After warranty for the same reason warranty is
-      // late: a resolver error here only ever omits time_sync_settings (the
-      // agent keeps its last applied settings), and placing it after pam means
-      // its SQL error can never abort the shared transaction before pam
-      // resolves and drop uacInterceptionEnabled to false.
+      // Time sync (index §F.2): an error only omits time_sync_settings.
       try {
-        timeSyncSettings = await buildTimeSyncConfigUpdate(scoped.deviceId, hierarchyOpts);
+        policyConfigs.timeSyncSettings = await buildTimeSyncConfigUpdate(scoped.deviceId, policyOpts);
       } catch (err) {
         console.error(`[agents] failed to build time sync config update for ${agentId}:`, err);
         captureException(err);
       }
 
-      // Workload inventory (spec §7.2). Last, like time sync: a resolver error
-      // here only ever omits the key (the agent keeps its last applied
-      // settings); and an earlier resolver's SQL error that aborts the shared
-      // transaction makes this throw too, which also only omits.
+      // OneDrive DB phase (#1105: no Graph call here). Its own savepoint, and
+      // skipped outright when the set shows no OneDrive settings link at all.
+      // The onedrive_device_state upsert happened in the org block, so
+      // ingest-before-delivery ordering is preserved.
       try {
-        workloadInventorySettings = await buildWorkloadInventoryConfigUpdate(scoped.deviceId, hierarchyOpts);
+        const mayHaveOnedrive = !beatPolicySet
+          || beatPolicySet.candidates.some((c) => c.links.onedrive_helper?.onedrive);
+        if (mayHaveOnedrive) {
+          onedrivePlan = await withDbTransaction(() => loadOnedriveHelperConfigPlan(scoped.deviceId, policyOpts));
+        }
+      } catch (err) {
+        console.error(`[agents] failed to load onedrive_helper config for ${agentId}:`, err);
+        captureException(err);
+      }
+
+      // Monitoring, then workload inventory. null = unresolved → omit (agent keeps its watches);
+      // "no policy applies" arrives as { watches: [] } and must be sent (#2949).
+      // With the set, a device with no monitors link costs no statement.
+      try {
+        policyConfigs.monitoringSettings = await buildMonitoringConfigUpdate(scoped.deviceId, policyOpts) as Record<string, unknown> | null;
+      } catch (err) {
+        console.error(`[agents] failed to build monitoring config update for ${agentId}:`, err);
+        captureException(err);
+      }
+
+      // Workload inventory (spec §7.2) after monitoring, in this context like
+      // the others: an error, including an earlier resolver's SQL error that
+      // aborted the context's transaction, only omits the key (the agent keeps
+      // its last applied settings). A settings-cache hit is a Redis read only.
+      try {
+        policyConfigs.workloadInventorySettings = await buildWorkloadInventoryConfigUpdate(scoped.deviceId, policyOpts);
       } catch (err) {
         console.error(`[agents] failed to build workload inventory config update for ${agentId}:`, err);
         captureException(err);
       }
-
-      return {
-        eventLogSettings,
-        monitoringSettings,
-        pamSettings,
-        patchSourceSettings,
-        warrantySettings,
-        hardwareMonitoringSettings,
-        timeSyncSettings,
-        workloadInventorySettings,
-      };
     });
-    // Stored only now that the shared context has committed (fillIfCurrent
-    // refuses to run inside one); a failed commit throws past this line.
+    // Stored only now that the context has committed (fillIfCurrent refuses to
+    // run inside one); a failed commit throws past this line.
     orgCacheFills.flush();
   } catch (err) {
-    // Transaction setup/commit failure — see the note above. Every resolver's
-    // documented "no policy this cycle" fallback already applies because
-    // policyConfigs keeps its all-null initial value.
-    console.error(`[agents] policy config context failed for ${agentId} — omitting config updates this heartbeat:`, err);
+    // Context setup or COMMIT failure. Values already written above are kept
+    // (see 2.); anything not yet produced keeps its "no update this cycle"
+    // null. By now the org transaction has committed and the claimed commands
+    // are marked delivered, so this must never 500 the heartbeat.
+    console.error(`[agents] policy config context failed for ${agentId}; delivering what was read before the failure:`, err);
     captureException(err);
   }
+
+  // OneDrive Graph phase: after the policy context is released, with no DB
+  // access (the plan carries every row it needs) — #1105.
+  let onedriveSettings: OnedriveConfigUpdate | null = null;
+  if (onedrivePlan) {
+    try {
+      onedriveSettings = await finishOnedriveHelperConfig(onedrivePlan);
+    } catch (err) {
+      console.error(`[agents] failed to build onedrive_helper config update for ${agentId}:`, err);
+      captureException(err);
+    }
+  }
+  const onedriveConfigUpdate = onedriveSettings
+    ? { onedrive_helper_settings: onedriveSettings }
+    : null;
+
   const {
     eventLogSettings,
     monitoringSettings,
