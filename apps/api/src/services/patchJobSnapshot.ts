@@ -46,7 +46,13 @@ export interface PatchesSnapshot {
     severities: PatchInlineSettings['autoApproveSeverities'];
     deferralDays: number;
   };
+  /** Policy-level per-app rules (the legacy key every executor version reads). */
   apps: PatchInlineSettings['apps'];
+  /**
+   * The ring's per-app rules (#8184). The executor enforces both keys,
+   * stricter verdict winning, and keeps parsing both for frozen snapshots.
+   */
+  ringAppRules: PatchRingResolution['appRules'];
   ringValidation: {
     classification: PatchRingResolution['classification'];
     valid: boolean;
@@ -68,6 +74,7 @@ export function buildPatchesSnapshot(policyLocal: PatchesSnapshotInput): Patches
       deferralDays: policyLocal.settings.autoApproveDeferralDays ?? 0,
     },
     apps: policyLocal.settings.apps ?? [],
+    ringAppRules: policyLocal.ring.appRules,
     ringValidation: {
       classification: policyLocal.ring.classification,
       valid: policyLocal.ring.valid,
