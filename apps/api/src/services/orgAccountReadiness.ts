@@ -291,19 +291,22 @@ function queryContactSignals(ids: string[]) {
       primaryPhone: sql<string | null>`max(${contacts.phone}) ${primary}`,
       primaryMobile: sql<string | null>`max(${contacts.mobile}) ${primary}`,
       // Organization readiness requires an explicit Organization-scoped
-      // billing responsibility; a Site/Device Group assignment is insufficient.
-      // EXISTS preserves the one-row-per-contact aggregate shape and avoids
-      // multiplying primary-contact fields when a contact has several roles.
-      billingRole: sql<boolean>`bool_or(EXISTS (
-        SELECT 1 FROM ${contactRoles}
-        WHERE ${contactRoles.contactId} = ${contacts.id}
-          AND ${contactRoles.orgId} = ${contacts.orgId}
-          AND ${contactRoles.role} = 'billing'
-          AND ${contactRoles.siteId} IS NULL
-          AND ${contactRoles.deviceGroupId} IS NULL
-      ))`,
+      // billing responsibility; Site/Device Group assignments are insufficient.
+      // The filtered LEFT JOIN keeps the decision on canonical contact_roles
+      // while the aggregates retain one result row per organization.
+      billingRole: sql<boolean>`bool_or(${contactRoles.id} IS NOT NULL)`,
     })
     .from(contacts)
+    .leftJoin(
+      contactRoles,
+      and(
+        eq(contactRoles.contactId, contacts.id),
+        eq(contactRoles.orgId, contacts.orgId),
+        eq(contactRoles.role, 'billing'),
+        isNull(contactRoles.siteId),
+        isNull(contactRoles.deviceGroupId),
+      ),
+    )
     .where(inArray(contacts.orgId, ids))
     .groupBy(contacts.orgId);
 }

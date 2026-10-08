@@ -262,10 +262,10 @@ describe('importAccountingCustomers', () => {
     // compat mirror inserts a contacts row between the org and the link, and
     // that contact write now also records caller-verification destination
     // provenance (#6354) with its own insert — org(1), contact(2),
-    // destination(3), link(4), site(5) — which is why the site is row-5
-    // rather than row-3/4. Pure sequencing artifact; the contract asserted
+    // destination(3), contact_roles(4), link(5), site(6) — which is why
+    // the site is row-6 rather than row-3/4/5. Pure sequencing artifact; the contract asserted
     // here is that the summary reports the ids of the rows actually created.
-    expect(summary.imported).toEqual([{ customerId: '1', displayName: 'Acme Co', organizationId: 'row-1', siteId: 'row-5' }]);
+    expect(summary.imported).toEqual([{ customerId: '1', displayName: 'Acme Co', organizationId: 'row-1', siteId: 'row-6' }]);
     expect(summary.skipped).toEqual([]);
     expect(summary.errors).toEqual([]);
 
