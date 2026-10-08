@@ -496,6 +496,15 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/backup\/providers\/connections\/?$/ },
   { method: 'PATCH', pattern: /^\/api\/v1\/backup\/providers\/connections\/[^/]+\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/backup\/providers\/connections\/[^/]+\/test\/?$/ },
+  // #8164 W01b — the same three for the EDR provider connections: each makes a
+  // REAL vendor `testConnection` call (GravityZone `getApiKeyDetails` against an
+  // operator-supplied Access URL) and so must not hold the request transaction
+  // across it (#1105). The handlers wrap their DB work in short
+  // `withAuthDbAccessContext` blocks. `/connections/:id/sync`, DELETE and
+  // `PUT /tenants/:id/mapping` make no outbound call and keep the ambient tx.
+  { method: 'POST', pattern: /^\/api\/v1\/edr\/connections\/?$/ },
+  { method: 'PATCH', pattern: /^\/api\/v1\/edr\/connections\/[^/]+\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/edr\/connections\/[^/]+\/test\/?$/ },
   // Caller verification (#6354 W01): the three Graph-backed operations
   // (directory picker search, authoritative sync, manual binding) each open
   // short `withAuthDbAccessContext` phases around a Microsoft Graph read, so
