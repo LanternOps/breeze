@@ -148,9 +148,10 @@ func (p *Payloads) Sessions(now time.Time) map[string]any {
 }
 
 func (p *Payloads) Security(id Identity) security.SecurityStatus {
+	firewallEnabled := true
 	return security.SecurityStatus{
 		DeviceID: id.DeviceID, DeviceName: id.Hostname, OrgID: id.OrgID, OS: p.cfg.OSType,
-		Provider: "none", FirewallEnabled: true, EncryptionStatus: "encrypted",
+		Provider: "none", FirewallEnabled: &firewallEnabled, EncryptionStatus: "encrypted",
 	}
 }
 
