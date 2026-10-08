@@ -43,6 +43,11 @@ export async function isPayOnAcceptAvailable(partnerId: string, orgId: string): 
   return !enrolled;
 }
 
+/** createInvoicePayLink refusals that are a normal state, not a fault. */
+const BENIGN_NO_CHECKOUT_CODES = new Set<string>([
+  'NOTHING_TO_PAY', 'STRIPE_NOT_CONNECTED', 'COLLECTION_IN_PROGRESS', 'STRIPE_REVOCATION_PENDING',
+]);
+
 /**
  * #8231 — after a successful PUBLIC accept, mint the Stripe Checkout session
  * for the converted invoice's charge-now amount (computeChargeNow inside
@@ -80,11 +85,12 @@ export async function resolveAcceptCheckoutUrl(
     );
     return link.url;
   } catch (err) {
-    // 4xx = a known "can't charge right now" state (nothing to pay, not
-    // connected, collection in progress, revocation pending, currency
-    // unsupported) — the invoice page explains it. Anything else is a fault
-    // worth seeing, but the customer still lands on the durable page.
-    if (err instanceof InvoiceServiceError && err.status < 500) {
+    // Expected "can't charge right now" states — the invoice page explains
+    // them. Everything else (ORG_DENIED, INVOICE_NOT_FOUND, NOT_PAYABLE on a
+    // just-issued invoice, INVALID_STATE, a partner's unsupported currency,
+    // any 5xx) is a fault an operator must see; the customer still lands on
+    // the durable page either way.
+    if (err instanceof InvoiceServiceError && err.code != null && BENIGN_NO_CHECKOUT_CODES.has(err.code)) {
       console.warn('[quoteAcceptCheckout] no checkout after accept', { invoiceId: res.invoiceId, code: err.code });
       return null;
     }

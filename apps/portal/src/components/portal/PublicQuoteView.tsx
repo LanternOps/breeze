@@ -86,7 +86,7 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
     depositDue: depositDue != null ? String(depositDue) : null,
     amountPaid: '0.00',
     balance: String(dueOnAcceptance),
-  });
+  }, currency);
   const signAndPay = initial.payOnAccept === true && Number(payCharge.amount) > 0;
   const acceptLabel = signAndPay
     ? (payCharge.isDeposit
@@ -144,7 +144,11 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
     // navigation is harmless. payDeferred = the link couldn't be minted now.
     const invoiceUrl = res.data?.data?.invoiceUrl ?? null;
     if (invoiceUrl) {
-      setMsg('Signed and accepted. Taking you to your invoice.');
+      // The button promised payment but none could be started (Stripe down,
+      // state changed since the page loaded): say so instead of going quiet.
+      setMsg(signAndPay
+        ? "Signed and accepted. We couldn't open payment just now — you can pay from your invoice."
+        : 'Signed and accepted. Taking you to your invoice.');
       replaceLocation(invoiceUrl);
       return;
     }

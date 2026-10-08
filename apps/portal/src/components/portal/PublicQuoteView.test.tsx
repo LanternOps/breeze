@@ -292,6 +292,8 @@ describe('PublicQuoteView — Sign & pay (#8231)', () => {
     render(<PublicQuoteView token="public-token" initial={{ ...DETAIL, payOnAccept: true }} />);
     sign();
     await waitFor(() => expect(replaceLocation).toHaveBeenCalledWith('https://portal.test/invoice/tok'));
+    // The button promised payment, so the fallback says payment didn't open.
+    expect(screen.getByTestId('public-quote-accepted').textContent).toContain("couldn't open payment");
   });
 });
 

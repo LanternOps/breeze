@@ -167,6 +167,7 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       payOnAccept = await isPayOnAcceptAvailable(data.owner.partnerId, data.owner.orgId);
     } catch (err) {
       console.error('[quotesPublic] pay-on-accept availability read failed', { quoteId: claims.quoteId, err });
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
     return c.json({ data: { ...data.payload, payOnAccept } });
   } catch (err) {

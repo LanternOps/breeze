@@ -105,6 +105,16 @@ describe('resolveAcceptCheckoutUrl', () => {
     expect(mocks.captureException).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['ORG_DENIED', 403], ['INVOICE_NOT_FOUND', 404], ['NOT_PAYABLE', 409], ['INVALID_STATE', 409],
+    ['STRIPE_CURRENCY_UNSUPPORTED', 409], ['STRIPE_INIT_FAILED', 500],
+  ])('falls back but captures an unexpected refusal (%s)', async (code, status) => {
+    const err = new InvoiceServiceError('no', status as never, code as never);
+    mocks.createInvoicePayLink.mockRejectedValue(err);
+    expect(await resolveAcceptCheckoutUrl(RES, INVOICE_URL, CLIENT)).toBeNull();
+    expect(mocks.captureException).toHaveBeenCalledWith(err);
+  });
+
   it('falls back and captures an unexpected failure (never throws past a committed accept)', async () => {
     const boom = new Error('stripe is down');
     mocks.createInvoicePayLink.mockRejectedValue(boom);
