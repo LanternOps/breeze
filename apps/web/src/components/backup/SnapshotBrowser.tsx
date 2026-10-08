@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CalendarClock,
@@ -19,23 +20,6 @@ import { buildRestoreHash } from './restoreHash';
 import { formatNumber } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
-
-type TreeNode = {
-  id: string;
-  name: string;
-  type: 'folder' | 'file';
-  size?: string;
-  modified?: string;
-  children?: TreeNode[];
-};
-
-type SnapshotFile = {
-  id: string;
-  name: string;
-  size?: string;
-  modified?: string;
-  path?: string;
-};
 
 type BackupType = 'file' | 'system_image' | 'database' | 'application';
 
@@ -73,8 +57,6 @@ type Snapshot = {
   retentionBlockedReason?: 'legal_hold' | 'immutable_until' | null;
   bareMetalRestorable?: boolean | null;
   bareMetalReasons?: string[] | null;
-  tree?: TreeNode;
-  files?: SnapshotFile[];
   // Set from GET /snapshots/:id/browse: the snapshot recorded files but has no
   // file index to list them from (not "still processing").
   manifestUnavailable?: boolean;
@@ -86,35 +68,23 @@ type SnapshotTreeItem = {
   type: 'file' | 'directory';
   sizeBytes?: number;
   modifiedAt?: string;
-  children?: SnapshotTreeItem[];
 };
 
-function toTreeNodes(items: SnapshotTreeItem[]): TreeNode[] {
-  return items.map((item) => ({
-    id: item.path,
-    name: item.name,
-    type: item.type === 'directory' ? 'folder' : 'file',
-    size: typeof item.sizeBytes === 'number' ? `${item.sizeBytes} B` : undefined,
-    modified: item.modifiedAt,
-    children: item.children ? toTreeNodes(item.children) : undefined,
-  }));
-}
+// #8230: the browse endpoint returns ONE directory level per request, paged by
+// an opaque cursor. Directories are fetched when first expanded/selected.
+type DirState = {
+  items: SnapshotTreeItem[];
+  nextCursor: string | null;
+  loading: boolean;
+};
 
-function flattenTree(items: SnapshotTreeItem[], parentPath = '/'): SnapshotFile[] {
-  return items.flatMap((item) => {
-    const itemPath = item.path || parentPath;
-    if (item.type === 'file') {
-      const folderPath = itemPath.split('/').slice(0, -1).join('/') || '/';
-      return [{
-        id: itemPath,
-        name: item.name,
-        size: typeof item.sizeBytes === 'number' ? `${item.sizeBytes} B` : undefined,
-        modified: item.modifiedAt,
-        path: folderPath,
-      }];
-    }
-    return item.children ? flattenTree(item.children, itemPath) : [];
-  });
+const ROOT_DIR = '/';
+
+function browseUrl(snapshotId: string, dir: string, cursor?: string | null): string {
+  const params: string[] = [];
+  if (dir !== ROOT_DIR) params.push(`dir=${encodeURIComponent(dir)}`);
+  if (cursor) params.push(`cursor=${encodeURIComponent(cursor)}`);
+  return `/backup/snapshots/${snapshotId}/browse${params.length ? `?${params.join('&')}` : ''}`;
 }
 
 // Picker text: the device leads, so snapshots of several devices that share a
@@ -153,7 +123,11 @@ export default function SnapshotBrowser() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [selectedFolder, setSelectedFolder] = useState('/');
+  const [selectedFolder, setSelectedFolder] = useState(ROOT_DIR);
+  const [dirs, setDirs] = useState<Record<string, DirState>>({});
+  // Bumped on every snapshot change so a slow page for a previous snapshot
+  // can never land in the new snapshot's directory cache.
+  const browseEpoch = useRef(0);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -193,46 +167,59 @@ export default function SnapshotBrowser() {
     }
   }, [selectedSnapshotId, snapshots]);
 
-  useEffect(() => {
+  const loadDir = useCallback(async (dir: string, cursor?: string | null) => {
     if (!selectedSnapshotId) return;
-
-    let cancelled = false;
-    const loadSnapshotBrowse = async () => {
-      try {
-        const response = await fetchWithAuth(`/backup/snapshots/${selectedSnapshotId}/browse`);
-        if (!response.ok) {
-          throw new Error('Failed to browse snapshot');
-        }
-        const payload = await response.json();
-        const items = Array.isArray(payload?.data) ? payload.data as SnapshotTreeItem[] : [];
-        const treeNodes = toTreeNodes(items);
-        const files = flattenTree(items);
-
-        if (cancelled) return;
+    const epoch = browseEpoch.current;
+    setDirs((prev) => ({
+      ...prev,
+      [dir]: { items: prev[dir]?.items ?? [], nextCursor: prev[dir]?.nextCursor ?? null, loading: true },
+    }));
+    try {
+      const response = await fetchWithAuth(browseUrl(selectedSnapshotId, dir, cursor));
+      if (!response.ok) {
+        throw new Error('Failed to browse snapshot');
+      }
+      const payload = await response.json();
+      if (epoch !== browseEpoch.current) return;
+      const items = Array.isArray(payload?.data) ? payload.data as SnapshotTreeItem[] : [];
+      setDirs((prev) => ({
+        ...prev,
+        [dir]: {
+          items: cursor ? [...(prev[dir]?.items ?? []), ...items] : items,
+          nextCursor: typeof payload?.nextCursor === 'string' ? payload.nextCursor : null,
+          loading: false,
+        },
+      }));
+      if (dir === ROOT_DIR && !cursor) {
         setSnapshots((prev) => prev.map((snapshot) => (
           snapshot.id === selectedSnapshotId
-            ? {
-                ...snapshot,
-                tree: treeNodes.length > 0
-                  ? { id: '/', name: 'Root', type: 'folder', children: treeNodes }
-                  : undefined,
-                files,
-                manifestUnavailable: payload?.manifestUnavailable === true,
-              }
+            ? { ...snapshot, manifestUnavailable: payload?.manifestUnavailable === true }
             : snapshot
         )));
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to browse snapshot');
-        }
       }
-    };
-
-    void loadSnapshotBrowse();
-    return () => {
-      cancelled = true;
-    };
+    } catch (err) {
+      if (epoch !== browseEpoch.current) return;
+      setDirs((prev) => ({
+        ...prev,
+        [dir]: { items: prev[dir]?.items ?? [], nextCursor: prev[dir]?.nextCursor ?? null, loading: false },
+      }));
+      setError(err instanceof Error ? err.message : 'Failed to browse snapshot');
+    }
   }, [selectedSnapshotId]);
+
+  // Reset + load the root level whenever the snapshot changes.
+  useEffect(() => {
+    browseEpoch.current += 1;
+    setDirs({});
+    setExpanded(new Set([ROOT_DIR]));
+    setSelectedFolder(ROOT_DIR);
+    setSelectedFiles(new Set());
+    if (selectedSnapshotId) void loadDir(ROOT_DIR);
+  }, [selectedSnapshotId, loadDir]);
+
+  const ensureDirLoaded = (dir: string) => {
+    if (!dirs[dir]) void loadDir(dir);
+  };
 
   const handleProtectionAction = useCallback(async (
     action: 'apply-hold' | 'release-hold' | 'apply-immutability' | 'release-immutability',
@@ -300,8 +287,6 @@ export default function SnapshotBrowser() {
               ...snapshot,
               ...updated,
               label: updated.label ?? snapshot.label,
-              tree: snapshot.tree,
-              files: snapshot.files,
             }
           : snapshot
       )));
@@ -336,21 +321,22 @@ export default function SnapshotBrowser() {
   // carrying no snapshot at all (#6456 review).
   const restoreLinkSnapshotId = selectedSnapshotId || snapshots[0]?.id || '';
 
-  useEffect(() => {
-    if (selectedSnapshot?.tree?.id) {
-      setExpanded(new Set([selectedSnapshot.tree.id]));
-    } else {
-      setExpanded(new Set());
-    }
-    setSelectedFolder('/');
-    setSelectedFiles(new Set());
-  }, [selectedSnapshotId, selectedSnapshot?.tree?.id]);
-
-  const visibleFiles = useMemo(() => {
-    return (selectedSnapshot?.files ?? []).filter((file) => (file.path ?? '/') === selectedFolder);
-  }, [selectedFolder, selectedSnapshot?.files]);
+  const visibleFiles = useMemo(
+    () => (dirs[selectedFolder]?.items ?? [])
+      .filter((item) => item.type === 'file')
+      .map((item) => ({
+        id: item.path,
+        name: item.name,
+        size: typeof item.sizeBytes === 'number' ? `${item.sizeBytes} B` : undefined,
+        modified: item.modifiedAt,
+      })),
+    [dirs, selectedFolder]
+  );
+  const rootLoaded = dirs[ROOT_DIR] !== undefined && !dirs[ROOT_DIR]!.loading;
+  const rootEmpty = rootLoaded && dirs[ROOT_DIR]!.items.length === 0;
 
   const toggleExpanded = (id: string) => {
+    ensureDirLoaded(id);
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -374,53 +360,63 @@ export default function SnapshotBrowser() {
     });
   };
 
-  const renderTree = (node: TreeNode, depth = 0, path = '') => {
-    const isFolder = node.type === 'folder';
-    const nodePath = depth === 0 ? '/' : `${path}/${node.name}`.replace('//', '/');
-    const isExpanded = expanded.has(node.id);
+  // Folder ids are the directory's tree path, exactly what the API takes as `dir`.
+  const renderTree = (item: SnapshotTreeItem | null, depth = 0): ReactNode => {
+    const dirPath = item ? item.path : ROOT_DIR;
+    const name = item ? item.name : 'Root';
+    const state = dirs[dirPath];
+    const isExpanded = expanded.has(dirPath);
 
     return (
-      <div key={node.id}>
+      <div key={dirPath}>
         <div
           className={cn(
             'flex items-center gap-2 rounded-md px-2 py-1 text-sm',
-            nodePath === selectedFolder ? 'bg-primary/10 text-foreground' : 'text-muted-foreground',
+            dirPath === selectedFolder ? 'bg-primary/10 text-foreground' : 'text-muted-foreground',
             marginLeftPxClass(depth * 14)
           )}
         >
-          {isFolder ? (
-            <button onClick={() => toggleExpanded(node.id)} className="text-muted-foreground">
-              {isExpanded ? (
-                <ChevronDown className="h-4 w-4" />
-              ) : (
-                <ChevronRight className="h-4 w-4" />
-              )}
-            </button>
-          ) : (
-            <span className="w-4" />
-          )}
-          {isFolder ? (
-            <button
-              onClick={() => setSelectedFolder(nodePath)}
-              className="flex items-center gap-2"
-            >
-              {isExpanded ? (
-                <FolderOpen className="h-4 w-4" />
-              ) : (
-                <Folder className="h-4 w-4" />
-              )}
-              {node.name}
-            </button>
-          ) : (
-            <div className="flex items-center gap-2">
-              <FileText className="h-4 w-4" />
-              {node.name}
-            </div>
-          )}
+          <button onClick={() => toggleExpanded(dirPath)} className="text-muted-foreground">
+            {isExpanded ? (
+              <ChevronDown className="h-4 w-4" />
+            ) : (
+              <ChevronRight className="h-4 w-4" />
+            )}
+          </button>
+          <button
+            onClick={() => {
+              ensureDirLoaded(dirPath);
+              setSelectedFolder(dirPath);
+            }}
+            className="flex items-center gap-2"
+          >
+            {isExpanded ? (
+              <FolderOpen className="h-4 w-4" />
+            ) : (
+              <Folder className="h-4 w-4" />
+            )}
+            {name}
+          </button>
         </div>
-        {isFolder && isExpanded && node.children && (
+        {isExpanded && (
           <div className="space-y-1">
-            {node.children.map((child) => renderTree(child, depth + 1, nodePath))}
+            {(state?.items ?? [])
+              .filter((child) => child.type === 'directory')
+              .map((child) => renderTree(child, depth + 1))}
+            {state?.loading && (
+              <div className={cn('px-2 py-1 text-xs text-muted-foreground', marginLeftPxClass((depth + 1) * 14))}>
+                Loading...
+              </div>
+            )}
+            {state?.nextCursor && !state.loading && (
+              <button
+                type="button"
+                onClick={() => void loadDir(dirPath, state.nextCursor)}
+                className={cn('px-2 py-1 text-xs text-primary hover:underline', marginLeftPxClass((depth + 1) * 14))}
+              >
+                Load more
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -698,8 +694,8 @@ export default function SnapshotBrowser() {
           <div className="rounded-md border bg-muted/10 p-3">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('snapshotBrowser.fileTree')}</h3>
             <div className="mt-3 space-y-1 text-sm">
-              {selectedSnapshot?.tree ? (
-                renderTree(selectedSnapshot.tree)
+              {rootLoaded && !rootEmpty ? (
+                renderTree(null)
               ) : (
                 <div className="rounded-md border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
                   {t('snapshotBrowser.noFileTreeAvailable')} </div>
@@ -770,9 +766,19 @@ export default function SnapshotBrowser() {
               </table>
             </div>
 
-            {visibleFiles.length === 0 && (
+            {dirs[selectedFolder]?.nextCursor && !dirs[selectedFolder]?.loading && (
+              <button
+                type="button"
+                onClick={() => void loadDir(selectedFolder, dirs[selectedFolder]?.nextCursor)}
+                className="text-xs font-medium text-primary hover:underline"
+              >
+                Load more
+              </button>
+            )}
+
+            {visibleFiles.length === 0 && !dirs[selectedFolder]?.loading && (
               <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-                {selectedSnapshot?.files?.length
+                {!rootEmpty && rootLoaded
                   ? 'Select a folder in the tree to view its files.'
                   : selectedSnapshot?.manifestUnavailable
                     ? t('snapshotBrowser.fileIndexUnavailable')
