@@ -78,6 +78,14 @@ export const devices = pgTable('devices', {
   // parallels), or null when physical or undetermined.
   isVirtual: boolean('is_virtual').notNull().default(false),
   virtualizationPlatform: varchar('virtualization_platform', { length: 30 }),
+  // Workload HOST axis (#3834): does this device host workloads (containers /
+  // VMs), of which runtime. Distinct from isVirtual above (the GUEST axis).
+  // Written by services/workloads/ingest.ts from runtime DETECTION, never
+  // derived from device_workloads rows — an empty Docker host is still a
+  // container host. workloadRuntimes is the sorted runtimes whose detection is
+  // 'present'; a runtime reported 'unknown' keeps its previous membership.
+  hostsWorkloads: boolean('hosts_workloads').notNull().default(false),
+  workloadRuntimes: varchar('workload_runtimes', { length: 30 }).array().notNull().default([]),
   osVersion: varchar('os_version', { length: 100 }).notNull(),
   // Hardware Lifecycle report: when the device was bought. Source is 'manual'
   // (operator-entered, never overwritten by sync) or 'vendor' (derived from the
@@ -268,6 +276,12 @@ export const devices = pgTable('devices', {
   // refuse to start rather than send a prompt block a capability-0 agent
   // will not honor. Non-sticky, same contract as the versions above.
   consentPromptProtocolVersion: integer('consent_prompt_protocol_version').notNull().default(0),
+  // #3834 — agent capability for workload inventory. 0 for every build
+  // predating the collector and for any heartbeat omitting the field; only the
+  // recognized integer version 1 is written as anything else. Non-sticky
+  // (written every beat), so a downgrade reports back down. The device
+  // Workloads view uses it to say "agent too old" instead of "no data".
+  workloadInventoryProtocolVersion: integer('workload_inventory_protocol_version').notNull().default(0),
   // Brokered storage-read protocol of the INSTALLED backup helper, reported by
   // the main agent as a top-level heartbeat field. 1 = the helper can restore
   // through a short-lived storage session instead of reusable storage

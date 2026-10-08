@@ -17,6 +17,7 @@ export * from './authenticatorPolicies';
 export * from './devices';
 export * from './hardwareHealth';
 export * from './timeSync';
+export * from './deviceWorkloads';
 export * from './deviceExternalLinks';
 export * from './deviceCustomFieldValues';
 export * from './deviceFunctionAssessments';
