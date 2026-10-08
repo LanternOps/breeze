@@ -186,6 +186,31 @@ describe('an org switch after a site link has been applied (#8113)', () => {
     expect(screen.queryByTestId('topology-site-not-in-org')).toBeNull();
   });
 
+  it('a switch made while the link\'s owner lookup is still in flight also wins (no late snap-back)', async () => {
+    window.location.hash = `#topology/site/${OTHER}/view/logical`;
+    const selectOrganization = vi.fn();
+    let answer!: (owner: { id: string; orgId: string }) => void;
+    vi.mocked(topologyApi.siteOwner).mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    const view = render(<TopologyEntry sites={[]} organization={{ currentOrgId: ORG_A, selectOrganization }} />);
+    await waitFor(() => expect(topologyApi.siteOwner).toHaveBeenCalledTimes(1));
+    view.rerender(<TopologyEntry sites={[]} organization={{ currentOrgId: ORG_C, selectOrganization }} />);
+    await waitFor(() => expect(window.location.hash).toBe('#topology/view/logical'));
+    answer({ id: OTHER, orgId: ORG_B });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(selectOrganization).not.toHaveBeenCalled();
+    expect(topologyApi.siteOwner).toHaveBeenCalledTimes(1);
+  });
+
+  it('the store selecting its first organization while a link resolves (fresh session) is not a user switch', async () => {
+    window.location.hash = `#topology/site/${OTHER}/view/overview`;
+    const selectOrganization = vi.fn();
+    vi.mocked(topologyApi.siteOwner).mockResolvedValue({ id: OTHER, orgId: ORG_B });
+    const view = render(<TopologyEntry sites={[]} organization={{ currentOrgId: null, selectOrganization }} />);
+    view.rerender(<TopologyEntry sites={[]} organization={{ currentOrgId: ORG_A, selectOrganization }} />);
+    await waitFor(() => expect(selectOrganization).toHaveBeenCalledWith(ORG_B));
+    expect(window.location.hash).toBe(`#topology/site/${OTHER}/view/overview`);
+  });
+
   it('a site picked from this organization\'s list is dropped, not chased, when the user switches organization', async () => {
     window.location.hash = `#topology/site/${OTHER}/view/overview`;
     const selectOrganization = vi.fn();
