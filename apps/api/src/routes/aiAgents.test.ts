@@ -795,7 +795,7 @@ describe('POST /ai-agents/:id/runs', () => {
     expect(res.status).toBe(202);
     expect(depths).toEqual({ getAgent: 1, verifyDeviceAccess: 1, admission: 0, audit: 0 });
     // One context for both authorization reads, opened with the caller's own
-    // auth — the same tenant scope the request transaction carried.
+    // auth (dbAccessContextFromAuth — the request transaction's tenant scope).
     expect(authDbCtx.withAuthDbAccessContextMock).toHaveBeenCalledTimes(1);
     expect(authDbCtx.withAuthDbAccessContextMock).toHaveBeenCalledWith(
       expect.objectContaining({ user: expect.objectContaining({ id: USER_ID }) }),

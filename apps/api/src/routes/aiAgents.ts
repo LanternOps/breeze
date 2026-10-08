@@ -143,9 +143,10 @@ export { runSiteScopeCondition };
 
 /**
  * A path id that is not a uuid must never reach a query. Postgres raises
- * 22P02 on the cast, and because the request runs inside one
- * withDbAccessContext transaction that error poisons it — the COMMIT then
- * 500s on what is really a 404.
+ * 22P02 on the cast, and because the request normally runs inside one
+ * withDbAccessContext transaction (self-managed routes such as POST /:id/runs
+ * hold none) that error poisons it — the COMMIT then 500s on what is really a
+ * 404.
  */
 function uuidParam(c: Context, name: string): string | null {
   const parsed = UUID.safeParse(c.req.param(name));
@@ -2077,9 +2078,10 @@ aiAgentsRoutes.post(
     // request transaction every manual run pinned a second pooled connection
     // for the whole admission (#2417 / #6671). So the phases are sequential,
     // never nested: both authorization reads run in ONE short caller-scoped
-    // context (same RLS scope the request transaction carried — a foreign
-    // agent or device is simply not found), it commits, and only then does
-    // admission run with nothing held.
+    // context (dbAccessContextFromAuth: the same tenant scope the request
+    // transaction carried — a foreign agent or device is simply not found;
+    // only the user id is withheld for ai_agent / service-principal callers),
+    // it commits, and only then does admission run with nothing held.
     const authz = await withAuthDbAccessContext(auth, async () => {
       const agent = await getAgent(auth, id);
       if (!agent) return { error: 'Agent not found' } as const;
