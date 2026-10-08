@@ -151,6 +151,25 @@ vi.mock('../services/aiAgents/skipVisibility', () => ({
   readAgentRunSkipSummary: readAgentRunSkipSummaryMock,
 }));
 
+// #7943 — models withAuthDbAccessContext as a short context that commits when
+// its callback returns. `depth` is how many request-scoped contexts are open at
+// the moment a service mock runs, so a test can prove admission ran with none
+// held (the self-managed POST /:id/runs contract).
+const authDbCtx = vi.hoisted(() => {
+  const state = { depth: 0 };
+  return {
+    state,
+    withAuthDbAccessContextMock: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => {
+      state.depth += 1;
+      try {
+        return await fn();
+      } finally {
+        state.depth -= 1;
+      }
+    }),
+  };
+});
+
 vi.mock('../middleware/auth', async (importOriginal) => {
   // Review round 1 (Task 18): `buildOrgAccessClosures` is the REAL
   // implementation (via importOriginal), not a hand-rolled stand-in — a test
@@ -173,6 +192,7 @@ vi.mock('../middleware/auth', async (importOriginal) => {
       hasPermMock(resource, action) ? next() : c.json({ error: 'Permission denied' }, 403)
     ),
     buildOrgAccessClosures: actual.buildOrgAccessClosures,
+    withAuthDbAccessContext: authDbCtx.withAuthDbAccessContextMock,
   };
 });
 
@@ -744,6 +764,50 @@ describe('POST /ai-agents/:id/runs', () => {
     expect(malformed.status).toBe(400);
     expect(smuggled.status).toBe(400);
     expect(createAndEnqueueAgentRunMock).not.toHaveBeenCalled();
+  });
+
+  // #7943 — admission opens its own system transaction(s) and enqueues the
+  // BullMQ job after they commit. Under the ambient request transaction every
+  // manual run pinned a second pooled connection for the length of admission
+  // (#2417 / #6671 pool class). The route is self-managed: authorization reads
+  // run in ONE short caller-scoped (RLS) context that commits, and admission
+  // runs with no context held.
+  it('authorizes in one short caller-scoped context, then admits with no DB context held (#7943)', async () => {
+    const depths: Record<string, number> = {};
+    getAgentMock.mockImplementation(async () => {
+      depths.getAgent = authDbCtx.state.depth;
+      return agent();
+    });
+    verifyDeviceAccessMock.mockImplementation(async () => {
+      depths.verifyDeviceAccess = authDbCtx.state.depth;
+      return { device: { id: DEVICE_ID, orgId: ORG_ID, siteId: null } };
+    });
+    createAndEnqueueAgentRunMock.mockImplementation(async () => {
+      depths.admission = authDbCtx.state.depth;
+      return { created: true, run: { id: RUN_ID, status: 'queued' } };
+    });
+    writeRouteAuditMock.mockImplementation(() => {
+      depths.audit = authDbCtx.state.depth;
+    });
+
+    const res = await trigger(buildApp());
+
+    expect(res.status).toBe(202);
+    expect(depths).toEqual({ getAgent: 1, verifyDeviceAccess: 1, admission: 0, audit: 0 });
+    // One context for both authorization reads, opened with the caller's own
+    // auth — the same tenant scope the request transaction carried.
+    expect(authDbCtx.withAuthDbAccessContextMock).toHaveBeenCalledTimes(1);
+    expect(authDbCtx.withAuthDbAccessContextMock).toHaveBeenCalledWith(
+      expect.objectContaining({ user: expect.objectContaining({ id: USER_ID }) }),
+      expect.any(Function),
+    );
+  });
+
+  it('opens no DB context at all for a non-uuid agent id (#7943)', async () => {
+    const res = await trigger(buildApp(), { deviceId: DEVICE_ID }, 'not-a-uuid');
+
+    expect(res.status).toBe(404);
+    expect(authDbCtx.withAuthDbAccessContextMock).not.toHaveBeenCalled();
   });
 
   it('lets a missing-organization HTTPException reach the global error handler', async () => {
