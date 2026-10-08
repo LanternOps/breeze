@@ -207,3 +207,27 @@ func TestSummaryCountsBothDirections(t *testing.T) {
 		t.Fatalf("viewer_to_host/text = %+v", tc)
 	}
 }
+
+func TestSendChunkedStopsWhenSessionStops(t *testing.T) {
+	sender := &stuckBufferSender{}
+	c := newClipboardSyncWithSender(sender, &stubProvider{}, Policy{HostToViewer: true, ViewerToHost: true})
+	c.bufferWaitTimeout = 10 * time.Second
+	_ = c.Receive(textMsg(`{"type":"hello","chunked":true}`))
+
+	go func() { time.Sleep(50 * time.Millisecond); c.Stop() }()
+	start := time.Now()
+	if err := c.Send(Content{Type: ContentTypeText, Text: strings.Repeat("a", 200*1024)}); err == nil {
+		t.Fatal("expected the send to fail once the session stopped")
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("a stopped session kept waiting on the channel buffer")
+	}
+}
+
+func TestBlockedChunkWithoutIDIsCounted(t *testing.T) {
+	c := newClipboardSyncWithSender(&mockSender{}, &stubProvider{}, Policy{HostToViewer: true, ViewerToHost: false})
+	_ = c.Receive(textMsg(`{"type":"chunk","id":"","seq":0,"total":1,"data":"eA=="}`))
+	if c.Summary().Blocked == 0 {
+		t.Fatal("a blocked chunk with no id went uncounted")
+	}
+}

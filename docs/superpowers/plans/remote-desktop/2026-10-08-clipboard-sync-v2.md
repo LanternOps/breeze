@@ -1122,3 +1122,24 @@ git commit -m "feat(agent): announce clipboard policy and capabilities when the 
   `logSessionAudit('session_clipboard_summary', deviceId, row.orgId, {sessionId, clipboard, sessionOwnerId, deviceId, reportedBy:'authenticated_agent'}, undefined, 'agent')`.
   Write it only when there are nonzero counts, and dedupe on `resourceId` and the action.
 - **Ordering:** the API schema change must ship **before or with** the agent change.
+
+---
+
+## Review amendments (2026-10-08, independent Opus review: 0 critical / 0 high)
+
+Each code fix has a regression test that failed before it:
+- **M1:** `chunkTransferTimeout` is an inactivity limit that resets on every accepted frame. A total
+  limit failed every full-size image paste on a slow uplink. Test:
+  `TestAssemblerAllowsSlowSteadyTransfer`.
+- **M2 and M3:** the gate positive control waits for the baseline poll, and the Watch tests require a
+  minimum poll count. A "0 sends" result can no longer come from a watcher that never ran.
+- **L4:** `sendChunked`'s buffer wait returns when `Stop()` is called. Test:
+  `TestSendChunkedStopsWhenSessionStops`.
+- **L5:** a blocked chunk with no id, or with an oversized id, is still counted. Test:
+  `TestBlockedChunkWithoutIDIsCounted`.
+- **L6:** transfer ids are capped at 64 bytes. Test: `TestAssemblerRejectsLongTransferID`.
+- **Compile-time check:** `var _ bufferedSender = (*webrtc.DataChannel)(nil)`.
+
+Noted for W4b:
+- The viewer reassembler must tolerate acks interleaved between chunk frames.
+- `suppressesBaseline` handling must land before W1's baseline skip changes what it counts.

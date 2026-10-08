@@ -113,3 +113,29 @@ func TestNewTransferIDIsUnique(t *testing.T) {
 		t.Fatal("transfer ids collided")
 	}
 }
+
+func TestAssemblerAllowsSlowSteadyTransfer(t *testing.T) {
+	// The timeout is for an abandoned transfer, not a slow one: an 8 MiB image
+	// over a home uplink takes well over 30s in total.
+	now := time.Unix(1000, 0)
+	a := chunkAssembler{now: func() time.Time { return now }}
+	for seq := 0; seq < 3; seq++ {
+		if seq > 0 {
+			now = now.Add(chunkTransferTimeout - time.Second)
+		}
+		_, done, err := a.add(chunkFrame{Type: "chunk", ID: "slow", Seq: seq, Total: 3, Data: "eA=="})
+		if err != nil {
+			t.Fatalf("frame %d: %v", seq, err)
+		}
+		if done != (seq == 2) {
+			t.Fatalf("frame %d: done=%v", seq, done)
+		}
+	}
+}
+
+func TestAssemblerRejectsLongTransferID(t *testing.T) {
+	var a chunkAssembler
+	if _, _, err := a.add(chunkFrame{Type: "chunk", ID: strings.Repeat("i", maxTransferIDBytes+1), Seq: 0, Total: 1, Data: "eA=="}); err == nil {
+		t.Fatal("expected an oversized transfer id to be rejected")
+	}
+}

@@ -15,12 +15,33 @@ type gateProvider struct {
 	mu       sync.Mutex
 	content  Content
 	setCalls int
+	gets     int
 }
 
 func (p *gateProvider) GetContent() (Content, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.gets++
 	return p.content, nil
+}
+
+func (p *gateProvider) getCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.gets
+}
+
+// waitForBaseline returns once the watcher has read the starting clipboard,
+// so a copy made after it is a change rather than the baseline.
+func waitForBaseline(t *testing.T, p *gateProvider) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for p.getCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("watcher never polled the clipboard")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func (p *gateProvider) SetContent(c Content) error {
@@ -101,7 +122,7 @@ func TestClipboardWatchGate_HostToViewerEnabled(t *testing.T) {
 	c.Watch()
 	defer c.Stop()
 
-	time.Sleep(20 * time.Millisecond)
+	waitForBaseline(t, prov)
 	prov.copyOnHost("copied-during-session")
 	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) && snd.count() == 0 {

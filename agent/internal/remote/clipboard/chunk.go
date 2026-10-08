@@ -27,8 +27,12 @@ const (
 	// maxAssembledBytes bounds a reassembled message: an 8 MiB image as
 	// base64 is ~10.7 MiB, plus JSON.
 	maxAssembledBytes = 12 * 1024 * 1024
-	// chunkTransferTimeout drops a transfer the sender abandoned.
+	// chunkTransferTimeout drops a transfer the sender abandoned: no frame for
+	// this long. It is an inactivity limit, not a total one; a full 8 MiB
+	// image over a slow uplink legitimately takes minutes.
 	chunkTransferTimeout = 30 * time.Second
+	// maxTransferIDBytes bounds the id a viewer chooses; it is echoed in the ack.
+	maxTransferIDBytes = 64
 )
 
 type chunkFrame struct {
@@ -102,7 +106,7 @@ func (a *chunkAssembler) reset() {
 // add consumes f. It returns the reassembled message and true when f was the
 // last piece.
 func (a *chunkAssembler) add(f chunkFrame) ([]byte, bool, error) {
-	if f.ID == "" || f.Total < 1 || f.Total > maxAssembledBytes/chunkPieceBytes+1 || f.Seq < 0 || f.Seq >= f.Total {
+	if f.ID == "" || len(f.ID) > maxTransferIDBytes || f.Total < 1 || f.Total > maxAssembledBytes/chunkPieceBytes+1 || f.Seq < 0 || f.Seq >= f.Total {
 		a.reset()
 		return nil, false, errors.New("invalid clipboard chunk header")
 	}
@@ -117,6 +121,7 @@ func (a *chunkAssembler) add(f chunkFrame) ([]byte, bool, error) {
 		a.reset()
 		return nil, false, errors.New("clipboard transfer timed out")
 	}
+	a.started = a.clock() // inactivity, not total duration
 	if f.Seq != a.next || f.Total != a.total {
 		a.reset()
 		return nil, false, errors.New("clipboard chunk out of sequence")

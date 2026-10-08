@@ -240,6 +240,10 @@ type bufferedSender interface {
 	BufferedAmount() uint64
 }
 
+// The production sender must keep offering backpressure, or chunked sends
+// would queue a whole image in SCTP without pausing.
+var _ bufferedSender = (*webrtc.DataChannel)(nil)
+
 // chunkBufferHighWater pauses a chunked send while this much is queued, so a
 // slow viewer does not make the agent buffer a whole image in SCTP.
 const chunkBufferHighWater = 1 << 20
@@ -257,7 +261,11 @@ func (c *ClipboardSync) sendChunked(inner []byte) error {
 				if time.Now().After(deadline) {
 					return errors.New("clipboard channel buffer did not drain")
 				}
-				time.Sleep(10 * time.Millisecond)
+				select {
+				case <-c.stop:
+					return errors.New("clipboard sync stopped")
+				case <-time.After(10 * time.Millisecond):
+				}
 			}
 		}
 		if err := c.sender.SendText(string(f)); err != nil {
@@ -371,8 +379,12 @@ func (c *ClipboardSync) Receive(msg webrtc.DataChannelMessage) error {
 			return err
 		}
 		if !c.policy.ViewerToHost {
-			if f.ID != c.rxBlockedID {
-				c.rxBlockedID = f.ID
+			// Once per transfer, not per frame. A frame with no usable id is
+			// malformed and counted on its own.
+			if f.ID == "" || len(f.ID) > maxTransferIDBytes || f.ID != c.rxBlockedID {
+				if len(f.ID) <= maxTransferIDBytes {
+					c.rxBlockedID = f.ID
+				}
 				c.blockedTransfer(len(msg.Data))
 			}
 			return nil
