@@ -1,0 +1,1 @@
+{"id":1,"jsonrpc":"2.0","result":{"id":"6a0000000000000000000a01","name":"WS-ALPHA","operatingSystem":"Windows Server 2022 Standard","state":1,"lastSeen":"2026-10-08T09:30:00+00:00","agent":{"productVersion":"7.9.12.345","signatureOutdated":false,"licensed":true},"malwareStatus":{"detection":false,"infected":false}}}
