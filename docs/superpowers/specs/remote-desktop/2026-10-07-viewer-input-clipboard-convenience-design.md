@@ -1,7 +1,8 @@
 # Remote Viewer: Input Correctness, Clipboard Sync v2, Convenience Features
 
 **Date:** 2026-10-07
-**Status:** Draft (design). W1 is implemented on `feature/remote-viewer-input-clipboard`; W2 onward await approval.
+**Status:** Draft (design). W1 is implemented (#8237); W2 onward await approval.
+**Tracking:** LanternOps/breeze#8236
 **Related issues:** #966 (block local input), #1012 (clipboard audit to `audit_logs`), #3084 (in-session chat), #3595 (Caps Lock sync), #3920 (keyboard layout selector), #4089 (type_text), #5484 (UAC prompt hidden)
 
 ## Problem
