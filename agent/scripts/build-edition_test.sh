@@ -146,6 +146,108 @@ case "$windowsgui_ldflags" in
     ;;
 esac
 
+# --- Branding: operator display strings -----------------------------------
+
+BRAND_PKG="github.com/breeze-rmm/agent/internal/branding"
+BRAND_VARS="BREEZE_BRAND_AGENT_DISPLAY_NAME BREEZE_BRAND_AGENT_DESCRIPTION BREEZE_BRAND_WATCHDOG_DISPLAY_NAME BREEZE_BRAND_WATCHDOG_DESCRIPTION BREEZE_BRAND_AGENT_CLI_SHORT BREEZE_BRAND_WATCHDOG_CLI_SHORT"
+for v in $BRAND_VARS; do unset "$v" || true; done
+
+# One brand value adds exactly one quoted -X flag and nothing else.
+brand_one="$(BREEZE_BRAND_AGENT_DISPLAY_NAME="Example MSP Agent" "${BUILD_EDITION}" \
+  --edition self-host --component agent --goos linux --goarch amd64 \
+  --version 1.2.3 --print-ldflags)"
+expected_one="-s -w -X main.version=1.2.3 -X '${BRAND_PKG}.AgentServiceDisplayName=Example MSP Agent'"
+if [ "$brand_one" = "$expected_one" ]; then
+  pass "a brand value adds exactly one quoted -X flag"
+else
+  fail "unexpected ldflags for one brand value: ${brand_one}"
+fi
+
+# A blank value counts as unset.
+brand_blank="$(BREEZE_BRAND_AGENT_DISPLAY_NAME="   " "${BUILD_EDITION}" \
+  --edition self-host --component agent --goos linux --goarch amd64 \
+  --version 1.2.3 --print-ldflags)"
+if [ "$brand_blank" = "-s -w -X main.version=1.2.3" ]; then
+  pass "a blank brand value is treated as unset"
+else
+  fail "a blank brand value must add no flag: ${brand_blank}"
+fi
+
+# All six variables map to their Go variables.
+brand_all="$(BREEZE_BRAND_AGENT_DISPLAY_NAME="A1" BREEZE_BRAND_AGENT_DESCRIPTION="A2" \
+  BREEZE_BRAND_WATCHDOG_DISPLAY_NAME="W1" BREEZE_BRAND_WATCHDOG_DESCRIPTION="W2" \
+  BREEZE_BRAND_AGENT_CLI_SHORT="A3" BREEZE_BRAND_WATCHDOG_CLI_SHORT="W3" \
+  "${BUILD_EDITION}" --edition self-host --component agent --goos linux --goarch amd64 \
+  --version 1.2.3 --print-ldflags)"
+for pair in "AgentServiceDisplayName=A1" "AgentServiceDescription=A2" \
+  "WatchdogServiceDisplayName=W1" "WatchdogServiceDescription=W2" \
+  "AgentCLIShort=A3" "WatchdogCLIShort=W3"; do
+  case "$brand_all" in
+    *"-X '${BRAND_PKG}.${pair}'"*)
+      pass "ldflags carry ${pair%%=*}"
+      ;;
+    *)
+      fail "ldflags missing ${pair}: ${brand_all}"
+      ;;
+  esac
+done
+
+# Brand flags come before -H windowsgui, which stays last.
+brand_gui="$(BREEZE_BRAND_AGENT_DISPLAY_NAME="Example MSP Agent" "${BUILD_EDITION}" \
+  --edition self-host --component user-helper --goos windows --goarch amd64 \
+  --version 1.2.3 --windowsgui --print-ldflags)"
+case "$brand_gui" in
+  *"-H windowsgui")
+    pass "brand flags keep -H windowsgui last"
+    ;;
+  *)
+    fail "expected -H windowsgui at the end with a brand set: ${brand_gui}"
+    ;;
+esac
+
+# Invalid values are refused (a newline would inject directives into a unit).
+refuse_brand() { # NAME VAR VALUE
+  local name="$1" var="$2" value="$3"
+  export "${var}=${value}"
+  assert_refuses "${name}" \
+    --edition self-host --component agent --goos linux --goarch amd64 \
+    --version 1.2.3 --print-ldflags
+  unset "$var"
+}
+refuse_brand "brand refuses a newline" BREEZE_BRAND_AGENT_DISPLAY_NAME $'Example\nExecStart=/bin/sh'
+refuse_brand "brand refuses a tab" BREEZE_BRAND_AGENT_DISPLAY_NAME $'Example\tAgent'
+refuse_brand "brand refuses a single quote" BREEZE_BRAND_AGENT_DISPLAY_NAME "Example's Agent"
+refuse_brand "brand refuses a backslash" BREEZE_BRAND_AGENT_DISPLAY_NAME 'Example\Agent'
+refuse_brand "brand refuses a percent sign" BREEZE_BRAND_AGENT_DISPLAY_NAME "100% Agent"
+refuse_brand "brand refuses a double quote" BREEZE_BRAND_AGENT_DISPLAY_NAME 'Acme "Pro"'
+long_257="$(printf 'a%.0s' $(seq 1 257))"
+refuse_brand "brand refuses 257 bytes" BREEZE_BRAND_AGENT_DISPLAY_NAME "$long_257"
+for v in $BRAND_VARS; do
+  refuse_brand "${v} is validated" "$v" "100% Agent"
+done
+
+long_256="$(printf 'a%.0s' $(seq 1 256))"
+if BREEZE_BRAND_AGENT_DISPLAY_NAME="$long_256" "${BUILD_EDITION}" \
+  --edition self-host --component agent --goos linux --goarch amd64 \
+  --version 1.2.3 --print-ldflags >/dev/null 2>&1; then
+  pass "brand accepts exactly 256 bytes"
+else
+  fail "brand must accept exactly 256 bytes"
+fi
+
+# End to end: a branded build carries the value, so the -ldflags quoting works.
+brand_bin="${TMP_DIR}/breeze-watchdog-brandtest"
+if ! BREEZE_BRAND_WATCHDOG_CLI_SHORT="Example MSP Watchdog CLI" "${BUILD_EDITION}" \
+  --edition self-host --component watchdog \
+  --goos "$(go env GOOS)" --goarch "$(go env GOARCH)" \
+  --version 0.0.0-brandtest --out "${brand_bin}" >/dev/null 2>&1; then
+  fail "branded build of the watchdog failed"
+elif grep -qa "Example MSP Watchdog CLI" "${brand_bin}"; then
+  pass "a branded build carries the brand value"
+else
+  fail "branded build does not contain the brand value"
+fi
+
 # --- Happy path: real self-host build for the host platform ---------------
 
 host_goos="$(go env GOOS)"

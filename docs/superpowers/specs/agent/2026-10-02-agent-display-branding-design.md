@@ -4,7 +4,7 @@ Discussion: LanternOps/breeze#7567
 Related: LanternOps/breeze#6365 (Helper white-labeling at runtime)
 Date: 2026-10-02
 Revised: 2026-10-05 (maintainer review on PR #7841)
-Status: draft, pre-implementation
+Status: approved (implementation in progress; see section 10)
 Blast radius: display strings in the MSI, in the agent's service registration (Go) and in the systemd unit generated in Go; an explicit contract plus tests on the API's reliability rule, and service-name normalization in the agent's collector. No route or protocol changes.
 
 ## 1. Summary
@@ -119,6 +119,8 @@ Windows service registration lives in build-constrained files. For the test to r
 1. A branded fleet **must** update from the operator's own release source (`BINARY_GITHUB_REPOSITORY` plus their manifest key). Pointed at official releases, the next auto-update restores Breeze branding.
 2. `selfhost-signing-template` signs only the official unsigned outputs, verified against the official manifest and `sourceCommit`. A rebuilt binary fails that check by design. A branded build needs the operator's own build-and-sign pipeline and manifest key.
 3. The API already serves unsigned self-host assets after the manifest verifies, with a warning. No new opt-in flag is introduced.
+4. A unit installed by the install script that the API generates (`apps/api/src/routes/agents/download.ts`) keeps the default description, because that script does not know the build-time parameters.
+5. The service display names in the MSI and in the binaries must be identical, because `CanonicalServiceName` only maps a display name that matches exactly; if they drifted, the restart of the agent after an update would count as a device failure in reliability scoring. `build-msi.ps1` therefore falls back to the matching `BREEZE_BRAND_*` variables when a parameter is blank, and refuses a parameter that differs from its variable.
 
 ## 8. Testing
 
@@ -134,3 +136,65 @@ Windows service registration lives in build-constrained files. For the test to r
 1. **Reliability (6.6).** Does the maintainer confirm the combination (explicit contract in the API plus the fixed name reported by the agent), or prefer another way to reach the fixed name?
 2. **API-generated install script.** `download.ts` generates a unit with a fixed description. In a branded build, a unit installed through that script would show "Breeze RMM Agent". Acceptable for Phase 1?
 3. Should the `go-winres` resource strings (`--product-name`, `--file-description`, `--copyright`) be part of Phase 1, or a follow-up?
+
+## 10. Implementation notes
+
+Added on 2026-10-05, while implementing this spec. The approved text above is unchanged except for the `Status` line and item 4 of section 7 (requested in the review of #7841). Where a note replaces a statement above, it says which one.
+
+### 10.1 Differences from the plan
+
+| # | Section | What happened |
+|---|---|---|
+| 1 | 6.2, 6.3 | The Go variables do **not** default to today's literals. The default descriptions differ per path (MSI, Windows service `Spec`, Linux unit), so one variable cannot hold "today's value". Every branding variable is empty by default and each call site keeps its own default through `branding.Or(value, default)`. This replaces the sentence in 6.2 about defaults equal to today's literals, and is what 6.3 already describes. |
+| 2 | 6.1 | Two parameters were added for the root command help text, which section 5 listed in scope without a parameter: `AgentCLIShort` and `WatchdogCLIShort`. |
+| 3 | 6.2 | Build interface: six `BREEZE_BRAND_*` environment variables read by `agent/scripts/build-edition.sh` (`AGENT_DISPLAY_NAME`, `AGENT_DESCRIPTION`, `WATCHDOG_DISPLAY_NAME`, `WATCHDOG_DESCRIPTION`, `AGENT_CLI_SHORT`, `WATCHDOG_CLI_SHORT`). Each non-blank value becomes one `-X 'github.com/breeze-rmm/agent/internal/branding.<Var>=<value>'` flag, single-quoted because values contain spaces. Unset or blank adds no flag, so a build with no brand is unchanged (`--print-ldflags` still prints exactly `-s -w -X main.version=<v>`). |
+| 4 | 6.2 | Validation is stricter than the spec lists. Besides control characters and length, it refuses `'`, `"`, `\` and `%`: the first and third break the `-ldflags` quoting, `%` is a systemd specifier inside `Description=`, and `"` is silently dropped on the way from PowerShell to `wix.exe`. **These four were not requested in the review; happy to drop any of them.** The script limits a value to 256 bytes (independent of the shell locale, and never more than 256 characters); `branding.Valid` limits it to 256 characters. The same rule applies in Go, in `build-edition.sh` and in `build-msi.ps1`. `build-msi.ps1` also refuses `[`, `]`, `{`, `}`, `$(` and `!(` (review of #8061): `ServiceInstall.DisplayName` and `Description` are MSI Formatted columns, so Windows Installer would expand `[PROPERTY]` at install time and `Acme [IT]` would silently become `Acme `. They are harmless in the unit and in the service registration, so only the MSI refuses them. |
+| 5 | 6.2, 6.5 | A value that is not valid never reaches a unit: `branding.UnitWithDescription` returns the unit unchanged with an error, and the caller prints a warning to `stderr`. The root command help text only applies `branding.Or`, since it never reaches a unit. |
+| 6 | 6.6 | Change 1: `BREEZE_FIXED_SERVICE_NAMES = ['BreezeAgent', 'BreezeWatchdog']` in `reliabilityScoring.ts`, exported through `reliabilityScoringInternals` and checked before the loose rule, which is unchanged. Change 2: `branding.CanonicalServiceName` maps a configured display name to the fixed name, and `parseServiceName` calls it on both the extracted name and the fallback, so both classification branches go through one place. `parseServiceName` is now a wrapper around the original function, renamed `parseRawServiceName`. Without a brand, both changes leave the output as it was. |
+| 7 | 6.2, 6.4 | The Windows service `Spec` moved out of the `_windows.go` files into `agentServiceSpec` and `watchdogServiceSpec`, which have no platform restriction and therefore have golden tests in the Linux CI. `Name` and `Args` never change; `DisplayName` and `Description` use `branding.Or`. The two Windows files now make one call in place of the literal. |
+| 8 | 6.1, 6.2 | The MSI gained six `ifndef`/`define` blocks with today's text as the default (`Manufacturer`, `PackageDescription`, and the display name and description of both services), and five literals in `breeze.wxs` became `$(var.X)`. `build-msi.ps1` gained six optional parameters and `Assert-BrandingValue`; only non-blank values reach `wix` (`-d Name=value`). |
+| 9 | 6.2, 7 | Review of #8061: the MSI service strings fall back to the matching `BREEZE_BRAND_*` variables, and `build-msi.ps1` refuses a parameter that differs from its variable, because `CanonicalServiceName` only maps a display name that is identical in the MSI and in the binary (item 5 of section 7). `Manufacturer` and the package description have no counterpart in the binaries. |
+| 10 | 6.2 | Review of #8061: `agentServiceSpec` and `watchdogServiceSpec` use `branding.OrValid`, so a build made with a raw `-ldflags -X` cannot register a value that the build gates would refuse. |
+
+### 10.2 What was verified and what was not
+
+**Verified**
+
+- **Linux unit, root command help text, collector, build script and API:** golden and behaviour tests, all passing. That includes a real build of a binary with a brand (the value is inside it).
+- **MSI**, built with **WiX 6.0.2** on a Windows machine (the release workflow installs the latest WiX and accepts the `wix7` EULA):
+  - Without a brand: `Manufacturer = Breeze RMM`, `ProductName = Breeze Agent`, the `UpgradeCode` as today, and the display name and description of both services as today.
+  - With a brand: `Manufacturer`, the package description and the display name and description of both services carry the brand, and `ProductName` and `UpgradeCode` do **not** change.
+  - Values with `&`, `<` and `>`: WiX escapes them and they arrive intact. A double quote was dropped, which led to the refusal in note 4.
+  - An invalid value (`100% Co`) is refused before `wix`, without echoing the value.
+- **MSI summary information:** `PackageDescription` goes into the *Subject* field and `Manufacturer` into *Author*; *Comments* keeps the WiX default text.
+- **Windows build** of all 16 packages that depend on `branding`, and `go build ./...` of the agent for Linux.
+
+- **Windows runtime validation** on a real Windows host:
+  - A branded SelfHost MSI installed successfully; `sc qc BreezeAgent` and `sc qc BreezeWatchdog` showed the supplied Automos display names while the fixed SCM names and `C:\Program Files\Breeze\` paths stayed unchanged.
+  - A branded MSI `1.0.0 -> 1.0.1` upgrade completed successfully and preserved `Manufacturer = Automos` plus both service display names; both services were running afterwards.
+  - A Windows agent binary built with the same `BREEZE_BRAND_*` profile ran `service install --no-watchdog` successfully; it upgraded the existing `BreezeAgent` registration, kept `Name = BreezeAgent`, applied `DisplayName = Automos Agent` and the branded description, and left the service running.
+  - A temporary Windows probe calling the production `updater.Restart()` function stopped and restarted the branded `BreezeAgent` successfully (`PID` changed and the service returned to `Running`), confirming that the updater still opens the fixed SCM name rather than the display name.
+
+**Not verified**
+
+- A build with **WiX 7** (the project's CI covers it).
+- A comparison with a **built original MSI**: the check was against the known text of today.
+- A full server-directed branded N -> N+1 update from the operator's release source (`BINARY_GITHUB_REPOSITORY` plus manifest key). The MSI N -> N+1 path and the production updater SCM restart path were verified independently as described above.
+- A real 7031 event from a branded service.
+- The double-quote refusal in `build-msi.ps1` **at run time** (only a structural test; the same expression did refuse `%` for real).
+- The `tsc` type check of `apps/api`.
+- **Three tests fail in the local environment** (container running as root, source mounted read-only): `internal/executor` (`TestConfigureRunAsElevatedWhenNotRoot`), `internal/remote/tools` (`TestAnalyzeFilesystemClassifiesThroughTheRuleTable`) and `internal/heartbeat` (`TestDesktopStreamStartAfterAllowStartsAndReportsUserConsent`). **All three fail the same way on `upstream/main`**, without these changes.
+
+### 10.3 Findings
+
+**Name extraction is English-only (existing behaviour, not changed here).** The collector reads the service name from the rendered SCM message with `the (.+?) service`. On a Windows installed in another language the message is translated. On a Portuguese host the 7031 event for the agent reads "O serviço Breeze RMM Agent foi finalizado inesperadamente…": it quotes the **display name** (which confirms the premise of this spec), but the expression does **not** match, and the name falls back to the event source. As a result the restarts of our own service are not recognised on Portuguese Windows, branded or not. This change does not alter that. A follow-up could read the display name from the event's structured `Properties[0]`, which does not depend on the language, instead of the rendered message. Would you want that as its own wave?
+
+**Double quotes.** Windows PowerShell 5.1 drops them when it passes the argument to `wix.exe`: a value `Acme "Pro"` became `Acme Pro`, with no error. Every build gate therefore refuses them (note 4).
+
+### 10.4 Confirmed out of scope
+
+The `Long` text of the root commands, the `breeze-agent-user` unit, the static unit files under `agent/service/systemd/`, macOS and the `go-winres` strings.
+
+### 10.5 Open questions (section 9)
+
+Answered in the review of #7841: question 1 (reliability) confirmed as both changes, which is what 6.6 now does; question 2 (the API-generated install script) is acceptable for Phase 1 and is now item 4 of section 7; question 3 (`go-winres`) stays as a follow-up.

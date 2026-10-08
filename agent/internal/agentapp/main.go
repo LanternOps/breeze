@@ -212,7 +212,7 @@ func waitForEnrollment(ctx context.Context, cfgFile string) *config.Config {
 
 var rootCmd = &cobra.Command{
 	Use:   "breeze-agent",
-	Short: "Breeze RMM Agent",
+	Short: agentRootShort(),
 	Long:  `Breeze Agent - Remote Monitoring and Management agent for Windows, macOS, and Linux`,
 }
 

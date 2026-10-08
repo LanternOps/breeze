@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/breeze-rmm/agent/internal/branding"
 	"github.com/spf13/cobra"
 )
 
@@ -125,7 +126,7 @@ func serviceInstallCmd() *cobra.Command {
 			}
 
 			// Write systemd unit file.
-			if err := os.WriteFile(watchdogUnitDst, []byte(watchdogUnit), 0644); err != nil {
+			if err := os.WriteFile(watchdogUnitDst, []byte(currentWatchdogUnit()), 0644); err != nil {
 				return fmt.Errorf("failed to write unit file: %w", err)
 			}
 			fmt.Printf("Systemd unit installed to %s\n", watchdogUnitDst)
@@ -248,4 +249,16 @@ func restartWatchdogService() error {
 // agentBinaryPath returns the platform-specific agent binary path.
 func agentBinaryPath() string {
 	return "/usr/local/bin/breeze-agent"
+}
+
+// currentWatchdogUnit returns the unit written to disk: the embedded
+// watchdogUnit, with only its Description= line replaced when the build
+// carries a brand (see internal/branding). A brand that is not valid falls
+// back to the embedded unit and prints a warning.
+func currentWatchdogUnit() string {
+	unit, err := branding.UnitWithDescription(watchdogUnit, branding.WatchdogServiceDescription)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: ignoring the branded service description: %v\n", err)
+	}
+	return unit
 }

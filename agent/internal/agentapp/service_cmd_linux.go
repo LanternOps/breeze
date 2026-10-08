@@ -186,7 +186,7 @@ var serviceInstallCmd = &cobra.Command{
 		}
 
 		// Write systemd unit file
-		if err := os.WriteFile(linuxUnitDst, []byte(linuxUnit), 0644); err != nil {
+		if err := os.WriteFile(linuxUnitDst, []byte(currentLinuxUnit()), 0644); err != nil {
 			return fmt.Errorf("failed to write unit file: %w", err)
 		}
 		fmt.Printf("Systemd unit installed to %s\n", linuxUnitDst)
@@ -456,7 +456,7 @@ var serviceReconcileUnitCmd = &cobra.Command{
 		// Best-effort heal: if a later step fails the unit is already v2 on disk,
 		// so the next startup won't re-attempt the restart — the relaxed sandbox
 		// then applies on the following natural service restart rather than now.
-		if err := os.WriteFile(linuxUnitDst, []byte(linuxUnit), 0644); err != nil {
+		if err := os.WriteFile(linuxUnitDst, []byte(currentLinuxUnit()), 0644); err != nil {
 			recordReconcileFailure(fmt.Sprintf("reconcile subcommand: write unit: %v", err))
 			return fmt.Errorf("write unit: %w", err)
 		}

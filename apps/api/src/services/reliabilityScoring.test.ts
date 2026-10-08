@@ -524,6 +524,20 @@ describe('mergeRowsIntoDailyBuckets event dedup (#1904)', () => {
     expect(isBreezeSelfServiceFailure('')).toBe(false);
   });
 
+  it('isBreezeSelfServiceFailure keys on the fixed service names, independent of any display name', () => {
+    const { isBreezeSelfServiceFailure, BREEZE_FIXED_SERVICE_NAMES } = reliabilityScoringInternals;
+    // The collector reports these fixed names for a branded agent/watchdog (an
+    // MSP's display name never reaches the API), so they must always match.
+    expect(BREEZE_FIXED_SERVICE_NAMES).toEqual(['BreezeAgent', 'BreezeWatchdog']);
+    for (const name of BREEZE_FIXED_SERVICE_NAMES) {
+      expect(isBreezeSelfServiceFailure(name)).toBe(true);
+      expect(isBreezeSelfServiceFailure(name.toLowerCase())).toBe(true);
+    }
+    // A branded display name that does not carry the fixed name is not
+    // recognised here; that is why the collector normalises it first.
+    expect(isBreezeSelfServiceFailure('Example MSP Agent')).toBe(false);
+  });
+
   it('tracks app_crash as a downweighted subset of crashCount', () => {
     const rows = [
       makeHistoryRow({

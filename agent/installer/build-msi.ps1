@@ -27,10 +27,61 @@ param(
     [string]$UserHelperExePath = "",
 
     [Parameter(Mandatory = $false)]
-    [string]$OutputPath = ""
+    [string]$OutputPath = "",
+
+    # Optional display strings an operator can brand (see breeze.wxs and
+    # agent/internal/branding). Empty keeps today's text. Only these strings
+    # are brandable: the service names, ProductName and UpgradeCode stay fixed.
+    [Parameter(Mandatory = $false)]
+    [string]$Manufacturer = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$PackageDescription = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$AgentServiceDisplayName = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$AgentServiceDescription = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$WatchdogServiceDisplayName = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$WatchdogServiceDescription = ""
+
 )
 
 $ErrorActionPreference = "Stop"
+
+# Display strings an operator can brand. They travel through the wix command
+# line and end up in files and registry entries the service manager reads, so
+# a value is refused when it is longer than 256 bytes (Windows caps a service
+# display name at 256 characters) or holds a control character, a single quote,
+# a double quote (PowerShell drops it on the way to wix), a backslash or a
+# percent sign. Same rules as agent/scripts/build-edition.sh
+# and agent/internal/branding. A blank value means "not set" and is never
+# passed to wix. The value is not echoed back.
+#
+# The MSI adds rules of its own: ServiceInstall.DisplayName and Description are
+# Formatted columns, so Windows Installer expands [PROPERTY] (and {...}) at
+# install time and "Acme [IT]" would silently become "Acme ". The WiX
+# preprocessor expands $( and !( in the same way at build time. Brackets,
+# braces and those two sequences are therefore refused here, and only here:
+# they are harmless in a Linux unit and in the Windows service registration.
+function Assert-BrandingValue {
+    param([string]$Name, [string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return }
+    if ([System.Text.Encoding]::UTF8.GetByteCount($Value) -gt 256) {
+        throw "$Name is longer than 256 bytes."
+    }
+    if ($Value -match '[\x00-\x1F\x7F''"\\%\[\]\{\}]') {
+        throw "$Name contains a control character, single quote, double quote, backslash, percent sign, bracket or brace."
+    }
+    if ($Value.Contains('$(') -or $Value.Contains('!(')) {
+        throw "$Name contains WiX preprocessor syntax."
+    }
+}
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $installerPath = Join-Path $PSScriptRoot "breeze.wxs"
@@ -140,9 +191,19 @@ if ($wixVersion -notmatch '^\d+\.\d+\.\d+') {
     throw "unexpected wix --version output '$wixVersionLine'; cannot pick a matching WixToolset.Util.wixext version"
 }
 $utilExtension = "WixToolset.Util.wixext/$wixVersion"
-& wix extension add -g $utilExtension
-if ($LASTEXITCODE -ne 0) {
-    throw "wix extension add $utilExtension failed with exit code $LASTEXITCODE"
+$installedExtensionsOutput = @(& wix extension list -g)
+$installedExtensionsExit = $LASTEXITCODE
+if ($installedExtensionsExit -ne 0) {
+    throw "wix extension list -g failed with exit code $installedExtensionsExit"
+}
+$utilExtensionInstalled = $installedExtensionsOutput | Where-Object {
+    ([string]$_).Trim() -eq "WixToolset.Util.wixext $wixVersion"
+}
+if (-not $utilExtensionInstalled) {
+    & wix extension add -g $utilExtension
+    if ($LASTEXITCODE -ne 0) {
+        throw "wix extension add $utilExtension failed with exit code $LASTEXITCODE"
+    }
 }
 
 $wixArgs = @(
@@ -164,6 +225,48 @@ $wixArgs = @(
     "-d", "EnrollAgentScriptPath=$enrollAgentScriptPath",
     "-o", "$OutputPath"
 )
+
+# Optional display strings (see breeze.wxs): only non-blank values reach wix, so
+# a build with no brand is exactly today's package.
+$brandingDefines = [ordered]@{
+    Manufacturer               = $Manufacturer
+    PackageDescription         = $PackageDescription
+    AgentServiceDisplayName    = $AgentServiceDisplayName
+    AgentServiceDescription    = $AgentServiceDescription
+    WatchdogServiceDisplayName = $WatchdogServiceDisplayName
+    WatchdogServiceDescription = $WatchdogServiceDescription
+}
+# The binaries take their brand from the BREEZE_BRAND_* variables that
+# agent/scripts/build-edition.sh reads, and the reliability scoring only
+# recognises the branded service when the display name in the MSI is the same
+# one. A blank parameter therefore falls back to the variable, and a parameter
+# that differs from it is refused, so the two can never drift apart. Manufacturer
+# and PackageDescription have no counterpart in the binaries.
+$brandingEnv = [ordered]@{
+    AgentServiceDisplayName    = 'BREEZE_BRAND_AGENT_DISPLAY_NAME'
+    AgentServiceDescription    = 'BREEZE_BRAND_AGENT_DESCRIPTION'
+    WatchdogServiceDisplayName = 'BREEZE_BRAND_WATCHDOG_DISPLAY_NAME'
+    WatchdogServiceDescription = 'BREEZE_BRAND_WATCHDOG_DESCRIPTION'
+}
+foreach ($name in $brandingEnv.Keys) {
+    $envName = $brandingEnv[$name]
+    $fromEnv = [Environment]::GetEnvironmentVariable($envName)
+    if ([string]::IsNullOrWhiteSpace($fromEnv)) { continue }
+    $given = $brandingDefines[$name]
+    if ([string]::IsNullOrWhiteSpace($given)) {
+        $brandingDefines[$name] = $fromEnv
+    }
+    elseif ($given.Trim() -ne $fromEnv.Trim()) {
+        throw "$name differs from ${envName}: the MSI and the binaries must carry the same brand."
+    }
+}
+foreach ($name in $brandingDefines.Keys) {
+    $value = $brandingDefines[$name]
+    Assert-BrandingValue -Name $name -Value $value
+    if (-not [string]::IsNullOrWhiteSpace($value)) {
+        $wixArgs += @("-d", "$name=$value")
+    }
+}
 
 & wix @wixArgs
 if ($LASTEXITCODE -ne 0) {

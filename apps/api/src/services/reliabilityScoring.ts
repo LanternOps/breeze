@@ -901,6 +901,12 @@ function isGenuineHardwareError(event: HistoryRow['hardwareErrors'][number]): bo
   return hasHardwareSource;
 }
 
+// The fixed service names the agent reports for its own services. A branded
+// build shows the operator's own display name in the Windows service list, but
+// the collector reports these names to the API (agent/internal/branding), so
+// they must always be recognised, whatever the loose rule below does.
+const BREEZE_FIXED_SERVICE_NAMES = ['BreezeAgent', 'BreezeWatchdog'] as const;
+
 // Breeze's own services, as they appear in service-failure events: SCM parses
 // "Breeze Agent" / "Breeze Watchdog" on Windows; systemd units are
 // breeze-agent / breeze-watchdog on Linux; launchd labels contain breeze + agent
@@ -910,6 +916,7 @@ function isGenuineHardwareError(event: HistoryRow['hardwareErrors'][number]): bo
 // name so the Windows display name and the unix unit names all hit.
 function isBreezeSelfServiceFailure(serviceName: string | undefined): boolean {
   const name = (serviceName ?? '').toLowerCase();
+  if (BREEZE_FIXED_SERVICE_NAMES.some((fixed) => fixed.toLowerCase() === name)) return true;
   if (!name.includes('breeze')) return false;
   return name.includes('agent') || name.includes('watchdog') || name.includes('helper');
 }
@@ -2282,6 +2289,7 @@ export const reliabilityScoringInternals = {
   RELIABILITY_RATE_MIN_DAYS,
   isGenuineHardwareError,
   isBreezeSelfServiceFailure,
+  BREEZE_FIXED_SERVICE_NAMES,
   effectiveCrashLoad,
   RELIABILITY_APP_CRASH_WEIGHT,
 };
