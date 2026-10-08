@@ -5,12 +5,14 @@ import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
-import { startTimerAction, onTimerChanged, onBillingChanged, broadcastBillingChanged } from '../../lib/timerActions';
+import { startTimerAction, onTimerChanged, onBillingChanged, broadcastBillingChanged, deleteTimeEntryAction } from '../../lib/timerActions';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import WorkTypeSelect from '../shared/WorkTypeSelect';
 import { formatMinutes } from '../../lib/timeFormat';
 import { sourceBadgeLabelKey } from '../time/timeEntrySource';
 import { formatMoney } from '../billing/shared/format';
 import { ApproximateMoneyLine } from '../billing/shared/ApproximateMoneyLine';
+import { Trash2 } from 'lucide-react';
 
 /** Mirrors the API's `CurrencyAmount` — money is reported per currency, never summed across. */
 interface CurrencyAmount {
@@ -46,7 +48,18 @@ interface EntryRow {
   endedAt: string | null;
   /** W06 (#3900) server-stamped provenance; absent on an older API. */
   source?: string | null;
+  /** #8133: an invoiced entry is not offered for deletion (the API refuses it). */
+  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract';
 }
+
+/** #8133: localized copy for the API's refusals of a time-entry DELETE. */
+const DELETE_REFUSALS: Record<string, string> = {
+  NOT_OWN_ENTRY: 'notOwnEntry',
+  APPROVED_IMMUTABLE: 'approvedImmutable',
+  ENTRY_BILLED: 'entryBilled',
+  ENTRY_DELETE_LOST: 'deleteLost',
+  ENTRY_NOT_FOUND: 'notFound',
+};
 
 /** #4628 §3.5 — one line naming the worked time whenever a minimum or the
  *  card's rounding moved the billed quantity. Returns null when they agree. */
@@ -87,6 +100,20 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
   const { t } = useTranslation('tickets');
   const { can } = usePermissions();
   const canManageBilling = can('time_entries', 'manage_billing');
+  // #8133: Delete is offered to anyone who can write time entries; the server
+  // decides per entry (own + unapproved, or a manage-all admin) and its
+  // refusal message is shown.
+  const canWriteTime = can('time_entries', 'write');
+  const [pendingDelete, setPendingDelete] = useState<EntryRow | null>(null);
+  // #8133: the entry whose DELETE is in flight. Tracked by id so a request
+  // that settles after the view changed only clears its own state, never a
+  // confirm the user has since opened for another entry.
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const deletingShown = deletingId !== null && deletingId === pendingDelete?.id;
+  // #8133: the workbench swaps ticketId without remounting; an open confirm
+  // must not survive that, or confirming would delete an entry from the
+  // ticket the user just left.
+  useEffect(() => { setPendingDelete(null); }, [ticketId]);
   const [summary, setSummary] = useState<BillingSummary | null>(null);
   const [entries, setEntries] = useState<EntryRow[]>([]);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
@@ -177,6 +204,31 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
     void startTimerAction({ ticketId, ...(timerWorkTypeId !== undefined ? { workTypeId: timerWorkTypeId } : {}) })
       .catch((err) => handleActionError(err, t('ticketTimeBilling.toast.startTimerFailed')))
       .finally(() => setStartingTimer(false));
+  };
+
+  // #8133: delete one entry after the confirm dialog. deleteTimeEntryAction
+  // broadcasts the timer and billing events, which refresh this panel, the
+  // workbench feed and the header timer.
+  const confirmDelete = async () => {
+    const entry = pendingDelete;
+    if (!entry) return;
+    setDeletingId(entry.id);
+    try {
+      await deleteTimeEntryAction(entry, {
+        errorFallback: t('ticketTimeBilling.toast.deleteFailed'),
+        successMessage: t('ticketTimeBilling.toast.deleted'),
+      }, (code) => {
+        const key = DELETE_REFUSALS[code];
+        return key ? t(/* i18n-dynamic */ `ticketTimeBilling.deleteRefusal.${key}`) : undefined;
+      });
+    } catch (err) {
+      handleActionError(err, t('ticketTimeBilling.toast.deleteFailed'));
+      // A refusal may mean it was approved or invoiced since the list loaded.
+      void refresh();
+    } finally {
+      setDeletingId((cur) => (cur === entry.id ? null : cur));
+      setPendingDelete((cur) => (cur?.id === entry.id ? null : cur));
+    }
   };
 
   const submitQuickAdd = async () => {
@@ -410,10 +462,51 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
                   </span>
                 )}
               </span>
+              {canWriteTime && entry.billingStatus !== 'billed' && (
+                <button
+                  type="button"
+                  onClick={() => setPendingDelete(entry)}
+                  data-testid={`ticket-billing-delete-${entry.id}`}
+                  aria-label={entry.description
+                    ? t('ticketTimeBilling.deleteEntryWithDescription', {
+                        duration: entry.endedAt == null ? t('ticketTimeBilling.running') : formatMinutes(entry.durationMinutes),
+                        tech: entry.userName ?? t('ticketTimeBilling.techFallback'),
+                        description: entry.description,
+                      })
+                    : t('ticketTimeBilling.deleteEntry', {
+                        duration: entry.endedAt == null ? t('ticketTimeBilling.running') : formatMinutes(entry.durationMinutes),
+                        tech: entry.userName ?? t('ticketTimeBilling.techFallback'),
+                      })}
+                  title={t('common:actions.delete')}
+                  className="shrink-0 rounded px-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                >
+                  <Trash2 className="h-3 w-3" aria-hidden="true" />
+                </button>
+              )}
             </li>
           ))}
         </ul>
       )}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onClose={() => { if (!deletingShown) setPendingDelete(null); }}
+        onConfirm={() => void confirmDelete()}
+        title={t('ticketTimeBilling.deleteConfirmTitle')}
+        message={pendingDelete
+          ? t('ticketTimeBilling.deleteConfirmMessage', {
+              duration: pendingDelete.endedAt == null
+                ? t('ticketTimeBilling.running')
+                : formatMinutes(pendingDelete.durationMinutes),
+              tech: pendingDelete.userName ?? t('ticketTimeBilling.techFallback'),
+            })
+          : ''}
+        confirmLabel={t('common:actions.delete')}
+        variant="destructive"
+        isLoading={deletingShown}
+        confirmTestId="ticket-billing-delete-confirm"
+        dialogTestId="ticket-billing-delete-dialog"
+      />
     </div>
   );
 }

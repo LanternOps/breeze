@@ -227,12 +227,25 @@
       "startTimerFailed": "No se pudo iniciar el cronómetro.",
       "logFailed": "No se pudo registrar el tiempo",
       "logged": "Tiempo registrado",
-      "logFailedSentence": "No se pudo registrar el tiempo."
+      "logFailedSentence": "No se pudo registrar el tiempo.",
+      "deleted": "Entrada de tiempo eliminada",
+      "deleteFailed": "No se pudo eliminar la entrada de tiempo."
     },
     "billedVsWorked": "{{worked}} h trabajadas · {{billed}} h facturadas",
     "includedMinutes": "{{hours}} h incluidas en el contrato",
     "missingRateCount_one": "1 entrada no tiene tarifa por hora; no está incluida en el monto anterior",
-    "missingRateCount_other": "{{count}} entradas no tienen tarifa por hora; no están incluidas en el monto anterior"
+    "missingRateCount_other": "{{count}} entradas no tienen tarifa por hora; no están incluidas en el monto anterior",
+    "deleteEntry": "Eliminar la entrada de tiempo de {{duration}} de {{tech}}",
+    "deleteConfirmTitle": "¿Eliminar entrada de tiempo?",
+    "deleteConfirmMessage": "Esto elimina de forma permanente la entrada de {{duration}} de {{tech}}. No se puede deshacer.",
+    "deleteRefusal": {
+      "notOwnEntry": "Solo puedes eliminar tus propias entradas de tiempo.",
+      "approvedImmutable": "Las entradas aprobadas solo pueden ser eliminadas por un administrador.",
+      "entryBilled": "Esta entrada ya se facturó y no se puede eliminar. Anula la factura primero.",
+      "deleteLost": "La entrada cambió mientras se eliminaba. Recarga e inténtalo de nuevo.",
+      "notFound": "Esta entrada ya no existe."
+    },
+    "deleteEntryWithDescription": "Eliminar la entrada de tiempo de {{duration}} de {{tech}}: {{description}}"
   },
   "inboundReviewQueue": {
     "title": "Cola de revisión",

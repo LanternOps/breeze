@@ -79,3 +79,30 @@ export async function stopTimerAction(input: { description?: string; isBillable?
   });
   broadcastTimerChanged();
 }
+
+/**
+ * #8133: delete one time entry. The server decides who may (the owner of an
+ * unapproved entry, or a manage-all admin) and refuses an invoiced entry with
+ * ENTRY_BILLED.
+ *
+ * Exactly ONE event fires. Deleting the running timer fires the timer event:
+ * the header timer must clear, and the ticket rail and workbench already
+ * reload on it. Any other entry fires the billing event. Firing both would
+ * reload every listener subscribed to both (rail, workbench) twice.
+ * @throws {ActionError} Failures are already toasted by runAction — callers should swallow
+ * ActionError and only toast non-ActionError.
+ */
+export async function deleteTimeEntryAction(
+  entry: { id: string; endedAt: string | null },
+  messages: { errorFallback: string; successMessage: string },
+  friendlyOverride?: (code: string) => string | undefined,
+): Promise<void> {
+  await runAction({
+    request: () => fetchWithAuth(`/time-entries/${encodeURIComponent(entry.id)}`, { method: 'DELETE' }),
+    errorFallback: messages.errorFallback,
+    successMessage: messages.successMessage,
+    friendly: (code) => friendlyOverride?.(code) ?? friendly(code),
+  });
+  if (entry.endedAt == null) broadcastTimerChanged();
+  else broadcastBillingChanged();
+}

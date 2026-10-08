@@ -1642,18 +1642,24 @@
         "friendly": {
           "adminRequired": "Aprovar folhas de ponto exige uma função de administrador.",
           "approvedImmutable": "Entradas aprovadas só podem ser alteradas por um administrador.",
-          "notOwnEntry": "Você só pode editar suas próprias entradas de tempo."
+          "notOwnEntry": "Você só pode editar suas próprias entradas de tempo.",
+          "entryBilled": "Esta entrada já foi faturada e não pode ser excluída. Anule a fatura primeiro.",
+          "notOwnEntryDelete": "Você só pode excluir suas próprias entradas de tempo.",
+          "entryDeleteLost": "A entrada mudou enquanto era excluída. Recarregue e tente novamente.",
+          "entryNotFound": "Esta entrada não existe mais."
         },
         "errors": {
           "bulkApprovalFailed": "Falha na aprovação em massa. Tente novamente.",
           "saveEntryFailed": "Falha ao salvar entrada. Tente novamente.",
-          "loadTimesheetFailed": "Falha ao carregar folha de ponto. Tente novamente."
+          "loadTimesheetFailed": "Falha ao carregar folha de ponto. Tente novamente.",
+          "deleteEntryFailed": "Falha ao excluir entrada. Tente novamente."
         },
         "toasts": {
           "bulkSkipped": "{{updated}} atualizadas, {{skipped}} ignoradas ({{reasons}})",
           "bulkApproved": "{{count}} aprovadas",
           "bulkUnapproved": "{{count}} desaprovadas",
-          "entryUpdated": "Entrada atualizada"
+          "entryUpdated": "Entrada atualizada",
+          "entryDeleted": "Entrada excluída"
         },
         "title": "Folha de Ponto",
         "selectTechnician": "Selecionar técnico",
@@ -1678,7 +1684,11 @@
         "editEntry": "Editar entrada {{id}}",
         "total": "Total: {{duration}}",
         "billableTotal": "Faturável: {{duration}}",
-        "billedVsWorked": "{{worked}} h trabalhadas · {{billed}} h faturadas"
+        "billedVsWorked": "{{worked}} h trabalhadas · {{billed}} h faturadas",
+        "deleteEntry": "Excluir entrada {{id}}",
+        "deleteConfirmTitle": "Excluir entrada de tempo?",
+        "deleteConfirmMessage": "Isso remove permanentemente a entrada de {{duration}} do ticket {{ticket}}. Não é possível desfazer.",
+        "deleteConfirmMessageNoTicket": "Isso remove permanentemente a entrada de {{duration}}. Não é possível desfazer."
       },
       "sourceBadge": {
         "timer": "Cronômetro",

@@ -227,12 +227,25 @@
       "startTimerFailed": "Impossibile avviare il timer.",
       "logFailed": "Impossibile registrare il tempo",
       "logged": "Tempo registrato",
-      "logFailedSentence": "Impossibile registrare il tempo."
+      "logFailedSentence": "Impossibile registrare il tempo.",
+      "deleted": "Voce di tempo eliminata",
+      "deleteFailed": "Impossibile eliminare la voce di tempo."
     },
     "billedVsWorked": "{{worked}} h lavorate · {{billed}} h fatturate",
     "includedMinutes": "{{hours}} h incluse nel contratto",
     "missingRateCount_one": "1 voce non ha una tariffa oraria — non conteggiata nell'importo sopra",
-    "missingRateCount_other": "{{count}} voci non hanno una tariffa oraria — non conteggiate nell'importo sopra"
+    "missingRateCount_other": "{{count}} voci non hanno una tariffa oraria — non conteggiate nell'importo sopra",
+    "deleteEntry": "Elimina la voce di tempo di {{duration}} di {{tech}}",
+    "deleteConfirmTitle": "Eliminare la voce di tempo?",
+    "deleteConfirmMessage": "Questa azione rimuove definitivamente la voce di {{duration}} di {{tech}}. Non può essere annullata.",
+    "deleteRefusal": {
+      "notOwnEntry": "Puoi eliminare solo le tue voci di tempo.",
+      "approvedImmutable": "Le voci approvate possono essere eliminate solo da un amministratore.",
+      "entryBilled": "Questa voce è già stata fatturata e non può essere eliminata. Annulla prima la fattura.",
+      "deleteLost": "La voce è cambiata durante l’eliminazione. Ricarica e riprova.",
+      "notFound": "Questa voce non esiste più."
+    },
+    "deleteEntryWithDescription": "Elimina la voce di tempo di {{duration}} di {{tech}}: {{description}}"
   },
   "inboundReviewQueue": {
     "title": "Coda di revisione",
