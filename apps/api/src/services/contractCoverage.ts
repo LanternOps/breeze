@@ -4,7 +4,7 @@
  * contract bills) and every device-counted line and the coverage warning are
  * computed here from that same snapshot.
  */
-import type { ContractLineType } from '@breeze/shared';
+import type { ContractLineType, HOUR_BLOCK_LINE_TYPE } from '@breeze/shared';
 import type { DeviceSnapshotRow } from './contractQuantities';
 
 /** Members of one billed group. `siteId` is the GROUP's site (null = org-wide):
@@ -22,7 +22,10 @@ export interface OrgDeviceSnapshot {
 
 /** The subset of a contract_lines row that coverage math needs. */
 export interface CoverageLine {
-  lineType: ContractLineType;
+  // Widened for persisted rows (see ContractLineAudit); matchReason's default
+  // arm already returns null for any non-device type, so an hour_block row
+  // matches no device.
+  lineType: ContractLineType | typeof HOUR_BLOCK_LINE_TYPE;
   siteId: string | null;
   deviceRoles: readonly string[] | null;
   deviceGroupId: string | null;
