@@ -41,6 +41,10 @@ AS $$
       'sites:write',
       'enrollment-keys:write',
       'contracts:write',
-      'tickets:write'
+      'tickets:write',
+      'ai:read',
+      'ai:write',
+      'ai:execute',
+      'ai:execute_admin'
     ]::text[];
 $$;
