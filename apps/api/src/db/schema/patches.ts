@@ -168,6 +168,9 @@ export const patchPolicies = pgTable('patch_policies', {
   categories: text('categories').array().notNull().default([]),
   excludeCategories: text('exclude_categories').array().notNull().default([]),
   categoryRules: jsonb('category_rules').notNull().default([]),
+  // Per-app block/pin rules (#8184), validated by ringAppRulesSchema.
+  // CHECK patch_policies_app_rules_array_chk (array) lives in the migration.
+  appRules: jsonb('app_rules').notNull().default([]),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
