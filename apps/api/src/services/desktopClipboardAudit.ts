@@ -1,6 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { auditLogs, remoteSessions } from '../db/schema';
+import { markRequestAuditWritten } from './auditRequestTracking';
 
 /**
  * Clipboard traffic for one remote-desktop session, as the agent counted it:
@@ -103,6 +104,9 @@ const defaultDeps: DesktopClipboardAuditDeps = {
             details,
             result: 'success',
           });
+          // No-op on the agent WS path (no request scope); keeps the generic
+          // request-audit fallback from adding a second row on a request path.
+          markRequestAuditWritten();
           return true;
         }),
       ),
