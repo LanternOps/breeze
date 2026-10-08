@@ -124,8 +124,9 @@ export class DbAccessContextPrologueTimeoutError extends Error {
     const timer = input.timer ?? 'on-time';
     super(
       `RLS GUC prologue for ${input.contextLabel} did not complete within ${input.timeoutMs}ms `
-        + `(elapsed ${input.elapsedMs}ms${lateSuffix(timer)}). The pooled connection was abandoned and a reclamation `
-        + 'pass was requested; see [db-wedged-backend] logs (#6048, #8143).',
+        + `(elapsed ${input.elapsedMs}ms${lateSuffix(timer)}). The transaction was abandoned and will roll back; `
+        + 'if its pool permit is still held one more prologue budget later, a wedged-backend reclamation '
+        + 'pass is requested (see [db-pool-admission] and [db-wedged-backend] logs) (#6048, #8143).',
       input.cause === undefined ? undefined : { cause: input.cause },
     );
     this.name = 'DbAccessContextPrologueTimeoutError';
