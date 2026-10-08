@@ -1,0 +1,53 @@
+import { describe, it, expect, vi } from 'vitest';
+import { recordDesktopClipboardSummary, type DesktopClipboardAuditDeps } from './desktopClipboardAudit';
+
+const SESSION = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const summary = {
+  transfers: [{ direction: 'host_to_viewer' as const, type: 'text' as const, count: 2, bytes: 40 }],
+  blocked: 1,
+};
+
+function deps(overrides: Partial<DesktopClipboardAuditDeps> = {}): DesktopClipboardAuditDeps {
+  return {
+    findSession: vi.fn(async () => ({ orgId: 'org-1', userId: 'user-1' })),
+    hasSummaryAudit: vi.fn(async () => false),
+    writeAudit: vi.fn(async () => {}),
+    ...overrides,
+  };
+}
+
+describe('recordDesktopClipboardSummary', () => {
+  it('writes one session_clipboard_summary row attributed to the reporting agent', async () => {
+    const d = deps();
+    const out = await recordDesktopClipboardSummary({ sessionId: SESSION, deviceId: 'device-1', clipboard: summary }, d);
+
+    expect(out).toBe('recorded');
+    expect(d.findSession).toHaveBeenCalledWith(SESSION, 'device-1');
+    expect(d.writeAudit).toHaveBeenCalledWith('session_clipboard_summary', 'device-1', 'org-1', {
+      sessionId: SESSION,
+      clipboard: summary,
+      sessionOwnerId: 'user-1',
+      deviceId: 'device-1',
+      reportedBy: 'authenticated_agent',
+    });
+  });
+
+  it('writes nothing for a session that is not on the reporting device', async () => {
+    const d = deps({ findSession: vi.fn(async () => null) });
+    expect(await recordDesktopClipboardSummary({ sessionId: SESSION, deviceId: 'device-2', clipboard: summary }, d)).toBe('unknown_session');
+    expect(d.writeAudit).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing when the summary was already recorded (outbox resend)', async () => {
+    const d = deps({ hasSummaryAudit: vi.fn(async () => true) });
+    expect(await recordDesktopClipboardSummary({ sessionId: SESSION, deviceId: 'device-1', clipboard: summary }, d)).toBe('duplicate');
+    expect(d.writeAudit).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing for an empty summary', async () => {
+    const d = deps();
+    expect(await recordDesktopClipboardSummary({ sessionId: SESSION, deviceId: 'device-1', clipboard: { transfers: [], blocked: 0 } }, d)).toBe('empty');
+    expect(d.findSession).not.toHaveBeenCalled();
+    expect(d.writeAudit).not.toHaveBeenCalled();
+  });
+});
