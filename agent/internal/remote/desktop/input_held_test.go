@@ -65,6 +65,7 @@ func TestHeldInputDoesNotTrackLockKeys(t *testing.T) {
 
 func TestHeldInputPrepareDropsHeldModifiersFromKeyPress(t *testing.T) {
 	h := newHeldInput()
+	h.goos = "windows" // meta handling is per-platform; see the Linux/Windows tests below
 	h.observe(InputEvent{Type: "key_down", Key: "shift"}, nil)
 	h.observe(InputEvent{Type: "key_down", Key: "control"}, nil)
 	h.observe(InputEvent{Type: "key_down", Key: "meta"}, nil)
