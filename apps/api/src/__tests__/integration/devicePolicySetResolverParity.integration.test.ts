@@ -46,6 +46,7 @@ import {
   seedPolicy,
   sys,
   type ParityWorld,
+  type SeedLink,
 } from './policySetFixtures';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -202,6 +203,100 @@ describe('equal-ranked assignments resolve to the EARLIEST assignment on every p
         .toMatchObject({ portalUrl: firstWins ? 'https://true.example' : 'https://false.example' });
     });
   }
+});
+
+describe('equal-ranked ties resolve to the EARLIEST assignment for every other resolver (#8142)', () => {
+  type TieLink = (n: 'a' | 'b') => SeedLink;
+  async function tieWorld(label: string, link: TieLink, firstWins: boolean) {
+    const partner = (await createPartner())!;
+    const org = (await createOrganization({ partnerId: partner.id }))!;
+    const site = (await createSite({ orgId: org.id }))!;
+    const deviceId = await seedDevice(org.id, site.id, label);
+    const early = new Date(Date.UTC(2026, 0, 1));
+    const late = new Date(Date.UTC(2026, 0, 2));
+    // 'a' is the policy expected to win when firstWins; 'b' otherwise.
+    const aId = await seedPolicy({ owner: { orgId: org.id, partnerId: null }, links: [link('a')],
+      assignments: [{ level: 'organization', targetId: org.id, priority: 0, createdAt: firstWins ? early : late }] });
+    const bId = await seedPolicy({ owner: { orgId: org.id, partnerId: null }, links: [link('b')],
+      assignments: [{ level: 'organization', targetId: org.id, priority: 0, createdAt: firstWins ? late : early }] });
+    return { deviceId, orgId: org.id, partnerId: partner.id, aId, bId };
+  }
+
+  for (const firstWins of [true, false]) {
+    const tag = `(${firstWins ? 'a' : 'b'} assigned first)`;
+    const pick = <T,>(a: T, b: T) => (firstWins ? a : b);
+
+    runDb(`warranty tie ${tag}`, async () => {
+      const t = await tieWorld('tie-warranty', (n) => ({ featureType: 'warranty',
+        inlineSettings: { enabled: true, warnDays: n === 'a' ? 41 : 42, criticalDays: 10 } }), firstWins);
+      expect(await threeWay(t, 'warranty tie', (id, o) => resolveEffectiveWarrantyInlineSettings(id, o)))
+        .toMatchObject({ warnDays: pick(41, 42) });
+    });
+
+    runDb(`event_log tie ${tag}`, async () => {
+      const t = await tieWorld('tie-eventlog', (n) => ({ featureType: 'event_log', maxEventsPerCycle: n === 'a' ? 211 : 212 }), firstWins);
+      expect(await threeWay(t, 'event_log tie', (id, o) => buildEventLogConfigUpdate(id, o)))
+        .toMatchObject({ max_events_per_cycle: pick(211, 212) });
+    });
+
+    runDb(`hardware_monitoring tie ${tag}`, async () => {
+      const t = await tieWorld('tie-hw', (n) => ({ featureType: 'hardware_monitoring', pollIntervalMinutes: n === 'a' ? 11 : 12 }), firstWins);
+      expect(await threeWay(t, 'hardware_monitoring tie', (id, o) => buildHardwareMonitoringConfigUpdate(id, o)))
+        .toMatchObject({ poll_interval_minutes: pick(11, 12) });
+    });
+
+    runDb(`check-interval tie ${tag}`, async () => {
+      const t = await tieWorld('tie-interval', (n) => ({ featureType: 'monitors', checkIntervalSeconds: n === 'a' ? 91 : 92 }), firstWins);
+      expect(await threeWay(t, 'check-interval tie', (id, o) => buildMonitoringConfigUpdate(id, o)))
+        .toMatchObject({ check_interval_seconds: pick(91, 92) });
+    });
+
+    runDb(`monitors tie ${tag}`, async () => {
+      const t = await tieWorld('tie-monitors', (n) => ({ featureType: 'monitors', inheritance: 'replace',
+        serviceName: n === 'a' ? 'TieSvcA' : 'TieSvcB' }), firstWins);
+      const answer: any = await threeWay(t, 'monitors tie', (id, o) => resolveMonitorsForDevice(id, db, o));
+      expect(answer.kind).toBe('resolved');
+      // Monitor rows carry only ids; the winning POLICY is the observable.
+      expect(answer.monitors).toHaveLength(1);
+      expect(answer.monitors[0].sourcePolicyId).toBe(pick(t.aId, t.bId));
+    });
+  }
+});
+
+describe('monitors link inherited from a parent policy (#8142)', () => {
+  runDb('a child with NO monitors link inherits the parent link: monitors + interval three ways, not the empty result', async () => {
+    const partner = (await createPartner())!;
+    const org = (await createOrganization({ partnerId: partner.id }))!;
+    const site = (await createSite({ orgId: org.id }))!;
+    const deviceId = await seedDevice(org.id, site.id, 'inherit-mon');
+    const parent = await seedPolicy({ owner: { orgId: org.id, partnerId: null }, status: 'inactive',
+      links: [{ featureType: 'monitors', serviceName: 'InheritedSvc', checkIntervalSeconds: 77 }] });
+    await seedPolicy({ owner: { orgId: org.id, partnerId: null }, parentPolicyId: parent,
+      assignments: [{ level: 'device', targetId: deviceId }] });
+    const ctx = { deviceId, orgId: org.id, partnerId: partner.id };
+    const monitors: any = await threeWay(ctx, 'resolveMonitorsForDevice', (id, o) => resolveMonitorsForDevice(id, db, o));
+    expect(monitors.kind).toBe('resolved');
+    expect(monitors.monitors).toHaveLength(1);
+    expect(await threeWay(ctx, 'buildMonitoringConfigUpdate', (id, o) => buildMonitoringConfigUpdate(id, o)))
+      .toMatchObject({ check_interval_seconds: 77, watches: [expect.objectContaining({ name: 'InheritedSvc' })] });
+  });
+});
+
+describe('quick_support: check interval keeps the partner target, monitors drops it (#8142)', () => {
+  runDb('partner-level monitors policy: interval 133 survives, monitors resolve empty, three ways', async () => {
+    const partner = (await createPartner())!;
+    const qs = (await createOrganization({ partnerId: partner.id, type: 'quick_support' }))!;
+    const qsSite = (await createSite({ orgId: qs.id }))!;
+    const deviceId = await seedDevice(qs.id, qsSite.id, 'qs-interval');
+    await seedPolicy({ owner: { orgId: null, partnerId: partner.id },
+      links: [{ featureType: 'monitors', serviceName: 'QsSvc', checkIntervalSeconds: 133 }],
+      assignments: [{ level: 'partner', targetId: partner.id }] });
+    const ctx = { deviceId, orgId: qs.id, partnerId: partner.id };
+    expect(await threeWay(ctx, 'check interval (via buildMonitoringConfigUpdate)',
+      async (id, o) => ((await buildMonitoringConfigUpdate(id, o)) as any)?.check_interval_seconds)).toBe(133);
+    expect(await threeWay(ctx, 'resolveMonitorsForDevice', (id, o) => resolveMonitorsForDevice(id, db, o)))
+      .toEqual({ kind: 'resolved', monitors: [] });
+  });
 });
 
 describe('parked orgs keep their partner-drop rules on the set path (#8142)', () => {
