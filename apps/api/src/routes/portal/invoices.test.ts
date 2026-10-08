@@ -333,7 +333,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     expect(body).toEqual(await draftRead.json());
   });
 
-  it('POST /invoices/:id/autopay-confirmation keeps a 409 reason for the page to branch on', async () => {
+  it('POST /invoices/:id/autopay-confirmation passes a 409 through with its message and code', async () => {
     confirmation.release.mockRejectedValue(new InvoiceServiceError('Payment is still processing', 409, 'INVALID_STATE', { reason: 'processing' }));
     const res = await app().request(`/invoices/${INV_ID}/autopay-confirmation`, { method: 'POST',
       headers: { 'content-type': 'application/json' }, body: '{}' });
