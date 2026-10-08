@@ -28,6 +28,10 @@
  * for any org with more than one device), and the device's own Redis policy
  * caches are dropped (their 120 s TTL misses on about every other 60 s beat;
  * this measures the miss). That is the beat production actually pays for.
+ *
+ * Ratcheted after #8053 W1a-1 (steady 26, warm 20, cold 57 statements; was 69,
+ * 47, 96). The remaining bulk is the 9 per-feature policy reads plus the
+ * OneDrive context (W1a-2).
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
@@ -405,16 +409,27 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(cold.status).toBe(200);
     expect(warm.status).toBe(200);
     expect(steady.status).toBe(200);
-    // Org block + the shared post-commit policy context + the OneDrive context.
-    // Before #8053: 9 transactions, 96 statements on this same beat.
-    expect(steady.transactions).toBeLessThanOrEqual(3);
-    // Pinned at the measured count (69) plus one. Any new per-beat transaction
-    // costs at least three (BEGIN, the RLS prologue, COMMIT), so it trips this.
-    // If a change legitimately adds a query, raise this number in the same PR
-    // and say why; the remaining bulk is ~26 repeated device/org/group reads
-    // across the policy resolvers (#8053 follow-up).
+    // #8053 W1a-1 ratchet. Measured after PR A (hierarchy pass-through,
+    // topology skip, per-org caches, batched agent_versions):
+    //   steady 26 statements / 3 tx (was 69 / 3), warm 20 / 3 (was 47 / 3),
+    //   cold 57 / 8 (was 96 / 8; that 96 / 8 figure included a leaked
+    //   enroll-audit tx before enrollDevice() waited for it to commit).
+    // Pinned at the measured value, not "plus one": any new statement on the
+    // beat reds this. If a change legitimately adds one, raise the number in
+    // the same PR, name the bucket, and say why. The remaining bulk is the 9
+    // per-feature policy reads plus the OneDrive context (W1a-2).
+    // Cold's one org-partner and one group-membership read are the effective
+    // config assignment resolution; warm and steady skip them via hotPathCache.
+    expect(steady.transactions).toBe(3);
     expect(steady.statements).toBeLessThanOrEqual(26);
+    expect(warm.transactions).toBe(3);
     expect(warm.statements).toBeLessThanOrEqual(20);
+    expect(cold.transactions).toBeLessThanOrEqual(8);
+    expect(cold.statements).toBeLessThanOrEqual(57);
+    expect(cold.buckets.hierarchyLoad).toBe(1);
+    expect(cold.buckets.deviceLookup).toBe(0);
+    expect(cold.buckets.topologyNegotiation).toBe(0);
+    expect(cold.buckets.agentVersions).toBe(1);
 
     // #8053 W1a-1 lever 1: one hierarchy read replaces 33 per-resolver reads.
     expect(steady.buckets.hierarchyLoad).toBe(1);
@@ -457,7 +472,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(steady.status).toBe(200);
     expect(steady.transactions).toBeLessThanOrEqual(3);
     expect(steady.buckets.peripheralCapabilityWrites).toBe(2);
-    expect(steady.statements).toBeLessThanOrEqual(70);
+    expect(steady.statements).toBeLessThanOrEqual(28);
   });
 
   runDb('a real SQL error in the helper reader stays inside its savepoint: the shared policy transaction still commits', async () => {
