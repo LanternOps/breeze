@@ -225,6 +225,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/unifiTelemetry.ts': { exempt: 'agent_transport' },
   'agents/uninstallIntent.ts': { exempt: 'agent_transport' },
   'agents/wingetBootstrap.ts': { exempt: 'agent_transport' },
+  'agents/workloads.ts': { exempt: 'agent_transport' },
   'ai.ts': { exempt: 'ai_transport', note: 'Chat session transport (sessions, messages, interrupt, approve-plan); usage/budget/admin sub-routes are AI governance.' },
   'ai/scriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Unattended script-lane grant plus lane reset (approvals:decide + step-up) -- the AI must not widen its own authority.' },
   'ai/scriptProposals.ts': { tools: ['propose_script', 'get_script_proposal'] },

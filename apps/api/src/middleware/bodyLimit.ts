@@ -35,6 +35,7 @@ export type BodyLimitRule =
   | 'agent-ingest'
   | 'agent-hardware-health'
   | 'agent-time-status'
+  | 'agent-workloads'
   | 'agent-topology-adjacency'
   | 'agent-unifi-telemetry'
   | 'ticket-attachment'
@@ -209,6 +210,16 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
     return {
       rule: 'agent-time-status',
       maxSize: 512 * 1024,
+      error: 'Request body too large',
+    };
+  }
+  // Workload inventory report (#3834): bounded at 2 MiB by the schema caps
+  // (max 1000 workloads per runtime, max 5 runtimes) and the route's own gate.
+  // Matched before the broader agent-ingest branch so it keeps its own label.
+  if (path.match(/^\/api\/v1\/agents\/[^/]+\/workloads$/)) {
+    return {
+      rule: 'agent-workloads',
+      maxSize: 2 * 1024 * 1024,
       error: 'Request body too large',
     };
   }
