@@ -158,6 +158,40 @@ describe('workloadsReportSchema', () => {
     ).toBe(false);
   });
 
+  it('accepts an ok collection only for a present, enumerated runtime', () => {
+    // An ok snapshot is authoritative (it reconciles by absence), so it must come
+    // from a runtime that is installed and actually enumerated.
+    for (const detection of ['unknown', 'absent']) {
+      expect(
+        workloadsReportSchema.safeParse(report({ runtimes: [runtime({ detection, workloads: [], observedCount: 0 })] })).success,
+        `${detection} + ok`,
+      ).toBe(false);
+    }
+    expect(
+      workloadsReportSchema.safeParse(
+        report({ runtimes: [runtime({ runtime: 'containerd', collection: 'ok', workloads: [], observedCount: 0 })] }),
+      ).success,
+    ).toBe(false);
+    expect(
+      workloadsReportSchema.safeParse(
+        report({ runtimes: [runtime({ detection: 'absent', collection: 'unavailable', workloads: [], observedCount: 0 })] }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('rejects a NUL character in any reported string (Postgres cannot store it)', () => {
+    for (const field of ['workloadId', 'name', 'rawState', 'imageRef', 'guestOs', 'composeProject']) {
+      const result = workloadsReportSchema.safeParse(
+        report({ runtimes: [runtime({ workloads: [workload({ [field]: 'a\u0000b' })] })] }),
+      );
+      expect(result.success, field).toBe(false);
+    }
+    expect(
+      workloadsReportSchema.safeParse(report({ runtimes: [runtime({ collection: 'error', error: 'a\u0000b', workloads: [], observedCount: 0 })] })).success,
+    ).toBe(false);
+    expect(workloadsReportSchema.safeParse(report({ runtimes: [runtime({ runtimeVersion: 'a\u0000' })] })).success).toBe(false);
+  });
+
   it('rejects out-of-vocabulary values', () => {
     expect(workloadsReportSchema.safeParse(report({ runtimes: [runtime({ detection: 'maybe' })] })).success).toBe(false);
     expect(workloadsReportSchema.safeParse(report({ runtimes: [runtime({ collection: 'partial' })] })).success).toBe(false);

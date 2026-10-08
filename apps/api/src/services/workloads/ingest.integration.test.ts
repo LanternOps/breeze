@@ -13,6 +13,19 @@ import { reportFixture, runtimeFixture, workloadFixture } from './testFixtures';
 // Settings changes in these tests must take effect immediately.
 vi.mock('../redis', () => ({ getRedis: () => null }));
 
+// Lets a test make the settings resolver fail while the device is visible.
+const resolver = vi.hoisted(() => ({ fail: false }));
+vi.mock('./settings', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./settings')>();
+  return {
+    ...actual,
+    getDeviceWorkloadInventorySettings: (deviceId: string) =>
+      resolver.fail
+        ? Promise.reject(new Error('policy read failed'))
+        : actual.getDeviceWorkloadInventorySettings(deviceId),
+  };
+});
+
 const system: DbAccessContext = { scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null };
 // Relative to real time: the ordering guard clamps a future collectedAt to receipt time.
 const BASE = Date.now() - 3 * 3_600_000;
@@ -238,6 +251,33 @@ it('writes nothing when the caller cannot see the device (resolver and ownership
   };
   await expect(
     f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a')] })] }), f.other.id, foreign),
+  ).rejects.toThrow();
+  expect(await f.workloads()).toHaveLength(0);
+  expect(await f.runtimes()).toHaveLength(0);
+  expect(await f.host()).toEqual({ hostsWorkloads: false, workloadRuntimes: [] });
+});
+
+it('a resolver failure rejects and leaves existing rows, the runtime row and the host axis unchanged', async () => {
+  const f = await fixture();
+  await f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a'), wl('b')] })] }));
+  const runtimesBefore = await f.runtimes();
+  resolver.fail = true;
+  try {
+    await expect(
+      f.send(reportFixture({ collectedAt: at(1), runtimes: [runtimeFixture({ workloads: [] })] })),
+    ).rejects.toThrow('policy read failed');
+  } finally {
+    resolver.fail = false;
+  }
+  expect((await f.workloads()).map((w) => w.workloadId).sort()).toEqual(['a', 'b']);
+  expect(await f.runtimes()).toEqual(runtimesBefore);
+  expect(await f.host()).toEqual({ hostsWorkloads: true, workloadRuntimes: ['docker'] });
+});
+
+it('refuses a report whose orgId does not own the device, even from the device org context', async () => {
+  const f = await fixture();
+  await expect(
+    f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a')] })] }), f.other.id),
   ).rejects.toThrow();
   expect(await f.workloads()).toHaveLength(0);
   expect(await f.runtimes()).toHaveLength(0);

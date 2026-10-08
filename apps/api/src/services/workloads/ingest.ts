@@ -150,7 +150,9 @@ export async function ingestWorkloadsReport(args: IngestWorkloadsArgs): Promise<
   const { settings } = await getDeviceWorkloadInventorySettings(args.deviceId);
   return withDbTransaction(async () => {
     await lockDeviceInventory(db, 'device_workloads', args.deviceId);
-    // Device row first, matching the device-deletion cascade's lock order.
+    // Per-device advisory lock (above) serializes concurrent reports; no other
+    // writer takes this key. Then the device row, before any child row, which
+    // is the same device-before-children order the deletion cascade uses.
     const [device] = await db
       .select({ id: devices.id, hostsWorkloads: devices.hostsWorkloads, workloadRuntimes: devices.workloadRuntimes })
       .from(devices)

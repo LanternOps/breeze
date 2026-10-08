@@ -119,6 +119,28 @@ describe('effective collection time', () => {
     expect(second.runtimes[0]!.applied).toBe(true);
   });
 
+  it('compares the clamped time, not the raw future collectedAt, against the stored row', () => {
+    const farFuture = new Date(NOW.getTime() + 48 * 3_600_000);
+    // Effective time = min(+48 h, NOW) = NOW, equal to the stored row: skipped.
+    expect(
+      onlyPlan({
+        now: NOW,
+        collectedAt: farFuture,
+        runtimes: [runtimeReport()],
+        storedRuntimes: [{ runtime: 'docker', collectedAt: NOW }],
+      }).applied,
+    ).toBe(false);
+    // One second later the clamped time is newer than the stored row: applied.
+    expect(
+      onlyPlan({
+        now: new Date(NOW.getTime() + 1000),
+        collectedAt: farFuture,
+        runtimes: [runtimeReport()],
+        storedRuntimes: [{ runtime: 'docker', collectedAt: NOW }],
+      }).applied,
+    ).toBe(true);
+  });
+
   it('uses collectedAt when it is not in the future', () => {
     const past = hoursAgo(3);
     const plan = onlyPlan({ collectedAt: past, runtimes: [runtimeReport()] });
@@ -170,7 +192,8 @@ describe('a failing collection never deletes workloads', () => {
     (collection) => {
       const plan = onlyPlan({
         runtimes: [runtimeReport({ collection, complete: false, error: 'boom', workloads: [] })],
-        storedWorkloads: [storedRow('s1', 'a'), storedRow('s2', 'b')],
+        // s2 is past the 24 h age-out: a failing collection must not age it out either.
+        storedWorkloads: [storedRow('s1', 'a'), storedRow('s2', 'b', 30)],
         previousHostRuntimes: ['docker'],
         previousHostsWorkloads: true,
       });
@@ -183,6 +206,14 @@ describe('a failing collection never deletes workloads', () => {
       });
     },
   );
+
+  it('a failing collection that claims complete still deletes nothing', () => {
+    const plan = onlyPlan({
+      runtimes: [runtimeReport({ collection: 'error', complete: true, observedCount: 0, error: 'boom', workloads: [] })],
+      storedWorkloads: [storedRow('s1', 'a'), storedRow('s2', 'b', 30)],
+    });
+    expect(plan.workloads).toEqual({ updates: [], inserts: [], deleteIds: [] });
+  });
 
   it('stores no error text for an ok collection', () => {
     expect(onlyPlan({ runtimes: [runtimeReport({ error: 'stale text' })] }).runtimeRow!.lastError).toBeNull();
@@ -217,6 +248,34 @@ describe('truncated snapshots', () => {
     expect(plan.workloads.deleteIds).toHaveLength(100);
     expect(plan.workloads.deleteIds[0]).toBe('s0900');
     expect(plan.workloads.deleteIds.at(-1)).toBe('s0999');
+  });
+
+  it('counts only unaged rows toward the retained cap', () => {
+    // 800 aged-out + 800 fresh unreported + 200 reported: the aged rows go by
+    // age-out; 800 fresh + 200 reported = 1000 <= 1500, so no fresh row is trimmed.
+    const aged = Array.from({ length: 800 }, (_, i) => storedRow(`a${String(i).padStart(4, '0')}`, `aged-${i}`, 30));
+    const fresh = Array.from({ length: 800 }, (_, i) => storedRow(`f${String(i).padStart(4, '0')}`, `fresh-${i}`, 1));
+    const reported = Array.from({ length: 200 }, (_, i) => item(`new-${i}`));
+    const plan = onlyPlan({
+      runtimes: [runtimeReport({ complete: false, observedCount: 2000, workloads: reported })],
+      storedWorkloads: [...aged, ...fresh],
+    });
+    expect(plan.workloads.deleteIds).toHaveLength(800);
+    expect(plan.workloads.deleteIds.every((id) => id.startsWith('a'))).toBe(true);
+  });
+
+  it('breaks a retained-cap tie on equal lastSeenAt by id', () => {
+    const sameTime = Array.from({ length: 1501 }, (_, i) => ({
+      id: `t${String(1500 - i).padStart(4, '0')}`,
+      runtime: 'docker' as const,
+      workloadId: `w-${i}`,
+      lastSeenAt: hoursAgo(1),
+    }));
+    const plan = onlyPlan({
+      runtimes: [runtimeReport({ complete: false, observedCount: 1501, workloads: [] })],
+      storedWorkloads: sameTime,
+    });
+    expect(plan.workloads.deleteIds).toEqual(['t0000']);
   });
 
   it('treats observed greater than reported as truncated even when the agent claims complete', () => {
@@ -348,6 +407,13 @@ describe('host axis', () => {
     });
     expect(docker.workloads).toEqual({ updates: [], inserts: [], deleteIds: ['s1', 's2'] });
     expect(plan.host).toEqual({ workloadRuntimes: ['hyperv'], hostsWorkloads: true, changed: true });
+  });
+
+  it('a first-ever absent report (no stored row) still writes the absent runtime row', () => {
+    const plan = onlyPlan({
+      runtimes: [runtimeReport({ detection: 'absent', collection: 'unavailable' })],
+    });
+    expect(plan).toMatchObject({ applied: true, runtimeRow: { detection: 'absent', collectedAt: NOW } });
   });
 
   it('absent wins over a policy override (the row records what the agent reported, not disabled)', () => {

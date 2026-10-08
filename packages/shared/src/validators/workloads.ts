@@ -13,8 +13,14 @@ import {
   type WorkloadRuntime,
 } from '../constants/workloads';
 
+/**
+ * A bounded string Postgres can store: varchar/text reject U+0000 (22021),
+ * which would abort the whole ingest transaction instead of returning a 400.
+ */
+const text = (max: number) =>
+  z.string().max(max).refine((value) => !value.includes('\u0000'), 'must not contain NUL');
 const nullableText = (max: number) =>
-  z.string().max(max).nullish().transform((value) => value ?? null);
+  text(max).nullish().transform((value) => value ?? null);
 const nullableInt = (max: number) =>
   z.number().int().min(0).max(max).nullish().transform((value) => value ?? null);
 const nullableTimestamp = z
@@ -32,8 +38,8 @@ const nullableTimestamp = z
 export const workloadReportItemSchema = z
   .object({
     kind: z.enum(WORKLOAD_KINDS),
-    workloadId: z.string().min(1).max(128),
-    name: z.string().min(1).max(255),
+    workloadId: text(128).pipe(z.string().min(1)),
+    name: text(255).pipe(z.string().min(1)),
     state: z.enum(WORKLOAD_STATES),
     rawState: nullableText(40),
     imageRef: nullableText(512),
@@ -60,13 +66,23 @@ export const workloadRuntimeReportSchema = z
     detection: z.enum(WORKLOAD_DETECTIONS),
     collection: z.enum(WORKLOAD_COLLECTIONS),
     complete: z.boolean(),
-    runtimeVersion: z.string().max(64).nullable(),
+    runtimeVersion: text(64).nullable(),
     observedCount: z.number().int().min(0).max(1_000_000),
-    error: z.string().max(500).nullable(),
+    error: text(500).nullable(),
     workloads: z.array(workloadReportItemSchema).max(WORKLOADS_MAX_PER_RUNTIME),
   })
   .strict()
   .superRefine((report, ctx) => {
+    // An ok snapshot is authoritative: it advances last_success_at and a
+    // complete one deletes by absence. Only an installed (present) runtime
+    // that is actually enumerated can produce one; containerd is detect-only.
+    if (report.collection === 'ok' && (report.detection !== 'present' || report.runtime === 'containerd')) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['collection'],
+        message: `collection ok requires detection present on an enumerated runtime (got ${report.detection} on ${report.runtime})`,
+      });
+    }
     const allowedKinds: readonly string[] = WORKLOAD_RUNTIME_KINDS[report.runtime];
     const seen = new Set<string>();
     report.workloads.forEach((workload, index) => {
