@@ -5,6 +5,8 @@ import type { TransportCapabilities } from '../lib/transports/types';
 import { transportHasQualityControls } from '../lib/transportTuning';
 import { webrtcSwitchUnavailableReason, shouldShowWebRTCSwitchPill } from '../lib/transportAvailability';
 import { detectViewerOs, shortcutLabel } from '../lib/inputSafety';
+import { ClipboardChip } from './ClipboardChip';
+import type { ClipboardChipInput } from '../lib/clipboardChip';
 
 const VIEWER_OS = detectViewerOs(typeof navigator === 'undefined' ? '' : navigator.userAgent);
 
@@ -75,6 +77,12 @@ interface Props {
   onSwitchTransport?: (target: 'webrtc' | 'vnc') => void;
   /** Capabilities of the active transport session; null = no session yet. */
   capabilities?: TransportCapabilities | null;
+  /** Clipboard status chip and its explicit actions (clipboard v2, C4). */
+  clipboardChip?: {
+    input: ClipboardChipInput;
+    onCopyRemote: () => void;
+    onSendToRemote: () => void;
+  };
 }
 
 interface KeyCombo {
@@ -178,6 +186,7 @@ export default function ViewerToolbar({
   onLockWorkstation,
   onPasteAsKeystrokes,
   onCancelPaste,
+  clipboardChip,
   reconnectSecondsLeft,
   webRTCAvailable = false,
   webrtcSupported = true,
@@ -665,6 +674,14 @@ export default function ViewerToolbar({
       <div className="w-px h-5 bg-gray-600" />
 
       {/* ── Primary actions: the controls a tech reaches for every session ── */}
+
+      {clipboardChip && (
+        <ClipboardChip
+          input={clipboardChip.input}
+          onCopyRemote={clipboardChip.onCopyRemote}
+          onSendToRemote={clipboardChip.onSendToRemote}
+        />
+      )}
 
       {/* Paste as Keystrokes */}
       <button
