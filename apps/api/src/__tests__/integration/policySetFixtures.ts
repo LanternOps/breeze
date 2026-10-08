@@ -5,6 +5,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
+import { HP_CMSL_EULA_ID } from '@breeze/shared/validators';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
   configPolicyAssignments,
@@ -244,7 +245,10 @@ export async function seedParityWorld(): Promise<ParityWorld> {
 
   await seedPolicy({ owner: O, links: [{ featureType: 'warranty', inlineSettings: { enabled: true, warnDays: 90, criticalDays: 30 } }],
     assignments: [{ level: 'device_group', targetId: groupIds[0], priority: 1 }] });
-  await seedPolicy({ owner: O, links: [{ featureType: 'warranty', inlineSettings: { enabled: true, warnDays: 45, criticalDays: 10 } }],
+  await seedPolicy({ owner: O, links: [{ featureType: 'warranty', inlineSettings: {
+      enabled: true, warnDays: 45, criticalDays: 10,
+      hpCmsl: { enabled: true, consent: { acceptedByUserId: 'parity-user', acceptedAt: '2026-09-10T00:00:00.000Z', eulaId: HP_CMSL_EULA_ID } },
+    } }],
     assignments: [{ level: 'device_group', targetId: groupIds[0], priority: 5 }] });
 
   await seedPolicy({ owner: P, links: [{ featureType: 'event_log', maxEventsPerCycle: 321 }],

@@ -42,6 +42,7 @@ const { dbMock, redisMock, getRedisImpl } = vi.hoisted(() => {
       from: vi.fn(() => chain),
       innerJoin: vi.fn(() => chain),
       where: vi.fn(() => chain),
+      orderBy: vi.fn(() => chain),
       limit: vi.fn(() => Promise.resolve(result)),
       // For the 4th query (no .limit — it's the terminal .where that returns
       // rows directly when awaited). We make `where` thenable.

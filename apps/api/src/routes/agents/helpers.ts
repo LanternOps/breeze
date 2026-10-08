@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { and, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { db, withSystemDbAccessContext } from '../../db';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
@@ -64,6 +64,7 @@ import {
 } from '../../services/featureConfigResolver';
 import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
 import { hierarchyFor, type DeviceHierarchyOpts } from '../../services/deviceHierarchy';
+import { candidatesWithLink, policySetFor, type ApplicabilityRule, type DevicePolicySetOpts } from '../../services/devicePolicySet';
 import { warrantyHpCmslCollectionEffective } from '@breeze/shared/validators';
 import { policyOwnershipCondition } from '../../services/configPolicyOwnership';
 import { HARDWARE_MONITORING_DEFAULTS, hardwareMonitoringInlineSettingsSchema, type HardwareMonitoringInlineSettings } from '@breeze/shared';
@@ -3195,13 +3196,38 @@ export async function resolveOrgPamFallback(orgId: string): Promise<PamSettings>
   return PAM_DEFAULTS;
 }
 
-export interface PamConfigUpdateOptions extends DeviceHierarchyOpts {
+export interface PamConfigUpdateOptions extends DevicePolicySetOpts {
   /** Source of the org grandfather flag; defaults to resolveOrgPamFallback. */
   loadOrgPamFallback?: (orgId: string) => Promise<PamSettings>;
 }
 
+/** #8142: PAM's own rules (raw partner, no role/OS filter). */
+const PAM_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOrPartner', partnerTarget: 'partner', roleOs: 'none' };
+
+/** Level DESC, then assignment priority ASC. */
+function compareLevelThenPriority(a: { level: string; assignmentPriority: number }, b: { level: string; assignmentPriority: number }): number {
+  const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
+  if (levelDiff !== 0) return levelDiff;
+  return a.assignmentPriority - b.assignmentPriority;
+}
+
+/** The winning PAM policy's settings, or null when no policy decides (the caller applies the org fallback). */
+function pamSettingsFromRows(rows: ReadonlyArray<{ level: string; assignmentPriority: number; inlineSettings: unknown }>): PamSettings | null {
+  if (rows.length === 0) return null;
+  const winner = [...rows].sort(compareLevelThenPriority)[0];
+  if (!winner?.inlineSettings) return null;
+  return parsePamSettings(winner.inlineSettings);
+}
+
 async function resolveDevicePamSettings(deviceId: string, opts?: PamConfigUpdateOptions): Promise<PamSettings> {
   const passed = hierarchyFor(deviceId, opts);
+  const set = policySetFor(deviceId, opts);
+  if (set) {
+    const orgFallbackFromSet = opts?.loadOrgPamFallback ?? resolveOrgPamFallback;
+    return pamSettingsFromRows(candidatesWithLink(set, 'pam', PAM_APPLICABILITY).map(({ candidate, link }) => ({
+      level: candidate.level, assignmentPriority: candidate.priority, inlineSettings: link.inlineSettings,
+    }))) ?? orgFallbackFromSet(set.hierarchy.orgId);
+  }
   // 1. Load device
   const [device] = passed
     ? [{ orgId: passed.orgId, siteId: passed.siteId }]
@@ -3265,21 +3291,10 @@ async function resolveDevicePamSettings(deviceId: string, opts?: PamConfigUpdate
       eq(configurationPolicies.status, 'active'),
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
       or(...targetConditions),
-    ));
+    ))
+    .orderBy(asc(configPolicyAssignments.createdAt), asc(configPolicyAssignments.id));
 
-  if (rows.length === 0) return orgFallback(device.orgId);
-
-  // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  rows.sort((a, b) => {
-    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
-    if (levelDiff !== 0) return levelDiff;
-    return a.assignmentPriority - b.assignmentPriority;
-  });
-
-  const winner = rows[0];
-  if (!winner?.inlineSettings) return orgFallback(device.orgId);
-
-  return parsePamSettings(winner.inlineSettings);
+  return pamSettingsFromRows(rows) ?? orgFallback(device.orgId);
 }
 
 const PAM_CACHE_TTL_SECONDS = 120;
@@ -3292,6 +3307,7 @@ const PAM_CACHE_TTL_SECONDS = 120;
  */
 export async function buildPamConfigUpdate(deviceId: string, opts?: PamConfigUpdateOptions): Promise<PamSettings> {
   hierarchyFor(deviceId, opts);
+  policySetFor(deviceId, opts);
   const redis = getRedis();
   const cacheKey = `pam:settings:device:${deviceId}`;
 
@@ -3376,7 +3392,7 @@ export interface WarrantySettings {
  * consent, or one naming superseded terms, delivers `false` (contract D2/D3).
  * Collection never runs on an acceptance we cannot point at.
  */
-export async function buildWarrantyConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<WarrantySettings> {
+export async function buildWarrantyConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<WarrantySettings> {
   const inlineSettings = await resolveEffectiveWarrantyInlineSettings(deviceId, opts);
   return { hpCmslEnabled: warrantyHpCmslCollectionEffective(inlineSettings) };
 }

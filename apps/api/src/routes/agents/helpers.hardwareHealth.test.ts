@@ -56,13 +56,11 @@ it.each([
   expect(await resolveDeviceHardwareMonitoringPolicy(id)).toEqual({ enabled: false, source: 'policy', policyName: 'Fleet Hardware' });
 });
 
-it('uses and restores verified partner visibility on the same transaction', async () => {
+it('reads in the caller\'s own scope: no partner-visibility GUC widening (#8142 — the RLS SELECT branch carries partner-wide rows)', async () => {
   m.context = { scope: 'organization', orgId: id, accessibleOrgIds: [id], accessiblePartnerIds: [] };
   m.rows = [[device], [{ partnerId: id }], [], []];
   expect(await resolveDeviceHardwareMonitoringPolicy(id)).toEqual({ enabled: true, source: 'default' });
-  expect(m.execute).toHaveBeenCalledTimes(2);
-  expect(JSON.stringify(m.execute.mock.calls[0])).toContain(id);
-  expect(JSON.stringify(m.execute.mock.calls[1])).not.toContain(id);
+  expect(m.execute).not.toHaveBeenCalled();
 });
 
 it('validates cached data and propagates resolver errors instead of resetting config', async () => {
