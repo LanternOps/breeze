@@ -55,24 +55,28 @@ async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs: numbe
 }
 
 /**
- * 'breeze-api' backends that existed BEFORE the fresh module was imported. The
+ * Database clock reading taken just before the fresh module is imported. The
  * shared integration setup's own module graph keeps a request-pool connection
- * of its own (same application_name, same role), so the leak check must only
- * look at backends this test's fresh pool opened.
+ * of its own (same application_name, same role), so the leak check only looks
+ * at backends started after this instant, i.e. the ones this test's fresh pool
+ * opened. Read from Postgres (clock_timestamp()) so host/container clock skew
+ * cannot shift the cut-off.
  */
-let preexistingRequestPids = new Set<number>();
+let freshPoolStartedAt: Date = new Date(0);
 
 async function requestPoolBackends(): Promise<Array<{ pid: number; state: string | null; xact_start: Date | null }>> {
   const rows = await admin<Array<{ pid: number; state: string | null; xact_start: Date | null }>>`
     select pid, state, xact_start
       from pg_stat_activity
      where datname = current_database()
-       and application_name = ${REQUEST_POOL_APPLICATION_NAME}`;
-  return rows.filter((row) => !preexistingRequestPids.has(row.pid));
+       and application_name = ${REQUEST_POOL_APPLICATION_NAME}
+       and backend_start >= ${freshPoolStartedAt}`;
+  return rows;
 }
 
 async function loadFreshDb(env: Record<string, string>): Promise<DbModule> {
-  preexistingRequestPids = new Set((await requestPoolBackends()).map((row) => row.pid));
+  const [clock] = await admin<Array<{ now: Date }>>`select clock_timestamp() as now`;
+  freshPoolStartedAt = clock!.now;
   vi.resetModules();
   Object.assign(process.env, env);
   current = (await import('../../db')) as DbModule;
@@ -176,13 +180,33 @@ describeIf('db pool recovery (#8143)', () => {
     vi.resetModules();
   });
 
-  async function stallScenario(db: DbModule): Promise<{ errors: number; stallEndedAt: number }> {
+  /**
+   * 12 contexts against a stalled event loop. Without `inFlightVia` the stall
+   * starts right after the calls are issued (before any connection is handed
+   * over), which exercises the ACQUIRE clock only. With a proxy, the stall
+   * starts the instant the first prologue is on the wire, so its reply sits
+   * buffered behind the stall and the PROLOGUE clock expires on a live
+   * transaction: the case that abandons a permit.
+   */
+  async function stallScenario(
+    db: DbModule,
+    inFlightVia?: PgWireProxy,
+  ): Promise<{ errors: number; stallEndedAt: number }> {
+    let stallEndedAt = 0;
+    const stall = () => {
+      busyWait(2_500); // longer than both 1 s budgets
+      stallEndedAt = Date.now();
+    };
+    inFlightVia?.armStallAfterNextPrologue(stall);
     const calls = Array.from({ length: 12 }, () =>
       db.withSystemDbAccessContext(() => db.db.execute(sql`select pg_sleep(0.05)`)),
     );
-    await new Promise((resolve) => setImmediate(resolve));
-    busyWait(2_500); // longer than both 1 s budgets
-    const stallEndedAt = Date.now();
+    if (inFlightVia) {
+      await waitFor(() => stallEndedAt !== 0, 5_000, 'the stall to fire on an in-flight prologue');
+    } else {
+      await new Promise((resolve) => setImmediate(resolve));
+      stall();
+    }
     const outcomes = await Promise.allSettled(calls);
     let errors = 0;
     for (const outcome of outcomes) {
@@ -195,14 +219,25 @@ describeIf('db pool recovery (#8143)', () => {
   }
 
   it('permits and real connections are back at max within 30 s of an event-loop stall', async () => {
+    const p = await startProxy();
     const db = await loadFreshDb({
+      DATABASE_URL_APP: p.urlFor(APP_URL!),
       DB_POOL_MAX: '3',
       DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS: '1000',
       DB_POOL_ACQUIRE_TIMEOUT_MS: '1000',
+      // No lag grace: the stall must actually expire budgets and abandon
+      // permits, or "back at max" is trivially true (grace 2000 → 0/12 errors).
+      DB_TIMER_LAG_GRACE_MS: '0',
     });
+    const suppressedBefore = suppressedTeardownWrites;
     await Promise.all([0, 1].map(() => db.withSystemDbAccessContext(() => db.db.execute(sql`select 1`))));
 
-    const { stallEndedAt } = await stallScenario(db);
+    const { errors, stallEndedAt } = await stallScenario(db, p);
+    expect(errors).toBeGreaterThan(0);
+    // At least one prologue expiry abandoned the permit of a live transaction.
+    // Read from the monotonic totals, not the snapshot: an abandoned permit can
+    // already have come back by rollback before allSettled resolved.
+    expect(admission(db).totals().abandoned).toBeGreaterThan(0);
 
     await waitFor(() => {
       const s = admission(db).snapshot();
@@ -242,6 +277,8 @@ describeIf('db pool recovery (#8143)', () => {
     expect(states).toHaveLength(3);
     for (const row of states) expect(row.state).toBe('idle');
     await assertNoLeakedRequestBackends(3);
+    // Recovery went through rollback, not through dropped connections.
+    expect(suppressedTeardownWrites).toBe(suppressedBefore);
   }, 60_000);
 
   it('grace keeps buffered replies from failing after a stall (measured, not assumed)', async () => {
@@ -250,6 +287,7 @@ describeIf('db pool recovery (#8143)', () => {
       DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS: '1000',
       DB_POOL_ACQUIRE_TIMEOUT_MS: '1000',
     });
+    const suppressedBefore = suppressedTeardownWrites;
     await db.withSystemDbAccessContext(() => db.db.execute(sql`select 1`));
 
     process.env.DB_TIMER_LAG_GRACE_MS = '2000';
@@ -264,8 +302,9 @@ describeIf('db pool recovery (#8143)', () => {
     // Without this the comparison below passes vacuously at 0/0: the stall
     // must actually produce timeouts when the grace is off.
     expect(withoutGrace.errors).toBeGreaterThan(0);
-    expect(withGrace.errors).toBeLessThanOrEqual(withoutGrace.errors);
+    expect(withGrace.errors).toBeLessThan(withoutGrace.errors);
     await assertNoLeakedRequestBackends(3);
+    expect(suppressedTeardownWrites).toBe(suppressedBefore);
   }, 90_000);
 
   it('slow database: the caller fails fast, fn never runs, the late reply rolls back, no GUC survives', async () => {
@@ -290,7 +329,10 @@ describeIf('db pool recovery (#8143)', () => {
     expect(admission(db).totals().abandonedReturned.rollback).toBe(1);
 
     // DB_POOL_MAX=1, so this bare read runs on the SAME backend that carried the
-    // abandoned org-scope prologue. Its GUCs were transaction-local.
+    // abandoned org-scope prologue. Empty GUCs here are consistent with that
+    // transaction having ended (commit would also discard set_config(..., true)
+    // values), so they do not on their own prove rollback or is_local; the
+    // rollback itself is asserted via abandonedReturned.rollback above.
     const rows = (await db.db.execute(
       sql`select pg_backend_pid() as pid, current_setting('breeze.scope', true) as scope, current_setting('breeze.org_id', true) as org_id`,
     )) as unknown as Array<{ pid: number; scope: string | null; org_id: string | null }>;
@@ -326,6 +368,14 @@ describeIf('db pool recovery (#8143)', () => {
       return wedgedPid !== 0;
     }, 5_000, 'the #6048 wedge shape is visible in pg_stat_activity');
 
+    // Deferred, not immediate: at expiry the set_config cannot be old enough to
+    // be reclaimable. Eligibility is abandonedAt + prologue budget + 1 s margin
+    // (about 2 s after the rejection), so 1 s in the backend must still be
+    // alive and its permit still abandoned.
+    await sleep(1_000);
+    expect(await admin`select 1 from pg_stat_activity where pid = ${wedgedPid}`).toHaveLength(1);
+    expect(admission(db).snapshot().abandoned).toBe(1);
+
     await waitFor(async () => (await admin`select 1 from pg_stat_activity where pid = ${wedgedPid}`).length === 0,
       15_000, 'the wedged backend is terminated');
     await waitFor(() => admission(db).totals().abandonedReturned['connection-closed'] === 1
@@ -342,6 +392,9 @@ describeIf('db pool recovery (#8143)', () => {
       DB_POOL_MAX: '1',
       DB_POOL_ACQUIRE_TIMEOUT_MS: '1000',
       DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS: '1000',
+      // Deterministic under host lag: no grace stretching the 1 s acquire
+      // budget toward the holder's 2.5 s.
+      DB_TIMER_LAG_GRACE_MS: '0',
     });
     await db.withSystemDbAccessContext(() => db.db.execute(sql`select 1`));
     const holder = db.withSystemDbAccessContext(() => db.db.execute(sql`select pg_sleep(2.5)`));
@@ -365,6 +418,7 @@ describeIf('db pool recovery (#8143)', () => {
       DB_POOL_ACQUIRE_TIMEOUT_MS: '3000',
       DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS: '1000',
     });
+    const suppressedBefore = suppressedTeardownWrites;
     const parent = () => db.withSystemDbAccessContext(async () => {
       await db.db.execute(sql`select pg_sleep(0.2)`);
       return db.runOutsideDbContext(() => db.withSystemDbAccessContext(async () => {
@@ -374,5 +428,6 @@ describeIf('db pool recovery (#8143)', () => {
     });
     await expect(Promise.all([parent(), parent(), parent()])).resolves.toEqual(['nested-ok', 'nested-ok', 'nested-ok']);
     await assertNoLeakedRequestBackends(3);
+    expect(suppressedTeardownWrites).toBe(suppressedBefore);
   }, 30_000);
 });

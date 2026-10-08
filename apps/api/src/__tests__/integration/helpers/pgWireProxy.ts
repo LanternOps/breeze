@@ -15,6 +15,11 @@
  * Only connections whose startup `application_name` matches
  * `holdApplicationName` (default 'breeze-api') are ever held, so the
  * reclaimer's side clients pass straight through.
+ *
+ * Plaintext only: TLS is unsupported. An SSLRequest is forwarded untouched, so
+ * if the upstream answers 'S' the stream becomes encrypted and the parser can
+ * no longer see Parse/Bind/Execute. Point it at a non-TLS test Postgres
+ * (`sslmode` off/prefer-without-server-TLS), as the integration stack is.
  */
 import net from 'node:net';
 
@@ -35,6 +40,13 @@ export interface PgWireProxy {
   urlFor(url: string): string;
   armWedgeOnNextPrologue(): void;
   armHoldResponsesAfterNextPrologue(): void;
+  /**
+   * One-shot: right after the next held-app prologue (and the rest of its
+   * chunk, incl. Sync) is forwarded upstream, call `stall` synchronously. A
+   * busy-wait there stalls the event loop while the prologue is IN FLIGHT, so
+   * its reply lands buffered behind the stall — the case that abandons a permit.
+   */
+  armStallAfterNextPrologue(stall: () => void): void;
   resume(): void;
   close(): Promise<void>;
 }
@@ -113,6 +125,8 @@ export async function startPgWireProxy(
   const connections = new Set<ProxiedConnection>();
   let wedgeArmed = false;
   let holdResponsesArmed = false;
+  let stallArmed: (() => void) | null = null;
+  let pendingStall: (() => void) | null = null;
 
   const isBegin = (query: string): boolean => /^\s*begin\b/i.test(query);
 
@@ -145,9 +159,20 @@ export async function startPgWireProxy(
           holdResponsesArmed = false;
           conn.serverHeld = true;
         }
+        if (stallArmed) {
+          pendingStall = stallArmed;
+          stallArmed = null;
+        }
       }
     }
     conn.upstream.write(message.raw);
+  }
+
+  /** Runs a stall armed by armStallAfterNextPrologue once the whole chunk (incl. Sync) is forwarded. */
+  function runPendingStall(): void {
+    const stall = pendingStall;
+    pendingStall = null;
+    stall?.();
   }
 
   const server = net.createServer((client) => {
@@ -165,7 +190,10 @@ export async function startPgWireProxy(
     connections.add(conn);
     stats.connections += 1;
     const parser = new FrontendParser((message) => onFrontendMessage(conn, message));
-    client.on('data', (chunk: Buffer) => parser.push(chunk));
+    client.on('data', (chunk: Buffer) => {
+      parser.push(chunk);
+      runPendingStall();
+    });
     upstream.on('data', (chunk: Buffer) => {
       if (conn.serverHeld) conn.heldServerChunks.push(chunk);
       else client.write(chunk);
@@ -195,6 +223,9 @@ export async function startPgWireProxy(
     },
     armWedgeOnNextPrologue() {
       wedgeArmed = true;
+    },
+    armStallAfterNextPrologue(stall: () => void) {
+      stallArmed = stall;
     },
     armHoldResponsesAfterNextPrologue() {
       holdResponsesArmed = true;
