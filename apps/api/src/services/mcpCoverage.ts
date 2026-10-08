@@ -298,7 +298,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // #8164 W01b — the EDR provider (GravityZone) admin surface; same reasoning as
   // the backup-provider block above. No entry for edr/index.ts: it only calls .route().
   'edr/connections.ts': { exempt: 'vendor_console_admin', note: 'stores and rotates the EDR console API key' },
+  'edr/endpoints.ts': { exempt: 'vendor_console_admin', note: 'lists EDR endpoint rows and links one to a Breeze device' },
   'edr/providers.ts': { exempt: 'vendor_console_admin', note: 'static adapter catalog for the connect-a-provider form' },
+  'edr/tenants.ts': { exempt: 'vendor_console_admin', note: 'maps a discovered EDR tenant onto a Breeze org' },
   'backup/storageCredentials.ts': { exempt: 'human_only_revocation_evidence', note: 'lists storage keys used before brokered backup writes, checks a replaced key, records a user confirmation' },
   'backup/reconcile.ts': { gap: '#6794' },
   'backup/resilienceAuthorization.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
