@@ -100,6 +100,16 @@ export const TICKET_CHILD_ORG_REWRITE_LOCK_ORDER = [
   // (ticket_id, org_id) FK is deferred by name in both movers too
   // (partner_api_idempotency_keys_ticket_org_fk).
   'partner_api_idempotency_keys',
+  // ticket_approval_requests (#4617) denormalizes org_id from its ticket and
+  // has no device_id, so it joins BOTH axes, appended last after
+  // partner_api_idempotency_keys on each. Its composite (ticket_id, org_id) FK is
+  // DEFERRABLE INITIALLY IMMEDIATE, so both movers also name
+  // ticket_approval_requests_ticket_org_fk in their SET CONSTRAINTS …
+  // DEFERRED statements. The approval writers (W02) lock
+  // request -> time_entries while the movers rewrite time_entries first and
+  // this table last; that is deadlock-free only because BOTH sides take the
+  // `tickets` row lock first, which serializes them per ticket.
+  'ticket_approval_requests',
 ] as const;
 
 /**
@@ -154,6 +164,7 @@ export const TICKET_ORG_DENORMALIZED_TABLES = [
   'ticket_checklist_items',
   'ticket_external_refs',
   'partner_api_idempotency_keys',
+  'ticket_approval_requests',
 ] as const;
 
 /**

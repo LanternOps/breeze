@@ -177,7 +177,7 @@ export async function moveDeviceOrgInTransaction(
   // Safe to precede the org lock below: SET CONSTRAINTS takes no table
   // locks, so it does not participate in this transaction's lock order.
   await tx.execute(
-    sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, tickets_org_partner_fk DEFERRED`,
+    sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, tickets_org_partner_fk DEFERRED`,
   );
   // Step-up admission (spec 2026-09-18 D3). FIRST row lock of this
   // transaction, deliberately BEFORE the organisation FOR SHARE reads
@@ -1067,6 +1067,19 @@ export async function moveDeviceOrgInTransaction(
   );
   await tx.execute(
     sql`UPDATE ${sql.identifier('partner_api_idempotency_keys')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+  // ticket_approval_requests (#4617) denormalizes org_id from its ticket and
+  // has no device_id, so it follows via the same tickets join. Placed AFTER
+  // partner_api_idempotency_keys to extend — not reorder — the documented global lock
+  // order (TICKET_CHILD_ORG_REWRITE_LOCK_ORDER). Its composite (ticket_id,
+  // org_id) FK is DEFERRABLE INITIALLY IMMEDIATE, which is why
+  // ticket_approval_requests_ticket_org_fk is named in this transaction's
+  // SET CONSTRAINTS … DEFERRED at the top; without both, this move would 23503
+  // at commit for any ticket that has an approval request. Decided rows are
+  // trigger-immutable except org_id, so the re-stamp is allowed on them too.
+  // (time_entries_approval_request_fk is keyed on ticket_id, so it needs no
+  // deferral.)
+  await tx.execute(
+    sql`UPDATE ${sql.identifier('ticket_approval_requests')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
   );
 
   // #4867 — the ALERT-axis children (ALERT_CHILD_ORG_REWRITE_TABLES in

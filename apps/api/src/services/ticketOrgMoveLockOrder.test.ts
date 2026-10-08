@@ -156,6 +156,7 @@ describe('org-merge walk order honors the canonical ticket child-table lock orde
       'ticket_external_refs',
       'ticket_checklist_items',
       'ticket_attachments',
+      'ticket_approval_requests',
       'ticket_alert_links',
       'users',
     ];

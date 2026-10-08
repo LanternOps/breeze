@@ -281,6 +281,10 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // UPDATE targets ownership_epoch, and passes whenever org_id changes too.
   'devices.devices_ownership_epoch_advance': 'appends ownership lineage on an org_id change; never RAISEs or reverts org_id',
   'devices.devices_ownership_epoch_write_guard': 'fires only on UPDATE OF ownership_epoch and refuses an epoch change WITHOUT an org change; a merge repoint never targets ownership_epoch',
+  // Customer work approval (#4617, 2026-12-17-150200): freezes a DECIDED
+  // request, but org_id is in its exempt list (to_jsonb(NEW) - org_id …), so an
+  // org_id-only repoint, move or merge passes on every row, pending or decided.
+  'ticket_approval_requests.ticket_approval_requests_decided_immutable': 'freezes decided rows but exempts org_id by name; an org_id-only repoint always passes',
   // Diagnostic access grants (2026-12-13-130000): on an org_id change, turns an
   // active grant into revoked and a pending request into expired. Never blocks
   // or reverts the org_id change itself; the merge fences these rows in its
@@ -551,13 +555,15 @@ describe('Org merge policy registry contract', () => {
     }
   });
 
+  // Must match DROP_LOSER_OVERRIDE_SETTINGS_TABLES in services/orgMerge.ts.
+  const DUAL_AXIS_SETTINGS_TABLES = new Set(['billing_payment_settings', 'ticket_approval_settings']);
   it('every keep-survivor table has a UNIQUE constraint on exactly (org_id)', async () => {
     for (const [table, policy] of policies) {
       if (policy.kind !== 'keep-survivor') continue;
       const indexes = await getUniqueIndexes(table);
       // Dual-axis settings have one row per non-null org, plus partner-owned rows.
       // Their merge executor deletes source settings and never repoints them.
-      const expectedWhere = table === 'billing_payment_settings' ? normalizeSql('org_id IS NOT NULL') : null;
+      const expectedWhere = DUAL_AXIS_SETTINGS_TABLES.has(table) ? normalizeSql('org_id IS NOT NULL') : null;
       const match = indexes.find((ix) => ix.whereNormalized === expectedWhere && ix.nonOrgColumns.size === 0);
       expect(
         match,

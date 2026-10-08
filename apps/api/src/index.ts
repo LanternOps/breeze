@@ -50,6 +50,7 @@ import { resendWebhookRoutes } from './routes/webhooks/emailProvider';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { billingPaymentSettingsRoutes } from './routes/billingPaymentSettings';
+import { ticketApprovalSettingsRoutes } from './routes/tickets/approvalSettings';
 import { autopayRoutes } from './routes/autopay';
 import { mountAutopayChargingRoutes } from './routes/autopay/mount';
 import { publicAutopayRoutes } from './routes/autopay/public';
@@ -789,6 +790,9 @@ api.route('/', invoiceAssemblyRoutes);
 // invoiceSettingsRoutes applies authMiddleware itself.
 api.route('/', invoiceSettingsRoutes);
 api.route('/', billingPaymentSettingsRoutes);
+// Customer work approval policy (#4617): /api/v1/ticketing/approval-settings and
+// /api/v1/orgs/:orgId/ticketing/approval-settings. Each route leads with authMiddleware.
+api.route('/', ticketApprovalSettingsRoutes);
 api.route('/time-entries', timeEntriesRoutes);
 api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/billing-profiles', billingProfilesRoutes);

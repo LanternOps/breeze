@@ -885,6 +885,16 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // 'tenant_variables' < 'ticket_alert_links' by localeCompare).
   'tenant_variables',
   'ticket_alert_links',
+  // ticket_approval_requests (#4617): customer approval requests for held
+  // ticket work. Shape 1 (direct org_id). Its (ticket_id, org_id) FK to tickets
+  // is ON DELETE CASCADE, and time_entries_approval_request_fk points AT it with
+  // ON DELETE SET NULL (approval_request_id) — so deleting it before
+  // 'time_entries' only nulls the link ('tic' < 'tim'), never blocks.
+  'ticket_approval_requests',
+  // ticket_approval_settings (#4617): dual-axis approval policy (org XOR
+  // partner). Only org-override rows carry org_id; partner-default rows are
+  // swept by cascadeDeletePartner's partner_id pass. Cascade leaf.
+  'ticket_approval_settings',
   // ticket_attachments (W08 #3902): comment photo/PDF attachments. Shape 1
   // (direct org_id, denormalised from tickets.org_id). ticket_id / comment_id
   // FKs are ON DELETE CASCADE; uploaded_by_user_id is ON DELETE SET NULL.
