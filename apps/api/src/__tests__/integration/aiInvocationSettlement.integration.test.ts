@@ -42,7 +42,7 @@ import { resolveModel } from '../../services/aiModels/resolveModel';
 import { settleInvocation, type SettleInvocationInput } from '../../services/aiModels/settleInvocation';
 import { deleteAnthropicConnection } from '../../services/aiModels/anthropicConnectionWrites';
 import { turnBindingFrom, type TurnBinding } from '../../services/aiModels/turnBinding';
-import { closeRegistryFixtures, fixtureSql } from './aiModelRegistryFixtures';
+import { closeRegistryFixtures, fixtureSql, seedOffering } from './aiModelRegistryFixtures';
 import { seedPricedPlatformModel, seedRegistryPartner, type SeededRegistryPartner } from './helpers/aiModelRegistrySeed';
 
 const RUN = !!process.env.DATABASE_URL;
@@ -705,5 +705,77 @@ describe.skipIf(!RUN)('money moves exactly once (Step 8a, findings 1 and 2)', ()
     await settleAndDebitAiReservations();
     expect(deductCalls).toHaveLength(0);
     expect(await reservationState(id)).toMatchObject({ status: 'settled', credits_debit_due_at: null });
+  });
+});
+
+describe.skipIf(!RUN)('an unbound BYOK refusal-fallback key at its own offering rate (#7773)', () => {
+  const OWN = { inputCentsPerM: 300, outputCentsPerM: 1500, cacheReadCentsPerM: 30, cacheWriteCentsPerM: 375 };
+  const swapped = (model: string): TurnOutcome => ({ ...OK(model, 1.23), fallbackUsed: true });
+
+  async function priceOffering(offeringId: string): Promise<void> {
+    await fixtureSql`
+      UPDATE partner_ai_models SET price_input_cents_per_m = 300, price_output_cents_per_m = 1500,
+             price_cache_read_cents_per_m = 30, price_cache_write_cents_per_m = 375
+       WHERE id = ${offeringId}`;
+  }
+
+  async function settleUnbound(b: SeededRegistryPartner, binding: TurnBinding, model: string) {
+    const id = await reserve(b, binding);
+    const out = await settleInvocation(settleInput(b, binding, id, {
+      usage: [{ model, tokens: T, webSearchRequests: 0, speedServed: 'standard', providerModel: null }],
+      outcome: swapped(model),
+    }));
+    expect(out.deferred).toBe(false);
+    expect(out.invocationIds).toHaveLength(1);
+    const [row] = await q<{ requested_model: string; fallback_used: boolean; rate_snapshot: unknown; cost_cents: string; funding_source: string }>(sql`
+      SELECT requested_model, fallback_used, rate_snapshot, cost_cents, funding_source
+      FROM ai_invocations WHERE id = ${out.invocationIds[0]}::uuid`);
+    return { out, row: row!, state: await reservationState(id) };
+  }
+
+  it('prices it at the own price of that model\'s enabled offering on the SAME connection, re-verified in the settlement transaction', async () => {
+    const b = await seedRegistryPartner('byok');
+    const binding = await bindingFor(b);
+    const fbModel = `w7773-fb-${randomUUID()}`;
+    await priceOffering(await seedOffering({ partnerId: b.partnerId, connectionId: b.connectionId, modelId: fbModel, source: 'manual', enabled: true }));
+
+    const { out, row, state } = await settleUnbound(b, binding, fbModel);
+    const expected = priceInvocation({ source: 'offering', standard: OWN }, T, {});
+    expect(row).toMatchObject({ requested_model: fbModel, fallback_used: true, funding_source: 'partner_key' });
+    expect(row.rate_snapshot).toEqual({ source: 'offering', standard: OWN });
+    expect(Number(row.cost_cents)).toBeCloseTo(expected, 6);
+    expect(out.costCents).toBeCloseTo(expected, 6);
+    expect(Number(state.actual_cost_cents)).toBeCloseTo(expected, 6);
+    expect(state.credits_debit_due_at).toBeNull();
+  });
+
+  it('an unpriced offering linked to a platform row takes the linked row\'s rate', async () => {
+    const b = await seedRegistryPartner('byok');
+    const binding = await bindingFor(b);
+    const fbModel = `w7773-linked-${randomUUID()}`;
+    const linkedId = await seedPricedPlatformModel(fbModel);
+    await fixtureSql`
+      UPDATE ai_platform_models SET input_cents_per_m = 300, output_cents_per_m = 1500,
+             cache_read_cents_per_m = 30, cache_write_cents_per_m = 375
+       WHERE id = ${linkedId}`;
+    await seedOffering({ partnerId: b.partnerId, connectionId: b.connectionId, platformModelId: linkedId, modelId: fbModel, source: 'discovered', enabled: true });
+
+    const { row } = await settleUnbound(b, binding, fbModel);
+    expect(row.rate_snapshot).toEqual({ source: 'linked_platform', standard: OWN });
+    expect(Number(row.cost_cents)).toBeCloseTo(priceInvocation({ source: 'linked_platform', standard: OWN }, T, {}), 6);
+  });
+
+  it('no enabled offering for that model on the connection (a disabled one; one on another partner\'s connection) keeps the bound rate', async () => {
+    const b = await seedRegistryPartner('byok');
+    const binding = await bindingFor(b);
+    const other = await seedRegistryPartner('byok');
+    const fbModel = `w7773-none-${randomUUID()}`;
+    await priceOffering(await seedOffering({ partnerId: b.partnerId, connectionId: b.connectionId, modelId: fbModel, source: 'manual', enabled: false }));
+    await priceOffering(await seedOffering({ partnerId: other.partnerId, connectionId: other.connectionId, modelId: fbModel, source: 'manual', enabled: true }));
+
+    const { row } = await settleUnbound(b, binding, fbModel);
+    expect(row).toMatchObject({ requested_model: fbModel, fallback_used: true });
+    expect(row.rate_snapshot).toEqual(binding.rateSnapshot);
+    expect(Number(row.cost_cents)).toBeCloseTo(priceInvocation(binding.rateSnapshot, T, {}), 6);
   });
 });

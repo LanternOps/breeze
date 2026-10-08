@@ -21,6 +21,7 @@ const { dbMock, hoisted } = vi.hoisted(() => ({
     captureMessage: vi.fn(),
     recordInvocation: vi.fn(),
     getPlatformModelByModelId: vi.fn(),
+    readConnectionOfferingRate: vi.fn(),
     // W10 (#7608): the real stamp reads the card through the ambient db; at
     // this SQL-shape level it is a pass-through no-card stamp (its own suite
     // and aiChargebackStamping.integration.test.ts cover the read).
@@ -38,6 +39,7 @@ vi.mock('./effectiveSettings', () => ({ getEffectiveAiBudget: hoisted.getEffecti
 vi.mock('./sentry', () => ({ captureException: hoisted.captureException, captureMessage: hoisted.captureMessage }));
 vi.mock('./aiModels/invocationLedgerWrite', () => ({ recordInvocation: hoisted.recordInvocation }));
 vi.mock('./aiModels/platformModels', () => ({ getPlatformModelByModelId: hoisted.getPlatformModelByModelId }));
+vi.mock('./aiModels/connectionOfferingRate', () => ({ readConnectionOfferingRate: hoisted.readConnectionOfferingRate }));
 vi.mock('./aiChargeback/stampChargeback', () => ({ stampChargeback: hoisted.stampChargeback }));
 
 import {
@@ -288,6 +290,88 @@ describe('settleAiBudgetReservation with ledger rows', () => {
       orgId: ORG_ID, reservationId: RESERVATION_ID,
       invocations: [invocation({ requestedModel: 'claude-sonnet-4-6', fallbackUsed: true, rateSnapshot: { source: 'platform', standard: { ...OTHER, inputCentsPerM: 1 } } })],
     })).rejects.toThrow(/does not match the turn binding/);
+  });
+
+  describe('an unbound BYOK refusal-fallback key at its own offering rate (#7773)', () => {
+    const CONN_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const OTHER = { inputCentsPerM: 300, outputCentsPerM: 1500, cacheReadCentsPerM: 30, cacheWriteCentsPerM: 375 };
+    const BYOK: TurnBinding = {
+      ...BINDING, funding: 'partner_key', connectionId: CONN_ID, connectionKind: 'anthropic_byok',
+      rateSnapshot: { source: 'linked_platform', standard: STD }, refusalFallback: null,
+    };
+    const byokRow = (rateSnapshot: NewInvocation['rateSnapshot'], over: Partial<NewInvocation> = {}) => invocation({
+      fundingSource: 'partner_key', requestedModel: 'claude-sonnet-4-6', servedModel: 'claude-sonnet-4-6',
+      fallbackUsed: true, rateSnapshot, ...over,
+    });
+    const byokReservation = () => reservationRow({ billing_source: 'partner_key', model_binding: BYOK });
+
+    it('accepts it only at the rate the in-transaction reader re-reads on the binding\'s own connection', async () => {
+      hoisted.readConnectionOfferingRate.mockResolvedValue({ rate: { source: 'offering', standard: OTHER } });
+      primeSettle(byokReservation());
+      await expect(settleAiBudgetReservation({
+        orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow({ source: 'offering', standard: OTHER })],
+      })).resolves.toMatchObject({ kind: 'settled', creditsDebitDue: false });
+      expect(hoisted.readConnectionOfferingRate).toHaveBeenCalledWith({
+        partnerId: PARTNER_ID, connectionId: CONN_ID, connectionKind: 'anthropic_byok', model: 'claude-sonnet-4-6',
+      });
+      // In the settlement transaction: no second context (no second pooled connection).
+      expect(hoisted.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+      expect(hoisted.readConnectionOfferingRate.mock.invocationCallOrder[0]!)
+        .toBeGreaterThan(dbMock.execute.mock.invocationCallOrder[1]!); // after the reservation FOR UPDATE
+      expect(hoisted.getPlatformModelByModelId).not.toHaveBeenCalled();
+      expect(hoisted.recordInvocation).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a rate the reader does not return now (changed, or no offering any more), and writes nothing', async () => {
+      hoisted.readConnectionOfferingRate.mockResolvedValue({ rate: { source: 'offering', standard: { ...OTHER, inputCentsPerM: 1 } } });
+      dbMock.execute.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([byokReservation()]);
+      await expect(settleAiBudgetReservation({
+        orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow({ source: 'offering', standard: OTHER })],
+      })).rejects.toThrow(/does not match the turn binding/);
+
+      hoisted.readConnectionOfferingRate.mockResolvedValue({ rate: null, reason: 'no_enabled_offering' });
+      dbMock.execute.mockReset();
+      dbMock.execute.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([byokReservation()]);
+      await expect(settleAiBudgetReservation({
+        orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow({ source: 'offering', standard: OTHER })],
+      })).rejects.toThrow(/does not match the turn binding/);
+      expect(hoisted.recordInvocation).not.toHaveBeenCalled();
+    });
+
+    it('never accepts the exception for a row not flagged fallbackUsed, or for a platform-sourced rate', async () => {
+      hoisted.readConnectionOfferingRate.mockResolvedValue({ rate: { source: 'offering', standard: OTHER } });
+      dbMock.execute.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([byokReservation()]);
+      await expect(settleAiBudgetReservation({
+        orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow({ source: 'offering', standard: OTHER }, { fallbackUsed: false })],
+      })).rejects.toThrow(/does not match the turn binding/);
+
+      hoisted.getPlatformModelByModelId.mockResolvedValue({ rates: OTHER, optionRates: null });
+      dbMock.execute.mockReset();
+      dbMock.execute.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([byokReservation()]);
+      await expect(settleAiBudgetReservation({
+        orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow({ source: 'platform', standard: OTHER })],
+      })).rejects.toThrow(/does not match the turn binding/);
+      expect(hoisted.recordInvocation).not.toHaveBeenCalled();
+    });
+
+    it('no offering on the connection: the bound-rate row settles without a re-read', async () => {
+      primeSettle(byokReservation());
+      await expect(settleAiBudgetReservation({
+        orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow({ source: 'linked_platform', standard: STD })],
+      })).resolves.toMatchObject({ kind: 'settled' });
+      expect(hoisted.readConnectionOfferingRate).not.toHaveBeenCalled();
+    });
+
+    it('a platform turn never consults the connection reader', async () => {
+      const OTHER_PLATFORM = { source: 'platform' as const, standard: OTHER };
+      hoisted.getPlatformModelByModelId.mockResolvedValue({ rates: OTHER, optionRates: null });
+      primeSettle();
+      await expect(settleAiBudgetReservation({
+        orgId: ORG_ID, reservationId: RESERVATION_ID,
+        invocations: [invocation({ requestedModel: 'claude-sonnet-4-6', fallbackUsed: true, rateSnapshot: OTHER_PLATFORM })],
+      })).resolves.toMatchObject({ kind: 'settled' });
+      expect(hoisted.readConnectionOfferingRate).not.toHaveBeenCalled();
+    });
   });
 
   describe('carried rates across a same-connection switch (W05)', () => {

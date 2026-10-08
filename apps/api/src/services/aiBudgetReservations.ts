@@ -7,6 +7,7 @@ import { tightenLockTimeout } from '../db/lockTimeout';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import type { AiBillingSource } from './aiCostTracker';
 import { TRANSIENT_FAILOVER_CAUSES } from './aiModels/failover';
+import { readConnectionOfferingRate } from './aiModels/connectionOfferingRate';
 import { recordInvocation, type NewInvocation } from './aiModels/invocationLedgerWrite';
 import { stampChargeback } from './aiChargeback/stampChargeback';
 import { parseSdkUsageSnapshot, sdkUsageHighWater, type SdkUsageSnapshot } from './aiModels/invocationUsage';
@@ -946,10 +947,13 @@ function sameJson(a: unknown, b: unknown): boolean {
  * A settlement may only bill a rate the turn claim bound (spec §9.2, §8): the
  * primary or the refusal-fallback snapshot, or (W05) a carried snapshot for its
  * own model key. One exception, from the W05 spike:
- * the CLI can switch a platform turn to a model the binding never named (its
- * own refusal fallback). That row is accepted only when flagged fallbackUsed,
- * platform-funded, and priced at exactly that model's CURRENT platform rate,
- * re-read here inside the transaction.
+ * the CLI can switch a turn to a model the binding never named (its own
+ * refusal fallback). That row is accepted only when flagged fallbackUsed and
+ * priced at exactly that model's CURRENT rate for the turn's funding, re-read
+ * here inside the transaction: on a platform turn its platform row; on a BYOK
+ * turn (#7773) its enabled, priced offering on the binding's own connection,
+ * through readConnectionOfferingRate on THIS transaction's connection (never
+ * loadOfferingCandidate, which would open a second pooled connection).
  */
 async function assertInvocationsMatchBinding(binding: TurnBinding, invocations: readonly NewInvocation[]): Promise<void> {
   const boundModels = new Set([binding.wireModel, ...(binding.refusalFallback ? [binding.refusalFallback.wireModel] : [])]);
@@ -970,6 +974,15 @@ async function assertInvocationsMatchBinding(binding: TurnBinding, invocations: 
       const platform = await getPlatformModelByModelId(row.requestedModel);
       const current = platform ? platformRateSnapshot(platform) : null;
       if (current && sameJson(rate, current)) continue;
+    }
+    const rateSource = (rate as { source?: unknown } | null)?.source;
+    if (row.fallbackUsed && binding.funding === 'partner_key' && !boundModels.has(row.requestedModel)
+        && (rateSource === 'offering' || rateSource === 'linked_platform')) {
+      const current = await readConnectionOfferingRate({
+        partnerId: binding.partnerId, connectionId: binding.connectionId,
+        connectionKind: binding.connectionKind, model: row.requestedModel,
+      });
+      if (current.rate && sameJson(rate, current.rate)) continue;
     }
     throw new Error('Settlement rate does not match the turn binding');
   }

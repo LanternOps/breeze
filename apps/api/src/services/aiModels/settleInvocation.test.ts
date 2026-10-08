@@ -8,6 +8,8 @@ const m = vi.hoisted(() => ({
   recordRetry: vi.fn(),
   debit: vi.fn(),
   getPlatformModelByModelId: vi.fn(),
+  readConnectionOfferingRate: vi.fn(),
+  withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
   captureMessage: vi.fn(),
   captureException: vi.fn(),
   checkCostAnomalies: vi.fn(),
@@ -23,7 +25,8 @@ vi.mock('../aiBudgetReservations', () => ({
 vi.mock('../aiCostTracker', () => ({ debitBillingCredits: m.debit, checkCostAnomalies: m.checkCostAnomalies }));
 vi.mock('./platformModels', () => ({ getPlatformModelByModelId: m.getPlatformModelByModelId }));
 vi.mock('../sentry', () => ({ captureMessage: m.captureMessage, captureException: m.captureException }));
-vi.mock('../../db', () => ({ runOutsideDbContext: (fn: () => unknown) => fn() }));
+vi.mock('./connectionOfferingRate', () => ({ readConnectionOfferingRate: m.readConnectionOfferingRate }));
+vi.mock('../../db', () => ({ runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: m.withSystemDbAccessContext }));
 
 import type { BilledUsage, SdkUsageSnapshot, TurnOutcome } from './invocationUsage';
 import { priceInvocation } from './pricing';
@@ -33,6 +36,7 @@ import {
   costEstimator,
   debitSettledCredits,
   priceUsage,
+  quoteInvocationCents,
   settleInvocation,
   toNewInvocations,
   __resetSettleInvocationReportsForTests,
@@ -76,6 +80,8 @@ beforeEach(() => {
   m.debit.mockResolvedValue({ kind: 'debited', replayed: false });
   m.recordRetry.mockResolvedValue({ attempts: 1, exhausted: false });
   m.getPlatformModelByModelId.mockResolvedValue(null);
+  m.readConnectionOfferingRate.mockResolvedValue({ rate: null, reason: 'no_enabled_offering' });
+  m.withSystemDbAccessContext.mockImplementation((fn: () => unknown) => fn());
   m.checkCostAnomalies.mockResolvedValue(undefined);
 });
 
@@ -559,5 +565,89 @@ describe('W09 ledger provenance', () => {
       usage: [], outcome: noUsageOutcome(binding.wireModel),
     }, priceUsage(binding, []));
     expect(row).toMatchObject({ failoverFromOfferingId: null, failoverHop: 0, failoverCause: null });
+  });
+});
+
+// #7773 (#7766 residual): the CLI swaps a BYOK turn to a model the binding
+// never named (on the Agent SDK, resolveModel drops a refusal fallback priced
+// differently from the primary, so this is the common BYOK case).
+describe('unbound BYOK refusal fallback priced at its own offering rate (#7773)', () => {
+  const BYOK: TurnBinding = {
+    ...B, funding: 'partner_key', connectionId: 'c1', connectionKind: 'anthropic_byok',
+    rateSnapshot: { source: 'linked_platform', standard: STD }, refusalFallback: null,
+  };
+  const OWN_RATE = { source: 'offering' as const, standard: OTHER };
+  const swapped = { ...OK, fallbackUsed: true, servedModel: 'claude-sonnet-4-6' };
+
+  it('priceUsage bills an unbound BYOK key at its connection offering rate, flagged', () => {
+    const [p] = priceUsage(BYOK, [use('claude-sonnet-4-6')], { connectionRates: new Map([['claude-sonnet-4-6', OWN_RATE]]) });
+    expect(p!.rate).toBe(OWN_RATE);
+    expect(p!.costCents).toBe(priceInvocation(OWN_RATE, T, {}));
+    expect(p!.unboundModel).toBe(true);
+  });
+
+  it('a connection rate never prices a platform turn, and a platform rate never prices a BYOK turn', () => {
+    expect(priceUsage(B, [use('claude-sonnet-4-6')], { connectionRates: new Map([['claude-sonnet-4-6', OWN_RATE]]) })[0])
+      .toMatchObject({ costCents: 300, rate: B.rateSnapshot });
+    expect(priceUsage(BYOK, [use('claude-sonnet-4-6')], { platformRates: new Map([['claude-sonnet-4-6', { source: 'platform', standard: OTHER }]]) })[0])
+      .toMatchObject({ costCents: 300, rate: BYOK.rateSnapshot });
+  });
+
+  it('settleInvocation reads the rate on the binding\'s own connection and writes it on the ledger row', async () => {
+    m.readConnectionOfferingRate.mockResolvedValue({ rate: OWN_RATE });
+    m.settleDurably.mockResolvedValue({ kind: 'settled', reservationId: 'r1', actualCostCents: 450, invocationIds: ['i1'], billingSource: 'partner_key', creditsDebitDue: false });
+    const out = await settleInvocation(base({ binding: BYOK, usage: [use('claude-sonnet-4-6')], outcome: swapped }));
+    expect(m.readConnectionOfferingRate).toHaveBeenCalledWith({
+      partnerId: 'p1', connectionId: 'c1', connectionKind: 'anthropic_byok', model: 'claude-sonnet-4-6',
+    });
+    // Pre-settlement read: its own short system context, never the request's.
+    expect(m.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    expect(m.getPlatformModelByModelId).not.toHaveBeenCalled();
+    expect(m.settleDurably.mock.calls[0]![0].invocations[0]).toMatchObject({
+      requestedModel: 'claude-sonnet-4-6', fundingSource: 'partner_key', fallbackUsed: true,
+      rateSnapshot: OWN_RATE, costCents: priceInvocation(OWN_RATE, T, {}),
+    });
+    expect(out.costCents).toBe(priceInvocation(OWN_RATE, T, {}));
+    expect(m.debit).not.toHaveBeenCalled();
+  });
+
+  it('only unbound keys are looked up: the bound model is never re-read', async () => {
+    m.readConnectionOfferingRate.mockResolvedValue({ rate: OWN_RATE });
+    await settleInvocation(base({ binding: BYOK, usage: [use('claude-sonnet-5-5'), use('claude-sonnet-4-6')], outcome: swapped }));
+    expect(m.readConnectionOfferingRate).toHaveBeenCalledTimes(1);
+  });
+
+  it('no enabled priced offering on the connection → the bound (primary) rate, and the reason is recorded', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    m.readConnectionOfferingRate.mockResolvedValue({ rate: null, reason: 'no_enabled_offering' });
+    await settleInvocation(base({ binding: BYOK, usage: [use('claude-sonnet-4-6')], outcome: swapped }));
+    expect(m.settleDurably.mock.calls[0]![0].invocations[0]).toMatchObject({
+      requestedModel: 'claude-sonnet-4-6', fallbackUsed: true, rateSnapshot: BYOK.rateSnapshot, costCents: 300,
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('bound rate'), expect.objectContaining({
+      eventCode: 'ai_unbound_byok_rate_bound_fallback', model: 'claude-sonnet-4-6', reason: 'no_enabled_offering',
+    }));
+    warn.mockRestore();
+  });
+
+  it('a failing rate read never fails the turn: bound rate, reason lookup_failed', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    m.readConnectionOfferingRate.mockRejectedValue(new Error('db down'));
+    await expect(settleInvocation(base({ binding: BYOK, usage: [use('claude-sonnet-4-6')], outcome: swapped })))
+      .resolves.toMatchObject({ costCents: 300 });
+    expect(err).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ reason: 'lookup_failed', model: 'claude-sonnet-4-6' }));
+    err.mockRestore();
+  });
+
+  it('a platform turn is unchanged: platform row lookup, no connection read', async () => {
+    m.getPlatformModelByModelId.mockResolvedValue({ rates: OTHER, optionRates: null });
+    await settleInvocation(base({ usage: [use('claude-sonnet-4-6')], outcome: swapped }));
+    expect(m.readConnectionOfferingRate).not.toHaveBeenCalled();
+    expect(m.settleDurably.mock.calls[0]![0].invocations[0]).toMatchObject({ rateSnapshot: { source: 'platform', standard: OTHER } });
+  });
+
+  it('quoteInvocationCents quotes the same number settleInvocation bills', async () => {
+    m.readConnectionOfferingRate.mockResolvedValue({ rate: OWN_RATE });
+    await expect(quoteInvocationCents(BYOK, [use('claude-sonnet-4-6')])).resolves.toBe(priceInvocation(OWN_RATE, T, {}));
   });
 });
