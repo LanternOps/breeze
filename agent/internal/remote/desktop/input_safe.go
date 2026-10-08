@@ -114,6 +114,13 @@ func (s *SafeInput) run(j safeInputJob) {
 
 func (s *SafeInput) runQueued() {
 	for {
+		// A release that arrives mid-drain goes first, and discards the rest.
+		select {
+		case j := <-s.urgent:
+			s.run(j)
+			continue
+		default:
+		}
 		select {
 		case j := <-s.jobs:
 			s.run(j)
@@ -156,13 +163,23 @@ func (s *SafeInput) takeMove() *InputEvent {
 	return mv
 }
 
-// submit queues run and waits for its result. timeout 0 waits as long as
+var errInputWorkerUnresponsive = errors.New("input worker did not respond")
+
+// submit queues run and waits for its result. timeout bounds the whole call,
+// queueing included: a wedged worker can leave a bounded queue full, and a
+// release or Close must never wait on it forever. timeout 0 waits as long as
 // the worker lives.
 func (s *SafeInput) submit(urgent bool, timeout time.Duration, run func() error) error {
 	select {
 	case <-s.done:
 		return errInputClosed
 	default:
+	}
+	var expire <-chan time.Time
+	if timeout > 0 {
+		t := time.NewTimer(timeout)
+		defer t.Stop()
+		expire = t.C
 	}
 	job := safeInputJob{run: run, result: make(chan error, 1)}
 	q := s.jobs
@@ -171,18 +188,12 @@ func (s *SafeInput) submit(urgent bool, timeout time.Duration, run func() error)
 	} else if mv := s.takeMove(); mv != nil {
 		// Keep pointer motion that arrived before this event ahead of it.
 		move := *mv
-		if err := s.enqueue(q, safeInputJob{run: func() error { return s.inject(move) }}); err != nil {
+		if err := s.enqueue(q, safeInputJob{run: func() error { return s.inject(move) }}, expire); err != nil {
 			return err
 		}
 	}
-	if err := s.enqueue(q, job); err != nil {
+	if err := s.enqueue(q, job, expire); err != nil {
 		return err
-	}
-	var expire <-chan time.Time
-	if timeout > 0 {
-		t := time.NewTimer(timeout)
-		defer t.Stop()
-		expire = t.C
 	}
 	select {
 	case err := <-job.result:
@@ -190,16 +201,18 @@ func (s *SafeInput) submit(urgent bool, timeout time.Duration, run func() error)
 	case <-s.exited:
 		return errInputClosed
 	case <-expire:
-		return errors.New("input worker did not respond")
+		return errInputWorkerUnresponsive
 	}
 }
 
-func (s *SafeInput) enqueue(q chan safeInputJob, j safeInputJob) error {
+func (s *SafeInput) enqueue(q chan safeInputJob, j safeInputJob, expire <-chan time.Time) error {
 	select {
 	case q <- j:
 		return nil
 	case <-s.done:
 		return errInputClosed
+	case <-expire:
+		return errInputWorkerUnresponsive
 	}
 }
 
@@ -284,8 +297,14 @@ func (s *SafeInput) Close() {
 	})
 }
 
+// SetDisplayOffset goes straight to the platform handler, which guards its
+// offset with its own lock, rather than through the worker. Its callers include
+// the capture goroutine on a desktop switch, and session teardown waits for
+// that goroutine: queueing behind a wedged worker would hang Stop for good.
+// Ordering against input is kept where it matters by releasing held input
+// first (monitor and desktop switch both do).
 func (s *SafeInput) SetDisplayOffset(x, y int) {
-	_ = s.submit(false, 0, func() error { s.inner.SetDisplayOffset(x, y); return nil })
+	s.inner.SetDisplayOffset(x, y)
 }
 
 func (s *SafeInput) SetAtLoginWindow(atLoginWindow bool) {

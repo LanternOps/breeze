@@ -88,3 +88,25 @@ func TestHeldInputPrepareLeavesOtherEventsAlone(t *testing.T) {
 		t.Fatalf("prepare changed a non-key_press event: %+v", got)
 	}
 }
+
+func TestHeldInputPrepareFiltersMetaOnLinux(t *testing.T) {
+	// On Linux a bundled meta is Super, the same key a held meta is, so
+	// re-pressing it inside key_press would release the held Super.
+	h := newHeldInput()
+	h.goos = "linux"
+	h.observe(InputEvent{Type: "key_down", Key: "meta"}, nil)
+	ev := h.prepare(InputEvent{Type: "key_press", Key: "e", Modifiers: []string{"meta"}})
+	if len(ev.Modifiers) != 0 {
+		t.Fatalf("modifiers = %v, want none", ev.Modifiers)
+	}
+}
+
+func TestHeldInputPrepareKeepsMetaOnWindows(t *testing.T) {
+	h := newHeldInput()
+	h.goos = "windows"
+	h.observe(InputEvent{Type: "key_down", Key: "meta"}, nil)
+	ev := h.prepare(InputEvent{Type: "key_press", Key: "c", Modifiers: []string{"meta"}})
+	if !reflect.DeepEqual(ev.Modifiers, []string{"meta"}) {
+		t.Fatalf("modifiers = %v, want [meta]", ev.Modifiers)
+	}
+}

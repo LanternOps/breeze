@@ -44,7 +44,9 @@ func ValidateInputEvent(ev InputEvent) error {
 	}
 	switch ev.Type {
 	case "key_press", "key_down", "key_up":
-		if strings.TrimSpace(ev.Key) == "" {
+		// Empty only: " " is the space key, which the viewer's keystroke
+		// fallback paste sends.
+		if ev.Key == "" {
 			return fmt.Errorf("key is required for keyboard events")
 		}
 	}

@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -16,20 +17,30 @@ type heldInput struct {
 	buttons map[string]struct{}
 	lastX   int
 	lastY   int
+	goos    string // runtime.GOOS; a field so tests can pick the platform
 }
 
 func newHeldInput() *heldInput {
-	return &heldInput{keys: map[string]struct{}{}, buttons: map[string]struct{}{}}
+	return &heldInput{keys: map[string]struct{}{}, buttons: map[string]struct{}{}, goos: runtime.GOOS}
 }
 
 // Toggle keys change state on press. They are never "held", and releasing
 // them would be a bogus key_up.
 var heldInputToggleKeys = map[string]struct{}{"capslock": {}, "numlock": {}, "scrolllock": {}}
 
-// Modifiers that mean the same key whether held via key_down or bundled in a
-// key_press. "meta" is excluded: bundled, the Windows agent injects it as Ctrl
-// (Mac Cmd → Ctrl); held, it is the Win key.
-var heldInputFilterableModifiers = map[string]struct{}{"ctrl": {}, "alt": {}, "shift": {}}
+// filterableModifier reports whether a modifier means the same key held via
+// key_down as bundled in a key_press. "meta" does on Linux (Super both ways)
+// but not on Windows, where bundled meta is injected as Ctrl (Mac Cmd → Ctrl)
+// and held meta is the Win key. macOS never holds modifiers at all.
+func (h *heldInput) filterableModifier(name string) bool {
+	switch name {
+	case "ctrl", "alt", "shift":
+		return true
+	case "meta":
+		return h.goos == "linux"
+	}
+	return false
+}
 
 func heldKeyName(key string) string {
 	k := strings.ToLower(strings.TrimSpace(key))
@@ -58,7 +69,7 @@ func (h *heldInput) prepare(ev InputEvent) InputEvent {
 	kept := make([]string, 0, len(ev.Modifiers))
 	for _, m := range ev.Modifiers {
 		name := heldKeyName(m)
-		if _, filterable := heldInputFilterableModifiers[name]; filterable {
+		if h.filterableModifier(name) {
 			if _, held := h.keys[name]; held {
 				continue
 			}

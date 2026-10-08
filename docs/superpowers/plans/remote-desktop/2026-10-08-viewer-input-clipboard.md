@@ -1489,3 +1489,28 @@ Lab gate (owed before merge; record results on the PR):
 2. Drag a window, pull the viewer's network cable mid-drag. The button is released immediately,
    not after 20 s.
 3. Start a UAC prompt while holding Alt. Alt is not latched on the secure desktop.
+
+---
+
+## Review amendments (2026-10-08, independent Opus review)
+
+Each fix has a regression test that failed before it:
+- **H1:** `SetDisplayOffset` calls the platform handler directly instead of queueing on the worker.
+  The capture goroutine calls it on a desktop switch and `StopWithReason` waits for that goroutine,
+  so a wedged worker hung teardown permanently. Platform handlers already guard the offset with
+  their own lock. Test: `TestSafeInputSetDisplayOffsetDoesNotWaitOnStuckWorker`.
+- **H2:** `submit`'s timeout now covers queueing too. Timed-out releases piled up in the 4-slot urgent
+  queue, and `Close` then blocked forever. Test:
+  `TestSafeInputCloseDoesNotHangWithFullUrgentQueue`.
+- **M2:** `ValidateInputEvent` rejects only an empty key, because `" "` is the space key that the
+  viewer's keystroke fallback paste sends. Test: the `space key ok` case.
+- **L1:** `meta` is filtered from `key_press` on Linux, where it is Super both bundled and held. It is
+  still not filtered on Windows. Tests: `TestHeldInputPrepareFiltersMetaOnLinux` and
+  `...KeepsMetaOnWindows`.
+- **L2:** `runQueued` lets an urgent release jump ahead mid-drain.
+- **Tests:** sleeps are replaced with an `entered` signal and queue-length polling, so the ordering
+  tests are deterministic.
+
+Accepted as-is:
+- **L3:** move failures log at Debug, to avoid 60 Hz log spam.
+- **L4:** `SetAtLoginWindow` and WS `StopSession` can wait up to the 2 s close timeout.

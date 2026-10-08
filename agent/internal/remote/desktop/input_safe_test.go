@@ -10,17 +10,27 @@ import (
 )
 
 // workerRecorder is a thread-safe InputHandler that records every call in
-// order. block, when non-nil, stalls HandleEvent until closed.
+// order. block, when non-nil, stalls HandleEvent until closed; entered (when
+// non-nil, buffered) is signalled as each HandleEvent call begins, so a test
+// can wait until the worker is actually wedged instead of sleeping.
 type workerRecorder struct {
 	stubInputHandler
 	mu      sync.Mutex
 	calls   []string
 	failKey string
 	block   chan struct{}
+	entered chan struct{}
 	texts   []string
 }
 
+func newBlockingRecorder() *workerRecorder {
+	return &workerRecorder{block: make(chan struct{}), entered: make(chan struct{}, 64)}
+}
+
 func (h *workerRecorder) HandleEvent(ev InputEvent) error {
+	if h.entered != nil {
+		h.entered <- struct{}{}
+	}
 	if h.block != nil {
 		<-h.block
 	}
@@ -57,6 +67,29 @@ func (h *workerRecorder) snapshot() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]string(nil), h.calls...)
+}
+
+// waitFor polls cond until it holds, failing the test after 2s.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// wedge parks the worker inside the platform handler on a key_down.
+func wedge(t *testing.T, s *SafeInput, inner *workerRecorder, key string) {
+	t.Helper()
+	go func() { _ = s.HandleEvent(InputEvent{Type: "key_down", Key: key}) }()
+	select {
+	case <-inner.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker never reached the platform handler")
+	}
 }
 
 func joinMods(m []string) string {
@@ -119,13 +152,11 @@ func TestSafeInputCloseReleasesAndIsIdempotent(t *testing.T) {
 }
 
 func TestSafeInputCloseDoesNotHangOnStuckHandler(t *testing.T) {
-	inner := &workerRecorder{block: make(chan struct{})}
+	inner := newBlockingRecorder()
 	defer close(inner.block)
 	s := NewSafeInput(inner, "t")
 	s.closeTimeout = 100 * time.Millisecond
-
-	go func() { _ = s.HandleEvent(InputEvent{Type: "key_down", Key: "a"}) }() // wedges the worker
-	time.Sleep(20 * time.Millisecond)
+	wedge(t, s, inner, "a")
 
 	done := make(chan struct{})
 	go func() { s.Close(); close(done) }()
@@ -137,19 +168,18 @@ func TestSafeInputCloseDoesNotHangOnStuckHandler(t *testing.T) {
 }
 
 func TestSafeInputMovesCoalesceAndKeepOrderWithDiscreteEvents(t *testing.T) {
-	inner := &workerRecorder{block: make(chan struct{})}
+	inner := newBlockingRecorder()
 	s := NewSafeInput(inner, "t")
 	defer s.Close()
 
 	// Wedge the worker on a discrete event, flood moves, then a mouse_down.
-	go func() { _ = s.HandleEvent(InputEvent{Type: "key_down", Key: "x"}) }()
-	time.Sleep(20 * time.Millisecond)
+	wedge(t, s, inner, "x")
 	for i := 1; i <= 1000; i++ {
 		_ = s.HandleEvent(InputEvent{Type: "mouse_move", X: i, Y: i})
 	}
 	downDone := make(chan error, 1)
 	go func() { downDone <- s.HandleEvent(InputEvent{Type: "mouse_down", X: 1000, Y: 1000, Button: "left"}) }()
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, "the coalesced move and the mouse_down to queue", func() bool { return len(s.jobs) == 2 })
 	close(inner.block)
 	if err := <-downDone; err != nil {
 		t.Fatal(err)
@@ -162,19 +192,18 @@ func TestSafeInputMovesCoalesceAndKeepOrderWithDiscreteEvents(t *testing.T) {
 }
 
 func TestSafeInputReleaseAllDiscardsQueuedInput(t *testing.T) {
-	inner := &workerRecorder{block: make(chan struct{})}
+	inner := newBlockingRecorder()
 	s := NewSafeInput(inner, "t")
 	defer s.Close()
 
-	go func() { _ = s.HandleEvent(InputEvent{Type: "key_down", Key: "x"}) }()
-	time.Sleep(20 * time.Millisecond)
+	wedge(t, s, inner, "x")
 	queued := make(chan error, 1)
 	go func() { queued <- s.HandleEvent(InputEvent{Type: "key_down", Key: "y"}) }()
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, "key_down y to queue", func() bool { return len(s.jobs) == 1 })
 
 	released := make(chan struct{})
 	go func() { s.ReleaseAll("test"); close(released) }()
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, "the release to queue", func() bool { return len(s.urgent) == 1 })
 	close(inner.block)
 	<-released
 
@@ -229,5 +258,48 @@ func mustHandle(t *testing.T, s *SafeInput, ev InputEvent) {
 	}
 	if ev.Type == "mouse_move" {
 		s.sync() // moves are asynchronous
+	}
+}
+
+func TestSafeInputSetDisplayOffsetDoesNotWaitOnStuckWorker(t *testing.T) {
+	// The capture goroutine sets the offset on a desktop switch; StopWithReason
+	// waits for that goroutine before cleanup, so blocking it on a wedged
+	// worker would hang session teardown for good.
+	inner := newBlockingRecorder()
+	defer close(inner.block)
+	s := NewSafeInput(inner, "t")
+	s.closeTimeout = 50 * time.Millisecond
+	defer s.Close()
+	wedge(t, s, inner, "a")
+
+	done := make(chan struct{})
+	go func() { s.SetDisplayOffset(1920, 0); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("SetDisplayOffset blocked on a wedged worker")
+	}
+}
+
+func TestSafeInputCloseDoesNotHangWithFullUrgentQueue(t *testing.T) {
+	inner := newBlockingRecorder()
+	defer close(inner.block)
+	s := NewSafeInput(inner, "t")
+	s.closeTimeout = 50 * time.Millisecond
+	wedge(t, s, inner, "a")
+
+	// Disconnect, channel closes, a desktop switch: each queues a release
+	// that times out and is left behind in the urgent queue.
+	for i := 0; i < cap(s.urgent)+2; i++ {
+		go s.ReleaseAll("pileup")
+	}
+	waitFor(t, "the urgent queue to fill", func() bool { return len(s.urgent) == cap(s.urgent) })
+
+	done := make(chan struct{})
+	go func() { s.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close blocked behind a full urgent queue")
 	}
 }

@@ -24,7 +24,9 @@ func TestValidateInputEvent(t *testing.T) {
 		{"button unknown", InputEvent{Type: "mouse_down", Button: "back"}, true},
 		{"key ok", InputEvent{Type: "key_down", Key: "a"}, false},
 		{"key missing", InputEvent{Type: "key_down"}, true},
-		{"key blank", InputEvent{Type: "key_up", Key: "  "}, true},
+		{"key empty", InputEvent{Type: "key_up", Key: ""}, true},
+		// The viewer's keystroke-fallback paste sends a space as the key " ".
+		{"space key ok", InputEvent{Type: "key_press", Key: " "}, false},
 		{"key too long", InputEvent{Type: "key_press", Key: strings.Repeat("a", MaxInputKeyBytes+1)}, true},
 		{"too many modifiers", InputEvent{Type: "key_press", Key: "a", Modifiers: make([]string, MaxInputModifiers+1)}, true},
 	}
