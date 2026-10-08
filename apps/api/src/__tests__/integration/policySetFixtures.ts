@@ -82,14 +82,17 @@ export async function seedPolicy(input: {
   links?: SeedLink[];
   assignments?: SeedAssignment[];
   /**
-   * Insert the assignments as the superuser with triggers off. The
-   * config_policy_assignments integrity trigger (rightly) refuses a target
-   * outside the policy owner's tenant; the cross-tenant forge tests need
-   * exactly such rows to prove RLS ALONE hides them.
+   * Insert the assignments as the superuser AFTER the policy has committed,
+   * with `session_replication_role = replica`. Replica mode turns off ALL
+   * triggers on the insert — the config_policy_assignments integrity trigger
+   * (which rightly refuses a target outside the policy owner's tenant), the
+   * FK/RI triggers, and the partner-export AFTER INSERT trigger — not just
+   * the integrity one. The cross-tenant forge tests need exactly such rows to
+   * prove RLS ALONE hides them.
    */
   forgeAssignments?: boolean;
 }): Promise<string> {
-  return sys(async () => {
+  const policyId = await sys(async () => {
     const [policy] = await db.insert(configurationPolicies).values({
       orgId: input.owner.orgId, partnerId: input.owner.partnerId,
       name: input.name ?? `ps ${randomUUID()}`, status: input.status ?? 'active',
@@ -138,18 +141,7 @@ export async function seedPolicy(input: {
         } as never);
       }
     }
-    if (input.forgeAssignments) {
-      const admin = getTestDb();
-      await admin.transaction(async (tx: any) => {
-        await tx.execute(sql`SET LOCAL session_replication_role = replica`);
-        for (const a of input.assignments ?? []) {
-          await tx.insert(configPolicyAssignments).values({
-            configPolicyId: policy!.id, level: a.level, targetId: a.targetId, priority: a.priority ?? 0,
-          });
-        }
-      });
-      return policy!.id;
-    }
+    if (input.forgeAssignments) return policy!.id;
     for (const a of input.assignments ?? []) {
       await db.insert(configPolicyAssignments).values({
         configPolicyId: policy!.id, level: a.level, targetId: a.targetId, priority: a.priority ?? 0,
@@ -160,6 +152,23 @@ export async function seedPolicy(input: {
     }
     return policy!.id;
   });
+  if (input.forgeAssignments) {
+    // Policy is committed and sys() has released its connection: only the
+    // admin connection is held here.
+    const admin = getTestDb();
+    await admin.transaction(async (tx: any) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      for (const a of input.assignments ?? []) {
+        await tx.insert(configPolicyAssignments).values({
+          configPolicyId: policyId, level: a.level, targetId: a.targetId, priority: a.priority ?? 0,
+          ...(a.roleFilter ? { roleFilter: a.roleFilter } : {}),
+          ...(a.osFilter ? { osFilter: a.osFilter } : {}),
+          ...(a.createdAt ? { createdAt: a.createdAt } : {}),
+        });
+      }
+    });
+  }
+  return policyId;
 }
 
 export async function dropDeviceRedisCaches(deviceId: string): Promise<void> {
