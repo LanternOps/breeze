@@ -17,7 +17,6 @@ import {
 } from '../../db/schema';
 import {
   policyOwnershipCondition,
-  withDevicePartnerPolicyVisibility,
 } from '../configPolicyOwnership';
 import {
   buildRoleOsFilterConditions,
@@ -119,15 +118,11 @@ export async function resolveDeviceTimeSyncSettings(
         ),
       ),
     );
-  // Same visibility rule as the hardware-monitoring resolver (routes/agents/helpers.ts):
-  // an org-scoped caller (device view, agent ingest) cannot see partner-wide policy rows
-  // without widening to the device's own partner. partnerId comes from the org row read
-  // above under the caller's RLS context, never from input.
-  const rows = await withDevicePartnerPolicyVisibility(
-    db,
-    org?.partnerId ?? null,
-    (executor) =>
-      executor
+  // #8142: read in the caller's own context. config_policy_time_sync_settings
+  // carries the SELECT-only partner-wide branch, so a context with
+  // currentPartnerId (the agent heartbeat, every user context) sees its own
+  // partner's partner-wide rows without widening accessible_partner_ids.
+  const rows = await db
         .select({
           policyId: configurationPolicies.id,
           policyName: configurationPolicies.name,
@@ -178,8 +173,7 @@ export async function resolveDeviceTimeSyncSettings(
               osType: device.osType,
             }),
           ),
-        ),
-  );
+        );
   const eligible = rows.filter((row) => matchesRoleOsFilter(row, device));
   eligible.sort(
     (a, b) =>

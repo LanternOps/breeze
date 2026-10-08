@@ -65,7 +65,7 @@ import {
 import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
 import { hierarchyFor, type DeviceHierarchyOpts } from '../../services/deviceHierarchy';
 import { warrantyHpCmslCollectionEffective } from '@breeze/shared/validators';
-import { policyOwnershipCondition, withDevicePartnerPolicyVisibility } from '../../services/configPolicyOwnership';
+import { policyOwnershipCondition } from '../../services/configPolicyOwnership';
 import { HARDWARE_MONITORING_DEFAULTS, hardwareMonitoringInlineSettingsSchema, type HardwareMonitoringInlineSettings } from '@breeze/shared';
 import {
   buildResolvedTimeSyncConfigUpdate,
@@ -2104,12 +2104,7 @@ type HardwareMonitoringPolicyView = { enabled: boolean; source: 'default' | 'pol
  * mirroring `resolveDeviceEventLogSettings`. Also returns provenance
  * (`policy`/`default` + policy name) for Task 13's AI/read surfaces.
  *
- * Uses `withDevicePartnerPolicyVisibility` to temporarily widen visibility to
- * the device's own partner on this transaction only — the settings table is
- * reached through `configuration_policies`, whose RLS predicate is
- * `breeze_has_org_access(org_id) OR breeze_has_partner_access(partner_id)`, and
- * an org-scoped caller's context does not carry its own partner id in
- * `accessiblePartnerIds`.
+ * Reads in the caller's own context; partner-wide rows are granted by the *_partner_wide_select branches.
  */
 async function resolveHardwareMonitoring(deviceId: string, opts?: DeviceHierarchyOpts): Promise<{ settings: HardwareMonitoringInlineSettings; policy: HardwareMonitoringPolicyView }> {
   const passed = hierarchyFor(deviceId, opts);
@@ -2161,8 +2156,10 @@ async function resolveHardwareMonitoring(deviceId: string, opts?: DeviceHierarch
     );
   }
 
-  const rows = await withDevicePartnerPolicyVisibility(db, org?.partnerId ?? null, async (executor) =>
-    executor
+  // #8142: config_policy_hardware_monitoring_settings now carries the
+  // SELECT-only partner-wide branch (2026-12-18-100000), so this reads in the
+  // caller's own context — no breeze.accessible_partner_ids widening.
+  const rows = await db
       .select({
         policyName: configurationPolicies.name,
         level: configPolicyAssignments.level,
@@ -2185,8 +2182,7 @@ async function resolveHardwareMonitoring(deviceId: string, opts?: DeviceHierarch
         policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
         or(...targetConditions),
         ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
-      ))
-  );
+      ));
 
   const eligible = rows.filter((r) =>
     matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })

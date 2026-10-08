@@ -68,11 +68,11 @@ it('resolves defaults when no policy exists', async () => {
     policy: null,
   });
 });
-it('widens policy visibility to the device partner so partner-wide policies resolve for org-scoped callers', async () => {
+it('reads in the caller\'s own context: no accessible_partner_ids widening (#8142)', async () => {
   const partnerId = '22222222-2222-4222-8222-222222222222';
   m.rows = [[device], [{ partnerId }], [], [{ ...base, level: 'partner' }]];
   const result = await resolveDeviceTimeSyncSettings(id);
-  expect(visibility.calls).toEqual([partnerId]);
+  expect(visibility.calls).toEqual([]);
   expect(result.settings.enforceNtp).toBe(true);
 });
 it('breaks equal level and priority ties by assignment creation time, not policy id', async () => {
