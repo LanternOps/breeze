@@ -15,7 +15,7 @@ func checkService(name string) CheckResult {
 	info, err := svcquery.GetStatus(name)
 	if err != nil {
 		return CheckResult{
-			Status:  StatusNotFound,
+			Status:  serviceErrorStatus(err),
 			Details: map[string]any{"error": err.Error()},
 		}
 	}

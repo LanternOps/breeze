@@ -3,9 +3,12 @@
 package svcquery
 
 import (
+	"errors"
 	"fmt"
 	"strings"
+	"unsafe"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -29,14 +32,22 @@ func GetStatus(name string) (ServiceInfo, error) {
 	}
 	defer m.Disconnect()
 
-	s, err := m.OpenService(name)
+	s, err := openServiceForQuery(m, name)
 	if err != nil {
+		if !errors.Is(err, ErrServiceNotFound) {
+			// The service may exist (e.g. access denied) — do not fall back to
+			// a display-name scan or report it as not found.
+			return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: open service %s: %w", name, err)
+		}
 		// Fallback: try to resolve as a display name
 		resolved, resolveErr := resolveDisplayName(m, name)
 		if resolveErr != nil {
-			return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: open service %s: %w", name, err)
+			if errors.Is(resolveErr, ErrServiceNotFound) {
+				return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: open service %s: %w", name, err)
+			}
+			return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: resolve display name %q: %w", name, resolveErr)
 		}
-		s, err = m.OpenService(resolved)
+		s, err = openServiceForQuery(m, resolved)
 		if err != nil {
 			return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: open service %s (resolved from %q): %w", resolved, name, err)
 		}
@@ -48,7 +59,7 @@ func GetStatus(name string) (ServiceInfo, error) {
 		return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: query %s: %w", name, err)
 	}
 
-	cfg, _ := s.Config()
+	cfg, _ := queryBaseConfig(s)
 
 	info := ServiceInfo{
 		Name:        name,
@@ -75,7 +86,7 @@ func ListServices() ([]ServiceInfo, error) {
 
 	services := make([]ServiceInfo, 0, len(names))
 	for _, name := range names {
-		s, err := m.OpenService(name)
+		s, err := openServiceForQuery(m, name)
 		if err != nil {
 			continue
 		}
@@ -84,7 +95,7 @@ func ListServices() ([]ServiceInfo, error) {
 			s.Close()
 			continue
 		}
-		cfg, _ := s.Config()
+		cfg, _ := queryBaseConfig(s)
 		services = append(services, ServiceInfo{
 			Name:        name,
 			DisplayName: cfg.DisplayName,
@@ -105,21 +116,99 @@ func resolveDisplayName(m *mgr.Mgr, displayName string) (string, error) {
 		return "", err
 	}
 	lower := strings.ToLower(displayName)
+	// A service we could not inspect might be the one being asked for, so if
+	// nothing matches we must not claim the name does not exist.
+	var uninspected error
 	for _, keyName := range names {
-		s, err := m.OpenService(keyName)
+		s, err := openServiceForQuery(m, keyName)
 		if err != nil {
+			if uninspected == nil && !errors.Is(err, ErrServiceNotFound) {
+				uninspected = fmt.Errorf("open service %s: %w", keyName, err)
+			}
 			continue
 		}
-		cfg, err := s.Config()
+		cfg, err := queryBaseConfig(s)
 		s.Close()
 		if err != nil {
+			if uninspected == nil {
+				uninspected = fmt.Errorf("query config %s: %w", keyName, err)
+			}
 			continue
 		}
 		if strings.ToLower(cfg.DisplayName) == lower {
 			return keyName, nil
 		}
 	}
-	return "", fmt.Errorf("no service with display name %q", displayName)
+	if uninspected != nil {
+		return "", fmt.Errorf("no inspectable service with display name %q (%w)", displayName, uninspected)
+	}
+	return "", fmt.Errorf("no service with display name %q: %w", displayName, ErrServiceNotFound)
+}
+
+// queryServiceAccess is the only access svcquery needs: Query() requires
+// SERVICE_QUERY_STATUS and queryBaseConfig() requires SERVICE_QUERY_CONFIG.
+// mgr.(*Mgr).OpenService requests SERVICE_ALL_ACCESS, which services with a
+// restrictive DACL (e.g. WinDefend) refuse with "Access is denied" (#7967).
+const queryServiceAccess = windows.SERVICE_QUERY_STATUS | windows.SERVICE_QUERY_CONFIG
+
+// winOpenService is a seam so tests can assert the requested access mask and
+// simulate ERROR_ACCESS_DENIED without a non-elevated host.
+var winOpenService = windows.OpenService
+
+// openServiceForQuery opens a service read-only. A service that does not exist
+// is reported as an error wrapping ErrServiceNotFound.
+func openServiceForQuery(m *mgr.Mgr, name string) (*mgr.Service, error) {
+	namePtr, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid service name %q: %w", ErrServiceNotFound, name, err)
+	}
+	h, err := winOpenService(m.Handle, namePtr, queryServiceAccess)
+	if err != nil {
+		return nil, classifyOpenError(err)
+	}
+	return &mgr.Service{Name: name, Handle: h}, nil
+}
+
+// classifyOpenError wraps ErrServiceNotFound around OpenService errors that
+// prove the service does not exist. Everything else (notably
+// ERROR_ACCESS_DENIED) is returned unchanged: the service may exist.
+func classifyOpenError(err error) error {
+	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) || errors.Is(err, windows.ERROR_INVALID_NAME) {
+		return fmt.Errorf("%w: %w", ErrServiceNotFound, err)
+	}
+	return err
+}
+
+// baseConfig is the subset of a service's configuration svcquery reports.
+type baseConfig struct {
+	DisplayName    string
+	StartType      uint32
+	BinaryPathName string
+}
+
+// queryBaseConfig reads only QueryServiceConfig. mgr.(*Service).Config also
+// issues QueryServiceConfig2 for the description, delayed-start and SID info,
+// and fails outright when any of those fail — e.g. a description stored as an
+// unresolvable MUI resource returns ERROR_FILE_NOT_FOUND (seen on
+// WaaSMedicSvc). None of that is needed here, so it must not hide the display
+// name, start type or binary path.
+func queryBaseConfig(s *mgr.Service) (baseConfig, error) {
+	n := uint32(1024)
+	for {
+		b := make([]byte, n)
+		p := (*windows.QUERY_SERVICE_CONFIG)(unsafe.Pointer(&b[0]))
+		err := windows.QueryServiceConfig(s.Handle, p, n, &n)
+		if err == nil {
+			return baseConfig{
+				DisplayName:    windows.UTF16PtrToString(p.DisplayName),
+				StartType:      p.StartType,
+				BinaryPathName: windows.UTF16PtrToString(p.BinaryPathName),
+			}, nil
+		}
+		if !errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) || n <= uint32(len(b)) {
+			return baseConfig{}, err
+		}
+	}
 }
 
 func mapWindowsState(state svc.State) ServiceStatus {
