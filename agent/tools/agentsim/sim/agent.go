@@ -63,6 +63,9 @@ func NewAgent(cfg *Config, rec *Recorder, id Identity, reenroll func(context.Con
 		seen:     map[string]struct{}{},
 	}
 	a.payloads = NewPayloads(cfg, rand.New(rand.NewPCG(seed, 0xfeed)))
+	if cfg.WSEnabled {
+		a.ws = newWSSession(a)
+	}
 	return a
 }
 
