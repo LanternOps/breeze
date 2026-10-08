@@ -96,20 +96,62 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 // One heartbeat interval, plus a second so a TTL of exactly 60 s has expired.
 const NEXT_BEAT_MS = 61_000;
 
+// Statement buckets (#8053 W1a-1). Each later lever asserts on its own bucket,
+// so a regression names itself instead of showing up as "statements 31 > 26".
+// Matched on the whitespace-collapsed, lower-cased SQL postgres.js sends.
+const BUCKET_MATCHERS = {
+  begin: (s: string) => s === 'begin' || s.startsWith('begin '),
+  prologue: (s: string) => s.startsWith("select set_config('breeze.scope'"),
+  savepoint: (s: string) => s.startsWith('savepoint'),
+  // A resolver's own `select … from devices where id = $1` — NOT the core read
+  // (which selects every column, agent_token_hash included).
+  deviceLookup: (s: string) =>
+    /^select .* from "devices" where "devices"\."id" = \$1/.test(s) && !s.includes('"agent_token_hash"'),
+  orgPartnerLookup: (s: string) => /^select "partner_id"(, "type")? from "organizations" where/.test(s),
+  groupLookup: (s: string) => s.startsWith('select "group_id" from "device_group_memberships"'),
+  hierarchyLoad: (s: string) => s.includes('from "devices" left join "organizations"') && s.includes('jsonb_agg'),
+  siteLookup: (s: string) => s.includes('from "devices" inner join "sites"'),
+  agentVersions: (s: string) => s.includes('from "agent_versions"'),
+  topologyNegotiation: (s: string) => s.includes('from devices where id=$1::uuid and not is_ephemeral'),
+  orgHelperSettings: (s: string) => s.startsWith('select "settings" from "organizations"'),
+  pamOrgConfig: (s: string) => s.includes('from "pam_org_config"'),
+  automationPolicies: (s: string) => s.includes('from "automation_policies"'),
+  peripheralCapabilityWrites: (s: string) =>
+    s.startsWith('update "device_commands"') || s.startsWith('update "peripheral_policy_device_states"'),
+} as const;
+
+type Bucket = keyof typeof BUCKET_MATCHERS;
+const BUCKETS = Object.keys(BUCKET_MATCHERS) as Bucket[];
+
+function normalizeStatement(sql: string): string {
+  return sql.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function classifyStatement(sql: string): Bucket | null {
+  const s = normalizeStatement(sql);
+  return BUCKETS.find((bucket) => BUCKET_MATCHERS[bucket](s)) ?? null;
+}
+
 interface Measurement {
   status: number;
   transactions: number;
   savepoints: number;
   statements: number;
+  buckets: Record<Bucket, number>;
 }
 
 function summarize(status: number, statements: string[]): Measurement {
-  const normalized = statements.map((s) => s.trim().toLowerCase());
+  const buckets = Object.fromEntries(BUCKETS.map((b) => [b, 0])) as Record<Bucket, number>;
+  for (const statement of statements) {
+    const bucket = classifyStatement(statement);
+    if (bucket) buckets[bucket] += 1;
+  }
   return {
     status,
-    transactions: normalized.filter((s) => s === 'begin' || s.startsWith('begin ')).length,
-    savepoints: normalized.filter((s) => s.startsWith('savepoint')).length,
-    statements: normalized.length,
+    transactions: buckets.begin,
+    savepoints: buckets.savepoint,
+    statements: statements.length,
+    buckets,
   };
 }
 
@@ -207,11 +249,37 @@ function agentApp(device: EnrolledDevice): Hono {
   return app;
 }
 
-function heartbeat(device: EnrolledDevice): Promise<Response> {
+// What a current agent declares on every beat: compiledSecurityCapabilities()
+// in agent/internal/heartbeat/heartbeat.go (~:7991) plus the runtime PAM
+// lifetime version and reconciliation status it sets at ~:4751-4753.
+const CURRENT_AGENT_HEARTBEAT = {
+  status: 'ok',
+  agentVersion: '1.0.0-test',
+  metricsAvailable: false,
+  securityCapabilities: {
+    outboundNetworkPolicyVersion: 1,
+    scriptSecretEnvVersion: 1,
+    peripheralPolicyProtocolVersion: 2,
+    rollbackProtocolVersion: 1,
+    revocationLeaseProtocolVersion: 1,
+    desktopFenceProtocolVersion: 1,
+    desktopWsFenceProtocolVersion: 1,
+    consentPromptProtocolVersion: 2,
+    pamLifetimeProtocolVersion: 2,
+    pamReconciliation: { unresolvedCount: 0, quarantinedCount: 0, awaitingAcknowledgementCount: 0 },
+  },
+};
+
+// A pre-capability agent (no securityCapabilities). The claim then cancels any
+// pending peripheral_policy_sync_v2 rows and marks their states rejected: two
+// UPDATEs per beat that a current agent never pays.
+const LEGACY_AGENT_HEARTBEAT = { status: 'ok', agentVersion: '1.0.0-test', metricsAvailable: false };
+
+function heartbeat(device: EnrolledDevice, body: Record<string, unknown> = CURRENT_AGENT_HEARTBEAT): Promise<Response> {
   return Promise.resolve(agentApp(device).request(`/agents/${device.agentId}/heartbeat`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ status: 'ok', agentVersion: '1.0.0-test', metricsAvailable: false }),
+    body: JSON.stringify(body),
   }));
 }
 
@@ -267,6 +335,10 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
       'steady:', JSON.stringify(steady),
     );
 
+    // A current agent declares peripheralPolicyProtocolVersion 2, so the claim
+    // never runs the v2 cancel/state UPDATEs that a legacy payload triggers.
+    expect(steady.buckets.peripheralCapabilityWrites).toBe(0);
+
     expect(cold.status).toBe(200);
     expect(warm.status).toBe(200);
     expect(steady.status).toBe(200);
@@ -278,6 +350,23 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     // If a change legitimately adds a query, raise this number in the same PR
     // and say why; the remaining bulk is ~26 repeated device/org/group reads
     // across the policy resolvers (#8053 follow-up).
+    expect(steady.statements).toBeLessThanOrEqual(70);
+  });
+
+  runDb('POST /agents/:id/heartbeat: a legacy (no securityCapabilities) beat pays the two peripheral-v2 UPDATEs on top', async () => {
+    const org = await seedOrg('legacy');
+    const device = await enrollDevice(org, 'legacy');
+    const sibling = await enrollDevice(org, 'legacy-sibling');
+    await heartbeat(device, LEGACY_AGENT_HEARTBEAT);
+    advanceClock(NEXT_BEAT_MS);
+    expect((await heartbeat(sibling, LEGACY_AGENT_HEARTBEAT)).status).toBe(200);
+    await dropDeviceRedisCaches(device.deviceId);
+    const steady = await measure(() => heartbeat(device, LEGACY_AGENT_HEARTBEAT));
+    console.log('[#8053 budget] legacy steady:', JSON.stringify(steady));
+
+    expect(steady.status).toBe(200);
+    expect(steady.transactions).toBeLessThanOrEqual(3);
+    expect(steady.buckets.peripheralCapabilityWrites).toBe(2);
     expect(steady.statements).toBeLessThanOrEqual(70);
   });
 
