@@ -157,8 +157,8 @@ function fromPassedHierarchy(h: PassedDeviceHierarchy): DeviceHierarchy {
 }
 
 export type RoleOsFilterable = {
-  roleFilter?: string[] | null;
-  osFilter?: string[] | null;
+  roleFilter?: readonly string[] | null;
+  osFilter?: readonly string[] | null;
 };
 
 export type DeviceRoleOs = {

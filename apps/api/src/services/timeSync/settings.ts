@@ -58,7 +58,7 @@ const TIME_SYNC_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOrPartner', 
 
 type TimeSyncRankRow = {
   policyId: string; policyName: string | null; level: string; assignmentPriority: number; assignmentCreatedAt: Date;
-  roleFilter: string[] | null; osFilter: string[] | null;
+  roleFilter: readonly string[] | null; osFilter: readonly string[] | null;
   enforceNtp: boolean; ntpServers: string[]; pollIntervalMinutes: number;
   timezoneExpected: 'site' | 'pinned'; pinnedTimezone: string | null; timezoneAutoFix: boolean;
 };

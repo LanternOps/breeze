@@ -1,7 +1,7 @@
 -- Partner-wide READ branch for config_policy_hardware_monitoring_settings
 -- (#8142, horizontal-scaling W03 / W1a-2).
 --
--- Every other per-feature settings table on the configuration-policy chain got
+-- Every other partner-capable per-feature settings table on the configuration-policy chain got
 -- a SELECT-only own-partner branch in 2026-10-05-110000 (wave 1 of #4673) or in
 -- its own creating migration (time_sync, 2026-11-10-120000). This table was
 -- created by 2026-10-30-110100 without one, so an ORG-scoped context could not

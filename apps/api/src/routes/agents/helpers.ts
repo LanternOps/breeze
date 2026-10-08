@@ -1937,7 +1937,7 @@ const LEVEL_PRIORITY: Record<string, number> = {
 const EVENT_LOG_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOrPartner', partnerTarget: 'partner', roleOs: 'sql' };
 
 type EventLogRankRow = {
-  level: string; assignmentPriority: number; roleFilter: string[] | null; osFilter: string[] | null;
+  level: string; assignmentPriority: number; roleFilter: readonly string[] | null; osFilter: readonly string[] | null;
   retentionDays: number; maxEventsPerCycle: number; collectCategories: string[]; minimumLevel: string;
   collectionIntervalMinutes: number; rateLimitPerHour: number;
 };
@@ -2121,7 +2121,7 @@ type HardwareMonitoringPolicyView = { enabled: boolean; source: 'default' | 'pol
 const HARDWARE_MONITORING_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOrPartner', partnerTarget: 'partner', roleOs: 'sql' };
 
 type HardwareMonitoringRankRow = {
-  policyName: string; level: string; assignmentPriority: number; roleFilter: string[] | null; osFilter: string[] | null;
+  policyName: string; level: string; assignmentPriority: number; roleFilter: readonly string[] | null; osFilter: readonly string[] | null;
   enabled: boolean; pollIntervalMinutes: number; diskHealthIntervalMinutes: number;
 };
 
@@ -3508,11 +3508,11 @@ export interface OnedriveUpnLookup {
 export interface OnedriveConfigPlan {
   readonly deviceId: string;
   readonly orgId: string;
-  readonly base: OnedriveConfigUpdate['base'];
-  readonly libs: OnedriveLibraryRow[];
+  readonly base: Readonly<OnedriveConfigUpdate['base']>;
+  readonly libs: readonly OnedriveLibraryRow[];
   /** One per deduplicated reported UPN, in report order; empty when nothing needs Graph tagging. */
   readonly upnLookups: readonly OnedriveUpnLookup[];
-  /** Loaded iff some lookup missed: the org's active legacy-direct connection, or null. */
+  /** Loaded only when some lookup missed: the org's active legacy-direct connection, or null. */
   readonly connection: LegacyDirectConnection | null;
 }
 

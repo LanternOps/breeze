@@ -23,9 +23,9 @@
  * null sub-object means "no settings row", which every inner-joining resolver
  * treats as "this candidate does not exist" — never as defaults.
  *
- * Order: created_at, id. Ranking ties that today's SQL left to plan order are
- * therefore won by the earliest assignment (the legacy queries got the same
- * ORDER BY in the same wave, so both paths agree).
+ * Order: assignment created_at, id, then link feature_type. Ranking ties that
+ * today's SQL left to plan order are therefore won by the earliest assignment
+ * (the legacy queries got the same ORDER BY, so both paths agree).
  */
 import { and, asc, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
@@ -79,8 +79,8 @@ export interface PolicyCandidate {
   readonly level: PolicyAssignmentLevel;
   readonly targetId: string;
   readonly priority: number;
-  readonly roleFilter: string[] | null;
-  readonly osFilter: string[] | null;
+  readonly roleFilter: readonly string[] | null;
+  readonly osFilter: readonly string[] | null;
   readonly assignmentCreatedAt: Date;
   /** The ASSIGNED policy (never the parent a link was inherited from). */
   readonly policyId: string;
@@ -140,7 +140,7 @@ export async function loadDevicePolicySet(hierarchy: DeviceHierarchy, executor: 
   })));
 }
 
-/** The set statement, unexecuted — exported so the Task 9 perf probe can EXPLAIN exactly it. */
+/** The set statement, unexecuted — exported so the EXPLAIN probe in agentHotPathQueryBudget.integration.test.ts can EXPLAIN exactly it. */
 export function policySetQuery(hierarchy: DeviceHierarchy, executor: DbExecutor = db) {
   const partnerId = hierarchy.org?.partnerId ?? null;
   const ownership: SQL = partnerId
@@ -309,7 +309,7 @@ export interface ApplicabilityRule {
 
 /** Exactly `(filter IS NULL OR $v = ANY(filter))` for role and OS. */
 export function sqlRoleOsMatch(
-  c: { roleFilter: string[] | null; osFilter: string[] | null },
+  c: { roleFilter: readonly string[] | null; osFilter: readonly string[] | null },
   device: { deviceRole: string | null; osType: string | null },
 ): boolean {
   const roleOk = c.roleFilter === null || (device.deviceRole !== null && c.roleFilter.includes(device.deviceRole));

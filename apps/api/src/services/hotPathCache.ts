@@ -36,9 +36,9 @@ export { __resetHotPathCachesForTests } from './hotPathCacheRegistry';
  *   scope (see `fillScopeIsCacheable`), with no writes of its own can load a
  *   per-org value there, and the value is stored only after that context has
  *   committed, through `fillIfCurrent`, which keeps the invalidation-race rule
- *   below. A load under an org scope is stored only when the caller passes the exact
- *   `{ orgId, partnerId }` fill scope the context was built for (#8142,
- *   `fillScopeIsCacheable`); any other narrower scope is returned but never stored.
+ *   below. Which org-scoped contexts may fill is decided in ONE place,
+ *   `fillScopeIsCacheable`; a load under any other narrower scope is returned
+ *   but never stored (an RLS-narrowed answer must not be served org-wide).
  * - **Failures are never cached.** A throwing loader propagates to the caller
  *   and leaves the cache untouched, so a fail-closed caller re-resolves on its
  *   next request.
@@ -161,10 +161,12 @@ export class HotPathTtlCache<K, V> {
 
 /** The exact org-scoped context a per-org value may be cached from (#8142). */
 export interface DeferredFillScope {
-  orgId: string;
-  /** The org's own partner, read under RLS in the same context. Both fields must be non-empty; the context must carry no userId. */
-  partnerId: string;
+  readonly orgId: string;
+  /** The org's own partner, read under RLS in the same context. */
+  readonly partnerId: string;
 }
+// Both fields must be non-empty, and the context must carry no userId
+// (checked by fillScopeIsCacheable).
 
 /**
  * Whether a load under `ctx` may be stored for everyone in the org.
@@ -196,10 +198,8 @@ export function fillScopeIsCacheable(ctx: DbAccessContext | undefined, fillScope
  * (#8053 W1a-1: the heartbeat's shared post-commit policy context). A hit
  * returns at once with no load. A miss loads in the caller's transaction, as
  * the code did before it was cached, and queues the fill. The caller calls
- * `flush()` once, after that context has committed. A miss under a non-system
- * scope still loads and returns, but is never stored unless the caller names
- * an exact org fill scope that the context matches (`fillScopeIsCacheable`):
- * an RLS-narrowed answer must not be served to the rest of the org.
+ * `flush()` once, after that context has committed. Whether a miss is stored
+ * at all is `fillScopeIsCacheable`'s decision.
  *
  * Caller contract: the context must have made no writes the loaded rows could
  * observe, and the value must be a function of `key` alone.
