@@ -109,7 +109,8 @@ func TestAssemblerTimesOut(t *testing.T) {
 }
 
 func TestNewTransferIDIsUnique(t *testing.T) {
-	if newTransferID() == newTransferID() {
+	first, second := newTransferID(), newTransferID()
+	if first == second {
 		t.Fatal("transfer ids collided")
 	}
 }
