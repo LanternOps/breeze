@@ -233,6 +233,13 @@ describe('report_runs direct dual-axis tenancy (#4247)', () => {
       expect(text, r.policyname).not.toMatch(/FROM\s+reports/i);
       expect(text, r.policyname).not.toContain('breeze_current_partner_id');
     }
+    const owner = list.find((r) => r.policyname === 'report_runs_owner_isolation')!;
+    for (const predicate of [owner.qual ?? '', owner.with_check ?? '']) {
+      expect(predicate).toContain('breeze_has_org_access(org_id)');
+      expect(predicate).toContain('breeze_has_partner_access(partner_id)');
+    }
+    const history = list.find((r) => r.policyname === 'report_runs_report_history_select')!;
+    expect(history.qual ?? '').toContain('breeze_has_report_history_access(org_id)');
   });
 
   runDb('a run created without owner columns inherits its parent owner (org and partner axis)', async () => {
@@ -245,6 +252,36 @@ describe('report_runs direct dual-axis tenancy (#4247)', () => {
     `);
     expect(await ownerOf(orgRun!.id)).toEqual({ org_id: w.orgA.id, partner_id: null });
     expect(await ownerOf(partnerRun!.id)).toEqual({ org_id: null, partner_id: w.partner.id });
+  });
+
+  runDb('the owner fill runs as the inserting breeze_app session: a visible parent fills, an invisible one cannot leak', async () => {
+    const w = await seedWorld();
+    // The rolling-deploy path: an old writer omits both owner columns.
+    const orgRows = await withDbAccessContext(orgContext(w.orgA.id, w.partner.id), () =>
+      db.execute<{ org_id: string | null; partner_id: string | null }>(sql`
+        INSERT INTO report_runs (report_id, status) VALUES (${w.reportA}, 'running') RETURNING org_id, partner_id
+      `),
+    );
+    expect(orgRows[0]).toEqual({ org_id: w.orgA.id, partner_id: null });
+    const partnerRows = await withDbAccessContext(partnerContext(w.partner.id), () =>
+      db.execute<{ org_id: string | null; partner_id: string | null }>(sql`
+        INSERT INTO report_runs (report_id, status) VALUES (${w.partnerReport}, 'running') RETURNING org_id, partner_id
+      `),
+    );
+    expect(partnerRows[0]).toEqual({ org_id: null, partner_id: w.partner.id });
+
+    // A SECURITY DEFINER fill would read org B's parent and copy its owner into
+    // a row org A then writes; the invoker fill sees nothing and the row is refused.
+    await expectSqlState(
+      withDbAccessContext(orgContext(w.orgA.id, w.partner.id), () =>
+        db.execute(sql`INSERT INTO report_runs (report_id, status) VALUES (${w.reportB}, 'running')`),
+      ),
+      '42501',
+    );
+    const leaked = await getTestDb().execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM report_runs WHERE report_id = ${w.reportB}
+    `);
+    expect(leaked[0]!.n).toBe(0);
   });
 
   runDb('rejects both-axes (23514) and an owner that is not the parent owner (23503), even as the table owner', async () => {
@@ -329,6 +366,21 @@ describe('report_runs direct dual-axis tenancy (#4247)', () => {
       ),
       '42501',
     );
+    // Neither an org session of the same partner nor another partner can
+    // change or delete the partner-owned run.
+    for (const ctx of [orgContext(w.orgA.id, w.partner.id), partnerContext(w.otherPartner.id)]) {
+      const upd = await withDbAccessContext(ctx, () =>
+        db.execute(sql`UPDATE report_runs SET status = 'failed' WHERE id = ${pRun} RETURNING id`),
+      );
+      expect(Array.from(upd)).toHaveLength(0);
+      const del = await withDbAccessContext(ctx, () =>
+        db.execute(sql`DELETE FROM report_runs WHERE id = ${pRun} RETURNING id`),
+      );
+      expect(Array.from(del)).toHaveLength(0);
+    }
+    const intact = await getTestDb().execute<{ status: string }>(sql`SELECT status FROM report_runs WHERE id = ${pRun}`);
+    expect(intact[0]!.status).toBe('completed');
+
     // An org session cannot create a run of the partner's report either.
     await expectSqlState(
       withDbAccessContext(orgContext(w.orgA.id, w.partner.id), () =>
@@ -348,7 +400,12 @@ describe('report_runs direct dual-axis tenancy (#4247)', () => {
     const runId = await ownerInsertRun(reportId, historyOrg.id, null);
     const ctx = historyContext(partner.id, [historyOrg.id]);
 
-    expect(await visibleRuns(ctx, [runId])).toEqual([runId]);
+    // Bound of the grant: a suspended org the GUC does not list stays invisible.
+    const otherHistoryOrg = await createOrganization({ partnerId: partner.id, status: 'suspended' });
+    const otherReportId = await seedOrgReport(otherHistoryOrg.id, user.id);
+    const otherRunId = await ownerInsertRun(otherReportId, otherHistoryOrg.id, null);
+
+    expect(await visibleRuns(ctx, [runId, otherRunId])).toEqual([runId]);
     // Without the opt-in GUC the plain partner context cannot see the suspended org's run.
     expect(await visibleRuns(partnerContext(partner.id), [runId])).toEqual([]);
 

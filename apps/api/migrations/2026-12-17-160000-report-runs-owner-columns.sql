@@ -29,7 +29,8 @@ CREATE INDEX IF NOT EXISTS report_runs_partner_id_idx ON report_runs (partner_id
 -- Owner fill. A run inserted without either owner column takes its parent's
 -- owner, read in the INSERTING session's own RLS context (SECURITY INVOKER):
 -- a session that cannot see the parent gets nothing filled, and the row is
--- then refused by report_runs_one_owner_chk (160200). It never overrides a
+-- then refused: by the owner policy's WITH CHECK (42501) for a tenant session,
+-- by report_runs_one_owner_chk (23514, 160200) for system scope. It never overrides a
 -- value the writer supplied — the composite FKs check those.
 --
 -- Why it exists alongside the explicit owner columns every application insert

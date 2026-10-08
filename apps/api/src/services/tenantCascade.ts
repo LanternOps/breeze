@@ -1298,10 +1298,12 @@ interface FkEdge {
  *
  * - `report_runs_artifact_id_ai_run_artifacts_id_fk` (#4247): report_runs
  *   gained org_id, which closed ai_agent_runs.report_run_id → report_runs →
- *   (artifact_id) ai_run_artifacts → (run_id, org_id) ai_agent_runs. Breaking
- *   it here (rather than ai_agent_runs.report_run_id) means the SET NULL
- *   lands on report_runs, which has no UPDATE trigger; ai_agent_runs is
- *   trigger-guarded.
+ *   (artifact_id) ai_run_artifacts → (run_id, org_id) ai_agent_runs. Either
+ *   SET NULL edge would be safe; this one is broken so the null-out lands on
+ *   report_runs (no UPDATE trigger) rather than on ai_agent_runs, whose
+ *   leave-for-erasure history rows carry a BEFORE UPDATE immutability guard
+ *   (it does not cover report_run_id today, but erasure should not depend on
+ *   that staying true).
  */
 export const CASCADE_ORDER_SET_NULL_EDGE_BREAKS: ReadonlySet<string> = new Set([
   'report_runs_artifact_id_ai_run_artifacts_id_fk',

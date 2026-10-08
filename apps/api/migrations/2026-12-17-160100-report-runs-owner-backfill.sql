@@ -10,16 +10,20 @@
 --
 -- Concurrency: both tables are locked SHARE ROW EXCLUSIVE for the duration
 -- (reads continue; report owner changes and run inserts wait) so no owner can
--- move between the copy and the audit. Run inserts arriving after commit are
--- filled by report_runs_fill_owner (160000).
+-- move between the copy and the audit. Lock order is report_runs THEN reports,
+-- the order the scheduler takes them (insert the run, then stamp the report),
+-- so the two cannot deadlock. Run inserts arriving after commit are filled by
+-- report_runs_fill_owner (160000).
 --
--- Batched by ctid (CLAUDE.md hot-table rule). Idempotent: only rows with
--- neither owner column are touched.
+-- Batched by ctid (CLAUDE.md hot-table rule). The batches bound per-statement
+-- work only: autoMigrate runs this file in one transaction, so the locks are
+-- held until the whole backfill commits. Idempotent: only rows with neither
+-- owner column are touched.
 
 SELECT set_config('breeze.scope', 'system', true);
 
-LOCK TABLE reports IN SHARE ROW EXCLUSIVE MODE;
 LOCK TABLE report_runs IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE reports IN SHARE ROW EXCLUSIVE MODE;
 
 DO $$
 DECLARE

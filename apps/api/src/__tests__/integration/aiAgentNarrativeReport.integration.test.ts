@@ -59,6 +59,7 @@ import {
 } from '../../services/aiAgents/narrativeReport';
 import type { NarrativeContext } from '../../services/aiAgents/narrativeContext';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
+import { createMemoryBlobStorage, setBlobStorageForTests } from '../../services/artifacts/blobStorage';
 import {
   NARRATIVE_SECTION_KEYS,
   NARRATIVE_SECTION_TITLES,
@@ -393,7 +394,43 @@ describe('persistNarrativeReport against live Postgres (P2-3, task A7)', () => {
     const f = await seed();
     const artifact = await persistNarrativeReport(input(f));
 
-    const stats = await cascadeDeleteOrg(f.orgId, f.userId);
+    // #4247: close the FK cycle the org cascade must break —
+    // ai_agent_runs.report_run_id -> report_runs.artifact_id -> ai_run_artifacts
+    // .(run_id, org_id) -> ai_agent_runs. Without the SET NULL edge break in
+    // topologicalCascadeOrder, cascadeDeleteOrg throws "FK cycle detected".
+    // Erasure pre-clears artifact blobs first; an in-memory store stands in for S3.
+    const blobs = createMemoryBlobStorage();
+    setBlobStorageForTests(blobs);
+    const put = await blobs.put({
+      region: 'us',
+      contentType: 'text/markdown',
+      body: Buffer.from('# narrative'),
+      maxBytes: 1024,
+    });
+    const runArtifactId = randomUUID();
+    await getTestDb().execute(sql`
+      INSERT INTO ai_run_artifacts (id, org_id, run_id, kind, name, content_type, bytes, sha256, blob_key, created_by_tool)
+      VALUES (${runArtifactId}::uuid, ${f.orgId}::uuid, ${f.runId}::uuid, 'report', 'narrative.md', 'text/markdown',
+              1, ${'0'.repeat(64)}, ${put.key}, 'test')
+    `);
+    await getTestDb().execute(sql`
+      UPDATE report_runs SET artifact_id = ${runArtifactId}::uuid WHERE id = ${artifact.reportRunId}::uuid
+    `);
+    expect(await countWhere(sql`
+      SELECT count(*)::int FROM ai_agent_runs
+       WHERE id = ${f.runId}::uuid AND report_run_id = ${artifact.reportRunId}::uuid
+    `)).toBe(1);
+
+    let stats: Awaited<ReturnType<typeof cascadeDeleteOrg>>;
+    try {
+      stats = await cascadeDeleteOrg(f.orgId, f.userId);
+    } finally {
+      setBlobStorageForTests(null);
+    }
+
+    expect(await countWhere(sql`
+      SELECT count(*)::int FROM ai_run_artifacts WHERE id = ${runArtifactId}::uuid
+    `)).toBe(0);
 
     expect(stats.tablesDeleted.organizations).toBe(1);
     expect(await countWhere(sql`

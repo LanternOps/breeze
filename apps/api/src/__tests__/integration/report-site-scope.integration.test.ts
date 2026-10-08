@@ -855,7 +855,7 @@ describe('Wave 2 · forced RLS blocks cross-organization report forgery', () => 
       '';
     expect(forgeMessage).toContain('new row violates row-level security policy');
 
-    // ── Same for report_runs, whose policy joins through its parent report. ──
+    // ── Same for report_runs, whose direct owner policy (#4247) keys on its own org_id. ──
     let runForgeError: unknown;
     try {
       await appDb.transaction(async (tx) => {

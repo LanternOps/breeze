@@ -15,8 +15,9 @@
  * helpers per command (an org-only policy passes it). This suite, through the
  * real postgres.js driver as the forced-RLS breeze_app role, is the only proof
  * of the partner branch, of the XOR CHECK, of the execution-scope CHECK's
- * partner_wide arm, of the report_runs / report_run_deliveries FK-join partner
- * OR, of org-token blindness, and of the report_runs ON DELETE CASCADE.
+ * partner_wide arm, of the report_run_deliveries FK-join partner OR, of
+ * org-token blindness, and of the report_runs ON DELETE CASCADE. (report_runs'
+ * own direct dual-axis policy is proven by reportRunsOwnerRls, #4247.)
  */
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';

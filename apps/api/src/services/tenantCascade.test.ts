@@ -307,6 +307,26 @@ describe('topologicalCascadeOrder', () => {
     await expect(topologicalCascadeOrder()).rejects.toThrow(/cycle/i);
   });
 
+  // #4247: the ai_agent_runs -> report_runs -> ai_run_artifacts -> ai_agent_runs
+  // cycle is broken at the SET NULL artifact_id edge, and ONLY while it is SET NULL.
+  const cycle = (artifactDelType: string) => [
+    { child_table: 'ai_agent_runs', parent_table: 'report_runs', conname: 'ai_agent_runs_report_run_id_fkey', confdeltype: 'n' },
+    { child_table: 'report_runs', parent_table: 'ai_run_artifacts', conname: 'report_runs_artifact_id_ai_run_artifacts_id_fk', confdeltype: artifactDelType },
+    { child_table: 'ai_run_artifacts', parent_table: 'ai_agent_runs', conname: 'ai_run_artifacts_run_org_fk', confdeltype: 'c' },
+  ];
+
+  it('breaks the report_runs artifact cycle at the SET NULL edge', async () => {
+    mockState.fkEdges = cycle('n');
+    const order = await topologicalCascadeOrder();
+    expect(order.indexOf('ai_run_artifacts')).toBeLessThan(order.indexOf('ai_agent_runs'));
+    expect(order.indexOf('ai_agent_runs')).toBeLessThan(order.indexOf('report_runs'));
+  });
+
+  it.each(['a', 'c', 'r'])('re-detects the cycle when the break edge is no longer SET NULL (confdeltype %s)', async (t) => {
+    mockState.fkEdges = cycle(t);
+    await expect(topologicalCascadeOrder()).rejects.toThrow(/cycle/i);
+  });
+
   it('ignores edges between cascade and non-cascade tables', async () => {
     mockState.fkEdges = [
       { child_table: 'something_not_in_list', parent_table: 'users' },
