@@ -2,9 +2,10 @@
  * Tests for buildPatchSourceConfigUpdate (#1872) — the heartbeat helper that
  * surfaces the sole-Windows-Update-source enforcement flag to the agent.
  *
- * resolvePatchConfigForDevice is mocked directly (its DB resolution is covered
- * by configPolicyPatching/featureConfigResolver tests), so this file pins only
- * the mapping the heartbeat relies on:
+ * resolvePatchConfigPolicyForDevice is mocked directly (its DB resolution is
+ * covered by configPolicyPatching/featureConfigResolver tests), so this file
+ * pins only the mapping the heartbeat relies on (#8053 W1a-1: the policy-only
+ * variant, never the timezone-resolving details path):
  *   - no patch policy resolved (null) → { exclusiveWindowsUpdate: false }
  *     (the revert-on-unassign contract — a device that loses its patch policy
  *     must be told to revert, not left enforced)
@@ -15,7 +16,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { resolvePatchConfigForDeviceMock } = vi.hoisted(() => ({
+const { resolvePatchConfigPolicyForDeviceMock, resolvePatchConfigForDeviceMock } = vi.hoisted(() => ({
+  resolvePatchConfigPolicyForDeviceMock: vi.fn(),
   resolvePatchConfigForDeviceMock: vi.fn(),
 }));
 
@@ -64,6 +66,7 @@ vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../../services/cloudflareMtls', () => ({ CloudflareMtlsService: vi.fn() }));
 vi.mock('../../services/softwarePolicyService', () => ({ recordSoftwarePolicyAudit: vi.fn() }));
 vi.mock('../../services/featureConfigResolver', () => ({
+  resolvePatchConfigPolicyForDevice: resolvePatchConfigPolicyForDeviceMock,
   resolvePatchConfigForDevice: resolvePatchConfigForDeviceMock,
 }));
 vi.mock('../../services/filesystemAnalysis', () => ({
@@ -95,7 +98,7 @@ describe('buildPatchSourceConfigUpdate (#1872)', () => {
   });
 
   it('returns exclusiveWindowsUpdate:false when the device has no patch policy (revert-on-unassign)', async () => {
-    resolvePatchConfigForDeviceMock.mockResolvedValue(null);
+    resolvePatchConfigPolicyForDeviceMock.mockResolvedValue(null);
 
     const result = await buildPatchSourceConfigUpdate(DEVICE_ID);
 
@@ -103,7 +106,7 @@ describe('buildPatchSourceConfigUpdate (#1872)', () => {
   });
 
   it('passes through exclusiveWindowsUpdate:true from a resolved patch settings row', async () => {
-    resolvePatchConfigForDeviceMock.mockResolvedValue({ exclusiveWindowsUpdate: true });
+    resolvePatchConfigPolicyForDeviceMock.mockResolvedValue({ settings: { exclusiveWindowsUpdate: true } });
 
     const result = await buildPatchSourceConfigUpdate(DEVICE_ID);
 
@@ -111,7 +114,7 @@ describe('buildPatchSourceConfigUpdate (#1872)', () => {
   });
 
   it('passes through exclusiveWindowsUpdate:false from a resolved patch settings row', async () => {
-    resolvePatchConfigForDeviceMock.mockResolvedValue({ exclusiveWindowsUpdate: false });
+    resolvePatchConfigPolicyForDeviceMock.mockResolvedValue({ settings: { exclusiveWindowsUpdate: false } });
 
     const result = await buildPatchSourceConfigUpdate(DEVICE_ID);
 
@@ -120,11 +123,20 @@ describe('buildPatchSourceConfigUpdate (#1872)', () => {
 
   it('coerces a missing column on a resolved row to false (back-compat)', async () => {
     // A pre-migration row read back without the column must not push undefined.
-    resolvePatchConfigForDeviceMock.mockResolvedValue({ rebootPolicy: 'if_required' });
+    resolvePatchConfigPolicyForDeviceMock.mockResolvedValue({ settings: { rebootPolicy: 'if_required' } });
 
     const result = await buildPatchSourceConfigUpdate(DEVICE_ID);
 
     expect(result).toEqual({ exclusiveWindowsUpdate: false });
+  });
+
+  it('reads only the winning patch link, never the timezone-resolving details path (#8053)', async () => {
+    resolvePatchConfigPolicyForDeviceMock.mockResolvedValue({ settings: { exclusiveWindowsUpdate: true } });
+
+    await expect(buildPatchSourceConfigUpdate(DEVICE_ID)).resolves.toEqual({ exclusiveWindowsUpdate: true });
+
+    expect(resolvePatchConfigPolicyForDeviceMock).toHaveBeenCalledWith(DEVICE_ID, undefined);
+    expect(resolvePatchConfigForDeviceMock).not.toHaveBeenCalled();
   });
 });
 

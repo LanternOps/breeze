@@ -1,4 +1,4 @@
-import { hasDbAccessContext, runAfterDbContextExit } from '../db';
+import { getCurrentDbAccessContext, hasDbAccessContext, runAfterDbContextExit } from '../db';
 import { registerHotPathCache } from './hotPathCacheRegistry';
 
 export { __resetHotPathCachesForTests } from './hotPathCacheRegistry';
@@ -28,10 +28,14 @@ export { __resetHotPathCachesForTests } from './hotPathCacheRegistry';
  *   to its own caller but does not populate the cache, so a writer that
  *   invalidates after committing can never be overwritten by a read that saw
  *   the pre-commit state.
- * - **Only top-level reads are cached.** Inside an ambient DB context the
- *   loader would join the caller's transaction — its RLS scope (an org-scoped
- *   caller cannot see the parent partner row) and its uncommitted writes — so
- *   the cache is bypassed entirely there: no read, no write.
+ * - **Only top-level reads are cached — with one exception.** Inside an ambient
+ *   DB context `getOrLoad` bypasses the cache entirely (the loader would join
+ *   the caller's transaction: its RLS scope and its uncommitted writes). The
+ *   exception is `DeferredCacheFills` (#8053 W1a-1): a hot path that already
+ *   runs inside a SYSTEM-scoped context with no writes of its own can load a
+ *   per-org value there, and the value is stored only after that context has
+ *   committed, through `fillIfCurrent`, which keeps the invalidation-race rule
+ *   below. A load under any narrower scope is returned but never stored.
  * - **Failures are never cached.** A throwing loader propagates to the caller
  *   and leaves the cache untouched, so a fail-closed caller re-resolves on its
  *   next request.
@@ -110,6 +114,33 @@ export class HotPathTtlCache<K, V> {
     runAfterDbContextExit(`hotPathCache.${this.name}.invalidate`, () => this.invalidate(key));
   }
 
+  /** The cached value, or undefined on a miss. Never loads and never touches the DB. */
+  peek(key: K): V | undefined {
+    const hit = this.entries.get(key);
+    if (!hit) return undefined;
+    if (hit.expiresAt > Date.now()) return hit.value;
+    this.entries.delete(key);
+    return undefined;
+  }
+
+  /** Generation stamp for a load the caller runs itself; pass it to fillIfCurrent. */
+  ticket(): number {
+    return this.generation;
+  }
+
+  /**
+   * Store a value the caller loaded itself, iff no invalidate() ran since
+   * `ticket`. Must be called OUTSIDE any DB context: the load's transaction
+   * has to have committed, or a rolled-back read could be cached.
+   */
+  fillIfCurrent(key: K, value: V, ticket: number): void {
+    if (hasDbAccessContext()) {
+      throw new Error(`HotPathTtlCache ${this.name}: fillIfCurrent called inside a DB context`);
+    }
+    if (ticket !== this.generation) return;
+    this.set(key, value);
+  }
+
   get size(): number {
     return this.entries.size;
   }
@@ -125,3 +156,39 @@ export class HotPathTtlCache<K, V> {
   }
 }
 
+/**
+ * Read-through for a hot path that runs INSIDE a system-scoped context
+ * (#8053 W1a-1: the heartbeat's shared post-commit policy context). A hit
+ * returns at once with no load. A miss loads in the caller's transaction, as
+ * the code did before it was cached, and queues the fill. The caller calls
+ * `flush()` once, after that context has committed. A miss under a non-system
+ * scope still loads and returns, but is never stored: an RLS-narrowed answer
+ * must not be served to the rest of the org.
+ *
+ * Caller contract: the context must have made no writes the loaded rows could
+ * observe, and the value must be a function of `key` alone.
+ */
+export class DeferredCacheFills {
+  private readonly pending: Array<() => void> = [];
+
+  async through<K, V>(cache: HotPathTtlCache<K, V>, key: K, load: () => Promise<V>): Promise<V> {
+    const hit = cache.peek(key);
+    if (hit !== undefined) return hit;
+    const cacheable = getCurrentDbAccessContext()?.scope === 'system';
+    const ticket = cache.ticket();
+    const value = await load();
+    if (cacheable) this.pending.push(() => cache.fillIfCurrent(key, value, ticket));
+    return value;
+  }
+
+  flush(): void {
+    // Each fill is independent: one throwing must not drop the rest.
+    for (const fill of this.pending.splice(0)) {
+      try {
+        fill();
+      } catch (err) {
+        console.error('[hotPathCache] deferred cache fill failed; skipping it:', err);
+      }
+    }
+  }
+}

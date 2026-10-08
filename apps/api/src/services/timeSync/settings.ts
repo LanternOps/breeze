@@ -1,4 +1,5 @@
 import { and, eq, inArray, or } from 'drizzle-orm';
+import { hierarchyFor, type DeviceHierarchyOpts } from '../deviceHierarchy';
 import { z } from 'zod';
 import {
   timeSyncInlineSettingsSchema,
@@ -55,27 +56,35 @@ const cacheSchema = z
 
 export async function resolveDeviceTimeSyncSettings(
   deviceId: string,
+  opts?: DeviceHierarchyOpts,
 ): Promise<ResolvedTimeSyncSettings> {
-  const [device] = await db
-    .select({
-      orgId: devices.orgId,
-      siteId: devices.siteId,
-      deviceRole: devices.deviceRole,
-      osType: devices.osType,
-    })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
+  const passed = hierarchyFor(deviceId, opts);
+  const [device] = passed
+    ? [{ orgId: passed.orgId, siteId: passed.siteId, deviceRole: passed.deviceRole, osType: passed.osType }]
+    : await db
+      .select({
+        orgId: devices.orgId,
+        siteId: devices.siteId,
+        deviceRole: devices.deviceRole,
+        osType: devices.osType,
+      })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
   if (!device) throw new Error('Time sync device not visible');
-  const [org] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, device.orgId))
-    .limit(1);
-  const groups = await db
-    .select({ groupId: deviceGroupMemberships.groupId })
-    .from(deviceGroupMemberships)
-    .where(eq(deviceGroupMemberships.deviceId, deviceId));
+  const [org] = passed
+    ? (passed.org ? [{ partnerId: passed.org.partnerId }] : [])
+    : await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, device.orgId))
+      .limit(1);
+  const groups = passed
+    ? passed.groupIds.map((groupId) => ({ groupId }))
+    : await db
+      .select({ groupId: deviceGroupMemberships.groupId })
+      .from(deviceGroupMemberships)
+      .where(eq(deviceGroupMemberships.deviceId, deviceId));
   const targets = [
     and(
       eq(configPolicyAssignments.level, 'device'),
@@ -210,12 +219,16 @@ export async function resolveDeviceTimeSyncSettings(
 
 export async function getDeviceTimeSyncSettings(
   deviceId: string,
+  opts?: DeviceHierarchyOpts,
 ): Promise<ResolvedTimeSyncSettings> {
-  const [device] = await db
-    .select({ orgId: devices.orgId })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
+  const passed = hierarchyFor(deviceId, opts);
+  const [device] = passed
+    ? [{ orgId: passed.orgId }]
+    : await db
+      .select({ orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
   if (!device) throw new Error('Time sync device not visible');
   const redis = getRedis();
   const key = `timesync:settings:device:${deviceId}`;
@@ -230,7 +243,7 @@ export async function getDeviceTimeSyncSettings(
       console.warn('[time-sync] settings cache read failed', error);
     }
   }
-  const resolved = await resolveDeviceTimeSyncSettings(deviceId);
+  const resolved = await resolveDeviceTimeSyncSettings(deviceId, opts);
   if (redis) {
     try {
       await redis.set(key, JSON.stringify(resolved), 'EX', 120);

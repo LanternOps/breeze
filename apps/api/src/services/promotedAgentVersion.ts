@@ -32,7 +32,9 @@ import { captureException, captureMessage } from './sentry';
  *   - `resolvePinnedUpgradeTarget({ pin: null })` (routes/agents/helpers.ts)
  *     — picks the version the heartbeat OFFERS the fleet. If it and this
  *     resolver disagree, agents are told to upgrade to a version whose bytes
- *     this server will not serve.
+ *     this server will not serve. `resolvePinnedUpgradeTargets` (same file) is
+ *     the heartbeat's batched form of the same read (#8053): same predicates,
+ *     same tiebreak.
  *
  * `agent_versions` is a global (non-tenant) table with no RLS, so this is safe
  * to call from the public, unauthenticated download routes in any DB context —

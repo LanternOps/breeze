@@ -48,6 +48,12 @@ vi.mock('../../services/complianceAlertReconcileTrigger', () => ({
   scheduleComplianceAlertReconcile: scheduleReconcileMock,
 }));
 
+const invalidateProbeMock = vi.hoisted(() => vi.fn());
+vi.mock('../../services/agentOrgSettingsCache', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/agentOrgSettingsCache')>()),
+  invalidateOrgPolicyProbeCache: invalidateProbeMock,
+}));
+
 import { db } from '../../db';
 import { actionRoutes } from './actions';
 import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
@@ -165,5 +171,24 @@ describe('POST /policies/:id/deactivate closes the policy alerts', () => {
     mfaOkMock.mockReturnValue(false);
     await buildApp({}).request(`/policies/${POLICY_ID}/deactivate`, { method: 'POST' });
     expect(scheduleReconcileMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /policies/:id/deactivate drops the heartbeat probe cache (#8053)', () => {
+  it("drops the org's heartbeat probe cache", async () => {
+    await buildApp({}).request(`/policies/${POLICY_ID}/deactivate`, { method: 'POST' });
+    expect(invalidateProbeMock).toHaveBeenCalledWith(ORG_ID);
+  });
+
+  it("drops every org's probe cache for a partner-wide policy", async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([policyRow({ orgId: null, partnerId: 'partner-1' })]) as never);
+    await buildApp({ scope: 'system' }).request(`/policies/${POLICY_ID}/deactivate`, { method: 'POST' });
+    expect(invalidateProbeMock).toHaveBeenCalledWith(undefined);
+  });
+
+  it('drops nothing when the deactivation is refused', async () => {
+    mfaOkMock.mockReturnValue(false);
+    await buildApp({}).request(`/policies/${POLICY_ID}/deactivate`, { method: 'POST' });
+    expect(invalidateProbeMock).not.toHaveBeenCalled();
   });
 });

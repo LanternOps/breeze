@@ -12,6 +12,12 @@ const AUTOMATION_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 
 vi.mock('../services', () => ({}));
 
+// The deactivate route drops the per-org heartbeat probe cache (#8053); its
+// after-commit hook needs the real ../db, which this suite replaces.
+vi.mock('../services/agentOrgSettingsCache', () => ({
+  invalidateOrgPolicyProbeCache: vi.fn(),
+}));
+
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));

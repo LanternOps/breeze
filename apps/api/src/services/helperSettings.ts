@@ -7,6 +7,7 @@
  * when NO link matches does the legacy organizations.settings.helper.enabled
  * flag apply; otherwise defaults (enabled: false).
  */
+import { hierarchyFor, type DeviceHierarchyOpts } from './deviceHierarchy';
 import { and, eq, inArray, or } from 'drizzle-orm';
 import { db } from '../db';
 import {
@@ -80,29 +81,38 @@ const HELPER_DEFAULTS: HelperSettings = {
 // policies. Returns null when NO helper feature link matched — callers
 // distinguish "no policy" (legacy org fallback applies) from an explicit
 // enabled:false (which must win; see buildHelperConfigUpdate).
-export async function resolveDeviceHelperSettings(deviceId: string): Promise<HelperSettings | null> {
+export async function resolveDeviceHelperSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<HelperSettings | null> {
+  // #8053 W1a-1: the heartbeat passes the hierarchy it already loaded; every
+  // other caller gets the three reads below, unchanged.
+  const passed = hierarchyFor(deviceId, opts);
+
   // 1. Load device
-  const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
+  const [device] = passed
+    ? [{ orgId: passed.orgId, siteId: passed.siteId }]
+    : await db
+      .select({ orgId: devices.orgId, siteId: devices.siteId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
 
   if (!device) return null;
 
   // 2. Load org (for partnerId)
-  const [org] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, device.orgId))
-    .limit(1);
+  const [org] = passed
+    ? (passed.org ? [{ partnerId: passed.org.partnerId }] : [])
+    : await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, device.orgId))
+      .limit(1);
 
   // 3. Load device group memberships
-  const groupRows = await db
-    .select({ groupId: deviceGroupMemberships.groupId })
-    .from(deviceGroupMemberships)
-    .where(eq(deviceGroupMemberships.deviceId, deviceId));
-  const groupIds = groupRows.map((r) => r.groupId);
+  const groupIds = passed
+    ? [...passed.groupIds]
+    : (await db
+      .select({ groupId: deviceGroupMemberships.groupId })
+      .from(deviceGroupMemberships)
+      .where(eq(deviceGroupMemberships.deviceId, deviceId))).map((r) => r.groupId);
 
   // 4. Build target match conditions
   const targetConditions = [
@@ -175,21 +185,46 @@ const HELPER_CACHE_TTL_SECONDS = 120;
  * Falls back to org-level helperEnabled for backward compatibility,
  * then to defaults if no policy found.
  */
-export async function buildHelperConfigUpdate(deviceId: string, orgId: string): Promise<HelperSettings> {
-  const redis = getRedis();
-  const cacheKey = `helper:settings:device:${deviceId}`;
+export interface HelperConfigUpdateOptions extends DeviceHierarchyOpts {
+  /** The caller already read the Redis entry this beat (and missed). */
+  skipCacheRead?: boolean;
+  /** Source of the legacy organizations.settings.helper flag; defaults to getOrgHelperSettings. */
+  loadOrgHelperSettings?: (orgId: string) => Promise<{ enabled: boolean }>;
+}
 
-  if (redis) {
-    try {
-      const cached = await redis.get(cacheKey);
-      if (cached) return JSON.parse(cached) as HelperSettings;
-    } catch (cacheErr) {
-      console.warn(`[helper] Redis cache read failed for device ${deviceId}:`, cacheErr);
-    }
+function helperCacheKey(deviceId: string): string {
+  return `helper:settings:device:${deviceId}`;
+}
+
+/** The device's cached helper settings, or null on a miss or a Redis error. */
+export async function readCachedHelperSettings(deviceId: string): Promise<HelperSettings | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  try {
+    const cached = await redis.get(helperCacheKey(deviceId));
+    return cached ? JSON.parse(cached) as HelperSettings : null;
+  } catch (cacheErr) {
+    console.warn(`[helper] Redis cache read failed for device ${deviceId}:`, cacheErr);
+    return null;
+  }
+}
+
+export async function buildHelperConfigUpdate(
+  deviceId: string,
+  orgId: string,
+  opts?: HelperConfigUpdateOptions,
+): Promise<HelperSettings> {
+  // Validate up front so a foreign hierarchy is a bug even on a cache hit here. The heartbeat
+  // does its own Redis read first (readCachedHelperSettings) and never reaches this guard on a
+  // hit; this covers direct callers of buildHelperConfigUpdate.
+  hierarchyFor(deviceId, opts);
+  if (!opts?.skipCacheRead) {
+    const cached = await readCachedHelperSettings(deviceId);
+    if (cached) return cached;
   }
 
   // Try config policy resolution first
-  let settings = await resolveDeviceHelperSettings(deviceId);
+  let settings = await resolveDeviceHelperSettings(deviceId, opts);
 
   // Legacy org-level fallback applies ONLY when no policy matched at all. An
   // explicit enabled:false policy must win over organizations.settings.helper
@@ -201,13 +236,15 @@ export async function buildHelperConfigUpdate(deviceId: string, orgId: string): 
   // helperAuth would serve as helper_disabled and the heartbeat would deliver
   // as an uninstall. Only Redis errors are soft.
   if (settings === null) {
-    const orgEnabled = (await getOrgHelperSettings(orgId)).enabled;
+    const loadOrg = opts?.loadOrgHelperSettings ?? getOrgHelperSettings;
+    const orgEnabled = (await loadOrg(orgId)).enabled;
     settings = { ...HELPER_DEFAULTS, enabled: orgEnabled };
   }
 
+  const redis = getRedis();
   if (redis) {
     try {
-      await redis.set(cacheKey, JSON.stringify(settings), 'EX', HELPER_CACHE_TTL_SECONDS);
+      await redis.set(helperCacheKey(deviceId), JSON.stringify(settings), 'EX', HELPER_CACHE_TTL_SECONDS);
     } catch (cacheErr) {
       console.warn(`[helper] Redis cache write failed for device ${deviceId}:`, cacheErr);
     }
