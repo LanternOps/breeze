@@ -2285,8 +2285,9 @@ export async function buildTimeSyncConfigUpdate(
  */
 export async function buildWorkloadInventoryConfigUpdate(
   deviceId: string,
+  opts?: DeviceHierarchyOpts,
 ): Promise<WorkloadInventoryConfigUpdate> {
-  return buildResolvedWorkloadInventoryConfigUpdate(deviceId);
+  return buildResolvedWorkloadInventoryConfigUpdate(deviceId, opts);
 }
 
 /**

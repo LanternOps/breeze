@@ -1,4 +1,5 @@
 import type { WorkloadInventoryInlineSettings } from '@breeze/shared';
+import type { DeviceHierarchyOpts } from '../deviceHierarchy';
 import { getDeviceWorkloadInventorySettings } from './settings';
 
 /** Wire payload for `configUpdate.workload_inventory_settings` (spec §7.2). */
@@ -32,7 +33,8 @@ export function toWorkloadInventoryConfigUpdate(
  */
 export async function buildResolvedWorkloadInventoryConfigUpdate(
   deviceId: string,
+  opts?: DeviceHierarchyOpts,
 ): Promise<WorkloadInventoryConfigUpdate> {
-  const { settings } = await getDeviceWorkloadInventorySettings(deviceId);
+  const { settings } = await getDeviceWorkloadInventorySettings(deviceId, opts);
   return toWorkloadInventoryConfigUpdate(settings);
 }

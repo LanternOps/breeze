@@ -1,17 +1,24 @@
-import { beforeEach, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { WORKLOAD_INVENTORY_DEFAULTS } from '@breeze/shared';
 
 const m = vi.hoisted(() => ({
   rows: [] as unknown[][],
+  statements: 0,
   redis: null as null | { get: ReturnType<typeof vi.fn>; set: ReturnType<typeof vi.fn> },
 }));
 vi.mock('../../db', () => {
-  const result = (rows: unknown[]) => {
-    const chain: any = { then: (yes: any, no: any) => Promise.resolve(rows).then(yes, no) };
+  // A query takes its canned rows (and counts as a statement) when awaited.
+  const query = () => {
+    const chain: any = {
+      then: (yes: any, no: any) => {
+        m.statements += 1;
+        return Promise.resolve(m.rows.shift() ?? []).then(yes, no);
+      },
+    };
     for (const key of ['from', 'where', 'limit', 'innerJoin', 'orderBy']) chain[key] = () => chain;
     return chain;
   };
-  return { db: { select: () => result(m.rows.shift() ?? []) } };
+  return { db: { select: query } };
 });
 vi.mock('../configPolicyOwnership', async () => {
   const { db } = await import('../../db');
@@ -26,6 +33,7 @@ vi.mock('../featureConfigResolver', () => ({
 }));
 vi.mock('../redis', () => ({ getRedis: () => m.redis }));
 
+import { DeviceHierarchyMismatchError, type DeviceHierarchy } from '../deviceHierarchy';
 import { getDeviceWorkloadInventorySettings } from './settings';
 
 const DEVICE = '11111111-1111-4111-8111-111111111111';
@@ -61,6 +69,7 @@ const missRows = (policies: unknown[]) => [
 
 beforeEach(() => {
   m.rows = [];
+  m.statements = 0;
   m.redis = { get: vi.fn().mockResolvedValue(null), set: vi.fn().mockResolvedValue('OK') };
 });
 
@@ -135,4 +144,47 @@ it('within one level the lower priority number wins, then the older assignment',
 it('throws when the device is not visible (never resolves defaults for a device it cannot see)', async () => {
   m.rows = [[]];
   await expect(getDeviceWorkloadInventorySettings(DEVICE)).rejects.toThrow('not visible');
+});
+
+describe('with the heartbeat\'s passed device hierarchy (#8053)', () => {
+  const hierarchy: DeviceHierarchy = {
+    deviceId: DEVICE,
+    orgId: ORG,
+    siteId: SITE,
+    deviceRole: 'server',
+    osType: 'linux',
+    org: { partnerId: PARTNER, type: 'customer' },
+    site: { id: SITE, name: 'HQ', timezone: 'UTC' },
+    groupIds: [],
+  };
+
+  it('a cache hit reads nothing from the database', async () => {
+    const settings = { ...WORKLOAD_INVENTORY_DEFAULTS, enabled: true };
+    m.redis!.get.mockResolvedValue(JSON.stringify({ orgId: ORG, settings }));
+    expect(await getDeviceWorkloadInventorySettings(DEVICE, { hierarchy })).toEqual({ orgId: ORG, settings });
+    expect(m.statements).toBe(0);
+  });
+
+  it('a cache miss issues only the policy query and resolves the same winner', async () => {
+    m.rows = [[policyRow({ level: 'organization', intervalMinutes: 45 })]];
+    const resolved = await getDeviceWorkloadInventorySettings(DEVICE, { hierarchy });
+    expect(resolved).toEqual({ orgId: ORG, settings: expect.objectContaining({ enabled: true, intervalMinutes: 45 }) });
+    expect(m.statements).toBe(1);
+  });
+
+  it('stamps the cache with the hierarchy\'s org, so a moved device re-resolves', async () => {
+    m.redis!.get.mockResolvedValue(
+      JSON.stringify({ orgId: '99999999-9999-4999-8999-999999999999', settings: { ...WORKLOAD_INVENTORY_DEFAULTS, enabled: true } }),
+    );
+    m.rows = [[]];
+    expect((await getDeviceWorkloadInventorySettings(DEVICE, { hierarchy })).settings).toEqual(WORKLOAD_INVENTORY_DEFAULTS);
+    expect(m.redis!.set).toHaveBeenCalledWith(`workloads:settings:device:${DEVICE}`, JSON.stringify({ orgId: ORG, settings: WORKLOAD_INVENTORY_DEFAULTS }), 'EX', 120);
+  });
+
+  it('refuses another device\'s hierarchy', async () => {
+    await expect(
+      getDeviceWorkloadInventorySettings(DEVICE, { hierarchy: { ...hierarchy, deviceId: POLICY } }),
+    ).rejects.toBeInstanceOf(DeviceHierarchyMismatchError);
+    expect(m.statements).toBe(0);
+  });
 });

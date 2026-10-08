@@ -2467,7 +2467,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // settings); and an earlier resolver's SQL error that aborts the shared
       // transaction makes this throw too, which also only omits.
       try {
-        workloadInventorySettings = await buildWorkloadInventoryConfigUpdate(scoped.deviceId);
+        workloadInventorySettings = await buildWorkloadInventoryConfigUpdate(scoped.deviceId, hierarchyOpts);
       } catch (err) {
         console.error(`[agents] failed to build workload inventory config update for ${agentId}:`, err);
         captureException(err);

@@ -16,6 +16,7 @@ import {
   organizations,
 } from '../../db/schema';
 import { policyOwnershipCondition, withDevicePartnerPolicyVisibility } from '../configPolicyOwnership';
+import { hierarchyFor, type DeviceHierarchyOpts } from '../deviceHierarchy';
 import { buildRoleOsFilterConditions, matchesRoleOsFilter } from '../featureConfigResolver';
 import { getRedis } from '../redis';
 
@@ -48,30 +49,43 @@ const cacheSchema = z
  * ingest context. An org-scoped caller cannot see partner-wide policy rows
  * unless visibility is widened to the device's own partner; partnerId comes
  * from the org row read here under the caller's RLS context, never from input.
+ *
+ * The heartbeat passes the device hierarchy it already loaded once per beat
+ * (#8053 W1a-1, services/deviceHierarchy.ts); with it this is one statement.
+ * Without it (agent ingest) the resolver reads the device, org and groups
+ * itself, exactly as before.
  */
 export async function resolveDeviceWorkloadInventorySettings(
   deviceId: string,
+  opts?: DeviceHierarchyOpts,
 ): Promise<ResolvedWorkloadInventorySettings> {
-  const [device] = await db
-    .select({
-      orgId: devices.orgId,
-      siteId: devices.siteId,
-      deviceRole: devices.deviceRole,
-      osType: devices.osType,
-    })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
+  const passed = hierarchyFor(deviceId, opts);
+  const [device] = passed
+    ? [{ orgId: passed.orgId, siteId: passed.siteId, deviceRole: passed.deviceRole, osType: passed.osType }]
+    : await db
+      .select({
+        orgId: devices.orgId,
+        siteId: devices.siteId,
+        deviceRole: devices.deviceRole,
+        osType: devices.osType,
+      })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
   if (!device) throw new Error('Workload inventory device not visible');
-  const [org] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, device.orgId))
-    .limit(1);
-  const groups = await db
-    .select({ groupId: deviceGroupMemberships.groupId })
-    .from(deviceGroupMemberships)
-    .where(eq(deviceGroupMemberships.deviceId, deviceId));
+  const [org] = passed
+    ? (passed.org ? [{ partnerId: passed.org.partnerId }] : [])
+    : await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, device.orgId))
+      .limit(1);
+  const groups = passed
+    ? passed.groupIds.map((groupId) => ({ groupId }))
+    : await db
+      .select({ groupId: deviceGroupMemberships.groupId })
+      .from(deviceGroupMemberships)
+      .where(eq(deviceGroupMemberships.deviceId, deviceId));
   const targets = [
     and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, deviceId)),
     and(eq(configPolicyAssignments.level, 'organization'), eq(configPolicyAssignments.targetId, device.orgId)),
@@ -161,12 +175,16 @@ export async function resolveDeviceWorkloadInventorySettings(
  */
 export async function getDeviceWorkloadInventorySettings(
   deviceId: string,
+  opts?: DeviceHierarchyOpts,
 ): Promise<ResolvedWorkloadInventorySettings> {
-  const [device] = await db
-    .select({ orgId: devices.orgId })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
+  const passed = hierarchyFor(deviceId, opts);
+  const [device] = passed
+    ? [{ orgId: passed.orgId }]
+    : await db
+      .select({ orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
   if (!device) throw new Error('Workload inventory device not visible');
   const redis = getRedis();
   const key = `workloads:settings:device:${deviceId}`;
@@ -181,7 +199,7 @@ export async function getDeviceWorkloadInventorySettings(
       console.warn('[workloads] settings cache read failed', error);
     }
   }
-  const resolved = await resolveDeviceWorkloadInventorySettings(deviceId);
+  const resolved = await resolveDeviceWorkloadInventorySettings(deviceId, opts);
   if (redis) {
     try {
       await redis.set(key, JSON.stringify(resolved), 'EX', WORKLOAD_INVENTORY_SETTINGS_CACHE_TTL_SECONDS);

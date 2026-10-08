@@ -869,6 +869,7 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
         helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
         helpers.buildPatchSourceConfigUpdate, helpers.buildWarrantyConfigUpdate,
         helpers.buildTimeSyncConfigUpdate, helpers.buildOnedriveHelperConfigUpdate,
+        helpers.buildWorkloadInventoryConfigUpdate,
       ]) {
         expect(vi.mocked(builder)).toHaveBeenCalledWith('device-1', expect.objectContaining({ hierarchy }));
       }
