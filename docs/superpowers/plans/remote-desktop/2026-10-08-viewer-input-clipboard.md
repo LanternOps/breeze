@@ -532,9 +532,9 @@ import (
 	"time"
 )
 
-// recordingHandler is a thread-safe InputHandler that records every call in
+// workerRecorder is a thread-safe InputHandler that records every call in
 // order. block, when non-nil, stalls HandleEvent until closed.
-type recordingHandler struct {
+type workerRecorder struct {
 	stubInputHandler
 	mu      sync.Mutex
 	calls   []string
@@ -543,7 +543,7 @@ type recordingHandler struct {
 	texts   []string
 }
 
-func (h *recordingHandler) HandleEvent(ev InputEvent) error {
+func (h *workerRecorder) HandleEvent(ev InputEvent) error {
 	if h.block != nil {
 		<-h.block
 	}
@@ -563,20 +563,20 @@ func (h *recordingHandler) HandleEvent(ev InputEvent) error {
 	return nil
 }
 
-func (h *recordingHandler) SetDisplayOffset(x, y int) {
+func (h *workerRecorder) SetDisplayOffset(x, y int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.calls = append(h.calls, "offset:"+itoa(x)+","+itoa(y))
 }
 
-func (h *recordingHandler) TypeText(text string) error {
+func (h *workerRecorder) TypeText(text string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.texts = append(h.texts, text)
 	return nil
 }
 
-func (h *recordingHandler) snapshot() []string {
+func (h *workerRecorder) snapshot() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]string(nil), h.calls...)
@@ -596,7 +596,7 @@ func joinMods(m []string) string {
 func itoa(v int) string { return strconv.Itoa(v) }
 
 func TestSafeInputReleaseAllReleasesHeldInput(t *testing.T) {
-	inner := &recordingHandler{}
+	inner := &workerRecorder{}
 	s := NewSafeInput(inner, "t")
 	defer s.Close()
 
@@ -611,7 +611,7 @@ func TestSafeInputReleaseAllReleasesHeldInput(t *testing.T) {
 }
 
 func TestSafeInputKeyPressKeepsHeldModifiersDown(t *testing.T) {
-	inner := &recordingHandler{}
+	inner := &workerRecorder{}
 	s := NewSafeInput(inner, "t")
 	defer s.Close()
 
@@ -625,7 +625,7 @@ func TestSafeInputKeyPressKeepsHeldModifiersDown(t *testing.T) {
 }
 
 func TestSafeInputCloseReleasesAndIsIdempotent(t *testing.T) {
-	inner := &recordingHandler{}
+	inner := &workerRecorder{}
 	s := NewSafeInput(inner, "t")
 	mustHandle(t, s, InputEvent{Type: "key_down", Key: "ctrl"})
 
@@ -642,7 +642,7 @@ func TestSafeInputCloseReleasesAndIsIdempotent(t *testing.T) {
 }
 
 func TestSafeInputCloseDoesNotHangOnStuckHandler(t *testing.T) {
-	inner := &recordingHandler{block: make(chan struct{})}
+	inner := &workerRecorder{block: make(chan struct{})}
 	defer close(inner.block)
 	s := NewSafeInput(inner, "t")
 	s.closeTimeout = 100 * time.Millisecond
@@ -660,7 +660,7 @@ func TestSafeInputCloseDoesNotHangOnStuckHandler(t *testing.T) {
 }
 
 func TestSafeInputMovesCoalesceAndKeepOrderWithDiscreteEvents(t *testing.T) {
-	inner := &recordingHandler{block: make(chan struct{})}
+	inner := &workerRecorder{block: make(chan struct{})}
 	s := NewSafeInput(inner, "t")
 	defer s.Close()
 
@@ -685,7 +685,7 @@ func TestSafeInputMovesCoalesceAndKeepOrderWithDiscreteEvents(t *testing.T) {
 }
 
 func TestSafeInputReleaseAllDiscardsQueuedInput(t *testing.T) {
-	inner := &recordingHandler{block: make(chan struct{})}
+	inner := &workerRecorder{block: make(chan struct{})}
 	s := NewSafeInput(inner, "t")
 	defer s.Close()
 
@@ -712,7 +712,7 @@ func TestSafeInputReleaseAllDiscardsQueuedInput(t *testing.T) {
 }
 
 func TestSafeInputReturnsPlatformErrors(t *testing.T) {
-	inner := &recordingHandler{failKey: "bogus"}
+	inner := &workerRecorder{failKey: "bogus"}
 	s := NewSafeInput(inner, "t")
 	defer s.Close()
 	if err := s.HandleEvent(InputEvent{Type: "key_down", Key: "bogus"}); err == nil {
@@ -721,7 +721,7 @@ func TestSafeInputReturnsPlatformErrors(t *testing.T) {
 }
 
 func TestSafeInputDisplayOffsetIsOrderedWithInput(t *testing.T) {
-	inner := &recordingHandler{}
+	inner := &workerRecorder{}
 	s := NewSafeInput(inner, "t")
 	defer s.Close()
 	mustHandle(t, s, InputEvent{Type: "mouse_down", X: 1, Y: 1, Button: "left"})
@@ -734,7 +734,7 @@ func TestSafeInputDisplayOffsetIsOrderedWithInput(t *testing.T) {
 }
 
 func TestSafeInputInjectTextUsesInnerTextTyper(t *testing.T) {
-	inner := &recordingHandler{}
+	inner := &workerRecorder{}
 	s := NewSafeInput(inner, "t")
 	defer s.Close()
 	if err := s.InjectText("hello"); err != nil {
@@ -1093,7 +1093,7 @@ func (s *SafeInput) SendKeyUp(key string) error {
 
 Design notes for the implementer:
 - `stubInputHandler` (in `session_control_test.go`) is not thread-safe. Tests use
-  `recordingHandler`.
+  `workerRecorder`.
 - `TestSafeInputCloseDoesNotHangOnStuckHandler` reads `s.closeTimeout`, which is why that field
   exists rather than using the constant directly.
 - `ReleaseAll` running inside a job and calling `discardQueued` happens on the worker goroutine.
@@ -1158,15 +1158,15 @@ import (
 	"testing"
 )
 
-func newSafeSession(t *testing.T) (*Session, *recordingHandler) {
+func newSafeSession(t *testing.T) (*Session, *workerRecorder) {
 	t.Helper()
-	inner := &recordingHandler{}
+	inner := &workerRecorder{}
 	si := NewSafeInput(inner, "session-1")
 	t.Cleanup(si.Close)
 	return &Session{id: "session-1", inputHandler: si}, inner
 }
 
-func lastCall(h *recordingHandler) string {
+func lastCall(h *workerRecorder) string {
 	c := h.snapshot()
 	if len(c) == 0 {
 		return ""
@@ -1240,7 +1240,7 @@ and whose `OnSecureDesktop` returns true:
 
 ```go
 func TestHandleDesktopSwitchReleasesHeldInput(t *testing.T) {
-	inner := &recordingHandler{}
+	inner := &workerRecorder{}
 	si := NewSafeInput(inner, "s")
 	t.Cleanup(si.Close)
 	s := &Session{id: "s", inputHandler: si, capturer: &switchingCapturer{secure: true}}
@@ -1414,7 +1414,7 @@ package desktop
 import "testing"
 
 func TestWsStreamStopReleasesHeldInput(t *testing.T) {
-	inner := &recordingHandler{}
+	inner := &workerRecorder{}
 	s := newWsStreamSession("ws-1", nil, NewSafeInput(inner, "ws-1"), nil, StreamConfig{})
 	s.skipWallpaper = true
 
