@@ -2905,6 +2905,27 @@ export async function getOrgAgentUpdateConfigCached(orgId: string): Promise<Agen
   );
 }
 
+/** Fail-closed pin miss: withheld, logged every time, captured once per key (#2124). */
+function warnMissingPinnedBuild(component: string, platform: string, architecture: string, pin: string, agentId?: string): void {
+  console.warn(
+    `[agents] update withheld for ${agentId ?? 'device'}: pinned ${component} version ` +
+      `"${pin}" has no registered ${getBinaryEdition()}-edition build for ` +
+      `${platform}/${architecture} (fail closed; a build registered under the other ` +
+      `edition does not count — #4072)`,
+  );
+  const key = `${component}:${platform}:${architecture}:${pin}`;
+  if (!warnedMissingPinBuilds.has(key)) {
+    warnedMissingPinBuilds.add(key);
+    captureException(
+      new Error(
+        `Agent update withheld (#2124): pinned ${component} version "${pin}" has no ` +
+          `registered ${getBinaryEdition()}-edition build for ${platform}/${architecture}; ` +
+          `fleet freeze until a build is published under this edition or the pin is corrected.`,
+      ),
+    );
+  }
+}
+
 /**
  * Resolve the candidate upgrade-target version for a component on a device's
  * platform/arch, honoring an effective version pin (issue #2124).
@@ -2983,26 +3004,72 @@ export async function resolvePinnedUpgradeTarget(args: {
     // is the same class of invisible, fleet-wide freeze the #2125 gate catch
     // routes to Sentry, so match that bar. Deduped per (component/platform/arch/
     // version) so a persistent misconfig captures ONCE per process, not per beat.
-    console.warn(
-      `[agents] update withheld for ${agentId ?? 'device'}: pinned ${component} version ` +
-        `"${pin}" has no registered ${getBinaryEdition()}-edition build for ` +
-        `${platform}/${architecture} (fail closed; a build registered under the other ` +
-        `edition does not count — #4072)`,
-    );
-    const key = `${component}:${platform}:${architecture}:${pin}`;
-    if (!warnedMissingPinBuilds.has(key)) {
-      warnedMissingPinBuilds.add(key);
-      captureException(
-        new Error(
-          `Agent update withheld (#2124): pinned ${component} version "${pin}" has no ` +
-            `registered ${getBinaryEdition()}-edition build for ${platform}/${architecture}; ` +
-            `fleet freeze until a build is published under this edition or the pin is corrected.`,
-        ),
-      );
-    }
+    warnMissingPinnedBuild(component, platform, architecture, pin, agentId);
     return null;
   }
   return pinned.version;
+}
+
+export interface PinnedUpgradeRequest {
+  component: string;
+  pin: string | null;
+}
+
+/**
+ * `resolvePinnedUpgradeTarget` for several components of ONE device in one
+ * statement (#8053 W1a-1: the heartbeat's agent, helper and watchdog offers).
+ *
+ * LOCKSTEP (#3499): the same predicates as the single resolver and as
+ * services/promotedAgentVersion.ts — platform, architecture, component,
+ * edition, and is_latest (or the exact pinned version) — and the same
+ * `created_at DESC` tiebreak: the first matching row in that order is what
+ * `LIMIT 1` would have returned. Not cached: the offered version must be the
+ * one whose bytes are served. Parity with three single calls is pinned by
+ * agentVersionsBatchParity.integration.test.ts.
+ */
+export async function resolvePinnedUpgradeTargets(args: {
+  platform: string;
+  architecture: string;
+  requests: readonly PinnedUpgradeRequest[];
+  agentId?: string;
+}): Promise<Map<string, string | null>> {
+  const { platform, architecture, requests, agentId } = args;
+  const result = new Map<string, string | null>();
+  if (requests.length === 0) return result;
+
+  const components = [...new Set(requests.map((r) => r.component))];
+  const pinned = requests.filter((r): r is PinnedUpgradeRequest & { pin: string } => r.pin !== null);
+  const rows = await db
+    .select({ component: agentVersions.component, version: agentVersions.version, isLatest: agentVersions.isLatest })
+    .from(agentVersions)
+    .where(
+      and(
+        eq(agentVersions.platform, platform),
+        eq(agentVersions.architecture, architecture),
+        inArray(agentVersions.component, components),
+        eq(agentVersions.edition, getBinaryEdition()),
+        or(
+          eq(agentVersions.isLatest, true),
+          ...pinned.map((r) => and(eq(agentVersions.component, r.component), eq(agentVersions.version, r.pin))),
+        ),
+      ),
+    )
+    .orderBy(desc(agentVersions.createdAt));
+
+  for (const request of requests) {
+    if (request.pin === null) {
+      result.set(request.component, rows.find((r) => r.component === request.component && r.isLatest)?.version ?? null);
+      continue;
+    }
+    const hit = rows.find((r) => r.component === request.component && r.version === request.pin);
+    if (hit) {
+      result.set(request.component, hit.version);
+      continue;
+    }
+    warnMissingPinnedBuild(request.component, platform, architecture, request.pin, agentId);
+    result.set(request.component, null);
+  }
+  return result;
 }
 
 export async function getOrgMtlsSettings(orgId: string): Promise<{ certLifetimeDays: number; expiredCertPolicy: 'auto_reissue' | 'quarantine' }> {

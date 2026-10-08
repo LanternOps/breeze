@@ -52,6 +52,7 @@ import {
   buildWarrantyConfigUpdate,
   getOrgAgentUpdateConfigCached,
   resolvePinnedUpgradeTarget,
+  resolvePinnedUpgradeTargets,
   agentAcceptsServedEdition,
   shouldAutoApplyAgentReportedDeviceRole,
   type AgentVersionPins,
@@ -1731,6 +1732,28 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // on) alerts again instead of being consumed by the first episode.
   warnedEditionRecoveryWithheldDevices.delete(device.id);
 
+  // #8053 W1a-1 — the agent, helper and watchdog offers below share one guard,
+  // so their three agent_versions reads are one statement. A failure leaves
+  // every target null: no offer this beat, the same outcome each per-block
+  // catch gave (the first failed read aborted the transaction for the rest).
+  let upgradeTargets: Map<string, string | null> | null = null;
+  if (normalizedArch && acceptsServedEdition) {
+    try {
+      upgradeTargets = await resolvePinnedUpgradeTargets({
+        platform: device.osType,
+        architecture: normalizedArch,
+        agentId,
+        requests: [
+          { component: 'agent', pin: versionPins.agent },
+          { component: 'helper', pin: null },
+          { component: 'watchdog', pin: versionPins.watchdog },
+        ],
+      });
+    } catch (err) {
+      console.error(`[agents] failed to resolve upgrade targets for ${agentId}:`, err);
+    }
+  }
+
   if (normalizedArch && !acceptsServedEdition) {
     warnEditionOfferWithheld({
       deviceId: device.id,
@@ -1797,13 +1820,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // Resolve the effective target: the tenant's agent pin (issue #2124) when
       // set, else the globally promoted latest. Fails closed if the pinned
       // version has no build for this platform/arch (returns null → no upgrade).
-      const targetVersion = await resolvePinnedUpgradeTarget({
-        component: 'agent',
-        platform: device.osType,
-        architecture: normalizedArch,
-        pin: versionPins.agent,
-        agentId,
-      });
+      const targetVersion = upgradeTargets?.get('agent') ?? null;
 
       if (targetVersion) {
         // Dev builds (dev-*) are local dev-push binaries — never auto-upgrade
@@ -1839,13 +1856,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // the agent/watchdog channels (#4072 — replaces an inline query that
       // was not edition-scoped). The helper channel is unpinnable, hence
       // pin: null — which is exactly the isLatest lookup the inline query did.
-      const latestHelperVersion = await resolvePinnedUpgradeTarget({
-        component: 'helper',
-        platform: device.osType,
-        architecture: normalizedArch,
-        pin: null,
-        agentId,
-      });
+      const latestHelperVersion = upgradeTargets?.get('helper') ?? null;
 
       if (latestHelperVersion) {
         // If agent reports no helper version, always upgrade (bootstraps first install
@@ -1869,13 +1880,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     try {
       // Effective watchdog target: the tenant's watchdog pin (issue #2124) when
       // set, else the globally promoted latest. Independent of the agent pin.
-      const targetWatchdog = await resolvePinnedUpgradeTarget({
-        component: 'watchdog',
-        platform: device.osType,
-        architecture: normalizedArch,
-        pin: versionPins.watchdog,
-        agentId,
-      });
+      const targetWatchdog = upgradeTargets?.get('watchdog') ?? null;
 
       // Prefer the version the agent just reported over the stored column so a
       // successful swap stops the re-send on the VERY NEXT heartbeat (#1802),

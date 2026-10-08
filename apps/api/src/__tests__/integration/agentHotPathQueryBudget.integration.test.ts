@@ -385,8 +385,8 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     // If a change legitimately adds a query, raise this number in the same PR
     // and say why; the remaining bulk is ~26 repeated device/org/group reads
     // across the policy resolvers (#8053 follow-up).
-    expect(steady.statements).toBeLessThanOrEqual(28);
-    expect(warm.statements).toBeLessThanOrEqual(22);
+    expect(steady.statements).toBeLessThanOrEqual(26);
+    expect(warm.statements).toBeLessThanOrEqual(20);
 
     // #8053 W1a-1 lever 1: one hierarchy read replaces 33 per-resolver reads.
     expect(steady.buckets.hierarchyLoad).toBe(1);
@@ -406,6 +406,9 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(steady.buckets.automationPolicies).toBe(0);
     expect(steady.buckets.orgHelperSettings).toBe(0);
     expect(steady.buckets.pamOrgConfig).toBe(0);
+    // Agent, helper and watchdog offers share one agent_versions read.
+    expect(steady.buckets.agentVersions).toBe(1);
+    expect(warm.buckets.agentVersions).toBe(1);
     // Lever 6: the claim's savepoint + the helper miss's; no probe savepoint.
     expect(steady.savepoints).toBe(2);
     // Warm: helper is a Redis hit (no savepoint), probe a process-cache hit.

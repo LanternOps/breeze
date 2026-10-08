@@ -227,6 +227,21 @@ vi.mock('./helpers', () => ({
   // upgrade tests: the resolver returns the candidate target version, and the
   // gate + compareAgentVersions (default 0 = no newer) decide whether to send it.
   resolvePinnedUpgradeTarget: vi.fn(async () => '0.66.0'),
+  // #8053 W1a-1 — the heartbeat's batched read, modelled as the three single
+  // calls it replaces (agent, helper, watchdog — the order the blocks ran).
+  resolvePinnedUpgradeTargets: async (args: {
+    platform: string; architecture: string; agentId?: string;
+    requests: Array<{ component: string; pin: string | null }>;
+  }) => {
+    const helpers = await import('./helpers');
+    const out = new Map<string, string | null>();
+    for (const r of args.requests) {
+      out.set(r.component, await helpers.resolvePinnedUpgradeTarget({
+        component: r.component, platform: args.platform, architecture: args.architecture, pin: r.pin, agentId: args.agentId,
+      }));
+    }
+    return out;
+  },
   // #4072 — permissive default so the edition gate is transparent to tests
   // that don't exercise it. The edition-gate describe overrides per-test and
   // restores this implementation in afterEach (clearAllMocks does not).
