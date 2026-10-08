@@ -346,6 +346,10 @@ describe('typed confirmation (user without a second factor, snapshot taken befor
     const out = await checkRestoreIntegrityRequest(ctx(), request({ targetDeviceId: target }));
     expect(out).toMatchObject({ status: 403, body: { stepUp: { method: 'mfa' } } });
     expect((out as unknown as { body: { stepUp: Record<string, unknown> } }).body.stepUp.confirmation).toBeUndefined();
+    // Even a presented grant is only ever consumed as the two-factor operation.
+    mocks.consumeStepUpGrant.mockResolvedValue(false);
+    await checkRestoreIntegrityRequest(ctx(), request({ targetDeviceId: target, stepUpGrant: GRANT }));
+    expect(mocks.consumeStepUpGrant).toHaveBeenCalledWith(GRANT, expect.objectContaining({ operation: 'backup_unattested_restore' }));
   });
 
   it('when the factor lookup fails, it asks for the two-factor step-up', async () => {

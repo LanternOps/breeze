@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 const mocks = vi.hoisted(() => ({
   authorize: vi.fn(),
   resolveRestoreIntegrity: vi.fn(),
-  userCanStepUp: vi.fn(),
+  userIsMfaProtected: vi.fn(),
   phrase: vi.fn(),
   getUserEpochs: vi.fn(),
   mintStepUpGrant: vi.fn(),
@@ -22,7 +22,6 @@ vi.mock('./resilienceAuthorization', () => ({ authorizeRouteResilienceResources:
 vi.mock('../../services/backupRestoreIntegrity', () => ({ resolveRestoreIntegrity: mocks.resolveRestoreIntegrity }));
 vi.mock('./restoreIntegrityGate', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./restoreIntegrityGate')>()),
-  userCanStepUp: mocks.userCanStepUp,
   restoreConfirmationPhrase: mocks.phrase,
 }));
 vi.mock('../../services/authEpochs', () => ({ getUserEpochs: mocks.getUserEpochs }));
@@ -37,7 +36,7 @@ vi.mock('../auth/schemas', async (importOriginal) => ({
     return mocks.enable2fa.value;
   },
 }));
-vi.mock('../auth/helpers', () => ({ userIsMfaProtected: vi.fn() }));
+vi.mock('../auth/helpers', () => ({ userIsMfaProtected: mocks.userIsMfaProtected }));
 
 import { restoreConfirmationRoutes } from './restoreConfirmations';
 import { unattestedRestoreResourceDigest } from '../../services/mfaStepUpGrant';
@@ -89,7 +88,7 @@ beforeEach(() => {
   mocks.enable2fa.value = true;
   mocks.authorize.mockResolvedValue({ ok: true });
   mocks.resolveRestoreIntegrity.mockResolvedValue(legacy);
-  mocks.userCanStepUp.mockResolvedValue(false);
+  mocks.userIsMfaProtected.mockResolvedValue(false);
   mocks.phrase.mockResolvedValue('Front Desk PC');
   mocks.getUserEpochs.mockResolvedValue({ authEpoch: 3, mfaEpoch: 5 });
   mocks.mintStepUpGrant.mockResolvedValue(GRANT);
@@ -132,7 +131,7 @@ describe('POST /backup/restore-confirmations', () => {
   });
 
   it('a user with a second factor must use the two-factor step-up', async () => {
-    mocks.userCanStepUp.mockResolvedValue(true);
+    mocks.userIsMfaProtected.mockResolvedValue(true);
     const res = await post();
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ code: 'typed_confirmation_not_applicable' });
@@ -181,6 +180,13 @@ describe('POST /backup/restore-confirmations', () => {
     mocks.authorize.mockResolvedValue({ ok: false, response: new Response(JSON.stringify({ error: 'nope' }), { status: 404 }) });
     const res = await post();
     expect(res.status).toBe(404);
+    expect(mocks.mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it('answers 503 (not "you have two-factor") when the factor lookup fails, minting nothing', async () => {
+    mocks.userIsMfaProtected.mockRejectedValue(new Error('db down'));
+    const res = await post();
+    expect(res.status).toBe(503);
     expect(mocks.mintStepUpGrant).not.toHaveBeenCalled();
   });
 

@@ -32,8 +32,8 @@ import {
   restoreConfirmationPhrase,
   typedConfirmationAllowedFor,
   typedConfirmationMatches,
-  userCanStepUp,
 } from './restoreIntegrityGate';
+import { userIsMfaProtected } from '../auth/helpers';
 import { authorizeRouteResilienceResources } from './resilienceAuthorization';
 import { restoreTypedConfirmationSchema } from './schemas';
 
@@ -44,6 +44,9 @@ const TYPED_CONFIRMATION_AUDIT_ACTION = 'backup.restore.typed_confirmation';
 restoreConfirmationRoutes.post(
   '/restore-confirmations',
   requireScope('organization', 'partner', 'system'),
+  // The grant is spendable only on a restore route, which enforces its own
+  // (stricter, per-route) permissions; minting one needs only read access to
+  // the backup, like the two-factor step-up mint needs none.
   requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
   requireMfa(),
   zValidator('json', restoreTypedConfirmationSchema),
@@ -76,7 +79,16 @@ restoreConfirmationRoutes.post(
     if (!typedConfirmationAllowedFor(decision.reason)) {
       return notApplicable('Confirm this restore with two-factor authentication.');
     }
-    if (await userCanStepUp(userId)) {
+    // Read directly (not via userCanStepUp, which maps a failed lookup to
+    // "has a factor"): a failed lookup here is a 503, never a wrong answer.
+    let hasFactor: boolean;
+    try {
+      hasFactor = await userIsMfaProtected(userId);
+    } catch (err) {
+      console.error('[restoreConfirmations] factor lookup failed:', err);
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
+    if (hasFactor) {
       return notApplicable('Your account has two-factor authentication set up. Confirm this restore with it.');
     }
     const phrase = await restoreConfirmationPhrase(orgId, payload.targetDeviceId);
