@@ -4,6 +4,8 @@ import { aiUsageCharges, timeEntries, ticketParts } from '../db/schema';
 import { computeLineTotal } from './invoiceMath';
 import type { InvoiceLineSourceType } from './invoiceTypes';
 import { roundToCurrency, type BillingStatus } from '@breeze/shared';
+import { hourBlockHoldWindows, isHeldForHourBlock } from './contractHourBlockHolds';
+import { sumEntryHours } from './contractHourBlocks';
 
 export interface DraftLineSpec {
   sourceType: InvoiceLineSourceType;
@@ -45,7 +47,12 @@ export interface AssemblyResult {
   blockedByCurrency: Record<string, DraftLineSpec[]>;
   /** Billable time entries with a NULL rate — an assembly gap, never a zero line (review #1). */
   missingRate: MissingRateSpec[];
+  /** Not-billed entries inside a block-of-hours hold window (#8181). The block's
+   *  period close bills them, never an ad-hoc invoice. Reported, never silent. */
+  heldForHourBlock: { count: number; hours: number };
 }
+
+const NOTHING_HELD = (): AssemblyResult['heldForHourBlock'] => ({ count: 0, hours: 0 });
 
 /** Defensive bucket for a time entry with a null snapshot (impossible while the CHECK holds). */
 export const UNKNOWN_CURRENCY_KEY = 'UNKNOWN';
@@ -69,7 +76,7 @@ export function isMissingRateGap(rate: string | number | null, billingStatus: Bi
 export function partitionByCurrency<R extends { currencyCode?: string | null }>(
   rows: R[], headerCurrency: string, toSpec: (row: R, currency: string) => DraftLineSpec
 ): AssemblyResult {
-  const result: AssemblyResult = { included: [], blockedByCurrency: {}, missingRate: [] };
+  const result: AssemblyResult = { included: [], blockedByCurrency: {}, missingRate: [], heldForHourBlock: NOTHING_HELD() };
   for (const row of rows) {
     if (row.currencyCode === headerCurrency) { result.included.push(toSpec(row, headerCurrency)); continue; }
     const key = row.currencyCode ?? UNKNOWN_CURRENCY_KEY;
@@ -79,10 +86,15 @@ export function partitionByCurrency<R extends { currencyCode?: string | null }>(
 }
 
 export function mergeAssembly(...parts: AssemblyResult[]): AssemblyResult {
-  const out: AssemblyResult = { included: [], blockedByCurrency: {}, missingRate: [] };
+  const out: AssemblyResult = { included: [], blockedByCurrency: {}, missingRate: [], heldForHourBlock: NOTHING_HELD() };
   for (const p of parts) {
     out.included.push(...p.included);
     out.missingRate.push(...p.missingRate);
+    out.heldForHourBlock = {
+      count: out.heldForHourBlock.count + p.heldForHourBlock.count,
+      // Hundredths, so 0.33 + 0.67 is exactly 1.00.
+      hours: Math.round((out.heldForHourBlock.hours + p.heldForHourBlock.hours) * 100) / 100,
+    };
     for (const [code, specs] of Object.entries(p.blockedByCurrency)) (out.blockedByCurrency[code] ??= []).push(...specs);
   }
   return out;
@@ -178,11 +190,13 @@ export function ticketPartToLineSpec(r: {
  *  rows whose snapshot `currency_code` differs are returned under `blockedByCurrency`
  *  (never converted, never silently dropped); included line totals round at the
  *  header currency's minor unit (JPY → whole units). */
-export async function gatherOrgTimeEntries(orgId: string, from: Date, to: Date, headerCurrency: string): Promise<AssemblyResult> {
+export async function gatherOrgTimeEntries(
+  orgId: string, from: Date, to: Date, headerCurrency: string, asOf: Date = new Date(),
+): Promise<AssemblyResult> {
   const rows = await db.select({
     id: timeEntries.id, ticketId: timeEntries.ticketId, description: timeEntries.description,
     durationMinutes: timeEntries.durationMinutes, billableMinutes: timeEntries.billableMinutes, hourlyRate: timeEntries.hourlyRate, isApproved: timeEntries.isApproved,
-    currencyCode: timeEntries.currencyCode
+    currencyCode: timeEntries.currencyCode, orgId: timeEntries.orgId, endedAt: timeEntries.endedAt
   }).from(timeEntries).where(and(
     eq(timeEntries.orgId, orgId),
     eq(timeEntries.isBillable, true),
@@ -194,7 +208,29 @@ export async function gatherOrgTimeEntries(orgId: string, from: Date, to: Date, 
     gte(timeEntries.endedAt, from),
     lte(timeEntries.endedAt, to)
   ));
-  return partitionTimeEntries(rows, headerCurrency);
+  return partitionHoldingBlockHours(rows, headerCurrency, asOf);
+}
+
+/**
+ * #8181 (Open Decision 9 A): set aside not_billed entries that a block of hours
+ * will bill at its period close, then partition the rest as usual. Held rows
+ * are counted in `heldForHourBlock`, never dropped silently.
+ */
+async function partitionHoldingBlockHours(
+  rows: Array<TimeEntryRow & { orgId: string | null; endedAt: Date | null }>, headerCurrency: string, asOf: Date,
+): Promise<AssemblyResult> {
+  const orgIds = [...new Set(rows.map((r) => r.orgId).filter((o): o is string => o !== null))];
+  const windows = new Map<string, Awaited<ReturnType<typeof hourBlockHoldWindows>>>();
+  for (const orgId of orgIds) windows.set(orgId, await hourBlockHoldWindows(orgId, asOf));
+  const isHeld = (r: (typeof rows)[number]) =>
+    r.orgId !== null && r.endedAt !== null && isHeldForHourBlock(windows.get(r.orgId) ?? [], r.endedAt);
+  const held = rows.filter(isHeld);
+  const result = partitionTimeEntries(rows.filter((r) => !isHeld(r)), headerCurrency);
+  result.heldForHourBlock = {
+    count: held.length,
+    hours: sumEntryHours(held.map((r) => (r.billableMinutes ?? r.durationMinutes) ?? 0)),
+  };
+  return result;
 }
 
 /** Unbilled billable ticket parts for an org within [from, to] (by created_at).
@@ -219,11 +255,11 @@ export async function gatherOrgParts(orgId: string, from: Date, to: Date, header
 
 /** Per-ticket: all unbilled billable time + parts for one ticket.
  *  `headerCurrency`: see gatherOrgTimeEntries. */
-export async function gatherTicketBillables(ticketId: string, headerCurrency: string): Promise<AssemblyResult> {
+export async function gatherTicketBillables(ticketId: string, headerCurrency: string, asOf: Date = new Date()): Promise<AssemblyResult> {
   const te = await db.select({
     id: timeEntries.id, ticketId: timeEntries.ticketId, description: timeEntries.description,
     durationMinutes: timeEntries.durationMinutes, billableMinutes: timeEntries.billableMinutes, hourlyRate: timeEntries.hourlyRate, isApproved: timeEntries.isApproved,
-    currencyCode: timeEntries.currencyCode
+    currencyCode: timeEntries.currencyCode, orgId: timeEntries.orgId, endedAt: timeEntries.endedAt
   }).from(timeEntries).where(and(
     eq(timeEntries.ticketId, ticketId), eq(timeEntries.isBillable, true), eq(timeEntries.billingStatus, 'not_billed'),
     // Explicit exclusions (redundant with = 'not_billed', kept for intent/future-proofing).
@@ -240,7 +276,7 @@ export async function gatherTicketBillables(ticketId: string, headerCurrency: st
     ne(ticketParts.billingStatus, 'contract'), ne(ticketParts.billingStatus, 'no_charge')
   ));
   return mergeAssembly(
-    partitionTimeEntries(te, headerCurrency),
+    await partitionHoldingBlockHours(te, headerCurrency, asOf),
     partitionByCurrency(parts, headerCurrency, ticketPartToLineSpec)
   );
 }

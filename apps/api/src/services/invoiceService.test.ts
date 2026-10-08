@@ -1591,7 +1591,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
   beforeEach(() => {
     results.length = 0; vi.clearAllMocks();
     // AI chargeback (#7608): no AI usage charges unless a test says otherwise.
-    (gatherOrgAiUsageCharges as Mock).mockResolvedValue({ included: [], blockedByCurrency: {}, missingRate: [] });
+    (gatherOrgAiUsageCharges as Mock).mockResolvedValue({ included: [], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
   });
   const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
   const spec = (lineTotal: string, sourceId = 'te1'): DraftLineSpec => ({
@@ -1599,7 +1599,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     quantity: '1.00', unitPrice: lineTotal, costBasis: null, taxable: false, customerVisible: true,
     lineTotal, isUnapprovedTime: false, workedMinutes: null
   });
-  const empty = () => ({ included: [], blockedByCurrency: {}, missingRate: [] });
+  const empty = () => ({ included: [], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
   const gap = (sourceId: string, quantity = '1.50') => ({
     sourceType: 'time_entry' as const, sourceId, ticketId: 'tk1', description: 'Work', quantity, currencyCode: 'USD'
   });
@@ -1638,7 +1638,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     queueResult([{ currencyCode: 'USD' }]);   // org currency
     queueResult([draftRow('USD')]);            // draft insert returning
     queueResult([]);                           // delete transient draft
-    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [], blockedByCurrency: { EUR: [spec('100.00')] }, missingRate: [] });
+    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [], blockedByCurrency: { EUR: [spec('100.00')] }, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
     (gatherOrgParts as Mock).mockResolvedValue(empty());
     await expect(
       svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30' }, actor)
@@ -1669,7 +1669,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     queueResult([{ currencyCode: 'GBP' }]);   // org is GBP now
     queueResult([draftRow('EUR')]);            // insert returning (header EUR)
     queueTail('EUR');
-    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('100.00')], blockedByCurrency: {}, missingRate: [] });
+    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('100.00')], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
     (gatherOrgParts as Mock).mockResolvedValue(empty());
     const out = await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30', currencyCode: 'EUR' }, actor);
     const valuesMock = (db as unknown as { values: Mock }).values;
@@ -1684,7 +1684,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     queueResult([{ currencyCode: 'GBP' }]);
     queueResult([draftRow('GBP')]);
     queueTail('GBP');
-    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('100.00')], blockedByCurrency: {}, missingRate: [] });
+    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('100.00')], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
     (gatherOrgParts as Mock).mockResolvedValue(empty());
     await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30' }, actor);
     const valuesMock = (db as unknown as { values: Mock }).values;
@@ -1696,11 +1696,11 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
     queueTail('USD');
-    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('50.00', 'te-usd')], blockedByCurrency: {}, missingRate: [] });
+    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('50.00', 'te-usd')], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
     (gatherOrgParts as Mock).mockResolvedValue(empty());
     (gatherOrgAiUsageCharges as Mock).mockResolvedValue({
       included: [{ ...spec('41.27', 'ch-usd'), sourceType: 'ai_usage', description: 'AI usage' }],
-      blockedByCurrency: { EUR: [{ ...spec('9.00', 'ch-eur'), sourceType: 'ai_usage' }] }, missingRate: [],
+      blockedByCurrency: { EUR: [{ ...spec('9.00', 'ch-eur'), sourceType: 'ai_usage' }] }, missingRate: [], heldForHourBlock: { count: 0, hours: 0 },
     });
     const out = await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-11-01', to: '2026-11-30' }, actor);
     // No lower bound: a closed month's charge exists only from the 1st of the
@@ -1722,10 +1722,10 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     queueResult([draftRow('USD')]);
     queueTail('USD');
     (gatherOrgTimeEntries as Mock).mockResolvedValue({
-      included: [spec('50.00', 'te-usd')], blockedByCurrency: { EUR: [spec('100.00', 'te-eur')] }, missingRate: []
+      included: [spec('50.00', 'te-usd')], blockedByCurrency: { EUR: [spec('100.00', 'te-eur')] }, missingRate: [], heldForHourBlock: { count: 0, hours: 0 }
     });
     (gatherOrgParts as Mock).mockResolvedValue({
-      included: [], blockedByCurrency: { EUR: [spec('25.00', 'part-eur')], JPY: [spec('330.00', 'part-jpy')] }, missingRate: []
+      included: [], blockedByCurrency: { EUR: [spec('25.00', 'part-eur')], JPY: [spec('330.00', 'part-jpy')] }, missingRate: [], heldForHourBlock: { count: 0, hours: 0 }
     });
     const out = await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30' }, actor);
     expect(out.blockedByCurrency).toEqual([
@@ -1745,7 +1745,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     queueResult([{ currencyCode: 'GBP' }]);    // org currency
     queueResult([draftRow('GBP')]);            // insert returning
     queueResult([]);                           // delete
-    (gatherTicketBillables as Mock).mockResolvedValue({ included: [], blockedByCurrency: { EUR: [spec('100.00')] }, missingRate: [] });
+    (gatherTicketBillables as Mock).mockResolvedValue({ included: [], blockedByCurrency: { EUR: [spec('100.00')] }, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
     await expect(svc.assembleDraftFromTicket('t1', actor)).rejects.toMatchObject({
       code: 'ALL_BLOCKED_BY_CURRENCY', status: 409,
       details: { blockedByCurrency: [{ currencyCode: 'EUR', count: 1, amount: '100.00' }] }
@@ -1760,7 +1760,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     queueResult([{ currencyCode: 'GBP' }]);
     queueResult([draftRow('EUR')]);
     queueTail('EUR');
-    (gatherTicketBillables as Mock).mockResolvedValue({ included: [spec('100.00')], blockedByCurrency: {}, missingRate: [] });
+    (gatherTicketBillables as Mock).mockResolvedValue({ included: [spec('100.00')], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
     const out = await svc.assembleDraftFromTicket('t1', actor, { currencyCode: 'EUR' });
     const valuesMock = (db as unknown as { values: Mock }).values;
     expect(valuesMock.mock.calls[0]![0]).toEqual(expect.objectContaining({ currencyCode: 'EUR', orgId: 'org1' }));
@@ -1772,7 +1772,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     queueResult([{ currencyCode: 'USD' }]);
     queueResult([draftRow('USD')]);
     queueResult([]);                           // delete transient draft
-    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [], blockedByCurrency: {}, missingRate: [gap('te-norate')] });
+    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [], blockedByCurrency: {}, missingRate: [gap('te-norate')], heldForHourBlock: { count: 0, hours: 0 } });
     (gatherOrgParts as Mock).mockResolvedValue(empty());
     const err = await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30' }, actor).catch((e) => e);
     expect(err).toBeInstanceOf(InvoiceServiceError);
@@ -1792,7 +1792,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     queueResult([draftRow('USD')]);
     queueTail('USD');
     (gatherOrgTimeEntries as Mock).mockResolvedValue({
-      included: [spec('50.00', 'te-usd')], blockedByCurrency: {}, missingRate: [gap('te-norate', '0.25')]
+      included: [spec('50.00', 'te-usd')], blockedByCurrency: {}, missingRate: [gap('te-norate', '0.25')], heldForHourBlock: { count: 0, hours: 0 }
     });
     (gatherOrgParts as Mock).mockResolvedValue(empty());
     const out = await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-06-01', to: '2026-06-30' }, actor);
@@ -1809,7 +1809,7 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     queueResult([draftRow('GBP')]);
     queueResult([]);
     (gatherTicketBillables as Mock).mockResolvedValue({
-      included: [], blockedByCurrency: { EUR: [spec('100.00')] }, missingRate: [gap('te-norate')]
+      included: [], blockedByCurrency: { EUR: [spec('100.00')] }, missingRate: [gap('te-norate')], heldForHourBlock: { count: 0, hours: 0 }
     });
     await expect(svc.assembleDraftFromTicket('t1', actor)).rejects.toMatchObject({
       code: 'ALL_BLOCKED_BY_CURRENCY', status: 409,

@@ -11,13 +11,17 @@
  */
 import { and, asc, desc, eq, gte, inArray, isNotNull, lt, sql } from 'drizzle-orm';
 import { assertInTransaction, db } from '../db';
-import { contractBillingPeriods, contractHourPeriods, contractLines, contracts, timeEntries } from '../db/schema';
+import { contractHourPeriods, contractLines, contracts, timeEntries } from '../db/schema';
 import { addContractLine } from './invoiceService';
 import type { InvoiceActor } from './invoiceTypes';
 import { ContractServiceError } from './contractTypes';
+import { hourBlockDayStart, loadPeriodClaims } from './contractHourBlockHolds';
 import {
   computePeriodMath, selectClosablePeriods, sumEntryHours, type ClosablePeriod, type RolloverPolicy,
 } from './contractHourBlocks';
+
+// Index C7 names this module as the import path for the hold windows.
+export { hourBlockHoldWindows, type HourBlockHoldWindow } from './contractHourBlockHolds';
 
 export interface HourBlockCloseSummary {
   contractLineId: string; description: string;
@@ -33,8 +37,7 @@ type ContractRow = typeof contracts.$inferSelect;
 type LineRow = typeof contractLines.$inferSelect;
 type OverageInvoice = { id: string; actor: InvoiceActor };
 
-/** Period boundary instant: UTC midnight of the ISO date, half-open [start, end). */
-const dayStart = (iso: string): Date => new Date(`${iso}T00:00:00Z`);
+const dayStart = hourBlockDayStart;
 const todayUTC = (d: Date): string => d.toISOString().slice(0, 10);
 
 /** Closes every closable period of one block line, earliest first. Caller holds the contract row lock. */
@@ -78,24 +81,6 @@ export async function closeHourBlockPeriods(args: {
     out.push(await closeOne(contract, line, p, args.closeSource, getInvoice));
   }
   return { closes: out, truncated };
-}
-
-/**
- * The contract's claimed periods with each claim's true INSTANT.
- * contract_billing_periods.generated_at is `timestamp` WITHOUT time zone filled
- * by now(), i.e. session-local wall time; hour_block_retired_at is timestamptz.
- * Reading generated_at through Drizzle's no-tz mapping appends +0000, which is
- * only right when the server runs in UTC. Resolve it to an instant in SQL so the
- * "claimed while live" rule (generated_at <= retired_at) holds in any TimeZone —
- * including the equal case, a final period claimed and retired in one transaction.
- */
-export async function loadPeriodClaims(contractId: string): Promise<Array<{ periodStart: string; periodEnd: string; generatedAt: Date }>> {
-  const rows = await db.select({
-    periodStart: contractBillingPeriods.periodStart,
-    periodEnd: contractBillingPeriods.periodEnd,
-    generatedAtUtc: sql<string>`to_char((${contractBillingPeriods.generatedAt} AT TIME ZONE current_setting('TimeZone')) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
-  }).from(contractBillingPeriods).where(eq(contractBillingPeriods.contractId, contractId));
-  return rows.map((r) => ({ periodStart: r.periodStart, periodEnd: r.periodEnd, generatedAt: new Date(r.generatedAtUtc) }));
 }
 
 /** Rollover in: the carried-out hours of the latest earlier closed period (pause gaps skip, never grant). */

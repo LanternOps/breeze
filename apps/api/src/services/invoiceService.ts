@@ -1296,25 +1296,36 @@ async function finishAssembly(
 ) {
   const blockedByCurrency = summarizeBlocked(gathered.blockedByCurrency);
   const missingRate = summarizeMissingRate(gathered.missingRate);
+  // #8181: entries a block of hours will bill at its period close. Always on
+  // the result (and on every empty-gather 409) so the caller can say why work
+  // it can see did not land on the draft.
+  const heldForHourBlock = gathered.heldForHourBlock;
   if (gathered.included.length === 0) {
     await db.delete(invoices).where(eq(invoices.id, inv.id));
     if (blockedByCurrency.length > 0) {
       throw new InvoiceServiceError(
         `All unbilled work is in ${blockedByCurrency.map((b) => b.currencyCode).join(', ')}; this draft is in ${inv.currencyCode} — assemble a draft in that currency instead`,
-        409, 'ALL_BLOCKED_BY_CURRENCY', { blockedByCurrency, missingRate }
+        409, 'ALL_BLOCKED_BY_CURRENCY', { blockedByCurrency, missingRate, heldForHourBlock }
       );
     }
     if (missingRate.length > 0) {
       throw new InvoiceServiceError(
         `${missingRate.length} billable time ${missingRate.length === 1 ? 'entry has' : 'entries have'} no hourly rate in ${inv.currencyCode} — set a rate on ${missingRate.length === 1 ? 'it' : 'them'} and assemble again`,
-        409, 'ALL_MISSING_RATE', { missingRate }
+        409, 'ALL_MISSING_RATE', { missingRate, heldForHourBlock }
+      );
+    }
+    if (heldForHourBlock.count > 0) {
+      const n = heldForHourBlock.count;
+      throw new InvoiceServiceError(
+        `${nothingMessage} — ${n} ${n === 1 ? 'entry' : 'entries'} (${heldForHourBlock.hours} h) ${n === 1 ? 'is' : 'are'} held for a block of hours and will bill when its period closes`,
+        409, 'NOTHING_TO_INVOICE', { heldForHourBlock }
       );
     }
     throw new InvoiceServiceError(nothingMessage, 409, 'NOTHING_TO_INVOICE');
   }
   await materializeLines(inv.id, inv.orgId, gathered.included);
   await recomputeInvoiceTotals(inv.id);
-  return { ...(await getInvoice(inv.id, actor)), blockedByCurrency, missingRate };
+  return { ...(await getInvoice(inv.id, actor)), blockedByCurrency, missingRate, heldForHourBlock };
 }
 
 export async function assembleDraftFromOrg(
