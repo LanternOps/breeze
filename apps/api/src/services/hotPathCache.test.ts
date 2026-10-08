@@ -318,6 +318,18 @@ describe('DeferredCacheFills — explicit org fill scope (#8142)', () => {
     expect(cache.peek(ORG)).toEqual({ v: 'loaded' });
   });
 
+  it('a key that is not the fill scope org is loaded and returned but never stored', async () => {
+    const cache = makeCache();
+    const fills = new DeferredCacheFills();
+    dbState.ctx = orgCtx();
+    dbState.inContext = true;
+    expect(await fills.through(cache, 'org-B', async () => ({ v: 'narrowed' }), { orgId: ORG, partnerId: PARTNER })).toEqual({ v: 'narrowed' });
+    dbState.inContext = false;
+    dbState.ctx = undefined;
+    fills.flush();
+    expect(cache.peek('org-B')).toBeUndefined();
+  });
+
   it('an org-scoped load WITHOUT a fill scope is returned but never stored (unchanged rule)', async () => {
     const cache = makeCache();
     const fills = new DeferredCacheFills();

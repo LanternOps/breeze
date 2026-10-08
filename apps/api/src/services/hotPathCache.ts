@@ -32,7 +32,8 @@ export { __resetHotPathCachesForTests } from './hotPathCacheRegistry';
  *   DB context `getOrLoad` bypasses the cache entirely (the loader would join
  *   the caller's transaction: its RLS scope and its uncommitted writes). The
  *   exception is `DeferredCacheFills` (#8053 W1a-1): a hot path that already
- *   runs inside a SYSTEM-scoped context with no writes of its own can load a
+ *   runs inside a system-scoped context, or an org-scoped one with an exact fill
+ *   scope (see `fillScopeIsCacheable`), with no writes of its own can load a
  *   per-org value there, and the value is stored only after that context has
  *   committed, through `fillIfCurrent`, which keeps the invalidation-race rule
  *   below. A load under an org scope is stored only when the caller passes the exact
@@ -190,7 +191,8 @@ export function fillScopeIsCacheable(ctx: DbAccessContext | undefined, fillScope
 }
 
 /**
- * Read-through for a hot path that runs INSIDE a system-scoped context
+ * Read-through for a hot path that runs INSIDE a system-scoped context, or an
+ * org-scoped one with an exact fill scope (see `fillScopeIsCacheable`)
  * (#8053 W1a-1: the heartbeat's shared post-commit policy context). A hit
  * returns at once with no load. A miss loads in the caller's transaction, as
  * the code did before it was cached, and queues the fill. The caller calls
@@ -208,7 +210,9 @@ export class DeferredCacheFills {
   async through<K, V>(cache: HotPathTtlCache<K, V>, key: K, load: () => Promise<V>, fillScope?: DeferredFillScope): Promise<V> {
     const hit = cache.peek(key);
     if (hit !== undefined) return hit;
-    const cacheable = fillScopeIsCacheable(getCurrentDbAccessContext(), fillScope);
+    // A fill scope binds the key: another org's key under this scope would cache an RLS-narrowed value.
+    const cacheable = fillScopeIsCacheable(getCurrentDbAccessContext(), fillScope)
+      && !(fillScope && key !== fillScope.orgId);
     const ticket = cache.ticket();
     const value = await load();
     if (cacheable) this.pending.push(() => cache.fillIfCurrent(key, value, ticket));
