@@ -199,7 +199,10 @@ Built dynamically from `HelperConfig` flags:
 No Exit item (#8138): the agent's session watcher respawns an exited helper
 within ~30s. The tray icon is always drawn, and the main window is built with
 `.visible(false)` (window-state never restores VISIBLE), so agent-driven spawns
-stay in the tray; `--show` opens it on launch.
+stay in the tray. A launch WITHOUT `--config` (manual: Start menu/Dock) or
+with `--show` opens it; on Windows a second manual launch signals the running
+instance via the `Local\com.breezermm.helper.show-window` event
+(`single_instance.rs`), macOS uses `RunEvent::Reopen`.
 
 Left-click on tray icon → show chat window. Right-click → context menu.
 

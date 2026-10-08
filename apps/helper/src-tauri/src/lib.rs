@@ -650,25 +650,33 @@ async fn invalidate_http_state() {
 // Window helpers (tray integration)
 // ---------------------------------------------------------------------------
 
-/// Whether the main window should be shown at launch (#8138). The default is
-/// hidden in the tray; only an explicit `--show` (a manual launch) opens it.
-/// The value after `--config` is a path and never counts as the flag.
-fn show_main_window_on_launch<I, S>(args: I) -> bool
+/// Whether this launch should put the main window on screen (#8138).
+///
+/// The agent always spawns the helper with `--config` (logon, updates,
+/// watcher restarts) and those launches stay hidden in the tray. A launch
+/// without `--config` is a person — Start menu, Dock, double-click — and
+/// opens the window, as does an explicit `--show`. The value after
+/// `--config` is a path and never counts as a flag.
+fn launch_requests_window<I, S>(args: I) -> bool
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
+    let mut has_config = false;
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
-        match arg.as_ref() {
-            "--show" => return true,
-            "--config" => {
-                iter.next();
-            }
-            _ => {}
+        let arg = arg.as_ref();
+        if arg == "--show" {
+            return true;
+        }
+        if arg == "--config" {
+            has_config = true;
+            iter.next();
+        } else if arg.starts_with("--config=") {
+            has_config = true;
         }
     }
-    false
+    !has_config
 }
 
 /// Window-state flags restored on startup. VISIBLE is excluded so a window
@@ -1331,9 +1339,16 @@ pub fn run() {
     // One helper per login session (#6251). Taken before any UI, tray or IPC
     // work so a duplicate exits without ever showing a second tray icon or
     // connecting to the agent. The guard lives until the process exits.
+    let wants_window = launch_requests_window(std::env::args().skip(1));
     let _instance_guard = match single_instance::acquire() {
         single_instance::Acquire::Acquired(guard) => guard,
         single_instance::Acquire::AlreadyRunning => {
+            // A manual launch while Assist already runs hidden in the tray
+            // (#8138): ask the running instance to show its window instead of
+            // exiting silently. Agent-driven duplicates never signal.
+            if wants_window {
+                single_instance::signal_show();
+            }
             eprintln!("[helper] another Breeze Helper is already running in this session; exiting");
             return;
         }
@@ -1361,7 +1376,7 @@ pub fn run() {
             get_consent_request,
             workspace_open::open_workspace_path,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             // Create main window manually (not from config) so we can set
             // a custom WebView2 data directory when running as SYSTEM.
             // The agent service spawns this process with a SYSTEM token
@@ -1440,9 +1455,11 @@ pub fn run() {
 
             let handle = app.handle().clone();
 
-            if show_main_window_on_launch(std::env::args().skip(1)) {
+            if wants_window {
                 show_window(&handle);
             }
+            let show_handle = handle.clone();
+            single_instance::listen_for_show(move || show_window(&show_handle));
 
             // Load initial config and build tray context menu
             let config = load_helper_config();
@@ -1735,25 +1752,28 @@ mod tests {
     }
 
     // #8138: the agent (re)spawns the helper on logon, updates and watcher
-    // restarts. Every one of those must start in the tray, not on screen.
+    // restarts, always with --config. Those must start in the tray. A launch
+    // without --config is a person (Start menu, Dock, double-click) and must
+    // open the window, as must an explicit --show.
     #[test]
-    fn main_window_starts_hidden_unless_show_flag_given() {
-        assert!(!show_main_window_on_launch(Vec::<String>::new()));
-        assert!(!show_main_window_on_launch(vec![
-            "--config".to_string(),
-            "C:\\ProgramData\\Breeze\\sessions\\1\\helper_config.yaml".to_string(),
-        ]));
-        assert!(show_main_window_on_launch(vec!["--show".to_string()]));
-        assert!(show_main_window_on_launch(vec![
-            "--config".to_string(),
-            "/tmp/helper_config.yaml".to_string(),
-            "--show".to_string(),
-        ]));
-        // A path that merely contains the flag text is not the flag.
-        assert!(!show_main_window_on_launch(vec![
-            "--config".to_string(),
-            "--show".to_string(),
-        ]));
+    fn only_manual_launches_request_the_window() {
+        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Agent-driven spawns stay hidden.
+        assert!(!launch_requests_window(args(&[
+            "--config",
+            "C:\\ProgramData\\Breeze\\sessions\\1\\helper_config.yaml",
+        ])));
+        assert!(!launch_requests_window(args(&["--config=/tmp/helper_config.yaml"])));
+        // A path that merely looks like the flag is not the flag.
+        assert!(!launch_requests_window(args(&["--config", "--show"])));
+        // Manual launches open it.
+        assert!(launch_requests_window(Vec::<String>::new()));
+        assert!(launch_requests_window(args(&["--show"])));
+        assert!(launch_requests_window(args(&[
+            "--config",
+            "/tmp/helper_config.yaml",
+            "--show",
+        ])));
     }
 
     // #8138: window-state must not restore VISIBLE, or a window that was open

@@ -323,7 +323,7 @@ The agent reads `helperEnabled` from each heartbeat response and stores it as an
 
 The Helper always runs in the user's session and always shows its tray icon. Its main window starts **hidden**: the agent launches the Helper at logon, after agent or Helper updates, and whenever its session watcher restarts an exited Helper, and none of these put a window on screen. The user opens the window by clicking the tray icon or choosing **Open Breeze Assist** from the tray menu (always present, even when a policy turns off every other item). On macOS, re-opening the app from the Dock or Finder also shows it. Closing the window hides it back to the tray.
 
-The tray menu has no **Exit** item. The agent restarts an exited Helper within about 30 seconds, so Exit only made the window come back. Running `breeze-helper --show` opens the window on launch, for a manual start.
+The tray menu has no **Exit** item. The agent restarts an exited Helper within about 30 seconds, so Exit only made the window come back. Launching the Helper by hand (Start menu, Dock, double-click) opens the window. The agent always passes `--config`, and a launch without it counts as manual; `--show` forces the window open in either case. On Windows, launching it again while it already runs in the tray shows the running instance's window instead of starting a second copy.
 
 Policies saved before this change may still store `showTrayIcon` in the Breeze Assist inline settings. The key is ignored and dropped the next time the policy is saved.
 
