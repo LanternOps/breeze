@@ -30,12 +30,25 @@ import { sendPasteText, pasteFailureMessage } from '../lib/pasteText';
 import { createInputCapabilitiesGate } from '../lib/inputCapabilities';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
 import { handleCtrlVPaste } from '../lib/clipboardPaste';
+import {
+  detectViewerOs,
+  defaultRemapCmdCtrl,
+  mouseButtonName,
+  shouldForwardKeyRepeat,
+  chordRouting,
+  remoteClipboardDecision,
+  viewerShortcut,
+  isPasteChord,
+} from '../lib/inputSafety';
 import { isServiceModeRefusal, serviceModeRefusalMessage } from '../lib/serviceModeRefusal';
 import { shouldAutoHandoffToVnc, shouldAutoHandoffToWebRTC } from '../lib/autoHandoff';
 import { startFrameCounter } from '../lib/frameCounter';
 import { createStatsReporter } from '../lib/statsReporter';
 import ViewerToolbar from './ViewerToolbar';
 import CredentialsPromptModal from './CredentialsPromptModal';
+
+const VIEWER_OS = detectViewerOs(typeof navigator === 'undefined' ? '' : navigator.userAgent);
+const INPUT_NOTICE_TTL_MS = 4000;
 
 interface Props {
   params: ConnectionParams;
@@ -158,6 +171,18 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // Physical key (KeyboardEvent.code) → name sent on its key_down, so key_up
   // releases the same name even if e.key changed while held (#7809).
   const heldKeyNameByCodeRef = useRef<Map<string, string>>(new Map());
+  // Mouse buttons sent as mouse_down and not yet released, and where the
+  // pointer last was, so a focus loss can release them in place.
+  const pressedButtonsRef = useRef<Set<string>>(new Set());
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
+  // Releases that could not be sent because the input channel was down. Keys
+  // are held at the OS level on the remote, not per session, so the next live
+  // channel sends them before anything else.
+  const strandedReleasesRef = useRef<Array<Record<string, unknown>>>([]);
+  // Inputs to the remote→local clipboard focus rule (remoteClipboardDecision).
+  const windowBlurAtRef = useRef<number | null>(null);
+  const clipboardOpenedAtRef = useRef<number | null>(null);
+  const clipboardPushesSeenRef = useRef(0);
   const wheelAccRef = useRef(DEFAULT_WHEEL_ACCUMULATOR);
   const pasteCancelRef = useRef(false);
   // What the connected agent said it can do with injected text. An agent that
@@ -219,7 +244,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // NOT errorMessage — that only renders behind the full-screen connection-error
   // overlay, and a failed paste must not tear down a working session.
   const [pasteNotice, setPasteNotice] = useState<string | null>(null);
-  const [remapCmdCtrl, setRemapCmdCtrl] = useState(true);
+  // null = follow the viewer/remote OS default. Only a Mac on exactly one side
+  // needs the swap; on Windows → Windows it turned a held Ctrl into the Win key.
+  const [remapOverride, setRemapOverride] = useState<boolean | null>(null);
+  const remapCmdCtrl = remapOverride ?? defaultRemapCmdCtrl(VIEWER_OS, remoteOs);
+  // Transient toolbar notice for input that could not be delivered.
+  const [inputNotice, setInputNotice] = useState<string | null>(null);
+  const [inputFocused, setInputFocused] = useState(false);
   const [cursorStreamActive, setCursorStreamActive] = useState(false);
   const [monitors, setMonitors] = useState<Array<{ index: number; name: string; width: number; height: number; isPrimary: boolean }>>([]);
   const [activeMonitor, setActiveMonitor] = useState(0);
@@ -595,6 +626,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       },
       onClipboardChannel: (channel) => {
         clipboardDCRef.current = channel;
+        clipboardOpenedAtRef.current = Date.now();
+        clipboardPushesSeenRef.current = 0;
         channel.onmessage = (msg) => {
           try {
             const payload = JSON.parse(msg.data);
@@ -609,6 +642,20 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
               }
             } else if (payload.type === 'text' && payload.text) {
               lastClipboardHashRef.current = payload.text;
+              // Only the focused session window may write the local clipboard,
+              // and never with the contents the remote already had at connect
+              // (see remoteClipboardDecision).
+              const decision = remoteClipboardDecision({
+                now: Date.now(),
+                hasFocus: document.hasFocus(),
+                lastBlurAt: windowBlurAtRef.current,
+                channelOpenedAt: clipboardOpenedAtRef.current,
+                pushesSeen: clipboardPushesSeenRef.current++,
+              });
+              if (decision !== 'apply') {
+                console.debug('[clipboard] remote clipboard not applied:', decision);
+                return;
+              }
               // navigator.clipboard.writeText requires a user activation in
               // WKWebView/WebView2; invoking it from an onmessage handler
               // silently rejects with NotAllowedError. Route through the
@@ -1538,40 +1585,108 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
 
+    // Clamped: pointer capture delivers moves from outside the canvas mid-drag.
+    const maxX = Math.max(0, Math.round(canvas.width / scale) - 1);
+    const maxY = Math.max(0, Math.round(canvas.height / scale) - 1);
     return {
-      x: Math.round((clientX - rect.left) * scaleX / scale),
-      y: Math.round((clientY - rect.top) * scaleY / scale),
+      x: Math.max(0, Math.min(maxX, Math.round((clientX - rect.left) * scaleX / scale))),
+      y: Math.max(0, Math.min(maxY, Math.round((clientY - rect.top) * scaleY / scale))),
     };
   }, [scale, transport]);
 
   // ── Input: send event ──────────────────────────────────────────────
 
-  const sendInputFn = useCallback((event: Record<string, unknown>) => {
-    const t = transportRef.current;
-    if (t === 'webrtc') {
+  // The live input channel's send, with any stranded releases flushed first,
+  // or null when no channel is open.
+  const getInputSender = useCallback((): ((event: Record<string, unknown>) => void) | null => {
+    let send: ((data: string) => void) | null = null;
+    if (transportRef.current === 'webrtc') {
       const ch = webrtcRef.current?.inputChannel;
-      if (ch && ch.readyState === 'open') {
-        ch.send(JSON.stringify(event));
-      }
-      return;
+      if (ch && ch.readyState === 'open') send = (data) => ch.send(data);
+    } else {
+      const wsSession = wsRef.current;
+      if (wsSession) send = (data) => wsSession.inputChannel.send(data);
     }
-
-    const wsSession = wsRef.current;
-    if (wsSession) {
-      wsSession.inputChannel.send(JSON.stringify(event));
+    if (!send) return null;
+    if (strandedReleasesRef.current.length > 0) {
+      const stranded = strandedReleasesRef.current;
+      strandedReleasesRef.current = [];
+      for (const ev of stranded) send(JSON.stringify(ev));
     }
+    const live = send;
+    return (event) => live(JSON.stringify(event));
   }, []);
 
+  const sendInputFn = useCallback((event: Record<string, unknown>): boolean => {
+    const send = getInputSender();
+    if (!send) {
+      // Pointer motion is disposable; a dropped click or keystroke is not, and
+      // the operator should know it went nowhere.
+      if (event.type !== 'mouse_move') {
+        setInputNotice('Input not delivered — the connection to the remote is down.');
+      }
+      return false;
+    }
+    send(event);
+    return true;
+  }, [getInputSender]);
+
+  // Releases every key and mouse button the remote believes is held. Called
+  // when focus leaves the session, on reconnect, session switch, disconnect and
+  // unmount: a key released while the viewer is not listening never produces a
+  // key_up, so the remote would keep it down.
   const releaseAllKeys = useCallback(() => {
-    const keys = Array.from(pressedKeysRef.current);
-    if (keys.length === 0) return;
-    for (const key of keys) {
-      sendInputFn({ type: 'key_up', key });
+    const releases: Array<Record<string, unknown>> = [];
+    for (const key of pressedKeysRef.current) releases.push({ type: 'key_up', key });
+    const at = lastPointerRef.current;
+    if (at) {
+      for (const button of pressedButtonsRef.current) {
+        releases.push({ type: 'mouse_up', x: at.x, y: at.y, button });
+      }
     }
     pressedKeysRef.current.clear();
     heldKeyNameByCodeRef.current.clear();
-  }, [sendInputFn]);
+    pressedButtonsRef.current.clear();
+    if (releases.length === 0) return;
+    const send = getInputSender();
+    if (send) {
+      for (const ev of releases) send(ev);
+    } else {
+      strandedReleasesRef.current.push(...releases);
+    }
+  }, [getInputSender]);
   releaseAllKeysRef.current = releaseAllKeys;
+
+  // A new session's channel may open with releases still stranded from the
+  // last one; send them now rather than waiting for the next input event.
+  useEffect(() => {
+    if (status !== 'connected' || strandedReleasesRef.current.length === 0) return;
+    getInputSender();
+  }, [status, getInputSender]);
+
+  // Focus leaving the window (Alt-Tab, Cmd-Tab, minimise) means key-ups for
+  // anything held will be delivered elsewhere. Release now (gotcha K1).
+  useEffect(() => {
+    const onWindowBlur = () => {
+      windowBlurAtRef.current = Date.now();
+      releaseAllKeysRef.current();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') releaseAllKeysRef.current();
+    };
+    window.addEventListener('blur', onWindowBlur);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('blur', onWindowBlur);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!inputNotice) return;
+    const timer = setTimeout(() => setInputNotice(null), INPUT_NOTICE_TTL_MS);
+    return () => clearTimeout(timer);
+  }, [inputNotice]);
 
   const flushWebRTCMouseMove = useCallback(() => {
     webrtcMouseMoveRafRef.current = null;
@@ -1614,6 +1729,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
+    lastPointerRef.current = { x, y };
     if (transport === 'webrtc') {
       webrtcMouseMovePendingRef.current = { x, y };
       if (webrtcMouseMoveRafRef.current === null) {
@@ -1629,6 +1745,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // preventDefault on mousedown suppresses the browser's default focus behavior,
     // so explicitly re-focus the video/canvas to ensure keyboard events are captured.
     (e.currentTarget as HTMLElement).focus();
+    // Back/forward have no agent equivalent; they used to arrive as a left click.
+    const button = mouseButtonName(e.button);
+    if (!button) return;
     // Flush any pending RAF mouse_move so the cursor is at the correct
     // position when the button press fires (consistent with mouseup).
     if (webrtcMouseMoveRafRef.current !== null) {
@@ -1641,11 +1760,16 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       sendInputFn({ type: 'mouse_move', x: pending.x, y: pending.y });
     }
     const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
-    const button = e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left';
+    lastPointerRef.current = { x, y };
+    pressedButtonsRef.current.add(button);
     sendInputFn({ type: 'mouse_down', x, y, button });
   }, [scaleCoordsFn, sendInputFn]);
 
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
+    const button = mouseButtonName(e.button);
+    // A release for a press that started elsewhere (toolbar, another window)
+    // or was already released on focus loss is not ours to send.
+    if (!button || !pressedButtonsRef.current.has(button)) return;
     // Flush any pending RAF mouse_move so the final drag position arrives
     // before mouse_up — ensures the selection endpoint is correct.
     if (webrtcMouseMoveRafRef.current !== null) {
@@ -1658,13 +1782,31 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       sendInputFn({ type: 'mouse_move', x: pending.x, y: pending.y });
     }
     const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
-    const button = e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left';
+    lastPointerRef.current = { x, y };
+    pressedButtonsRef.current.delete(button);
     sendInputFn({ type: 'mouse_up', x, y, button });
   }, [scaleCoordsFn, sendInputFn]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
   }, []);
+
+  // Pointer capture keeps the mouseup of a drag released outside the video
+  // (letterbox, another window) on this element, so the remote button is
+  // released instead of staying down (gotcha M2).
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Not capturable (pointer already gone); the blur release still covers it.
+    }
+  }, []);
+
+  const handleInputFocus = useCallback(() => setInputFocused(true), []);
+  const handleInputBlur = useCallback(() => {
+    setInputFocused(false);
+    releaseAllKeys();
+  }, [releaseAllKeys]);
 
   // ── Input: paste as keystrokes ────────────────────────────────────
 
@@ -1771,34 +1913,39 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       return;
     }
 
-    // Ctrl+Shift+V / Cmd+Shift+V → paste as keystrokes
-    if (ne.code === 'KeyV' && ne.shiftKey && (ne.ctrlKey || ne.metaKey)) {
-      handlePasteAsKeystrokes();
+    // Viewer shortcuts: Ctrl+Alt+Shift+<key> (Windows/Linux) or Ctrl+Opt+Cmd+<key>
+    // (macOS), handled here and never forwarded. Kept to a prefix no remote app
+    // uses: every locally intercepted chord is one the remote can never receive.
+    const shortcut = viewerShortcut(ne, VIEWER_OS);
+    if (shortcut) {
+      // The prefix modifiers already went down on the remote as key_downs.
+      // Release them first, or paste-as-keystrokes would type into a held
+      // Ctrl+Alt+Shift and fire shortcuts there.
+      releaseAllKeys();
+      if (shortcut === 'paste-keystrokes') {
+        handlePasteAsKeystrokes();
+      } else if (shortcut === 'release-keys') {
+        setInputNotice('Released all keys and mouse buttons on the remote.');
+      } else {
+        const fs = document.fullscreenElement
+          ? document.exitFullscreen()
+          : document.documentElement.requestFullscreen();
+        // Best-effort, but leave a breadcrumb (parity with ViewerToolbar's
+        // toggleFullscreen) so a "hotkey does nothing" report is diagnosable.
+        fs.catch((err) => console.warn('Fullscreen hotkey failed:', err));
+      }
       return;
     }
 
-    // Ctrl+Shift+F / Cmd+Shift+F → toggle local fullscreen. Handled client-side
-    // and NOT forwarded, matching the reserved Shift-combo convention above.
-    // We keep this set deliberately small: every locally-intercepted combo is
-    // a keystroke the remote machine can never receive.
-    if (ne.code === 'KeyF' && ne.shiftKey && (ne.ctrlKey || ne.metaKey)) {
-      const fs = document.fullscreenElement
-        ? document.exitFullscreen()
-        : document.documentElement.requestFullscreen();
-      // Best-effort, but leave a breadcrumb (parity with ViewerToolbar's
-      // toggleFullscreen) so a "hotkey does nothing" report is diagnosable.
-      fs.catch((err) => console.warn('Fullscreen hotkey failed:', err));
-      return;
-    }
-
-    // Ctrl+V / Cmd+V → push local clipboard to remote before pasting.
-    // Must await the clipboard sync BEFORE dispatching the key_press, or the
-    // keystroke lands on the agent ahead of the clipboard payload and pastes
-    // the previous contents.
-    if (ne.code === 'KeyV' && !ne.shiftKey && (ne.ctrlKey || ne.metaKey)) {
+    // Paste chords (Ctrl/Cmd+V, Ctrl/Cmd+Shift+V, Shift+Insert) → push the
+    // local clipboard to the remote before pasting. Must await the clipboard
+    // sync BEFORE dispatching the keystroke, or it lands on the agent ahead of
+    // the clipboard payload and pastes the previous contents.
+    if (isPasteChord(ne)) {
       const dc = clipboardDCRef.current;
-      // Positional on purpose: this branch is detected by physical KeyV, so
-      // the remote must get V whatever letter the local layout puts there.
+      // Positional on purpose: this branch is detected by physical key (KeyV,
+      // Insert), so the remote must get that key whatever the local layout
+      // puts there.
       const pasteKey = mapKey(ne, 'positional');
       let pasteModifiers = getModifiers(ne);
       if (remapCmdCtrl && pasteModifiers.length > 0) {
@@ -1809,7 +1956,23 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       const dispatchPaste = () => {
         // capsLock is captured from the original event: this dispatches after
         // an await, by which point the live modifier state may have moved on.
-        if (pasteKey) sendInputFn({ type: 'key_press', key: pasteKey, modifiers: pasteModifiers, capsLock });
+        if (!pasteKey) return;
+        // Same routing as any other chord: re-pressing an already-held Ctrl
+        // inside key_press would release it on the remote.
+        const routing = chordRouting({
+          modifiers: pasteModifiers,
+          heldKeys: pressedKeysRef.current,
+          remoteOs,
+          viewerOs: VIEWER_OS,
+          physicalMeta: ne.metaKey,
+          remapActive: remapCmdCtrl,
+        });
+        if (routing === 'held') {
+          sendInputFn({ type: 'key_down', key: pasteKey, capsLock });
+          sendInputFn({ type: 'key_up', key: pasteKey, capsLock });
+        } else {
+          sendInputFn({ type: 'key_press', key: pasteKey, modifiers: pasteModifiers, capsLock });
+        }
       };
       const waitForAck = (hash: string, timeoutMs: number): Promise<void> => {
         if (!hash) return Promise.resolve();
@@ -1830,6 +1993,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         lastHash: lastClipboardHashRef,
         dispatchPaste,
         waitForAck,
+      }).then((result) => {
+        if (result === 'push-failed') {
+          setPasteNotice('Nothing pasted — your clipboard could not be sent to the remote (too large, or the connection dropped).');
+        }
       });
       return;
     }
@@ -1845,19 +2012,35 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       );
     }
 
-    // If any modifier is held, fall back to the agent's key_press (which applies modifiers).
-    // Otherwise, use key_down/key_up for proper "held key" semantics.
-    if (modifiers.length > 0) {
+    // A chord goes as key_press (the agent presses and releases the modifiers
+    // around the key) unless its modifiers are already held on the remote; see
+    // chordRouting for when re-pressing them would release them early.
+    if (modifiers.length > 0 && chordRouting({
+      modifiers,
+      heldKeys: pressedKeysRef.current,
+      remoteOs,
+      viewerOs: VIEWER_OS,
+      physicalMeta: ne.metaKey,
+      remapActive: remapCmdCtrl,
+    }) === 'key_press') {
       sendInputFn({ type: 'key_press', key, modifiers, capsLock });
       return;
     }
 
+    // Plain key, or a chord whose modifiers are held: key_down/key_up keeps
+    // "held key" semantics. Injected key-downs do not autorepeat on Windows or
+    // macOS, so OS repeats are forwarded there (Linux's X server repeats itself).
+    if (pressedKeysRef.current.has(key)) {
+      if (e.repeat && shouldForwardKeyRepeat(remoteOs)) {
+        sendInputFn({ type: 'key_down', key, capsLock });
+      }
+      return;
+    }
     if (e.repeat) return;
-    if (pressedKeysRef.current.has(key)) return;
     pressedKeysRef.current.add(key);
     if (ne.code) heldKeyNameByCodeRef.current.set(ne.code, key);
     sendInputFn({ type: 'key_down', key, capsLock });
-  }, [sendInputFn, handlePasteAsKeystrokes, remapCmdCtrl, keyNameMode]);
+  }, [sendInputFn, handlePasteAsKeystrokes, releaseAllKeys, remapCmdCtrl, keyNameMode, remoteOs]);
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
@@ -2083,9 +2266,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     onMouseDown: handleMouseDown,
     onMouseUp: handleMouseUp,
     onContextMenu: handleContextMenu,
+    onPointerDown: handlePointerDown,
     onKeyDown: handleKeyDown,
     onKeyUp: handleKeyUp,
+    onFocus: handleInputFocus,
+    onBlur: handleInputBlur,
   };
+  // Shows when keystrokes are going to the remote. Without it, typing after a
+  // click on the toolbar silently goes nowhere.
+  const focusRing = inputFocused ? 'ring-1 ring-inset ring-accent-soft/60' : '';
 
   return (
     <div className="flex flex-col h-screen bg-gray-900">
@@ -2100,7 +2289,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         maxFps={maxFps}
         bitrate={bitrate}
         pasteProgress={pasteProgress}
-        pasteNotice={pasteNotice}
+        pasteNotice={pasteNotice ?? inputNotice}
         remapCmdCtrl={remapCmdCtrl}
         monitors={monitors}
         activeMonitor={activeMonitor}
@@ -2111,7 +2300,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         hasAudioTrack={hasAudioTrack}
         showRemoteCursor={showRemoteCursor}
         remoteOs={remoteOs}
-        onRemapCmdCtrlChange={setRemapCmdCtrl}
+        onRemapCmdCtrlChange={(v) => {
+          // Held keys were sent under the old mapping; their key_up names
+          // would no longer match.
+          releaseAllKeys();
+          setRemapOverride(v);
+        }}
+        onReleaseAllKeys={releaseAllKeys}
         onShowRemoteCursorChange={setShowRemoteCursor}
         onConfigChange={handleConfigChange}
         onBitrateChange={handleBitrateChange}
@@ -2138,7 +2333,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           autoPlay
           playsInline
           muted
-          className={`max-w-full max-h-full object-contain outline-hidden ${transport !== 'webrtc' ? 'hidden' : ''}`}
+          className={`max-w-full max-h-full object-contain outline-hidden ${focusRing} ${transport !== 'webrtc' ? 'hidden' : ''}`}
           style={{ cursor: cursorStreamActive && showRemoteCursor ? 'none' : 'default' }}
           {...interactionProps}
         />
@@ -2168,7 +2363,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         <canvas
           ref={canvasRef}
           tabIndex={0}
-          className={`max-w-full max-h-full object-contain outline-hidden cursor-default ${transport !== 'websocket' ? 'hidden' : ''}`}
+          className={`max-w-full max-h-full object-contain outline-hidden cursor-default ${focusRing} ${transport !== 'websocket' ? 'hidden' : ''}`}
           {...interactionProps}
         />
 
