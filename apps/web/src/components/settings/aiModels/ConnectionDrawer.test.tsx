@@ -255,7 +255,7 @@ describe('ConnectionDrawer', () => {
       expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
     });
 
-    it('the error clears once the Base URL is edited, and returns if the same URL is put back', async () => {
+    it('the error clears once the Base URL is edited, and stays cleared if the old URL is typed back (it was never re-tested)', async () => {
       fetchWithAuth.mockResolvedValueOnce(jsonRes(UNREACHABLE, 400));
       addGateway('http://example.invalid/v1');
       await screen.findByTestId('ai-connection-openai-base-url-error');
@@ -264,7 +264,30 @@ describe('ConnectionDrawer', () => {
       expect(screen.queryByTestId('ai-connection-openai-base-url-error')).toBeNull();
       expect(input.getAttribute('aria-invalid')).toBeNull();
       fireEvent.change(input, { target: { value: 'http://example.invalid/v1' } });
-      expect(screen.getByTestId('ai-connection-openai-base-url-error')).toBeTruthy();
+      expect(screen.queryByTestId('ai-connection-openai-base-url-error')).toBeNull();
+    });
+
+    it('a retry that fails for another reason drops the old field error and toasts instead', async () => {
+      fetchWithAuth
+        .mockResolvedValueOnce(jsonRes(UNREACHABLE, 400))
+        .mockResolvedValueOnce(jsonRes({ error: 'busy', code: 'registry_busy' }, 409));
+      addGateway('http://example.invalid/v1');
+      await screen.findByTestId('ai-connection-openai-base-url-error');
+      fireEvent.click(screen.getByTestId('ai-connection-save'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      expect(screen.queryByTestId('ai-connection-openai-base-url-error')).toBeNull();
+    });
+
+    it('locks the gateway fields while a save is in flight, so a refusal always lands on the URL that was sent', async () => {
+      let resolve: (r: Response) => void = () => {};
+      fetchWithAuth.mockReturnValueOnce(new Promise<Response>((r) => { resolve = r; }));
+      addGateway('http://example.invalid/v1');
+      await waitFor(() => expect((screen.getByTestId('ai-connection-openai-base-url') as HTMLInputElement).disabled).toBe(true));
+      expect((screen.getByTestId('ai-connection-openai-name') as HTMLInputElement).disabled).toBe(true);
+      expect((screen.getByTestId('ai-connection-openai-api-key') as HTMLInputElement).disabled).toBe(true);
+      resolve(jsonRes(UNREACHABLE, 400));
+      await screen.findByTestId('ai-connection-openai-base-url-error');
+      expect((screen.getByTestId('ai-connection-openai-base-url') as HTMLInputElement).disabled).toBe(false);
     });
 
     it('edit: the endpoint PATCH refusal lands on Base URL too', async () => {

@@ -34,7 +34,14 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
     : connection === null ? initialKind ?? 'anthropic_byok' : 'anthropic_byok';
   const isGateway = kind === 'openai_compatible';
   const [kindDraft, setKindDraft] = useState<KindDraft | null>(null);
-  const onDraftChange = useCallback((d: KindDraft) => setKindDraft(d), []);
+  // The last Base URL the server refused, and why (#7803). Any edit to the URL
+  // clears it: the message describes the URL that was sent, and a retyped URL
+  // has not been re-tested (DNS may have been fixed since).
+  const [baseUrlRefusal, setBaseUrlRefusal] = useState<{ url: string; message: string } | null>(null);
+  const onDraftChange = useCallback((d: KindDraft) => {
+    setKindDraft(d);
+    setBaseUrlRefusal((prev) => (prev !== null && d.draft.baseUrl.trim() !== prev.url ? null : prev));
+  }, []);
   const [name, setName] = useState(connection?.name ?? '');
   const [geo, setGeo] = useState<string | null>(connection?.inferenceGeo ?? null);
   const [apiKey, setApiKey] = useState('');
@@ -45,9 +52,6 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
   const [disconnecting, setDisconnecting] = useState(false);
 
   const [refreshing, setRefreshing] = useState(false);
-  // The last Base URL the server refused, and why (#7803). Keyed by the URL so the
-  // message goes away as soon as the admin edits it, and is never shown for another URL.
-  const [baseUrlRefusal, setBaseUrlRefusal] = useState<{ url: string; message: string } | null>(null);
   // Set when a Save stored a new endpoint but a later step failed: the prop may
   // still hold the old value until the parent reloads, and a retry must not re-post it.
   const [savedEndpoint, setSavedEndpoint] = useState<{ value: string | null } | null>(null);
@@ -74,10 +78,6 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
     || gatewayDraft.apiKey.trim() !== ''
     || gatewayDraft.removeKey);
 
-  const baseUrlError = baseUrlRefusal !== null && gatewayDraft !== null && gatewayDraft.baseUrl.trim() === baseUrlRefusal.url
-    ? baseUrlRefusal.message
-    : null;
-
   const canSave = isGateway
     ? gatewayDraft !== null && gatewayDraft.valid && gatewayDirty
     : connection === null
@@ -99,8 +99,12 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
     setBaseUrlRefusal(null);
     // Set once the endpoint/key PATCH committed, so a later failure can reload the new configVersion.
     let gatewaySaved = false;
+    // True only while the request that carries the Base URL (create / gateway PATCH) is in
+    // flight: only that request's refusal belongs on the field, and only it suppresses the toast.
+    let urlStep = false;
     try {
       if (connection === null) {
+        urlStep = true;
         await runAction({
           request: () => fetchWithAuth('/ai/models/connections', {
             method: 'POST',
@@ -122,6 +126,7 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
           // A refused Base URL is reported on the field (catch below), not as a toast.
           suppressErrorToast: isBaseUrlRefusal,
         });
+        urlStep = false;
       } else {
         const base = `/ai/models/connections/${connection.id}`;
         const gatewayPatch: Record<string, unknown> = {};
@@ -129,6 +134,7 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
         if (d.removeKey) gatewayPatch.apiKey = null;
         else if (d.apiKey.trim()) gatewayPatch.apiKey = d.apiKey.trim();
         if (Object.keys(gatewayPatch).length > 0) {
+          urlStep = true;
           await runAction({
             request: () => fetchWithAuth(`${base}/gateway`, {
               method: 'PATCH',
@@ -139,6 +145,7 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
             onUnauthorized,
             suppressErrorToast: isBaseUrlRefusal,
           });
+          urlStep = false;
           gatewaySaved = true;
         }
         if (d.name.trim() !== connection.name) {
@@ -158,7 +165,8 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiModels.connections.saveFailed') });
       // A refused Base URL (toast suppressed above) goes on the field; any other
       // non-401 ActionError was already toasted by runAction. The drawer stays open.
-      if (err instanceof ActionError && isBaseUrlRefusal(err.status, err.code)) {
+      // The form is locked while saving (disabled={busy}), so d.baseUrl is still the draft's URL.
+      if (urlStep && err instanceof ActionError && isBaseUrlRefusal(err.status, err.code)) {
         setBaseUrlRefusal({ url: d.baseUrl.trim(), message: err.message });
       }
       if (gatewaySaved) {
@@ -322,7 +330,8 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
           </div>
         )}
 
-        {isGateway && <ConnectionKindForm kind={kind} connection={connection} onDraftChange={onDraftChange} baseUrlError={baseUrlError} />}
+        {isGateway && <ConnectionKindForm kind={kind} connection={connection} onDraftChange={onDraftChange}
+          baseUrlError={baseUrlRefusal?.message ?? null} disabled={busy} />}
 
         {!isGateway && (<>
         <div className="space-y-1">
