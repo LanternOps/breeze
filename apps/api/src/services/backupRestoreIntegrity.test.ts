@@ -6,7 +6,6 @@ import { expectedControlKey } from './backupAttestation';
 import {
   evaluateRestoreIntegrity,
   indexFailedOnAttestation,
-  lookupIntegrityInformational,
   snapshotIntegrityFailed,
   indexMatchesAttestation,
   integrityPayload,
@@ -247,24 +246,3 @@ describe('indexMatchesAttestation with a refused statement and no row', () => {
   });
 });
 
-describe('lookupIntegrityInformational', () => {
-  it('returns the lookup result', async () => {
-    expect(await lookupIntegrityInformational({ label: 'x' }, async () => 42)).toBe(42);
-  });
-
-  it('reports a failure with the command, device and snapshot it was for, and continues', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const err = new Error('statement timeout');
-    const out = await lookupIntegrityInformational(
-      { label: 'vm_instant_boot delivery', commandId: 'cmd-1', deviceId: 'dev-1', snapshotRef: SNAP },
-      async () => { throw err; },
-    );
-    expect(out).toBe('lookup_failed');
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('vm_instant_boot delivery'),
-      expect.objectContaining({ commandId: 'cmd-1', deviceId: 'dev-1', snapshotRef: SNAP, error: 'statement timeout' }),
-    );
-    expect(captureExceptionMock).toHaveBeenCalledWith(err);
-    warn.mockRestore();
-  });
-});

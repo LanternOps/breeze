@@ -234,6 +234,12 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // `portal_show_provider_name` contain "provider", not "provision", and
   // `client_version` is not "client_key": no reviewedIncluded entries needed.
   "backup_provider_devices": tablePolicy("org_id", {"included":["id","connection_id","partner_id","org_id","customer_id","provider","portal_show_provider_name","vendor_device_id","vendor_device_name","computer_name","os_type","os_version","client_version","mac_addresses","account_type","data_sources","status","vendor_status_code","last_session_at","last_success_at","last_completed_at","selected_bytes","used_bytes","errors_count","breeze_device_id","device_match_source","pending_condition","vendor_created_at","vendor_expires_at","first_seen_at","last_seen_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["vendor_raw"]}),
+  // backup_restore_authorizations: identifiers, a closed command type and
+  // reason, the step-up resource digest (a public digest of the tuple, not a
+  // credential) and timestamps. recovery_token_id / recovery_id trip
+  // SUSPICIOUS_NAME_PARTS ('recovery', 'token') but are plain row ids, never
+  // token material -> reviewedIncluded.
+  "backup_restore_authorizations": tablePolicy("org_id", {"included":["id","org_id","snapshot_db_id","device_id","command_type","reason","authorized_by_user_id","resource_digest","command_id","audit_written_at","created_at"],"reviewedIncluded":["recovery_token_id","recovery_id"],"excludedSensitive":[],"excludedOpen":[]}),
   "backup_sla_configs": tablePolicy("org_id", {"included":["id","org_id","name","rpo_target_minutes","rto_target_minutes","alert_on_breach","is_active","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["target_devices","target_groups"]}),
   "backup_sla_events": tablePolicy("org_id", {"included":["id","org_id","sla_config_id","device_id","event_type","detected_at","resolved_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["details"]}),
   // backup_snapshot_attestations: identifiers, public content digests of the

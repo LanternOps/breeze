@@ -20,6 +20,9 @@ import {
 } from './resilienceAuthorization';
 import { BareMetalRecoveryError, cancelBareMetalRecovery } from '../../services/bareMetalRecoveryService';
 import { isBackupHelperUpdateRequiredError } from '../../services/backupReadHelperGate';
+import { isRestoreHelperUpdateRequiredError } from '../../services/backupRestoreGate';
+import { randomUUID } from 'node:crypto';
+import { checkRestoreIntegrityRequest, recordRequestAuthorization, restoreIntegrityResponse } from './restoreIntegrityGate';
 
 export const restoreRoutes = new Hono();
 
@@ -32,14 +35,18 @@ function runInOrg<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
   );
 }
 
+function isHelperUpdateRequired(error: string): boolean {
+  return isBackupHelperUpdateRequiredError(error) || isRestoreHelperUpdateRequiredError(error);
+}
+
 function mapDispatchErrorStatus(error: string): number {
   // Both are states of the target device the operator can act on, not
   // dispatch failures.
-  return error.startsWith('Device is ') || isBackupHelperUpdateRequiredError(error) ? 409 : 502;
+  return error.startsWith('Device is ') || isHelperUpdateRequired(error) ? 409 : 502;
 }
 
 function dispatchFailureReason(error: string): string {
-  if (isBackupHelperUpdateRequiredError(error)) return 'helper_update_required';
+  if (isHelperUpdateRequired(error)) return 'helper_update_required';
   return error.startsWith('Device is ') ? 'device_offline' : 'enqueue_failed';
 }
 
@@ -293,6 +300,33 @@ restoreRoutes.post(
       return c.json({ error: message, reason }, 422);
     }
 
+    // Integrity (routes/backup/restoreIntegrityGate.ts): decided before
+    // anything is created. A restore of a snapshot without a usable
+    // attestation needs a step-up; once consumed, its authorization is
+    // recorded bound to the command id reserved here, before the command
+    // exists, so delivery can find it.
+    const integrityRequest = {
+      orgId,
+      snapshotDbId: snapshot.id,
+      targetDeviceId: resolvedTargetDeviceId,
+      commandType: CommandTypes.BACKUP_RESTORE,
+      stepUpGrant: payload.stepUpGrant,
+      confirmUnattestedRestore: payload.confirmUnattestedRestore,
+      executingDeviceId: resolvedTargetDeviceId,
+    };
+    const integrityCheck = await checkRestoreIntegrityRequest(c, integrityRequest);
+    if (!integrityCheck.ok) {
+      recordBackupDispatchFailure('manual_restore', 'integrity_refused');
+      return restoreIntegrityResponse(c, integrityCheck);
+    }
+    let reservedCommandId: string | undefined;
+    if (integrityCheck.authorizationReason) {
+      reservedCommandId = randomUUID();
+      await recordRequestAuthorization(c, integrityRequest, integrityCheck.authorizationReason, { commandId: reservedCommandId }, {
+        confirmationMethod: integrityCheck.confirmationMethod,
+      });
+    }
+
     const [row] = await runInOrg(orgId, async () =>
       db
         .insert(restoreJobs)
@@ -331,7 +365,10 @@ restoreRoutes.post(
             // is delivered, so it is never written to the command row.
             ...backupReadCredentialPayload(snapshot.configId!, orgId, backupProviderConfig.provider),
           },
-          { userId: auth?.user?.id ?? undefined }
+          {
+            userId: auth?.user?.id ?? undefined,
+            ...(reservedCommandId ? { commandId: reservedCommandId } : {}),
+          }
         )
       );
 

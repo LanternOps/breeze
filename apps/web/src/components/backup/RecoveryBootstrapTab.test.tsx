@@ -282,7 +282,8 @@ describe('RecoveryBootstrapTab', () => {
         '/backup/bmr/recover/authenticate',
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify({ token: 'brz_rec_123' }),
+          // The preview reports an enforcing client: it only reads the bootstrap.
+          body: JSON.stringify({ token: 'brz_rec_123', integrityProtocolVersion: 2 }),
         })
       );
     });
@@ -298,6 +299,43 @@ describe('RecoveryBootstrapTab', () => {
     // rows carry a sha256 (rendered directly), not the old per-artifact
     // bootTemplate* trust metadata.
     expect(screen.getByText('breeze-recovery-linux-amd64.iso')).toBeTruthy();
+  });
+
+  it('asks for confirmation before creating a token for a backup without an integrity attestation, then resubmits', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    let tokenPosts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (String(input) === '/backup/bmr/tokens' && method === 'POST') {
+        tokenPosts += 1;
+        if (tokenPosts === 1) return makeJsonResponse({
+          error: 'Confirm the restore.',
+          code: 'STEP_UP_REQUIRED',
+          stepUp: {
+            operation: 'backup_unattested_restore',
+            method: 'confirm',
+            reason: 'unattested_legacy',
+            resource: { snapshotId: 'snapshot-1', targetDeviceId: 'device-1', commandType: 'bmr_recover' },
+          },
+        }, false, 403);
+      }
+      return base(input, init);
+    });
+
+    render(<RecoveryBootstrapTab />);
+    await screen.findByText('Nightly Snapshot');
+    fireEvent.click(screen.getByRole('button', { name: /Create token/i }));
+
+    await screen.findByTestId('unattested-restore-stepup');
+    fireEvent.click(screen.getByTestId('unattested-restore-stepup-confirm'));
+
+    const expectedCommand = `breeze-backup bmr-recover --token brz_rec_123 --server ${window.location.origin}`;
+    expect(await screen.findByText(expectedCommand)).toBeTruthy();
+    const bodies = fetchMock.mock.calls
+      .filter(([url, init]) => url === '/backup/bmr/tokens' && (init as RequestInit | undefined)?.method === 'POST')
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+    expect(bodies[1]).toMatchObject({ snapshotId: 'snapshot-1', confirmUnattestedRestore: true });
+    expect(bodies[0]).not.toHaveProperty('confirmUnattestedRestore');
   });
 
   it('shows the snapshot label instead of the bare UUID in the bootstrap detail panel (#6496)', async () => {

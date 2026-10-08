@@ -65,6 +65,8 @@ export async function dispatchTrackedDbRestore(opts: {
   targetConfig: Record<string, unknown>;
   /** Builds the command payload; must carry the restore job id for the agent. */
   buildPayload: (restoreJobId: string) => Record<string, unknown>;
+  /** Reserved command id (a confirmed unattested restore's authorization is bound to it). */
+  commandId?: string;
 }): Promise<DbRestoreDispatchResult> {
   const { orgId } = opts;
   const now = new Date();
@@ -96,7 +98,7 @@ export async function dispatchTrackedDbRestore(opts: {
         opts.deviceId,
         opts.commandType,
         opts.buildPayload(job.id),
-        { userId: opts.userId ?? undefined },
+        { userId: opts.userId ?? undefined, ...(opts.commandId ? { commandId: opts.commandId } : {}) },
       )
     );
   } catch (err) {

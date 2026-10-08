@@ -253,6 +253,8 @@ vi.mock('../services/mfaStepUpGrant', () => ({
   // operation, and a dispatch that fell through to another digest function
   // would produce the wrong constant and fail the assertion below.
   moveOrgResourceDigest: vi.fn(() => 'sha256:m0ve0r9b0undd19e5700000000000000000000000000000000000000000000'),
+  // Unattested restore step-up: another distinct constant, same reason.
+  unattestedRestoreResourceDigest: vi.fn(() => 'sha256:b0c7a5c0e5700000000000000000000000000000000000000000000000000004'),
   // Parked-device assignment: two more distinct constants, same reason.
   parkedAssignResourceDigest: vi.fn(() => 'sha256:9a7ked0a551900000000000000000000000000000000000000000000000000001'),
   parkedBulkAssignResourceDigest: vi.fn(() => 'sha256:9a7ked0b01k000000000000000000000000000000000000000000000000000002'),
@@ -483,7 +485,7 @@ import { hashRecoveryCode, encryptMfaSecret } from './auth/helpers';
 import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 import * as mfaPolicyModule from '../services/mfaPolicy';
 import { enforceIpAllowlist } from '../services/ipAllowlist';
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest } from '../services/mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, unattestedRestoreResourceDigest } from '../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { getTwilioService } from '../services/twilio';
 import { authMiddleware } from '../middleware/auth';
@@ -5136,6 +5138,31 @@ describe('auth routes', () => {
 			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
 				operation: 'device_move_org',
 				resourceDigest: 'sha256:m0ve0r9b0undd19e5700000000000000000000000000000000000000000000',
+			}));
+		});
+
+		it('mints a backup_unattested_restore grant bound to the snapshot, target device and command type', async () => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-unattested');
+			const resource = {
+				snapshotId: '00000000-0000-4000-8000-000000000010',
+				targetDeviceId: '00000000-0000-4000-8000-000000000020',
+				commandType: 'mssql_restore',
+			};
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'backup_unattested_restore', resource }),
+			});
+			expect(res.status).toBe(200);
+			expect(unattestedRestoreResourceDigest).toHaveBeenCalledWith({
+				snapshotDbId: resource.snapshotId,
+				targetDeviceId: resource.targetDeviceId,
+				commandType: resource.commandType,
+			});
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'backup_unattested_restore',
+				resourceDigest: 'sha256:b0c7a5c0e5700000000000000000000000000000000000000000000000000004',
 			}));
 		});
 

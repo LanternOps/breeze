@@ -801,6 +801,8 @@ const REPOINT_TABLES: readonly string[] = [
   "backup_provider_customers",
   "backup_provider_device_history",
   "backup_provider_devices",
+  // Restore authorizations travel with their target device and snapshot.
+  "backup_restore_authorizations",
   "backup_sla_configs",
   "backup_sla_events",
   // Snapshot attestations travel with their device and snapshot.

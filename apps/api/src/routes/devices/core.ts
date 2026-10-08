@@ -317,7 +317,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
-  'backup_chains', 'backup_jobs', 'backup_sla_events', 'backup_snapshot_attestations', 'backup_snapshot_id_reservations',
+  'backup_chains', 'backup_jobs', 'backup_restore_authorizations', 'backup_sla_events', 'backup_snapshot_attestations', 'backup_snapshot_id_reservations',
   'backup_snapshot_retirements', 'backup_snapshots', 'backup_storage_session_uploads', 'backup_storage_sessions',
   'backup_verifications', 'bare_metal_recoveries',
   'brain_device_context', 'browser_extensions', 'browser_policy_violations',
@@ -575,6 +575,9 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // its id).
   'backup_storage_session_uploads',
   'backup_storage_sessions',
+  // Restore authorizations reference the snapshot, the target device and a
+  // recovery token or recovery (all CASCADE); listed before them anyway.
+  'backup_restore_authorizations',
   // Snapshot attestations reference the snapshot, the job and the device.
   'backup_snapshot_attestations',
   'backup_snapshot_id_reservations',

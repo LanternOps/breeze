@@ -286,6 +286,14 @@ async function expireRefusedClaim(
  * Release a claimed row whose refresher DEFERRED it, recording why. Best-effort
  * like the other release paths: a failure is reported, never thrown.
  */
+/**
+ * Recorded on a command whose delivery refresher failed for an ordinary
+ * reason (a lookup or storage error), so the stale reaper can say why it was
+ * never delivered. Operator-facing: the raw error stays in the log.
+ */
+export const DELIVERY_PREPARATION_FAILED_MESSAGE =
+  'Breeze could not prepare this command for delivery and will try again when the device next checks in.';
+
 async function releaseDeferredClaim(
   commandId: string,
   type: string,
@@ -394,7 +402,7 @@ async function refreshClaimedCommandPayloads(
         if (!cmd.executedAt) {
           throw new Error('claimed command row has no executedAt — cannot release');
         }
-        await releaseClaimedCommandDelivery(cmd.id, cmd.executedAt);
+        await releaseClaimedCommandDelivery(cmd.id, cmd.executedAt, DELIVERY_PREPARATION_FAILED_MESSAGE);
       } catch (releaseErr) {
         const releaseMessage = releaseErr instanceof Error ? releaseErr.message : String(releaseErr);
         console.error(
@@ -458,6 +466,11 @@ export async function refreshClaimedPayloadForPush(
     // say) silently downgrades every direct push to a heartbeat wait, and
     // nothing else on this path surfaces that.
     captureException(err instanceof Error ? err : new Error(String(err)));
+    // Released here with an operator-facing reason, so the caller's own
+    // release is a 0-row no-op; the next claim tries again.
+    if (ctx.claimedAt) {
+      await releaseDeferredClaim(ctx.commandId, type, ctx.claimedAt, DELIVERY_PREPARATION_FAILED_MESSAGE);
+    }
     return { ok: false, refusal: null };
   }
 }

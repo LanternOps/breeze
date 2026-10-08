@@ -18,6 +18,12 @@ import {
 import { cn, formatBytes } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { ActionError, runAction } from '../../lib/runAction';
+import {
+  isUnattestedRestoreStepUp,
+  suppressUnattestedRestoreStepUpToast,
+  useUnattestedRestoreStepUp,
+  type UnattestedRestoreExtras,
+} from './useUnattestedRestoreStepUp';
 import { formatTime } from './backupDashboardHelpers';
 import BareMetalRecoveryPanel from './BareMetalRecoveryPanel';
 import RestoreResultNotices, { isAdvisoryRestoreWarning } from './RestoreResultNotices';
@@ -730,7 +736,11 @@ export default function RecoveryBootstrapTab() {
     setSelectedTokenId(token.id);
   }, []);
 
-  const handleCreateToken = useCallback(async () => {
+  // A backup without an integrity attestation gets a recovery token only
+  // after the operator confirms it (two-factor when enabled); the server asks.
+  const unattestedStepUp = useUnattestedRestoreStepUp();
+
+  const submitCreateToken = useCallback(async (extras: UnattestedRestoreExtras) => {
     setError(undefined);
     setErrorReasons([]);
     setTokenMessage(undefined);
@@ -771,10 +781,12 @@ export default function RecoveryBootstrapTab() {
               restoreType: createRestoreType,
               targetConfig: parsedTargetConfig,
               expiresInHours,
+              ...extras,
             }),
           }),
         errorFallback: t('recoveryBootstrapTab.failedToCreateRecoveryToken'),
         successMessage: 'Recovery token created.',
+        suppressErrorToast: suppressUnattestedRestoreStepUpToast,
       });
 
       const payload = normalizeApiResponse(data);
@@ -792,6 +804,8 @@ export default function RecoveryBootstrapTab() {
       // `snapshot_not_bare_metal_restorable`) plus a `reasons` array —
       // the actual "why". Map the known refusal to plain copy and surface
       // the reasons instead of letting the raw code reach the UI verbatim.
+      // The confirmation prompt handles a step-up request.
+      if (isUnattestedRestoreStepUp(err)) throw err;
       const body = err instanceof ActionError ? err.body : undefined;
       if (isRecord(body) && body.error === 'snapshot_not_bare_metal_restorable') {
         setError("This snapshot can't be used for a bare-metal restore.");
@@ -805,6 +819,13 @@ export default function RecoveryBootstrapTab() {
       setCreating(false);
     }
   }, [createExpiresInHours, createRestoreType, createSnapshotId, createTargetConfig, upsertToken]);
+
+  const { run: runWithStepUp } = unattestedStepUp;
+  const handleCreateToken = useCallback(
+    // Every other failure was surfaced by submitCreateToken itself.
+    () => runWithStepUp(submitCreateToken).catch(() => undefined),
+    [runWithStepUp, submitCreateToken],
+  );
 
   const handleLoadToken = useCallback(async () => {
     const tokenId = loadTokenId.trim();
@@ -869,7 +890,9 @@ export default function RecoveryBootstrapTab() {
         // `error` banner and success in `tokenMessage` below (see catch/finally).
         const response = await fetchWithAuth('/backup/bmr/recover/authenticate', {
           method: 'POST',
-          body: JSON.stringify({ token: token.token }),
+          // The preview only reads the bootstrap (it restores nothing), so it
+          // reports the integrity protocol the server requires of a client.
+          body: JSON.stringify({ token: token.token, integrityProtocolVersion: 2 }),
         });
         if (!response.ok) {
           const body = await response.json().catch(() => null);
@@ -1076,6 +1099,7 @@ export default function RecoveryBootstrapTab() {
         </div>
       </div>
 
+      {unattestedStepUp.prompt}
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <p>{error}</p>

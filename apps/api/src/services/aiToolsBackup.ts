@@ -35,6 +35,7 @@ import { backupJobHistoryOrderBy, latestBackupRunOrderBy } from './backupJobOrde
 import { resolveSelectedSnapshotPaths, selectedSnapshotPathError } from './backupSelectedPaths';
 import { inArray } from 'drizzle-orm';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+import { restoreIntegrityRefusalForActor } from './backupRestoreActorGate';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -735,6 +736,16 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         const { reason, message } = resolveBackupDestinationError(snapshot.configId);
         return JSON.stringify({ error: message, reason });
       }
+
+      // Integrity: an AI agent can only restore an attested snapshot
+      // (services/backupRestoreActorGate.ts); delivery enforces it again.
+      const integrityRefusal = await restoreIntegrityRefusalForActor({
+        snapshotDbId: snapshot.id,
+        targetDeviceId: deviceId,
+        commandType: CommandTypes.BACKUP_RESTORE,
+        actor: 'ai_agent',
+      });
+      if (integrityRefusal) return JSON.stringify({ error: integrityRefusal.message, code: integrityRefusal.code });
 
       // Insert restore job
       const [restoreJob] = await db.insert(restoreJobs).values({

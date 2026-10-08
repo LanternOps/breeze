@@ -13,6 +13,15 @@ import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { queueCommandForExecution, CommandTypes } from '../../services/commandQueue';
 import { PERMISSIONS } from '../../services/permissions';
 import { startRebuildEngineVmRestore } from '../../services/vmRestoreRebuildEngine';
+import { getUserEpochs } from '../../services/authEpochs';
+import { isRestoreHelperUpdateRequiredError } from '../../services/backupRestoreGate';
+import {
+  checkRestoreIntegrityRequest,
+  gateRestoreCommand,
+  userCanStepUp,
+  recordRequestAuthorization,
+  restoreIntegrityResponse,
+} from './restoreIntegrityGate';
 import { resolveScopedOrgId } from './helpers';
 import {
   bmrVmRestoreSchema,
@@ -41,6 +50,8 @@ type VmRestoreDispatchOptions = {
   commandType: typeof CommandTypes.VM_RESTORE_FROM_BACKUP | typeof CommandTypes.VM_INSTANT_BOOT;
   commandPayload: Record<string, unknown>;
   userId?: string | null;
+  /** Reserved command id (a confirmed unattested restore's authorization is bound to it). */
+  commandId?: string;
 };
 
 type VmRestoreDispatchResult = {
@@ -50,10 +61,11 @@ type VmRestoreDispatchResult = {
 };
 
 function mapDispatchErrorStatus(error: string): number {
-  return error.startsWith('Device is ') ? 409 : 502;
+  return error.startsWith('Device is ') || isRestoreHelperUpdateRequiredError(error) ? 409 : 502;
 }
 
 function dispatchFailureReason(error: string): string {
+  if (isRestoreHelperUpdateRequiredError(error)) return 'helper_update_required';
   return error.startsWith('Device is ') ? 'device_offline' : 'enqueue_failed';
 }
 
@@ -73,13 +85,13 @@ async function markRestoreJobFailed(orgId: string, restoreJobId: string, error: 
 }
 
 async function dispatchVmRestoreCommand(options: VmRestoreDispatchOptions): Promise<VmRestoreDispatchResult> {
-  const { restoreJobId, orgId, deviceId, commandType, commandPayload, userId } = options;
+  const { restoreJobId, orgId, deviceId, commandType, commandPayload, userId, commandId } = options;
   const { command, error } = await runInOrg(orgId, () =>
     queueCommandForExecution(
       deviceId,
       commandType,
       commandPayload,
-      { userId: userId ?? undefined },
+      { userId: userId ?? undefined, ...(commandId ? { commandId } : {}) },
     )
   );
 
@@ -141,6 +153,10 @@ vmRestoreRoutes.post(
       ], 'restore');
       if (!authorization.ok) return authorization.response;
 
+      // Read in the request context: the engine's org-scoped transaction
+      // below cannot see a partner-level technician's user row.
+      const userEpochs = auth.user?.id && payload.stepUpGrant ? await getUserEpochs(auth.user.id) : undefined;
+      const userMfaProtected = auth.user?.id ? await userCanStepUp(auth.user.id) : undefined;
       const result = await runInOrg(orgId, () =>
         startRebuildEngineVmRestore({
           orgId,
@@ -151,10 +167,38 @@ vmRestoreRoutes.post(
           ...(payload.hyperv ? { hyperv: payload.hyperv } : {}),
           userId: auth.user?.id ?? null,
           requestUrl: c.req.url,
+          // Integrity: the rebuild recovers the snapshot's own device. A
+          // confirmed restore of a snapshot without a usable attestation is
+          // authorized for the recovery, in this same transaction.
+          integrity: async (snapshot) => {
+            const request = {
+              orgId,
+              snapshotDbId: snapshot.id,
+              targetDeviceId: snapshot.deviceId,
+              commandType: CommandTypes.BARE_METAL_REBUILD,
+              stepUpGrant: payload.stepUpGrant,
+              confirmUnattestedRestore: payload.confirmUnattestedRestore,
+              ...(userEpochs !== undefined ? { userEpochs } : {}),
+              ...(userMfaProtected !== undefined ? { userMfaProtected } : {}),
+              // The rebuild host runs the command.
+              executingDeviceId: payload.rebuildHostDeviceId,
+            };
+            const check = await checkRestoreIntegrityRequest(c, request);
+            if (!check.ok) return check;
+            if (!check.authorizationReason) return { ok: true };
+            const reason = check.authorizationReason;
+            const confirmationMethod = check.confirmationMethod;
+            return {
+              ok: true,
+              bindRecovery: (recoveryId: string) =>
+                recordRequestAuthorization(c, request, reason, { recoveryId }, { inCurrentTransaction: true, confirmationMethod }),
+            };
+          },
         })
       );
 
       if (!result.ok) {
+        if (result.body) return c.json(result.body, result.status);
         return c.json({
           error: result.error,
           ...(result.message ? { message: result.message } : {}),
@@ -224,6 +268,19 @@ vmRestoreRoutes.post(
       return c.json({ error: `Device is ${targetDevice.status}, cannot execute command` }, 409);
     }
 
+    // Integrity (routes/backup/restoreIntegrityGate.ts): decided before the
+    // restore job or command exists.
+    const integrity = await gateRestoreCommand(c, {
+      orgId,
+      snapshotDbId: snapshot.id,
+      targetDeviceId: payload.targetDeviceId,
+      commandType: CommandTypes.VM_RESTORE_FROM_BACKUP,
+      stepUpGrant: payload.stepUpGrant,
+      confirmUnattestedRestore: payload.confirmUnattestedRestore,
+      executingDeviceId: payload.targetDeviceId,
+    });
+    if (!integrity.ok) return restoreIntegrityResponse(c, integrity);
+
     // Create restore job.
     const [restoreJob] = await runInOrg(orgId, async () =>
       db
@@ -273,6 +330,7 @@ vmRestoreRoutes.post(
         commandType: CommandTypes.VM_RESTORE_FROM_BACKUP,
         commandPayload,
         userId: auth.user?.id,
+        ...(integrity.commandId ? { commandId: integrity.commandId } : {}),
       });
 
       if (dispatchResult.error) {
@@ -379,6 +437,19 @@ vmRestoreRoutes.post(
       return c.json({ error: `Device is ${targetDevice.status}, cannot execute command` }, 409);
     }
 
+    // Integrity (routes/backup/restoreIntegrityGate.ts): decided before the
+    // restore job or command exists.
+    const integrity = await gateRestoreCommand(c, {
+      orgId,
+      snapshotDbId: snapshot.id,
+      targetDeviceId: payload.targetDeviceId,
+      commandType: CommandTypes.VM_INSTANT_BOOT,
+      stepUpGrant: payload.stepUpGrant,
+      confirmUnattestedRestore: payload.confirmUnattestedRestore,
+      executingDeviceId: payload.targetDeviceId,
+    });
+    if (!integrity.ok) return restoreIntegrityResponse(c, integrity);
+
     // Create restore job.
     const [restoreJob] = await runInOrg(orgId, async () =>
       db
@@ -426,6 +497,7 @@ vmRestoreRoutes.post(
         commandType: CommandTypes.VM_INSTANT_BOOT,
         commandPayload,
         userId: auth.user?.id,
+        ...(integrity.commandId ? { commandId: integrity.commandId } : {}),
       });
 
       if (dispatchResult.error) {

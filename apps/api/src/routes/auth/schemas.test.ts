@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mfaVerifySchema, mfaStepUpSchema } from './schemas';
+import { mfaVerifySchema, mfaStepUpSchema, unattestedRestoreStepUpResource } from './schemas';
 
 // SR2-09: mfaVerifySchema must accept a 6-digit TOTP/SMS code OR the
 // `XXXX-XXXX` recovery-code form, and the `method` enum must include
@@ -133,6 +133,14 @@ describe('mfaStepUpSchema operation field', () => {
     ).toThrow();
   });
 
+  // The typed restore confirmation is minted only by POST
+  // /backup/restore-confirmations after the device name was typed.
+  it('rejects backup_unattested_restore_typed — restore-confirmation mint only, never client-requestable', () => {
+    expect(() =>
+      mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'backup_unattested_restore_typed' })
+    ).toThrow();
+  });
+
   // RMM-QA-176 D11 (T12): entering/extending device maintenance mode is a
   // client-requestable step-up operation, and its resource binding must be
   // accepted by this schema. The duration cap is imported from the grant
@@ -163,6 +171,27 @@ describe('mfaStepUpSchema operation field', () => {
   // resource binding must be accepted by this schema. acceptCurrencyMismatch
   // is optional here because the device route's body schema makes it optional
   // — the digest normalises the omission to false.
+  // Restoring a backup without an integrity attestation: client-requestable,
+  // bound to exactly one snapshot, target device and privileged restore type.
+  it('accepts backup_unattested_restore with a restore resource binding', () => {
+    const resource = {
+      snapshotId: '00000000-0000-4000-8000-000000000010',
+      targetDeviceId: '00000000-0000-4000-8000-000000000020',
+      commandType: 'backup_restore',
+    };
+    const parsed = mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'backup_unattested_restore', resource });
+    expect(parsed.operation).toBe('backup_unattested_restore');
+    expect(parsed.resource).toEqual(resource);
+  });
+
+  it('rejects a backup_unattested_restore resource for a command that is not a privileged restore', () => {
+    expect(unattestedRestoreStepUpResource.safeParse({
+      snapshotId: '00000000-0000-4000-8000-000000000010',
+      targetDeviceId: '00000000-0000-4000-8000-000000000020',
+      commandType: 'backup_verify',
+    }).success).toBe(false);
+  });
+
   it('accepts device_move_org with a move-org resource binding', () => {
     const parsed = mfaStepUpSchema.parse({
       method: 'totp',

@@ -8,6 +8,12 @@ import { AlertTriangle, CheckCircle2, Loader2, XCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
+import {
+  isUnattestedRestoreStepUp,
+  suppressUnattestedRestoreStepUpToast,
+  useUnattestedRestoreStepUp,
+  type UnattestedRestoreExtras,
+} from './useUnattestedRestoreStepUp';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { cn } from '@/lib/utils';
@@ -194,7 +200,11 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
 
   useEffect(() => stopPolling, [stopPolling]);
 
-  const handleCreate = useCallback(async () => {
+  // A backup without an integrity attestation is recovered only after the
+  // operator confirms it (two-factor when enabled); the server asks for it.
+  const unattestedStepUp = useUnattestedRestoreStepUp();
+
+  const submitCreate = useCallback(async (extras: UnattestedRestoreExtras) => {
     setCreateError(null);
     setCreateErrorReasons([]);
     if (!selectedSnapshotId) {
@@ -207,9 +217,10 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
         request: () =>
           fetchWithAuth(`/backup/bmr/recoveries?${orgQuery.slice(0, -1)}`, {
             method: 'POST',
-            body: JSON.stringify({ snapshotId: selectedSnapshotId, identity }),
+            body: JSON.stringify({ snapshotId: selectedSnapshotId, identity, ...extras }),
           }),
         errorFallback: t('bareMetalRecovery.createFailed'),
+        suppressErrorToast: suppressUnattestedRestoreStepUpToast,
         parseSuccess: (data) => {
           const summary = parseRecoverySummary(data);
           const code = isRecord(data) && typeof data.code === 'string' ? data.code : null;
@@ -221,6 +232,8 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
       setCreated(result);
       setActive(result);
     } catch (err) {
+      // The confirmation prompt handles a step-up request.
+      if (isUnattestedRestoreStepUp(err)) throw err;
       if (err instanceof ActionError) {
         const body = err.body;
         if (isRecord(body) && Array.isArray(body.reasons)) {
@@ -235,6 +248,13 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
       setCreating(false);
     }
   }, [selectedSnapshotId, identity, orgQuery, t, onUnauthorized]);
+
+  const { run: runWithStepUp } = unattestedStepUp;
+  const handleCreate = useCallback(
+    // Every other failure was surfaced by submitCreate itself.
+    () => runWithStepUp(submitCreate).catch(() => undefined),
+    [runWithStepUp, submitCreate],
+  );
 
   // `completed` (identity: 'new' recoveries validated straight through,
   // never going via rebooted/checked_in — see canTransition on the server)
@@ -307,6 +327,7 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
             </label>
           </fieldset>
 
+          {unattestedStepUp.prompt}
           {createError && (
             <div className="text-sm text-destructive" data-testid="bare-metal-recovery-create-error">
               <p>{createError}</p>

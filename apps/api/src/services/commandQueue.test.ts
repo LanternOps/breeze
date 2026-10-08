@@ -1066,9 +1066,11 @@ describe('command queue service', () => {
         agentId: 'agent-1',
         orgId: 'org-1',
         hostname: 'host-1',
-        // A helper that supports storage sessions, so storage reads pass the
-        // enqueue gate and reach the delivery refresher under test.
+        // A helper that supports storage sessions and checks restores
+        // against snapshot attestations, so storage reads and restores pass
+        // the enqueue gates and reach the delivery refresher under test.
         backupReadProtocolVersion: 1,
+        backupIntegrityProtocolVersion: 2,
       };
       const queued = { id: 'cmd-x' };
       const completed = opts.completedResult ?? {
@@ -1934,6 +1936,23 @@ describe('command queue service', () => {
       const insertValues = mockDevice({ ...device, backupReadProtocolVersion: null, backupWriteProtocolVersion: null });
       await executeCommand('dev-sql', 'hyperv_backup', backupPayload, { userId: 'user-1', timeoutMs: 10 });
       expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ type: 'hyperv_backup' }));
+    });
+
+    it('refuses a privileged restore to a helper below integrity protocol 2, writing no row', async () => {
+      const insertValues = mockDevice({ ...device, backupReadProtocolVersion: 1, backupIntegrityProtocolVersion: 1 });
+      const result = await executeCommand('dev-sql', 'mssql_restore', verifyPayload, { userId: 'user-1' });
+      expect(result.status).toBe('failed');
+      expect(result.error).toBe(
+        'Update the Breeze agent on this device, then try again. Restoring backups now requires integrity checks '
+          + "this device's backup component does not support yet.",
+      );
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    it('lets a privileged restore through to a helper that checks attestations', async () => {
+      const insertValues = mockDevice({ ...device, backupReadProtocolVersion: 1, backupIntegrityProtocolVersion: 2 });
+      await executeCommand('dev-sql', 'mssql_restore', verifyPayload, { userId: 'user-1', timeoutMs: 10 });
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ type: 'mssql_restore' }));
     });
 
     it('lets a backup to a local destination through to any helper', async () => {

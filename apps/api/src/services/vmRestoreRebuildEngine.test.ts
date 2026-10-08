@@ -66,6 +66,7 @@ const input: RebuildEngineVmRestoreInput = {
   rebuildHostDeviceId: HOST_ID,
   outputPath: '/srv/rebuild/dev-1.vhdx',
   userId: 'user-1',
+  integrity: async () => ({ ok: true }),
 };
 
 function snapshotRow(layoutManifest: unknown) {
@@ -254,5 +255,40 @@ describe('startRebuildEngineVmRestore — host/platform matching (W06d)', () => 
     const result = await startRebuildEngineVmRestore(input);
 
     expect(result).toEqual({ ok: false, status: 404, error: 'rebuild_host_not_found' });
+  });
+});
+
+describe('startRebuildEngineVmRestore — snapshot integrity', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.select.mockReset();
+    mocks.insert.mockReset();
+    mocks.update.mockReset();
+  });
+
+  it('asks the caller to decide integrity for the snapshot being rebuilt, and creates nothing when it refuses', async () => {
+    mocks.select
+      .mockReturnValueOnce(snapshotRow({ platform: 'linux', disks: [] }))
+      .mockReturnValueOnce(hostRow('linux'));
+    const integrity = vi.fn(async () => ({
+      ok: false as const, status: 403 as const, body: { code: 'STEP_UP_REQUIRED', error: 'confirm' },
+    }));
+    const result = await startRebuildEngineVmRestore({ ...input, integrity });
+    expect(integrity).toHaveBeenCalledWith({ id: SNAPSHOT_ID, deviceId: DEVICE_ID });
+    expect(result).toEqual({ ok: false, status: 403, error: 'STEP_UP_REQUIRED', body: { code: 'STEP_UP_REQUIRED', error: 'confirm' } });
+    expect(mocks.createBareMetalRecovery).not.toHaveBeenCalled();
+    expect(mocks.queueBareMetalRebuild).not.toHaveBeenCalled();
+  });
+
+  it('binds a confirmed authorization to the recovery before the rebuild command is queued', async () => {
+    mocks.select
+      .mockReturnValueOnce(snapshotRow({ platform: 'linux', disks: [] }))
+      .mockReturnValueOnce(hostRow('linux'));
+    mockRowsAndQueue();
+    const bindRecovery = vi.fn(async () => undefined);
+    const result = await startRebuildEngineVmRestore({ ...input, integrity: async () => ({ ok: true, bindRecovery }) });
+    expect(result.ok).toBe(true);
+    expect(bindRecovery).toHaveBeenCalledWith(RECOVERY_ID);
+    expect(bindRecovery.mock.invocationCallOrder[0]).toBeLessThan(mocks.queueBareMetalRebuild.mock.invocationCallOrder[0]!);
   });
 });
