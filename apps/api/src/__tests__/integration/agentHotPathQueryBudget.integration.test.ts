@@ -7,7 +7,8 @@
  * at v0.121 the API's single event loop saturated at ~200-250 online agents.
  * These budgets pin the counts after #8053 so a new per-beat transaction or a
  * re-introduced per-request reload shows up as a red test instead of as the
- * next production saturation.
+ * next production saturation. W0d (#8151) extends the same gate to every
+ * request and WS frame the agent simulator (agent/tools/agentsim) sends.
  *
  * How it counts: `postgres` is wrapped so the request pool (the one client
  * named `application_name: 'breeze-api'`, i.e. the production `db`) gets a
@@ -20,10 +21,14 @@
  *
  * The route-only cases below set the agent context directly (as in
  * enrollmentReachability.integration.test.ts), so they isolate each route's
- * own cost. The W0d cases (#8151) go through the production agent router with
- * a real bearer token, so agentAuthMiddleware's device lookup, limiters,
- * tenant gate and request-long transaction are counted too: that is the full
- * per-request cost every simulated (and real) agent pays.
+ * own cost. The W0d HTTP cases (#8151) go through the production agent router
+ * with a real bearer token, so agentAuthMiddleware's device lookup, limiters,
+ * tenant gate and, for routes that are not self-managed, the request-long org
+ * transaction are counted too: the full per-request cost every simulated (and
+ * real) agent pays. The W0d WS frame cases drive createAgentWsHandlers
+ * directly with the context a real upgrade produces (credential hash
+ * included), so they count each frame's per-frame credential re-check but not
+ * the one-off upgrade.
  *
  * The heartbeat budget is asserted on a STEADY-STATE beat, not on an immediate
  * re-beat: the clock moves 61 s (one beat interval), a sibling device in the
@@ -37,7 +42,7 @@
  * OneDrive context (W1a-2).
  */
 import './setup';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { and, eq } from 'drizzle-orm';
@@ -119,6 +124,13 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 // One heartbeat interval, plus a second so a TTL of exactly 60 s has expired.
 const NEXT_BEAT_MS = 61_000;
+
+/**
+ * The route-only steady-state heartbeat transaction count (#8053 test below).
+ * The W0d full-chain heartbeat budget must equal it plus agent auth, so both
+ * read this one constant (#8142 W03 lowers it to 2).
+ */
+const ROUTE_ONLY_STEADY_HEARTBEAT_TX = 3;
 
 // Statement buckets (#8053 W1a-1). Each later lever asserts on its own bucket,
 // so a regression names itself instead of showing up as "statements 31 > 26".
@@ -394,35 +406,29 @@ const WS_PONG_KEY = 'WS pong';
 /** Budget keys outside HOT_ROUTES. */
 const W0D_EXTRA_KEYS: string[] = [COMMAND_RESULT_KEY, WS_COMMAND_RESULT_KEY, WS_PONG_KEY];
 
-/**
- * The route-only steady-state heartbeat transaction count asserted in the
- * #8053 test below. The full-chain heartbeat budget must not exceed it plus
- * agent auth. Keep the two equal when either moves (#8142 W03 lowers it).
- */
-const ROUTE_ONLY_STEADY_HEARTBEAT_TX = 3;
-
 // Declared after the key constants: its computed keys read them.
 /**
  * Pinned per-request DB cost, keyed by the simulator's route key
- * (agent/tools/agentsim/sim/routes.go). Both numbers are pinned at the
- * measured steady-state value, not "plus one" (same rule as the #8053
- * heartbeat budget above): one re-introduced per-request read is exactly the
- * regression this gate exists for, and a one-statement slack would absorb it.
- * A change that legitimately adds a query raises its number in the same PR and
- * says why; a change that removes one lowers it. A budget is today's cost, not
- * a blessing of it. agent/tools/agentsim/sim/budget_contract_test.go fails
+ * (agent/tools/agentsim/sim/routes.go). Both numbers are pinned EXACTLY at
+ * the measured steady-state value, not "plus one" and not as a ceiling: one
+ * re-introduced per-request read is exactly the regression this gate exists
+ * for (a one-statement slack absorbs it), and a drop means either an
+ * improvement the ratchet must keep or a handler that stopped doing its work.
+ * A change that legitimately moves a number updates it in the same PR and says
+ * why. A budget is today's cost, not a blessing of it. agent/tools/agentsim/sim/budget_contract_test.go fails
  * when the simulator gains a route with no entry here.
  */
 const HOT_ROUTE_BUDGETS: Record<string, Budget> = {
   // Measured 2026-10-08 on main 551bffd (after #8140 W01, before #8142 W03).
-  // Agent auth is 1 tx / 4 statements on every route below; wrapped routes add
-  // the request-long org transaction (1 tx / 3 statements) on top.
+  // Agent auth is 1 tx / 4 statements on every HTTP route below; wrapped
+  // routes add the request-long org transaction (1 tx / 3 statements) on top.
+  // The WS frame keys bypass HTTP auth (see the WS test).
   [AUTH_ONLY_SELF_MANAGED]: { transactions: 1, statements: 4 },
   [AUTH_ONLY_WRAPPED]: { transactions: 2, statements: 7 },
   'POST /agents/:id/heartbeat': { transactions: 4, statements: 31 },
   'GET /agents/:id/unifi-collectors': { transactions: 1, statements: 4 },
   'POST /agents/:id/process-sample': { transactions: 2, statements: 8 },
-  'PUT /agents/:id/security/status': { transactions: 2, statements: 12 },
+  'PUT /agents/:id/security/status': { transactions: 2, statements: 10 },
   'PUT /agents/:id/sessions': { transactions: 2, statements: 11 },
   'PUT /agents/:id/software': { transactions: 3, statements: 23 },
   'PUT /agents/:id/disks': { transactions: 2, statements: 12 },
@@ -430,22 +436,27 @@ const HOT_ROUTE_BUDGETS: Record<string, Budget> = {
   'PUT /agents/:id/connections': { transactions: 2, statements: 11 },
   'PUT /agents/:id/registry-state': { transactions: 2, statements: 10 },
   'PUT /agents/:id/config-state': { transactions: 2, statements: 10 },
-  'PUT /agents/:id/management/posture': { transactions: 2, statements: 11 },
-  // Self-managed; re-resolves the event-log policy per request (device, org
-  // partner and group reads) outside the heartbeat's hierarchy pass-through.
-  'PUT /agents/:id/eventlogs': { transactions: 4, statements: 22 },
-  [COMMAND_RESULT_KEY]: { transactions: 4, statements: 19 },
+  'PUT /agents/:id/management/posture': { transactions: 2, statements: 9 },
+  // Self-managed. getDeviceEventLogSettings is Redis-cached for 120 s, but the
+  // agent sends every ~15 min, so steady state is the cache miss: device,
+  // org-partner and group reads outside the heartbeat's hierarchy pass-through.
+  'PUT /agents/:id/eventlogs': { transactions: 4, statements: 20 },
+  [COMMAND_RESULT_KEY]: { transactions: 4, statements: 18 },
   [WS_COMMAND_RESULT_KEY]: { transactions: 4, statements: 17 },
-  // Presence refresh is Redis-only.
-  [WS_PONG_KEY]: { transactions: 0, statements: 0 },
+  // The per-frame credential re-check (one system-context device read): a pong
+  // arrives every 30 s, past the 5 s re-check lease. The presence refresh
+  // itself is Redis-only.
+  [WS_PONG_KEY]: { transactions: 1, statements: 4 },
 };
 
 function expectWithinBudget(key: string, measured: Measurement): void {
   const budget = HOT_ROUTE_BUDGETS[key];
   const seen = JSON.stringify({ status: measured.status, transactions: measured.transactions, statements: measured.statements });
   expect(budget, `no budget pinned for '${key}' — measured ${seen}`).toBeDefined();
-  expect(measured.transactions, `'${key}' transactions — measured ${seen}`).toBeLessThanOrEqual(budget!.transactions);
-  expect(measured.statements, `'${key}' statements — measured ${seen}`).toBeLessThanOrEqual(budget!.statements);
+  // Exact, not a ceiling: a drop is either an improvement to ratchet in (lower
+  // the pin) or a handler that silently stopped doing its DB work.
+  expect(measured.transactions, `'${key}' transactions — measured ${seen}; pinned ${JSON.stringify(budget)}`).toBe(budget!.transactions);
+  expect(measured.statements, `'${key}' statements — measured ${seen}; pinned ${JSON.stringify(budget)}`).toBe(budget!.statements);
 }
 
 /**
@@ -509,8 +520,11 @@ const SIM_SOFTWARE_ITEMS = [
 
 /**
  * Bodies mirror the JSON agent/tools/agentsim/sim/payloads.go marshals (the
- * agent's own wire structs), including the keys the Go structs send without
- * omitempty (rebootStatus, backup*ProtocolVersion: null).
+ * agent's wire structs where it uses them, otherwise the same map shapes),
+ * including the keys the Go structs send without omitempty (rebootStatus,
+ * backup*ProtocolVersion: null). registry-state and config-state send what
+ * the simulator sends, `entries: [], replace: true`: the delete-only path, so
+ * their upsert is not measured here.
  */
 const HOT_ROUTES: HotRoute[] = [
   {
@@ -616,12 +630,13 @@ async function steadyStateMeasure(route: HotRoute, device: EnrolledDevice, sibli
   const warmed = await send(sibling); // org-wide caches warm, as in any org with more than one device
   expect(warmed.status, `${route.key} sibling`).toBeLessThan(300);
   await dropDeviceRedisCaches(device.deviceId);
-  return measure(() => send(device));
+  return measureQuiet(() => send(device));
 }
 
-const wsStub = { send: vi.fn(), close: vi.fn() } as unknown as Parameters<
-  ReturnType<typeof createAgentWsHandlers>['onMessage']
->[1];
+type WsStub = Parameters<ReturnType<typeof createAgentWsHandlers>['onMessage']>[1];
+
+/** The server's ping cadence, AGENT_PING_INTERVAL_MS in routes/agentWs.ts; the agent answers each with a pong. */
+const WS_PING_INTERVAL_MS = 30_000;
 
 /** A `sent` command row, as dispatch leaves it; written by the uncounted test client. */
 async function insertSentCommand(deviceId: string): Promise<string> {
@@ -644,6 +659,38 @@ async function commandStatus(commandId: string): Promise<string | undefined> {
 
 /** What the simulator's command worker answers (agent.go). */
 const commandResultBody = { status: 'completed', exitCode: 0, stdout: 'agentsim' };
+
+/**
+ * Wait until the request pool has sent nothing for QUIET_MS, so deferred work
+ * from EARLIER requests (fire-and-forget audit writes, runAfterDbContextExit
+ * work) cannot land inside the next measured window. Without it a sibling's
+ * first-send audit INSERT/COMMIT straddles the window and the count wobbles by
+ * one or two statements between runs. Throws rather than measure a busy pool.
+ */
+async function waitForRequestPoolQuiet(): Promise<void> {
+  const QUIET_MS = 150;
+  const started = performance.now();
+  recorder.statements = [];
+  recorder.recording = true;
+  try {
+    let seen = -1;
+    while (performance.now() - started < 5_000) {
+      await new Promise((resolve) => setTimeout(resolve, QUIET_MS));
+      if (recorder.statements.length === seen) return;
+      seen = recorder.statements.length;
+    }
+    throw new Error(`request pool never went quiet: ${recorder.statements.length} statements in 5 s`);
+  } finally {
+    recorder.recording = false;
+    recorder.statements = [];
+  }
+}
+
+/** measure(), after earlier requests' deferred work has drained. */
+async function measureQuiet(run: () => Promise<Response>): Promise<Measurement> {
+  await waitForRequestPoolQuiet();
+  return measure(run);
+}
 
 describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
   beforeEach(() => {
@@ -704,7 +751,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     // per-feature policy reads plus the OneDrive context (W1a-2).
     // Cold's one org-partner and one group-membership read are the effective
     // config assignment resolution; warm and steady skip them via hotPathCache.
-    expect(steady.transactions).toBe(3);
+    expect(steady.transactions).toBe(ROUTE_ONLY_STEADY_HEARTBEAT_TX);
     expect(steady.statements).toBeLessThanOrEqual(26);
     expect(warm.transactions).toBe(3);
     expect(warm.statements).toBeLessThanOrEqual(20);
@@ -844,9 +891,9 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     const sibling = await enrollDevice(org, 'auth-sibling');
     // Org-wide caches (tenant state, org device count) warm, as for any org with more than one device.
     expect((await authOnlyRequest(sibling, 'POST', 'heartbeat')).status).toBe(200);
-    const cold = await measure(() => authOnlyRequest(device, 'POST', 'heartbeat'));
-    const selfManaged = await measure(() => authOnlyRequest(device, 'POST', 'heartbeat'));
-    const wrapped = await measure(() => authOnlyRequest(device, 'PUT', 'software'));
+    const cold = await measureQuiet(() => authOnlyRequest(device, 'POST', 'heartbeat'));
+    const selfManaged = await measureQuiet(() => authOnlyRequest(device, 'POST', 'heartbeat'));
+    const wrapped = await measureQuiet(() => authOnlyRequest(device, 'PUT', 'software'));
     console.log(
       '[W0d budget] agent auth cold:', JSON.stringify(cold),
       'self-managed:', JSON.stringify(selfManaged),
@@ -878,22 +925,25 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     });
   }
 
-  it('W0d: the full-chain heartbeat budget is the route-only beat plus agent auth, no more', () => {
+  it('W0d: the full-chain heartbeat transaction budget is the route-only beat plus agent auth', () => {
     const fullChain = HOT_ROUTE_BUDGETS['POST /agents/:id/heartbeat'];
     const auth = HOT_ROUTE_BUDGETS[AUTH_ONLY_SELF_MANAGED];
     expect(fullChain, 'heartbeat budget pinned').toBeDefined();
     expect(auth, 'auth-only budget pinned').toBeDefined();
-    expect(fullChain!.transactions).toBeLessThanOrEqual(ROUTE_ONLY_STEADY_HEARTBEAT_TX + auth!.transactions);
+    expect(fullChain!.transactions).toBe(ROUTE_ONLY_STEADY_HEARTBEAT_TX + auth!.transactions);
   });
 
   runDb(`W0d ${COMMAND_RESULT_KEY}: the HTTP fallback result, agent auth included, stays inside its budget`, async () => {
     const org = await seedOrg('w0d-cmd-http');
     const device = await enrollDevice(org, 'target');
     const sibling = await enrollDevice(org, 'sibling');
+    const primed = await agentRequest(device, 'POST', `commands/${await insertSentCommand(device.deviceId)}/result`, commandResultBody);
+    expect(primed.status).toBeLessThan(300);
+    advanceClock(WS_PING_INTERVAL_MS);
     const warm = await agentRequest(sibling, 'POST', `commands/${await insertSentCommand(sibling.deviceId)}/result`, commandResultBody);
     expect(warm.status).toBeLessThan(300);
     const commandId = await insertSentCommand(device.deviceId);
-    const measured = await measure(() => agentRequest(device, 'POST', `commands/${commandId}/result`, commandResultBody));
+    const measured = await measureQuiet(() => agentRequest(device, 'POST', `commands/${commandId}/result`, commandResultBody));
     console.log('[W0d budget]', COMMAND_RESULT_KEY, JSON.stringify(measured));
     expect(measured.status).toBeLessThan(300);
     expect(await commandStatus(commandId)).toBe('completed'); // accepted, not short-circuited
@@ -904,28 +954,47 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
   runDb('W0d WS frames: a pong and a command_result stay inside their budgets', async () => {
     const org = await seedOrg('w0d-ws');
     const device = await enrollDevice(org, 'ws-target');
+    // The context a real upgrade produces (agentWs.ts validateAgentWsToken):
+    // with credentialTokenHash set, every frame after the re-check lease
+    // re-authorizes the credential, exactly as on a production socket.
     const handlers = createAgentWsHandlers(device.agentId, {
       deviceId: device.deviceId,
       orgId: device.orgId,
       partnerId: device.partnerId,
+      credentialTokenHash: createHash('sha256').update(device.authToken).digest('hex'),
     });
+    const ws = { send: vi.fn(), close: vi.fn() } as unknown as WsStub;
     const frame = async (data: unknown): Promise<Response> => {
-      await handlers.onMessage({ data: JSON.stringify(data) } as MessageEvent, wsStub);
+      await handlers.onMessage({ data: JSON.stringify(data) } as MessageEvent, ws);
       return new Response(null, { status: 204 });
     };
-    await handlers.onOpen({}, wsStub);
+    const presenceKey = `agent-presence:${device.agentId}`;
+    const redis = getTestRedis();
+    await handlers.onOpen({}, ws);
     try {
-      await frame({ type: 'pong', timestamp: Date.now() }); // the first pong after open is not steady state
+      expect(await redis.exists(presenceKey), 'onOpen took the presence lease').toBe(1);
+      await frame({ type: 'pong', timestamp: Date.now() }); // the first frame after open is not steady state
+      // Steady state: the agent answers the server's ping every 30 s, well
+      // past AGENT_CREDENTIAL_RECHECK_TTL_MS (5 s), so each pong re-checks.
+      advanceClock(WS_PING_INTERVAL_MS);
+      // Shorten the lease (just before measuring) so the pong's refresh is
+      // observable: a pong the handler silently dropped would otherwise
+      // measure only the credential re-check and pass.
+      await waitForRequestPoolQuiet();
+      await redis.pexpire(presenceKey, 1_000);
       const pong = await measure(() => frame({ type: 'pong', timestamp: Date.now() }));
+      expect(await redis.pttl(presenceKey), 'the pong refreshed the presence lease').toBeGreaterThan(1_000);
+
       const commandId = await insertSentCommand(device.deviceId);
-      const result = await measure(() => frame({ type: 'command_result', commandId, ...commandResultBody }));
+      advanceClock(WS_PING_INTERVAL_MS);
+      const result = await measureQuiet(() => frame({ type: 'command_result', commandId, ...commandResultBody }));
       console.log('[W0d budget] ws pong:', JSON.stringify(pong), 'ws command_result:', JSON.stringify(result));
       expect(await commandStatus(commandId)).toBe('completed');
-      expect(result.statements).toBeGreaterThan(0);
+      expect((ws as unknown as { close: ReturnType<typeof vi.fn> }).close, 'the credential re-check passed').not.toHaveBeenCalled();
       expectWithinBudget(WS_PONG_KEY, pong);
       expectWithinBudget(WS_COMMAND_RESULT_KEY, result);
     } finally {
-      await handlers.onClose({}, wsStub);
+      await handlers.onClose({}, ws);
     }
   });
 });

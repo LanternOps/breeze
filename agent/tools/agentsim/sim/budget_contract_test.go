@@ -12,10 +12,13 @@ var budgetExempt = map[string]string{
 	RouteCrawlConfig: "ee/workspace extension route, mounted only with BREEZE_WORKSPACE_ENABLED; its budget belongs with that module",
 }
 
-// Every request the simulator sends per minute must have a pinned DB budget in
-// the API Integration Tests job (W0d, #8151), so a new query on any hot agent
-// path reds CI. The TS file owns the numbers; this only checks the keys exist.
-// Adding a simulator route touches agent/**, so this runs in Test Agent.
+// Every steady-state request and WS frame the simulator sends
+// (SteadyStateRoutes) must have a pinned DB budget in the API Integration Tests
+// job (W0d, #8151), so a new query on any hot agent path reds CI. This only
+// checks that each route key appears quoted in the TS file; the TS file owns
+// the numbers, and its own table test checks that HOT_ROUTE_BUDGETS holds
+// exactly the HOT_ROUTES and W0D_EXTRA_KEYS keys. Adding a simulator route
+// touches agent/**, so this runs in Test Agent.
 func TestEverySteadyStateRouteHasAnAPIDBBudget(t *testing.T) {
 	path := filepath.Join("..", "..", "..", "..", "apps", "api", "src", "__tests__", "integration",
 		"agentHotPathQueryBudget.integration.test.ts")
