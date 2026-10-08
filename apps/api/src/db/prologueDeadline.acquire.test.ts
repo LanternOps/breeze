@@ -199,8 +199,84 @@ describe('withAcquireAndPrologueDeadline', () => {
     expect(err.elapsedMs).toBe(12_000);
     expect(err.contextLabel).toBe('withDbAccessContext(scope=system)');
     // Must point at saturation, not at a wedged prologue.
-    expect(err.message).toContain('#8229');
-    expect(err.message).not.toContain('reclamation pass was requested');
+    expect(err.message).toContain('saturation, not a wedged prologue');
+    expect(err.message).toContain('no reclamation was requested');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('reports an acquire expiry through onAcquireExpired, BEFORE the caller is rejected', async () => {
+    // Saturation must stay visible to operators even when the caller swallows
+    // the error — it used to surface (mislabelled) as a prologue warning.
+    const pool = fakePool();
+    const order: string[] = [];
+    const onExpired = vi.fn();
+    const result = withAcquireAndPrologueDeadline(
+      'withDbAccessContext(scope=system)',
+      (acquisition) =>
+        pool.transaction(async () => {
+          acquisition.acquired();
+          return 'rows';
+        }),
+      {
+        acquireTimeoutMs: 15_000,
+        timeoutMs: 15_000,
+        onExpired,
+        onAcquireExpired: (expiry) => {
+          order.push(`acquire-expired:${expiry.contextLabel}:${expiry.timeoutMs}:${expiry.elapsedMs}`);
+        },
+      },
+    ).catch(() => {
+      order.push('rejected');
+    });
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    await result;
+    expect(order).toEqual(['acquire-expired:withDbAccessContext(scope=system):15000:15000', 'rejected']);
+    expect(onExpired).not.toHaveBeenCalled();
+  });
+
+  it('never leaves the caller hanging when the acquire expiry handler throws', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const pool = fakePool();
+    const result = withAcquireAndPrologueDeadline(
+      'withDbAccessContext(scope=system)',
+      (acquisition) =>
+        pool.transaction(async () => {
+          acquisition.acquired();
+          return 'rows';
+        }),
+      {
+        acquireTimeoutMs: 5_000,
+        timeoutMs: 5_000,
+        onAcquireExpired: () => {
+          throw new Error('reporter exploded');
+        },
+      },
+    );
+    const assertion = expect(result).rejects.toBeInstanceOf(DbPoolAcquireTimeoutError);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await assertion;
+  });
+
+  it('acquired() is idempotent: a second call returns the same deadline and starts no second clock', async () => {
+    let first: PrologueDeadline | null = null;
+    let second: PrologueDeadline | null = null;
+    let timersAfter = -1;
+    const result = withAcquireAndPrologueDeadline(
+      'withDbAccessContext(scope=system)',
+      async (acquisition) => {
+        first = acquisition.acquired();
+        second = acquisition.acquired();
+        timersAfter = vi.getTimerCount();
+        first.disarm();
+        return 'rows';
+      },
+      { acquireTimeoutMs: 15_000, timeoutMs: 15_000 },
+    );
+    await expect(result).resolves.toBe('rows');
+    expect(second).toBe(first);
+    // The acquire clock is stopped and exactly one prologue clock is running.
+    expect(timersAfter).toBe(1);
     expect(vi.getTimerCount()).toBe(0);
   });
 

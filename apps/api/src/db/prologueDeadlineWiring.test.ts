@@ -320,6 +320,35 @@ describe('#6048 prologue deadline wiring', () => {
     expect(requestWedgedBackendReclaim).not.toHaveBeenCalled();
   });
 
+  it('logs pool saturation once per throttle window, not once per timed-out request (#8229)', async () => {
+    // Under saturation hundreds of requests time out together; one line per
+    // request would bury the logs. The FIRST must still be visible, carrying
+    // the label, and a later one must report how many were folded into it.
+    process.env.DB_POOL_ACQUIRE_TIMEOUT_MS = '15000';
+    transactionImpl.mockImplementation(() => new Promise(() => {}));
+    const warn = vi.mocked(console.warn);
+
+    const { withSystemDbAccessContext } = await loadDb();
+    const results = [1, 2, 3].map(() => withSystemDbAccessContext(async () => 'rows', 'wiringTest').catch(() => null));
+    await vi.advanceTimersByTimeAsync(15_000);
+    await Promise.all(results);
+
+    const acquireWarnings = () =>
+      warn.mock.calls.map((args) => String(args[0])).filter((line) => line.startsWith('[db-pool-acquire]'));
+    expect(acquireWarnings()).toHaveLength(1);
+    expect(acquireWarnings()[0]).toContain('withDbAccessContext(wiringTest)');
+    expect(acquireWarnings()[0]).toContain('#8229');
+
+    // After the window, the next expiry logs again and counts the suppressed two.
+    await vi.advanceTimersByTimeAsync(60_000);
+    const later = withSystemDbAccessContext(async () => 'rows', 'wiringTest').catch(() => null);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await later;
+    expect(acquireWarnings()).toHaveLength(2);
+    expect(acquireWarnings()[1]).toContain('2 more');
+    expect(requestWedgedBackendReclaim).not.toHaveBeenCalled();
+  });
+
   it('refuses a connection that arrives after the acquire budget expired, issuing nothing on it (#8229)', async () => {
     process.env.DB_POOL_ACQUIRE_TIMEOUT_MS = '15000';
     const { tx, issued } = makeTx(null);

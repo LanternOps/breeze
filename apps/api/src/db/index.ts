@@ -622,7 +622,41 @@ function withContextAcquireAndPrologueDeadline<T>(
 ): Promise<T> {
   return withAcquireAndPrologueDeadline(prologueLabel(opener, context), work, {
     onExpired: onPrologueDeadlineExpired,
+    onAcquireExpired: onPoolAcquireExpired,
   });
+}
+
+/**
+ * #8229 — throttle window for the pool-saturation warning. Saturation times out
+ * many requests at once, so the warning is logged at most once per window and
+ * reports how many expiries it folded in. Sentry still sees every caller's
+ * typed error through normal error handling; this line exists so saturation is
+ * visible even where a caller swallows it.
+ */
+const POOL_ACQUIRE_WARN_WINDOW_MS = 60_000;
+let poolAcquireWarnedAt: number | null = null;
+let poolAcquireSuppressed = 0;
+
+function onPoolAcquireExpired(expiry: {
+  contextLabel: string;
+  elapsedMs: number;
+  timeoutMs: number;
+}): void {
+  const nowMs = Date.now();
+  if (poolAcquireWarnedAt !== null && nowMs - poolAcquireWarnedAt < POOL_ACQUIRE_WARN_WINDOW_MS) {
+    poolAcquireSuppressed += 1;
+    return;
+  }
+  const folded = poolAcquireSuppressed;
+  poolAcquireWarnedAt = nowMs;
+  poolAcquireSuppressed = 0;
+  console.warn(
+    `[db-pool-acquire] ${expiry.contextLabel} waited ${expiry.elapsedMs}ms for a pooled connection `
+      + `(budget ${expiry.timeoutMs}ms) and gave up`
+      + (folded > 0 ? `; ${folded} more such timeout(s) since the last warning` : '')
+      + '. The pool is saturated or the event loop is starved — no reclamation requested, nothing '
+      + 'is wedged (#8229).',
+  );
 }
 
 /**

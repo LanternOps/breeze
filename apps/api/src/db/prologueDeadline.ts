@@ -257,6 +257,13 @@ const UNBOUNDED_ACQUISITION: PoolAcquisition = {
 export interface WithAcquireAndPrologueDeadlineDeps extends WithPrologueDeadlineDeps {
   /** Pool-acquire budget; defaults to {@link getDbPoolAcquireTimeoutMs}. 0 = unbounded. */
   acquireTimeoutMs?: number;
+  /**
+   * Fired synchronously at ACQUIRE expiry, before the typed error is thrown —
+   * observability only (a saturated pool must stay visible even when callers
+   * swallow the error). Separate from `onExpired` on purpose: an acquire
+   * expiry must never request a reclaim. Must not throw.
+   */
+  onAcquireExpired?: (expiry: PrologueDeadlineExpiry) => void;
 }
 
 /**
@@ -264,8 +271,9 @@ export interface WithAcquireAndPrologueDeadlineDeps extends WithPrologueDeadline
  * (#8229):
  *
  * 1. ACQUIRE — from now until `work` calls `acquisition.acquired()`. Expiry
- *    rejects with {@link DbPoolAcquireTimeoutError}. `onExpired` is NOT called:
- *    nothing is wedged, so no reclamation pass is requested.
+ *    calls `onAcquireExpired` (reporting only), then rejects with
+ *    {@link DbPoolAcquireTimeoutError}. `onExpired` is NOT called: nothing is
+ *    wedged, so no reclamation pass is requested.
  * 2. PROLOGUE — from `acquired()` until the returned deadline is disarmed.
  *    Expiry behaves exactly as it always has (#6048): `onExpired` first, then
  *    {@link DbAccessContextPrologueTimeoutError}, `elapsedMs` measured from
@@ -314,11 +322,14 @@ export async function withAcquireAndPrologueDeadline<T>(
     acquireTimer = setTimeout(() => {
       acquireTimer = undefined;
       acquireExpired = true;
-      fail(new DbPoolAcquireTimeoutError({
-        contextLabel,
-        elapsedMs: now() - calledAt,
-        timeoutMs: acquireTimeoutMs,
-      }));
+      const elapsedMs = now() - calledAt;
+      // Guarded: a reporting fault must not replace the caller's real error.
+      try {
+        deps.onAcquireExpired?.({ contextLabel, elapsedMs, timeoutMs: acquireTimeoutMs });
+      } catch (reportErr) {
+        console.warn('[db-pool-acquire] expiry handler failed:', reportErr);
+      }
+      fail(new DbPoolAcquireTimeoutError({ contextLabel, elapsedMs, timeoutMs: acquireTimeoutMs }));
     }, acquireTimeoutMs);
     // Never the reason the process stays alive.
     acquireTimer.unref?.();
