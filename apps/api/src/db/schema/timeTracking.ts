@@ -10,7 +10,9 @@ import { catalogItems } from './catalog';
 import { workTypes } from './workTypes';
 import { billingProfiles } from './billingProfiles';
 
-export const billingStatusEnum = pgEnum('billing_status', ['not_billed', 'billed', 'no_charge', 'contract']);
+// 'awaiting_approval' (#4617): held from billing until the customer approves.
+// Added alone in 2026-12-17-150000; ticket_parts forbids it by CHECK.
+export const billingStatusEnum = pgEnum('billing_status', ['not_billed', 'billed', 'no_charge', 'contract', 'awaiting_approval']);
 
 // Drizzle partial-index predicate helper (kept local; drizzle-kit only needs it
 // for drift detection — the real index is created in the SQL migration).
@@ -86,6 +88,16 @@ export const timeEntries = pgTable('time_entries', {
   //   - time_entries_contract_line_org_chk: contract_line_id IS NULL OR org_id IS NOT NULL
   //   - time_entries_contract_line_chk:     contract_line_id IS NULL OR billing_status = 'contract'
   contractLineId: uuid('contract_line_id'),
+  // #4617 spec §4.4: the customer approval request this entry is held for.
+  // Set together with billing_status = 'awaiting_approval' by the approval
+  // gate (W02); server-written only. Plain column here; the real constraint is
+  // SQL-only (2026-12-17-150300): time_entries_approval_request_fk
+  // (approval_request_id, ticket_id) -> ticket_approval_requests (id, ticket_id)
+  // ON DELETE SET NULL (approval_request_id). Keyed on ticket_id, not org_id, so
+  // neither org mover defers it. The awaiting_approval => approval_request_id
+  // invariant is service-enforced, not a CHECK: a hard ticket delete nulls the
+  // link and a CHECK would abort the delete.
+  approvalRequestId: uuid('approval_request_id'),
   // W06 (#3900) provenance. Server-stamped only — no public zod schema accepts it.
   // Values enforced by CHECK time_entries_source_chk in SQL:
   // 'manual' | 'timer' | 'location' | 'remote_session' | 'support_session' |
@@ -109,7 +121,11 @@ export const timeEntries = pgTable('time_entries', {
   // SQL (2026-12-17-100300); this mirrors it so db:check-drift stays clean.
   index('time_entries_contract_line_idx')
     .on(t.contractLineId)
-    .where(sql`${t.contractLineId} IS NOT NULL`)
+    .where(sql`${t.contractLineId} IS NOT NULL`),
+  // Partial, built CONCURRENTLY in SQL (2026-12-17-150300).
+  index('time_entries_approval_request_idx')
+    .on(t.approvalRequestId)
+    .where(sql`${t.approvalRequestId} IS NOT NULL`)
 ]);
 
 export const ticketParts = pgTable('ticket_parts', {

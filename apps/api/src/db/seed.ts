@@ -165,6 +165,7 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'tickets', action: 'read', description: 'View tickets, comments, and categories' },
   { resource: 'tickets', action: 'write', description: 'Create and update tickets, comments, and categories' },
   { resource: 'tickets', action: 'manage', description: 'Edit or delete any comment and reassign ticket organization' },
+  { resource: 'tickets', action: 'record_approval', description: 'Record a customer approval or denial of held ticket work on their behalf' },
 
   // Time entries (#4251). Seeded because Partner Technician grants them: the
   // mobile start/stop timer (#3206 W05) calls routes gated on
@@ -426,7 +427,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'devices:read', 'devices:write', 'devices:delete', 'devices:execute',
       'scripts:read', 'scripts:write', 'scripts:delete', 'scripts:execute',
       'alerts:read', 'alerts:write', 'alerts:acknowledge',
-      'tickets:read', 'tickets:write', 'tickets:manage',
+      'tickets:read', 'tickets:write', 'tickets:manage', 'tickets:record_approval',
       'reports:read', 'reports:write', 'reports:delete', 'reports:export',
       'users:read', 'users:write', 'users:delete', 'users:invite',
       'sites:read', 'sites:write', 'sites:delete',

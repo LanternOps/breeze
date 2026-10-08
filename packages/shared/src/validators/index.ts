@@ -992,6 +992,7 @@ export * from './ticketConfig';
 export * from './retiredLabourPricing';
 export * from './retiredAiModelFields';
 export * from './partnerTicketingSettings';
+export * from './ticketApproval';
 export * from './auditRetention';
 export * from './ticketPushPreferences';
 export * from './clientAiDlp';
