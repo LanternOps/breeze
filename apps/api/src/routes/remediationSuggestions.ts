@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { RESEARCH_BUILTIN_PARAM_SCHEMAS } from '@breeze/shared';
-import { and, desc, eq, gte, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm';
 
 import { db, withDbTransaction } from '../db';
 import { devices, elevationAudit, elevationRequests, mlFeedbackEvents, remediationSuggestions } from '../db/schema';
@@ -1212,6 +1212,34 @@ async function releaseBuiltinClaim(
   }
 }
 
+const SCRIPT_CLAIM_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Undo a script claim after a REFUSED/denied dispatch (nothing was sent).
+ * Conditional on the claim still being ours (our executedAt, no link yet).
+ */
+async function releaseScriptClaim(
+  auth: AuthContext,
+  existing: typeof remediationSuggestions.$inferSelect,
+  claimedAt: Date,
+): Promise<void> {
+  try {
+    await withAuthDbAccessContext(auth, async () => {
+      await db
+        .update(remediationSuggestions)
+        .set({ executedBy: existing.executedBy ?? null, executedAt: existing.executedAt ?? null, updatedAt: new Date() })
+        .where(and(
+          eq(remediationSuggestions.id, existing.id),
+          eq(remediationSuggestions.executedAt, claimedAt),
+          isNull(remediationSuggestions.scriptExecutionId),
+        ));
+    });
+  } catch (err) {
+    console.error('[remediationSuggestions] could not release a script claim after a refused dispatch', { suggestionId: existing.id, err });
+    captureException(err, undefined, { component: 'remediationSuggestions.scriptRelease', suggestionId: existing.id });
+  }
+}
+
 remediationSuggestionRoutes.post(
   '/:id/execute',
   requireScope('organization', 'partner', 'system'),
@@ -1323,7 +1351,32 @@ remediationSuggestionRoutes.post(
       if (approvalError) {
         return { ok: false as const, error: approvalError, status: 403 as const };
       }
-      return { ok: true as const, kind: 'script' as const, existing, scriptId: existing.scriptId, deviceId };
+      // Atomic CLAIM before dispatch (#7276, script half). A script suggestion
+      // cannot flip to `executed` without an execution link (terminal link
+      // CHECK), so the claim reserves the row by stamping executed_by/at while
+      // the status stays gated — a non-terminal row never otherwise carries
+      // executed_at. It commits with this context: a concurrent /execute
+      // (blocked on the row lock, then re-evaluating the WHERE) matches nothing
+      // and gets a 409 before it can dispatch. A claim older than the TTL is
+      // reclaimable so a crash between claim and link cannot wedge the row.
+      const claimedAt = new Date();
+      const [claimed] = await db
+        .update(remediationSuggestions)
+        .set({ executedBy: auth.user.id, executedAt: claimedAt, updatedAt: claimedAt })
+        .where(and(
+          eq(remediationSuggestions.id, existing.id),
+          eq(remediationSuggestions.status, existing.status),
+          isNull(remediationSuggestions.scriptExecutionId),
+          or(
+            isNull(remediationSuggestions.executedAt),
+            lt(remediationSuggestions.executedAt, new Date(claimedAt.getTime() - SCRIPT_CLAIM_TTL_MS)),
+          ),
+        ))
+        .returning({ id: remediationSuggestions.id });
+      if (!claimed) {
+        return { ok: false as const, error: 'This suggestion is already being executed', code: 'already_dispatching' as const, status: 409 as const };
+      }
+      return { ok: true as const, kind: 'script' as const, existing, scriptId: existing.scriptId, deviceId, claimedAt };
     });
     if (!gate.ok) {
       return c.json({ error: gate.error, ...('code' in gate ? { code: gate.code } : {}) }, gate.status);
@@ -1331,8 +1384,10 @@ remediationSuggestionRoutes.post(
     if (gate.kind === 'builtin') {
       return runBuiltinExecution(c, auth, gate);
     }
-    const { existing, scriptId, deviceId } = gate;
+    const { existing, scriptId, deviceId, claimedAt } = gate;
 
+    // A throw is ambiguous (the command may have left), so the claim is KEPT —
+    // fail safe against a double send; the TTL frees it if nothing was sent.
     const execution = await executeScriptOnDevices({
       scriptId,
       deviceIds: [deviceId],
@@ -1344,6 +1399,7 @@ remediationSuggestionRoutes.post(
     });
 
     if (!execution.ok) {
+      await releaseScriptClaim(auth, existing, claimedAt);
       return c.json({ error: execution.error }, execution.status);
     }
 
@@ -1351,6 +1407,7 @@ remediationSuggestionRoutes.post(
       (target) => target.requestedDeviceId === deviceId,
     );
     if (!admission || admission.admission !== 'admitted' || !admission.executionId) {
+      await releaseScriptClaim(auth, existing, claimedAt);
       return c.json({
         admission: admission?.admission ?? 'denied',
         reasonCode: admission?.reasonCode ?? 'not_found_or_inaccessible',
@@ -1373,7 +1430,8 @@ remediationSuggestionRoutes.post(
           executedAt: now,
           updatedAt: now,
         })
-        .where(eq(remediationSuggestions.id, existing.id))
+        // Second guard behind the claim: never overwrite an existing link.
+        .where(and(eq(remediationSuggestions.id, existing.id), isNull(remediationSuggestions.scriptExecutionId)))
         .returning();
 
       if (!row) return undefined;
