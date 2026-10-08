@@ -448,6 +448,25 @@ describe('purgeRemovedDevice', () => {
     expect(deleteDeviceCascade).toHaveBeenCalledTimes(1);
   });
 
+  it('bounds the policy-hold FOR SHARE wait and restores the caller lock_timeout afterwards', async () => {
+    let callsAtCheck: string[] = [];
+    const { tx, calls } = makeTx({
+      lockRow: { id: DEV, status: 'decommissioned', org_id: ORG, link_group_id: null },
+    });
+    vi.mocked(findPolicyBackupLegalHoldInContext).mockImplementation(async () => {
+      callsAtCheck = [...calls];
+      return null;
+    });
+    await purgeRemovedDevice(tx, DEV);
+    // The check runs with the bound in force: tightened after the org lookup
+    // (the first tighten belongs to the devices-row lock) ...
+    const orgLookup = callsAtCheck.indexOf('device-org');
+    expect(orgLookup).toBeGreaterThanOrEqual(0);
+    expect(callsAtCheck.lastIndexOf('tighten-lock-timeout')).toBeGreaterThan(orgLookup);
+    // ... and put back right after it (makeTx reports a disabled prior, 0).
+    expect(calls.slice(callsAtCheck.length)[0]).toBe('restore-lock-timeout');
+  });
+
   it('checks for a protected backup snapshot only AFTER the pending-uninstall check', async () => {
     const { tx, calls } = makeTx({
       lockRow: { id: DEV, status: 'decommissioned', link_group_id: null },

@@ -354,7 +354,16 @@ export async function hasProtectedBackupSnapshots(tx: Tx, deviceId: string): Pro
   `)) as unknown as Array<{ org_id: string }>;
   // No device row: the cascade has nothing to delete, so nothing to protect.
   if (!device?.org_id) return false;
+  // The FOR SHARE locks wait behind any in-flight edit of a hold-bearing
+  // policy row while this transaction already holds the devices row lock and
+  // a pooled connection: bound that wait like lockDevice does (55P03 maps to
+  // a retryable 409), then put the caller's value back. Success path only —
+  // after a lock timeout the aborted (sub)transaction rejects any statement.
+  const priorMs = await tightenLockTimeout(tx, DEVICE_LIFECYCLE_LOCK_TIMEOUT_MS);
   const policyHold = await findPolicyBackupLegalHoldInContext(device.org_id, { deviceId, lockForShare: true });
+  if (lockTimeoutWasChanged(priorMs, DEVICE_LIFECYCLE_LOCK_TIMEOUT_MS)) {
+    await tx.execute(sql`select set_config('lock_timeout', ${`${priorMs}ms`}, true)`);
+  }
   return policyHold !== null;
 }
 

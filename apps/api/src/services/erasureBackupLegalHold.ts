@@ -50,8 +50,16 @@ export async function findPolicyBackupLegalHoldInContext(
   `));
   const partnerId = org?.partner_id ?? null;
 
+  // Every snapshot has a job (backup_snapshots.job_id is NOT NULL, ON DELETE
+  // CASCADE), and a legacy policy reaches a snapshot only through its job's
+  // policy_id, so in device scope those are the only backup_policies rows
+  // whose hold can govern the device's backups.
+  const devicePolicyFilter = deviceId
+    ? sql`AND id IN (SELECT policy_id FROM backup_jobs WHERE device_id = ${deviceId}::uuid AND policy_id IS NOT NULL)`
+    : sql``;
+
   if (opts.lockForShare) {
-    await dbModule.db.execute(sql`SELECT id FROM backup_policies WHERE org_id = ${orgId}::uuid FOR SHARE`);
+    await dbModule.db.execute(sql`SELECT id FROM backup_policies WHERE org_id = ${orgId}::uuid ${devicePolicyFilter} FOR SHARE`);
     await dbModule.db.execute(sql`
       SELECT id FROM config_policy_backup_settings
        WHERE org_id = ${orgId}::uuid ${partnerId ? sql`OR partner_id = ${partnerId}::uuid` : sql``}
@@ -62,7 +70,7 @@ export async function findPolicyBackupLegalHoldInContext(
   const [policyHold] = rowsOf<{ id: string }>(await dbModule.db.execute(sql`
     SELECT id FROM backup_policies
      WHERE org_id = ${orgId}::uuid AND legal_hold = true
-       ${deviceId ? sql`AND id IN (SELECT policy_id FROM backup_jobs WHERE device_id = ${deviceId}::uuid AND policy_id IS NOT NULL)` : sql``}
+       ${devicePolicyFilter}
      LIMIT 1
   `));
   if (policyHold) return 'backup_policy';

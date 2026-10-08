@@ -288,6 +288,42 @@ describe('device purge refuses while a backup legal hold governs the device (#79
     expect(await exec(sql`SELECT id FROM devices WHERE id = ${device}`)).toHaveLength(1);
   });
 
+  runDb('a held PARTNER-WIDE configuration policy effective for the device refuses the purge', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'breeze-purge-fence-'));
+    const partnerId = await seedPartner();
+    const a = await seedOrg(partnerId, root);
+    const device = await seedDevice(a, { removed: true });
+    const [policy] = await exec<{ id: string }>(sql`
+      INSERT INTO configuration_policies (org_id, partner_id, name, status)
+      VALUES (NULL, ${partnerId}, 'Partner-wide held backups', 'active') RETURNING id
+    `);
+    const [link] = await exec<{ id: string }>(sql`
+      INSERT INTO config_policy_feature_links (config_policy_id, feature_type) VALUES (${policy!.id}, 'backup') RETURNING id
+    `);
+    await exec(sql`
+      INSERT INTO config_policy_backup_settings (feature_link_id, org_id, partner_id, retention)
+      VALUES (${link!.id}, NULL, ${partnerId}, ${JSON.stringify({ legalHold: true })}::jsonb)
+    `);
+    await exec(sql`
+      INSERT INTO config_policy_assignments (config_policy_id, level, target_id) VALUES (${policy!.id}, 'device', ${device})
+    `);
+
+    const err = await purge(device).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DeviceLifecycleError);
+    expect((err as DeviceLifecycleError).code).toBe('BACKUP_PROTECTED');
+    expect(await exec(sql`SELECT id FROM devices WHERE id = ${device}`)).toHaveLength(1);
+  });
+
+  runDb('a device with no backups purges cleanly and fences nothing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'breeze-purge-fence-'));
+    const a = await seedOrg(await seedPartner(), root);
+    const device = await seedDevice(a, { removed: true });
+
+    await purge(device);
+    expect(await exec(sql`SELECT id FROM devices WHERE id = ${device}`)).toHaveLength(0);
+    expect(await exec(sql`SELECT id FROM backup_erasure_targets WHERE subject_org_id = ${a.orgId}`)).toHaveLength(0);
+  });
+
   runDb('a held backup policy the device never ran under does not block its purge', async () => {
     const root = await mkdtemp(join(tmpdir(), 'breeze-purge-fence-'));
     const a = await seedOrg(await seedPartner(), root);
