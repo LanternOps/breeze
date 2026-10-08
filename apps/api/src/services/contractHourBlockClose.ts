@@ -9,10 +9,12 @@
  * set, flip exactly that set. ORDER BY id is issueInvoice's order, so the two
  * paths serialize instead of deadlocking.
  */
-import { and, asc, desc, eq, gte, inArray, isNotNull, lt, sql } from 'drizzle-orm';
-import { assertInTransaction, db } from '../db';
+import { and, asc, desc, eq, gte, inArray, isNotNull, lt, ne, or, sql } from 'drizzle-orm';
+import { assertInTransaction, db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { contractHourPeriods, contractLines, contracts, timeEntries } from '../db/schema';
-import { addContractLine } from './invoiceService';
+import { addContractLine, createManualInvoice } from './invoiceService';
+import { buildAutomationEligibleOrgPredicate } from './tenantStatus';
+import { captureException } from './sentry';
 import type { InvoiceActor } from './invoiceTypes';
 import { ContractServiceError } from './contractTypes';
 import { hourBlockDayStart, loadPeriodClaims } from './contractHourBlockHolds';
@@ -179,4 +181,78 @@ async function closeOne(
     overageHours: math.overageHours, carriedOutHours: math.carriedOutHours, foreignCurrencyHours: foreign,
     entryCount: ids.length, overageInvoiceLineId, closeSource,
   };
+}
+
+/**
+ * Daily close-out (#8181, plan-time amendment 4): closes the ended, claimed,
+ * unclosed periods the billing run will never visit again — every block line
+ * whose contract is no longer active, or that is retired. Typically the final
+ * period of an advance contract, claimed on the run that expired it but not
+ * ended until weeks later. Overage lands on a NEW draft invoice that is never
+ * auto-issued (nothing here issues). One transaction per contract, contract row
+ * locked first (the billing run's lock), so a sweep racing a manual generate or
+ * another sweep closes each period exactly once; one contract's failure never
+ * stops the rest.
+ */
+export async function runHourBlockCloseOutSweep(asOf: Date = new Date()): Promise<{ contracts: number; closes: number; errors: number }> {
+  const today = asOf.toISOString().slice(0, 10);
+  // Pre-filter only (the selector decides): a claimed, ended period at or after
+  // the block's first period, claimed while the line was live, with no ledger row.
+  const candidates = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    db.selectDistinct({ contractId: contractLines.contractId }).from(contractLines)
+      .innerJoin(contracts, eq(contracts.id, contractLines.contractId))
+      .where(and(
+        eq(contractLines.lineType, 'hour_block'),
+        or(ne(contracts.status, 'active'), isNotNull(contractLines.hourBlockRetiredAt)),
+        buildAutomationEligibleOrgPredicate(contracts.orgId),
+        sql`EXISTS (
+          SELECT 1 FROM contract_billing_periods p
+          WHERE p.contract_id = ${contractLines.contractId}
+            AND p.period_start >= ${contractLines.hourBlockFirstPeriodStart}
+            AND p.period_end <= ${today}::date
+            AND (${contractLines.hourBlockRetiredAt} IS NULL
+                 OR (p.generated_at AT TIME ZONE current_setting('TimeZone')) <= ${contractLines.hourBlockRetiredAt})
+            AND NOT EXISTS (
+              SELECT 1 FROM contract_hour_periods h
+              WHERE h.contract_line_id = ${contractLines.id} AND h.period_start = p.period_start))`,
+      ))));
+
+  let closes = 0;
+  let errors = 0;
+  for (const { contractId } of candidates) {
+    try {
+      closes += await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+        // Same statement as contractService.lockContractRow — inlined because
+        // contractService imports this module (a back-import would be a cycle).
+        const [c] = await db.select().from(contracts).where(eq(contracts.id, contractId)).limit(1).for('update');
+        if (!c) return 0; // deleted since the candidate read
+        const actor: InvoiceActor = { userId: c.createdBy, partnerId: c.partnerId, accessibleOrgIds: [c.orgId] };
+        const lines = await db.select().from(contractLines)
+          .where(and(eq(contractLines.contractId, contractId), eq(contractLines.lineType, 'hour_block')))
+          .orderBy(asc(contractLines.id));
+        let n = 0;
+        for (const line of lines) {
+          // A live line on an active contract belongs to the billing run (re-read under the lock).
+          if ((c.status as string) === 'active' && line.hourBlockRetiredAt === null) continue;
+          const r = await closeHourBlockPeriods({
+            contract: c, line, closeSource: 'close_out', asOf,
+            overageInvoice: async () => {
+              const inv = await createManualInvoice({
+                orgId: c.orgId, currencyCode: c.currencyCode,
+                notes: `Block hours over the included amount on contract "${c.name}"`,
+              }, actor);
+              return { id: inv.id, actor };
+            },
+          });
+          n += r.closes.length;
+        }
+        return n;
+      }));
+    } catch (err) {
+      errors += 1;
+      console.error('[contractHourBlocks] close-out failed', `contractId=${contractId}`, err instanceof Error ? err.message : err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+  return { contracts: candidates.length, closes, errors };
 }

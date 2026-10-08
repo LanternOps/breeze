@@ -12,6 +12,9 @@ const { generateDueInvoiceMock, issueInvoiceMock, sendInvoiceEmailMock, captureE
 }));
 vi.mock('../services/contractService', () => ({ generateDueInvoice: generateDueInvoiceMock }));
 vi.mock('../services/contractRenewal', () => ({ runContractRenewalSweep: vi.fn() }));
+vi.mock('../services/contractHourBlockClose', () => ({
+  runHourBlockCloseOutSweep: vi.fn().mockResolvedValue({ contracts: 0, closes: 0, errors: 0 }),
+}));
 vi.mock('../services/invoiceService', () => ({ issueInvoice: issueInvoiceMock }));
 vi.mock('../services/invoicePdf', () => ({ sendInvoiceEmail: sendInvoiceEmailMock }));
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
@@ -35,7 +38,9 @@ import { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { Mock } from 'vitest';
 import { db } from '../db';
-import { runContractBillingSweep } from './contractWorker';
+import { runBillingSweepJob, runContractBillingSweep } from './contractWorker';
+import { runContractRenewalSweep } from '../services/contractRenewal';
+import { runHourBlockCloseOutSweep } from '../services/contractHourBlockClose';
 
 const ACTOR = { userId: null, partnerId: 'p1', accessibleOrgIds: ['org1'] } as const;
 
@@ -297,5 +302,26 @@ describe('runContractBillingSweep tenant scope', () => {
     expect(params).not.toContain('merging');
     // Pre-existing predicates survive alongside it.
     expect(sql).toContain('"contracts"."next_billing_at" <=');
+  });
+});
+
+describe('billing-sweep job ordering (#8181)', () => {
+  beforeEach(() => { dueRows.length = 0; vi.clearAllMocks(); });
+
+  it('runs renewal, then billing, then the block-hours close-out, with the same asOf', async () => {
+    dueRows.push({ id: 'c1', orgId: 'org1' });
+    generateDueInvoiceMock.mockResolvedValue({
+      generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null,
+      overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false,
+    });
+    const asOf = new Date('2026-08-02T06:00:00Z');
+    const res = await runBillingSweepJob(asOf);
+    expect(res).toEqual({ billed: 0, failed: 0 });
+    const renewal = (runContractRenewalSweep as Mock).mock.invocationCallOrder[0]!;
+    const billing = generateDueInvoiceMock.mock.invocationCallOrder[0]!;
+    const closeOut = (runHourBlockCloseOutSweep as Mock).mock.invocationCallOrder[0]!;
+    expect(renewal).toBeLessThan(billing);
+    expect(billing).toBeLessThan(closeOut);
+    expect(runHourBlockCloseOutSweep).toHaveBeenCalledWith(asOf);
   });
 });

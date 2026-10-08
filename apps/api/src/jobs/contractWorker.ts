@@ -18,6 +18,7 @@ import { captureException } from '../services/sentry';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { contracts } from '../db/schema';
 import { generateDueInvoice } from '../services/contractService';
+import { runHourBlockCloseOutSweep } from '../services/contractHourBlockClose';
 import { buildAutomationEligibleOrgPredicate } from '../services/tenantStatus';
 import { runContractRenewalSweep } from '../services/contractRenewal';
 import { issueInvoice } from '../services/invoiceService';
@@ -145,17 +146,30 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
   return { billed, failed };
 }
 
+/**
+ * The daily billing-sweep job, in order: renewal → billing → block-hours close-out.
+ * Renewal MUST run before billing so an about-to-expire auto-renew contract has
+ * its term extended before generateDueInvoice decides expiry. The close-out runs
+ * AFTER billing so a contract the billing run just expired or cancelled has its
+ * block line retired before the sweep looks for the periods it left behind.
+ */
+export async function runBillingSweepJob(asOf: Date = new Date()): Promise<{ billed: number; failed: number }> {
+  await runOutsideDbContext(() => withSystemDbAccessContext(() => runContractRenewalSweep()));
+  const billing = await runContractBillingSweep(asOf);
+  // Self-wrapping: one system transaction per contract, failures captured per contract.
+  const hb = await runHourBlockCloseOutSweep(asOf);
+  if (hb.closes > 0 || hb.errors > 0) {
+    console.info('[contract-billing] block-hours close-out: contracts=%d closes=%d errors=%d', hb.contracts, hb.closes, hb.errors);
+  }
+  return billing;
+}
+
 /** Create the contract BullMQ worker. */
 export function createContractWorker(): Worker {
   return new Worker(
     CONTRACT_QUEUE,
     async (job) => {
-      if (job.name === 'billing-sweep') {
-        // Renewal pre-pass MUST run before billing so an about-to-expire auto-renew
-        // contract has its term extended before generateDueInvoice decides expiry.
-        await runOutsideDbContext(() => withSystemDbAccessContext(() => runContractRenewalSweep()));
-        return runContractBillingSweep();
-      }
+      if (job.name === 'billing-sweep') return runBillingSweepJob();
       throw new Error(`Unknown contract job: ${job.name}`);
     },
     { connection: getBullMQConnection(), concurrency: 1 }
