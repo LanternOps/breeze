@@ -80,19 +80,25 @@ complianceRoutes.get(
 
     const statuses = (await listStatusRows(auth, query.orgId)).map(toStatusResponse);
 
+    // `firewallEnabled: null` is unknown (#8252): the collector failed or never
+    // reported, so no profile or rule data is synthesized for it.
     let devicesData = statuses.map((status) => ({
       deviceId: status.deviceId,
       deviceName: status.deviceName,
       os: status.os,
       firewallEnabled: status.firewallEnabled,
-      profiles: status.os === 'windows'
+      profiles: status.firewallEnabled === null
+        ? []
+        : status.os === 'windows'
         ? [
             { name: 'Domain', enabled: status.firewallEnabled, inboundPolicy: 'block', outboundPolicy: 'allow' },
             { name: 'Private', enabled: status.firewallEnabled, inboundPolicy: 'block', outboundPolicy: 'allow' },
             { name: 'Public', enabled: status.firewallEnabled, inboundPolicy: 'block', outboundPolicy: 'block' }
           ]
         : [{ name: status.os === 'macos' ? 'Application Firewall' : 'iptables/nftables', enabled: status.firewallEnabled, inboundPolicy: 'block', outboundPolicy: 'allow' }],
-      rulesCount: status.firewallEnabled ? (status.os === 'windows' ? 142 : 38) : 0
+      rulesCount: status.firewallEnabled === null
+        ? null
+        : status.firewallEnabled ? (status.os === 'windows' ? 142 : 38) : 0
     }));
 
     if (query.status) {
@@ -109,8 +115,9 @@ complianceRoutes.get(
       devicesData = devicesData.filter((device) => device.deviceName.toLowerCase().includes(term));
     }
 
-    const enabledCount = statuses.filter((status) => status.firewallEnabled).length;
-    const disabledCount = statuses.length - enabledCount;
+    const enabledCount = statuses.filter((status) => status.firewallEnabled === true).length;
+    const disabledCount = statuses.filter((status) => status.firewallEnabled === false).length;
+    const unknownCount = statuses.length - enabledCount - disabledCount;
 
     return c.json({
       ...paginate(devicesData, page, limit),
@@ -118,6 +125,7 @@ complianceRoutes.get(
         total: statuses.length,
         enabled: enabledCount,
         disabled: disabledCount,
+        unknown: unknownCount,
         coveragePercent: statuses.length ? Math.round((enabledCount / statuses.length) * 100) : 0
       }
     });
