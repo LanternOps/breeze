@@ -141,6 +141,7 @@ const adapter = {
   },
   baseUrlPolicy: { required: true, pathPrefix: '/api' },
   hostAllowlist: ['.gravityzone.bitdefender.com'],
+  capabilities: { tenantModel: 'partner', detectionDelivery: 'poll', installer: 'none', actions: [] },
   testConnection,
 };
 vi.mock('../../services/edrProviders/registry', () => ({
@@ -290,7 +291,7 @@ describe('EDR connection routes', () => {
       expect(created.credentialsEncrypted).toBe(`enc:${created.id}`);
       expect(created).toMatchObject({
         partnerId: PARTNER_ID, vendorRootId: '1000', vendorRootType: 'partner', status: 'connected',
-        capabilitiesSnapshot: ['quarantine: API not enabled on key'],
+        capabilitiesSnapshot: ['tenants:partner', 'detections:poll', 'installer:none', 'note:quarantine: API not enabled on key'],
       });
       const payload = JSON.stringify(await res.json());
       expect(payload).not.toContain(CREDS.apiKey);

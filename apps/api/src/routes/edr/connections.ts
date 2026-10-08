@@ -18,6 +18,7 @@ import { getEdrProvider } from '../../services/edrProviders/registry';
 import { decryptEdrSecret, encryptEdrSecret } from '../../services/edrProviders/credentials';
 import { validateVendorUrl } from '../../services/edrProviders/guardedFetch';
 import { buildEdrAdapterContext } from '../../services/edrProviders/context';
+import { capabilitySnapshot } from '../../services/edrProviders/capabilities';
 import type { EdrProviderAdapter } from '../../services/edrProviders/types';
 import { enqueueEdrSync } from '../../jobs/edrProviderSync';
 import {
@@ -178,7 +179,7 @@ edrConnectionRoutes.post(
             status: 'connected',
             detectionIntervalMinutes: body.detectionIntervalMinutes ?? null,
             inventoryIntervalMinutes: body.inventoryIntervalMinutes ?? null,
-            capabilitiesSnapshot: test.capabilityNotes,
+            capabilitiesSnapshot: capabilitySnapshot(adapter, test.capabilityNotes),
             createdBy: auth.user?.id ?? null,
           })
           .returning({ id: edrConnections.id });
@@ -292,7 +293,7 @@ edrConnectionRoutes.patch(
       updates.vendorRootId = test.rootId;
       updates.vendorRootName = test.rootName;
       updates.vendorRootType = test.rootType;
-      updates.capabilitiesSnapshot = test.capabilityNotes;
+      updates.capabilitiesSnapshot = capabilitySnapshot(adapter, test.capabilityNotes);
       // A successful re-test is the ONLY thing that clears reauth_required.
       updates.status = 'connected';
       updates.lastInventorySyncError = null;
@@ -385,7 +386,7 @@ edrConnectionRoutes.post(
               vendorRootId: result.rootId,
               vendorRootName: result.rootName,
               vendorRootType: result.rootType,
-              capabilitiesSnapshot: result.capabilityNotes,
+              capabilitiesSnapshot: capabilitySnapshot(adapter, result.capabilityNotes),
               updatedAt: new Date(),
             }
             : { status: 'reauth_required', updatedAt: new Date() })

@@ -228,6 +228,18 @@ interface LoadedConnection {
   tenants: LoadedTenant[];
   /** inventory only: tenant row id -> stalest vendor endpoint ids to enrich */
   staleDetailIds: Map<string, string[]>;
+  /** inventory only: tenant row id -> every vendor endpoint id already stored */
+  knownEndpointIds: Map<string, Set<string>>;
+}
+
+/**
+ * Endpoints to enrich this run: ones fetched for the first time (so a newly mapped company shows
+ * health / online / last-seen on its first sync, not an inventory cycle later), then the stalest
+ * stored ones, capped at DETAIL_ENRICH_PER_RUN.
+ */
+function enrichmentTargets(fetchedIds: readonly string[], known: ReadonlySet<string>, stale: readonly string[]): string[] {
+  const fresh = fetchedIds.filter((id) => !known.has(id));
+  return [...new Set([...fresh, ...stale])].slice(0, DETAIL_ENRICH_PER_RUN);
 }
 
 async function loadForSync(connectionId: string, stream: EdrSyncStream): Promise<LoadedConnection | null> {
@@ -260,21 +272,27 @@ async function loadForSync(connectionId: string, stream: EdrSyncStream): Promise
       .where(and(eq(edrTenants.connectionId, connectionId), sql`${edrTenants.vendorMissingSince} IS NULL`));
 
     const staleDetailIds = new Map<string, string[]>();
+    const knownEndpointIds = new Map<string, Set<string>>();
     if (stream === 'inventory') {
+      // Every stored endpoint id (so phase 2 can tell which fetched endpoints are NEW), ranked
+      // stalest-detail first per tenant.
       const rows = (await db.execute(sql`
-        SELECT tenant_id, vendor_endpoint_id FROM (
-          SELECT tenant_id, vendor_endpoint_id,
-                 row_number() OVER (PARTITION BY tenant_id ORDER BY vendor_detail_synced_at ASC NULLS FIRST) AS rn
-          FROM edr_endpoints WHERE connection_id = ${connectionId}::uuid
-        ) s WHERE rn <= ${DETAIL_ENRICH_PER_RUN}
-      `)) as unknown as Array<{ tenant_id: string; vendor_endpoint_id: string }>;
+        SELECT tenant_id, vendor_endpoint_id,
+               row_number() OVER (PARTITION BY tenant_id ORDER BY vendor_detail_synced_at ASC NULLS FIRST) AS rn
+        FROM edr_endpoints WHERE connection_id = ${connectionId}::uuid
+      `)) as unknown as Array<{ tenant_id: string; vendor_endpoint_id: string; rn: number | string }>;
       for (const r of rows) {
-        const list = staleDetailIds.get(r.tenant_id) ?? [];
-        list.push(r.vendor_endpoint_id);
-        staleDetailIds.set(r.tenant_id, list);
+        const known = knownEndpointIds.get(r.tenant_id) ?? new Set<string>();
+        known.add(r.vendor_endpoint_id);
+        knownEndpointIds.set(r.tenant_id, known);
+        if (Number(r.rn) <= DETAIL_ENRICH_PER_RUN) {
+          const list = staleDetailIds.get(r.tenant_id) ?? [];
+          list.push(r.vendor_endpoint_id);
+          staleDetailIds.set(r.tenant_id, list);
+        }
       }
     }
-    return { row, tenants, staleDetailIds };
+    return { row, tenants, staleDetailIds, knownEndpointIds };
   }, `edrProviderSync.load.${stream}`);
 }
 
@@ -396,16 +414,6 @@ function requireRoot(row: typeof edrConnections.$inferSelect): string {
   return row.vendorRootId;
 }
 
-function capabilityKeys(adapter: EdrProviderAdapter): string[] {
-  const c = adapter.capabilities;
-  return [
-    `tenants:${c.tenantModel}`,
-    `detections:${c.detectionDelivery}`,
-    `installer:${c.installer}`,
-    ...c.actions.map((a) => `action:${a}`),
-  ];
-}
-
 // ---------------------------------------------------------------------------
 // Inventory stream
 // ---------------------------------------------------------------------------
@@ -451,7 +459,11 @@ export async function syncEdrInventory(
             }
             const endpoints = await adapter.listEndpoints(ctx, ref);
             const details = adapter.enrichEndpoints
-              ? await adapter.enrichEndpoints(ctx, ref, loaded.staleDetailIds.get(known.id) ?? [])
+              ? await adapter.enrichEndpoints(ctx, ref, enrichmentTargets(
+                endpoints.map((e) => e.vendorEndpointId),
+                loaded.knownEndpointIds.get(known.id) ?? new Set(),
+                loaded.staleDetailIds.get(known.id) ?? [],
+              ))
               : [];
             return { vendorTenantId: t.vendorTenantId, ok: true, value: { endpoints, details } };
           } catch (err) {
@@ -509,7 +521,6 @@ export async function syncEdrInventory(
           lastSyncLinkedEndpoints: match.linked,
           lastSyncAmbiguousEndpoints: match.ambiguous,
           lastSyncOpenDetections: open?.n ?? 0,
-          capabilitiesSnapshot: capabilityKeys(adapter),
           effectiveDetectionIntervalMinutes: cadence.detectionsMinutes,
           effectiveInventoryIntervalMinutes: cadence.inventoryMinutes,
           updatedAt: now,

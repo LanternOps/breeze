@@ -38,6 +38,8 @@ function chain(resultFor: () => unknown) {
 
 // First edr_tenants select (phase 1) returns the tenant list; later ones the open-detection sum.
 let tenantSelects = 0;
+// Rows the phase-1 endpoint query (db.execute) returns.
+let executeRows: Array<Record<string, unknown>> = [];
 vi.mock('../db', () => ({
   db: {
     select: vi.fn((..._a: unknown[]) => {
@@ -60,7 +62,7 @@ vi.mock('../db', () => ({
     update: vi.fn(() => { dbCallDepths.push(contextDepth); return chain(() => []); }),
     insert: vi.fn(() => chain(() => [])),
     delete: vi.fn(() => chain(() => [])),
-    execute: vi.fn(() => { events.push('execute'); return Promise.resolve([]); }),
+    execute: vi.fn(() => { events.push('execute'); return Promise.resolve(executeRows); }),
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
     contextDepth += 1;
@@ -175,7 +177,7 @@ const RUN_CACHE = new Map<string, Promise<unknown>>();
 
 beforeEach(() => {
   vi.clearAllMocks();
-  contextDepth = 0; tenantSelects = 0;
+  contextDepth = 0; tenantSelects = 0; executeRows = [];
   fetchDepths.length = 0; dbCallDepths.length = 0; updatePayloads.length = 0; events.length = 0;
   connectionRow = { ...BASE_ROW };
   reReadRow = undefined;
@@ -233,6 +235,27 @@ describe('enqueueEdrSync', () => {
 });
 
 describe('syncEdrInventory', () => {
+  it('enriches an endpoint in the run that first stores it, ahead of the stalest known ones', async () => {
+    // Live 2026-10-08: without this, a newly mapped company showed health/online/last-seen
+    // as unknown until the NEXT inventory run (an hour later by default).
+    executeRows = [
+      { tenant_id: 't-mapped', vendor_endpoint_id: 'old-stale', rn: 1 },
+      { tenant_id: 't-mapped', vendor_endpoint_id: 'old-fresh', rn: 2 },
+    ];
+    m.listEndpoints.mockImplementation(async () => [
+      { vendorEndpointId: 'new-1' }, { vendorEndpointId: 'old-stale' }, { vendorEndpointId: 'old-fresh' },
+    ]);
+    await syncEdrInventory(CONNECTION_ID);
+    expect(m.enrichEndpoints).toHaveBeenCalledTimes(1);
+    expect(m.enrichEndpoints.mock.calls[0]![2]).toEqual(['new-1', 'old-stale', 'old-fresh']);
+  });
+
+  it('never writes capabilities_snapshot (only a connection test does)', async () => {
+    await syncEdrInventory(CONNECTION_ID);
+    expect(lastConnectionUpdate()?.payload).toBeDefined();
+    expect(updatePayloads.some((u) => 'capabilitiesSnapshot' in u.payload)).toBe(false);
+  });
+
   it('vendor calls run outside any db context and no db call happens between phase 1 and phase 3', async () => {
     await syncEdrInventory(CONNECTION_ID);
     expect(fetchDepths.length).toBeGreaterThan(0);
