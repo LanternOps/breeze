@@ -100,6 +100,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // /:id/tools/:toolId, POST /:id/tools/bulk, and POST /:id/discover (the
   // one enqueue site a caller can reach — added in the same PR that added
   // this allowlist entry, after a review round found it missing).
+  'services/deliverableAutoEvidence.ts': 'report_runs gained partner_id in #4247; this file writes a run only for a definition it loaded with `reports.orgId = <deliverable org>` (an org-owned row; a partner-owned report has org_id NULL and never matches), copies the owner axis off that row, and runs in system context for managed evidence — never a partner-owned run, no caller-chosen owner axis',
   'services/toolSources/discovery.ts': 'background discovery copies the owner axis off the source row it was handed; every caller-facing write in routes/toolSources.ts (PATCH /:id, DELETE /:id, PATCH /:id/tools/:toolId, POST /:id/tools/bulk, POST /:id/discover) runs canManagePartnerWidePolicies() first',
   // --- `users` is dual-axis (shape 4) but these are AUTHENTICATION flows -----
   // They mutate the acting user's own credential/session columns (password

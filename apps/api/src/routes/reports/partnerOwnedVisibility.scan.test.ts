@@ -301,9 +301,8 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
     ['loadRunOwners', pinned(2, 'system reconciler maps narrative delivery runs to their owner by id; partner-owned runs are settled failed, never delivered (#3198 W01 Task 6)', AUD_SYSTEM)],
   ])],
   // Raw-SQL sites (fix round 1): system-context tenant lifecycle, never a caller read.
-  ['src/services/tenantCascade.ts', new Map([
-    ['clearSql', pinned(2, 'org erasure pre-clear in system context: DELETE FROM report_runs WHERE report_id IN (SELECT id FROM reports WHERE org_id = <erased org>) — a partner-owned definition has org_id NULL and never matches; its runs go with the partner sweep via ON DELETE CASCADE', AUD_SYSTEM)],
-  ])],
+  // (tenantCascade.ts's report_runs pre-clear left in #4247: report_runs has its
+  // own org_id now and is erased by the ordinary org cascade loop.)
   ['src/services/orgMergeCustomExecutors.ts', new Map([
     ['rehomeReportChildrenThenDelete', pinned(12, 'org merge (platform admin, system context): every statement keys on t.org_id = <loser> and s.org_id = <survivor>; a partner-owned definition has org_id NULL and is never re-homed, deduplicated or deleted', AUD_SYSTEM)],
     ['archiveCollidingSeriesChildren', pinned(8, 'org merge (platform admin, system context): every statement keys on t.org_id = <loser> and s.org_id = <survivor> with series_id IS NOT NULL; series children are org-owned (reports_series_child_shape_chk), so a partner-owned definition is never archived or joined', AUD_SYSTEM)],
@@ -867,7 +866,7 @@ describe('partner-owned report visibility is mechanical (#3198 W01, per-site sin
 
   it('finds raw-SQL sites in template text (guards against a vacuous raw arm)', () => {
     const raw = files.flatMap((f) => querySiteMatches(code(f)).filter((h) => h.text.startsWith('sql`')).map(() => rel(f)));
-    expect(new Set(raw)).toEqual(new Set(['src/services/tenantCascade.ts', 'src/services/orgMergeCustomExecutors.ts', 'src/services/reportSeries/reconcile.ts']));
+    expect(new Set(raw)).toEqual(new Set(['src/services/orgMergeCustomExecutors.ts', 'src/services/reportSeries/reconcile.ts']));
   });
 
   it('every guard entrypoint reaches the helper', () => {
