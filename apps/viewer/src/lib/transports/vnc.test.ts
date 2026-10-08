@@ -19,6 +19,7 @@ vi.mock('../novnc', () => {
       this.sendCredentials = vi.fn();
       this.disconnect = vi.fn();
       this.clipboardPasteFrom = vi.fn();
+      this.sendKey = vi.fn();
     }),
   };
 });
@@ -123,6 +124,31 @@ describe('connectVnc', () => {
     expect(deps.onError).toHaveBeenCalledWith(expect.stringMatching(/connection refused by remote/));
     expect(deps.onError).toHaveBeenCalledWith(expect.not.stringMatching(/wrong password/));
     expect(deps.onStatus).toHaveBeenCalledWith('error');
+  });
+
+  it('wires the clipboard under the policy reported with the tunnel, and detaches it on close', async () => {
+    const container = document.createElement('div');
+    const deps = makeDeps({
+      container,
+      clipboard: { readLocalText: vi.fn(), writeLocalText: vi.fn(), hasFocus: () => true },
+    });
+    const session = await connectVnc({
+      tunnelId: 't1', wsUrl: 'wss://api/x', clipboard: { hostToViewer: true, viewerToHost: true },
+    }, deps);
+    const { RFB } = await import('../novnc');
+    const rfb = (RFB as unknown as { mock: { results: Array<{ value: any }> } }).mock.results[0].value;
+    expect(rfb._listeners.clipboard).toHaveLength(1);
+    expect(session.clipboard?.state.policy).toEqual({ hostToViewer: true, viewerToHost: true });
+    session.close();
+    expect(rfb.removeEventListener).toHaveBeenCalledWith('clipboard', expect.any(Function));
+  });
+
+  it('keeps the clipboard off when the tunnel came with no policy', async () => {
+    const deps = makeDeps({
+      clipboard: { readLocalText: vi.fn(), writeLocalText: vi.fn(), hasFocus: () => true },
+    });
+    const session = await connectVnc({ tunnelId: 't1', wsUrl: 'wss://api/x' }, deps);
+    expect(session.clipboard?.state.policy).toBeNull();
   });
 
   it('session.close() calls rfb.disconnect idempotently', async () => {
