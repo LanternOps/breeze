@@ -48,13 +48,19 @@ report)
     jq -e --argjson p "$PROD" '((.totals.requestsPerAgentMinute - $p) / $p | fabs) <= 0.10' "$R" >/dev/null && r=ok || r=bad
     check "$r" "mix vs production $PROD req/agent-min"
   fi
+  jq -e --argjson n "$N" '.window.agentMinutes > 0 and .agents.onlineAtWindowOpen == $n and .agents.enrollFailures == 0' "$R" >/dev/null && r=ok || r=bad
+  check "$r" "steady window measured: $(jq -c '{agentMinutes: .window.agentMinutes, online: .agents.onlineAtWindowOpen, enrollFailures: .agents.enrollFailures}' "$R") (want agentMinutes > 0, online == $N, enrollFailures == 0)"
   BAD="$(jq '[.routes[] | select(.route != "GET /workspace/agent/crawl-config" and .route != "GET /agent-ws/:id/ws")
               | (.status // {}) | to_entries[] | select(.key | test("^2") | not) | .value] | add // 0' "$R")"
   [ "$BAD" -eq 0 ] && r=ok || r=bad; check "$r" "non-2xx outside crawl-config: $BAD"
+  CRAWL="$(jq '[.routes[] | select(.route == "GET /workspace/agent/crawl-config") | (.status // {}) | to_entries[]
+               | select(.key | test("^(200|401|404)$") | not) | .value] | add // 0' "$R")"
+  [ "$CRAWL" -eq 0 ] && r=ok || r=bad; check "$r" "crawl-config answers only 200/401/404: $CRAWL others"
   TE="$(jq .totals.transportErrors "$R")"; [ "$TE" -eq 0 ] && r=ok || r=bad; check "$r" "transport errors: $TE"
   jq -e --argjson n "$N" '.agents.started == $n and .ws.connects >= $n' "$R" >/dev/null && r=ok || r=bad
   check "$r" "agents started $(jq .agents.started "$R")/$N, ws connects $(jq .ws.connects "$R")"
-  jq -e '.commands.dispatched == 0 or (([.commands.resultsSent[]] | add // 0) >= .commands.dispatched * 0.99)' "$R" >/dev/null && r=ok || r=bad
+  jq -e '(.config.commandsPerMinute == 0 or .commands.dispatched > 0)
+         and (.commands.dispatched == 0 or (([.commands.resultsSent[]] | add // 0) >= .commands.dispatched * 0.99))' "$R" >/dev/null && r=ok || r=bad
   check "$r" "command results $(jq '[.commands.resultsSent[]] | add // 0' "$R") for $(jq .commands.dispatched "$R") dispatched"
   ;;
 *) echo "usage: check-acceptance.sh live <n> | report <report.json> [expectedRpm]" >&2; exit 2 ;;

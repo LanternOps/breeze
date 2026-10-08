@@ -39,6 +39,30 @@ func TestAgentMinutesClipToTheWindow(t *testing.T) {
 	}
 }
 
+// A request cut off by the run's own deadline/Ctrl-C is not a server or
+// network failure and must not show up as a transport error in the report.
+func TestRecordingTransportIgnoresRequestsCancelledByTheRunEnding(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	t0 := time.Now().Add(-time.Second)
+	rec := NewRecorder("r", t0, t0, t0.Add(time.Hour))
+	client := &http.Client{Transport: &recordingTransport{base: http.DefaultTransport, rec: rec}}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/v1/agents/a1/unifi-collectors", nil)
+	if _, err := client.Do(req); err == nil {
+		t.Fatal("want the cancelled request to fail")
+	}
+	if st := rec.routes[RouteUnifi]; st != nil && (st.transportErrors != 0 || st.attempts != 0) {
+		t.Fatalf("a request cancelled by the run ending was recorded: %+v", st)
+	}
+}
+
 func TestRecordingTransportCountsOneRequestAcrossRetries(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

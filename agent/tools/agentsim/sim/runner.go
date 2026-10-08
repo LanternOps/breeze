@@ -74,7 +74,9 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	runCtx, cancel := context.WithDeadline(ctx, start.Add(cfg.Duration))
 	defer cancel()
 
+	autosaveDone := make(chan struct{})
 	go func() { // a crash mid-run must not lose 2,000 enrollments
+		defer close(autosaveDone)
 		t := time.NewTicker(30 * time.Second)
 		defer t.Stop()
 		for {
@@ -136,6 +138,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	wg.Wait()
 	ended := time.Now()
 
+	<-autosaveDone // a late periodic save must not overwrite the final one
 	saveErr := store.Save(cfg.StorePath)
 	report := BuildReport(rec, cfg, ended, int(started.Load()))
 	if err := WriteReport(cfg.ReportPath, report); err != nil {

@@ -39,6 +39,11 @@ func (t *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error
 	if resp != nil {
 		status = resp.StatusCode
 	}
+	if err != nil && req.Context().Err() != nil {
+		// Cut off by the run ending (deadline or Ctrl-C): not a server or
+		// network failure, so it must not appear as a transport error.
+		return resp, err
+	}
 	t.rec.ObserveHTTP(route, first, start, time.Since(start), status, err)
 	return resp, err
 }
