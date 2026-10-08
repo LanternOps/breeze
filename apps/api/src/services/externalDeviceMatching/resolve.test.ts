@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveDeviceMatches } from './deviceMatching';
+import { normalizeMatchName, resolveDeviceMatches } from './resolve';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG = '22222222-2222-4222-8222-222222222222';
@@ -12,7 +12,7 @@ describe('resolveDeviceMatches', () => {
       [{ id: 'p1', orgId: ORG, matchName: 'srv-01', macAddresses: [] }],
       [dev('d1', 'srv-01')],
     );
-    expect(out.links).toEqual([{ providerDeviceId: 'p1', deviceId: 'd1', source: 'auto_hostname' }]);
+    expect(out.links).toEqual([{ rowId: 'p1', deviceId: 'd1', source: 'auto_hostname' }]);
     expect(out.ambiguous).toEqual([]);
   });
 
@@ -21,7 +21,7 @@ describe('resolveDeviceMatches', () => {
       [{ id: 'p1', orgId: ORG, matchName: 'srv-01', macAddresses: ['AA:BB:CC:DD:EE:FF'] }],
       [dev('d1', 'srv-01', ['00:11:22:33:44:55']), dev('d2', 'srv-01', ['aa:bb:cc:dd:ee:ff'])],
     );
-    expect(out.links).toEqual([{ providerDeviceId: 'p1', deviceId: 'd2', source: 'auto_mac' }]);
+    expect(out.links).toEqual([{ rowId: 'p1', deviceId: 'd2', source: 'auto_mac' }]);
     expect(out.ambiguous).toEqual([]);
   });
 
@@ -48,10 +48,10 @@ describe('resolveDeviceMatches', () => {
       [{ id: 'p1', orgId: ORG, matchName: 'srv-01', macAddresses: ['aa:bb:cc:dd:ee:ff'] }],
       [dev('d1', 'srv-01', [], true), dev('d2', 'srv-01')],
     );
-    expect(out.links).toEqual([{ providerDeviceId: 'p1', deviceId: 'd2', source: 'auto_hostname' }]);
+    expect(out.links).toEqual([{ rowId: 'p1', deviceId: 'd2', source: 'auto_hostname' }]);
   });
 
-  it('counts a row as ambiguous when its only candidate is already claimed by another provider row', () => {
+  it('counts a row as ambiguous when its only candidate is already claimed by another row', () => {
     const out = resolveDeviceMatches(
       [{ id: 'p1', orgId: ORG, matchName: 'srv-01', macAddresses: [] }],
       [dev('d1', 'srv-01', [], true)],
@@ -60,7 +60,7 @@ describe('resolveDeviceMatches', () => {
     expect(out.ambiguous).toEqual(['p1']);
   });
 
-  it('gives a contested device to exactly one provider row, deterministically, and calls the loser ambiguous', () => {
+  it('gives a contested device to exactly one row, deterministically, and calls the loser ambiguous', () => {
     const out = resolveDeviceMatches(
       [
         { id: 'p2', orgId: ORG, matchName: 'srv-01', macAddresses: [] },
@@ -68,7 +68,7 @@ describe('resolveDeviceMatches', () => {
       ],
       [dev('d1', 'srv-01')],
     );
-    expect(out.links).toEqual([{ providerDeviceId: 'p1', deviceId: 'd1', source: 'auto_hostname' }]);
+    expect(out.links).toEqual([{ rowId: 'p1', deviceId: 'd1', source: 'auto_hostname' }]);
     expect(out.ambiguous).toEqual(['p2']);
   });
 
@@ -99,12 +99,24 @@ describe('resolveDeviceMatches', () => {
     expect(out.ambiguous).toEqual([]);
   });
 
-  it("keeps exact-name semantics: 'ws-01.corp' does NOT match 'ws-01' (FQDN shortening is EDR-only)", () => {
-    const out = resolveDeviceMatches(
-      [{ id: 'p1', orgId: ORG, matchName: 'ws-01', macAddresses: [] }],
-      [dev('d1', 'ws-01.corp')],
+  it('identifier-poor rows with a same-org name collision stay ambiguous (no fuzzy fallback)', () => {
+    const r = resolveDeviceMatches(
+      [{ id: 'r1', orgId: 'o', matchName: 'pc', macAddresses: [] }],
+      [
+        { deviceId: 'd1', orgId: 'o', matchName: 'pc', macAddresses: [], claimed: false },
+        { deviceId: 'd2', orgId: 'o', matchName: 'pc', macAddresses: [], claimed: false },
+      ],
     );
-    expect(out.links).toEqual([]);
-    expect(out.ambiguous).toEqual([]);
+    expect(r).toEqual({ links: [], ambiguous: ['r1'] });
+  });
+});
+
+describe('normalizeMatchName', () => {
+  it('compares the short name of an FQDN against hostname and display name', () => {
+    expect(normalizeMatchName('WS-01.corp.example.com')).toBe('ws-01');
+    expect(normalizeMatchName('  ws-01 ')).toBe('ws-01');
+    expect(normalizeMatchName('')).toBeNull();
+    expect(normalizeMatchName(null)).toBeNull();
+    expect(normalizeMatchName('.corp')).toBeNull();
   });
 });

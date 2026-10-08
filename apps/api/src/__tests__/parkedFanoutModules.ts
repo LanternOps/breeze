@@ -11,6 +11,7 @@
 /** Target selection for background work: must reference a parked-device predicate. */
 export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> = {
   // --- shared resolvers -----------------------------------------------------
+  'services/externalDeviceMatching/candidates.ts': { guards: 1, reason: 'candidate devices for external vendor endpoint matching carry the parked-device predicate' },
   'services/featureConfigResolver.ts': { guards: 5, reason: 'per-device config resolution, partner-wide assignment fan-out, backup and scan device sets' },
   'services/configurationPolicy.ts': { guards: 1, reason: 'effective configuration for a device (no partner-level assignment for a parked device)' },
   'services/policyEvaluationService.ts': { guards: 3, reason: 'policy scope and assignment-target device resolution' },

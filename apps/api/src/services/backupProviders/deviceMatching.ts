@@ -3,6 +3,7 @@ import { backupProviderDevices, deviceNetwork, devices } from '../../db/schema';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import type { ProviderSyncTx } from './persist';
 import { notParkedDeviceCondition } from '../unassignedPool/selectorPredicate';
+import { resolveDeviceMatches as resolveExternalDeviceMatches } from '../externalDeviceMatching/resolve';
 
 export interface MatchProviderRow {
   id: string;
@@ -35,78 +36,21 @@ function normalize(value: string | null | undefined): string | null {
 }
 
 /**
- * PURE match rules (spec, Device matching section).
- *
- *  1. Candidates are non-decommissioned devices in the row's OWN org whose
- *     hostname or display name equals the row's match name.
- *  2. Exactly one free candidate -> auto_hostname.
- *  3. More than one -> intersect on MAC; exactly one survivor -> auto_mac.
- *  4. Anything else -> unlinked, counted ambiguous.
- *
- * `claimed` devices are excluded from candidacy but still make the row
- * ambiguous: "the machine I would have linked is already taken" is exactly the
- * post-acquisition second-connection case the spec wants surfaced on the
- * connection card, not reported as "no match".
- *
- * Rows are processed in ascending id order so a contested device always goes to
- * the same winner across syncs — a non-deterministic winner would make the link
- * flap and re-raise alerts every poll.
+ * PURE match rules live in `services/externalDeviceMatching/resolve.ts`
+ * (shared with the EDR framework). This adapter keeps the backup field name
+ * (`providerDeviceId` <-> `rowId`) and passes names exactly as the backup path
+ * normalizes them -- FQDN shortening is EDR-only, so 'ws-01.corp' never matches
+ * 'ws-01' for backup rows.
  */
 export function resolveDeviceMatches(
   rows: MatchProviderRow[],
   candidates: MatchCandidateDevice[],
 ): { links: DeviceMatchLink[]; ambiguous: string[] } {
-  const byOrgAndName = new Map<string, MatchCandidateDevice[]>();
-  for (const candidate of candidates) {
-    const key = `${candidate.orgId}::${candidate.matchName}`;
-    const bucket = byOrgAndName.get(key);
-    if (bucket) {
-      if (!bucket.some((c) => c.deviceId === candidate.deviceId)) bucket.push(candidate);
-    } else {
-      byOrgAndName.set(key, [candidate]);
-    }
-  }
-
-  const taken = new Set(candidates.filter((c) => c.claimed).map((c) => c.deviceId));
-  const links: DeviceMatchLink[] = [];
-  const ambiguous: string[] = [];
-
-  for (const row of [...rows].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
-    if (!row.matchName) continue;
-    const all = byOrgAndName.get(`${row.orgId}::${row.matchName}`) ?? [];
-    if (all.length === 0) continue;
-
-    const free = all.filter((c) => !taken.has(c.deviceId));
-    if (free.length === 0) {
-      ambiguous.push(row.id);
-      continue;
-    }
-    if (free.length === 1) {
-      // The MAC never entered this decision, so the source stays auto_hostname
-      // even when the NAME matched several devices.
-      taken.add(free[0]!.deviceId);
-      links.push({ providerDeviceId: row.id, deviceId: free[0]!.deviceId, source: 'auto_hostname' });
-      continue;
-    }
-
-    const wanted = new Set(
-      row.macAddresses.map((m) => normalize(m)).filter((m): m is string => m !== null),
-    );
-    const macMatches = wanted.size === 0
-      ? []
-      : free.filter((c) => c.macAddresses.some((m) => {
-        const n = normalize(m);
-        return n !== null && wanted.has(n);
-      }));
-    if (macMatches.length === 1) {
-      taken.add(macMatches[0]!.deviceId);
-      links.push({ providerDeviceId: row.id, deviceId: macMatches[0]!.deviceId, source: 'auto_mac' });
-      continue;
-    }
-    ambiguous.push(row.id);
-  }
-
-  return { links, ambiguous };
+  const { links, ambiguous } = resolveExternalDeviceMatches(rows, candidates);
+  return {
+    links: links.map((l) => ({ providerDeviceId: l.rowId, deviceId: l.deviceId, source: l.source })),
+    ambiguous,
+  };
 }
 
 /** lower(nullif(btrim(coalesce(nullif(btrim(computer_name),''), vendor_device_name)),'')) */
