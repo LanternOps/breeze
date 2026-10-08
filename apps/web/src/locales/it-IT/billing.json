@@ -887,7 +887,8 @@
         "showLess": "Mostra meno",
         "showMore": "Mostra altro",
         "skuHelp": "Il tuo numero di catalogo o del distributore per questo elemento.",
-        "tidyWithAi": "Sistema con AI"
+        "tidyWithAi": "Sistema con AI",
+        "partNumberRequiredHint": "Aggiungi un codice articolo per includerla nell'ordine dei componenti."
       },
       "liveTotals": {
         "annualRecurring": "Ricorrente annuale",
@@ -1148,7 +1149,10 @@
         "tooManyRecipients": "Usa al massimo {{max}} indirizzi.",
         "zeroTotalWarning": "Il totale di questo preventivo è {{zero}}: verifica che gli elementi abbiano un prezzo prima dell'invio.",
         "noBillingContactHint": "Nessun contatto di fatturazione è salvato per questa organizzazione — inserisci un'email oppure aggiungine uno nelle <orgLink>impostazioni dell'organizzazione</orgLink>.",
-        "revisionWarning": "L’invio sostituisce {{number}} e disattiva il link che il cliente possiede già."
+        "revisionWarning": "L’invio sostituisce {{number}} e disattiva il link che il cliente possiede già.",
+        "noPartNumberWarning_one": "{{count}} riga di prodotto non ha un codice articolo e non verrà aggiunta all'ordine dei componenti.",
+        "noPartNumberWarning_other": "{{count}} righe di prodotto non hanno un codice articolo e non verranno aggiunte all'ordine dei componenti.",
+        "sendAnyway": "Invia comunque"
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposta contrassegnata come Inviata, ma nessuna email è stata consegnata: {{orgName}} non ha un'email di contatto per la fatturazione. Aggiungine una nelle impostazioni dell'organizzazione, poi invia di nuovo.",
@@ -1321,7 +1325,9 @@
           "vendor": "Fornitore"
         },
         "title": "Da ordinare",
-        "unknownVendor": "Altro / fornitore sconosciuto"
+        "unknownVendor": "Altro / fornitore sconosciuto",
+        "excluded": "Non inclusi in questo ordine (nessun codice articolo): {{names}}",
+        "untitledLine": "Riga senza titolo"
       },
       "pax8Order": {
         "message_one": "Questo preventivo ha preparato un ordine Pax8 ({{count}} elemento) in attesa dei dettagli di provisioning",

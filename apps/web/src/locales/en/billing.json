@@ -911,7 +911,8 @@
         "skuOptional": "SKU (optional)",
         "tidyWithAi": "Tidy with AI",
         "unitCost": "Unit cost",
-        "unitPriceForAria": "Unit price for {{item}}"
+        "unitPriceForAria": "Unit price for {{item}}",
+        "partNumberRequiredHint": "Add a part number to include this in the parts order."
       },
       "liveTotals": {
         "annualRecurring": "Annual recurring",
@@ -1148,7 +1149,10 @@
         "tooManyRecipients": "Use at most {{max}} addresses.",
         "zeroTotalWarning": "This quote totals {{zero}} — check that its items are priced before sending.",
         "noBillingContactHint": "No billing contact is saved for this organization — enter an email, or add one in the <orgLink>organization settings</orgLink>.",
-        "revisionWarning": "Sending this replaces {{number}} and disables the link the customer already has."
+        "revisionWarning": "Sending this replaces {{number}} and disables the link the customer already has.",
+        "noPartNumberWarning_one": "{{count}} product line has no part number and won't be added to the parts order.",
+        "noPartNumberWarning_other": "{{count}} product lines have no part number and won't be added to the parts order.",
+        "sendAnyway": "Send anyway"
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposal marked Sent, but no email was delivered — {{orgName}} has no billing contact email. Add one in the organization settings, then resend.",
@@ -1321,7 +1325,9 @@
           "vendor": "Vendor"
         },
         "title": "To be ordered",
-        "unknownVendor": "Other / unknown vendor"
+        "unknownVendor": "Other / unknown vendor",
+        "excluded": "Not in this order (no part number): {{names}}",
+        "untitledLine": "Untitled line"
       },
       "pax8Order": {
         "message_one": "This quote staged a Pax8 order ({{count}} item) awaiting provisioning details",

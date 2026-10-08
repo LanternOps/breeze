@@ -887,7 +887,8 @@
         "showLess": "Afficher moins",
         "showMore": "Afficher plus",
         "skuHelp": "Votre numéro d'article de catalogue ou de distributeur pour cet article.",
-        "tidyWithAi": "Nettoyer avec l'IA"
+        "tidyWithAi": "Nettoyer avec l'IA",
+        "partNumberRequiredHint": "Ajoutez un numéro de pièce pour inclure cette ligne dans la commande de pièces."
       },
       "liveTotals": {
         "annualRecurring": "Récurrent annuel",
@@ -1148,7 +1149,10 @@
         "tooManyRecipients": "Utilisez au maximum {{max}} adresses.",
         "zeroTotalWarning": "Ce devis totalise {{zero}} — vérifiez que ses lignes sont tarifées avant l'envoi.",
         "noBillingContactHint": "Aucun contact de facturation n'est enregistré pour cette organisation — saisissez une adresse courriel ou ajoutez-en une dans les <orgLink>paramètres de l'organisation</orgLink>.",
-        "revisionWarning": "L’envoi remplace {{number}} et désactive le lien que le client possède déjà."
+        "revisionWarning": "L’envoi remplace {{number}} et désactive le lien que le client possède déjà.",
+        "noPartNumberWarning_one": "{{count}} ligne de produit n'a pas de numéro de pièce et ne sera pas ajoutée à la commande de pièces.",
+        "noPartNumberWarning_other": "{{count}} lignes de produit n'ont pas de numéro de pièce et ne seront pas ajoutées à la commande de pièces.",
+        "sendAnyway": "Envoyer quand même"
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposition marquée comme Envoyée, mais aucun courriel n'a été remis — {{orgName}} n'a pas d'adresse courriel de contact de facturation. Ajoutez-en une dans les paramètres de l'organisation, puis renvoyez.",
@@ -1321,7 +1325,9 @@
           "vendor": "Fournisseur"
         },
         "title": "À commander",
-        "unknownVendor": "Autre / fournisseur inconnu"
+        "unknownVendor": "Autre / fournisseur inconnu",
+        "excluded": "Absent de cette commande (aucun numéro de pièce) : {{names}}",
+        "untitledLine": "Ligne sans titre"
       },
       "pax8Order": {
         "message_one": "Ce devis a préparé une commande Pax8 ({{count}} article) en attente des détails de provisionnement",

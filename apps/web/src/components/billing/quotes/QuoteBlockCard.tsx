@@ -7,7 +7,7 @@ import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } fr
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Loader2, Package, Sparkles } from 'lucide-react';
 import '../../../lib/i18n';
-import { fromCents, markupPct, priceFromMarkup, toCents, type QuoteLineForMath } from '@breeze/shared';
+import { fromCents, isUnorderableProductLine, markupPct, priceFromMarkup, toCents, type QuoteLineForMath } from '@breeze/shared';
 import { quoteImageUrl } from '../../../lib/api/quotes';
 import { fetchWithAuth } from '../../../stores/auth';
 import { fetchAllSites } from '../../../lib/fetchAllSites';
@@ -192,6 +192,10 @@ export function BlockCard({
     priceAuthority.current = 'markup';
     derivePrice(v, cost);
   };
+  // #8232: a manual line with a cost reads as a product; without a SKU or part
+  // number it would never reach the parts order, so say so at the PN field.
+  const manualMissingPartNumber = isUnorderableProductLine({ itemType: null, sku, partNumber, unitCost: cost });
+
   const onCostChange = (v: string) => {
     setCost(v);
     if (priceAuthority.current === 'markup') derivePrice(markup, v);
@@ -981,11 +985,22 @@ export function BlockCard({
                         type="text" value={partNumber}
                         onChange={(e) => setPartNumber(e.target.value)}
                         title={t('quotes.editor.line.partNumberHelp')}
-                        aria-describedby={`quote-manual-partnumber-help-${block.id}`}
+                        aria-describedby={manualMissingPartNumber
+                          ? `quote-manual-partnumber-help-${block.id} quote-manual-partnumber-hint-${block.id}`
+                          : `quote-manual-partnumber-help-${block.id}`}
                         data-testid={`quote-manual-partnumber-${block.id}`}
                         className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       />
                       <span id={`quote-manual-partnumber-help-${block.id}`} className="sr-only">{t('quotes.editor.line.partNumberHelp')}</span>
+                      {manualMissingPartNumber && (
+                        <span
+                          id={`quote-manual-partnumber-hint-${block.id}`}
+                          className="mt-1 block text-xs text-warning-foreground dark:text-warning"
+                          data-testid={`quote-manual-partnumber-hint-${block.id}`}
+                        >
+                          {t('quotes.editor.line.partNumberRequiredHint')}
+                        </span>
+                      )}
                     </label>
                     <label className="block">
                       <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.line.unitCost')}</span>

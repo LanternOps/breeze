@@ -911,7 +911,8 @@
         "skuHelp": "Seu número de estoque de catálogo ou distribuidor para este item.",
         "skuOptional": "SKU (opcional)",
         "tidyWithAi": "Aprimorar com IA",
-        "unitCost": "Custo unitário"
+        "unitCost": "Custo unitário",
+        "partNumberRequiredHint": "Adicione um número de peça para incluir isto no pedido de peças."
       },
       "liveTotals": {
         "annualRecurring": "Recorrente anual",
@@ -1148,7 +1149,10 @@
         "tooManyRecipients": "Use no máximo {{max}} endereços.",
         "zeroTotalWarning": "Este orçamento totaliza {{zero}} — verifique se os itens têm preço antes de enviar.",
         "noBillingContactHint": "Esta organização não tem um contato de cobrança salvo — digite um e-mail ou adicione um nas <orgLink>configurações da organização</orgLink>.",
-        "revisionWarning": "Enviar substitui {{number}} e desativa o link que o cliente já possui."
+        "revisionWarning": "Enviar substitui {{number}} e desativa o link que o cliente já possui.",
+        "noPartNumberWarning_one": "{{count}} linha de produto não tem número de peça e não será adicionada ao pedido de peças.",
+        "noPartNumberWarning_other": "{{count}} linhas de produto não têm número de peça e não serão adicionadas ao pedido de peças.",
+        "sendAnyway": "Enviar mesmo assim"
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — {{orgName}} não tem e-mail de contato de cobrança. Adicione um nas configurações da organização e envie novamente.",
@@ -1321,7 +1325,9 @@
           "vendor": "Fornecedor"
         },
         "title": "A encomendar",
-        "unknownVendor": "Outro / fornecedor desconhecido"
+        "unknownVendor": "Outro / fornecedor desconhecido",
+        "excluded": "Fora deste pedido (sem número de peça): {{names}}",
+        "untitledLine": "Linha sem título"
       },
       "pax8Order": {
         "message_one": "Esta cotação preparou um pedido da Pax8 ({{count}} item) aguardando os detalhes de provisionamento",
