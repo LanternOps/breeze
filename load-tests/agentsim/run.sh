@@ -7,6 +7,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 mkdir -p "$HERE/.state" "$HERE/reports"
 chmod 700 "$HERE/.state"
+# `lab-setup.sh > .state/lab.env` (0600) is an alternative to eval-ing its output.
+if [ -f "$HERE/.state/lab.env" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  . "$HERE/.state/lab.env"
+  set +a
+fi
 STORE="${AGENTSIM_STORE:-$HERE/.state/tokens.json}"
 REPORT="$HERE/reports/$(date -u +%Y%m%dT%H%M%SZ).json"
 cd "$REPO/agent"

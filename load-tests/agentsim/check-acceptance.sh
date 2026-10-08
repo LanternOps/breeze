@@ -12,6 +12,12 @@
 set -euo pipefail
 REPO="$(git rev-parse --show-toplevel)"
 DESC="$REPO/.breeze-stack.json"
+if [ -f "$REPO/load-tests/agentsim/.state/lab.env" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  . "$REPO/load-tests/agentsim/.state/lab.env"
+  set +a
+fi
 STORE="${AGENTSIM_STORE:-$REPO/load-tests/agentsim/.state/tokens.json}"
 fail=0
 check() { if [ "$1" = ok ]; then echo "PASS  $2"; else echo "FAIL  $2"; fail=1; fi; }
