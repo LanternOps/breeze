@@ -1515,8 +1515,8 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   // carries the full rendered markdown, which the run-detail DTO deliberately
   // does not ship. Skipped entirely for every run that links no artifact.
   //
-  // The join to `reports` is what carries the tenancy: `report_runs` has no
-  // `org_id` of its own, so the org pin lives on its parent definition. Both
+  // The join to `reports` pins the org on the parent definition (report_runs
+  // also carries the same owner since #4247, enforced by composite FKs). Both
   // predicates are load-bearing for the same reason the hostname read's two
   // are — `eq(reports.orgId, run.orgId)` pins the artifact to the RUN's org
   // (a partner-scoped caller's accessible set spans siblings), and

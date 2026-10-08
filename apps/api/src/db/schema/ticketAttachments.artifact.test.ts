@@ -24,8 +24,8 @@ describe('artifact attachments (execution-plane spec §6.3)', () => {
     expect(policy?.columns.artifact_id).toMatchObject({ decision: 'include' });
   });
 
-  it('does not add a report_runs export-policy entry — that table has no org_id', () => {
-    expect(CORE_TENANT_EXPORT_POLICY.report_runs).toBeUndefined();
+  it('classifies report_runs.artifact_id in the export policy (report_runs gained org_id in #4247)', () => {
+    expect(CORE_TENANT_EXPORT_POLICY.report_runs?.columns.artifact_id).toMatchObject({ decision: 'include' });
   });
 
   it('gives both foreign keys ON DELETE SET NULL, so an expired artifact degrades to a gap', () => {

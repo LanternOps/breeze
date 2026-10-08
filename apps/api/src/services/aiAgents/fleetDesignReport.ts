@@ -42,6 +42,7 @@
  */
 
 import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
+import { reportRunOwnerColumns } from '../reportRunOwner';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import {
   type AiAgentRunFleetDesignDto,
@@ -250,6 +251,7 @@ export async function persistFleetDesignReport(
       .insert(reportRuns)
       .values({
         reportId: definition.id,
+        ...reportRunOwnerColumns({ orgId: run.orgId, partnerId: null }),
         status: 'completed',
         startedAt: generatedAt,
         completedAt: generatedAt,

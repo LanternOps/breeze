@@ -69,6 +69,10 @@ describe('org merge — report runs cited as deliverable evidence (#7443)', () =
     const deliverableS = randomUUID();
     const occurrenceS = randomUUID();
     const evidenceS = randomUUID();
+    // #4247: a partner-owned definition of the same partner, with a run. An org
+    // merge must never touch it (org_id NULL is never `= loser`).
+    const reportPartner = randomUUID();
+    const runPartner = randomUUID();
 
     await withSystemDbAccessContext(async () => {
       await db.execute(sql`
@@ -89,6 +93,13 @@ describe('org merge — report runs cited as deliverable evidence (#7443)', () =
       await db.execute(sql`
         INSERT INTO reports (id, org_id, name, type, portal_self_service)
         VALUES (${reportOnlyL}::uuid, ${loser}::uuid, 'Board pack', 'executive_summary', false)`);
+      await db.execute(sql`
+        INSERT INTO reports (id, org_id, partner_id, name, type)
+        VALUES (${reportPartner}::uuid, NULL, ${partner}::uuid, 'Partner aging', 'ar_aging')`);
+      await db.execute(sql`
+        INSERT INTO report_runs (id, report_id, partner_id, status)
+        VALUES (${runPartner}::uuid, ${reportPartner}::uuid, ${partner}::uuid, 'completed')`);
+      // Owner columns are filled from the parent by report_runs_fill_owner.
       await db.execute(sql`
         INSERT INTO report_runs (id, report_id, status) VALUES
           (${runL}::uuid, ${reportL}::uuid, 'completed'),
@@ -147,6 +158,19 @@ describe('org merge — report runs cited as deliverable evidence (#7443)', () =
     expect(new Map(runs.map((r) => [r.id, r.report_id]))).toEqual(
       new Map([[runL, reportS], [runS, reportS], [runOnlyL, reportOnlyL]]),
     );
+
+    // #4247: every run's owner followed its (re-homed or repointed) parent —
+    // runL via the reports executor's re-home, runOnlyL via the report_runs
+    // repoint — and the partner-owned run was left alone.
+    const owners = rows<{ id: string; org_id: string | null; partner_id: string | null }>(await testDb.execute(sql`
+      SELECT id, org_id, partner_id FROM report_runs
+       WHERE id IN (${runL}::uuid, ${runS}::uuid, ${runOnlyL}::uuid, ${runPartner}::uuid)`));
+    expect(new Map(owners.map((r) => [r.id, [r.org_id, r.partner_id]]))).toEqual(new Map([
+      [runL, [survivor, null]],
+      [runS, [survivor, null]],
+      [runOnlyL, [survivor, null]],
+      [runPartner, [null, partner]],
+    ]));
 
     // Every evidence row survived and is under the survivor. Only the one
     // citing the dropped definition's run was re-pointed.

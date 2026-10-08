@@ -20,10 +20,8 @@ const EXTRA_REQUIRED = [
   // follows-parent).
   'device_commands', 'user_sso_identities', 'sso_sessions', 'psa_ticket_mappings',
   'deployment_results', 'software_versions',
-  // P2-3 (#4190): report_runs joined ASSOCIATED_SYSTEM_SCOPED_TABLES when the
-  // org-erasure FK gap on reports.report_id was closed. Parent-keyed, so it
-  // travels with its definition's repointed org_id.
-  'report_runs',
+  // (report_runs left this list in #4247: it has its own org_id now and is
+  // in getOrgCascadeDeleteOrder(), classified as a plain repoint.)
   // Joined ASSOCIATED_SYSTEM_SCOPED_TABLES so org erasure clears items naming
   // the org's roles (role_id keeps NO ACTION). Review/role/user-keyed, so it
   // travels with its parents through a merge.

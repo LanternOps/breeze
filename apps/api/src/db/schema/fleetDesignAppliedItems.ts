@@ -27,8 +27,9 @@ import { users } from './users';
  * Tenancy: RLS shape 1 (direct org_id). Registered in
  * CORE_ORG_CASCADE_DELETE_ORDER, CORE_TENANT_EXPORT_POLICY (both jsonb
  * columns excludedOpen) and orgMergeRegistry REPOINT_TABLES.
- * `report_run_id` is ON DELETE CASCADE because org erasure pre-clears
- * report_runs (tenantCascade.ts). ONLY services/fleetDesign/ledger.ts writes here.
+ * `report_run_id` is ON DELETE CASCADE, so applied items go with their run
+ * whichever of the two the org cascade (or the partner sweep) reaches first
+ * (report_runs is itself in CORE_ORG_CASCADE_DELETE_ORDER since #4247). ONLY services/fleetDesign/ledger.ts writes here.
  */
 export const fleetDesignAppliedItems = pgTable('fleet_design_applied_items', {
   id: uuid('id').primaryKey().defaultRandom(),

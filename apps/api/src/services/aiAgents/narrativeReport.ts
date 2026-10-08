@@ -54,6 +54,7 @@
  */
 
 import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm';
+import { reportRunOwnerColumns } from '../reportRunOwner';
 import {
   AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS,
   NARRATIVE_SECTION_KEYS,
@@ -324,6 +325,7 @@ export async function persistNarrativeReport(
       .insert(reportRuns)
       .values({
         reportId: definition.id,
+        ...reportRunOwnerColumns({ orgId: run.orgId, partnerId: null }),
         status: 'completed',
         startedAt: generatedAt,
         completedAt: generatedAt,

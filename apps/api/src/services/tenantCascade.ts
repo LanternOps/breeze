@@ -610,7 +610,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // explicit ON DELETE). Cascades after nothing that references it.
   'fix_outcomes',
   // Fleet Designer W03 (#5653): apply ledger. report_run_id FK is ON DELETE
-  // CASCADE (report_runs is pre-cleared above), org_id reached here too —
+  // CASCADE (report_runs is in this list too, #4247), org_id reached here too —
   // either order is a no-op for the other. Leaf table, no children.
   'fleet_design_applied_items',
   'fleet_finding_devices',
@@ -795,6 +795,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'recovery_tokens',
   'remediation_suggestions',
   'remote_sessions',
+  // #4247: org_id XOR partner_id, pinned to the parent report's owner by
+  // composite FKs. Sorts before `reports` (its parent). Partner-owned runs
+  // (org_id NULL) go with the partner sweep's automatic partner_id discovery.
+  // Inbound FKs (ai_agent_runs / device_function_assessments SET NULL;
+  // fleet_design_applied_items / report_run_deliveries /
+  // service_deliverable_evidence CASCADE) never block this delete.
+  'report_runs',
   'report_schedule_recipients',
   // Multi-org report series W02: shape-1 target rows. FK to organizations is
   // NO ACTION (organizations is last); its series_id parent (report_series) is
@@ -1183,41 +1190,10 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
       DELETE FROM software_deployments WHERE org_id = ${orgId}
     `,
   },
-  // report_runs has NO org_id column of its own — its tenancy is its parent
-  // definition's — so neither the org cascade list nor the partner-axis sweep
-  // reaches it directly. `report_runs_report_id_reports_id_fk` was originally
-  // declared without an explicit ON DELETE (NO ACTION), so the main loop's
-  // `DELETE FROM reports WHERE org_id = ...` aborted with 23503 for ANY org
-  // that had ever generated a report — a latent GDPR erasure bug found by
-  // P2-3's narrative-artifact fixture (#4190), which this pre-clear fixed.
-  // Since 2026-10-27-130100 (#3198 W01) the FK is ON DELETE CASCADE, so the
-  // reports delete would now take its runs with it; this pre-clear is kept as
-  // an explicit, order-deterministic clear and is harmless either way.
-  //
-  // Safe to clear first: two FKs point INTO report_runs and neither can raise
-  // 23503 here —
-  //   * `ai_agent_runs.report_run_id` is ON DELETE SET NULL (confdeltype 'n'):
-  //     the run rows survive this statement with a null link and are then
-  //     deleted by the main loop on their own org_id;
-  //   * `service_deliverable_evidence.sd_evidence_report_run_fk`
-  //     (report_run_id, report_id) is ON DELETE CASCADE (confdeltype 'c',
-  //     #5573 W01): the evidence rows referencing a deleted run go with it.
-  //     Those rows carry org_id and are also reached by the main loop, so a
-  //     run cleared here or an evidence row deleted there are both fine in
-  //     either order.
-  //
-  // #3198 W01: reports is org XOR partner. Org-owned definitions (and their
-  // runs, via this pre-clear) are reached by the per-org cascade; PARTNER-
-  // owned definitions are reached only by the partner sweep's automatic
-  // `partner_id` discovery in cascadeDeletePartner, and their runs by the
-  // report_runs.report_id ON DELETE CASCADE that 2026-10-27-130100 added.
-  {
-    table: 'report_runs',
-    clearSql: (orgId) => sql`
-      DELETE FROM report_runs
-      WHERE report_id IN (SELECT id FROM reports WHERE org_id = ${orgId})
-    `,
-  },
+  // report_runs: no pre-clear since #4247. It has its own org_id (XOR
+  // partner_id) and sits in CORE_ORG_CASCADE_DELETE_ORDER before `reports`;
+  // the pre-clear that P2-3 (#4190) added for the old NO ACTION report_id FK
+  // is gone with the FK-child shape.
   // accounting_entity_mappings (QuickBooks Phase B): the ONE entry here that is
   // not about an FK. Its tenancy axis is `partner_id`, and the Breeze side of a
   // mapping is a POLYMORPHIC (breeze_entity_type, breeze_entity_id) pair with
@@ -1316,7 +1292,33 @@ interface FkEdge {
   // SQL aliases are snake_case (postgres-js does not auto-camelCase).
   child_table: string;
   parent_table: string;
+  conname: string;
+  confdeltype: string;
 }
+
+/**
+ * FK constraints the cascade toposort does NOT order on, by constraint name.
+ * Each one closes an FK cycle between cascade tables, and each MUST be
+ * `ON DELETE SET NULL` on a nullable column: deleting the referenced table
+ * first is then safe — Postgres nulls the referencing column and that row is
+ * deleted later, on its own org_id/partner_id. The break is honoured only
+ * while the live constraint really is SET NULL (`confdeltype = 'n'`); if it is
+ * ever changed, the edge is ordered again and the cycle error resurfaces
+ * rather than an unsafe order shipping. tenantCascade.integration.test.ts
+ * asserts every entry exists, is SET NULL, and is on nullable columns.
+ *
+ * - `report_runs_artifact_id_ai_run_artifacts_id_fk` (#4247): report_runs
+ *   gained org_id, which closed ai_agent_runs.report_run_id → report_runs →
+ *   (artifact_id) ai_run_artifacts → (run_id, org_id) ai_agent_runs. Either
+ *   SET NULL edge would be safe; this one is broken so the null-out lands on
+ *   report_runs (no UPDATE trigger) rather than on ai_agent_runs, whose
+ *   leave-for-erasure history rows carry a BEFORE UPDATE immutability guard
+ *   (it does not cover report_run_id today, but erasure should not depend on
+ *   that staying true).
+ */
+export const CASCADE_ORDER_SET_NULL_EDGE_BREAKS: ReadonlySet<string> = new Set([
+  'report_runs_artifact_id_ai_run_artifacts_id_fk',
+]);
 
 /**
  * Tables whose rows are the only index to an S3 object key. The erasure
@@ -1348,7 +1350,8 @@ const OBJECT_PRECLEAR_TABLES: ReadonlyArray<{ table: string; keyColumn: string; 
  *
  * Cycles between distinct tables would be detected here; we throw a
  * loud error so the deploy fails rather than silently producing a
- * partial cascade.
+ * partial cascade. The only edges skipped are the ON DELETE SET NULL
+ * cycle breaks in CASCADE_ORDER_SET_NULL_EDGE_BREAKS.
  */
 export async function topologicalCascadeOrder(
   tables: Iterable<string> = getOrgCascadeDeleteOrder(),
@@ -1357,7 +1360,9 @@ export async function topologicalCascadeOrder(
   const edges = (await dbModule.db.execute(sql`
     SELECT
       tc.relname AS child_table,
-      tp.relname AS parent_table
+      tp.relname AS parent_table,
+      c.conname AS conname,
+      c.confdeltype::text AS confdeltype
     FROM pg_constraint c
     JOIN pg_class tc ON tc.oid = c.conrelid
     JOIN pg_class tp ON tp.oid = c.confrelid
@@ -1377,6 +1382,7 @@ export async function topologicalCascadeOrder(
   }
   for (const edge of edges) {
     if (!tableSet.has(edge.child_table) || !tableSet.has(edge.parent_table)) continue;
+    if (CASCADE_ORDER_SET_NULL_EDGE_BREAKS.has(edge.conname) && edge.confdeltype === 'n') continue;
     childToParents.get(edge.child_table)!.add(edge.parent_table);
   }
 

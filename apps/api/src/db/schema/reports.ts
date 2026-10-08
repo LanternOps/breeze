@@ -191,6 +191,10 @@ export const reports = pgTable('reports', {
   reportsIdOrgIdUniq: uniqueIndex('reports_id_org_id_uniq')
     .on(table.id, table.orgId),
   reportsPartnerIdIdx: index('reports_partner_id_idx').on(table.partnerId),
+  // #4247: target of report_runs_report_partner_fk. NON-partial for the same
+  // reason as reports_id_org_id_uniq — a partial index cannot back an FK.
+  reportsIdPartnerIdUniq: uniqueIndex('reports_id_partner_id_uniq')
+    .on(table.id, table.partnerId),
   reportsPortalSelfServiceOrgTypeUniq: uniqueIndex(
     'reports_portal_self_service_org_type_uniq',
   ).on(table.orgId, table.type)
@@ -234,6 +238,17 @@ export const reportRuns = pgTable('report_runs', {
   id: uuid('id').primaryKey().defaultRandom(),
   // #3198 W01: ON DELETE CASCADE since migration 2026-10-27-130100.
   reportId: uuid('report_id').notNull().references(() => reports.id, { onDelete: 'cascade' }),
+  /**
+   * #4247: the run's owner is ALWAYS its parent report's current owner —
+   * org_id XOR partner_id (`report_runs_one_owner_chk`), pinned to the parent
+   * by the composite FKs below. Every insert site copies both from the loaded
+   * parent (`reportRunOwnerColumns`, services/reportRunOwner.ts); a BEFORE INSERT trigger
+   * (`report_runs_fill_owner`, migration 2026-12-17-160000) fills them from
+   * the parent when a writer omits both. Direct dual-axis RLS keys on these
+   * columns; there is NO org-readable partner-wide SELECT branch.
+   */
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   status: reportRunStatusEnum('status').notNull().default('pending'),
   startedAt: timestamp('started_at'),
   completedAt: timestamp('completed_at'),
@@ -283,7 +298,7 @@ export const reportRuns = pgTable('report_runs', {
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   // (id, report_id) key so service_deliverable_evidence can prove a run belongs to
-  // a report of the same org (report_runs has no org_id of its own). Spec #5573 §4.3.
+  // a report of the same org (it predates report_runs.org_id, #4247). Spec #5573 §4.3.
   reportRunsIdReportIdUniq: uniqueIndex('report_runs_id_report_id_uniq').on(table.id, table.reportId),
   requestedByShape: check(
     'report_runs_requested_by_shape_chk',
@@ -321,6 +336,27 @@ export const reportRuns = pgTable('report_runs', {
   ),
   reportIdCreatedAtIdx: index('report_runs_report_id_created_at_idx')
     .on(table.reportId, table.createdAt.desc(), table.id.desc()),
+  // #4247 owner binding. Both FKs are also ON DELETE CASCADE and DEFERRABLE
+  // INITIALLY IMMEDIATE in migration 2026-12-17-160200 (org merge re-points
+  // reports.org_id and report_runs.org_id in separate statements under
+  // SET CONSTRAINTS ALL DEFERRED); drizzle-orm's foreignKey() builder has no
+  // deferrable option, so the migration is the source of truth.
+  reportOrgFk: foreignKey({
+    name: 'report_runs_report_org_fk',
+    columns: [table.reportId, table.orgId],
+    foreignColumns: [reports.id, reports.orgId],
+  }).onDelete('cascade'),
+  reportPartnerFk: foreignKey({
+    name: 'report_runs_report_partner_fk',
+    columns: [table.reportId, table.partnerId],
+    foreignColumns: [reports.id, reports.partnerId],
+  }).onDelete('cascade'),
+  oneOwner: check(
+    'report_runs_one_owner_chk',
+    sql`((${table.orgId} IS NULL) <> (${table.partnerId} IS NULL))`,
+  ),
+  orgIdIdx: index('report_runs_org_id_idx').on(table.orgId),
+  partnerIdIdx: index('report_runs_partner_id_idx').on(table.partnerId),
 }));
 
 export const REPORT_RUN_DELIVERY_STATES = ['pending', 'claimed', 'sent', 'failed', 'unknown'] as const;
