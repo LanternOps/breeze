@@ -1732,6 +1732,31 @@ describe('executeAgentRun', () => {
         expect(outcome.executedActions).toMatchObject([{ executionId: 'exec-1', result: 'ok', actTargetName: 'Spooler' }]);
       });
 
+      it('a successful result whose tool_use id has no pre-call state is logged, not silently dropped', async () => {
+        const outcome: AgentRunOutcome = {
+          proposedActions: [], executedActions: [], deniedActions: [], toolExecutionCount: 0,
+        };
+        const post = createAgentRunPostToolUse({
+          outcome, pairing: createAgentRunCallPairing(),
+          run: { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, deviceId: DEVICE_ID },
+          agentUserId: USER_A,
+        } as never);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          // A denial/proposal echo (isError) with an unknown id is expected and quiet…
+          await post('manage_services', {}, '{"error":"denied"}', true, 0, undefined, undefined, 'toolu_denied');
+          expect(warn).not.toHaveBeenCalled();
+          // …but a SUCCESS with an unknown id means a real execution lost its state.
+          await post('manage_services', {}, '{"ok":true}', false, 5, undefined, undefined, 'toolu_orphan');
+          expect(warn).toHaveBeenCalledTimes(1);
+          expect(String(warn.mock.calls[0]![0])).toMatch(/no pre-call state/);
+        } finally {
+          warn.mockRestore();
+        }
+        expect(outcome.executedActions).toEqual([]);
+        expect(completeToolExecution).not.toHaveBeenCalled();
+      });
+
       it('keeps the null ledger-write sentinel per call: a failed write never borrows a sibling\'s row', async () => {
         seedActRun();
         pinFromInput();

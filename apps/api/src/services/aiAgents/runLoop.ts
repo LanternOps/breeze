@@ -1442,7 +1442,18 @@ export function createAgentRunPostToolUse(args: {
     }
 
     const call = takeAllowedCall(pairing, toolName, toolUseId);
-    if (!call) return;
+    if (!call) {
+      // Denial, proposal and inline-playbook echoes all arrive as isError
+      // (`preToolUseDenialResult`), so they end here quietly. A SUCCESS with
+      // an id the pre hook never recorded means a real execution lost its
+      // ledger row and act pin — never let that look like a denial echo.
+      if (toolUseId && !isError) {
+        console.warn('[aiAgentRunLoop] tool result has no pre-call state for its tool_use id — not recorded as an execution', {
+          runId: run.id, toolName, toolUseId,
+        });
+      }
+      return;
+    }
     const { executionId, actPin } = call;
 
     if (executionId) {
