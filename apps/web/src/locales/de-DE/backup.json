@@ -1112,6 +1112,8 @@
     "introProducerOnly": "Diese Sicherung wurde dort gespeichert, wo nur das ursprüngliche Gerät ihre Integrität prüfen kann. Die Wiederherstellung auf ein anderes Gerät erfordert Ihre Bestätigung.",
     "twoFactor": "Bestätigen Sie mit Zwei-Faktor-Authentifizierung, um fortzufahren.",
     "confirmOnly": "Bestätigen Sie, um fortzufahren. Die Wiederherstellung wird im Audit-Protokoll erfasst.",
+    "typedIntro": "Diese Sicherung wurde erstellt, bevor es Integritätsprüfungen gab. Geben Sie zur Bestätigung den Gerätenamen ein. Die Wiederherstellung wird im Audit-Protokoll erfasst.",
+    "typedLabel": "Geben Sie {{phrase}} zur Bestätigung ein",
     "code": "Authentifizierungscode",
     "passkey": "Sie werden aufgefordert, Ihren Passkey zu verwenden.",
     "noFactor": "Richten Sie in Ihrem Profil die Zwei-Faktor-Authentifizierung ein und versuchen Sie es erneut.",

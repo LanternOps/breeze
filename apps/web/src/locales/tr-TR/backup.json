@@ -1112,6 +1112,8 @@
     "introProducerOnly": "Bu yedek, bütünlüğünü yalnızca özgün cihazın denetleyebileceği bir yerde saklandı. Başka bir cihaza geri yüklemek için onayınız gerekir.",
     "twoFactor": "Devam etmek için iki faktörlü kimlik doğrulamayla onaylayın.",
     "confirmOnly": "Devam etmek için onaylayın. Geri yükleme denetim günlüğüne kaydedilir.",
+    "typedIntro": "Bu yedek, bütünlük denetimleri var olmadan önce alındı. Onaylamak için cihaz adını yazın. Geri yükleme denetim günlüğüne kaydedilir.",
+    "typedLabel": "Onaylamak için {{phrase}} yazın",
     "code": "Kimlik doğrulama kodu",
     "passkey": "Geçiş anahtarınızı kullanmanız istenecek.",
     "noFactor": "Profilinizde iki faktörlü kimlik doğrulamayı ayarlayın ve yeniden deneyin.",

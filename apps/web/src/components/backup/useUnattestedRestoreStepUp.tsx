@@ -9,11 +9,42 @@ import { pickReauthTier, type ReauthTier } from '../settings/StepUpPrompt';
 export type UnattestedRestoreExtras = { stepUpGrant?: string; confirmUnattestedRestore?: boolean };
 
 type StepUpDetails = {
-  method: 'mfa' | 'confirm';
+  method: 'mfa' | 'confirm' | 'typed';
   reason: string;
   /** Exactly the resource the server digests for the grant; sent back verbatim. */
   resource: unknown;
+  /** For `typed`: the device name to type, and the org the restore belongs to. */
+  confirmation?: { phrase: string; orgId: string };
 };
+
+function typedConfirmation(stepUp: Record<string, unknown>): StepUpDetails['confirmation'] {
+  const raw = stepUp.confirmation && typeof stepUp.confirmation === 'object' ? stepUp.confirmation as Record<string, unknown> : null;
+  if (!raw || typeof raw.phrase !== 'string' || !raw.phrase || typeof raw.orgId !== 'string' || !raw.orgId) return undefined;
+  return { phrase: raw.phrase, orgId: raw.orgId };
+}
+
+/** Same comparison as the server: case-insensitive, surrounding whitespace ignored. */
+function phraseMatches(phrase: string, typed: string): boolean {
+  return typed.trim().toLowerCase() === phrase.trim().toLowerCase();
+}
+
+/**
+ * Mints the typed-confirmation grant (POST /backup/restore-confirmations) for
+ * the resource the server named, in the restore's own org. Throws with the
+ * server's message on refusal.
+ */
+async function mintTypedConfirmation(details: StepUpDetails, typed: string): Promise<string> {
+  const response = await fetchWithAuth('/backup/restore-confirmations', {
+    method: 'POST',
+    body: JSON.stringify({ ...(details.resource as Record<string, unknown>), confirmationText: typed }),
+    orgIdOverride: details.confirmation!.orgId,
+  });
+  const data = await response.json().catch(() => null) as { stepUpGrant?: unknown; error?: unknown } | null;
+  if (!response.ok || typeof data?.stepUpGrant !== 'string') {
+    throw new Error(typeof data?.error === 'string' ? data.error : '');
+  }
+  return data.stepUpGrant;
+}
 
 const OPERATION = 'backup_unattested_restore';
 
@@ -22,10 +53,14 @@ function stepUpDetails(err: unknown): StepUpDetails | null {
   const body = err.body && typeof err.body === 'object' ? err.body as Record<string, unknown> : {};
   const stepUp = body.stepUp && typeof body.stepUp === 'object' ? body.stepUp as Record<string, unknown> : null;
   if (!stepUp || stepUp.operation !== OPERATION) return null;
+  const confirmation = stepUp.method === 'typed' ? typedConfirmation(stepUp) : undefined;
   return {
-    method: stepUp.method === 'confirm' ? 'confirm' : 'mfa',
+    // A typed confirmation without a usable phrase falls back to two-factor;
+    // the server then refuses the grant and asks again.
+    method: stepUp.method === 'confirm' ? 'confirm' : confirmation ? 'typed' : 'mfa',
     reason: typeof stepUp.reason === 'string' ? stepUp.reason : 'unattested',
     resource: stepUp.resource,
+    ...(confirmation ? { confirmation } : {}),
   };
 }
 
@@ -65,8 +100,12 @@ type Pending = {
  * `403 STEP_UP_REQUIRED` for operation `backup_unattested_restore` reveals the
  * prompt. With two-factor authentication on, a grant is minted for the exact
  * resource the server named and the request is resubmitted with
- * `stepUpGrant`; on a deployment without it, an explicit confirmation
- * resubmits with `confirmUnattestedRestore: true`. The server stays the only
+ * `stepUpGrant`. A user without a second factor restoring a backup taken
+ * before attestations existed is asked (`method: 'typed'`) to type the device
+ * name instead; POST /backup/restore-confirmations mints the grant and the
+ * request is resubmitted with it the same way. On a deployment without
+ * two-factor authentication, an explicit confirmation resubmits with
+ * `confirmUnattestedRestore: true`. The server stays the only
  * enforcer.
  *
  * `submit` must call runAction with `suppressErrorToast:
@@ -116,6 +155,13 @@ export function useUnattestedRestoreStepUp(): {
       let extras: UnattestedRestoreExtras;
       if (pending.details.method === 'confirm') {
         extras = { confirmUnattestedRestore: true };
+      } else if (pending.details.method === 'typed') {
+        try {
+          extras = { stepUpGrant: await mintTypedConfirmation(pending.details, code) };
+        } catch (cause) {
+          if (live.current) setError(cause instanceof Error && cause.message ? cause.message : t('unattestedRestoreStepUp.failed'));
+          return;
+        }
       } else {
         try {
           const stepUpGrant = await mintStepUpGrant({
@@ -151,6 +197,7 @@ export function useUnattestedRestoreStepUp(): {
 
   const { details, tier } = pending;
   const needsCode = details.method === 'mfa' && tier === 'totp';
+  const typed = details.method === 'typed' ? details.confirmation! : null;
   const noFactor = details.method === 'mfa' && tier === 'password';
   const prompt = (
     <div
@@ -166,9 +213,27 @@ export function useUnattestedRestoreStepUp(): {
           : t('unattestedRestoreStepUp.introUnattested')}
       </p>
       <p className="text-xs text-muted-foreground">
-        {details.method === 'confirm' ? t('unattestedRestoreStepUp.confirmOnly') : t('unattestedRestoreStepUp.twoFactor')}
+        {details.method === 'confirm'
+          ? t('unattestedRestoreStepUp.confirmOnly')
+          : typed
+            ? t('unattestedRestoreStepUp.typedIntro')
+            : t('unattestedRestoreStepUp.twoFactor')}
       </p>
-      {noFactor ? <p role="alert" className="text-sm text-destructive">{t('unattestedRestoreStepUp.noFactor')}</p>
+      {typed ? (
+        <label className="block text-sm">
+          {t('unattestedRestoreStepUp.typedLabel', { phrase: typed.phrase })}
+          <input
+            data-testid="unattested-restore-stepup-phrase"
+            className="mt-1 h-10 w-full rounded border bg-background px-3"
+            autoComplete="off"
+            spellCheck={false}
+            maxLength={255}
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+            disabled={busy}
+          />
+        </label>
+      ) : noFactor ? <p role="alert" className="text-sm text-destructive">{t('unattestedRestoreStepUp.noFactor')}</p>
         : needsCode ? (
           <label className="block text-sm">{t('unattestedRestoreStepUp.code')}
             <input
@@ -189,7 +254,7 @@ export function useUnattestedRestoreStepUp(): {
           type="button"
           data-testid="unattested-restore-stepup-confirm"
           className="rounded bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50"
-          disabled={busy || noFactor || (needsCode && code.length !== 6)}
+          disabled={busy || noFactor || (needsCode && code.length !== 6) || (typed !== null && !phraseMatches(typed.phrase, code))}
           onClick={() => void confirm()}
         >
           {t('unattestedRestoreStepUp.confirm')}

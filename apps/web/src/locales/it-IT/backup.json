@@ -1112,6 +1112,8 @@
     "introProducerOnly": "Questo backup è stato archiviato dove solo il dispositivo originale può verificarne l'integrità. Il ripristino su un altro dispositivo richiede la tua conferma.",
     "twoFactor": "Conferma con l'autenticazione a due fattori per continuare.",
     "confirmOnly": "Conferma per continuare. Il ripristino viene registrato nel registro di controllo.",
+    "typedIntro": "Questo backup è stato creato prima che esistessero i controlli di integrità. Digita il nome del dispositivo per confermare. Il ripristino viene registrato nel registro di controllo.",
+    "typedLabel": "Digita {{phrase}} per confermare",
     "code": "Codice di autenticazione",
     "passkey": "Ti verrà chiesto di usare la tua passkey.",
     "noFactor": "Configura l'autenticazione a due fattori nel tuo profilo, quindi riprova.",

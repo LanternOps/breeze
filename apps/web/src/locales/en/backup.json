@@ -1112,6 +1112,8 @@
     "introProducerOnly": "This backup was stored where only the original device can check its integrity. Restoring it to a different device needs your confirmation.",
     "twoFactor": "Confirm with two-factor authentication to continue.",
     "confirmOnly": "Confirm to continue. The restore is recorded in the audit log.",
+    "typedIntro": "This backup was taken before integrity checks existed. Type the device name to confirm. The restore is recorded in the audit log.",
+    "typedLabel": "Type {{phrase}} to confirm",
     "code": "Authentication code",
     "passkey": "You will be asked to use your passkey.",
     "noFactor": "Set up two-factor authentication on your profile, then try again.",

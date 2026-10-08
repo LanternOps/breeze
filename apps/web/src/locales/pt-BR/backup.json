@@ -1112,6 +1112,8 @@
     "introProducerOnly": "Este backup foi armazenado onde somente o dispositivo original pode verificar sua integridade. Restaurá-lo em outro dispositivo exige sua confirmação.",
     "twoFactor": "Confirme com a autenticação de dois fatores para continuar.",
     "confirmOnly": "Confirme para continuar. A restauração é registrada no log de auditoria.",
+    "typedIntro": "Este backup foi criado antes de existirem as verificações de integridade. Digite o nome do dispositivo para confirmar. A restauração é registrada no log de auditoria.",
+    "typedLabel": "Digite {{phrase}} para confirmar",
     "code": "Código de autenticação",
     "passkey": "Será solicitado que você use sua chave de acesso.",
     "noFactor": "Configure a autenticação de dois fatores no seu perfil e tente novamente.",
