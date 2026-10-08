@@ -29,14 +29,16 @@ import {
 import { sendPasteText, pasteFailureMessage } from '../lib/pasteText';
 import { createInputCapabilitiesGate } from '../lib/inputCapabilities';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
-import { handleCtrlVPaste } from '../lib/clipboardPaste';
+import { ClipboardSync, type ClipboardSyncState } from '../lib/clipboardSync';
+import { createTauriClipboardIO } from '../lib/clipboardIO';
+import { clipboardFailureMessage, type ClipboardChipInput } from '../lib/clipboardChip';
+import type { VncClipboardState } from '../lib/vncClipboard';
 import {
   detectViewerOs,
   defaultRemapCmdCtrl,
   mouseButtonName,
   shouldForwardKeyRepeat,
   chordRouting,
-  remoteClipboardDecision,
   viewerShortcut,
   isPasteChord,
   isCopyChord,
@@ -50,6 +52,7 @@ import CredentialsPromptModal from './CredentialsPromptModal';
 
 const VIEWER_OS = detectViewerOs(typeof navigator === 'undefined' ? '' : navigator.userAgent);
 const INPUT_NOTICE_TTL_MS = 4000;
+const clipboardIO = createTauriClipboardIO();
 
 interface Props {
   params: ConnectionParams;
@@ -185,10 +188,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const inputDestination = params.deviceId ?? (params.mode === 'desktop' ? params.sessionId : params.tunnelId);
   const inputDestinationRef = useRef(inputDestination);
   inputDestinationRef.current = inputDestination;
-  // Inputs to the remote→local clipboard focus rule (remoteClipboardDecision).
+  // Input to the remote→local clipboard focus rule (remoteClipboardDecision).
   const lastCopyIntentAtRef = useRef<number | null>(null);
-  const clipboardOpenedAtRef = useRef<number | null>(null);
-  const clipboardPushesSeenRef = useRef(0);
   const wheelAccRef = useRef(DEFAULT_WHEEL_ACCUMULATOR);
   const pasteCancelRef = useRef(false);
   // What the connected agent said it can do with injected text. An agent that
@@ -217,9 +218,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const activeVncTunnelIdRef = useRef<string | null>(null);
   const switchingToRef = useRef<Transport | null>(null);
 
-  const clipboardDCRef = useRef<RTCDataChannel | null>(null);
-  const lastClipboardHashRef = useRef<string>('');
-  const clipboardAckMapRef = useRef<Map<string, { resolve: () => void; timer: ReturnType<typeof setTimeout> }>>(new Map());
+  // One controller per WebRTC clipboard channel (lib/clipboardSync.ts).
+  const clipboardSyncRef = useRef<ClipboardSync | null>(null);
+  const [clipboardState, setClipboardState] = useState<ClipboardSyncState | null>(null);
+  const [vncClipboardState, setVncClipboardState] = useState<VncClipboardState | null>(null);
   const webrtcMouseMovePendingRef = useRef<{ x: number; y: number } | null>(null);
   const webrtcMouseMoveRafRef = useRef<number | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
@@ -394,6 +396,18 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           if (isStale()) return;
           setCredentialsPrompt({ requiresUsername, submit });
         },
+        // The policy rides on the tunnel info; without one the clipboard stays off.
+        clipboard: {
+          readLocalText: () => clipboardIO.readText(),
+          writeLocalText: (text) => clipboardIO.writeText(text),
+          hasFocus: () => document.hasFocus(),
+          onChange: (s) => {
+            if (!isStale()) setVncClipboardState(s);
+          },
+          onPasteFailed: (reason) => {
+            if (!isStale()) setPasteNotice(clipboardFailureMessage(reason, 'paste'));
+          },
+        },
       });
       ownSession = session;
       if (isStale()) {
@@ -401,6 +415,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         return false;
       }
       vncSessionRef.current = session;
+      setVncClipboardState(session.clipboard?.state ?? null);
       return true;
     } catch (err) {
       if (isStale()) return false;
@@ -594,6 +609,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const videoEl = videoRef.current;
     if (!videoEl) return false;
 
+    // The previous peer connection's clipboard session is over; the chip must
+    // not keep describing it if this one brings no clipboard channel.
+    clipboardSyncRef.current?.close();
+    clipboardSyncRef.current = null;
+    setClipboardState(null);
+
     const sessionWrapper = await connectWebRTCTransport(auth, {
       videoElement: videoEl,
       cursorOverlayRef,
@@ -631,64 +652,21 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         setHasAudioTrack(true);
       },
       onClipboardChannel: (channel) => {
-        clipboardDCRef.current = channel;
-        clipboardOpenedAtRef.current = Date.now();
-        clipboardPushesSeenRef.current = 0;
-        channel.onmessage = (msg) => {
-          try {
-            const payload = JSON.parse(msg.data);
-            // Every push counts toward the baseline, whatever its format: an
-            // image or empty baseline must not make the next real copy look
-            // like the baseline.
-            const pushesSeen = payload.type === 'ack' ? clipboardPushesSeenRef.current : clipboardPushesSeenRef.current++;
-            if (payload.type === 'ack' && payload.hash) {
-              const entry = clipboardAckMapRef.current.get(payload.hash);
-              if (entry) {
-                clearTimeout(entry.timer);
-                clipboardAckMapRef.current.delete(payload.hash);
-                entry.resolve();
-              } else {
-                console.debug('[clipboard] ack for unknown hash:', payload.hash);
-              }
-            } else if (payload.type === 'text' && payload.text) {
-              lastClipboardHashRef.current = payload.text;
-              // Only the focused session window may write the local clipboard,
-              // and never with the contents the remote already had at connect
-              // (see remoteClipboardDecision).
-              const decision = remoteClipboardDecision({
-                now: Date.now(),
-                hasFocus: document.hasFocus(),
-                lastCopyIntentAt: lastCopyIntentAtRef.current,
-                channelOpenedAt: clipboardOpenedAtRef.current,
-                pushesSeen,
-              });
-              if (decision !== 'apply') {
-                console.debug('[clipboard] remote clipboard not applied:', decision);
-                return;
-              }
-              // navigator.clipboard.writeText requires a user activation in
-              // WKWebView/WebView2; invoking it from an onmessage handler
-              // silently rejects with NotAllowedError. Route through the
-              // Tauri plugin, which goes via the Rust side and does not
-              // require a gesture.
-              import('@tauri-apps/plugin-clipboard-manager').then(({ writeText }) =>
-                writeText(payload.text)
-              ).catch((err) => {
-                console.warn('[clipboard] failed to write remote→local:', err);
-              });
-            }
-          } catch (err) {
-            console.warn('[clipboard] message handling failed:', err);
-          }
-        };
-        channel.onclose = () => {
-          clipboardDCRef.current = null;
-          for (const entry of clipboardAckMapRef.current.values()) {
-            clearTimeout(entry.timer);
-            entry.resolve();
-          }
-          clipboardAckMapRef.current.clear();
-        };
+        // A new channel is a new session as far as the clipboard is concerned:
+        // anything the old one was doing (a paste waiting on its ack) must
+        // never complete into this one.
+        clipboardSyncRef.current?.close();
+        const sync = new ClipboardSync({
+          channel,
+          io: clipboardIO,
+          hasFocus: () => document.hasFocus(),
+          lastCopyIntentAt: () => lastCopyIntentAtRef.current,
+          onChange: (state) => {
+            if (clipboardSyncRef.current === sync) setClipboardState(state);
+          },
+        });
+        clipboardSyncRef.current = sync;
+        setClipboardState(sync.state);
       },
       onCursorChannelOpen: () => setCursorStreamActive(true),
       onCursorChannelClose: () => setCursorStreamActive(false),
@@ -1184,11 +1162,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         }
       }
 
-      for (const entry of clipboardAckMapRef.current.values()) {
-        clearTimeout(entry.timer);
-        entry.resolve();
-      }
-      clipboardAckMapRef.current.clear();
+      clipboardSyncRef.current?.close();
+      clipboardSyncRef.current = null;
 
 	      if (sessionRegisteredRef.current) {
 	        sessionRegisteredRef.current = false;
@@ -1894,6 +1869,45 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     pasteCancelRef.current = true;
   }, []);
 
+  // ── Clipboard chip actions ─────────────────────────────────────────
+
+  const activeClipboard = useCallback(() => (
+    transport === 'vnc' ? vncSessionRef.current?.clipboard ?? null : clipboardSyncRef.current
+  ), [transport]);
+
+  // "Copy remote clipboard": the latest remote item, including one a
+  // background window skipped under the focus rule.
+  const handleCopyRemoteClipboard = useCallback(async () => {
+    const target = activeClipboard();
+    if (!target) return;
+    if (!(await target.copyRemoteClipboard())) {
+      setPasteNotice('The remote clipboard could not be copied to this computer.');
+    }
+  }, [activeClipboard]);
+
+  // "Send clipboard to remote": for pasting from a menu on the remote, which
+  // no keystroke here can detect.
+  const handleSendClipboardToRemote = useCallback(async () => {
+    const target = activeClipboard();
+    if (!target) return;
+    const outcome = await target.sendLocalClipboard();
+    if (outcome.result === 'failed') setPasteNotice(clipboardFailureMessage(outcome.reason, 'send'));
+    else if (outcome.result === 'empty') setPasteNotice('Your clipboard is empty — nothing was sent.');
+  }, [activeClipboard]);
+
+  const clipboardChipInput: ClipboardChipInput =
+    transport === 'vnc'
+      ? (vncClipboardState ? { kind: 'vnc', ...vncClipboardState } : { kind: 'hidden' })
+      : transport === 'webrtc'
+        ? (clipboardState
+          ? { kind: 'webrtc', state: clipboardState }
+          : status === 'connected'
+            ? { kind: 'unavailable', reason: 'No clipboard channel: the clipboard is disabled by policy in both directions, or the agent does not support it.' }
+            : { kind: 'hidden' })
+        : transport === 'websocket' && status === 'connected'
+          ? { kind: 'unavailable', reason: 'The clipboard is not available over the WebSocket fallback.' }
+          : { kind: 'hidden' };
+
   // ── Input: keyboard handlers ───────────────────────────────────────
 
   // key_press presses its modifiers around the key and then releases them, so
@@ -1977,7 +1991,6 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // sync BEFORE dispatching the keystroke, or it lands on the agent ahead of
     // the clipboard payload and pastes the previous contents.
     if (isPasteChord(ne)) {
-      const dc = clipboardDCRef.current;
       // Positional on purpose: this branch is detected by physical key (KeyV,
       // Insert), so the remote must get that key whatever the local layout
       // puts there.
@@ -2010,29 +2023,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           forgetModifiersReleasedByKeyPress(pasteModifiers);
         }
       };
-      const waitForAck = (hash: string, timeoutMs: number): Promise<void> => {
-        if (!hash) return Promise.resolve();
-        return new Promise<void>(resolve => {
-          const timer = setTimeout(() => {
-            clipboardAckMapRef.current.delete(hash);
-            resolve();
-          }, timeoutMs);
-          clipboardAckMapRef.current.set(hash, { resolve, timer });
-        });
-      };
-      handleCtrlVPaste({
-        dc,
-        readText: async () => {
-          const { readText } = await import('@tauri-apps/plugin-clipboard-manager');
-          return readText();
-        },
-        lastHash: lastClipboardHashRef,
-        dispatchPaste,
-        waitForAck,
-      }).then((result) => {
-        if (result === 'push-failed') {
-          setPasteNotice('Nothing pasted — your clipboard could not be sent to the remote (too large, or the connection dropped).');
-        }
+      const sync = clipboardSyncRef.current;
+      if (!sync) {
+        dispatchPaste();
+        return;
+      }
+      void sync.pasteTransaction(dispatchPaste).then((outcome) => {
+        if (outcome.result === 'failed') setPasteNotice(clipboardFailureMessage(outcome.reason, 'paste'));
       });
       return;
     }
@@ -2316,6 +2313,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   return (
     <div className="flex flex-col h-screen bg-gray-900">
       <ViewerToolbar
+        clipboardChip={{
+          input: clipboardChipInput,
+          onCopyRemote: () => { void handleCopyRemoteClipboard(); },
+          onSendToRemote: () => { void handleSendClipboardToRemote(); },
+        }}
         status={status}
         hostname={hostname}
         connectedAt={connectedAt}

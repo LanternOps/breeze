@@ -4,7 +4,7 @@
  * crossed. Without it, "disabled by policy", "older agent" and "one direction
  * off" all look like a broken clipboard.
  */
-import type { ClipboardSyncState, ClipboardTransfer } from './clipboardSync';
+import type { ClipboardSyncState, ClipboardTransfer, PushFailure } from './clipboardSync';
 
 /** How long the chip shows "Copied 2.1 KB from remote" after a transfer. */
 export const RECENT_TRANSFER_MS = 4_000;
@@ -126,4 +126,17 @@ export function clipboardChipView(input: ClipboardChipInput, now: number): Clipb
       });
     }
   }
+}
+
+const FAILURE_DETAIL: Record<PushFailure, string> = {
+  'too-large': 'your clipboard is larger than the remote accepts.',
+  'send-failed': 'your clipboard could not be sent to the remote (the connection may have dropped).',
+  'no-ack': 'the remote did not confirm it received your clipboard.',
+  closed: 'the clipboard connection closed before your clipboard arrived.',
+  disabled: 'sending your clipboard to the remote is disabled by policy.',
+};
+
+/** Toolbar notice for a paste or send that did not reach the remote. */
+export function clipboardFailureMessage(reason: PushFailure, action: 'paste' | 'send'): string {
+  return `${action === 'paste' ? 'Nothing pasted' : 'Clipboard not sent'} — ${FAILURE_DETAIL[reason]}`;
 }

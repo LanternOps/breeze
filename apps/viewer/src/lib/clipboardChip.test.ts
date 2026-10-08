@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { clipboardChipView, formatBytes, RECENT_TRANSFER_MS } from './clipboardChip';
+import { clipboardChipView, clipboardFailureMessage, formatBytes, RECENT_TRANSFER_MS } from './clipboardChip';
 import type { ClipboardSyncState } from './clipboardSync';
 
 const NOW = 100_000;
@@ -109,5 +109,20 @@ describe('clipboardChipView', () => {
     expect(v.title).toMatch(/Text only/);
     expect(v.canCopyRemote).toBe(true);
     expect(v.canSend).toBe(false);
+  });
+});
+
+describe('clipboardFailureMessage', () => {
+  it('says nothing was pasted when a paste was cancelled', () => {
+    for (const reason of ['too-large', 'send-failed', 'no-ack', 'closed', 'disabled'] as const) {
+      expect(clipboardFailureMessage(reason, 'paste')).toMatch(/^Nothing pasted — /);
+    }
+  });
+
+  it('explains each reason', () => {
+    expect(clipboardFailureMessage('too-large', 'paste')).toMatch(/larger than the remote accepts/);
+    expect(clipboardFailureMessage('no-ack', 'paste')).toMatch(/did not confirm/);
+    expect(clipboardFailureMessage('closed', 'send')).toMatch(/^Clipboard not sent — .*connection closed/);
+    expect(clipboardFailureMessage('disabled', 'send')).toMatch(/disabled by policy/);
   });
 });
