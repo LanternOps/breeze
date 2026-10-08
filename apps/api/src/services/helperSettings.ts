@@ -7,6 +7,7 @@
  * when NO link matches does the legacy organizations.settings.helper.enabled
  * flag apply; otherwise defaults (enabled: false).
  */
+import { hierarchyFor, type DeviceHierarchyOpts } from './deviceHierarchy';
 import { and, eq, inArray, or } from 'drizzle-orm';
 import { db } from '../db';
 import {
@@ -80,29 +81,38 @@ const HELPER_DEFAULTS: HelperSettings = {
 // policies. Returns null when NO helper feature link matched — callers
 // distinguish "no policy" (legacy org fallback applies) from an explicit
 // enabled:false (which must win; see buildHelperConfigUpdate).
-export async function resolveDeviceHelperSettings(deviceId: string): Promise<HelperSettings | null> {
+export async function resolveDeviceHelperSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<HelperSettings | null> {
+  // #8053 W1a-1: the heartbeat passes the hierarchy it already loaded; every
+  // other caller gets the three reads below, unchanged.
+  const passed = hierarchyFor(deviceId, opts);
+
   // 1. Load device
-  const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
+  const [device] = passed
+    ? [{ orgId: passed.orgId, siteId: passed.siteId }]
+    : await db
+      .select({ orgId: devices.orgId, siteId: devices.siteId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
 
   if (!device) return null;
 
   // 2. Load org (for partnerId)
-  const [org] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, device.orgId))
-    .limit(1);
+  const [org] = passed
+    ? (passed.org ? [{ partnerId: passed.org.partnerId }] : [])
+    : await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, device.orgId))
+      .limit(1);
 
   // 3. Load device group memberships
-  const groupRows = await db
-    .select({ groupId: deviceGroupMemberships.groupId })
-    .from(deviceGroupMemberships)
-    .where(eq(deviceGroupMemberships.deviceId, deviceId));
-  const groupIds = groupRows.map((r) => r.groupId);
+  const groupIds = passed
+    ? [...passed.groupIds]
+    : (await db
+      .select({ groupId: deviceGroupMemberships.groupId })
+      .from(deviceGroupMemberships)
+      .where(eq(deviceGroupMemberships.deviceId, deviceId))).map((r) => r.groupId);
 
   // 4. Build target match conditions
   const targetConditions = [
