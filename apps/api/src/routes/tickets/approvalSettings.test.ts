@@ -23,8 +23,17 @@ vi.mock('../../middleware/auth', () => ({
     if (!scopes.includes(c.get('auth').scope)) return c.json({ error: 'Forbidden scope' }, 403);
     await next();
   },
-  requirePermission: () => async (_c: any, next: any) => next(),
-  requireMfa: () => async (_c: any, next: any) => next(),
+  // Real-shaped gates: deny when the stub auth lacks the named grant / MFA,
+  // so a dropped requirePermission(...) or requireMfa() reds a test below.
+  requirePermission: (resource: string, action: string) => async (c: any, next: any) => {
+    const perms: string[] | undefined = c.get('auth').perms;
+    if (perms && !perms.includes(`${resource}:${action}`)) return c.json({ error: 'Permission denied' }, 403);
+    await next();
+  },
+  requireMfa: () => async (c: any, next: any) => {
+    if (c.get('auth').mfa === false) return c.json({ error: 'MFA required' }, 403);
+    await next();
+  },
 }));
 
 vi.mock('../../db', () => ({
@@ -131,6 +140,43 @@ describe('partner default: /ticketing/approval-settings', () => {
   it('PATCH with null is 400 (the partner row has nothing to inherit from)', async () => {
     const res = await app().request('/ticketing/approval-settings', json('PATCH', { enforcement: null }));
     expect(res.status).toBe(400);
+  });
+});
+
+describe('gates', () => {
+  const ROUTES = [
+    { name: 'partner', path: '/ticketing/approval-settings', write: 'PATCH' },
+    { name: 'org', path: `/orgs/${ORG_ID}/ticketing/approval-settings`, write: 'PATCH' },
+  ];
+  for (const r of ROUTES) {
+    it(`${r.name} PATCH requires MFA`, async () => {
+      authRef.current = partnerAuth({ mfa: false });
+      const res = await app().request(r.path, json(r.write, { enabled: true }));
+      expect(res.status).toBe(403);
+    });
+    it(`${r.name} PATCH requires organizations:write`, async () => {
+      authRef.current = partnerAuth({ perms: ['organizations:read'] });
+      const res = await app().request(r.path, json(r.write, { enabled: true }));
+      expect(res.status).toBe(403);
+    });
+    it(`${r.name} GET requires organizations:read but not write or MFA`, async () => {
+      authRef.current = partnerAuth({ perms: ['organizations:read'], mfa: false });
+      expect((await app().request(r.path)).status).toBe(200);
+      authRef.current = partnerAuth({ perms: [] });
+      expect((await app().request(r.path)).status).toBe(403);
+    });
+    it(`${r.name} PATCH {} is 400 and writes/audits nothing`, async () => {
+      const res = await app().request(r.path, json(r.write, {}));
+      expect(res.status).toBe(400);
+      expect(svc.updatePartnerTicketApprovalSettings).not.toHaveBeenCalled();
+      expect(svc.updateOrgTicketApprovalSettings).not.toHaveBeenCalled();
+      expect(auditSpy).not.toHaveBeenCalled();
+    });
+  }
+
+  it('org routes refuse an organization-scope token', async () => {
+    authRef.current = partnerAuth({ scope: 'organization', orgId: ORG_ID });
+    expect((await app().request(`/orgs/${ORG_ID}/ticketing/approval-settings`)).status).toBe(403);
   });
 });
 

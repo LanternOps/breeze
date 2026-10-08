@@ -31,7 +31,8 @@ describe('2026-12-18-150400-tickets-record-approval-permission.sql', () => {
 
   it('matches roles on the existing tickets:manage GRANT, never on a role name', () => {
     expect(sql).toMatch(/resource = 'tickets' AND action = 'manage'/);
-    expect(sql).not.toMatch(/r\.name\s*=/);
+    // No predicate on a role's identity — only on the grant it already holds.
+    expect(sql).not.toMatch(/\bJOIN\s+roles\b|\bFROM\s+roles\b|\bname\s*=/i);
   });
 
   it('uses an explicit existence check, not ON CONFLICT (permissions has no unique key)', () => {

@@ -19,6 +19,10 @@ import { createOrganization, createPartner, createSite, createUser } from './db-
 import { getTestDb } from './setup';
 import { moveTicketOrg } from '../../services/ticketService';
 import { moveDeviceOrgInTransaction } from '../../services/deviceOrgMove/moveDeviceOrgInTransaction';
+import { runPolicy } from '../../services/orgMerge';
+import { getOrgMergePolicies } from '../../services/orgMergeRegistry';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { pgErrorCode } from '../../utils/pgErrors';
 
 const seededPartnerIds: string[] = [];
@@ -181,6 +185,42 @@ describe('ticket_approval_requests constraints (#4617 §4.3)', () => {
     expect((await row('ticket_approval_requests', pending))!.revision).toBe(2);
   });
 
+  // Every terminal status is frozen, including against re-opening it (a late
+  // approval of an expired request is the main business invariant).
+  const TERMINAL: Array<[string, Record<string, unknown>]> = [
+    ['approved', DECIDED],
+    ['denied', { ...DECIDED, status: 'denied' }],
+    ['expired', { status: 'expired' }],
+    ['cancelled', { status: 'cancelled' }],
+  ];
+  for (const [status, values] of TERMINAL) {
+    runDb(`a ${status} request cannot be re-opened or re-decided`, async () => {
+      const f = await seed();
+      const id = await insertRequest(f, values);
+      for (const change of [
+        sql`status = 'pending'`,
+        sql`status = 'approved', decided_at = now(), decision_origin = 'on_behalf', decision_method = 'verbal', decision_reference = 'late', decided_revision = 1`,
+        sql`expires_at = now() + interval '30 days'`,
+        sql`revision = revision + 1`,
+      ]) {
+        const r = await rejection(() => getTestDb().execute(
+          sql`UPDATE ticket_approval_requests SET ${change} WHERE id = ${id}::uuid`));
+        expect(r.code, `${status}: ${r.message}`).toBe('55000');
+      }
+      expect((await row('ticket_approval_requests', id))!.status).toBe(status);
+    });
+  }
+
+  runDb('requested_by_user_id on a decided row can be nulled but not re-pointed', async () => {
+    const f = await seed();
+    const id = await insertRequest(f, { ...DECIDED, requestedByUserId: f.actor.id, origin: 'staff' });
+    const other = await createUser({ partnerId: f.partner.id, orgId: null, email: `req-other-${f.unique}@example.test` });
+    expect((await rejection(() => getTestDb().execute(
+      sql`UPDATE ticket_approval_requests SET requested_by_user_id = ${other.id}::uuid WHERE id = ${id}::uuid`))).code).toBe('55000');
+    await getTestDb().execute(sql`UPDATE ticket_approval_requests SET requested_by_user_id = NULL WHERE id = ${id}::uuid`);
+    expect((await row('ticket_approval_requests', id))!.requested_by_user_id).toBeNull();
+  });
+
   runDb('a decided row stays deletable (tenant erasure)', async () => {
     const f = await seed();
     const id = await insertRequest(f, DECIDED);
@@ -269,6 +309,26 @@ describe('ticket_approval_requests RLS (Shape 1)', () => {
     expect(seenByOwner).toHaveLength(1);
     expect(seenByOther).toHaveLength(0);
   });
+
+  runDb("an org context cannot UPDATE or DELETE another org's request", async () => {
+    const f = await seed();
+    const id = await insertRequest(f);
+    const updated = await withDbAccessContext(orgCtx(f.orgB.id, f.partner.id), () =>
+      db.update(ticketApprovalRequests).set({ revision: 9 }).where(sql`${ticketApprovalRequests.id} = ${id}`).returning());
+    const deleted = await withDbAccessContext(orgCtx(f.orgB.id, f.partner.id), () =>
+      db.delete(ticketApprovalRequests).where(sql`${ticketApprovalRequests.id} = ${id}`).returning());
+    expect(updated).toHaveLength(0);
+    expect(deleted).toHaveLength(0);
+    expect((await row('ticket_approval_requests', id))!.revision).toBe(1);
+  });
+
+  runDb('an org context cannot hop its own request into another org (WITH CHECK)', async () => {
+    const f = await seed();
+    const id = await insertRequest(f);
+    const hop = await rejection(() => withDbAccessContext(orgCtx(f.orgA.id, f.partner.id), () =>
+      db.update(ticketApprovalRequests).set({ orgId: f.orgB.id }).where(sql`${ticketApprovalRequests.id} = ${id}`).returning()));
+    expect(hop.code).toBe('42501');
+  });
 });
 
 describe('org moves carry the request and its held entry (#4617 §4.6)', () => {
@@ -295,6 +355,13 @@ describe('org moves carry the request and its held entry (#4617 §4.6)', () => {
     const decided = await insertRequest(f, { ...DECIDED, trigger: 'after_hours' });
     const entryId = await insertHeldEntry(f, pending);
     const siteB = await createSite({ orgId: f.orgB.id });
+    // Bystander: a request on another ticket in the same source org, not bound
+    // to the moving device. It must stay behind.
+    const [otherTicket] = await (getTestDb() as any).insert(tickets).values({
+      orgId: f.orgA.id, partnerId: f.partner.id, ticketNumber: `APR-B-${f.unique}`,
+      subject: 'bystander', source: 'manual',
+    }).returning();
+    const bystander = await insertRequest(f, { ticketId: otherTicket!.id });
 
     await withSystemDbAccessContext(() => db.transaction((tx) => moveDeviceOrgInTransaction(tx, {
       deviceId: f.device.id,
@@ -312,6 +379,33 @@ describe('org moves carry the request and its held entry (#4617 §4.6)', () => {
     expect((await row('tickets', f.ticket.id))!.org_id).toBe(f.orgB.id);
     expect((await row('ticket_approval_requests', pending))!.org_id).toBe(f.orgB.id);
     expect((await row('ticket_approval_requests', decided))!.org_id).toBe(f.orgB.id);
+    expect((await row('ticket_approval_requests', bystander))!.org_id).toBe(f.orgA.id);
+    const entry = await row('time_entries', entryId);
+    expect(entry!.org_id).toBe(f.orgB.id);
+    expect(entry!.approval_request_id).toBe(pending);
+  });
+
+  runDb('org MERGE (real repoint policies) carries a decided request and its held entry to the survivor', async () => {
+    const f = await seed();
+    const decided = await insertRequest(f, DECIDED);
+    const pending = await insertRequest(f, { trigger: 'after_hours' });
+    const entryId = await insertHeldEntry(f, pending);
+    const policies = getOrgMergePolicies();
+    expect(policies.get('ticket_approval_requests')).toEqual({ kind: 'repoint' });
+
+    // Loser orgA → survivor orgB, the merge engine's way: one transaction,
+    // SET CONSTRAINTS ALL DEFERRED, each table repointed in its own statement.
+    await withSystemDbAccessContext(() => db.transaction(async (tx) => {
+      await tx.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+      await tx.execute(sql`UPDATE tickets SET org_id = ${f.orgB.id}::uuid WHERE org_id = ${f.orgA.id}::uuid`);
+      for (const table of ['time_entries', 'ticket_approval_requests']) {
+        await runPolicy(table, policies.get(table)!, f.orgA.id, f.orgB.id, 'resolve');
+        await runPolicy(table, policies.get(table)!, f.orgA.id, f.orgB.id, 'move');
+      }
+    }));
+
+    expect((await row('ticket_approval_requests', decided))!.org_id).toBe(f.orgB.id);
+    expect((await row('ticket_approval_requests', pending))!.org_id).toBe(f.orgB.id);
     const entry = await row('time_entries', entryId);
     expect(entry!.org_id).toBe(f.orgB.id);
     expect(entry!.approval_request_id).toBe(pending);
@@ -326,5 +420,46 @@ describe('org moves carry the request and its held entry (#4617 §4.6)', () => {
     })));
     expect(failed.code).toBe('23503');
     expect(failed.message).toMatch(/ticket_approval_requests_ticket_org_fk/);
+  });
+});
+
+describe('tickets:record_approval back-fill (2026-12-18-150400), executed', () => {
+  const FILE = path.resolve(__dirname, '../../../migrations/2026-12-18-150400-tickets-record-approval-permission.sql');
+
+  runDb('grants it to a custom role holding tickets:manage, not to one without, and re-applies as a no-op', async () => {
+    const f = await seed();
+    const adminDb = getTestDb() as any;
+    const mkRole = async (name: string) => (await adminDb.execute(sql`
+      INSERT INTO roles (name, scope, partner_id, is_system) VALUES (${name}, 'partner', ${f.partner.id}::uuid, false) RETURNING id
+    `) as Array<{ id: string }>)[0]!.id;
+    const grant = (roleId: string, action: string) => adminDb.execute(sql`
+      INSERT INTO role_permissions (role_id, permission_id)
+      SELECT ${roleId}::uuid, id FROM permissions WHERE resource = 'tickets' AND action = ${action} ORDER BY id LIMIT 1
+    `);
+    const manager = await mkRole(`Custom manager ${f.unique}`);
+    const writer = await mkRole(`Custom writer ${f.unique}`);
+    await grant(manager, 'manage');
+    await grant(writer, 'write');
+
+    const migration = readFileSync(FILE, 'utf8');
+    const holds = async (roleId: string) => ((await adminDb.execute(sql`
+      SELECT count(*)::int AS n FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id
+       WHERE rp.role_id = ${roleId}::uuid AND p.resource = 'tickets' AND p.action = 'record_approval'
+    `)) as Array<{ n: number }>)[0]!.n;
+
+    try {
+      await adminDb.execute(sql.raw(migration));
+      expect(await holds(manager)).toBe(1);
+      expect(await holds(writer)).toBe(0);
+      await adminDb.execute(sql.raw(migration)); // re-apply
+      expect(await holds(manager)).toBe(1);
+      const rows = (await adminDb.execute(sql`
+        SELECT count(*)::int AS n FROM permissions WHERE resource = 'tickets' AND action = 'record_approval'
+      `)) as Array<{ n: number }>;
+      expect(rows[0]!.n).toBe(1);
+    } finally {
+      await adminDb.execute(sql`DELETE FROM role_permissions WHERE role_id IN (${manager}::uuid, ${writer}::uuid)`);
+      await adminDb.execute(sql`DELETE FROM roles WHERE id IN (${manager}::uuid, ${writer}::uuid)`);
+    }
   });
 });
