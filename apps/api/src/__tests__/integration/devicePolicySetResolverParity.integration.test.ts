@@ -12,6 +12,8 @@
  * assignments resolve to the earliest on every path.
  */
 import './setup';
+import { db } from '../../db';
+import { resolveMonitorsForDevice } from '../../services/monitors/monitorResolver';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { loadDeviceHierarchy, type DeviceHierarchy } from '../../services/deviceHierarchy';
 import {
@@ -27,6 +29,7 @@ import { resolveDeviceTimeSyncSettings } from '../../services/timeSync/settings'
 import { buildResolvedTimeSyncConfigUpdate } from '../../services/timeSync/configUpdate';
 import {
   buildEventLogConfigUpdate,
+  buildMonitoringConfigUpdate,
   buildHardwareMonitoringConfigUpdate,
   buildPamConfigUpdate,
   buildPatchSourceConfigUpdate,
@@ -114,6 +117,17 @@ const RESOLVERS: Array<[string, Resolver, (answer: any) => void, (emptyAnswer: a
   ['buildPatchSourceConfigUpdate', (id, o) => buildPatchSourceConfigUpdate(id, o),
     (a) => expect(a).toEqual({ exclusiveWindowsUpdate: true }),
     (e) => expect(e).toEqual({ exclusiveWindowsUpdate: false })],
+  ['resolveMonitorsForDevice', (id, o) => resolveMonitorsForDevice(id, db, o),
+    // Partner-wide cumulative attachment survives the closer EMPTY replace link at site level.
+    (a) => {
+      expect(a.kind).toBe('resolved');
+      expect(a.monitors).toHaveLength(1);
+      expect(a.monitors[0]).toMatchObject({ enabled: true, sourceLevel: 'partner' });
+    },
+    (e) => expect(e).toEqual({ kind: 'resolved', monitors: [] })],
+  ['buildMonitoringConfigUpdate', (id, o) => buildMonitoringConfigUpdate(id, o),
+    (a) => expect(a).toMatchObject({ check_interval_seconds: 120, watches: [expect.objectContaining({ name: 'ParityService' })] }),
+    (e) => expect(e).toEqual({ check_interval_seconds: 60, watches: [] })],
 ];
 
 describe('heartbeat policy resolvers: three-way parity with the policy set (#8142) — real PostgreSQL', () => {
@@ -200,4 +214,28 @@ describe('parked orgs keep their partner-drop rules on the set path (#8142)', ()
       await threeWay(ctx, 'resolveDeviceTimeSyncSettings', (id, o) => resolveDeviceTimeSyncSettings(id, o));
     });
   }
+});
+
+describe('monitoring with no monitors link resolves to the explicit clear on every path (#8142)', () => {
+  runDb('a device whose only policy is PAM: watches [] three ways; quick_support drops the partner target', async () => {
+    const partner = (await createPartner())!;
+    const org = (await createOrganization({ partnerId: partner.id }))!;
+    const site = (await createSite({ orgId: org.id }))!;
+    const deviceId = await seedDevice(org.id, site.id, 'pam-only');
+    await seedPolicy({ owner: { orgId: org.id, partnerId: null },
+      links: [{ featureType: 'pam', inlineSettings: { uacInterceptionEnabled: true } }],
+      assignments: [{ level: 'organization', targetId: org.id }] });
+    const ctx = { deviceId, orgId: org.id, partnerId: partner.id };
+    expect(await threeWay(ctx, 'buildMonitoringConfigUpdate', (id, o) => buildMonitoringConfigUpdate(id, o)))
+      .toEqual({ check_interval_seconds: 60, watches: [] });
+    expect(await threeWay(ctx, 'resolveMonitorsForDevice', (id, o) => resolveMonitorsForDevice(id, db, o)))
+      .toEqual({ kind: 'resolved', monitors: [] });
+
+    const world = await seedParityWorld();
+    const qs = (await createOrganization({ partnerId: world.partnerId, type: 'quick_support' }))!;
+    const qsSite = (await createSite({ orgId: qs.id }))!;
+    const qsDevice = await seedDevice(qs.id, qsSite.id, 'qs');
+    expect(await threeWay({ deviceId: qsDevice, orgId: qs.id, partnerId: world.partnerId }, 'monitors (quick_support)',
+      (id, o) => resolveMonitorsForDevice(id, db, o))).toEqual({ kind: 'resolved', monitors: [] });
+  });
 });

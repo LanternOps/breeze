@@ -65,7 +65,7 @@ import {
 } from '../../services/featureConfigResolver';
 import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
 import { hierarchyFor, type DeviceHierarchyOpts } from '../../services/deviceHierarchy';
-import { candidatesWithLink, policySetFor, type ApplicabilityRule, type DevicePolicySetOpts } from '../../services/devicePolicySet';
+import { applicableCandidates, candidatesWithLink, policySetFor, type ApplicabilityRule, type DevicePolicySetOpts } from '../../services/devicePolicySet';
 import { warrantyHpCmslCollectionEffective } from '@breeze/shared/validators';
 import { policyOwnershipCondition } from '../../services/configPolicyOwnership';
 import { HARDWARE_MONITORING_DEFAULTS, hardwareMonitoringInlineSettingsSchema, type HardwareMonitoringInlineSettings } from '@breeze/shared';
@@ -2474,7 +2474,7 @@ type MonitorDerivedWatchesResult =
   | { kind: 'device_missing' }
   | { kind: 'resolved'; watches: MonitoringWatchConfig[] };
 
-async function resolveMonitorDerivedWatches(deviceId: string, opts?: DeviceHierarchyOpts): Promise<MonitorDerivedWatchesResult> {
+async function resolveMonitorDerivedWatches(deviceId: string, opts?: DevicePolicySetOpts): Promise<MonitorDerivedWatchesResult> {
   const resolution = await resolveMonitorsForDevice(deviceId, undefined, opts);
   if (resolution.kind === 'device_missing') return { kind: 'device_missing' };
   const effective = resolution.monitors;
@@ -2568,7 +2568,7 @@ type DeviceMonitoringResolution =
   | { kind: 'none_applies'; settings: MonitoringConfigUpdate }
   | { kind: 'resolved'; settings: MonitoringConfigUpdate };
 
-async function resolveDeviceMonitoringSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<DeviceMonitoringResolution> {
+async function resolveDeviceMonitoringSettings(deviceId: string, opts?: DevicePolicySetOpts): Promise<DeviceMonitoringResolution> {
   // W05d: monitors alone supply watches; the monitors link supplies the interval.
   const policyResult = await resolvePolicyCheckInterval(deviceId, opts);
   const monitorResult = await resolveMonitorDerivedWatches(deviceId, opts);
@@ -2624,8 +2624,59 @@ type PolicyCheckIntervalResult =
   | { kind: 'no_policy' }
   | { kind: 'resolved'; settings: { check_interval_seconds: number } };
 
-async function resolvePolicyCheckInterval(deviceId: string, opts?: DeviceHierarchyOpts): Promise<PolicyCheckIntervalResult> {
+/** #8142: check-interval's own rules (raw partner; SQL role/OS, then matchesRoleOsFilter). */
+const CHECK_INTERVAL_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOrPartner', partnerTarget: 'partner', roleOs: 'sql' };
+
+type CheckIntervalAssignment = { policyId: string; parentPolicyId: string | null; level: string; assignmentPriority: number };
+
+/**
+ * Field-level interval inheritance (unchanged): read the RAW `monitors` links of
+ * each assigned policy and its immediate parent, in the caller's context.
+ */
+async function checkIntervalFromAssignments(assignments: CheckIntervalAssignment[]): Promise<PolicyCheckIntervalResult> {
+  if (assignments.length === 0) return { kind: 'no_policy' };
+  const policyIds = [...new Set(assignments.flatMap((r) =>
+    r.parentPolicyId ? [r.policyId, r.parentPolicyId] : [r.policyId]
+  ))];
+  const settingsRows = await db
+    .select({
+      policyId: configPolicyFeatureLinks.configPolicyId,
+      checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
+    })
+    .from(configPolicyFeatureLinks)
+    .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
+    .where(and(
+      inArray(configPolicyFeatureLinks.configPolicyId, policyIds),
+      eq(configPolicyFeatureLinks.featureType, 'monitors'),
+    ));
+  const intervals = new Map(settingsRows.map((r) => [r.policyId, r.checkIntervalSeconds]));
+  const eligibleRows = assignments.flatMap((r) => {
+    const checkIntervalSeconds = intervals.get(r.policyId)
+      ?? (r.parentPolicyId ? intervals.get(r.parentPolicyId) : undefined);
+    return checkIntervalSeconds === undefined ? [] : [{ ...r, checkIntervalSeconds }];
+  });
+  if (eligibleRows.length === 0) return { kind: 'no_policy' };
+  eligibleRows.sort(compareLevelThenPriority);
+  const winner = eligibleRows[0];
+  if (!winner) return { kind: 'no_policy' };
+  return { kind: 'resolved', settings: { check_interval_seconds: winner.checkIntervalSeconds } };
+}
+
+async function resolvePolicyCheckInterval(deviceId: string, opts?: DevicePolicySetOpts): Promise<PolicyCheckIntervalResult> {
   const passed = hierarchyFor(deviceId, opts);
+  const set = policySetFor(deviceId, opts);
+  if (set) {
+    if (!set.hierarchy.org) return { kind: 'device_missing' };
+    const applicable = applicableCandidates(set, CHECK_INTERVAL_APPLICABILITY)
+      .filter((c) => matchesRoleOsFilter(c, set.hierarchy));
+    // #8142 — exact, statement-free "no interval": the effective view carries a
+    // `monitors` row for policy P iff P or P's parent has a raw `monitors` link,
+    // and the raw read below can only return rows for such links.
+    if (!applicable.some((c) => c.links.monitors)) return { kind: 'no_policy' };
+    return checkIntervalFromAssignments(applicable.map((c) => ({
+      policyId: c.policyId, parentPolicyId: c.parentPolicyId, level: c.level, assignmentPriority: c.priority,
+    })));
+  }
   // 1. Load device
   const [device] = passed
     ? [{ orgId: passed.orgId, siteId: passed.siteId, deviceRole: passed.deviceRole, osType: passed.osType }]
@@ -2702,58 +2753,20 @@ async function resolvePolicyCheckInterval(deviceId: string, opts?: DeviceHierarc
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
       or(...targetConditions),
       ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
-    ));
+    ))
+    .orderBy(asc(configPolicyAssignments.createdAt), asc(configPolicyAssignments.id));
 
   const assignments = rows.filter((r) =>
     matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
   );
-  if (assignments.length === 0) return { kind: 'no_policy' };
-
-  // Interval inheritance is field-level: a child's attachment link must not
-  // hide its parent's explicit interval. Parents need not be active/assigned.
-  // Read only these policies and their immediate parents, in this DB context.
-  const policyIds = [...new Set(assignments.flatMap((r) =>
-    r.parentPolicyId ? [r.policyId, r.parentPolicyId] : [r.policyId]
-  ))];
-  const settingsRows = await db
-    .select({
-      policyId: configPolicyFeatureLinks.configPolicyId,
-      checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
-    })
-    .from(configPolicyFeatureLinks)
-    .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
-    .where(and(
-      inArray(configPolicyFeatureLinks.configPolicyId, policyIds),
-      eq(configPolicyFeatureLinks.featureType, 'monitors'),
-    ));
-  const intervals = new Map(settingsRows.map((r) => [r.policyId, r.checkIntervalSeconds]));
-  const eligibleRows = assignments.flatMap((r) => {
-    const checkIntervalSeconds = intervals.get(r.policyId)
-      ?? (r.parentPolicyId ? intervals.get(r.parentPolicyId) : undefined);
-    return checkIntervalSeconds === undefined ? [] : [{ ...r, checkIntervalSeconds }];
-  });
-  if (eligibleRows.length === 0) return { kind: 'no_policy' };
-
-  // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  eligibleRows.sort((a, b) => {
-    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
-    if (levelDiff !== 0) return levelDiff;
-    return a.assignmentPriority - b.assignmentPriority;
-  });
-
-  const winner = eligibleRows[0];
-  if (!winner) return { kind: 'no_policy' };
-
-  return {
-    kind: 'resolved',
-    settings: { check_interval_seconds: winner.checkIntervalSeconds },
-  };
+  return checkIntervalFromAssignments(assignments);
 }
 
 const MONITORING_CACHE_TTL_SECONDS = 120; // 2 minutes
 
-export async function buildMonitoringConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<MonitoringConfigUpdate | null> {
+export async function buildMonitoringConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<MonitoringConfigUpdate | null> {
   hierarchyFor(deviceId, opts);
+  policySetFor(deviceId, opts);
   const redis = getRedis();
   const cacheKey = `monitoring:settings:device:${deviceId}`;
 
@@ -2777,6 +2790,7 @@ export async function buildMonitoringConfigUpdate(deviceId: string, opts?: Devic
   // Only a `resolved` result is cached. `none_applies` is not, so a policy
   // assigned to a device that had none activates on the very next heartbeat
   // instead of waiting out the TTL (the same reason null was never cached).
+  // #8142: a device with no monitors link now answers none_applies with zero statements from the beat's policy set, so this stays uncached (see the W03 plan's decision).
   if (redis && resolution.kind === 'resolved') {
     try {
       await redis.set(cacheKey, JSON.stringify(resolution.settings), 'EX', MONITORING_CACHE_TTL_SECONDS);
