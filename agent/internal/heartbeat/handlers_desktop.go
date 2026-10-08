@@ -17,11 +17,11 @@ import (
 
 const (
 	maxDesktopDisplayIndex  = 16
-	maxDesktopCoordinateAbs = 100000
-	maxDesktopScrollDelta   = 120
-	maxDesktopKeyBytes      = 64
+	maxDesktopCoordinateAbs = desktop.MaxInputCoordinateAbs
+	maxDesktopScrollDelta   = desktop.MaxInputScrollDelta
+	maxDesktopKeyBytes      = desktop.MaxInputKeyBytes
 	maxDesktopModifierBytes = 16
-	maxDesktopModifiers     = 8
+	maxDesktopModifiers     = desktop.MaxInputModifiers
 
 	// Cap for the caller-supplied idle timeout in the direct-mode (map-payload)
 	// decoder. Same maximum as the IPC path (userhelper), but note the

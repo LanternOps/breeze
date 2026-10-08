@@ -129,6 +129,10 @@ func (s *Session) handleInputMessage(data []byte) {
 		slog.Warn("Failed to parse input event", "session", s.id, "error", err.Error())
 		return
 	}
+	if err := ValidateInputEvent(event); err != nil {
+		slog.Warn("Rejected invalid input event", "session", s.id, "type", event.Type, "error", err.Error())
+		return
+	}
 
 	// Signal the capture loop that the user is active so it exits idle mode
 	// and polls at full speed. This covers mouse_move, key_down, scroll, etc.
