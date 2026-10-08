@@ -247,5 +247,18 @@ Confirm the profile arrived through MDM (`profiles list` should show it under a 
 **Remote desktop connects but shows a black screen.**
 Screen Recording has not been approved for `breeze-desktop-helper`. This permission always requires a one-time user approval -- see the table above.
 
+**macOS keeps asking to let `breeze-desktop-helper` record the screen (macOS 15+).**
+On macOS 15 and later, ScreenCaptureKit can show its own "record this computer's screen and audio" approval, and for the bare helper binary macOS may not keep that approval. The desktop helper's permission checks never use ScreenCaptureKit; only a remote desktop session does. If ScreenCaptureKit cannot capture in a session (the user declines its prompt, or it produces no frames) while Screen Recording is granted, the helper switches to CoreGraphics capture and records that, so later sessions and helper restarts don't ask again. The record lapses when the agent updates, macOS updates, or the Screen Recording grant changes. Run these as the logged-in user, without `sudo`:
+
+```bash
+breeze-desktop-helper capture-backend                    # show the recorded verdict
+breeze-desktop-helper capture-backend pin-coregraphics   # never use ScreenCaptureKit for this user
+breeze-desktop-helper capture-backend reset              # forget it; the next session tries ScreenCaptureKit
+```
+
+From a root shell, such as a Breeze remote terminal, use `launchctl asuser <uid> sudo -u '#<uid>' /usr/local/bin/breeze-desktop-helper capture-backend ...`.
+
+`breeze-desktop-helper probe` doesn't call ScreenCaptureKit unless you pass `--sck`. macOS charges a probe's capture to whatever launched it: Terminal, or `breeze-agent` from a Breeze script or remote terminal. The launchd helper's grants are separate, so the probe can't show them. For the helper's real permission state, look for the `TCC permissions received` line in the device's agent logs.
+
 **Remote desktop is unavailable even though the device shows Online.**
 The desktop helper runs alongside the agent and can briefly lose its connection to it — after an agent update, or when the Mac sleeps and wakes. The helper now reconnects on its own when that happens, so this should clear within moments. Earlier agent versions left the helper stopped until it was relaunched or the user logged out and back in; if you are seeing that, update the agent.

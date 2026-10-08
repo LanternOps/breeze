@@ -199,7 +199,7 @@ func (c *Client) Run() error {
 	// Skip capture probes while a live session is active to avoid contending
 	// with the streaming capturer in the same helper process.
 	safeGo("tcc_check", func() {
-		runTCCCheckLoop(c.conn, runDone, c.context, func() bool {
+		runTCCCheckLoop(c.conn, runDone, c.context, c.binaryKind, func() bool {
 			return !c.desktopMgr.hasActiveSessions()
 		})
 	})
@@ -1531,6 +1531,9 @@ func detectCapabilities(binaryKind, desktopContext string) ipc.Capabilities {
 		caps.CanTray = false
 		caps.CanClipboard = false
 		if runtime.GOOS == "darwin" {
+			// A permission check: ProbeCaptureAccess never calls
+			// ScreenCaptureKit (#8058). The backend a real session uses is
+			// chosen when it opens its capturer.
 			granted, err := desktop.ProbeCaptureAccess(desktop.CaptureConfig{
 				DesktopContext: desktopContext,
 			})

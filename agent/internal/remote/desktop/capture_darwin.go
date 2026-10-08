@@ -611,109 +611,118 @@ type darwinCapturer struct {
 	stream          *sckStreamController
 }
 
-// sckCaptureUnhealthy latches when the capability probe saw ScreenCaptureKit
-// initialise but fail to produce a frame on every attempt while CoreGraphics
-// did produce one (#6105 — Intel macOS 14/15 hosts whose ScreenCaptureKit
-// capture never answers). Once set, newPlatformCapturer routes this process's
-// user-session captures to CoreGraphics: the probe would otherwise report
-// CanCapture=true on the strength of a CG frame while the streaming session
-// went straight back to the SCK path that cannot capture. It lives for the
-// helper process; restarting the helper re-tries ScreenCaptureKit.
+// sckCaptureUnhealthy is the in-process fallback for the persisted
+// ScreenCaptureKit verdict (capture_darwin_backend.go): it latches when a
+// session found ScreenCaptureKit unable to capture while CoreGraphics could,
+// and the verdict could not be written to disk. Once set, newPlatformCapturer
+// routes this process's user-session captures to CoreGraphics until the
+// helper restarts — the pre-#8058 behaviour (#6105).
 var sckCaptureUnhealthy atomic.Bool
 
-// sckProbeAttempts / sckProbeRetryDelay bound the probe's ScreenCaptureKit
-// retry: one retry, since each failed attempt can cost the stream-start
-// timeout (5 s) plus sckFirstFrameTimeout.
+// sckProbeAttempts / sckProbeRetryDelay bound a capture session's
+// ScreenCaptureKit attempts before it falls back to CoreGraphics: one retry,
+// since each failed attempt can cost the stream-start timeout (5 s) plus
+// sckFirstFrameTimeout. A refusal (-3801) is never retried.
 const (
 	sckProbeAttempts   = 2
 	sckProbeRetryDelay = 500 * time.Millisecond
+)
+
+// Backend seams, swapped by tests so no test run on a developer's Mac ever
+// opens a real ScreenCaptureKit stream (which could raise the consent dialog).
+var (
+	openSCKCapturer = newSCKCapturer
+	openCGCapturer  = newCGCapturer
+	// screenRecordingPreflight reports whether TCC says this process holds
+	// the Screen Recording grant. Non-prompting.
+	screenRecordingPreflight = func() bool { return C.screenCapturePreflight() != 0 }
 )
 
 func init() {
 	platformCaptureProbePlan = darwinCaptureProbePlan
 }
 
-// darwinCaptureProbePlan orders the capability probe's backends. On macOS 14+
-// in the user session it probes ScreenCaptureKit directly (so a capture-phase
-// failure is visible as such), retries it once, and then tries CoreGraphics —
-// but only when TCC preflight reports the Screen Recording grant, because a
-// CoreGraphics capture without the grant still returns wallpaper and menu bar
-// and would report a missing permission as CanCapture=true.
-//
-// Known limit: on macOS 26 CGPreflightScreenCaptureAccess can report false
-// while the grant is present (see tcc_darwin.go). There the gate refuses the
-// fallback, which is the pre-#6105 behaviour, not a regression.
-func darwinCaptureProbePlan(config CaptureConfig) captureProbePlan {
-	if config.DesktopContext == "login_window" || !hasSCScreenshotManager() || sckCaptureUnhealthy.Load() {
-		return defaultCaptureProbePlan(config)
-	}
-	fallback := captureProbeBackend{
-		name: "coregraphics",
-		open: func() (ScreenCapturer, error) { return newCGCapturer(config) },
-	}
-	return captureProbePlan{
-		primary: captureProbeBackend{
-			name: "screencapturekit",
-			open: func() (ScreenCapturer, error) {
-				capturer, err := newSCKCapturer(config)
-				if err != nil {
-					// A zero display count means the fallback is doomed too and
-					// the cause is a missing framebuffer, not a permission (#4042).
-					slog.Warn("ScreenCaptureKit init failed during capture probe",
-						"error", err.Error(), "darwinVersion", macOSMajorVersion,
-						"activeDisplayCount", int(C.activeDisplayCount()))
-				}
-				return capturer, err
-			},
-		},
-		primaryAttempts:   sckProbeAttempts,
-		primaryRetryDelay: sckProbeRetryDelay,
-		fallback:          &fallback,
-		allowCaptureFallback: func() bool {
-			granted := C.screenCapturePreflight() != 0
-			if !granted {
-				slog.Warn("ScreenCaptureKit capture failed and Screen Recording preflight reports no grant; not falling back to CoreGraphics",
-					"darwinVersion", macOSMajorVersion)
+// darwinUserSessionBackends wires the real macOS 14+ backends for config.
+func darwinUserSessionBackends(config CaptureConfig) macCaptureBackends {
+	return macCaptureBackends{
+		openSCK: func() (ScreenCapturer, error) {
+			capturer, err := openSCKCapturer(config)
+			if err != nil {
+				// A zero display count means the fallback is doomed too and
+				// the cause is a missing framebuffer, not a permission (#4042).
+				slog.Warn("ScreenCaptureKit init failed",
+					"error", err.Error(), "darwinVersion", macOSMajorVersion,
+					"activeDisplayCount", int(C.activeDisplayCount()))
 			}
-			return granted
+			return capturer, err
 		},
-		onSuccess: func(res captureProbeResult) {
-			if res.primaryCaptureFailed && !sckCaptureUnhealthy.Swap(true) {
-				slog.Warn("ScreenCaptureKit cannot capture on this host but CoreGraphics can; routing this helper's desktop capture to CoreGraphics until it restarts",
-					"darwinVersion", macOSMajorVersion)
-			}
-		},
+		openCG:    func() (ScreenCapturer, error) { return openCGCapturer(config) },
+		preflight: screenRecordingPreflight,
 	}
 }
 
-// newPlatformCapturer creates a new macOS screen capturer.
-// On macOS 14+, uses ScreenCaptureKit (a persistent SCStream, #5928).
-// On macOS 12-13, falls back to CGWindowListCreateImage.
-// Also falls back to CG if SCK init fails at runtime (e.g., classes don't load),
-// and uses CG outright once the capability probe has found SCK unable to
-// capture on this host (sckCaptureUnhealthy, #6105).
+// darwinCaptureProbePlan orders a capability probe's backends.
+//
+// On macOS 14+ in the user session a probe never calls ScreenCaptureKit unless
+// the caller explicitly allows it (the CLI's `probe --sck`), and then at most
+// once. Probes are permission checks — the TCC check loop, the background
+// re-probe, the connect-time capability probe, the helper's startup log — and
+// on Sequoia every ScreenCaptureKit call can raise macOS's own consent dialog,
+// whose approval does not persist for the bare helper binary (#8058). Only a
+// real capture session (newPlatformCapturer) uses ScreenCaptureKit.
+//
+// A probe never records a verdict either: an explicit --sck probe runs in the
+// operator's context, and macOS charges its capture to whatever launched it
+// (Terminal, or breeze-agent), not to the launchd desktop helper.
+func darwinCaptureProbePlan(config CaptureConfig, opts CaptureProbeOptions) captureProbePlan {
+	if config.DesktopContext == "login_window" || !hasSCScreenshotManager() {
+		return defaultCaptureProbePlan(config)
+	}
+	sckAttempts := 0
+	if opts.AllowScreenCaptureKit {
+		sckAttempts = 1
+	}
+	return macUserSessionPlan(darwinUserSessionBackends(config), sckAttempts, 0)
+}
+
+// newPlatformCapturer creates a new macOS screen capturer for a real capture
+// session (remote desktop, screenshots).
+//   - login window: CGDisplayStream.
+//   - macOS 12-13: CoreGraphics (CGWindowListCreateImage).
+//   - macOS 14+: ScreenCaptureKit (a persistent SCStream, #5928), verified by
+//     taking its first frame here, retried once, and falling back to
+//     CoreGraphics — unconditionally after an init failure, and after a
+//     capture failure only when Screen Recording preflight reports the grant.
+//     A capture-phase failure that CoreGraphics then covers is recorded as the
+//     host's ScreenCaptureKit verdict, so later sessions — including in a
+//     restarted helper — go straight to CoreGraphics instead of asking
+//     ScreenCaptureKit (and, on Sequoia, the user) again (#6105, #8058).
 func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	if config.DesktopContext == "login_window" {
 		return newDisplayStreamCapturer(config)
 	}
-	if hasSCScreenshotManager() && !sckCaptureUnhealthy.Load() {
-		cap, sckErr := newSCKCapturer(config)
-		if sckErr != nil {
-			// Log the display count alongside the error: a zero here means the
-			// fallback is also doomed and the cause is a missing framebuffer,
-			// not a permission (#4042).
-			slog.Warn("ScreenCaptureKit init failed, falling back to CoreGraphics",
-				"error", sckErr.Error(), "darwinVersion", macOSMajorVersion,
-				"activeDisplayCount", int(C.activeDisplayCount()))
-			cgCap, cgErr := newCGCapturer(config)
-			if cgErr != nil {
-				return nil, fmt.Errorf("SCK failed (%v); CG fallback also failed: %w", sckErr, cgErr)
-			}
-			return cgCap, nil
-		}
-		return cap, nil
+	if !hasSCScreenshotManager() {
+		return openCGCapturer(config)
 	}
-	return newCGCapturer(config)
+	if sckCaptureUnhealthy.Load() {
+		slog.Info("using CoreGraphics capture: ScreenCaptureKit was found unable to capture earlier in this helper process",
+			"darwinVersion", macOSMajorVersion)
+		return openCGCapturer(config)
+	}
+	if v := applicableSCKVerdict(); v != nil {
+		slog.Info("using CoreGraphics capture: a recorded verdict says ScreenCaptureKit cannot capture on this host",
+			"reason", v.Reason, "recordedAt", v.RecordedAt.Format(time.RFC3339),
+			"darwinVersion", macOSMajorVersion)
+		return openCGCapturer(config)
+	}
+
+	capturer, res, err := openCaptureBackends(
+		macUserSessionPlan(darwinUserSessionBackends(config), sckProbeAttempts, sckProbeRetryDelay))
+	if err != nil {
+		return nil, err
+	}
+	recordSCKOutcome(res)
+	return capturer, nil
 }
 
 // newSCKCapturer creates a ScreenCaptureKit-based capturer (macOS 14+).

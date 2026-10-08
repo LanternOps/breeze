@@ -152,7 +152,11 @@ type darwinCGCapturer struct {
 
 // newCGCapturer creates a CoreGraphics-based capturer (macOS 12-13 fallback).
 func newCGCapturer(config CaptureConfig) (ScreenCapturer, error) {
-	slog.Warn("using CoreGraphics screen capture; ScreenCaptureKit is unavailable (macOS 12-13), failed to initialise, or was found unable to capture on this host",
+	// Debug, not Warn: since #8058 every permission check (the TCC loop, up
+	// to every 2 minutes) captures through CoreGraphics. The callers that
+	// pick CoreGraphics for a session log why (newPlatformCapturer, the
+	// probe plan's fallback).
+	slog.Debug("opening CoreGraphics screen capture",
 		"darwinVersion", macOSMajorVersion, "displayIndex", config.DisplayIndex,
 		"sckCaptureUnhealthy", sckCaptureUnhealthy.Load())
 	darwinCaptureMu.Lock()

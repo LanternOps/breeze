@@ -251,7 +251,11 @@ func probeFullDiskAccess() bool {
 // dialog only when the permission is missing and we have not asked recently),
 // then re-checks at a fast interval while permissions are missing, switching to
 // the slower interval once all are granted.
-func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext string, canProbe func() bool) {
+//
+// Only the desktop helper prompts or runs the capture probe (tccLoopPolicyFor),
+// and that probe never calls ScreenCaptureKit (#8058).
+func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, binaryKind string, canProbe func() bool) {
+	policy := tccLoopPolicyFor(binaryKind)
 	startedAt := time.Now()
 	var seq uint64
 	var consecutiveFailures int
@@ -262,11 +266,11 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext stri
 	promptFile := tccPromptFilePath()
 
 	check := func() {
-		allowProbe := true
-		if canProbe != nil {
+		allowProbe := policy.captureProbe
+		if allowProbe && canProbe != nil {
 			allowProbe = canProbe()
 		}
-		status := checkTCCPermissions(desktopContext, true, allowProbe, lastRemoteDesktop)
+		status := checkTCCPermissions(desktopContext, policy.promptAccessibility, allowProbe, lastRemoteDesktop)
 		lastRemoteDesktop = cloneBoolPtr(status.RemoteDesktop)
 		allGranted = len(missingPermissions(status)) == 0
 		if err := sendTCCStatus(conn, status, &seq); err != nil {
@@ -297,7 +301,9 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext stri
 		firstCheck = false
 	}
 
-	maybeRequestScreenRecording(screenRecordingMarkerPath(), time.Now())
+	if policy.requestScreenRecording {
+		maybeRequestScreenRecording(screenRecordingMarkerPath(), time.Now())
+	}
 
 	// Immediate first check (sends full TCC status to the service)
 	check()
@@ -405,6 +411,9 @@ func normalizedDesktopContext(desktopContext string) string {
 	return ipc.DesktopContextUserSession
 }
 
+// probeRemoteDesktopPermission runs the permission-check capture probe. It
+// never calls ScreenCaptureKit: desktop.ProbeCaptureAccess keeps permission
+// checks on CoreGraphics (#8058).
 func probeRemoteDesktopPermission(desktopContext string) *bool {
 	granted, err := desktop.ProbeCaptureAccess(desktop.CaptureConfig{
 		DesktopContext: normalizedDesktopContext(desktopContext),
