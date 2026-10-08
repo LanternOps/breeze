@@ -4,11 +4,12 @@ const dbState = vi.hoisted(() => ({
   inContext: false,
   deferred: [] as Array<() => unknown>,
   scope: undefined as 'system' | 'organization' | 'partner' | undefined,
+  ctx: undefined as Record<string, unknown> | undefined,
 }));
 
 vi.mock('../db', () => ({
   hasDbAccessContext: () => dbState.inContext,
-  getCurrentDbAccessContext: () => (dbState.scope ? { scope: dbState.scope } : undefined),
+  getCurrentDbAccessContext: () => dbState.ctx ?? (dbState.scope ? { scope: dbState.scope } : undefined),
   // Inside a context the real helper defers until the transaction settles;
   // tests flush `deferred` to model the COMMIT.
   runAfterDbContextExit: (_label: string, work: () => unknown) => {
@@ -17,7 +18,7 @@ vi.mock('../db', () => ({
   },
 }));
 
-import { DeferredCacheFills, HotPathTtlCache, __resetHotPathCachesForTests } from './hotPathCache';
+import { DeferredCacheFills, HotPathTtlCache, fillScopeIsCacheable, __resetHotPathCachesForTests } from './hotPathCache';
 
 const T0 = Date.parse('2026-10-07T12:00:00Z');
 
@@ -36,6 +37,7 @@ describe('HotPathTtlCache (#8053)', () => {
     dbState.inContext = false;
     dbState.deferred = [];
     dbState.scope = undefined;
+    dbState.ctx = undefined;
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -177,6 +179,7 @@ describe('HotPathTtlCache deferred fills (#8053 W1a-1)', () => {
     vi.setSystemTime(T0);
     dbState.inContext = false;
     dbState.scope = undefined;
+    dbState.ctx = undefined;
   });
   afterEach(() => vi.useRealTimers());
 
@@ -266,5 +269,64 @@ describe('HotPathTtlCache deferred fills (#8053 W1a-1)', () => {
     expect(good.peek('org-1')).toEqual({ v: 'good' });
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
+  });
+});
+
+describe('DeferredCacheFills — explicit org fill scope (#8142)', () => {
+  const ORG = 'org-1';
+  const PARTNER = 'partner-1';
+  const orgCtx = (over: Record<string, unknown> = {}) => ({
+    scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG], accessiblePartnerIds: [], currentPartnerId: PARTNER, ...over,
+  });
+
+  beforeEach(() => {
+    dbState.inContext = false;
+    dbState.scope = undefined;
+    dbState.ctx = undefined;
+  });
+
+  it('fillScopeIsCacheable: system always; org only with an exact org + partner match', () => {
+    expect(fillScopeIsCacheable({ scope: 'system' } as never)).toBe(true);
+    expect(fillScopeIsCacheable(orgCtx() as never)).toBe(false);
+    expect(fillScopeIsCacheable(orgCtx() as never, { orgId: ORG, partnerId: PARTNER })).toBe(true);
+    expect(fillScopeIsCacheable(orgCtx() as never, { orgId: 'org-2', partnerId: PARTNER })).toBe(false);
+    expect(fillScopeIsCacheable(orgCtx({ currentPartnerId: 'partner-2' }) as never, { orgId: ORG, partnerId: PARTNER })).toBe(false);
+    expect(fillScopeIsCacheable(orgCtx({ currentPartnerId: null }) as never, { orgId: ORG, partnerId: PARTNER })).toBe(false);
+    expect(fillScopeIsCacheable(orgCtx({ accessibleOrgIds: [ORG, 'org-2'] }) as never, { orgId: ORG, partnerId: PARTNER })).toBe(false);
+    expect(fillScopeIsCacheable({ ...orgCtx(), scope: 'partner' } as never, { orgId: ORG, partnerId: PARTNER })).toBe(false);
+    expect(fillScopeIsCacheable(undefined, { orgId: ORG, partnerId: PARTNER })).toBe(false);
+  });
+
+  it('an org context carrying a partner-level grant never fills (wider view must not be cached for the org)', () => {
+    const scope = { orgId: ORG, partnerId: PARTNER };
+    expect(fillScopeIsCacheable(orgCtx({ accessiblePartnerIds: [PARTNER] }) as never, scope)).toBe(false);
+    expect(fillScopeIsCacheable(orgCtx({ accessiblePartnerIds: ['partner-9'] }) as never, scope)).toBe(false);
+    // null/undefined means no grant, same as empty
+    expect(fillScopeIsCacheable(orgCtx({ accessiblePartnerIds: null }) as never, scope)).toBe(true);
+    expect(fillScopeIsCacheable(orgCtx({ accessiblePartnerIds: undefined }) as never, scope)).toBe(true);
+  });
+
+  it('an org-scoped load with a matching fill scope is stored after flush', async () => {
+    const cache = makeCache();
+    const fills = new DeferredCacheFills();
+    dbState.ctx = orgCtx();
+    dbState.inContext = true;
+    await fills.through(cache, ORG, async () => ({ v: 'loaded' }), { orgId: ORG, partnerId: PARTNER });
+    dbState.inContext = false;
+    dbState.ctx = undefined;
+    fills.flush();
+    expect(cache.peek(ORG)).toEqual({ v: 'loaded' });
+  });
+
+  it('an org-scoped load WITHOUT a fill scope is returned but never stored (unchanged rule)', async () => {
+    const cache = makeCache();
+    const fills = new DeferredCacheFills();
+    dbState.ctx = orgCtx();
+    dbState.inContext = true;
+    expect(await fills.through(cache, ORG, async () => ({ v: 'loaded' }))).toEqual({ v: 'loaded' });
+    dbState.inContext = false;
+    dbState.ctx = undefined;
+    fills.flush();
+    expect(cache.peek(ORG)).toBeUndefined();
   });
 });

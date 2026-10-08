@@ -1,4 +1,4 @@
-import { getCurrentDbAccessContext, hasDbAccessContext, runAfterDbContextExit } from '../db';
+import { getCurrentDbAccessContext, hasDbAccessContext, runAfterDbContextExit, type DbAccessContext } from '../db';
 import { registerHotPathCache } from './hotPathCacheRegistry';
 
 export { __resetHotPathCachesForTests } from './hotPathCacheRegistry';
@@ -35,7 +35,9 @@ export { __resetHotPathCachesForTests } from './hotPathCacheRegistry';
  *   runs inside a SYSTEM-scoped context with no writes of its own can load a
  *   per-org value there, and the value is stored only after that context has
  *   committed, through `fillIfCurrent`, which keeps the invalidation-race rule
- *   below. A load under any narrower scope is returned but never stored.
+ *   below. A load under an org scope is stored only when the caller passes the exact
+ *   `{ orgId, partnerId }` fill scope the context was built for (#8142,
+ *   `fillScopeIsCacheable`); any other narrower scope is returned but never stored.
  * - **Failures are never cached.** A throwing loader propagates to the caller
  *   and leaves the cache untouched, so a fail-closed caller re-resolves on its
  *   next request.
@@ -156,14 +158,43 @@ export class HotPathTtlCache<K, V> {
   }
 }
 
+/** The exact org-scoped context a per-org value may be cached from (#8142). */
+export interface DeferredFillScope {
+  orgId: string;
+  /** The org's own partner, read under RLS in the same context. */
+  partnerId: string;
+}
+
+/**
+ * Whether a load under `ctx` may be stored for everyone in the org.
+ * - system scope: yes (#8053 W1a-1).
+ * - org scope: only when the caller names the scope it built the context for
+ *   AND the context is exactly that: this org alone, no partner-level grant,
+ *   and this org's partner as the partner-wide read axis. Then RLS shows the
+ *   loader every row any device of the org would see, so the value is not
+ *   narrowed or widened. Anything else is returned but never stored.
+ */
+export function fillScopeIsCacheable(ctx: DbAccessContext | undefined, fillScope?: DeferredFillScope): boolean {
+  if (!ctx) return false;
+  if (ctx.scope === 'system') return true;
+  if (!fillScope || ctx.scope !== 'organization') return false;
+  return ctx.orgId === fillScope.orgId
+    && Array.isArray(ctx.accessibleOrgIds)
+    && ctx.accessibleOrgIds.length === 1
+    && ctx.accessibleOrgIds[0] === fillScope.orgId
+    && (ctx.accessiblePartnerIds ?? []).length === 0
+    && (ctx.currentPartnerId ?? null) === fillScope.partnerId;
+}
+
 /**
  * Read-through for a hot path that runs INSIDE a system-scoped context
  * (#8053 W1a-1: the heartbeat's shared post-commit policy context). A hit
  * returns at once with no load. A miss loads in the caller's transaction, as
  * the code did before it was cached, and queues the fill. The caller calls
  * `flush()` once, after that context has committed. A miss under a non-system
- * scope still loads and returns, but is never stored: an RLS-narrowed answer
- * must not be served to the rest of the org.
+ * scope still loads and returns, but is never stored unless the caller names
+ * an exact org fill scope that the context matches (`fillScopeIsCacheable`):
+ * an RLS-narrowed answer must not be served to the rest of the org.
  *
  * Caller contract: the context must have made no writes the loaded rows could
  * observe, and the value must be a function of `key` alone.
@@ -171,10 +202,10 @@ export class HotPathTtlCache<K, V> {
 export class DeferredCacheFills {
   private readonly pending: Array<() => void> = [];
 
-  async through<K, V>(cache: HotPathTtlCache<K, V>, key: K, load: () => Promise<V>): Promise<V> {
+  async through<K, V>(cache: HotPathTtlCache<K, V>, key: K, load: () => Promise<V>, fillScope?: DeferredFillScope): Promise<V> {
     const hit = cache.peek(key);
     if (hit !== undefined) return hit;
-    const cacheable = getCurrentDbAccessContext()?.scope === 'system';
+    const cacheable = fillScopeIsCacheable(getCurrentDbAccessContext(), fillScope);
     const ticket = cache.ticket();
     const value = await load();
     if (cacheable) this.pending.push(() => cache.fillIfCurrent(key, value, ticket));
