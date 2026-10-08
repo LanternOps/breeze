@@ -78,7 +78,8 @@ import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
-import { ERROR_CODES } from '@breeze/shared';
+import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE } from '@breeze/shared';
+import { siteLocationRoutes } from './siteLocation';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
@@ -416,7 +417,17 @@ const createSiteSchema = siteBaseSchema.extend({
   timezone: z.string().refine(isValidIanaTimezone, 'Invalid IANA timezone').default('UTC')
 });
 
-const updateSiteSchema = siteBaseSchema.partial().omit({ orgId: true });
+// Location fields are PATCH-only: create never accepts them (zod strips them), so
+// POST /sites cannot write an unstamped pin. latitude/longitude are a pair.
+const updateSiteSchema = siteBaseSchema
+  .partial()
+  .omit({ orgId: true })
+  .extend(siteLocationFieldsShape)
+  .superRefine((v, ctx) => {
+    if (!siteLocationPairIsConsistent(v)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: SITE_LOCATION_PAIR_MESSAGE, path: ['latitude'] });
+    }
+  });
 
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
@@ -466,6 +477,9 @@ function resolveIncomingSettingsSecrets(
 }
 
 orgRoutes.use('*', authMiddleware);
+
+// Mounted after authMiddleware so the pin route inherits authentication.
+orgRoutes.route('/', siteLocationRoutes);
 
 // GET / - List organizations accessible to the current user
 orgRoutes.get('/', requireScope('organization', 'partner', 'system'), requireOrgRead, async (c) => {
@@ -3215,6 +3229,15 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
   // Encrypt secret-bearing fields inside sites.settings before writing —
   // matches the registry walker so UI edits don't regress to plaintext.
   const writeData: Record<string, unknown> = { ...data, updatedAt: new Date() };
+  if (data.latitude !== undefined) {
+    // Coordinates changed through the generic edit path: stamp provenance as
+    // 'manual' (technician pins go through POST /sites/:id/location). Clearing
+    // the pair clears the provenance with it.
+    const pinned = data.latitude !== null;
+    writeData.locationSource = pinned ? 'manual' : null;
+    writeData.locationSetBy = pinned ? auth.user.id : null;
+    writeData.locationSetAt = pinned ? new Date() : null;
+  }
   if (writeData.settings !== undefined) {
     const resolvedSecrets = resolveIncomingSettingsSecrets(writeData.settings, site.settings);
     if (!resolvedSecrets.ok) {

@@ -17,13 +17,23 @@ export const siteLocationPinSchema = z.object({
   geofenceRadiusM: radius.optional(),
 }).strict();
 
-/** Location fields on a site PATCH: latitude/longitude are a pair — both or neither. */
-export const siteLocationFieldsSchema = z.object({
+/** Plain shape of the location fields on a site PATCH, for schemas that extend it. */
+export const siteLocationFieldsShape = {
   latitude: lat.nullable().optional(),
   longitude: lng.nullable().optional(),
   geofenceRadiusM: radius.nullable().optional(),
-}).refine(
-  (v) => (v.latitude === undefined) === (v.longitude === undefined)
-      && ((v.latitude ?? null) === null) === ((v.longitude ?? null) === null),
-  { message: 'latitude and longitude must be set together', path: ['latitude'] },
+};
+
+/** latitude/longitude are a pair — both set or both null/absent. */
+export function siteLocationPairIsConsistent(v: { latitude?: number | null; longitude?: number | null }): boolean {
+  return (v.latitude === undefined) === (v.longitude === undefined)
+    && ((v.latitude ?? null) === null) === ((v.longitude ?? null) === null);
+}
+
+export const SITE_LOCATION_PAIR_MESSAGE = 'latitude and longitude must be set together';
+
+/** Location fields on a site PATCH: latitude/longitude are a pair — both or neither. */
+export const siteLocationFieldsSchema = z.object(siteLocationFieldsShape).refine(
+  siteLocationPairIsConsistent,
+  { message: SITE_LOCATION_PAIR_MESSAGE, path: ['latitude'] },
 );

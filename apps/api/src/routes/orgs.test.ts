@@ -5872,6 +5872,44 @@ describe('org routes', () => {
     });
   });
 
+  describe('POST /orgs/sites/:id/location mount', () => {
+    it('is reachable under /orgs and sits behind authMiddleware (401 when unauthenticated)', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any) => c.json({ error: 'Unauthorized' }, 401));
+      const res = await app.request('/orgs/sites/33333333-3333-4333-8333-333333333333/location', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ latitude: 1, longitude: 2 })
+      });
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('POST /orgs/sites location columns', () => {
+    it('strips latitude/longitude from a create body (no unstamped pin)', async () => {
+      setAuthContext({ scope: 'system' });
+      const values = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'site-new', name: 'N' }]) });
+      vi.mocked(db.insert).mockReturnValue({ values } as any);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: '11111111-1111-1111-1111-111111111111', partnerId: 'partner-123' }])
+          })
+        })
+      } as any);
+      await app.request('/orgs/sites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: '11111111-1111-1111-1111-111111111111', name: 'N', latitude: 1, longitude: 2, geofenceRadiusM: 100 })
+      });
+      expect(values).toHaveBeenCalled();
+      for (const call of values.mock.calls as any[][]) {
+        expect(call[0]).not.toHaveProperty('latitude');
+        expect(call[0]).not.toHaveProperty('longitude');
+        expect(call[0]).not.toHaveProperty('geofenceRadiusM');
+      }
+    });
+  });
+
   describe('POST /orgs/sites', () => {
     it('should create a site', async () => {
       setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
@@ -6159,6 +6197,73 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.name).toBe('Updated');
+    });
+
+    describe('location fields', () => {
+      const ORG_ID = '11111111-1111-1111-1111-111111111111';
+      const patchSite = (body: unknown) => app.request('/orgs/sites/site-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const arrange = () => {
+        setAuthContext({ scope: 'organization', orgId: ORG_ID });
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'site-1', orgId: ORG_ID }])
+            })
+          })
+        } as any);
+        const set = vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'site-1', name: 'S' }])
+          })
+        });
+        vi.mocked(db.update).mockReturnValue({ set } as any);
+        return set;
+      };
+
+      it('stamps location_source=manual when lat/lng are set', async () => {
+        const set = arrange();
+        const res = await patchSite({ latitude: 40.5, longitude: -75.5, geofenceRadiusM: 300 });
+        expect(res.status).toBe(200);
+        const written = (set.mock.calls[0] as any[])[0];
+        expect(written).toMatchObject({
+          latitude: 40.5, longitude: -75.5, geofenceRadiusM: 300,
+          locationSource: 'manual', locationSetBy: 'user-123'
+        });
+        expect(written.locationSetAt).toBeInstanceOf(Date);
+      });
+
+      it('clearing lat+lng nulls source/setBy/setAt', async () => {
+        const set = arrange();
+        const res = await patchSite({ latitude: null, longitude: null });
+        expect(res.status).toBe(200);
+        expect((set.mock.calls[0] as any[])[0]).toMatchObject({
+          latitude: null, longitude: null,
+          locationSource: null, locationSetBy: null, locationSetAt: null
+        });
+      });
+
+      it('does not stamp location columns on an unrelated edit', async () => {
+        const set = arrange();
+        await patchSite({ name: 'Renamed' });
+        const written = (set.mock.calls[0] as any[])[0];
+        expect('locationSource' in written).toBe(false);
+        expect('latitude' in written).toBe(false);
+      });
+
+      it('400 when only latitude is sent', async () => {
+        const set = arrange();
+        expect((await patchSite({ latitude: 40 })).status).toBe(400);
+        expect(set).not.toHaveBeenCalled();
+      });
+
+      it('400 on out-of-range coordinates', async () => {
+        arrange();
+        expect((await patchSite({ latitude: 95, longitude: 0 })).status).toBe(400);
+      });
     });
 
     it('rejects an invalid IANA timezone on update', async () => {
