@@ -69,6 +69,7 @@ import { loadTaskFence, type TaskFence } from '../aiOperator/taskService';
 import { buildTaskOperationKey } from '../aiOperator/operationKey';
 import { TOOL_TIERS, createBreezeMcpServer, listChatSurfaceToolNames } from '../aiAgentSdkTools';
 import type { PostToolUseCallback, PreToolUseCallback } from '../aiAgentSdkTools';
+import { reportMissingSdkToolUseId } from '../aiToolUseCorrelation';
 import { checkBudgetDetailed, type AiBillingSource } from '../aiCostTracker';
 import {
   markAiBudgetReservationIndeterminate,
@@ -676,6 +677,105 @@ function readToolAction(toolName: string, input: Record<string, unknown>): strin
 }
 
 /**
+ * What the pre hook decided for one ALLOWED call, consumed by that call's post
+ * hook: its `ai_tool_executions` row (`null` when the ledger write failed or
+ * was skipped) and its act-mode asset pin (`null` for an ordinary allow).
+ */
+export interface AllowedCallState {
+  executionId: string | null;
+  actPin: ActAssetPin | null;
+}
+
+/**
+ * Pre → post correlation for one run's ALLOWED tool calls (#8163).
+ *
+ * The SDK runs MCP tool calls concurrently, so two calls of the same tool in
+ * one turn can finish in either order — and a denied call's result echo can
+ * arrive while an allowed same-name sibling is still running. Each call's
+ * state is therefore keyed by the model's tool_use id, which the SDK hands
+ * both hooks for the same call (`PreToolUseCallback`'s `toolUseId`, bound into
+ * postToolUse by `postToolUseForCall`). A post hook whose id is not in
+ * `byToolUseId` is not an allowed call (a denial or proposal echo) and is
+ * ignored.
+ *
+ * Only a call the SDK sent WITHOUT an id falls back to the per-name FIFOs —
+ * which pair by start order and so can mis-pair same-name calls that finish
+ * out of order. That fallback is warned and reported once per run.
+ */
+export interface AgentRunCallPairing {
+  /** Allowed calls that carried the SDK tool_use id, by that id. */
+  byToolUseId: Map<string, AllowedCallState>;
+  /** Fallback only (no SDK id): per-tool count of allowed calls. */
+  allowedPending: Map<string, number>;
+  /** Fallback only (no SDK id): per-tool FIFO of ledger ids, in lockstep with `actPinPending`. */
+  executionIdPending: Map<string, Array<string | null>>;
+  /**
+   * Fallback only (no SDK id): per-tool FIFO of act-mode asset pins, pushed in
+   * LOCKSTEP with `executionIdPending` (a `null` entry for every ordinary
+   * allowed call) — the SAME tool name can be BOTH in one run (e.g.
+   * `disk_cleanup` preview is a plain read-only allow, `disk_cleanup` execute
+   * is act-eligible), so this cannot be a separate independently-sized queue.
+   */
+  actPinPending: Map<string, Array<ActAssetPin | null>>;
+}
+
+export function createAgentRunCallPairing(): AgentRunCallPairing {
+  return {
+    byToolUseId: new Map(),
+    allowedPending: new Map(),
+    executionIdPending: new Map(),
+    actPinPending: new Map(),
+  };
+}
+
+function recordAllowedCall(
+  pairing: AgentRunCallPairing,
+  toolName: string,
+  toolUseId: string | undefined,
+  state: AllowedCallState,
+): void {
+  if (toolUseId) {
+    pairing.byToolUseId.set(toolUseId, state);
+    return;
+  }
+  reportMissingSdkToolUseId(pairing, toolName, 'agent_run');
+  pairing.allowedPending.set(toolName, (pairing.allowedPending.get(toolName) ?? 0) + 1);
+  const pending = pairing.executionIdPending.get(toolName) ?? [];
+  pending.push(state.executionId);
+  pairing.executionIdPending.set(toolName, pending);
+  const pinQueue = pairing.actPinPending.get(toolName) ?? [];
+  pinQueue.push(state.actPin);
+  pairing.actPinPending.set(toolName, pinQueue);
+}
+
+/** Returns the allowed call this result belongs to, or undefined for a denial/proposal echo. */
+function takeAllowedCall(
+  pairing: AgentRunCallPairing,
+  toolName: string,
+  toolUseId: string | undefined,
+): AllowedCallState | undefined {
+  if (toolUseId) {
+    const state = pairing.byToolUseId.get(toolUseId);
+    if (state) {
+      pairing.byToolUseId.delete(toolUseId);
+      return state;
+    }
+    // Not an id-keyed allowed call. Only a pre hook that got NO id for this
+    // call can have queued it by name; with ids flowing to both hooks the
+    // fallback queues stay empty and this is a denial/proposal echo.
+  } else {
+    reportMissingSdkToolUseId(pairing, toolName, 'agent_run');
+  }
+  const remaining = pairing.allowedPending.get(toolName) ?? 0;
+  if (remaining <= 0) return undefined;
+  pairing.allowedPending.set(toolName, remaining - 1);
+  return {
+    executionId: pairing.executionIdPending.get(toolName)?.shift() ?? null,
+    actPin: pairing.actPinPending.get(toolName)?.shift() ?? null,
+  };
+}
+
+/**
  * The pre-tool-use hook: 3b's tri-state guardrail is the ONLY authority.
  *
  * Exported so the red-team contract suite can drive it directly and assert that
@@ -696,25 +796,13 @@ export function createAgentRunPreToolUse(args: {
   guardrailPolicy: AgentGuardrailPolicy;
   outcome: AgentRunOutcome;
   intentIds: string[];
-  /** Per-tool count of calls the gate ALLOWED, consumed by the post hook. */
-  allowedPending: Map<string, number>;
   /** The run's execution-ledger session, or `null` if session creation itself failed. */
   sessionId: string | null;
   /**
-   * Per-tool FIFO of `ai_tool_executions` ids (or `null` sentinels for a
-   * failed/skipped ledger write), shifted by the post hook. Same ordering
-   * assumption as `allowedPending`.
+   * Where each ALLOWED call's state (ledger id, act pin) waits for its post
+   * hook — the SAME object the post hook receives. See `AgentRunCallPairing`.
    */
-  executionIdPending: Map<string, Array<string | null>>;
-  /**
-   * Per-tool FIFO of act-mode asset pins, pushed in LOCKSTEP with
-   * `executionIdPending` (a `null` entry for every ordinary allowed call, a
-   * real `ActAssetPin` only for one that dispatched through the act branch)
-   * — the SAME tool name can be BOTH in one run (e.g. `disk_cleanup` preview
-   * is a plain read-only allow, `disk_cleanup` execute is act-eligible), so
-   * this cannot be a separate independently-sized queue.
-   */
-  actPinPending: Map<string, Array<ActAssetPin | null>>;
+  pairing: AgentRunCallPairing;
   /** In-run `maxActionsPerRun` reservation counter, shared across every
    *  act-mode call in this run (Task 3). */
   actReservation: ActReservationState;
@@ -755,8 +843,8 @@ export function createAgentRunPreToolUse(args: {
   research?: ResearchToolRefs;
 }): PreToolUseCallback {
   const {
-    run, agentName, agentAuth, agentKind, guardrailPolicy, outcome, intentIds, allowedPending,
-    sessionId, executionIdPending, actPinPending, actReservation, deadlineMs, design, patch, research,
+    run, agentName, agentAuth, agentKind, guardrailPolicy, outcome, intentIds,
+    sessionId, pairing, actReservation, deadlineMs, design, patch, research,
     runTargets, stagedBytesRemaining,
   } = args;
 
@@ -884,20 +972,19 @@ export function createAgentRunPreToolUse(args: {
   }
 
   /** Shared by the ordinary 'allow' tail AND an act-mode 'ok' revalidation —
-   *  both write the SAME ledger row and per-tool FIFOs; only `actPin` (and
+   *  both write the SAME ledger row and call pairing; only `actPin` (and
    *  therefore the returned `context`) differs. */
   async function recordAllowedExecution(
     toolName: string,
     input: Record<string, unknown>,
     actPin: ActAssetPin | null,
+    toolUseId: string | undefined,
   ): Promise<{ allowed: true; context?: ToolExecutionContext }> {
-    allowedPending.set(toolName, (allowedPending.get(toolName) ?? 0) + 1);
-
     // Ledger write is best-effort: the tool call is already decided ALLOWED
     // above, and a failure here must never turn that into a denial. A failed
-    // (or skipped, when the session itself never got created) write pushes a
-    // `null` sentinel so the post hook's FIFO stays aligned with the calls
-    // that actually happened.
+    // (or skipped, when the session itself never got created) write records a
+    // `null` sentinel for THIS call, so its post hook completes no row rather
+    // than a sibling's.
     let executionId: string | null = null;
     if (sessionId) {
       try {
@@ -909,20 +996,14 @@ export function createAgentRunPreToolUse(args: {
         executionId = null;
       }
     }
-    const pending = executionIdPending.get(toolName) ?? [];
-    pending.push(executionId);
-    executionIdPending.set(toolName, pending);
-
-    const pinQueue = actPinPending.get(toolName) ?? [];
-    pinQueue.push(actPin);
-    actPinPending.set(toolName, pinQueue);
+    recordAllowedCall(pairing, toolName, toolUseId, { executionId, actPin });
 
     return actPin?.toolExecutionContext
       ? { allowed: true, context: { ...runFrame, ...actPin.toolExecutionContext } }
       : { allowed: true, context: runFrame };
   }
 
-  return async (toolName, input) => {
+  return async (toolName, input, _mcpToolName, toolUseId) => {
     // No `.catch` — `isRunResourceScopeCurrent` already fails closed on a throw.
     if (args.revalidateResourceScope && (await args.revalidateResourceScope(toolName)) !== true) {
       const reason = 'This run\'s device is no longer within the agent\'s resource scope, '
@@ -1167,9 +1248,9 @@ export function createAgentRunPreToolUse(args: {
         // step list to run turn-by-turn — never a rule-equivalent shape for
         // unattended act mode. The deterministic executor replaces it
         // entirely: it does NOT dispatch through `recordAllowedExecution`
-        // (the SDK tool never runs), so `actPinPending`/`executionIdPending`
-        // never see an entry for this call and the post-hook's FIFO guard
-        // (`remaining <= 0`) makes its no-op safe. The outcome is recorded
+        // (the SDK tool never runs), so `pairing` never sees an entry for
+        // this call and the post hook ignores its result echo as a
+        // non-allowed call (`takeAllowedCall`). The outcome is recorded
         // here, directly, in the SAME shape the post-hook would have used.
         const target = revalidated.pin.target as Extract<ActTarget, { kind: 'playbook' }>;
         const playbookDigest = revalidated.pin.playbookDigest;
@@ -1231,24 +1312,24 @@ export function createAgentRunPreToolUse(args: {
 
       // ok: the ONLY remaining path that actually dispatches — through the
       // normal tool implementation, exactly like a plain 'allow'.
-      return recordAllowedExecution(toolName, input, revalidated.pin);
+      return recordAllowedExecution(toolName, input, revalidated.pin, toolUseId);
     }
 
-    return recordAllowedExecution(toolName, input, null);
+    return recordAllowedExecution(toolName, input, null, toolUseId);
   };
 }
 
 /**
  * The post-tool-use hook. `makeHandler` fires postToolUse for REFUSED calls too
- * (with `isError: true`), so the counter written by the pre hook is what
- * separates a real execution from the echo of a denial or a proposal — without
- * it every denial would be recorded as a failed execution.
+ * (with `isError: true`), so the call state the pre hook recorded in `pairing`
+ * is what separates a real execution from the echo of a denial or a proposal —
+ * without it every denial would be recorded as a failed execution. Each result
+ * is paired with its own call's state by the SDK tool_use id (#8163).
  */
 export function createAgentRunPostToolUse(args: {
   outcome: AgentRunOutcome;
-  allowedPending: Map<string, number>;
-  executionIdPending: Map<string, Array<string | null>>;
-  actPinPending: Map<string, Array<ActAssetPin | null>>;
+  /** The SAME object the pre hook records into. See `AgentRunCallPairing`. */
+  pairing: AgentRunCallPairing;
   run: {
     id: string; orgId: string; agentId: string; deviceId: string | null; profile: AiAgentRunProfile;
     /** #5205 W06 — selects `submit_task_step` for capture (`outcomeToolsForRun`). */
@@ -1274,12 +1355,12 @@ export function createAgentRunPostToolUse(args: {
   /** AI Suggested Fixes W2 — see the pre-hook's `research` param. */
   research?: ResearchToolRefs;
 }): PostToolUseCallback {
-  const { outcome, allowedPending, executionIdPending, actPinPending, run, agentUserId, design, patch, research } = args;
+  const { outcome, pairing, run, agentUserId, design, patch, research } = args;
 
-  return async (toolName, input, output, isError, durationMs) => {
+  return async (toolName, input, output, isError, durationMs, _sealed, _handoff, toolUseId) => {
     // Outcome tools (Phase 2 wave P2-1): never went through
     // `recordAllowedExecution` in the pre-hook, so they never touch
-    // `allowedPending`/the execution ledger/the act pipeline — capture the
+    // `pairing`/the execution ledger/the act pipeline — capture the
     // validated verdict and stop, before any of the ordinary accounting below.
     if (isOutcomeTool(toolName)) {
       // Stored BY TOOL NAME (wave P2-2, task 6), gated on the same
@@ -1360,15 +1441,21 @@ export function createAgentRunPostToolUse(args: {
       return;
     }
 
-    const remaining = allowedPending.get(toolName) ?? 0;
-    if (remaining <= 0) return;
-    allowedPending.set(toolName, remaining - 1);
-
-    let executionId: string | null = null;
-    const pending = executionIdPending.get(toolName);
-    if (pending && pending.length > 0) {
-      executionId = pending.shift() ?? null;
+    const call = takeAllowedCall(pairing, toolName, toolUseId);
+    if (!call) {
+      // Denial, proposal and inline-playbook echoes all arrive as isError
+      // (`preToolUseDenialResult`), so they end here quietly. A SUCCESS with
+      // an id the pre hook never recorded means a real execution lost its
+      // ledger row and act pin — never let that look like a denial echo.
+      if (toolUseId && !isError) {
+        console.warn('[aiAgentRunLoop] tool result has no pre-call state for its tool_use id — not recorded as an execution', {
+          runId: run.id, toolName, toolUseId,
+        });
+      }
+      return;
     }
+    const { executionId, actPin } = call;
+
     if (executionId) {
       try {
         await completeToolExecution({ executionId, isError, durationMs });
@@ -1377,12 +1464,6 @@ export function createAgentRunPostToolUse(args: {
           toolName, executionId, error,
         });
       }
-    }
-
-    let actPin: ActAssetPin | null = null;
-    const pinQueue = actPinPending.get(toolName);
-    if (pinQueue && pinQueue.length > 0) {
-      actPin = pinQueue.shift() ?? null;
     }
 
     const action = readToolAction(toolName, input);
@@ -2208,9 +2289,8 @@ async function driveSdkLoop(
     toolExecutionCount: 0,
   };
   const intentIds: string[] = [];
-  const allowedPending = new Map<string, number>();
-  const executionIdPending = new Map<string, Array<string | null>>();
-  const actPinPending = new Map<string, Array<ActAssetPin | null>>();
+  // ONE object shared by both hooks — see AgentRunCallPairing.
+  const pairing = createAgentRunCallPairing();
   // Shared across every act-mode call in THIS run — see actRevalidation.ts.
   const actReservation: ActReservationState = { count: 0 };
 
@@ -2224,7 +2304,7 @@ async function driveSdkLoop(
   const researchRefs = researchOutcomeRefs(ctx);
   const preToolUse = createAgentRunPreToolUse({
     run, agentName: ctx.agent.name, agentAuth, agentKind: ctx.agent.kind, guardrailPolicy, outcome,
-    intentIds, allowedPending, sessionId: ctx.sessionId, executionIdPending, actPinPending,
+    intentIds, sessionId: ctx.sessionId, pairing,
     actReservation, deadlineMs, design: designRefs, patch: patchRefs, research: researchRefs,
     revalidateResourceScope: (toolName) => isRunResourceScopeCurrent(ctx, readCurrentPolicy, toolName),
     // W03 seeds the run frame from the single-device runs that exist today.
@@ -2238,7 +2318,7 @@ async function driveSdkLoop(
       : EXPORT_DEFAULT_MAX_BYTES,
   });
   const postToolUse = createAgentRunPostToolUse({
-    outcome, allowedPending, executionIdPending, actPinPending,
+    outcome, pairing,
     run: {
       id: run.id, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId,
       profile: run.profile, taskId: run.taskId,

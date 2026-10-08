@@ -12,6 +12,7 @@
  * routes/agents/helpers.ts would pull alertService and the event bus into every
  * heartbeat for one boolean.
  */
+import { hierarchyFor, type DeviceHierarchyOpts } from './deviceHierarchy';
 import { db } from '../db';
 import {
   devices,
@@ -50,22 +51,27 @@ const LEVEL_PRIORITY: Record<string, number> = {
  * Throws on a database error. The heartbeat caller depends on that: an error
  * must omit the config block entirely rather than resolve to "off".
  */
-export async function resolveEffectiveWarrantyInlineSettings(deviceId: string): Promise<unknown | undefined> {
-  const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
+export async function resolveEffectiveWarrantyInlineSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<unknown | undefined> {
+  const passed = hierarchyFor(deviceId, opts);
+  const [device] = passed
+    ? [{ orgId: passed.orgId, siteId: passed.siteId }]
+    : await db
+      .select({ orgId: devices.orgId, siteId: devices.siteId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
 
   if (!device) return undefined;
 
   // The device org's partner. Needed twice below: a `level='partner'` assignment
   // targets `partners.id`, and a partner-wide policy carries `org_id NULL`.
-  const [org] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, device.orgId))
-    .limit(1);
+  const [org] = passed
+    ? (passed.org ? [{ partnerId: passed.org.partnerId }] : [])
+    : await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, device.orgId))
+      .limit(1);
 
   // Not reachable by the schema: `devices.org_id` is NOT NULL with an FK to
   // `organizations.id`, and `organizations.partner_id` is itself NOT NULL. So an
@@ -84,11 +90,12 @@ export async function resolveEffectiveWarrantyInlineSettings(deviceId: string): 
     );
   }
 
-  const groupRows = await db
-    .select({ groupId: deviceGroupMemberships.groupId })
-    .from(deviceGroupMemberships)
-    .where(eq(deviceGroupMemberships.deviceId, deviceId));
-  const groupIds = groupRows.map((r) => r.groupId);
+  const groupIds = passed
+    ? [...passed.groupIds]
+    : (await db
+      .select({ groupId: deviceGroupMemberships.groupId })
+      .from(deviceGroupMemberships)
+      .where(eq(deviceGroupMemberships.deviceId, deviceId))).map((r) => r.groupId);
 
   // `config_policy_assignments.targetId` is POLYMORPHIC — its referent depends
   // on `level` ('device' → devices.id, 'device_group' → device_groups.id,

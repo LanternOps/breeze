@@ -210,6 +210,38 @@ describe('screenshotStorage', () => {
       expect(unlink).toHaveBeenCalledWith(writtenPath);
     });
 
+    it('recreates the device directory once when the orphan sweep pruned it mid-capture (#8117)', async () => {
+      mocks.insertReturning.mockResolvedValueOnce([{ id: TEST_SCREENSHOT_ID }]);
+      vi.mocked(writeFile).mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+
+      await expect(storeScreenshot({
+        deviceId: TEST_DEVICE_ID,
+        orgId: TEST_ORG_ID,
+        imageBase64: 'dGVzdGltYWdl',
+        width: 1920,
+        height: 1080,
+        capturedBy: 'helper',
+      })).resolves.toMatchObject({ id: TEST_SCREENSHOT_ID });
+
+      expect(mkdir).toHaveBeenCalledTimes(2);
+      expect(writeFile).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry a write that failed for any other reason', async () => {
+      const diskFull = Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+      vi.mocked(writeFile).mockRejectedValueOnce(diskFull);
+
+      await expect(storeScreenshot({
+        deviceId: TEST_DEVICE_ID,
+        orgId: TEST_ORG_ID,
+        imageBase64: 'dGVzdGltYWdl',
+        width: 1920,
+        height: 1080,
+        capturedBy: 'helper',
+      })).rejects.toBe(diskFull);
+      expect(writeFile).toHaveBeenCalledTimes(1);
+    });
+
     it('removes the written file when the insert returns no row', async () => {
       mocks.insertReturning.mockResolvedValueOnce([]);
 

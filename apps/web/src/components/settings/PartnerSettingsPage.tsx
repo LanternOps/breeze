@@ -732,7 +732,7 @@ export default function PartnerSettingsPage() {
 
           {/* Login Branding: self-contained card with its own load/save (the
               top-level "Save Settings" button does not apply here). */}
-          {activeTab === 'loginBranding' && <LoginBrandingCard />}
+          {activeTab === 'loginBranding' && <LoginBrandingCard partnerSlug={partner?.slug} />}
 
           {activeTab === 'aiBudgets' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">

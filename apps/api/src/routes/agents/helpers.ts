@@ -58,11 +58,12 @@ import {
 } from '../../services/filesystemAnalysis';
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
 import {
-  resolvePatchConfigForDevice,
+  resolvePatchConfigPolicyForDevice,
   buildRoleOsFilterConditions,
   matchesRoleOsFilter,
 } from '../../services/featureConfigResolver';
 import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
+import { hierarchyFor, type DeviceHierarchyOpts } from '../../services/deviceHierarchy';
 import { warrantyHpCmslCollectionEffective } from '@breeze/shared/validators';
 import { policyOwnershipCondition, withDevicePartnerPolicyVisibility } from '../../services/configPolicyOwnership';
 import { HARDWARE_MONITORING_DEFAULTS, hardwareMonitoringInlineSettingsSchema, type HardwareMonitoringInlineSettings } from '@breeze/shared';
@@ -422,7 +423,12 @@ export function derivePolicyStateProbesFromRules(rules: unknown): {
   };
 }
 
-export async function buildPolicyProbeConfigUpdate(orgId: string | null | undefined): Promise<PolicyProbeConfigUpdate | null> {
+export async function buildPolicyProbeConfigUpdate(
+  orgId: string | null | undefined,
+  // #8053 W1a-1: the heartbeat passes the org's partner from the hierarchy it
+  // loaded. `undefined` = read it here, as before; `null` = no partner.
+  opts?: { partnerId?: string | null },
+): Promise<PolicyProbeConfigUpdate | null> {
   if (!orgId) {
     return null;
   }
@@ -431,16 +437,18 @@ export async function buildPolicyProbeConfigUpdate(orgId: string | null | undefi
   // partner-wide compliance policies (org_id NULL) owned by this org's
   // partner — the evaluation worker fans those out to this device, so the
   // agent has to collect their registry/config state too.
-  const [org] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .limit(1);
+  const partnerId = opts?.partnerId !== undefined
+    ? opts.partnerId
+    : (await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1))[0]?.partnerId ?? null;
 
-  const ownershipCondition = org?.partnerId
+  const ownershipCondition = partnerId
     ? or(
         eq(automationPolicies.orgId, orgId),
-        and(isNull(automationPolicies.orgId), eq(automationPolicies.partnerId, org.partnerId))
+        and(isNull(automationPolicies.orgId), eq(automationPolicies.partnerId, partnerId))
       )
     : eq(automationPolicies.orgId, orgId);
 
@@ -514,15 +522,17 @@ export async function upsertSecurityStatusForDevice(
 ): Promise<{ provider: SecurityProviderValue; threatCount: number }> {
   const avProducts = Array.isArray(payload.avProducts) ? payload.avProducts : [];
   // `preferredProduct` only backfills the top-level summary when the payload
-  // omits it entirely. The current Go agent always marshals `provider` and
-  // `realTimeProtection` (non-pointer fields, no omitempty), so these fallbacks
-  // are unreachable from it — they exist for partial payloads from other
-  // producers (e.g. script-result ingestion via getSecurityStatusFromResult).
-  // The array itself is persisted below; it is the evidence behind the derived
-  // `realTimeProtection` boolean. See #3641 / #3593.
+  // omits it entirely. The Go agent always marshals `provider`; it omits
+  // `realTimeProtection` / `firewallEnabled` when that collector failed
+  // (#7965). A value that is still missing after the fallback is UNKNOWN and is
+  // stored as null — never coalesced to `false`, which the antivirus alert
+  // checks read as "protection is off". The array itself is persisted below;
+  // it is the evidence behind the derived `realTimeProtection` boolean. See
+  // #3641 / #3593.
   const preferredProduct = avProducts.find((p) => p.realTimeProtection) ?? avProducts[0];
   const provider = normalizeProvider(payload.provider ?? preferredProduct?.provider);
   const avProductsValue = payload.avProducts ?? null;
+  const realTimeProtection = payload.realTimeProtection ?? preferredProduct?.realTimeProtection ?? null;
   const threatCount = payload.threatCount ?? 0;
 
   await db
@@ -534,7 +544,7 @@ export async function upsertSecurityStatusForDevice(
       providerVersion: asString(payload.providerVersion) ?? null,
       definitionsVersion: asString(payload.definitionsVersion) ?? null,
       definitionsDate: parseDate(payload.definitionsDate),
-      realTimeProtection: payload.realTimeProtection ?? preferredProduct?.realTimeProtection ?? false,
+      realTimeProtection,
       lastScan: parseDate(payload.lastScan),
       lastScanType: asString(payload.lastScanType) ?? null,
       threatCount,
@@ -554,7 +564,7 @@ export async function upsertSecurityStatusForDevice(
         providerVersion: asString(payload.providerVersion) ?? null,
         definitionsVersion: asString(payload.definitionsVersion) ?? null,
         definitionsDate: parseDate(payload.definitionsDate),
-        realTimeProtection: payload.realTimeProtection ?? preferredProduct?.realTimeProtection ?? false,
+        realTimeProtection,
         lastScan: parseDate(payload.lastScan),
         lastScanType: asString(payload.lastScanType) ?? null,
         threatCount,
@@ -1916,34 +1926,40 @@ const LEVEL_PRIORITY: Record<string, number> = {
   partner: 1,
 };
 
-async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLogSettings> {
+async function resolveDeviceEventLogSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<EventLogSettings> {
+  const passed = hierarchyFor(deviceId, opts);
   // 1. Load device
-  const [device] = await db
-    .select({
-      orgId: devices.orgId,
-      siteId: devices.siteId,
-      deviceRole: devices.deviceRole,
-      osType: devices.osType,
-    })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
+  const [device] = passed
+    ? [{ orgId: passed.orgId, siteId: passed.siteId, deviceRole: passed.deviceRole, osType: passed.osType }]
+    : await db
+      .select({
+        orgId: devices.orgId,
+        siteId: devices.siteId,
+        deviceRole: devices.deviceRole,
+        osType: devices.osType,
+      })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
 
   if (!device) return EVENT_LOG_DEFAULTS;
 
   // 2. Load org (for partnerId)
-  const [org] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, device.orgId))
-    .limit(1);
+  const [org] = passed
+    ? (passed.org ? [{ partnerId: passed.org.partnerId }] : [])
+    : await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, device.orgId))
+      .limit(1);
 
   // 3. Load device group memberships
-  const groupRows = await db
-    .select({ groupId: deviceGroupMemberships.groupId })
-    .from(deviceGroupMemberships)
-    .where(eq(deviceGroupMemberships.deviceId, deviceId));
-  const groupIds = groupRows.map((r) => r.groupId);
+  const groupIds = passed
+    ? [...passed.groupIds]
+    : (await db
+      .select({ groupId: deviceGroupMemberships.groupId })
+      .from(deviceGroupMemberships)
+      .where(eq(deviceGroupMemberships.deviceId, deviceId))).map((r) => r.groupId);
 
   // 4. Build target match conditions
   const targetConditions = [
@@ -2022,7 +2038,9 @@ const EVENT_LOG_CACHE_TTL_SECONDS = 120; // 2 minutes
  * Resolve event_log policy settings for a device via full hierarchy.
  * Uses Redis cache with 2-min TTL. Falls back to defaults if no policy found.
  */
-export async function getDeviceEventLogSettings(deviceId: string): Promise<EventLogSettings> {
+export async function getDeviceEventLogSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<EventLogSettings> {
+  // Validate before the cache short-circuit: a foreign hierarchy is a bug even on a hit.
+  hierarchyFor(deviceId, opts);
   const redis = getRedis();
   const cacheKey = `eventlog:settings:device:${deviceId}`;
 
@@ -2039,7 +2057,7 @@ export async function getDeviceEventLogSettings(deviceId: string): Promise<Event
   }
 
   // Resolve via full hierarchy: device → device_group → site → org → partner
-  const settings = await resolveDeviceEventLogSettings(deviceId);
+  const settings = await resolveDeviceEventLogSettings(deviceId, opts);
 
   // Cache the result
   if (redis) {
@@ -2058,13 +2076,13 @@ export async function getDeviceEventLogSettings(deviceId: string): Promise<Event
  * Returns agent-facing settings, including defaults when no policy is assigned.
  * This ensures stale non-default agent settings get reset after policy removal.
  */
-export async function buildEventLogConfigUpdate(deviceId: string): Promise<{
+export async function buildEventLogConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<{
   max_events_per_cycle: number;
   collect_categories: string[];
   minimum_level: string;
   collection_interval_minutes: number;
 }> {
-  const settings = await getDeviceEventLogSettings(deviceId);
+  const settings = await getDeviceEventLogSettings(deviceId, opts);
 
   return {
     max_events_per_cycle: settings.maxEventsPerCycle,
@@ -2089,33 +2107,39 @@ type HardwareMonitoringPolicyView = { enabled: boolean; source: 'default' | 'pol
  * an org-scoped caller's context does not carry its own partner id in
  * `accessiblePartnerIds`.
  */
-async function resolveHardwareMonitoring(deviceId: string): Promise<{ settings: HardwareMonitoringInlineSettings; policy: HardwareMonitoringPolicyView }> {
+async function resolveHardwareMonitoring(deviceId: string, opts?: DeviceHierarchyOpts): Promise<{ settings: HardwareMonitoringInlineSettings; policy: HardwareMonitoringPolicyView }> {
+  const passed = hierarchyFor(deviceId, opts);
   const fallback = { settings: { ...HARDWARE_MONITORING_DEFAULTS }, policy: { enabled: HARDWARE_MONITORING_DEFAULTS.enabled, source: 'default' as const } };
 
-  const [device] = await db
-    .select({
-      orgId: devices.orgId,
-      siteId: devices.siteId,
-      deviceRole: devices.deviceRole,
-      osType: devices.osType,
-    })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
+  const [device] = passed
+    ? [{ orgId: passed.orgId, siteId: passed.siteId, deviceRole: passed.deviceRole, osType: passed.osType }]
+    : await db
+      .select({
+        orgId: devices.orgId,
+        siteId: devices.siteId,
+        deviceRole: devices.deviceRole,
+        osType: devices.osType,
+      })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
 
   if (!device) return fallback;
 
-  const [org] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, device.orgId))
-    .limit(1);
+  const [org] = passed
+    ? (passed.org ? [{ partnerId: passed.org.partnerId }] : [])
+    : await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, device.orgId))
+      .limit(1);
 
-  const groupRows = await db
-    .select({ groupId: deviceGroupMemberships.groupId })
-    .from(deviceGroupMemberships)
-    .where(eq(deviceGroupMemberships.deviceId, deviceId));
-  const groupIds = groupRows.map((r) => r.groupId);
+  const groupIds = passed
+    ? [...passed.groupIds]
+    : (await db
+      .select({ groupId: deviceGroupMemberships.groupId })
+      .from(deviceGroupMemberships)
+      .where(eq(deviceGroupMemberships.deviceId, deviceId))).map((r) => r.groupId);
 
   const targetConditions = [
     and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, deviceId)),
@@ -2177,8 +2201,8 @@ async function resolveHardwareMonitoring(deviceId: string): Promise<{ settings: 
   };
 }
 
-export async function resolveDeviceHardwareMonitoringSettings(deviceId: string): Promise<HardwareMonitoringInlineSettings> {
-  return (await resolveHardwareMonitoring(deviceId)).settings;
+export async function resolveDeviceHardwareMonitoringSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<HardwareMonitoringInlineSettings> {
+  return (await resolveHardwareMonitoring(deviceId, opts)).settings;
 }
 
 export async function resolveDeviceHardwareMonitoringPolicy(deviceId: string): Promise<HardwareMonitoringPolicyView> {
@@ -2191,7 +2215,8 @@ export const HARDWARE_MONITORING_CACHE_TTL_SECONDS = 120;
  * Resolve hardware-monitoring settings for a device with a 2-min Redis cache,
  * matching `getDeviceEventLogSettings`.
  */
-export async function getDeviceHardwareMonitoringSettings(deviceId: string): Promise<HardwareMonitoringInlineSettings> {
+export async function getDeviceHardwareMonitoringSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<HardwareMonitoringInlineSettings> {
+  hierarchyFor(deviceId, opts);
   const redis = getRedis();
   const cacheKey = `hwmon:settings:device:${deviceId}`;
 
@@ -2204,7 +2229,7 @@ export async function getDeviceHardwareMonitoringSettings(deviceId: string): Pro
     }
   }
 
-  const settings = await resolveDeviceHardwareMonitoringSettings(deviceId);
+  const settings = await resolveDeviceHardwareMonitoringSettings(deviceId, opts);
 
   if (redis) {
     try {
@@ -2221,12 +2246,12 @@ export async function getDeviceHardwareMonitoringSettings(deviceId: string): Pro
  * Build hardware_monitoring config update payload for heartbeat response.
  * Returns agent-facing settings, including defaults when no policy is assigned.
  */
-export async function buildHardwareMonitoringConfigUpdate(deviceId: string): Promise<{
+export async function buildHardwareMonitoringConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<{
   enabled: boolean;
   poll_interval_minutes: number;
   disk_health_interval_minutes: number;
 }> {
-  const settings = await getDeviceHardwareMonitoringSettings(deviceId);
+  const settings = await getDeviceHardwareMonitoringSettings(deviceId, opts);
 
   return {
     enabled: settings.enabled,
@@ -2242,8 +2267,9 @@ export async function buildHardwareMonitoringConfigUpdate(deviceId: string): Pro
  */
 export async function buildTimeSyncConfigUpdate(
   deviceId: string,
+  opts?: DeviceHierarchyOpts,
 ): Promise<TimeSyncConfigUpdate> {
-  return buildResolvedTimeSyncConfigUpdate(deviceId);
+  return buildResolvedTimeSyncConfigUpdate(deviceId, opts);
 }
 
 /**
@@ -2391,8 +2417,8 @@ type MonitorDerivedWatchesResult =
   | { kind: 'device_missing' }
   | { kind: 'resolved'; watches: MonitoringWatchConfig[] };
 
-async function resolveMonitorDerivedWatches(deviceId: string): Promise<MonitorDerivedWatchesResult> {
-  const resolution = await resolveMonitorsForDevice(deviceId);
+async function resolveMonitorDerivedWatches(deviceId: string, opts?: DeviceHierarchyOpts): Promise<MonitorDerivedWatchesResult> {
+  const resolution = await resolveMonitorsForDevice(deviceId, undefined, opts);
   if (resolution.kind === 'device_missing') return { kind: 'device_missing' };
   const effective = resolution.monitors;
   const enabledIds = effective.filter((m) => m.enabled).map((m) => m.monitorId);
@@ -2485,10 +2511,10 @@ type DeviceMonitoringResolution =
   | { kind: 'none_applies'; settings: MonitoringConfigUpdate }
   | { kind: 'resolved'; settings: MonitoringConfigUpdate };
 
-async function resolveDeviceMonitoringSettings(deviceId: string): Promise<DeviceMonitoringResolution> {
+async function resolveDeviceMonitoringSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<DeviceMonitoringResolution> {
   // W05d: monitors alone supply watches; the monitors link supplies the interval.
-  const policyResult = await resolvePolicyCheckInterval(deviceId);
-  const monitorResult = await resolveMonitorDerivedWatches(deviceId);
+  const policyResult = await resolvePolicyCheckInterval(deviceId, opts);
+  const monitorResult = await resolveMonitorDerivedWatches(deviceId, opts);
 
   // A device that vanished between authentication and here (raced a
   // delete/org move) must NOT be folded into "resolved with zero watches":
@@ -2541,27 +2567,32 @@ type PolicyCheckIntervalResult =
   | { kind: 'no_policy' }
   | { kind: 'resolved'; settings: { check_interval_seconds: number } };
 
-async function resolvePolicyCheckInterval(deviceId: string): Promise<PolicyCheckIntervalResult> {
+async function resolvePolicyCheckInterval(deviceId: string, opts?: DeviceHierarchyOpts): Promise<PolicyCheckIntervalResult> {
+  const passed = hierarchyFor(deviceId, opts);
   // 1. Load device
-  const [device] = await db
-    .select({
-      orgId: devices.orgId,
-      siteId: devices.siteId,
-      deviceRole: devices.deviceRole,
-      osType: devices.osType,
-    })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
+  const [device] = passed
+    ? [{ orgId: passed.orgId, siteId: passed.siteId, deviceRole: passed.deviceRole, osType: passed.osType }]
+    : await db
+      .select({
+        orgId: devices.orgId,
+        siteId: devices.siteId,
+        deviceRole: devices.deviceRole,
+        osType: devices.osType,
+      })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
 
   if (!device) return { kind: 'device_missing' };
 
   // 2. Load org (for partnerId)
-  const [org] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, device.orgId))
-    .limit(1);
+  const [org] = passed
+    ? (passed.org ? [{ partnerId: passed.org.partnerId }] : [])
+    : await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, device.orgId))
+      .limit(1);
   // An org miss (deleted mid-race) would drop the partner-level target and
   // the partner-wide ownership branch below, so a device whose only policy
   // is partner-wide would resolve as `no_policy` and be sent the #2949 clear.
@@ -2569,11 +2600,12 @@ async function resolvePolicyCheckInterval(deviceId: string): Promise<PolicyCheck
   if (!org) return { kind: 'device_missing' };
 
   // 3. Load device group memberships
-  const groupRows = await db
-    .select({ groupId: deviceGroupMemberships.groupId })
-    .from(deviceGroupMemberships)
-    .where(eq(deviceGroupMemberships.deviceId, deviceId));
-  const groupIds = groupRows.map((r) => r.groupId);
+  const groupIds = passed
+    ? [...passed.groupIds]
+    : (await db
+      .select({ groupId: deviceGroupMemberships.groupId })
+      .from(deviceGroupMemberships)
+      .where(eq(deviceGroupMemberships.deviceId, deviceId))).map((r) => r.groupId);
 
   // 4. Build target match conditions
   const targetConditions = [
@@ -2663,7 +2695,8 @@ async function resolvePolicyCheckInterval(deviceId: string): Promise<PolicyCheck
 
 const MONITORING_CACHE_TTL_SECONDS = 120; // 2 minutes
 
-export async function buildMonitoringConfigUpdate(deviceId: string): Promise<MonitoringConfigUpdate | null> {
+export async function buildMonitoringConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<MonitoringConfigUpdate | null> {
+  hierarchyFor(deviceId, opts);
   const redis = getRedis();
   const cacheKey = `monitoring:settings:device:${deviceId}`;
 
@@ -2679,7 +2712,7 @@ export async function buildMonitoringConfigUpdate(deviceId: string): Promise<Mon
     }
   }
 
-  const resolution = await resolveDeviceMonitoringSettings(deviceId);
+  const resolution = await resolveDeviceMonitoringSettings(deviceId, opts);
 
   // `unresolved` → null: heartbeat.ts omits monitoring_settings this cycle.
   if (resolution.kind === 'unresolved') return null;
@@ -2874,6 +2907,27 @@ export async function getOrgAgentUpdateConfigCached(orgId: string): Promise<Agen
   );
 }
 
+/** Fail-closed pin miss: withheld, logged every time, captured once per key (#2124). */
+function warnMissingPinnedBuild(component: string, platform: string, architecture: string, pin: string, agentId?: string): void {
+  console.warn(
+    `[agents] update withheld for ${agentId ?? 'device'}: pinned ${component} version ` +
+      `"${pin}" has no registered ${getBinaryEdition()}-edition build for ` +
+      `${platform}/${architecture} (fail closed; a build registered under the other ` +
+      `edition does not count — #4072)`,
+  );
+  const key = `${component}:${platform}:${architecture}:${pin}`;
+  if (!warnedMissingPinBuilds.has(key)) {
+    warnedMissingPinBuilds.add(key);
+    captureException(
+      new Error(
+        `Agent update withheld (#2124): pinned ${component} version "${pin}" has no ` +
+          `registered ${getBinaryEdition()}-edition build for ${platform}/${architecture}; ` +
+          `fleet freeze until a build is published under this edition or the pin is corrected.`,
+      ),
+    );
+  }
+}
+
 /**
  * Resolve the candidate upgrade-target version for a component on a device's
  * platform/arch, honoring an effective version pin (issue #2124).
@@ -2952,26 +3006,72 @@ export async function resolvePinnedUpgradeTarget(args: {
     // is the same class of invisible, fleet-wide freeze the #2125 gate catch
     // routes to Sentry, so match that bar. Deduped per (component/platform/arch/
     // version) so a persistent misconfig captures ONCE per process, not per beat.
-    console.warn(
-      `[agents] update withheld for ${agentId ?? 'device'}: pinned ${component} version ` +
-        `"${pin}" has no registered ${getBinaryEdition()}-edition build for ` +
-        `${platform}/${architecture} (fail closed; a build registered under the other ` +
-        `edition does not count — #4072)`,
-    );
-    const key = `${component}:${platform}:${architecture}:${pin}`;
-    if (!warnedMissingPinBuilds.has(key)) {
-      warnedMissingPinBuilds.add(key);
-      captureException(
-        new Error(
-          `Agent update withheld (#2124): pinned ${component} version "${pin}" has no ` +
-            `registered ${getBinaryEdition()}-edition build for ${platform}/${architecture}; ` +
-            `fleet freeze until a build is published under this edition or the pin is corrected.`,
-        ),
-      );
-    }
+    warnMissingPinnedBuild(component, platform, architecture, pin, agentId);
     return null;
   }
   return pinned.version;
+}
+
+export interface PinnedUpgradeRequest {
+  component: string;
+  pin: string | null;
+}
+
+/**
+ * `resolvePinnedUpgradeTarget` for several components of ONE device in one
+ * statement (#8053 W1a-1: the heartbeat's agent, helper and watchdog offers).
+ *
+ * LOCKSTEP (#3499): the same predicates as the single resolver and as
+ * services/promotedAgentVersion.ts — platform, architecture, component,
+ * edition, and is_latest (or the exact pinned version) — and the same
+ * `created_at DESC` tiebreak: the first matching row in that order is what
+ * `LIMIT 1` would have returned. Not cached: the offered version must be the
+ * one whose bytes are served. Parity with three single calls is pinned by
+ * agentVersionsBatchParity.integration.test.ts.
+ */
+export async function resolvePinnedUpgradeTargets(args: {
+  platform: string;
+  architecture: string;
+  requests: readonly PinnedUpgradeRequest[];
+  agentId?: string;
+}): Promise<Map<string, string | null>> {
+  const { platform, architecture, requests, agentId } = args;
+  const result = new Map<string, string | null>();
+  if (requests.length === 0) return result;
+
+  const components = [...new Set(requests.map((r) => r.component))];
+  const pinned = requests.filter((r): r is PinnedUpgradeRequest & { pin: string } => r.pin !== null);
+  const rows = await db
+    .select({ component: agentVersions.component, version: agentVersions.version, isLatest: agentVersions.isLatest })
+    .from(agentVersions)
+    .where(
+      and(
+        eq(agentVersions.platform, platform),
+        eq(agentVersions.architecture, architecture),
+        inArray(agentVersions.component, components),
+        eq(agentVersions.edition, getBinaryEdition()),
+        or(
+          eq(agentVersions.isLatest, true),
+          ...pinned.map((r) => and(eq(agentVersions.component, r.component), eq(agentVersions.version, r.pin))),
+        ),
+      ),
+    )
+    .orderBy(desc(agentVersions.createdAt));
+
+  for (const request of requests) {
+    if (request.pin === null) {
+      result.set(request.component, rows.find((r) => r.component === request.component && r.isLatest)?.version ?? null);
+      continue;
+    }
+    const hit = rows.find((r) => r.component === request.component && r.version === request.pin);
+    if (hit) {
+      result.set(request.component, hit.version);
+      continue;
+    }
+    warnMissingPinnedBuild(request.component, platform, architecture, request.pin, agentId);
+    result.set(request.component, null);
+  }
+  return result;
 }
 
 export async function getOrgMtlsSettings(orgId: string): Promise<{ certLifetimeDays: number; expiredCertPolicy: 'auto_reissue' | 'quarantine' }> {
@@ -3056,7 +3156,7 @@ export async function issueMtlsCertForDevice(deviceId: string, orgId: string): P
 
 // Helper Settings (policy-driven) — canonical home is services/helperSettings.ts
 // (shared with helperAuth and /helper/config); re-exported here for existing callers.
-export { buildHelperConfigUpdate, getOrgHelperSettings, resolveDeviceHelperSettings, type HelperSettings } from '../../services/helperSettings';
+export { buildHelperConfigUpdate, getOrgHelperSettings, readCachedHelperSettings, resolveDeviceHelperSettings, type HelperSettings } from '../../services/helperSettings';
 
 // ============================================
 // PAM Settings (policy-driven)
@@ -3069,7 +3169,7 @@ export { buildHelperConfigUpdate, getOrgHelperSettings, resolveDeviceHelperSetti
  * (grandfathered by migration 2026-07-01); everyone else falls to PAM_DEFAULTS
  * (opt-in: off). An explicit config-policy feature link always wins over this.
  */
-async function resolveOrgPamFallback(orgId: string): Promise<PamSettings> {
+export async function resolveOrgPamFallback(orgId: string): Promise<PamSettings> {
   const [cfg] = await db
     .select({ enabled: pamOrgConfig.uacInterceptionEnabled })
     .from(pamOrgConfig)
@@ -3081,29 +3181,41 @@ async function resolveOrgPamFallback(orgId: string): Promise<PamSettings> {
   return PAM_DEFAULTS;
 }
 
-async function resolveDevicePamSettings(deviceId: string): Promise<PamSettings> {
+export interface PamConfigUpdateOptions extends DeviceHierarchyOpts {
+  /** Source of the org grandfather flag; defaults to resolveOrgPamFallback. */
+  loadOrgPamFallback?: (orgId: string) => Promise<PamSettings>;
+}
+
+async function resolveDevicePamSettings(deviceId: string, opts?: PamConfigUpdateOptions): Promise<PamSettings> {
+  const passed = hierarchyFor(deviceId, opts);
   // 1. Load device
-  const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
+  const [device] = passed
+    ? [{ orgId: passed.orgId, siteId: passed.siteId }]
+    : await db
+      .select({ orgId: devices.orgId, siteId: devices.siteId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
 
   if (!device) return PAM_DEFAULTS;
+  const orgFallback = opts?.loadOrgPamFallback ?? resolveOrgPamFallback;
 
   // 2. Load org (for partnerId)
-  const [org] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, device.orgId))
-    .limit(1);
+  const [org] = passed
+    ? (passed.org ? [{ partnerId: passed.org.partnerId }] : [])
+    : await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, device.orgId))
+      .limit(1);
 
   // 3. Load device group memberships
-  const groupRows = await db
-    .select({ groupId: deviceGroupMemberships.groupId })
-    .from(deviceGroupMemberships)
-    .where(eq(deviceGroupMemberships.deviceId, deviceId));
-  const groupIds = groupRows.map((r) => r.groupId);
+  const groupIds = passed
+    ? [...passed.groupIds]
+    : (await db
+      .select({ groupId: deviceGroupMemberships.groupId })
+      .from(deviceGroupMemberships)
+      .where(eq(deviceGroupMemberships.deviceId, deviceId))).map((r) => r.groupId);
 
   // 4. Build target match conditions
   const targetConditions = [
@@ -3141,7 +3253,7 @@ async function resolveDevicePamSettings(deviceId: string): Promise<PamSettings> 
       or(...targetConditions),
     ));
 
-  if (rows.length === 0) return resolveOrgPamFallback(device.orgId);
+  if (rows.length === 0) return orgFallback(device.orgId);
 
   // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
   rows.sort((a, b) => {
@@ -3151,7 +3263,7 @@ async function resolveDevicePamSettings(deviceId: string): Promise<PamSettings> 
   });
 
   const winner = rows[0];
-  if (!winner?.inlineSettings) return resolveOrgPamFallback(device.orgId);
+  if (!winner?.inlineSettings) return orgFallback(device.orgId);
 
   return parsePamSettings(winner.inlineSettings);
 }
@@ -3164,7 +3276,8 @@ const PAM_CACHE_TTL_SECONDS = 120;
  * org-level grandfather flag, then PAM_DEFAULTS (uacInterceptionEnabled: false).
  * Cached per-device in Redis for 120s — policy changes propagate within ~2min + heartbeat interval.
  */
-export async function buildPamConfigUpdate(deviceId: string): Promise<PamSettings> {
+export async function buildPamConfigUpdate(deviceId: string, opts?: PamConfigUpdateOptions): Promise<PamSettings> {
+  hierarchyFor(deviceId, opts);
   const redis = getRedis();
   const cacheKey = `pam:settings:device:${deviceId}`;
 
@@ -3177,7 +3290,7 @@ export async function buildPamConfigUpdate(deviceId: string): Promise<PamSetting
     }
   }
 
-  const settings = await resolveDevicePamSettings(deviceId);
+  const settings = await resolveDevicePamSettings(deviceId, opts);
 
   if (redis) {
     try {
@@ -3212,10 +3325,14 @@ export interface PatchSourceSettings {
  * any prior Breeze enforcement" — so removing the policy cleanly reverts the
  * endpoint. The caller (heartbeat) omits the block entirely on a resolver error
  * so a transient failure never triggers an unintended revert.
+ *
+ * #8053 W1a-1: reads only WHICH patch link won. The details variant also
+ * resolves the device timezone (a device/org/site join plus a partner-axis
+ * `partners` read) that this flag never used.
  */
-export async function buildPatchSourceConfigUpdate(deviceId: string): Promise<PatchSourceSettings> {
-  const patch = await resolvePatchConfigForDevice(deviceId);
-  return { exclusiveWindowsUpdate: patch?.exclusiveWindowsUpdate ?? false };
+export async function buildPatchSourceConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<PatchSourceSettings> {
+  const patch = await resolvePatchConfigPolicyForDevice(deviceId, opts);
+  return { exclusiveWindowsUpdate: patch?.settings.exclusiveWindowsUpdate ?? false };
 }
 
 // ============================================
@@ -3245,8 +3362,8 @@ export interface WarrantySettings {
  * consent, or one naming superseded terms, delivers `false` (contract D2/D3).
  * Collection never runs on an acceptance we cannot point at.
  */
-export async function buildWarrantyConfigUpdate(deviceId: string): Promise<WarrantySettings> {
-  const inlineSettings = await resolveEffectiveWarrantyInlineSettings(deviceId);
+export async function buildWarrantyConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<WarrantySettings> {
+  const inlineSettings = await resolveEffectiveWarrantyInlineSettings(deviceId, opts);
   return { hpCmslEnabled: warrantyHpCmslCollectionEffective(inlineSettings) };
 }
 
@@ -3276,29 +3393,35 @@ export interface OnedriveConfigUpdate {
   }>;
 }
 
-async function resolveDeviceOnedriveSettings(deviceId: string): Promise<OnedriveConfigUpdate | null> {
+async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<OnedriveConfigUpdate | null> {
+  const passed = hierarchyFor(deviceId, opts);
   // 1. Load device
-  const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
+  const [device] = passed
+    ? [{ orgId: passed.orgId, siteId: passed.siteId }]
+    : await db
+      .select({ orgId: devices.orgId, siteId: devices.siteId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
 
   if (!device) return null;
 
   // 2. Load org (for partnerId)
-  const [org] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, device.orgId))
-    .limit(1);
+  const [org] = passed
+    ? (passed.org ? [{ partnerId: passed.org.partnerId }] : [])
+    : await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, device.orgId))
+      .limit(1);
 
   // 3. Load device group memberships
-  const groupRows = await db
-    .select({ groupId: deviceGroupMemberships.groupId })
-    .from(deviceGroupMemberships)
-    .where(eq(deviceGroupMemberships.deviceId, deviceId));
-  const groupIds = groupRows.map((r) => r.groupId);
+  const groupIds = passed
+    ? [...passed.groupIds]
+    : (await db
+      .select({ groupId: deviceGroupMemberships.groupId })
+      .from(deviceGroupMemberships)
+      .where(eq(deviceGroupMemberships.deviceId, deviceId))).map((r) => r.groupId);
 
   // 4. Build target match conditions (closest-level-wins hierarchy)
   const targetConditions = [
@@ -3499,8 +3622,8 @@ async function resolveDeviceOnedriveSettings(deviceId: string): Promise<Onedrive
   };
 }
 
-export async function buildOnedriveHelperConfigUpdate(deviceId: string): Promise<OnedriveConfigUpdate | null> {
-  return resolveDeviceOnedriveSettings(deviceId);
+export async function buildOnedriveHelperConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<OnedriveConfigUpdate | null> {
+  return resolveDeviceOnedriveSettings(deviceId, opts);
 }
 
 // Roles that dynamic-group filters and attribute-targeted automations most

@@ -1,4 +1,5 @@
 import { deleteSiteTopologyAiSessions } from '../services/topology/siteTopologySessions';
+import { removeUnreferencedScreenshotFiles } from '../services/screenshotStorage';
 import { ensureDefaultProfile } from '../services/billingProfileService';
 import { lockMfaPolicySettings, countMfaPolicyLockouts, mfaPolicyLockoutResponse } from '../services/mfaPolicyActivation';
 import { MFA_ENROLLMENT_GRACE_DAYS_MAX } from '../services/mfaEnrollmentGrace';
@@ -9,7 +10,7 @@ import type { Context, Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, ilike, inArray, isNull, ne, not, notInArray, or, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runAfterDbContextExit, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { resolveAuditOrgIdForPartner } from '../services/auditOrgResolver';
 import { deleteSiteOwnedTopologyAlerts, lockSiteForDelete } from '../services/siteOwnedAlerts';
 import { partners, organizations, sites, devices, agentVersions, partnerUsers } from '../db/schema';
@@ -3336,7 +3337,18 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
       deviceCount: otherDevices,
     }, 409);
   }
-  const { removedTopologyAlerts, topologyAiSessions } = removed;
+  const { removedTopologyAlerts, topologyAiSessions: { screenshotStorageKeys, ...topologyAiSessions } } = removed;
+  // #8117 — remove the deleted investigations' screenshot files. Not here: the
+  // db.transaction above is a savepoint inside the request's transaction, which
+  // commits only after this handler returns. Deferred until that transaction
+  // settles, the helper re-checks the rows and unlinks only keys no row still
+  // references, so a rollback removes nothing. Any leftover is reclaimed by the
+  // screenshot orphan sweep.
+  if (screenshotStorageKeys.length > 0) {
+    const context = `site delete site=${site.id}`;
+    runAfterDbContextExit('siteDelete.screenshotFiles', () =>
+      removeUnreferencedScreenshotFiles(screenshotStorageKeys, context));
+  }
   const siteDeleteDetails = {
     ...(removedTopologyAlerts > 0 ? { removedTopologyAlerts } : {}),
     ...(topologyAiSessions.investigations > 0 ? { topologyInvestigationsDeleted: topologyAiSessions } : {}),

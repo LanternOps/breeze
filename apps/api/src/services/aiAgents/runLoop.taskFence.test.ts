@@ -64,7 +64,7 @@ vi.mock('../permissions', async (importOriginal) => {
   return { ...actual, getUserPermissions: vi.fn(async () => null) };
 });
 
-import { createAgentRunPreToolUse } from './runLoop';
+import { createAgentRunCallPairing, createAgentRunPreToolUse } from './runLoop';
 
 function makeOutcome(): AgentRunOutcome {
   return { proposedActions: [], executedActions: [], deniedActions: [], toolExecutionCount: 0 };
@@ -96,10 +96,8 @@ function makeHook(args: {
     } as never,
     outcome: args.outcome,
     intentIds: [],
-    allowedPending: new Map(),
     sessionId: null,
-    executionIdPending: new Map(),
-    actPinPending: new Map(),
+    pairing: createAgentRunCallPairing(),
     actReservation: { count: 0 },
     runTargets: [],
     stagedBytesRemaining: 256 * 1024 * 1024,

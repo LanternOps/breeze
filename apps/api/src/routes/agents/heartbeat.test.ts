@@ -45,6 +45,11 @@ vi.mock('../../db', () => ({
   },
   runOutsideDbContext: (...args: unknown[]) =>
     runOutsideDbContextMock(...(args as [any])),
+  // #8053 W1a-1 — DeferredCacheFills / HotPathTtlCache consult these. The
+  // shared policy context is system-scoped; no ambient context at flush time.
+  hasDbAccessContext: () => false,
+  getCurrentDbAccessContext: () => ({ scope: 'system' }),
+  runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
   // Pass-through that records when the org-scoped context opens and when its
   // callback resolves — in production the org transaction is released at the
   // latter point.
@@ -187,6 +192,11 @@ vi.mock('./helpers', () => ({
   buildTimeSyncConfigUpdate: vi.fn(),
   buildMonitoringConfigUpdate: vi.fn(() => undefined),
   buildHelperConfigUpdate: vi.fn(() => undefined),
+  // #8053 W1a-1 — the heartbeat reads the Redis entry itself and hands the org
+  // loaders in; default to "no cached entry / flag off / PAM fallback off".
+  readCachedHelperSettings: vi.fn(async () => null),
+  getOrgHelperSettings: vi.fn(async () => ({ enabled: false })),
+  resolveOrgPamFallback: vi.fn(async () => ({ uacInterceptionEnabled: false })),
   buildPamConfigUpdate: vi.fn(async () => ({ uacInterceptionEnabled: false })),
   buildPatchSourceConfigUpdate: vi.fn(async () => ({ exclusiveWindowsUpdate: false })),
   // Default OFF, mirroring buildPatchSourceConfigUpdate: every heartbeat test
@@ -217,6 +227,21 @@ vi.mock('./helpers', () => ({
   // upgrade tests: the resolver returns the candidate target version, and the
   // gate + compareAgentVersions (default 0 = no newer) decide whether to send it.
   resolvePinnedUpgradeTarget: vi.fn(async () => '0.66.0'),
+  // #8053 W1a-1 — the heartbeat's batched read, modelled as the three single
+  // calls it replaces (agent, helper, watchdog — the order the blocks ran).
+  resolvePinnedUpgradeTargets: async (args: {
+    platform: string; architecture: string; agentId?: string;
+    requests: Array<{ component: string; pin: string | null }>;
+  }) => {
+    const helpers = await import('./helpers');
+    const out = new Map<string, string | null>();
+    for (const r of args.requests) {
+      out.set(r.component, await helpers.resolvePinnedUpgradeTarget({
+        component: r.component, platform: args.platform, architecture: args.architecture, pin: r.pin, agentId: args.agentId,
+      }));
+    }
+    return out;
+  },
   // #4072 — permissive default so the edition gate is transparent to tests
   // that don't exercise it. The edition-gate describe overrides per-test and
   // restores this implementation in afterEach (clearAllMocks does not).
@@ -292,6 +317,13 @@ vi.mock('../../services/topology/flags', () => ({
   withResolvedTopologyFlags: (...args: unknown[]) => withResolvedTopologyFlagsMock(...args),
 }));
 
+// #8053 W1a-1 — the hierarchy is loaded in the OneDrive system context. Null by
+// default: every mocked resolver then gets `undefined` opts, exactly as before.
+vi.mock('../../services/deviceHierarchy', () => ({
+  loadDeviceHierarchy: vi.fn(async () => null),
+  withHierarchy: (h: unknown) => (h ? { hierarchy: h } : undefined),
+}));
+
 vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
 }));
@@ -349,6 +381,10 @@ import { and, eq, notInArray } from 'drizzle-orm';
 import { heartbeatRoutes, tccPermissionsMeaningfullyChanged } from './heartbeat';
 import { devices, bareMetalRecoveries } from '../../db/schema';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
+import { __resetHotPathCachesForTests } from '../../services/hotPathCacheRegistry';
+
+// Otherwise a probe/helper value cached by one test is served to the next for the same org.
+beforeEach(() => { __resetHotPathCachesForTests(); });
 
 // Builds a thenable mock-chain so any `.from().where().limit()` access
 // resolves to the given value.
@@ -794,6 +830,62 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
 
     expect(response.status).toBe(401);
     expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  describe('#8053 W1a-1 hierarchy pass-through', () => {
+    const hierarchy = {
+      deviceId: 'device-1', orgId: 'org-1', siteId: 'site-1', deviceRole: 'workstation', osType: 'linux',
+      org: { partnerId: 'partner-1', type: 'customer' },
+      site: { id: 'site-1', name: 'HQ', timezone: 'UTC' },
+      groupIds: ['group-1'],
+    };
+
+    function arrangeBeat() {
+      selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+      selectMock.mockReturnValue(selectChainResolving([]));
+      updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })) });
+      insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    }
+
+    async function beat() {
+      return buildApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(minimalHeartbeatBody),
+      });
+    }
+
+    it('loads the hierarchy for the authenticated device and hands it to every resolver', async () => {
+      const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
+      const helpers = await import('./helpers');
+      vi.mocked(loadDeviceHierarchy).mockResolvedValueOnce(hierarchy as never);
+      arrangeBeat();
+
+      expect((await beat()).status).toBe(200);
+      expect(loadDeviceHierarchy).toHaveBeenCalledWith('device-1');
+      for (const builder of [
+        helpers.buildEventLogConfigUpdate, helpers.buildHardwareMonitoringConfigUpdate,
+        helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
+        helpers.buildPatchSourceConfigUpdate, helpers.buildWarrantyConfigUpdate,
+        helpers.buildTimeSyncConfigUpdate, helpers.buildOnedriveHelperConfigUpdate,
+      ]) {
+        expect(vi.mocked(builder)).toHaveBeenCalledWith('device-1', expect.objectContaining({ hierarchy }));
+      }
+      expect(vi.mocked(helpers.buildHelperConfigUpdate))
+        .toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ hierarchy }));
+      expect(vi.mocked(helpers.buildPolicyProbeConfigUpdate)).toHaveBeenCalledWith('org-1', { partnerId: 'partner-1' });
+    });
+
+    it('drops a hierarchy whose org is not the beat\'s org (device moved mid-beat): resolvers load their own', async () => {
+      const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
+      const helpers = await import('./helpers');
+      vi.mocked(loadDeviceHierarchy).mockResolvedValueOnce({ ...hierarchy, orgId: 'org-2' } as never);
+      arrangeBeat();
+
+      expect((await beat()).status).toBe(200);
+      expect(vi.mocked(helpers.buildEventLogConfigUpdate)).toHaveBeenCalledWith('device-1', undefined);
+      expect(vi.mocked(helpers.buildPolicyProbeConfigUpdate)).toHaveBeenCalledWith('org-1', undefined);
+    });
   });
 });
 
@@ -5062,7 +5154,10 @@ describe('POST /agents/:id/heartbeat — version-pin threading (#2124)', () => {
     const calls = vi.mocked(resolvePinnedUpgradeTarget).mock.calls.map((c) => c[0] as any);
     const agentCall = calls.find((a) => a.component === 'agent');
     const watchdogCall = calls.find((a) => a.component === 'watchdog');
+    const helperCall = calls.find((a) => a.component === 'helper');
 
+    // The helper component is requested too, unpinned.
+    expect(helperCall).toMatchObject({ component: 'helper', pin: null });
     // Each branch gets ITS OWN pin + the device's real platform/arch.
     expect(agentCall).toMatchObject({ component: 'agent', pin: '0.90.0', platform: 'windows', architecture: 'amd64' });
     expect(watchdogCall).toMatchObject({ component: 'watchdog', pin: '0.91.0', platform: 'windows', architecture: 'amd64' });

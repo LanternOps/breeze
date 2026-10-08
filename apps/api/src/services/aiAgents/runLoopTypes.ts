@@ -81,9 +81,9 @@ export interface OutcomeExecutedAction {
    * `'(inline)'` when the ledger write itself failed — a ledger failure must
    * never block the tool call, so the call still executes and is recorded
    * with the placeholder id (see `executionLedger.ts` and the pre/post hooks
-   * below). Correlation between the pre and post hook is per-tool FIFO order
-   * (same assumption `allowedPending` already made) — genuine per-invocation
-   * ids need SDK hook support the loop doesn't have yet.
+   * below). The pre and post hook pair each call by the SDK's tool_use id
+   * (`AgentRunCallPairing` in runLoop.ts, #8163), falling back to per-tool
+   * FIFO order only for a call the SDK sent without one.
    */
   executionId: string;
   result: 'ok' | 'failed';

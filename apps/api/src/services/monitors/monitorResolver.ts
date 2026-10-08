@@ -1,4 +1,5 @@
 import { monitorsInheritanceSchema, type MonitorsInheritance } from '@breeze/shared';
+import { hierarchyFor, type DeviceHierarchyOpts } from '../deviceHierarchy';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, deviceGroupMemberships } from '../../db/schema/devices';
@@ -180,35 +181,43 @@ export function selectContributingAttachments(args: {
 export async function resolveMonitorsForDevice(
   deviceId: string,
   executor: DbExecutor = db,
+  opts?: DeviceHierarchyOpts,
 ): Promise<MonitorResolution> {
-  const [device] = await executor
-    .select({
-      id: devices.id,
-      orgId: devices.orgId,
-      siteId: devices.siteId,
-      deviceRole: devices.deviceRole,
-      osType: devices.osType,
-    })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
+  // #8053 W1a-1: the heartbeat passes its hierarchy; other callers read below.
+  const passed = hierarchyFor(deviceId, opts);
+  const [device] = passed
+    ? [{ id: passed.deviceId, orgId: passed.orgId, siteId: passed.siteId, deviceRole: passed.deviceRole, osType: passed.osType }]
+    : await executor
+      .select({
+        id: devices.id,
+        orgId: devices.orgId,
+        siteId: devices.siteId,
+        deviceRole: devices.deviceRole,
+        osType: devices.osType,
+      })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
   if (!device) return { kind: 'device_missing' };
 
-  const [org] = await executor
-    .select({ partnerId: organizations.partnerId, type: organizations.type })
-    .from(organizations)
-    .where(eq(organizations.id, device.orgId))
-    .limit(1);
+  const [org] = passed
+    ? (passed.org ? [{ partnerId: passed.org.partnerId, type: passed.org.type }] : [])
+    : await executor
+      .select({ partnerId: organizations.partnerId, type: organizations.type })
+      .from(organizations)
+      .where(eq(organizations.id, device.orgId))
+      .limit(1);
   // Without the org row the partner-level assignments and partner-wide
   // monitors below silently drop out, so a partial answer would pass for
   // "resolved". Report it as unresolvable, like a vanished device (#2949).
   if (!org) return { kind: 'device_missing' };
 
-  const groupRows = await executor
-    .select({ groupId: deviceGroupMemberships.groupId })
-    .from(deviceGroupMemberships)
-    .where(eq(deviceGroupMemberships.deviceId, deviceId));
-  const groupIds = groupRows.map((r) => r.groupId);
+  const groupIds = passed
+    ? [...passed.groupIds]
+    : (await executor
+      .select({ groupId: deviceGroupMemberships.groupId })
+      .from(deviceGroupMemberships)
+      .where(eq(deviceGroupMemberships.deviceId, deviceId))).map((r) => r.groupId);
 
   const targetConditions = [
     and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, deviceId))!,

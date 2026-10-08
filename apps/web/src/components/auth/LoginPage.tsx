@@ -156,9 +156,11 @@ async function bootstrapThenNavigate(url: string): Promise<void> {
 
 interface LoginPageProps {
   next?: string;
+  /** Set on /login/<partner-slug> (#4017): resolve the context for that partner. */
+  partnerSlug?: string;
 }
 
-export default function LoginPage({ next }: LoginPageProps = {}) {
+export default function LoginPage({ next, partnerSlug }: LoginPageProps = {}) {
   const { t } = useTranslation('auth');
   const safeNext = getSafeNext(next);
   const [error, setError] = useState<string>();
@@ -204,14 +206,15 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   const login = useAuthStore((state) => state.login);
 
   // Partner SSO: the (memoized) login context tells us whether this deployment
-  // resolves to a single partner with an active SSO provider. Presence of
-  // partnerSso IS the availability signal (no separate `available` flag). If
-  // present, surface a "Sign in with {provider}" button above the password
+  // resolves to a single partner with an active SSO provider — or, on a
+  // /login/<partner-slug> page, whether that partner has one (#4017). Presence
+  // of partnerSso IS the availability signal (no separate `available` flag).
+  // If present, surface a "Sign in with {provider}" button above the password
   // form. Fetch failure / null response leaves the button absent
   // (password-only login).
   useEffect(() => {
     let cancelled = false;
-    getLoginContext().then((ctx) => {
+    getLoginContext(partnerSlug).then((ctx) => {
       if (cancelled) return;
       if (ctx.partnerSso) {
         setPartnerSso({
@@ -222,7 +225,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
       }
     });
     return () => { cancelled = true; };
-  }, []);
+  }, [partnerSlug]);
 
   // CF Access trust mode: if the deployment has it on AND we're not already
   // in the post-redirect bounce (which AuthOverlay handles), top-level

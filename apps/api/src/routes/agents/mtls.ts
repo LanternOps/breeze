@@ -42,6 +42,7 @@ import {
   readAgentCertificateAssertion,
   type AgentMtlsBindingMode,
 } from '../../services/agentCertificateBinding';
+import { invalidateOrgHelperSettingsCache } from '../../services/agentOrgSettingsCache';
 import { issueRenewalChallenge, verifyAndConsumeRenewalProof } from '../../services/mtlsRenewalProof';
 import {
   queueCertificateRevocationCore,
@@ -1785,6 +1786,8 @@ mtlsRoutes.patch(
         updatedAt: new Date(),
       })
       .where(eq(organizations.id, orgId));
+    // The legacy flag is served to the org's heartbeats from a 60 s cache (#8053).
+    invalidateOrgHelperSettingsCache(orgId);
 
     writeAuditEvent(c, {
       orgId,

@@ -53,7 +53,7 @@ vi.mock('./aiTools', async (importOriginal) => ({
   executeTool: (...args: unknown[]) => mockExecuteTool(...(args as [])),
 }));
 
-import { __test__ } from './aiAgentSdkTools';
+import { __test__, wrapExtraToolWithHooks } from './aiAgentSdkTools';
 import { buildScriptBuilderTools } from './scriptBuilderTools';
 import type { PreToolUseCallback } from './aiAgentSdkTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
@@ -213,6 +213,62 @@ describe('the SDK tool_use id reaches onPostToolUse (#7931)', () => {
   it('passes undefined when the SDK sent no id', async () => {
     const post = vi.fn(async () => undefined);
     await makeHandler('list_scripts', () => fakeAuth, undefined, post)({}, {});
+    expect((post.mock.calls[0] as unknown[])[7]).toBeUndefined();
+  });
+});
+
+// #8163: an agent run keeps per-call state (ledger row, act pin) between its
+// pre and post hooks, keyed by the SDK tool_use id. So every handler factory
+// must hand onPreToolUse the SAME id it binds into that call's onPostToolUse.
+describe('the SDK tool_use id reaches onPreToolUse, matching onPostToolUse (#8163)', () => {
+  const extra = { _meta: { 'claudecode/toolUseId': 'toolu_own_call' } };
+  type Post = NonNullable<Parameters<typeof makeHandler>[3]>;
+  const extraTool = {
+    name: 'submit_test_outcome',
+    description: 'test',
+    inputSchema: {},
+    handler: async () => ({ content: [{ type: 'text' as const, text: '{"ok":true}' }] }),
+  } as unknown as Parameters<typeof wrapExtraToolWithHooks>[0];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExecuteTool.mockResolvedValue(JSON.stringify({ ok: true }));
+  });
+
+  it.each([
+    {
+      name: 'Fleet AI handler',
+      call: (pre: PreToolUseCallback, post: Post, ex: unknown) =>
+        makeHandler('list_scripts', () => fakeAuth, pre, post)({}, ex),
+    },
+    {
+      name: 'Script Builder existing-tool handler',
+      call: (pre: PreToolUseCallback, post: Post, ex: unknown) => {
+        const registered = buildScriptBuilderTools(() => fakeAuth, pre, post).find(t => t.name === 'list_scripts');
+        if (!registered) throw new Error('Missing tool: list_scripts');
+        return registered.handler({} as never, ex as never);
+      },
+    },
+    {
+      name: 'extra (outcome) tool wrapper',
+      call: (pre: PreToolUseCallback, post: Post, ex: unknown) =>
+        wrapExtraToolWithHooks(extraTool, pre, post).handler({}, ex),
+    },
+  ])('$name', async ({ call }) => {
+    const pre = vi.fn<PreToolUseCallback>(async () => ({ allowed: true }));
+    const post = vi.fn(async () => undefined);
+    await call(pre, post, extra);
+    expect(pre).toHaveBeenCalledTimes(1);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(pre.mock.calls[0]![3]).toBe('toolu_own_call');
+    expect((post.mock.calls[0] as unknown[])[7]).toBe('toolu_own_call');
+
+    // No id from the SDK: both hooks see undefined (the agent run then falls
+    // back to per-name pairing and reports it).
+    pre.mockClear();
+    post.mockClear();
+    await call(pre, post, {});
+    expect(pre.mock.calls[0]![3]).toBeUndefined();
     expect((post.mock.calls[0] as unknown[])[7]).toBeUndefined();
   });
 });

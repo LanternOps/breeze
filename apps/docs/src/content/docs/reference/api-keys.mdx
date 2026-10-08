@@ -244,6 +244,7 @@ Every mutation is recorded in the audit log (`service_principal.create`, `servic
 | `backup-configuration:read` | Export backup configuration |
 | `custom-fields:read` | Export custom field definitions and values |
 | `alerts:read` | Read the alerts feed across accessible organizations (opt-in, never a default scope) |
+| `device-status:read` | Read live device status, last-seen time and agent version across accessible organizations (opt-in, never a default scope, not implied by `devices:read`) |
 | `organizations:write` | Create organizations (bounded by the partner's organization cap) |
 | `sites:write` | Create sites in the principal's accessible organizations |
 | `enrollment-keys:write` | Create enrollment keys (raw key returned once) |

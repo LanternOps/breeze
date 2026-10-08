@@ -12,7 +12,7 @@ import {
   ALLOWANCE_LINE_TYPES, BILLABLE_DEVICE_ROLES, fromCents, isRepresentableInCurrency, minorUnitExponent,
   multiplyToCurrency, roundToCurrency, toCents, PERMISSION_GRANTS,
   contractLineInvariantIssues, isSiteDeletedLine, mergeContractLinePatch, patchHasKey, SITE_SCOPABLE_LINE_TYPES,
-  type DeviceRole, type UpdateContractLineInput,
+  type ContractLineType, type DeviceRole, type UpdateContractLineInput,
 } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired, duePeriodStartFor } from './contractMath';
@@ -615,6 +615,22 @@ function assertRoleLineHasRoles(line: Pick<ContractLineRow, 'id' | 'lineType' | 
   }
 }
 
+/** #4547 W01: the fail-closed error for an hour_block row reaching a path that
+ *  cannot price it. W02 replaces the generateDueInvoice arm; W03 the
+ *  resolveLineQty arm and the updateContractLine guard. */
+function hourBlockNotEnabled(): ContractServiceError {
+  return new ContractServiceError('hour_block lines are not enabled', 500, 'HOUR_BLOCK_NOT_ENABLED');
+}
+
+/** Throws on a block row; otherwise narrows the row's `lineType` to the shared
+ *  ContractLineType so the pure shared helpers (which are typed against
+ *  CONTRACT_LINE_TYPES) accept it. */
+function assertNotHourBlock<T extends { lineType: string }>(
+  line: T,
+): asserts line is T & { lineType: ContractLineType } {
+  if (line.lineType === 'hour_block') throw hourBlockNotEnabled();
+}
+
 const BILLABLE_DEVICE_ROLE_SET = new Set<string>(BILLABLE_DEVICE_ROLES);
 
 // #3205 W04: the types contract_lines_allowance_chk lets carry an allowance.
@@ -701,6 +717,11 @@ async function resolveLineQty(
       if (!sc.has(orgId)) sc.set(orgId, await countContractSeats(orgId));
       return { ...applyAllowance(sc.get(orgId)!, line, 'included_units'), live: true };
     }
+    case 'hour_block':
+      // #4547 W01: the DB accepts the type, the engine does not exist yet. A
+      // forged row must fail loudly, never count as a quantity. W03 replaces
+      // this with the fee-only arm.
+      throw hourBlockNotEnabled();
     default: {
       // Exhaustiveness: a new line type is a compile error here, not a silent qty 0.
       const _exhaustive: never = line.lineType;
@@ -1669,6 +1690,7 @@ export async function updateContractLine(
     const [current] = await tx.select().from(contractLines)
       .where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId))).limit(1);
     if (!current) throw new ContractServiceError('Contract line not found', 404, 'LINE_NOT_FOUND');
+    assertNotHourBlock(current);
 
     // ---- catalog transition table (spec § Validators (d)) ------------------
     const touchesLink = patchHasKey(patch, 'catalogItemId');
@@ -2063,6 +2085,13 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
     }
   }
 
+  // #4547 W01: same no-write rule as the site check above. Refuse before the
+  // draft invoice exists, so a forged hour_block row can neither bill nor leave
+  // a half-built invoice for the caller's transaction to roll back.
+  for (const l of lines) {
+    if (l.lineType === 'hour_block') throw hourBlockNotEnabled();
+  }
+
   const hasDeviceLine = lines.some(isDeviceLine);
   const dc: DeviceCache = new Map();
   const snapshot = hasDeviceLine ? await orgSnapshot(c.orgId, dc, groupIdsOf(lines)) : emptySnapshot();
@@ -2117,6 +2146,10 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
       case 'per_seat':
         quantity = String(await countContractSeats(c.orgId));
         break;
+      case 'hour_block':
+        // Unreachable: the pre-flight above refuses first. Kept so the switch
+        // stays exhaustive; W02 replaces it with the fee-only arm.
+        throw hourBlockNotEnabled();
       default: {
         // Exhaustiveness: adding a 5th line type becomes a compile error here
         // (instead of silently billing qty 1).
@@ -2252,6 +2285,9 @@ export async function createContractWithLinesDetailed(
   const createdLines: CreatedContractWithLines['lines'] = [];
   for (let i = 0; i < spec.lines.length; i++) {
     const l = spec.lines[i]! as DeviceSetContractLineSpec;
+    // #4547 W01: the quote path never carries a block (quote_lines' CHECK has no
+    // hour_block); fail closed and narrow for the shared invariant helpers.
+    assertNotHourBlock(l);
     const issues = contractLineInvariantIssues(l, { mode: 'create' });
     if (issues.length > 0) {
       throw new ContractServiceError(issues[0]!.message, 400, 'INVALID_STATE', { issues });

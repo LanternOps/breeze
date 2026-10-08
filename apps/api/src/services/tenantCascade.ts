@@ -53,6 +53,7 @@ import { deleteObjects } from './s3Storage';
 import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
 import { deleteOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
 import { captureMessage } from './sentry';
+import { removeScreenshotFiles } from './screenshotFiles';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from './authLifecycle';
 import {
   captureBackupErasureFence,
@@ -486,6 +487,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'contract_billing_period_outcomes',
   'contract_billing_periods',
   'contract_documents',
+  'contract_hour_periods',
   'contract_lines',
   'contract_renewal_notices',
   // contract_template_versions sorts before contract_templates: localeCompare
@@ -575,6 +577,19 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'dr_executions',
   'dr_plan_groups',
   'dr_plans',
+  // EDR provider framework W01 (#8164 / #8165). Four org_id tables; the fifth
+  // (edr_connections) is partner-axis with no org_id and is erased by
+  // cascadeDeletePartner's information_schema partner_id sweep instead.
+  // edr_tenants is partner-axis too but carries the nullable org_id MAPPING
+  // target, so an erased org's tenant rows go with it. Alphabetical happens to
+  // be children-before-parents (actions -> detections -> endpoints -> tenants);
+  // every FK among them is ON DELETE CASCADE or SET NULL (col), so position is
+  // determinism — topologicalCascadeOrder()'s live pg_constraint read is the
+  // real DELETE order.
+  'edr_actions',
+  'edr_detections',
+  'edr_endpoints',
+  'edr_tenants',
   'elevation_audit',
   'elevation_requests',
   'enrollment_keys',
@@ -1592,6 +1607,33 @@ export async function deleteBackupSnapshotsCascadeStep(orgId: string): Promise<n
 }
 
 /**
+ * Walk step for `ai_screenshots` (#8117). The rows only index helper
+ * screenshots; the images themselves are files under SCREENSHOT_STORAGE_DIR,
+ * so deleting the rows alone left every captured screen on disk after an
+ * erasure. The DELETE returns each row's `storage_key` (which, not the row's
+ * org, is where the file lives — an org move does not relocate files), and the
+ * files are unlinked only once that delete has COMMITTED. A filesystem fault
+ * never fails or rolls back the erasure: `removeScreenshotFiles` logs it with
+ * counts and reports it to Sentry, and the orphan sweep retries the leftovers.
+ */
+async function deleteAiScreenshotsCascadeStep(orgId: string): Promise<number> {
+  const { count, storageKeys } = await dbModule.withSystemDbAccessContext(async () => {
+    await setBackupErasureContext(orgId);
+    const result = await dbModule.db.execute(
+      sql`DELETE FROM ai_screenshots WHERE org_id = ${orgId} RETURNING storage_key`,
+    );
+    return {
+      count: extractRowCount(result),
+      storageKeys: rowsFromExecute<{ storage_key: string }>(result).map((row) => row.storage_key),
+    };
+  });
+  if (storageKeys.length > 0) {
+    await removeScreenshotFiles(storageKeys, `org erasure org=${orgId}`);
+  }
+  return count;
+}
+
+/**
  * Test seams for the erasure scenarios in backupErasureFence.integration.test.ts.
  * Never set in production code.
  */
@@ -1955,6 +1997,8 @@ export async function cascadeDeleteOrg(
           })
         : table === 'backup_snapshots'
         ? await deleteBackupSnapshotsCascadeStep(orgId)
+        : table === 'ai_screenshots'
+        ? await deleteAiScreenshotsCascadeStep(orgId)
         : await dbModule.withSystemDbAccessContext(async () => {
             // Every walk transaction is marked as this org's erasure, so the
             // on-delete fence trigger records any backup source row deleted in

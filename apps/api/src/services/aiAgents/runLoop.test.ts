@@ -29,9 +29,12 @@ const ACT_TRIGGER_TICKET_ID = '00000000-0000-4000-8000-0000000000d3';
 
 interface Hooks {
   getAuth?: () => unknown;
-  pre?: (tool: string, input: Record<string, unknown>) => Promise<{ allowed: boolean; error?: string }>;
+  pre?: (
+    tool: string, input: Record<string, unknown>, mcpToolName?: string, toolUseId?: string,
+  ) => Promise<{ allowed: boolean; error?: string }>;
   post?: (
     tool: string, input: Record<string, unknown>, output: string, isError: boolean, durationMs: number,
+    sealed?: unknown, handoff?: unknown, toolUseId?: string,
   ) => Promise<void>;
 }
 // ---------------------------------------------------------------------------
@@ -368,9 +371,11 @@ vi.mock('../llm/platformKeyAlert', () => ({
 }));
 
 const captureException = vi.hoisted(() => vi.fn());
+const captureMessage = vi.hoisted(() => vi.fn());
 vi.mock('../sentry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../sentry')>()),
   captureException,
+  captureMessage,
 }));
 
 const settleInvocation = vi.hoisted(() =>
@@ -437,7 +442,7 @@ vi.mock('../aiBudgetReservations', () => ({
 // the red-team suite (Task 5). Here we assert the loop never imports it by
 // asserting on the guardrail path it DOES take.
 import {
-  computeRunVerdict, createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun,
+  computeRunVerdict, createAgentRunCallPairing, createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun,
   fullRunToolExposure, PROPOSAL_RECORDED_TEXT, __setResourceScopeRecheckClockForTests,
 } from './runLoop';
 import type { AgentRunOutcome } from './runLoop';
@@ -1388,7 +1393,7 @@ describe('executeAgentRun', () => {
       expect(revalidateArgs.toolName).toBe('manage_services');
       expect((revalidateArgs.run as Record<string, unknown>).deviceId).toBe(DEVICE_ID);
       // This is the ONLY execution path — through the same
-      // startToolExecution/allowedPending machinery a plain 'allow' uses.
+      // startToolExecution/call-pairing machinery a plain 'allow' uses.
       expect(startToolExecution).toHaveBeenCalledTimes(1);
       expect(createActionIntent).not.toHaveBeenCalled();
       expect(preVerdicts[0]).toMatchObject({ allowed: true });
@@ -1556,21 +1561,20 @@ describe('executeAgentRun', () => {
       const outcome: AgentRunOutcome = {
         proposedActions: [], executedActions: [], deniedActions: [], toolExecutionCount: 0,
       };
-      const allowedPending = new Map<string, number>([['manage_services', 1]]);
-      const executionIdPending = new Map<string, Array<string | null>>([['manage_services', ['exec-1']]]);
       const actPin = {
         op: { key: 'manage_services.restart' },
         target: { kind: 'service' as const, serviceName: 'Spooler' },
       };
-      const actPinPending = new Map([['manage_services', [actPin]]]);
+      const pairing = createAgentRunCallPairing();
+      pairing.byToolUseId.set('toolu_1', { executionId: 'exec-1', actPin: actPin as never });
 
       const post = createAgentRunPostToolUse({
-        outcome, allowedPending, executionIdPending, actPinPending,
+        outcome, pairing,
         run: { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, deviceId: DEVICE_ID },
         agentUserId: USER_A,
       } as never);
 
-      const pending = post('manage_services', { action: 'restart' }, '{"ok":true}', false, 5);
+      const pending = post('manage_services', { action: 'restart' }, '{"ok":true}', false, 5, undefined, undefined, 'toolu_1');
       // Flush pending microtasks WITHOUT resolving verifyActExecution's
       // promise — this is the moment a real 10s post-hook timeout would fire.
       await Promise.resolve();
@@ -1610,6 +1614,203 @@ describe('executeAgentRun', () => {
       expect(revalidateActExecution).not.toHaveBeenCalled();
       expect(createActionIntent).toHaveBeenCalledTimes(1);
       expect(preVerdicts[0]).toEqual({ allowed: false, error: PROPOSAL_RECORDED_TEXT });
+    });
+
+    // #8163: the SDK runs MCP tool calls concurrently, so two calls of the
+    // SAME tool in one turn can finish in the opposite order they started.
+    // The post hook must pair each result with ITS OWN pre-call state (ledger
+    // row + act pin) by the SDK tool_use id, not by per-name FIFO position.
+    describe('pairs each result with its own pre-call state by SDK tool_use id (#8163)', () => {
+      const CALL_A = { tool: 'manage_services', input: { action: 'restart', deviceId: DEVICE_ID, serviceName: 'Spooler' } };
+      const CALL_B = { tool: 'manage_services', input: { action: 'restart', deviceId: DEVICE_ID, serviceName: 'W32Time' } };
+
+      function pinFromInput() {
+        revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => {
+          const serviceName = (args.input as { serviceName: string }).serviceName;
+          if (serviceName === 'Forbidden') return { ok: false, deny: 'Forbidden service' };
+          return { ok: true, pin: { op: args.op, target: { kind: 'service', serviceName } } };
+        });
+        // Verification passes only when the output being verified is the
+        // output of the call the pin was taken for — a swapped pairing shows
+        // up as a failed verification (and a false alert).
+        verifyActExecution.mockImplementation(async (args: Record<string, unknown>) => {
+          const pinned = (args.pin as { target: { serviceName: string } }).target.serviceName;
+          const restarted = (JSON.parse(args.toolOutput as string) as { restarted?: string }).restarted;
+          return pinned === restarted
+            ? { execution: 'succeeded', verification: 'passed' }
+            : { execution: 'succeeded', verification: 'failed', verifyDetail: `pin ${pinned} != output ${restarted}` };
+        });
+      }
+
+      /** Replaces the scripted SDK turn with `body`, then a success result. */
+      function scriptTurn(body: () => Promise<void>) {
+        queryMock.mockImplementation((params: { prompt: unknown; options: Record<string, unknown> }) => {
+          lastQueryOptions = params.options;
+          const generator = (async function* () {
+            await body();
+            const result = resultMessage();
+            yielded.push(result);
+            yield result;
+          })();
+          return Object.assign(generator, { close: closeMock, interrupt: vi.fn() });
+        });
+      }
+
+      /** pre(A), pre(B), then post(B) BEFORE post(A) — the out-of-order race. */
+      function scriptOutOfOrder(ids: { a?: string; b?: string }) {
+        scriptTurn(async () => {
+          preVerdicts.push(await hooks.pre!(CALL_A.tool, CALL_A.input, undefined, ids.a));
+          preVerdicts.push(await hooks.pre!(CALL_B.tool, CALL_B.input, undefined, ids.b));
+          await hooks.post!(CALL_B.tool, CALL_B.input, '{"restarted":"W32Time"}', false, 7, undefined, undefined, ids.b);
+          await hooks.post!(CALL_A.tool, CALL_A.input, '{"restarted":"Spooler"}', false, 50, undefined, undefined, ids.a);
+        });
+      }
+
+      function completedRows() {
+        return completeToolExecution.mock.calls.map(([c]) => c);
+      }
+
+      function missingIdReports() {
+        return captureMessage.mock.calls.filter(
+          ([, opts]) => (opts as { eventCode?: string } | undefined)?.eventCode === 'ai_tool_use_id_missing');
+      }
+
+      it('second call finishing first: each ledger row, pin and verification stays with its own call', async () => {
+        seedActRun();
+        pinFromInput();
+        scriptOutOfOrder({ a: 'toolu_A', b: 'toolu_B' });
+
+        await executeAgentRun(RUN_ID);
+
+        expect(preVerdicts).toMatchObject([{ allowed: true }, { allowed: true }]);
+        // startToolExecution ran A then B, so A owns exec-1 and B owns exec-2.
+        expect(completedRows()).toEqual([
+          { executionId: 'exec-2', isError: false, durationMs: 7 },
+          { executionId: 'exec-1', isError: false, durationMs: 50 },
+        ]);
+        const verifiedPairs = verifyActExecution.mock.calls.map(([c]) => [
+          (c as { pin: { target: { serviceName: string } } }).pin.target.serviceName,
+          (c as { toolOutput: string }).toolOutput,
+        ]);
+        expect(verifiedPairs).toEqual([
+          ['W32Time', '{"restarted":"W32Time"}'],
+          ['Spooler', '{"restarted":"Spooler"}'],
+        ]);
+        expect(recordActVerifyFailureAlert).not.toHaveBeenCalled();
+
+        const outcome = finalTransition()!.patch.outcome as AgentRunOutcome;
+        expect(outcome.executedActions).toMatchObject([
+          { executionId: 'exec-2', durationMs: 7, verification: 'passed', actTargetName: 'W32Time' },
+          { executionId: 'exec-1', durationMs: 50, verification: 'passed', actTargetName: 'Spooler' },
+        ]);
+        expect(outcome.runVerdict).toBe('remediated');
+        expect(missingIdReports()).toEqual([]);
+      });
+
+      it('a denied same-name call\'s result echo never consumes the allowed call\'s ledger row or pin', async () => {
+        seedActRun();
+        pinFromInput();
+        const DENIED = { tool: 'manage_services', input: { action: 'restart', deviceId: DEVICE_ID, serviceName: 'Forbidden' } };
+        scriptTurn(async () => {
+          preVerdicts.push(await hooks.pre!(CALL_A.tool, CALL_A.input, undefined, 'toolu_A'));
+          const denied = await hooks.pre!(DENIED.tool, DENIED.input, undefined, 'toolu_D');
+          preVerdicts.push(denied);
+          // makeToolHandler publishes a denial through postToolUse at once,
+          // while the allowed sibling is still running.
+          await hooks.post!(DENIED.tool, DENIED.input, JSON.stringify({ error: denied.error }), true, 0, undefined, undefined, 'toolu_D');
+          await hooks.post!(CALL_A.tool, CALL_A.input, '{"restarted":"Spooler"}', false, 50, undefined, undefined, 'toolu_A');
+        });
+
+        await executeAgentRun(RUN_ID);
+
+        expect(preVerdicts).toMatchObject([{ allowed: true }, { allowed: false }]);
+        expect(completedRows()).toEqual([{ executionId: 'exec-1', isError: false, durationMs: 50 }]);
+        expect(verifyActExecution).toHaveBeenCalledTimes(1);
+        expect((verifyActExecution.mock.calls[0]![0] as { toolOutput: string }).toolOutput).toBe('{"restarted":"Spooler"}');
+        expect(recordActVerifyFailureAlert).not.toHaveBeenCalled();
+        const outcome = finalTransition()!.patch.outcome as AgentRunOutcome;
+        expect(outcome.executedActions).toMatchObject([{ executionId: 'exec-1', result: 'ok', actTargetName: 'Spooler' }]);
+      });
+
+      it('a successful result whose tool_use id has no pre-call state is logged, not silently dropped', async () => {
+        const outcome: AgentRunOutcome = {
+          proposedActions: [], executedActions: [], deniedActions: [], toolExecutionCount: 0,
+        };
+        const post = createAgentRunPostToolUse({
+          outcome, pairing: createAgentRunCallPairing(),
+          run: { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, deviceId: DEVICE_ID },
+          agentUserId: USER_A,
+        } as never);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          // A denial/proposal echo (isError) with an unknown id is expected and quiet…
+          await post('manage_services', {}, '{"error":"denied"}', true, 0, undefined, undefined, 'toolu_denied');
+          expect(warn).not.toHaveBeenCalled();
+          // …but a SUCCESS with an unknown id means a real execution lost its state.
+          await post('manage_services', {}, '{"ok":true}', false, 5, undefined, undefined, 'toolu_orphan');
+          expect(warn).toHaveBeenCalledTimes(1);
+          expect(String(warn.mock.calls[0]![0])).toMatch(/no pre-call state/);
+        } finally {
+          warn.mockRestore();
+        }
+        expect(outcome.executedActions).toEqual([]);
+        expect(completeToolExecution).not.toHaveBeenCalled();
+      });
+
+      it('keeps the null ledger-write sentinel per call: a failed write never borrows a sibling\'s row', async () => {
+        seedActRun();
+        pinFromInput();
+        // A's ledger write fails (null sentinel); B's succeeds.
+        startToolExecution.mockReset()
+          .mockRejectedValueOnce(new Error('ledger down'))
+          .mockResolvedValueOnce('exec-B');
+        const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+        scriptOutOfOrder({ a: 'toolu_A', b: 'toolu_B' });
+
+        try {
+          await executeAgentRun(RUN_ID);
+        } finally {
+          err.mockRestore();
+        }
+
+        expect(completedRows()).toEqual([{ executionId: 'exec-B', isError: false, durationMs: 7 }]);
+        const outcome = finalTransition()!.patch.outcome as AgentRunOutcome;
+        expect(outcome.executedActions).toMatchObject([
+          { executionId: 'exec-B', actTargetName: 'W32Time', verification: 'passed' },
+          { executionId: '(inline)', actTargetName: 'Spooler', verification: 'passed' },
+        ]);
+        expect(recordActVerifyFailureAlert).not.toHaveBeenCalled();
+      });
+
+      it('without the SDK id falls back to per-name FIFO and warns + reports once per run', async () => {
+        seedActRun();
+        pinFromInput();
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        // In-order completion: the FIFO fallback pairs these correctly.
+        scriptTurn(async () => {
+          preVerdicts.push(await hooks.pre!(CALL_A.tool, CALL_A.input));
+          preVerdicts.push(await hooks.pre!(CALL_B.tool, CALL_B.input));
+          await hooks.post!(CALL_A.tool, CALL_A.input, '{"restarted":"Spooler"}', false, 50);
+          await hooks.post!(CALL_B.tool, CALL_B.input, '{"restarted":"W32Time"}', false, 7);
+        });
+
+        let missingIdWarnings: unknown[][];
+        try {
+          await executeAgentRun(RUN_ID);
+          missingIdWarnings = warn.mock.calls.filter(([msg]) => /without the SDK tool_use id/.test(String(msg)));
+        } finally {
+          warn.mockRestore();
+        }
+
+        expect(completedRows()).toEqual([
+          { executionId: 'exec-1', isError: false, durationMs: 50 },
+          { executionId: 'exec-2', isError: false, durationMs: 7 },
+        ]);
+        expect(recordActVerifyFailureAlert).not.toHaveBeenCalled();
+        expect(missingIdReports()).toHaveLength(1);
+        expect(missingIdWarnings).toHaveLength(1);
+        expect(String(missingIdWarnings[0]![0])).toMatch(/agent run/);
+      });
     });
   });
 
@@ -3142,10 +3343,8 @@ describe('verdict profile in the run loop (P2-1)', () => {
       },
       outcome: emptyOutcome(),
       intentIds: [],
-      allowedPending: new Map<string, number>(),
       sessionId: null,
-      executionIdPending: new Map<string, Array<string | null>>(),
-      actPinPending: new Map<string, Array<unknown>>(),
+      pairing: createAgentRunCallPairing(),
       actReservation: { count: 0 },
       deadlineMs: Date.now() + 60_000,
     };
@@ -3163,9 +3362,7 @@ describe('verdict profile in the run loop (P2-1)', () => {
     const outcome = emptyOutcome();
     const post = createAgentRunPostToolUse({
       outcome,
-      allowedPending: new Map<string, number>(),
-      executionIdPending: new Map<string, Array<string | null>>(),
-      actPinPending: new Map<string, Array<unknown>>(),
+      pairing: createAgentRunCallPairing(),
       run: { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, deviceId: null, profile: 'verdict' },
       agentUserId: USER_A,
     } as never);
@@ -3225,10 +3422,8 @@ describe('verdict profile in the run loop (P2-1)', () => {
       },
       outcome,
       intentIds: [],
-      allowedPending: new Map<string, number>(),
       sessionId: null,
-      executionIdPending: new Map<string, Array<string | null>>(),
-      actPinPending: new Map<string, Array<unknown>>(),
+      pairing: createAgentRunCallPairing(),
       actReservation: { count: 0 },
       deadlineMs: Date.now() + 60_000,
     } as never);
@@ -3263,10 +3458,8 @@ describe('verdict profile in the run loop (P2-1)', () => {
       },
       outcome,
       intentIds: [],
-      allowedPending: new Map<string, number>(),
       sessionId: null,
-      executionIdPending: new Map<string, Array<string | null>>(),
-      actPinPending: new Map<string, Array<unknown>>(),
+      pairing: createAgentRunCallPairing(),
       actReservation: { count: 0 },
       deadlineMs: Date.now() + 60_000,
     } as never);

@@ -42,7 +42,7 @@ import { deliveryToolShape, diagnosticAccessShapes, executeCommandShape, setDevi
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { captureMessage } from './sentry';
-import { postToolUseForCall } from './aiToolUseCorrelation';
+import { postToolUseForCall, sdkToolUseIdFromExtra } from './aiToolUseCorrelation';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
   m365DisableUserHandler, m365ResetPasswordHandler,
@@ -119,6 +119,15 @@ export type PreToolUseCallback = (
    * test run with "Tool 'run_script' is not allowed for this session" (#4883).
    */
   mcpToolName?: string,
+  /**
+   * The model's tool_use id for this call, as the SDK sent it to our MCP
+   * handler (`extra._meta['claudecode/toolUseId']`) — the SAME id the handler
+   * binds into this call's postToolUse (`postToolUseForCall`). A hook that
+   * keeps per-call state between pre and post keys it by this id, because the
+   * SDK runs calls concurrently and they can finish out of order (#8163).
+   * Absent only when the SDK sent none.
+   */
+  toolUseId?: string,
 ) => Promise<
   | { allowed: true; intentId?: string; context?: ToolExecutionContext }
   /**
@@ -688,7 +697,7 @@ function makeToolHandler(
         | { allowed: true; intentId?: string; context?: ToolExecutionContext }
         | { allowed: false; error: string; handoff?: ToolHandoffStatus };
       try {
-        check = await onPreToolUse(toolName, args);
+        check = await onPreToolUse(toolName, args, undefined, sdkToolUseIdFromExtra(extra));
       } catch (err) {
         // The guardrail path also touches the DB (approval records, rate limits),
         // so `reason` can be a raw driver message — sanitize before embedding it
@@ -932,7 +941,7 @@ function makeSessionAwareHandler(
         | { allowed: true; intentId?: string }
         | { allowed: false; error: string; handoff?: ToolHandoffStatus };
       try {
-        check = await onPreToolUse(toolName, args);
+        check = await onPreToolUse(toolName, args, undefined, sdkToolUseIdFromExtra(extra));
       } catch (err) {
         // The guardrail path also touches the DB (approval records, rate limits),
         // so `reason` can be a raw driver message — sanitize before embedding it
@@ -1430,7 +1439,7 @@ export function wrapExtraToolWithHooks(
           | { allowed: true; context?: ToolExecutionContext }
           | { allowed: false; error: string; handoff?: ToolHandoffStatus };
         try {
-          check = await onPreToolUse(name, args);
+          check = await onPreToolUse(name, args, undefined, sdkToolUseIdFromExtra(extra));
         } catch (err) {
           const reason = sanitizeThrownToolError(`${name}:preToolUse`, err);
           check = { allowed: false, error: `Guardrails check failed: ${reason}` };

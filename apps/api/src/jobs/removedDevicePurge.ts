@@ -52,6 +52,8 @@ import { captureException } from '../services/sentry';
 import { recordRetentionRun } from '../services/retentionMetrics';
 import { getOrgPurgeRemovedAfterDays } from '../services/deviceLifecyclePolicy';
 import { DeviceLifecycleError, purgeRemovedDevice } from '../services/deviceLifecycle';
+import { listDeviceScreenshotStorageKeys } from '../services/screenshotStorage';
+import { removeScreenshotFiles } from '../services/screenshotFiles';
 import { attachWorkerObservability } from './workerObservability';
 import { jobSchedule } from './scheduleRegistry';
 import { parsePositiveIntEnv } from './retentionBatch';
@@ -167,8 +169,8 @@ export async function purgeOneRemovedDevice(
   candidate: RemovedDevicePurgeCandidate,
 ): Promise<RemovedDevicePurgeSkip | null> {
   try {
-    return await inSystemContext('removedDevicePurge.purgeOne', () =>
-      db.transaction(async (tx): Promise<RemovedDevicePurgeSkip | null> => {
+    const outcome = await inSystemContext('removedDevicePurge.purgeOne', () =>
+      db.transaction(async (tx): Promise<{ skip: RemovedDevicePurgeSkip } | { skip: null; screenshotStorageKeys: string[] }> => {
         const rows = (await tx.execute(
           sql`SELECT org_id, decommissioned_at FROM devices WHERE id = ${candidate.deviceId} FOR UPDATE`,
         )) as unknown as Array<{ org_id: string; decommissioned_at: Date | string | null }>;
@@ -176,18 +178,27 @@ export async function purgeOneRemovedDevice(
 
         // Gone already (a concurrent purge, or a cascading org delete). Not an
         // error — the outcome this run wanted is the outcome that happened.
-        if (!row) return 'NOT_FOUND';
-        if (row.org_id !== candidate.orgId) return 'ORG_CHANGED';
+        if (!row) return { skip: 'NOT_FOUND' };
+        if (row.org_id !== candidate.orgId) return { skip: 'ORG_CHANGED' };
 
         const stamp = row.decommissioned_at === null ? null : new Date(row.decommissioned_at);
         // `null` here means the removal time became unknown under the lock,
         // which is the same fail-closed answer the candidate query gives it.
-        if (stamp === null || Number.isNaN(stamp.getTime())) return 'NO_LONGER_ELIGIBLE';
-        if (stamp.getTime() >= candidate.cutoff.getTime()) return 'NO_LONGER_ELIGIBLE';
+        if (stamp === null || Number.isNaN(stamp.getTime())) return { skip: 'NO_LONGER_ELIGIBLE' };
+        if (stamp.getTime() >= candidate.cutoff.getTime()) return { skip: 'NO_LONGER_ELIGIBLE' };
 
+        // #8117 — under the devices row lock, so the key list is complete.
+        const screenshotStorageKeys = await listDeviceScreenshotStorageKeys(tx, candidate.deviceId);
         await purgeRemovedDevice(tx, candidate.deviceId);
-        return null;
+        return { skip: null, screenshotStorageKeys };
       }));
+    if (outcome.skip !== null) return outcome.skip;
+    // Committed (the system context is a top-level transaction). Never throws;
+    // leftovers are retried by the screenshot orphan sweep.
+    if (outcome.screenshotStorageKeys.length > 0) {
+      await removeScreenshotFiles(outcome.screenshotStorageKeys, `removed-device purge device=${candidate.deviceId}`);
+    }
+    return null;
   } catch (err) {
     // Deliberately caught OUTSIDE the transaction so a DeviceLifecycleError
     // still rolls it back, exactly as before.

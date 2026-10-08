@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { hierarchyFor, type DeviceHierarchyOpts } from '../deviceHierarchy';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, sites } from '../../db/schema';
@@ -48,14 +49,20 @@ export function canonicalTimeSyncJson(value: JsonValue): string {
  */
 export async function buildResolvedTimeSyncConfigUpdate(
   deviceId: string,
+  opts?: DeviceHierarchyOpts,
 ): Promise<TimeSyncConfigUpdate> {
-  const resolved = await getDeviceTimeSyncSettings(deviceId);
-  const [site] = await db
-    .select({ id: sites.id, name: sites.name, timezone: sites.timezone })
-    .from(devices)
-    .innerJoin(sites, eq(devices.siteId, sites.id))
-    .where(eq(devices.id, deviceId))
-    .limit(1);
+  const passed = hierarchyFor(deviceId, opts);
+  const resolved = await getDeviceTimeSyncSettings(deviceId, opts);
+  // #8053 W1a-1: the site rides in the passed hierarchy; null there means the
+  // same as this inner join finding no row.
+  const [site] = passed
+    ? (passed.site ? [{ id: passed.site.id, name: passed.site.name, timezone: passed.site.timezone }] : [])
+    : await db
+      .select({ id: sites.id, name: sites.name, timezone: sites.timezone })
+      .from(devices)
+      .innerJoin(sites, eq(devices.siteId, sites.id))
+      .where(eq(devices.id, deviceId))
+      .limit(1);
   const expected = resolveExpectedTimezone({
     site: site ?? null,
     policy: resolved.policy,

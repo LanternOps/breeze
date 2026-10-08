@@ -299,6 +299,13 @@ export const SENTRY_EVENT_CODES = [
    * would otherwise raise no alert on its own.
    */
   'tenant_erasure_refused_legal_hold',
+  /**
+   * Helper screenshot files could not be removed after their rows were
+   * deleted (org erasure, device purge, site delete) or by the orphan sweep
+   * (#8117). The rows are already gone, so the bytes are customer data with no
+   * owner left on disk until the next orphan sweep succeeds.
+   */
+  'screenshot_file_removal_failed',
 
   // --- agent binary serving ---------------------------------------------
   /** No promoted `agent_versions` row, so downloads fall back to the

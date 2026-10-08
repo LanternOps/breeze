@@ -117,8 +117,6 @@ export function claimToolUseId(
   const names = session.toolUseNames;
   if (!names) return session.toolUseIdQueue.shift();
 
-  // Every chat tool call is expected to carry the SDK id; without it, two
-  // parallel calls of the same tool can be mis-paired. Make that loud.
   reportMissingSdkToolUseId(session, toolName);
 
   const idx = session.toolUseIdQueue.findIndex((id) => names.get(id) === toolName);
@@ -132,15 +130,29 @@ export function claimToolUseId(
   return undefined;
 }
 
-const sessionsWarnedMissingId = new WeakSet<object>();
+const scopesWarnedMissingId = new WeakSet<object>();
 
-function reportMissingSdkToolUseId(session: object, toolName: string): void {
-  if (sessionsWarnedMissingId.has(session)) return;
-  sessionsWarnedMissingId.add(session);
+/**
+ * Every tool call is expected to carry the SDK id; without it, two parallel
+ * calls of the same tool can be mis-paired. Warns and reports to Sentry once
+ * per `scope` (a chat session, or one agent run's correlation state), so a CLI
+ * change that stops sending the id is loud without flooding the logs.
+ */
+export function reportMissingSdkToolUseId(
+  scope: object,
+  toolName: string,
+  surface: 'session' | 'agent_run' = 'session',
+): void {
+  if (scopesWarnedMissingId.has(scope)) return;
+  scopesWarnedMissingId.add(scope);
+  const where = surface === 'agent_run' ? 'agent run (#8163)' : 'session (#7931)';
   console.warn(
-    `[AI-SDK] tool call ${toolName} arrived without the SDK tool_use id (_meta['${SDK_TOOL_USE_ID_META_KEY}']) — pairing results by tool name for this session (#7931)`,
+    `[AI-SDK] tool call ${toolName} arrived without the SDK tool_use id (_meta['${SDK_TOOL_USE_ID_META_KEY}']) — pairing results by tool name for this ${where}`,
   );
-  captureMessage('AI tool call without SDK tool_use id', { eventCode: 'ai_tool_use_id_missing', level: 'warning' });
+  captureMessage(
+    surface === 'agent_run' ? 'AI agent-run tool call without SDK tool_use id' : 'AI tool call without SDK tool_use id',
+    { eventCode: 'ai_tool_use_id_missing', level: 'warning' },
+  );
 }
 
 /**

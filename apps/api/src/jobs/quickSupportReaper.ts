@@ -186,8 +186,8 @@ export async function reapOnce(): Promise<void> {
           if (await hasProtectedBackupSnapshots(tx, session.deviceId!)) {
             console.error(
               `[QuickSupportReaper] REFUSING to purge device ${session.deviceId} ` +
-              `(session ${session.id}) — it has a backup snapshot under legal hold ` +
-              `or inside its immutability window`,
+              `(session ${session.id}) — it has backups under legal hold (snapshot, ` +
+              `backup policy or configuration policy) or a snapshot inside its immutability window`,
             );
             return;
           }

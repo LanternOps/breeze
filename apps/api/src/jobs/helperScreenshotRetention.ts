@@ -1,6 +1,10 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
-import { deleteExpiredScreenshots } from '../services/screenshotStorage';
+import {
+  deleteExpiredScreenshots,
+  sweepOrphanedScreenshotFiles,
+  type OrphanSweepResult,
+} from '../services/screenshotStorage';
 import { attachWorkerObservability } from './workerObservability';
 import { jobSchedule } from './scheduleRegistry';
 
@@ -27,12 +31,32 @@ function getQueue(): Queue {
   return queue;
 }
 
-async function processJob(_job: Job): Promise<unknown> {
+/**
+ * One retention run: expire rows past `expires_at` (and their files), then
+ * remove files no row references (#8117) — leftovers from delete paths that
+ * could not unlink, and files orphaned before those paths removed them.
+ * Exported for tests.
+ */
+export async function runHelperScreenshotRetentionOnce(): Promise<{
+  deleted: number;
+  orphans: OrphanSweepResult;
+}> {
   const deleted = await deleteExpiredScreenshots();
   if (deleted > 0) {
     console.log(`[helperScreenshotRetention] swept ${deleted} expired screenshot(s)`);
   }
-  return { deleted };
+  const orphans = await sweepOrphanedScreenshotFiles();
+  if (orphans.removed > 0 || orphans.directoriesRemoved > 0) {
+    console.log(
+      `[helperScreenshotRetention] removed ${orphans.removed} orphaned screenshot file(s) `
+      + `and ${orphans.directoriesRemoved} empty director${orphans.directoriesRemoved === 1 ? 'y' : 'ies'}`,
+    );
+  }
+  return { deleted, orphans };
+}
+
+async function processJob(_job: Job): Promise<unknown> {
+  return runHelperScreenshotRetentionOnce();
 }
 
 async function scheduleRepeatableJob(): Promise<void> {
