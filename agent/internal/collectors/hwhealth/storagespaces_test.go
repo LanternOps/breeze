@@ -267,3 +267,19 @@ func TestSpacesAvailable(t *testing.T) {
 		})
 	}
 }
+
+// A successful probe that finds no pools is authoritative, so the remembered
+// members of a decommissioned pool are forgotten; otherwise a later probe
+// error on that host would re-invent the pool and restart the flapping.
+func TestSpacesAvailableForgetsMembersWhenPoolsGone(t *testing.T) {
+	remembered := map[string]string{"{0b6e5c7a-1111-2222-3333-444455556666}": "uid"}
+	if spacesAvailable(execResult{Stdout: []byte("0")}, nil, remembered) {
+		t.Fatal("zero pools reported available")
+	}
+	if len(remembered) != 0 {
+		t.Fatalf("remembered = %v, want empty", remembered)
+	}
+	if spacesAvailable(execResult{}, fmt.Errorf("timeout"), remembered) {
+		t.Fatal("probe error after decommission reported available")
+	}
+}

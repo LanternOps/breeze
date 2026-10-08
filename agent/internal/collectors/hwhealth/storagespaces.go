@@ -56,12 +56,18 @@ func memberUniqueID(d windowsDisk, remembered map[string]string, record bool) st
 // exit) proves nothing about pools, so it counts as present only on a host
 // that has reported pool members before (remembered is non-empty): a broken
 // pool then keeps failing visibly, while a pool-less host whose probe errors
-// stays unavailable instead of flapping failed/backing_off.
+// stays unavailable instead of flapping failed/backing_off. A successful probe
+// that finds no pools also forgets remembered members, so a decommissioned
+// pool cannot keep a later probe error counting as present.
 func spacesAvailable(o execResult, e error, remembered map[string]string) bool {
 	if e != nil || o.ExitCode != 0 {
 		return len(remembered) > 0
 	}
-	return number(strings.TrimSpace(string(o.Stdout))) > 0
+	if number(strings.TrimSpace(string(o.Stdout))) > 0 {
+		return true
+	}
+	clear(remembered)
+	return false
 }
 
 type windowsDisk struct {
