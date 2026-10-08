@@ -221,9 +221,11 @@ export function scoreEncryption(input: DeviceInput): FactorResult {
   };
 }
 
-function scoreAvHealth(input: DeviceInput): FactorResult {
-  const rtp = Boolean(input.security.realTimeProtection);
-  let score = rtp ? 85 : 20;
+export function scoreAvHealth(input: DeviceInput): FactorResult {
+  // A null reading means the agent's AV collector failed (#8043): score it as a
+  // neutral data gap like firewall/encryption do, not as protection off (#8252).
+  const rtp = input.security.realTimeProtection;
+  let score = rtp === true ? 85 : rtp === null ? 50 : 20;
   let confidence = input.security.realTimeProtection === null ? 0.3 : 0.9;
   const evidence: Record<string, unknown> = {
     realTimeProtection: input.security.realTimeProtection ?? null,

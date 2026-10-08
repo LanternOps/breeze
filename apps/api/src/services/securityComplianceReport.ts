@@ -454,8 +454,9 @@ export async function generateSecurityCompliancePostureReport(
     if (ss) reporting += 1;
     if (isManaged) managedEdr += 1;
     if (protection === 'protected') anyAv += 1;
-    // The report has no unknown protection bucket. An absent status row has
-    // always counted as unprotected here, so preserve that public contract.
+    // The report has no unknown protection bucket. An absent status row (and a
+    // null real-time-protection reading) has always counted as unprotected
+    // here, so preserve that public contract.
     if (protection !== 'protected') unprotected += 1;
 
     // Firewall/encryption are live device states that stop updating when a device
