@@ -384,8 +384,46 @@ describe('ClipboardSync paste transaction', () => {
     expect(order).toEqual(['send:one', 'dispatch:one', 'send:two', 'dispatch:two']);
   });
 
-  it('dispatches immediately when the channel is not open', async () => {
+  it('does not dispatch a paste queued behind one the channel close cancelled', async () => {
+    const { channel, sync } = setup({ local: { text: 'queued' } });
+    const first = vi.fn();
+    const second = vi.fn();
+    const a = sync.pasteTransaction(first);
+    const b = sync.pasteTransaction(second);
+    await sleep(5);
+    channel.closeNow();
+    expect(await a).toEqual({ result: 'failed', reason: 'closed' });
+    expect(await b).toEqual({ result: 'failed', reason: 'closed' });
+    expect(first).not.toHaveBeenCalled();
+    expect(second).not.toHaveBeenCalled();
+  });
+
+  it('does not re-upload a remote image it wrote locally (the local copy is re-encoded)', async () => {
+    const { channel, sync, io } = setup();
+    const remotePng = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1]);
+    const reencoded = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 2, 2]);
+    io.image = reencoded;
+    io.text = '';
+    channel.deliver({ type: 'image', image: bytesToBase64(remotePng), image_format: 'png' });
+    await flush();
+    expect(io.writeImage).toHaveBeenCalled();
+    const sends = channel.sent.length;
+    const dispatch = vi.fn();
+    expect(await sync.pasteTransaction(dispatch)).toEqual({ result: 'pasted' });
+    expect(channel.sent.length).toBe(sends);
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it('cancels a paste on a closing channel once the agent was known to ack', async () => {
     const { channel, sync } = setup({ local: { text: 'x' } });
+    channel.readyState = 'closing';
+    const dispatch = vi.fn();
+    expect(await sync.pasteTransaction(dispatch)).toEqual({ result: 'failed', reason: 'closed' });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('dispatches immediately on a channel that is not open for a legacy agent (W1)', async () => {
+    const { channel, sync } = setup({ local: { text: 'x' }, status: null });
     channel.readyState = 'closing';
     const dispatch = vi.fn();
     expect(await sync.pasteTransaction(dispatch)).toEqual({ result: 'pasted' });

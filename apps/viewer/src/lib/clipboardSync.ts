@@ -190,9 +190,13 @@ export class ClipboardSync {
   private status: ClipboardAgentStatus | null = null;
   private helloSent = false;
   private pushesSeen = 0;
-  /** Fingerprint of what both clipboards are believed to hold. */
-  private lastSyncedFp = '';
-  private remoteItem: ClipItem | null = null;
+  /**
+   * Fingerprints of what both clipboards are believed to hold. More than one:
+   * a remote image written here reads back re-encoded, with a different hash
+   * for the same picture.
+   */
+  private synced = new Set<string>();
+  private remoteItem: { item: ClipItem; fp: string } | null = null;
   private lastTransfer: ClipboardTransfer | null = null;
   private readonly ackWaiters = new Map<string, Array<(o: AckOutcome) => void>>();
   private queue: Promise<unknown> = Promise.resolve();
@@ -305,11 +309,12 @@ export class ClipboardSync {
       pushesSeen,
       suppressesBaseline: this.status?.suppressesBaseline ?? false,
     });
-    this.remoteItem = item;
     this.inbound = this.inbound.then(async () => {
-      this.lastSyncedFp = await fingerprintItem(item);
+      const fp = await fingerprintItem(item);
+      this.remoteItem = { item, fp };
+      this.markSynced(fp);
       if (decision === 'apply') {
-        await this.writeLocal(item);
+        await this.writeLocal(item, fp);
       } else {
         console.debug('[clipboard] remote clipboard not applied:', decision);
         this.emit();
@@ -317,14 +322,31 @@ export class ClipboardSync {
     });
   }
 
+  private markSynced(fp: string): void {
+    this.synced = new Set([fp]);
+  }
+
   /** Writes a remote item to the local clipboard. Only the focus rule or an explicit action calls this. */
-  private async writeLocal(item: ClipItem): Promise<boolean> {
+  private async writeLocal(item: ClipItem, fp: string): Promise<boolean> {
     try {
       if (item.type === 'text') await this.io.writeText(item.text);
       else await this.io.writeImage(item.image, item.format);
     } catch (err) {
       console.warn('[clipboard] failed to write remote→local:', err);
       return false;
+    }
+    // The local clipboard re-encodes an image, so a paste would read back
+    // different bytes and upload the same picture again. Record the read-back
+    // too — but only while the remote still holds this item.
+    if (item.type === 'image' && this.synced.has(fp)) {
+      try {
+        const back = await this.io.readImagePng();
+        if (back && back.length > 0 && this.synced.has(fp)) {
+          this.synced.add(await fingerprintItem({ type: 'image', image: back, format: 'png' }));
+        }
+      } catch {
+        // Best effort: without it the next paste re-sends, which is still correct.
+      }
     }
     this.lastTransfer = { direction: 'from-remote', type: item.type, bytes: itemBytes(item), at: this.now() };
     this.emit();
@@ -335,7 +357,7 @@ export class ClipboardSync {
   async copyRemoteClipboard(): Promise<boolean> {
     await this.inbound;
     if (!this.remoteItem) return false;
-    return this.writeLocal(this.remoteItem);
+    return this.writeLocal(this.remoteItem.item, this.remoteItem.fp);
   }
 
   // ── outbound ────────────────────────────────────────────────────────
@@ -454,7 +476,7 @@ export class ClipboardSync {
     if (!status) {
       // Agents that predate the ack exist: cache on send and go ahead after a
       // short wait whatever happens (W1 behaviour).
-      this.lastSyncedFp = fp;
+      this.markSynced(fp);
       this.lastTransfer = { direction: 'to-remote', type: item.type, bytes, at: this.now() };
       this.emit();
       await ack.wait(this.timings.legacyAckMs);
@@ -470,7 +492,7 @@ export class ClipboardSync {
     }
     const outcome = await ack.wait(this.timings.ackMs);
     if (outcome !== 'ack' || this.closed) return outcome === 'timeout' ? 'no-ack' : 'closed';
-    this.lastSyncedFp = fp;
+    this.markSynced(fp);
     this.lastTransfer = { direction: 'to-remote', type: item.type, bytes, at: this.now() };
     this.emit();
     return 'ok';
@@ -486,11 +508,15 @@ export class ClipboardSync {
    */
   pasteTransaction(dispatch: () => void): Promise<PasteOutcome> {
     return this.enqueue(async () => {
+      const status = this.status;
       if (this.closed || this.channel.readyState !== 'open') {
+        // An agent that acks had a working channel, and this paste may be one
+        // queued behind a push the close cancelled: the keystroke would land
+        // on whatever input path is current, pasting stale content.
+        if (status) return { result: 'failed', reason: 'closed' } as const;
         dispatch();
         return { result: 'pasted' } as const;
       }
-      const status = this.status;
       // Disabled by policy: the agent would drop the push. Ctrl+V still pastes
       // the remote's own clipboard, so the keystroke goes through.
       if (status && !status.viewerToHost) {
@@ -505,7 +531,7 @@ export class ClipboardSync {
       const fp = await fingerprintItem(item);
       // Skip what the remote already holds — but only while host→viewer is on.
       // With it off, a remote copy since the last sync is invisible here.
-      if (fp === this.lastSyncedFp && (!status || status.hostToViewer)) {
+      if (this.synced.has(fp) && (!status || status.hostToViewer)) {
         dispatch();
         return { result: 'pasted' } as const;
       }
