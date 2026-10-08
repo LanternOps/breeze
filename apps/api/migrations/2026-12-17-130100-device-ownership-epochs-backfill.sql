@@ -1,13 +1,19 @@
 -- PAM ownership epochs W1 (#8203, feature #8202): epoch-1 backfill.
 --
 -- Separate from 2026-12-17-130000 so that file's ACCESS EXCLUSIVE lock on
--- devices (ADD COLUMN) is released before this reads the whole table. Every
+-- devices (ADD COLUMN) is released before this scans the whole table. Every
 -- device gets the epoch row it would have received at enrollment, tagged
 -- cause 'backfill'. Keyset batches of 5000 by device id; a device that
 -- already has any epoch row (enrolled after 130000 ran) is skipped, so
 -- re-applying is a no-op. Reports the row count.
 
 SELECT set_config('breeze.scope', 'system', true);
+
+-- devices_ownership_epoch_chk was added NOT VALID in 130000. Validating here,
+-- in a separate transaction, scans devices under SHARE UPDATE EXCLUSIVE
+-- (reads and writes continue) instead of under 130000's ACCESS EXCLUSIVE.
+-- Re-validating an already-valid constraint is a no-op.
+ALTER TABLE public.devices VALIDATE CONSTRAINT devices_ownership_epoch_chk;
 
 DO $$
 DECLARE

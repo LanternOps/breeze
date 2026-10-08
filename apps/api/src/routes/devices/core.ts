@@ -642,11 +642,15 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'recovery_key_access_events', 'device_recovery_keys',
   'pam_actuations', 'pam_actuation_results',
   // PAM ownership-epoch lineage (#8203). No FK to devices on the two epoch
-  // tables (spec §4.4) — this app-level DELETE is what reclaims them, and it
-  // runs under the caller's RLS, so only epochs of orgs the deleter can see
-  // go. Closures FK -> epochs, so closures first. pam_ledger_retirements
-  // also cascades from devices by FK. W2 narrows this to the exact current
-  // epoch once PAM rows are epoch-anchored.
+  // tables (spec §4.4) — this app-level DELETE is what reclaims them.
+  // deviceDeletion runs in a SYSTEM context and deletes by device_id alone,
+  // so today it removes EVERY epoch and closure of the device, earlier orgs'
+  // included. That is acceptable only while no device with PAM evidence can
+  // change org (devices_pam_history_move_guard): a multi-epoch device carries
+  // lineage but no evidence. W2 (#8202) MUST narrow both entries to the exact
+  // current epoch, (device_id, org_id, epoch) = the live device's, before any
+  // PAM-touched device may move. Closures FK -> epochs, so closures first.
+  // pam_ledger_retirements also cascades from devices by FK.
   'device_ownership_epoch_closures', 'device_ownership_epochs', 'pam_ledger_retirements',
   'peripheral_policy_delivery_events', 'peripheral_policy_device_states', 'peripheral_events',
   'agent_rollback_events', 'agent_rollback_directives',

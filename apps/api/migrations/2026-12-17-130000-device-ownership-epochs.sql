@@ -6,15 +6,16 @@
 -- move guard (devices_pam_history_move_guard) and the org-merge blocks-merge
 -- policy keep refusing every PAM-touched move/merge until W6.
 --
--- devices is a hot table. Nothing here rewrites it:
---   * ADD COLUMN ... NOT NULL DEFAULT 1 (constant default) is catalog-only.
---   * The CHECK is added NOT VALID and validated separately (validation scans
---     but takes only SHARE UPDATE EXCLUSIVE).
---   * Both new devices triggers are column-scoped (UPDATE OF org_id /
---     UPDATE OF ownership_epoch), so heartbeat/status UPDATEs never fire them.
---   * The epoch-1 backfill lives in the NEXT migration (130100), so the
---     ACCESS EXCLUSIVE lock this file takes on devices is released before the
---     backfill reads the table.
+-- devices is a hot table. Nothing here rewrites or scans it:
+--   * ADD COLUMN ... NOT NULL DEFAULT 1 (constant default) is catalog-only,
+--     but takes ACCESS EXCLUSIVE, held until this file's transaction commits.
+--   * The CHECK is added NOT VALID here (no scan). Its VALIDATE, and the
+--     epoch-1 backfill, live in the NEXT migration (130100), which runs in its
+--     own transaction after this lock is released; VALIDATE there takes only
+--     SHARE UPDATE EXCLUSIVE.
+--   * The two new UPDATE triggers on devices are column-scoped (UPDATE OF
+--     org_id / UPDATE OF ownership_epoch), so heartbeat/status UPDATEs never
+--     fire them. The third (init) fires only on INSERT (enrollment).
 --
 -- Writes to the three lineage tables happen only inside SECURITY DEFINER
 -- trigger functions. breeze_app keeps SELECT (RLS-filtered) and DELETE
@@ -38,7 +39,7 @@ BEGIN
       ADD CONSTRAINT devices_ownership_epoch_chk CHECK (ownership_epoch >= 1) NOT VALID;
   END IF;
 END $$;
-ALTER TABLE public.devices VALIDATE CONSTRAINT devices_ownership_epoch_chk;
+-- VALIDATE runs in 2026-12-17-130100 (see header).
 
 -- ---------------------------------------------------------------------------
 -- Lineage tables
@@ -193,7 +194,7 @@ CREATE OR REPLACE FUNCTION public.breeze_device_ownership_epoch_init()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, pg_catalog
+SET search_path = pg_catalog, public
 SET "breeze.scope" = 'system'
 AS $$
 BEGIN
@@ -232,7 +233,7 @@ CREATE OR REPLACE FUNCTION public.breeze_device_ownership_epoch_advance()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, pg_catalog
+SET search_path = pg_catalog, public
 SET "breeze.scope" = 'system'
 AS $$
 DECLARE
@@ -240,6 +241,11 @@ DECLARE
 BEGIN
   IF NEW.org_id IS NOT DISTINCT FROM OLD.org_id THEN
     RETURN NEW;
+  END IF;
+
+  IF change_cause NOT IN ('device_move', 'org_merge', 'unspecified') THEN
+    RAISE WARNING 'breeze.ownership_change_cause % is not an ownership-change cause; device % epoch % recorded as unspecified',
+      change_cause, OLD.id, OLD.ownership_epoch + 1;
   END IF;
 
   -- Self-heal a departing epoch row that is missing (a device inserted with
@@ -287,8 +293,12 @@ REVOKE ALL ON FUNCTION public.breeze_device_ownership_epoch_advance() FROM PUBLI
 -- ---------------------------------------------------------------------------
 -- Generic device-move org_id restamp must never touch lineage (it is appended
 -- by the trigger above, never rewritten; the tables are also UPDATE-blocked).
--- Full current body from 2026-10-08-101300-device-move-exclude-billing-evidence.sql,
--- with only the three lineage tables added to the exclusion list.
+-- Body copied VERBATIM from the newest definition,
+-- 2026-11-08-170000-fix-memory-tables.sql section 4 (verified with
+-- `grep -l 'FUNCTION public.breeze_device_child_orgid_tables' apps/api/migrations/*.sql | sort`
+-- — re-run it before committing and re-copy from the newest hit if that
+-- changed), with only the three lineage tables added to the NOT IN list.
+-- deviceOwnershipEpochs.integration.test.ts pins the full exclusion set.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.breeze_device_child_orgid_tables()
   RETURNS SETOF text
@@ -312,15 +322,34 @@ CREATE OR REPLACE FUNCTION public.breeze_device_child_orgid_tables()
     -- the end of the trigger's own statement. moveOrg.ts detaches device_id
     -- instead, and that statement is LOAD-BEARING, not a mirror of this loop
     -- (#3205 W07).
+    -- ai_operator_tasks: AI Operator task history stays with the SOURCE org
+    -- (#5205 W03, #5208). org_id is immutable and anchors composite
+    -- (x, org_id) FKs, so a re-stamp aborts the move as soon as the task has
+    -- an operation, an outbox wake, a target, a step, an event, a linked run
+    -- or a linked intent. moveOrg.ts and this trigger both detach device_id
+    -- and fence the task instead.
+    -- ai_operator_task_targets (recipe library E2): same rule one level down.
+    -- The target's org_id is its TASK's org_id and anchors
+    -- ai_operator_task_targets_task_org_fk, so re-stamping it to the
+    -- destination org while the task stays behind aborts the move with 23503.
+    -- Section 9 detaches device_id and stamps the reason instead.
+    -- fix_outcomes (AI Suggested Fixes W1): attempt history stays with the org
+    -- the attempt ran in; (org_id, partner_id) composite FK would 23503 on a
+    -- cross-partner move. The outcome sweeper cancels in-flight rows whose
+    -- device left the org.
     -- device_ownership_epochs / device_ownership_epoch_closures: ownership
     -- lineage is append-only; an org change appends a new epoch through
-    -- breeze_device_ownership_epoch_advance() instead (PAM ownership epochs,
-    -- spec §4). pam_ledger_retirements has no org_id; listed for clarity.
+    -- breeze_device_ownership_epoch_advance() instead (PAM ownership epochs
+    -- #8203, spec §4). pam_ledger_retirements has no org_id; listed for clarity.
     AND t.relname NOT IN (
       'ai_agent_runs',
+      'ai_operator_tasks',
+      'ai_operator_task_targets',
       'pam_actuations',
       'pam_actuation_results',
       'invoice_line_devices',
+      'offline_transition_effects',
+      'fix_outcomes',
       'device_ownership_epochs',
       'device_ownership_epoch_closures',
       'pam_ledger_retirements'

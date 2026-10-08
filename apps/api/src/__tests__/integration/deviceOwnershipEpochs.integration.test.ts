@@ -338,6 +338,9 @@ describe('device ownership epochs — advance on org change', () => {
     const device = await createDevice({ orgId: a.id, siteId: siteA.id });
     const act1 = await seedPamActuation(a.id, siteA.id, partner.id, device.id);
     const act2 = await seedPamActuation(a.id, siteA.id, partner.id, device.id);
+    // Decoy: another device's actuation in the same source org must not be retired.
+    const otherDevice = await createDevice({ orgId: a.id, siteId: siteA.id });
+    await seedPamActuation(a.id, siteA.id, partner.id, otherDevice.id);
 
     const client = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
     const ROLLBACK = new Error('rollback sentinel');
@@ -403,12 +406,49 @@ describe('device ownership epochs — advance on org change', () => {
     expect((await closuresOf(legacy)).map((c) => c.epoch)).toEqual([1]);
   });
 
-  it('the generic device-move org_id restamp never discovers the lineage tables', async () => {
+  it('the generic device-move org_id restamp excludes exactly the source-frozen tables, lineage included', async () => {
+    // Pins the FULL exclusion set, not just the new names: this migration
+    // redefines breeze_device_child_orgid_tables(), and a body copied from a
+    // stale definition silently drops earlier exclusions.
     const rows = await getTestDb().execute<{ t: string }>(sql`SELECT public.breeze_device_child_orgid_tables() AS t`);
     const discovered = new Set(rows.map((r) => r.t));
-    for (const table of LINEAGE_TABLES) expect(discovered.has(table), table).toBe(false);
+    const candidates = await getTestDb().execute<{ t: string }>(sql`
+      SELECT c.relname::text AS t
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname <> 'devices'
+        AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'device_id'
+                      AND NOT a.attisdropped AND a.atttypid = 'uuid'::regtype)
+        AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'org_id'
+                      AND NOT a.attisdropped AND a.atttypid = 'uuid'::regtype)`);
+    const excluded = candidates.map((r) => r.t).filter((t) => !discovered.has(t)).sort();
+    expect(excluded).toEqual([
+      'ai_agent_runs',
+      'ai_operator_task_targets',
+      'ai_operator_tasks',
+      'device_ownership_epoch_closures',
+      'device_ownership_epochs',
+      'fix_outcomes',
+      'invoice_line_devices',
+      'offline_transition_effects',
+      'pam_actuation_results',
+      'pam_actuations',
+    ]);
     // Sanity: discovery still works for an ordinary device child.
     expect(discovered.has('device_group_memberships')).toBe(true);
+  });
+
+  it('a departing epoch row recorded under a DIFFERENT org fails the move loudly and writes nothing', async () => {
+    const { a, b, siteA, siteB } = await twoOrgs();
+    const legacy = await insertDeviceWithoutTriggers(a.id, siteA.id);
+    // Corrupt lineage: epoch 1 claims org B while the device is in org A.
+    await getTestDb().execute(sql`
+      INSERT INTO device_ownership_epochs (device_id, epoch, org_id, site_id, cause)
+      VALUES (${legacy}, 1, ${b.id}, ${siteB.id}, 'backfill')`);
+
+    await expectPgCode(() => moveDevice(legacy, b.id, siteB.id, 'device_move'), '23503');
+
+    expect(await currentEpoch(legacy)).toBe(1);
+    expect(await lineageCounts(legacy)).toEqual({ epochs: 1, closures: 0, retirements: 0 });
   });
 
   it('closures and epochs are visible only to the org that owned the epoch', async () => {
