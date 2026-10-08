@@ -46,6 +46,18 @@ import { resolveMonitorsForDevice } from '../../services/monitors/monitorResolve
 import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
 import { resolveDeviceTimeSyncSettings } from '../../services/timeSync/settings';
 import { buildResolvedTimeSyncConfigUpdate } from '../../services/timeSync/configUpdate';
+import {
+  buildEventLogConfigUpdate,
+  buildHardwareMonitoringConfigUpdate,
+  buildMonitoringConfigUpdate,
+  buildOnedriveHelperConfigUpdate,
+  buildPamConfigUpdate,
+  buildPatchSourceConfigUpdate,
+  buildPolicyProbeConfigUpdate,
+  buildTimeSyncConfigUpdate,
+  buildWarrantyConfigUpdate,
+} from '../../routes/agents/helpers';
+import { buildHelperConfigUpdate } from '../../services/helperSettings';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestRedis } from './setup';
 
@@ -220,6 +232,18 @@ const NON_TRIVIAL: Record<string, (own: any) => void> = {
     expect(o.settings).toMatchObject({ enforceNtp: true, ntpServers: ['time.parity.example'], pollIntervalMinutes: 30 });
   },
   buildResolvedTimeSyncConfigUpdate: (o) => expect(o).toMatchObject({ enforce_ntp: true, poll_interval_minutes: 30 }),
+  buildEventLogConfigUpdate: (o) => expect(o).toMatchObject({ max_events_per_cycle: 321 }),
+  buildPamConfigUpdate: (o) => expect(o).toEqual({ uacInterceptionEnabled: true }),
+  buildPatchSourceConfigUpdate: (o) => expect(o).toEqual({ exclusiveWindowsUpdate: expect.any(Boolean) }),
+  buildWarrantyConfigUpdate: (o) => expect(o).toEqual({ hpCmslEnabled: expect.any(Boolean) }),
+  buildTimeSyncConfigUpdate: (o) => expect(o).toMatchObject({ enforce_ntp: true, poll_interval_minutes: 30 }),
+  buildMonitoringConfigUpdate: (o) => expect(o).not.toBeNull(),
+  buildHelperConfigUpdate: (o) => expect(o).toBeTruthy(),
+  // No hardware_monitoring / onedrive policy is seeded: these two answer the
+  // default / null for the fixture, so their parity is structural only (the
+  // foreign-hierarchy refusal test is the discriminating check for them).
+  buildHardwareMonitoringConfigUpdate: () => {},
+  buildOnedriveHelperConfigUpdate: () => {},
 };
 
 async function expectParity(name: string, resolve: Resolver): Promise<void> {
@@ -248,6 +272,18 @@ const SERVICE_RESOLVERS: Array<[string, Resolver]> = [
   ['buildResolvedTimeSyncConfigUpdate', (id, o) => buildResolvedTimeSyncConfigUpdate(id, o)],
 ];
 
+const ROUTE_BUILDERS: Array<[string, Resolver]> = [
+  ['buildEventLogConfigUpdate', (id, o) => buildEventLogConfigUpdate(id, o)],
+  ['buildHardwareMonitoringConfigUpdate', (id, o) => buildHardwareMonitoringConfigUpdate(id, o)],
+  ['buildMonitoringConfigUpdate', (id, o) => buildMonitoringConfigUpdate(id, o)],
+  ['buildPamConfigUpdate', (id, o) => buildPamConfigUpdate(id, o)],
+  ['buildPatchSourceConfigUpdate', (id, o) => buildPatchSourceConfigUpdate(id, o)],
+  ['buildWarrantyConfigUpdate', (id, o) => buildWarrantyConfigUpdate(id, o)],
+  ['buildTimeSyncConfigUpdate', (id, o) => buildTimeSyncConfigUpdate(id, o)],
+  ['buildOnedriveHelperConfigUpdate', (id, o) => buildOnedriveHelperConfigUpdate(id, o)],
+  ['buildHelperConfigUpdate', (id, o) => buildHelperConfigUpdate(id, f.orgId, o)],
+];
+
 describe('policy resolvers: passed hierarchy parity (#8053 W1a-1) — real PostgreSQL', () => {
   beforeEach(async () => {
     if (!process.env.DATABASE_URL) return;
@@ -258,6 +294,41 @@ describe('policy resolvers: passed hierarchy parity (#8053 W1a-1) — real Postg
     runDb(`${name}: same answer with the passed hierarchy`, () => expectParity(name, resolve));
     runDb(`${name}: refuses another device's hierarchy`, () => expectForeignRefused(name, resolve));
   }
+
+  for (const [name, resolve] of ROUTE_BUILDERS) {
+    runDb(`${name}: same answer with the passed hierarchy`, () => expectParity(name, resolve));
+    runDb(`${name}: refuses another device's hierarchy`, () => expectForeignRefused(name, resolve));
+  }
+
+  runDb('negative control: a hierarchy with no org drops the partner-wide event_log and pam policies', async () => {
+    const hierarchy = await loadHierarchy();
+    const noOrg: DeviceHierarchy = { ...hierarchy, org: null };
+    await dropDeviceRedisCaches(f.deviceId);
+    expect(await sys(() => buildEventLogConfigUpdate(f.deviceId))).toMatchObject({ max_events_per_cycle: 321 });
+    await dropDeviceRedisCaches(f.deviceId);
+    expect(await sys(() => buildEventLogConfigUpdate(f.deviceId, { hierarchy: noOrg }))).toMatchObject({ max_events_per_cycle: 100 });
+    await dropDeviceRedisCaches(f.deviceId);
+    expect(await sys(() => buildPamConfigUpdate(f.deviceId))).toEqual({ uacInterceptionEnabled: true });
+    await dropDeviceRedisCaches(f.deviceId);
+    expect(await sys(() => buildPamConfigUpdate(f.deviceId, { hierarchy: noOrg }))).toEqual({ uacInterceptionEnabled: false });
+  });
+
+  runDb('negative control: the role in the hierarchy decides a role-filtered policy', async () => {
+    const hierarchy = await loadHierarchy();
+    await dropDeviceRedisCaches(f.deviceId);
+    expect(await sys(() => buildEventLogConfigUpdate(f.deviceId, { hierarchy: { ...hierarchy, deviceRole: 'printer' } })))
+      .toMatchObject({ max_events_per_cycle: 100 });
+  });
+
+  runDb('policy probe: the passed partner id gives the same probe list as the org read', async () => {
+    const own = await sys(() => buildPolicyProbeConfigUpdate(f.orgId));
+    const passed = await sys(() => buildPolicyProbeConfigUpdate(f.orgId, { partnerId: f.partnerId }));
+    expect(own?.policy_registry_state_probes).toEqual([{ registry_path: 'HKLM\\SOFTWARE\\BreezeParity', value_name: 'Value' }]);
+    expect(passed).toEqual(own);
+    // Discriminates: with partnerId null the partner-wide probe disappears.
+    const orgOnly = await sys(() => buildPolicyProbeConfigUpdate(f.orgId, { partnerId: null }));
+    expect(orgOnly?.policy_registry_state_probes).toEqual([]);
+  });
 
   runDb('negative control: wrong groups change the helper and warranty answers (the hierarchy is really used)', async () => {
     const hierarchy = await loadHierarchy();

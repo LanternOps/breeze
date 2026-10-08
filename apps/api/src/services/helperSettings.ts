@@ -185,7 +185,9 @@ const HELPER_CACHE_TTL_SECONDS = 120;
  * Falls back to org-level helperEnabled for backward compatibility,
  * then to defaults if no policy found.
  */
-export async function buildHelperConfigUpdate(deviceId: string, orgId: string): Promise<HelperSettings> {
+export async function buildHelperConfigUpdate(deviceId: string, orgId: string, opts?: DeviceHierarchyOpts): Promise<HelperSettings> {
+  // Validate before the cache short-circuit: a foreign hierarchy is a bug even on a hit.
+  hierarchyFor(deviceId, opts);
   const redis = getRedis();
   const cacheKey = `helper:settings:device:${deviceId}`;
 
@@ -199,7 +201,7 @@ export async function buildHelperConfigUpdate(deviceId: string, orgId: string): 
   }
 
   // Try config policy resolution first
-  let settings = await resolveDeviceHelperSettings(deviceId);
+  let settings = await resolveDeviceHelperSettings(deviceId, opts);
 
   // Legacy org-level fallback applies ONLY when no policy matched at all. An
   // explicit enabled:false policy must win over organizations.settings.helper
