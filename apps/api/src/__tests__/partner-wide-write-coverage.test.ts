@@ -226,6 +226,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/contacts/compat.ts': 'updates one org\'s legacy billing-contact blob by org id',
   'services/autopay/billingPaymentSettings.ts': 'C4 settings mutators have one HTTP caller, routes/billingPaymentSettings.ts, which checks billing:manage plus canManagePartnerWidePolicies before partner writes; strict schemas reject owner/provenance writes and org attestation',
   'services/invoiceService.ts': 'org billing settings + time-entry billing status, org-axis authority',
+  'services/contractHourBlockClose.ts': 'block-hours period close (#8181): flips one org\'s not_billed time entries to contract inside the system billing run / close-out sweep, filtered by the contract\'s org_id — same billing-status class as invoiceService.ts; no caller-facing route, never partner-wide config',
   'services/orgCurrencyService.ts': 'updates the selected organization\'s currency by org id',
   'services/orgImport/index.ts': 'org import creates org-axis rows across the resolved partner under system context; every HTTP entry point requires canManagePartnerWidePolicies, while mutating and CSV/PSA preview routes additionally require organizations:write and sites:write',
   'services/quickSupportOrg.ts': 'quick-support provisioning creates an org-axis container',

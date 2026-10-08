@@ -88,7 +88,7 @@ describe('block close concurrency (real DB) #8181', () => {
     const rows = await sys(() => db.select().from(contractHourPeriods).where(eq(contractHourPeriods.contractLineId, f.blockLineId)));
     expect(rows).toHaveLength(1);
     const overageLines = await sys(() => db.select().from(invoiceLines).where(eq(invoiceLines.sourceId, f.blockLineId)));
-    expect(overageLines.filter((l) => l.description.includes('hours over block'))).toHaveLength(1);
+    expect(overageLines.filter((l) => (l.description ?? '').includes('hours over block'))).toHaveLength(1);
   });
 });
 
