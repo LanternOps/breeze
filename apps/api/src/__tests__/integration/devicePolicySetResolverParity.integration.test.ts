@@ -30,6 +30,7 @@ import { buildResolvedTimeSyncConfigUpdate } from '../../services/timeSync/confi
 import {
   buildEventLogConfigUpdate,
   buildMonitoringConfigUpdate,
+  buildOnedriveHelperConfigUpdate,
   buildHardwareMonitoringConfigUpdate,
   buildPamConfigUpdate,
   buildPatchSourceConfigUpdate,
@@ -128,6 +129,9 @@ const RESOLVERS: Array<[string, Resolver, (answer: any) => void, (emptyAnswer: a
   ['buildMonitoringConfigUpdate', (id, o) => buildMonitoringConfigUpdate(id, o),
     (a) => expect(a).toMatchObject({ check_interval_seconds: 120, watches: [expect.objectContaining({ name: 'ParityService' })] }),
     (e) => expect(e).toEqual({ check_interval_seconds: 60, watches: [] })],
+  ['buildOnedriveHelperConfigUpdate', (id, o) => buildOnedriveHelperConfigUpdate(id, o),
+    (a) => expect(a).toMatchObject({ base: { filesOnDemand: false }, libraries: [expect.objectContaining({ displayName: 'Parity Docs', allowedUpns: [] })] }),
+    (e) => expect(e).toBeNull()],
 ];
 
 describe('heartbeat policy resolvers: three-way parity with the policy set (#8142) — real PostgreSQL', () => {

@@ -77,7 +77,8 @@ import {
   buildResolvedWorkloadInventoryConfigUpdate,
   type WorkloadInventoryConfigUpdate,
 } from '../../services/workloads/configUpdate';
-import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
+import { loadLegacyDirectConnection, type LegacyDirectConnection } from '../../services/m365DirectGraph';
+import { peekUserGroupMembershipCached, resolveUserGroupMembershipCached, type GroupMembershipResult } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
 import { orgAgentUpdateConfigCache } from '../../services/agentOrgSettingsCache';
 import { isParkedDevice } from '../../services/unassignedPool/deliveryEligibility';
@@ -3482,9 +3483,60 @@ export interface OnedriveConfigUpdate {
   }>;
 }
 
-async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<OnedriveConfigUpdate | null> {
+/** #8142: OneDrive's own rules — ORG-ONLY ownership (ORG_SCOPED_ONLY_FEATURE_TYPES), raw partner target, no role/OS. */
+const ONEDRIVE_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOnly', partnerTarget: 'partner', roleOs: 'none' };
+
+type OnedriveLibraryRow = typeof configPolicyOnedriveLibraries.$inferSelect;
+type OnedriveWinnerRow = {
+  level: string; assignmentPriority: number; settingsId: string;
+  silentAccountConfig: boolean; filesOnDemand: boolean; kfmSilentOptIn: boolean; kfmFolders: unknown;
+  kfmBlockOptOut: boolean; tenantAssociationId: string | null; restartOnChange: boolean;
+};
+
+export interface OnedriveUpnLookup {
+  readonly upn: string;
+  /** The membership-cache result captured in the DB phase; null = a miss the Graph phase resolves. */
+  readonly cached: GroupMembershipResult | null;
+}
+
+/**
+ * Everything the OneDrive build needs from the database (#8142). Built inside
+ * the heartbeat's policy context; `finishOnedriveHelperConfig` turns it into the
+ * wire payload AFTER that context commits, with no DB access (#1105: no pooled
+ * connection is ever held across a Graph call).
+ */
+export interface OnedriveConfigPlan {
+  readonly deviceId: string;
+  readonly orgId: string;
+  readonly base: OnedriveConfigUpdate['base'];
+  readonly libs: OnedriveLibraryRow[];
+  /** One per deduplicated reported UPN, in report order; empty when nothing needs Graph tagging. */
+  readonly upnLookups: readonly OnedriveUpnLookup[];
+  /** Loaded iff some lookup missed: the org's active legacy-direct connection, or null. */
+  readonly connection: LegacyDirectConnection | null;
+}
+
+function onedriveWinnerFromRows(rows: OnedriveWinnerRow[]): OnedriveWinnerRow | null {
+  return [...rows].sort(compareLevelThenPriority)[0] ?? null;
+}
+
+async function selectOnedriveWinner(deviceId: string, opts?: DevicePolicySetOpts): Promise<{ orgId: string; winner: OnedriveWinnerRow } | null> {
   const passed = hierarchyFor(deviceId, opts);
-  // 1. Load device
+  const set = policySetFor(deviceId, opts);
+  if (set) {
+    const winner = onedriveWinnerFromRows(candidatesWithLink(set, 'onedrive_helper', ONEDRIVE_APPLICABILITY).flatMap(({ candidate, link }) =>
+      link.onedrive
+        ? [{
+          level: candidate.level, assignmentPriority: candidate.priority, settingsId: link.onedrive.id,
+          silentAccountConfig: link.onedrive.silentAccountConfig, filesOnDemand: link.onedrive.filesOnDemand,
+          kfmSilentOptIn: link.onedrive.kfmSilentOptIn, kfmFolders: link.onedrive.kfmFolders,
+          kfmBlockOptOut: link.onedrive.kfmBlockOptOut, tenantAssociationId: link.onedrive.tenantAssociationId,
+          restartOnChange: link.onedrive.restartOnChange,
+        }]
+        : []));
+    return winner ? { orgId: set.hierarchy.orgId, winner } : null;
+  }
+  // ---- read path: the former resolveDeviceOnedriveSettings steps 1–6, plus ORDER BY.
   const [device] = passed
     ? [{ orgId: passed.orgId, siteId: passed.siteId }]
     : await db
@@ -3492,10 +3544,8 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
       .from(devices)
       .where(eq(devices.id, deviceId))
       .limit(1);
-
   if (!device) return null;
 
-  // 2. Load org (for partnerId)
   const [org] = passed
     ? (passed.org ? [{ partnerId: passed.org.partnerId }] : [])
     : await db
@@ -3504,7 +3554,6 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
       .where(eq(organizations.id, device.orgId))
       .limit(1);
 
-  // 3. Load device group memberships
   const groupIds = passed
     ? [...passed.groupIds]
     : (await db
@@ -3512,7 +3561,6 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
       .from(deviceGroupMemberships)
       .where(eq(deviceGroupMemberships.deviceId, deviceId))).map((r) => r.groupId);
 
-  // 4. Build target match conditions (closest-level-wins hierarchy)
   const targetConditions = [
     and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, deviceId)),
     and(eq(configPolicyAssignments.level, 'site'), eq(configPolicyAssignments.targetId, device.siteId)),
@@ -3529,8 +3577,6 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
     );
   }
 
-  // 5. Single query: assignments → active policies → onedrive_helper feature link → settings
-  //
   // DELIBERATELY org-only, unlike the sibling resolvers fixed for #2930.
   // `onedrive_helper` is the sole member of ORG_SCOPED_ONLY_FEATURE_TYPES
   // (packages/shared/src/constants/configFeatureTypes.ts): its settings carry
@@ -3538,8 +3584,6 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
   // org to anchor to, and featureLinks.ts rejects the link with a 400 at write
   // time. A partner-owned row therefore cannot exist here — adding the
   // dual-axis predicate would be dead code that implies support we don't have.
-  // Supporting partner-wide OneDrive is a schema/product change, not a resolver
-  // fix.
   const rows = await db
     .select({
       level: configPolicyAssignments.level,
@@ -3564,19 +3608,18 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
       eq(configurationPolicies.status, 'active'),
       eq(configurationPolicies.orgId, device.orgId),
       or(...targetConditions),
-    ));
+    ))
+    .orderBy(asc(configPolicyAssignments.createdAt), asc(configPolicyAssignments.id));
 
-  if (rows.length === 0) return null;
+  const winner = onedriveWinnerFromRows(rows);
+  return winner ? { orgId: device.orgId, winner } : null;
+}
 
-  // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  rows.sort((a, b) => {
-    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
-    if (levelDiff !== 0) return levelDiff;
-    return a.assignmentPriority - b.assignmentPriority;
-  });
-
-  const winner = rows[0];
-  if (!winner) return null;
+/** DB phase (#8142). Issues only DB reads; never calls Graph. */
+export async function loadOnedriveHelperConfigPlan(deviceId: string, opts?: DevicePolicySetOpts): Promise<OnedriveConfigPlan | null> {
+  const selected = await selectOnedriveWinner(deviceId, opts);
+  if (!selected) return null;
+  const { orgId, winner } = selected;
 
   // 7. Load enabled libraries for the winning settings row, in sort order
   const libs = await db
@@ -3596,7 +3639,7 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
       .limit(1)
     : [];
 
-  // Phase 4: tag enabled graph_group libraries with the reported UPNs whose
+  // Phase 4: graph_group libraries are tagged with the reported UPNs whose
   // transitive Entra membership includes the rule's groupId. Fail closed:
   // no UPNs / no groupId / Graph error → no tag → the agent never mounts it.
   const graphRules = libs.filter((l) => l.targetingMode === 'graph_group' && l.groupId);
@@ -3622,12 +3665,40 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
     seenUpns.add(key);
     return true;
   });
+
+  const tagging = graphRules.length > 0 && upns.length > 0;
+  const upnLookups: OnedriveUpnLookup[] = tagging
+    ? upns.map((upn) => ({ upn, cached: peekUserGroupMembershipCached(orgId, upn) }))
+    : [];
+  const connection = upnLookups.some((l) => l.cached === null) ? await loadLegacyDirectConnection(orgId) : null;
+
+  return {
+    deviceId,
+    orgId,
+    base: {
+      silentAccountConfig: winner.silentAccountConfig,
+      filesOnDemand: winner.filesOnDemand,
+      kfmSilentOptIn: winner.kfmSilentOptIn,
+      kfmFolders: (winner.kfmFolders as string[]) ?? [],
+      kfmBlockOptOut: winner.kfmBlockOptOut,
+      tenantAssociationId: winner.tenantAssociationId,
+      restartOnChange: winner.restartOnChange,
+    },
+    libs,
+    upnLookups,
+    connection,
+  };
+}
+
+/** Graph phase (#8142). No DB access: captured hits are reused, misses use the preloaded connection. */
+export async function finishOnedriveHelperConfig(plan: OnedriveConfigPlan): Promise<OnedriveConfigUpdate> {
   // Group ids are GUIDs from two sources (Graph responses vs. the stored rule,
   // which future entry paths may brace/uppercase) — normalize both sides so a
   // formatting mismatch can't silently fail-close the library forever.
   const normalizeGuid = (g: string) => g.replace(/^\{|\}$/g, '').toLowerCase();
+  const graphRules = plan.libs.filter((l) => l.targetingMode === 'graph_group' && l.groupId);
   const allowedByLib = new Map<string, string[]>();
-  if (graphRules.length > 0 && upns.length > 0) {
+  if (graphRules.length > 0 && plan.upnLookups.length > 0) {
     // Aggregate deadline: per-call timeouts bound each round-trip, but 16 UPNs
     // × (token + up to 5 membership pages) can still sum past the agent's
     // heartbeat client timeout — which would drop the WHOLE response including
@@ -3642,23 +3713,25 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
     // cap stays small on purpose: these calls share one org's Graph token and
     // rate limit, so widening it trades a burst of 429s for the latency win.
     const TAGGING_CONCURRENCY = 4;
-    const memberships = new Array<Set<string> | null>(upns.length).fill(null);
+    const memberships = new Array<Set<string> | null>(plan.upnLookups.length).fill(null);
     let nextIndex = 0;
     let budgetExhausted = false;
 
     const worker = async () => {
       for (;;) {
         const i = nextIndex++;
-        if (i >= upns.length) return;
+        if (i >= plan.upnLookups.length) return;
         if (Date.now() > taggingDeadline) {
           budgetExhausted = true;
           return;
         }
-        const res = await resolveUserGroupMembershipCached(device.orgId, upns[i]!);
+        const lookup = plan.upnLookups[i]!;
+        const res = lookup.cached
+          ?? await resolveUserGroupMembershipCached(plan.orgId, lookup.upn, { connection: plan.connection });
         if (res.kind !== 'ok') {
           // Deliberately no UPN in the log line — it's end-user PII; the code +
           // deviceId is enough to triage.
-          console.warn(`[agents] graph_group tagging: membership lookup failed for device ${deviceId}: ${res.code}`);
+          console.warn(`[agents] graph_group tagging: membership lookup failed for device ${plan.deviceId}: ${res.code}`);
           continue;
         }
         memberships[i] = new Set(res.data.groupIds.map(normalizeGuid));
@@ -3666,22 +3739,22 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
     };
 
     await Promise.all(
-      Array.from({ length: Math.min(TAGGING_CONCURRENCY, upns.length) }, () => worker()),
+      Array.from({ length: Math.min(TAGGING_CONCURRENCY, plan.upnLookups.length) }, () => worker()),
     );
 
     if (budgetExhausted) {
-      console.warn(`[agents] graph_group tagging: time budget exhausted for device ${deviceId}; remaining UPNs untagged this cycle`);
+      console.warn(`[agents] graph_group tagging: time budget exhausted for device ${plan.deviceId}; remaining UPNs untagged this cycle`);
     }
 
     // Applied in the original UPN order (not completion order) so allowedUpns
     // is deterministic for a given input regardless of how the pool interleaved.
-    for (let i = 0; i < upns.length; i++) {
+    for (let i = 0; i < plan.upnLookups.length; i++) {
       const groupIds = memberships[i];
       if (!groupIds) continue;
       for (const rule of graphRules) {
         if (rule.groupId && groupIds.has(normalizeGuid(rule.groupId))) {
           const arr = allowedByLib.get(rule.id) ?? [];
-          arr.push(upns[i]!);
+          arr.push(plan.upnLookups[i]!.upn);
           allowedByLib.set(rule.id, arr);
         }
       }
@@ -3689,16 +3762,8 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
   }
 
   return {
-    base: {
-      silentAccountConfig: winner.silentAccountConfig,
-      filesOnDemand: winner.filesOnDemand,
-      kfmSilentOptIn: winner.kfmSilentOptIn,
-      kfmFolders: (winner.kfmFolders as string[]) ?? [],
-      kfmBlockOptOut: winner.kfmBlockOptOut,
-      tenantAssociationId: winner.tenantAssociationId,
-      restartOnChange: winner.restartOnChange,
-    },
-    libraries: libs.map((l) => ({
+    base: plan.base,
+    libraries: plan.libs.map((l) => ({
       libraryId: l.libraryId,
       displayName: l.displayName,
       siteUrl: l.siteUrl,
@@ -3711,8 +3776,10 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
   };
 }
 
-export async function buildOnedriveHelperConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<OnedriveConfigUpdate | null> {
-  return resolveDeviceOnedriveSettings(deviceId, opts);
+/** Both phases back to back, for every non-heartbeat caller (unchanged contract). */
+export async function buildOnedriveHelperConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<OnedriveConfigUpdate | null> {
+  const plan = await loadOnedriveHelperConfigPlan(deviceId, opts);
+  return plan ? finishOnedriveHelperConfig(plan) : null;
 }
 
 // Roles that dynamic-group filters and attribute-targeted automations most

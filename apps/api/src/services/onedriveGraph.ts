@@ -1,4 +1,4 @@
-import { getToken, graphFetch, type DirectInvokeResult } from './m365DirectGraph';
+import { getToken, graphFetch, type DirectInvokeResult, type GetTokenOptions } from './m365DirectGraph';
 import { captureException } from './sentry';
 
 /** Encode a Graph composite site ID (hostname,scGuid,webGuid) for use in a path segment.
@@ -115,14 +115,17 @@ export async function listSharePointLibraries(orgId: string): Promise<DirectInvo
 // false negative for the full TTL with no log anywhere.
 const GROUP_MEMBERSHIP_MAX_PAGES = 5;
 
+export type GroupMembershipResult = DirectInvokeResult<{ groupIds: string[] }>;
+
 export async function resolveUserGroupMembership(
   orgId: string,
   upn: string,
-): Promise<DirectInvokeResult<{ groupIds: string[] }>> {
+  opts?: GetTokenOptions,
+): Promise<GroupMembershipResult> {
   if (!upn || typeof upn !== 'string') {
     return { kind: 'error', code: 'bad_request', message: 'upn is required.' };
   }
-  const tok = await getToken(orgId);
+  const tok = await getToken(orgId, opts);
   if ('kind' in tok) return tok;
 
   // transitiveMemberOf so nested group membership counts; only group objects, ids only.
@@ -204,6 +207,14 @@ export function clearGroupMembershipCache(): void {
   groupMembershipCache.clear();
 }
 
+const membershipKey = (orgId: string, upn: string) => `${orgId}:${upn.toLowerCase()}`;
+
+/** #8142: the live cached membership for (org, upn), or null on a miss. No I/O. */
+export function peekUserGroupMembershipCached(orgId: string, upn: string): GroupMembershipResult | null {
+  const hit = groupMembershipCache.get(membershipKey(orgId, upn));
+  return hit && Date.now() - hit.at < hit.ttlMs ? hit.result : null;
+}
+
 /** Insert/refresh a cache entry, bounding the map size. Map preserves
  * insertion order, so delete-then-set moves a refreshed key to the back, and
  * evicting past the bound just means deleting the first (oldest) key. */
@@ -226,11 +237,12 @@ function setGroupMembershipCacheEntry(key: string, entry: CacheEntry): void {
 export async function resolveUserGroupMembershipCached(
   orgId: string,
   upn: string,
-): Promise<DirectInvokeResult<{ groupIds: string[] }>> {
-  const key = `${orgId}:${upn.toLowerCase()}`;
-  const hit = groupMembershipCache.get(key);
-  if (hit && Date.now() - hit.at < hit.ttlMs) return hit.result;
-  const result = await resolveUserGroupMembership(orgId, upn);
+  opts?: GetTokenOptions,
+): Promise<GroupMembershipResult> {
+  const cached = peekUserGroupMembershipCached(orgId, upn);
+  if (cached) return cached;
+  const key = membershipKey(orgId, upn);
+  const result = await resolveUserGroupMembership(orgId, upn, opts);
   if (result.kind === 'ok') {
     setGroupMembershipCacheEntry(key, { at: Date.now(), ttlMs: GROUP_MEMBERSHIP_CACHE_TTL_MS, result });
   } else if (GROUP_MEMBERSHIP_NEGATIVE_CACHEABLE_CODES.has(result.code)) {

@@ -251,3 +251,25 @@ describe('getToken cache bound', () => {
     expect((acquireClientCredentialsToken as any).mock.calls.length).toBe(callsAfterRefetch);
   }, 20_000);
 });
+
+describe('getToken with a supplied connection (#8142)', () => {
+  it('uses the supplied row and issues no DB read', async () => {
+    const { db } = await import('../db');
+    vi.mocked(db.select).mockClear();
+    const result = await getToken('org-1', { connection: { ...mockRow, orgId: 'org-1' } as never });
+    expect(result).toEqual({ token: 'TOKEN-123' });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('supplied null means "no connection", still without a DB read', async () => {
+    const { db } = await import('../db');
+    vi.mocked(db.select).mockClear();
+    expect(await getToken('org-1', { connection: null })).toMatchObject({ kind: 'error', code: 'no_connection' });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('refuses a supplied row that belongs to another org', async () => {
+    expect(await getToken('org-1', { connection: { ...mockRow, orgId: 'org-2' } as never }))
+      .toMatchObject({ kind: 'error', code: 'no_connection' });
+  });
+});
