@@ -1,5 +1,6 @@
 ---
 title: Network Proxy — serve device UIs from a dedicated tunnel origin
+tracking_issue: LanternOps/breeze#8155
 status: draft (advisor-reviewed: Fable + Codex xhigh, 2026-10-07)
 date: 2026-10-06
 area: monitoring / remote access
@@ -82,7 +83,7 @@ Tunnel:  https://<tunnelId>.us.breezetunnel.net/<device path, unmodified>
   cookies, from sibling tossing or fixation. **Verified PSL inclusion (present in shipped
   browser lists, not just submitted) gates making host mode the hosted default.** Before that,
   host mode is opt-in. See Open question 3. PSL inclusion takes weeks, so it
-  is a W03 task, not a launch blocker.
+  is a W04 task, not a launch blocker.
 - The hostname reveals only the tunnel id, which is not a credential. Access always
   requires the session cookie.
 
@@ -269,7 +270,7 @@ The device owns the whole origin, so root-relative and relative URLs need **no r
 - Self-hosters get a docs page: an optional second domain plus wildcard DNS/cert. Without
   it they stay in path mode.
 
-### 9. Security review checklist (gate for W01 merge)
+### 9. Security review checklist (gate for W02 merge)
 
 - [ ] A tunnel host never serves `/api/*`, auth, app, or portal routes. An app host never
       serves tunnel-host handling. Tested both ways, including a forged `Host` and a forged
@@ -302,12 +303,13 @@ The device owns the whole origin, so root-relative and relative URLs need **no r
 | Wave | Scope | Exit criteria |
 |---|---|---|
 | **W00 — Spikes (before W01 is approved)** | Domain + DNS + ACM + Origin CA on one region against a stub; real Caddy routing with forged Host/assertion; CHIPS iframe + new-tab cookies in real Chrome, Firefox, and Safari (current and one older) | Written results appended to this spec; Open questions 1–3 answered |
-| **W01 — API host mode** | Config + validator; shared core factored out of `tunnelHttp.ts`; `tunnelHostRoutes` with Host routing and the tunnel-site assertion; `/__bz/enter`; `__Host-bzt`; host-mode rewriting and headers; `http-ticket` returns `url`. Request admission (§4a), revocation fixes, rate/concurrency budgets and metrics. Everything behind `TUNNEL_ORIGIN_TEMPLATE` (off by default). | Unit + route tests for every checklist item; path mode unchanged (existing suites green); security review round |
-| **W02 — Web** | `ProxyTunnelPage` uses the server `url`; host-mode sandbox attributes; new-tab ticket flow; Safari fallback notice | Web tests; Playwright run against a wt-stack with a local wildcard host (`*.tunnel.localhost`) in Chromium + Firefox, plus WebKit where available |
-| **W03 — Infra + rollout** | Domain, DNS, certs, Caddy site block in repo + droplets, env mapping, self-host docs, PSL submission; enable on US, then EU | Lab: SonicWall SonicOS 7, a modern printer UI (the #5906 Xerox class), and a form-post-login device, in Chrome/Firefox/Safari; version-parity check post-deploy |
-| **W04 — WebSocket proxying** *(optional, later)* | Upgrade passthrough over the agent tunnel | Separate spec |
+| **W01 — API foundation** | Config + validator; shared core factored out of `tunnelHttp.ts` (path mode unchanged); conditional activation + Close cancels in-flight work (both modes); `http-ticket` returns `url`; Host dispatch scaffold (tunnel hosts fail closed). Off by default. | Unit + route tests; path-mode suites green |
+| **W02 — API host mode** | Header/cookie rules; request admission (§4a); `tunnelHostRoutes` with `/__bz/enter` and `__Host-bzt`; host-mode rewriting; rate/concurrency budgets, metrics, log redaction; real-Caddy routing contract | Unit + route tests for every §9 checklist item; security review round |
+| **W03 — Web** | `ProxyTunnelPage` uses the server `url`; host-mode sandbox attributes; new-tab ticket flow; Safari fallback notice | Web tests; Playwright run against a wt-stack with a local wildcard host (`*.tunnel.localhost`) in Chromium + Firefox, plus WebKit where available |
+| **W04 — Infra + rollout** | Domain, DNS, certs, Caddy site block in repo + droplets, env mapping, self-host docs, PSL submission; enable on US, then EU | Lab: SonicWall SonicOS 7, a modern printer UI (the #5906 Xerox class), and a form-post-login device, in Chrome/Firefox/Safari; version-parity check post-deploy |
+| **W05 — WebSocket proxying** *(optional, later)* | Upgrade passthrough over the agent tunnel | Separate spec |
 
-Path mode and its #8110 workarounds stay in place throughout. Host mode ships opt-in at W03.
+Path mode and its #8110 workarounds stay in place throughout. Host mode ships opt-in at W04.
 It becomes the hosted default only after verified PSL inclusion. A follow-up can deprecate path mode once self-hoster adoption is known.
 
 ## Open questions (for Todd)
