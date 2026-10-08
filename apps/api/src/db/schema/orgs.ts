@@ -265,7 +265,17 @@ export const sites = pgTable('sites', {
   settings: jsonb('settings').default({}),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-  partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
+  partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull(),
+  // #4186: deliberately pinned site coordinate (never a technician position).
+  latitude: numeric('latitude', { precision: 9, scale: 6, mode: 'number' }),
+  longitude: numeric('longitude', { precision: 9, scale: 6, mode: 'number' }),
+  geofenceRadiusM: integer('geofence_radius_m'),
+  locationSource: varchar('location_source', { length: 16 }).$type<'technician' | 'manual' | 'geocoded'>(),
+  // FK sites_location_set_by_fkey -> users(id) ON DELETE SET NULL is defined in
+  // the SQL migration (authoritative): users.ts imports orgs.ts, so a Drizzle
+  // reference here would be cyclic.
+  locationSetBy: uuid('location_set_by'),
+  locationSetAt: timestamp('location_set_at', { withTimezone: true }),
 }, (table) => ({
   idOrgUnique: uniqueIndex('sites_id_org_id_uniq').on(table.id, table.orgId),
   orgIdIdx: index('sites_org_id_idx').on(table.orgId),
