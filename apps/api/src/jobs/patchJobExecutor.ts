@@ -92,9 +92,9 @@ export function parseJobCategoryList(value: unknown): string[] | null | undefine
 /**
  * Parse an app-rule list from a job snapshot key (`apps` — policy rules — or
  * `ringAppRules` — ring rules, #8184). Absent → undefined (a job from before
- * that key existed). Present but not an array → undefined, loudly: the job
- * still runs under the other key's rules, the same posture malformed `apps`
- * has always had. Entries go through `coerceAppRuleList`: malformed but
+ * that key existed). Present but not an array → undefined, loudly; the caller
+ * decides the posture (`apps`: run without them, as it always has;
+ * `ringAppRules`: skip the device). Entries go through `coerceAppRuleList`: malformed but
  * identifiable rules become `block` (dropping a restriction would widen
  * install scope); entries with no usable identity are dropped, loudly.
  */
@@ -1188,6 +1188,14 @@ async function prepareDeviceExecution(
   // #8184) are parsed identically and both enforced by the evaluator.
   const jobApps = parseJobAppRules(patchesConfig?.apps, patchJobId, 'apps');
   const jobRingAppRules = parseJobAppRules(patchesConfig?.ringAppRules, patchJobId, 'ringAppRules');
+  // A present-but-unparseable `ringAppRules` skips the device rather than
+  // running it with no ring restrictions. The key is new, so no legacy
+  // snapshot can carry a bad value; `apps` keeps its historical
+  // ignore-and-run posture (parseJobAppRules already reported both).
+  if (patchesConfig?.ringAppRules !== undefined && jobRingAppRules === undefined) {
+    await markDeviceSkipped(patchJobId, deviceId, 'invalid_patch_app_rules');
+    return { kind: 'skipped', skipped: true, reason: 'Invalid ring app rules' };
+  }
 
   // Ring category include/exclude filters (#2117). Mirror the sources posture:
   // absent = legacy job (no filtering); present-but-malformed skips the device

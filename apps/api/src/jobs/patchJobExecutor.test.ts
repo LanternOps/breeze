@@ -850,23 +850,38 @@ describe('patch job executor queueing', () => {
     warnSpy.mockRestore();
   });
 
-  it('ignores a non-array ringAppRules loudly, still enforcing the policy apps', async () => {
+  it('skips the device on a present-but-non-array ringAppRules (fail closed — no legacy snapshot carries a bad one)', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    await runDeviceJobWithPatches({
-      ringId: null,
-      autoApprove: {},
-      apps: [{ source: 'custom', packageId: 'corp-tool', action: 'block' }],
-      ringAppRules: 'nope',
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createSelectChain([{
+        id: 'job-1',
+        orgId: 'org-1',
+        status: 'running',
+        patches: {
+          ringId: null,
+          autoApprove: {},
+          apps: [{ source: 'custom', packageId: 'corp-tool', action: 'block' }],
+          ringAppRules: 'nope',
+        },
+        targets: { deviceIds: ['device-1'] },
+      }]) as any)
+      .mockImplementationOnce(() => createSelectChain([{ id: 'device-1' }]) as any)
+      // checkAndFinalizeJob select (called by markDeviceSkipped)
+      .mockImplementationOnce(() => createSelectChain([]) as any);
+    const valuesMock = vi.fn(() => Promise.resolve());
+    vi.mocked(db.insert).mockImplementationOnce(() => ({ values: valuesMock }) as any);
+    vi.mocked(db.update).mockImplementationOnce(() => ({
+      set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
+    }) as any);
+
+    createPatchJobDeviceWorker();
+    const result = await shared.processorRefs['patch-job-devices']({
+      data: { type: 'execute-patch-job-device', patchJobId: 'job-1', deviceId: 'device-1', orgId: 'org-1' },
     });
 
-    expect(resolveApprovedPatchesForDevice).toHaveBeenCalledWith(
-      'device-1',
-      'org-1',
-      expect.objectContaining({
-        ringAppRules: undefined,
-        apps: [{ source: 'custom', packageId: 'corp-tool', action: 'block' }],
-      }),
-    );
+    expect(resolveApprovedPatchesForDevice).not.toHaveBeenCalled();
+    expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'Invalid ring app rules' });
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'skipped', deviceId: 'device-1' }));
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('malformed patches.ringAppRules'),
       expect.any(String),
