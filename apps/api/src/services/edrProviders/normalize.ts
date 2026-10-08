@@ -49,7 +49,11 @@ export function parseVendorDate(raw: unknown): Date | null {
   else if (typeof raw === 'number') d = new Date(raw < 1e11 ? raw * 1000 : raw);
   else if (typeof raw === 'string') {
     const s = raw.trim();
-    d = /^\d+$/.test(s) ? new Date(Number(s) < 1e11 ? Number(s) * 1000 : Number(s)) : new Date(s);
+    if (/^\d+$/.test(s)) d = new Date(Number(s) < 1e11 ? Number(s) * 1000 : Number(s));
+    // An ISO date-time with no offset (GravityZone's lastSeen, live 2026-10-08) is read as UTC.
+    // `new Date()` would read it as host-local time, so the stored instant moved with the TZ.
+    else if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(s)) d = new Date(`${s.replace(' ', 'T')}Z`);
+    else d = new Date(s);
   } else return null;
   return Number.isNaN(d.getTime()) ? null : d;
 }

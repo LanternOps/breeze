@@ -156,27 +156,34 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
         vendorTenantId: root.id, name: own.name, parentId: null, tenantType: 'company', externalCode: null, apiHost: null,
       }];
     }
+    // Partner companies (the root and every sub-partner) are tenants too: endpoints can be
+    // enrolled directly in a partner company (the MSP's own machines — the lab endpoint on
+    // 2026-10-08 was). listEndpoints keeps only items whose companyId is the tenant itself,
+    // so a partner tenant never picks up its customers' endpoints.
     const tenants = new Map<string, VendorEdrTenant>();
-    const seenPartners = new Set<string>([root.id]);
+    const add = (t: VendorEdrTenant) => {
+      if (tenants.has(t.vendorTenantId)) return false;
+      tenants.set(t.vendorTenantId, t);
+      if (tenants.size >= MAX_COMPANIES) {
+        throw new EdrProviderRequestError(`GravityZone tree has at least ${MAX_COMPANIES} companies; refusing to truncate`, {
+          code: 'too_many_companies', reauth: false, scope: 'connection',
+        });
+      }
+      return true;
+    };
+    const own = await client.getOwnCompany();
+    add({ vendorTenantId: root.id, name: own.name, parentId: null, tenantType: 'partner', externalCode: null, apiHost: null });
     let level: string[] = [root.id];
     for (let depth = 0; level.length > 0; depth++) {
       const next: string[] = [];
       for (const parentId of level) {
         for (const c of await client.getCompaniesList(parentId, 1)) {
-          if (tenants.has(c.id)) continue;
-          tenants.set(c.id, {
-            vendorTenantId: c.id, name: c.name, parentId, tenantType: 'company', externalCode: null, apiHost: null,
-          });
-          if (tenants.size >= MAX_COMPANIES) {
-            throw new EdrProviderRequestError(`GravityZone tree has at least ${MAX_COMPANIES} companies; refusing to truncate`, {
-              code: 'too_many_companies', reauth: false, scope: 'connection',
-            });
-          }
+          add({ vendorTenantId: c.id, name: c.name, parentId, tenantType: 'company', externalCode: null, apiHost: null });
         }
         for (const sp of await client.getCompaniesList(parentId, 0)) {
-          if (seenPartners.has(sp.id)) continue;
-          seenPartners.add(sp.id);
-          next.push(sp.id);
+          if (add({ vendorTenantId: sp.id, name: sp.name, parentId, tenantType: 'partner', externalCode: null, apiHost: null })) {
+            next.push(sp.id);
+          }
         }
       }
       if (next.length > 0 && depth + 1 > MAX_SUBPARTNER_DEPTH) {
@@ -191,12 +198,18 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
 
   async listEndpoints(ctx, tenant) {
     const items = await clientFor(ctx).getInventoryAll(tenant.vendorTenantId);
-    // Unmanaged network items carry no Bitdefender agent.
-    return items.filter((i) => i.details?.isManaged === true).map((i) => toVendorEndpoint(i, tenant.vendorTenantId));
+    // The inventory call is recursive, so for a PARTNER company it also returns every descendant
+    // company's endpoints. Keep only the tenant's own items (an item without a companyId is
+    // dropped, never guessed). Unmanaged network items carry no Bitdefender agent.
+    return items
+      .filter((i) => i.companyId === tenant.vendorTenantId && i.details?.isManaged === true)
+      .map((i) => toVendorEndpoint(i, tenant.vendorTenantId));
   },
 
+  // The count shown for an unmapped tenant (D5) is what mapping it would store. The page-1
+  // `total` is not: it counts unmanaged items and, for a partner company, its descendants'.
   async countEndpoints(ctx, tenant) {
-    return clientFor(ctx).getInventoryTotal(tenant.vendorTenantId);
+    return (await bitdefenderAdapter.listEndpoints(ctx, tenant)).length;
   },
 
   async enrichEndpoints(ctx, _tenant, ids): Promise<VendorEdrEndpointDetail[]> {

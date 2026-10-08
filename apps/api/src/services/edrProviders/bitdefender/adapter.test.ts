@@ -63,7 +63,7 @@ describe('testConnection', () => {
     });
     const r = await adapter.testConnection(ctx);
     expect(r).toEqual({
-      ok: true, rootId: P0, rootName: 'Example Partner', rootType: 'partner', tenantCount: 2,
+      ok: true, rootId: P0, rootName: 'Example Partner', rootType: 'partner', tenantCount: 3,
       capabilityNotes: ['quarantine: API not enabled on key'],
     });
     expect(count('incidents.getIncidentsList')).toBe(0);
@@ -107,8 +107,11 @@ describe('testConnection', () => {
 });
 
 describe('listTenants', () => {
-  it('partner key: walks sub-partners and returns only customer companies as tenants', async () => {
+  it('partner key: walks sub-partners; customers AND partner companies (root, sub-partners) are tenants', async () => {
+    // Live 2026-10-08: endpoints can be enrolled directly in a partner company (the MSP's own
+    // machines). Those are only reachable if the partner company is itself a tenant.
     const { ctx } = makeCtx({
+      'companies.getCompanyDetails': ok('company-details-partner.json'),
       'network.getCompaniesList': (p) => {
         if (p.parentId === P0) return p.filters.companyType === 1 ? ok('companies-list-root.json') : ok('companies-list-subpartner.json');
         if (p.parentId === SP) return p.filters.companyType === 1 ? rpc([{ id: '5f0a1b2c3d4e5f60718293b1', name: 'Nested Customer' }]) : rpc([]);
@@ -116,10 +119,15 @@ describe('listTenants', () => {
       },
     });
     const t = await adapter.listTenants(ctx, { id: P0, type: 'partner' });
-    expect(t.map((x) => x.vendorTenantId)).toEqual([C1, C2, '5f0a1b2c3d4e5f60718293b1']);
-    expect(t.every((x) => x.tenantType === 'company' && x.apiHost === null && x.externalCode === null)).toBe(true);
-    expect(t[2]!.parentId).toBe(SP);
-    expect(t.map((x) => x.vendorTenantId)).not.toContain(SP);
+    expect(t.map((x) => [x.vendorTenantId, x.tenantType, x.parentId])).toEqual([
+      [P0, 'partner', null],
+      [C1, 'company', P0],
+      [C2, 'company', P0],
+      [SP, 'partner', P0],
+      ['5f0a1b2c3d4e5f60718293b1', 'company', SP],
+    ]);
+    expect(t[0]!.name).toBe('Example Partner');
+    expect(t.every((x) => x.apiHost === null && x.externalCode === null)).toBe(true);
   });
 
   it('customer key: returns exactly one tenant, the root company', async () => {
@@ -131,13 +139,17 @@ describe('listTenants', () => {
 
   it('refuses to truncate a sub-partner chain deeper than 5 levels', async () => {
     const { ctx } = makeCtx({
+      'companies.getCompanyDetails': ok('company-details-partner.json'),
       'network.getCompaniesList': (p) => (p.filters.companyType === 1 ? rpc([]) : rpc([{ id: `${p.parentId}x`, name: 'deeper' }])),
     });
     await expect(adapter.listTenants(ctx, { id: P0, type: 'partner' })).rejects.toMatchObject({ code: 'too_deep' });
   });
 
   it('a failing company list call throws rather than returning a partial tree', async () => {
-    const { ctx } = makeCtx({ 'network.getCompaniesList': { status: 500, body: 'x' } });
+    const { ctx } = makeCtx({
+      'companies.getCompanyDetails': ok('company-details-partner.json'),
+      'network.getCompaniesList': { status: 500, body: 'x' },
+    }, { });
     await expect(adapter.listTenants(ctx, { id: P0, type: 'partner' })).rejects.toBeInstanceOf(EdrProviderRequestError);
   });
 });
@@ -150,10 +162,25 @@ describe('listEndpoints / countEndpoints / enrichEndpoints', () => {
     expect(eps[0]).toMatchObject({ hostname: 'WS-ALPHA', macAddresses: ['aa:bb:cc:00:11:22'], isolationState: 'isolated', health: 'degraded' });
   });
 
-  it('countEndpoints returns the inventory total from a perPage:1 call', async () => {
-    const { ctx, calls } = makeCtx({ 'network.getNetworkInventoryItems': ok('inventory-page1.json') });
-    expect(await adapter.countEndpoints!(ctx, { vendorTenantId: C1, apiHost: null })).toBe(3);
-    expect(calls[0]!.params.perPage).toBe(1);
+  it("keeps only the company's OWN items: a partner company's recursive inventory includes its customers' endpoints", async () => {
+    // getNetworkInventoryItems(parentId, allItemsRecursively) on a partner company returns every
+    // descendant company's endpoints too. Without the companyId filter, mapping the partner
+    // company to one org would store other customers' endpoints in that org.
+    const page = JSON.parse(fx('inventory-page2.json'));
+    const managed = { ...page.result.items[0], details: { ...page.result.items[0].details, isManaged: true } };
+    const foreign = { ...managed, id: '6a0000000000000000000f01', name: 'OTHER-CUSTOMER', companyId: C2 };
+    page.result.items.push(foreign, { ...foreign, id: '6a0000000000000000000f02', companyId: undefined });
+    const { ctx } = makeCtx({ 'network.getNetworkInventoryItems': [ok('inventory-page1.json'), { body: JSON.stringify(page) }] });
+    const eps = await adapter.listEndpoints(ctx, { vendorTenantId: C1, apiHost: null });
+    expect(eps.map((e) => e.vendorEndpointId)).toEqual(['6a0000000000000000000a01', '6a0000000000000000000a02']);
+  });
+
+  it("countEndpoints counts the company's own managed endpoints (what a mapping would store)", async () => {
+    const page = JSON.parse(fx('inventory-page2.json'));
+    const managed = { ...page.result.items[0], details: { ...page.result.items[0].details, isManaged: true } };
+    page.result.items.push({ ...managed, id: '6a0000000000000000000f01', companyId: C2 });
+    const { ctx } = makeCtx({ 'network.getNetworkInventoryItems': [ok('inventory-page1.json'), { body: JSON.stringify(page) }] });
+    expect(await adapter.countEndpoints!(ctx, { vendorTenantId: C1, apiHost: null })).toBe(2);
   });
 
   it('enrichment: infected -> unhealthy; a per-id invalid_params/not_found skips that id without throwing', async () => {

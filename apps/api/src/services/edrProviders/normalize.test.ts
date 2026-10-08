@@ -25,6 +25,14 @@ describe('edr normalize', () => {
   it('parses vendor dates defensively', () => {
     expect(parseVendorDate('2026-10-01T10:00:00Z')?.toISOString()).toBe('2026-10-01T10:00:00.000Z');
     expect(parseVendorDate('not a date')).toBeNull();
+  });
+  it('reads an offset-less vendor timestamp as UTC, independent of the host time zone', () => {
+    // GravityZone returns e.g. lastSeen "2026-10-08T13:23:47" with no offset (live 2026-10-08).
+    // `new Date()` would read that as HOST-local time, so the stored value moved with TZ.
+    expect(parseVendorDate('2026-10-08T13:23:47')?.toISOString()).toBe('2026-10-08T13:23:47.000Z');
+    expect(parseVendorDate('2026-10-08 13:23:47')?.toISOString()).toBe('2026-10-08T13:23:47.000Z');
+    expect(parseVendorDate('2026-10-08T13:23:47.5')?.toISOString()).toBe('2026-10-08T13:23:47.500Z');
+    expect(parseVendorDate('2026-10-08T13:23:47+02:00')?.toISOString()).toBe('2026-10-08T11:23:47.000Z');
     expect(parseVendorDate(null)).toBeNull();
     expect(parseVendorDate({})).toBeNull();
     expect(parseVendorDate(1790000000)?.getUTCFullYear()).toBe(2026);
