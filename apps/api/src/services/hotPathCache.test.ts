@@ -354,6 +354,25 @@ describe('DeferredCacheFills — explicit org fill scope (#8142)', () => {
     expect(fillScopeIsCacheable(orgCtx({ userId: undefined }) as never, scope)).toBe(true);
   });
 
+  // `through` end to end (not just fillScopeIsCacheable): the cache stays EMPTY.
+  for (const [label, ctx] of [
+    ['carries a userId', orgCtx({ userId: 'user-1' })],
+    ['is built for a different org', orgCtx({ orgId: 'org-2', accessibleOrgIds: ['org-2'] })],
+    ['is built for a different partner', orgCtx({ currentPartnerId: 'partner-2' })],
+  ] as const) {
+    it(`a context that ${label} returns the loaded value but leaves the cache empty after flush`, async () => {
+      const cache = makeCache();
+      const fills = new DeferredCacheFills();
+      dbState.ctx = ctx;
+      dbState.inContext = true;
+      expect(await fills.through(cache, ORG, async () => ({ v: 'narrowed' }), { orgId: ORG, partnerId: PARTNER })).toEqual({ v: 'narrowed' });
+      dbState.inContext = false;
+      dbState.ctx = undefined;
+      fills.flush();
+      expect(cache.peek(ORG)).toBeUndefined();
+    });
+  }
+
   it('a throwing loader leaves the cache empty after flush', async () => {
     const cache = makeCache();
     const fills = new DeferredCacheFills();

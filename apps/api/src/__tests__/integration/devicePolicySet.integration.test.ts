@@ -12,7 +12,8 @@ import { db } from '../../db';
 import { configPolicyAssignments, configurationPolicies } from '../../db/schema';
 import { loadDeviceHierarchy } from '../../services/deviceHierarchy';
 import { loadDevicePolicySet } from '../../services/devicePolicySet';
-import { inOrg, seedParityWorld, sys, type ParityWorld } from './policySetFixtures';
+import { createOrganization, createPartner, createSite } from './db-utils';
+import { inOrg, seedDevice, seedParityWorld, seedPolicy, sys, type ParityWorld } from './policySetFixtures';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 let w: ParityWorld;
@@ -42,11 +43,30 @@ describe('loadDevicePolicySet (#8142) — real PostgreSQL', () => {
     }
   });
 
-  runDb('candidates are ordered by assignment created_at, then id', async () => {
-    const set = await inOrg(w.orgId, w.partnerId, async () => loadDevicePolicySet((await loadDeviceHierarchy(w.deviceId))!));
-    const keys = set.candidates.map((c) => [c.assignmentCreatedAt.getTime(), c.assignmentId] as const);
-    const sorted = [...keys].sort((a, b) => a[0] - b[0] || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
-    expect(keys).toEqual(sorted);
+  runDb('candidates are ordered by assignment created_at, then id — insert order is deliberately NOT that order', async () => {
+    const partner = (await createPartner())!;
+    const org = (await createOrganization({ partnerId: partner.id }))!;
+    const site = (await createSite({ orgId: org.id }))!;
+    const deviceId = await seedDevice(org.id, site.id, 'order');
+    const day = (n: number) => new Date(Date.UTC(2026, 0, n));
+    const ids = {
+      newest: '55555555-0000-4000-8000-000000000005',
+      oldest: '99999999-0000-4000-8000-000000000009', // highest id, but earliest created_at
+      tieHigh: 'cccccccc-0000-4000-8000-00000000000c',
+      tieLow: '11111111-0000-4000-8000-000000000001',
+    };
+    // Insert order: newest, tieHigh, oldest, tieLow. Expected: oldest (d1),
+    // then the d2 pair by id (tieLow before tieHigh), then newest (d3).
+    const insertOrder: Array<[string, Date]> = [
+      [ids.newest, day(3)], [ids.tieHigh, day(2)], [ids.oldest, day(1)], [ids.tieLow, day(2)],
+    ];
+    for (const [id, createdAt] of insertOrder) {
+      await seedPolicy({ owner: { orgId: org.id, partnerId: null },
+        links: [{ featureType: 'pam', inlineSettings: { uacInterceptionEnabled: true } }],
+        assignments: [{ id, level: 'organization', targetId: org.id, createdAt }] });
+    }
+    const set = await inOrg(org.id, partner.id, async () => loadDevicePolicySet((await loadDeviceHierarchy(deviceId))!));
+    expect(set.candidates.map((c) => c.assignmentId)).toEqual([ids.oldest, ids.tieLow, ids.tieHigh, ids.newest]);
   });
 
   runDb('the inherited time_sync link of an INACTIVE partner-wide parent reaches the org child, with its settings', async () => {

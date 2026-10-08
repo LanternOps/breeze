@@ -64,9 +64,11 @@ export type SeedLink =
   | { featureType: 'patch'; exclusiveWindowsUpdate: boolean }
   | { featureType: 'time_sync'; ntpServers: string[] }
   | { featureType: 'monitors'; serviceName?: string; checkIntervalSeconds?: number; inheritance?: 'cumulative' | 'replace' }
-  | { featureType: 'onedrive_helper'; orgId: string; filesOnDemand: boolean; libraryName: string };
+  | { featureType: 'onedrive_helper'; orgId: string; filesOnDemand: boolean; libraryName: string; graphGroupId?: string };
 
 export interface SeedAssignment {
+  /** Explicit assignment id (default: generated). Lets a test force the id tie-break. */
+  id?: string;
   level: Level;
   targetId: string;
   priority?: number;
@@ -138,14 +140,17 @@ export async function seedPolicy(input: {
         } as never).returning();
         await db.insert(configPolicyOnedriveLibraries).values({
           settingsId: settings!.id, orgId: l.orgId, libraryId: `lib-${randomUUID()}`, displayName: l.libraryName,
-          targetingMode: 'everyone', sortOrder: 0, enabled: true,
+          ...(l.graphGroupId
+            ? { targetingMode: 'graph_group', groupId: l.graphGroupId, groupName: 'Parity group' }
+            : { targetingMode: 'everyone' }),
+          sortOrder: 0, enabled: true,
         } as never);
       }
     }
     if (input.forgeAssignments) return policy!.id;
     for (const a of input.assignments ?? []) {
       await db.insert(configPolicyAssignments).values({
-        configPolicyId: policy!.id, level: a.level, targetId: a.targetId, priority: a.priority ?? 0,
+        ...(a.id ? { id: a.id } : {}), configPolicyId: policy!.id, level: a.level, targetId: a.targetId, priority: a.priority ?? 0,
         ...(a.roleFilter ? { roleFilter: a.roleFilter } : {}),
         ...(a.osFilter ? { osFilter: a.osFilter } : {}),
         ...(a.createdAt ? { createdAt: a.createdAt } : {}),
@@ -161,7 +166,7 @@ export async function seedPolicy(input: {
       await tx.execute(sql`SET LOCAL session_replication_role = replica`);
       for (const a of input.assignments ?? []) {
         await tx.insert(configPolicyAssignments).values({
-          configPolicyId: policyId, level: a.level, targetId: a.targetId, priority: a.priority ?? 0,
+          ...(a.id ? { id: a.id } : {}), configPolicyId: policyId, level: a.level, targetId: a.targetId, priority: a.priority ?? 0,
           ...(a.roleFilter ? { roleFilter: a.roleFilter } : {}),
           ...(a.osFilter ? { osFilter: a.osFilter } : {}),
           ...(a.createdAt ? { createdAt: a.createdAt } : {}),

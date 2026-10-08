@@ -12,7 +12,9 @@
  * assignments resolve to the earliest on every path.
  */
 import './setup';
+import { eq } from 'drizzle-orm';
 import { db } from '../../db';
+import { automationPolicies, organizations, pamOrgConfig } from '../../db/schema';
 import { resolveMonitorsForDevice } from '../../services/monitors/monitorResolver';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { loadDeviceHierarchy, type DeviceHierarchy } from '../../services/deviceHierarchy';
@@ -27,7 +29,10 @@ import { buildHelperConfigUpdate, resolveDeviceHelperSettings } from '../../serv
 import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
 import { resolveDeviceTimeSyncSettings } from '../../services/timeSync/settings';
 import { buildResolvedTimeSyncConfigUpdate } from '../../services/timeSync/configUpdate';
+import { getOrgHelperSettings } from '../../services/helperSettings';
 import {
+  buildPolicyProbeConfigUpdate,
+  resolveOrgPamFallback,
   buildEventLogConfigUpdate,
   buildMonitoringConfigUpdate,
   buildOnedriveHelperConfigUpdate,
@@ -105,17 +110,17 @@ const RESOLVERS: Array<[string, Resolver, (answer: any) => void, (emptyAnswer: a
     (e) => expect(e).toMatchObject({ max_events_per_cycle: 100 })],
   ['buildHardwareMonitoringConfigUpdate', (id, o) => buildHardwareMonitoringConfigUpdate(id, o),
     (a) => expect(a).toMatchObject({ enabled: true, poll_interval_minutes: 7 }),
-    (e) => expect(e).not.toMatchObject({ poll_interval_minutes: 7 })],
+    (e) => expect(e).toEqual({ enabled: true, poll_interval_minutes: 10, disk_health_interval_minutes: 60 })],
   ['resolveDeviceTimeSyncSettings', (id, o) => resolveDeviceTimeSyncSettings(id, o),
     // Device-level child inherits the INACTIVE partner-wide parent's link.
     (a) => expect(a).toMatchObject({ settings: { ntpServers: ['time.parent.example'] } }),
     (e) => expect(e).toMatchObject({ policy: null })],
   ['buildResolvedTimeSyncConfigUpdate', (id, o) => buildResolvedTimeSyncConfigUpdate(id, o),
     (a) => expect(a).toMatchObject({ ntp_servers: ['time.parent.example'] }),
-    (e) => expect(e).not.toMatchObject({ ntp_servers: ['time.parent.example'] })],
+    (e) => expect(e).toEqual({ enforce_ntp: false, ntp_servers: [], poll_interval_minutes: 60, timezone: { expected_windows_id: null, auto_fix: false }, fingerprint: expect.stringMatching(/^sha256:/) })],
   ['buildTimeSyncConfigUpdate', (id, o) => buildTimeSyncConfigUpdate(id, o),
     (a) => expect(a).toMatchObject({ ntp_servers: ['time.parent.example'] }),
-    (e) => expect(e).not.toMatchObject({ ntp_servers: ['time.parent.example'] })],
+    (e) => expect(e).toEqual({ enforce_ntp: false, ntp_servers: [], poll_interval_minutes: 60, timezone: { expected_windows_id: null, auto_fix: false }, fingerprint: expect.stringMatching(/^sha256:/) })],
   ['buildPatchSourceConfigUpdate', (id, o) => buildPatchSourceConfigUpdate(id, o),
     (a) => expect(a).toEqual({ exclusiveWindowsUpdate: true }),
     (e) => expect(e).toEqual({ exclusiveWindowsUpdate: false })],
@@ -201,6 +206,46 @@ describe('equal-ranked assignments resolve to the EARLIEST assignment on every p
         .toEqual({ uacInterceptionEnabled: firstWins });
       expect(await threeWay(t, 'helper tie', (id, o) => resolveDeviceHelperSettings(id, o)))
         .toMatchObject({ portalUrl: firstWins ? 'https://true.example' : 'https://false.example' });
+    });
+  }
+});
+
+describe('equal created_at AND priority: the LOWEST assignment id wins on every path (#8142)', () => {
+  const LOW_ID = '11111111-0000-4000-8000-000000000001';
+  const HIGH_ID = 'ffffffff-0000-4000-8000-00000000000f';
+
+  // The LOW-id policy always carries the "winning" values (uac true, low portal, 401).
+  async function idTieWorld(insertHighFirst: boolean) {
+    const partner = (await createPartner())!;
+    const org = (await createOrganization({ partnerId: partner.id }))!;
+    const site = (await createSite({ orgId: org.id }))!;
+    const deviceId = await seedDevice(org.id, site.id, 'id-tie');
+    const sameInstant = new Date(Date.UTC(2026, 0, 1));
+    const seed = (id: string, low: boolean) => seedPolicy({ owner: { orgId: org.id, partnerId: null },
+      links: [{ featureType: 'pam', inlineSettings: { uacInterceptionEnabled: low } },
+        { featureType: 'helper', inlineSettings: { enabled: true, portalUrl: low ? 'https://low.example' : 'https://high.example' } },
+        { featureType: 'event_log', maxEventsPerCycle: low ? 401 : 402 }],
+      assignments: [{ id, level: 'organization', targetId: org.id, priority: 0, createdAt: sameInstant }] });
+    if (insertHighFirst) {
+      await seed(HIGH_ID, false);
+      await seed(LOW_ID, true);
+    } else {
+      await seed(LOW_ID, true);
+      await seed(HIGH_ID, false);
+    }
+    return { deviceId, orgId: org.id, partnerId: partner.id };
+  }
+
+  // Both insert orders: a resolver that ignored the id (plan/insert order) could pass one, never both.
+  for (const insertHighFirst of [true, false]) {
+    runDb(`pam + helper + event_log (${insertHighFirst ? 'high' : 'low'} id inserted first)`, async () => {
+      const t = await idTieWorld(insertHighFirst);
+      expect(await threeWay(t, 'pam id tie', (id, o) => buildPamConfigUpdate(id, o)))
+        .toEqual({ uacInterceptionEnabled: true });
+      expect(await threeWay(t, 'helper id tie', (id, o) => resolveDeviceHelperSettings(id, o)))
+        .toMatchObject({ portalUrl: 'https://low.example' });
+      expect(await threeWay(t, 'event_log id tie', (id, o) => buildEventLogConfigUpdate(id, o)))
+        .toMatchObject({ max_events_per_cycle: 401 });
     });
   }
 });
@@ -310,7 +355,11 @@ describe('parked orgs keep their partner-drop rules on the set path (#8142)', ()
       const patch = await threeWay(ctx, 'buildPatchSourceConfigUpdate', (id, o) => buildPatchSourceConfigUpdate(id, o));
       // Patch drops the partner for unassigned_pool only.
       expect(patch).toEqual({ exclusiveWindowsUpdate: orgType !== 'unassigned_pool' });
-      await threeWay(ctx, 'resolveDeviceTimeSyncSettings', (id, o) => resolveDeviceTimeSyncSettings(id, o));
+      // Time sync keeps the partner target for parked orgs: the partner-wide
+      // policy's servers reach the device (the device-level child is the other
+      // world's device, so this is the partner-level link).
+      expect(await threeWay(ctx, 'resolveDeviceTimeSyncSettings', (id, o) => resolveDeviceTimeSyncSettings(id, o)))
+        .toMatchObject({ settings: { ntpServers: ['time.partner.example'] } });
     });
   }
 });
@@ -336,5 +385,59 @@ describe('monitoring with no monitors link resolves to the explicit clear on eve
     const qsDevice = await seedDevice(qs.id, qsSite.id, 'qs');
     expect(await threeWay({ deviceId: qsDevice, orgId: qs.id, partnerId: world.partnerId }, 'monitors (quick_support)',
       (id, o) => resolveMonitorsForDevice(id, db, o))).toEqual({ kind: 'resolved', monitors: [] });
+  });
+});
+
+
+describe('per-org cache fills: the org-scoped load equals the system-scoped load (#8142)', () => {
+  // The heartbeat stores these three values in per-org caches from the org-scoped
+  // post-commit context, and serves them to every device of the org. They are only
+  // safe to share if that context shows the loader exactly what system scope does.
+  const probeRules = (n: string) => [{ type: 'registry_check', registryPath: `HKLM\\Software\\${n}`, registryValueName: n }];
+
+  async function cacheWorld() {
+    const partner = (await createPartner())!;
+    const org = (await createOrganization({ partnerId: partner.id }))!;
+    const sibling = (await createOrganization({ partnerId: partner.id }))!;
+    const foreignPartner = (await createPartner())!;
+    await sys(async () => {
+      const targets = { targetType: 'all', targetIds: [] };
+      await db.insert(automationPolicies).values([
+        { orgId: null, partnerId: partner.id, name: 'pw', targets, rules: probeRules('PartnerWide') },
+        { orgId: org.id, partnerId: null, name: 'own', targets, rules: probeRules('OrgOwn') },
+        { orgId: org.id, partnerId: null, name: 'off', enabled: false, targets, rules: probeRules('Disabled') },
+        { orgId: sibling.id, partnerId: null, name: 'sib', targets, rules: probeRules('Sibling') },
+        { orgId: null, partnerId: foreignPartner.id, name: 'fp', targets, rules: probeRules('ForeignPartner') },
+      ] as never);
+      await db.update(organizations).set({ settings: { helper: { enabled: true } } }).where(eq(organizations.id, org.id));
+      await db.insert(pamOrgConfig).values({ orgId: org.id, uacInterceptionEnabled: true } as never);
+    });
+    return { orgId: org.id, partnerId: partner.id };
+  }
+
+  runDb('policy probe: partner-wide + own rows, equal in system and org scope; sibling/foreign/disabled never appear', async () => {
+    const t = await cacheWorld();
+    const load = () => buildPolicyProbeConfigUpdate(t.orgId, { partnerId: t.partnerId });
+    const asSystem = await sys(load);
+    const asOrg = await inOrg(t.orgId, t.partnerId, load);
+    expect(asOrg).toEqual(asSystem);
+    const names = (asOrg?.policy_registry_state_probes ?? []).map((p) => p.value_name).sort();
+    expect(names).toEqual(['OrgOwn', 'PartnerWide']);
+  });
+
+  runDb('org helper flag: equal in system and org scope, and not the default', async () => {
+    const t = await cacheWorld();
+    const asSystem = await sys(() => getOrgHelperSettings(t.orgId));
+    const asOrg = await inOrg(t.orgId, t.partnerId, () => getOrgHelperSettings(t.orgId));
+    expect(asOrg).toEqual(asSystem);
+    expect(asOrg).toEqual({ enabled: true });
+  });
+
+  runDb('org PAM fallback: equal in system and org scope, and not the default', async () => {
+    const t = await cacheWorld();
+    const asSystem = await sys(() => resolveOrgPamFallback(t.orgId));
+    const asOrg = await inOrg(t.orgId, t.partnerId, () => resolveOrgPamFallback(t.orgId));
+    expect(asOrg).toEqual(asSystem);
+    expect(asOrg).toEqual({ uacInterceptionEnabled: true });
   });
 });

@@ -122,12 +122,17 @@ vi.mock('../../services/devicePolicySet', async (importOriginal) => {
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
   auditLogs,
+  automationPolicies,
+  organizations,
+  pamOrgConfig,
   configPolicyAssignments,
   configPolicyEventLogSettings,
   configPolicyFeatureLinks,
   configurationPolicies,
   deviceCommands,
   enrollmentKeys,
+  m365Connections,
+  onedriveDeviceState,
 } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { loadDeviceHierarchy } from '../../services/deviceHierarchy';
@@ -137,6 +142,9 @@ import {
   buildMonitoringConfigUpdate, buildPamConfigUpdate, buildPatchSourceConfigUpdate,
   buildTimeSyncConfigUpdate, buildWarrantyConfigUpdate, loadOnedriveHelperConfigPlan,
 } from '../../routes/agents/helpers';
+import { encryptSecret } from '../../services/secretCrypto';
+import { clearGroupMembershipCache } from '../../services/onedriveGraph';
+import { clearTokenCache } from '../../services/m365DirectGraph';
 import { seedPolicy, type SeedLink } from './policySetFixtures';
 import { getTestDb, getTestRedis } from './setup';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
@@ -871,6 +879,96 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(missed.buckets.policySetLoad).toBe(1);
     expect(missed.buckets.perFeatureAssignmentRead).toBe(0);
     expect(missed.statements).toBeLessThanOrEqual(CACHES_MISS_STATEMENTS);
+  });
+
+  runDb('POST /agents/:id/heartbeat: the org-scoped cache-miss beat STORES the full probe, helper-flag and PAM-fallback values for the org (#8142)', async () => {
+    const org = await seedOrg('fillvalues');
+    const device = await enrollDevice(org, 'filler');
+    const rules = (n: string) => [{ type: 'registry_check', registryPath: `HKLM\\Software\\${n}`, registryValueName: n }];
+    await withSystemDbAccessContext(async () => {
+      const targets = { targetType: 'all', targetIds: [] };
+      await db.insert(automationPolicies).values([
+        { orgId: null, partnerId: org.partnerId, name: 'pw', targets, rules: rules('PartnerWide') },
+        { orgId: org.orgId, partnerId: null, name: 'own', targets, rules: rules('OrgOwn') },
+      ] as never);
+      await db.update(organizations).set({ settings: { helper: { enabled: true } } }).where(eq(organizations.id, org.orgId));
+      await db.insert(pamOrgConfig).values({ orgId: org.orgId, uacInterceptionEnabled: true } as never);
+    });
+    // Control: nothing is cached for this fresh org before the beat.
+    expect(orgPolicyProbeCache.peek(org.orgId)).toBeUndefined();
+    expect(orgHelperSettingsCache.peek(org.orgId)).toBeUndefined();
+    expect(orgPamFallbackCache.peek(org.orgId)).toBeUndefined();
+
+    expect((await heartbeat(device)).status).toBe(200);
+
+    const probe = orgPolicyProbeCache.peek(org.orgId);
+    expect(probe?.policy_config_state_probes).toEqual([]);
+    expect((probe?.policy_registry_state_probes ?? []).map((p) => p.value_name).sort()).toEqual(['OrgOwn', 'PartnerWide']);
+    expect(orgHelperSettingsCache.peek(org.orgId)).toEqual({ enabled: true });
+    expect(orgPamFallbackCache.peek(org.orgId)).toEqual({ uacInterceptionEnabled: true });
+  });
+
+  runDb('POST /agents/:id/heartbeat: the OneDrive Graph phase (real getToken + membership chain) holds no transaction and issues no DB statement (#8142)', async () => {
+    const org = await seedOrg('graphphase');
+    const device = await enrollDevice(org, 'graph');
+    const GROUP_ID = '0f0f0f0f-aaaa-4bbb-8ccc-000000000001';
+    const TENANT_ID = '11111111-2222-4333-8444-555555555555';
+    await seedPolicy({ owner: { orgId: org.orgId, partnerId: null },
+      links: [{ featureType: 'onedrive_helper', orgId: org.orgId, filesOnDemand: true, libraryName: 'Graph Docs', graphGroupId: GROUP_ID }],
+      assignments: [{ level: 'organization', targetId: org.orgId }] });
+    await withSystemDbAccessContext(async () => {
+      await db.insert(onedriveDeviceState).values({
+        deviceId: device.deviceId, orgId: org.orgId, signedIn: true, signedInUpns: ['member@contoso.example'],
+      } as never);
+      await db.insert(m365Connections).values({
+        orgId: org.orgId, tenantId: TENANT_ID, clientId: 'graph-phase-client',
+        clientSecret: encryptSecret('graph-phase-secret'),
+        profile: 'legacy-direct', authMode: 'client-secret-legacy', credentialDomain: 'legacy-direct',
+        vaultRef: null, credentialVersion: null, permissionManifestVersion: 0, observedGrants: [],
+        status: 'active',
+      } as never);
+    });
+    clearGroupMembershipCache();
+    clearTokenCache();
+
+    // Stub ONLY the two Microsoft hosts; record, at each outbound call, how many
+    // statements the request pool has seen and how many transactions are still open.
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const calls: Array<{ url: string; statements: number; openTransactions: number }> = [];
+    const openTransactions = () => recorder.statements
+      .map(normalizeStatement)
+      .reduce((n, s) => n + (s === 'begin' || s.startsWith('begin ') ? 1 : 0) - (s === 'commit' || s === 'rollback' ? 1 : 0), 0);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any, init?: any) => {
+      const url = typeof input === 'string' ? input : input.url ?? String(input);
+      if (url.startsWith('https://login.microsoftonline.com/') || url.startsWith('https://graph.microsoft.com/')) {
+        calls.push({ url, statements: recorder.statements.length, openTransactions: openTransactions() });
+        const body = url.includes('/oauth2/v2.0/token')
+          ? { access_token: 'graph-phase-token', expires_in: 3600 }
+          : { value: [{ id: GROUP_ID }] };
+        return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return realFetch(input, init);
+    });
+
+    let responseBody: any;
+    const beat = await measure(async () => {
+      const res = await heartbeat(device);
+      responseBody = await res.clone().json();
+      return res;
+    });
+    expect(beat.status).toBe(200);
+
+    // The phase really ran: a token call and a membership call, in that order, and the
+    // library was tagged for the member (the chain produced its output).
+    expect(calls.map((c) => c.url.includes('/oauth2/v2.0/token') ? 'token' : 'graph')).toEqual(['token', 'graph']);
+    expect(responseBody.configUpdate.onedrive_helper_settings.libraries[0].allowedUpns).toEqual(['member@contoso.example']);
+    // No pooled connection is held across either Microsoft call (#1105) ...
+    expect(calls.map((c) => c.openTransactions)).toEqual([0, 0]);
+    // ... the policy context's COMMIT is the last statement before the first call
+    // (nothing is read between the context and the Graph phase) ...
+    expect(normalizeStatement(recorder.statements[calls[0]!.statements - 1]!)).toBe('commit');
+    // ... and the DB is not touched between the two calls (the whole chain is DB-free).
+    expect(calls[1]!.statements).toBe(calls[0]!.statements);
   });
 
   runDb('POST /agents/:id/heartbeat: a legacy (no securityCapabilities) beat pays the two peripheral-v2 UPDATEs on top', async () => {
