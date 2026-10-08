@@ -133,6 +133,13 @@ function buildFollowsParentEntries(): Record<string, OrgMergePolicy> {
 }
 
 const SPECIAL: Record<string, OrgMergePolicy> = {
+  // PAM ownership-epoch lineage (#8203, spec §4). Append-only: the devices
+  // repoint fires breeze_device_ownership_epoch_advance(), which closes each
+  // loser-org epoch and opens the survivor epoch itself. The loser's epoch and
+  // closure rows stay with the loser shell and go with its erasure. W5
+  // revisits this for evidence-held shells.
+  device_ownership_epochs: { kind: 'leave-for-erasure', note: 'ownership lineage is immutable; the loser epoch closes when the devices repoint opens a survivor epoch' },
+  device_ownership_epoch_closures: { kind: 'leave-for-erasure', note: 'ownership lineage is immutable; a loser-epoch closure belongs to the loser and goes with its erasure' },
   autopay_setup_attempts: {kind:'leave-for-erasure',note:'Immutable enrollment authority stays with the loser; its generation/status fence prevents completion after merge'},
   billing_payment_settings: { kind: 'keep-survivor' },
   org_autopay_enrollments: { kind: 'custom', note: 'Cancel with org_merged and retain authority on the loser.' },

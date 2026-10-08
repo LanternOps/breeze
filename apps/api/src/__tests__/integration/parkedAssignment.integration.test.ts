@@ -101,6 +101,13 @@ async function assignedLedgerRows(deviceId: string) {
  * Rows keyed to (device, org) across every table carrying both device_id and
  * org_id — the child rows a heartbeat could write under the old org.
  */
+// Ownership lineage (#8203) is excluded: the assignment's org change itself
+// closes the departing epoch under the holding org via the
+// breeze_device_ownership_epoch_advance() trigger. That row is written by the
+// move, not by a raced heartbeat, and is pinned by
+// deviceOwnershipEpochs.integration.test.ts.
+const LINEAGE_TABLES = ['device_ownership_epochs', 'device_ownership_epoch_closures'];
+
 async function childRowsUnderOrg(deviceId: string, orgId: string): Promise<number> {
   const tables = await getTestDb().execute<{ table_name: string }>(sql`
     SELECT c.table_name
@@ -108,6 +115,7 @@ async function childRowsUnderOrg(deviceId: string, orgId: string): Promise<numbe
       JOIN information_schema.tables t
         ON t.table_schema = c.table_schema AND t.table_name = c.table_name AND t.table_type = 'BASE TABLE'
      WHERE c.table_schema = 'public' AND c.column_name = 'device_id'
+       AND c.table_name NOT IN (${sql.join(LINEAGE_TABLES.map((t) => sql`${t}`), sql`, `)})
        AND EXISTS (SELECT 1 FROM information_schema.columns o
                     WHERE o.table_schema = 'public' AND o.table_name = c.table_name AND o.column_name = 'org_id')
      ORDER BY c.table_name`);

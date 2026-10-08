@@ -239,6 +239,10 @@ export const devices = pgTable('devices', {
   peripheralPolicyProtocolVersion: integer('peripheral_policy_protocol_version').notNull().default(0),
   rollbackProtocolVersion: integer('rollback_protocol_version').notNull().default(0),
   pamLifetimeProtocolVersion: integer('pam_lifetime_protocol_version').notNull().default(0),
+  // PAM ownership epochs (#8203): current ownership epoch. Trigger-managed —
+  // advanced by exactly +1 on every org_id change; a caller-written change is
+  // refused with 42501. Never set it from app code.
+  ownershipEpoch: integer('ownership_epoch').notNull().default(1),
   // Revocation-lease capability. 1 = this agent build renews a per-session
   // revocation lease over the command WebSocket and stops the desktop stream
   // when the lease is revoked or expires past its grace window. 0 (default,

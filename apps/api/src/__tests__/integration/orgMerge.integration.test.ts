@@ -69,6 +69,7 @@ import * as orgMergeModule from '../../services/orgMerge';
 import { MergeValidationError, POST_PASS_FIXUPS_SUMMARY_KEY } from '../../services/orgMerge';
 import { sweepOffboardingTenants } from '../../services/tenantOffboarding';
 import { getTenantErasureQueue } from '../../jobs/tenantErasure';
+import { cascadeDeleteOrg } from '../../services/tenantCascade';
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -1295,6 +1296,38 @@ describe('executeOrgMerge end-to-end against real Postgres', () => {
     expect(await countIn('quotes', f.loser)).toBe(0);
     const eventsAfter = await query<{ n: number }>(sql`SELECT count(*)::int AS n FROM org_merge_events`);
     expect(Number(eventsAfter[0]?.n)).toBe(1);
+  }, 180_000);
+
+  it('a merge appends survivor ownership lineage for each loser device; loser lineage goes with loser erasure (#8203)', async () => {
+    await orgMergeModule.executeOrgMerge({
+      loserOrgId: f.loser,
+      survivorOrgId: f.survivor,
+      partnerId: f.partner,
+      performedBy: f.actor,
+      performedByEmail: f.actorEmail,
+    });
+
+    const device = await query<{ org_id: string; ownership_epoch: number }>(sql`
+      SELECT org_id, ownership_epoch FROM devices WHERE id = ${f.deviceL}::uuid`);
+    expect(device).toEqual([{ org_id: f.survivor, ownership_epoch: 2 }]);
+    const lineage = async () => ({
+      epochs: await query<{ epoch: number; org_id: string }>(sql`
+        SELECT epoch, org_id FROM device_ownership_epochs WHERE device_id = ${f.deviceL}::uuid ORDER BY epoch`),
+      closures: await query<{ epoch: number; org_id: string }>(sql`
+        SELECT epoch, org_id FROM device_ownership_epoch_closures WHERE device_id = ${f.deviceL}::uuid ORDER BY epoch`),
+    });
+    // leave-for-erasure: the loser epoch + its closure stay on the loser shell.
+    expect(await lineage()).toEqual({
+      epochs: [{ epoch: 1, org_id: f.loser }, { epoch: 2, org_id: f.survivor }],
+      closures: [{ epoch: 1, org_id: f.loser }],
+    });
+
+    await cascadeDeleteOrg(f.loser, f.actor);
+    expect(await lineage()).toEqual({
+      epochs: [{ epoch: 2, org_id: f.survivor }],
+      closures: [],
+    });
+    expect(await query(sql`SELECT 1 FROM devices WHERE id = ${f.deviceL}::uuid`)).toHaveLength(1);
   }, 180_000);
 
   it('rolls the entire merge back and unfences the loser when a policy throws mid-walk', async () => {

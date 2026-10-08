@@ -218,6 +218,13 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // — no bypass exists for any app role.
   'pam_actuation_results.pam_actuation_results_block_mutation':
     'unconditional append-only RAISE (42501) on UPDATE — no bypass exists for any app role',
+  // PAM ownership-epoch lineage (#8203, 2026-12-17-130000): unconditional
+  // append-only RAISE (42501) on UPDATE. Both tables are leave-for-erasure:
+  // the devices repoint appends survivor lineage via a trigger instead.
+  'device_ownership_epochs.device_ownership_epochs_block_update':
+    'unconditional append-only RAISE (42501) on UPDATE; leave-for-erasure',
+  'device_ownership_epoch_closures.device_ownership_epoch_closures_block_update':
+    'unconditional append-only RAISE (42501) on UPDATE; leave-for-erasure',
   // AI script proposals (2026-10-16-100100): RAISEs 42501 iff any content /
   // identity column changes, org_id included. Lifecycle columns (status,
   // decision_note, intent_id, …) stay writable — which is exactly what the
@@ -269,6 +276,13 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // PAM ownership epochs W1 (#8203, 2026-12-17-130000). The advance trigger
+  // fires on the devices repoint and only APPENDS lineage (closes the loser
+  // epoch, opens survivor epoch +1, writes retirement markers); it never
+  // RAISEs and never reverts org_id. The write guard fires only when the
+  // UPDATE targets ownership_epoch, and passes whenever org_id changes too.
+  'devices.devices_ownership_epoch_advance': 'appends ownership lineage on an org_id change; never RAISEs or reverts org_id',
+  'devices.devices_ownership_epoch_write_guard': 'fires only on UPDATE OF ownership_epoch and refuses an epoch change WITHOUT an org change; a merge repoint never targets ownership_epoch',
   // Diagnostic access grants (2026-12-13-130000): on an org_id change, turns an
   // active grant into revoked and a pending request into expired. Never blocks
   // or reverts the org_id change itself; the merge fences these rows in its

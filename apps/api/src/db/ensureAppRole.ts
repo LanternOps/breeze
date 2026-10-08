@@ -204,6 +204,22 @@ export async function ensureAppRole(): Promise<boolean> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='breeze_version_history') THEN
           REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE breeze_version_history FROM breeze_app;
         END IF;
+        -- PAM ownership-epoch lineage (#8203, migrations/2026-12-17-130000):
+        -- written ONLY by the SECURITY DEFINER devices triggers
+        -- breeze_device_ownership_epoch_init/_advance. A direct app-role
+        -- INSERT could forge an epoch and wedge the next move (PK clash) or,
+        -- once the PAM chain anchors to epochs (W2), fake an ownership era.
+        -- SELECT stays (RLS-filtered reads), DELETE stays (device permanent
+        -- deletion + org erasure).
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='device_ownership_epochs') THEN
+          REVOKE INSERT, UPDATE, TRUNCATE ON TABLE device_ownership_epochs FROM breeze_app;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='device_ownership_epoch_closures') THEN
+          REVOKE INSERT, UPDATE, TRUNCATE ON TABLE device_ownership_epoch_closures FROM breeze_app;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='pam_ledger_retirements') THEN
+          REVOKE INSERT, UPDATE, TRUNCATE ON TABLE pam_ledger_retirements FROM breeze_app;
+        END IF;
         -- Backup snapshot id tombstones: ids that may never be issued again.
         -- Only ever appended (by triggers on backup_snapshot_id_reservations
         -- and by storage reclaim); nothing may rewrite or remove one, or an
