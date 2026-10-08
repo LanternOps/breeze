@@ -47,6 +47,7 @@ import {
   AiBudgetPendingSettlementError,
   attestUnboundRate,
   MAX_PENDING_SETTLEMENT_REPLAY_ATTEMPTS,
+  readUnboundRateAttestation,
   readSdkUsageSnapshot,
   replayPendingAiSettlements,
   reserveAiBudget,
@@ -172,6 +173,7 @@ describe('reserveAiBudget with a turn binding (spec §9.2 bullet 1)', () => {
     const rebind = q(2);
     expect(rebind.sql).toMatch(/UPDATE ai_budget_reservations\s+SET model_binding/);
     expect(rebind.params).toContain(JSON.stringify(repriced));
+    expect(rebind.sql).toContain('unbound_rate_attestations = NULL');
   });
 
   it('a replay with the SAME binding changes nothing', async () => {
@@ -403,7 +405,7 @@ describe('settleAiBudgetReservation with ledger rows', () => {
       const OFFERING_RATE = { source: 'offering' as const, standard: OTHER };
       const attestedReservation = (over: Record<string, unknown> = {}) => reservationRow({
         billing_source: 'partner_key', model_binding: BYOK,
-        unbound_rate_attestations: { 'claude-sonnet-4-6': { connectionId: CONN_ID, offeringId: 'off-x', rate: OFFERING_RATE } },
+        unbound_rate_attestations: { [`${CONN_ID}:claude-sonnet-4-6`]: { connectionId: CONN_ID, offeringId: 'off-x', rate: OFFERING_RATE } },
         ...over,
       });
 
@@ -424,13 +426,34 @@ describe('settleAiBudgetReservation with ledger rows', () => {
       });
 
       it('an attestation for a different connection is not accepted: falls to the live re-read', async () => {
-        const other = { 'claude-sonnet-4-6': { connectionId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', offeringId: 'off-x', rate: OFFERING_RATE } };
+        const other = { [`${CONN_ID}:claude-sonnet-4-6`]: { connectionId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', offeringId: 'off-x', rate: OFFERING_RATE } };
         hoisted.readConnectionOfferingRate.mockResolvedValue({ rate: { source: 'offering', standard: { ...OTHER, inputCentsPerM: 1 } }, offeringId: 'off-x' });
         dbMock.execute.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([attestedReservation({ unbound_rate_attestations: other })]);
         await expect(settleAiBudgetReservation({
           orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow(OFFERING_RATE)],
         })).rejects.toThrow(/does not match the turn binding/);
         expect(hoisted.readConnectionOfferingRate).toHaveBeenCalledTimes(1);
+        expect(hoisted.recordInvocation).not.toHaveBeenCalled();
+      });
+
+      it('an entry stored under another connection id key is not accepted: falls to the live re-read', async () => {
+        const other = { 'ffffffff-ffff-4fff-8fff-ffffffffffff:claude-sonnet-4-6': { connectionId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', offeringId: 'off-x', rate: OFFERING_RATE } };
+        hoisted.readConnectionOfferingRate.mockResolvedValue({ rate: { source: 'offering', standard: { ...OTHER, inputCentsPerM: 1 } }, offeringId: 'off-x' });
+        dbMock.execute.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([attestedReservation({ unbound_rate_attestations: other })]);
+        await expect(settleAiBudgetReservation({
+          orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow(OFFERING_RATE)],
+        })).rejects.toThrow(/does not match the turn binding/);
+        expect(hoisted.readConnectionOfferingRate).toHaveBeenCalledTimes(1);
+        expect(hoisted.recordInvocation).not.toHaveBeenCalled();
+      });
+
+      it('a null-rate attestation never accepts an offering-priced row', async () => {
+        const nullRate = { [`${CONN_ID}:claude-sonnet-4-6`]: { connectionId: CONN_ID, offeringId: null, rate: null } };
+        hoisted.readConnectionOfferingRate.mockResolvedValue({ rate: { source: 'offering', standard: { ...OTHER, inputCentsPerM: 1 } }, offeringId: 'off-x' });
+        dbMock.execute.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([attestedReservation({ unbound_rate_attestations: nullRate })]);
+        await expect(settleAiBudgetReservation({
+          orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow(OFFERING_RATE)],
+        })).rejects.toThrow(/does not match the turn binding/);
         expect(hoisted.recordInvocation).not.toHaveBeenCalled();
       });
 
@@ -460,7 +483,7 @@ describe('settleAiBudgetReservation with ledger rows', () => {
     const input = { orgId: ORG_ID, reservationId: RESERVATION_ID, model: 'claude-sonnet-4-6', attestation: ENTRY };
 
     it('one UPDATE, new entry on the LEFT of || (first write wins), scoped by id + org + settleable status; returns the parsed entry', async () => {
-      dbMock.execute.mockResolvedValueOnce([{ attestations: { 'claude-sonnet-4-6': ENTRY } }]);
+      dbMock.execute.mockResolvedValueOnce([{ attestations: { [`${CONN}:claude-sonnet-4-6`]: ENTRY } }]);
       await expect(attestUnboundRate(input)).resolves.toEqual(ENTRY);
       expect(dbMock.execute).toHaveBeenCalledTimes(1);
       const { sql: text, params } = q(0);
@@ -468,18 +491,42 @@ describe('settleAiBudgetReservation with ledger rows', () => {
       expect(text).toContain('|| COALESCE(unbound_rate_attestations');
       expect(text).toMatch(/WHERE id = \$\d::uuid AND org_id = \$\d::uuid/);
       expect(text).toMatch(/status IN \('active', 'indeterminate', 'expired'\)/);
-      expect(params).toEqual(expect.arrayContaining([RESERVATION_ID, ORG_ID, JSON.stringify({ 'claude-sonnet-4-6': ENTRY })]));
+      expect(params).toEqual(expect.arrayContaining([RESERVATION_ID, ORG_ID, JSON.stringify({ [`${CONN}:claude-sonnet-4-6`]: ENTRY })]));
     });
 
     it('returns the STORED entry when an earlier write exists', async () => {
       const stored = { ...ENTRY, offeringId: 'off-0', rate: { source: 'offering' as const, standard: FB } };
-      dbMock.execute.mockResolvedValueOnce([{ attestations: { 'claude-sonnet-4-6': stored } }]);
+      dbMock.execute.mockResolvedValueOnce([{ attestations: { [`${CONN}:claude-sonnet-4-6`]: stored } }]);
       await expect(attestUnboundRate(input)).resolves.toEqual(stored);
     });
 
     it('returns null when no row comes back (settled, released or gone)', async () => {
       dbMock.execute.mockResolvedValueOnce([]);
       await expect(attestUnboundRate(input)).resolves.toBeNull();
+    });
+  });
+
+  describe('readUnboundRateAttestation (#7773)', () => {
+    const CONN = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const ENTRY = { connectionId: CONN, offeringId: 'off-1', rate: { source: 'offering' as const, standard: STD } };
+    const input = { orgId: ORG_ID, reservationId: RESERVATION_ID, connectionId: CONN, model: 'claude-sonnet-4-6' };
+
+    it('one SELECT scoped by id + org_id with no status filter; returns the connection:model entry', async () => {
+      dbMock.execute.mockResolvedValueOnce([{ attestations: { [`${CONN}:claude-sonnet-4-6`]: ENTRY } }]);
+      await expect(readUnboundRateAttestation(input)).resolves.toEqual(ENTRY);
+      expect(dbMock.execute).toHaveBeenCalledTimes(1);
+      const { sql: text, params } = q(0);
+      expect(text).toMatch(/SELECT unbound_rate_attestations/);
+      expect(text).toMatch(/WHERE id = \$\d::uuid AND org_id = \$\d::uuid/);
+      expect(text).not.toMatch(/status/);
+      expect(params).toEqual(expect.arrayContaining([RESERVATION_ID, ORG_ID]));
+    });
+
+    it('returns null when the key is absent or the row is gone', async () => {
+      dbMock.execute.mockResolvedValueOnce([{ attestations: { 'other:claude-sonnet-4-6': ENTRY } }]);
+      await expect(readUnboundRateAttestation(input)).resolves.toBeNull();
+      dbMock.execute.mockResolvedValueOnce([]);
+      await expect(readUnboundRateAttestation(input)).resolves.toBeNull();
     });
   });
 

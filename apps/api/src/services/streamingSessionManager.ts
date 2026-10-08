@@ -2069,7 +2069,10 @@ export class StreamingSessionManager {
 
     let costCents: number;
     try {
-      costCents = await quoteInvocationCents(binding, turn.usage);
+      // #7773: with the reservation, the quote and the settlement below read
+      // one attested pricing decision for an unbound BYOK key.
+      costCents = await quoteInvocationCents(binding, turn.usage, session.budgetReservationId
+        ? { orgId: session.orgId, reservationId: session.budgetReservationId } : undefined);
     } catch (err) {
       console.error('[StreamingSessionManager] registry quote failed; quoting the bound rate:', safeErrorMessage(err));
       costCents = sumCostCents(priceUsage(binding, turn.usage));

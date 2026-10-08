@@ -39,7 +39,7 @@ import type { SdkUsageSnapshot, TurnOutcome } from '../../services/aiModels/invo
 import { getPlatformModelById } from '../../services/aiModels/platformModels';
 import { priceInvocation } from '../../services/aiModels/pricing';
 import { resolveModel } from '../../services/aiModels/resolveModel';
-import { settleInvocation, type SettleInvocationInput } from '../../services/aiModels/settleInvocation';
+import { quoteInvocationCents, settleInvocation, type SettleInvocationInput } from '../../services/aiModels/settleInvocation';
 import { deleteAnthropicConnection } from '../../services/aiModels/anthropicConnectionWrites';
 import { turnBindingFrom, type TurnBinding } from '../../services/aiModels/turnBinding';
 import { closeRegistryFixtures, fixtureSql, seedOffering } from './aiModelRegistryFixtures';
@@ -825,6 +825,87 @@ describe.skipIf(!RUN)('an unbound BYOK refusal-fallback key at its own offering 
     expect(rows[0]!.rate_snapshot).toEqual({ source: 'offering', standard: OWN });
     expect(Number(rows[0]!.cost_cents)).toBeCloseTo(expected, 6);
   }, 30_000);
+
+  const fbUsage = (model: string) => [{ model, tokens: T, webSearchRequests: 0, speedServed: 'standard' as const, providerModel: null }];
+  async function attestationsOf(id: string): Promise<unknown> {
+    const [row] = await q<{ unbound_rate_attestations: unknown }>(sql`
+      SELECT unbound_rate_attestations FROM ai_budget_reservations WHERE id = ${id}::uuid`);
+    return row!.unbound_rate_attestations;
+  }
+
+  it('a repeated settle of a settled turn reprices from its attestation after the offering is deleted: already_settled, one ledger row', async () => {
+    const b = await seedRegistryPartner('byok');
+    const binding = await bindingFor(b);
+    const fbModel = `w7773-again-${randomUUID()}`;
+    const offeringId = await seedOffering({ partnerId: b.partnerId, connectionId: b.connectionId, modelId: fbModel, source: 'manual', enabled: true });
+    await priceOffering(offeringId);
+    const id = await reserve(b, binding);
+    const input = settleInput(b, binding, id, { usage: fbUsage(fbModel), outcome: swapped(fbModel) });
+    const first = await settleInvocation(input);
+    expect(first.invocationIds).toHaveLength(1);
+
+    await fixtureSql`DELETE FROM partner_ai_models WHERE id = ${offeringId}`;
+    const again = await settleInvocation(input);   // would bill the bound rate -> "Conflicting settlement" without the attestation
+    expect(again).toMatchObject({ deferred: false, invocationIds: [] });
+    expect(again.costCents).toBeCloseTo(first.costCents, 6);
+    expect(await q(sql`SELECT 1 FROM ai_invocations WHERE org_id = ${b.orgId}::uuid AND requested_model = ${fbModel}`)).toHaveLength(1);
+  });
+
+  it('the quote attests the decision the settlement then bills, even after a reprice in between', async () => {
+    const b = await seedRegistryPartner('byok');
+    const binding = await bindingFor(b);
+    const fbModel = `w7773-quote-${randomUUID()}`;
+    const offeringId = await seedOffering({ partnerId: b.partnerId, connectionId: b.connectionId, modelId: fbModel, source: 'manual', enabled: true });
+    await priceOffering(offeringId);
+    const id = await reserve(b, binding);
+    const quoted = await quoteInvocationCents(binding, fbUsage(fbModel), { orgId: b.orgId, reservationId: id });
+    expect(quoted).toBeCloseTo(priceInvocation({ source: 'offering', standard: OWN }, T, {}), 6);
+    expect(await attestationsOf(id)).toEqual({
+      [`${b.connectionId}:${fbModel}`]: { connectionId: b.connectionId, offeringId, rate: { source: 'offering', standard: OWN } },
+    });
+
+    await fixtureSql`UPDATE partner_ai_models SET price_input_cents_per_m = 999 WHERE id = ${offeringId}`;
+    const out = await settleInvocation(settleInput(b, binding, id, { usage: fbUsage(fbModel), outcome: swapped(fbModel) }));
+    expect(out.costCents).toBeCloseTo(quoted, 6);
+    expect(Number((await reservationState(id)).actual_cost_cents)).toBeCloseTo(quoted, 6);
+  });
+
+  it('a miss is attested too: an offering enabled after the quote does not change what the turn bills', async () => {
+    const b = await seedRegistryPartner('byok');
+    const binding = await bindingFor(b);
+    const fbModel = `w7773-miss-${randomUUID()}`;
+    const offeringId = await seedOffering({ partnerId: b.partnerId, connectionId: b.connectionId, modelId: fbModel, source: 'manual', enabled: false });
+    await priceOffering(offeringId);
+    const id = await reserve(b, binding);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const quoted = await quoteInvocationCents(binding, fbUsage(fbModel), { orgId: b.orgId, reservationId: id });
+      expect(quoted).toBeCloseTo(priceInvocation(binding.rateSnapshot, T, {}), 6);
+      await fixtureSql`UPDATE partner_ai_models SET enabled = true WHERE id = ${offeringId}`;
+      const out = await settleInvocation(settleInput(b, binding, id, { usage: fbUsage(fbModel), outcome: swapped(fbModel) }));
+      expect(out.costCents).toBeCloseTo(quoted, 6);
+    } finally {
+      warn.mockRestore();
+    }
+    const [row] = await q<{ rate_snapshot: unknown }>(sql`
+      SELECT rate_snapshot FROM ai_invocations WHERE org_id = ${b.orgId}::uuid AND requested_model = ${fbModel}`);
+    expect(row!.rate_snapshot).toEqual(binding.rateSnapshot);
+  });
+
+  it('a stable-key retry that rebinds the reservation clears the old attempt\'s attestations', async () => {
+    const b = await seedRegistryPartner('byok');
+    const binding = await bindingFor(b);
+    const fbModel = `w7773-rebind-${randomUUID()}`;
+    await priceOffering(await seedOffering({ partnerId: b.partnerId, connectionId: b.connectionId, modelId: fbModel, source: 'manual', enabled: true }));
+    const key = `t:${randomUUID()}`;
+    const id = await reserve(b, binding, { key });
+    await quoteInvocationCents(binding, fbUsage(fbModel), { orgId: b.orgId, reservationId: id });
+    expect(await attestationsOf(id)).not.toBeNull();
+
+    const rebound: TurnBinding = { ...binding, rateSnapshot: { ...binding.rateSnapshot, standard: { ...binding.rateSnapshot.standard, inputCentsPerM: binding.rateSnapshot.standard.inputCentsPerM + 1 } } };
+    expect(await reserve(b, rebound, { key })).toBe(id);
+    expect(await attestationsOf(id)).toBeNull();
+  });
 
   it('an enabled, priced offering of that model on ANOTHER connection of the same partner is never used', async () => {
     const b = await seedRegistryPartner('byok');

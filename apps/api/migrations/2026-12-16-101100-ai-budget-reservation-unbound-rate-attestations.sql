@@ -3,8 +3,11 @@
 --
 -- settleInvocation prices a BYOK usage key the turn never bound (the Agent SDK
 -- CLI's own refusal swap) at the rate of that model's enabled offering on the
--- binding's own connection, and writes what it read here, keyed by model:
--- { "<model>": { "connectionId", "offeringId", "rate" } }. First write wins.
+-- binding's own connection, and records that decision here (a miss as a null
+-- rate, i.e. the bound rate), keyed by connection and model:
+-- { "<connectionId>:<model>": { "connectionId", "offeringId", "rate" } }.
+-- First write wins; a quote, retry or replay of the turn reads the same entry.
+-- reserveAiBudget clears it when a stable-key retry rebinds the reservation.
 -- The settlement transaction verifies the ledger row's rate against this entry
 -- (read FOR UPDATE on the same connection), so a settlement deferred by
 -- org-lock contention and replayed after the partner repriced, disabled or

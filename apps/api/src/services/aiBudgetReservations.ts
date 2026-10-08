@@ -687,13 +687,15 @@ export async function reserveAiBudget(input: ReserveAiBudgetInput): Promise<Rese
       // binding may predate a rate or offering change, and settlement would
       // then reject the new rows and leak the hold. Re-bind it here, before
       // anything is dispatched — but never one whose outcome is (or may be)
-      // recorded.
+      // recorded. The new dispatch prices its own unbound keys, so the old
+      // attempt's #7773 rate attestations are cleared with the old binding.
       if (input.binding && stableJson(parseTurnBinding(existing.model_binding)) !== stableJson(input.binding)) {
         if (existing.status !== 'active' || existing.settlement_fingerprint !== null) {
           throw new AiBudgetBindingConflictError();
         }
         await db.execute(sql`
-          UPDATE ai_budget_reservations SET model_binding = ${JSON.stringify(input.binding)}::jsonb, updated_at = now()
+          UPDATE ai_budget_reservations SET model_binding = ${JSON.stringify(input.binding)}::jsonb,
+                 unbound_rate_attestations = NULL, updated_at = now()
           WHERE id = ${existing.id}::uuid
           RETURNING id
         `);
@@ -944,31 +946,67 @@ function sameJson(a: unknown, b: unknown): boolean {
   return stableJson(a) === stableJson(b);
 }
 
-/** One #7773 attestation: what the turn read from its connection's offering. */
+/**
+ * One #7773 attestation: the pricing decision the turn made for an unbound
+ * BYOK key on its connection. `rate` is the offering rate it read, or null when
+ * it found none and billed the bound rate (a miss is recorded too, so a retry
+ * cannot flip to an offering enabled afterwards and change the cost).
+ */
 export interface UnboundRateAttestation {
   connectionId: string;
-  offeringId: string;
-  rate: RateSnapshot;
-}
-
-function attestedUnboundRate(raw: unknown, model: string): UnboundRateAttestation | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const entry = (raw as Record<string, unknown>)[model];
-  if (!entry || typeof entry !== 'object') return null;
-  const { connectionId, offeringId, rate } = entry as Record<string, unknown>;
-  if (typeof connectionId !== 'string' || typeof offeringId !== 'string' || !rate || typeof rate !== 'object') return null;
-  return { connectionId, offeringId, rate: rate as RateSnapshot };
+  offeringId: string | null;
+  rate: RateSnapshot | null;
 }
 
 /**
- * #7773: record, on the reservation the turn holds, the rate settleInvocation
- * read for an unbound BYOK key, and return the attested entry. FIRST WRITE
- * WINS (the stored entry is kept when present), so a retried settleInvocation
- * for the same turn prices at the same turn-time rate and keeps the same
- * settlement fingerprint. Runs on the AMBIENT db, in the caller's short system
- * context, right after the offering read; it never opens a context of its own.
- * Returns null when the reservation can no longer settle (settled, released or
- * gone): the caller then bills the bound rate, exactly as before #7773.
+ * Keyed by connection AND model: a stable-key retry that rebinds the
+ * reservation to another connection never sees the old connection's entry
+ * (and reserveAiBudget clears the map on any rebind). A connection id is a
+ * fixed-width uuid, so the key is unambiguous whatever the model id holds.
+ */
+function attestationKey(connectionId: string, model: string): string {
+  return `${connectionId}:${model}`;
+}
+
+function attestedUnboundRate(raw: unknown, connectionId: string, model: string): UnboundRateAttestation | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const entry = (raw as Record<string, unknown>)[attestationKey(connectionId, model)];
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const { connectionId: storedConnection, offeringId, rate } = entry as Record<string, unknown>;
+  if (storedConnection !== connectionId) return null;
+  if (offeringId !== null && typeof offeringId !== 'string') return null;
+  if (rate !== null && (typeof rate !== 'object' || Array.isArray(rate))) return null;
+  return { connectionId, offeringId, rate: rate as RateSnapshot | null };
+}
+
+/**
+ * #7773: the attestation this reservation already holds for (connection,
+ * model), whatever its status — a settled or pending reservation still answers,
+ * so a repeated settleInvocation for the same turn reprices identically.
+ * Ambient db; the caller supplies the (short, system) context.
+ */
+export async function readUnboundRateAttestation(input: {
+  orgId: string;
+  reservationId: string;
+  connectionId: string;
+  model: string;
+}): Promise<UnboundRateAttestation | null> {
+  const row = rows<{ attestations: unknown }>(await db.execute(sql`
+    SELECT unbound_rate_attestations AS attestations FROM ai_budget_reservations
+    WHERE id = ${input.reservationId}::uuid AND org_id = ${input.orgId}::uuid
+  `))[0];
+  return row ? attestedUnboundRate(row.attestations, input.connectionId, input.model) : null;
+}
+
+/**
+ * #7773: record the turn's pricing decision for an unbound BYOK key on the
+ * reservation it holds, and return the entry now stored. FIRST WRITE WINS (an
+ * existing entry is kept), so every later quote, settlement or retry for this
+ * turn prices at the same turn-time rate and keeps the same settlement
+ * fingerprint. Only a reservation that can still settle takes a NEW entry;
+ * returns null otherwise (the caller then bills the bound rate, as before
+ * #7773). Ambient db, in the caller's short system context, right after the
+ * offering read; it never opens a context of its own and takes no org lock.
  */
 export async function attestUnboundRate(input: {
   orgId: string;
@@ -977,7 +1015,8 @@ export async function attestUnboundRate(input: {
   attestation: UnboundRateAttestation;
 }): Promise<UnboundRateAttestation | null> {
   await tightenLockTimeout(db as unknown as { execute(q: unknown): Promise<unknown> }, AI_BUDGET_LOCK_TIMEOUT_MS);
-  const entry = JSON.stringify({ [input.model]: input.attestation });
+  const { connectionId } = input.attestation;
+  const entry = JSON.stringify({ [attestationKey(connectionId, input.model)]: input.attestation });
   const row = rows<{ attestations: unknown }>(await db.execute(sql`
     UPDATE ai_budget_reservations
     SET unbound_rate_attestations = ${entry}::jsonb || COALESCE(unbound_rate_attestations, '{}'::jsonb),
@@ -986,7 +1025,7 @@ export async function attestUnboundRate(input: {
       AND status IN ('active', 'indeterminate', 'expired')
     RETURNING unbound_rate_attestations AS attestations
   `))[0];
-  return row ? attestedUnboundRate(row.attestations, input.model) : null;
+  return row ? attestedUnboundRate(row.attestations, connectionId, input.model) : null;
 }
 
 /**
@@ -1036,8 +1075,8 @@ async function assertInvocationsMatchBinding(
     const rateSource = (rate as { source?: unknown } | null)?.source;
     if (row.fallbackUsed && binding.funding === 'partner_key' && !boundModels.has(row.requestedModel)
         && (rateSource === 'offering' || rateSource === 'linked_platform')) {
-      const attested = attestedUnboundRate(attestations, row.requestedModel);
-      if (attested && attested.connectionId === binding.connectionId && sameJson(rate, attested.rate)) continue;
+      const attested = binding.connectionId ? attestedUnboundRate(attestations, binding.connectionId, row.requestedModel) : null;
+      if (attested?.rate && sameJson(rate, attested.rate)) continue;
       const current = await readConnectionOfferingRate({
         partnerId: binding.partnerId, connectionId: binding.connectionId,
         connectionKind: binding.connectionKind, model: row.requestedModel,
