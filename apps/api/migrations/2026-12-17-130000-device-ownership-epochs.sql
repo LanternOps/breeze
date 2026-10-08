@@ -185,22 +185,28 @@ CREATE TRIGGER devices_ownership_epoch_write_guard
   EXECUTE FUNCTION public.breeze_device_ownership_epoch_write_guard();
 
 -- ---------------------------------------------------------------------------
--- Epoch 1 on insert. SECURITY DEFINER with a function-level scope SET (reverts
--- on exit, never leaks into the caller's transaction): breeze_app holds no
--- INSERT on the lineage tables, and the row it writes mirrors a devices row
--- that has already passed the devices RLS WITH CHECK.
+-- Epoch 1 on insert. SECURITY DEFINER with in-body system scope, saved and
+-- restored before RETURN so it never leaks into the caller's transaction
+-- (an error path aborts the statement, which rolls the set_config back too):
+-- breeze_app holds no INSERT on the lineage tables, and the row it writes
+-- mirrors a devices row that has already passed the devices RLS WITH CHECK.
+-- A function-level SET "breeze.scope" attribute is not usable here: it needs
+-- superuser in prod (42501, see migrationGucAttributes.test.ts).
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.breeze_device_ownership_epoch_init()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET "breeze.scope" = 'system'
 AS $$
+DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
 BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
   INSERT INTO public.device_ownership_epochs (device_id, epoch, org_id, site_id, cause)
   VALUES (NEW.id, NEW.ownership_epoch, NEW.org_id, NEW.site_id, 'enrollment')
   ON CONFLICT DO NOTHING;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
   RETURN NULL;
 END;
 $$;
@@ -215,11 +221,13 @@ CREATE TRIGGER devices_ownership_epoch_init
 -- Advance on org change: close the departing epoch (with a display snapshot),
 -- write one retirement marker per departing-epoch actuation, open epoch +1.
 --
--- SECURITY DEFINER + function-level SET "breeze.scope" = 'system' is required:
--- pam_ledger_retirements is system-only, the lineage tables grant breeze_app
--- no INSERT, and the pam_actuations read must see the source org's rows.
--- Never use an in-body set_config(..., true): it would leak system scope into
--- the rest of the caller's transaction.
+-- SECURITY DEFINER + system scope is required: pam_ledger_retirements is
+-- system-only, the lineage tables grant breeze_app no INSERT, and the
+-- pam_actuations read must see the source org's rows. Scope is elevated
+-- in-body and restored to the caller's value before every RETURN, so it never
+-- leaks into the rest of the caller's transaction (error paths abort the
+-- statement, which rolls the set_config back). A function-level
+-- SET "breeze.scope" attribute is not usable: it needs superuser in prod.
 --
 -- The cause comes from the transaction-local GUC breeze.ownership_change_cause;
 -- anything other than device_move / org_merge records 'unspecified'. W1 does
@@ -234,14 +242,16 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET "breeze.scope" = 'system'
 AS $$
 DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
   change_cause text := coalesce(nullif(current_setting('breeze.ownership_change_cause', true), ''), 'unspecified');
 BEGIN
   IF NEW.org_id IS NOT DISTINCT FROM OLD.org_id THEN
     RETURN NEW;
   END IF;
+
+  PERFORM set_config('breeze.scope', 'system', true);
 
   IF change_cause NOT IN ('device_move', 'org_merge', 'unspecified') THEN
     RAISE WARNING 'breeze.ownership_change_cause % is not an ownership-change cause; device % epoch % recorded as unspecified',
@@ -276,6 +286,7 @@ BEGIN
     CASE WHEN change_cause IN ('device_move', 'org_merge') THEN change_cause ELSE 'unspecified' END
   );
 
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
   RETURN NEW;
 END;
 $$;
