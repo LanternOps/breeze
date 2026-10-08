@@ -766,3 +766,11 @@ default 1200, always capped by the key's own limit), then partner-wide
 partner admin can mint service principals, so a per-principal limit alone
 would be multiplied by however many they create. Both defaults are
 provisional and will be tuned on real traffic.
+
+The key's own limit matters twice. It caps the ticket-write ceiling, and it is
+also the general hourly bucket that every request on the key is charged to,
+feed reads included. A key issued with the default `rateLimit` of 600 (see
+[Issue and capture the key once](#issue-and-capture-the-key-once)) therefore
+tops out at 600 requests an hour, shared between feed polling and writes, and
+never reaches the 1200 ticket-write ceiling. For a mirror, issue the key with a
+`rateLimit` that covers both the writes and the feed polling it needs.
