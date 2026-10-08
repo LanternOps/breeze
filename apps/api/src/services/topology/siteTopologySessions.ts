@@ -14,6 +14,15 @@ export type SiteTopologyAiSessionCleanup = {
   screenshots: number;
 };
 
+export type SiteTopologyAiSessionDeletion = SiteTopologyAiSessionCleanup & {
+  /**
+   * `storage_key` of every deleted screenshot row (#8117). The caller removes
+   * the files with `removeScreenshotFiles` once its transaction commits; keep
+   * these out of the audit row, which takes the counts only.
+   */
+  screenshotStorageKeys: string[];
+};
+
 /**
  * Topology M4-D2 (#6000): a topology investigation session is pinned to ONE
  * site by `ai_sessions.topology_site_id` — a same-scope FK with NO ON DELETE
@@ -34,13 +43,15 @@ export type SiteTopologyAiSessionCleanup = {
 export async function deleteSiteTopologyAiSessions(
   executor: Executor,
   scope: { orgId: string; siteId: string },
-): Promise<SiteTopologyAiSessionCleanup> {
+): Promise<SiteTopologyAiSessionDeletion> {
   const rows = await executor
     .select({ id: aiSessions.id })
     .from(aiSessions)
     .where(and(eq(aiSessions.orgId, scope.orgId), eq(aiSessions.topologySiteId, scope.siteId)));
   const ids = rows.map((row) => row.id);
-  if (ids.length === 0) return { investigations: 0, messages: 0, toolExecutions: 0, actionPlans: 0, screenshots: 0 };
+  if (ids.length === 0) {
+    return { investigations: 0, messages: 0, toolExecutions: 0, actionPlans: 0, screenshots: 0, screenshotStorageKeys: [] };
+  }
 
   const toolExecutions = await executor.delete(aiToolExecutions)
     .where(inArray(aiToolExecutions.sessionId, ids)).returning({ id: aiToolExecutions.id });
@@ -49,7 +60,8 @@ export async function deleteSiteTopologyAiSessions(
   const actionPlans = await executor.delete(aiActionPlans)
     .where(inArray(aiActionPlans.sessionId, ids)).returning({ id: aiActionPlans.id });
   const screenshots = await executor.delete(aiScreenshots)
-    .where(inArray(aiScreenshots.sessionId, ids)).returning({ id: aiScreenshots.id });
+    .where(inArray(aiScreenshots.sessionId, ids))
+    .returning({ id: aiScreenshots.id, storageKey: aiScreenshots.storageKey });
   const sessions = await executor.delete(aiSessions)
     .where(and(eq(aiSessions.orgId, scope.orgId), eq(aiSessions.topologySiteId, scope.siteId), inArray(aiSessions.id, ids)))
     .returning({ id: aiSessions.id });
@@ -60,5 +72,6 @@ export async function deleteSiteTopologyAiSessions(
     toolExecutions: toolExecutions.length,
     actionPlans: actionPlans.length,
     screenshots: screenshots.length,
+    screenshotStorageKeys: screenshots.map((row) => row.storageKey),
   };
 }

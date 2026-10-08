@@ -251,17 +251,27 @@ func numericEventID(entry EventLogEntry) int {
 	return n
 }
 
-// reServiceName extracts the failing service name from SCM messages like
-// "The <ServiceName> service terminated unexpectedly".
+// reServiceNameAnchored is the preferred match for SCM messages like
+// "The <ServiceName> service terminated unexpectedly": the name is what sits
+// between "The" and "service <verb>", so a name that itself contains the word
+// "service" (for example "Acme Service Desk Agent") is not cut at its first
+// occurrence. The verbs are the ones used by the failure events listed in
+// scmFailureEventIDs.
+var reServiceNameAnchored = regexp.MustCompile(`(?i)the (.+?) service (?:terminated|failed|hung|entered|stopped|was)\b`)
+
+// reServiceName is the looser match: the name ends at the first "service". It
+// stays as the second attempt so that every message that matched before still
+// matches.
 var reServiceName = regexp.MustCompile(`(?i)the (.+?) service\b`)
 
 // parseRawServiceName extracts the service name from an SCM message.
 // Falls back to fallback (typically entry.Source) if no match.
 func parseRawServiceName(message, fallback string) string {
-	if m := reServiceName.FindStringSubmatch(message); len(m) >= 2 {
-		name := strings.TrimSpace(m[1])
-		if name != "" {
-			return name
+	for _, re := range []*regexp.Regexp{reServiceNameAnchored, reServiceName} {
+		if m := re.FindStringSubmatch(message); len(m) >= 2 {
+			if name := strings.TrimSpace(m[1]); name != "" {
+				return name
+			}
 		}
 	}
 	return fallback

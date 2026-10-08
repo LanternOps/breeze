@@ -33,6 +33,8 @@ import { enqueueOrReplaceStale } from '../services/bullmqUtils';
 import { createAuditLog } from '../services/auditService';
 import { invalidateOrgDeviceCount } from '../services/agentOrgRateLimit';
 import { purgeRemovedDevice, DeviceLifecycleError } from '../services/deviceLifecycle';
+import { listDeviceScreenshotStorageKeys } from '../services/screenshotStorage';
+import { removeScreenshotFiles } from '../services/screenshotFiles';
 import { attachWorkerObservability } from './workerObservability';
 
 // V2 uses a distinct queue, not merely a new field on the old payload. During
@@ -173,10 +175,10 @@ async function purgeOne(
   target: DeviceBulkPurgeTarget,
   allowedSiteIds?: readonly string[],
 ): Promise<PurgeOneOutcome> {
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
+  const { screenshotStorageKeys, ...outcome } = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async (): Promise<PurgeOneOutcome & { screenshotStorageKeys?: string[] }> => {
       try {
-        return await db.transaction(async (tx): Promise<PurgeOneOutcome> => {
+        return await db.transaction(async (tx) => {
           const rows = (await tx.execute(
             sql`SELECT org_id FROM devices WHERE id = ${target.deviceId} FOR UPDATE`,
           )) as unknown as Array<{ org_id: string }>;
@@ -186,12 +188,16 @@ async function purgeOne(
             return { code: 'ORG_CHANGED', linkGroupId: null, linkGroupDissolved: false };
           }
 
+          // #8117 — under the devices row lock (which also blocks a concurrent
+          // capture's FK check), so the key list is complete.
+          const keys = await listDeviceScreenshotStorageKeys(tx, target.deviceId);
           const purged = await purgeRemovedDevice(tx, target.deviceId, allowedSiteIds);
           return {
             code: null,
             linkGroupId: purged.linkGroupId,
             linkGroupDissolved: purged.linkGroupDissolved,
             removedTopologyAlerts: purged.removedTopologyAlerts,
+            screenshotStorageKeys: keys,
           };
         });
       } catch (err) {
@@ -208,6 +214,12 @@ async function purgeOne(
       }
     }, 'deviceBulkPurge.purgeOne'),
   );
+  // The system context above is a top-level transaction, so the purge has
+  // committed. Never throws; leftovers are retried by the orphan sweep.
+  if (outcome.code === null && screenshotStorageKeys && screenshotStorageKeys.length > 0) {
+    await removeScreenshotFiles(screenshotStorageKeys, `bulk device purge device=${target.deviceId}`);
+  }
+  return outcome;
 }
 
 /**

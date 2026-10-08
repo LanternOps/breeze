@@ -1,4 +1,4 @@
-import type { ContractLineType } from '@breeze/shared';
+import type { ContractLineType, HOUR_BLOCK_LINE_TYPE } from '@breeze/shared';
 
 export type ContractStatus = 'draft' | 'active' | 'paused' | 'cancelled' | 'expired';
 export type BillingTiming = 'advance' | 'arrears';
@@ -112,7 +112,11 @@ export type ContractServiceErrorCode =
   // #3205 W03: resolvePrice could not reach the catalog item. Deliberately does
   // NOT distinguish missing / foreign / RLS-invisible (catalogService.ts:680) —
   // a 404 that fires only for foreign ids enumerates other partners' catalogs.
-  | 'CATALOG_ITEM_NOT_FOUND';
+  | 'CATALOG_ITEM_NOT_FOUND'
+  // #4547 W01: an hour_block row reached a billing/estimate path before the
+  // engine that understands it shipped. 500: only a hand-forged row gets here,
+  // because no validator accepts the type until W03.
+  | 'HOUR_BLOCK_NOT_ENABLED';
 
 export class ContractServiceError extends Error {
   constructor(
@@ -148,7 +152,9 @@ export interface ContractLineAudit {
    *  deliberately unchanged. Becomes the audit event's resourceName when set. */
   contractName?: string;
   contractLineId: string;
-  lineType: ContractLineType;
+  // Widened (not ContractLineType): this is filled from persisted rows, whose
+  // Drizzle type now includes 'hour_block'. CONTRACT_LINE_TYPES is unchanged.
+  lineType: ContractLineType | typeof HOUR_BLOCK_LINE_TYPE;
   /** Column NAMES whose persisted value changed. Empty on a no-op patch.
    *  Absent for add/remove. Never a value — see the no-free-text rule. */
   changedFields?: string[];

@@ -5,6 +5,7 @@ import { db } from '../../db';
 import { automationPolicies } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { invalidateOrgPolicyProbeCache } from '../../services/agentOrgSettingsCache';
 import { scheduleComplianceAlertReconcile } from '../../services/complianceAlertReconcileTrigger';
 import {
   canManagePartnerWidePolicies,
@@ -86,6 +87,9 @@ actionRoutes.post(
       ? { orgId: policy.orgId }
       : policy.partnerId ? { partnerId: policy.partnerId } : null;
     if (updated && owner) scheduleComplianceAlertReconcile(owner, 'automation-policy-deactivate');
+    // Every agent of this org (every org, for a partner-wide policy) gets this
+    // policy's probes from a 60 s per-org heartbeat cache (#8053).
+    if (updated) invalidateOrgPolicyProbeCache(policy.orgId ?? undefined);
 
     writeRouteAudit(c, {
       orgId: policy.orgId,

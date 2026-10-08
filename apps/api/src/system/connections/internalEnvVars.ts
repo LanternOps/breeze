@@ -139,6 +139,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   DB_CONTEXT_HELD_CAPTURE_THROTTLE_MS: 'database pool/watchdog tuning',
   DB_CONTEXT_HELD_WARN_MS: 'database pool/watchdog tuning',
   DB_CONTEXT_TRIPWIRE_STRICT: 'database pool/watchdog tuning',
+  DB_POOL_ACQUIRE_TIMEOUT_MS: 'database pool/watchdog tuning',
   DB_POOL_HEALTH_CAPTURE_THROTTLE_MS: 'database pool/watchdog tuning',
   DB_POOL_HEALTH_DISABLED: 'database pool/watchdog tuning',
   DB_POOL_HEALTH_INTERVAL_MS: 'database pool/watchdog tuning',
@@ -411,6 +412,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   SCREENSHOT_MAX_BYTES: 'screenshot size cap',
   SCREENSHOT_MAX_BYTES_PER_DEVICE: 'screenshot storage quota knob',
   SCREENSHOT_MAX_PER_DEVICE: 'screenshot storage quota knob',
+  SCREENSHOT_ORPHAN_MIN_AGE_MS: 'timing knob',
   SCREENSHOT_STORAGE_DIR: 'filesystem path',
   // SCRIPT_*
   SCRIPT_VERIFY_RECONCILE_MIN_AGE_MINUTES: 'timing knob',

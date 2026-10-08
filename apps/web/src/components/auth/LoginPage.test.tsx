@@ -145,6 +145,16 @@ describe('LoginPage partner SSO button', () => {
     vi.mocked(getLoginContext).mockResolvedValue({ branding: null, partnerSso: null });
   });
 
+  it('asks for the slug-scoped context on a /login/<partner-slug> page (#4017)', async () => {
+    render(<LoginPage partnerSlug="acme-msp" />);
+    await waitFor(() => expect(getLoginContext).toHaveBeenCalledWith('acme-msp'));
+  });
+
+  it('asks for the singleton context on the stock /login page', async () => {
+    render(<LoginPage />);
+    await waitFor(() => expect(getLoginContext).toHaveBeenCalledWith(undefined));
+  });
+
   it('renders a "Sign in with {provider}" button when partner SSO is available', async () => {
     vi.mocked(getLoginContext).mockResolvedValue({
       branding: null,

@@ -247,7 +247,7 @@ vi.mock('../fixMemory/researchPersist', () => ({ persistResearchSuggestions }));
 
 import { ResearchContextUnavailableError } from './researchContext';
 import { RESEARCH_TOOL_ALLOWLIST } from './researchProfile';
-import { AgentRunError, createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun } from './runLoop';
+import { AgentRunError, createAgentRunCallPairing, createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun } from './runLoop';
 import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
 import type { AgentRunOutcome } from './runLoop';
 
@@ -387,9 +387,8 @@ function directPre(profile: AiAgentRunProfile, outcome: AgentRunOutcome, extra: 
       protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
       deviceId: null, deviceSiteId: null,
     },
-    outcome, intentIds: [], allowedPending: new Map<string, number>(), sessionId: null,
-    executionIdPending: new Map<string, Array<string | null>>(),
-    actPinPending: new Map<string, Array<unknown>>(),
+    outcome, intentIds: [], sessionId: null,
+    pairing: createAgentRunCallPairing(),
     actReservation: { count: 0 }, deadlineMs: Date.now() + 60_000,
     ...extra,
   } as never);

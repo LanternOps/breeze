@@ -169,9 +169,14 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
     `${winMzCheck}; ` +
     `${winVerifySignature}; ` +
     `${winVerifyChecksum}; ` +
-    `& $exe service install; ${winThrow('service install')}; ` +
+    // Enroll FIRST (#7576). `service install` stages the watchdog, and before
+    // enrollment it has no persisted control plane to fetch it from: a hosted
+    // build that allows several refuses outright, and the watchdog was never
+    // installed. On an enrolled host `service install` also starts the service
+    // and exits non-zero if the start fails, so there is no separate
+    // `service start` (it would fail against the already-running service).
     `& $exe enroll "${token}" --server "${apiUrl}"${winSecretFlag}; ${winThrow('enrollment')}; ` +
-    `& $exe service start; ${winThrow('service start')}`;
+    `& $exe service install; ${winThrow('service install')}`;
 
   return { windows, macos: unixCmd, linux: unixCmd };
 }

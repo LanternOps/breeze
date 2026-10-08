@@ -93,6 +93,12 @@ func TestParseServiceName(t *testing.T) {
 	}{
 		{"The Spooler service terminated unexpectedly.", "Service Control Manager", "Spooler"},
 		{"The Windows Update service failed to start.", "Service Control Manager", "Windows Update"},
+		// A name that itself contains the word "service" must not be cut at its first occurrence.
+		{"The Acme Service Desk Agent service terminated unexpectedly. It has done this 1 time(s).", "Service Control Manager", "Acme Service Desk Agent"},
+		{"The Acme Service Desk Agent service failed to start due to the following error:", "Service Control Manager", "Acme Service Desk Agent"},
+		{"The Acme Service Desk Agent service hung on starting.", "Service Control Manager", "Acme Service Desk Agent"},
+		// A message whose verb is not in the anchored list keeps matching as it did before.
+		{"A timeout was reached (30000 milliseconds) while waiting for the Spooler service to connect.", "Service Control Manager", "Spooler"},
 		{"No match here", "Service Control Manager", "Service Control Manager"},
 		{"", "Service Control Manager", "Service Control Manager"},
 	}

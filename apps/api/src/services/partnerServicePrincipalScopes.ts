@@ -33,11 +33,15 @@ export const PARTNER_SERVICE_PRINCIPAL_WRITE_SCOPES = Object.freeze([
 // Opt-in read scopes: grantable, but deliberately NOT in any default scope set.
 // alerts:read exposes operational alert titles/messages across every org the
 // principal can reach, so it must be requested explicitly.
+// device-status:read (#7577) exposes live heartbeat state (online/offline,
+// last-seen time, agent version). It is a separate grant, NOT implied by
+// devices:read: the material-change export never carries liveness.
 export const PARTNER_SERVICE_PRINCIPAL_OPT_IN_READ_SCOPES = Object.freeze([
   'alerts:read',
   // tickets:read exposes ticket subjects, descriptions and comments —
   // customer-authored data — across every org the principal can reach.
   'tickets:read',
+  'device-status:read',
 ] as const);
 
 // Opt-in MCP scopes: admit the principal to the MCP endpoint (/api/v1/mcp)

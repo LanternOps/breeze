@@ -356,6 +356,45 @@ export async function moveDeviceOrgInTransaction(
           AND org_id = ${sourceOrgId}::uuid`,
   );
 
+  // #8165 (EDR provider framework W01, spec D4/D14) — same contract as the
+  // backup_provider_devices detach above, for the three EDR link tables:
+  // each carries (breeze_device_id, org_id) -> devices(id, org_id)
+  // DEFERRABLE INITIALLY IMMEDIATE, nothing trigger-side mirrors a
+  // breeze_device_id column, so these statements are the only detach and must
+  // precede the org flip below. The ROWS stay in the source org — their org_id
+  // comes from the vendor tenant mapping, not from this device — and the next
+  // EDR sync re-links the device in the new org if that org's mapping covers
+  // it. device_match_source is cleared with the endpoint link for the reason
+  // given above.
+  //
+  // Detections additionally snapshot the device's CURRENT site (this runs
+  // before the devices UPDATE below, so site_id is still the source site):
+  // a finding that turned into a null-device row would otherwise be visible
+  // to every site-restricted technician in the org (spec §4.7, D14 — never
+  // widen visibility as a side effect).
+  //
+  // An org MERGE never reaches this route: it re-points all four EDR org
+  // tables wholesale (orgMergeRegistry.ts REPOINT_TABLES).
+  await tx.execute(
+    sql`UPDATE edr_endpoints
+        SET breeze_device_id = NULL, device_match_source = NULL
+        WHERE breeze_device_id = ${deviceId}::uuid
+          AND org_id = ${sourceOrgId}::uuid`,
+  );
+  await tx.execute(
+    sql`UPDATE edr_detections
+        SET breeze_device_id = NULL, device_detached_at = now(),
+            last_site_id = (SELECT site_id FROM devices WHERE id = ${deviceId}::uuid)
+        WHERE breeze_device_id = ${deviceId}::uuid
+          AND org_id = ${sourceOrgId}::uuid`,
+  );
+  await tx.execute(
+    sql`UPDATE edr_actions
+        SET breeze_device_id = NULL
+        WHERE breeze_device_id = ${deviceId}::uuid
+          AND org_id = ${sourceOrgId}::uuid`,
+  );
+
   // Caller verification (#6354 W01): lock the device row and revoke the
   // source org's workstation authorization BEFORE the org flip. The
   // FOR UPDATE here is load-bearing — nothing above locks the device

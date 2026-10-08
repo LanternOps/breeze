@@ -532,12 +532,20 @@ describe('W11 prompt variants', () => {
 describe('W09 (#7607, D5): chat never replays a turn; a pre-output provider failure cools the bound offering', () => {
   const failed = () => ({ ...sdkResult({ subtype: 'error_during_execution', usage: {}, modelUsage: {} }), is_error: true });
 
-  it('a turn that failed on a 529 before any output cools the bound offering', async () => {
+  it('a turn that failed on a terminal 529 before any output cools the bound offering', async () => {
     await runOneTurn('s1', makeResolvedModel(), [
       { type: 'system', subtype: 'api_retry', attempt: 3, max_retries: 3, retry_delay_ms: 0, error_status: 529, error: 'overloaded' },
-      failed(),
+      { ...failed(), api_error_status: 529 },
     ], { reservationId: 'r1' });
     expect(m.noteProviderFailureForBinding).toHaveBeenCalledWith(expect.objectContaining({ offeringId: 'off-1' }), 'overloaded');
+  });
+
+  it('#7790: an abort during a 529 retry (no terminal failure reported) does not cool the offering', async () => {
+    await runOneTurn('s1', makeResolvedModel(), [
+      { type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 3, retry_delay_ms: 0, error_status: 529, error: 'overloaded' },
+      failed(),
+    ], { reservationId: 'r1' });
+    expect(m.noteProviderFailureForBinding).not.toHaveBeenCalled();
   });
 
   it('a turn that streamed text before failing does not cool anything', async () => {

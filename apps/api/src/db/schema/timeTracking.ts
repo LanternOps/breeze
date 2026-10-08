@@ -75,6 +75,17 @@ export const timeEntries = pgTable('time_entries', {
   // Written by the service, pinned by time_entries_billable_minutes_chk. NULL
   // while a timer runs and on pre-feature rows — money readers COALESCE.
   billableMinutes: integer('billable_minutes'),
+  // #4547 W01: which block-hours line drew this entry. Server-written only
+  // (W02's close path stamps it together with billing_status = 'contract'); no
+  // zod schema in @breeze/shared accepts it. Plain column here; the real
+  // constraints are SQL-only (2026-12-17-100300-time-entries-contract-line.sql),
+  // added NOT VALID then validated (hot table):
+  //   - time_entries_contract_line_org_fk (contract_line_id, org_id) ->
+  //     contract_lines (id, org_id) ON DELETE SET NULL (contract_line_id),
+  //     DEFERRABLE INITIALLY IMMEDIATE. MATCH SIMPLE, so ...
+  //   - time_entries_contract_line_org_chk: contract_line_id IS NULL OR org_id IS NOT NULL
+  //   - time_entries_contract_line_chk:     contract_line_id IS NULL OR billing_status = 'contract'
+  contractLineId: uuid('contract_line_id'),
   // W06 (#3900) provenance. Server-stamped only — no public zod schema accepts it.
   // Values enforced by CHECK time_entries_source_chk in SQL:
   // 'manual' | 'timer' | 'location' | 'remote_session' | 'support_session' |
@@ -93,7 +104,12 @@ export const timeEntries = pgTable('time_entries', {
   index('time_entries_user_started_idx').on(t.userId, t.startedAt),
   index('time_entries_org_started_at_idx')
     .on(t.orgId, t.startedAt)
-    .where(sql`${t.orgId} IS NOT NULL`)
+    .where(sql`${t.orgId} IS NOT NULL`),
+  // Partial index (WHERE contract_line_id IS NOT NULL), built CONCURRENTLY in
+  // SQL (2026-12-17-100300); this mirrors it so db:check-drift stays clean.
+  index('time_entries_contract_line_idx')
+    .on(t.contractLineId)
+    .where(sql`${t.contractLineId} IS NOT NULL`)
 ]);
 
 export const ticketParts = pgTable('ticket_parts', {

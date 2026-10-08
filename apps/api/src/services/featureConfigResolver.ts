@@ -1,4 +1,5 @@
 import { db } from '../db';
+import { hierarchyFor, type DeviceHierarchy as PassedDeviceHierarchy, type DeviceHierarchyOpts } from './deviceHierarchy';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { policyOwnershipCondition } from './configPolicyOwnership';
 import {
@@ -134,6 +135,23 @@ async function loadDeviceHierarchy(deviceId: string, executor: DbExecutor = db):
     groupIds: groupRows.map((r) => r.groupId),
     deviceRole: device.deviceRole,
     osType: device.osType,
+  };
+}
+
+/**
+ * The same value loadDeviceHierarchy above builds, from a hierarchy the caller
+ * already loaded (#8053 W1a-1). Same parked-device rule: an `unassigned_pool`
+ * org gets no partner-level assignment.
+ */
+function fromPassedHierarchy(h: PassedDeviceHierarchy): DeviceHierarchy {
+  return {
+    deviceId: h.deviceId,
+    orgId: h.orgId,
+    siteId: h.siteId,
+    partnerId: isUnassignedPoolOrgType(h.org?.type) ? null : h.org?.partnerId ?? null,
+    groupIds: [...h.groupIds],
+    deviceRole: h.deviceRole,
+    osType: h.osType,
   };
 }
 
@@ -537,9 +555,11 @@ export async function resolvePatchConfigDetailsForDevice(
  * context: every read here has an RLS read branch for the caller's own partner.
  */
 export async function resolvePatchConfigPolicyForDevice(
-  deviceId: string
+  deviceId: string,
+  opts?: DeviceHierarchyOpts,
 ): Promise<Omit<ResolvedPatchConfigDetails, 'resolvedTimezone'> | null> {
-  const hierarchy = await loadDeviceHierarchy(deviceId);
+  const passed = hierarchyFor(deviceId, opts);
+  const hierarchy = passed ? fromPassedHierarchy(passed) : await loadDeviceHierarchy(deviceId);
   if (!hierarchy) return null;
 
   const targetConditions = buildTargetConditions(hierarchy);

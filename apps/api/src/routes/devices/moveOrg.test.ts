@@ -1501,20 +1501,42 @@ describe('POST /devices/:id/move-org', () => {
       // W02's re-validation treat it as a manual link and never re-match it.
       expect(providerDetach).toContain('device_match_source = NULL');
       expect(providerDetach).toMatch(/AND org_id =/);
+      // #8165 (EDR provider framework W01, spec D4/D14) — the EDR link
+      // detaches sit right after the backup one, before the device UPDATE, for
+      // the same reason: each table's (breeze_device_id, org_id) ->
+      // devices(id, org_id) FK is DEFERRABLE INITIALLY IMMEDIATE and nothing
+      // trigger-side mirrors a breeze_device_id column. The ROWS stay in the
+      // source org (their org_id comes from the vendor tenant mapping).
+      const edrEndpointDetach = collapseStmt(statements[9]!);
+      expect(edrEndpointDetach).toContain(
+        'UPDATE edr_endpoints SET breeze_device_id = NULL, device_match_source = NULL',
+      );
+      expect(edrEndpointDetach).toMatch(/AND org_id =/);
+      const edrDetectionDetach = collapseStmt(statements[10]!);
+      expect(edrDetectionDetach).toContain('UPDATE edr_detections SET breeze_device_id = NULL');
+      // D14: a detached finding keeps the last device's site restriction, so
+      // a site-restricted technician does not gain visibility of it. The
+      // snapshot reads the device BEFORE the org flip below changes its site.
+      expect(edrDetectionDetach).toContain('device_detached_at = now()');
+      expect(edrDetectionDetach).toMatch(/last_site_id = \(SELECT site_id FROM devices WHERE id =/);
+      expect(edrDetectionDetach).toMatch(/AND org_id =/);
+      const edrActionDetach = collapseStmt(statements[11]!);
+      expect(edrActionDetach).toContain('UPDATE edr_actions SET breeze_device_id = NULL');
+      expect(edrActionDetach).toMatch(/AND org_id =/);
       // Caller verification (#6354 W01) — the device row lock and the
       // workstation-grant revocation sit immediately before the org flip: the
       // FOR UPDATE is the only device-row lock on this path, and the hook must
       // observe the SOURCE org's grants before the row leaves it.
-      expect(statements[9]).toBe('SELECT devices FOR update');
-      expect(collapseStmt(statements[10]!)).toContain('SELECT requester_binding_id, target_binding_id FROM caller_verifications');
-      expect(collapseStmt(statements[11]!)).toContain('UPDATE caller_verifications');
+      expect(statements[12]).toBe('SELECT devices FOR update');
+      expect(collapseStmt(statements[13]!)).toContain('SELECT requester_binding_id, target_binding_id FROM caller_verifications');
+      expect(collapseStmt(statements[14]!)).toContain('UPDATE caller_verifications');
       // Diagnostic access grants approved in the SOURCE org die before the flip
       // (its trigger restamps them into the target org): pending requests
       // expire, active grants are revoked. Other approvers' approval rows are
       // expired post-commit in system scope (they are per-approver under RLS).
-      expect(collapseStmt(statements[12]!)).toContain('UPDATE diagnostic_access_grants SET status = \'expired\'');
-      expect(collapseStmt(statements[13]!)).toContain('UPDATE diagnostic_access_grants SET status = \'revoked\'');
-      expect(statements[14]).toBe('UPDATE devices');
+      expect(collapseStmt(statements[15]!)).toContain('UPDATE diagnostic_access_grants SET status = \'expired\'');
+      expect(collapseStmt(statements[16]!)).toContain('UPDATE diagnostic_access_grants SET status = \'revoked\'');
+      expect(statements[17]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,

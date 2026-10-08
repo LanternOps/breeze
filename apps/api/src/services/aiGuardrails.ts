@@ -27,6 +27,7 @@ import { warrantyHpCmslRequested } from '@breeze/shared/validators';
 import { getCachedAiKillStateSnapshot } from './aiKillState';
 import { AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS } from './aiToolExposure';
 import { LIVE_READ_INPUT_FLAGS, requestsLiveDeviceRead } from './aiLiveDeviceReads';
+import { classifyChatReadOnlyEventLogsQuery, type PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
 
 // Re-exported so every existing importer of AGENT_HUMAN_ONLY_TOOLS keeps
 // working unchanged after the move to aiToolExposure.ts (W01 quorum
@@ -133,6 +134,13 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   //     failed-logon Account Name, or any credential/PII another app logged.
   // Both would let an AI actor pull that content into its context with zero
   // human review under auto_approve session mode.
+  //
+  // #7906 narrows the event_logs_query case WITHOUT a static entry here: in
+  // an interactive chat session only, a System/Setup query with no XPath and
+  // a strictly-validated payload resolves Tier 2 read-only through the
+  // payload-aware classifier (aiChatEventLogsReadOnly.ts, wired in
+  // checkGuardrails via GuardrailContext.chatSession). Every other channel,
+  // any XPath, and every non-chat principal keep the base Tier 3.
   execute_command: [
     'event_logs_list',
     'file_list',
@@ -778,6 +786,15 @@ export interface GuardrailContext {
    * generic `proposal_context_missing` catch-all.
    */
   proposalDenyReason?: ProposalContextDenyReason;
+  /**
+   * #7906: set ONLY by the interactive chat gate (`createSessionPreToolUse` /
+   * its postToolUse twin in aiAgentSdk.ts) for a `user_session` principal
+   * that is not a Helper session. Opts the call in to the payload-aware
+   * read-only `event_logs_query` classification. MCP, intents, the agent
+   * catalog and headless runs never set it — `checkAgentGuardrails` strips
+   * it — so they keep the base Tier 3.
+   */
+  chatSession?: true;
 }
 
 /** A `run_script` call that names a proposal instead of a library script. */
@@ -1813,6 +1830,13 @@ interface GuardrailCheckCommon {
    * — with the Tier-2 audit-ledger row — even under per_step approval mode.
    */
   readOnly?: boolean;
+  /**
+   * #7906: set only on the chat-session read-only `event_logs_query`
+   * resolution — the strictly-parsed payload the call was classified on. The
+   * chat gate pins it on the ToolExecutionContext so dispatch uses exactly
+   * these values, never the raw input.
+   */
+  pinnedEventLogsQuery?: PinnedEventLogsQuery;
   reason?: string;
   description?: string;
 }
@@ -2033,6 +2057,23 @@ export function checkGuardrails(
       readOnly: true,
       description: buildApprovalDescription(toolName, action, input)
     };
+  }
+
+  // #7906: chat-only, payload-aware read-only event_logs_query. Placed after
+  // every escalation table (none names event_logs_query) and before the base
+  // tier, which would otherwise resolve execute_command's static Tier 3.
+  if (context?.chatSession === true) {
+    const pinnedEventLogsQuery = classifyChatReadOnlyEventLogsQuery(toolName, input);
+    if (pinnedEventLogsQuery) {
+      return {
+        tier: 2,
+        allowed: true,
+        requiresApproval: false,
+        readOnly: true,
+        pinnedEventLogsQuery,
+        description: buildApprovalDescription(toolName, action, input)
+      };
+    }
   }
 
   // Use base tier from tool registration. Split by literal tier (rather than
@@ -2447,7 +2488,10 @@ export function checkAgentGuardrails(
   policy: AgentGuardrailPolicy | null | undefined,
   context?: GuardrailContext,
 ): AgentGuardrailCheck {
-  const base = checkGuardrails(toolName, input, context);
+  // #7906: the chat-session opt-in is never honored for an agent run, even if
+  // a caller hands it in — headless principals keep event_logs_query at Tier 3.
+  const agentContext = context?.chatSession ? { ...context, chatSession: undefined } : context;
+  const base = checkGuardrails(toolName, input, agentContext);
   const deny = (reason: string): AgentGuardrailCheck =>
     ({ ...base, allowed: false, requiresApproval: false, disposition: 'deny', reason });
 

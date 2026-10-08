@@ -53,6 +53,19 @@ vi.mock('bullmq', () => ({
   Job: class {},
 }));
 
+// #8117 — screenshot keys are read in the purge transaction and the files
+// removed after it commits (file side: screenshotStorage.files.test.ts).
+const screenshotMocks = vi.hoisted(() => ({
+  listDeviceScreenshotStorageKeys: vi.fn(async (_tx: unknown, deviceId: string) => [`screenshots/o/${deviceId}/f.jpg`]),
+  removeScreenshotFiles: vi.fn(async (_keys: readonly string[], _context: string) => ({ removed: 1, missing: 0, failed: 0 })),
+}));
+vi.mock('../services/screenshotStorage', () => ({
+  listDeviceScreenshotStorageKeys: screenshotMocks.listDeviceScreenshotStorageKeys,
+}));
+vi.mock('../services/screenshotFiles', () => ({
+  removeScreenshotFiles: screenshotMocks.removeScreenshotFiles,
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: (...args: unknown[]) => dbSelectMock(...(args as [])),
@@ -511,6 +524,46 @@ describe('runRemovedDevicePurgeOnce', () => {
 describe('purgeOneRemovedDevice', () => {
   it('is exported so a caller can prove the re-check independently of a whole sweep', () => {
     expect(purgeOneRemovedDevice).toBeTypeOf('function');
+  });
+
+  it('removes the purged device\'s screenshot files only after its transaction commits (#8117)', async () => {
+    rigQueries([], []);
+    scriptedDevices.set('dev-1', device('dev-1'));
+    const events: string[] = [];
+    dbTransactionMock.mockImplementation(async (cb: (tx: unknown) => unknown) => {
+      const result = await cb(makeTx());
+      events.push('commit');
+      return result;
+    });
+    screenshotMocks.removeScreenshotFiles.mockImplementationOnce(async () => {
+      events.push('unlink');
+      return { removed: 1, missing: 0, failed: 0 };
+    });
+
+    const outcome = await purgeOneRemovedDevice({
+      deviceId: 'dev-1',
+      orgId: ORG_A,
+      cutoff: new Date('2026-06-01T00:00:00.000Z'),
+    });
+
+    expect(outcome).toBeNull();
+    expect(screenshotMocks.removeScreenshotFiles).toHaveBeenCalledWith(
+      ['screenshots/o/dev-1/f.jpg'],
+      expect.stringContaining('dev-1'),
+    );
+    expect(events).toEqual(['commit', 'unlink']);
+  });
+
+  it('removes no screenshot files when the device is skipped or the purge is refused (#8117)', async () => {
+    rigQueries([], []);
+    scriptedDevices.set('dev-1', device('dev-1', { orgId: ORG_B }));
+    scriptedDevices.set('dev-2', device('dev-2'));
+    purgeRemovedDeviceMock.mockRejectedValueOnce(new DeviceLifecycleError('UNINSTALL_PENDING', 'queued'));
+    const cutoff = new Date('2026-06-01T00:00:00.000Z');
+
+    expect(await purgeOneRemovedDevice({ deviceId: 'dev-1', orgId: ORG_A, cutoff })).toBe('ORG_CHANGED');
+    expect(await purgeOneRemovedDevice({ deviceId: 'dev-2', orgId: ORG_A, cutoff })).toBe('UNINSTALL_PENDING');
+    expect(screenshotMocks.removeScreenshotFiles).not.toHaveBeenCalled();
   });
 
   it('reports ORG_CHANGED without touching the device when the locked row names another org', async () => {

@@ -55,6 +55,8 @@ import {
   restoreRemovedDevice,
   DeviceLifecycleError,
 } from '../../services/deviceLifecycle';
+import { listDeviceScreenshotStorageKeys } from '../../services/screenshotStorage';
+import { removeScreenshotFiles } from '../../services/screenshotFiles';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 import {
   resolveRemoteAccessLaunch,
@@ -2374,6 +2376,7 @@ coreRoutes.delete(
     let linkGroupId: string | null = null;
     let linkGroupDissolved = false;
     let removedTopologyAlerts = 0;
+    let screenshotStorageKeys: string[] = [];
 
     // Delegated to `purgeRemovedDevice` (services/deviceLifecycle.ts) since
     // #2787 — one implementation shared with POST /devices/bulk/permanent-delete
@@ -2429,10 +2432,15 @@ coreRoutes.delete(
     try {
       const purge = await runOutsideDbContext(() =>
         withSystemDbAccessContext(
-          () => db.transaction((tx) => purgeRemovedDevice(tx, deviceId, auth.allowedSiteIds)),
+          () => db.transaction(async (tx) => ({
+            // #8117 — read in the purge transaction; files go after it commits.
+            screenshotStorageKeys: await listDeviceScreenshotStorageKeys(tx, deviceId),
+            ...(await purgeRemovedDevice(tx, deviceId, auth.allowedSiteIds)),
+          })),
           'devices.permanentDelete',
         ),
       );
+      screenshotStorageKeys = purge.screenshotStorageKeys;
       linkGroupId = purge.linkGroupId;
       linkGroupDissolved = purge.linkGroupDissolved;
       removedTopologyAlerts = purge.removedTopologyAlerts;
@@ -2491,6 +2499,13 @@ coreRoutes.delete(
       // onError.
       console.error(`[devices] unhandled ${pgCode ?? 'non-postgres'} error during cascade delete of ${deviceId}`, err);
       throw err;
+    }
+
+    // #8117 — the purge committed (its system context is a top-level
+    // transaction), so the screenshot rows are gone for good; remove the
+    // files. Never throws; leftovers are retried by the orphan sweep.
+    if (screenshotStorageKeys.length > 0) {
+      await removeScreenshotFiles(screenshotStorageKeys, `device permanent delete device=${deviceId}`);
     }
 
     writeRouteAudit(c, {
