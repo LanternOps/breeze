@@ -75,6 +75,11 @@ re-enrolls under a fresh hostname, and carries on (`agents.reenrolled`).
 | Agent WebSocket | control ping 54 s; pong to every app ping; reconnect as `reconnectLoop` | `internal/websocket/client.go` |
 | Command results | over the socket; `POST /commands/:id/result` without one | `heartbeat.go processCommand` |
 
+With the workspace module off (the wt-stack default) `crawl-config` answers
+`401` to an agent token, not `404`. The real agent only backs off on `404`, so
+it keeps polling every ~60 s and so does the simulator: the stream stays in the
+model (5.21 req/agent-min) and its 401s are exempt in `check-acceptance.sh`.
+
 Not modelled: daily hardware/patch/reliability uploads, `time-status`,
 `hardware-health`, `changes` (only when there are change records),
 `security/recovery-keys` (only when the key fingerprint changes),
