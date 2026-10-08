@@ -18,6 +18,7 @@ import {
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 import { moveTicketOrg } from '../../services/ticketService';
+import { moveDeviceOrgInTransaction } from '../../services/deviceOrgMove/moveDeviceOrgInTransaction';
 import { pgErrorCode } from '../../utils/pgErrors';
 
 const seededPartnerIds: string[] = [];
@@ -288,21 +289,32 @@ describe('org moves carry the request and its held entry (#4617 §4.6)', () => {
     expect(entry!.billing_status).toBe('awaiting_approval');
   });
 
-  runDb('the DEVICE axis statement sequence commits with the request FK deferred by name', async () => {
+  runDb('the DEVICE axis (real moveDeviceOrgInTransaction) re-stamps the request and its held entry', async () => {
     const f = await seed();
     const pending = await insertRequest(f);
-    await insertHeldEntry(f, pending);
+    const decided = await insertRequest(f, { ...DECIDED, trigger: 'after_hours' });
+    const entryId = await insertHeldEntry(f, pending);
+    const siteB = await createSite({ orgId: f.orgB.id });
 
-    // Replays moveDeviceOrgInTransaction for these tables: defer BY NAME, move
-    // the device's tickets, then re-stamp the children through the tickets join.
-    await withSystemDbAccessContext(() => db.transaction(async (tx) => {
-      await tx.execute(sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_approval_requests_ticket_org_fk DEFERRED`);
-      await tx.execute(sql`UPDATE tickets SET org_id = ${f.orgB.id}::uuid WHERE device_id = ${f.device.id}::uuid`);
-      await tx.execute(sql`UPDATE time_entries SET org_id = ${f.orgB.id}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${f.device.id}::uuid)`);
-      await tx.execute(sql`UPDATE ticket_approval_requests SET org_id = ${f.orgB.id}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${f.device.id}::uuid)`);
-    }));
+    await withSystemDbAccessContext(() => db.transaction((tx) => moveDeviceOrgInTransaction(tx, {
+      deviceId: f.device.id,
+      sourceOrgId: f.orgA.id,
+      targetOrgId: f.orgB.id,
+      targetSiteId: siteB.id,
+      targetOrgName: 'target',
+      deviceLinkGroupId: null,
+      acceptCurrencyMismatch: false,
+      actor: { userId: f.actor.id, allowedSiteIds: undefined },
+      stepUp: null,
+      via: 'generic_move',
+    } as Parameters<typeof moveDeviceOrgInTransaction>[1])));
 
+    expect((await row('tickets', f.ticket.id))!.org_id).toBe(f.orgB.id);
     expect((await row('ticket_approval_requests', pending))!.org_id).toBe(f.orgB.id);
+    expect((await row('ticket_approval_requests', decided))!.org_id).toBe(f.orgB.id);
+    const entry = await row('time_entries', entryId);
+    expect(entry!.org_id).toBe(f.orgB.id);
+    expect(entry!.approval_request_id).toBe(pending);
   });
 
   runDb('without the deferral, moving the ticket first aborts on ticket_approval_requests_ticket_org_fk (the name is load-bearing)', async () => {
