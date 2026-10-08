@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"fmt"
+	"github.com/breeze-rmm/agent/internal/ipc"
 	"image"
 	"log/slog"
 	"runtime/debug"
@@ -128,6 +129,9 @@ type Session struct {
 	// sasHandler is set from SessionManager.OnSASRequest during creation.
 	sasHandler func() error
 
+	// onClipboardSummary is SessionManager.OnClipboardSummary at creation.
+	onClipboardSummary func(sessionID string, summary ipc.ClipboardSummary)
+
 	// displayIndex is the monitor index this session was started on.
 	displayIndex int
 	// captureConfig stores the context needed to recreate capturers on monitor switches.
@@ -211,6 +215,11 @@ type SessionManager struct {
 	// already returned (called synchronously, earlier in the same call chain),
 	// so the reason is fully committed under s.mu before this ever reads it.
 	OnSessionStopped func(sessionID, reason string)
+
+	// OnClipboardSummary receives a session's clipboard transfer counters
+	// once, at teardown, when there was any clipboard activity. Copied onto
+	// each session at creation, like OnSASRequest.
+	OnClipboardSummary func(sessionID string, summary ipc.ClipboardSummary)
 
 	// OnSessionStarted is the symmetric hook: called when a WebRTC peer
 	// connection reaches Connected, i.e. the viewer is actually watching.
@@ -589,6 +598,7 @@ func (s *Session) doCleanup() {
 		}
 		if s.clipboardSync != nil {
 			s.clipboardSync.Stop()
+			s.reportClipboardSummary()
 		}
 		if s.cursorDC != nil {
 			s.cursorDC.Close()

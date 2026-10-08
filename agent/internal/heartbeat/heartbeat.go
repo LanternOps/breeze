@@ -554,6 +554,10 @@ type Heartbeat struct {
 	// plane; nil means sendDesktopDisconnectNotification (tests override it).
 	wsStreamStopNotify func(sessionID, reason string)
 	desktopOwners      sync.Map // desktop session ID -> helper session ID
+	// endedDesktopOwners: desktop session ID -> desktopOwnerTombstone, so a
+	// helper's teardown report that lands just after the owner was forgotten
+	// is still attributed (see desktopOwnerMatches).
+	endedDesktopOwners sync.Map
 	// leaseRenewRequester asks the control plane to renew a desktop session's
 	// revocation lease. Indirected through a field (rather than calling the
 	// method directly) so the helper-hosted bridge is observable in tests.
@@ -1264,6 +1268,9 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.desktopMgr.OnSessionStopped = func(sessionID, reason string) {
 			h.sendDesktopDisconnectNotification(sessionID, reason)
 		}
+		h.desktopMgr.OnClipboardSummary = func(sessionID string, summary ipc.ClipboardSummary) {
+			go h.sendDesktopClipboardSummary(sessionID, summary)
+		}
 	}
 
 	// The desktop watchdog has no transport of its own — this process owns the
@@ -1638,6 +1645,25 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 		}
 		h.forgetDesktopOwner(notice.SessionID)
 		go h.sendDesktopDisconnectNotification(notice.SessionID, notice.Reason)
+	case ipc.TypeDesktopClipboardSummary:
+		var notice ipc.DesktopClipboardSummaryNotice
+		if err := json.Unmarshal(env.Payload, &notice); err != nil {
+			log.Warn("invalid desktop clipboard summary payload", "error", err.Error())
+			return
+		}
+		if !desktopSessionIDPattern.MatchString(notice.SessionID) {
+			log.Warn("dropping desktop clipboard summary with invalid session ID",
+				"sessionId", notice.SessionID, "helperSession", session.SessionID)
+			return
+		}
+		// Owner or very recent owner: the session has usually just stopped,
+		// and its stop forgets the owner before this report arrives.
+		if !h.desktopOwnerMatches(notice.SessionID, session.SessionID) {
+			log.Warn("dropping desktop clipboard summary for non-owned session",
+				"sessionId", notice.SessionID, "helperSession", session.SessionID)
+			return
+		}
+		go h.sendDesktopClipboardSummary(notice.SessionID, notice.Clipboard)
 	case backupipc.TypeBackupResult:
 		// NOTE: do NOT early-return when wsClient is nil. The outbox needs no
 		// live WS client, and a terminal backup result that arrives during

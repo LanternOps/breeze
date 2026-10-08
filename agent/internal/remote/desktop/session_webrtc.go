@@ -123,6 +123,8 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		cursor:       newCursorOverlay(),
 		metrics:      newStreamMetrics(),
 		sasHandler:   m.OnSASRequest,
+
+		onClipboardSummary: m.OnClipboardSummary,
 	}
 	session.cursorStreamEnabled.Store(false)
 

@@ -43,6 +43,9 @@ const (
 
 	// Desktop peer disconnected — helper notifies service when WebRTC drops
 	TypeDesktopPeerDisconnected = "desktop_peer_disconnected"
+	// helper -> agent, once per desktop session at teardown: what crossed the
+	// clipboard channel, for the central audit log (#1012).
+	TypeDesktopClipboardSummary = "desktop_clipboard_summary"
 
 	// Console user changed — agent notifies helpers to switch input mode
 	TypeConsoleUserChanged = "console_user_changed"
@@ -505,6 +508,27 @@ type SASResponse struct {
 type DesktopPeerDisconnectedNotice struct {
 	SessionID string `json:"sessionId"`
 	Reason    string `json:"reason,omitempty"`
+}
+
+// ClipboardSummary is a desktop session's clipboard traffic: direction × type
+// → transfers and bytes, plus attempts the policy blocked. Never content.
+type ClipboardSummary struct {
+	Transfers []ClipboardTransferCount `json:"transfers"`
+	Blocked   int                      `json:"blocked"`
+}
+
+type ClipboardTransferCount struct {
+	Direction string `json:"direction"` // host_to_viewer | viewer_to_host
+	Type      string `json:"type"`      // text | rtf | image
+	Count     int    `json:"count"`
+	Bytes     int    `json:"bytes"`
+}
+
+// DesktopClipboardSummaryNotice carries a session's ClipboardSummary from the
+// user helper to the service, which forwards it to the API.
+type DesktopClipboardSummaryNotice struct {
+	SessionID string           `json:"sessionId"`
+	Clipboard ClipboardSummary `json:"clipboard"`
 }
 
 // LaunchProcessRequest asks the user-role helper to launch a binary.

@@ -188,7 +188,11 @@ func (h *Heartbeat) forgetDesktopOwner(desktopSessionID string) {
 	if desktopSessionID == "" {
 		return
 	}
-	h.desktopOwners.Delete(desktopSessionID)
+	if owner, ok := h.desktopOwners.LoadAndDelete(desktopSessionID); ok {
+		if helper, ok := owner.(string); ok && helper != "" {
+			h.endedDesktopOwners.Store(desktopSessionID, desktopOwnerTombstone{helperSessionID: helper, endedAt: time.Now()})
+		}
+	}
 }
 
 func (h *Heartbeat) desktopOwnerSession(desktopSessionID string) *sessionbroker.Session {
