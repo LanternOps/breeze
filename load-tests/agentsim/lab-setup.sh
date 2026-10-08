@@ -38,8 +38,13 @@ SQL
 )
 [ -n "${SITE_ID:-}" ] || { echo "lab-setup: seeded Default Organization / Default Site not found" >&2; exit 1; }
 
-TOKEN="$(curl -fsS -X POST "$API_URL/v1/auth/login" -H 'content-type: application/json' \
-  -d "$(jq -n --arg e "$EMAIL" --arg p "$PASSWORD" '{email:$e,password:$p}')" | jq -r '.tokens.accessToken // empty')"
+# A login with no auth-binding cookie is answered 428 (auth_binding_rotation_required)
+# plus a Set-Cookie; the second attempt, carrying the cookie, succeeds.
+JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
+LOGIN_BODY="$(jq -n --arg e "$EMAIL" --arg p "$PASSWORD" '{email:$e,password:$p}')"
+login() { curl -sS -b "$JAR" -c "$JAR" -X POST "$API_URL/v1/auth/login" -H 'content-type: application/json' -d "$LOGIN_BODY"; }
+login >/dev/null || true
+TOKEN="$(login | jq -r '.tokens.accessToken // empty')"
 [ -n "$TOKEN" ] || { echo "lab-setup: admin login returned no access token" >&2; exit 1; }
 
 KEY="$(curl -fsS -X POST "$API_URL/v1/enrollment-keys" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \

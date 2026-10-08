@@ -26,6 +26,17 @@ The override is an exported shell variable, so `.env.stack` (rewritten on every
 `up`) and every committed default stay untouched. `lab-setup.sh` refuses to run
 until the api container sees it.
 
+If your root `.env` was copied from `.env.example` (`FORCE_HTTPS=true`), the lab
+API answers every non-health request on `localhost` with
+`400 FORCE_HTTPS_NON_CANONICAL_HOST`; also `export FORCE_HTTPS=false` before
+`pnpm wt-stack up`. `lab-setup.sh` writes secrets to stdout for `eval` (or
+redirect it to a 0600 file under `.state/` and `source` it).
+
+The admin login (`lab-setup.sh`, and the `--commands-per-minute` commander) gets
+`428 auth_binding_rotation_required` plus a cookie on its first attempt and
+succeeds on the retry; both handle that. Agent endpoints use bearer tokens and
+are unaffected.
+
 ## Smoke (20 agents, 3 minutes)
 
 ```bash

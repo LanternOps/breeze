@@ -50,26 +50,39 @@ func (c *Commander) Run(ctx context.Context) error {
 	}
 }
 
+// login signs in as the lab admin. A login with no auth-binding cookie is
+// answered 428 auth_binding_rotation_required with a Set-Cookie; the client
+// (which must carry a cookie jar) retries once and the second attempt succeeds.
 func (c *Commander) login(ctx context.Context) (string, error) {
 	body, _ := json.Marshal(map[string]string{"email": c.Cfg.Email, "password": c.Cfg.Password})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ServerURL+"/api/v1/auth/login", bytes.NewReader(body))
-	if err != nil {
-		return "", err
+	var (
+		status int
+		data   []byte
+	)
+	for attempt := 0; attempt < 2; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ServerURL+"/api/v1/auth/login", bytes.NewReader(body))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := c.Client.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("commander login: %w", err)
+		}
+		data, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		status = resp.StatusCode
+		if status != http.StatusPreconditionRequired {
+			break
+		}
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.Client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("commander login: %w", err)
-	}
-	defer resp.Body.Close()
 	var out struct {
 		Tokens *struct {
 			AccessToken string `json:"accessToken"`
 		} `json:"tokens"`
 	}
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK || json.Unmarshal(data, &out) != nil || out.Tokens == nil || out.Tokens.AccessToken == "" {
-		return "", fmt.Errorf("commander login: HTTP %d with no access token (the lab stack pins MFA_FORCE_FOR_PARTNER_ADMIN=false; check --admin-email/--admin-password)", resp.StatusCode)
+	if status != http.StatusOK || json.Unmarshal(data, &out) != nil || out.Tokens == nil || out.Tokens.AccessToken == "" {
+		return "", fmt.Errorf("commander login: HTTP %d with no access token (the lab stack pins MFA_FORCE_FOR_PARTNER_ADMIN=false; check --admin-email/--admin-password)", status)
 	}
 	return out.Tokens.AccessToken, nil
 }

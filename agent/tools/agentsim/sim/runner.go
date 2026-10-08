@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/cookiejar"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -93,7 +94,8 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	)
 	sem := make(chan struct{}, cfg.EnrollConcurrency)
 	if cfg.Commander.PerMinute > 0 {
-		cmd := &Commander{ServerURL: cfg.ServerURL, Cfg: cfg.Commander, Client: &http.Client{Timeout: cfg.RequestTimeout},
+		jar, _ := cookiejar.New(nil) // the login's auth-binding handshake needs the cookie back
+		cmd := &Commander{ServerURL: cfg.ServerURL, Cfg: cfg.Commander, Client: &http.Client{Timeout: cfg.RequestTimeout, Jar: jar},
 			Rec: rec, DeviceIDs: devices.snapshot}
 		wg.Add(1)
 		go func() { defer wg.Done(); _ = cmd.Run(runCtx) }()

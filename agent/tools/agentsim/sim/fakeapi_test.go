@@ -86,6 +86,14 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	case route == RouteEnroll:
 		f.enroll(w, r)
 	case route == "POST /auth/login":
+		// The real API answers a login that carries no auth-binding cookie with
+		// 428 auth_binding_rotation_required plus Set-Cookie; the client must
+		// retry with the cookie (found against a live stack, not in the plan).
+		if _, err := r.Cookie("breeze_binding"); err != nil {
+			http.SetCookie(w, &http.Cookie{Name: "breeze_binding", Value: "b1", Path: "/"})
+			writeJSON(w, http.StatusPreconditionRequired, map[string]any{"reason": "auth_binding_rotation_required"})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"tokens": map[string]string{"accessToken": "admin-jwt"}})
 	case strings.HasPrefix(route, "POST /devices/"):
 		f.dispatch(w, r)
