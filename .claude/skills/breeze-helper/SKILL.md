@@ -191,6 +191,7 @@ Built dynamically from `HelperConfig` flags:
 
 | Menu Item | Action |
 |-----------|--------|
+| Open Breeze Assist | Show chat window (always present — the only way in on Linux) |
 | Request Support | Show chat window |
 | Open Breeze Portal | Open portal URL in browser |
 | Device Info | Emit `show-device-info` event, show device info view |

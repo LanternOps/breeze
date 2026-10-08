@@ -1282,11 +1282,12 @@ fn uuid_v4() -> String {
 // ---------------------------------------------------------------------------
 
 /// Tray menu item ids, in display order. The tray icon itself is always drawn
-/// (#8138) — it is the only way back to a window that starts hidden. There is
-/// deliberately no "Exit": the agent's session watcher respawns an exited
-/// helper within ~30s, so Exit only ever made the window come back.
+/// (#8138) — it is the only way back to a window that starts hidden, and on
+/// Linux (appindicator) left-click does not fire, so "Open Breeze Assist" is
+/// unconditional. There is deliberately no "Exit": the agent's session watcher
+/// respawns an exited helper within ~30s, so Exit only made the window return.
 fn tray_menu_item_ids(config: &HelperConfig) -> Vec<&'static str> {
-    let mut ids = Vec::new();
+    let mut ids = vec!["open_assist"];
     if config.show_request_support {
         ids.push("request_support");
     }
@@ -1301,6 +1302,7 @@ fn tray_menu_item_ids(config: &HelperConfig) -> Vec<&'static str> {
 
 fn tray_menu_label(id: &str) -> &'static str {
     match id {
+        "open_assist" => "Open Breeze Assist",
         "request_support" => "Request Support",
         "open_portal" => "Open Breeze Portal",
         "device_info" => "Device Info",
@@ -1483,7 +1485,7 @@ pub fn run() {
             // Handle menu item clicks
             let menu_handle = handle.clone();
             app.on_menu_event(move |app_handle, event| match event.id().as_ref() {
-                "request_support" => {
+                "open_assist" | "request_support" => {
                     show_window(&menu_handle);
                 }
                 "open_portal" => {
@@ -1571,8 +1573,16 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, _event| {
+            // macOS: re-opening the app from the Dock or Finder while it runs
+            // hidden in the tray must bring the window back (#8138).
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                show_window(_app);
+            }
+        });
 }
 
 #[cfg(test)]
@@ -1762,7 +1772,15 @@ mod tests {
     fn tray_menu_has_no_exit_item() {
         let all_on = HelperConfig::default();
         let ids = tray_menu_item_ids(&all_on);
-        assert_eq!(ids, vec!["request_support", "open_portal", "device_info"]);
+        assert_eq!(
+            ids,
+            vec![
+                "open_assist",
+                "request_support",
+                "open_portal",
+                "device_info"
+            ]
+        );
 
         let all_off = HelperConfig {
             show_open_portal: false,
@@ -1770,7 +1788,9 @@ mod tests {
             show_request_support: false,
             ..HelperConfig::default()
         };
-        assert!(tray_menu_item_ids(&all_off).is_empty());
+        // The window starts hidden, and on Linux (appindicator) the menu is the
+        // only way in — so "Open" survives even with every policy item off.
+        assert_eq!(tray_menu_item_ids(&all_off), vec!["open_assist"]);
     }
 
     #[test]
