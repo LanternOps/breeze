@@ -217,7 +217,7 @@ export const tickets = pgTable('tickets', {
   // before every real transaction id, so a first full sync covers them.
   partnerFeedXid: xid8('partner_feed_xid').notNull().default(sql`'1'::xid8`),
   // #4617 spec §4.2: per-ticket labour ceiling (a document value, no default).
-  // CHECK tickets_budget_chk (SQL-only, 2026-12-17-150300): each > 0 when set,
+  // CHECK tickets_budget_chk (SQL-only, 2026-12-18-150300): each > 0 when set,
   // budget_currency_code set iff budget_amount is, and ^[A-Z]{3}$.
   budgetMinutes: integer('budget_minutes'),
   budgetAmount: numeric('budget_amount', { precision: 12, scale: 2 }),

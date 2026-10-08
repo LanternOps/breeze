@@ -19,7 +19,7 @@ export type TicketApprovalDecisionMethod = 'verbal' | 'email' | 'signed_document
 /**
  * Spec §4.1 — dual-axis policy (org XOR partner); a NULL column means inherit.
  * RLS (FOR ALL org-or-partner + SELECT-only partner-default branch) is in
- * 2026-12-17-150100-ticket-approval-settings.sql. Read ONLY through
+ * 2026-12-18-150100-ticket-approval-settings.sql. Read ONLY through
  * resolveTicketApprovalSettings (services/ticketApproval/settings.ts).
  */
 export const ticketApprovalSettings = pgTable('ticket_approval_settings', {
@@ -43,7 +43,7 @@ export const ticketApprovalSettings = pgTable('ticket_approval_settings', {
 
 /**
  * Spec §4.3 — one request for customer consent and its decision (Shape 1,
- * direct org_id). SQL-only (2026-12-17-150200-ticket-approval-requests.sql):
+ * direct org_id). SQL-only (2026-12-18-150200-ticket-approval-requests.sql):
  *   - the CHECKs, including ticket_approval_requests_decision_shape_chk and
  *     ticket_approval_requests_coverage_chk;
  *   - the BEFORE UPDATE trigger ticket_approval_requests_decided_immutable,

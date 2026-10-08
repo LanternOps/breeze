@@ -2,7 +2,7 @@
 -- and work_types.is_after_hours.
 --
 -- The columns on the hot tables (tickets budget, time_entries link,
--- ticket_parts hold guard) are in 2026-12-17-150300, which runs outside a
+-- ticket_parts hold guard) are in 2026-12-18-150300, which runs outside a
 -- transaction so their constraints can be validated without holding an
 -- ACCESS EXCLUSIVE lock across a scan.
 --
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS ticket_approval_requests (
   user_agent text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  -- Target of time_entries_approval_request_fk (2026-12-17-150300).
+  -- Target of time_entries_approval_request_fk (2026-12-18-150300).
   CONSTRAINT ticket_approval_requests_id_ticket_uq UNIQUE (id, ticket_id),
   CONSTRAINT ticket_approval_requests_coverage_chk CHECK (
     (coverage_starts_at IS NULL) = (coverage_ends_at IS NULL)

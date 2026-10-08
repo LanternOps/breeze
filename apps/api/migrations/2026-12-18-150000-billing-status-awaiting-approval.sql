@@ -3,7 +3,7 @@
 --
 -- ALTER TYPE ... ADD VALUE cannot be USED in the transaction that adds it, and
 -- autoMigrate wraps each file in one, so this file adds the value only. Later
--- files (2026-12-17-150300) reference 'awaiting_approval' after this commits.
+-- files (2026-12-18-150300) reference 'awaiting_approval' after this commits.
 -- Same rule as 2026-10-05-100000-contract-line-type-per-device-role.sql.
 --
 -- The value ships dark: nothing writes it until the W02 gate lands, and every

@@ -12,7 +12,7 @@
 -- its own statement under SHARE UPDATE EXCLUSIVE, so writes continue during the
 -- scan. Every new column is entirely NULL, so validation passes trivially; the
 -- ticket_parts CHECK passes because nothing has ever written the value (it was
--- added by 2026-12-17-150000 and has no writer yet).
+-- added by 2026-12-18-150000 and has no writer yet).
 -- lock_timeout bounds how long a statement may queue behind a long-running
 -- transaction; on timeout autoMigrate aborts boot and the file re-runs cleanly.
 -- It is RESET before the CONCURRENTLY build, which waits for older transactions

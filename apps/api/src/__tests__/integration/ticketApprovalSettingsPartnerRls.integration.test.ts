@@ -3,7 +3,7 @@
  * the resolver's inheritance against real Postgres (#4617 W01, CLAUDE.md
  * "Partner-Wide First" step 6).
  *
- * Shipped policies (2026-12-17-150100-ticket-approval-settings.sql):
+ * Shipped policies (2026-12-18-150100-ticket-approval-settings.sql):
  *   ticket_approval_settings_tenant                  FOR ALL  system OR org-access OR partner-access
  *   ticket_approval_settings_partner_default_select  FOR SELECT  org_id IS NULL
  *                                                    AND partner_id = breeze_current_partner_id()

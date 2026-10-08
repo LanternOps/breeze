@@ -4,7 +4,7 @@ import path from 'node:path';
 import { DEFAULT_PERMISSIONS, SYSTEM_ROLES } from './seed';
 
 const FILE = path.resolve(
-  __dirname, '../../migrations/2026-12-17-150400-tickets-record-approval-permission.sql',
+  __dirname, '../../migrations/2026-12-18-150400-tickets-record-approval-permission.sql',
 );
 
 /**
@@ -13,7 +13,7 @@ const FILE = path.resolve(
  * upgrade back-fills from here). If they disagree, two databases disagree about
  * who may record a customer's approval of held work.
  */
-describe('2026-12-17-150400-tickets-record-approval-permission.sql', () => {
+describe('2026-12-18-150400-tickets-record-approval-permission.sql', () => {
   const sql = readFileSync(FILE, 'utf8');
 
   it('elects system scope before any write', () => {
