@@ -1,0 +1,3 @@
+# Token stores hold live bearer tokens; reports are run artifacts (W0c commits baselines elsewhere).
+.state/
+reports/
