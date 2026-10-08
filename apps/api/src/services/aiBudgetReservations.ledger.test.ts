@@ -354,6 +354,31 @@ describe('settleAiBudgetReservation with ledger rows', () => {
       expect(hoisted.recordInvocation).not.toHaveBeenCalled();
     });
 
+    it('a rejected BYOK re-read is logged with what it found, so a repriced/disabled offering is diagnosable', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      hoisted.readConnectionOfferingRate.mockResolvedValue({ rate: null, reason: 'no_enabled_offering' });
+      dbMock.execute.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([byokReservation()]);
+      await expect(settleAiBudgetReservation({
+        orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow({ source: 'offering', standard: OTHER })],
+      })).rejects.toThrow(/does not match the turn binding/);
+      expect(warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+        eventCode: 'ai_unbound_byok_rate_rejected', model: 'claude-sonnet-4-6', connectionId: CONN_ID,
+        offeringId: OFFERING_ID, reason: 'no_enabled_offering', rowRateSource: 'offering', currentRateSource: null,
+      }));
+      warn.mockRestore();
+    });
+
+    it('a platform-funded turn can never use the BYOK exception, even with an offering-sourced rate the reader would match', async () => {
+      hoisted.readConnectionOfferingRate.mockResolvedValue({ rate: { source: 'offering', standard: OTHER } });
+      dbMock.execute.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([reservationRow({ model_binding: { ...BINDING, connectionId: CONN_ID } })]);
+      await expect(settleAiBudgetReservation({
+        orgId: ORG_ID, reservationId: RESERVATION_ID,
+        invocations: [invocation({ requestedModel: 'claude-sonnet-4-6', fallbackUsed: true, rateSnapshot: { source: 'offering', standard: OTHER } })],
+      })).rejects.toThrow(/does not match the turn binding/);
+      expect(hoisted.readConnectionOfferingRate).not.toHaveBeenCalled();
+      expect(hoisted.recordInvocation).not.toHaveBeenCalled();
+    });
+
     it('no offering on the connection: the bound-rate row settles without a re-read', async () => {
       primeSettle(byokReservation());
       await expect(settleAiBudgetReservation({

@@ -983,6 +983,13 @@ async function assertInvocationsMatchBinding(binding: TurnBinding, invocations: 
         connectionKind: binding.connectionKind, model: row.requestedModel,
       });
       if (current.rate && sameJson(rate, current.rate)) continue;
+      // The offering was repriced, disabled or removed since the turn priced
+      // this row; the throw below is generic, so say what the re-read found.
+      console.warn('[aiBudgetReservations] unbound BYOK rate no longer matches its connection offering; settlement rejected', {
+        eventCode: 'ai_unbound_byok_rate_rejected', model: row.requestedModel, connectionId: binding.connectionId,
+        offeringId: binding.offeringId, reason: current.rate ? 'rate_changed' : current.reason,
+        rowRateSource: rateSource, currentRateSource: current.rate?.source ?? null,
+      });
     }
     throw new Error('Settlement rate does not match the turn binding');
   }

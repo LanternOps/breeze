@@ -778,4 +778,21 @@ describe.skipIf(!RUN)('an unbound BYOK refusal-fallback key at its own offering 
     expect(row.rate_snapshot).toEqual(binding.rateSnapshot);
     expect(Number(row.cost_cents)).toBeCloseTo(priceInvocation(binding.rateSnapshot, T, {}), 6);
   });
+
+  it('an enabled, priced offering of that model on ANOTHER connection of the same partner is never used', async () => {
+    const b = await seedRegistryPartner('byok');
+    const binding = await bindingFor(b);
+    const fbModel = `w7773-otherconn-${randomUUID()}`;
+    // One active anthropic_byok/catalog connection per partner
+    // (partner_ai_connections_compat_uq), so the partner's other connection is a gateway one.
+    const [second] = await fixtureSql`
+      INSERT INTO partner_ai_connections (partner_id, kind, name, base_url, status)
+      VALUES (${b.partnerId}, 'openai_compatible', 'W7773 second', 'https://llm.example.test/v1', 'active')
+      RETURNING id`;
+    await priceOffering(await seedOffering({ partnerId: b.partnerId, connectionId: String(second!.id), modelId: fbModel, source: 'manual', enabled: true }));
+
+    const { row } = await settleUnbound(b, binding, fbModel);
+    expect(row.rate_snapshot).toEqual(binding.rateSnapshot);
+    expect(Number(row.cost_cents)).toBeCloseTo(priceInvocation(binding.rateSnapshot, T, {}), 6);
+  });
 });
