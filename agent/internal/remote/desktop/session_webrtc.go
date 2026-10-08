@@ -409,11 +409,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 				HostToViewer: policy.ClipboardHostToViewer,
 				ViewerToHost: policy.ClipboardViewerToHost,
 			})
-			if policy.ClipboardHostToViewer {
-				clipboardDC.OnOpen(func() {
-					session.clipboardSync.Watch()
-				})
-			}
+			hostToViewer := policy.ClipboardHostToViewer
+			clipboardDC.OnOpen(func() {
+				onClipboardChannelOpen(session.clipboardSync, hostToViewer)
+			})
 		}
 	} else {
 		slog.Info("Clipboard sync disabled by policy", "session", sessionID)
