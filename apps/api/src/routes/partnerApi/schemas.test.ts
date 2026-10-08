@@ -44,6 +44,7 @@ describe('partner export schemas', () => {
       'custom-field-values',
       'alerts',
       'tickets',
+      'device-status',
     ]);
     for (const resource of PARTNER_EXPORT_RESOURCES) {
       expect(partnerExportResourceSchema.parse(resource)).toBe(resource);

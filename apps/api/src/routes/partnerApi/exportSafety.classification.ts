@@ -59,6 +59,9 @@ export const RESOURCE_CLASSIFICATION: Record<PartnerExportResource, ResourceClas
   // pasted credential in a support ticket is the canonical "customer-authored
   // secret". Everything is scanned.
   tickets: { default: 'customer-authored' },
+  // Live device state (#7577): an enum, ids, a timestamp and the agent's
+  // self-reported version string. Nothing a person types.
+  'device-status': { default: 'machine-observed' },
 };
 
 export function normalizeClassificationPath(path: string): string {
