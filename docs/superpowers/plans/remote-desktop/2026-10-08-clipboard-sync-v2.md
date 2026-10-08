@@ -1203,3 +1203,23 @@ count. Never any content. This closes `TODO(#1012)` for clipboard.
     an empty summary;
   - `agentWs` wiring: calls the service with the parsed summary, and ignores a session-id
     mismatch.
+
+## W4c review amendments (2026-10-08, independent Opus review: 0 critical / 0 high)
+
+- **M1:** the agent saturates the summary counters to the API's bounds (count and blocked at 1e6,
+  bytes at 1e12). An over-limit value made the strict schema reject the whole summary, so a
+  technician could erase their own session's audit row by spamming blocked frames. Test:
+  `TestDesktopClipboardSummaryPayloadClampsToAPIBounds`.
+- **L1:** ended-owner tombstones are swept whenever a new one is stored, cleared when the session is
+  re-owned, and consumed by the one accepted report. Tests: `TestForgetDesktopOwnerSweeps…`,
+  `TestRememberDesktopOwnerClearsTombstone`, and the handler test.
+- **L2:** `forgetDesktopOwner` stores the tombstone before removing the owner (`CompareAndDelete`).
+- **L3:** the API's existence check and insert run in one system transaction under
+  `pg_advisory_xact_lock(hashtextextended('clipboard-summary:'||sessionId, 0))`. Concurrent copies
+  of one report can no longer write two rows.
+- **Test gap closed:** `TestHandleUserHelperMessageForwardsClipboardSummary` drives the IPC handler
+  end to end. It covers the owner, a recently ended owner, another helper, a malformed id, and a
+  second report.
+
+Still open: an integration test against real Postgres for `writeAuditOnce`. That needs the test
+stack, so it's listed as an owed item on the PR.

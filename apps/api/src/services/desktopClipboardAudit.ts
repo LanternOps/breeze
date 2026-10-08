@@ -1,7 +1,6 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { auditLogs, remoteSessions } from '../db/schema';
-import { logSessionAudit } from '../routes/remote/helpers';
 
 /**
  * Clipboard traffic for one remote-desktop session, as the agent counted it:
@@ -23,13 +22,13 @@ export const DESKTOP_CLIPBOARD_SUMMARY_ACTION = 'session_clipboard_summary';
 export interface DesktopClipboardAuditDeps {
   /** The session, only if it ran on this device. */
   findSession(sessionId: string, deviceId: string): Promise<{ orgId: string; userId: string } | null>;
-  hasSummaryAudit(sessionId: string): Promise<boolean>;
-  writeAudit(
-    action: string,
-    actorId: string,
-    orgId: string,
-    details: Record<string, unknown>,
-  ): Promise<void>;
+  /**
+   * Inserts the summary row unless the session already has one, atomically.
+   * Returns false when one existed. Two copies of the same report can be in
+   * flight at once (WS messages are not processed one at a time), so the
+   * check and the insert must not be separate transactions.
+   */
+  writeAuditOnce(actorId: string, orgId: string, details: Record<string, unknown> & { sessionId: string }): Promise<boolean>;
 }
 
 export type DesktopClipboardAuditOutcome = 'recorded' | 'empty' | 'unknown_session' | 'duplicate';
@@ -51,16 +50,15 @@ export async function recordDesktopClipboardSummary(
   // another device's sessions.
   const session = await deps.findSession(sessionId, deviceId);
   if (!session) return 'unknown_session';
-  if (await deps.hasSummaryAudit(sessionId)) return 'duplicate';
 
-  await deps.writeAudit(DESKTOP_CLIPBOARD_SUMMARY_ACTION, deviceId, session.orgId, {
+  const written = await deps.writeAuditOnce(deviceId, session.orgId, {
     sessionId,
     clipboard,
     sessionOwnerId: session.userId,
     deviceId,
     reportedBy: 'authenticated_agent',
   });
-  return 'recorded';
+  return written ? 'recorded' : 'duplicate';
 }
 
 const defaultDeps: DesktopClipboardAuditDeps = {
@@ -76,25 +74,38 @@ const defaultDeps: DesktopClipboardAuditDeps = {
     );
     return rows[0] ?? null;
   },
-  async hasSummaryAudit(sessionId) {
-    const rows = await runOutsideDbContext(() =>
+  async writeAuditOnce(actorId, orgId, details) {
+    // Same shape as logSessionAudit's rows, written in one system-scope
+    // transaction serialized per session so a duplicate report finds the row.
+    return runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>
-        db
-          .select({ id: auditLogs.id })
-          .from(auditLogs)
-          .where(
-            and(
-              eq(auditLogs.resourceType, 'remote_session'),
-              eq(auditLogs.resourceId, sessionId),
-              eq(auditLogs.action, DESKTOP_CLIPBOARD_SUMMARY_ACTION),
-            ),
-          )
-          .limit(1),
+        db.transaction(async (tx) => {
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${'clipboard-summary:' + details.sessionId}, 0))`);
+          const existing = await tx
+            .select({ id: auditLogs.id })
+            .from(auditLogs)
+            .where(
+              and(
+                eq(auditLogs.resourceType, 'remote_session'),
+                eq(auditLogs.resourceId, details.sessionId),
+                eq(auditLogs.action, DESKTOP_CLIPBOARD_SUMMARY_ACTION),
+              ),
+            )
+            .limit(1);
+          if (existing.length > 0) return false;
+          await tx.insert(auditLogs).values({
+            orgId,
+            actorType: 'agent',
+            actorId,
+            action: DESKTOP_CLIPBOARD_SUMMARY_ACTION,
+            resourceType: 'remote_session',
+            resourceId: details.sessionId,
+            details,
+            result: 'success',
+          });
+          return true;
+        }),
       ),
     );
-    return rows.length > 0;
-  },
-  async writeAudit(action, actorId, orgId, details) {
-    await logSessionAudit(action, actorId, orgId, details, undefined, 'agent');
   },
 };

@@ -7,9 +7,20 @@ import (
 	"github.com/breeze-rmm/agent/internal/websocket"
 )
 
-// maxClipboardSummaryEntries matches the API schema: two directions × three
-// content types.
-const maxClipboardSummaryEntries = 6
+// Bounds of the API schema for a summary (agentWs.ts desktopCommandResultSchema):
+// two directions × three content types, and per-counter maxima. Counters are
+// saturated to them, never sent over: the API rejects the whole summary on any
+// out-of-range value, so a viewer spamming blocked frames could otherwise
+// erase the session's audit row.
+const (
+	maxClipboardSummaryEntries = 6
+	maxClipboardSummaryCount   = 1_000_000
+	maxClipboardSummaryBytes   = 1_000_000_000_000
+)
+
+// forwardDesktopClipboardSummary sends an accepted helper report on to the
+// API. A var so tests can observe what the IPC handler accepted.
+var forwardDesktopClipboardSummary = (*Heartbeat).sendDesktopClipboardSummary
 
 var (
 	clipboardSummaryDirections = map[string]bool{"host_to_viewer": true, "viewer_to_host": true}
@@ -48,12 +59,32 @@ func (h *Heartbeat) desktopOwnerMatches(desktopSessionID, helperSessionID string
 	return ts.helperSessionID == helperSessionID
 }
 
+// consumeEndedDesktopOwner drops a session's tombstone once its teardown
+// report has been accepted: a session sends exactly one.
+func (h *Heartbeat) consumeEndedDesktopOwner(desktopSessionID string) {
+	h.endedDesktopOwners.Delete(desktopSessionID)
+}
+
+// sweepEndedDesktopOwners drops expired tombstones. Most sessions never send a
+// report, so a tombstone is usually never looked up again.
+func (h *Heartbeat) sweepEndedDesktopOwners() {
+	h.endedDesktopOwners.Range(func(key, value any) bool {
+		if ts, ok := value.(desktopOwnerTombstone); !ok || time.Since(ts.endedAt) > desktopOwnerTombstoneTTL {
+			h.endedDesktopOwners.Delete(key)
+		}
+		return true
+	})
+}
+
 // desktopClipboardSummaryPayload builds the `result` of the desk-clipsum
 // command_result. Entries the API does not declare are dropped and negative
 // counters clamped, because its .strict() schema would otherwise reject the
 // whole summary.
 func desktopClipboardSummaryPayload(sessionID string, in ipc.ClipboardSummary) map[string]any {
-	out := ipc.ClipboardSummary{Transfers: make([]ipc.ClipboardTransferCount, 0, len(in.Transfers)), Blocked: max(in.Blocked, 0)}
+	out := ipc.ClipboardSummary{
+		Transfers: make([]ipc.ClipboardTransferCount, 0, len(in.Transfers)),
+		Blocked:   min(max(in.Blocked, 0), maxClipboardSummaryCount),
+	}
 	for _, t := range in.Transfers {
 		if len(out.Transfers) == maxClipboardSummaryEntries {
 			break
@@ -61,8 +92,8 @@ func desktopClipboardSummaryPayload(sessionID string, in ipc.ClipboardSummary) m
 		if !clipboardSummaryDirections[t.Direction] || !clipboardSummaryTypes[t.Type] {
 			continue
 		}
-		t.Count = max(t.Count, 0)
-		t.Bytes = max(t.Bytes, 0)
+		t.Count = min(max(t.Count, 0), maxClipboardSummaryCount)
+		t.Bytes = min(max(t.Bytes, 0), maxClipboardSummaryBytes)
 		out.Transfers = append(out.Transfers, t)
 	}
 	return map[string]any{

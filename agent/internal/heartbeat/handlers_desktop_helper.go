@@ -182,17 +182,24 @@ func (h *Heartbeat) rememberDesktopOwner(desktopSessionID, helperSessionID strin
 		return
 	}
 	h.desktopOwners.Store(desktopSessionID, helperSessionID)
+	h.endedDesktopOwners.Delete(desktopSessionID)
 }
 
 func (h *Heartbeat) forgetDesktopOwner(desktopSessionID string) {
 	if desktopSessionID == "" {
 		return
 	}
-	if owner, ok := h.desktopOwners.LoadAndDelete(desktopSessionID); ok {
-		if helper, ok := owner.(string); ok && helper != "" {
-			h.endedDesktopOwners.Store(desktopSessionID, desktopOwnerTombstone{helperSessionID: helper, endedAt: time.Now()})
-		}
+	h.sweepEndedDesktopOwners()
+	owner, ok := h.desktopOwners.Load(desktopSessionID)
+	if !ok {
+		return
 	}
+	// Tombstone first, then remove the owner: a teardown report checked in
+	// between must see one or the other.
+	if helper, ok := owner.(string); ok && helper != "" {
+		h.endedDesktopOwners.Store(desktopSessionID, desktopOwnerTombstone{helperSessionID: helper, endedAt: time.Now()})
+	}
+	h.desktopOwners.CompareAndDelete(desktopSessionID, owner)
 }
 
 func (h *Heartbeat) desktopOwnerSession(desktopSessionID string) *sessionbroker.Session {

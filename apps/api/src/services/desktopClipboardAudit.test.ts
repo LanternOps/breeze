@@ -10,8 +10,7 @@ const summary = {
 function deps(overrides: Partial<DesktopClipboardAuditDeps> = {}): DesktopClipboardAuditDeps {
   return {
     findSession: vi.fn(async () => ({ orgId: 'org-1', userId: 'user-1' })),
-    hasSummaryAudit: vi.fn(async () => false),
-    writeAudit: vi.fn(async () => {}),
+    writeAuditOnce: vi.fn(async () => true),
     ...overrides,
   };
 }
@@ -23,7 +22,7 @@ describe('recordDesktopClipboardSummary', () => {
 
     expect(out).toBe('recorded');
     expect(d.findSession).toHaveBeenCalledWith(SESSION, 'device-1');
-    expect(d.writeAudit).toHaveBeenCalledWith('session_clipboard_summary', 'device-1', 'org-1', {
+    expect(d.writeAuditOnce).toHaveBeenCalledWith('device-1', 'org-1', {
       sessionId: SESSION,
       clipboard: summary,
       sessionOwnerId: 'user-1',
@@ -35,19 +34,21 @@ describe('recordDesktopClipboardSummary', () => {
   it('writes nothing for a session that is not on the reporting device', async () => {
     const d = deps({ findSession: vi.fn(async () => null) });
     expect(await recordDesktopClipboardSummary({ sessionId: SESSION, deviceId: 'device-2', clipboard: summary }, d)).toBe('unknown_session');
-    expect(d.writeAudit).not.toHaveBeenCalled();
+    expect(d.writeAuditOnce).not.toHaveBeenCalled();
   });
 
   it('writes nothing when the summary was already recorded (outbox resend)', async () => {
-    const d = deps({ hasSummaryAudit: vi.fn(async () => true) });
+    // The writer decides atomically (one transaction under a per-session
+    // advisory lock) whether a row already exists; two concurrent copies of
+    // the same report must not both insert.
+    const d = deps({ writeAuditOnce: vi.fn(async () => false) });
     expect(await recordDesktopClipboardSummary({ sessionId: SESSION, deviceId: 'device-1', clipboard: summary }, d)).toBe('duplicate');
-    expect(d.writeAudit).not.toHaveBeenCalled();
   });
 
   it('writes nothing for an empty summary', async () => {
     const d = deps();
     expect(await recordDesktopClipboardSummary({ sessionId: SESSION, deviceId: 'device-1', clipboard: { transfers: [], blocked: 0 } }, d)).toBe('empty');
     expect(d.findSession).not.toHaveBeenCalled();
-    expect(d.writeAudit).not.toHaveBeenCalled();
+    expect(d.writeAuditOnce).not.toHaveBeenCalled();
   });
 });
