@@ -71,11 +71,6 @@ All in the agent config directory (same as `agent.yaml`):
 ### HelperConfig Fields
 
 ```yaml
-show_tray_icon: true         # Draw the tray icon at all (#3202). Independent of
-                             # the three menu-item flags below: with this false
-                             # the helper still serves chat, remote-access
-                             # consent and PAM dialogs, it just has no tray.
-                             # Missing key => TRUE everywhere in the chain.
 show_open_portal: true       # Show "Open Breeze Portal" in tray menu
 show_device_info: true       # Show "Device Info" in tray menu
 show_request_support: true   # Show "Request Support" in tray menu
@@ -199,7 +194,11 @@ Built dynamically from `HelperConfig` flags:
 | Request Support | Show chat window |
 | Open Breeze Portal | Open portal URL in browser |
 | Device Info | Emit `show-device-info` event, show device info view |
-| Exit | `app.exit(0)` |
+
+No Exit item (#8138): the agent's session watcher respawns an exited helper
+within ~30s. The tray icon is always drawn, and the main window is built with
+`.visible(false)` (window-state never restores VISIBLE), so agent-driven spawns
+stay in the tray; `--show` opens it on launch.
 
 Left-click on tray icon → show chat window. Right-click → context menu.
 

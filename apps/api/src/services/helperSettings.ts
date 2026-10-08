@@ -48,14 +48,6 @@ export async function getOrgHelperSettings(orgId: string): Promise<{ enabled: bo
 
 export interface HelperSettings {
   enabled: boolean;
-  /**
-   * Whether Breeze Assist draws its system-tray icon. Independent of
-   * `enabled` — the helper still serves chat, remote-access consent and PAM
-   * dialogs with the icon hidden (#3202). Defaults to true; only an explicit
-   * false hides it (the agent treats an absent field as true so an older
-   * server can never blank a fleet's trays).
-   */
-  showTrayIcon: boolean;
   showOpenPortal: boolean;
   showDeviceInfo: boolean;
   showRequestSupport: boolean;
@@ -71,7 +63,6 @@ export interface HelperSettings {
 
 const HELPER_DEFAULTS: HelperSettings = {
   enabled: false,
-  showTrayIcon: true,
   showOpenPortal: true,
   showDeviceInfo: true,
   showRequestSupport: true,
@@ -165,7 +156,6 @@ export async function resolveDeviceHelperSettings(deviceId: string, opts?: Devic
   const s = winner.inlineSettings as Record<string, unknown>;
   return {
     enabled: typeof s.enabled === 'boolean' ? s.enabled : HELPER_DEFAULTS.enabled,
-    showTrayIcon: typeof s.showTrayIcon === 'boolean' ? s.showTrayIcon : HELPER_DEFAULTS.showTrayIcon,
     showOpenPortal: typeof s.showOpenPortal === 'boolean' ? s.showOpenPortal : HELPER_DEFAULTS.showOpenPortal,
     showDeviceInfo: typeof s.showDeviceInfo === 'boolean' ? s.showDeviceInfo : HELPER_DEFAULTS.showDeviceInfo,
     showRequestSupport: typeof s.showRequestSupport === 'boolean' ? s.showRequestSupport : HELPER_DEFAULTS.showRequestSupport,

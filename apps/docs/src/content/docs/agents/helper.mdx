@@ -319,19 +319,13 @@ The Helper chat toggle is managed through organization settings. When disabled, 
 
 The agent reads `helperEnabled` from each heartbeat response and stores it as an atomic boolean. When the value changes, the Helper is notified to show or hide its chat UI.
 
-### Hiding the System Tray Icon
+### Window and Tray Behavior
 
-Tray visibility is a separate setting from deployment. Set **System tray icon** to off in the **Breeze Assist** tab of a configuration policy (`showTrayIcon: false` in the feature link's inline settings) to run the Helper without any tray presence. This is intended for fleets where the MSP wants the Helper's capabilities -- AI chat, remote-access consent prompts, and PAM elevation dialogs -- without a visible icon on end-user machines. Those capabilities do not go through the tray and keep working with the icon hidden.
+The Helper always runs in the user's session and always shows its tray icon. Its main window starts **hidden**: the agent launches the Helper at logon, after agent or Helper updates, and whenever its session watcher restarts an exited Helper, and none of these put a window on screen. The user opens the window by clicking the tray icon or choosing **Request Support** or **Device Info** from the tray menu. Closing the window hides it back to the tray.
 
-The setting defaults to `true`. It is written to the per-session `helper_config.yaml` as `show_tray_icon` and applied by the Helper within 60 seconds (its config reload loop) -- no restart required.
+The tray menu has no **Exit** item. The agent restarts an exited Helper within about 30 seconds, so Exit only made the window come back. Running `breeze-helper --show` opens the window on launch, for a manual start.
 
-Platform behavior:
-
-| Platform | Behavior when `showTrayIcon: false` |
-| --- | --- |
-| Windows | Notification-area icon is hidden. |
-| macOS | Status-bar item is hidden. |
-| Linux | Best effort. The tray is a StatusNotifierItem exported via libappindicator, where hiding marks the item `Passive`. Most hosts (KDE Plasma, the GNOME AppIndicator extension) stop drawing passive items, but a host is free to keep rendering them, so the icon may persist on some desktops. |
+Policies saved before this change may still store `showTrayIcon` in the Breeze Assist inline settings. The key is ignored and dropped the next time the policy is saved.
 
 ### Configuration Endpoint
 
@@ -517,10 +511,7 @@ The end user does not approve tool calls from inside the Helper chat -- there is
 ## Troubleshooting
 
 **Helper tray icon does not appear.**
-First check whether it was hidden on purpose: a configuration policy with **System tray icon** off (`showTrayIcon: false`) suppresses it deliberately. Otherwise, the Helper requires a display server to show the tray icon. On Linux, verify that `DISPLAY` or `WAYLAND_DISPLAY` is set in the user session. On Windows, the Helper is spawned by the session broker -- check agent logs for "starting helper in session" messages. If the agent service is not running, the Helper cannot start.
-
-**Tray icon still visible on Linux after turning "System tray icon" off.**
-Expected on some desktops. Hiding an appindicator sets it to `Passive`; hosts that render passive items keep showing it. The Helper's other functions are unaffected. See the platform table under [Hiding the System Tray Icon](#hiding-the-system-tray-icon).
+The Helper requires a display server to show the tray icon. On Linux, verify that `DISPLAY` or `WAYLAND_DISPLAY` is set in the user session. On Windows, the Helper is spawned by the session broker -- check agent logs for "starting helper in session" messages. If the agent service is not running, the Helper cannot start.
 
 **"Invalid agent credentials" when Helper tries to chat.**
 The Helper authenticates to the API using its own helper-scoped `brz_` token, separate from the agent's own token. If the device was re-enrolled or the token was rotated, the Helper's cached token may be stale. Restart the agent service to pick up the new token. Also verify the device is not in `decommissioned` or `quarantined` status.
