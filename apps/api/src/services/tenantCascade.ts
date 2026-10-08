@@ -551,6 +551,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // verifies it against pg_constraint at runtime regardless.
   'device_mtls_certificates',
   'device_network',
+  // PAM ownership-epoch lineage (#8203). Closures FK -> epochs
+  // (device_id, org_id, epoch) ON DELETE CASCADE, so closures sort (and
+  // delete) first. Epochs carry no FK to devices (spec §4.4).
+  'device_ownership_epoch_closures',
+  'device_ownership_epochs',
   'device_patches',
   'device_process_samples',
   'device_recovery_keys',

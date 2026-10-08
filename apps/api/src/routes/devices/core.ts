@@ -273,6 +273,16 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts. The outcome sweeper
  * cancels in-flight rows whose device left the org.
  *
+ * device_ownership_epochs / device_ownership_epoch_closures are deliberately
+ * ABSENT too (PAM ownership epochs W1, #8203): ownership lineage is
+ * append-only (UPDATE trigger-blocked and revoked). An org change appends a
+ * new epoch through the breeze_device_ownership_epoch_advance() trigger on
+ * devices instead of re-stamping; each closed epoch keeps the org that owned
+ * it. Both are excluded from breeze_device_child_orgid_tables() by
+ * 2026-12-17-130000-device-ownership-epochs.sql and listed in
+ * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts. pam_ledger_retirements
+ * has no org_id at all.
+ *
  * invoice_line_devices is deliberately ABSENT too (#3205 W07): it has both
  * org_id and device_id, but its org_id belongs to the INVOICE, which does not
  * move. Re-stamping it would break the (invoice_line_id, org_id) and
@@ -631,6 +641,13 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // ON DELETE CASCADE, so delete the access-event ledger before its parent keys.
   'recovery_key_access_events', 'device_recovery_keys',
   'pam_actuations', 'pam_actuation_results',
+  // PAM ownership-epoch lineage (#8203). No FK to devices on the two epoch
+  // tables (spec §4.4) — this app-level DELETE is what reclaims them, and it
+  // runs under the caller's RLS, so only epochs of orgs the deleter can see
+  // go. Closures FK -> epochs, so closures first. pam_ledger_retirements
+  // also cascades from devices by FK. W2 narrows this to the exact current
+  // epoch once PAM rows are epoch-anchored.
+  'device_ownership_epoch_closures', 'device_ownership_epochs', 'pam_ledger_retirements',
   'peripheral_policy_delivery_events', 'peripheral_policy_device_states', 'peripheral_events',
   'agent_rollback_events', 'agent_rollback_directives',
   's1_agents', 's1_threats', 's1_actions',

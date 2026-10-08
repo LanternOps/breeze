@@ -87,6 +87,7 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
 // scoped by design) — see apps/api/src/db/schema/devices.ts.
 const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'device_commands', // Agent WS path: system-scoped command queue, no tenant isolation needed.
+  'pam_ledger_retirements', // PAM ownership epochs (#8203, spec §4.5): identifier-only markers (device_id, actuation_id, epoch) — no org, no evidence. Forced RLS, single system-only policy; written only by the SECURITY DEFINER devices org-change trigger, read only by system-scope lineage lookups. Lives with the device (FK ON DELETE CASCADE + CORE_DEVICE_CASCADE_DELETE_TABLES).
   'intent_outbox', // Generalized transactional outbox: system-scoped workers-only queue. Its XOR parent FK cascades from either action_intents or pam_actuations (both direct-org, forced RLS). Mirrors device_commands.
   'manifest_signing_keys', // System-scoped: per-deployment agent-update signing key. Forced RLS, no policies → only system context.
   'manifest_signing_key_delegations', // System-scoped: signed authorisation to add ONE unseen agent-update signing key (Wave 6 Task 7). No tenant column — per-deployment agent-update infrastructure. Forced RLS, single system-only policy (USING + WITH CHECK) → only system context. No org_id/device_id, so no cascade-list registration applies.
