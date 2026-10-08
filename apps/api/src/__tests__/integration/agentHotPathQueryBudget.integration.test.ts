@@ -71,19 +71,25 @@ vi.mock('../../services/helperSettings', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/helperSettings')>();
   return {
     ...actual,
-    buildHelperConfigUpdate: async (deviceId: string, orgId: string) => {
+    buildHelperConfigUpdate: async (deviceId: string, orgId: string, opts?: unknown) => {
       if (helperFault.enabled) {
         const { db: faultDb } = await import('../../db');
         const { sql: faultSql } = await import('drizzle-orm');
         await faultDb.execute(faultSql`SELECT 1 / 0`); // division_by_zero
       }
-      return actual.buildHelperConfigUpdate(deviceId, orgId);
+      return actual.buildHelperConfigUpdate(deviceId, orgId, opts as never);
     },
   };
 });
 
 import { db, withSystemDbAccessContext } from '../../db';
-import { enrollmentKeys } from '../../db/schema';
+import {
+  configPolicyAssignments,
+  configPolicyEventLogSettings,
+  configPolicyFeatureLinks,
+  configurationPolicies,
+  enrollmentKeys,
+} from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestRedis } from './setup';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
@@ -198,6 +204,35 @@ async function seedOrg(label: string) {
     });
   });
   return { partnerId: partner.id, orgId: org.id, siteId: site.id, rawKey, suffix };
+}
+
+async function seedOrgPolicy(input: {
+  orgId: string;
+  featureType: 'helper' | 'event_log';
+  inlineSettings?: Record<string, unknown>;
+  maxEventsPerCycle?: number;
+  level: 'device' | 'organization';
+  targetId: string;
+  roleFilter?: string[];
+}): Promise<void> {
+  await withSystemDbAccessContext(async () => {
+    const [policy] = await db.insert(configurationPolicies).values({
+      orgId: input.orgId, partnerId: null, name: `hotpath ${input.featureType} ${randomUUID()}`, status: 'active',
+    }).returning();
+    const [link] = await db.insert(configPolicyFeatureLinks).values({
+      configPolicyId: policy!.id, featureType: input.featureType,
+      ...(input.inlineSettings ? { inlineSettings: input.inlineSettings } : {}),
+    }).returning();
+    if (input.maxEventsPerCycle !== undefined) {
+      await db.insert(configPolicyEventLogSettings).values({
+        featureLinkId: link!.id, retentionDays: 30, maxEventsPerCycle: input.maxEventsPerCycle,
+      });
+    }
+    await db.insert(configPolicyAssignments).values({
+      configPolicyId: policy!.id, level: input.level, targetId: input.targetId, priority: 0,
+      ...(input.roleFilter ? { roleFilter: input.roleFilter } : {}),
+    });
+  });
 }
 
 type SeededOrg = Awaited<ReturnType<typeof seedOrg>>;
@@ -351,6 +386,15 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     // and say why; the remaining bulk is ~26 repeated device/org/group reads
     // across the policy resolvers (#8053 follow-up).
     expect(steady.statements).toBeLessThanOrEqual(70);
+
+    // #8053 W1a-1 lever 1: one hierarchy read replaces 33 per-resolver reads.
+    expect(steady.buckets.hierarchyLoad).toBe(1);
+    expect(steady.buckets.deviceLookup).toBe(0);
+    expect(steady.buckets.orgPartnerLookup).toBe(0);
+    expect(steady.buckets.groupLookup).toBe(0);
+    expect(steady.buckets.siteLookup).toBe(0);
+    expect(warm.buckets.hierarchyLoad).toBe(1);
+    expect(warm.buckets.deviceLookup).toBe(0);
   });
 
   runDb('POST /agents/:id/heartbeat: a legacy (no securityCapabilities) beat pays the two peripheral-v2 UPDATEs on top', async () => {
@@ -419,5 +463,39 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(warm.transactions).toBe(0);
     expect(warm.statements).toBe(0);
     expect(nextPoll.statements).toBe(0);
+  });
+});
+
+describe('heartbeat hierarchy pass-through (#8053 W1a-1) — behaviour guards, real PostgreSQL', () => {
+  // These pass BEFORE and AFTER the change: they pin today's behaviour so the
+  // pass-through cannot alter what an agent receives.
+
+  runDb('a sibling\'s device-level helper policy never reaches another device in the same org', async () => {
+    const org = await seedOrg('isolation');
+    const device = await enrollDevice(org, 'plain');
+    const sibling = await enrollDevice(org, 'helper-on');
+    await seedOrgPolicy({
+      orgId: org.orgId, featureType: 'helper', inlineSettings: { enabled: true },
+      level: 'device', targetId: sibling.deviceId,
+    });
+
+    const siblingBody = await (await heartbeat(sibling)).json() as { helperEnabled: boolean };
+    const deviceBody = await (await heartbeat(device)).json() as { helperEnabled: boolean };
+    expect(siblingBody.helperEnabled).toBe(true);
+    expect(deviceBody.helperEnabled).toBe(false);
+  });
+
+  runDb('a role this very beat writes is the role the policy resolvers see', async () => {
+    const org = await seedOrg('role');
+    const device = await enrollDevice(org, 'role');
+    await seedOrgPolicy({
+      orgId: org.orgId, featureType: 'event_log', maxEventsPerCycle: 777,
+      level: 'organization', targetId: org.orgId, roleFilter: ['printer'],
+    });
+
+    const res = await heartbeat(device, { ...CURRENT_AGENT_HEARTBEAT, deviceRole: 'printer' });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { configUpdate: { event_log_settings?: { max_events_per_cycle: number } } };
+    expect(body.configUpdate.event_log_settings?.max_events_per_cycle).toBe(777);
   });
 });

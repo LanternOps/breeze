@@ -5,6 +5,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '../../lib/validation';
 import { and, eq, notInArray } from 'drizzle-orm';
+import { loadDeviceHierarchy, withHierarchy, type DeviceHierarchy } from '../../services/deviceHierarchy';
 import { db, runOutsideDbContext, withDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import {
   maybeDispatchEditionMigration,
@@ -2184,15 +2185,40 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // pivot tenants (same guarantee as the policy-probe pattern above). The
   // onedrive_device_state upsert happened inside scoped (ingest), and this
   // build runs later, so the ingest-before-delivery ordering is preserved.
+  // #8053 W1a-1 — the device's policy hierarchy (device, org partner + type,
+  // site, group ids), read ONCE for the whole beat and passed explicitly to
+  // every post-commit resolver below. Before this, each of them re-read it:
+  // 33 statements per beat.
+  //
+  // It is read HERE, as the first statement of the OneDrive system context,
+  // rather than taken from the core device row or the agent context, because:
+  //   - the agent context carries no organization type (featureConfigResolver
+  //     and monitorResolver both need it);
+  //   - the core row predates this beat's own `UPDATE devices`, which can
+  //     change deviceRole — and role-filtered policies must see the new role,
+  //     as they always have (these resolvers ran after commit);
+  //   - the resolvers' own reads ran in SYSTEM scope; this does too, so RLS
+  //     visibility is identical.
+  // It is keyed on `scoped.deviceId` — the device the agent authenticated as,
+  // read in the org context by agent.deviceId — and every resolver re-checks
+  // that id (hierarchyFor throws on a mismatch).
+  //
+  // A failure here, or a device whose org changed since the org transaction,
+  // leaves `beatHierarchy` null: every resolver then loads its own, exactly
+  // as before this change.
+  let beatHierarchy = null as DeviceHierarchy | null;
   let onedriveSettings: OnedriveConfigUpdate | null = null;
   try {
-    onedriveSettings = await withSystemDbAccessContext(() =>
-      buildOnedriveHelperConfigUpdate(scoped.deviceId)
-    );
+    onedriveSettings = await withSystemDbAccessContext(async () => {
+      const loaded = await loadDeviceHierarchy(scoped.deviceId);
+      beatHierarchy = loaded && loaded.orgId === scoped.deviceOrgId ? loaded : null;
+      return buildOnedriveHelperConfigUpdate(scoped.deviceId, withHierarchy(beatHierarchy));
+    });
   } catch (err) {
-    console.error(`[agents] failed to build onedrive_helper config update for ${agentId}:`, err);
+    console.error(`[agents] failed to load the device hierarchy or build onedrive_helper config update for ${agentId}:`, err);
     captureException(err);
   }
+  const hierarchyOpts = withHierarchy(beatHierarchy);
   const onedriveConfigUpdate = onedriveSettings
     ? { onedrive_helper_settings: onedriveSettings }
     : null;
@@ -2272,7 +2298,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // reviewable change. See the note at the `currentPartnerId` assignment.
       try {
         helperSettings = await withDbTransaction(() =>
-          buildHelperConfigUpdate(scoped.deviceId, scoped.deviceOrgId),
+          buildHelperConfigUpdate(scoped.deviceId, scoped.deviceOrgId, hierarchyOpts),
         );
       } catch (err) {
         console.error(`[agents] failed to read helper settings for ${agentId}:`, err);
@@ -2281,7 +2307,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
       try {
         policyProbeConfig = await withDbTransaction(() =>
-          buildPolicyProbeConfigUpdate(scoped.deviceOrgId),
+          buildPolicyProbeConfigUpdate(
+            scoped.deviceOrgId,
+            beatHierarchy?.org ? { partnerId: beatHierarchy.org.partnerId } : undefined,
+          ),
         );
       } catch (err) {
         console.error(`[agents] failed to build policy probe config update for ${agentId}:`, err);
@@ -2301,28 +2330,28 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // the agent keeps collecting on stale defaults and nothing surfaces it.
       // A stdout line is not an alerting channel.
       try {
-        eventLogSettings = await buildEventLogConfigUpdate(scoped.deviceId);
+        eventLogSettings = await buildEventLogConfigUpdate(scoped.deviceId, hierarchyOpts);
       } catch (err) {
         console.error(`[agents] failed to build event log config update for ${agentId}:`, err);
         captureException(err);
       }
 
       try {
-        hardwareMonitoringSettings = await buildHardwareMonitoringConfigUpdate(scoped.deviceId);
+        hardwareMonitoringSettings = await buildHardwareMonitoringConfigUpdate(scoped.deviceId, hierarchyOpts);
       } catch (err) {
         console.error(`[agents] failed to build hardware monitoring config update for ${agentId}:`, err);
         captureException(err);
       }
 
       try {
-        monitoringSettings = await buildMonitoringConfigUpdate(scoped.deviceId) as Record<string, unknown> | null;
+        monitoringSettings = await buildMonitoringConfigUpdate(scoped.deviceId, hierarchyOpts) as Record<string, unknown> | null;
       } catch (err) {
         console.error(`[agents] failed to build monitoring config update for ${agentId}:`, err);
         captureException(err);
       }
 
       try {
-        pamSettings = await buildPamConfigUpdate(scoped.deviceId);
+        pamSettings = await buildPamConfigUpdate(scoped.deviceId, hierarchyOpts);
       } catch (err) {
         // Opt-in default means a resolver failure leaves pamSettings null and we
         // send uacInterceptionEnabled:false below. For an org that *enforces* PAM
@@ -2341,7 +2370,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // a transient failure never reverts an endpoint already under enforcement;
       // a successful resolve with no patch policy returns false → agent reverts.
       try {
-        patchSourceSettings = await buildPatchSourceConfigUpdate(scoped.deviceId);
+        patchSourceSettings = await buildPatchSourceConfigUpdate(scoped.deviceId, hierarchyOpts);
       } catch (err) {
         console.error(`[agents] failed to build patch_source config update for ${agentId}:`, err);
         captureException(err);
@@ -2356,7 +2385,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // resolver's SQL error aborts the transaction, which makes this one throw
       // too — and throwing here only ever omits the block, never revokes.
       try {
-        warrantySettings = await buildWarrantyConfigUpdate(scoped.deviceId);
+        warrantySettings = await buildWarrantyConfigUpdate(scoped.deviceId, hierarchyOpts);
       } catch (err) {
         console.error(`[agents] failed to build warranty config update for ${agentId}:`, err);
         captureException(err);
@@ -2368,7 +2397,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // its SQL error can never abort the shared transaction before pam
       // resolves and drop uacInterceptionEnabled to false.
       try {
-        timeSyncSettings = await buildTimeSyncConfigUpdate(scoped.deviceId);
+        timeSyncSettings = await buildTimeSyncConfigUpdate(scoped.deviceId, hierarchyOpts);
       } catch (err) {
         console.error(`[agents] failed to build time sync config update for ${agentId}:`, err);
         captureException(err);
