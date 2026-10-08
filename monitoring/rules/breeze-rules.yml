@@ -70,6 +70,21 @@ groups:
           summary: "High rate of 4xx errors on {{ $labels.job }}"
           description: "4xx error rate is {{ $value | humanizePercentage }}"
 
+      # #8143. A permit held by an abandoned transaction normally returns within
+      # seconds (the late statement completes and rolls back). One still held
+      # after 3 minutes means a wedged backend the reclaimer has not cleared
+      # (or reclaim is disabled): the effective pool is smaller than DB_POOL_MAX.
+      # The worker is included: it runs the same db module and gate, and
+      # publishes the role-agnostic runtime series on job="breeze-worker".
+      - alert: DbPoolPermitsHeldByAbandonedTransactions
+        expr: max by (job, instance) (breeze_db_pool_admission_abandoned{job=~"breeze-(api|worker).*"}) > 0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Abandoned DB transactions are holding pool permits on {{ $labels.instance }}"
+          description: "{{ $value }} pool permit(s) held by transactions abandoned at their RLS prologue deadline for 3+ minutes. Check [db-wedged-backend] and [db-pool-admission] logs."
+
   - name: breeze-infrastructure-alerts
     interval: 30s
     rules:

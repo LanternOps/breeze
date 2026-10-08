@@ -127,6 +127,13 @@ import {
   recordS1SyncRun,
 } from '../services/sentinelOne/metrics';
 
+import {
+  createPoolAdmission,
+  registerRequestPoolAdmission,
+  __resetRequestPoolAdmissionForTests,
+} from '../db/poolAdmission';
+import { __resetDeadlineExpiryTotalsForTests, withAcquireAndPrologueDeadline } from '../db/prologueDeadline';
+
 function mockRollupTrendRows(selectMock: ReturnType<typeof vi.fn>, rows: unknown[]) {
   selectMock.mockReturnValueOnce({
     from: () => ({
@@ -557,6 +564,75 @@ describe('metrics routes', () => {
       expect(
         getMetricLine(body, 'breeze_db_connect_timeouts_total', { cause: 'event-loop-starvation' }),
       ).toBe('breeze_db_connect_timeouts_total{cause="event-loop-starvation"} 1');
+    });
+  });
+
+  describe('db pool admission gauges (#8143)', () => {
+    afterEach(() => {
+      __resetRequestPoolAdmissionForTests();
+      __resetDeadlineExpiryTotalsForTests();
+    });
+
+    async function scrape(): Promise<string> {
+      const res = await app.request('/metrics', { headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(200);
+      return res.text();
+    }
+
+    it('publishes -1 for the pool-size series when this process has no request pool', async () => {
+      const body = await scrape();
+      for (const name of [
+        'breeze_db_pool_admission_permits',
+        'breeze_db_pool_admission_in_use',
+        'breeze_db_pool_admission_waiting',
+        'breeze_db_pool_admission_abandoned',
+        'breeze_db_pool_admission_effective_permits',
+      ]) {
+        expect(getMetricLine(body, name)).toBe(`${name} -1`);
+      }
+      expect(getMetricLine(body, 'breeze_db_prologue_deadline_expiries_total', { timer: 'late' }))
+        .toBe('breeze_db_prologue_deadline_expiries_total{timer="late"} 0');
+    });
+
+    it('tracks permits in use, abandoned permits and the effective pool on scrape', async () => {
+      const gate = createPoolAdmission({ permits: 4 });
+      registerRequestPoolAdmission(gate);
+      const held = await gate.acquire('metrics-test');
+      const abandoned = await gate.acquire('metrics-test');
+      abandoned.abandon(new Error('prologue expired'));
+
+      const during = await scrape();
+      expect(getMetricLine(during, 'breeze_db_pool_admission_permits')).toBe('breeze_db_pool_admission_permits 4');
+      expect(getMetricLine(during, 'breeze_db_pool_admission_in_use')).toBe('breeze_db_pool_admission_in_use 2');
+      expect(getMetricLine(during, 'breeze_db_pool_admission_abandoned')).toBe('breeze_db_pool_admission_abandoned 1');
+      expect(getMetricLine(during, 'breeze_db_pool_admission_effective_permits'))
+        .toBe('breeze_db_pool_admission_effective_permits 3');
+
+      abandoned.release('connection-closed');
+      held.release('resolved');
+      const after = await scrape();
+      expect(getMetricLine(after, 'breeze_db_pool_admission_in_use')).toBe('breeze_db_pool_admission_in_use 0');
+      expect(getMetricLine(after, 'breeze_db_pool_admission_effective_permits'))
+        .toBe('breeze_db_pool_admission_effective_permits 4');
+      expect(getMetricLine(after, 'breeze_db_pool_admission_abandoned_returned_total', { how: 'connection-closed' }))
+        .toBe('breeze_db_pool_admission_abandoned_returned_total{how="connection-closed"} 1');
+    });
+
+    it('counts acquire timeouts by timer lateness', async () => {
+      vi.useFakeTimers();
+      try {
+        const expired = withAcquireAndPrologueDeadline('metrics-test', () => new Promise<never>(() => {}), {
+          acquireTimeoutMs: 1_000,
+          timeoutMs: 15_000,
+        }).catch(() => undefined);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await expired;
+      } finally {
+        vi.useRealTimers();
+      }
+      const body = await scrape();
+      expect(getMetricLine(body, 'breeze_db_pool_acquire_timeouts_total', { timer: 'on-time' }))
+        .toBe('breeze_db_pool_acquire_timeouts_total{timer="on-time"} 1');
     });
   });
 
