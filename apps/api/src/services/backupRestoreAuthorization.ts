@@ -44,6 +44,8 @@ export type RecordRestoreAuthorizationInput = RestoreTuple & {
   userId: string;
   userEmail?: string | null;
   binding: RestoreAuthorizationBinding;
+  /** How the technician confirmed it: two-factor step-up, typed device name, or explicit confirmation (2FA disabled). */
+  confirmationMethod?: 'mfa' | 'typed' | 'confirm';
   ipAddress?: string | null;
   userAgent?: string | null;
 };
@@ -108,6 +110,7 @@ export async function recordRestoreAuthorization(
         targetDeviceId: input.targetDeviceId,
         commandType: input.commandType,
         reason: input.reason,
+        ...(input.confirmationMethod ? { confirmationMethod: input.confirmationMethod } : {}),
         ...('commandId' in binding ? { commandId: binding.commandId } : {}),
         ...('recoveryTokenId' in binding ? { recoveryTokenId: binding.recoveryTokenId } : {}),
         ...('recoveryId' in binding ? { recoveryId: binding.recoveryId } : {}),

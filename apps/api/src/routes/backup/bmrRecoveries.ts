@@ -168,12 +168,13 @@ bmrRecoveryRoutes.post(
           };
           const check = await checkRestoreIntegrityRequest(c, request);
           if (!check.ok) return check;
+          if (!check.authorizationReason) return { ok: true };
           const reason = check.authorizationReason;
-          if (!reason) return { ok: true };
+          const confirmationMethod = check.confirmationMethod;
           return {
             ok: true,
             bindRecovery: (recoveryId: string) =>
-              recordRequestAuthorization(c, request, reason, { recoveryId }, { inCurrentTransaction: true }),
+              recordRequestAuthorization(c, request, reason, { recoveryId }, { inCurrentTransaction: true, confirmationMethod }),
           };
         },
       });

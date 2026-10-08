@@ -133,6 +133,14 @@ describe('mfaStepUpSchema operation field', () => {
     ).toThrow();
   });
 
+  // The typed restore confirmation is minted only by POST
+  // /backup/restore-confirmations after the device name was typed.
+  it('rejects backup_unattested_restore_typed — restore-confirmation mint only, never client-requestable', () => {
+    expect(() =>
+      mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'backup_unattested_restore_typed' })
+    ).toThrow();
+  });
+
   // RMM-QA-176 D11 (T12): entering/extending device maintenance mode is a
   // client-requestable step-up operation, and its resource binding must be
   // accepted by this schema. The duration cap is imported from the grant

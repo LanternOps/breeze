@@ -234,6 +234,21 @@ export const restoreIntegrityConfirmationFields = {
   confirmUnattestedRestore: z.boolean().optional(),
 };
 
+/**
+ * POST /backup/restore-confirmations: the typed confirmation of one restore
+ * (routes/backup/restoreConfirmations.ts). The resource fields mirror the
+ * `stepUp.resource` a restore route answered with.
+ */
+export const restoreTypedConfirmationSchema = z.object({
+  snapshotId: z.string().uuid(),
+  targetDeviceId: z.string().uuid(),
+  commandType: z.enum([
+    'backup_restore', 'mssql_restore', 'hyperv_restore', 'vm_restore_from_backup', 'vm_instant_boot',
+    'bmr_recover', 'bare_metal_rebuild',
+  ]),
+  confirmationText: z.string().min(1).max(255),
+});
+
 export const restoreSchema = z.object({
   ...restoreIntegrityConfirmationFields,
   snapshotId: z.string().min(1),

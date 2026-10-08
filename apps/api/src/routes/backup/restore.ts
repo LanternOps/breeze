@@ -322,7 +322,9 @@ restoreRoutes.post(
     let reservedCommandId: string | undefined;
     if (integrityCheck.authorizationReason) {
       reservedCommandId = randomUUID();
-      await recordRequestAuthorization(c, integrityRequest, integrityCheck.authorizationReason, { commandId: reservedCommandId });
+      await recordRequestAuthorization(c, integrityRequest, integrityCheck.authorizationReason, { commandId: reservedCommandId }, {
+        confirmationMethod: integrityCheck.confirmationMethod,
+      });
     }
 
     const [row] = await runInOrg(orgId, async () =>

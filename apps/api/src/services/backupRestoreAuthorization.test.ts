@@ -75,6 +75,13 @@ describe('unattestedRestoreResourceDigest', () => {
 });
 
 describe('recordRestoreAuthorization', () => {
+  it('records how the restore was confirmed in the audit event, and only there', async () => {
+    const { writer, committed } = transactionalWriter();
+    await recordRestoreAuthorization({ ...input(), confirmationMethod: 'typed' }, writer);
+    expect(committed.audits[0].details).toMatchObject({ confirmationMethod: 'typed', reason: 'unattested_legacy' });
+    expect(committed.authorizations[0]).not.toHaveProperty('confirmationMethod');
+  });
+
   it('writes the authorization and its audit event together, bound to the reserved command id', async () => {
     const { writer, committed } = transactionalWriter();
     const id = await recordRestoreAuthorization(input(), writer);

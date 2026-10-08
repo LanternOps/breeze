@@ -610,7 +610,7 @@ bmrRoutes.post(
         integrityRequest,
         integrityCheck.authorizationReason,
         { recoveryTokenId: row.id },
-        { inCurrentTransaction: true },
+        { inCurrentTransaction: true, confirmationMethod: integrityCheck.confirmationMethod },
       );
     }
 

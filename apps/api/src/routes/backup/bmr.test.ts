@@ -702,7 +702,7 @@ describe('bmr routes', () => {
 
     it('records a confirmed token\'s authorization bound to the token, in the same transaction', async () => {
       tokenRows();
-      integrityGate.check.mockResolvedValueOnce({ ok: true, authorizationReason: 'unattested_legacy' });
+      integrityGate.check.mockResolvedValueOnce({ ok: true, authorizationReason: 'unattested_legacy', confirmationMethod: 'typed' });
       const res = await post();
       expect(res.status).toBe(201);
       expect(integrityGate.record).toHaveBeenCalledWith(
@@ -710,7 +710,7 @@ describe('bmr routes', () => {
         expect.objectContaining({ snapshotDbId: SNAPSHOT_ID, targetDeviceId: DEVICE_ID, commandType: 'bmr_recover' }),
         'unattested_legacy',
         { recoveryTokenId: TOKEN_ID },
-        { inCurrentTransaction: true },
+        { inCurrentTransaction: true, confirmationMethod: 'typed' },
       );
     });
   });

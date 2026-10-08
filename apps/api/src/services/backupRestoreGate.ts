@@ -14,7 +14,10 @@
  *     snapshot restored onto another device: a technician confirmed it with a
  *     two-factor step-up, recorded as a durable authorization bound to that
  *     exact snapshot, target device and command
- *     (services/backupRestoreAuthorization.ts).
+ *     (services/backupRestoreAuthorization.ts). For a snapshot written before
+ *     attestations existed, a technician who has no second factor confirms it
+ *     by typing the target device's name instead; the authorization is bound
+ *     and recorded the same way (routes/backup/restoreIntegrityGate.ts).
  *
  * A snapshot that did not match its attestation is never restored, with or
  * without a step-up. A snapshot whose attestation is still being checked waits.
@@ -73,6 +76,8 @@ export const RESTORE_INTEGRITY_MESSAGES = {
   snapshot_unresolved: 'The backup could not be found for this organization, so its integrity cannot be checked.',
   step_up_required:
     'This backup has no integrity attestation. Confirm the restore with two-factor authentication to continue.',
+  typed_confirmation_required:
+    'This backup was taken before integrity attestations existed. Type the name of the device being restored to confirm the restore.',
   producer_only_other_target:
     'This backup was written to storage only the original device can check. Confirm the restore to another device with two-factor authentication to continue.',
   authorization_missing:

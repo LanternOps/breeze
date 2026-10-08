@@ -115,7 +115,16 @@ export type StepUpOperation =
   // targetDeviceId, commandType }; consumed when the restore is requested,
   // and recorded as a durable authorization with its audit event
   // (services/backupRestoreAuthorization.ts).
-  | 'backup_unattested_restore';
+  | 'backup_unattested_restore'
+  // The same restore confirmation for a user WITHOUT a second factor, of a
+  // snapshot taken before attestations existed: minted by
+  // POST /backup/restore-confirmations once the user typed the target
+  // device's name (routes/backup/restoreConfirmations.ts), bound by the same
+  // resourceDigest and consumed by the same restore routes. A separate
+  // operation so a typed grant is never accepted where the two-factor step-up
+  // is required, and the reverse. MUST NOT be client-requestable from
+  // POST /auth/mfa/step-up: excluded from STEP_UP_OPERATIONS by the compiler.
+  | 'backup_unattested_restore_typed';
 
 export interface StepUpGrant {
   id: string;

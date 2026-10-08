@@ -985,13 +985,14 @@ describe('restore routes', () => {
 
     it('a confirmed restore records the authorization bound to the command id it then queues', async () => {
       snapshotRows();
-      integrityGate.check.mockResolvedValueOnce({ ok: true, authorizationReason: 'unattested_legacy' });
+      integrityGate.check.mockResolvedValueOnce({ ok: true, authorizationReason: 'unattested_legacy', confirmationMethod: 'typed' });
       insertMock.mockReturnValueOnce(chainMock([jobRow]));
       queueCommandForExecutionMock.mockResolvedValueOnce({ command: { id: 'reserved', status: 'pending' } });
       const res = await post({ stepUpGrant: '66666666-6666-4666-8666-666666666666' });
       expect(res.status).toBe(201);
       expect(integrityGate.record).toHaveBeenCalledTimes(1);
-      const [, request, reason, binding] = integrityGate.record.mock.calls[0]!;
+      const [, request, reason, binding, options] = integrityGate.record.mock.calls[0]!;
+      expect(options).toEqual({ confirmationMethod: 'typed' });
       expect(request).toMatchObject({ snapshotDbId: 'snap-db-1', targetDeviceId: 'device-2', commandType: 'backup_restore' });
       expect(reason).toBe('unattested_legacy');
       expect(binding.commandId).toMatch(/^[0-9a-f-]{36}$/);

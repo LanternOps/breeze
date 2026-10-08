@@ -18,6 +18,7 @@ import { isRestoreHelperUpdateRequiredError } from '../../services/backupRestore
 import {
   checkRestoreIntegrityRequest,
   gateRestoreCommand,
+  userCanStepUp,
   recordRequestAuthorization,
   restoreIntegrityResponse,
 } from './restoreIntegrityGate';
@@ -155,6 +156,7 @@ vmRestoreRoutes.post(
       // Read in the request context: the engine's org-scoped transaction
       // below cannot see a partner-level technician's user row.
       const userEpochs = auth.user?.id && payload.stepUpGrant ? await getUserEpochs(auth.user.id) : undefined;
+      const userMfaProtected = auth.user?.id ? await userCanStepUp(auth.user.id) : undefined;
       const result = await runInOrg(orgId, () =>
         startRebuildEngineVmRestore({
           orgId,
@@ -177,17 +179,19 @@ vmRestoreRoutes.post(
               stepUpGrant: payload.stepUpGrant,
               confirmUnattestedRestore: payload.confirmUnattestedRestore,
               ...(userEpochs !== undefined ? { userEpochs } : {}),
+              ...(userMfaProtected !== undefined ? { userMfaProtected } : {}),
               // The rebuild host runs the command.
               executingDeviceId: payload.rebuildHostDeviceId,
             };
             const check = await checkRestoreIntegrityRequest(c, request);
             if (!check.ok) return check;
+            if (!check.authorizationReason) return { ok: true };
             const reason = check.authorizationReason;
-            if (!reason) return { ok: true };
+            const confirmationMethod = check.confirmationMethod;
             return {
               ok: true,
               bindRecovery: (recoveryId: string) =>
-                recordRequestAuthorization(c, request, reason, { recoveryId }, { inCurrentTransaction: true }),
+                recordRequestAuthorization(c, request, reason, { recoveryId }, { inCurrentTransaction: true, confirmationMethod }),
             };
           },
         })
