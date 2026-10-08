@@ -130,6 +130,10 @@ vi.mock('../db', () => ({
   withDbAccessContext: vi.fn(async (_ctx: any, fn: any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: any) => fn()),
   runOutsideDbContext: vi.fn((fn: any) => fn()),
+  // #8053 W1a-1: DeferredCacheFills consults these.
+  hasDbAccessContext: () => false,
+  getCurrentDbAccessContext: () => ({ scope: 'system' }),
+  runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
   // #3530: the command-result route's CAS + persistence savepoint.
   withDbTransaction: vi.fn(async (fn: any) => fn()),
   SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, accessibleOrgIds: null }
@@ -297,12 +301,14 @@ import { queueCommandForExecution } from '../services/commandQueue';
 import { processBackupVerificationResult } from './backup/verificationService';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
 import { agentAuthMiddleware } from '../middleware/agentAuth';
+import { __resetHotPathCachesForTests } from '../services/hotPathCacheRegistry';
 
 describe('agent routes', () => {
   let app: Hono;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetHotPathCachesForTests(); // per-org heartbeat caches (#8053)
     // Reset db mock implementations to factory defaults (clearAllMocks doesn't reset mockReturnValue)
     vi.mocked(db.select).mockImplementation(() => defaultSelectChain() as any);
     vi.mocked(db.insert).mockImplementation(() => defaultInsertChain() as any);

@@ -45,6 +45,11 @@ vi.mock('../../db', () => ({
   },
   runOutsideDbContext: (...args: unknown[]) =>
     runOutsideDbContextMock(...(args as [any])),
+  // #8053 W1a-1 — DeferredCacheFills / HotPathTtlCache consult these. The
+  // shared policy context is system-scoped; no ambient context at flush time.
+  hasDbAccessContext: () => false,
+  getCurrentDbAccessContext: () => ({ scope: 'system' }),
+  runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
   // Pass-through that records when the org-scoped context opens and when its
   // callback resolves — in production the org transaction is released at the
   // latter point.
@@ -187,6 +192,11 @@ vi.mock('./helpers', () => ({
   buildTimeSyncConfigUpdate: vi.fn(),
   buildMonitoringConfigUpdate: vi.fn(() => undefined),
   buildHelperConfigUpdate: vi.fn(() => undefined),
+  // #8053 W1a-1 — the heartbeat reads the Redis entry itself and hands the org
+  // loaders in; default to "no cached entry / flag off / PAM fallback off".
+  readCachedHelperSettings: vi.fn(async () => null),
+  getOrgHelperSettings: vi.fn(async () => ({ enabled: false })),
+  resolveOrgPamFallback: vi.fn(async () => ({ uacInterceptionEnabled: false })),
   buildPamConfigUpdate: vi.fn(async () => ({ uacInterceptionEnabled: false })),
   buildPatchSourceConfigUpdate: vi.fn(async () => ({ exclusiveWindowsUpdate: false })),
   // Default OFF, mirroring buildPatchSourceConfigUpdate: every heartbeat test
@@ -356,6 +366,10 @@ import { and, eq, notInArray } from 'drizzle-orm';
 import { heartbeatRoutes, tccPermissionsMeaningfullyChanged } from './heartbeat';
 import { devices, bareMetalRecoveries } from '../../db/schema';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
+import { __resetHotPathCachesForTests } from '../../services/hotPathCacheRegistry';
+
+// Otherwise a probe/helper value cached by one test is served to the next for the same org.
+beforeEach(() => { __resetHotPathCachesForTests(); });
 
 // Builds a thenable mock-chain so any `.from().where().limit()` access
 // resolves to the given value.

@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const dbState = vi.hoisted(() => ({
   inContext: false,
   deferred: [] as Array<() => unknown>,
+  scope: undefined as 'system' | 'organization' | 'partner' | undefined,
 }));
 
 vi.mock('../db', () => ({
   hasDbAccessContext: () => dbState.inContext,
+  getCurrentDbAccessContext: () => (dbState.scope ? { scope: dbState.scope } : undefined),
   // Inside a context the real helper defers until the transaction settles;
   // tests flush `deferred` to model the COMMIT.
   runAfterDbContextExit: (_label: string, work: () => unknown) => {
@@ -15,7 +17,7 @@ vi.mock('../db', () => ({
   },
 }));
 
-import { HotPathTtlCache, __resetHotPathCachesForTests } from './hotPathCache';
+import { DeferredCacheFills, HotPathTtlCache, __resetHotPathCachesForTests } from './hotPathCache';
 
 const T0 = Date.parse('2026-10-07T12:00:00Z');
 
@@ -33,6 +35,7 @@ describe('HotPathTtlCache (#8053)', () => {
     vi.setSystemTime(T0);
     dbState.inContext = false;
     dbState.deferred = [];
+    dbState.scope = undefined;
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -165,5 +168,86 @@ describe('HotPathTtlCache (#8053)', () => {
 
     expect(a.size).toBe(0);
     expect(b.size).toBe(0);
+  });
+});
+
+describe('HotPathTtlCache deferred fills (#8053 W1a-1)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(T0);
+    dbState.inContext = false;
+    dbState.scope = undefined;
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('peek never loads and honours the TTL', async () => {
+    const cache = makeCache({ ttlMs: 1_000 });
+    expect(cache.peek('a')).toBeUndefined();
+    await cache.getOrLoad('a', async () => ({ v: '1' }));
+    expect(cache.peek('a')).toEqual({ v: '1' });
+    vi.setSystemTime(T0 + 1_001);
+    expect(cache.peek('a')).toBeUndefined();
+  });
+
+  it('fillIfCurrent stores only when no invalidate() ran since the ticket', () => {
+    const cache = makeCache();
+    const ticket = cache.ticket();
+    cache.fillIfCurrent('a', { v: '1' }, ticket);
+    expect(cache.peek('a')).toEqual({ v: '1' });
+
+    const stale = cache.ticket();
+    cache.invalidate('b');
+    cache.fillIfCurrent('a', { v: '2' }, stale);
+    expect(cache.peek('a')).toEqual({ v: '1' });
+  });
+
+  it('fillIfCurrent refuses to run inside a DB context (the load has not committed)', () => {
+    const cache = makeCache();
+    dbState.inContext = true;
+    expect(() => cache.fillIfCurrent('a', { v: '1' }, cache.ticket())).toThrow(/inside a DB context/);
+  });
+
+  it('through: a hit never loads; a miss in a SYSTEM context loads now and stores only on flush', async () => {
+    const cache = makeCache();
+    const fills = new DeferredCacheFills();
+    dbState.inContext = true;
+    dbState.scope = 'system';
+    const load = vi.fn(async () => ({ v: 'loaded' }));
+
+    await expect(fills.through(cache, 'org-1', load)).resolves.toEqual({ v: 'loaded' });
+    expect(cache.peek('org-1')).toBeUndefined();
+
+    dbState.inContext = false;
+    fills.flush();
+    expect(cache.peek('org-1')).toEqual({ v: 'loaded' });
+
+    dbState.inContext = true;
+    await fills.through(cache, 'org-1', load);
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it('through under an ORG-scoped context loads but never caches (a narrower RLS answer)', async () => {
+    const cache = makeCache();
+    const fills = new DeferredCacheFills();
+    dbState.inContext = true;
+    dbState.scope = 'organization';
+    await fills.through(cache, 'org-1', async () => ({ v: 'partial' }));
+    dbState.inContext = false;
+    fills.flush();
+    expect(cache.peek('org-1')).toBeUndefined();
+  });
+
+  it('through: a failed load queues nothing; an invalidate before flush wins', async () => {
+    const cache = makeCache();
+    const fills = new DeferredCacheFills();
+    dbState.inContext = true;
+    dbState.scope = 'system';
+    await expect(fills.through(cache, 'org-1', async () => { throw new Error('boom'); })).rejects.toThrow('boom');
+    await fills.through(cache, 'org-2', async () => ({ v: 'pre-commit' }));
+    cache.invalidate('org-2');
+    dbState.inContext = false;
+    fills.flush();
+    expect(cache.peek('org-1')).toBeUndefined();
+    expect(cache.peek('org-2')).toBeUndefined();
   });
 });

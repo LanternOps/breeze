@@ -3087,7 +3087,7 @@ export async function issueMtlsCertForDevice(deviceId: string, orgId: string): P
 
 // Helper Settings (policy-driven) — canonical home is services/helperSettings.ts
 // (shared with helperAuth and /helper/config); re-exported here for existing callers.
-export { buildHelperConfigUpdate, getOrgHelperSettings, resolveDeviceHelperSettings, type HelperSettings } from '../../services/helperSettings';
+export { buildHelperConfigUpdate, getOrgHelperSettings, readCachedHelperSettings, resolveDeviceHelperSettings, type HelperSettings } from '../../services/helperSettings';
 
 // ============================================
 // PAM Settings (policy-driven)
@@ -3100,7 +3100,7 @@ export { buildHelperConfigUpdate, getOrgHelperSettings, resolveDeviceHelperSetti
  * (grandfathered by migration 2026-07-01); everyone else falls to PAM_DEFAULTS
  * (opt-in: off). An explicit config-policy feature link always wins over this.
  */
-async function resolveOrgPamFallback(orgId: string): Promise<PamSettings> {
+export async function resolveOrgPamFallback(orgId: string): Promise<PamSettings> {
   const [cfg] = await db
     .select({ enabled: pamOrgConfig.uacInterceptionEnabled })
     .from(pamOrgConfig)
@@ -3112,7 +3112,12 @@ async function resolveOrgPamFallback(orgId: string): Promise<PamSettings> {
   return PAM_DEFAULTS;
 }
 
-async function resolveDevicePamSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<PamSettings> {
+export interface PamConfigUpdateOptions extends DeviceHierarchyOpts {
+  /** Source of the org grandfather flag; defaults to resolveOrgPamFallback. */
+  loadOrgPamFallback?: (orgId: string) => Promise<PamSettings>;
+}
+
+async function resolveDevicePamSettings(deviceId: string, opts?: PamConfigUpdateOptions): Promise<PamSettings> {
   const passed = hierarchyFor(deviceId, opts);
   // 1. Load device
   const [device] = passed
@@ -3124,6 +3129,7 @@ async function resolveDevicePamSettings(deviceId: string, opts?: DeviceHierarchy
       .limit(1);
 
   if (!device) return PAM_DEFAULTS;
+  const orgFallback = opts?.loadOrgPamFallback ?? resolveOrgPamFallback;
 
   // 2. Load org (for partnerId)
   const [org] = passed
@@ -3178,7 +3184,7 @@ async function resolveDevicePamSettings(deviceId: string, opts?: DeviceHierarchy
       or(...targetConditions),
     ));
 
-  if (rows.length === 0) return resolveOrgPamFallback(device.orgId);
+  if (rows.length === 0) return orgFallback(device.orgId);
 
   // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
   rows.sort((a, b) => {
@@ -3188,7 +3194,7 @@ async function resolveDevicePamSettings(deviceId: string, opts?: DeviceHierarchy
   });
 
   const winner = rows[0];
-  if (!winner?.inlineSettings) return resolveOrgPamFallback(device.orgId);
+  if (!winner?.inlineSettings) return orgFallback(device.orgId);
 
   return parsePamSettings(winner.inlineSettings);
 }
@@ -3201,7 +3207,7 @@ const PAM_CACHE_TTL_SECONDS = 120;
  * org-level grandfather flag, then PAM_DEFAULTS (uacInterceptionEnabled: false).
  * Cached per-device in Redis for 120s — policy changes propagate within ~2min + heartbeat interval.
  */
-export async function buildPamConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<PamSettings> {
+export async function buildPamConfigUpdate(deviceId: string, opts?: PamConfigUpdateOptions): Promise<PamSettings> {
   hierarchyFor(deviceId, opts);
   const redis = getRedis();
   const cacheKey = `pam:settings:device:${deviceId}`;

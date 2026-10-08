@@ -185,19 +185,40 @@ const HELPER_CACHE_TTL_SECONDS = 120;
  * Falls back to org-level helperEnabled for backward compatibility,
  * then to defaults if no policy found.
  */
-export async function buildHelperConfigUpdate(deviceId: string, orgId: string, opts?: DeviceHierarchyOpts): Promise<HelperSettings> {
+export interface HelperConfigUpdateOptions extends DeviceHierarchyOpts {
+  /** The caller already read the Redis entry this beat (and missed). */
+  skipCacheRead?: boolean;
+  /** Source of the legacy organizations.settings.helper flag; defaults to getOrgHelperSettings. */
+  loadOrgHelperSettings?: (orgId: string) => Promise<{ enabled: boolean }>;
+}
+
+function helperCacheKey(deviceId: string): string {
+  return `helper:settings:device:${deviceId}`;
+}
+
+/** The device's cached helper settings, or null on a miss or a Redis error. */
+export async function readCachedHelperSettings(deviceId: string): Promise<HelperSettings | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  try {
+    const cached = await redis.get(helperCacheKey(deviceId));
+    return cached ? JSON.parse(cached) as HelperSettings : null;
+  } catch (cacheErr) {
+    console.warn(`[helper] Redis cache read failed for device ${deviceId}:`, cacheErr);
+    return null;
+  }
+}
+
+export async function buildHelperConfigUpdate(
+  deviceId: string,
+  orgId: string,
+  opts?: HelperConfigUpdateOptions,
+): Promise<HelperSettings> {
   // Validate before the cache short-circuit: a foreign hierarchy is a bug even on a hit.
   hierarchyFor(deviceId, opts);
-  const redis = getRedis();
-  const cacheKey = `helper:settings:device:${deviceId}`;
-
-  if (redis) {
-    try {
-      const cached = await redis.get(cacheKey);
-      if (cached) return JSON.parse(cached) as HelperSettings;
-    } catch (cacheErr) {
-      console.warn(`[helper] Redis cache read failed for device ${deviceId}:`, cacheErr);
-    }
+  if (!opts?.skipCacheRead) {
+    const cached = await readCachedHelperSettings(deviceId);
+    if (cached) return cached;
   }
 
   // Try config policy resolution first
@@ -213,13 +234,15 @@ export async function buildHelperConfigUpdate(deviceId: string, orgId: string, o
   // helperAuth would serve as helper_disabled and the heartbeat would deliver
   // as an uninstall. Only Redis errors are soft.
   if (settings === null) {
-    const orgEnabled = (await getOrgHelperSettings(orgId)).enabled;
+    const loadOrg = opts?.loadOrgHelperSettings ?? getOrgHelperSettings;
+    const orgEnabled = (await loadOrg(orgId)).enabled;
     settings = { ...HELPER_DEFAULTS, enabled: orgEnabled };
   }
 
+  const redis = getRedis();
   if (redis) {
     try {
-      await redis.set(cacheKey, JSON.stringify(settings), 'EX', HELPER_CACHE_TTL_SECONDS);
+      await redis.set(helperCacheKey(deviceId), JSON.stringify(settings), 'EX', HELPER_CACHE_TTL_SECONDS);
     } catch (cacheErr) {
       console.warn(`[helper] Redis cache write failed for device ${deviceId}:`, cacheErr);
     }

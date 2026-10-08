@@ -44,6 +44,9 @@ import {
   buildMonitoringConfigUpdate,
   buildHelperConfigUpdate,
   buildPamConfigUpdate,
+  getOrgHelperSettings,
+  readCachedHelperSettings,
+  resolveOrgPamFallback,
   buildOnedriveHelperConfigUpdate,
   buildPatchSourceConfigUpdate,
   buildWarrantyConfigUpdate,
@@ -56,6 +59,8 @@ import {
   type HelperSettings,
 } from './helpers';
 import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
+import { DeferredCacheFills } from '../../services/hotPathCache';
+import { orgHelperSettingsCache, orgPamFallbackCache, orgPolicyProbeCache } from '../../services/agentOrgSettingsCache';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
@@ -2297,15 +2302,29 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     hardwareMonitoringSettings: null,
     timeSyncSettings: null,
   };
+  // #8053 W1a-1 — per-org reads served from 60 s process caches. A miss loads
+  // inside the shared system context below, as before; the fills are stored
+  // only after that context commits (orgCacheFills.flush()).
+  const orgCacheFills = new DeferredCacheFills();
+  const probePartnerOpts = beatHierarchy?.org ? { partnerId: beatHierarchy.org.partnerId } : undefined;
   try {
     policyConfigs = await withSystemDbAccessContext(async (): Promise<PolicyConfigUpdates> => {
       // #1105/#4673 W03: `buildHelperConfigUpdate` touches no partner-AXIS
       // table and would be a safe drop-in for an org-scoped context; it shares
       // this system one so the heartbeat's hoists convert to org scope as ONE
       // reviewable change. See the note at the `currentPartnerId` assignment.
+      // The Redis read runs BEFORE the savepoint, so a hit costs no SAVEPOINT
+      // statement. A miss resolves inside its own savepoint, as before (a SQL
+      // error there must not abort the shared transaction — see above).
       try {
-        helperSettings = await withDbTransaction(() =>
-          buildHelperConfigUpdate(scoped.deviceId, scoped.deviceOrgId, hierarchyOpts),
+        const cachedHelper = await readCachedHelperSettings(scoped.deviceId);
+        helperSettings = cachedHelper ?? await withDbTransaction(() =>
+          buildHelperConfigUpdate(scoped.deviceId, scoped.deviceOrgId, {
+            ...hierarchyOpts,
+            skipCacheRead: true,
+            loadOrgHelperSettings: (orgId) =>
+              orgCacheFills.through(orgHelperSettingsCache, orgId, () => getOrgHelperSettings(orgId)),
+          }),
         );
       } catch (err) {
         console.error(`[agents] failed to read helper settings for ${agentId}:`, err);
@@ -2313,12 +2332,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
 
       try {
-        policyProbeConfig = await withDbTransaction(() =>
-          buildPolicyProbeConfigUpdate(
-            scoped.deviceOrgId,
-            beatHierarchy?.org ? { partnerId: beatHierarchy.org.partnerId } : undefined,
-          ),
-        );
+        const cachedProbe = orgPolicyProbeCache.peek(scoped.deviceOrgId);
+        policyProbeConfig = cachedProbe !== undefined
+          ? cachedProbe
+          : await withDbTransaction(() =>
+            orgCacheFills.through(orgPolicyProbeCache, scoped.deviceOrgId, () =>
+              buildPolicyProbeConfigUpdate(scoped.deviceOrgId, probePartnerOpts)),
+          );
       } catch (err) {
         console.error(`[agents] failed to build policy probe config update for ${agentId}:`, err);
         captureException(err);
@@ -2358,7 +2378,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
 
       try {
-        pamSettings = await buildPamConfigUpdate(scoped.deviceId, hierarchyOpts);
+        pamSettings = await buildPamConfigUpdate(scoped.deviceId, {
+          ...hierarchyOpts,
+          loadOrgPamFallback: (orgId) =>
+            orgCacheFills.through(orgPamFallbackCache, orgId, () => resolveOrgPamFallback(orgId)),
+        });
       } catch (err) {
         // Opt-in default means a resolver failure leaves pamSettings null and we
         // send uacInterceptionEnabled:false below. For an org that *enforces* PAM
@@ -2420,6 +2444,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         timeSyncSettings,
       };
     });
+    // Stored only now that the shared context has committed (fillIfCurrent
+    // refuses to run inside one); a failed commit throws past this line.
+    orgCacheFills.flush();
   } catch (err) {
     // Transaction setup/commit failure — see the note above. Every resolver's
     // documented "no policy this cycle" fallback already applies because

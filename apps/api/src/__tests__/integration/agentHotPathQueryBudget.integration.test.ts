@@ -71,13 +71,13 @@ vi.mock('../../services/helperSettings', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/helperSettings')>();
   return {
     ...actual,
-    buildHelperConfigUpdate: async (deviceId: string, orgId: string, opts?: unknown) => {
+    buildHelperConfigUpdate: async (...args: Parameters<typeof actual.buildHelperConfigUpdate>) => {
       if (helperFault.enabled) {
         const { db: faultDb } = await import('../../db');
         const { sql: faultSql } = await import('drizzle-orm');
         await faultDb.execute(faultSql`SELECT 1 / 0`); // division_by_zero
       }
-      return actual.buildHelperConfigUpdate(deviceId, orgId, opts as never);
+      return actual.buildHelperConfigUpdate(...args);
     },
   };
 });
@@ -385,7 +385,8 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     // If a change legitimately adds a query, raise this number in the same PR
     // and say why; the remaining bulk is ~26 repeated device/org/group reads
     // across the policy resolvers (#8053 follow-up).
-    expect(steady.statements).toBeLessThanOrEqual(70);
+    expect(steady.statements).toBeLessThanOrEqual(28);
+    expect(warm.statements).toBeLessThanOrEqual(22);
 
     // #8053 W1a-1 lever 1: one hierarchy read replaces 33 per-resolver reads.
     expect(steady.buckets.hierarchyLoad).toBe(1);
@@ -399,6 +400,16 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     // Lever 2: materialization is off for this org, so no negotiation runs.
     expect(steady.buckets.topologyNegotiation).toBe(0);
     expect(warm.buckets.topologyNegotiation).toBe(0);
+
+    // Lever 3: the sibling's beat warmed the org's probe, helper-legacy and PAM
+    // caches, so this beat reads none of them.
+    expect(steady.buckets.automationPolicies).toBe(0);
+    expect(steady.buckets.orgHelperSettings).toBe(0);
+    expect(steady.buckets.pamOrgConfig).toBe(0);
+    // Lever 6: the claim's savepoint + the helper miss's; no probe savepoint.
+    expect(steady.savepoints).toBe(2);
+    // Warm: helper is a Redis hit (no savepoint), probe a process-cache hit.
+    expect(warm.savepoints).toBe(1);
   });
 
   runDb('POST /agents/:id/heartbeat: a legacy (no securityCapabilities) beat pays the two peripheral-v2 UPDATEs on top', async () => {
