@@ -26,6 +26,8 @@ vi.mock('drizzle-orm', () => ({
   eq: vi.fn((column: unknown, value: unknown) => `${String(column)}=${String(value)}`),
   and: vi.fn((...conditions: unknown[]) => conditions),
 }));
+const captureExceptionMock = vi.hoisted(() => vi.fn());
+vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./secretCrypto', () => ({ decryptForColumn: vi.fn(() => 'plaintext-secret') }));
 vi.mock('./c2cM365', () => ({
   acquireClientCredentialsToken: vi.fn(async () => ({ accessToken: 'TOKEN-123', expiresIn: 3600 })),
@@ -268,8 +270,22 @@ describe('getToken with a supplied connection (#8142)', () => {
     expect(db.select).not.toHaveBeenCalled();
   });
 
-  it('refuses a supplied row that belongs to another org', async () => {
-    expect(await getToken('org-1', { connection: { ...mockRow, orgId: 'org-2' } as never }))
-      .toMatchObject({ kind: 'error', code: 'no_connection' });
+  it('refuses a supplied row that belongs to another org with a distinct, loud, non-cacheable error', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    captureExceptionMock.mockClear();
+    const result = await getToken('org-1', { connection: { ...mockRow, orgId: 'org-2' } as never });
+    expect(result).toMatchObject({ kind: 'error', code: 'connection_org_mismatch' });
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    expect(String(errSpy.mock.calls[0]![0])).toContain('org-1');
+    expect(String(errSpy.mock.calls[0]![0])).toContain('org-2');
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({ requestedOrgId: 'org-1', connectionOrgId: 'org-2' });
+    errSpy.mockRestore();
+  });
+
+  it('a supplied null is still plain no_connection and is not reported', async () => {
+    captureExceptionMock.mockClear();
+    expect(await getToken('org-1', { connection: null })).toMatchObject({ code: 'no_connection' });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 });

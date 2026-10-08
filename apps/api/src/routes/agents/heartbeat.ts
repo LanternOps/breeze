@@ -583,7 +583,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // RLS, so a partner-locked policy would be silently invisible there. This
   // short-lived context also opens and CLOSES before the org transaction below,
   // so we never hold two pooled connections at once (#1105 mass-reconnect
-  // deadlock — same pattern as the policy-probe/trust-keyset reads at the end).
+  // deadlock — same pattern as the trust-keyset/delegation reads at the end).
   // Fails CLOSED (#2125): the gate starts denied and is only opened by a
   // successful policy evaluation; a lookup failure withholds version-to-version
   // targets rather than bypass Manual mode / a maintenance window. Bootstrap
@@ -2280,13 +2280,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // 2. Every result is written to an outer variable as soon as it is produced.
   //    The transaction is read-only, so a value read before a later statement
   //    aborted it is still right; a context that fails only skips the per-org
-  //    cache fills. (Before #8142 only helper and probe survived that.)
+  //    cache fills.
   // 3. Order: with the set, everything up to OneDrive is pure TypeScript except
   //    the per-org cache misses (each in its own savepoint). OneDrive's DB phase
-  //    (own savepoint, only when the set holds a OneDrive link) runs before
-  //    monitoring's secondary reads and the workload-inventory read, which run
-  //    last: a SQL error there can then only lose monitoring and/or workload
-  //    inventory, whose failure answer (omit) is safe.
+  //    (own savepoint, only when the set holds a OneDrive settings row,
+  //    always when no set was loaded) runs before monitoring's secondary reads
+  //    and the workload-inventory read, which run last: a SQL error there can
+  //    then only lose monitoring and/or workload inventory, whose failure
+  //    answer (omit) is safe.
   type PolicyConfigUpdates = {
     eventLogSettings: Record<string, unknown> | null;
     monitoringSettings: Record<string, unknown> | null;
@@ -2316,16 +2317,29 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       let beatHierarchy = null as DeviceHierarchy | null;
       let beatPolicySet = null as DevicePolicySet | null;
       let hierarchyOutcome = 'error' as 'loaded' | 'missing' | 'error';
+      let missingReason = 'absent' as 'absent' | 'org_mismatch' | 'partner_mismatch';
+      let missingLoadedOrgId = null as string | null;
+      let missingLoadedPartnerId = null as string | null;
       try {
         await withDbTransaction(async () => {
           const loaded = await loadDeviceHierarchy(scoped.deviceId);
-          if (
-            !loaded
-            || loaded.orgId !== scoped.deviceOrgId
-            || loaded.orgId !== agent.orgId
-            || (loaded.org?.partnerId ?? null) !== agent.partnerId
-          ) {
+          if (!loaded) {
             hierarchyOutcome = 'missing';
+            missingReason = 'absent';
+            return;
+          }
+          if (loaded.orgId !== scoped.deviceOrgId || loaded.orgId !== agent.orgId) {
+            hierarchyOutcome = 'missing';
+            missingReason = 'org_mismatch';
+            missingLoadedOrgId = loaded.orgId;
+            missingLoadedPartnerId = loaded.org?.partnerId ?? null;
+            return;
+          }
+          if ((loaded.org?.partnerId ?? null) !== agent.partnerId) {
+            hierarchyOutcome = 'missing';
+            missingReason = 'partner_mismatch';
+            missingLoadedOrgId = loaded.orgId;
+            missingLoadedPartnerId = loaded.org?.partnerId ?? null;
             return;
           }
           beatHierarchy = loaded;
@@ -2338,7 +2352,16 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
       if (hierarchyOutcome === 'missing') {
         console.warn(`[agents] device ${scoped.deviceId} is not visible to its own org context (moved, deleted or re-parented mid-beat); omitting policy config this heartbeat`);
-        captureException(new Error('heartbeat policy context: device hierarchy not visible to its own org'));
+        // Tags carry the ids (Sentry has no separate extra channel here) so the
+        // event says WHICH mismatch fired; ids are never used as a fingerprint.
+        captureException(new Error('heartbeat policy context: device hierarchy not visible to its own org'), undefined, {
+          reason: missingReason,
+          deviceId: scoped.deviceId,
+          agentOrgId: agent.orgId,
+          loadedOrgId: missingLoadedOrgId ?? 'none',
+          agentPartnerId: agent.partnerId ?? 'none',
+          loadedPartnerId: missingLoadedPartnerId ?? 'none',
+        });
         return;
       }
 

@@ -363,6 +363,15 @@ describe('resolveUserGroupMembershipCached negative caching', () => {
     expect(graphFetch).toHaveBeenCalledTimes(2);
   });
 
+  it('does NOT cache connection_org_mismatch — a mis-supplied connection is retried and re-reported (#8142)', async () => {
+    (getToken as any)
+      .mockResolvedValueOnce({ kind: 'error', code: 'connection_org_mismatch', message: 'x' })
+      .mockResolvedValueOnce({ kind: 'error', code: 'connection_org_mismatch', message: 'x' });
+    await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+    await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+    expect(getToken).toHaveBeenCalledTimes(2);
+  });
+
   it('does NOT cache not_found — a just-provisioned user can resolve promptly', async () => {
     (graphFetch as any)
       .mockResolvedValueOnce({ kind: 'error', code: 'not_found', message: 'x' })

@@ -446,7 +446,7 @@ function whereResultWithReturning(returningRows: unknown[] = [{ id: 'device-1' }
   return result;
 }
 
-function buildApp(): Hono {
+function buildApp(agentOverrides: Record<string, unknown> = {}): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
@@ -456,6 +456,7 @@ function buildApp(): Hono {
       partnerId: 'partner-1',
       siteId: 'site-1',
       role: 'agent',
+      ...agentOverrides,
     });
     await next();
   });
@@ -909,18 +910,40 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
       expect(vi.mocked(helpers.buildPolicyProbeConfigUpdate)).toHaveBeenCalledWith('org-1', { partnerId: 'partner-1' });
     });
 
-    for (const [label, override] of [
-      ['moved to another org', { orgId: 'org-2' }],
-      ['org re-parented to another partner', { org: { partnerId: 'partner-2', type: 'customer' } }],
-    ] as const) {
-      it(`device ${label} mid-beat: no policy builder runs, nothing is cached, Sentry is told (#8142)`, async () => {
+    // Each clause of the identity guard (heartbeat.ts, hierarchy load) must be
+    // the SOLE difference in at least one case, so deleting any one turns a
+    // test red. `deviceRow` overrides the authenticated device row
+    // (scoped.deviceOrgId); `agentOverride` overrides the auth context.
+    const missingCases: ReadonlyArray<{
+      label: string;
+      hierarchy: unknown;
+      deviceRow?: Record<string, unknown>;
+      agentOverride?: Record<string, unknown>;
+      reason: string;
+    }> = [
+      { label: 'hierarchy not visible at all (null)', hierarchy: null, reason: 'absent' },
+      { label: 'hierarchy and agent moved to another org (all org ids differ)', hierarchy: { ...hierarchy, orgId: 'org-2' }, reason: 'org_mismatch' },
+      { label: 'only the device row org differs (scoped.deviceOrgId)', hierarchy, deviceRow: { orgId: 'org-9' }, reason: 'org_mismatch' },
+      { label: 'only the authenticated agent org differs (agent.orgId)', hierarchy, agentOverride: { orgId: 'org-9' }, reason: 'org_mismatch' },
+      { label: 'org re-parented to another partner', hierarchy: { ...hierarchy, org: { partnerId: 'partner-2', type: 'customer' } }, reason: 'partner_mismatch' },
+    ];
+    for (const c of missingCases) {
+      it(`${c.label}: no policy builder runs, nothing is cached, Sentry is told why (#8142)`, async () => {
         const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
         const helpers = await import('./helpers');
         const { captureException } = await import('../../services/sentry');
-        vi.mocked(loadDeviceHierarchy).mockResolvedValueOnce({ ...hierarchy, ...override } as never);
-        arrangeBeat();
+        const { orgPolicyProbeCache, orgHelperSettingsCache, orgPamFallbackCache } = await import('../../services/agentOrgSettingsCache');
+        vi.mocked(loadDeviceHierarchy).mockResolvedValueOnce(c.hierarchy as never);
+        selectMock.mockReturnValueOnce(selectChainResolving([{ ...pendingDevice, ...c.deviceRow }]));
+        selectMock.mockReturnValue(selectChainResolving([]));
+        updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })) });
+        insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
 
-        const res = await beat();
+        const res = await buildApp(c.agentOverride).request('/agents/device-1/heartbeat', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(minimalHeartbeatBody),
+        });
         expect(res.status).toBe(200);
         const body = (await res.json()) as Record<string, unknown>;
         for (const builder of [
@@ -930,11 +953,19 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
         ]) {
           expect(vi.mocked(builder)).not.toHaveBeenCalled();
         }
+        // "nothing is cached": every per-org cache stays empty for both orgs involved.
+        for (const orgId of ['org-1', 'org-2', 'org-9']) {
+          expect(orgPolicyProbeCache.peek(orgId)).toBeUndefined();
+          expect(orgHelperSettingsCache.peek(orgId)).toBeUndefined();
+          expect(orgPamFallbackCache.peek(orgId)).toBeUndefined();
+        }
         expect(body.helperEnabled).toBe(false);
         expect(body.uacInterceptionEnabled).toBe(false);
-        expect(vi.mocked(captureException)).toHaveBeenCalledWith(expect.objectContaining({
-          message: expect.stringContaining('not visible to its own org'),
-        }));
+        expect(vi.mocked(captureException)).toHaveBeenCalledWith(
+          expect.objectContaining({ message: expect.stringContaining('not visible to its own org') }),
+          undefined,
+          expect.objectContaining({ reason: c.reason, deviceId: 'device-1' }),
+        );
       });
     }
 
