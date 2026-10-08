@@ -1,18 +1,23 @@
 /**
- * #8053 W1a-1 — every policy resolver returns the SAME answer with the
- * heartbeat's passed hierarchy as with its own reads, against real PostgreSQL
- * with real policies at the device_group, organization and partner levels
- * (org-owned and partner-wide). Resolvers run in SYSTEM scope with the
- * hierarchy loaded in SYSTEM scope, which is exactly the heartbeat's shape.
+ * #8053 W1a-1 — every service-layer policy resolver returns the SAME answer
+ * with the heartbeat's passed hierarchy as with its own reads, against real
+ * PostgreSQL. Each resolver resolves to a NON-default answer for the fixture
+ * device, so parity cannot pass on two empty/default results: helper and
+ * warranty win through a device_group assignment, patch / monitors / time_sync
+ * through a PARTNER-level, partner-wide assignment (the partner id must flow
+ * through the hierarchy). Resolvers run in SYSTEM scope with the hierarchy
+ * loaded in SYSTEM scope, which is exactly the heartbeat's shape.
  *
- * Two discriminating checks make the parity assertion mean something: a
- * hierarchy with the WRONG groups or NO org must change the answer for a
- * resolver whose winning policy depends on it, and a hierarchy for ANOTHER
- * device must be refused. Both fail before the resolver honours `opts`, because
- * JavaScript silently ignores an extra argument.
+ * Discriminating checks: wrong groups / no org change the answer; a hierarchy
+ * for ANOTHER device is refused; devices parked in `unassigned_pool` /
+ * `quick_support` orgs keep the partner-drop rules on the passed path. All
+ * fail before the resolver honours `opts`, because JavaScript silently ignores
+ * an extra argument. (event_log / pam policies seeded below are consumed by
+ * the route builders later extended into this suite.)
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
+import { sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
@@ -20,7 +25,11 @@ import {
   configPolicyAssignments,
   configPolicyEventLogSettings,
   configPolicyFeatureLinks,
+  configPolicyMonitors,
+  configPolicyPatchSettings,
+  configPolicyTimeSyncSettings,
   configurationPolicies,
+  monitorDefinitions,
   deviceGroupMemberships,
   deviceGroups,
   devices,
@@ -90,24 +99,69 @@ async function seedPolicy(input: {
   });
 }
 
+async function seedDevice(orgId: string, siteId: string, label: string): Promise<string> {
+  return sys(async () => {
+    const unique = randomUUID().slice(0, 8);
+    // An unassigned_pool org admits devices only through enrollment; declare
+    // that transaction-locally (the guard trigger's own documented hook).
+    await db.execute(sql`SELECT set_config('breeze.parked_device_admission', 'enrollment', true)`);
+    const [device] = await db.insert(devices).values({
+      orgId, siteId, agentId: `par-${label}-${unique}`, hostname: `par-${label}-${unique}`,
+      osType: 'windows', osVersion: '11', architecture: 'amd64', agentVersion: '0.0.0-test',
+      status: 'online', deviceRole: 'workstation',
+    }).returning();
+    return device!.id;
+  });
+}
+
+/** Partner-wide, partner-level policies for patch, time_sync and monitors. */
+async function seedPartnerWidePolicies(partnerId: string): Promise<void> {
+  await sys(async () => {
+    const owner = { orgId: null, partnerId };
+    const mk = async (featureType: string) => {
+      const [policy] = await db.insert(configurationPolicies).values({
+        ...owner, name: `parity ${featureType} ${randomUUID()}`, status: 'active',
+      }).returning();
+      const [link] = await db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: policy!.id, featureType: featureType as never,
+      }).returning();
+      await db.insert(configPolicyAssignments).values({
+        configPolicyId: policy!.id, level: 'partner', targetId: partnerId, priority: 0,
+      });
+      return link!.id;
+    };
+    const patchLink = await mk('patch');
+    await db.insert(configPolicyPatchSettings).values({
+      featureLinkId: patchLink, autoApprove: true, rebootPolicy: 'never', scheduleFrequency: 'daily',
+    });
+    const timeLink = await mk('time_sync');
+    await db.insert(configPolicyTimeSyncSettings).values({
+      featureLinkId: timeLink, enforceNtp: true, ntpServers: ['time.parity.example'], pollIntervalMinutes: 30,
+    });
+    const monitorLink = await mk('monitors');
+    const [monitor] = await db.insert(monitorDefinitions).values({
+      orgId: null, partnerId, name: `parity-monitor-${randomUUID()}`, kind: 'service',
+      condition: { serviceName: 'ParityService', consecutiveFailures: 2 }, severity: 'high',
+    }).returning({ id: monitorDefinitions.id });
+    await db.insert(configPolicyMonitors).values({ featureLinkId: monitorLink, monitorId: monitor!.id, enabled: true });
+  });
+}
+
 async function seedFixture(): Promise<Fixture> {
   const partner = (await createPartner())!;
   const org = (await createOrganization({ partnerId: partner.id }))!;
   const site = (await createSite({ orgId: org.id }))!;
+  const deviceId = await seedDevice(org.id, site.id, 'agent');
   const fixture = await sys(async () => {
     const unique = randomUUID().slice(0, 8);
-    const [device] = await db.insert(devices).values({
-      orgId: org.id, siteId: site.id, agentId: `par-agent-${unique}`, hostname: `par-${unique}`,
-      osType: 'windows', osVersion: '11', architecture: 'amd64', agentVersion: '0.0.0-test',
-      status: 'online', deviceRole: 'workstation',
-    }).returning();
+    const device = { id: deviceId };
     const groupIds: string[] = [];
     for (const name of ['g1', 'g2']) {
       const [group] = await db.insert(deviceGroups).values({ orgId: org.id, name: `parity ${name} ${unique}` }).returning();
-      await db.insert(deviceGroupMemberships).values({ deviceId: device!.id, groupId: group!.id, orgId: org.id });
+      await db.insert(deviceGroupMemberships).values({ deviceId: device.id, groupId: group!.id, orgId: org.id });
       groupIds.push(group!.id);
     }
-    return { partnerId: partner.id, orgId: org.id, siteId: site.id, deviceId: device!.id, groupIds };
+    return { partnerId: partner.id, orgId: org.id, siteId: site.id, deviceId: device.id, groupIds };
   });
 
   // helper: org-owned, assigned to group g2 (wins only through groupIds).
@@ -129,6 +183,7 @@ async function seedFixture(): Promise<Fixture> {
       rules: [{ type: 'registry_check', registryPath: 'HKLM\\SOFTWARE\\BreezeParity', registryValueName: 'Value' }],
     });
   });
+  await seedPartnerWidePolicies(partner.id);
   return fixture;
 }
 
@@ -138,8 +193,8 @@ async function dropDeviceRedisCaches(deviceId: string): Promise<void> {
   if (keys.length > 0) await redis.del(...keys);
 }
 
-async function loadHierarchy(): Promise<DeviceHierarchy> {
-  const hierarchy = await sys(() => loadDeviceHierarchy(f.deviceId));
+async function loadHierarchy(deviceId: string = f.deviceId): Promise<DeviceHierarchy> {
+  const hierarchy = await sys(() => loadDeviceHierarchy(deviceId));
   expect(hierarchy).not.toBeNull();
   return hierarchy!;
 }
@@ -150,9 +205,27 @@ function foreignHierarchy(h: DeviceHierarchy): DeviceHierarchy {
 
 type Resolver = (deviceId: string, opts?: DeviceHierarchyOpts) => Promise<unknown>;
 
+/** The own-read answer must be a real policy answer, never null / empty / default. */
+const NON_TRIVIAL: Record<string, (own: any) => void> = {
+  resolveDeviceHelperSettings: (o) => expect(o).toMatchObject({ enabled: true, showTrayIcon: false }),
+  resolvePatchConfigPolicyForDevice: (o) =>
+    expect(o).toMatchObject({ assignmentLevel: 'partner', settings: { autoApprove: true, rebootPolicy: 'never' } }),
+  resolveMonitorsForDevice: (o) => {
+    expect(o.kind).toBe('resolved');
+    expect(o.monitors.length).toBeGreaterThan(0);
+  },
+  resolveEffectiveWarrantyInlineSettings: (o) => expect(o).toMatchObject({ enabled: true, warnDays: 90 }),
+  resolveDeviceTimeSyncSettings: (o) => {
+    expect(o.policy).not.toBeNull();
+    expect(o.settings).toMatchObject({ enforceNtp: true, ntpServers: ['time.parity.example'], pollIntervalMinutes: 30 });
+  },
+  buildResolvedTimeSyncConfigUpdate: (o) => expect(o).toMatchObject({ enforce_ntp: true, poll_interval_minutes: 30 }),
+};
+
 async function expectParity(name: string, resolve: Resolver): Promise<void> {
   await dropDeviceRedisCaches(f.deviceId);
   const own = await sys(() => resolve(f.deviceId));
+  NON_TRIVIAL[name]!(own);
   const hierarchy = await loadHierarchy();
   await dropDeviceRedisCaches(f.deviceId);
   const passed = await sys(() => resolve(f.deviceId, { hierarchy }));
@@ -199,4 +272,39 @@ describe('policy resolvers: passed hierarchy parity (#8053 W1a-1) — real Postg
     expect(warrantyOwn).toMatchObject({ enabled: true });
     expect(warrantyNoGroups).toBeUndefined();
   });
+
+  runDb('org: null in a passed hierarchy: monitors device_missing, partner patch policy no longer wins', async () => {
+    const hierarchy = await loadHierarchy();
+    const noOrg: DeviceHierarchy = { ...hierarchy, org: null };
+    expect(await sys(() => resolveMonitorsForDevice(f.deviceId, db))).toMatchObject({ kind: 'resolved' });
+    expect(await sys(() => resolveMonitorsForDevice(f.deviceId, db, { hierarchy: noOrg }))).toEqual({ kind: 'device_missing' });
+    expect(await sys(() => resolvePatchConfigPolicyForDevice(f.deviceId))).toMatchObject({ assignmentLevel: 'partner' });
+    expect(await sys(() => resolvePatchConfigPolicyForDevice(f.deviceId, { hierarchy: noOrg }))).toBeNull();
+  });
+
+  for (const orgType of ['unassigned_pool', 'quick_support'] as const) {
+    runDb(`${orgType} org: partner-level assignment drop rules hold on the passed path`, async () => {
+      const parkedOrg = (await createOrganization({ partnerId: f.partnerId, type: orgType }))!;
+      const parkedSite = (await createSite({ orgId: parkedOrg.id }))!;
+      const deviceId = await seedDevice(parkedOrg.id, parkedSite.id, orgType);
+      const hierarchy = await loadHierarchy(deviceId);
+      expect(hierarchy.org?.type).toBe(orgType);
+
+      const run = async (name: string, resolve: Resolver) => {
+        const own = await sys(() => resolve(deviceId));
+        const passed = await sys(() => resolve(deviceId, { hierarchy }));
+        expect(passed, `${name} (${orgType})`).toEqual(own);
+        return own;
+      };
+      // Monitors drop the partner target for BOTH types (the customer-org
+      // fixture device above resolves a monitor from the same policy).
+      expect(await run('resolveMonitorsForDevice', (id, o) => resolveMonitorsForDevice(id, db, o)))
+        .toEqual({ kind: 'resolved', monitors: [] });
+      // Patch drops the partner only for unassigned_pool.
+      const patch = await run('resolvePatchConfigPolicyForDevice', (id, o) => resolvePatchConfigPolicyForDevice(id, o));
+      if (orgType === 'unassigned_pool') expect(patch).toBeNull();
+      else expect(patch).toMatchObject({ assignmentLevel: 'partner' });
+      await run('resolveDeviceTimeSyncSettings', (id, o) => resolveDeviceTimeSyncSettings(id, o));
+    });
+  }
 });
