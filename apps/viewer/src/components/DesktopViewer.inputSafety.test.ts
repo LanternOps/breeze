@@ -94,4 +94,9 @@ describe('DesktopViewer input safety wiring', () => {
     expect(source).toMatch(/clipboard: \{\s*readLocalText:/);
     expect(source).toMatch(/clipboardChip=\{\{/);
   });
+
+  it('passes the reported clipboard policy through on every VNC tunnel path', () => {
+    expect(source).toMatch(/clipboard: parseClipboardPolicy\(exchange\)/);
+    expect(source).toMatch(/clipboard: parseClipboardPolicy\(body\)/);
+  });
 });

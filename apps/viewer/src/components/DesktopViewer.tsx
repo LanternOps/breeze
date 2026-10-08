@@ -32,7 +32,7 @@ import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
 import { ClipboardSync, type ClipboardSyncState } from '../lib/clipboardSync';
 import { createTauriClipboardIO } from '../lib/clipboardIO';
 import { clipboardFailureMessage, type ClipboardChipInput } from '../lib/clipboardChip';
-import type { VncClipboardState } from '../lib/vncClipboard';
+import { parseClipboardPolicy, type VncClipboardState } from '../lib/vncClipboard';
 import {
   detectViewerOs,
   defaultRemapCmdCtrl,
@@ -546,7 +546,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             throw new Error(body?.error ?? `Downgrade to VNC failed (${res.status})`);
           }
           const body = await res.json() as { tunnelId: string; wsUrl: string; accessToken: string };
-          tunnel = { tunnelId: body.tunnelId, wsUrl: body.wsUrl };
+          tunnel = { tunnelId: body.tunnelId, wsUrl: body.wsUrl, clipboard: parseClipboardPolicy(body) };
           // sessionId stays '' after a VNC switch so the next WebRTC
           // handoff knows to mint a fresh desktop session via the upgrade
           // endpoint instead of reusing a stale (or worse, tunnel-shaped)
@@ -1016,7 +1016,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         };
         setRemoteOs('macos'); // VNC is macOS-only for now
         activeVncTunnelIdRef.current = exchange.tunnelId;
-        const ok = await connectVncTransport({ tunnelId: exchange.tunnelId, wsUrl: exchange.wsUrl });
+        const ok = await connectVncTransport({
+          tunnelId: exchange.tunnelId,
+          wsUrl: exchange.wsUrl,
+          clipboard: parseClipboardPolicy(exchange),
+        });
         if (cancelled) return;
         if (!ok) {
           // Viewer stays mounted on error; close the tunnel we own so it doesn't
