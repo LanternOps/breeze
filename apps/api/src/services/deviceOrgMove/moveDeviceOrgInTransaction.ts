@@ -1067,10 +1067,12 @@ export async function moveDeviceOrgInTransaction(
   );
   await tx.execute(
     sql`UPDATE ${sql.identifier('partner_api_idempotency_keys')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+  );
+
   // ticket_approval_requests (#4617) denormalizes org_id from its ticket and
   // has no device_id, so it follows via the same tickets join. Placed AFTER
-  // partner_api_idempotency_keys to extend — not reorder — the documented global lock
-  // order (TICKET_CHILD_ORG_REWRITE_LOCK_ORDER). Its composite (ticket_id,
+  // partner_api_idempotency_keys to extend — not reorder — the documented
+  // global lock order (TICKET_CHILD_ORG_REWRITE_LOCK_ORDER). Its composite (ticket_id,
   // org_id) FK is DEFERRABLE INITIALLY IMMEDIATE, which is why
   // ticket_approval_requests_ticket_org_fk is named in this transaction's
   // SET CONSTRAINTS … DEFERRED at the top; without both, this move would 23503
