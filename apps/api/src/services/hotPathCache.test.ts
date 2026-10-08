@@ -329,4 +329,30 @@ describe('DeferredCacheFills — explicit org fill scope (#8142)', () => {
     fills.flush();
     expect(cache.peek(ORG)).toBeUndefined();
   });
+
+  it('rejects empty-string fill scope fields, even when the context carries the same empties', () => {
+    expect(fillScopeIsCacheable(orgCtx({ orgId: '', accessibleOrgIds: [''] }) as never, { orgId: '', partnerId: PARTNER })).toBe(false);
+    expect(fillScopeIsCacheable(orgCtx({ currentPartnerId: '' }) as never, { orgId: ORG, partnerId: '' })).toBe(false);
+  });
+
+  it('an org context carrying a userId never fills (users self-read RLS branch)', () => {
+    const scope = { orgId: ORG, partnerId: PARTNER };
+    expect(fillScopeIsCacheable(orgCtx({ userId: 'user-1' }) as never, scope)).toBe(false);
+    expect(fillScopeIsCacheable(orgCtx({ userId: null }) as never, scope)).toBe(true);
+    expect(fillScopeIsCacheable(orgCtx({ userId: undefined }) as never, scope)).toBe(true);
+  });
+
+  it('a throwing loader leaves the cache empty after flush', async () => {
+    const cache = makeCache();
+    const fills = new DeferredCacheFills();
+    dbState.ctx = orgCtx();
+    dbState.inContext = true;
+    await expect(
+      fills.through(cache, ORG, async () => { throw new Error('boom'); }, { orgId: ORG, partnerId: PARTNER }),
+    ).rejects.toThrow('boom');
+    dbState.inContext = false;
+    dbState.ctx = undefined;
+    fills.flush();
+    expect(cache.peek(ORG)).toBeUndefined();
+  });
 });

@@ -161,7 +161,7 @@ export class HotPathTtlCache<K, V> {
 /** The exact org-scoped context a per-org value may be cached from (#8142). */
 export interface DeferredFillScope {
   orgId: string;
-  /** The org's own partner, read under RLS in the same context. */
+  /** The org's own partner, read under RLS in the same context. Both fields must be non-empty; the context must carry no userId. */
   partnerId: string;
 }
 
@@ -170,6 +170,7 @@ export interface DeferredFillScope {
  * - system scope: yes (#8053 W1a-1).
  * - org scope: only when the caller names the scope it built the context for
  *   AND the context is exactly that: this org alone, no partner-level grant,
+ *   no userId (it would enable the users self-read RLS branch),
  *   and this org's partner as the partner-wide read axis. Then RLS shows the
  *   loader every row any device of the org would see, so the value is not
  *   narrowed or widened. Anything else is returned but never stored.
@@ -178,7 +179,9 @@ export function fillScopeIsCacheable(ctx: DbAccessContext | undefined, fillScope
   if (!ctx) return false;
   if (ctx.scope === 'system') return true;
   if (!fillScope || ctx.scope !== 'organization') return false;
+  if (fillScope.orgId === '' || fillScope.partnerId === '') return false;
   return ctx.orgId === fillScope.orgId
+    && (ctx.userId ?? null) === null
     && Array.isArray(ctx.accessibleOrgIds)
     && ctx.accessibleOrgIds.length === 1
     && ctx.accessibleOrgIds[0] === fillScope.orgId
