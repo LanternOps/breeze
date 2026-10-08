@@ -222,6 +222,11 @@ invoiceRoutes.post('/invoices/:id/autopay-confirmation', zValidator('param', tic
   try {
     return c.json(await releaseInvoiceConfirmation({ invoiceId: id, orgId: auth.user.orgId }));
   } catch (err) {
+    if (err instanceof InvoiceServiceError && err.status === 404) {
+      // The service gives a missing, other-org and draft invoice one 404; answer
+      // it with the body the other portal invoice routes use (#8254).
+      return c.json({ error: 'Invoice not found', code: ERROR_CODES.NOT_FOUND }, 404);
+    }
     if (err instanceof InvoiceServiceError && err.status < 500) return c.json({ error: err.message, code: err.code }, err.status);
     throw err;
   }

@@ -316,6 +316,31 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     expect(confirmation.release).toHaveBeenCalledWith({ invoiceId: INV_ID, orgId: '99999999-9999-4999-8999-999999999999' });
   });
 
+  // #8254: releaseInvoiceConfirmation refuses a draft with the same 404 as a
+  // missing or other-org invoice (confirmPayment.test.ts). The route must then
+  // answer with the body every other portal invoice route gives a draft, so the
+  // response never says whether an unissued invoice exists.
+  it('POST /invoices/:id/autopay-confirmation answers not-found with the same body GET gives a draft', async () => {
+    confirmation.release.mockRejectedValue(new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND'));
+    const release = await app().request(`/invoices/${INV_ID}/autopay-confirmation`, { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: '{}' });
+    getCustomerInvoiceMock.mockResolvedValue({ invoice: { id: INV_ID, status: 'draft' }, lines: [] });
+    const draftRead = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
+    expect(release.status).toBe(404);
+    expect(draftRead.status).toBe(404);
+    const body = await release.json();
+    expect(body).toEqual({ error: 'Invoice not found', code: 'NOT_FOUND' });
+    expect(body).toEqual(await draftRead.json());
+  });
+
+  it('POST /invoices/:id/autopay-confirmation keeps a 409 reason for the page to branch on', async () => {
+    confirmation.release.mockRejectedValue(new InvoiceServiceError('Payment is still processing', 409, 'INVALID_STATE', { reason: 'processing' }));
+    const res = await app().request(`/invoices/${INV_ID}/autopay-confirmation`, { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: '{}' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'Payment is still processing', code: 'INVALID_STATE' });
+  });
+
   it('POST /invoices/:id/autopay-confirmation requires a JSON body and cookie CSRF before Stripe', async () => {
     expect((await app().request(`/invoices/${INV_ID}/autopay-confirmation`, { method: 'POST' })).status).toBe(415);
     expect((await app(ORG_ID, 'cookie').request(`/invoices/${INV_ID}/autopay-confirmation`, { method: 'POST',
