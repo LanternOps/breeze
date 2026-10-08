@@ -17,7 +17,7 @@ function makeFetch(responses: Stub[] | ((n: number, url: string, body: any) => S
     const body = init.body ? JSON.parse(init.body) : null;
     calls.push({ url, headers: init.headers, body });
     const n = calls.length - 1;
-    const r = typeof responses === 'function' ? responses(n, url, body) : responses[Math.min(n, responses.length - 1)];
+    const r = typeof responses === 'function' ? responses(n, url, body) : responses[Math.min(n, responses.length - 1)]!;
     return {
       status: r.status ?? 200,
       headers: new Headers(r.headers ?? {}),
@@ -51,19 +51,19 @@ describe('GravityZoneClient transport', () => {
     const { impl, calls } = makeFetch([{ body: fx('inventory-page2.json') }]);
     const { client } = makeClient(impl);
     await client.call('network', '1.1', 'getNetworkInventoryItems', { page: 1 });
-    expect(calls[0].url).toBe(`${ACCESS_URL}/v1.1/jsonrpc/network`);
-    expect(calls[0].headers.Authorization).toBe(`Basic ${Buffer.from(`${API_KEY}:`).toString('base64')}`);
-    expect(calls[0].headers['Content-Type']).toBe('application/json');
-    expect(calls[0].body).toMatchObject({ jsonrpc: '2.0', method: 'getNetworkInventoryItems', params: { page: 1 } });
-    expect(typeof calls[0].body.id).toBe('string');
+    expect(calls[0]!.url).toBe(`${ACCESS_URL}/v1.1/jsonrpc/network`);
+    expect(calls[0]!.headers.Authorization).toBe(`Basic ${Buffer.from(`${API_KEY}:`).toString('base64')}`);
+    expect(calls[0]!.headers['Content-Type']).toBe('application/json');
+    expect(calls[0]!.body).toMatchObject({ jsonrpc: '2.0', method: 'getNetworkInventoryItems', params: { page: 1 } });
+    expect(typeof calls[0]!.body.id).toBe('string');
   });
 
   it('routes quarantine/computers on its nested service path', async () => {
     const { impl, calls } = makeFetch([{ body: fx('quarantine-page.json') }]);
     const { client } = makeClient(impl);
     await client.getQuarantineBetween(new Date('2026-10-01T00:00:00Z'), new Date('2026-10-08T00:00:00Z'));
-    expect(calls[0].url).toBe(`${ACCESS_URL}/v1.1/jsonrpc/quarantine/computers`);
-    expect(calls[0].body.params.filters).toEqual({
+    expect(calls[0]!.url).toBe(`${ACCESS_URL}/v1.1/jsonrpc/quarantine/computers`);
+    expect(calls[0]!.body.params.filters).toEqual({
       startDate: '2026-10-01T00:00:00.000Z', endDate: '2026-10-08T00:00:00.000Z',
     });
   });
@@ -78,7 +78,7 @@ describe('GravityZoneClient pagination', () => {
       '6a0000000000000000000a01', '6a0000000000000000000a02', '6a0000000000000000000a03',
     ]);
     expect(calls.map((c) => c.body.params.page)).toEqual([1, 2]);
-    expect(calls[0].body.params).toMatchObject({
+    expect(calls[0]!.body.params).toMatchObject({
       parentId: '5f0a1b2c3d4e5f60718293a1', perPage: 1000,
       filters: { type: { computers: true, virtualMachines: true }, depth: { allItemsRecursively: true } },
     });
@@ -111,12 +111,12 @@ describe('GravityZoneClient pagination', () => {
     const to = new Date('2026-10-08T00:00:00Z');
     const items = await client.getIncidentsChangedBetween(from, to);
     expect(items.map((i) => i.incidentId)).toEqual(['i1', 'i2']);
-    expect(calls[0].url).toBe(`${ACCESS_URL}/v1.2/jsonrpc/incidents`);
-    expect(calls[0].body.params.filters).toEqual({
+    expect(calls[0]!.url).toBe(`${ACCESS_URL}/v1.2/jsonrpc/incidents`);
+    expect(calls[0]!.body.params.filters).toEqual({
       changeStartDate: from.toISOString(), changeEndDate: to.toISOString(),
     });
-    expect(calls[0].body.params.filters).not.toHaveProperty('companyId');
-    expect(calls[0].body.params).toMatchObject({ perPage: 1000, options: { sortBy: 'lastIncidentChange' } });
+    expect(calls[0]!.body.params.filters).not.toHaveProperty('companyId');
+    expect(calls[0]!.body.params).toMatchObject({ perPage: 1000, options: { sortBy: 'lastIncidentChange' } });
     expect(limiter.acquire).toHaveBeenCalledWith('incidents');
   });
 
@@ -288,31 +288,31 @@ describe('GravityZoneClient operation classes and typed helpers', () => {
   it('getCompaniesList uses the network service with parentId + companyType filter', async () => {
     const { impl, calls } = makeFetch([{ body: fx('companies-list-root.json') }]);
     const list = await makeClient(impl).client.getCompaniesList('p1', 1);
-    expect(calls[0].url).toBe(`${ACCESS_URL}/v1.0/jsonrpc/network`);
-    expect(calls[0].body.method).toBe('getCompaniesList');
-    expect(calls[0].body.params).toEqual({ parentId: 'p1', filters: { companyType: 1 } });
+    expect(calls[0]!.url).toBe(`${ACCESS_URL}/v1.0/jsonrpc/network`);
+    expect(calls[0]!.body.method).toBe('getCompaniesList');
+    expect(calls[0]!.body.params).toEqual({ parentId: 'p1', filters: { companyType: 1 } });
     expect(list.length).toBe(2);
   });
 
   it('getOwnCompany posts companies.getCompanyDetails with empty params', async () => {
     const { impl, calls } = makeFetch([{ body: fx('company-details-partner.json') }]);
     const c = await makeClient(impl).client.getOwnCompany();
-    expect(calls[0].url).toBe(`${ACCESS_URL}/v1.0/jsonrpc/companies`);
-    expect(calls[0].body).toMatchObject({ method: 'getCompanyDetails', params: {} });
+    expect(calls[0]!.url).toBe(`${ACCESS_URL}/v1.0/jsonrpc/companies`);
+    expect(calls[0]!.body).toMatchObject({ method: 'getCompanyDetails', params: {} });
     expect(c).toMatchObject({ name: 'Example Partner', type: 0 });
   });
 
   it('getApiKeyDetails posts general.getApiKeyDetails', async () => {
     const { impl, calls } = makeFetch([{ body: fx('api-key-details.json') }]);
     const d = await makeClient(impl).client.getApiKeyDetails();
-    expect(calls[0].url).toBe(`${ACCESS_URL}/v1.0/jsonrpc/general`);
+    expect(calls[0]!.url).toBe(`${ACCESS_URL}/v1.0/jsonrpc/general`);
     expect(d.enabledApis).toContain('network');
   });
 
   it('getInventoryTotal asks for one item and returns total', async () => {
     const { impl, calls } = makeFetch([{ body: fx('inventory-page1.json') }]);
     expect(await makeClient(impl).client.getInventoryTotal('c1')).toBe(3);
-    expect(calls[0].body.params.perPage).toBe(1);
+    expect(calls[0]!.body.params.perPage).toBe(1);
   });
 });
 

@@ -94,7 +94,7 @@ function parseRetryAfterMs(headers: Headers): number | undefined {
   // Observed as "60" or "60, 60" (the vendor duplicates the header).
   const raw = headers.get('retry-after');
   if (!raw) return undefined;
-  const secs = Number.parseInt(raw.split(',')[0].trim(), 10);
+  const secs = Number.parseInt(raw.split(',')[0]!.trim(), 10);
   return Number.isFinite(secs) && secs >= 0 ? secs * 1000 : undefined;
 }
 
