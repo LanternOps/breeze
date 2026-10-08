@@ -43,8 +43,9 @@ const settleSchema = z.object({ sessionId: z.string().trim().min(1).max(255) });
 
 // Invoice statuses that may be paid online. Drafts/paid/void are excluded.
 const PAYABLE = new Set(['sent', 'partially_paid', 'overdue']);
-// One body for a missing, other-org and draft invoice, so the response never
-// tells a portal user that an unissued invoice exists.
+// One body for a missing, other-org and draft invoice on the read, PDF, pay and
+// settle routes, so they never tell a portal user that an unissued invoice
+// exists. /autopay-confirmation does not use it yet (#8254).
 const INVOICE_NOT_FOUND_BODY = { error: 'Invoice not found', code: ERROR_CODES.NOT_FOUND };
 
 /**
