@@ -6245,7 +6245,11 @@
     "saved": "Paramètres de suivi du temps enregistrés",
     "saveFailed": "Impossible d’enregistrer les paramètres de suivi du temps",
     "minSessionRange": "La durée minimale de session doit être comprise entre {{min}} et {{max}} secondes",
-    "mergeGapRange": "L’intervalle de fusion doit être compris entre {{min}} et {{max}} minutes"
+    "mergeGapRange": "L’intervalle de fusion doit être compris entre {{min}} et {{max}} minutes",
+    "locationEnabledLabel": "Suggérer un minuteur lorsqu’un technicien arrive sur le site d’un client",
+    "locationHelp": "Chaque technicien doit également autoriser la localisation sur son téléphone. La position est vérifiée sur le téléphone et n’est jamais envoyée à Breeze.",
+    "radiusLabel": "Rayon d’arrivée par défaut (m)",
+    "radiusRange": "Le rayon d’arrivée doit être compris entre {{min}} et {{max}} mètres"
   },
   "contactsCard": {
     "title": "Contacts",

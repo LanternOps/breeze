@@ -6245,7 +6245,11 @@
     "saved": "Configurações de controle de tempo salvas",
     "saveFailed": "Não foi possível salvar as configurações de controle de tempo",
     "minSessionRange": "A duração mínima da sessão deve estar entre {{min}} e {{max}} segundos",
-    "mergeGapRange": "O intervalo de mesclagem deve estar entre {{min}} e {{max}} minutos"
+    "mergeGapRange": "O intervalo de mesclagem deve estar entre {{min}} e {{max}} minutos",
+    "locationEnabledLabel": "Sugerir um cronômetro quando um técnico chega ao local de um cliente",
+    "locationHelp": "Cada técnico também precisa permitir a localização no próprio celular. A localização é verificada no celular e nunca é enviada ao Breeze.",
+    "radiusLabel": "Raio de chegada padrão (m)",
+    "radiusRange": "O raio de chegada deve estar entre {{min}} e {{max}} metros"
   },
   "contactsCard": {
     "title": "Contatos",

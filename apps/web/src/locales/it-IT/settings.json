@@ -6245,7 +6245,11 @@
     "saved": "Impostazioni di tracciamento tempo salvate",
     "saveFailed": "Impossibile salvare le impostazioni di tracciamento tempo",
     "minSessionRange": "La durata minima della sessione deve essere compresa tra {{min}} e {{max}} secondi",
-    "mergeGapRange": "L’intervallo di unione deve essere compreso tra {{min}} e {{max}} minuti"
+    "mergeGapRange": "L’intervallo di unione deve essere compreso tra {{min}} e {{max}} minuti",
+    "locationEnabledLabel": "Suggerisci un timer quando un tecnico arriva presso la sede di un cliente",
+    "locationHelp": "Ogni tecnico deve inoltre consentire la posizione sul proprio telefono. La posizione viene verificata sul telefono e non viene mai inviata a Breeze.",
+    "radiusLabel": "Raggio di arrivo predefinito (m)",
+    "radiusRange": "Il raggio di arrivo deve essere compreso tra {{min}} e {{max}} metri"
   },
   "contactsCard": {
     "title": "Contatti",
