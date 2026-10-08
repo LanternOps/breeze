@@ -94,7 +94,13 @@ func (w *watcher) run() {
 				"failures", failures,
 			)
 		} else {
-			log.Info("breeze assist restarted by watcher", "session", w.state.key)
+			// WARN, not INFO: the helper exited unexpectedly (there is no Exit
+			// menu item), and only warn+ ships to the server by default — at
+			// info a crash-looping helper was invisible fleet-wide (#8138).
+			log.Warn("breeze assist restarted by watcher",
+				"session", w.state.key,
+				"failures", failures,
+			)
 		}
 
 		backoff := time.Duration(1<<uint(failures)) * time.Second
