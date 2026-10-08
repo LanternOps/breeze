@@ -18,21 +18,20 @@ const CAUSE_TEXT: Readonly<Record<ProviderFailureCause, string>> = Object.freeze
 });
 
 /**
- * `failure` is the turn's observed provider failure (`SdkTurnObservation.providerFailure`).
+ * `cause` is the turn's TERMINAL provider failure cause
+ * (`SdkTurnObservation.providerFailure` with `terminal: true`), or null. A
+ * non-terminal cause is an `api_retry` the CLI may have recovered from, so it
+ * must never be passed here: it would blame a later, unrelated failure on it.
  * `sawOutput` is whether the turn produced any assistant output.
  *
- * Only a TERMINAL failure before any output cools the bound offering
+ * A terminal failure before any output cools the bound offering
  * (StreamingSessionManager.settleSdkTurn, W09 D5), so only then can the next
  * message resolve to a backup model. The wording never promises more than that.
  */
-export function providerFailureMessage(
-  failure: { cause: ProviderFailureCause; terminal: boolean } | null,
-  sawOutput: boolean,
-): string {
-  if (!failure) return PROVIDER_FAILURE_GENERIC_MESSAGE;
-  const cooled = failure.terminal && !sawOutput;
-  const next = cooled
-    ? ' Try again shortly. If a backup model is configured, Breeze uses it while this one recovers.'
-    : ' Try again shortly.';
-  return CAUSE_TEXT[failure.cause] + next;
+export function providerFailureMessage(cause: ProviderFailureCause | null, sawOutput: boolean): string {
+  if (!cause) return PROVIDER_FAILURE_GENERIC_MESSAGE;
+  const next = sawOutput
+    ? ' Try again shortly.'
+    : ' Try again shortly. If a backup model is configured, Breeze uses it while this one recovers.';
+  return CAUSE_TEXT[cause] + next;
 }

@@ -1891,12 +1891,14 @@ export class StreamingSessionManager {
               break;
             }
 
-            // #7785: the provider failure the CLI reported this turn, read
-            // BEFORE settleSdkTurn swaps the observation out. Fixed text only
-            // (providerFailureMessage); the CLI's synthetic assistant text is
-            // raw provider output and is never shown.
+            // #7785: the provider failure the CLI reported as FINAL this turn,
+            // read BEFORE settleSdkTurn swaps the observation out. A
+            // non-terminal cause is an api_retry that may have recovered, so it
+            // never names a later failure (as for the cooldown, #7790). Fixed
+            // text only (providerFailureMessage); the CLI's synthetic assistant
+            // text is raw provider output and is never shown.
             const { providerFailure, sawOutput } = session.refusalObservation;
-            const providerMessage = providerFailure ? providerFailureMessage(providerFailure, sawOutput) : null;
+            const providerMessage = providerFailure?.terminal ? providerFailureMessage(providerFailure.cause, sawOutput) : null;
             let isErrorSuccessMessage: string | null = null;
 
             if (resultMsg.subtype !== 'success') {

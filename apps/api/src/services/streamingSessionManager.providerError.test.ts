@@ -110,7 +110,7 @@ describe('#7785: a pre-output provider failure publishes an error', () => {
     ['low-credit 400', [synthetic('billing_error', 'Credit balance is too low'), isErrorResult(400)], 'quota_exhausted'],
   ] as const)('%s: error event names the cause, then turn_model, then done', async (_name, frames, cause) => {
     const events = await runTurn(`s-${cause}`, [...frames]);
-    const expected = providerFailureMessage({ cause, terminal: true }, false);
+    const expected = providerFailureMessage(cause, false);
     expect(errorsOf(events)).toEqual([expected]);
     const types = events.map((e) => e.type);
     expect(types.indexOf('error')).toBeLessThan(types.indexOf('done'));
@@ -138,7 +138,39 @@ describe('#7785: a pre-output provider failure publishes an error', () => {
       synthetic('rate_limit', 'API Error: 429'),
       { ...sdkResult({ subtype: 'error_during_execution' }), errors: ['API Error: 429'] },
     ]);
-    expect(errorsOf(events)).toEqual([providerFailureMessage({ cause: 'rate_limited', terminal: true }, false)]);
+    expect(errorsOf(events)).toEqual([providerFailureMessage('rate_limited', false)]);
+  });
+
+  it('a failure after streamed output never promises a backup model (the offering is not cooled)', async () => {
+    const events = await runTurn('s-output', [
+      { type: 'stream_event', event: { type: 'message_start' } },
+      { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Partial' } } },
+      synthetic('server_error', 'API Error: 529'),
+      isErrorResult(529),
+    ]);
+    const expected = providerFailureMessage('overloaded', true);
+    expect(expected).not.toMatch(/backup/);
+    expect(errorsOf(events)).toEqual([expected]);
+  });
+
+  it('an is_error turn that settles as a refusal publishes the refusal, not a provider error', async () => {
+    const events = await runTurn('s-refused', [
+      { type: 'system', subtype: 'model_refusal_no_fallback', api_refusal_category: 'cyber' },
+      { ...sdkResult({ stop_reason: 'refusal' }), is_error: true },
+    ]);
+    expect(errorsOf(events)).toEqual([]);
+    expect(events.some((e) => e.type === 'model_refusal')).toBe(true);
+  });
+
+  it('a retried-then-recovered 529 is never blamed for a later unrelated failure', async () => {
+    const events = await runTurn('s-stale', [
+      retry('overloaded', 529, 1),
+      { type: 'stream_event', event: { type: 'message_start' } },
+      { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } },
+      { ...sdkResult({ subtype: 'error_during_execution' }), errors: ['boom'] },
+    ]);
+    expect(errorsOf(events)).toEqual(['An internal error occurred. Please try again.']);
   });
 
   it('a successful turn publishes no error', async () => {
