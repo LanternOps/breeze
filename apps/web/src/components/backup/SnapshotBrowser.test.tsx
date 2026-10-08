@@ -112,6 +112,25 @@ describe('SnapshotBrowser', () => {
     ]);
   });
 
+  it('retries a directory whose first load failed when it is selected again (#8230)', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    let failures = 1;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/backup/snapshots/snap-1/browse?dir=%2FDocuments' && failures-- > 0) {
+        return makeJsonResponse({ error: 'boom' }, false, 500);
+      }
+      return base(input, init);
+    });
+
+    render(<SnapshotBrowser />);
+    fireEvent.click(await screen.findByText('Documents'));
+    await screen.findByText(/Failed to browse snapshot/i);
+    expect(screen.queryByText('report.txt')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Documents' }));
+    await screen.findByText('report.txt');
+  });
+
   it('points the restore-workflow copy at the Restore tab, carrying the active snapshot (#6349, #6456)', async () => {
     render(<SnapshotBrowser />);
 

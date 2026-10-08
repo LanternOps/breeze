@@ -199,10 +199,17 @@ export default function SnapshotBrowser() {
       }
     } catch (err) {
       if (epoch !== browseEpoch.current) return;
-      setDirs((prev) => ({
-        ...prev,
-        [dir]: { items: prev[dir]?.items ?? [], nextCursor: prev[dir]?.nextCursor ?? null, loading: false },
-      }));
+      // A first-page failure must leave the directory "not loaded" so
+      // expanding/selecting it again retries; only keep an entry that already
+      // holds earlier pages (a failed "Load more").
+      setDirs((prev) => {
+        const existing = prev[dir];
+        if (!existing || existing.items.length === 0) {
+          const { [dir]: _dropped, ...rest } = prev;
+          return rest;
+        }
+        return { ...prev, [dir]: { ...existing, loading: false } };
+      });
       setError(err instanceof Error ? err.message : 'Failed to browse snapshot');
     }
   }, [selectedSnapshotId]);
