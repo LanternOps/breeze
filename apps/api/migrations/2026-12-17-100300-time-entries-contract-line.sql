@@ -1,0 +1,67 @@
+-- @no-transaction
+-- #4547 W01 (block hours): time_entries.contract_line_id — which block line, if
+-- any, drew this entry. Server-written only (W02's close path stamps it together
+-- with billing_status = 'contract'); no Zod schema accepts it.
+-- Contract: docs/superpowers/plans/billing/2026-10-06-block-hours-index.md (C4).
+--
+-- time_entries is a large, hot, partner-axis table. A plain ADD CONSTRAINT on it
+-- validates inside the same statement while holding a heavy lock, and inside a
+-- transaction the ACCESS EXCLUSIVE lock from adding a NOT VALID constraint would
+-- still be held while a following VALIDATE scanned the table. So this file runs
+-- outside a transaction and:
+--   1. adds the column (catalog-only: nullable, no default, no rewrite);
+--   2. adds the FK and both CHECKs NOT VALID in ONE ALTER TABLE statement
+--      (catalog only, no scan; every new row is checked from this point on).
+--      Dropping the old definition first makes a re-apply converge;
+--   3. VALIDATEs each as its own statement, which takes only SHARE UPDATE
+--      EXCLUSIVE (the FK also ROW SHARE on contract_lines), so writes continue
+--      during the scan. The column is new and entirely NULL, so every
+--      constraint passes trivially;
+--   4. builds the partial index CONCURRENTLY.
+-- lock_timeout bounds how long step 2 may queue behind a long-running
+-- transaction: the statement fails after 5s instead of stalling every reader and
+-- writer of time_entries; autoMigrate aborts boot and the file re-runs cleanly
+-- on the next start. It is set per session (each statement is sent on its own)
+-- and RESET at the end. Precedent: 2026-12-13-110100-device-software-device-cascade.sql.
+--
+-- Idempotent: re-applying re-swaps and re-validates the same definitions. A
+-- failed CONCURRENTLY build leaves an INVALID index that IF NOT EXISTS would
+-- skip; an operator must DROP INDEX it before the next deploy (same contract as
+-- 2026-10-08-101100-billing-evidence-fk-targets.sql).
+--
+-- No row is written, so no system-scope election is needed.
+
+SET lock_timeout = '5s';
+
+ALTER TABLE public.time_entries ADD COLUMN IF NOT EXISTS contract_line_id uuid;
+
+ALTER TABLE public.time_entries
+  DROP CONSTRAINT IF EXISTS time_entries_contract_line_org_fk,
+  DROP CONSTRAINT IF EXISTS time_entries_contract_line_org_chk,
+  DROP CONSTRAINT IF EXISTS time_entries_contract_line_chk,
+  -- Composite so the line must belong to the entry's own org. MATCH SIMPLE (the
+  -- default) skips a row whose org_id is NULL, which is exactly why the _org_chk
+  -- below exists. ON DELETE SET NULL (contract_line_id): the PG15 column list
+  -- nulls only that column; a bare SET NULL would also null org_id.
+  -- DEFERRABLE INITIALLY IMMEDIATE: org merge repoints this table and
+  -- contract_lines in separate statements under SET CONSTRAINTS ALL DEFERRED.
+  ADD CONSTRAINT time_entries_contract_line_org_fk
+    FOREIGN KEY (contract_line_id, org_id) REFERENCES public.contract_lines (id, org_id)
+    ON DELETE SET NULL (contract_line_id) DEFERRABLE INITIALLY IMMEDIATE NOT VALID,
+  ADD CONSTRAINT time_entries_contract_line_org_chk
+    CHECK (contract_line_id IS NULL OR org_id IS NOT NULL) NOT VALID,
+  -- A line id is only ever written together with billing_status = 'contract'
+  -- (spec amendment 2026-09-19: 'contract' is terminal only when a line id is set).
+  ADD CONSTRAINT time_entries_contract_line_chk
+    CHECK (contract_line_id IS NULL OR billing_status = 'contract') NOT VALID;
+
+ALTER TABLE public.time_entries VALIDATE CONSTRAINT time_entries_contract_line_org_fk;
+ALTER TABLE public.time_entries VALIDATE CONSTRAINT time_entries_contract_line_org_chk;
+ALTER TABLE public.time_entries VALIDATE CONSTRAINT time_entries_contract_line_chk;
+
+-- The FK's child side (a line delete must find its entries) and the per-line
+-- drawdown read. Partial: nearly every entry has no line.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS time_entries_contract_line_idx
+  ON public.time_entries (contract_line_id) WHERE contract_line_id IS NOT NULL;
+
+RESET lock_timeout;

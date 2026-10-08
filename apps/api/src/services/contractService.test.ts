@@ -585,6 +585,56 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
   });
 });
 
+// #4547 W01: the enum value exists before the engine does. A forged row must
+// fail loudly and bill nothing; W02 replaces the generateDueInvoice arm and W03
+// the resolveLineQty arm.
+describe('hour_block fails closed until its engine ships (#4547 W01)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const contract = {
+    id: 'c1', orgId: 'org1', partnerId: 'p1', status: 'active', currencyCode: 'USD',
+    startDate: '2026-07-01', intervalMonths: 1, billingTiming: 'advance', nextBillingAt: '2026-07-01',
+    endDate: null, autoIssue: false, createdBy: 'u1', notes: null, terms: null,
+  };
+  const noAllowance = { includedQuantity: null, overageMode: null, overageUnitPrice: null };
+  const flatLine = {
+    id: 'cl-flat', lineType: 'flat', description: 'Fee', unitPrice: '80.00', taxable: true,
+    catalogItemId: null, manualQuantity: null, siteId: null, siteName: null, deviceRoles: null, ...noAllowance,
+  };
+  const blockLine = {
+    id: 'cl-block', contractId: 'c1', orgId: 'org1', lineType: 'hour_block', description: 'Prepaid hours',
+    unitPrice: '500.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, siteName: null,
+    deviceRoles: null, deviceGroupId: null, deviceGroupName: null, sortOrder: 0,
+    includedQuantity: '10.00', overageMode: 'bill', overageUnitPrice: '95.00',
+    rolloverPolicy: 'none', rolloverCapHours: null, hourBlockAlertPct: null,
+    hourBlockFirstPeriodStart: '2026-07-01', hourBlockRetiredAt: null,
+  };
+
+  it('generateDueInvoice refuses a forged hour_block line before any invoice exists', async () => {
+    queueResult([contract]);                 // locked contract
+    queueResult([flatLine, blockLine]);      // lines — the flat line must not be billed either
+    await expect(svc.generateDueInvoice('c1', new Date('2026-07-01T06:00:00Z')))
+      .rejects.toMatchObject({ code: 'HOUR_BLOCK_NOT_ENABLED', status: 500 });
+    expect(createManualInvoice).not.toHaveBeenCalled();
+    expect(addContractLine).not.toHaveBeenCalled();
+  });
+
+  it('computeContractEstimate (resolveLineQty) refuses a forged hour_block line', async () => {
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD' }]);
+    queueResult([blockLine]);
+    await expect(svc.computeContractEstimate('c1', actor))
+      .rejects.toMatchObject({ code: 'HOUR_BLOCK_NOT_ENABLED', status: 500 });
+  });
+
+  it('updateContractLine refuses to patch a forged hour_block line', async () => {
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', name: 'Acme MSA', status: 'draft', currencyCode: 'USD' }]);
+    queueResult([blockLine]);
+    await expect(svc.updateContractLine('c1', 'cl-block', { description: 'x' } as never, actor))
+      .rejects.toMatchObject({ code: 'HOUR_BLOCK_NOT_ENABLED', status: 500 });
+    expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
+  });
+});
+
 // Wave-6 release gate (W6-G3-1): a contract line is the template every future
 // generated invoice snapshots from, so a hand-entered non-catalog price must be
 // representable in the CONTRACT's stamped currency before it can propagate.

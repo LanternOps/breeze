@@ -486,6 +486,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'contract_billing_period_outcomes',
   'contract_billing_periods',
   'contract_documents',
+  'contract_hour_periods',
   'contract_lines',
   'contract_renewal_notices',
   // contract_template_versions sorts before contract_templates: localeCompare
