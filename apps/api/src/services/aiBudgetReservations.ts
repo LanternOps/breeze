@@ -968,15 +968,32 @@ function attestationKey(connectionId: string, model: string): string {
   return `${connectionId}:${model}`;
 }
 
+function isRateSnapshot(value: unknown): value is RateSnapshot {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const standard = (value as { standard?: unknown }).standard;
+  return !!standard && typeof standard === 'object' && !Array.isArray(standard)
+    && ['inputCentsPerM', 'outputCentsPerM', 'cacheReadCentsPerM', 'cacheWriteCentsPerM']
+      .every((k) => typeof (standard as Record<string, unknown>)[k] === 'number');
+}
+
 function attestedUnboundRate(raw: unknown, connectionId: string, model: string): UnboundRateAttestation | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const entry = (raw as Record<string, unknown>)[attestationKey(connectionId, model)];
-  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-  const { connectionId: storedConnection, offeringId, rate } = entry as Record<string, unknown>;
-  if (storedConnection !== connectionId) return null;
-  if (offeringId !== null && typeof offeringId !== 'string') return null;
-  if (rate !== null && (typeof rate !== 'object' || Array.isArray(rate))) return null;
-  return { connectionId, offeringId, rate: rate as RateSnapshot | null };
+  if (raw === null || raw === undefined) return null;
+  const key = attestationKey(connectionId, model);
+  const entry = typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>)[key] : raw;
+  if (entry === undefined) return null;
+  const { connectionId: stored, offeringId, rate } = (entry && typeof entry === 'object' && !Array.isArray(entry)
+    ? entry : {}) as Record<string, unknown>;
+  if (stored === connectionId && (offeringId === null || typeof offeringId === 'string')
+      && (rate === null || isRateSnapshot(rate))) {
+    return { connectionId, offeringId, rate };
+  }
+  // Only this module writes the column, so this is corruption, not a miss:
+  // say so, or the caller's later reason (a live miss, "not settleable")
+  // would hide why a turn stopped billing its attested rate.
+  console.error('[aiBudgetReservations] malformed unbound rate attestation; treated as absent', {
+    eventCode: 'ai_unbound_rate_attestation_malformed', key,
+  });
+  return null;
 }
 
 /**
@@ -1076,7 +1093,17 @@ async function assertInvocationsMatchBinding(
     if (row.fallbackUsed && binding.funding === 'partner_key' && !boundModels.has(row.requestedModel)
         && (rateSource === 'offering' || rateSource === 'linked_platform')) {
       const attested = binding.connectionId ? attestedUnboundRate(attestations, binding.connectionId, row.requestedModel) : null;
-      if (attested?.rate && sameJson(rate, attested.rate)) continue;
+      // An attestation is the turn's decision and is authoritative: a row
+      // that does not match it is rejected without consulting the live row.
+      if (attested) {
+        if (attested.rate && sameJson(rate, attested.rate)) continue;
+        console.warn('[aiBudgetReservations] unbound BYOK rate does not match the turn\'s attestation; settlement rejected', {
+          eventCode: 'ai_unbound_byok_rate_rejected', model: row.requestedModel, connectionId: binding.connectionId,
+          offeringId: binding.offeringId, reason: attested.rate ? 'attested_rate_differs' : 'attested_bound_rate',
+          rowRateSource: rateSource, currentRateSource: attested.rate?.source ?? null,
+        });
+        throw new Error('Settlement rate does not match the turn binding');
+      }
       const current = await readConnectionOfferingRate({
         partnerId: binding.partnerId, connectionId: binding.connectionId,
         connectionKind: binding.connectionKind, model: row.requestedModel,

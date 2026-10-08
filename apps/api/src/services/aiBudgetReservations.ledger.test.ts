@@ -454,7 +454,39 @@ describe('settleAiBudgetReservation with ledger rows', () => {
         await expect(settleAiBudgetReservation({
           orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow(OFFERING_RATE)],
         })).rejects.toThrow(/does not match the turn binding/);
+        expect(hoisted.readConnectionOfferingRate).not.toHaveBeenCalled();
         expect(hoisted.recordInvocation).not.toHaveBeenCalled();
+      });
+
+      it('an attestation is authoritative: a row at the CURRENT live rate that differs from it is rejected, live row unread', async () => {
+        const LIVE = { source: 'offering' as const, standard: { ...OTHER, inputCentsPerM: 1 } };
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        hoisted.readConnectionOfferingRate.mockResolvedValue({ rate: LIVE, offeringId: 'off-x' });
+        dbMock.execute.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([attestedReservation()]);
+        await expect(settleAiBudgetReservation({
+          orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow(LIVE)],
+        })).rejects.toThrow(/does not match the turn binding/);
+        expect(hoisted.readConnectionOfferingRate).not.toHaveBeenCalled();
+        expect(hoisted.recordInvocation).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+          eventCode: 'ai_unbound_byok_rate_rejected', reason: 'attested_rate_differs',
+        }));
+        warn.mockRestore();
+      });
+
+      it('a malformed stored entry is logged as corruption and treated as absent (live re-read)', async () => {
+        const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const bad = { [`${CONN_ID}:claude-sonnet-4-6`]: { connectionId: CONN_ID, offeringId: 'off-x', rate: {} } };
+        hoisted.readConnectionOfferingRate.mockResolvedValue({ rate: OFFERING_RATE, offeringId: 'off-x' });
+        primeSettle(attestedReservation({ unbound_rate_attestations: bad }));
+        await expect(settleAiBudgetReservation({
+          orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: [byokRow(OFFERING_RATE)],
+        })).resolves.toMatchObject({ kind: 'settled' });
+        expect(hoisted.readConnectionOfferingRate).toHaveBeenCalledTimes(1);
+        expect(err).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+          eventCode: 'ai_unbound_rate_attestation_malformed', key: `${CONN_ID}:claude-sonnet-4-6`,
+        }));
+        err.mockRestore();
       });
 
       it('a tampered rate (differs from the attestation and from the live read) is rejected, nothing recorded', async () => {

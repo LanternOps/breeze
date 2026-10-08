@@ -29,6 +29,7 @@ import {
   listDeadPendingSettlements,
   listUndebitedPlatformSettlements,
   MAX_PENDING_SETTLEMENT_REPLAY_ATTEMPTS,
+  attestUnboundRate,
   persistPendingSettlement,
   readSdkUsageSnapshot,
   replayPendingAiSettlements,
@@ -890,6 +891,26 @@ describe.skipIf(!RUN)('an unbound BYOK refusal-fallback key at its own offering 
     const [row] = await q<{ rate_snapshot: unknown }>(sql`
       SELECT rate_snapshot FROM ai_invocations WHERE org_id = ${b.orgId}::uuid AND requested_model = ${fbModel}`);
     expect(row!.rate_snapshot).toEqual(binding.rateSnapshot);
+  });
+
+  it('attestUnboundRate on real Postgres: first write wins, and a settled reservation takes no new entry', async () => {
+    const b = await seedRegistryPartner('byok');
+    const binding = await bindingFor(b);
+    const model = `w7773-fww-${randomUUID()}`;
+    const id = await reserve(b, binding);
+    const at = (input: number) => ({ connectionId: b.connectionId!, offeringId: null, rate: { source: 'offering' as const, standard: { ...OWN, inputCentsPerM: input } } });
+    const attest = (input: number, reservationId = id, m = model) => withSystemDbAccessContext(
+      () => attestUnboundRate({ orgId: b.orgId, reservationId, model: m, attestation: at(input) }), 'test.attest');
+
+    expect(await attest(111)).toEqual(at(111));
+    expect(await attest(222)).toEqual(at(111));   // the second writer gets the stored entry back
+    expect(await attestationsOf(id)).toEqual({ [`${b.connectionId}:${model}`]: at(111) });
+
+    await settleInvocation(settleInput(b, binding, id));   // the bound turn settles the reservation
+    expect((await reservationState(id)).status).toBe('settled');
+    const other = `w7773-late-${randomUUID()}`;
+    expect(await attest(333, id, other)).toBeNull();
+    expect(await attestationsOf(id)).toEqual({ [`${b.connectionId}:${model}`]: at(111) });
   });
 
   it('a stable-key retry that rebinds the reservation clears the old attempt\'s attestations', async () => {

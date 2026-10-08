@@ -377,9 +377,20 @@ async function loadUnboundConnectionRates(
       if (found.rate) rates.set(model, found.rate);
       else console.warn('[settleInvocation] unbound BYOK model has no enabled priced offering on the connection; billing the bound rate', { ...detail, reason: found.reason });
     } catch (error) {
+      // Not rethrown: failing here would lose the settlement, which is worse
+      // than the pre-#7773 bound rate. Against a reservation it is reported,
+      // since it may contradict an attestation the quote already wrote.
       console.error('[settleInvocation] connection rate lookup failed; billing the bound rate', {
         ...detail, reason: 'lookup_failed', error: safeErrorMessage(error),
+        ...(reservation ? { reservationId: reservation.reservationId } : {}),
       });
+      if (reservation && shouldReport('ai_unbound_byok_rate_lookup_failed', reservation.orgId)) {
+        captureMessage('AI unbound BYOK rate could not be read or attested; billed the bound rate', {
+          eventCode: 'ai_unbound_byok_rate_lookup_failed',
+          level: 'warning',
+          tags: { org_id: reservation.orgId, ai_reservation_id: reservation.reservationId },
+        });
+      }
     }
   }
   return rates;
@@ -399,7 +410,7 @@ async function loadUnboundRates(
 }
 
 type ReportedEventCode = 'ai_usage_snapshot_regressed' | 'ai_credit_debit_rejected' | 'ai_credit_debit_retries_exhausted'
-  | 'ai_prompt_variant_mismatch';
+  | 'ai_prompt_variant_mismatch' | 'ai_unbound_byok_rate_lookup_failed';
 const lastReportedAt = new Map<string, number>();
 const MAX_THROTTLE_KEYS = 10_000;
 

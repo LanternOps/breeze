@@ -685,7 +685,20 @@ describe('unbound BYOK refusal fallback priced at its own offering rate (#7773)'
     m.attestUnboundRate.mockRejectedValue(new Error('lock timeout'));
     await expect(settleInvocation(base({ binding: BYOK, usage: [use('claude-sonnet-4-6')], outcome: swapped })))
       .resolves.toMatchObject({ costCents: 300 });
-    expect(err).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ reason: 'lookup_failed', model: 'claude-sonnet-4-6' }));
+    expect(err).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ reason: 'lookup_failed', model: 'claude-sonnet-4-6', reservationId: 'r1' }));
+    // Against a reservation it may contradict an attestation the quote wrote: Sentry, not just a log line.
+    expect(m.captureMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      eventCode: 'ai_unbound_byok_rate_lookup_failed', tags: { org_id: 'o1', ai_reservation_id: 'r1' },
+    }));
+    err.mockRestore();
+  });
+
+  it('a failed lookup with no reservation is logged only (nothing to contradict)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    m.readConnectionOfferingRate.mockRejectedValue(new Error('db down'));
+    await settleInvocation(base({ binding: BYOK, usage: [use('claude-sonnet-4-6')], outcome: swapped, reservationId: undefined }));
+    expect(err).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ reason: 'lookup_failed' }));
+    expect(m.captureMessage.mock.calls.filter(([, o]) => o.eventCode === 'ai_unbound_byok_rate_lookup_failed')).toHaveLength(0);
     err.mockRestore();
   });
 
