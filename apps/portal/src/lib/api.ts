@@ -733,6 +733,10 @@ export interface PublicQuoteDetail {
   /** Resolved document theme/pageSize (Task 12). Optional: fixtures/older
    *  payloads omit it, which must read as 'classic' (documentShell's fallback). */
   presentation?: QuotePresentation;
+  /** #8231: signing goes straight on to card checkout (the partner takes online
+   *  payment and the client is not on automatic payments). The page still
+   *  gates on an amount being due; the server makes the final call on accept. */
+  payOnAccept?: boolean;
 }
 
 /** The public (token-gated) invoice payload — /invoices/public/:token. A VOID
@@ -1187,8 +1191,8 @@ export const portalApi = {
     token: string,
     signerName: string,
     signerEmail?: string
-  ): Promise<ApiResponse<{ data: { status: string; invoiceNumber: string | null; invoiceUrl: string | null; payDeferred?: boolean } }>> => {
-    return apiPost<{ data: { status: string; invoiceNumber: string | null; invoiceUrl: string | null; payDeferred?: boolean } }>(
+  ): Promise<ApiResponse<{ data: { status: string; invoiceNumber: string | null; invoiceUrl: string | null; checkoutUrl?: string | null; payDeferred?: boolean } }>> => {
+    return apiPost<{ data: { status: string; invoiceNumber: string | null; invoiceUrl: string | null; checkoutUrl?: string | null; payDeferred?: boolean } }>(
       `/quotes/public/${encodeURIComponent(token)}/accept`,
       { signerName, signerEmail },
       { redirectOnUnauthorized: false }

@@ -26,6 +26,7 @@ import { resolveQuoteLinkOrgGate, PUBLIC_LINK_ORG_UNAVAILABLE, type PublicLinkOr
 import { resolveThemeId, resolvePageSize } from '../services/documentThemes';
 import { resolvePartnerDocumentLocale } from '../services/documentLocale';
 import { resolveDocumentBrand } from '../services/partnerDocumentBrand';
+import { isPayOnAcceptAvailable, resolveAcceptCheckoutUrl } from '../services/quoteAcceptCheckout';
 
 /**
  * Unauthenticated, token-gated quote acceptance surface for prospects without a
@@ -141,11 +142,11 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       const presentationSnap = quote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
       const theme = resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme);
       const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
-      return { quote: toPublicQuoteHeader(quote, totals), blocks, lines: serializedLines, branding: {
+      return { owner: { partnerId: quote.partnerId, orgId: quote.orgId }, payload: { quote: toPublicQuoteHeader(quote, totals), blocks, lines: serializedLines, branding: {
         partnerName: partner?.name ?? 'Proposal', ...resolveDocumentBrand(brand, partner?.settings),
         supportEmail: brand?.supportEmail ?? null, supportPhone: brand?.supportPhone ?? null,
         theme, pageSize,
-      }, presentation: toPublicQuotePresentation(theme, pageSize) };
+      }, presentation: toPublicQuotePresentation(theme, pageSize) } };
     }));
     if (data && 'superseded' in data) {
       // Deliberately withhold the successor: the latest email is the customer's
@@ -157,7 +158,17 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       }, 410);
     }
     if (!data) return c.json({ error: 'Quote not found', code: ERROR_CODES.NOT_FOUND }, 404);
-    return c.json({ data });
+    // #8231: tells the page whether signing goes straight on to card checkout,
+    // so the button can say "Sign & pay". Read AFTER the system context above
+    // closed (it opens its own) and best-effort: a failed read only costs the
+    // copy, never the proposal. The accept route re-checks it before minting.
+    let payOnAccept = false;
+    try {
+      payOnAccept = await isPayOnAcceptAvailable(data.owner.partnerId, data.owner.orgId);
+    } catch (err) {
+      console.error('[quotesPublic] pay-on-accept availability read failed', { quoteId: claims.quoteId, err });
+    }
+    return c.json({ data: { ...data.payload, payOnAccept } });
   } catch (err) {
     if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
     // Fail-closed floor for any retired status that reaches serialization.
@@ -264,7 +275,17 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
     // delay the accept response; both swallow their own errors.
     void autoEmailAcceptedInvoice(res);
     void notifyQuoteOutcome({ quoteId: claims.quoteId, outcome: 'accepted', source: 'customer', signerName: body.signerName });
-    return c.json({ data: { status: res.quote.status, invoiceNumber: null, invoiceUrl, payDeferred, pax8OrderId: res.pax8OrderId } });
+    // #8231 Sign & pay: on top of that durable url, mint the Stripe checkout for
+    // the charge-now amount so the customer goes straight from signing to
+    // payment. It is the PUBLIC-LINK session family (same return urls and
+    // idempotency key as the invoice page's own Pay button), consumed by an
+    // immediate redirect, and Stripe success/cancel both land back on the
+    // durable page — not the retired one-shot payUrl. null → the page falls
+    // back to invoiceUrl (no Stripe, nothing to pay, autopay, mint failure).
+    const checkoutUrl = await resolveAcceptCheckoutUrl(res, invoiceUrl, {
+      ip: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,
+    });
+    return c.json({ data: { status: res.quote.status, invoiceNumber: null, invoiceUrl, checkoutUrl, payDeferred, pax8OrderId: res.pax8OrderId } });
   } catch (err) {
     if (err instanceof QuoteServiceError) {
       if (err.code === 'RESPONSE_CONSUMED') {

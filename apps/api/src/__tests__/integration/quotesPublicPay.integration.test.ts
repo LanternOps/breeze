@@ -76,7 +76,7 @@ function app() {
 const postJson = (path: string, body: unknown) =>
   app().request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
-async function seedSentQuote(opts: { recurringOnly?: boolean } = {}) {
+async function seedSentQuote(opts: { recurringOnly?: boolean; noStripe?: boolean } = {}) {
   return withSystemDbAccessContext(async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
@@ -85,10 +85,12 @@ async function seedSentQuote(opts: { recurringOnly?: boolean } = {}) {
     // the account the mock reports must exist for this partner, and
     // stripe_account_id is globally unique, so each seeded partner gets its own.
     currentAccountId = `acct_qpub_${Math.random().toString(36).slice(2, 10)}`;
-    await db.insert(stripeConnectAccounts).values({
-      partnerId: partner.id, stripeAccountId: currentAccountId,
-      apiKey: 'enc:synthetic', keyLast4: 'test', livemode: false,
-    });
+    if (!opts.noStripe) {
+      await db.insert(stripeConnectAccounts).values({
+        partnerId: partner.id, stripeAccountId: currentAccountId,
+        apiKey: 'enc:synthetic', keyLast4: 'test', livemode: false,
+      });
+    }
     const [q] = await db.insert(quotes).values({ partnerId: partner.id, orgId: org.id, currencyCode: 'USD', status: 'sent', quoteNumber: 'Q-2026-0009' }).returning({ id: quotes.id });
     await db.insert(quoteLines).values(opts.recurringOnly
       ? { quoteId: q!.id, orgId: org.id, sourceType: 'manual', description: 'Managed seat', quantity: '1', unitPrice: '99.00', lineTotal: '99.00', recurrence: 'monthly', taxable: false, customerVisible: true, sortOrder: 0 }
@@ -98,7 +100,7 @@ async function seedSentQuote(opts: { recurringOnly?: boolean } = {}) {
   });
 }
 
-type AcceptBody = { data: { status: string; invoiceUrl: string | null; payDeferred?: boolean } };
+type AcceptBody = { data: { status: string; invoiceUrl: string | null; checkoutUrl: string | null; payDeferred?: boolean } };
 
 describe('public accept → durable invoice link → pay', () => {
   beforeEach(() => {
@@ -116,13 +118,75 @@ describe('public accept → durable invoice link → pay', () => {
     expect(body.data.status).toBe('converted');
     expect(body.data.invoiceUrl).toMatch(/\/invoice\/[A-Za-z0-9_-]{40,}$/);
     expect(body.data.payDeferred).toBeFalsy();
-    // No Stripe call at accept time — payment moved to the public invoice surface.
-    expect(sessionsCreateMock).not.toHaveBeenCalled();
     const [inv] = await withSystemDbAccessContext(() =>
       db.select({ hash: invoices.publicLinkTokenHash, exp: invoices.publicLinkExpiresAt })
         .from(invoices).innerJoin(quotes, eq(quotes.convertedInvoiceId, invoices.id)).where(eq(quotes.id, quoteId)));
     expect(inv!.hash).toMatch(/^[0-9a-f]{64}$/);
     expect(inv!.exp!.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  // #8231 — Sign & pay: the accept goes straight on to Stripe checkout for the
+  // charge-now amount, and the session is the PUBLIC-LINK family (spec §5/§8):
+  // session-id-only return urls that land back on the durable page, and the same
+  // idempotency key the durable page's own Pay button uses — one payable session,
+  // not a second competing link.
+  runDb('accept mints a public-link-family checkout for the charge-now amount', async () => {
+    const { token } = await seedSentQuote();
+    const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Pat Prospect' });
+    expect(res.status).toBe(200);
+    const body = await res.json() as AcceptBody;
+    expect(body.data.invoiceUrl).toMatch(/\/invoice\/[A-Za-z0-9_-]{40,}$/);
+    expect(body.data.checkoutUrl).toBe('https://checkout.stripe.com/c/pay/pub');
+    expect(sessionsCreateMock).toHaveBeenCalledTimes(1);
+    const [args, opts] = sessionsCreateMock.mock.calls[0]!;
+    expect(args.line_items[0].price_data.unit_amount).toBe(25000);
+    const invToken = body.data.invoiceUrl!.split('/invoice/')[1]!;
+    expect(args.success_url).toContain('/invoice/return?session_id={CHECKOUT_SESSION_ID}');
+    expect(args.cancel_url).toContain('/invoice/return?canceled=1&session_id={CHECKOUT_SESSION_ID}');
+    expect(args.success_url).not.toContain(invToken);
+    expect(args.cancel_url).not.toContain(invToken);
+
+    // Pressing Pay on the durable page afterwards replays the SAME request:
+    // identical params + idempotency key, so Stripe hands back the same session.
+    const pay = await postJson(`/invoices/public/${invToken}/pay`, {});
+    expect(pay.status).toBe(200);
+    const [payArgs, payOpts] = sessionsCreateMock.mock.calls[1]!;
+    expect(payOpts.idempotencyKey).toBe(opts.idempotencyKey);
+    expect(payArgs).toEqual(args);
+  });
+
+  runDb('accept falls back to the invoice page when the partner has no Stripe connection', async () => {
+    const { token } = await seedSentQuote({ noStripe: true });
+    const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Pat Prospect' });
+    expect(res.status).toBe(200);
+    const body = await res.json() as AcceptBody;
+    expect(body.data.invoiceUrl).toMatch(/\/invoice\//);
+    expect(body.data.checkoutUrl).toBeNull();
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
+  });
+
+  runDb('accept falls back to the invoice page when the checkout mint fails', async () => {
+    sessionsCreateMock.mockRejectedValue(new Error('stripe is down'));
+    const { quoteId, token } = await seedSentQuote();
+    const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Pat Prospect' });
+    expect(res.status).toBe(200);
+    const body = await res.json() as AcceptBody;
+    expect(body.data.status).toBe('converted');
+    expect(body.data.invoiceUrl).toMatch(/\/invoice\//);
+    expect(body.data.checkoutUrl).toBeNull();
+    expect(body.data.payDeferred).toBeFalsy();
+    const [q] = await withSystemDbAccessContext(() => db.select({ status: quotes.status }).from(quotes).where(eq(quotes.id, quoteId)));
+    expect(q!.status).toBe('converted');
+  });
+
+  runDb('public quote GET advertises payOnAccept only when the partner can take online payment', async () => {
+    const withStripe = await seedSentQuote();
+    const a = await app().request(`/quotes/public/${withStripe.token}`);
+    expect(a.status).toBe(200);
+    expect(((await a.json()) as { data: { payOnAccept: boolean } }).data.payOnAccept).toBe(true);
+    const without = await seedSentQuote({ noStripe: true });
+    const b = await app().request(`/quotes/public/${without.token}`);
+    expect(((await b.json()) as { data: { payOnAccept: boolean } }).data.payOnAccept).toBe(false);
   });
 
   runDb('the returned link pays: public GET resolves and /pay mints a session-id-only checkout', async () => {
@@ -171,6 +235,8 @@ describe('public accept → durable invoice link → pay', () => {
     const body = await res.json() as AcceptBody;
     expect(body.data.status).toBe('converted');
     expect(body.data.invoiceUrl).toBeNull();
+    expect(body.data.checkoutUrl).toBeNull();
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
     expect(body.data.payDeferred).toBeFalsy();
     const [q] = await withSystemDbAccessContext(() => db.select({ status: quotes.status }).from(quotes).where(eq(quotes.id, quoteId)));
     expect(q!.status).toBe('converted');
@@ -188,6 +254,9 @@ describe('public accept → durable invoice link → pay', () => {
     expect(body.data.status).toBe('converted');
     expect(body.data.invoiceUrl).toBeNull();
     expect(body.data.payDeferred).toBe(true);
+    // No durable page to return to → no checkout either.
+    expect(body.data.checkoutUrl).toBeNull();
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
     const [q] = await withSystemDbAccessContext(() => db.select({ status: quotes.status }).from(quotes).where(eq(quotes.id, quoteId)));
     expect(q!.status).toBe('converted'); // accept committed despite the failure
   });

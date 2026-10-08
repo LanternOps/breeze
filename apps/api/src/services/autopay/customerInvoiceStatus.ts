@@ -13,6 +13,21 @@ const OPEN = new Set(['sent', 'partially_paid', 'overdue']);
 const ON_HOLD = new Set(['charging_disabled', 'stripe_unavailable']);
 
 /**
+ * Whether the org pays by automatic payments: an active enrollment with a usable
+ * method and nothing needing attention. ONE predicate shared by the invoice pages
+ * (which then stop offering automatic-payment setup) and the public quote accept
+ * (#8231: an enrolled client is not sent to card checkout — the invoice page tells
+ * them it will be paid automatically). The caller has authorized the org.
+ */
+export async function readOrgAutopayEnrollment(db: Tx, orgId: string) {
+  const [enrollment] = await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId, orgId)).limit(1);
+  const method = enrollment ? await getAutopayMethod(db, orgId) : null;
+  const enrolled = enrollment?.status === 'active' && !enrollment.needsAttentionReason
+    && !!method && (method.status === 'active' || method.status === 'pending_verification');
+  return { enrollment, method, enrolled };
+}
+
+/**
  * The client's view of this invoice's automatic payment, for the public and portal
  * invoice pages: "will be paid automatically on <date> with <method>", processing,
  * waiting on the bank, delayed, skipped, not included, paid automatically.
@@ -27,10 +42,7 @@ export async function getCustomerInvoiceAutopay(db: Tx, ids: { invoiceId: string
   : Promise<{ enrolled: boolean; status: CustomerInvoiceAutopayStatus | null }> {
   const [invoice] = await db.select().from(invoices).where(and(eq(invoices.id, ids.invoiceId), eq(invoices.orgId, ids.orgId))).limit(1);
   if (!invoice || invoice.orgId !== ids.orgId) return { enrolled: false, status: null };
-  const [enrollment] = await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId, invoice.orgId)).limit(1);
-  const method = enrollment ? await getAutopayMethod(db, invoice.orgId) : null;
-  const enrolled = enrollment?.status === 'active' && !enrollment.needsAttentionReason
-    && !!method && (method.status === 'active' || method.status === 'pending_verification');
+  const { enrollment, method, enrolled } = await readOrgAutopayEnrollment(db, invoice.orgId);
   const [schedule] = await db.select().from(invoiceAutopaySchedules).where(and(
     eq(invoiceAutopaySchedules.invoiceId, invoice.id), eq(invoiceAutopaySchedules.orgId, invoice.orgId))).limit(1);
   const inFlight = await readInFlightCollection(db, invoice.id);
