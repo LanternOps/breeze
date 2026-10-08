@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { discoveredAssetSourceEnum } from '../../db/schema/discovery';
+import { deviceStatusEnum } from '../../db/schema/devices';
 
 export const PARTNER_EXPORT_RESOURCES = [
   'organizations',
@@ -17,6 +18,7 @@ export const PARTNER_EXPORT_RESOURCES = [
   'custom-field-values',
   'alerts',
   'tickets',
+  'device-status',
 ] as const;
 
 export const partnerExportResourceSchema = z.enum(PARTNER_EXPORT_RESOURCES);
@@ -862,6 +864,39 @@ export const partnerTicketCommentListSchema = z.object({
   schemaVersion: z.literal('1'),
   ticketId: z.string().uuid(),
   data: z.array(partnerTicketCommentListItemSchema).max(500),
+  nextCursor: partnerExportCursorTokenSchema.nullable(),
+  hasMore: z.boolean(),
+  blocked: z.array(partnerExportBlockedRecordSchema).max(500).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.hasMore !== (value.nextCursor !== null)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['nextCursor'], message: 'nextCursor must be present exactly when hasMore is true' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Device status feed (device-status:read, #7577). LIVE state read at request
+// time — deliberately NOT part of the material-change export: no revision, no
+// sourceUpdatedAt, no snapshotAt/watermark, and no partner-export read locks.
+// Heartbeats would turn every row over constantly (see #6698).
+// ---------------------------------------------------------------------------
+// Same enum the console and MCP query_devices read (devices.status).
+export const PARTNER_DEVICE_STATUSES = deviceStatusEnum.enumValues;
+
+export const partnerDeviceStatusRecordSchema = z.object({
+  deviceId: z.string().uuid(),
+  orgId: z.string().uuid(),
+  siteId: z.string().uuid(),
+  status: z.enum(PARTNER_DEVICE_STATUSES),
+  lastSeenAt: partnerExportTimestampSchema.nullable(),
+  // 2x the varchar(50) column: Postgres counts characters, Zod UTF-16 units.
+  agentVersion: z.string().max(100),
+}).strict();
+
+export type PartnerDeviceStatusRecord = z.infer<typeof partnerDeviceStatusRecordSchema>;
+
+export const partnerDeviceStatusEnvelopeSchema = z.object({
+  schemaVersion: z.literal('1'),
+  data: z.array(partnerDeviceStatusRecordSchema).max(500),
   nextCursor: partnerExportCursorTokenSchema.nullable(),
   hasMore: z.boolean(),
   blocked: z.array(partnerExportBlockedRecordSchema).max(500).optional(),

@@ -1,10 +1,11 @@
-import { topologyHeartbeat } from '../../services/topology/heartbeat';
+import { topologyHeartbeat, topologyHeartbeatWithoutMaterialization } from '../../services/topology/heartbeat';
 import { loadAgentTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from '../../services/topology/flags';
 import { Hono } from 'hono';
 import { timingSafeEqual } from 'node:crypto';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '../../lib/validation';
 import { and, eq, notInArray } from 'drizzle-orm';
+import { loadDeviceHierarchy, withHierarchy, type DeviceHierarchy } from '../../services/deviceHierarchy';
 import { db, runOutsideDbContext, withDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import {
   maybeDispatchEditionMigration,
@@ -43,11 +44,15 @@ import {
   buildMonitoringConfigUpdate,
   buildHelperConfigUpdate,
   buildPamConfigUpdate,
+  getOrgHelperSettings,
+  readCachedHelperSettings,
+  resolveOrgPamFallback,
   buildOnedriveHelperConfigUpdate,
   buildPatchSourceConfigUpdate,
   buildWarrantyConfigUpdate,
   getOrgAgentUpdateConfigCached,
   resolvePinnedUpgradeTarget,
+  resolvePinnedUpgradeTargets,
   agentAcceptsServedEdition,
   shouldAutoApplyAgentReportedDeviceRole,
   type AgentVersionPins,
@@ -55,6 +60,8 @@ import {
   type HelperSettings,
 } from './helpers';
 import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
+import { DeferredCacheFills } from '../../services/hotPathCache';
+import { orgHelperSettingsCache, orgPamFallbackCache, orgPolicyProbeCache } from '../../services/agentOrgSettingsCache';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
@@ -1725,6 +1732,29 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // on) alerts again instead of being consumed by the first episode.
   warnedEditionRecoveryWithheldDevices.delete(device.id);
 
+  // #8053 W1a-1 — the agent, helper and watchdog offers below share one guard,
+  // so their three agent_versions reads are one statement. A failure leaves
+  // every target null: no offer this beat, the same outcome each per-block
+  // catch gave (the first failed read aborted the transaction for the rest).
+  let upgradeTargets: Map<string, string | null> | null = null;
+  if (normalizedArch && acceptsServedEdition) {
+    try {
+      upgradeTargets = await resolvePinnedUpgradeTargets({
+        platform: device.osType,
+        architecture: normalizedArch,
+        agentId,
+        requests: [
+          { component: 'agent', pin: versionPins.agent },
+          { component: 'helper', pin: null },
+          { component: 'watchdog', pin: versionPins.watchdog },
+        ],
+      });
+    } catch (err) {
+      console.error(`[agents] failed to resolve upgrade targets for ${agentId}:`, err);
+      captureException(err);
+    }
+  }
+
   if (normalizedArch && !acceptsServedEdition) {
     warnEditionOfferWithheld({
       deviceId: device.id,
@@ -1791,13 +1821,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // Resolve the effective target: the tenant's agent pin (issue #2124) when
       // set, else the globally promoted latest. Fails closed if the pinned
       // version has no build for this platform/arch (returns null → no upgrade).
-      const targetVersion = await resolvePinnedUpgradeTarget({
-        component: 'agent',
-        platform: device.osType,
-        architecture: normalizedArch,
-        pin: versionPins.agent,
-        agentId,
-      });
+      const targetVersion = upgradeTargets?.get('agent') ?? null;
 
       if (targetVersion) {
         // Dev builds (dev-*) are local dev-push binaries — never auto-upgrade
@@ -1833,13 +1857,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // the agent/watchdog channels (#4072 — replaces an inline query that
       // was not edition-scoped). The helper channel is unpinnable, hence
       // pin: null — which is exactly the isLatest lookup the inline query did.
-      const latestHelperVersion = await resolvePinnedUpgradeTarget({
-        component: 'helper',
-        platform: device.osType,
-        architecture: normalizedArch,
-        pin: null,
-        agentId,
-      });
+      const latestHelperVersion = upgradeTargets?.get('helper') ?? null;
 
       if (latestHelperVersion) {
         // If agent reports no helper version, always upgrade (bootstraps first install
@@ -1863,13 +1881,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     try {
       // Effective watchdog target: the tenant's watchdog pin (issue #2124) when
       // set, else the globally promoted latest. Independent of the agent pin.
-      const targetWatchdog = await resolvePinnedUpgradeTarget({
-        component: 'watchdog',
-        platform: device.osType,
-        architecture: normalizedArch,
-        pin: versionPins.watchdog,
-        agentId,
-      });
+      const targetWatchdog = upgradeTargets?.get('watchdog') ?? null;
 
       // Prefer the version the agent just reported over the stored column so a
       // successful swap stops the re-send on the VERY NEXT heartbeat (#1802),
@@ -2028,10 +2040,19 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   } else {
     try {
       const resolvedFlags = topologyFlags;
-      const topology = await withResolvedTopologyFlags(
-        { orgId: agent.orgId, flags: resolvedFlags },
-        () => db.transaction(() => topologyHeartbeat(device, data)),
-      );
+      // #8053 W1a-1 — with materialization off, negotiation can only answer
+      // "not accepted" and ingest nothing; computing that needs no DB and no
+      // savepoint. Its one refusal (an ephemeral, suspended or tokenless
+      // device) is re-derived from `device` and thrown the same way, so the
+      // catch below — collection_unavailable + Sentry — is unchanged.
+      // Note: this skip path does not take activeDevice()'s FOR KEY SHARE NOWAIT lock,
+      // so under lock contention it returns the real receipt instead of collection_unavailable.
+      const topology = resolvedFlags.materialization
+        ? await withResolvedTopologyFlags(
+          { orgId: agent.orgId, flags: resolvedFlags },
+          () => db.transaction(() => topologyHeartbeat(device, data)),
+        )
+        : topologyHeartbeatWithoutMaterialization(device, data);
       mergedConfigUpdate.networkContext = topology.config;
       networkContextReceipt = topology.receipt;
     } catch (error) {
@@ -2184,15 +2205,41 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // pivot tenants (same guarantee as the policy-probe pattern above). The
   // onedrive_device_state upsert happened inside scoped (ingest), and this
   // build runs later, so the ingest-before-delivery ordering is preserved.
+  // #8053 W1a-1 — the device's policy hierarchy (device, org partner + type,
+  // site, group ids), read ONCE for the whole beat and passed explicitly to
+  // every post-commit resolver below. Before this, each of them re-read it:
+  // 33 statements per beat.
+  //
+  // It is read HERE, as the first statement of the OneDrive system context,
+  // rather than taken from the core device row or the agent context, because:
+  //   - the agent context carries no organization type (featureConfigResolver
+  //     and monitorResolver both need it);
+  //   - the core row predates this beat's own `UPDATE devices`, which can
+  //     change deviceRole — and role-filtered policies must see the new role,
+  //     as they always have (these resolvers ran after commit);
+  //   - the resolvers' own reads ran in SYSTEM scope; this does too, so RLS
+  //     visibility is identical.
+  // It is keyed on `scoped.deviceId` — the device the agent authenticated as,
+  // read in the org context by agent.deviceId — and every resolver re-checks
+  // that id (hierarchyFor throws on a mismatch).
+  //
+  // If the hierarchy load fails or the device's org changed, `beatHierarchy`
+  // stays null and every resolver loads its own, exactly as before this
+  // change; a later failure in the OneDrive build does not clear an
+  // already-loaded hierarchy.
+  let beatHierarchy = null as DeviceHierarchy | null;
   let onedriveSettings: OnedriveConfigUpdate | null = null;
   try {
-    onedriveSettings = await withSystemDbAccessContext(() =>
-      buildOnedriveHelperConfigUpdate(scoped.deviceId)
-    );
+    onedriveSettings = await withSystemDbAccessContext(async () => {
+      const loaded = await loadDeviceHierarchy(scoped.deviceId);
+      beatHierarchy = loaded && loaded.orgId === scoped.deviceOrgId ? loaded : null;
+      return buildOnedriveHelperConfigUpdate(scoped.deviceId, withHierarchy(beatHierarchy));
+    });
   } catch (err) {
-    console.error(`[agents] failed to build onedrive_helper config update for ${agentId}:`, err);
+    console.error(`[agents] failed to load the device hierarchy or build onedrive_helper config update for ${agentId}:`, err);
     captureException(err);
   }
+  const hierarchyOpts = withHierarchy(beatHierarchy);
   const onedriveConfigUpdate = onedriveSettings
     ? { onedrive_helper_settings: onedriveSettings }
     : null;
@@ -2264,15 +2311,29 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     hardwareMonitoringSettings: null,
     timeSyncSettings: null,
   };
+  // #8053 W1a-1 — per-org reads served from 60 s process caches. A miss loads
+  // inside the shared system context below, as before; the fills are stored
+  // only after that context commits (orgCacheFills.flush()).
+  const orgCacheFills = new DeferredCacheFills();
+  const probePartnerOpts = beatHierarchy?.org ? { partnerId: beatHierarchy.org.partnerId } : undefined;
   try {
     policyConfigs = await withSystemDbAccessContext(async (): Promise<PolicyConfigUpdates> => {
       // #1105/#4673 W03: `buildHelperConfigUpdate` touches no partner-AXIS
       // table and would be a safe drop-in for an org-scoped context; it shares
       // this system one so the heartbeat's hoists convert to org scope as ONE
       // reviewable change. See the note at the `currentPartnerId` assignment.
+      // The Redis read runs BEFORE the savepoint, so a hit costs no SAVEPOINT
+      // statement. A miss resolves inside its own savepoint, as before (a SQL
+      // error there must not abort the shared transaction — see above).
       try {
-        helperSettings = await withDbTransaction(() =>
-          buildHelperConfigUpdate(scoped.deviceId, scoped.deviceOrgId),
+        const cachedHelper = await readCachedHelperSettings(scoped.deviceId);
+        helperSettings = cachedHelper ?? await withDbTransaction(() =>
+          buildHelperConfigUpdate(scoped.deviceId, scoped.deviceOrgId, {
+            ...hierarchyOpts,
+            skipCacheRead: true,
+            loadOrgHelperSettings: (orgId) =>
+              orgCacheFills.through(orgHelperSettingsCache, orgId, () => getOrgHelperSettings(orgId)),
+          }),
         );
       } catch (err) {
         console.error(`[agents] failed to read helper settings for ${agentId}:`, err);
@@ -2280,9 +2341,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
 
       try {
-        policyProbeConfig = await withDbTransaction(() =>
-          buildPolicyProbeConfigUpdate(scoped.deviceOrgId),
-        );
+        const cachedProbe = orgPolicyProbeCache.peek(scoped.deviceOrgId);
+        policyProbeConfig = cachedProbe !== undefined
+          ? cachedProbe
+          : await withDbTransaction(() =>
+            orgCacheFills.through(orgPolicyProbeCache, scoped.deviceOrgId, () =>
+              buildPolicyProbeConfigUpdate(scoped.deviceOrgId, probePartnerOpts)),
+          );
       } catch (err) {
         console.error(`[agents] failed to build policy probe config update for ${agentId}:`, err);
         captureException(err);
@@ -2301,28 +2366,32 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // the agent keeps collecting on stale defaults and nothing surfaces it.
       // A stdout line is not an alerting channel.
       try {
-        eventLogSettings = await buildEventLogConfigUpdate(scoped.deviceId);
+        eventLogSettings = await buildEventLogConfigUpdate(scoped.deviceId, hierarchyOpts);
       } catch (err) {
         console.error(`[agents] failed to build event log config update for ${agentId}:`, err);
         captureException(err);
       }
 
       try {
-        hardwareMonitoringSettings = await buildHardwareMonitoringConfigUpdate(scoped.deviceId);
+        hardwareMonitoringSettings = await buildHardwareMonitoringConfigUpdate(scoped.deviceId, hierarchyOpts);
       } catch (err) {
         console.error(`[agents] failed to build hardware monitoring config update for ${agentId}:`, err);
         captureException(err);
       }
 
       try {
-        monitoringSettings = await buildMonitoringConfigUpdate(scoped.deviceId) as Record<string, unknown> | null;
+        monitoringSettings = await buildMonitoringConfigUpdate(scoped.deviceId, hierarchyOpts) as Record<string, unknown> | null;
       } catch (err) {
         console.error(`[agents] failed to build monitoring config update for ${agentId}:`, err);
         captureException(err);
       }
 
       try {
-        pamSettings = await buildPamConfigUpdate(scoped.deviceId);
+        pamSettings = await buildPamConfigUpdate(scoped.deviceId, {
+          ...hierarchyOpts,
+          loadOrgPamFallback: (orgId) =>
+            orgCacheFills.through(orgPamFallbackCache, orgId, () => resolveOrgPamFallback(orgId)),
+        });
       } catch (err) {
         // Opt-in default means a resolver failure leaves pamSettings null and we
         // send uacInterceptionEnabled:false below. For an org that *enforces* PAM
@@ -2341,7 +2410,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // a transient failure never reverts an endpoint already under enforcement;
       // a successful resolve with no patch policy returns false → agent reverts.
       try {
-        patchSourceSettings = await buildPatchSourceConfigUpdate(scoped.deviceId);
+        patchSourceSettings = await buildPatchSourceConfigUpdate(scoped.deviceId, hierarchyOpts);
       } catch (err) {
         console.error(`[agents] failed to build patch_source config update for ${agentId}:`, err);
         captureException(err);
@@ -2356,7 +2425,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // resolver's SQL error aborts the transaction, which makes this one throw
       // too — and throwing here only ever omits the block, never revokes.
       try {
-        warrantySettings = await buildWarrantyConfigUpdate(scoped.deviceId);
+        warrantySettings = await buildWarrantyConfigUpdate(scoped.deviceId, hierarchyOpts);
       } catch (err) {
         console.error(`[agents] failed to build warranty config update for ${agentId}:`, err);
         captureException(err);
@@ -2368,7 +2437,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // its SQL error can never abort the shared transaction before pam
       // resolves and drop uacInterceptionEnabled to false.
       try {
-        timeSyncSettings = await buildTimeSyncConfigUpdate(scoped.deviceId);
+        timeSyncSettings = await buildTimeSyncConfigUpdate(scoped.deviceId, hierarchyOpts);
       } catch (err) {
         console.error(`[agents] failed to build time sync config update for ${agentId}:`, err);
         captureException(err);
@@ -2384,6 +2453,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         timeSyncSettings,
       };
     });
+    // Stored only now that the shared context has committed (fillIfCurrent
+    // refuses to run inside one); a failed commit throws past this line.
+    orgCacheFills.flush();
   } catch (err) {
     // Transaction setup/commit failure — see the note above. Every resolver's
     // documented "no policy this cycle" fallback already applies because

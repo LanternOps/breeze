@@ -229,6 +229,26 @@ function mockSelectOnce(result: unknown) {
   dbMocks.selectMock.mockReturnValueOnce(createSelectChain(result));
 }
 
+const scriptUpdateCalls: Array<Record<string, unknown>> = [];
+// #7276: the script path's atomic claim (and, on a refused dispatch, its release).
+function mockScriptClaim(claimed = true) {
+  dbMocks.updateMock.mockImplementationOnce(() => ({
+    set: vi.fn((set: Record<string, unknown>) => {
+      scriptUpdateCalls.push(set);
+      return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(claimed ? [{ id: baseSuggestion.id }] : []) }) };
+    }),
+  }));
+}
+// Release is awaited without .returning().
+function mockScriptRelease() {
+  dbMocks.updateMock.mockImplementationOnce(() => ({
+    set: vi.fn((set: Record<string, unknown>) => {
+      scriptUpdateCalls.push(set);
+      return { where: vi.fn().mockResolvedValue(undefined) };
+    }),
+  }));
+}
+
 function mockSuggestionLoad(suggestion: Record<string, unknown>) {
   dbMocks.selectMock.mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
@@ -276,12 +296,34 @@ function mockInsertValuesOnly() {
   return { values };
 }
 
+function admittedForRace() {
+  return {
+    ok: true,
+    admission: {
+      requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      status: 'queued',
+      targets: [{
+        requestedDeviceId: baseSuggestion.deviceId,
+        admission: 'admitted',
+        executionId: '66666666-6666-4666-8666-666666666666',
+        commandId: '77777777-7777-4777-8777-777777777777',
+      }],
+    },
+    script: { id: baseSuggestion.scriptId, name: 'Disk Cleanup' },
+    ignoredParameters: [],
+    triggerType: 'manual',
+    runAs: 'system',
+    auditOrgId: baseSuggestion.orgId,
+  };
+}
+
 describe('remediation suggestion routes', () => {
   let app: Hono;
 
   beforeEach(() => {
     vi.clearAllMocks();
     currentPermissions = undefined;
+    scriptUpdateCalls.length = 0;
     dbMocks.dbContextState.depth = 0;
     dbMocks.dbContextState.events = [];
     app = new Hono();
@@ -911,6 +953,7 @@ describe('remediation suggestion routes', () => {
     const scriptExecutionId = '66666666-6666-4666-8666-666666666666';
     const depths: Record<string, number> = {};
     mockSuggestionLoad(accepted);
+    mockScriptClaim();
     dbMocks.executeScriptOnDevicesMock.mockResolvedValueOnce({
       ok: true,
       admission: {
@@ -1034,6 +1077,7 @@ describe('remediation suggestion routes', () => {
     it('sends only after the context that created the execution rows committed', async () => {
       const accepted = { ...baseSuggestion, status: 'accepted' };
       mockSuggestionLoad(accepted);
+      mockScriptClaim();
       // Stands in for executeScriptOnDevices' contract (#7103, pinned in
       // scriptExecution.commitBeforeSend.test.ts): rows are created through
       // the runner when one is given, else inline; the send follows.
@@ -1065,6 +1109,7 @@ describe('remediation suggestion routes', () => {
     it('passes a runner that opens the caller\'s own DB access context', async () => {
       const accepted = { ...baseSuggestion, status: 'accepted' };
       mockSuggestionLoad(accepted);
+      mockScriptClaim();
       dbMocks.executeScriptOnDevicesMock.mockResolvedValueOnce(admitted());
       mockExecutedUpdate(accepted);
 
@@ -1083,6 +1128,7 @@ describe('remediation suggestion routes', () => {
 
     it('loads and updates the suggestion in contexts, never holding one across the service', async () => {
       const accepted = { ...baseSuggestion, status: 'accepted' };
+      mockScriptClaim();
       dbMocks.selectMock.mockImplementationOnce(() => {
         depths.load = dbMocks.dbContextState.depth;
         return {
@@ -1115,6 +1161,7 @@ describe('remediation suggestion routes', () => {
     it('returns 500 without feedback or audit when the link update matches no row', async () => {
       const accepted = { ...baseSuggestion, status: 'accepted' };
       mockSuggestionLoad(accepted);
+      mockScriptClaim();
       dbMocks.executeScriptOnDevicesMock.mockResolvedValueOnce(admitted());
       dbMocks.updateMock.mockReturnValueOnce({
         set: vi.fn().mockReturnValue({
@@ -1135,9 +1182,99 @@ describe('remediation suggestion routes', () => {
     });
   });
 
+  it('#7276: a lost claim race is a 409 and the script is never dispatched', async () => {
+    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
+    mockScriptClaim(false);
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'already_dispatching' });
+    expect(dbMocks.executeScriptOnDevicesMock).not.toHaveBeenCalled();
+    expect(dbMocks.emitFeedbackMock).not.toHaveBeenCalled();
+    expect(dbMocks.updateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('#7276: a service refusal (ok:false) releases the claim and passes the status through', async () => {
+    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
+    mockScriptClaim();
+    mockScriptRelease();
+    dbMocks.executeScriptOnDevicesMock.mockResolvedValueOnce({ ok: false, error: 'forbidden', status: 403 });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(scriptUpdateCalls).toHaveLength(2);
+    expect(scriptUpdateCalls[1]).toMatchObject({ executedBy: null, executedAt: null });
+  });
+
+  it('#7276: an admitted target with no executionId KEEPS the claim (command may have left)', async () => {
+    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
+    mockScriptClaim();
+    const r = admittedForRace();
+    (r.admission.targets[0] as { executionId: string | null }).executionId = null;
+    dbMocks.executeScriptOnDevicesMock.mockResolvedValueOnce(r);
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(500);
+    expect(scriptUpdateCalls).toHaveLength(1);
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
+  it('#7276: a dispatch that throws KEEPS the claim (no release), so a retry cannot re-send', async () => {
+    mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
+    mockScriptClaim();
+    dbMocks.executeScriptOnDevicesMock.mockRejectedValueOnce(new Error('boom'));
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(500);
+    expect(scriptUpdateCalls).toHaveLength(1);
+    expect(dbMocks.updateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('#7276: two concurrent /execute calls dispatch exactly once', async () => {
+    const accepted = { ...baseSuggestion, status: 'accepted' };
+    mockSuggestionLoad(accepted);
+    mockSuggestionLoad(accepted);
+    mockScriptClaim(true);  // winner
+    mockScriptClaim(false); // loser (row lock, WHERE re-evaluated)
+    dbMocks.executeScriptOnDevicesMock.mockResolvedValue(admittedForRace());
+    dbMocks.updateMock.mockImplementationOnce(() => ({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ ...accepted, status: 'executed', scriptExecutionId: '66666666-6666-4666-8666-666666666666' }]),
+        }),
+      }),
+    }));
+    const call = () => app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+    const [a, b] = await Promise.all([call(), call()]);
+
+    expect([a.status, b.status].sort()).toEqual([201, 409]);
+    expect(dbMocks.executeScriptOnDevicesMock).toHaveBeenCalledTimes(1);
+  });
+
   it('returns 422 for rejected admission without mutating or auditing the suggestion', async () => {
     const accepted = { ...baseSuggestion, status: 'accepted' };
     mockSuggestionLoad(accepted);
+    mockScriptClaim();
+    mockScriptRelease();
     dbMocks.executeScriptOnDevicesMock.mockResolvedValueOnce({
       ok: true,
       admission: {
@@ -1163,7 +1300,10 @@ describe('remediation suggestion routes', () => {
 
     expect(res.status).toBe(422);
     expect(await res.json()).toEqual({ admission: 'denied', reasonCode: 'site_access_denied' });
-    expect(dbMocks.updateMock).not.toHaveBeenCalled();
+    // Claim then release (nothing was dispatched); never a link/executed write.
+    expect(scriptUpdateCalls).toHaveLength(2);
+    expect(scriptUpdateCalls[1]).toMatchObject({ executedBy: null, executedAt: null });
+    expect(scriptUpdateCalls.some((c) => 'scriptExecutionId' in c || c.status === 'executed')).toBe(false);
     expect(dbMocks.emitFeedbackMock).not.toHaveBeenCalled();
     expect(dbMocks.writeRouteAuditMock).not.toHaveBeenCalled();
     expect(dbMocks.recordOutcomeMock).not.toHaveBeenCalled();
@@ -1220,6 +1360,7 @@ describe('remediation suggestion routes', () => {
     const scriptExecutionId = '66666666-6666-4666-8666-666666666666';
 
     mockSuggestionLoad(accepted);
+    mockScriptClaim();
     mockElevationLoad({
       id: elevationRequestId,
       orgId: baseSuggestion.orgId,

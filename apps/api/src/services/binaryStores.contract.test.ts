@@ -113,14 +113,16 @@ import {
 } from './installerBuilder';
 import { HELPER_FILENAMES, VIEWER_FILENAMES } from './binarySource';
 
-// Every S3-offloaded download in local mode, with the file it reads.
+// Every S3-offloaded download in local mode, with the file it reads and how
+// the object reaches the caller: a presigned 302, or streamed from the API
+// origin (the watchdog, #7576).
 const COMPONENT_ROUTES = [
-  { component: 'agent', path: '/download/linux/amd64', file: 'breeze-agent-linux-amd64' },
-  { component: 'agent (windows)', path: '/download/windows/amd64', file: 'breeze-agent-windows-amd64.exe' },
-  { component: 'watchdog', path: '/download/watchdog/linux/amd64', file: 'breeze-watchdog-linux-amd64' },
-  { component: 'backup', path: '/download/backup/linux/amd64', file: 'breeze-backup-linux-amd64' },
-  { component: 'user-helper', path: '/download/user-helper/windows/amd64', file: 'breeze-user-helper-windows-amd64.exe' },
-  { component: 'recovery-iso', path: '/download/recovery-iso/linux/amd64', file: 'breeze-recovery-linux-amd64.iso' },
+  { component: 'agent', path: '/download/linux/amd64', file: 'breeze-agent-linux-amd64', delivery: 'redirect' },
+  { component: 'agent (windows)', path: '/download/windows/amd64', file: 'breeze-agent-windows-amd64.exe', delivery: 'redirect' },
+  { component: 'watchdog', path: '/download/watchdog/linux/amd64', file: 'breeze-watchdog-linux-amd64', delivery: 'stream' },
+  { component: 'backup', path: '/download/backup/linux/amd64', file: 'breeze-backup-linux-amd64', delivery: 'redirect' },
+  { component: 'user-helper', path: '/download/user-helper/windows/amd64', file: 'breeze-user-helper-windows-amd64.exe', delivery: 'redirect' },
+  { component: 'recovery-iso', path: '/download/recovery-iso/linux/amd64', file: 'breeze-recovery-linux-amd64.iso', delivery: 'redirect' },
 ] as const;
 
 const ENV_KEYS = [
@@ -199,8 +201,16 @@ describe.each([
     expect(unsynced, 'S3 keys read by a download path that syncBinaries() never writes').toEqual([]);
   });
 
-  it.each(COMPONENT_ROUTES)('$component download redirects to the object sync uploaded', async ({ path, file }) => {
+  it.each(COMPONENT_ROUTES)('$component download serves the object sync uploaded ($delivery)', async ({ path, file, delivery }) => {
     const res = await downloadRoutes.request(path);
+    if (delivery === 'stream') {
+      expect(res.status).toBe(200);
+      expect(res.headers.get('location')).toBeNull();
+      expect(Buffer.from(await res.arrayBuffer()).equals(FILE_BYTES)).toBe(true);
+      expect(bucket.reads).toHaveLength(1);
+      expect(bucket.reads[0]!.endsWith(`/${file}`)).toBe(true);
+      return;
+    }
     expect(res.status).toBe(302);
     const location = res.headers.get('location') ?? '';
     expect(location.startsWith('https://bucket.test/')).toBe(true);

@@ -11,11 +11,9 @@
  */
 import './setup';
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { getTestDb } from './setup';
+import { replayMigration } from './replayMigration';
 import { partners, organizations, contracts } from '../../db/schema';
 
 const MIGRATION = '2026-10-08-100200-contract-lines-allowance-overage.sql';
@@ -144,10 +142,10 @@ describe('contract_lines allowance invariants (real DB) #3205 W04', () => {
 
   it('re-applying the migration is a no-op and the CHECK still fires', async () => {
     const f = await seed();
-    const migrationSql = readFileSync(join(__dirname, '../../../migrations/', MIGRATION), 'utf8');
-    // getTestDb() is the superuser client — the same shape the other migration
-    // replay tests use for DDL.
-    await getTestDb().execute(sql.raw(migrationSql));
+    // replayMigration, not a bare execute: #4547 re-adds this same CHECK in a
+    // later file (with hour_block in its type list), and a bare replay would
+    // leave the narrower definition in force for every later suite in the shard.
+    await replayMigration(MIGRATION);
     await expectRejected(() => insertLine(f, { lineType: 'per_device', includedQuantity: I }), 'after replay');
     await expect(insertLine(f, { lineType: 'per_device', includedQuantity: I, overageMode: 'flag' })).resolves.toBeDefined();
   });

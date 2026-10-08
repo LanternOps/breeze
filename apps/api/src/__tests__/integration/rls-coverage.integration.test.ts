@@ -197,6 +197,13 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // (Shape 1) and is deliberately NOT excluded — it is auto-discovered and
   // must carry breeze_has_org_access(org_id) on all four commands.
   'backup_provider_customers',
+  // edr_tenants (#8164 W01, EDR provider framework): partner-axis (Shape 3)
+  // carrying a NULLABLE org_id — the MAPPING TARGET, not the tenancy axis. An
+  // unmapped vendor tenant has org_id NULL and must stay visible to the partner
+  // admin who has to map it. Identical treatment to backup_provider_customers.
+  // Its shape-1 siblings edr_endpoints / edr_detections / edr_actions are
+  // auto-discovered and must carry breeze_has_org_access(org_id).
+  'edr_tenants',
   // ticket_mailbox_connections (2026-10-24, Gmail inbound): partner-axis (Shape
   // 3, in PARTNER_TENANT_TABLES). Its new org_id is NOT the tenancy axis -- it
   // names which org's google_workspace_connections holds the DWD service-account
@@ -414,6 +421,17 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // backupProviderRls.integration.test.ts.
   ['backup_provider_connections', 'partner_id'],
   ['backup_provider_customers', 'partner_id'],
+  // EDR provider framework (#8164 W01): one MSP-level vendor console
+  // connection (edr_connections, no org_id) and its discovered vendor tenants
+  // (edr_tenants) mapped to Breeze orgs. Four per-command
+  // breeze_has_partner_access policies each; edr_tenants additionally
+  // re-checks its parent connection's partner_id in INSERT/UPDATE WITH CHECK
+  // and is ALSO in ORG_AXIS_POLICY_EXCLUDED_TABLES (dual-list trap). Not
+  // DUAL_AXIS_TENANT_TABLES: these are partner-only credentials, not an
+  // org-XOR-partner config table (Cove precedent, spec §5.7).
+  // Functional cross-partner forge proof: edrProviderRls.integration.test.ts.
+  ['edr_connections', 'partner_id'],
+  ['edr_tenants', 'partner_id'],
   // partner_sending_domains / partner_sender_identities (spec 2026-09-17,
   // partner sending domains W02): the MSP's custom outbound From domain and
   // one sender identity per (partner, mail stream). Partner-axis (Shape 3),

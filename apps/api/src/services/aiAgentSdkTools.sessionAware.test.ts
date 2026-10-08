@@ -95,7 +95,11 @@ describe('makeSessionAwareHandler (M365 enforcement routing)', () => {
       { _meta: { 'claudecode/toolUseId': 'toolu_denied' } },
     )) as ToolResult;
 
-    expect(onPreToolUse).toHaveBeenCalledWith('m365_reset_password', { userIdentifier: 'u@x.com', reason: 'r' });
+    expect(onPreToolUse).toHaveBeenCalledWith(
+      'm365_reset_password', { userIdentifier: 'u@x.com', reason: 'r' },
+      // No exposed-name override; then the call's own SDK tool_use id (#8163).
+      undefined, 'toolu_denied',
+    );
     expect(sessionHandler).not.toHaveBeenCalled();
     expect(res.isError).toBe(true);
     expect(firstText(res)).toContain('approval_required');

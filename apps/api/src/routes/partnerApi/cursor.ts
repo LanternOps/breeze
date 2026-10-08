@@ -32,11 +32,18 @@ export interface PartnerExportCursor {
 export interface PartnerExportCursorFilters {
   orgId: string | null;
   siteId: string | null;
+  /**
+   * Normalized (sorted, comma-joined) status filter. Only the device-status
+   * feed binds it; every other resource omits the key, so cursors they mint
+   * are byte-identical to those minted before the key existed.
+   */
+  status?: string | null;
 }
 
 const partnerExportCursorFiltersSchema = z.object({
   orgId: z.string().uuid().nullable(),
   siteId: z.string().uuid().nullable(),
+  status: z.string().min(1).max(200).nullable().optional(),
 }).strict();
 
 const partnerExportCursorSchema = z.object({

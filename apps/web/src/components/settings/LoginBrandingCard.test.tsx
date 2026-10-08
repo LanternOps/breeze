@@ -140,4 +140,19 @@ describe('LoginBrandingCard', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByTestId('login-branding-save')).not.toBeDisabled();
   });
+
+  it('shows the partner sign-in page URL built from the partner slug (#4017)', async () => {
+    routeFetch(null);
+    render(<LoginBrandingCard partnerSlug="acme-msp" />);
+    const url = await screen.findByTestId('login-branding-signin-url');
+    expect(url).toHaveValue(`${window.location.origin}/login/acme-msp`);
+    expect(url).toHaveAttribute('readonly');
+  });
+
+  it('omits the sign-in page URL until the partner slug is known', async () => {
+    routeFetch(null);
+    render(<LoginBrandingCard />);
+    await screen.findByTestId('login-branding-card');
+    expect(screen.queryByTestId('login-branding-signin-url')).not.toBeInTheDocument();
+  });
 });

@@ -301,6 +301,33 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
     VALUES (${contractId}, ${orgA}, 'per_device_group', 'VIP', 40.00, false, ${groupId}, ${'Roundtrip group ' + suffix})
   `);
 
+  // #4547 W01: an hour_block line with a closed period, so contract_lines.json
+  // carries the block columns, contract_hour_periods.json is exported, and
+  // erasure has to delete the ledger row BEFORE the line it restricts.
+  const blockLineId = crypto.randomUUID();
+  await db.execute(sql`
+    INSERT INTO contract_lines (
+      id, contract_id, org_id, line_type, description, unit_price, taxable,
+      included_quantity, overage_mode, overage_unit_price,
+      rollover_policy, rollover_cap_hours, hour_block_alert_pct, hour_block_first_period_start
+    ) VALUES (
+      ${blockLineId}, ${contractId}, ${orgA}, 'hour_block', 'Prepaid hours', 500.00, false,
+      10.00, 'bill', 95.00,
+      'carry_forward', 5.00, 80, '2026-07-01'
+    )
+  `);
+  await db.execute(sql`
+    INSERT INTO contract_hour_periods (
+      contract_line_id, contract_id, org_id, period_start, period_end,
+      included_hours, carried_in_hours, consumed_hours, overage_hours, carried_out_hours,
+      entry_count, overage_unit_price, currency_code, close_source
+    ) VALUES (
+      ${blockLineId}, ${contractId}, ${orgA}, '2026-07-01', '2026-08-01',
+      10.00, 0.00, 7.50, 0.00, 2.50,
+      3, 95.00, 'USD', 'billing_run'
+    )
+  `);
+
   // #3205 W05: quote_lines exports the complete device-set descriptor. Group
   // and site/role selectors are mutually exclusive under the CHECK, so the
   // group line carries the bill allowance and a companion line exercises the
@@ -457,7 +484,9 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     // Org A has exactly 2 sites + 3 device_groups; Org B's rows must not leak.
     expect(byName.get('sites.json')?.rowCount).toBe(2);
     expect(byName.get('contracts.json')?.rowCount).toBe(1);
-    expect(byName.get('contract_lines.json')?.rowCount).toBe(2);
+    expect(byName.get('contract_lines.json')?.rowCount).toBe(3);
+    // #4547 W01: the block-hours ledger is exported (every column `included`).
+    expect(byName.get('contract_hour_periods.json')?.rowCount).toBe(1);
     expect(byName.get('device_groups.json')?.rowCount).toBe(3);
     expect(byName.get('quotes.json')?.rowCount).toBe(1);
     expect(byName.get('quote_lines.json')?.rowCount).toBe(2);
@@ -540,6 +569,23 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     const groupLine = contractLines.find((line) => line.device_group_id === groupId);
     expect(groupLine?.device_group_id).toBe(groupId);
     expect(groupLine?.device_group_name).toBe(groupName);
+    // #4547 W01: the block line carries its new columns through the export...
+    const blockLine = contractLines.find((line) => line.description === 'Prepaid hours');
+    expect(blockLine).toMatchObject({
+      line_type: 'hour_block',
+      included_quantity: '10.00',
+      overage_mode: 'bill',
+      overage_unit_price: '95.00',
+      rollover_policy: 'carry_forward',
+      rollover_cap_hours: '5.00',
+      hour_block_alert_pct: 80,
+    });
+    // ...and its ledger row is exported readably.
+    const hourPeriods = await archiveTable(archive, 'contract_hour_periods');
+    expect(hourPeriods).toHaveLength(1);
+    expect(hourPeriods[0]).toMatchObject({
+      org_id: orgA, consumed_hours: '7.50', carried_out_hours: '2.50', close_source: 'billing_run',
+    });
 
     const quoteLines = JSON.parse(
       await archive.file('quote_lines.json')!.async('string'),
@@ -718,6 +764,7 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(await rowCount(db, 'quote_lines', orgA)).toBe(2);
     expect(await rowCount(db, 'invoice_line_devices', orgA)).toBe(1);
     expect(await rowCount(db, 'contract_billing_period_outcomes', orgA)).toBe(1);
+    expect(await rowCount(db, 'contract_hour_periods', orgA)).toBe(1);
 
     expect(await rowCount(db, 'restore_jobs', orgA)).toBe(1);
     expect(await rowCount(db, 'restore_jobs', orgB)).toBe(1);
@@ -750,6 +797,7 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(await rowCount(db, 'portal_branding', orgA)).toBe(0);
     expect(await rowCount(db, 'invoice_line_devices', orgA)).toBe(0);
     expect(await rowCount(db, 'contract_billing_period_outcomes', orgA)).toBe(0);
+    expect(await rowCount(db, 'contract_hour_periods', orgA)).toBe(0);
     expect(await rowCount(db, 'portal_branding', orgB)).toBe(1);
     expect(stats.tablesDeleted.portal_branding).toBe(1);
     const orgARows = (await db.execute(
@@ -773,7 +821,10 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(stats.tablesDeleted['sites']).toBe(2);
     expect(stats.tablesDeleted['device_groups']).toBe(3);
     expect(stats.tablesDeleted['contracts']).toBeGreaterThanOrEqual(1);
-    expect(stats.tablesDeleted['contract_lines']).toBeGreaterThanOrEqual(2);
+    expect(stats.tablesDeleted['contract_lines']).toBeGreaterThanOrEqual(3);
+    // Erased child-first: the RESTRICT FK from the ledger to the line means the
+    // ledger rows must go before the block line, or the erasure would abort.
+    expect(stats.tablesDeleted['contract_hour_periods']).toBe(1);
     expect(stats.tablesDeleted['quotes']).toBe(1);
     expect(stats.tablesDeleted['quote_lines']).toBe(2);
     expect(stats.tablesDeleted['invoice_line_devices']).toBe(1);

@@ -179,6 +179,8 @@ describe('PartnerServicePrincipalsPage', () => {
     expect(checkedScopes).toEqual(defaultScopes);
     // alerts:read is offered but opt-in, never pre-selected.
     expect(screen.getByTestId('scope-checkbox-alerts:read')).not.toBeChecked();
+    // device-status:read (#7577) is offered but opt-in, never pre-selected.
+    expect(screen.getByTestId('scope-checkbox-device-status:read')).not.toBeChecked();
     const writeScope = screen.getByTestId('scope-checkbox-enrollment-keys:write');
     expect(writeScope).not.toBeChecked();
     expect(screen.getByTestId('scope-checkbox-contracts:write')).not.toBeChecked();

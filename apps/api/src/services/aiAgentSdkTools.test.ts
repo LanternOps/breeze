@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBreezeMcpServer, wrapExtraToolWithHooks } from './aiAgentSdkTools';
 import { buildOutcomeSdkTools, isOutcomeTool, type SdkTool } from './aiAgents/outcomeTools';
 import {
+  createAgentRunCallPairing,
   createAgentRunPostToolUse,
   createAgentRunPreToolUse,
   type AgentRunOutcome,
@@ -44,6 +45,8 @@ const validVerdict = {
  *  touches (envFlag, the DB kill-state module-level default, the outcome
  *  object) works without further setup; nothing here reaches the DB. */
 function realHooks(profile: AiAgentRunProfile, outcome: AgentRunOutcome) {
+  // ONE object shared by both hooks, exactly as executeAgentRun wires them.
+  const pairing = createAgentRunCallPairing();
   const preToolUse = createAgentRunPreToolUse({
     run: { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, profile },
     agentName: 'Front Desk Triage',
@@ -59,19 +62,15 @@ function realHooks(profile: AiAgentRunProfile, outcome: AgentRunOutcome) {
     },
     outcome,
     intentIds: [],
-    allowedPending: new Map<string, number>(),
     sessionId: null,
-    executionIdPending: new Map<string, Array<string | null>>(),
-    actPinPending: new Map<string, Array<unknown>>(),
+    pairing,
     actReservation: { count: 0 },
     deadlineMs: Date.now() + 60_000,
   } as never);
 
   const postToolUse = createAgentRunPostToolUse({
     outcome,
-    allowedPending: new Map<string, number>(),
-    executionIdPending: new Map<string, Array<string | null>>(),
-    actPinPending: new Map<string, Array<unknown>>(),
+    pairing,
     run: { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, deviceId: null, profile },
     agentUserId: USER_ID,
   } as never);

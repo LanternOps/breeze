@@ -120,6 +120,38 @@ describe('upsertSecurityStatusForDevice — avProducts persistence (#3641)', () 
     expect(lastSet().avProducts).toBeNull();
   });
 
+  // #7965: an agent whose Security Center + Defender queries both failed omits
+  // realTimeProtection (and firewallEnabled when that query failed too). A
+  // missing value is "unknown" and must be stored as null, never as false —
+  // a stored false fires the antivirus not_protected / realtime_disabled checks.
+  it('stores null (unknown) when the payload omits realTimeProtection and firewallEnabled', async () => {
+    const parsed = securityStatusIngestSchema.parse({ provider: 'other', threatCount: 0, encryptionStatus: 'unknown' });
+    await upsertSecurityStatusForDevice(DEVICE_ID, ORG_ID, parsed);
+
+    expect(firstInsert().realTimeProtection).toBeNull();
+    expect(firstInsert().firewallEnabled).toBeNull();
+    expect(lastSet().realTimeProtection).toBeNull();
+    expect(lastSet().firewallEnabled).toBeNull();
+  });
+
+  it('still stores an explicit false from older agents as false', async () => {
+    await upsertSecurityStatusForDevice(DEVICE_ID, ORG_ID, {
+      provider: 'other',
+      realTimeProtection: false,
+      firewallEnabled: false
+    });
+
+    expect(firstInsert()).toMatchObject({ realTimeProtection: false, firewallEnabled: false });
+    expect(lastSet()).toMatchObject({ realTimeProtection: false, firewallEnabled: false });
+  });
+
+  it('falls back to the per-product value only when the top-level field is omitted', async () => {
+    await upsertSecurityStatusForDevice(DEVICE_ID, ORG_ID, { avProducts: AV_PRODUCTS });
+
+    expect(firstInsert().realTimeProtection).toBe(true);
+    expect(lastSet().realTimeProtection).toBe(true);
+  });
+
   it('truncates over-long strings instead of rejecting the whole submission', () => {
     // displayName is raw WMI text. Rejecting would 400 the entire heartbeat's
     // security status for one long vendor name, and keep doing so every cycle.

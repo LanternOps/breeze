@@ -28,11 +28,16 @@
  * for any org with more than one device), and the device's own Redis policy
  * caches are dropped (their 120 s TTL misses on about every other 60 s beat;
  * this measures the miss). That is the beat production actually pays for.
+ *
+ * Ratcheted after #8053 W1a-1 (steady 26, warm 20, cold 57 statements; was 69,
+ * 47, 96). The remaining bulk is the 9 per-feature policy reads plus the
+ * OneDrive context (W1a-2).
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { and, eq } from 'drizzle-orm';
 
 const recorder = vi.hoisted(() => ({
   recording: false,
@@ -71,22 +76,34 @@ vi.mock('../../services/helperSettings', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/helperSettings')>();
   return {
     ...actual,
-    buildHelperConfigUpdate: async (deviceId: string, orgId: string) => {
+    buildHelperConfigUpdate: async (...args: Parameters<typeof actual.buildHelperConfigUpdate>) => {
       if (helperFault.enabled) {
         const { db: faultDb } = await import('../../db');
         const { sql: faultSql } = await import('drizzle-orm');
         await faultDb.execute(faultSql`SELECT 1 / 0`); // division_by_zero
       }
-      return actual.buildHelperConfigUpdate(deviceId, orgId);
+      return actual.buildHelperConfigUpdate(...args);
     },
   };
 });
 
 import { db, withSystemDbAccessContext } from '../../db';
-import { enrollmentKeys } from '../../db/schema';
+import {
+  auditLogs,
+  configPolicyAssignments,
+  configPolicyEventLogSettings,
+  configPolicyFeatureLinks,
+  configurationPolicies,
+  enrollmentKeys,
+} from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestRedis } from './setup';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
+import {
+  orgHelperSettingsCache,
+  orgPamFallbackCache,
+  orgPolicyProbeCache,
+} from '../../services/agentOrgSettingsCache';
 import { enrollmentRoutes } from '../../routes/agents/enrollment';
 import { heartbeatRoutes } from '../../routes/agents/heartbeat';
 import { unifiTelemetryRoutes } from '../../routes/agents/unifiTelemetry';
@@ -96,20 +113,62 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 // One heartbeat interval, plus a second so a TTL of exactly 60 s has expired.
 const NEXT_BEAT_MS = 61_000;
 
+// Statement buckets (#8053 W1a-1). Each later lever asserts on its own bucket,
+// so a regression names itself instead of showing up as "statements 31 > 26".
+// Matched on the whitespace-collapsed, lower-cased SQL postgres.js sends.
+const BUCKET_MATCHERS = {
+  begin: (s: string) => s === 'begin' || s.startsWith('begin '),
+  prologue: (s: string) => s.startsWith("select set_config('breeze.scope'"),
+  savepoint: (s: string) => s.startsWith('savepoint'),
+  // A resolver's own `select … from devices where id = $1` — NOT the core read
+  // (which selects every column, agent_token_hash included).
+  deviceLookup: (s: string) =>
+    /^select .* from "devices" where "devices"\."id" = \$1/.test(s) && !s.includes('"agent_token_hash"'),
+  orgPartnerLookup: (s: string) => /^select "partner_id"(, "type")? from "organizations" where/.test(s),
+  groupLookup: (s: string) => s.startsWith('select "group_id" from "device_group_memberships"'),
+  hierarchyLoad: (s: string) => s.includes('from "devices" left join "organizations"') && s.includes('jsonb_agg'),
+  siteLookup: (s: string) => s.includes('from "devices" inner join "sites"'),
+  agentVersions: (s: string) => s.includes('from "agent_versions"'),
+  topologyNegotiation: (s: string) => s.includes('from devices where id=$1::uuid and not is_ephemeral'),
+  orgHelperSettings: (s: string) => s.startsWith('select "settings" from "organizations"'),
+  pamOrgConfig: (s: string) => s.includes('from "pam_org_config"'),
+  automationPolicies: (s: string) => s.includes('from "automation_policies"'),
+  peripheralCapabilityWrites: (s: string) =>
+    s.startsWith('update "device_commands"') || s.startsWith('update "peripheral_policy_device_states"'),
+} as const;
+
+type Bucket = keyof typeof BUCKET_MATCHERS;
+const BUCKETS = Object.keys(BUCKET_MATCHERS) as Bucket[];
+
+function normalizeStatement(sql: string): string {
+  return sql.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function classifyStatement(sql: string): Bucket | null {
+  const s = normalizeStatement(sql);
+  return BUCKETS.find((bucket) => BUCKET_MATCHERS[bucket](s)) ?? null;
+}
+
 interface Measurement {
   status: number;
   transactions: number;
   savepoints: number;
   statements: number;
+  buckets: Record<Bucket, number>;
 }
 
 function summarize(status: number, statements: string[]): Measurement {
-  const normalized = statements.map((s) => s.trim().toLowerCase());
+  const buckets = Object.fromEntries(BUCKETS.map((b) => [b, 0])) as Record<Bucket, number>;
+  for (const statement of statements) {
+    const bucket = classifyStatement(statement);
+    if (bucket) buckets[bucket] += 1;
+  }
   return {
     status,
-    transactions: normalized.filter((s) => s === 'begin' || s.startsWith('begin ')).length,
-    savepoints: normalized.filter((s) => s.startsWith('savepoint')).length,
-    statements: normalized.length,
+    transactions: buckets.begin,
+    savepoints: buckets.savepoint,
+    statements: statements.length,
+    buckets,
   };
 }
 
@@ -158,7 +217,61 @@ async function seedOrg(label: string) {
   return { partnerId: partner.id, orgId: org.id, siteId: site.id, rawKey, suffix };
 }
 
+async function seedOrgPolicy(input: {
+  orgId: string;
+  featureType: 'helper' | 'event_log';
+  inlineSettings?: Record<string, unknown>;
+  maxEventsPerCycle?: number;
+  level: 'device' | 'organization';
+  targetId: string;
+  roleFilter?: string[];
+}): Promise<void> {
+  await withSystemDbAccessContext(async () => {
+    const [policy] = await db.insert(configurationPolicies).values({
+      orgId: input.orgId, partnerId: null, name: `hotpath ${input.featureType} ${randomUUID()}`, status: 'active',
+    }).returning();
+    const [link] = await db.insert(configPolicyFeatureLinks).values({
+      configPolicyId: policy!.id, featureType: input.featureType,
+      ...(input.inlineSettings ? { inlineSettings: input.inlineSettings } : {}),
+    }).returning();
+    if (input.maxEventsPerCycle !== undefined) {
+      await db.insert(configPolicyEventLogSettings).values({
+        featureLinkId: link!.id, retentionDays: 30, maxEventsPerCycle: input.maxEventsPerCycle,
+      });
+    }
+    await db.insert(configPolicyAssignments).values({
+      configPolicyId: policy!.id, level: input.level, targetId: input.targetId, priority: 0,
+      ...(input.roleFilter ? { roleFilter: input.roleFilter } : {}),
+    });
+  });
+}
+
 type SeededOrg = Awaited<ReturnType<typeof seedOrg>>;
+
+/**
+ * #8053: `/agents/enroll` writes its `agent.enroll` audit row fire-and-forget
+ * (createAuditLogAsync), as its own transaction on the instrumented request
+ * pool, and returns before that write finishes. If it is still in flight when
+ * `measure()` arms the recorder, begin/prologue/insert/commit land inside the
+ * measured window and inflate (or flake) the budget. Visibility from another
+ * session means the audit transaction has COMMITTED, so polling for the row is
+ * deterministic, not a sleep. The recorder is unarmed here, so the polls are
+ * never counted. Throws on timeout: never proceed with an unsettled enroll.
+ */
+async function waitForEnrollAuditCommitted(deviceId: string): Promise<void> {
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    const rows = await withSystemDbAccessContext(() =>
+      db
+        .select({ id: auditLogs.id })
+        .from(auditLogs)
+        .where(and(eq(auditLogs.action, 'agent.enroll'), eq(auditLogs.resourceId, deviceId)))
+        .limit(1),
+    );
+    if (rows.length > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`agent.enroll audit row for device ${deviceId} never became visible (10s)`);
+}
 
 async function enrollDevice(org: SeededOrg, hostname: string) {
   const app = new Hono();
@@ -177,6 +290,7 @@ async function enrollDevice(org: SeededOrg, hostname: string) {
   });
   expect(response.status).toBe(201);
   const body = await response.json() as { deviceId: string; agentId: string };
+  await waitForEnrollAuditCommitted(body.deviceId);
   return {
     deviceId: body.deviceId,
     agentId: body.agentId,
@@ -207,11 +321,37 @@ function agentApp(device: EnrolledDevice): Hono {
   return app;
 }
 
-function heartbeat(device: EnrolledDevice): Promise<Response> {
+// What a current agent declares on every beat: compiledSecurityCapabilities()
+// in agent/internal/heartbeat/heartbeat.go (~:7991) plus the runtime PAM
+// lifetime version and reconciliation status it sets at ~:4751-4753.
+const CURRENT_AGENT_HEARTBEAT = {
+  status: 'ok',
+  agentVersion: '1.0.0-test',
+  metricsAvailable: false,
+  securityCapabilities: {
+    outboundNetworkPolicyVersion: 1,
+    scriptSecretEnvVersion: 1,
+    peripheralPolicyProtocolVersion: 2,
+    rollbackProtocolVersion: 1,
+    revocationLeaseProtocolVersion: 1,
+    desktopFenceProtocolVersion: 1,
+    desktopWsFenceProtocolVersion: 1,
+    consentPromptProtocolVersion: 2,
+    pamLifetimeProtocolVersion: 2,
+    pamReconciliation: { unresolvedCount: 0, quarantinedCount: 0, awaitingAcknowledgementCount: 0 },
+  },
+};
+
+// A pre-capability agent (no securityCapabilities). The claim then cancels any
+// pending peripheral_policy_sync_v2 rows and marks their states rejected: two
+// UPDATEs per beat that a current agent never pays.
+const LEGACY_AGENT_HEARTBEAT = { status: 'ok', agentVersion: '1.0.0-test', metricsAvailable: false };
+
+function heartbeat(device: EnrolledDevice, body: Record<string, unknown> = CURRENT_AGENT_HEARTBEAT): Promise<Response> {
   return Promise.resolve(agentApp(device).request(`/agents/${device.agentId}/heartbeat`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ status: 'ok', agentVersion: '1.0.0-test', metricsAvailable: false }),
+    body: JSON.stringify(body),
   }));
 }
 
@@ -267,18 +407,100 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
       'steady:', JSON.stringify(steady),
     );
 
+    // A current agent declares peripheralPolicyProtocolVersion 2, so the claim
+    // never runs the v2 cancel/state UPDATEs that a legacy payload triggers.
+    expect(steady.buckets.peripheralCapabilityWrites).toBe(0);
+
     expect(cold.status).toBe(200);
     expect(warm.status).toBe(200);
     expect(steady.status).toBe(200);
-    // Org block + the shared post-commit policy context + the OneDrive context.
-    // Before #8053: 9 transactions, 96 statements on this same beat.
+    // #8053 W1a-1 ratchet. Measured after PR A (hierarchy pass-through,
+    // topology skip, per-org caches, batched agent_versions):
+    //   steady 26 statements / 3 tx (was 69 / 3), warm 20 / 3 (was 47 / 3),
+    //   cold 57 / 8 (was 96 / 8; that 96 / 8 figure included a leaked
+    //   enroll-audit tx before enrollDevice() waited for it to commit).
+    // Pinned at the measured value, not "plus one": any new statement on the
+    // beat reds this. If a change legitimately adds one, raise the number in
+    // the same PR, name the bucket, and say why. The remaining bulk is the 9
+    // per-feature policy reads plus the OneDrive context (W1a-2).
+    // Cold's one org-partner and one group-membership read are the effective
+    // config assignment resolution; warm and steady skip them via hotPathCache.
+    expect(steady.transactions).toBe(3);
+    expect(steady.statements).toBeLessThanOrEqual(26);
+    expect(warm.transactions).toBe(3);
+    expect(warm.statements).toBeLessThanOrEqual(20);
+    expect(cold.transactions).toBeLessThanOrEqual(8);
+    expect(cold.statements).toBeLessThanOrEqual(57);
+    expect(cold.buckets.hierarchyLoad).toBe(1);
+    expect(cold.buckets.deviceLookup).toBe(0);
+    expect(cold.buckets.topologyNegotiation).toBe(0);
+    expect(cold.buckets.agentVersions).toBe(1);
+
+    // #8053 W1a-1 lever 1: one hierarchy read replaces 33 per-resolver reads.
+    expect(steady.buckets.hierarchyLoad).toBe(1);
+    expect(steady.buckets.deviceLookup).toBe(0);
+    expect(steady.buckets.orgPartnerLookup).toBe(0);
+    expect(steady.buckets.groupLookup).toBe(0);
+    expect(steady.buckets.siteLookup).toBe(0);
+    expect(warm.buckets.hierarchyLoad).toBe(1);
+    expect(warm.buckets.deviceLookup).toBe(0);
+
+    // Lever 2: materialization is off for this org, so no negotiation runs.
+    expect(steady.buckets.topologyNegotiation).toBe(0);
+    expect(warm.buckets.topologyNegotiation).toBe(0);
+
+    // Lever 3: the sibling's beat warmed the org's probe, helper-legacy and PAM
+    // caches, so this beat reads none of them.
+    expect(steady.buckets.automationPolicies).toBe(0);
+    expect(steady.buckets.orgHelperSettings).toBe(0);
+    expect(steady.buckets.pamOrgConfig).toBe(0);
+    // Agent, helper and watchdog offers share one agent_versions read.
+    expect(steady.buckets.agentVersions).toBe(1);
+    expect(warm.buckets.agentVersions).toBe(1);
+    // Lever 6: the claim's savepoint + the helper miss's; no probe savepoint.
+    expect(steady.savepoints).toBe(2);
+    // Warm: helper is a Redis hit (no savepoint), probe a process-cache hit.
+    expect(warm.savepoints).toBe(1);
+  });
+
+  runDb('POST /agents/:id/heartbeat: a beat whose per-org caches (probe, helper legacy, PAM fallback) all miss — e.g. a single-device org — still costs 3 transactions; a miss loads inside the existing system context', async () => {
+    const org = await seedOrg('permiss');
+    const device = await enrollDevice(org, 'target');
+    const sibling = await enrollDevice(org, 'sibling');
+    expect((await heartbeat(device)).status).toBe(200);
+    advanceClock(NEXT_BEAT_MS);
+    expect((await heartbeat(sibling)).status).toBe(200);
+    await dropDeviceRedisCaches(device.deviceId);
+    // Miss ONLY the three per-org caches this wave added; everything else stays warm.
+    orgPolicyProbeCache.invalidate(org.orgId);
+    orgHelperSettingsCache.invalidate(org.orgId);
+    orgPamFallbackCache.invalidate(org.orgId);
+    const missed = await measure(() => heartbeat(device));
+    console.log('[#8053 budget] per-org caches all miss:', JSON.stringify(missed));
+
+    expect(missed.status).toBe(200);
+    expect(missed.transactions).toBe(3);
+    expect(missed.buckets.automationPolicies).toBe(1);
+    expect(missed.buckets.orgHelperSettings).toBe(1);
+    expect(missed.buckets.pamOrgConfig).toBe(1);
+    expect(missed.statements).toBeLessThanOrEqual(30);
+  });
+
+  runDb('POST /agents/:id/heartbeat: a legacy (no securityCapabilities) beat pays the two peripheral-v2 UPDATEs on top', async () => {
+    const org = await seedOrg('legacy');
+    const device = await enrollDevice(org, 'legacy');
+    const sibling = await enrollDevice(org, 'legacy-sibling');
+    await heartbeat(device, LEGACY_AGENT_HEARTBEAT);
+    advanceClock(NEXT_BEAT_MS);
+    expect((await heartbeat(sibling, LEGACY_AGENT_HEARTBEAT)).status).toBe(200);
+    await dropDeviceRedisCaches(device.deviceId);
+    const steady = await measure(() => heartbeat(device, LEGACY_AGENT_HEARTBEAT));
+    console.log('[#8053 budget] legacy steady:', JSON.stringify(steady));
+
+    expect(steady.status).toBe(200);
     expect(steady.transactions).toBeLessThanOrEqual(3);
-    // Pinned at the measured count (69) plus one. Any new per-beat transaction
-    // costs at least three (BEGIN, the RLS prologue, COMMIT), so it trips this.
-    // If a change legitimately adds a query, raise this number in the same PR
-    // and say why; the remaining bulk is ~26 repeated device/org/group reads
-    // across the policy resolvers (#8053 follow-up).
-    expect(steady.statements).toBeLessThanOrEqual(70);
+    expect(steady.buckets.peripheralCapabilityWrites).toBe(2);
+    expect(steady.statements).toBeLessThanOrEqual(28);
   });
 
   runDb('a real SQL error in the helper reader stays inside its savepoint: the shared policy transaction still commits', async () => {
@@ -330,5 +552,39 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(warm.transactions).toBe(0);
     expect(warm.statements).toBe(0);
     expect(nextPoll.statements).toBe(0);
+  });
+});
+
+describe('heartbeat hierarchy pass-through (#8053 W1a-1) — behaviour guards, real PostgreSQL', () => {
+  // These pass BEFORE and AFTER the change: they pin today's behaviour so the
+  // pass-through cannot alter what an agent receives.
+
+  runDb('a sibling\'s device-level helper policy never reaches another device in the same org', async () => {
+    const org = await seedOrg('isolation');
+    const device = await enrollDevice(org, 'plain');
+    const sibling = await enrollDevice(org, 'helper-on');
+    await seedOrgPolicy({
+      orgId: org.orgId, featureType: 'helper', inlineSettings: { enabled: true },
+      level: 'device', targetId: sibling.deviceId,
+    });
+
+    const siblingBody = await (await heartbeat(sibling)).json() as { helperEnabled: boolean };
+    const deviceBody = await (await heartbeat(device)).json() as { helperEnabled: boolean };
+    expect(siblingBody.helperEnabled).toBe(true);
+    expect(deviceBody.helperEnabled).toBe(false);
+  });
+
+  runDb('a role this very beat writes is the role the policy resolvers see', async () => {
+    const org = await seedOrg('role');
+    const device = await enrollDevice(org, 'role');
+    await seedOrgPolicy({
+      orgId: org.orgId, featureType: 'event_log', maxEventsPerCycle: 777,
+      level: 'organization', targetId: org.orgId, roleFilter: ['printer'],
+    });
+
+    const res = await heartbeat(device, { ...CURRENT_AGENT_HEARTBEAT, deviceRole: 'printer' });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { configUpdate: { event_log_settings?: { max_events_per_cycle: number } } };
+    expect(body.configUpdate.event_log_settings?.max_events_per_cycle).toBe(777);
   });
 });

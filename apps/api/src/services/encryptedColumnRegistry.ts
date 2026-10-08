@@ -112,6 +112,9 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'backup_storage_credential_history', column: 'sealed_previous_secret', kind: 'text', aadBinding: 'row', description: 'replaced S3 backup destination connection settings (endpoint, bucket, key pair), kept only to check the old key is disabled — AAD bound to the row id' },
   { table: 'ticket_push_preferences', column: 'pushover_user_key_encrypted', kind: 'text', idColumn: 'user_id', aadBinding: 'row', description: 'per-user Pushover user key for ticket-assignment pushes — AAD bound to the user id when an encryption key id is configured' },
   { table: 'backup_provider_connections', column: 'credentials_encrypted', kind: 'text', aadBinding: 'row', description: 'external backup provider console credentials JSON (#6008 W01) — AAD bound to the row id, so a blob pasted into another partner\'s connection does not decrypt' },
+  { table: 'edr_connections', column: 'credentials_encrypted', kind: 'text', aadBinding: 'row', description: 'EDR vendor console credential JSON (#8164 W01) — AAD bound to the row id' },
+  { table: 'edr_connections', column: 'webhook_secret_encrypted', kind: 'text', aadBinding: 'row', description: 'EDR push/webhook shared secret Breeze generates (#8164 W03) — AAD bound to the row id' },
+  { table: 'edr_tenants', column: 'installer_secret_encrypted', kind: 'text', aadBinding: 'row', description: 'per-vendor-tenant installer token / link (#8164 W06) — AAD bound to the row id' },
   // Sealed/opened by the column type itself (db/schema/backup.ts); listed here
   // so key rotation re-seals it.
   BACKUP_PROVIDER_CONFIG_COLUMN,

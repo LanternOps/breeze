@@ -120,10 +120,29 @@ describe('buildInstallCommands', () => {
 
     it('checks $LASTEXITCODE after every agent invocation', () => {
       const { windows } = buildInstallCommands(base);
-      // Native exe failures do not throw in PowerShell — each of the three
-      // agent steps (service install, enroll, service start) needs a check.
-      expect(windows.match(/if\(\$LASTEXITCODE\)\{throw/g)).toHaveLength(3);
+      // Native exe failures do not throw in PowerShell — each agent step
+      // (enroll, service install) needs a check.
+      const invocations = windows.match(/& \$exe /g) ?? [];
+      expect(invocations).toHaveLength(2);
+      expect(windows.match(/if\(\$LASTEXITCODE\)\{throw/g)).toHaveLength(invocations.length);
       expect(windows).toContain('enroll "enroll_abc123" --server "https://rmm.example.com"');
+    });
+
+    it('enrolls before `service install` so the install can stage the watchdog (#7576)', () => {
+      // Before enrollment the watchdog bootstrap inside `service install` has no
+      // persisted control plane; a hosted build that allows more than one
+      // refuses to stage ("run `breeze-agent enroll` first, then re-run
+      // `service install`"), so the old install-then-enroll order left the
+      // device without a watchdog.
+      const { windows } = buildInstallCommands(base);
+      const enrollAt = windows.indexOf('& $exe enroll ');
+      const installAt = windows.indexOf('& $exe service install');
+      expect(enrollAt).toBeGreaterThan(-1);
+      expect(installAt).toBeGreaterThan(enrollAt);
+      // On an enrolled host `service install` starts the service itself and
+      // exits non-zero if the start fails. A trailing `service start` would
+      // then fail against the already-running service.
+      expect(windows).not.toContain('service start');
     });
 
     it('verifies the download is a real PE executable before running it', () => {
@@ -135,7 +154,7 @@ describe('buildInstallCommands', () => {
       expect(windows).toContain('0x5A');
       expect(windows).toContain('captive portal or web filter');
       // The MZ check must run before the first agent invocation.
-      expect(windows.indexOf('0x4D')).toBeLessThan(windows.indexOf('service install'));
+      expect(windows.indexOf('0x4D')).toBeLessThan(windows.indexOf('& $exe '));
     });
 
     it('downloads into a temp directory, never the shell working directory (#5898)', () => {
@@ -210,7 +229,7 @@ describe('buildInstallCommands', () => {
       expect(windows).toContain('Get-FileHash');
       expect(windows).toContain('SHA256');
       // Checksum must be verified before the executable is ever invoked.
-      expect(windows.indexOf('Get-FileHash')).toBeLessThan(windows.indexOf('service install'));
+      expect(windows.indexOf('Get-FileHash')).toBeLessThan(windows.indexOf('& $exe '));
       // A metadata fetch failure or a missing/malformed checksum must fail
       // closed rather than fall back to running the file unverified.
       expect(windows).toContain('refusing to install');
@@ -219,7 +238,7 @@ describe('buildInstallCommands', () => {
     it('checks the Authenticode signature status when the binary is signed, failing closed on tampering', () => {
       const { windows } = buildInstallCommands(base);
       expect(windows).toContain('Get-AuthenticodeSignature');
-      expect(windows.indexOf('Get-AuthenticodeSignature')).toBeLessThan(windows.indexOf('service install'));
+      expect(windows.indexOf('Get-AuthenticodeSignature')).toBeLessThan(windows.indexOf('& $exe '));
     });
 
     it('pins the download to the exact version the checksum was fetched for', () => {

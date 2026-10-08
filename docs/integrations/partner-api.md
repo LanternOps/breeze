@@ -132,6 +132,7 @@ See the MCP server documentation.
 | `GET /api/v1/partner-api/tickets/ids` | `tickets:read` (opt-in) |
 | `GET /api/v1/partner-api/tickets/<ticket-uuid>` | `tickets:read` (opt-in) |
 | `GET /api/v1/partner-api/tickets/<ticket-uuid>/comments` | `tickets:read` (opt-in) |
+| `GET /api/v1/partner-api/device-status` | `device-status:read` (opt-in) |
 | `POST /api/v1/partner-api/organizations` | `organizations:write` |
 | `POST /api/v1/partner-api/sites` | `sites:write` |
 | `POST /api/v1/partner-api/enrollment-keys` | `enrollment-keys:write` |
@@ -611,3 +612,58 @@ Guarantees and limits, in addition to the alerts feed's:
 - Checkpoints, cursors and comment cursors are signed, bound to the partner
   (and to the filters, organization set, or ticket they were minted for),
   and expire after 24 hours.
+
+## Device status feed (`device-status:read`)
+
+`GET /api/v1/partner-api/device-status` returns live status, last-seen time
+and agent version for every device in the organizations the principal can
+reach. `device-status:read` is an opt-in scope: it is never part of the
+default delegation and is not implied by `devices:read`. Ephemeral Quick
+Support devices are excluded, as in `/devices`. Requests are audited like the
+other partner-api exports.
+
+Query parameters (all optional): `orgId`, `siteId`, `status` (comma list of
+`online`, `offline`, `maintenance`, `decommissioned`, `quarantined`,
+`updating`, `pending`), `limit` (1-500, default 100), and `cursor`. An
+unknown `orgId` returns `404 partner_export_org_not_found`.
+
+```json
+{
+  "schemaVersion": "1",
+  "data": [
+    {
+      "deviceId": "<device-uuid>",
+      "orgId": "<org-uuid>",
+      "siteId": "<site-uuid>",
+      "status": "online",
+      "lastSeenAt": "2026-01-01T12:00:00.000Z",
+      "agentVersion": "1.2.3"
+    }
+  ],
+  "nextCursor": "<signed-cursor>",
+  "hasMore": true
+}
+```
+
+`lastSeenAt` is ISO-8601 or `null`. `blocked` is present only when a record
+was withheld, as in the other feeds.
+
+Paging:
+
+- Rows are ordered by device id. Follow `nextCursor` (as `cursor`) while
+  `hasMore` is true.
+- A traversal covers devices created before it started. Each row is the
+  device's state at the moment its page was read, so this is live state and
+  not a snapshot: two pages of one traversal can reflect different moments.
+- The cursor is signed, bound to the partner and to `orgId`, `siteId` and
+  `status`, and expires 24 hours after the traversal started. Changing a
+  filter mid-traversal returns `400 invalid_partner_export_cursor`.
+
+Not part of the material-change snapshot or watermark:
+
+- Heartbeats change these fields constantly, so the feed has no `revision`,
+  `sourceUpdatedAt` or `snapshotAt`, no `updatedSince` or `since`, and no
+  incremental sync. It takes no partner-export advisory locks.
+- Poll the whole list at the cadence you need.
+- `sourceUpdatedAt` on `/devices` tracks material changes only. It is not a
+  last-seen signal.

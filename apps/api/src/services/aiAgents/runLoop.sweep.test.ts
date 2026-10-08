@@ -261,7 +261,7 @@ const reserveAiBudget = vi.hoisted(() => vi.fn());
 const markAiBudgetReservationIndeterminate = vi.hoisted(() => vi.fn());
 vi.mock('../aiBudgetReservations', () => ({ reserveAiBudget, markAiBudgetReservationIndeterminate }));
 
-import { createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun } from './runLoop';
+import { createAgentRunCallPairing, createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun } from './runLoop';
 import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
 import type { AgentRunOutcome } from './runLoop';
 import { SWEEP_TOOL_ALLOWLIST } from './sweepProfile';
@@ -501,10 +501,8 @@ describe('sweep profile outcome-tool gating (P2-2)', () => {
       },
       outcome,
       intentIds: [],
-      allowedPending: new Map<string, number>(),
       sessionId: null,
-      executionIdPending: new Map<string, Array<string | null>>(),
-      actPinPending: new Map<string, Array<unknown>>(),
+      pairing: createAgentRunCallPairing(),
       actReservation: { count: 0 },
       deadlineMs: Date.now() + 60_000,
     };
@@ -570,9 +568,7 @@ describe('sweep profile outcome-tool gating (P2-2)', () => {
     const outcome = emptyOutcome();
     const post = createAgentRunPostToolUse({
       outcome,
-      allowedPending: new Map<string, number>(),
-      executionIdPending: new Map<string, Array<string | null>>(),
-      actPinPending: new Map<string, Array<unknown>>(),
+      pairing: createAgentRunCallPairing(),
       run: { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, deviceId: null, profile: 'sweep' },
       agentUserId: USER_A,
     } as never);
@@ -588,9 +584,7 @@ describe('sweep profile outcome-tool gating (P2-2)', () => {
     const outcome = emptyOutcome();
     const post = createAgentRunPostToolUse({
       outcome,
-      allowedPending: new Map<string, number>(),
-      executionIdPending: new Map<string, Array<string | null>>(),
-      actPinPending: new Map<string, Array<unknown>>(),
+      pairing: createAgentRunCallPairing(),
       run: { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, deviceId: null, profile: 'full' },
       agentUserId: USER_A,
     } as never);

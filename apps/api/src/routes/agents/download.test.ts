@@ -13,6 +13,7 @@ vi.mock('../../services/installerBuilder', () => ({
 vi.mock('../../services/s3Storage', () => ({
   isS3Configured: vi.fn(() => false),
   getPresignedUrl: vi.fn(),
+  getObjectStream: vi.fn(),
   isS3NotFound: (err: unknown) => {
     const name = (err as { name?: string }).name;
     return name === 'NotFound' || name === 'NoSuchKey';
@@ -64,9 +65,10 @@ import { createHash } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { downloadRoutes } from './download';
 import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl } from '../../services/binarySource';
-import { isS3Configured, getPresignedUrl } from '../../services/s3Storage';
+import { isS3Configured, getPresignedUrl, getObjectStream } from '../../services/s3Storage';
 import { getPromotedComponentVersion, getRegisteredComponentVersion } from '../../services/promotedAgentVersion';
 
 // File-scoped so every describe block below gets a permissive default for
@@ -650,8 +652,9 @@ describe('S3 transport failures surface as 500, not a masked 404 (issue #1802)',
   });
 
   it.each([
+    // watchdog streams from object storage instead of presigning (#7576) —
+    // its transport-fault/NotFound cases live in the #7576 describe below.
     ['agent', '/download/linux/amd64', '[agent-download]'],
-    ['watchdog', '/download/watchdog/linux/amd64', '[watchdog-download]'],
     ['user-helper', '/download/user-helper/windows/amd64', '[user-helper-download]'],
     ['backup', '/download/backup/linux/amd64', '[backup-download]'],
   ])('returns 500 for the %s route on a non-NotFound S3 error', async (_name, path, logTag) => {
@@ -669,7 +672,6 @@ describe('S3 transport failures surface as 500, not a masked 404 (issue #1802)',
 
   it.each([
     ['agent', '/download/linux/amd64', '[agent-download]', 'NotFound'],
-    ['watchdog', '/download/watchdog/linux/amd64', '[watchdog-download]', 'NotFound'],
     ['user-helper', '/download/user-helper/windows/amd64', '[user-helper-download]', 'NotFound'],
     ['backup', '/download/backup/linux/amd64', '[backup-download]', 'NotFound'],
   ])(
@@ -701,6 +703,153 @@ describe('S3 transport failures surface as 500, not a masked 404 (issue #1802)',
 
     expect(res.status).toBe(500);
     expect(console.error).toHaveBeenCalled();
+  });
+});
+
+describe('watchdog object-storage copies are served on the control-plane origin, never via a presigned redirect (#7576)', () => {
+  // A hosted agent's first-install watchdog bootstrap (`service install`)
+  // follows redirects only to GitHub release hosts and its own control plane.
+  // A 302 to a presigned object-storage URL is refused as "release redirect to
+  // untrusted origin", so the watchdog was never installed. The bytes must come
+  // back on the route's own origin; integrity is still bound by the signed
+  // release manifest the agent checks after the download.
+  const originalAgentDir = process.env.AGENT_BINARY_DIR;
+  const WATCHDOG_BYTES = Buffer.from('MZ-fake-watchdog-bytes-for-7576');
+  const PRESIGNED = 'https://storage.example.test/bucket/key?X-Amz-Signature=abc';
+
+  beforeEach(() => {
+    process.env.AGENT_BINARY_DIR = '/tmp/breeze-nonexistent-agent-binaries-7576';
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(getBinarySource).mockReturnValue('local');
+    vi.mocked(isS3Configured).mockReturnValue(true);
+    vi.mocked(getPresignedUrl).mockResolvedValue(PRESIGNED);
+  });
+
+  afterEach(() => {
+    if (originalAgentDir === undefined) delete process.env.AGENT_BINARY_DIR;
+    else process.env.AGENT_BINARY_DIR = originalAgentDir;
+    vi.restoreAllMocks();
+    vi.mocked(getBinarySource).mockReset();
+    vi.mocked(isS3Configured).mockReset();
+    vi.mocked(getPresignedUrl).mockReset();
+    vi.mocked(getObjectStream).mockReset();
+  });
+
+  it('streams the watchdog object on this origin with its exact bytes and length', async () => {
+    vi.mocked(getObjectStream).mockResolvedValue({
+      body: Readable.from([WATCHDOG_BYTES]),
+      contentLength: WATCHDOG_BYTES.length,
+    });
+
+    const res = await downloadRoutes.request('/download/watchdog/windows/amd64');
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('location')).toBeNull();
+    expect(res.headers.get('content-length')).toBe(String(WATCHDOG_BYTES.length));
+    expect(res.headers.get('content-disposition')).toContain('breeze-watchdog-windows-amd64.exe');
+    expect(Buffer.from(await res.arrayBuffer()).equals(WATCHDOG_BYTES)).toBe(true);
+    // The same key the presign path used: the agent store's prefix (#7515).
+    expect(getObjectStream).toHaveBeenCalledWith('agent/breeze-watchdog-windows-amd64.exe');
+    expect(getPresignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('omits Content-Length rather than guessing when object storage does not report one', async () => {
+    vi.mocked(getObjectStream).mockResolvedValue({
+      body: Readable.from([WATCHDOG_BYTES]),
+      contentLength: null,
+    });
+
+    const res = await downloadRoutes.request('/download/watchdog/linux/amd64');
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-length')).toBeNull();
+    expect(Buffer.from(await res.arrayBuffer()).equals(WATCHDOG_BYTES)).toBe(true);
+  });
+
+  it('falls back to disk (404 here) when the object is genuinely absent', async () => {
+    vi.mocked(getObjectStream).mockResolvedValue({ body: null, contentLength: null });
+
+    const res = await downloadRoutes.request('/download/watchdog/linux/amd64');
+
+    expect(res.status).toBe(404);
+    expect(console.error).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('[watchdog-download] S3 object missing'),
+    );
+    expect(getPresignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('returns 500 on an object-storage transport fault instead of masking it as a disk 404', async () => {
+    vi.mocked(getObjectStream).mockRejectedValue(
+      Object.assign(new Error('credentials expired'), { name: 'CredentialsProviderError' }),
+    );
+
+    const res = await downloadRoutes.request('/download/watchdog/linux/amd64');
+    const body = await res.text();
+
+    expect(res.status).toBe(500);
+    expect(body).not.toContain('not available');
+    expect(body).not.toContain('/tmp');
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('[watchdog-download] S3 fetch failed'),
+      expect.anything(),
+    );
+    expect(getPresignedUrl).not.toHaveBeenCalled();
+  });
+
+  function failingBody(err: Error): Readable {
+    let sent = false;
+    return new Readable({
+      read() {
+        if (!sent) {
+          sent = true;
+          this.push(WATCHDOG_BYTES);
+          return;
+        }
+        this.destroy(err);
+      },
+    });
+  }
+
+  it('logs an object-storage fault that breaks the stream mid-body', async () => {
+    vi.mocked(getObjectStream).mockResolvedValue({
+      body: failingBody(Object.assign(new Error('socket reset'), { code: 'ECONNRESET' })),
+      contentLength: WATCHDOG_BYTES.length * 2,
+    });
+
+    const res = await downloadRoutes.request('/download/watchdog/linux/amd64');
+    expect(res.status).toBe(200);
+    await expect(res.arrayBuffer()).rejects.toThrow();
+
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('[watchdog-download] S3 stream error'),
+      expect.anything(),
+    );
+  });
+
+  it('does not report a client hang-up (AbortError) as an object-storage fault', async () => {
+    vi.mocked(getObjectStream).mockResolvedValue({
+      body: failingBody(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' })),
+      contentLength: WATCHDOG_BYTES.length * 2,
+    });
+
+    const res = await downloadRoutes.request('/download/watchdog/linux/amd64');
+    await res.arrayBuffer().catch(() => undefined);
+
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['agent', '/download/linux/amd64'],
+    ['user-helper', '/download/user-helper/windows/amd64'],
+    ['backup', '/download/backup/linux/amd64'],
+  ])('leaves the %s route on the presigned redirect (bandwidth offload unchanged)', async (_name, path) => {
+    const res = await downloadRoutes.request(path);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(PRESIGNED);
+    expect(getObjectStream).not.toHaveBeenCalled();
   });
 });
 

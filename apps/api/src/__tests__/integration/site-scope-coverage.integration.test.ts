@@ -162,6 +162,10 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // user permissions/allowedSiteIds context; rows clamped to the principal's
   // accessible orgs, device/rule/monitor/episode ids ownership-checked.
   'routes/partnerApi/alerts.ts:GET /alerts',
+  // Partner device-status feed (device-status:read, #7577): same machine
+  // service-principal auth, no user permissions/allowedSiteIds context; rows
+  // clamped to the principal's accessible orgs, siteId is only a filter.
+  'routes/partnerApi/deviceStatus.ts:GET /device-status',
   // Helper-token path (helperAuth on all helperRoutes): no user permissions
   // context, and the session lookup is pinned to the token's own device row
   // (eq(aiSessions.deviceId, device.id)) before any write. (W7 #2637.)

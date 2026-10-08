@@ -112,6 +112,7 @@ vi.mock('../../db', () => {
     assertInTransaction: vi.fn(),
     // #8053: hot-path caches + the savepoints in the shared policy context.
     hasDbAccessContext: () => false,
+    getCurrentDbAccessContext: () => ({ scope: 'system' }),
     runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
     withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
   };
@@ -120,6 +121,7 @@ vi.mock('../../db', () => {
 const topologyHeartbeatMock = vi.hoisted(() => vi.fn());
 vi.mock('../../services/topology/heartbeat', () => ({
   topologyHeartbeat: topologyHeartbeatMock,
+  topologyHeartbeatWithoutMaterialization: vi.fn(),
 }));
 
 // Flags are resolved before the org block (US 2026-09-22 pool deadlock) —

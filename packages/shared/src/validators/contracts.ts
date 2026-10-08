@@ -24,6 +24,15 @@ export type ContractLineType = typeof CONTRACT_LINE_TYPES[number];
 export const OVERAGE_MODES = ['bill', 'flag'] as const;
 export type OverageMode = typeof OVERAGE_MODES[number];
 
+// #4547 (block hours) W01. Exported ahead of the feature on purpose: the API's
+// fail-closed arms and the audit/coverage types name the literal, but
+// CONTRACT_LINE_TYPES (the set the validators and the web editor accept) does
+// NOT gain 'hour_block' until W03. The DB twin is contract_line_type /
+// contract_lines_hour_block_chk.
+export const HOUR_BLOCK_LINE_TYPE = 'hour_block' as const;
+export const ROLLOVER_POLICIES = ['none', 'carry_forward'] as const;
+export type RolloverPolicy = typeof ROLLOVER_POLICIES[number];
+
 /** Line types that accept an allowance (#4607). The DB twin is the type list in
  *  contract_lines_allowance_chk. #4547's hour_block joins this set. */
 export const ALLOWANCE_LINE_TYPES = ['per_device', 'per_device_role', 'per_device_group', 'per_seat'] as const;

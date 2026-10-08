@@ -287,6 +287,7 @@ const EXEMPT: Record<string, string> = {
   'services/deviceCoverage.ts': 'request path: single-device read enforcing actor.accessibleOrgIds from the request',
   'services/deviceDeletion.ts': 'lifecycle: removes one device and its referencing rows',
   'services/deviceFunction.ts': 'org-pinned: membership check scoped to an explicit org and device pair',
+  'services/deviceHierarchy.ts': 'single-device request read keyed on the authenticated device id (scoped.deviceId); loads raw facts only and decides nothing. Parked (pre-assignment) devices never reach its heartbeat caller: heartbeat.ts returns the minimal parked beat at the agent.isPreAssignment early return (routes/agents/heartbeat.ts:492) before any hierarchy consumer runs; resolvers that receive it apply exactly the org rules they applied to their own reads.',
   'services/deviceLifecycle.ts': 'lifecycle: restore/purge of one locked removed device',
   'services/deviceLinkGroups.ts': 'request path: mutations scoped to a link group or caller-supplied devices from link routes and the deletion cascade',
   'services/deviceMtlsCertificateIssuance.ts': 'org-pinned: locks and activates a certificate for one caller-supplied (device, org) pair; not a selector',

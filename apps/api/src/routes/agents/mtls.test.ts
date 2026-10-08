@@ -172,6 +172,12 @@ vi.mock('../agentWs', () => ({
 const { tenantActiveMock } = vi.hoisted(() => ({
   tenantActiveMock: vi.fn(async () => true),
 }));
+const invalidateHelperCacheMock = vi.hoisted(() => vi.fn());
+vi.mock('../../services/agentOrgSettingsCache', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/agentOrgSettingsCache')>()),
+  invalidateOrgHelperSettingsCache: invalidateHelperCacheMock,
+}));
+
 vi.mock('../../services/tenantStatus', () => ({
   isAgentTenantActive: tenantActiveMock,
 }));
@@ -2103,6 +2109,22 @@ describe('organization settings writers serialize with MFA policy changes', () =
     expect(lockMfaPolicySettings).toHaveBeenCalledWith({ kind: 'organization', id: ORG_ID });
     expect(vi.mocked(lockMfaPolicySettings).mock.invocationCallOrder[0]).toBeLessThan(dbSelectMock.mock.invocationCallOrder[0]!);
     expect(dbUpdateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH /org/:orgId/settings/helper drops the heartbeat cache (#8053)', () => {
+  beforeEach(() => { vi.clearAllMocks(); mfaGate.deny = false; });
+  it("invalidates the org's legacy helper flag after the write", async () => {
+    dbSelectMock.mockReturnValueOnce({ from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: ORG_ID, settings: {} }]) }),
+    }) });
+    dbUpdateMock.mockReturnValueOnce({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) });
+    const response = await buildApp().request(`/agents/org/${ORG_ID}/settings/helper`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(response.status).toBe(200);
+    expect(invalidateHelperCacheMock).toHaveBeenCalledWith(ORG_ID);
   });
 });
 

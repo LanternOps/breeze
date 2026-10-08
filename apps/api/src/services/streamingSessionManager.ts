@@ -2056,9 +2056,12 @@ export class StreamingSessionManager {
     // W09 (#7607, D5): a chat turn is never replayed on another model. A turn
     // that FAILED on a classified provider error before any output cools its
     // offering, so the next message resolves to a healthy fallback
-    // (resolveModel). Fire-and-forget: the cooldown fails open.
+    // (resolveModel). Fire-and-forget: the cooldown fails open. Only a
+    // TERMINAL cause cools (#7790), as on the agent path: a cause left by an
+    // `api_retry` the CLI never gave up on (e.g. the user aborted mid-retry)
+    // says nothing about the offering's health.
     const turnFailed = !result || result.subtype !== 'success' || (result as { is_error?: unknown }).is_error === true;
-    if (turnFailed && observation.providerFailure && !observation.sawOutput) {
+    if (turnFailed && observation.providerFailure?.terminal && !observation.sawOutput) {
       void noteProviderFailureForBinding(binding, observation.providerFailure.cause).catch((err) => {
         console.warn('[StreamingSessionManager] cooldown write failed:', safeErrorMessage(err));
       });

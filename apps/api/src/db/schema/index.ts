@@ -187,6 +187,7 @@ export * from './topologyMonitoring';
 export * from './topologyTemplates';
 export * from './emailSendingDomains';
 export * from './backupProviders';
+export * from './edrProviders';
 export * from './callerVerification';
 export * from './hardwareAlertRetirementOutbox';
 export * from './backupSnapshotIdReservations';

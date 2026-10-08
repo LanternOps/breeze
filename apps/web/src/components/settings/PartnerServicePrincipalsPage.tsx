@@ -16,7 +16,9 @@ const WRITE_SCOPES = ['organizations:write', 'sites:write', 'enrollment-keys:wri
 // Opt-in read scopes: offered, never pre-selected (alerts:read exposes alert
 // titles/messages, tickets:read exposes ticket bodies/comments, across every
 // org the principal reaches).
-const OPT_IN_READ_SCOPES = ['alerts:read', 'tickets:read'] as const;
+// device-status:read (#7577) exposes live online/last-seen/agent-version state
+// and is not implied by devices:read.
+const OPT_IN_READ_SCOPES = ['alerts:read', 'tickets:read', 'device-status:read'] as const;
 // MCP scopes: opt-in, never pre-selected. They admit the principal's key to
 // the MCP endpoint across every org of the partner; nothing on the Partner API.
 const MCP_SCOPES = ['ai:read', 'ai:write', 'ai:execute', 'ai:execute_admin'] as const;

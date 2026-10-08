@@ -170,6 +170,16 @@ vi.mock('./erasureBackupLegalHold', () => ({
   findPolicyBackupLegalHoldInContext: vi.fn(async () => null),
 }));
 
+// #8117: helper screenshot files are removed after the ai_screenshots step
+// commits. The file side is proven on a real directory in
+// screenshotStorage.files.test.ts; here only the hand-off is asserted.
+const { removeScreenshotFilesMock } = vi.hoisted(() => ({
+  removeScreenshotFilesMock: vi.fn(async (_keys: readonly string[], _context: string) => ({ removed: 0, missing: 0, failed: 0 })),
+}));
+vi.mock('./screenshotFiles', () => ({
+  removeScreenshotFiles: removeScreenshotFilesMock,
+}));
+
 import {
   getOrgCascadeDeleteOrder,
   cascadeDeleteOrg,
@@ -177,9 +187,12 @@ import {
   TenantCascadeRefusalError,
   __testOnly,
 } from './tenantCascade';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 
 const cascadeOrder = getOrgCascadeDeleteOrder();
+// Captured before any test swaps it out, so a later suite can delegate to it.
+const defaultExecuteImpl = vi.mocked(db.execute).getMockImplementation()!;
+const defaultSystemContextImpl = vi.mocked(withSystemDbAccessContext).getMockImplementation()!;
 
 describe('getOrgCascadeDeleteOrder()', () => {
   it('has every entry as a safe identifier', () => {
@@ -916,5 +929,80 @@ describe('cascadeDeleteOrg — artifact blob pre-clear (execution-plane W01, spe
       Object.assign(new Error('relation "ai_run_artifacts" does not exist'), { code: '42P01' }),
     );
     await expect(cascadeDeleteOrg(ORG, BY)).resolves.toBeDefined();
+  });
+});
+
+describe('cascadeDeleteOrg — helper screenshot files (#8117)', () => {
+  const ORG = '00000000-0000-0000-0000-000000000001';
+  const BY = '00000000-0000-0000-0000-000000000002';
+
+  beforeEach(() => {
+    mockState.executeResponses = [];
+    mockState.executedSql = [];
+    mockState.fkEdges = [];
+    mockState.legalHoldRows = [];
+    mockState.artifactKeyError = null;
+    removeScreenshotFilesMock.mockReset();
+    removeScreenshotFilesMock.mockResolvedValue({ removed: 0, missing: 0, failed: 0 });
+    vi.mocked(withSystemDbAccessContext).mockImplementation(defaultSystemContextImpl);
+    vi.mocked(db.execute).mockImplementation(defaultExecuteImpl);
+  });
+
+  function stubScreenshotDelete(events: string[], keys: string[]) {
+    vi.mocked(db.execute).mockImplementation(((q: unknown) => {
+      const text = sqlToText(q);
+      if (/DELETE FROM "?ai_screenshots"?/.test(text)) {
+        mockState.executedSql.push(text);
+        events.push('delete');
+        return Promise.resolve(Object.assign(keys.map((k) => ({ storage_key: k })), { count: keys.length }));
+      }
+      return defaultExecuteImpl(q as never);
+    }) as any);
+    vi.mocked(withSystemDbAccessContext).mockImplementation((async (fn: () => Promise<unknown>) => {
+      const result = await fn();
+      events.push('commit');
+      return result;
+    }) as any);
+  }
+
+  it('returns the storage keys from the row DELETE and removes the files only after that step commits', async () => {
+    const events: string[] = [];
+    stubScreenshotDelete(events, ['screenshots/a/b/c.jpg', 'screenshots/a/b/d.jpg']);
+    removeScreenshotFilesMock.mockImplementation(async () => {
+      events.push('unlink');
+      return { removed: 2, missing: 0, failed: 0 };
+    });
+
+    const stats = await cascadeDeleteOrg(ORG, BY);
+
+    const deleteSql = mockState.executedSql.find((t) => /DELETE FROM "?ai_screenshots"?/.test(t));
+    expect(deleteSql).toMatch(/RETURNING storage_key/);
+    expect(removeScreenshotFilesMock).toHaveBeenCalledTimes(1);
+    expect(removeScreenshotFilesMock).toHaveBeenCalledWith(
+      ['screenshots/a/b/c.jpg', 'screenshots/a/b/d.jpg'],
+      expect.stringContaining(ORG),
+    );
+    const del = events.indexOf('delete');
+    expect(events.slice(del, del + 3)).toEqual(['delete', 'commit', 'unlink']);
+    expect(stats.tablesDeleted.ai_screenshots).toBe(2);
+  });
+
+  it('does not fail or roll back the erasure when files cannot be removed', async () => {
+    stubScreenshotDelete([], ['screenshots/a/b/c.jpg']);
+    removeScreenshotFilesMock.mockResolvedValue({ removed: 0, missing: 0, failed: 1 });
+
+    const stats = await cascadeDeleteOrg(ORG, BY);
+
+    expect(removeScreenshotFilesMock).toHaveBeenCalledTimes(1);
+    expect(stats.tablesDeleted.ai_screenshots).toBe(1);
+    expect(stats.tablesDeleted.organizations).toBeDefined();
+  });
+
+  it('skips the file step when the org has no screenshots', async () => {
+    stubScreenshotDelete([], []);
+
+    await cascadeDeleteOrg(ORG, BY);
+
+    expect(removeScreenshotFilesMock).not.toHaveBeenCalled();
   });
 });

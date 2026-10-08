@@ -380,7 +380,12 @@ While an organization provider signs in a customer's users, a **partner-owned pr
 
 ### Login Entry Point
 
-When an active partner provider exists, the main login page shows a **"Sign in with \{provider\}"** button — before any organization is chosen. The button appears only on **self-hosted deployments that resolve to exactly one partner** (`IS_HOSTED` not set to `true`). Hosted and multi-partner instances never show it: exposing one tenant's IdP on a shared login page would leak tenant information, so those deployments continue to use per-organization SSO entry points.
+When an active partner provider exists, a **"Sign in with \{provider\}"** button appears on the login page before any organization is chosen. Where it appears depends on the deployment:
+
+- **Self-hosted, single partner** (`IS_HOSTED` not set to `true`, exactly one partner): the button appears on the shared `/login` page automatically.
+- **Hosted or multi-partner:** the shared `/login` page never shows a partner's button, because naming one tenant's IdP on a page every visitor sees would disclose it. Instead, every partner has its own sign-in page at **`/login/<partner-slug>`**, for example `https://us.2breeze.app/login/acme-msp`. It shows that partner's [login branding](#login-page-branding) and SSO button. Partner admins find the exact URL under **Settings → Partner Settings → Branding → Login Branding**, in the **Your sign-in page** field. The slug match is case-insensitive.
+
+The partner page does not confirm whether a slug exists. An unknown slug, a suspended or deleted partner, and a partner with no branding or provider configured all render the stock login page, and the API returns the same response for each.
 
 If more than one partner provider is active, the button deterministically targets the **oldest active** provider (by creation time), so activating a second provider never silently changes the login page. The button starts the standard OIDC flow via `GET /api/v1/sso/login/partner/:partnerId`.
 
@@ -426,7 +431,7 @@ Partner administrators can brand the login screen itself — separate from any S
 
 The API surface is `GET`/`PUT /api/v1/partners/me/login-branding`. The `PUT` is a **full replace**: any field omitted from the request is cleared, not preserved.
 
-Login branding renders under the same rule as the partner SSO button: only on self-hosted deployments that resolve to exactly one partner. It is distinct from [organization and portal branding](/features/branding/), which covers post-login surfaces (dashboard, end-user portal, and email templates).
+Login branding renders under the same rule as the partner SSO button: on the shared `/login` page only for self-hosted deployments that resolve to exactly one partner, and on the partner's own `/login/<partner-slug>` page on any deployment. It is distinct from [organization and portal branding](/features/branding/), which covers post-login surfaces (dashboard, end-user portal, and email templates).
 
 ---
 
@@ -551,6 +556,7 @@ All routes are prefixed with `/api/v1/sso`, except where a full path starting wi
 | `GET` | `/sso/login/:orgId` | None | Initiate SSO login for an organization. Generates PKCE + state and redirects to the IdP. |
 | `GET` | `/sso/login/partner/:partnerId` | None | Initiate partner-wide SSO login (technician sign-in). Uses the oldest active partner provider. |
 | `GET` | `/api/v1/auth/login-context` | None | Login-page context: partner login branding and the partner SSO button target. Returns empty values on hosted or multi-partner deployments. |
+| `GET` | `/api/v1/auth/login-context/partner/:slug` | None | Same response as `/auth/login-context`, resolved by partner slug on any deployment. Backs `/login/<partner-slug>`. Unknown, inactive, and unconfigured slugs all return empty values with status 200. |
 | `GET` | `/sso/callback` | None | IdP callback. Exchanges code for tokens, provisions user, creates session. Redirects to the app with a token exchange code. |
 | `POST` | `/sso/exchange` | None | Exchange a one-time SSO code for JWT access and refresh tokens. |
 

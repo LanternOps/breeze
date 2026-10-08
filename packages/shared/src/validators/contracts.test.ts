@@ -3,6 +3,8 @@ import {
   createContractSchema, contractLineInputSchema, updateContractSchema, changeContractCurrencySchema,
   updateContractLineSchema, contractLineInvariantIssues, mergeContractLinePatch, patchHasKey,
   isSiteDeletedLine,
+  CONTRACT_LINE_TYPES, ALLOWANCE_LINE_TYPES, HOUR_BLOCK_LINE_TYPE, ROLLOVER_POLICIES,
+  type RolloverPolicy,
   type ContractLineShape, type PersistedContractLine,
 } from './contracts';
 
@@ -728,5 +730,26 @@ describe('mergeContractLinePatch carries the site stamp (#4693)', () => {
     const merged = mergeContractLinePatch(current, { siteId: '44444444-4444-4444-8444-444444444444' } as never);
     expect(merged).toMatchObject({ siteId: '44444444-4444-4444-8444-444444444444', siteName: 'Dallas' });
     expect(contractLineInvariantIssues(merged, { mode: 'persisted' })).toEqual([]);
+  });
+});
+
+describe('hour_block constants (#4547 W01)', () => {
+  it('exports the line-type literal and the rollover policies', () => {
+    expect(HOUR_BLOCK_LINE_TYPE).toBe('hour_block');
+    expect([...ROLLOVER_POLICIES]).toEqual(['none', 'carry_forward']);
+    const p: RolloverPolicy = 'carry_forward';
+    expect(ROLLOVER_POLICIES).toContain(p);
+  });
+
+  it('does NOT add hour_block to CONTRACT_LINE_TYPES or ALLOWANCE_LINE_TYPES until W03', () => {
+    expect((CONTRACT_LINE_TYPES as readonly string[]).includes(HOUR_BLOCK_LINE_TYPE)).toBe(false);
+    expect((ALLOWANCE_LINE_TYPES as readonly string[]).includes(HOUR_BLOCK_LINE_TYPE)).toBe(false);
+  });
+
+  it('the line input schema still rejects hour_block, so no API can create one', () => {
+    const r = contractLineInputSchema.safeParse({
+      lineType: 'hour_block', description: 'Prepaid hours', unitPrice: '500.00', taxable: false,
+    });
+    expect(r.success).toBe(false);
   });
 });
