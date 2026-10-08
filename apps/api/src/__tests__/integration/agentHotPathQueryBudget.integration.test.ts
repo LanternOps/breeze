@@ -99,6 +99,11 @@ import {
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestRedis } from './setup';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
+import {
+  orgHelperSettingsCache,
+  orgPamFallbackCache,
+  orgPolicyProbeCache,
+} from '../../services/agentOrgSettingsCache';
 import { enrollmentRoutes } from '../../routes/agents/enrollment';
 import { heartbeatRoutes } from '../../routes/agents/heartbeat';
 import { unifiTelemetryRoutes } from '../../routes/agents/unifiTelemetry';
@@ -456,6 +461,29 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(steady.savepoints).toBe(2);
     // Warm: helper is a Redis hit (no savepoint), probe a process-cache hit.
     expect(warm.savepoints).toBe(1);
+  });
+
+  runDb('POST /agents/:id/heartbeat: a beat whose per-org caches (probe, helper legacy, PAM fallback) all miss — e.g. a single-device org — still costs 3 transactions; a miss loads inside the existing system context', async () => {
+    const org = await seedOrg('permiss');
+    const device = await enrollDevice(org, 'target');
+    const sibling = await enrollDevice(org, 'sibling');
+    expect((await heartbeat(device)).status).toBe(200);
+    advanceClock(NEXT_BEAT_MS);
+    expect((await heartbeat(sibling)).status).toBe(200);
+    await dropDeviceRedisCaches(device.deviceId);
+    // Miss ONLY the three per-org caches this wave added; everything else stays warm.
+    orgPolicyProbeCache.invalidate(org.orgId);
+    orgHelperSettingsCache.invalidate(org.orgId);
+    orgPamFallbackCache.invalidate(org.orgId);
+    const missed = await measure(() => heartbeat(device));
+    console.log('[#8053 budget] per-org caches all miss:', JSON.stringify(missed));
+
+    expect(missed.status).toBe(200);
+    expect(missed.transactions).toBe(3);
+    expect(missed.buckets.automationPolicies).toBe(1);
+    expect(missed.buckets.orgHelperSettings).toBe(1);
+    expect(missed.buckets.pamOrgConfig).toBe(1);
+    expect(missed.statements).toBeLessThanOrEqual(30);
   });
 
   runDb('POST /agents/:id/heartbeat: a legacy (no securityCapabilities) beat pays the two peripheral-v2 UPDATEs on top', async () => {
