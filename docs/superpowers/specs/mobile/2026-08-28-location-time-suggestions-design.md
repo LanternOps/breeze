@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-28
 **Source:** Todd, 2026-08-28 — "the app can know their location, the address of the clients, and just simply enters the time against the client." Refined in discussion to one-tap confirm + a selector when several sites match.
-**Status:** Drafted — awaiting plan. Roadmap item `LanternOps/breeze#4186`. Depends on `LanternOps/breeze#3206` W03 (time-entry client) and W05 (timer bar).
+**Status:** Approved (Gate A, 2026-09-02, W1–W2). Plan: `docs/superpowers/plans/mobile/2026-10-06-location-time-suggestions.md` — read its "Premise check" table and Open Decisions for deviations from this spec (new `GET /time-entries/location-sites`, `endedAt` deferred to W3, `POST /time-entries` also takes `orgId`/`siteId`). Roadmap item `LanternOps/breeze#4186`. Depends on `LanternOps/breeze#3206` W03 (time-entry client) and W05 (timer bar).
 **Parent feature:** Mobile ticketing & time entry (`#3206`). This is a follow-on, not a wave of that plan — it needs backend changes that plan deliberately excludes.
 
 ## 1. Problem & positioning
