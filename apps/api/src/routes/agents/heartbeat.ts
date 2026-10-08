@@ -2044,6 +2044,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // savepoint. Its one refusal (an ephemeral, suspended or tokenless
       // device) is re-derived from `device` and thrown the same way, so the
       // catch below — collection_unavailable + Sentry — is unchanged.
+      // Note: this skip path does not take activeDevice()'s FOR KEY SHARE NOWAIT lock,
+      // so under lock contention it returns the real receipt instead of collection_unavailable.
       const topology = resolvedFlags.materialization
         ? await withResolvedTopologyFlags(
           { orgId: agent.orgId, flags: resolvedFlags },

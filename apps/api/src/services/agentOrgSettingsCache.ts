@@ -18,7 +18,8 @@ import type { PamSettings } from '../routes/agents/pamSettings';
  * next 60 s beat in any case). The org/partner settings routes in
  * routes/orgs.ts invalidate this process at once. Other writers of
  * `organizations.settings` / `partners.settings` (imports, onboarding, the
- * topology bootstrap) rely on the TTL.
+ * topology bootstrap) rely on the TTL. An org merge re-points automation_policies,
+ * so the target org's policy probe can be up to one TTL stale after a merge.
  *
  * The loaders live with their resolvers (`getOrgAgentUpdateConfigCached` in
  * routes/agents/helpers.ts, `loadAgentTopologyFlags` in

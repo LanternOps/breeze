@@ -5154,7 +5154,10 @@ describe('POST /agents/:id/heartbeat — version-pin threading (#2124)', () => {
     const calls = vi.mocked(resolvePinnedUpgradeTarget).mock.calls.map((c) => c[0] as any);
     const agentCall = calls.find((a) => a.component === 'agent');
     const watchdogCall = calls.find((a) => a.component === 'watchdog');
+    const helperCall = calls.find((a) => a.component === 'helper');
 
+    // The helper component is requested too, unpinned.
+    expect(helperCall).toMatchObject({ component: 'helper', pin: null });
     // Each branch gets ITS OWN pin + the device's real platform/arch.
     expect(agentCall).toMatchObject({ component: 'agent', pin: '0.90.0', platform: 'windows', architecture: 'amd64' });
     expect(watchdogCall).toMatchObject({ component: 'watchdog', pin: '0.91.0', platform: 'windows', architecture: 'amd64' });

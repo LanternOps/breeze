@@ -214,7 +214,9 @@ export async function buildHelperConfigUpdate(
   orgId: string,
   opts?: HelperConfigUpdateOptions,
 ): Promise<HelperSettings> {
-  // Validate before the cache short-circuit: a foreign hierarchy is a bug even on a hit.
+  // Validate up front so a foreign hierarchy is a bug even on a cache hit here. The heartbeat
+  // does its own Redis read first (readCachedHelperSettings) and never reaches this guard on a
+  // hit; this covers direct callers of buildHelperConfigUpdate.
   hierarchyFor(deviceId, opts);
   if (!opts?.skipCacheRead) {
     const cached = await readCachedHelperSettings(deviceId);

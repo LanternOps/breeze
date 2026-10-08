@@ -112,6 +112,7 @@ vi.mock('../../db', () => {
     assertInTransaction: vi.fn(),
     // #8053: hot-path caches + the savepoints in the shared policy context.
     hasDbAccessContext: () => false,
+    getCurrentDbAccessContext: () => ({ scope: 'system' }),
     runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
     withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
   };

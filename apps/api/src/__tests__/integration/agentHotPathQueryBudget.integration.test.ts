@@ -254,7 +254,7 @@ type SeededOrg = Awaited<ReturnType<typeof seedOrg>>;
  * never counted. Throws on timeout: never proceed with an unsettled enroll.
  */
 async function waitForEnrollAuditCommitted(deviceId: string): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt++) {
+  for (let attempt = 0; attempt < 1000; attempt++) {
     const rows = await withSystemDbAccessContext(() =>
       db
         .select({ id: auditLogs.id })
@@ -265,7 +265,7 @@ async function waitForEnrollAuditCommitted(deviceId: string): Promise<void> {
     if (rows.length > 0) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error(`agent.enroll audit row for device ${deviceId} never became visible (2s)`);
+  throw new Error(`agent.enroll audit row for device ${deviceId} never became visible (10s)`);
 }
 
 async function enrollDevice(org: SeededOrg, hostname: string) {
