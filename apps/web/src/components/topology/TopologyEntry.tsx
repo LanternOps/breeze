@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useHashState } from '../../lib/useHashState';
-import { parseTopologyHash, writeTopologyHash } from './topologyHash';
+import { formatTopologyHash, parseTopologyHash, writeTopologyHash } from './topologyHash';
 import { topologyApi, topologyNodeListSchema, topologyRead, TopologyReadError, type TopologySettings } from './topologyApi';
 import { clearTopologyPrefetch, prefetchTopologyGraph, prefetchTopologySettings, takePrefetchedSettings } from './topologyPrefetch';
 import TopologyEmptyState from './TopologyEmptyState';
@@ -25,11 +25,30 @@ export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, l
   const currentOrgId = organization?.currentOrgId ?? null;
   const organizationRef = useRef(organization); organizationRef.current = organization;
   const [linked, setLinked] = useState<LinkedSite>();
+  /**
+   * The organization that owns the site the hash names, once known: from the owner lookup, or because the
+   * current organization's list contains it (the store empties `sites` in the same update that changes the org,
+   * so a non-empty list always belongs to `currentOrgId`). A link is applied once (#8113): when the selector
+   * later moves away from this organization, that was the user, and the link is dropped instead of re-resolved.
+   */
+  const linkOwner = useRef<{ siteId: string; orgId: string } | undefined>(undefined);
+  if (!siteId && hashSite && currentOrgId && sites.some((site) => site.id === hashSite)) linkOwner.current = { siteId: hashSite, orgId: currentOrgId };
   useEffect(() => clearTopologyPrefetch, [currentOrgId]);
   const [settings, setSettings] = useState<TopologySettings>(), [focus, setFocus] = useState<string>(), [error, setError] = useState<string>(), [bindingResolved, setBindingResolved] = useState(false);
   useEffect(() => {
     setLinked(undefined);
     if (!linkedSite) return;
+    const known = linkOwner.current;
+    if (known?.siteId === linkedSite && known.orgId !== currentOrgId) {
+      // The user switched organization after the link was applied: the explicit switch wins (#8113). Moving the
+      // selector back here is the snap-back. Drop the site from the hash (no history entry: Back must not
+      // re-open the link either) and keep the view, so the new organization's sites load as usual.
+      linkOwner.current = undefined;
+      const view = parseTopologyHash(window.location.hash)?.view ?? 'overview';
+      history.replaceState(null, '', `${window.location.pathname}${window.location.search}#${formatTopologyHash({ view, search: '' })}`);
+      setHashSite(undefined);
+      return;
+    }
     void loadExplorer().catch(() => undefined);
     const controller = new AbortController();
     setLinked('checking');
@@ -38,6 +57,7 @@ export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, l
     void topologyApi.siteOwner(linkedSite, controller.signal).then((owner) => {
       if (controller.signal.aborted) return;
       const org = organizationRef.current;
+      if (org) linkOwner.current = { siteId: linkedSite, orgId: owner.orgId };
       if (owner.orgId === (org?.currentOrgId ?? null)) {
         // Usually the org's site list is just still loading: start this site's reads so they overlap it.
         // Nothing renders until the list contains the site.
