@@ -1,9 +1,13 @@
 # Physical Placement and Circuits — V1 Design
 
-**Date:** 2026-10-07  
-**Status:** Draft — prepared from Discussion #8134 and maintainer review; awaiting maintainer approval before implementation  
-**Discussion:** #8134  
-**Maintainer review:** discussion comment `18803894` (ToddHebebrand)  
+**Date:** 2026-10-07
+
+**Status:** Draft — prepared from Discussion #8134 and maintainer review; awaiting maintainer approval before implementation
+
+**Discussion:** #8134
+
+**Maintainer review:** discussion comment `18803894` (ToddHebebrand)
+
 **Related:** `2026-09-15-intelligent-network-topology-design.md`, `2026-09-15-intelligent-network-topology-data-contracts.md`, `2026-10-03-topology-site-location-design.md`, `../device-lifecycle/2026-09-07-manual-asset-entry-spec.md`
 
 ## Summary
