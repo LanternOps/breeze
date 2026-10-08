@@ -915,6 +915,21 @@ const REPOINT_TABLES: readonly string[] = [
   "dr_executions",
   "dr_plan_groups",
   "dr_plans",
+  // EDR provider framework W01 (#8164 / #8165) — same reasoning as the
+  // backup_provider_* block above. Every composite FK onto an org_id among
+  // these four ((org_id, partner_id) -> organizations, (tenant_id, org_id),
+  // (endpoint_id, org_id), (detection_id, org_id), (breeze_device_id, org_id)
+  // -> devices) is DEFERRABLE INITIALLY IMMEDIATE, so the merge's SET
+  // CONSTRAINTS ALL DEFERRED lets parent and child org_id move in separate
+  // statements. No unique key is org-scoped — (connection_id,
+  // vendor_tenant_id), (connection_id, vendor_endpoint_id), the partial
+  // (connection_id, breeze_device_id) and the partial live-detection identity
+  // are all org-independent — so a plain repoint can never raise 23505.
+  // D13 tombstones (tenant_id NULL) move with the org like any other row.
+  "edr_actions",
+  "edr_detections",
+  "edr_endpoints",
+  "edr_tenants",
   "elevation_audit",
   "elevation_requests",
   "escalation_policies",

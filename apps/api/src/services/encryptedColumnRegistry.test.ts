@@ -45,6 +45,20 @@ describe('encryptedColumnRegistry', () => {
     }
   });
 
+  it('registers the EDR provider secret columns with row-bound AAD (#8165)', () => {
+    // A ciphertext pasted into another partner's connection / tenant row must
+    // not decrypt, so every EDR secret column binds its AAD to the row id.
+    for (const [table, column] of [
+      ['edr_connections', 'credentials_encrypted'],
+      ['edr_connections', 'webhook_secret_encrypted'],
+      ['edr_tenants', 'installer_secret_encrypted'],
+    ] as const) {
+      const spec = encryptedColumnRegistry.find((c) => c.table === table && c.column === column);
+      expect(spec, `${table}.${column} missing from encryptedColumnRegistry`).toBeDefined();
+      expect(spec).toMatchObject({ kind: 'text', aadBinding: 'row' });
+    }
+  });
+
   it('transforms text columns from legacy ciphertext to the active v2 key id', () => {
     setEncryptionEnv({ APP_ENCRYPTION_KEY: 'legacy-key-material' });
     const legacyCiphertext = encryptSecret('legacy-secret');

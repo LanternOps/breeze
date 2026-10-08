@@ -576,6 +576,19 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'dr_executions',
   'dr_plan_groups',
   'dr_plans',
+  // EDR provider framework W01 (#8164 / #8165). Four org_id tables; the fifth
+  // (edr_connections) is partner-axis with no org_id and is erased by
+  // cascadeDeletePartner's information_schema partner_id sweep instead.
+  // edr_tenants is partner-axis too but carries the nullable org_id MAPPING
+  // target, so an erased org's tenant rows go with it. Alphabetical happens to
+  // be children-before-parents (actions -> detections -> endpoints -> tenants);
+  // every FK among them is ON DELETE CASCADE or SET NULL (col), so position is
+  // determinism — topologicalCascadeOrder()'s live pg_constraint read is the
+  // real DELETE order.
+  'edr_actions',
+  'edr_detections',
+  'edr_endpoints',
+  'edr_tenants',
   'elevation_audit',
   'elevation_requests',
   'enrollment_keys',

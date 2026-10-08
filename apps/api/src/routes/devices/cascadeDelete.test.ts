@@ -308,6 +308,30 @@ describe('device hard-delete table coverage contract', () => {
     expect(DEVICE_DETACH_DEVICE_ID_TABLES).not.toContain('backup_provider_devices');
     expect(DEVICE_LINKED_DEVICE_ID_TABLES).not.toContain('backup_provider_devices');
   });
+
+  it.each(['edr_endpoints', 'edr_detections', 'edr_actions'])(
+    '%s needs no device-cascade entry — its link column is breeze_device_id',
+    (name) => {
+      // #8165 (EDR provider framework W01, spec D4). Same reasoning as
+      // backup_provider_devices above: these rows LINK to a Breeze device; their
+      // org_id comes from the vendor TENANT MAPPING, and the
+      // (breeze_device_id, org_id) -> devices(id, org_id) FK is
+      // ON DELETE SET NULL (breeze_device_id) (confdelsetcols pinned in
+      // edrProviderRls.integration.test.ts). A rename to device_id would enrol
+      // the tables in the generic device delete cascade (destroying detection
+      // history) and in the org-move SET org_id re-stamp loop.
+      const table = allSchemaTables().find((t) => getTableName(t) === name);
+      expect(table, `${name} missing from the Drizzle schema barrel`).toBeDefined();
+      const names = getTableColumns(table!).map((col) => col.name);
+      expect(names).toContain('breeze_device_id');
+      expect(names).not.toContain('device_id');
+      expect(names).not.toContain('linked_device_id');
+
+      expect(DEVICE_CASCADE_DELETE_TABLES).not.toContain(name);
+      expect(DEVICE_DETACH_DEVICE_ID_TABLES).not.toContain(name);
+      expect(DEVICE_LINKED_DEVICE_ID_TABLES).not.toContain(name);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

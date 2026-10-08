@@ -388,6 +388,24 @@ export async function deleteDeviceCascade(
     await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
   }
 
+  // #8165 (EDR provider framework W01, spec D14 applied to hard delete — plan
+  // index correction 12). edr_detections' (breeze_device_id, org_id) FK is
+  // ON DELETE SET NULL (breeze_device_id), so the DELETE below clears the link
+  // itself; without this snapshot the finding would become a "never linked"
+  // null-device row visible to every site-restricted technician in the org.
+  // Snapshot only — the FK does the detach. Runs under the device-row lock
+  // taken at the top, while the device row (and its site_id) still exists.
+  await tx.execute(sql`UPDATE edr_detections
+    SET device_detached_at = COALESCE(device_detached_at, now()),
+        last_site_id = (SELECT site_id FROM devices WHERE id = ${deviceId})
+    WHERE breeze_device_id = ${deviceId}`);
+  // Clear the endpoint link WITH its provenance, as the org-move detach does:
+  // the FK's SET NULL (breeze_device_id) alone would leave e.g. 'manual' on an
+  // unlinked row, and manual links are never re-matched.
+  await tx.execute(sql`UPDATE edr_endpoints
+    SET breeze_device_id = NULL, device_match_source = NULL
+    WHERE breeze_device_id = ${deviceId}`);
+
   await tx.delete(devices).where(eq(devices.id, deviceId));
 
   // Disarm the backup fence (armed after the parent lock above) so later work
