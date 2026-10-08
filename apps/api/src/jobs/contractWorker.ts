@@ -102,6 +102,18 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
           row.id, row.orgId, o.contractLineId, o.counted, o.included, o.overage, o.mode
         );
       }
+      // #8181: block-hour closes. A capped backlog closes over later runs; hours
+      // absorbed from entries stamped in another currency are a Decision 8 flag.
+      if (res.hourBlockCloseTruncated) {
+        console.warn('[contract-billing] block-hours close backlog capped; remaining periods close on later runs: contractId=%s', row.id);
+      }
+      for (const hb of res.hourBlockCloses) {
+        if (hb.foreignCurrencyHours <= 0) continue;
+        console.warn(
+          '[contract-billing] block hours absorbed foreign-currency entries: contractId=%s lineId=%s period=%s foreignHours=%d',
+          row.id, hb.contractLineId, hb.periodStart, hb.foreignCurrencyHours
+        );
+      }
     } catch (err) {
       failed++;
       console.error('[ContractWorker] generation failed', `contractId=${row.id}`, err instanceof Error ? err.message : err);
