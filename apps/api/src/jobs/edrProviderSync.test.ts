@@ -20,7 +20,7 @@ function chain(resultFor: () => unknown) {
   const c: Record<string, unknown> = {};
   for (const m of ['where', 'limit', 'values', 'onConflictDoUpdate', 'returning']) c[m] = vi.fn(() => c);
   c.from = vi.fn((t: unknown) => { state.table = t; return c; });
-  c.for = vi.fn(() => { events.push('for-update'); state.table = 'forUpdate'; return c; });
+  c.for = vi.fn(() => { phase3Started = true; events.push('for-update'); state.table = 'forUpdate'; return c; });
   c.set = vi.fn((payload: Record<string, unknown>) => {
     updatePayloads.push({ depth: contextDepth, payload });
     return c;
@@ -38,6 +38,10 @@ function chain(resultFor: () => unknown) {
 
 // First edr_tenants select (phase 1) returns the tenant list; later ones the open-detection sum.
 let tenantSelects = 0;
+// Phase-3 per-tenant fence read (the first edr_tenants select after the FOR UPDATE re-read).
+let phase3Started = false;
+let phase3TenantSelects = 0;
+let phase3TenantRows: Array<Record<string, unknown>> | undefined;
 // Rows the phase-1 endpoint query (db.execute) returns.
 let executeRows: Array<Record<string, unknown>> = [];
 vi.mock('../db', () => ({
@@ -50,6 +54,14 @@ vi.mock('../db', () => ({
         origFrom(t);
         if (t === edrConnections) tenantSelects = 0; // each run's phase-1 connection load restarts the sequence
         if (t === edrTenants) {
+          if (phase3Started) {
+            phase3TenantSelects += 1;
+            if (phase3TenantSelects === 1) {
+              (c as { then: unknown }).then = (res: (v: unknown) => unknown) =>
+                Promise.resolve(phase3TenantRows ?? tenantRows).then(res);
+            }
+            return c;
+          }
           tenantSelects += 1;
           if (tenantSelects === 1) {
             (c as { then: unknown }).then = (res: (v: unknown) => unknown) => Promise.resolve(tenantRows).then(res);
@@ -66,13 +78,14 @@ vi.mock('../db', () => ({
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
     contextDepth += 1;
+    phase3Started = false; phase3TenantSelects = 0;
     events.push('tx-begin');
     try { return await fn(); } finally { contextDepth -= 1; }
   }),
-  runOutsideDbContext: vi.fn((fn: () => unknown) => {
+  runOutsideDbContext: vi.fn(async (fn: () => unknown) => {
     const saved = contextDepth;
     contextDepth = 0;
-    try { return fn(); } finally { contextDepth = saved; }
+    try { return await fn(); } finally { contextDepth = saved; }
   }),
 }));
 
@@ -123,7 +136,8 @@ vi.mock('../services/edrProviders/registry', () => ({
     listDetections: m.listDetections,
   }),
 }));
-vi.mock('../services/edrProviders/credentials', () => ({ decryptEdrSecret: vi.fn(() => ({ apiKey: 'k' })) }));
+const SECRET_KEY = 'sk-distinctive-secret-9f3a';
+vi.mock('../services/edrProviders/credentials', () => ({ decryptEdrSecret: vi.fn(() => ({ apiKey: SECRET_KEY })) }));
 vi.mock('../services/edrProviders/context', () => ({ buildEdrAdapterContext: m.buildEdrAdapterContext }));
 vi.mock('../services/edrProviders/persist', () => ({
   upsertTenants: m.upsertTenants,
@@ -180,7 +194,7 @@ beforeEach(() => {
   contextDepth = 0; tenantSelects = 0; executeRows = [];
   fetchDepths.length = 0; dbCallDepths.length = 0; updatePayloads.length = 0; events.length = 0;
   connectionRow = { ...BASE_ROW };
-  reReadRow = undefined;
+  reReadRow = undefined; phase3Started = false; phase3TenantSelects = 0; phase3TenantRows = undefined;
   tenantRows = [MAPPED, UNMAPPED];
   m.buildEdrAdapterContext.mockReturnValue({ runCache: RUN_CACHE });
   m.listTenants.mockImplementation(async () => { fetchDepths.push(contextDepth); return [vt('v-mapped'), vt('v-un')]; });
@@ -402,5 +416,168 @@ describe('syncEdrDetections', () => {
     reReadRow = { ...BASE_ROW, baseUrl: 'https://other.gravityzone.bitdefender.com' };
     await expect(syncEdrDetections(CONNECTION_ID)).resolves.toBeUndefined();
     expect(m.persistDetections).not.toHaveBeenCalled();
+  });
+});
+
+describe('phase-3 per-tenant fence (review #1)', () => {
+  const REMAPPED = { ...MAPPED, orgId: 'org-NEW' };
+
+  it('inventory: a tenant remapped between phases is not persisted and the stream is re-enqueued', async () => {
+    tenantRows = [MAPPED, MAPPED2];
+    phase3TenantRows = [REMAPPED, MAPPED2];
+    m.listTenants.mockResolvedValue([vt('v-mapped'), vt('v-mapped2')]);
+    await syncEdrInventory(CONNECTION_ID);
+    const results = m.persistInventory.mock.calls[0]![2] as Array<{ vendorTenantId: string }>;
+    expect(results.map((r) => r.vendorTenantId)).toEqual(['v-mapped2']);
+    expect(m.enqueueOrReplaceStale).toHaveBeenCalledWith(
+      expect.anything(), 'sync-inventory', `edr-inventory-${CONNECTION_ID}`,
+      expect.anything(), expect.anything(), expect.any(String),
+    );
+  });
+
+  it('inventory: unchanged tenants are all persisted and nothing is re-enqueued', async () => {
+    tenantRows = [MAPPED, MAPPED2];
+    m.listTenants.mockResolvedValue([vt('v-mapped'), vt('v-mapped2')]);
+    await syncEdrInventory(CONNECTION_ID);
+    expect((m.persistInventory.mock.calls[0]![2] as unknown[]).length).toBe(2);
+    expect(m.enqueueOrReplaceStale).not.toHaveBeenCalled();
+  });
+
+  it('inventory: a tenant auto-mapped in phase 3 (was unmapped in phase 1) is dropped too', async () => {
+    phase3TenantRows = [MAPPED, { ...UNMAPPED, orgId: 'org-auto' }];
+    await syncEdrInventory(CONNECTION_ID);
+    const results = m.persistInventory.mock.calls[0]![2] as Array<{ vendorTenantId: string }>;
+    expect(results.map((r) => r.vendorTenantId)).toEqual(['v-mapped']);
+    expect(m.enqueueOrReplaceStale).toHaveBeenCalledTimes(1);
+  });
+
+  it('detections: a remapped org OR a reset cursor drops that tenant; the other persists; re-enqueued', async () => {
+    const A = { ...MAPPED, id: 'a', vendorTenantId: 'va', detectionCursor: 'c0' };
+    const B = { ...MAPPED, id: 'b', vendorTenantId: 'vb', detectionCursor: 'c0' };
+    const C = { ...MAPPED, id: 'c', vendorTenantId: 'vc', detectionCursor: 'c0' };
+    tenantRows = [A, B, C];
+    phase3TenantRows = [{ ...A, orgId: 'org-NEW' }, { ...B, detectionCursor: null }, C];
+    await syncEdrDetections(CONNECTION_ID);
+    const results = m.persistDetections.mock.calls[0]![2] as Array<{ vendorTenantId: string }>;
+    expect(results.map((r) => r.vendorTenantId)).toEqual(['vc']);
+    expect(m.enqueueOrReplaceStale).toHaveBeenCalledWith(
+      expect.anything(), 'sync-detections', `edr-detections-${CONNECTION_ID}`,
+      expect.anything(), expect.anything(), expect.any(String),
+    );
+  });
+
+  it('detections: unchanged tenants persist and nothing is re-enqueued; an enqueue failure does not fail the run', async () => {
+    await syncEdrDetections(CONNECTION_ID);
+    expect(m.enqueueOrReplaceStale).not.toHaveBeenCalled();
+    phase3TenantRows = [{ ...MAPPED, orgId: 'org-NEW' }];
+    m.enqueueOrReplaceStale.mockRejectedValue(new Error('redis down'));
+    await expect(syncEdrDetections(CONNECTION_ID)).resolves.toBeUndefined();
+  });
+});
+
+describe('all tenants failed -> fail closed (H3)', () => {
+  const tenantErr = (m_: string) => new FakeEdrError(m_, { code: 'permission', reauth: false, scope: 'tenant' });
+
+  it('inventory: every fetch failing throws with the first tenant error; final attempt records error', async () => {
+    tenantRows = [MAPPED, MAPPED2];
+    m.listTenants.mockResolvedValue([vt('v-mapped'), vt('v-mapped2')]);
+    m.listEndpoints.mockRejectedValue(tenantErr('company denied'));
+    await expect(syncEdrInventory(CONNECTION_ID, { isFinalAttempt: true })).rejects.toThrow('company denied');
+    expect(m.persistInventory).not.toHaveBeenCalled();
+    const rec = updatePayloads.find((u) => u.payload.lastInventorySyncStatus === 'error')!;
+    expect(rec.payload.lastInventorySyncError).toContain('company denied');
+    expect(updatePayloads.some((u) => u.payload.status === 'connected')).toBe(false);
+  });
+
+  it('inventory: zero tenants is not "all failed"', async () => {
+    tenantRows = [];
+    m.listTenants.mockResolvedValue([]);
+    await expect(syncEdrInventory(CONNECTION_ID)).resolves.toBeUndefined();
+    expect(m.persistInventory).toHaveBeenCalled();
+  });
+
+  it('detections: every fetch failing throws with the first tenant error; zero mapped tenants is fine', async () => {
+    tenantRows = [MAPPED, MAPPED2];
+    m.listDetections.mockRejectedValue(tenantErr('incidents denied'));
+    await expect(syncEdrDetections(CONNECTION_ID, { isFinalAttempt: true })).rejects.toThrow('incidents denied');
+    expect(m.persistDetections).not.toHaveBeenCalled();
+    expect(updatePayloads.find((u) => u.payload.lastDetectionSyncStatus === 'error')!.payload.lastDetectionSyncError)
+      .toContain('incidents denied');
+
+    tenantRows = [UNMAPPED];
+    await expect(syncEdrDetections(CONNECTION_ID)).resolves.toBeUndefined();
+  });
+});
+
+describe('detection warnings + skipped (M1, M3)', () => {
+  it('page warnings make the connection partial with de-duplicated warnings as the error', async () => {
+    tenantRows = [MAPPED, MAPPED2];
+    m.listDetections.mockImplementation(async () => ({ detections: [], cursor: 'c1', warnings: ['quarantine: API not enabled', 'x'] }));
+    await syncEdrDetections(CONNECTION_ID);
+    expect(lastConnectionUpdate()!.payload).toMatchObject({
+      lastDetectionSyncStatus: 'partial',
+      lastDetectionSyncError: 'quarantine: API not enabled; x',
+    });
+  });
+
+  it('tenant failures and warnings combine', async () => {
+    m.persistDetections.mockResolvedValue({ upserted: 0, failedTenants: 1, skipped: 0 });
+    m.listDetections.mockImplementation(async () => ({ detections: [], cursor: 'c1', warnings: ['w1'] }));
+    await syncEdrDetections(CONNECTION_ID);
+    expect(lastConnectionUpdate()!.payload).toMatchObject({
+      lastDetectionSyncStatus: 'partial',
+      lastDetectionSyncError: '1 tenant(s) failed to sync; w1',
+    });
+  });
+
+  it('skipped detections are warned about with the connection id and count only', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    m.persistDetections.mockResolvedValue({ upserted: 0, failedTenants: 0, skipped: 3 });
+    await syncEdrDetections(CONNECTION_ID);
+    const line = warn.mock.calls.map((c) => String(c[0])).find((l) => l.includes('skipped'));
+    expect(line).toContain(CONNECTION_ID);
+    expect(line).toContain('3');
+    warn.mockRestore();
+  });
+});
+
+describe('failure writes are fenced on the credential tuple (review #4)', () => {
+  it('a stale job cannot flip a re-credentialled connection to reauth_required / error', async () => {
+    reReadRow = { ...BASE_ROW, credentialsEncrypted: 'enc-rotated' };
+    m.listTenants.mockRejectedValue(new FakeEdrError('bad key', { code: 'unauthorized', reauth: true, scope: 'connection' }));
+    await expect(syncEdrInventory(CONNECTION_ID)).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(updatePayloads.some((u) => u.payload.status === 'reauth_required')).toBe(false);
+    expect(updatePayloads.some((u) => u.payload.lastInventorySyncStatus === 'error')).toBe(false);
+
+    m.listDetections.mockRejectedValue(new Error('vendor 503'));
+    await expect(syncEdrDetections(CONNECTION_ID, { isFinalAttempt: true })).rejects.toThrow('vendor 503');
+    expect(updatePayloads.some((u) => u.payload.lastDetectionSyncStatus === 'error')).toBe(false);
+  });
+});
+
+describe('detections resilience + secret scrubbing (test gap)', () => {
+  it('retries a 40P01 deadlock twice then succeeds: 3 persist calls, one connection write', async () => {
+    const deadlock = Object.assign(new Error('deadlock detected'), { code: '40P01' });
+    m.persistDetections.mockRejectedValueOnce(deadlock).mockRejectedValueOnce(deadlock);
+    await expect(syncEdrDetections(CONNECTION_ID)).resolves.toBeUndefined();
+    expect(m.persistDetections).toHaveBeenCalledTimes(3);
+    expect(updatePayloads.filter((u) => 'lastDetectionSyncAt' in u.payload)).toHaveLength(1);
+    expect(m.listDetections).toHaveBeenCalledTimes(1);
+  });
+
+  it('never persists the decrypted credential, even when a vendor error echoes it', async () => {
+    tenantRows = [MAPPED, MAPPED2];
+    m.listDetections.mockImplementation(async (_c: unknown, t: { vendorTenantId: string }) => {
+      if (t.vendorTenantId === 'v-mapped') throw new FakeEdrError(`bad auth ${SECRET_KEY} here`, { code: 'permission', reauth: false, scope: 'tenant' });
+      return { detections: [], cursor: 'c1', warnings: [] };
+    });
+    await syncEdrDetections(CONNECTION_ID);
+    const results = m.persistDetections.mock.calls[0]![2];
+    expect(JSON.stringify(results)).not.toContain(SECRET_KEY);
+
+    m.listTenants.mockRejectedValue(new Error(`GET failed with key=${SECRET_KEY}`));
+    await expect(syncEdrInventory(CONNECTION_ID, { isFinalAttempt: true })).rejects.toThrow();
+    expect(JSON.stringify(updatePayloads)).not.toContain(SECRET_KEY);
+    expect(updatePayloads.find((u) => u.payload.lastInventorySyncStatus === 'error')).toBeDefined();
   });
 });

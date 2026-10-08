@@ -188,9 +188,57 @@ function isEdrReauthFailure(error: unknown): boolean {
   return message.includes(EDR_REAUTH_MARKER);
 }
 
-function safeMessage(error: unknown): string {
+/** Decrypted credential values worth scrubbing from any error text we persist (short values are noise). */
+function secretsOf(creds: unknown): string[] {
+  if (!creds || typeof creds !== 'object') return [];
+  return Object.values(creds as Record<string, unknown>)
+    .filter((v): v is string => typeof v === 'string' && v.length >= 4);
+}
+
+function scrub(text: string, secrets: readonly string[]): string {
+  let out = text;
+  for (const secret of secrets) out = out.split(secret).join('[redacted]');
+  return out;
+}
+
+function safeMessage(error: unknown, secrets: readonly string[] = []): string {
   const message = error instanceof Error ? error.message : String(error);
-  return message.slice(0, 500);
+  return scrub(message, secrets).slice(0, 500);
+}
+
+/** Every fetch attempted failed (and at least one was attempted): fail closed instead of recording success. */
+function throwIfAllFailed(results: ReadonlyArray<{ ok: boolean; error?: string }>): void {
+  if (results.length === 0) return;
+  const failures = results.filter((r) => !r.ok);
+  if (failures.length !== results.length) return;
+  throw new Error(`All ${results.length} tenant fetch(es) failed: ${failures[0]!.error ?? 'unknown error'}`);
+}
+
+/** Live tenant org / cursor as read inside the Phase-3 tx, keyed by vendor tenant id. */
+async function readCurrentTenants(
+  tx: EdrSyncTx,
+  connectionId: string,
+): Promise<Map<string, { orgId: string | null; detectionCursor: string | null }>> {
+  const rows = (await (tx as unknown as typeof db)
+    .select({
+      vendorTenantId: edrTenants.vendorTenantId,
+      orgId: edrTenants.orgId,
+      detectionCursor: edrTenants.detectionCursor,
+    })
+    .from(edrTenants)
+    .where(eq(edrTenants.connectionId, connectionId))) as Array<{
+    vendorTenantId: string; orgId: string | null; detectionCursor: string | null;
+  }>;
+  return new Map(rows.map((r) => [r.vendorTenantId, r]));
+}
+
+/** Best-effort re-run of a stream whose tenants were dropped by the per-tenant fence. */
+async function reenqueueStream(connectionId: string, stream: EdrSyncStream): Promise<void> {
+  try {
+    await dbModule.runOutsideDbContext(() => enqueueEdrSync(connectionId, stream));
+  } catch (error) {
+    console.error(`[EdrProviderSync] Failed to re-enqueue ${stream} sync for ${connectionId}:`, error);
+  }
 }
 
 /** Run `fn` over `items` with bounded concurrency; the first thrown error stops new work and is rethrown. */
@@ -296,14 +344,31 @@ async function loadForSync(connectionId: string, stream: EdrSyncStream): Promise
   }, `edrProviderSync.load.${stream}`);
 }
 
-function buildContext(adapter: EdrProviderAdapter, row: typeof edrConnections.$inferSelect): EdrAdapterContext {
+function buildContext(
+  adapter: EdrProviderAdapter,
+  row: typeof edrConnections.$inferSelect,
+): { ctx: EdrAdapterContext; secrets: string[] } {
   const creds = decryptEdrSecret('connection_credentials', row.id, row.credentialsEncrypted);
-  return buildEdrAdapterContext(adapter, {
+  const ctx = buildEdrAdapterContext(adapter, {
     creds,
     baseUrl: row.baseUrl,
     region: row.region,
     vendorRootId: row.vendorRootId,
   });
+  return { ctx, secrets: secretsOf(creds) };
+}
+
+type CredentialTuple = Pick<
+  typeof edrConnections.$inferSelect,
+  'credentialsEncrypted' | 'baseUrl' | 'region' | 'vendorRootId'
+>;
+
+/** The fence: same credential material the run loaded in Phase 1. */
+function sameCredentialTuple(current: CredentialTuple, loaded: CredentialTuple): boolean {
+  return current.credentialsEncrypted === loaded.credentialsEncrypted
+    && current.baseUrl === loaded.baseUrl
+    && current.region === loaded.region
+    && current.vendorRootId === loaded.vendorRootId;
 }
 
 /**
@@ -343,12 +408,7 @@ async function runPhase3<T>(
           .for('update')
           .limit(1);
         if (!current || !current.isActive) return null;
-        if (
-          current.credentialsEncrypted !== row.credentialsEncrypted
-          || current.baseUrl !== row.baseUrl
-          || current.region !== row.region
-          || current.vendorRootId !== row.vendorRootId
-        ) return null;
+        if (!sameCredentialTuple(current, row)) return null;
         return body(db as unknown as EdrSyncTx, current);
       }, label);
     } catch (error) {
@@ -362,24 +422,41 @@ async function runPhase3<T>(
 }
 
 async function recordSyncFailure(
-  connectionId: string,
+  loaded: LoadedConnection,
   stream: EdrSyncStream,
   message: string,
   reauth: boolean,
 ): Promise<void> {
-  // A FRESH transaction: phase 3's is rolling back as we unwind.
+  // A FRESH transaction: phase 3's is rolling back as we unwind. Fenced on the credential tuple
+  // loaded in Phase 1 (row locked FOR UPDATE), so a stale in-flight job holding an old key cannot
+  // flip a freshly re-credentialled connection to reauth_required / error.
+  const connectionId = loaded.row.id;
   const clipped = message.slice(0, MAX_SYNC_ERROR_LENGTH);
   try {
-    await dbModule.runOutsideDbContext(() => runWithSystemDbAccess(() => db
-      .update(edrConnections)
-      .set({
-        ...(stream === 'inventory'
-          ? { lastInventorySyncStatus: 'error' as const, lastInventorySyncError: clipped }
-          : { lastDetectionSyncStatus: 'error' as const, lastDetectionSyncError: clipped }),
-        ...(reauth ? { status: 'reauth_required' as const } : {}),
-        updatedAt: new Date(),
-      })
-      .where(eq(edrConnections.id, connectionId)), 'edrProviderSync.recordError'));
+    await dbModule.runOutsideDbContext(() => runWithSystemDbAccess(async () => {
+      const [current] = await db
+        .select({
+          credentialsEncrypted: edrConnections.credentialsEncrypted,
+          baseUrl: edrConnections.baseUrl,
+          region: edrConnections.region,
+          vendorRootId: edrConnections.vendorRootId,
+        })
+        .from(edrConnections)
+        .where(eq(edrConnections.id, connectionId))
+        .for('update')
+        .limit(1);
+      if (!current || !sameCredentialTuple(current, loaded.row)) return;
+      await db
+        .update(edrConnections)
+        .set({
+          ...(stream === 'inventory'
+            ? { lastInventorySyncStatus: 'error' as const, lastInventorySyncError: clipped }
+            : { lastDetectionSyncStatus: 'error' as const, lastDetectionSyncError: clipped }),
+          ...(reauth ? { status: 'reauth_required' as const } : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(edrConnections.id, connectionId));
+    }, 'edrProviderSync.recordError'));
   } catch (dbError) {
     console.error(`[EdrProviderSync] Failed to record sync error for ${connectionId}:`, dbError);
     captureException(dbError instanceof Error ? dbError : new Error(String(dbError)));
@@ -388,16 +465,17 @@ async function recordSyncFailure(
 
 async function handleSyncError(
   error: unknown,
-  connectionId: string,
+  loaded: LoadedConnection,
   stream: EdrSyncStream,
   isFinalAttempt: boolean,
+  secrets: readonly string[],
 ): Promise<never> {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = scrub(error instanceof Error ? error.message : String(error), secrets);
   const reauth = isEdrReauthFailure(error);
   // rate_limited / rate_budget_exhausted are connection-scope but NOT reauth: they
   // fall through to a plain rethrow so BullMQ backs off; nothing was persisted.
   if (isFinalAttempt || reauth) {
-    await recordSyncFailure(connectionId, stream, message, reauth);
+    await recordSyncFailure(loaded, stream, message, reauth);
   }
   if (reauth) {
     throw error instanceof UnrecoverableError ? error : new UnrecoverableError(`${EDR_REAUTH_MARKER} ${message}`);
@@ -428,10 +506,13 @@ export async function syncEdrInventory(
   const loaded = await loadForSync(connectionId, 'inventory');
   if (!loaded) return;
 
+  let secrets: string[] = [];
   try {
     const rootId = requireRoot(loaded.row);
     const adapter = getEdrProvider(loaded.row.provider);
-    const ctx = buildContext(adapter, loaded.row);
+    const built = buildContext(adapter, loaded.row);
+    const ctx = built.ctx;
+    secrets = built.secrets;
     const byVendorId = new Map(loaded.tenants.map((t) => [t.vendorTenantId, t]));
 
     // ---- phase 2 (NO DB) ---------------------------------------------
@@ -469,12 +550,14 @@ export async function syncEdrInventory(
           } catch (err) {
             // reauth / budget / rate limit: the whole run fails.
             if (err instanceof EdrProviderRequestError && err.scope === 'connection') throw err;
-            return { vendorTenantId: t.vendorTenantId, ok: false, error: safeMessage(err), scope: 'tenant' };
+            return { vendorTenantId: t.vendorTenantId, ok: false, error: safeMessage(err, secrets), scope: 'tenant' };
           }
         },
       );
       return { vendorTenants, results };
     });
+
+    throwIfAllFailed(fetched.results);
 
     // ---- phase 3 -------------------------------------------------------
     const done = await runPhase3(loaded, 'edrProviderSync.persistInventory', async (tx, current) => {
@@ -484,7 +567,16 @@ export async function syncEdrInventory(
         hostAllowlist: adapter.hostAllowlist,
       });
       const mapped = await autoMapEdrTenants(tx, conn);
-      const inv = await persistInventory(tx, conn, fetched.results, now);
+      // Per-tenant fence: a tenant remapped (remapEdrTenant) or auto-mapped since Phase 1 must not
+      // get its Phase-2 result (fetched under the OLD org / unmapped state) written.
+      const currentTenants = await readCurrentTenants(tx, conn.id);
+      const keep = fetched.results.filter((r) => {
+        const snap = byVendorId.get(r.vendorTenantId);
+        const cur = currentTenants.get(r.vendorTenantId);
+        return (cur?.orgId ?? null) === (snap?.orgId ?? null);
+      });
+      const dropped = fetched.results.length - keep.length;
+      const inv = await persistInventory(tx, conn, keep, now);
       await pruneMissingTenantEndpoints(tx, conn.id, now);
       const match = await matchEdrEndpoints(tx, conn.id);
       await refreshDetectionDeviceLinks(tx, conn.id);
@@ -526,8 +618,10 @@ export async function syncEdrInventory(
           updatedAt: now,
         })
         .where(eq(edrConnections.id, conn.id));
-      return true;
+      return { dropped };
     });
+
+    if (done && done.dropped > 0) await reenqueueStream(connectionId, 'inventory');
 
     if (!done) {
       console.warn(
@@ -536,7 +630,7 @@ export async function syncEdrInventory(
       );
     }
   } catch (error) {
-    await handleSyncError(error, connectionId, 'inventory', isFinalAttempt);
+    await handleSyncError(error, loaded, 'inventory', isFinalAttempt, secrets);
   }
 }
 
@@ -553,12 +647,15 @@ export async function syncEdrDetections(
   const loaded = await loadForSync(connectionId, 'detections');
   if (!loaded) return;
 
+  let secrets: string[] = [];
   try {
     requireRoot(loaded.row);
     const adapter = getEdrProvider(loaded.row.provider);
     // ONE context (and runCache) for the whole run: connection-wide vendor calls
     // (incidents, quarantine) are memoized there and shared by every tenant.
-    const ctx = buildContext(adapter, loaded.row);
+    const built = buildContext(adapter, loaded.row);
+    const ctx = built.ctx;
+    secrets = built.secrets;
     // Unmapped tenants are not fetched.
     const mappedTenants = loaded.tenants.filter((t) => t.orgId);
 
@@ -578,16 +675,36 @@ export async function syncEdrDetections(
           return { vendorTenantId: t.vendorTenantId, ok: true, value: page };
         } catch (err) {
           if (err instanceof EdrProviderRequestError && err.scope === 'connection') throw err;
-          return { vendorTenantId: t.vendorTenantId, ok: false, error: safeMessage(err), scope: 'tenant' };
+          return { vendorTenantId: t.vendorTenantId, ok: false, error: safeMessage(err, secrets), scope: 'tenant' };
         }
       },
     ));
 
+    throwIfAllFailed(results);
+
     // ---- phase 3 -------------------------------------------------------
+    const snapshot = new Map(loaded.tenants.map((t) => [t.vendorTenantId, t]));
     const done = await runPhase3(loaded, 'edrProviderSync.persistDetections', async (tx, current) => {
       const at = new Date();
       const conn = { id: current.id, partnerId: current.partnerId, provider: current.provider };
-      const det = await persistDetections(tx, conn, results, at);
+      // Per-tenant fence: a remap resets detection_cursor and changes org_id; persisting the stale
+      // page + cursor would write the old org's detections into the new org and skip its backfill.
+      const currentTenants = await readCurrentTenants(tx, conn.id);
+      const keep = results.filter((r) => {
+        const snap = snapshot.get(r.vendorTenantId);
+        const cur = currentTenants.get(r.vendorTenantId);
+        return !!snap && !!cur && cur.orgId === snap.orgId && cur.detectionCursor === snap.detectionCursor;
+      });
+      const dropped = results.length - keep.length;
+      const det = await persistDetections(tx, conn, keep, at);
+      if (det.skipped > 0) {
+        console.warn(`[EdrProviderSync] Connection ${conn.id}: ${det.skipped} detection(s) skipped during persist`);
+      }
+      const warnings = [...new Set(keep.flatMap((r) => (r.ok ? r.value.warnings ?? [] : [])))];
+      const issues = [
+        ...(det.failedTenants > 0 ? [`${det.failedTenants} tenant(s) failed to sync`] : []),
+        ...warnings,
+      ];
       await refreshDetectionDeviceLinks(tx, conn.id);
       const [open] = await tx
         .select({ n: sql<number>`coalesce(sum(${edrTenants.openDetectionCount}), 0)::int` })
@@ -597,15 +714,17 @@ export async function syncEdrDetections(
         .update(edrConnections)
         .set({
           lastDetectionSyncAt: at,
-          lastDetectionSyncStatus: det.failedTenants > 0 ? 'partial' : 'success',
-          lastDetectionSyncError: det.failedTenants > 0 ? `${det.failedTenants} tenant(s) failed to sync` : null,
+          lastDetectionSyncStatus: issues.length > 0 ? 'partial' : 'success',
+          lastDetectionSyncError: issues.length > 0 ? issues.join('; ').slice(0, MAX_SYNC_ERROR_LENGTH) : null,
           status: 'connected',
           lastSyncOpenDetections: open?.n ?? 0,
           updatedAt: at,
         })
         .where(eq(edrConnections.id, conn.id));
-      return true;
+      return { dropped };
     });
+
+    if (done && done.dropped > 0) await reenqueueStream(connectionId, 'detections');
 
     if (!done) {
       console.warn(
@@ -614,7 +733,7 @@ export async function syncEdrDetections(
       );
     }
   } catch (error) {
-    await handleSyncError(error, connectionId, 'detections', isFinalAttempt);
+    await handleSyncError(error, loaded, 'detections', isFinalAttempt, secrets);
   }
 }
 
