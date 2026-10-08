@@ -742,6 +742,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'pam_org_config',
   'pam_rules',
   'pam_signer_groups',
+  // partner_api_idempotency_keys (2026-12-18, partner-api-tickets wave 3):
+  // X-Idempotency-Key claims for Partner API ticket writes, bound to the
+  // ticket they guard (ticket_id FK ON DELETE CASCADE — alphabetically before
+  // 'tickets', so children-first holds) with a denormalized org_id (FK ON
+  // DELETE CASCADE). Also on both org movers; enumerated per the contract.
+  'partner_api_idempotency_keys',
   // partner_enrollment_key_idempotency (2026-08-09, partner-api-enrollment-keys):
   // Idempotency claim store for Partner API enrollment-key minting. org_id is a
   // direct FK to organizations (ON DELETE CASCADE already clears rows on org

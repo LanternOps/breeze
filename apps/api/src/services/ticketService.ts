@@ -3151,12 +3151,13 @@ export async function moveTicketOrg(
     // #5783 W01 adds ticket_checklist_items_ticket_org_fk — the third composite
     // (ticket_id, org_id) -> tickets(id, org_id) child FK, same shape and same
     // reason as the two above it — and the Partner API tickets surface adds
-    // the fourth, ticket_external_refs_ticket_org_fk. Still BY NAME, never `ALL`.
+    // the fourth and fifth, ticket_external_refs_ticket_org_fk and
+    // partner_api_idempotency_keys_ticket_org_fk. Still BY NAME, never `ALL`.
     //
     // Safe to precede the org lock below: SET CONSTRAINTS takes no table locks,
     // so it does not participate in the lock order this transaction documents.
     await tx.execute(
-      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk DEFERRED`
+      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk DEFERRED`
     );
     // Lock order (global, #3778): organizations FOR SHARE (BOTH orgs, ascending
     // UUID so two concurrent moves between the same pair cannot deadlock) →

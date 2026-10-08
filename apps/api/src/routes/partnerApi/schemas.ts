@@ -905,3 +905,28 @@ export const partnerDeviceStatusEnvelopeSchema = z.object({
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['nextCursor'], message: 'nextCursor must be present exactly when hasMore is true' });
   }
 });
+
+/**
+ * Write responses (tickets:write). `data` is the full record when the secret
+ * scanner passes; when it fires the record is withheld (`data: null`, the
+ * offending paths in `blocked`) but the ids are always present so the caller
+ * can correlate. `idempotencyReplay` marks a retry answered from the claim.
+ */
+export const partnerTicketWriteResponseSchema = z.object({
+  schemaVersion: z.literal('1'),
+  id: z.string().uuid(),
+  orgId: z.string().uuid(),
+  data: partnerTicketExportRecordSchema.nullable(),
+  blocked: z.array(partnerExportBlockedRecordSchema).max(1).optional(),
+  idempotencyReplay: z.literal(true).optional(),
+}).strict();
+
+export const partnerTicketCommentWriteResponseSchema = z.object({
+  schemaVersion: z.literal('1'),
+  id: z.string().uuid(),
+  ticketId: z.string().uuid(),
+  orgId: z.string().uuid(),
+  data: partnerTicketCommentExportRecordSchema.nullable(),
+  blocked: z.array(partnerExportBlockedRecordSchema).max(1).optional(),
+  idempotencyReplay: z.literal(true).optional(),
+}).strict();

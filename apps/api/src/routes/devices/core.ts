@@ -465,6 +465,12 @@ export const CUSTOM_ORG_REWRITE_TABLES = [
   // IMMEDIATE, so moveDeviceOrgInTransaction.ts also names
   // ticket_external_refs_ticket_org_fk in its SET CONSTRAINTS … DEFERRED.
   'ticket_external_refs',
+  // partner_api_idempotency_keys (Partner API tickets): claim rows bound to
+  // a ticket (ticket_id) with a denormalized org_id, rewritten through the
+  // tickets join, appended last after ticket_external_refs. Its composite
+  // (ticket_id, org_id) FK is named in moveDeviceOrgInTransaction.ts's
+  // SET CONSTRAINTS … DEFERRED.
+  'partner_api_idempotency_keys',
 ] as const;
 
 /**

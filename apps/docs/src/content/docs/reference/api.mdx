@@ -226,6 +226,11 @@ Each route requires the listed scope on the principal.
 | `POST` | `/partner-api/contracts/:id/lines` | `contracts:write` | Add a line. Same field rules as the human editor. |
 | `PATCH` | `/partner-api/contracts/:id/lines/:lineId` | `contracts:write` | Patch a line, including `manualQuantity`. |
 | `DELETE` | `/partner-api/contracts/:id/lines/:lineId` | `contracts:write` | Remove a line. This is contract contents, not tenancy deletion. |
+| `POST` | `/partner-api/tickets` | `tickets:write` | Create a ticket (`source` is always `api`). `orgId` must be in the principal's accessible organizations. Supports `X-Idempotency-Key`; `409 EXTERNAL_ID_CONFLICT` names the ticket already holding `externalTicketId` for this integration (`existingTicketId`, `existingDeleted`). |
+| `PATCH` | `/partner-api/tickets/:id` | `tickets:write` | Update fields (not status/assignee, never SLA targets). Unknown keys are rejected. |
+| `POST` | `/partner-api/tickets/:id/status` | `tickets:write` | Change status (`status` or `statusId`, `resolutionNote` required when resolving). |
+| `POST` | `/partner-api/tickets/:id/assign` | `tickets:write` | Assign (`assigneeId`, or `null` to unassign). |
+| `POST` | `/partner-api/tickets/:id/comments` | `tickets:write` | Add a comment; `isPublic` is required (a public comment emails the requester). Supports `X-Idempotency-Key`. |
 
 Tenancy provisioning is deliberately **create-only**: there are no `DELETE` routes
 for organizations, sites, or enrollment keys, and organization deletion remains
@@ -233,8 +238,10 @@ a human, MFA-gated action on the main API. Contract line `DELETE` is contents
 only. `partnerId` never appears in any write body — it always comes
 from the authenticated principal. Writes share the principal's hourly rate
 limit but are additionally capped by a tighter per-principal write budget
-(120/hour), and every write is attributed to the service principal in the
-audit log.
+(120/hour; ticket writes use their own buckets, default 1200/hour per
+principal and 6000/hour per partner, with each key still capped by its own
+rate limit, which defaults to 600/hour), and every write is attributed to the
+service principal in the audit log.
 
 Minting enrollment keys is held to a tighter standard again. The principal must
 carry **both** an expiry and a source-CIDR allowlist — a principal without them

@@ -167,8 +167,9 @@ export async function moveDeviceOrgInTransaction(
   //
   // #5783 W01 adds ticket_checklist_items_ticket_org_fk — the third
   // composite (ticket_id, org_id) child FK, same shape and same reason —
-  // and the Partner API tickets surface adds the fourth,
-  // ticket_external_refs_ticket_org_fk.
+  // and the Partner API tickets surface adds the fourth and fifth,
+  // ticket_external_refs_ticket_org_fk and
+  // partner_api_idempotency_keys_ticket_org_fk.
   //
   // The device-org cascade trigger restamps tickets.org_id before the
   // loop below can align partner_id; defer their composite FK too.
@@ -176,7 +177,7 @@ export async function moveDeviceOrgInTransaction(
   // Safe to precede the org lock below: SET CONSTRAINTS takes no table
   // locks, so it does not participate in this transaction's lock order.
   await tx.execute(
-    sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, tickets_org_partner_fk DEFERRED`,
+    sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, tickets_org_partner_fk DEFERRED`,
   );
   // Step-up admission (spec 2026-09-18 D3). FIRST row lock of this
   // transaction, deliberately BEFORE the organisation FOR SHARE reads
@@ -1050,6 +1051,22 @@ export async function moveDeviceOrgInTransaction(
   );
   await tx.execute(
     sql`UPDATE ${sql.identifier('ticket_external_refs')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+  );
+
+  // partner_api_idempotency_keys (Partner API tickets): an X-Idempotency-Key
+  // claim bound to its ticket (ticket_id) with a denormalized org_id and no
+  // device_id — same tickets join, appended AFTER ticket_external_refs to
+  // extend the shared lock order. A claim whose ticket_id is still null (a
+  // create that has not linked yet) is invisible to other transactions, so
+  // nothing is left behind. Like a ref, a claim's org follows its ticket's
+  // (partner_api_idempotency_keys_ticket_org_fk, deferred at the top) and it
+  // is pinned to its principal's partner by a composite (org_id, partner_id)
+  // FK, so on a cross-partner move it is deleted rather than re-stamped.
+  await tx.execute(
+    sql`DELETE FROM partner_api_idempotency_keys WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid) AND partner_id IS DISTINCT FROM (SELECT partner_id FROM organizations WHERE id = ${targetOrgId}::uuid)`,
+  );
+  await tx.execute(
+    sql`UPDATE ${sql.identifier('partner_api_idempotency_keys')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
   );
 
   // #4867 — the ALERT-axis children (ALERT_CHILD_ORG_REWRITE_TABLES in
