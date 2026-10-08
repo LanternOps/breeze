@@ -1,4 +1,4 @@
-import { topologyHeartbeat } from '../../services/topology/heartbeat';
+import { topologyHeartbeat, topologyHeartbeatWithoutMaterialization } from '../../services/topology/heartbeat';
 import { loadAgentTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from '../../services/topology/flags';
 import { Hono } from 'hono';
 import { timingSafeEqual } from 'node:crypto';
@@ -2029,10 +2029,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   } else {
     try {
       const resolvedFlags = topologyFlags;
-      const topology = await withResolvedTopologyFlags(
-        { orgId: agent.orgId, flags: resolvedFlags },
-        () => db.transaction(() => topologyHeartbeat(device, data)),
-      );
+      // #8053 W1a-1 — with materialization off, negotiation can only answer
+      // "not accepted" and ingest nothing; computing that needs no DB and no
+      // savepoint. Its one refusal (an ephemeral, suspended or tokenless
+      // device) is re-derived from `device` and thrown the same way, so the
+      // catch below — collection_unavailable + Sentry — is unchanged.
+      const topology = resolvedFlags.materialization
+        ? await withResolvedTopologyFlags(
+          { orgId: agent.orgId, flags: resolvedFlags },
+          () => db.transaction(() => topologyHeartbeat(device, data)),
+        )
+        : topologyHeartbeatWithoutMaterialization(device, data);
       mergedConfigUpdate.networkContext = topology.config;
       networkContextReceipt = topology.receipt;
     } catch (error) {

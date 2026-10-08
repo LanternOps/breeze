@@ -395,6 +395,10 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(steady.buckets.siteLookup).toBe(0);
     expect(warm.buckets.hierarchyLoad).toBe(1);
     expect(warm.buckets.deviceLookup).toBe(0);
+
+    // Lever 2: materialization is off for this org, so no negotiation runs.
+    expect(steady.buckets.topologyNegotiation).toBe(0);
+    expect(warm.buckets.topologyNegotiation).toBe(0);
   });
 
   runDb('POST /agents/:id/heartbeat: a legacy (no securityCapabilities) beat pays the two peripheral-v2 UPDATEs on top', async () => {

@@ -120,6 +120,7 @@ vi.mock('../../db', () => {
 const topologyHeartbeatMock = vi.hoisted(() => vi.fn());
 vi.mock('../../services/topology/heartbeat', () => ({
   topologyHeartbeat: topologyHeartbeatMock,
+  topologyHeartbeatWithoutMaterialization: vi.fn(),
 }));
 
 // Flags are resolved before the org block (US 2026-09-22 pool deadlock) —
