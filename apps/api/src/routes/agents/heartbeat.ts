@@ -41,6 +41,7 @@ import {
   buildEventLogConfigUpdate,
   buildHardwareMonitoringConfigUpdate,
   buildTimeSyncConfigUpdate,
+  buildWorkloadInventoryConfigUpdate,
   buildMonitoringConfigUpdate,
   buildHelperConfigUpdate,
   buildPamConfigUpdate,
@@ -303,6 +304,16 @@ export function normalizeDesktopFenceProtocolVersion(value: unknown): 0 | 1 {
  */
 export function normalizeConsentPromptProtocolVersion(value: unknown): 0 | 1 | 2 {
   return value === 1 || value === 2 ? value : 0;
+}
+
+/**
+ * Normalize the only workload-inventory protocol version implemented here
+ * (#3834). Absent, malformed, or a future version this server does not speak
+ * is 0; the device Workloads view then reports "agent too old" rather than
+ * treating a report it cannot interpret as data.
+ */
+export function normalizeWorkloadInventoryProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
 }
 
 /**
@@ -991,6 +1002,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // requiring consent is refused again rather than trusting a stale claim.
     consentPromptProtocolVersion: normalizeConsentPromptProtocolVersion(
       data.securityCapabilities?.consentPromptProtocolVersion,
+    ),
+    // Workload inventory capability (#3834), same non-sticky contract: an
+    // agent that stops reporting it self-heals back to 0.
+    workloadInventoryProtocolVersion: normalizeWorkloadInventoryProtocolVersion(
+      data.securityCapabilities?.workloadInventoryProtocolVersion,
     ),
     // Migration-banner Task 2 — self-reported install edition + migration
     // flag. Written UNCONDITIONALLY every heartbeat, mirroring
@@ -2301,6 +2317,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     warrantySettings: { hpCmslEnabled: boolean } | null;
     hardwareMonitoringSettings: Awaited<ReturnType<typeof buildHardwareMonitoringConfigUpdate>> | null;
     timeSyncSettings: Awaited<ReturnType<typeof buildTimeSyncConfigUpdate>> | null;
+    workloadInventorySettings: Awaited<ReturnType<typeof buildWorkloadInventoryConfigUpdate>> | null;
   };
   let policyConfigs: PolicyConfigUpdates = {
     eventLogSettings: null,
@@ -2310,6 +2327,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     warrantySettings: null,
     hardwareMonitoringSettings: null,
     timeSyncSettings: null,
+    workloadInventorySettings: null,
   };
   // #8053 W1a-1 — per-org reads served from 60 s process caches. A miss loads
   // inside the shared system context below, as before; the fills are stored
@@ -2360,6 +2378,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       let warrantySettings: { hpCmslEnabled: boolean } | null = null;
       let hardwareMonitoringSettings: Awaited<ReturnType<typeof buildHardwareMonitoringConfigUpdate>> | null = null;
       let timeSyncSettings: Awaited<ReturnType<typeof buildTimeSyncConfigUpdate>> | null = null;
+      let workloadInventorySettings: Awaited<ReturnType<typeof buildWorkloadInventoryConfigUpdate>> | null = null;
 
       // Sentry on all four, not just pam/patch_source. Losing an event_log or
       // monitoring policy is precisely the invisible failure #2930 is about:
@@ -2443,6 +2462,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         captureException(err);
       }
 
+      // Workload inventory (spec §7.2). Last, like time sync: a resolver error
+      // here only ever omits the key (the agent keeps its last applied
+      // settings); and an earlier resolver's SQL error that aborts the shared
+      // transaction makes this throw too, which also only omits.
+      try {
+        workloadInventorySettings = await buildWorkloadInventoryConfigUpdate(scoped.deviceId);
+      } catch (err) {
+        console.error(`[agents] failed to build workload inventory config update for ${agentId}:`, err);
+        captureException(err);
+      }
+
       return {
         eventLogSettings,
         monitoringSettings,
@@ -2451,6 +2481,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         warrantySettings,
         hardwareMonitoringSettings,
         timeSyncSettings,
+        workloadInventorySettings,
       };
     });
     // Stored only now that the shared context has committed (fillIfCurrent
@@ -2471,6 +2502,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     warrantySettings,
     hardwareMonitoringSettings,
     timeSyncSettings,
+    workloadInventorySettings,
   } = policyConfigs;
 
   const policyConfigUpdate: Record<string, unknown> = {};
@@ -2482,6 +2514,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   }
   if (timeSyncSettings) {
     policyConfigUpdate.time_sync_settings = timeSyncSettings;
+  }
+  if (workloadInventorySettings) {
+    policyConfigUpdate.workload_inventory_settings = workloadInventorySettings;
   }
   // null = couldn't resolve this cycle (device vanished mid-resolution, #5677,
   // or the resolver threw) → omit, and the agent keeps its watches. "No

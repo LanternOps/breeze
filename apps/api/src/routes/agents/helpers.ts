@@ -71,6 +71,10 @@ import {
   buildResolvedTimeSyncConfigUpdate,
   type TimeSyncConfigUpdate,
 } from '../../services/timeSync/configUpdate';
+import {
+  buildResolvedWorkloadInventoryConfigUpdate,
+  type WorkloadInventoryConfigUpdate,
+} from '../../services/workloads/configUpdate';
 import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
 import { orgAgentUpdateConfigCache } from '../../services/agentOrgSettingsCache';
@@ -2270,6 +2274,19 @@ export async function buildTimeSyncConfigUpdate(
   opts?: DeviceHierarchyOpts,
 ): Promise<TimeSyncConfigUpdate> {
   return buildResolvedTimeSyncConfigUpdate(deviceId, opts);
+}
+
+/**
+ * Build workload_inventory_settings config update payload for heartbeat
+ * response (workload inventory spec §7.2). Explicit defaults (enabled: false)
+ * are sent when no policy is assigned, so removing a policy turns enumeration
+ * off; a resolver error throws so the heartbeat omits the key and the agent
+ * keeps its previous settings.
+ */
+export async function buildWorkloadInventoryConfigUpdate(
+  deviceId: string,
+): Promise<WorkloadInventoryConfigUpdate> {
+  return buildResolvedWorkloadInventoryConfigUpdate(deviceId);
 }
 
 /**

@@ -375,6 +375,9 @@ export const heartbeatSchema = z.object({
     // Consent/notification prompt capability. Same tolerant contract: a
     // malformed value drops this field alone rather than rejecting the beat.
     consentPromptProtocolVersion: z.number().int().optional().catch(undefined),
+    // #3834 workload inventory capability. Same tolerant contract: a malformed
+    // value drops this field alone rather than rejecting the beat.
+    workloadInventoryProtocolVersion: z.number().int().optional().catch(undefined),
     pamReconciliation: z.object({
       unresolvedCount: z.number().int().nonnegative(),
       quarantinedCount: z.number().int().nonnegative(),

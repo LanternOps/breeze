@@ -190,6 +190,7 @@ vi.mock('./helpers', () => ({
   buildEventLogConfigUpdate: vi.fn(() => undefined),
   buildHardwareMonitoringConfigUpdate: vi.fn(),
   buildTimeSyncConfigUpdate: vi.fn(),
+  buildWorkloadInventoryConfigUpdate: vi.fn(),
   buildMonitoringConfigUpdate: vi.fn(() => undefined),
   buildHelperConfigUpdate: vi.fn(() => undefined),
   // #8053 W1a-1 — the heartbeat reads the Redis entry itself and hands the org
@@ -3308,6 +3309,35 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     expect(updateArg.consentPromptProtocolVersion).toBe(expected);
   });
 
+  // workloadInventoryProtocolVersion: same non-sticky contract as the other
+  // capability counters. Only the exact integer 1 is recorded; an agent that
+  // stops reporting it (old build, downgrade) self-heals back to 0.
+  it.each([
+    { name: 'recognized version 1', capabilities: { workloadInventoryProtocolVersion: 1 }, expected: 1 },
+    { name: 'omitted capability object', capabilities: undefined, expected: 0 },
+    { name: 'omitted key (pre-collector agent)', capabilities: {}, expected: 0 },
+    { name: 'explicit zero downgrade', capabilities: { workloadInventoryProtocolVersion: 0 }, expected: 0 },
+    { name: 'unknown integer version', capabilities: { workloadInventoryProtocolVersion: 2 }, expected: 0 },
+    { name: 'fractional version', capabilities: { workloadInventoryProtocolVersion: 1.5 }, expected: 0 },
+    { name: 'string version', capabilities: { workloadInventoryProtocolVersion: '1' }, expected: 0 },
+  ])('persists tolerant non-sticky workload-inventory capability: $name', async ({ capabilities, expected }) => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const body = capabilities === undefined
+      ? minimalHeartbeatBody
+      : { ...minimalHeartbeatBody, securityCapabilities: capabilities };
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.workloadInventoryProtocolVersion).toBe(expected);
+  });
+
   // The backup helper's brokered-read protocol is a TOP-LEVEL heartbeat field
   // (not inside securityCapabilities), reported from the INSTALLED helper and
   // recorded non-sticky on every beat: omitted, lower, unknown, fractional and
@@ -3960,6 +3990,38 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     });
     expect(res.status).toBe(200);
     expect(((await res.json()) as Record<string, any>).configUpdate ?? {}).not.toHaveProperty('time_sync_settings');
+  });
+
+  it('delivers workload inventory settings under the shared system context', async () => {
+    const { buildWorkloadInventoryConfigUpdate } = await import('./helpers');
+    const payload = {
+      enabled: false,
+      docker_enabled: true,
+      podman_enabled: true,
+      hyperv_enabled: true,
+      proxmox_enabled: true,
+      interval_minutes: 60,
+    };
+    vi.mocked(buildWorkloadInventoryConfigUpdate).mockResolvedValueOnce(payload);
+    const res = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Record<string, any>).configUpdate.workload_inventory_settings).toEqual(payload);
+  });
+
+  it('omits workload settings when its resolver fails, preserving the heartbeat', async () => {
+    const { buildWorkloadInventoryConfigUpdate } = await import('./helpers');
+    vi.mocked(buildWorkloadInventoryConfigUpdate).mockRejectedValueOnce(new Error('policy read failed'));
+    const res = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Record<string, any>).configUpdate ?? {}).not.toHaveProperty('workload_inventory_settings');
   });
 
   it('includes monitoring_settings in configUpdate when the resolver succeeds', async () => {
