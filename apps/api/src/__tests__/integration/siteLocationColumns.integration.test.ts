@@ -5,7 +5,10 @@
  */
 import './setup';
 import { describe, it, expect, beforeEach } from 'vitest';
+import { readFile } from 'node:fs/promises';
+import postgres from 'postgres';
 import { sql } from 'drizzle-orm';
+import { splitSqlStatements } from '../../db/autoMigrate';
 import { db, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, sites } from '../../db/schema';
 
@@ -74,5 +77,32 @@ describe('site location columns migration', () => {
       { conname: 'sites_location_set_by_fkey', confdeltype: 'n', convalidated: true },
       { conname: 'time_entries_site_id_fkey', confdeltype: 'n', convalidated: true },
     ]);
+  });
+
+  it('builds time_entries_site_id_idx and leaves it valid', async () => {
+    const rows = await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+      WHERE c.relname = 'time_entries_site_id_idx' AND i.indrelid = 'public.time_entries'::regclass`));
+    expect([...rows]).toEqual([{ indisvalid: true }]);
+  });
+
+  it('re-running the @no-transaction migration file is a no-op', async () => {
+    const file = '2026-12-17-140000-site-location-columns.sql';
+    const content = await readFile(new URL(`../../../migrations/${file}`, import.meta.url), 'utf8');
+    const snapshot = () => withSystemDbAccessContext(() => db.execute(sql`
+      SELECT 'con' AS k, conname AS n, convalidated::text AS v FROM pg_constraint
+      WHERE conname IN ('sites_location_set_by_fkey','time_entries_site_id_fkey','sites_location_pair_chk',
+        'sites_location_range_chk','sites_geofence_radius_chk','sites_location_source_chk')
+      UNION ALL SELECT 'idx', c.relname, i.indisvalid::text FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+      WHERE c.relname = 'time_entries_site_id_idx' ORDER BY 1, 2`));
+    const before = [...await snapshot()];
+    const admin = postgres(process.env.DATABASE_URL!, { max: 1, onnotice: () => {} });
+    try {
+      for (const statement of splitSqlStatements(content)) await admin.unsafe(statement);
+    } finally {
+      await admin.end();
+    }
+    expect([...await snapshot()]).toEqual(before);
+    expect(before).toHaveLength(7);
   });
 });

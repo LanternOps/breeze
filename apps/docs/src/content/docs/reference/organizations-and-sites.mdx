@@ -395,7 +395,12 @@ POST /api/v1/orgs/sites/<site-uuid>/location
 { "latitude": 39.7392, "longitude": -104.9903, "geofenceRadiusM": 200 }
 ```
 
-`geofenceRadiusM` is optional; omit it to keep the site's current value. The response is `{ "data": { "id", "latitude", "longitude", "geofenceRadiusM", "locationSource", "locationSetBy", "locationSetAt" } }`. Unknown keys and out-of-range values return `400`; the unassigned-device holding organisation returns `409`.
+`geofenceRadiusM` is optional; omit it to keep the site's current value. The response is `{ "data": { "id", "latitude", "longitude", "geofenceRadiusM", "locationSource", "locationSetBy", "locationSetAt" } }`. Error responses:
+
+- `400` -- unknown keys or out-of-range values.
+- `403` -- the caller's organisation allowlist or site allowlist does not include the site.
+- `404` -- the site does not exist, or its organisation is soft-deleted.
+- `409` -- the site belongs to a holding or hidden organisation (the unassigned-device holding organisation, Quick Support).
 
 **Edit from the site form.** `PATCH /api/v1/orgs/sites/:id` also accepts `latitude`, `longitude`, and `geofenceRadiusM` (it keeps its `sites:write` and MFA requirements). `latitude` and `longitude` must be sent together; send both as `null` to clear the pin. Setting a coordinate this way stamps the source as `manual`; clearing it also clears the source, setter, and timestamp. `POST /api/v1/orgs/sites` (create) does not accept location fields.
 

@@ -72,6 +72,9 @@ export default function TimeTrackingSettingsCard() {
   const [radius, setRadius] = useState(String(LOCATION_DEFAULTS.defaultRadiusM));
   const [radiusError, setRadiusError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // A failed initial read leaves defaults in the form; Save would then PATCH
+  // those defaults over the stored settings, so Save stays disabled instead.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
 
@@ -91,9 +94,11 @@ export default function TimeTrackingSettingsCard() {
             setLocationEnabled(loc.enabled);
             setRadius(String(loc.defaultRadiusM));
           }
+        } else if (!cancelled) {
+          setLoadFailed(true);
         }
       } catch {
-        /* the save path reports its own failures; a failed read leaves defaults */
+        if (!cancelled) setLoadFailed(true);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -102,6 +107,7 @@ export default function TimeTrackingSettingsCard() {
   }, []);
 
   const save = useCallback(async () => {
+    if (loadFailed) return;
     const minSessionSeconds = Number(minSession);
     const mergeGapMinutes = Number(mergeGap);
     if (!Number.isInteger(minSessionSeconds) || minSessionSeconds < MIN_SESSION_MIN || minSessionSeconds > MIN_SESSION_MAX) {
@@ -151,12 +157,18 @@ export default function TimeTrackingSettingsCard() {
     } finally {
       setSaving(false);
     }
-  }, [enabled, minSession, mergeGap, locationEnabled, radius, t]);
+  }, [enabled, minSession, mergeGap, locationEnabled, radius, loadFailed, t]);
 
   return (
     <div className="rounded-lg border p-4" data-testid="time-tracking-settings-card">
       <h3 className="text-sm font-medium">{t('timeTrackingSettingsCard.heading')}</h3>
       <p className="mt-1 text-sm text-muted-foreground">{t('timeTrackingSettingsCard.subheading')}</p>
+
+      {loadFailed && (
+        <p className="mt-3 text-sm text-destructive" role="alert" data-testid="time-suggestions-load-error">
+          {t('timeTrackingSettingsCard.loadFailed')}
+        </p>
+      )}
 
       <label className="mt-4 flex items-center gap-2 text-sm">
         <input
@@ -238,7 +250,7 @@ export default function TimeTrackingSettingsCard() {
         type="button"
         data-testid="time-suggestions-save"
         className="mt-4 rounded-md border px-3 py-1.5 text-sm font-medium"
-        disabled={saving || loading}
+        disabled={saving || loading || loadFailed}
         onClick={() => void save()}
       >
         {t('timeTrackingSettingsCard.save')}

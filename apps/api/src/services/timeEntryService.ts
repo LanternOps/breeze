@@ -760,6 +760,9 @@ export async function createTimeEntry(
     // #4186: ticket org wins; still verify a client orgId agrees and the site fits.
     siteId = (await resolveLocationLink(input, orgId, actor)).siteId;
   } else if (provenance.orgLink) {
+    if (input.orgId && input.orgId !== provenance.orgLink.orgId) {
+      throw new TimeEntryServiceError('orgId does not match the linked organization', 422, 'ORG_MISMATCH');
+    }
     // W06 (#3900): no ticket, but the signal knows its org — stamp org and the
     // org's locked currency so time_entries_currency_required_when_org_chk holds.
     orgId = provenance.orgLink.orgId;

@@ -3,11 +3,12 @@ import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { ERROR_CODES, siteLocationPinSchema } from '@breeze/shared';
 import { db } from '../db';
-import { sites } from '../db/schema';
+import { organizations, sites } from '../db/schema';
 import { requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { zValidator } from '../lib/validation';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
+import { isHiddenOrgType } from '../services/unassignedPool/visibility';
 import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
 import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 import { pinSiteLocation } from '../services/siteLocationPin';
@@ -48,6 +49,20 @@ siteLocationRoutes.post(
 
     if (!(await ensureOrgAccess(site.orgId, auth))) {
       return c.json({ error: 'Access to this site denied', code: ERROR_CODES.ACCESS_DENIED }, 403);
+    }
+
+    const [org] = await db
+      .select({ type: organizations.type, deletedAt: organizations.deletedAt })
+      .from(organizations)
+      .where(eq(organizations.id, site.orgId))
+      .limit(1);
+    // Soft-deleted org: indistinguishable from a missing site (no existence oracle).
+    if (!org || org.deletedAt) {
+      return c.json({ error: 'Site not found', code: ERROR_CODES.NOT_FOUND }, 404);
+    }
+    // Quick Support / holding orgs are hidden and not user-managed.
+    if (isHiddenOrgType(org.type)) {
+      return c.json(PROTECTED_ORG_ERROR, 409);
     }
 
     // The unassigned-device holding org is managed by Breeze.

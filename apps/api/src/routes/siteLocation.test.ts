@@ -7,7 +7,6 @@ const OTHER_ORG = '22222222-2222-4222-8222-222222222222';
 
 const state = vi.hoisted(() => ({
   denied: new Set<string>(),
-  mfaCalls: 0,
 }));
 
 vi.mock('../db', () => ({
@@ -15,6 +14,7 @@ vi.mock('../db', () => ({
 }));
 vi.mock('../db/schema', () => ({
   sites: { id: 'sites.id', orgId: 'sites.orgId', name: 'sites.name' },
+  organizations: { id: 'organizations.id', type: 'organizations.type', deletedAt: 'organizations.deletedAt' },
   devices: {},
 }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn(), writeAuditEvent: vi.fn() }));
@@ -26,7 +26,10 @@ vi.mock('../middleware/auth', () => ({
     scopes.includes(c.get('auth')?.scope) ? next() : c.json({ error: 'Forbidden' }, 403)),
   requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) =>
     state.denied.has(`${resource}:${action}`) ? c.json({ error: 'Permission denied' }, 403) : next()),
-  requireMfa: vi.fn(() => { state.mfaCalls++; return async (_c: any, next: any) => next(); }),
+  // Rejects any caller without MFA, so adding requireMfa() to the route turns the
+  // (mfa=false) happy-path test red.
+  requireMfa: vi.fn(() => async (c: any, next: any) =>
+    c.get('auth')?.mfa ? next() : c.json({ error: 'MFA required' }, 403)),
 }));
 
 import { db } from '../db';
@@ -37,10 +40,14 @@ let auth: any;
 let permissions: any;
 let app: Hono;
 
-const mockSite = (rows: any[]) =>
-  vi.mocked(db.select).mockReturnValue({
-    from: () => ({ where: () => ({ limit: () => Promise.resolve(rows) }) }),
-  } as any);
+const chain = (rows: any[]) => ({
+  from: () => ({ where: () => ({ limit: () => Promise.resolve(rows) }) }),
+}) as any;
+// First select = the site row, second = its org row (type + deletedAt).
+const mockSite = (rows: any[], org: any = { type: 'customer', deletedAt: null }) =>
+  vi.mocked(db.select)
+    .mockReturnValueOnce(chain(rows))
+    .mockReturnValueOnce(chain(org ? [org] : []));
 const mockUpdate = (rows: any[]) => {
   const set = vi.fn(() => ({ where: () => ({ returning: () => Promise.resolve(rows) }) }));
   vi.mocked(db.update).mockReturnValue({ set } as any);
@@ -55,8 +62,9 @@ const post = (body: unknown, id = SITE) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(db.select).mockReset();
+  vi.mocked(db.update).mockReset();
   state.denied.clear();
-  state.mfaCalls = 0;
   isHoldingOrg.mockResolvedValue(false);
   auth = {
     user: { id: 'user-1' },
@@ -85,7 +93,6 @@ describe('POST /sites/:id/location', () => {
     expect(written).toMatchObject({ latitude: 40.1, longitude: -75.2, geofenceRadiusM: 200, locationSource: 'technician', locationSetBy: 'user-1' });
     expect(written.locationSetAt).toBeInstanceOf(Date);
     expect(written.updatedAt).toBeInstanceOf(Date);
-    expect(state.mfaCalls).toBe(0);
   });
 
   it('leaves geofenceRadiusM untouched when not provided', async () => {
@@ -136,6 +143,18 @@ describe('POST /sites/:id/location', () => {
     isHoldingOrg.mockResolvedValue(true);
     mockSite([{ id: SITE, orgId: ORG, name: 'HQ' }]);
     expect((await post({ latitude: 1, longitude: 2 })).status).toBe(409);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it.each(['quick_support', 'unassigned_pool'])('409 for a hidden org type (%s)', async (type) => {
+    mockSite([{ id: SITE, orgId: ORG, name: 'HQ' }], { type, deletedAt: null });
+    expect((await post({ latitude: 1, longitude: 2 })).status).toBe(409);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('404 for a site in a soft-deleted org', async () => {
+    mockSite([{ id: SITE, orgId: ORG, name: 'HQ' }], { type: 'customer', deletedAt: new Date() });
+    expect((await post({ latitude: 1, longitude: 2 })).status).toBe(404);
     expect(db.update).not.toHaveBeenCalled();
   });
 

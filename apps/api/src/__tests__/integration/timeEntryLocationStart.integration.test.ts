@@ -11,7 +11,7 @@ vi.mock('../../services/timeEntryEvents', () => ({ emitTimeEntryEvent: vi.fn().m
 
 import { eq } from 'drizzle-orm';
 import { withDbAccessContext, type DbAccessContext } from '../../db';
-import { timeEntries } from '../../db/schema';
+import { tickets, timeEntries } from '../../db/schema';
 import { startTimer, createTimeEntry, type TimeEntryActor } from '../../services/timeEntryService';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
@@ -79,6 +79,21 @@ describe('POST /time-entries/start with orgId/siteId (real Postgres)', () => {
       startTimer({ orgId: f.org1.id, siteId: f.site2.id, source: 'location' }, f.actor)))
       .rejects.toMatchObject({ code: 'SITE_ORG_MISMATCH', status: 422 });
     expect(await rowsFor(f.tech.id)).toHaveLength(0);
+  });
+
+  it('a ticketed start with a siteId from another org is SITE_ORG_MISMATCH and writes zero rows', async () => {
+    const f = await fixture();
+    const [ticket] = await (getTestDb() as any).insert(tickets).values({
+      orgId: f.org1.id, partnerId: f.p1.id, ticketNumber: `LOC-${Math.random().toString(36).slice(2, 8)}`,
+      subject: 'Site mismatch', source: 'manual', priority: 'normal',
+    }).returning();
+    await expect(withDbAccessContext(f.ctx, () =>
+      startTimer({ ticketId: ticket.id, siteId: f.site2.id }, f.actor)))
+      .rejects.toMatchObject({ code: 'SITE_ORG_MISMATCH', status: 422 });
+    expect(await rowsFor(f.tech.id)).toHaveLength(0);
+    const ok = await withDbAccessContext(f.ctx, () =>
+      startTimer({ ticketId: ticket.id, siteId: f.site1.id }, f.actor));
+    expect(ok).toMatchObject({ orgId: f.org1.id, siteId: f.site1.id, ticketId: ticket.id });
   });
 
   it('a start without orgId keeps today\'s behaviour (org null, source timer)', async () => {

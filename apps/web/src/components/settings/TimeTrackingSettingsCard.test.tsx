@@ -111,6 +111,28 @@ describe('TimeTrackingSettingsCard', () => {
     });
   });
 
+  it.each([
+    ['non-OK response', () => fetchWithAuth.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) } as Response)],
+    ['thrown request', () => fetchWithAuth.mockRejectedValue(new Error('network'))],
+  ])('initial load failure (%s): error shown, Save disabled, no PATCH', async (_n, arrange) => {
+    arrange();
+    render(<TimeTrackingSettingsCard />);
+    expect(await screen.findByTestId('time-suggestions-load-error')).toBeTruthy();
+    const save = screen.getByTestId('time-suggestions-save') as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.click(save);
+    expect(lastPatchBody()).toBeNull();
+  });
+
+  it('feature off with a stored radius of 300: Save still sends defaultRadiusM 300', async () => {
+    mockPartner({ timeTracking: { locationSuggestions: { enabled: false, defaultRadiusM: 300 } } });
+    render(<TimeTrackingSettingsCard />);
+    await waitFor(() => expect((screen.getByTestId('time-suggestions-save') as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByTestId('time-suggestions-save'));
+    await waitFor(() => expect(lastPatchBody()).not.toBeNull());
+    expect(lastPatchBody().settings.timeTracking.locationSuggestions).toEqual({ enabled: false, defaultRadiusM: 300 });
+  });
+
   it('a failed save surfaces an error, never a silent no-op', async () => {
     mockPartner({});
     fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {

@@ -6243,6 +6243,7 @@
     "mergeGapLabel": "Birleştirme aralığı (dakika)",
     "save": "Kaydet",
     "saved": "Zaman takibi ayarları kaydedildi",
+    "loadFailed": "Kayıtlı ayarlar yüklenemedi. Yüklenene kadar kaydetme devre dışıdır; yeniden denemek için sayfayı yenileyin.",
     "saveFailed": "Zaman takibi ayarları kaydedilemedi",
     "minSessionRange": "Minimum oturum süresi {{min}} ile {{max}} saniye arasında olmalıdır",
     "mergeGapRange": "Birleştirme aralığı {{min}} ile {{max}} dakika arasında olmalıdır",

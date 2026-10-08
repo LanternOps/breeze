@@ -6243,6 +6243,7 @@
     "mergeGapLabel": "Intervallo di unione (minuti)",
     "save": "Salva",
     "saved": "Impostazioni di tracciamento tempo salvate",
+    "loadFailed": "Impossibile caricare le impostazioni salvate. Il salvataggio è disattivato finché non vengono caricate; aggiorna la pagina per riprovare.",
     "saveFailed": "Impossibile salvare le impostazioni di tracciamento tempo",
     "minSessionRange": "La durata minima della sessione deve essere compresa tra {{min}} e {{max}} secondi",
     "mergeGapRange": "L’intervallo di unione deve essere compreso tra {{min}} e {{max}} minuti",

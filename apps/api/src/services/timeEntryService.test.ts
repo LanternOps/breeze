@@ -2021,6 +2021,86 @@ describe('location start: orgId / siteId / source (#4186)', () => {
   });
 });
 
+describe('location link: ticket + site / provenance.orgLink (#4186 review)', () => {
+  const SITE = 's1';
+  const actor = () => ({ ...ACTOR, recordAuditMutation: vi.fn() });
+  const range = { startedAt: new Date('2026-08-29T09:00:00Z'), endedAt: new Date('2026-08-29T09:30:00Z') };
+  // ticket, org (system read), org SHARE barrier, ticket lock row — categoryId null skips the default-work-type read.
+  const queueTicket = (orgId = 'o-ticket') => {
+    dbMocks.selectResults.push(
+      [{ id: 't-1', partnerId: 'p-1', orgId, categoryId: null }],
+      [{ partnerId: 'p-1', currencyCode: 'USD' }],
+      [{ currencyCode: 'USD' }],
+      [{ id: 't-1', orgId }],
+    );
+  };
+  beforeEach(() => {
+    cardMocks.loadCardsForOrg.mockResolvedValue({ assignedCard: null, partnerDefaultCard: mockCard('125.00', 'USD', 'billable') });
+  });
+
+  it('startTimer: ticket + site in another org is 422 SITE_ORG_MISMATCH and inserts nothing', async () => {
+    queueTicket();
+    dbMocks.selectResults.push([{ orgId: 'o-other' }]); // site lookup
+    dbMocks.updateResult = [];
+    await expect(startTimer({ ticketId: 't-1', siteId: SITE }, actor()))
+      .rejects.toMatchObject({ code: 'SITE_ORG_MISMATCH', status: 422 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('startTimer: ticket + site in the ticket org stamps siteId', async () => {
+    queueTicket();
+    dbMocks.selectResults.push([{ orgId: 'o-ticket' }]);
+    dbMocks.updateResult = [];
+    dbMocks.insertResult = [{ id: 'te-s', endedAt: null }];
+    await startTimer({ ticketId: 't-1', siteId: SITE }, actor());
+    expect(dbMocks.insertedValues[0]).toMatchObject({ orgId: 'o-ticket', siteId: SITE, ticketId: 't-1' });
+  });
+
+  it('createTimeEntry: ticket + mismatched orgId is 422 ORG_MISMATCH', async () => {
+    queueTicket();
+    await expect(createTimeEntry({ ticketId: 't-1', orgId: 'o-different', ...range }, actor()))
+      .rejects.toMatchObject({ code: 'ORG_MISMATCH', status: 422 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('createTimeEntry: ticket + matching orgId succeeds', async () => {
+    queueTicket();
+    dbMocks.insertResult = [{ id: 'te-m', ticketId: 't-1', durationMinutes: 30, isBillable: true, orgId: 'o-ticket' }];
+    await createTimeEntry({ ticketId: 't-1', orgId: 'o-ticket', ...range }, actor());
+    expect(dbMocks.insertedValues[0]).toMatchObject({ orgId: 'o-ticket', ticketId: 't-1' });
+  });
+
+  it('createTimeEntry: ticket + siteId outside allowedSiteIds is 403 SITE_DENIED', async () => {
+    queueTicket();
+    await expect(createTimeEntry({ ticketId: 't-1', siteId: SITE, ...range }, { ...actor(), allowedSiteIds: ['s-other'] }))
+      .rejects.toMatchObject({ code: 'SITE_DENIED', status: 403 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('createTimeEntry: provenance.orgLink + site in another org is 422 SITE_ORG_MISMATCH', async () => {
+    dbMocks.selectResults.push([{ orgId: 'o-other' }]);
+    await expect(createTimeEntry({ siteId: SITE, ...range }, actor(),
+      { source: 'remote_session', orgLink: { orgId: 'o1', currencyCode: 'EUR' } }))
+      .rejects.toMatchObject({ code: 'SITE_ORG_MISMATCH', status: 422 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('createTimeEntry: provenance.orgLink + site in the linked org stamps siteId', async () => {
+    dbMocks.selectResults.push([{ orgId: 'o1' }]);
+    dbMocks.insertResult = [{ id: 'e6', ticketId: null, durationMinutes: 30, isBillable: false, orgId: 'o1' }];
+    await createTimeEntry({ siteId: SITE, ...range }, actor(),
+      { source: 'remote_session', orgLink: { orgId: 'o1', currencyCode: 'EUR' } });
+    expect(dbMocks.insertedValues[0]).toMatchObject({ orgId: 'o1', siteId: SITE });
+  });
+
+  it('createTimeEntry: provenance.orgLink + a differing client orgId is 422 ORG_MISMATCH', async () => {
+    await expect(createTimeEntry({ orgId: 'o-different', ...range }, actor(),
+      { source: 'remote_session', orgLink: { orgId: 'o1', currencyCode: 'EUR' } }))
+      .rejects.toMatchObject({ code: 'ORG_MISMATCH', status: 422 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+});
+
 describe('listTimeEntries siteId filter (#4186)', () => {
   it('adds a siteId condition and selects siteId + source on the rows', async () => {
     dbMocks.selectResults.push([{ id: 'e1', siteId: 's1', source: 'location' }], [{ count: 1 }]);

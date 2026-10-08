@@ -65,7 +65,7 @@ Last release: **v0.121.0** (2026-10-03).
 
 - **Site location pin.** New `POST /api/v1/orgs/sites/:id/location` pins a site's coordinate (and optional 50-1000 m geofence radius) from the field; it requires `sites:set_location` and deliberately no MFA. `PATCH /orgs/sites/:id` also accepts `latitude`/`longitude`/`geofenceRadiusM` (still MFA-gated; both coordinates or neither). Only the site's coordinate is stored, never a technician position. Audited as `site.location_set`.
 - **Time entries carry an org and site without a ticket.** `POST /api/v1/time-entries/start` and `POST /api/v1/time-entries` accept optional `orgId`, `siteId` and `source` (`timer`/`location` on start, `location` on create). A ticket's org always wins; a mismatch is `422 ORG_MISMATCH`, a site outside the org is `422 SITE_ORG_MISMATCH`. `GET /time-entries` returns `siteId` and filters by it.
-- **Location suggestions (partner setting, off by default).** Ticketing settings → Time Tracking gains a toggle and a default arrival radius (`timeTracking.locationSuggestions`). New `GET /api/v1/time-entries/location-sites` returns the flag, the default radius, whether the caller may pin sites, and the caller's sites with their pins, for the mobile app's arrival prompt.
+- **Location suggestions (partner setting, off by default).** Ticketing settings → Time Tracking gains a toggle and a default arrival radius (`timeTracking.locationSuggestions`). New `GET /api/v1/time-entries/location-sites` returns the flag, the default radius, whether the caller may pin sites, and the caller's sites (pinned or not; empty without `sites:read`), capped at 2000 with a `truncated` flag, for the mobile app's arrival prompt.
 
 ## Migrations
 

@@ -67,8 +67,8 @@ export type TicketingInboundSettings = z.infer<typeof ticketingInboundSettingsSc
  * `sessionSuggestions` (W06, #3900) and `locationSuggestions` (#4186).
  *
  * `.strict()` on each inner object so a typo ("enabledd") is a 400 rather than
- * a silently stored no-op; `.passthrough()` on the wrapper so a sibling block
- * this schema does not own yet is neither rejected nor stripped.
+ * a silently stored no-op; `.passthrough()` on the wrapper so unknown sibling keys
+ * under `timeTracking` are neither rejected nor stripped.
  */
 export const timeTrackingSessionSuggestionsSchema = z.object({
   sessionSuggestions: z.object({

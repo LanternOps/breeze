@@ -6243,6 +6243,7 @@
     "mergeGapLabel": "Zusammenführungsintervall (Minuten)",
     "save": "Speichern",
     "saved": "Zeiterfassungseinstellungen gespeichert",
+    "loadFailed": "Die gespeicherten Einstellungen konnten nicht geladen werden. Speichern ist deaktiviert, bis sie geladen sind; Seite neu laden und erneut versuchen.",
     "saveFailed": "Zeiterfassungseinstellungen konnten nicht gespeichert werden",
     "minSessionRange": "Die Mindestdauer der Sitzung muss zwischen {{min}} und {{max}} Sekunden liegen",
     "mergeGapRange": "Das Zusammenführungsintervall muss zwischen {{min}} und {{max}} Minuten liegen",

@@ -101,6 +101,17 @@ describe('GET /time-entries/location-sites', () => {
     });
   });
 
+  it('flag on, sites:read but not sites:set_location: canSetLocation false, sites listed', async () => {
+    settingsMocks.getLocationSuggestionSettings.mockResolvedValue({ enabled: true, defaultRadiusM: 150 });
+    siteMocks.listLocationSites.mockResolvedValue({ sites: [SITE_ROW], truncated: false });
+    permsRef.current = { permissions: [READ, SITES_READ], allowedSiteIds: undefined };
+    const res = await timeEntriesRoutes.request('/location-sites');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.canSetLocation).toBe(false);
+    expect(body.sites).toEqual([SITE_ROW]);
+  });
+
   it('flag on, no sites:read: 200 with empty sites and the list is not read', async () => {
     settingsMocks.getLocationSuggestionSettings.mockResolvedValue({ enabled: true, defaultRadiusM: 150 });
     permsRef.current = { permissions: [READ], allowedSiteIds: undefined };

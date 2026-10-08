@@ -6238,6 +6238,7 @@
     "mergeGapLabel": "Merge gap (minutes)",
     "save": "Save",
     "saved": "Time tracking settings saved",
+    "loadFailed": "Could not load the saved settings. Saving is disabled until they load; refresh to try again.",
     "saveFailed": "Could not save time tracking settings",
     "minSessionRange": "Minimum session length must be between {{min}} and {{max}} seconds",
     "mergeGapRange": "Merge gap must be between {{min}} and {{max}} minutes",

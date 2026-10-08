@@ -6243,6 +6243,7 @@
     "mergeGapLabel": "Intervalle de fusion (minutes)",
     "save": "Enregistrer",
     "saved": "Paramètres de suivi du temps enregistrés",
+    "loadFailed": "Impossible de charger les paramètres enregistrés. L'enregistrement est désactivé tant qu'ils ne sont pas chargés ; actualisez la page pour réessayer.",
     "saveFailed": "Impossible d’enregistrer les paramètres de suivi du temps",
     "minSessionRange": "La durée minimale de session doit être comprise entre {{min}} et {{max}} secondes",
     "mergeGapRange": "L’intervalle de fusion doit être compris entre {{min}} et {{max}} minutes",
