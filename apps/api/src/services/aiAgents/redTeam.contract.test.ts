@@ -97,6 +97,7 @@ import {
   type OrgRef,
 } from './agentAuthContext';
 import {
+  createAgentRunCallPairing,
   createAgentRunPreToolUse,
   PROPOSAL_RECORDED_TEXT,
   type AgentRunOutcome,
@@ -608,7 +609,6 @@ describe('F. a device-less run never proposes', () => {
   it('keeps proposals and action intents empty through the real runner pre-hook', async () => {
     const outcome = emptyOutcome();
     const intentIds: string[] = [];
-    const allowedPending = new Map<string, number>();
     const agentAuth = agentAuthFor(null);
 
     for (const mode of ['shadow', 'act'] as const) {
@@ -634,10 +634,8 @@ describe('F. a device-less run never proposes', () => {
         guardrailPolicy,
         outcome,
         intentIds,
-        allowedPending,
         sessionId: null,
-        executionIdPending: new Map(),
-        actPinPending: new Map(),
+        pairing: createAgentRunCallPairing(),
         actReservation: { count: 0 },
       runTargets: [],
       stagedBytesRemaining: 256 * 1024 * 1024,
@@ -783,7 +781,6 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
     const agentAuth = agentAuthFor('dev-1');
     const outcome = emptyOutcome();
     const intentIds: string[] = [];
-    const allowedPending = new Map<string, number>();
     const allToolsAllowlist = Object.keys(TOOL_TIERS).flatMap((toolName) => {
       const { action } = toolCallFor(toolName);
       return allowlistFor(toolName, action);
@@ -802,10 +799,8 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
       guardrailPolicy: policyWith({ mode: 'shadow', toolAllowlist: allToolsAllowlist }),
       outcome,
       intentIds,
-      allowedPending,
       sessionId: null,
-      executionIdPending: new Map(),
-      actPinPending: new Map(),
+      pairing: createAgentRunCallPairing(),
       actReservation: { count: 0 },
       runTargets: [],
       stagedBytesRemaining: 256 * 1024 * 1024,
@@ -832,10 +827,8 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
       guardrailPolicy: policyWith({ mode: 'shadow', toolAllowlist: [] }),
       outcome,
       intentIds,
-      allowedPending,
       sessionId: null,
-      executionIdPending: new Map(),
-      actPinPending: new Map(),
+      pairing: createAgentRunCallPairing(),
       actReservation: { count: 0 },
       runTargets: [],
       stagedBytesRemaining: 256 * 1024 * 1024,
@@ -867,10 +860,8 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
       }),
       outcome,
       intentIds,
-      allowedPending,
       sessionId: null,
-      executionIdPending: new Map(),
-      actPinPending: new Map(),
+      pairing: createAgentRunCallPairing(),
       actReservation: { count: 0 },
       runTargets: [],
       stagedBytesRemaining: 256 * 1024 * 1024,

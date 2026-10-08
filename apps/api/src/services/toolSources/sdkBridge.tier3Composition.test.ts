@@ -61,7 +61,9 @@ describe('tier-3 external tool: gate + sdkBridge composition (#5216 PR B)', () =
 
     const result = await wrapWithGate(gate).handler({ name: 'Printer 3' }, {});
 
-    expect(gate).toHaveBeenCalledWith('hudu__create_asset', { name: 'Printer 3' });
+    // The 3rd/4th args are the MCP tool name and SDK tool_use id (#8163); this
+    // direct handler call carries neither.
+    expect(gate).toHaveBeenCalledWith('hudu__create_asset', { name: 'Printer 3' }, undefined, undefined);
     expect(executeTenantToolDetailed).toHaveBeenCalledWith(
       descriptor,
       { name: 'Printer 3' },
