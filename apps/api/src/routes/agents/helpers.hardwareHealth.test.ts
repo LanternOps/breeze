@@ -5,7 +5,7 @@ vi.mock('../../db', () => {
   const query = () => {
     const rows = m.rows.shift() ?? [];
     const q: any = { then: (a: any, b: any) => Promise.resolve(rows).then(a, b) };
-    for (const k of ['from', 'where', 'limit', 'innerJoin']) q[k] = () => q;
+    for (const k of ['from', 'where', 'limit', 'innerJoin', 'orderBy']) q[k] = () => q;
     return q;
   };
   return { db: { select: query, execute: m.execute }, getCurrentDbAccessContext: () => m.context, runOutsideDbContext: (f: any) => f(), withSystemDbAccessContext: (f: any) => f(), withDbAccessContext: (_c: any, f: any) => f() };

@@ -11,7 +11,7 @@ vi.mock('../../db', () => ({
       const q: any = {
         then: (yes: any, no: any) => Promise.resolve(rows).then(yes, no),
       };
-      for (const key of ['from', 'where', 'limit', 'innerJoin'])
+      for (const key of ['from', 'where', 'limit', 'innerJoin', 'orderBy'])
         q[key] = () => q;
       return q;
     },

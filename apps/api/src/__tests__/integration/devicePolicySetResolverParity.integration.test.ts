@@ -23,7 +23,16 @@ import {
 } from '../../services/devicePolicySet';
 import { buildHelperConfigUpdate, resolveDeviceHelperSettings } from '../../services/helperSettings';
 import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
-import { buildPamConfigUpdate, buildWarrantyConfigUpdate } from '../../routes/agents/helpers';
+import { resolveDeviceTimeSyncSettings } from '../../services/timeSync/settings';
+import { buildResolvedTimeSyncConfigUpdate } from '../../services/timeSync/configUpdate';
+import {
+  buildEventLogConfigUpdate,
+  buildHardwareMonitoringConfigUpdate,
+  buildPamConfigUpdate,
+  buildPatchSourceConfigUpdate,
+  buildTimeSyncConfigUpdate,
+  buildWarrantyConfigUpdate,
+} from '../../routes/agents/helpers';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import {
   dropDeviceRedisCaches,
@@ -85,6 +94,26 @@ const RESOLVERS: Array<[string, Resolver, (answer: any) => void, (emptyAnswer: a
   ['buildWarrantyConfigUpdate', (id, o) => buildWarrantyConfigUpdate(id, o),
     (a) => expect(a).toEqual({ hpCmslEnabled: true }),
     (e) => expect(e).toEqual({ hpCmslEnabled: false })],
+  ['buildEventLogConfigUpdate', (id, o) => buildEventLogConfigUpdate(id, o),
+    // 321 = partner-wide partner-level winner; 555 (printer) and the bare device-level link are excluded; 999 is forged.
+    (a) => expect(a).toMatchObject({ max_events_per_cycle: 321 }),
+    (e) => expect(e).toMatchObject({ max_events_per_cycle: 100 })],
+  ['buildHardwareMonitoringConfigUpdate', (id, o) => buildHardwareMonitoringConfigUpdate(id, o),
+    (a) => expect(a).toMatchObject({ enabled: true, poll_interval_minutes: 7 }),
+    (e) => expect(e).not.toMatchObject({ poll_interval_minutes: 7 })],
+  ['resolveDeviceTimeSyncSettings', (id, o) => resolveDeviceTimeSyncSettings(id, o),
+    // Device-level child inherits the INACTIVE partner-wide parent's link.
+    (a) => expect(a).toMatchObject({ settings: { ntpServers: ['time.parent.example'] } }),
+    (e) => expect(e).toMatchObject({ policy: null })],
+  ['buildResolvedTimeSyncConfigUpdate', (id, o) => buildResolvedTimeSyncConfigUpdate(id, o),
+    (a) => expect(a).toMatchObject({ ntp_servers: ['time.parent.example'] }),
+    (e) => expect(e).not.toMatchObject({ ntp_servers: ['time.parent.example'] })],
+  ['buildTimeSyncConfigUpdate', (id, o) => buildTimeSyncConfigUpdate(id, o),
+    (a) => expect(a).toMatchObject({ ntp_servers: ['time.parent.example'] }),
+    (e) => expect(e).not.toMatchObject({ ntp_servers: ['time.parent.example'] })],
+  ['buildPatchSourceConfigUpdate', (id, o) => buildPatchSourceConfigUpdate(id, o),
+    (a) => expect(a).toEqual({ exclusiveWindowsUpdate: true }),
+    (e) => expect(e).toEqual({ exclusiveWindowsUpdate: false })],
 ];
 
 describe('heartbeat policy resolvers: three-way parity with the policy set (#8142) — real PostgreSQL', () => {
@@ -153,6 +182,22 @@ describe('equal-ranked assignments resolve to the EARLIEST assignment on every p
         .toEqual({ uacInterceptionEnabled: firstWins });
       expect(await threeWay(t, 'helper tie', (id, o) => resolveDeviceHelperSettings(id, o)))
         .toMatchObject({ portalUrl: firstWins ? 'https://true.example' : 'https://false.example' });
+    });
+  }
+});
+
+describe('parked orgs keep their partner-drop rules on the set path (#8142)', () => {
+  for (const orgType of ['unassigned_pool', 'quick_support'] as const) {
+    runDb(`${orgType}: patch source and time sync agree three ways`, async () => {
+      const world = await seedParityWorld();
+      const parked = (await createOrganization({ partnerId: world.partnerId, type: orgType }))!;
+      const parkedSite = (await createSite({ orgId: parked.id }))!;
+      const deviceId = await seedDevice(parked.id, parkedSite.id, orgType);
+      const ctx = { deviceId, orgId: parked.id, partnerId: world.partnerId };
+      const patch = await threeWay(ctx, 'buildPatchSourceConfigUpdate', (id, o) => buildPatchSourceConfigUpdate(id, o));
+      // Patch drops the partner for unassigned_pool only.
+      expect(patch).toEqual({ exclusiveWindowsUpdate: orgType !== 'unassigned_pool' });
+      await threeWay(ctx, 'resolveDeviceTimeSyncSettings', (id, o) => resolveDeviceTimeSyncSettings(id, o));
     });
   }
 });

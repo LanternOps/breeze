@@ -59,6 +59,7 @@ import {
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
 import {
   resolvePatchConfigPolicyForDevice,
+  patchExclusiveWindowsUpdateFromPolicySet,
   buildRoleOsFilterConditions,
   matchesRoleOsFilter,
 } from '../../services/featureConfigResolver';
@@ -1931,8 +1932,46 @@ const LEVEL_PRIORITY: Record<string, number> = {
   partner: 1,
 };
 
-async function resolveDeviceEventLogSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<EventLogSettings> {
+/** #8142: event_log's own rules (raw partner; SQL role/OS here, matchesRoleOsFilter in the ranking). */
+const EVENT_LOG_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOrPartner', partnerTarget: 'partner', roleOs: 'sql' };
+
+type EventLogRankRow = {
+  level: string; assignmentPriority: number; roleFilter: string[] | null; osFilter: string[] | null;
+  retentionDays: number; maxEventsPerCycle: number; collectCategories: string[]; minimumLevel: string;
+  collectionIntervalMinutes: number; rateLimitPerHour: number;
+};
+
+function eventLogSettingsFromRows(rows: EventLogRankRow[], device: { deviceRole: string; osType: string }): EventLogSettings {
+  const eligibleRows = rows.filter((r) => matchesRoleOsFilter(r, device));
+  if (eligibleRows.length === 0) return EVENT_LOG_DEFAULTS;
+  eligibleRows.sort(compareLevelThenPriority);
+  const winner = eligibleRows[0];
+  if (!winner) return EVENT_LOG_DEFAULTS;
+  return {
+    retentionDays: winner.retentionDays,
+    maxEventsPerCycle: winner.maxEventsPerCycle,
+    collectCategories: winner.collectCategories as EventLogCategory[],
+    minimumLevel: winner.minimumLevel as EventLogLevel,
+    collectionIntervalMinutes: winner.collectionIntervalMinutes,
+    rateLimitPerHour: winner.rateLimitPerHour,
+  };
+}
+
+async function resolveDeviceEventLogSettings(deviceId: string, opts?: DevicePolicySetOpts): Promise<EventLogSettings> {
   const passed = hierarchyFor(deviceId, opts);
+  const set = policySetFor(deviceId, opts);
+  if (set) {
+    return eventLogSettingsFromRows(candidatesWithLink(set, 'event_log', EVENT_LOG_APPLICABILITY).flatMap(({ candidate, link }) =>
+      link.eventLog
+        ? [{
+          level: candidate.level, assignmentPriority: candidate.priority,
+          roleFilter: candidate.roleFilter, osFilter: candidate.osFilter,
+          retentionDays: link.eventLog.retentionDays, maxEventsPerCycle: link.eventLog.maxEventsPerCycle,
+          collectCategories: link.eventLog.collectCategories, minimumLevel: link.eventLog.minimumLevel,
+          collectionIntervalMinutes: link.eventLog.collectionIntervalMinutes, rateLimitPerHour: link.eventLog.rateLimitPerHour,
+        }]
+        : []), set.hierarchy);
+  }
   // 1. Load device
   const [device] = passed
     ? [{ orgId: passed.orgId, siteId: passed.siteId, deviceRole: passed.deviceRole, osType: passed.osType }]
@@ -2009,32 +2048,10 @@ async function resolveDeviceEventLogSettings(deviceId: string, opts?: DeviceHier
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
       or(...targetConditions),
       ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
-    ));
+    ))
+    .orderBy(asc(configPolicyAssignments.createdAt), asc(configPolicyAssignments.id));
 
-  // Filter by deviceRole and osType using canonical predicate
-  const eligibleRows = rows.filter((r) =>
-    matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
-  );
-
-  if (eligibleRows.length === 0) return EVENT_LOG_DEFAULTS;
-
-  // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  eligibleRows.sort((a, b) => {
-    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
-    if (levelDiff !== 0) return levelDiff;
-    return a.assignmentPriority - b.assignmentPriority;
-  });
-
-  const winner = eligibleRows[0];
-  if (!winner) return EVENT_LOG_DEFAULTS;
-  return {
-    retentionDays: winner.retentionDays,
-    maxEventsPerCycle: winner.maxEventsPerCycle,
-    collectCategories: winner.collectCategories as EventLogCategory[],
-    minimumLevel: winner.minimumLevel as EventLogLevel,
-    collectionIntervalMinutes: winner.collectionIntervalMinutes,
-    rateLimitPerHour: winner.rateLimitPerHour,
-  };
+  return eventLogSettingsFromRows(rows, device);
 }
 
 const EVENT_LOG_CACHE_TTL_SECONDS = 120; // 2 minutes
@@ -2043,9 +2060,10 @@ const EVENT_LOG_CACHE_TTL_SECONDS = 120; // 2 minutes
  * Resolve event_log policy settings for a device via full hierarchy.
  * Uses Redis cache with 2-min TTL. Falls back to defaults if no policy found.
  */
-export async function getDeviceEventLogSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<EventLogSettings> {
+export async function getDeviceEventLogSettings(deviceId: string, opts?: DevicePolicySetOpts): Promise<EventLogSettings> {
   // Validate before the cache short-circuit: a foreign hierarchy is a bug even on a hit.
   hierarchyFor(deviceId, opts);
+  policySetFor(deviceId, opts);
   const redis = getRedis();
   const cacheKey = `eventlog:settings:device:${deviceId}`;
 
@@ -2081,7 +2099,7 @@ export async function getDeviceEventLogSettings(deviceId: string, opts?: DeviceH
  * Returns agent-facing settings, including defaults when no policy is assigned.
  * This ensures stale non-default agent settings get reset after policy removal.
  */
-export async function buildEventLogConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<{
+export async function buildEventLogConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<{
   max_events_per_cycle: number;
   collect_categories: string[];
   minimum_level: string;
@@ -2099,6 +2117,29 @@ export async function buildEventLogConfigUpdate(deviceId: string, opts?: DeviceH
 
 type HardwareMonitoringPolicyView = { enabled: boolean; source: 'default' | 'policy'; policyName?: string };
 
+const HARDWARE_MONITORING_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOrPartner', partnerTarget: 'partner', roleOs: 'sql' };
+
+type HardwareMonitoringRankRow = {
+  policyName: string; level: string; assignmentPriority: number; roleFilter: string[] | null; osFilter: string[] | null;
+  enabled: boolean; pollIntervalMinutes: number; diskHealthIntervalMinutes: number;
+};
+
+function hardwareMonitoringFromRows(
+  rows: HardwareMonitoringRankRow[],
+  device: { deviceRole: string; osType: string },
+): { settings: HardwareMonitoringInlineSettings; policy: HardwareMonitoringPolicyView } {
+  const eligible = rows.filter((r) => matchesRoleOsFilter(r, device));
+  eligible.sort(compareLevelThenPriority);
+  const winner = eligible[0];
+  if (!winner) {
+    return { settings: { ...HARDWARE_MONITORING_DEFAULTS }, policy: { enabled: HARDWARE_MONITORING_DEFAULTS.enabled, source: 'default' } };
+  }
+  return {
+    settings: hardwareMonitoringInlineSettingsSchema.parse(winner),
+    policy: { enabled: winner.enabled, source: 'policy', policyName: winner.policyName },
+  };
+}
+
 /**
  * Resolve hardware-monitoring collection settings for a device via the full
  * assignment hierarchy (device → device_group → site → org → partner),
@@ -2107,8 +2148,21 @@ type HardwareMonitoringPolicyView = { enabled: boolean; source: 'default' | 'pol
  *
  * Reads in the caller's own context; partner-wide rows are granted by the *_partner_wide_select branches.
  */
-async function resolveHardwareMonitoring(deviceId: string, opts?: DeviceHierarchyOpts): Promise<{ settings: HardwareMonitoringInlineSettings; policy: HardwareMonitoringPolicyView }> {
+async function resolveHardwareMonitoring(deviceId: string, opts?: DevicePolicySetOpts): Promise<{ settings: HardwareMonitoringInlineSettings; policy: HardwareMonitoringPolicyView }> {
   const passed = hierarchyFor(deviceId, opts);
+  const set = policySetFor(deviceId, opts);
+  if (set) {
+    return hardwareMonitoringFromRows(candidatesWithLink(set, 'hardware_monitoring', HARDWARE_MONITORING_APPLICABILITY).flatMap(({ candidate, link }) =>
+      link.hardwareMonitoring
+        ? [{
+          policyName: candidate.policyName, level: candidate.level, assignmentPriority: candidate.priority,
+          roleFilter: candidate.roleFilter, osFilter: candidate.osFilter,
+          enabled: link.hardwareMonitoring.enabled,
+          pollIntervalMinutes: link.hardwareMonitoring.pollIntervalMinutes,
+          diskHealthIntervalMinutes: link.hardwareMonitoring.diskHealthIntervalMinutes,
+        }]
+        : []), set.hierarchy);
+  }
   const fallback = { settings: { ...HARDWARE_MONITORING_DEFAULTS }, policy: { enabled: HARDWARE_MONITORING_DEFAULTS.enabled, source: 'default' as const } };
 
   const [device] = passed
@@ -2183,26 +2237,13 @@ async function resolveHardwareMonitoring(deviceId: string, opts?: DeviceHierarch
         policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
         or(...targetConditions),
         ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
-      ));
+      ))
+      .orderBy(asc(configPolicyAssignments.createdAt), asc(configPolicyAssignments.id));
 
-  const eligible = rows.filter((r) =>
-    matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
-  );
-  eligible.sort((a, b) => {
-    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
-    if (levelDiff !== 0) return levelDiff;
-    return a.assignmentPriority - b.assignmentPriority;
-  });
-
-  const winner = eligible[0];
-  if (!winner) return fallback;
-  return {
-    settings: hardwareMonitoringInlineSettingsSchema.parse(winner),
-    policy: { enabled: winner.enabled, source: 'policy', policyName: winner.policyName },
-  };
+  return hardwareMonitoringFromRows(rows, device);
 }
 
-export async function resolveDeviceHardwareMonitoringSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<HardwareMonitoringInlineSettings> {
+export async function resolveDeviceHardwareMonitoringSettings(deviceId: string, opts?: DevicePolicySetOpts): Promise<HardwareMonitoringInlineSettings> {
   return (await resolveHardwareMonitoring(deviceId, opts)).settings;
 }
 
@@ -2216,8 +2257,9 @@ export const HARDWARE_MONITORING_CACHE_TTL_SECONDS = 120;
  * Resolve hardware-monitoring settings for a device with a 2-min Redis cache,
  * matching `getDeviceEventLogSettings`.
  */
-export async function getDeviceHardwareMonitoringSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<HardwareMonitoringInlineSettings> {
+export async function getDeviceHardwareMonitoringSettings(deviceId: string, opts?: DevicePolicySetOpts): Promise<HardwareMonitoringInlineSettings> {
   hierarchyFor(deviceId, opts);
+  policySetFor(deviceId, opts);
   const redis = getRedis();
   const cacheKey = `hwmon:settings:device:${deviceId}`;
 
@@ -2247,7 +2289,7 @@ export async function getDeviceHardwareMonitoringSettings(deviceId: string, opts
  * Build hardware_monitoring config update payload for heartbeat response.
  * Returns agent-facing settings, including defaults when no policy is assigned.
  */
-export async function buildHardwareMonitoringConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<{
+export async function buildHardwareMonitoringConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<{
   enabled: boolean;
   poll_interval_minutes: number;
   disk_health_interval_minutes: number;
@@ -2268,7 +2310,7 @@ export async function buildHardwareMonitoringConfigUpdate(deviceId: string, opts
  */
 export async function buildTimeSyncConfigUpdate(
   deviceId: string,
-  opts?: DeviceHierarchyOpts,
+  opts?: DevicePolicySetOpts,
 ): Promise<TimeSyncConfigUpdate> {
   return buildResolvedTimeSyncConfigUpdate(deviceId, opts);
 }
@@ -3360,7 +3402,10 @@ export interface PatchSourceSettings {
  * resolves the device timezone (a device/org/site join plus a partner-axis
  * `partners` read) that this flag never used.
  */
-export async function buildPatchSourceConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<PatchSourceSettings> {
+export async function buildPatchSourceConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<PatchSourceSettings> {
+  hierarchyFor(deviceId, opts);
+  const set = policySetFor(deviceId, opts);
+  if (set) return { exclusiveWindowsUpdate: patchExclusiveWindowsUpdateFromPolicySet(set) };
   const patch = await resolvePatchConfigPolicyForDevice(deviceId, opts);
   return { exclusiveWindowsUpdate: patch?.settings.exclusiveWindowsUpdate ?? false };
 }
