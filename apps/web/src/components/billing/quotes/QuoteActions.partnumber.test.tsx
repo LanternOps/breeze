@@ -112,6 +112,16 @@ describe('QuoteActions — send-time missing part number warning (#8232)', () =>
     expect(screen.getByTestId('quote-send-no-part-number-warning')).toBeInTheDocument();
   });
 
+  it('is absent when re-sending — the lines were already sent', async () => {
+    const detail = draft([hardwareNoPn]);
+    detail.quote = { ...detail.quote, status: 'sent', quoteNumber: 'Q-1', sentAt: '2026-06-02T00:00:00Z' };
+    render(<QuoteActions detail={detail} onChanged={vi.fn()} variant="rail" />);
+    fireEvent.click(screen.getByTestId('quote-resend'));
+    await waitFor(() => expect(screen.getByTestId('quote-send-confirm')).toBeInTheDocument());
+    expect(screen.queryByTestId('quote-send-no-part-number-warning')).not.toBeInTheDocument();
+    expect(screen.getByTestId('quote-send-confirm')).not.toHaveTextContent('Send anyway');
+  });
+
   it('"Send anyway" still sends', async () => {
     await openSend([hardwareNoPn]);
     await waitFor(() => expect(screen.getByTestId('quote-send-to')).toHaveValue('ap@customer.example'));

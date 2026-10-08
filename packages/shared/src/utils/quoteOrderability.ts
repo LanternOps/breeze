@@ -32,15 +32,18 @@ export function isOrderableQuoteLine(line: QuoteOrderabilityLine): boolean {
 /**
  * True when the line looks like something you buy rather than labor: a
  * hardware or software catalog line, or any non-service line carrying a unit
- * cost (a manual line with a cost is almost always a product). Any cost value
- * counts, including zero; a blank string does not.
+ * cost (a manual line with a cost is almost always a product). The cost must
+ * be greater than zero: the editor's "No cost" shortcut saves 0 for labor with
+ * no cost basis, and that must not read as a product.
  */
 export function isProductLikeQuoteLine(line: QuoteOrderabilityLine): boolean {
   if (line.itemType === 'hardware' || line.itemType === 'software') return true;
   if (line.itemType === 'service') return false;
   const cost = line.unitCost;
   if (cost === null || cost === undefined) return false;
-  return typeof cost === 'number' ? Number.isFinite(cost) : cost.trim() !== '';
+  if (typeof cost === 'string' && cost.trim() === '') return false;
+  const n = Number(cost);
+  return Number.isFinite(n) && n > 0;
 }
 
 /** A product-like line that will be left out of the parts order because it has

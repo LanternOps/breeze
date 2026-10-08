@@ -40,7 +40,10 @@ describe('isProductLikeQuoteLine', () => {
     ['software, no cost', line({ itemType: 'software' }), true],
     ['manual line with a cost', line({ unitCost: '12.50' }), true],
     ['manual line with a numeric cost', line({ unitCost: 12.5 }), true],
-    ['manual line with a zero cost', line({ unitCost: '0.00' }), true],
+    // The editor's "No cost" shortcut (labor with no cost basis) saves 0.
+    ['manual line with a zero cost', line({ unitCost: '0.00' }), false],
+    ['manual line with a numeric zero cost', line({ unitCost: 0 }), false],
+    ['manual line with an unparseable cost', line({ unitCost: 'abc' }), false],
     ['manual line without cost', line(), false],
     ['manual line with a blank cost', line({ unitCost: '  ' }), false],
     ['service with a cost', line({ itemType: 'service', unitCost: '30.00' }), false],
