@@ -33,6 +33,7 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { and, eq } from 'drizzle-orm';
 
 const recorder = vi.hoisted(() => ({
   recording: false,
@@ -84,6 +85,7 @@ vi.mock('../../services/helperSettings', async (importOriginal) => {
 
 import { db, withSystemDbAccessContext } from '../../db';
 import {
+  auditLogs,
   configPolicyAssignments,
   configPolicyEventLogSettings,
   configPolicyFeatureLinks,
@@ -237,6 +239,31 @@ async function seedOrgPolicy(input: {
 
 type SeededOrg = Awaited<ReturnType<typeof seedOrg>>;
 
+/**
+ * #8053: `/agents/enroll` writes its `agent.enroll` audit row fire-and-forget
+ * (createAuditLogAsync), as its own transaction on the instrumented request
+ * pool, and returns before that write finishes. If it is still in flight when
+ * `measure()` arms the recorder, begin/prologue/insert/commit land inside the
+ * measured window and inflate (or flake) the budget. Visibility from another
+ * session means the audit transaction has COMMITTED, so polling for the row is
+ * deterministic, not a sleep. The recorder is unarmed here, so the polls are
+ * never counted. Throws on timeout: never proceed with an unsettled enroll.
+ */
+async function waitForEnrollAuditCommitted(deviceId: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const rows = await withSystemDbAccessContext(() =>
+      db
+        .select({ id: auditLogs.id })
+        .from(auditLogs)
+        .where(and(eq(auditLogs.action, 'agent.enroll'), eq(auditLogs.resourceId, deviceId)))
+        .limit(1),
+    );
+    if (rows.length > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`agent.enroll audit row for device ${deviceId} never became visible (2s)`);
+}
+
 async function enrollDevice(org: SeededOrg, hostname: string) {
   const app = new Hono();
   app.route('/agents', enrollmentRoutes);
@@ -254,6 +281,7 @@ async function enrollDevice(org: SeededOrg, hostname: string) {
   });
   expect(response.status).toBe(201);
   const body = await response.json() as { deviceId: string; agentId: string };
+  await waitForEnrollAuditCommitted(body.deviceId);
   return {
     deviceId: body.deviceId,
     agentId: body.agentId,
