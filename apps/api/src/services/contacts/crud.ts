@@ -702,10 +702,10 @@ export async function updateContact(
   // behind it, on a call the route answers 404.
   if (!updated) return null;
 
-  // After legacy-writer retirement, siteId-only changes are affiliation/primacy
-  // changes. Only an explicit legacy roles payload is adapted into a canonical
-  // responsibility replacement.
-  if (patch.roles !== undefined) {
+  // While legacy writers still exist, either half of the legacy responsibility
+  // shape (`siteId` + `roles`) re-derives the complete canonical assignment set.
+  // Once those adapters retire, siteId can become affiliation-only metadata.
+  if (patch.siteId !== undefined || patch.roles !== undefined) {
     await reconcileLegacyContactResponsibilities(exec, {
       contactId,
       orgId,

@@ -683,16 +683,20 @@ describe('updateContact writes only what the patch names', () => {
     expect(Object.keys(write.set).sort()).toEqual(['notes', 'title', 'updatedAt']);
   });
 
-  it('treats a siteId-only patch as affiliation and does not rewrite canonical responsibilities', async () => {
-    const stored = { ...PLAIN_ORG_ROW, siteId: null, isPrimary: false, roles: [] };
+  it('re-derives canonical responsibilities when a legacy siteId-only patch changes scope', async () => {
+    const stored = { ...PLAIN_ORG_ROW, siteId: null, isPrimary: false, roles: ['admin'] };
+    const updated = { ...stored, siteId: SITE };
     const { exec } = makeExec([
       [stored],          // getContact
       [{ id: SITE }],    // assertSiteInOrg
       [],                // organization pre-lock
       [stored],          // locked target re-read
-    ]);
+    ], { updateReturns: [[updated]] });
     await updateContact(exec, CONTACT, ORG, { siteId: SITE }, ACTOR);
-    expect(responsibilityMocks.reconcileLegacyContactResponsibilities).not.toHaveBeenCalled();
+    expect(responsibilityMocks.reconcileLegacyContactResponsibilities).toHaveBeenCalledWith(
+      exec,
+      { contactId: CONTACT, orgId: ORG, siteId: SITE, roles: ['admin'] },
+    );
   });
 
   it('adapts an explicit roles patch into the canonical responsibility set using the resulting site pin', async () => {

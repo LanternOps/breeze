@@ -16,8 +16,11 @@ import { getTestDb } from './setup';
 import { cascadeDeleteOrg, getOrgCascadeDeleteOrder } from '../../services/tenantCascade';
 import { getOrgMergePolicies } from '../../services/orgMergeRegistry';
 import { getTenantExportPolicyRegistry } from '../../services/tenantExportPolicyRegistry';
+import { updateContact } from '../../services/contacts/crud';
+import { requesterAuthorized } from '../../services/callerVerification/access';
+import type { BindingRow } from '../../services/callerVerification/types';
 
-const MIGRATION_FILE = join(__dirname, '../../../migrations/2026-12-15-110000-contact-responsibility-scope.sql');
+const MIGRATION_FILE = join(__dirname, '../../../migrations/2026-12-17-100400-contact-responsibility-scope.sql');
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 function orgContext(orgId: string, partnerId: string): DbAccessContext {
@@ -89,6 +92,36 @@ describe('contact_roles migration and tenancy contracts (#8087)', () => {
     await testDb.execute(sql.raw(migration));
     const second = await testDb.select().from(contactRoles).where(eq(contactRoles.orgId, org.id));
     expect(second).toHaveLength(first.length);
+  });
+
+  runDb('siteId-only legacy patch re-scopes org admin and removes org-level disable_user authority', async () => {
+    const testDb = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const [contact] = await testDb.insert(contacts).values({
+      orgId: org.id, name: 'Org admin', siteId: null, roles: ['admin'],
+    }).returning();
+    await testDb.insert(contactRoles).values({
+      contactId: contact!.id, orgId: org.id, role: 'admin', siteId: null, deviceGroupId: null,
+    });
+
+    await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      updateContact(db, contact!.id, org.id, { siteId: site.id }, { userId: null }));
+
+    const assignments = await testDb.select().from(contactRoles).where(and(
+      eq(contactRoles.contactId, contact!.id),
+      eq(contactRoles.orgId, org.id),
+      eq(contactRoles.role, 'admin'),
+    ));
+    expect(assignments).toHaveLength(1);
+    expect(assignments[0]).toMatchObject({ siteId: site.id, deviceGroupId: null });
+
+    const requester = { id: randomUUID(), revokedAt: null } as BindingRow;
+    const target = { id: randomUUID(), revokedAt: null } as BindingRow;
+    const authorized = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      requesterAuthorized('disable_user', requester, target, org.id, contact!.id, ['admin']));
+    expect(authorized).toBe(false);
   });
 
   runDb('enforces scope CHECK, role CHECK, NULLS NOT DISTINCT uniqueness and composite tenant FKs', async () => {
