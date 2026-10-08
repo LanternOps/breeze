@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func testFingerprint() sckFingerprint {
@@ -251,5 +252,10 @@ func TestNewSCKVerdict_TruncatesDetail(t *testing.T) {
 	v := newSCKVerdict(sckVerdictReasonCaptureFailed, strings.Repeat("e", 4096), time.Now(), testFingerprint())
 	if len(v.Detail) > sckVerdictMaxDetail {
 		t.Fatalf("detail length %d exceeds %d", len(v.Detail), sckVerdictMaxDetail)
+	}
+	// A cut through a multi-byte rune must not leave invalid UTF-8.
+	v = newSCKVerdict(sckVerdictReasonCaptureFailed, "e"+strings.Repeat("é", 600), time.Now(), testFingerprint())
+	if !utf8.ValidString(v.Detail) {
+		t.Fatalf("truncated detail is not valid UTF-8: %q", v.Detail[len(v.Detail)-4:])
 	}
 }

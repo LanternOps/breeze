@@ -21,8 +21,8 @@ var (
 // errCaptureBackendAsRoot: the verdict lives in the console user's home, and
 // the user-session helper reads only its own account's.
 var errCaptureBackendAsRoot = errors.New("run this as the console user, not root: the verdict is per user " +
-	"(~/Library/Application Support/Breeze/capture-backend.json) and root's copy is never read. " +
-	`From a root shell: launchctl asuser <uid> sudo -u '#<uid>' breeze-desktop-helper capture-backend ...`)
+	"(~/Library/Application Support/Breeze/capture-backend.json) and root's copy is never read; " +
+	`from a root shell use launchctl asuser <uid> sudo -u '#<uid>' breeze-desktop-helper capture-backend <command>`)
 
 // newCaptureBackendCmd builds `capture-backend`: show, reset or pin the
 // recorded ScreenCaptureKit verdict that capture sessions honour (#8058).
@@ -83,9 +83,10 @@ func runCaptureBackendReset(w io.Writer) error {
 		return fmt.Errorf("reset capture backend verdict: %w", err)
 	}
 	if removed {
-		fmt.Fprintf(w, "removed %s; the next remote-desktop session tries ScreenCaptureKit\n", path)
+		_, _ = fmt.Fprintf(w, "removed %s; the next remote-desktop session tries ScreenCaptureKit "+
+			"(a running helper that could not save a verdict keeps CoreGraphics until it restarts)\n", path)
 	} else {
-		fmt.Fprintf(w, "no verdict recorded at %s\n", path)
+		_, _ = fmt.Fprintf(w, "no verdict recorded at %s\n", path)
 	}
 	return nil
 }
@@ -98,6 +99,6 @@ func runCaptureBackendPin(w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("pin CoreGraphics capture: %w", err)
 	}
-	fmt.Fprintf(w, "wrote %s; remote-desktop sessions for this user use CoreGraphics until `capture-backend reset`\n", path)
+	_, _ = fmt.Fprintf(w, "wrote %s; remote-desktop sessions for this user use CoreGraphics until `capture-backend reset`\n", path)
 	return nil
 }

@@ -89,7 +89,9 @@ func TestRunTearsDownPerRunGoroutinesWhenTheConnectionDrops(t *testing.T) {
 	loopReturned := make(chan struct{})
 	restore := runTCCCheckLoop
 	t.Cleanup(func() { runTCCCheckLoop = restore })
-	runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _, _ string, _ func() bool) {
+	gotKind := make(chan string, 1)
+	runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _, binaryKind string, _ func() bool) {
+		gotKind <- binaryKind
 		<-stop
 		close(loopReturned)
 	}
@@ -133,5 +135,11 @@ func TestRunTearsDownPerRunGoroutinesWhenTheConnectionDrops(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("per-run goroutine outlived Run: it is still holding a dead *ipc.Conn, " +
 			"and one more will leak on every reconnect")
+	}
+
+	// The loop gates its prompts and capture probe on the binary kind
+	// (#8058), so Run must hand it the client's own kind.
+	if kind := <-gotKind; kind != ipc.HelperBinaryDesktopHelper {
+		t.Fatalf("TCC loop got binaryKind %q, want %q", kind, ipc.HelperBinaryDesktopHelper)
 	}
 }

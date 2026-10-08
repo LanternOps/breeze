@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -79,7 +80,7 @@ type sckVerdict struct {
 
 func newSCKVerdict(reason, detail string, at time.Time, fp sckFingerprint) sckVerdict {
 	if len(detail) > sckVerdictMaxDetail {
-		detail = detail[:sckVerdictMaxDetail]
+		detail = strings.ToValidUTF8(detail[:sckVerdictMaxDetail], "")
 	}
 	return sckVerdict{
 		Schema:      sckVerdictSchema,
@@ -170,7 +171,7 @@ func (s *sckVerdictStore) load() (*sckVerdict, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open verdict %s: %w", s.path(), err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -229,15 +230,15 @@ func (s *sckVerdictStore) save(v sckVerdict) error {
 		}
 	}()
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {

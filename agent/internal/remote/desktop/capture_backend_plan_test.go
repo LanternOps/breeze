@@ -132,3 +132,47 @@ func TestProbeCapture_ReportsBackendAndScreenCaptureKitCalls(t *testing.T) {
 		t.Fatalf("ScreenCaptureKit opened %d times in total, want 1 (only the explicit probe)", sck.opened)
 	}
 }
+
+// macProbePlan is what darwinCaptureProbePlan returns for a macOS 14+ user
+// session; the option-to-attempts mapping is asserted here so it runs in CI.
+func TestMacProbePlan_ScreenCaptureKitOnlyWhenAllowedAndAtMostOnce(t *testing.T) {
+	t.Run("permission check", func(t *testing.T) {
+		sck := &scriptedBackend{name: captureBackendScreenCaptureKit}
+		cg := &scriptedBackend{name: captureBackendCoreGraphics}
+		plan := macProbePlan(fakeMacBackends(sck, cg, true), CaptureProbeOptions{})
+		if _, err := probeCaptureBackends(plan); err != nil {
+			t.Fatal(err)
+		}
+		if sck.opened != 0 || cg.opened != 1 {
+			t.Fatalf("opened sck=%d cg=%d, want 0/1", sck.opened, cg.opened)
+		}
+	})
+	t.Run("explicit --sck", func(t *testing.T) {
+		sck := &scriptedBackend{name: captureBackendScreenCaptureKit, frames: []*fakeProbeCapturer{{err: errSCKTimeout}, {err: errSCKTimeout}}}
+		cg := &scriptedBackend{name: captureBackendCoreGraphics}
+		plan := macProbePlan(fakeMacBackends(sck, cg, true), CaptureProbeOptions{AllowScreenCaptureKit: true})
+		if _, err := probeCaptureBackends(plan); err != nil {
+			t.Fatal(err)
+		}
+		if sck.opened != 1 {
+			t.Fatalf("ScreenCaptureKit opened %d times, want 1", sck.opened)
+		}
+	})
+}
+
+// The permission-check probe is not gated on preflight (macOS 26 can report
+// false while the grant is present), so a CG frame still counts as granted.
+func TestMacProbePlan_PermissionCheckNotGatedOnPreflight(t *testing.T) {
+	sck := &scriptedBackend{name: captureBackendScreenCaptureKit}
+	cg := &scriptedBackend{name: captureBackendCoreGraphics}
+	plan := macProbePlan(fakeMacBackends(sck, cg, false), CaptureProbeOptions{})
+	res, err := probeCaptureBackends(plan)
+	if err != nil || res.backend != captureBackendCoreGraphics {
+		t.Fatalf("res=%+v err=%v, want a CoreGraphics frame", res, err)
+	}
+	if plan.onSuccess == nil {
+		t.Fatal("the no-grant warning hook is missing")
+	}
+	plan.onSuccess(res) // must not panic; warns once
+	plan.onSuccess(res)
+}

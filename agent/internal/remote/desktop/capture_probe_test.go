@@ -426,3 +426,50 @@ func TestOpenCaptureBackends_ClosesFailedPrimaryBeforeFallback(t *testing.T) {
 	}
 	_ = capturer.Close()
 }
+
+// Review finding on #8058: attempt 1 reaches the capture phase and fails
+// (possibly a missing grant), attempt 2 fails at init. The capture-phase
+// failure must still gate the fallback on preflight, and must still count as
+// a capture failure for the verdict.
+func TestOpenCaptureBackends_CaptureThenInitFailureStillGatesFallback(t *testing.T) {
+	opens := 0
+	primary := captureProbeBackend{
+		name: "screencapturekit",
+		open: func() (ScreenCapturer, error) {
+			opens++
+			if opens == 1 {
+				return &fakeProbeCapturer{err: errSCKTimeout}, nil
+			}
+			return nil, errors.New("display reconfiguring")
+		},
+	}
+	t.Run("gate refuses", func(t *testing.T) {
+		opens = 0
+		cg := &scriptedBackend{name: "coregraphics"}
+		fallback := cg.step()
+		gateCalls := 0
+		_, _, err := openCaptureBackends(captureProbePlan{
+			primary: primary, primaryAttempts: 2, fallback: &fallback,
+			allowCaptureFallback: func() bool { gateCalls++; return false },
+		})
+		if err == nil || gateCalls != 1 || cg.opened != 0 {
+			t.Fatalf("err=%v gateCalls=%d cgOpened=%d; want the preflight gate consulted and refusing", err, gateCalls, cg.opened)
+		}
+	})
+	t.Run("gate allows", func(t *testing.T) {
+		opens = 0
+		cg := &scriptedBackend{name: "coregraphics"}
+		fallback := cg.step()
+		capturer, res, err := openCaptureBackends(captureProbePlan{
+			primary: primary, primaryAttempts: 2, fallback: &fallback,
+			allowCaptureFallback: func() bool { return true },
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		_ = capturer.Close()
+		if !res.primaryCaptureFailed {
+			t.Fatalf("res = %+v, want primaryCaptureFailed after a capture-phase failure", res)
+		}
+	})
+}

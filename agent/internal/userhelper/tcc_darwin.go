@@ -266,11 +266,7 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 	promptFile := tccPromptFilePath()
 
 	check := func() {
-		allowProbe := policy.captureProbe
-		if allowProbe && canProbe != nil {
-			allowProbe = canProbe()
-		}
-		status := checkTCCPermissions(desktopContext, policy.promptAccessibility, allowProbe, lastRemoteDesktop)
+		status := checkTCCPermissions(desktopContext, policy.promptAccessibility, policy.allowCaptureProbe(canProbe), lastRemoteDesktop)
 		lastRemoteDesktop = cloneBoolPtr(status.RemoteDesktop)
 		allGranted = len(missingPermissions(status)) == 0
 		if err := sendTCCStatus(conn, status, &seq); err != nil {
@@ -301,9 +297,7 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 		firstCheck = false
 	}
 
-	if policy.requestScreenRecording {
-		maybeRequestScreenRecording(screenRecordingMarkerPath(), time.Now())
-	}
+	requestScreenRecordingAtLoopStart(policy, screenRecordingMarkerPath(), time.Now())
 
 	// Immediate first check (sends full TCC status to the service)
 	check()
@@ -341,6 +335,14 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 				ticker.Reset(currentInterval)
 			}
 		}
+	}
+}
+
+// requestScreenRecordingAtLoopStart raises the Screen Recording consent
+// dialog at loop start, only for a helper whose policy allows it.
+func requestScreenRecordingAtLoopStart(policy tccLoopPolicy, markerPath string, now time.Time) {
+	if policy.requestScreenRecording {
+		maybeRequestScreenRecording(markerPath, now)
 	}
 }
 

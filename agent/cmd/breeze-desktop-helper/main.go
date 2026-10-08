@@ -48,7 +48,7 @@ The authoritative source is the agent log line "TCC permissions received".`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Logs to stderr so stdout stays the JSON report.
 		logging.Init("text", "info", os.Stderr)
-		return runProbeTo(os.Stdout, os.Stderr, probeOptions{
+		return runProbeTo(cmd.OutOrStdout(), cmd.ErrOrStderr(), probeOptions{
 			allowPrompt: probePrompt,
 			capture:     true,
 			allowSCK:    probeSCK,
@@ -158,8 +158,15 @@ func runDesktopHelper() {
 	if startupProbe.CaptureError != "" {
 		attrs = append(attrs, "captureError", startupProbe.CaptureError)
 	}
-	if v := startupProbe.ScreenCaptureKitVerdict; v != nil && v.Present {
-		attrs = append(attrs, "sckVerdict", v.Reason, "sckVerdictApplies", v.Applies)
+	if v := startupProbe.ScreenCaptureKitVerdict; v != nil {
+		if v.Present {
+			attrs = append(attrs, "sckVerdict", v.Reason, "sckVerdictApplies", v.Applies)
+		}
+		if v.Error != "" {
+			// Unreadable or refused: sessions will try ScreenCaptureKit, so
+			// the macOS consent dialog can come back (#8058).
+			attrs = append(attrs, "sckVerdictError", v.Error)
+		}
 	}
 	if startupProbe.TCC != nil {
 		remoteDesktop := "unknown"

@@ -678,11 +678,7 @@ func darwinCaptureProbePlan(config CaptureConfig, opts CaptureProbeOptions) capt
 	if config.DesktopContext == "login_window" || !hasSCScreenshotManager() {
 		return defaultCaptureProbePlan(config)
 	}
-	sckAttempts := 0
-	if opts.AllowScreenCaptureKit {
-		sckAttempts = 1
-	}
-	return macUserSessionPlan(darwinUserSessionBackends(config), sckAttempts, 0)
+	return macProbePlan(darwinUserSessionBackends(config), opts)
 }
 
 // newPlatformCapturer creates a new macOS screen capturer for a real capture
@@ -704,25 +700,7 @@ func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	if !hasSCScreenshotManager() {
 		return openCGCapturer(config)
 	}
-	if sckCaptureUnhealthy.Load() {
-		slog.Info("using CoreGraphics capture: ScreenCaptureKit was found unable to capture earlier in this helper process",
-			"darwinVersion", macOSMajorVersion)
-		return openCGCapturer(config)
-	}
-	if v := applicableSCKVerdict(); v != nil {
-		slog.Info("using CoreGraphics capture: a recorded verdict says ScreenCaptureKit cannot capture on this host",
-			"reason", v.Reason, "recordedAt", v.RecordedAt.Format(time.RFC3339),
-			"darwinVersion", macOSMajorVersion)
-		return openCGCapturer(config)
-	}
-
-	capturer, res, err := openCaptureBackends(
-		macUserSessionPlan(darwinUserSessionBackends(config), sckProbeAttempts, sckProbeRetryDelay))
-	if err != nil {
-		return nil, err
-	}
-	recordSCKOutcome(res)
-	return capturer, nil
+	return sckPolicy.openSessionCapturer(darwinUserSessionBackends(config), sckProbeAttempts, sckProbeRetryDelay)
 }
 
 // newSCKCapturer creates a ScreenCaptureKit-based capturer (macOS 14+).

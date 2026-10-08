@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -271,8 +272,9 @@ func TestPostinstallRemovesLegacyAgentUserLaunchAgent(t *testing.T) {
 	if !strings.Contains(s, plist) {
 		t.Fatalf("postinstall does not name the legacy plist (%s)", plist)
 	}
-	if !strings.Contains(s, `rm -f "$LEGACY_AGENT_USER_PLIST"`) {
-		t.Fatal("postinstall does not delete the legacy com.breeze.agent-user plist")
+	// A top-level, uncommented line: not commented out, not inside a branch.
+	if !regexp.MustCompile(`(?m)^rm -f "\$LEGACY_AGENT_USER_PLIST"$`).MatchString(s) {
+		t.Fatal("postinstall does not delete the legacy com.breeze.agent-user plist at top level")
 	}
 	pre := readRepoFile(t, "macos/preinstall")
 	if !strings.Contains(pre, "com.breeze.agent-user") {

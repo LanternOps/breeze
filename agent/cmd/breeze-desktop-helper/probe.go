@@ -61,7 +61,7 @@ func runProbeTo(stdout, stderr io.Writer, opts probeOptions, goos string) error 
 	out := collectProbeOutput(opts)
 	if goos == "darwin" {
 		out.AttributionWarning = probeAttributionWarning
-		fmt.Fprintln(stderr, "WARNING: "+probeAttributionWarning)
+		_, _ = fmt.Fprintln(stderr, "WARNING: "+probeAttributionWarning)
 	}
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")

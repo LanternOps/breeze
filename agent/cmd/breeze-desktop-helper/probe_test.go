@@ -137,3 +137,31 @@ func TestRunProbeTo_NoAttributionWarningOffMacOS(t *testing.T) {
 		t.Fatalf("unexpected macOS attribution warning off macOS: %s / %s", stdout.String(), stderr.String())
 	}
 }
+
+// The --sck flag is what lets the CLI touch ScreenCaptureKit; without it the
+// probe must ask for a plan without ScreenCaptureKit.
+func TestProbeCommand_SCKFlagWiring(t *testing.T) {
+	calls := stubProbes(t, desktop.CaptureProbeReport{Granted: true}, nil)
+	t.Cleanup(func() {
+		probeSCK = false
+		_ = probeCmd.Flags().Set("sck", "false")
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+	})
+	var out, errOut bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errOut)
+
+	rootCmd.SetArgs([]string{"probe"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	rootCmd.SetArgs([]string{"probe", "--sck"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("probe --sck: %v", err)
+	}
+	if len(calls.capture) != 2 || calls.capture[0].AllowScreenCaptureKit || !calls.capture[1].AllowScreenCaptureKit {
+		t.Fatalf("capture options = %+v, want [no SCK, SCK]", calls.capture)
+	}
+}

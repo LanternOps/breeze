@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"log/slog"
+	"sync/atomic"
 	"time"
 )
 
@@ -60,4 +61,32 @@ func macUserSessionPlan(b macCaptureBackends, sckAttempts int, sckRetryDelay tim
 			return granted
 		},
 	}
+}
+
+// probeNoGrantWarned keeps the permission-check probe's "frame without a
+// grant" warning to once per process: the TCC loop probes every few minutes.
+var probeNoGrantWarned atomic.Bool
+
+// macProbePlan builds the macOS 14+ user-session capability probe. It never
+// calls ScreenCaptureKit unless opts allows it, and then once (#8058). It
+// never records a verdict: an explicit probe runs in the operator's context,
+// and macOS charges its capture to whatever launched it.
+//
+// The no-ScreenCaptureKit probe is not gated on preflight (macOS 26 can report
+// false while the grant is present, and gating would make a working host look
+// unable to capture). When it gets a frame while preflight reports no grant it
+// says so, once, because that frame may be wallpaper only.
+func macProbePlan(b macCaptureBackends, opts CaptureProbeOptions) captureProbePlan {
+	if opts.AllowScreenCaptureKit {
+		return macUserSessionPlan(b, 1, 0)
+	}
+	plan := macUserSessionPlan(b, 0, 0)
+	plan.onSuccess = func(captureProbeResult) {
+		if !b.preflight() && probeNoGrantWarned.CompareAndSwap(false, true) {
+			slog.Warn("capture probe got a CoreGraphics frame but Screen Recording preflight reports no grant; " +
+				"without the grant the frame shows only the wallpaper and menu bar, so canCapture may be optimistic " +
+				"(on macOS 26 preflight can also report false while the grant is present)")
+		}
+	}
+	return plan
 }

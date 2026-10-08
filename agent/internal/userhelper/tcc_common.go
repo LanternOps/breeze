@@ -46,3 +46,13 @@ func tccLoopPolicyFor(binaryKind string) tccLoopPolicy {
 	}
 	return tccLoopPolicy{}
 }
+
+// allowCaptureProbe reports whether this check may run the capture probe:
+// only when the policy allows it and, if canProbe is set, no live session owns
+// the capturer. canProbe is not consulted when the policy forbids the probe.
+func (p tccLoopPolicy) allowCaptureProbe(canProbe func() bool) bool {
+	if !p.captureProbe {
+		return false
+	}
+	return canProbe == nil || canProbe()
+}

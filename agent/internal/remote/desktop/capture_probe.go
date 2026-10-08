@@ -39,8 +39,10 @@ type captureProbePlan struct {
 	// menu bar, no other apps' windows); falling back blindly would turn a
 	// missing permission into CanCapture=true. nil means always allowed.
 	//
-	// An init-phase failure of the primary falls back unconditionally, which
-	// is what newPlatformCapturer has always done.
+	// When every primary attempt failed at init, the fallback runs
+	// unconditionally, which is what newPlatformCapturer has always done. If
+	// any attempt reached the capture phase, the gate applies even when a
+	// later retry failed at init.
 	allowCaptureFallback func() bool
 
 	// onSuccess, when set, is called by ProbeCapture with the result of a
@@ -97,7 +99,11 @@ func openCaptureBackends(plan captureProbePlan) (ScreenCapturer, captureProbeRes
 
 	var res captureProbeResult
 	var primaryErr error
-	initFailed := false
+	// captureFailed: some attempt initialised and then failed to capture.
+	// It decides the fallback gate and the verdict even when a later retry
+	// failed at init, because the capture-phase failure may have been a
+	// missing Screen Recording grant.
+	captureFailed := false
 	for i := 0; i < attempts; i++ {
 		if i > 0 && plan.primaryRetryDelay > 0 {
 			time.Sleep(plan.primaryRetryDelay)
@@ -106,7 +112,6 @@ func openCaptureBackends(plan captureProbePlan) (ScreenCapturer, captureProbeRes
 		capturer, err := plan.primary.open()
 		if err != nil {
 			primaryErr = err
-			initFailed = true
 			break
 		}
 		primaryErr = verifyProbeFrame(capturer)
@@ -119,6 +124,7 @@ func openCaptureBackends(plan captureProbePlan) (ScreenCapturer, captureProbeRes
 			return capturer, res, nil
 		}
 		_ = capturer.Close()
+		captureFailed = true
 		slog.Warn("capture probe attempt failed",
 			"backend", plan.primary.name, "attempt", i+1, "attempts", attempts,
 			"error", primaryErr.Error())
@@ -132,15 +138,15 @@ func openCaptureBackends(plan captureProbePlan) (ScreenCapturer, captureProbeRes
 		return nil, res, primaryErr
 	}
 
-	if !initFailed && plan.allowCaptureFallback != nil && !plan.allowCaptureFallback() {
+	if captureFailed && plan.allowCaptureFallback != nil && !plan.allowCaptureFallback() {
 		return nil, res, fmt.Errorf("%s capture failed (%w); %s fallback not attempted: "+
 			"Screen Recording preflight did not report a grant, so a fallback frame could be "+
 			"missing other apps' windows", plan.primary.name, primaryErr, plan.fallback.name)
 	}
 
-	phase := "capture"
-	if initFailed {
-		phase = "init"
+	phase := "init"
+	if captureFailed {
+		phase = "capture"
 	}
 	slog.Warn("capture probe falling back",
 		"from", plan.primary.name, "to", plan.fallback.name, "phase", phase,
@@ -160,7 +166,7 @@ func openCaptureBackends(plan captureProbePlan) (ScreenCapturer, captureProbeRes
 	slog.Info("capture probe succeeded on fallback backend",
 		"backend", plan.fallback.name, "primary", plan.primary.name, "phase", phase)
 	res.backend = plan.fallback.name
-	res.primaryCaptureFailed = !initFailed
+	res.primaryCaptureFailed = captureFailed
 	res.primaryErr = primaryErr
 	return fallbackCapturer, res, nil
 }
