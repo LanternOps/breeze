@@ -15,6 +15,20 @@ to verify; in that case say below which half shipped and which did not.
 
 Closes #
 
+## Merge Danger
+
+<!--
+Door: two-way (cheap to roll back: revert the PR) or one-way (migration that
+drops/rewrites data, shipped agent binary, external side effect, public API
+contract). A one-way door says what makes it irreversible.
+Blast radius: one word or phrase for who/what breaks if this is wrong
+(e.g. "one settings page", "all agents", "org erasure", "partner billing").
+-->
+
+**Door:** two-way / one-way
+
+**Blast radius:**
+
 ## Type of Change
 
 <!-- Check the one that applies: -->
