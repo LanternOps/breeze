@@ -3,7 +3,7 @@
  * the parent-org guard, immutability, the binding CHECK, the atomic
  * authorization + audit write, and the lookups command delivery and recovery
  * authentication use. A mocked suite cannot prove any of these — they live in
- * the database (migrations/2026-12-14-100000-backup-restore-authorizations.sql).
+ * the database (migrations/2026-12-17-170000-backup-restore-authorizations.sql).
  */
 import './setup';
 

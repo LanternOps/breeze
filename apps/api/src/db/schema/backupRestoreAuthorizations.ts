@@ -12,7 +12,7 @@ import { bareMetalRecoveries } from './bareMetalRecoveries';
  * usable attestation (unattested, or device-local restored onto another
  * device) onto one target device with one command type
  * (services/backupRestoreAuthorization.ts,
- * migrations/2026-12-14-100000-backup-restore-authorizations.sql).
+ * migrations/2026-12-17-170000-backup-restore-authorizations.sql).
  *
  * Created only after a two-factor step-up grant bound to exactly that tuple
  * was consumed, in the same transaction as its audit event. Bound to exactly
