@@ -258,13 +258,6 @@ fn select_bearer_token(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HelperConfig {
-    /// Whether the system-tray icon is drawn at all (#3202). Independent of the
-    /// menu-item toggles below: with this false the helper keeps serving chat,
-    /// remote-access consent and PAM dialogs, it just has no tray presence.
-    /// Defaults to true so a config written by an agent that predates the
-    /// setting — or a partially-written file — never blanks the tray.
-    #[serde(default = "default_true")]
-    show_tray_icon: bool,
     #[serde(default = "default_true")]
     show_open_portal: bool,
     #[serde(default = "default_true")]
@@ -288,7 +281,6 @@ fn default_true() -> bool {
 impl Default for HelperConfig {
     fn default() -> Self {
         Self {
-            show_tray_icon: true,
             show_open_portal: true,
             show_device_info: true,
             show_request_support: true,
@@ -657,6 +649,34 @@ async fn invalidate_http_state() {
 // ---------------------------------------------------------------------------
 // Window helpers (tray integration)
 // ---------------------------------------------------------------------------
+
+/// Whether the main window should be shown at launch (#8138). The default is
+/// hidden in the tray; only an explicit `--show` (a manual launch) opens it.
+/// The value after `--config` is a path and never counts as the flag.
+fn show_main_window_on_launch<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut iter = args.into_iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_ref() {
+            "--show" => return true,
+            "--config" => {
+                iter.next();
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Window-state flags restored on startup. VISIBLE is excluded so a window
+/// that was open when the helper last exited does not reappear on the next
+/// spawn (#8138); size, position and maximized state are still restored.
+fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
+    tauri_plugin_window_state::StateFlags::all() & !tauri_plugin_window_state::StateFlags::VISIBLE
+}
 
 /// Show the main window and bring it to focus.
 fn show_window(app: &tauri::AppHandle) {
@@ -1261,29 +1281,30 @@ fn uuid_v4() -> String {
 // Tray menu builder
 // ---------------------------------------------------------------------------
 
-/// Apply the policy's `show_tray_icon` value to the live tray icon (#3202).
-///
-/// Best-effort by design, and deliberately non-fatal:
-///
-/// - **Windows / macOS** — `set_visible` maps onto a native show/hide of the
-///   notification-area / status-bar item and is reliable.
-/// - **Linux** — the tray is a StatusNotifierItem exported through
-///   libappindicator, where hiding sets the item's status to `Passive` rather
-///   than withdrawing it. Most SNI hosts (KDE Plasma, the GNOME AppIndicator
-///   extension) stop drawing passive items, but a host is free to keep
-///   rendering them, so on some desktops the icon can persist. There is no
-///   stronger primitive available without dropping the tray registration
-///   entirely, which would make re-showing it on a later policy change
-///   impossible within the 60s reload loop.
-///
-/// The worst case is therefore a still-visible icon, never a broken helper:
-/// chat, remote-access consent and PAM dialogs do not go through the tray.
-fn apply_tray_visibility<R: tauri::Runtime>(tray: &tauri::tray::TrayIcon<R>, visible: bool) {
-    if let Err(e) = tray.set_visible(visible) {
-        log_helper_error(&format!(
-            "[helper] failed to set tray icon visibility to {}: {}",
-            visible, e
-        ));
+/// Tray menu item ids, in display order. The tray icon itself is always drawn
+/// (#8138) — it is the only way back to a window that starts hidden. There is
+/// deliberately no "Exit": the agent's session watcher respawns an exited
+/// helper within ~30s, so Exit only ever made the window come back.
+fn tray_menu_item_ids(config: &HelperConfig) -> Vec<&'static str> {
+    let mut ids = Vec::new();
+    if config.show_request_support {
+        ids.push("request_support");
+    }
+    if config.show_open_portal {
+        ids.push("open_portal");
+    }
+    if config.show_device_info {
+        ids.push("device_info");
+    }
+    ids
+}
+
+fn tray_menu_label(id: &str) -> &'static str {
+    match id {
+        "request_support" => "Request Support",
+        "open_portal" => "Open Breeze Portal",
+        "device_info" => "Device Info",
+        _ => "",
     }
 }
 
@@ -1292,27 +1313,10 @@ fn build_tray_menu(
     config: &HelperConfig,
 ) -> Result<tauri::menu::Menu<tauri::Wry>, tauri::Error> {
     let mut builder = MenuBuilder::new(app);
-
-    if config.show_request_support {
-        let item = MenuItemBuilder::with_id("request_support", "Request Support").build(app)?;
+    for id in tray_menu_item_ids(config) {
+        let item = MenuItemBuilder::with_id(id, tray_menu_label(id)).build(app)?;
         builder = builder.item(&item);
     }
-
-    if config.show_open_portal {
-        let item = MenuItemBuilder::with_id("open_portal", "Open Breeze Portal").build(app)?;
-        builder = builder.item(&item);
-    }
-
-    if config.show_device_info {
-        let item = MenuItemBuilder::with_id("device_info", "Device Info").build(app)?;
-        builder = builder.item(&item);
-    }
-
-    builder = builder.separator();
-
-    let exit_item = MenuItemBuilder::with_id("exit", "Exit").build(app)?;
-    builder = builder.item(&exit_item);
-
     builder.build()
 }
 
@@ -1335,7 +1339,11 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(window_state_flags())
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             read_agent_config,
             helper_fetch,
@@ -1368,7 +1376,12 @@ pub fn run() {
             .inner_size(920.0, 640.0)
             .min_inner_size(360.0, 520.0)
             .resizable(true)
-            .center();
+            .center()
+            // #8138: start in the tray. The agent spawns the helper on logon,
+            // agent/helper updates and watcher restarts; a visible-by-default
+            // window popped up on screen every time. The tray icon (left
+            // click / menu) is how the user opens it.
+            .visible(false);
 
             // macOS: native traffic light buttons with overlay titlebar, hidden native title
             #[cfg(target_os = "macos")]
@@ -1425,14 +1438,13 @@ pub fn run() {
 
             let handle = app.handle().clone();
 
+            if show_main_window_on_launch(std::env::args().skip(1)) {
+                show_window(&handle);
+            }
+
             // Load initial config and build tray context menu
             let config = load_helper_config();
             if let Some(tray) = app.tray_by_id("main") {
-                // Honor the policy's tray-icon visibility before anything else —
-                // Tauri auto-creates the icon from tauri.conf.json, so without
-                // this it is unconditionally visible (#3202).
-                apply_tray_visibility(&tray, config.show_tray_icon);
-
                 // Set tray tooltip with version
                 let _ = tray.set_tooltip(Some(&format!(
                     "Breeze Helper v{}",
@@ -1502,9 +1514,6 @@ pub fn run() {
                     }
                     show_window(&menu_handle);
                 }
-                "exit" => {
-                    app_handle.exit(0);
-                }
                 _ => {}
             });
 
@@ -1520,7 +1529,6 @@ pub fn run() {
                     if new_yaml != last_config {
                         eprintln!("[helper] Config changed, rebuilding tray menu");
                         if let Some(tray) = reload_handle.tray_by_id("main") {
-                            apply_tray_visibility(&tray, new_config.show_tray_icon);
                             match build_tray_menu(&reload_handle, &new_config) {
                                 Ok(menu) => {
                                     if let Err(e) = tray.set_menu(Some(menu)) {
@@ -1706,27 +1714,63 @@ mod tests {
         );
     }
 
-    // #3202: a config written by an agent that predates show_tray_icon must
-    // leave the icon VISIBLE. A bare `#[serde(default)]` would decode the
-    // missing key as false and blank the tray on every such device.
+    // #8138: the tray icon is no longer optional. A config written by an older
+    // agent still carries `show_tray_icon`; it must parse and be ignored.
     #[test]
-    fn helper_config_defaults_show_tray_icon_to_true_when_absent() {
-        let cfg: HelperConfig =
-            serde_yaml::from_str("show_open_portal: true\nshow_device_info: true\n")
-                .expect("parse legacy helper config");
-        assert!(cfg.show_tray_icon);
-        assert!(HelperConfig::default().show_tray_icon);
-    }
-
-    #[test]
-    fn helper_config_honors_explicit_show_tray_icon_false() {
+    fn helper_config_ignores_legacy_show_tray_icon_key() {
         let cfg: HelperConfig = serde_yaml::from_str("show_tray_icon: false\n")
-            .expect("parse helper config with tray icon disabled");
-        assert!(!cfg.show_tray_icon);
-        // The menu-item toggles keep their own defaults — hiding the icon does
-        // not implicitly disable the items behind it.
+            .expect("parse helper config written by a pre-#8138 agent");
         assert!(cfg.show_open_portal);
         assert!(cfg.show_request_support);
+    }
+
+    // #8138: the agent (re)spawns the helper on logon, updates and watcher
+    // restarts. Every one of those must start in the tray, not on screen.
+    #[test]
+    fn main_window_starts_hidden_unless_show_flag_given() {
+        assert!(!show_main_window_on_launch(Vec::<String>::new()));
+        assert!(!show_main_window_on_launch(vec![
+            "--config".to_string(),
+            "C:\\ProgramData\\Breeze\\sessions\\1\\helper_config.yaml".to_string(),
+        ]));
+        assert!(show_main_window_on_launch(vec!["--show".to_string()]));
+        assert!(show_main_window_on_launch(vec![
+            "--config".to_string(),
+            "/tmp/helper_config.yaml".to_string(),
+            "--show".to_string(),
+        ]));
+        // A path that merely contains the flag text is not the flag.
+        assert!(!show_main_window_on_launch(vec![
+            "--config".to_string(),
+            "--show".to_string(),
+        ]));
+    }
+
+    // #8138: window-state must not restore VISIBLE, or a window that was open
+    // when the helper last exited pops back up on the next spawn.
+    #[test]
+    fn window_state_restore_never_includes_visibility() {
+        let flags = window_state_flags();
+        assert!(!flags.contains(tauri_plugin_window_state::StateFlags::VISIBLE));
+        assert!(flags.contains(tauri_plugin_window_state::StateFlags::SIZE));
+        assert!(flags.contains(tauri_plugin_window_state::StateFlags::POSITION));
+    }
+
+    // #8138: the agent's watcher respawns an exited helper within ~30s, so a
+    // tray "Exit" item only made the window reappear. Assist is always running.
+    #[test]
+    fn tray_menu_has_no_exit_item() {
+        let all_on = HelperConfig::default();
+        let ids = tray_menu_item_ids(&all_on);
+        assert_eq!(ids, vec!["request_support", "open_portal", "device_info"]);
+
+        let all_off = HelperConfig {
+            show_open_portal: false,
+            show_device_info: false,
+            show_request_support: false,
+            ..HelperConfig::default()
+        };
+        assert!(tray_menu_item_ids(&all_off).is_empty());
     }
 
     #[test]
