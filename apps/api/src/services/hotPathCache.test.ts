@@ -250,4 +250,21 @@ describe('HotPathTtlCache deferred fills (#8053 W1a-1)', () => {
     expect(cache.peek('org-1')).toBeUndefined();
     expect(cache.peek('org-2')).toBeUndefined();
   });
+
+  it('flush: a throwing fill does not drop the fills queued after it', async () => {
+    dbState.inContext = true;
+    dbState.scope = 'system';
+    const bad = makeCache();
+    const good = makeCache();
+    const fills = new DeferredCacheFills();
+    await fills.through(bad, 'org-1', async () => ({ v: 'bad' }));
+    await fills.through(good, 'org-1', async () => ({ v: 'good' }));
+    vi.spyOn(bad, 'fillIfCurrent').mockImplementation(() => { throw new Error('fill boom'); });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    dbState.inContext = false;
+    expect(() => fills.flush()).not.toThrow();
+    expect(good.peek('org-1')).toEqual({ v: 'good' });
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
 });

@@ -182,6 +182,13 @@ export class DeferredCacheFills {
   }
 
   flush(): void {
-    for (const fill of this.pending.splice(0)) fill();
+    // Each fill is independent: one throwing must not drop the rest.
+    for (const fill of this.pending.splice(0)) {
+      try {
+        fill();
+      } catch (err) {
+        console.error('[hotPathCache] deferred cache fill failed; skipping it:', err);
+      }
+    }
   }
 }

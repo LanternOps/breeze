@@ -66,9 +66,21 @@ export function withHierarchy(hierarchy: DeviceHierarchy | null): DeviceHierarch
   return hierarchy ? { hierarchy } : undefined;
 }
 
-function parseGroupIds(raw: unknown): string[] {
+/**
+ * Throws on a malformed aggregate instead of coercing it: a silently dropped
+ * group id would silently remove device_group policy targets. The throw takes
+ * the heartbeat's load-failure path (no hierarchy; every resolver reads its own).
+ * Exported for tests only.
+ */
+export function parseGroupIds(raw: unknown): string[] {
   const value: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw;
-  return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
+  if (!Array.isArray(value)) {
+    throw new Error(`device hierarchy: group ids aggregate is not an array (got ${value === null ? 'null' : typeof value})`);
+  }
+  if (!value.every((id): id is string => typeof id === 'string')) {
+    throw new Error('device hierarchy: group ids aggregate contains a non-string element');
+  }
+  return value;
 }
 
 /**

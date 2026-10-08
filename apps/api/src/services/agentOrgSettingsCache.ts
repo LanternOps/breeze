@@ -68,7 +68,9 @@ export function invalidateAgentOrgSettingsCaches(orgId?: string): void {
  * invalidation only until W1b. On the writing instance:
  *   - policy probe (automation_policies rules, org-owned + the partner's
  *     partner-wide): POST /policies/:id/deactivate invalidates — the only
- *     production write that changes it. Partner-wide -> every org.
+ *     invalidating write today, because no route creates automation_policies
+ *     or updates their rules. Any future create/rules-update route must call
+ *     invalidateOrgPolicyProbeCache. Partner-wide -> every org.
  *   - helper legacy flag (organizations.settings.helper.enabled):
  *     PATCH /agents/org/:orgId/settings/helper, plus the org/partner settings
  *     routes via invalidateAgentOrgSettingsCaches. It already sits behind the

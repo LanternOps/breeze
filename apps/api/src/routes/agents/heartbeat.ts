@@ -1751,6 +1751,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       });
     } catch (err) {
       console.error(`[agents] failed to resolve upgrade targets for ${agentId}:`, err);
+      captureException(err);
     }
   }
 
@@ -2222,9 +2223,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // read in the org context by agent.deviceId — and every resolver re-checks
   // that id (hierarchyFor throws on a mismatch).
   //
-  // A failure here, or a device whose org changed since the org transaction,
-  // leaves `beatHierarchy` null: every resolver then loads its own, exactly
-  // as before this change.
+  // If the hierarchy load fails or the device's org changed, `beatHierarchy`
+  // stays null and every resolver loads its own, exactly as before this
+  // change; a later failure in the OneDrive build does not clear an
+  // already-loaded hierarchy.
   let beatHierarchy = null as DeviceHierarchy | null;
   let onedriveSettings: OnedriveConfigUpdate | null = null;
   try {
