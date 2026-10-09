@@ -202,6 +202,61 @@ describe('PatchComplianceView', () => {
       expect(downloadBlobMock).not.toHaveBeenCalled();
       expect(assign).not.toHaveBeenCalled();
     });
+
+    it('a superseded export whose download fails does not stop the newer export poll', async () => {
+      orgState.currentOrgId = 'org-1';
+      let queued = 0;
+      let failStaleDownload: (r: Response) => void = () => {};
+      const staleDownload = new Promise<Response>((resolve) => { failStaleDownload = resolve; });
+      fetchMock.mockImplementation(async (input: unknown) => {
+        const url = String(input);
+        if (url.startsWith('/patches/compliance/report?')) {
+          queued += 1;
+          return makeJsonResponse({ reportId: queued === 1 ? 'rep-1' : 'rep-2' });
+        }
+        if (url === '/patches/compliance/report/rep-1') {
+          return makeJsonResponse({ data: { id: 'rep-1', status: 'completed' } });
+        }
+        if (url === '/patches/compliance/report/rep-1/download') return staleDownload;
+        if (url === '/patches/compliance/report/rep-2') {
+          return makeJsonResponse({ data: { id: 'rep-2', status: 'pending' } });
+        }
+        return emptyComplianceImpl(() => null)(input);
+      });
+
+      render(<PatchComplianceView ringId={null} />);
+      const exportBtn = await screen.findByRole('button', { name: /Export/i });
+      fireEvent.click(exportBtn);
+      expect(await screen.findByText(/Compliance report rep-1 queued/i)).toBeTruthy();
+
+      // rep-1 completes; its download is now in flight (held open).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/patches/compliance/report/rep-1/download');
+      });
+
+      // The user exports again while rep-1's download is still pending.
+      fireEvent.click(exportBtn);
+      expect(await screen.findByText(/Compliance report rep-2 queued/i)).toBeTruthy();
+
+      // The stale rep-1 download now fails.
+      await act(async () => {
+        failStaleDownload(makeBlobResponse(false, 500));
+        await Promise.resolve();
+      });
+
+      const rep2Polls = () =>
+        fetchMock.mock.calls.filter((c) => String(c[0]) === '/patches/compliance/report/rep-2').length;
+      const before = rep2Polls();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(rep2Polls()).toBeGreaterThan(before);
+      expect(screen.queryByText(/Failed to download compliance report rep-1/i)).toBeNull();
+      expect(screen.getByText(/Compliance report rep-2 queued/i)).toBeTruthy();
+    });
   });
 
   it('resolves approved pending patch ids before queuing bulk install', async () => {

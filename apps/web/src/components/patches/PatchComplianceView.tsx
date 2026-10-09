@@ -100,6 +100,10 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
   const [statusFilter, setStatusFilter] = useState('all');
   const [exporting, setExporting] = useState(false);
   const reportPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Bumped each time an export starts polling. A poll whose generation is no
+  // longer current was superseded by a newer export and must not touch the
+  // newer poll's timer or banner (its download can still be in flight).
+  const reportPollGenerationRef = useRef(0);
 
   const fetchData = useCallback(async () => {
     try {
@@ -312,7 +316,13 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           clearInterval(reportPollTimerRef.current);
         }
 
-        reportPollTimerRef.current = setInterval(async () => {
+        const generation = ++reportPollGenerationRef.current;
+        const isCurrentPoll = () => reportPollGenerationRef.current === generation;
+        const stopPolling = () => {
+          clearInterval(timer);
+          if (reportPollTimerRef.current === timer) reportPollTimerRef.current = null;
+        };
+        const timer = setInterval(async () => {
           try {
             const statusResponse = await fetchWithAuth(`/patches/compliance/report/${reportId}`);
             if (!statusResponse.ok) {
@@ -321,10 +331,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
             const payload = await statusResponse.json();
             const report = payload?.data ?? payload;
             if (report?.status === 'completed') {
-              if (reportPollTimerRef.current) {
-                clearInterval(reportPollTimerRef.current);
-                reportPollTimerRef.current = null;
-              }
+              stopPolling();
               setBulkSuccess(t('patchComplianceView.export.ready', { reportId }));
               // Fetch through fetchWithAuth: the access token lives in memory
               // and is attached only by fetchWithAuth, so a plain navigation to
@@ -335,22 +342,19 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
               }
               downloadBlob(await downloadResponse.blob(), `patch-compliance-${reportId}.csv`);
             } else if (report?.status === 'failed') {
-              if (reportPollTimerRef.current) {
-                clearInterval(reportPollTimerRef.current);
-                reportPollTimerRef.current = null;
-              }
+              stopPolling();
               setBulkError(report?.errorMessage || t('patchComplianceView.export.failed', { reportId }));
               setBulkSuccess(undefined);
             }
           } catch (err) {
-            if (reportPollTimerRef.current) {
-              clearInterval(reportPollTimerRef.current);
-              reportPollTimerRef.current = null;
-            }
+            stopPolling();
+            // Superseded by a newer export: don't overwrite its banner.
+            if (!isCurrentPoll()) return;
             setBulkError(err instanceof Error ? err.message : t('patchComplianceView.export.checkFailed'));
             setBulkSuccess(undefined);
           }
         }, 3000);
+        reportPollTimerRef.current = timer;
       } else {
         setBulkError(t('patchComplianceView.export.noReportId'));
       }
