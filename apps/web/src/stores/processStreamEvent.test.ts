@@ -42,6 +42,16 @@ describe('W05 events', () => {
     processStreamEvent({ type: 'model_refusal', category: 'cyber', alternatives: [{ offeringId: 'x', displayName: 'X' }], docsUrl: 'https://docs' }, h.set, h.get, null);
     expect(h.state.refusalAlternatives).toEqual(['x']);
   });
+  it('#7785: a provider-failure error survives the turn_model and done that follow it', () => {
+    const h = harness();
+    const turnModel = { requestedModel: 'a', requestedDisplayName: 'A', servedModel: 'a', servedDisplayName: 'A', fallbackUsed: false, appliedOptions: {}, fastDowngraded: false };
+    const message = 'The AI model is overloaded right now. Try again shortly.';
+    processStreamEvent({ type: 'error', message }, h.set, h.get, null);
+    processStreamEvent({ type: 'turn_model', turnModel }, h.set, h.get, null);
+    processStreamEvent({ type: 'done', usage: { inputTokens: 0, outputTokens: 0, costCents: 0 } }, h.set, h.get, null);
+    expect(h.state.error).toBe(message);
+    expect(h.state.isStreaming).toBe(false);
+  });
   it('message_start clears stale refusal suggestions', () => {
     const h = harness();
     h.set(() => ({ refusalAlternatives: ['x'] }));

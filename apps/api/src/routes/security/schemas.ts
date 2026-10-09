@@ -32,9 +32,11 @@ export type StatusRow = {
   providerVersion: string | null;
   definitionsVersion: string | null;
   definitionsDate: Date | null;
-  realTimeProtection: boolean;
+  // null = unknown: the agent's collector failed (#8043) or the device has no
+  // security_status row yet. Never coerce to false — that reads as "off" (#8252).
+  realTimeProtection: boolean | null;
   threatCount: number;
-  firewallEnabled: boolean;
+  firewallEnabled: boolean | null;
   encryptionStatus: string;
   encryptionDetails: unknown;
   localAdminSummary: unknown;

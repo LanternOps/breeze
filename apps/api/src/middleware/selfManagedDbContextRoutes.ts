@@ -301,6 +301,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // refuses a held context; the handlers run their reads in short
   // withAuthDbAccessContext phases and call it with none held.
   { method: 'POST', pattern: /^\/api\/v1\/remediation-suggestions\/(?:generate|research)\/?$/ },
+  // #7943 — AI agents manual-run trigger. Admission
+  // (createAndEnqueueAgentRun) opens its own system transaction(s) and
+  // enqueues the BullMQ job after they commit; under the ambient request
+  // transaction each click pinned a second pooled connection for the whole
+  // admission (#2417 / #6671). The handler runs its agent + device
+  // authorization reads in one short withAuthDbAccessContext and admits with
+  // none held. GET on the same path (the run list) keeps the ambient tx.
+  { method: 'POST', pattern: /^\/api\/v1\/ai\/agents\/[^/]+\/runs\/?$/ },
   // #7347 — manual automation trigger (both spellings). The handler inserts the
   // automation_runs row and enqueues `execute-run`, which the automation worker
   // loads on its own connection. Under the ambient request transaction a fast

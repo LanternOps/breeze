@@ -369,6 +369,7 @@
       "crossesFunding": "Dieses Ausweichmodell wird über eine andere Quelle bezahlt. Erlauben Sie zuerst das Ausweichen zwischen Breeze-Guthaben und Ihrem eigenen API-Schlüssel.",
       "egress_blocked": "Diese Adresse ist nicht zulässig.",
       "invalid_url": "Diese URL ist ungültig.",
+      "endpoint_unreachable": "Der Host des Endpunkts konnte nicht aufgelöst oder erreicht werden. Prüfen Sie die Basis-URL.",
       "managed_by_env": "Diese Verbindung wird über die Umgebung der Instanz verwaltet und kann hier nicht geändert werden.",
       "connection_in_use": "Eine Funktion verwendet noch ein Modell dieser Verbindung. Wählen Sie zuerst einen anderen Standard.",
       "duplicate_model": "Diese Modell-ID ist bei dieser Verbindung bereits vorhanden.",

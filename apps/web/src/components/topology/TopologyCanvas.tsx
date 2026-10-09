@@ -203,7 +203,10 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
   }, [render]);
 
   useEffect(() => {
-    const renderer = cytoscape({ container: container.current, elements: [], minZoom: 0.1, maxZoom: 2.5, wheelSensitivity: 0.2, style: stylesheet(palette()) });
+    // `layout: null`: Cytoscape otherwise runs a grid layout at construction. It places nothing here (no elements
+    // yet; the render effect sets every position) and it throws from GridLayout.run when the container cannot be
+    // measured (NaN size, e.g. a container no longer in the document), which an org switch on a site link hit (#8113).
+    const renderer = cytoscape({ container: container.current, elements: [], layout: { name: 'null' }, minZoom: 0.1, maxZoom: 2.5, wheelSensitivity: 0.2, style: stylesheet(palette()) });
     cy.current = renderer;
     const themeObserver = new MutationObserver(() => renderer.style(stylesheet(palette())));
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });

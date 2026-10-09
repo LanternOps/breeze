@@ -292,7 +292,7 @@
     "n30Days": "30 Tagen",
     "n90Days": "90 Tagen",
     "n1Year": "1 Jahr",
-    "afterThisWindowTheDownloadedInstaller": "Nach diesem Zeitraum akzeptieren der heruntergeladene Installer und der freigegebene Link keine neuen Registrierungen mehr. Bereits registrierte Geräte bleiben verbunden.",
+    "afterThisWindowTheDownloadedInstaller": "Nach diesem Zeitraum akzeptieren der heruntergeladene Installer und der freigegebene Link keine neuen Registrierungen mehr. Ein heruntergeladener Installer funktioniert höchstens 30 Tage, und jeder Download über den freigegebenen Link enthält ein Token, das bis zu 30 Tage gültig ist. Bereits registrierte Geräte bleiben verbunden.",
     "generatingInstaller": "Installer wird generiert...",
     "downloaded": "Heruntergeladen",
     "generatingLink": "Link wird generiert...",

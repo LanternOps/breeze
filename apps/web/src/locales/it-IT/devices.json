@@ -292,7 +292,7 @@
     "n30Days": "30 giorni",
     "n90Days": "90 giorni",
     "n1Year": "1 anno",
-    "afterThisWindowTheDownloadedInstaller": "Trascorso questo periodo, il programma di installazione scaricato e il link condiviso non accetteranno più nuove registrazioni. I dispositivi già registrati resteranno connessi.",
+    "afterThisWindowTheDownloadedInstaller": "Trascorso questo periodo, il programma di installazione scaricato e il link condiviso non accetteranno più nuove registrazioni. Un programma di installazione scaricato funziona al massimo per 30 giorni e ogni download dal link condiviso contiene un token valido fino a 30 giorni. I dispositivi già registrati resteranno connessi.",
     "generatingInstaller": "Generazione del programma di installazione…",
     "downloaded": "Scaricato",
     "generatingLink": "Generazione del link…",
