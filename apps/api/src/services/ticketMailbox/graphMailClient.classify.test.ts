@@ -79,3 +79,23 @@ describe('Graph request deadline (#8299)', () => {
     expect(init.redirect).toBe('error');
   });
 });
+
+describe('listInboxDelta error to classifier contract (#8299)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  // The sweep only sees what listInboxDelta throws. If a real Graph error ever
+  // lost its HTTP status, a 502 would classify as 'fatal' and stop the mailbox.
+  it.each([
+    [502, 'transient'],
+    [503, 'transient'],
+    [408, 'transient'],
+    [401, 'reauth'],
+    [404, 'fatal'],
+  ] as const)('a real Graph %i response reaches the classifier as %s', async (status, kind) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":{"code":"UnknownError"}}', { status })));
+
+    const err = await listInboxDelta('tok', 'support@example.com', null).catch((e: unknown) => e);
+    expect((err as Error & { status?: number }).status).toBe(status);
+    expect(classifyGraphPollError(err)).toBe(kind);
+  });
+});
