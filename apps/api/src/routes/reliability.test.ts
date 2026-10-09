@@ -590,6 +590,7 @@ describe('baselines (#5876)', () => {
     source: 'manual', note: 'Fixed driver', beforeSnapshot: null, createdBy: null, createdAt: '2026-10-08T00:00:00.000Z',
     clearedAt: null, clearedBy: null, active: true };
   beforeEach(() => {
+    vi.clearAllMocks();
     permGate.denied.clear();
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(device as any);
     vi.mocked(getDeviceReliability).mockResolvedValue(null);
@@ -658,6 +659,38 @@ describe('baselines (#5876)', () => {
     vi.mocked(clearReliabilityBaseline).mockResolvedValueOnce('cleared');
     expect((await buildApp().request(`/reliability/${DEVICE_ID}/baselines/${dto.id}`, { method: 'DELETE' })).status).toBe(200);
     expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'device.reliability.baseline_cleared' }));
+  });
+
+  it('DELETE requires devices:write and never reaches the clear', async () => {
+    permGate.denied.add('devices:write');
+    const res = await buildApp().request(`/reliability/${DEVICE_ID}/baselines/${dto.id}`, { method: 'DELETE' });
+    expect(res.status).toBe(403);
+    expect(clearReliabilityBaseline).not.toHaveBeenCalled();
+  });
+
+  it('DELETE returns 403 on site access denial and 404 for an unknown device', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValueOnce(SITE_ACCESS_DENIED as any);
+    const denied = await buildApp().request(`/reliability/${DEVICE_ID}/baselines/${dto.id}`, { method: 'DELETE' });
+    expect(denied.status).toBe(403);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValueOnce(null);
+    const missing = await buildApp().request(`/reliability/${DEVICE_ID}/baselines/${dto.id}`, { method: 'DELETE' });
+    expect(missing.status).toBe(404);
+    expect(clearReliabilityBaseline).not.toHaveBeenCalled();
+  });
+
+  it('DELETE clears the addressed marker attributed to the caller', async () => {
+    vi.mocked(clearReliabilityBaseline).mockResolvedValueOnce('cleared');
+    const res = await buildApp().request(`/reliability/${DEVICE_ID}/baselines/${dto.id}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(clearReliabilityBaseline).toHaveBeenCalledTimes(1);
+    expect(clearReliabilityBaseline).toHaveBeenCalledWith({ deviceId: DEVICE_ID, baselineId: dto.id, clearedBy: 'user-1' });
+  });
+
+  it('GET requires devices:read and never lists', async () => {
+    permGate.denied.add('devices:read');
+    const res = await buildApp().request(`/reliability/${DEVICE_ID}/baselines`);
+    expect(res.status).toBe(403);
+    expect(listReliabilityBaselines).not.toHaveBeenCalled();
   });
 
   it('GET lists markers with devices:read', async () => {
