@@ -1,6 +1,6 @@
 module github.com/breeze-rmm/agent
 
-go 1.26.6
+go 1.26.9
 
 require (
 	cloud.google.com/go/storage v1.69.0
@@ -30,7 +30,7 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/y9o/go-openh264 v0.2.0
 	golang.org/x/mod v0.41.0
-	golang.org/x/net v0.59.0
+	golang.org/x/net v0.60.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/text v0.42.0
 	golang.org/x/time v0.16.0
