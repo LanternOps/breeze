@@ -129,7 +129,7 @@ describe('issueBootstrapTokenForKey', () => {
     expect(ttlMs).toBeGreaterThan(10080 * 60 * 1000 - 60_000);
   });
 
-  it('falls back to the 24h base TTL when ttlMinutes is omitted', async () => {
+  it('falls back to the 7-day base TTL when ttlMinutes is omitted', async () => {
     mockParent();
     mockInsert();
 
@@ -140,8 +140,32 @@ describe('issueBootstrapTokenForKey', () => {
     });
 
     const ttlMs = result.expiresAt.getTime() - Date.now();
-    expect(ttlMs).toBeGreaterThan(23 * 60 * 60 * 1000);
+    expect(ttlMs).toBeGreaterThan(10080 * 60 * 1000 - 60_000);
+    expect(ttlMs).toBeLessThanOrEqual(10080 * 60 * 1000);
   });
+
+  it.each([129600, 525600])(
+    'never issues a token living longer than 30 days, even when %i minutes is picked',
+    async (ttlMinutes) => {
+      mockParent();
+      const insertedValues = mockInsert();
+
+      const result = await issueBootstrapTokenForKey({
+        parentEnrollmentKeyId: 'parent-1',
+        createdByUserId: 'user-1',
+        usageKind: "capacity",
+        ttlMinutes,
+      });
+
+      const ttlMs = result.expiresAt.getTime() - Date.now();
+      expect(ttlMs).toBeLessThanOrEqual(43200 * 60 * 1000);
+      expect(ttlMs).toBeGreaterThan(43200 * 60 * 1000 - 60_000);
+      expect(insertedValues()!.expiresAt).toEqual(result.expiresAt);
+      // The partner cap is consulted with the already-bounded value.
+      expect(clampTtlToCapMock).toHaveBeenCalledWith('org-1', expect.any(Number));
+      expect(clampTtlToCapMock.mock.calls[0]![1]).toBeLessThanOrEqual(43200);
+    },
+  );
 
   // Fix round 4 (#2776). The round-3 code computed minutes from rawExpiresAt
   // and then ALWAYS rebuilt the Date from them, reading the clock a third

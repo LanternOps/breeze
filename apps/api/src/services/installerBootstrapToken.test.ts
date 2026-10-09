@@ -3,8 +3,11 @@ import { createHash, createHmac } from 'node:crypto';
 import {
   generateBootstrapToken,
   bootstrapTokenExpiresAt,
+  clampBootstrapTokenTtlMinutes,
   hashBootstrapToken,
   BOOTSTRAP_TOKEN_PATTERN,
+  DEFAULT_BOOTSTRAP_TOKEN_TTL_MINUTES,
+  MAX_BOOTSTRAP_TOKEN_TTL_MINUTES,
 } from './installerBootstrapToken';
 import { hashEnrollmentKey } from './enrollmentKeySecurity';
 
@@ -50,12 +53,18 @@ describe('BOOTSTRAP_TOKEN_PATTERN', () => {
 describe('bootstrapTokenExpiresAt', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
   });
 
   const minutesOut = (d: Date) => Math.round((d.getTime() - Date.now()) / 60_000);
 
-  it('defaults to 30 days when the env var is unset', () => {
-    expect(minutesOut(bootstrapTokenExpiresAt())).toBe(43200);
+  it('exports a 7-day default and a 30-day maximum', () => {
+    expect(DEFAULT_BOOTSTRAP_TOKEN_TTL_MINUTES).toBe(10080);
+    expect(MAX_BOOTSTRAP_TOKEN_TTL_MINUTES).toBe(43200);
+  });
+
+  it('defaults to 7 days when the env var is unset', () => {
+    expect(minutesOut(bootstrapTokenExpiresAt())).toBe(10080);
   });
 
   // #2776 regression. docker-compose threads this var in as
@@ -65,21 +74,77 @@ describe('bootstrapTokenExpiresAt', () => {
   // `Number(process.env.X ?? 24 * 60)` read gave 0 there (`??` doesn't fire
   // on '', Number('') === 0), so EVERY bootstrap token was minted already
   // expired and agent enrollment stopped working on upgrade.
-  it('falls back to 30 days when the env var is the EMPTY STRING, not 0 (#2776)', () => {
+  it('falls back to 7 days when the env var is the EMPTY STRING, not 0 (#2776)', () => {
     vi.stubEnv('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES', '');
     const expiresAt = bootstrapTokenExpiresAt();
-    expect(minutesOut(expiresAt)).toBe(43200);
+    expect(minutesOut(expiresAt)).toBe(10080);
     expect(expiresAt.getTime()).toBeGreaterThan(Date.now());
   });
 
-  it('falls back to 30 days for a non-numeric value', () => {
+  it('falls back to 7 days for a non-numeric value', () => {
     vi.stubEnv('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES', 'forever');
-    expect(minutesOut(bootstrapTokenExpiresAt())).toBe(43200);
+    expect(minutesOut(bootstrapTokenExpiresAt())).toBe(10080);
+  });
+
+  it.each(['0', '-60'])('falls back to 7 days for a non-positive value (%s), never minting an expired token', (raw) => {
+    vi.stubEnv('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES', raw);
+    const expiresAt = bootstrapTokenExpiresAt();
+    expect(minutesOut(expiresAt)).toBe(10080);
+    expect(expiresAt.getTime()).toBeGreaterThan(Date.now());
   });
 
   it('honours an explicit override', () => {
     vi.stubEnv('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES', '60');
     expect(minutesOut(bootstrapTokenExpiresAt())).toBe(60);
+  });
+
+  it('honours an override exactly at the 30-day maximum', () => {
+    vi.stubEnv('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES', '43200');
+    expect(minutesOut(bootstrapTokenExpiresAt())).toBe(43200);
+  });
+
+  it('clamps an override above 30 days to 30 days', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubEnv('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES', '525600');
+    expect(minutesOut(bootstrapTokenExpiresAt())).toBe(43200);
+  });
+
+  it('warns once, naming the env var, when an override is clamped', async () => {
+    vi.resetModules();
+    const fresh = await import('./installerBootstrapToken');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubEnv('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES', '129600');
+
+    fresh.bootstrapTokenExpiresAt();
+    fresh.bootstrapTokenExpiresAt();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES');
+  });
+
+  it('does not warn for an in-range override', async () => {
+    vi.resetModules();
+    const fresh = await import('./installerBootstrapToken');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubEnv('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES', '1440');
+
+    fresh.bootstrapTokenExpiresAt();
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('clampBootstrapTokenTtlMinutes', () => {
+  it('leaves values at or below 30 days unchanged', () => {
+    expect(clampBootstrapTokenTtlMinutes(1)).toBe(1);
+    expect(clampBootstrapTokenTtlMinutes(10080)).toBe(10080);
+    expect(clampBootstrapTokenTtlMinutes(43200)).toBe(43200);
+  });
+
+  it('clamps values above 30 days to 30 days', () => {
+    expect(clampBootstrapTokenTtlMinutes(43201)).toBe(43200);
+    expect(clampBootstrapTokenTtlMinutes(129600)).toBe(43200);
+    expect(clampBootstrapTokenTtlMinutes(525600)).toBe(43200);
   });
 });
 

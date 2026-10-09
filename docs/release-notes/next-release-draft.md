@@ -16,6 +16,19 @@ Last release: **v0.121.0** (2026-10-03).
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
+- **New installer bootstrap links expire after 7 days by default (previously
+  30), and never after more than 30 days.** When no expiry is chosen for an
+  installer (the bootstrap-token API called without `ttlMinutes`, or a download
+  from an installer link that has no expiry), the token embedded in the
+  downloaded installer now lives 7 days: `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES`
+  defaults to `10080`, and the bundled compose files pass `10080` when it is
+  unset (previously `1440`). The token is capped at 30 days (`43200`): a larger
+  env value is clamped, with a one-time warning in the API log, and so is a
+  longer expiry picked in the Add Device modal (90 days, 1 year), which still
+  sizes the installer link itself. The Add Device modal's preselected expiry
+  still follows the partner/organization enrollment default. Set
+  `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` to keep a different value.
+  Installers already downloaded keep their original expiry.
 - **Database migrations take brief exclusive locks on busy tables.** The
   `2026-12-13-110000/110100/110200` migrations redefine foreign keys on child
   tables of `users`, `devices`, `alerts`, `tickets`, `roles` and others. Each

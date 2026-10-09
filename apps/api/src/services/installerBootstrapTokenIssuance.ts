@@ -5,6 +5,7 @@ import { installerBootstrapTokens } from '../db/schema/installerBootstrapTokens'
 import {
   generateBootstrapToken,
   bootstrapTokenExpiresAt,
+  clampBootstrapTokenTtlMinutes,
   hashBootstrapToken,
 } from './installerBootstrapToken';
 import { clampTtlToCap } from './enrollmentDefaults';
@@ -43,11 +44,12 @@ export interface IssueBootstrapTokenInput {
   installerPlatform?: "windows" | "macos";
   /**
    * Absolute lifetime for this token, in minutes, as chosen by the admin in
-   * the Add Device modal. Omitted → the 24h base from bootstrapTokenExpiresAt().
-   * Bounds are enforced upstream by the route Zod schemas (1..525_600) AND,
-   * as of fix round 3 (#2776), by a partner-cap clamp inside this function
-   * (see below) — the schema bound alone says nothing about a partner's
-   * OWN configured ceiling, which can be lower.
+   * the Add Device modal. Omitted → the configured base from
+   * bootstrapTokenExpiresAt() (7 days by default). Bounds are enforced
+   * upstream by the route Zod schemas (1..525_600), and inside this function
+   * by the 30-day MAX_BOOTSTRAP_TOKEN_TTL_MINUTES clamp and, as of fix round 3
+   * (#2776), a partner-cap clamp (see below) — the schema bound alone says
+   * nothing about a partner's OWN configured ceiling, which can be lower.
    */
   ttlMinutes?: number;
 }
@@ -126,8 +128,14 @@ export async function issueBootstrapTokenForKey(
   //
   // Freshness at ISSUE time is still enforced by the caller via
   // parentKeyTooCloseToExpiry().
+  //
+  // Whatever the source of the lifetime — the admin's pick, an installer
+  // link's remaining life, or the configured base — the token never lives
+  // past MAX_BOOTSTRAP_TOKEN_TTL_MINUTES (30 days). The pickers and link
+  // expiries go up to a year because they also size enrollment keys and
+  // links; the token embedded in a downloaded installer is held shorter.
   const rawExpiresAt = input.ttlMinutes !== undefined
-    ? new Date(Date.now() + input.ttlMinutes * 60 * 1000)
+    ? new Date(Date.now() + clampBootstrapTokenTtlMinutes(input.ttlMinutes) * 60 * 1000)
     : bootstrapTokenExpiresAt();
 
   // Defensive partner-cap bound (fix round 3, #2776) — a CLAMP, not a
@@ -140,7 +148,7 @@ export async function issueBootstrapTokenForKey(
   // via assertTtlWithinCap, so for them this is a same-value no-op. The
   // THIRD caller — serveInstaller's UNAUTHENTICATED public-download / short-
   // link path — passes no ttlMinutes at all and had no cap consult anywhere
-  // in its call chain before this fix, so the 24h bootstrapTokenExpiresAt()
+  // in its call chain before this fix, so the bootstrapTokenExpiresAt()
   // base could exceed a partner's configured (lower) cap. Bounding it HERE,
   // once, means the contract stops depending on every future caller
   // remembering to check the cap itself.

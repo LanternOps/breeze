@@ -205,9 +205,10 @@ function parentKeyTooCloseToExpiry(expiresAt: Date | null): boolean {
  * So: the token inherits the link's remaining lifetime at download time —
  * never MORE than the link has left (floored to minutes, minimum 1 so the
  * `expires_at > created_at` CHECK on installer_bootstrap_tokens always
- * holds), and clamped to the partner's `maxEnrollmentLinkTtlMinutes` cap
- * inside issueBootstrapTokenForKey. A link with no expiry returns undefined
- * → the conservative 24h base, NOT an unbounded token.
+ * holds), and clamped to the 30-day token maximum and the partner's
+ * `maxEnrollmentLinkTtlMinutes` cap inside issueBootstrapTokenForKey. A link
+ * with no expiry returns undefined → the configured base TTL (7 days by
+ * default), NOT an unbounded token.
  */
 function installerLinkRemainingTtlMinutes(
   linkExpiresAt: Date | null,
@@ -2962,8 +2963,9 @@ async function serveInstaller(
         // the expiry when the link was generated, and the token minted into
         // the downloaded MSI must honor that choice, not silently fall back
         // to the 24h base (which killed every install after hour 24 of a
-        // 30-day link). undefined (no link expiry) keeps the 24h base;
-        // issueBootstrapTokenForKey clamps to the partner cap either way.
+        // 30-day link). undefined (no link expiry) keeps the configured base;
+        // issueBootstrapTokenForKey clamps to the 30-day token maximum and
+        // the partner cap either way.
         ttlMinutes: installerLinkRemainingTtlMinutes(linkExpiresAt),
         installerPlatform: "windows",
       });

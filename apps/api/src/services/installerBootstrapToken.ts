@@ -52,20 +52,70 @@ export function hashBootstrapToken(rawToken: string): string {
 }
 
 /**
- * Default TTL for a freshly-issued bootstrap token. Tunable via env
- * for testing; production default is 30 days — installers get staged
- * through deploy tooling (RMM/GPO/Intune) and are expected to keep
- * working well past the day they were downloaded. Keep in step with
- * PRODUCT_DEFAULT_ENROLLMENT_TTL_MINUTES (packages/shared).
+ * Lifetime of a freshly-issued bootstrap token, in minutes.
+ *
+ * Default 7 days: long enough for an installer to be staged through deploy
+ * tooling (RMM/GPO/Intune) and run on the target machines, short enough that
+ * a downloaded installer does not stay redeemable for a month after it is
+ * forgotten. Operators can raise it with INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES,
+ * up to the 30-day maximum; per-request lifetimes chosen in the Add Device
+ * modal or inherited from an installer link are held to the same maximum (see
+ * `issueBootstrapTokenForKey`), and the partner's
+ * `maxEnrollmentLinkTtlMinutes` cap can lower it further.
+ *
+ * This is the lifetime of the token embedded in an installer, not of
+ * enrollment keys — those follow PRODUCT_DEFAULT_ENROLLMENT_TTL_MINUTES
+ * (packages/shared) and ENROLLMENT_KEY_DEFAULT_TTL_MINUTES, independently.
+ *
+ * Changing these values never touches tokens already issued: each row keeps
+ * the `expires_at` it was minted with.
+ */
+export const DEFAULT_BOOTSTRAP_TOKEN_TTL_MINUTES = 60 * 24 * 7; // 10080
+export const MAX_BOOTSTRAP_TOKEN_TTL_MINUTES = 60 * 24 * 30; // 43200
+
+const BOOTSTRAP_TOKEN_TTL_ENV = 'INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES';
+
+/** Bound a requested token lifetime to MAX_BOOTSTRAP_TOKEN_TTL_MINUTES. */
+export function clampBootstrapTokenTtlMinutes(ttlMinutes: number): number {
+  return Math.min(ttlMinutes, MAX_BOOTSTRAP_TOKEN_TTL_MINUTES);
+}
+
+let warnedEnvTtlClamped = false;
+
+/**
+ * The configured base TTL: INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES, or the
+ * 7-day default, clamped to the 30-day maximum.
  *
  * Must go through `envInt`, never `Number(process.env.X ?? default)`:
- * compose threads this in as `${INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES:-}`,
+ * compose threaded this in as `${INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES:-}`,
  * which renders as the empty STRING when the operator hasn't set it. `??`
  * doesn't fire on `''` and `Number('') === 0`, so the naive form gave every
  * bootstrap token a 0-minute TTL — born expired — on any self-host that
- * pulled this release without adding the key to its .env (#2776).
+ * pulled this release without adding the key to its .env (#2776). For the
+ * same reason a zero or negative value falls back to the default rather than
+ * minting tokens that are already expired.
+ *
+ * Read per call (not cached at import) so the value follows the environment.
+ * The over-maximum warning is logged once per process.
  */
+function configuredBootstrapTokenTtlMinutes(): number {
+  const configured = envInt(BOOTSTRAP_TOKEN_TTL_ENV, DEFAULT_BOOTSTRAP_TOKEN_TTL_MINUTES);
+  if (configured <= 0) return DEFAULT_BOOTSTRAP_TOKEN_TTL_MINUTES;
+  if (configured > MAX_BOOTSTRAP_TOKEN_TTL_MINUTES) {
+    if (!warnedEnvTtlClamped) {
+      warnedEnvTtlClamped = true;
+      console.warn(
+        `[installer] ${BOOTSTRAP_TOKEN_TTL_ENV}=${configured} exceeds the maximum of ` +
+          `${MAX_BOOTSTRAP_TOKEN_TTL_MINUTES} minutes (30 days); installer bootstrap tokens ` +
+          `will be issued with a ${MAX_BOOTSTRAP_TOKEN_TTL_MINUTES}-minute lifetime.`,
+      );
+    }
+    return MAX_BOOTSTRAP_TOKEN_TTL_MINUTES;
+  }
+  return configured;
+}
+
+/** Expiry for a bootstrap token issued now with the configured base TTL. */
 export function bootstrapTokenExpiresAt(): Date {
-  const ttlMin = envInt('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES', 60 * 24 * 30);
-  return new Date(Date.now() + ttlMin * 60 * 1000);
+  return new Date(Date.now() + configuredBootstrapTokenTtlMinutes() * 60 * 1000);
 }
