@@ -1150,12 +1150,14 @@ describe('POST /agents/:id/heartbeat — signed identity sync (#8317)', () => {
   const SITE_B = '00000000-0000-4000-8000-0000000000b2';
   const ORG_A = '00000000-0000-4000-8000-0000000000a1';
   const SITE_A = '00000000-0000-4000-8000-0000000000a2';
+  const NONCE = '0123456789abcdef0123456789abcdef';
   const assertion = {
     v: 1,
     agentId: 'device-1',
     deviceId: DEVICE_ID,
     orgId: ORG_B,
     siteId: SITE_B,
+    nonce: NONCE,
     issuedAt: '2026-10-09T19:00:00Z',
     expiresAt: '2026-10-09T19:15:00Z',
     keyId: 'deploy-2026-10-09-abcdef01',
@@ -1168,8 +1170,9 @@ describe('POST /agents/:id/heartbeat — signed identity sync (#8317)', () => {
     getActiveTrustKeysetMock.mockResolvedValue([]);
     getActiveManifestKeyDelegationsMock.mockResolvedValue([]);
     signAgentIdentityAssertionMock.mockResolvedValue(assertion);
-    const { resetWatchdogRestartLogCacheForTests } = await import('./heartbeat');
+    const { resetWatchdogRestartLogCacheForTests, resetIdentitySyncLogStateForTests } = await import('./heartbeat');
     resetWatchdogRestartLogCacheForTests();
+    resetIdentitySyncLogStateForTests();
 
     // The row the agent authenticated as now lives in org B / site B.
     selectMock.mockReturnValueOnce(
@@ -1215,7 +1218,7 @@ describe('POST /agents/:id/heartbeat — signed identity sync (#8317)', () => {
   it('sends a signed assertion of the row identity to a capable agent that still holds the old org/site', async () => {
     const body = await beat({
       securityCapabilities: { identitySyncProtocolVersion: 1 },
-      reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A },
+      reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A, nonce: NONCE },
     });
 
     expect(signAgentIdentityAssertionMock).toHaveBeenCalledWith({
@@ -1223,25 +1226,24 @@ describe('POST /agents/:id/heartbeat — signed identity sync (#8317)', () => {
       deviceId: DEVICE_ID,
       orgId: ORG_B,
       siteId: SITE_B,
+      nonce: NONCE,
     });
     expect(body.identityAssertion).toEqual(assertion);
-    // Signed before the keyset is read, so a key created on demand is pinned
-    // by this same response; and only after the org transaction released.
-    expect(callOrder.indexOf('identity:signed')).toBeLessThan(callOrder.indexOf('trustKeyset:fetched'));
+    // Signed only after the org transaction released (#1105).
     expect(callOrder.indexOf('dbContext:released')).toBeLessThan(callOrder.indexOf('identity:signed'));
   });
 
   it('also syncs a site-only change', async () => {
     const body = await beat({
       securityCapabilities: { identitySyncProtocolVersion: 1 },
-      reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_A },
+      reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_A, nonce: NONCE },
     });
     expect(body.identityAssertion).toEqual(assertion);
   });
 
   it('sends nothing to an agent that does not declare the capability', async () => {
     const body = await beat({
-      reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A },
+      reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A, nonce: NONCE },
     });
     expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
     expect(body).not.toHaveProperty('identityAssertion');
@@ -1250,7 +1252,7 @@ describe('POST /agents/:id/heartbeat — signed identity sync (#8317)', () => {
   it('sends nothing when the reported identity already matches the row', async () => {
     const body = await beat({
       securityCapabilities: { identitySyncProtocolVersion: 1 },
-      reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_B },
+      reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_B, siteId: SITE_B, nonce: NONCE },
     });
     expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
     expect(body).not.toHaveProperty('identityAssertion');
@@ -1259,26 +1261,28 @@ describe('POST /agents/:id/heartbeat — signed identity sync (#8317)', () => {
   it('never re-points a different device id', async () => {
     const body = await beat({
       securityCapabilities: { identitySyncProtocolVersion: 1 },
-      reportedIdentity: { deviceId: '00000000-0000-4000-8000-000000000099', orgId: ORG_A, siteId: SITE_A },
+      reportedIdentity: { deviceId: '00000000-0000-4000-8000-000000000099', orgId: ORG_A, siteId: SITE_A, nonce: NONCE },
     });
     expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
     expect(body).not.toHaveProperty('identityAssertion');
   });
 
-  it('drops a malformed reported identity without failing the beat', async () => {
+  it('sends nothing, and keeps the beat healthy, when the deployment has no signing key', async () => {
+    signAgentIdentityAssertionMock.mockResolvedValueOnce(null);
     const body = await beat({
       securityCapabilities: { identitySyncProtocolVersion: 1 },
-      reportedIdentity: { deviceId: 'not-a-uuid', orgId: ORG_A, siteId: SITE_A },
+      reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A, nonce: NONCE },
     });
-    expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
+    expect(signAgentIdentityAssertionMock).toHaveBeenCalledTimes(1);
     expect(body).not.toHaveProperty('identityAssertion');
+    expect(body.manifestTrustKeys).toEqual([]);
   });
 
   it('keeps the heartbeat healthy when signing fails', async () => {
     signAgentIdentityAssertionMock.mockRejectedValueOnce(new Error('no signing key'));
     const body = await beat({
       securityCapabilities: { identitySyncProtocolVersion: 1 },
-      reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A },
+      reportedIdentity: { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A, nonce: NONCE },
     });
     expect(body).not.toHaveProperty('identityAssertion');
     expect(body.manifestTrustKeys).toEqual([]);

@@ -257,6 +257,37 @@ export function resetWatchdogRestartLogCacheForTests(): void {
   watchdogRestartLogCache.clear();
 }
 
+// #8317 — bounded logging for the identity sync. A deployment with no signing
+// key would otherwise warn once per moved agent per beat, and a signing fault
+// (an APP_ENCRYPTION_KEY that no longer decrypts the key, say) would log and
+// send a Sentry event once per moved agent per beat.
+const IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS = 10 * 60 * 1000;
+let identitySyncNoSigningKeyWarned = false;
+let identityAssertionFailureReportedAt = 0;
+
+function warnIdentitySyncWithoutSigningKey(): void {
+  if (identitySyncNoSigningKeyWarned) return;
+  identitySyncNoSigningKeyWarned = true;
+  console.warn(
+    '[heartbeat] A moved device needs a signed identity assertion (#8317), but this deployment has no '
+    + 'deployment signing key and the heartbeat does not create one. Moved agents keep their enrolled '
+    + 'org/site until a key exists.',
+  );
+}
+
+function reportIdentityAssertionFailure(agentId: string, err: unknown): void {
+  const now = Date.now();
+  if (now - identityAssertionFailureReportedAt < IDENTITY_ASSERTION_FAILURE_REPORT_INTERVAL_MS) return;
+  identityAssertionFailureReportedAt = now;
+  console.error(`[heartbeat] Failed to sign identity assertion for agentId=${agentId}:`, err);
+  captureException(err);
+}
+
+export function resetIdentitySyncLogStateForTests(): void {
+  identitySyncNoSigningKeyWarned = false;
+  identityAssertionFailureReportedAt = 0;
+}
+
 export function watchdogRestartLogCacheSizeForTests(): number {
   return watchdogRestartLogCache.size;
 }
@@ -2167,15 +2198,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // process per TTL, not once per agent per beat. See MANIFEST_TRUST_CACHE_TTL_MS.
   // #8317 — the device was moved to another org or site after enrollment; the
   // agent still holds the old pair in agent.yaml and rejects every payload
-  // bound to the new one. Send a signed assertion of the row's identity.
-  // Signed BEFORE the trust keyset is read: when no deployment key exists yet,
-  // ensureActiveSigningKey creates one and invalidates the keyset cache, so
-  // this same response pins the key that verifies the assertion. Outside the
-  // org transaction for the same reason as the keyset (#1105). Non-fatal: a
-  // missed assertion is retried on the next beat.
+  // bound to the new one. Send a signed assertion of the row's identity that
+  // echoes this beat's nonce. Outside the org transaction for the same reason
+  // as the keyset (#1105). Never creates the deployment key: without one, no
+  // assertion is sent. Non-fatal: a missed assertion is retried next beat.
   let identityAssertion: AgentIdentityAssertionV1 | undefined;
   if (
-    normalizeIdentitySyncProtocolVersion(data.securityCapabilities?.identitySyncProtocolVersion) === 1
+    data.reportedIdentity
+    && normalizeIdentitySyncProtocolVersion(data.securityCapabilities?.identitySyncProtocolVersion) === 1
     && agentIdentityNeedsSync(data.reportedIdentity, {
       id: scoped.deviceId,
       orgId: scoped.deviceOrgId,
@@ -2183,15 +2213,20 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     })
   ) {
     try {
-      identityAssertion = await signAgentIdentityAssertion({
+      const signed = await signAgentIdentityAssertion({
         agentId,
         deviceId: scoped.deviceId,
         orgId: scoped.deviceOrgId,
         siteId: scoped.deviceSiteId,
+        nonce: data.reportedIdentity.nonce,
       });
+      if (signed) {
+        identityAssertion = signed;
+      } else {
+        warnIdentitySyncWithoutSigningKey();
+      }
     } catch (err) {
-      console.error(`[heartbeat] Failed to sign identity assertion for agentId=${agentId}:`, err);
-      captureException(err);
+      reportIdentityAssertionFailure(agentId, err);
     }
   }
 

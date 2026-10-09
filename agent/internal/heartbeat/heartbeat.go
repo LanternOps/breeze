@@ -4758,7 +4758,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		// runtime check): the enforcement is compiled in, not a runtime
 		// toggle.
 		SecurityCapabilities: compiledSecurityCapabilities(),
-		ReportedIdentity:     h.reportedIdentity(),
+		ReportedIdentity:     h.reportIdentityForBeat(),
 	}
 	// Read from the installed helper at startup and again after any helper
 	// install (invalidateBackupVersionCache); unknown while the probe gets
@@ -5246,8 +5246,12 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	h.applyManifestKeyDelegations(response.ManifestKeyDelegations)
 
 	// #8317 — after the pin above, so a deployment key first delivered in this
-	// same response already verifies the assertion that relies on it.
-	h.applyIdentityAssertion(response.IdentityAssertion)
+	// same response already verifies the assertion that relies on it. While a
+	// restart for a new identity is pending, this process starts no binary
+	// swap or credential write: those would persist the old org/site again
+	// and race the restart. Commands still run; the restart waits for them.
+	// The server re-signals everything skipped here on the next beat.
+	identityRestarting := h.applyIdentityAssertion(response.IdentityAssertion)
 
 	rollbackActive := h.rollbackController != nil && h.rollbackController.Active()
 	// Process any commands via worker pool
@@ -5273,7 +5277,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	}
 
 	// Handle upgrade if requested and auto-update is enabled
-	if !rollbackActive && response.UpgradeTo != "" && response.UpgradeTo != h.agentVersion {
+	if !rollbackActive && !identityRestarting && response.UpgradeTo != "" && response.UpgradeTo != h.agentVersion {
 		if decision := mainAgentUpgradeDecision(response.UpgradeTo, h.agentVersion); !decision.Allowed {
 			// SECURITY: never auto-downgrade, and never accept a malformed or
 			// prerelease-mis-ordered target. A compromised/MITM'd control
@@ -5301,12 +5305,14 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	}
 
 	// Handle mTLS cert renewal if signaled by server
-	if response.RenewCert {
+	if response.RenewCert && !identityRestarting {
 		go h.handleCertRenewal()
 	}
 
 	// Handle proactive bearer-token rotation before the token becomes stale.
-	if response.RotateToken {
+	if identityRestarting {
+		// Re-signaled after the restart.
+	} else if response.RotateToken {
 		go h.handleTokenRotation()
 	} else if !response.ConfirmTokenRotation && h.maybeStartOwedHelperTokenRotation(time.Now()) {
 		// An older agent kept the helper token in agent.yaml. The startup scrub
@@ -5319,14 +5325,14 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// credentials it never promoted (we confirmed late, or crashed before
 	// confirming). Finish phase two so the rotation stops depending on the
 	// pending window staying open.
-	if response.ConfirmTokenRotation {
+	if response.ConfirmTokenRotation && !identityRestarting {
 		go h.reconcilePendingRotation()
 	}
 
 	// Handle helper upgrade if requested, or its withdrawal (#6927).
 	// Nil-checked here, not in applyHelperOffer: a nil *helper.Manager in the
 	// interface would not compare equal to nil there.
-	if !rollbackActive && h.helperMgr != nil {
+	if !rollbackActive && !identityRestarting && h.helperMgr != nil {
 		applyHelperOffer(h.helperMgr, response.HelperUpgradeTo)
 	}
 
@@ -5341,7 +5347,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// WatchdogUpgradeTo), so a HEALTHY watchdog would never self-heal. The
 	// reliably-updating agent drives it instead, recovering already-stuck fleets
 	// whose watchdog is frozen at install-time version.
-	if !rollbackActive && response.WatchdogUpgradeTo != "" {
+	if !rollbackActive && !identityRestarting && response.WatchdogUpgradeTo != "" {
 		go h.handleWatchdogUpgrade(response.WatchdogUpgradeTo)
 	}
 

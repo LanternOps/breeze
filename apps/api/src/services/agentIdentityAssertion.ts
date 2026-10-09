@@ -9,20 +9,25 @@
  * those handlers rejected every payload for the new org/site as
  * `wrong_identity` until the agent was re-enrolled.
  *
- * The heartbeat now carries the identity the agent holds. When it disagrees
- * with the row, the response carries an assertion of the row's org and site,
- * signed with the deployment signing key — the same key, pin set and line
- * format that already sign diagnostic authorizations, under its own domain.
- * The agent accepts it only for its own agentId + deviceId (a device id can
- * never change through this path), persists the new org/site and restarts so
- * every component reloads the identity. Identity is therefore never taken
- * from an unsigned response field.
+ * Every heartbeat now carries the identity the agent holds and a fresh nonce.
+ * When the identity disagrees with the row, the response carries an assertion
+ * of the row's org and site that echoes the nonce, signed with the deployment
+ * signing key — the same key, pin set and line format that already sign
+ * diagnostic authorizations, under its own domain. The agent accepts it only
+ * as the answer to its own latest beat and only for its own agentId +
+ * deviceId (a device id can never change through this path), persists the
+ * new org/site and restarts so every component reloads the identity.
+ * Identity is therefore never taken from an unsigned response field, and an
+ * assertion cannot be replayed to a later beat.
+ *
+ * This never creates the deployment key (see getActiveSigningKeyId): on a
+ * deployment that has none, no assertion is sent.
  */
-import { ensureActiveSigningKey, signBytesWithActiveKey } from './manifestSigning';
+import { getActiveSigningKeyId, signBytesWithActiveKey } from './manifestSigning';
 
 export const AGENT_IDENTITY_ASSERTION_DOMAIN = 'breeze-agent-identity-v1';
-// Long enough to survive a slow beat and modest agent clock skew; short enough
-// that a captured assertion cannot be replayed long after a later move.
+// Informational: the nonce, not the clock, makes an assertion fresh. The agent
+// only checks that the stated window is well formed and at most an hour.
 export const AGENT_IDENTITY_ASSERTION_LIFETIME_MS = 15 * 60 * 1000;
 
 export type AgentIdentityAssertionV1 = {
@@ -31,6 +36,7 @@ export type AgentIdentityAssertionV1 = {
   deviceId: string;
   orgId: string;
   siteId: string;
+  nonce: string;
   issuedAt: string;
   expiresAt: string;
   keyId: string;
@@ -43,6 +49,7 @@ export type ReportedAgentIdentity = {
   deviceId: string;
   orgId: string;
   siteId: string;
+  nonce: string;
 };
 
 /**
@@ -81,6 +88,7 @@ export function canonicalAgentIdentityAssertionBytes(a: UnsignedAgentIdentityAss
     a.deviceId,
     a.orgId,
     a.siteId,
+    a.nonce,
     a.issuedAt,
     a.expiresAt,
     a.keyId,
@@ -93,27 +101,34 @@ export function canonicalAgentIdentityAssertionBytes(a: UnsignedAgentIdentityAss
   return Buffer.from(lines.join('\n'), 'utf8');
 }
 
+/**
+ * Sign the row's identity as the answer to one heartbeat. Returns null when
+ * the deployment has no signing key yet; this path never creates one.
+ */
 export async function signAgentIdentityAssertion(input: {
   agentId: string;
   deviceId: string;
   orgId: string;
   siteId: string;
+  nonce: string;
   now?: Date;
-}): Promise<AgentIdentityAssertionV1> {
+}): Promise<AgentIdentityAssertionV1 | null> {
+  const keyId = await getActiveSigningKeyId();
+  if (!keyId) return null;
   const now = input.now ?? new Date();
-  const active = await ensureActiveSigningKey();
   const unsigned: UnsignedAgentIdentityAssertionV1 = {
     v: 1,
     agentId: input.agentId,
     deviceId: input.deviceId,
     orgId: input.orgId,
     siteId: input.siteId,
+    nonce: input.nonce,
     issuedAt: secondPrecision(now),
     expiresAt: secondPrecision(new Date(now.getTime() + AGENT_IDENTITY_ASSERTION_LIFETIME_MS)),
-    keyId: active.keyId,
+    keyId,
   };
   const signed = await signBytesWithActiveKey(canonicalAgentIdentityAssertionBytes(unsigned));
-  if (signed.keyId !== active.keyId) {
+  if (signed.keyId !== keyId) {
     throw new Error('active signing key rotated while signing an agent identity assertion');
   }
   return { ...unsigned, signature: signed.signature };

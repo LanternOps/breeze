@@ -395,13 +395,15 @@ export const heartbeatSchema = z.object({
       ]).refine((value) => value.length <= 64).optional(),
     }).optional().catch(undefined),
   }).optional().catch(undefined),
-  // #8317 — the identity the agent holds in agent.yaml. Compared with the row
-  // so a moved device can be sent a signed identity assertion. Informational:
-  // a malformed value drops the field and the beat proceeds without one.
+  // #8317 — the identity the agent holds in agent.yaml, and a per-beat nonce
+  // the signed identity assertion must echo. Compared with the row so a moved
+  // device can be sent one. Informational: a malformed value drops the field
+  // and the beat proceeds without an assertion.
   reportedIdentity: z.object({
     deviceId: z.string().uuid(),
     orgId: z.string().uuid(),
     siteId: z.string().uuid(),
+    nonce: z.string().regex(/^[0-9a-f]{32}$/),
   }).optional().catch(undefined),
   // Signed rollback progress is informational and restart-resend safe. A
   // malformed optional observation must never take the ordinary heartbeat
