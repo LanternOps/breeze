@@ -12,6 +12,7 @@ import {
   type ReliabilityTopIssue,
 } from '../db/schema';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
+import { activeBaselineIdSql, getActiveReliabilityBaseline } from './reliabilityBaselineQueries';
 import {
   BASELINE_PROVISIONAL_REPORTED_DAYS,
   type ActiveReliabilityBaseline,
@@ -1698,17 +1699,34 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
   // duplicate event re-reported in a row past the cursor would be counted again
   // on top of the cached count. Rebuilding from raw rows is cheap (history is a
   // bounded 90-day window) and is exactly what the old cold path already did.
+  const windowEnd = new Date();
+  const baseline = await getActiveReliabilityBaseline(device.id);
   const { values } = await scoreDeviceReliabilityAsOf(
     { id: device.id, deviceRole: device.deviceRole, enrolledAt: device.enrolledAt ?? null },
-    new Date(),
-    null,
+    windowEnd,
+    baseline,
   );
+  await persistDeviceReliability(device, values, baseline?.id ?? null);
+  return true;
+}
+
+export async function persistDeviceReliability(
+  device: { id: string; orgId: string },
+  values: ReliabilityScoreValues,
+  baselineIdUsed: string | null,
+): Promise<void> {
+  // #5876 compare-and-set: only overwrite when the marker this run scored against
+  // is still the active one. A worker run that loaded the old marker and finishes
+  // after a marker change commits is skipped; the marker route's own recompute
+  // wins. INSERT (first-ever row) is unguarded by design — see spec "Concurrency".
   await db
     .insert(deviceReliability)
     .values({ deviceId: device.id, orgId: device.orgId, ...values })
-    .onConflictDoUpdate({ target: deviceReliability.deviceId, set: { orgId: device.orgId, ...values } });
-
-  return true;
+    .onConflictDoUpdate({
+      target: deviceReliability.deviceId,
+      set: { orgId: device.orgId, ...values },
+      setWhere: sql`${activeBaselineIdSql(device.id)} IS NOT DISTINCT FROM ${baselineIdUsed}::uuid`,
+    });
 }
 
 async function runConcurrently<T>(
