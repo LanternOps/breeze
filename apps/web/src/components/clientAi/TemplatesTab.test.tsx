@@ -4,7 +4,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import TemplatesTab from './TemplatesTab';
 import { fetchWithAuth } from '../../stores/auth';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+const grants = vi.hoisted(() => ({
+  current: [] as { resource: string; action: string }[],
+}));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  useAuthStore: (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
+    selector({ user: { permissions: grants.current } }),
+}));
+
+const READ_GRANT = { resource: 'client_ai_templates', action: 'read' };
+const WRITE_GRANT = { resource: 'client_ai_templates', action: 'write' };
 
 const showToast = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
@@ -74,6 +84,7 @@ function mockApi() {
 describe('TemplatesTab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    grants.current = [READ_GRANT, WRITE_GRANT];
   });
 
   it('renders scope badges: Partner-wide for partner-owned, org name for org-scoped', async () => {
@@ -192,5 +203,52 @@ describe('TemplatesTab', () => {
     );
     const delCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'DELETE');
     expect(String(delCall![0])).toBe(`/client-ai/admin/templates/${TEMPLATE_ID}`);
+  });
+
+  it('hides create, edit and delete for a read-only holder and skips the org lookup', async () => {
+    grants.current = [READ_GRANT];
+    mockApi();
+    render(<TemplatesTab />);
+    await waitFor(() =>
+      expect(screen.getByTestId(`ai-office-template-row-${TEMPLATE_ID}`)).toBeInTheDocument()
+    );
+    expect(screen.queryByTestId('ai-office-template-create')).toBeNull();
+    expect(screen.queryByTestId(`ai-office-template-edit-${TEMPLATE_ID}`)).toBeNull();
+    expect(screen.queryByTestId(`ai-office-template-delete-${TEMPLATE_ID}`)).toBeNull();
+    expect(fetchMock.mock.calls.some(([url]) => String(url) === '/client-ai/admin/orgs')).toBe(false);
+  });
+
+  it('shows the write controls to the wildcard grant', async () => {
+    grants.current = [{ resource: '*', action: '*' }];
+    mockApi();
+    render(<TemplatesTab />);
+    await waitFor(() => expect(screen.getByTestId('ai-office-template-create')).toBeInTheDocument());
+    expect(screen.getByTestId(`ai-office-template-edit-${TEMPLATE_ID}`)).toBeInTheDocument();
+  });
+
+  it('surfaces a 403 MFA_REQUIRED on save through the shared MFA message and keeps the dialog open', async () => {
+    mockApi();
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/client-ai/admin/templates' && init?.method === 'POST') {
+        return makeJsonResponse({ error: 'MFA required', code: 'MFA_REQUIRED' }, false, 403);
+      }
+      return base(input, init);
+    });
+    render(<TemplatesTab />);
+    await waitFor(() => expect(screen.getByTestId('ai-office-template-create')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('ai-office-template-create'));
+    fireEvent.change(screen.getByTestId('ai-office-template-name'), { target: { value: 'New' } });
+    fireEvent.change(screen.getByTestId('ai-office-template-body'), { target: { value: 'Body' } });
+    fireEvent.click(screen.getByTestId('ai-office-template-save'));
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'Multi-factor authentication is required' })
+      )
+    );
+    expect(showToast).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('ai-office-template-save')).toBeInTheDocument();
   });
 });

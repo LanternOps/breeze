@@ -31,6 +31,7 @@ vi.mock('../../middleware/auth', () => ({
     await next();
   }),
   requirePermission: () => async (_c: any, next: any) => next(),
+  requireMfa: () => async (_c: any, next: any) => next(),
 }));
 
 vi.mock('../../db', () => ({
@@ -61,8 +62,8 @@ vi.mock('../../db/schema/orgs', () => ({ organizations: { id: 'id', name: 'name'
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/permissions', () => ({
   PERMISSIONS: {
-    ORGS_READ: { resource: 'organizations', action: 'read' },
-    ORGS_WRITE: { resource: 'organizations', action: 'write' },
+    CLIENT_AI_TEMPLATES_READ: { resource: 'client_ai_templates', action: 'read' },
+    CLIENT_AI_TEMPLATES_WRITE: { resource: 'client_ai_templates', action: 'write' },
   },
 }));
 

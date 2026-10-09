@@ -84,3 +84,15 @@ describe('quotes:accept permission (accept-on-behalf, 2026-09-21 spec §7)', () 
     expect(PERMISSION_GRANTS.QUOTES_ACCEPT).not.toEqual(PERMISSION_GRANTS.QUOTES_SEND);
   });
 });
+
+describe('AI for Office prompt-template permissions', () => {
+  it('declares read and write on the client_ai_templates resource', () => {
+    expect(PERMISSION_GRANTS.CLIENT_AI_TEMPLATES_READ).toEqual({ resource: 'client_ai_templates', action: 'read' });
+    expect(PERMISSION_GRANTS.CLIENT_AI_TEMPLATES_WRITE).toEqual({ resource: 'client_ai_templates', action: 'write' });
+  });
+
+  it('is distinct from the generic organizations grants', () => {
+    expect(PERMISSION_GRANTS.CLIENT_AI_TEMPLATES_READ).not.toEqual(PERMISSION_GRANTS.ORGS_READ);
+    expect(PERMISSION_GRANTS.CLIENT_AI_TEMPLATES_WRITE).not.toEqual(PERMISSION_GRANTS.ORGS_WRITE);
+  });
+});

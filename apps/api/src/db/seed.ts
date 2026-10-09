@@ -282,6 +282,12 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'external_tools', action: 'write',
     description: 'Call Tier 2/3 (mutating) external tools from AI' },
 
+  // AI for Office prompt-template manager
+  { resource: 'client_ai_templates', action: 'read',
+    description: 'View AI for Office prompt templates' },
+  { resource: 'client_ai_templates', action: 'write',
+    description: 'Create, edit, and delete AI for Office prompt templates' },
+
   // Action intents / durable approvals
   { resource: 'approvals', action: 'decide',
     description: 'Decide (approve/deny) pending action-intent approvals' },
@@ -353,6 +359,8 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'sites:read',
       'topology:read',
       'organizations:read',
+      // AI for Office prompt templates: view only; authoring is an admin action.
+      'client_ai_templates:read',
       // AI chat (#6396): same reasoning as Org Technician.
       'ai_sessions:use',
       // Tier 1 (read-only) external tools only (#5216).
@@ -374,7 +382,8 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'ticket_mailbox:read',
       'reports:read',
       'sites:read',
-      'organizations:read'
+      'organizations:read',
+      'client_ai_templates:read'
     ]
   },
   {
@@ -458,7 +467,12 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'workspace:read', 'workspace:write', 'workspace:credentials', 'workspace:execute',
       'connected_apps:read', 'connected_apps:manage',
       // Org document library (service deliverables W03).
-      'documents:read', 'documents:write'
+      'documents:read', 'documents:write',
+      // AI for Office prompt templates. A PARTNER-WIDE template additionally
+      // requires partner scope with org_access='all'
+      // (canManagePartnerWidePolicies), so this grant reaches the caller's own
+      // org's templates only.
+      'client_ai_templates:read', 'client_ai_templates:write'
     ]
   },
   {
@@ -521,6 +535,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
     permissions: [
       'devices:read',
       'organizations:read',
+      'client_ai_templates:read',
       'vulnerabilities:accept_risk'
     ]
   }

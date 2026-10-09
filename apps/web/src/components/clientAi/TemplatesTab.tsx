@@ -5,6 +5,7 @@ import { Dialog } from "../shared/Dialog";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
 import { runAction, handleActionError } from "@/lib/runAction";
 import { navigateTo } from "@/lib/navigation";
+import { usePermissions } from "@/lib/permissions";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 
@@ -14,6 +15,11 @@ import "@/lib/i18n";
  * orgId NULL = partner-wide ("All orgs") row, else org-scoped. Scope is
  * immutable after create (templateUpdateSchema has no orgId — Plan-4 Task 5;
  * move a template by delete + recreate).
+ *
+ * Create/edit/delete controls render only for holders of
+ * client_ai_templates:write. The API additionally requires an MFA-assured
+ * session for those writes; a 403 MFA_REQUIRED surfaces through runAction's
+ * shared errors:MFA_REQUIRED toast.
  */
 
 /** The four Office hosts a template can target. Empty/all ⇒ shown everywhere. */
@@ -100,6 +106,8 @@ function ScopeBadge({ row }: { row: TemplateRow }) {
 
 export default function TemplatesTab() {
   const { t } = useTranslation("ai");
+  const { can } = usePermissions();
+  const canWrite = can("client_ai_templates", "write");
   const [rows, setRows] = useState<TemplateRow[]>([]);
   const [orgs, setOrgs] = useState<{ orgId: string; orgName: string }[]>([]);
   const [loading, setLoading] = useState(true);
@@ -130,8 +138,9 @@ export default function TemplatesTab() {
     void load();
   }, [load]);
 
-  // Org options for the create-dialog scope selector.
+  // Org options for the create-dialog scope selector (writers only).
   useEffect(() => {
+    if (!canWrite) return;
     void fetchWithAuth("/client-ai/admin/orgs")
       .then((r) =>
         r.ok
@@ -145,7 +154,7 @@ export default function TemplatesTab() {
           setOrgs(b.data.map(({ orgId, orgName }) => ({ orgId, orgName })));
       })
       .catch(() => {});
-  }, []);
+  }, [canWrite]);
 
   const confirmDelete = async () => {
     if (!deleting || deleteBusy) return;
@@ -210,14 +219,16 @@ export default function TemplatesTab() {
               {t("templatesTab.description")}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setEditor({ mode: "create" })}
-            className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground"
-            data-testid="ai-office-template-create"
-          >
-            <Plus className="h-4 w-4" /> {t("templatesTab.newTemplate")}
-          </button>
+          {canWrite && (
+            <button
+              type="button"
+              onClick={() => setEditor({ mode: "create" })}
+              className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground"
+              data-testid="ai-office-template-create"
+            >
+              <Plus className="h-4 w-4" /> {t("templatesTab.newTemplate")}
+            </button>
+          )}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -232,9 +243,11 @@ export default function TemplatesTab() {
                 <th className="px-4 py-2">
                   {t("templatesTab.columns.updated")}
                 </th>
-                <th className="px-4 py-2 text-right">
-                  {t("common:labels.actions")}
-                </th>
+                {canWrite && (
+                  <th className="px-4 py-2 text-right">
+                    {t("common:labels.actions")}
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -264,36 +277,38 @@ export default function TemplatesTab() {
                   <td className="px-4 py-2.5 text-xs text-muted-foreground">
                     {new Date(row.updatedAt).toLocaleDateString()}
                   </td>
-                  <td className="px-4 py-2.5">
-                    <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setEditor({ mode: "edit", template: row })
-                        }
-                        className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
-                        data-testid={`ai-office-template-edit-${row.id}`}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />{" "}
-                        {t("common:actions.edit")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDeleting(row)}
-                        className="inline-flex items-center gap-1 rounded-md border border-destructive/40 px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
-                        data-testid={`ai-office-template-delete-${row.id}`}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />{" "}
-                        {t("common:actions.delete")}
-                      </button>
-                    </div>
-                  </td>
+                  {canWrite && (
+                    <td className="px-4 py-2.5">
+                      <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEditor({ mode: "edit", template: row })
+                          }
+                          className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
+                          data-testid={`ai-office-template-edit-${row.id}`}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />{" "}
+                          {t("common:actions.edit")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDeleting(row)}
+                          className="inline-flex items-center gap-1 rounded-md border border-destructive/40 px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+                          data-testid={`ai-office-template-delete-${row.id}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />{" "}
+                          {t("common:actions.delete")}
+                        </button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))}
               {rows.length === 0 && (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={canWrite ? 6 : 5}
                     className="px-4 py-8 text-center text-muted-foreground"
                   >
                     {t("templatesTab.empty")}
@@ -305,7 +320,7 @@ export default function TemplatesTab() {
         </div>
       </div>
 
-      {editor.mode !== "closed" && (
+      {canWrite && editor.mode !== "closed" && (
         <TemplateEditorDialog
           state={editor}
           orgs={orgs}
@@ -318,7 +333,7 @@ export default function TemplatesTab() {
       )}
 
       <ConfirmDialog
-        open={deleting !== null}
+        open={canWrite && deleting !== null}
         onClose={() => setDeleting(null)}
         onConfirm={() => void confirmDelete()}
         title={t("templatesTab.deleteDialog.title")}

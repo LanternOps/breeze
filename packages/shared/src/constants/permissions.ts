@@ -192,6 +192,13 @@ export const PERMISSION_GRANTS = {
   // organizations:write.
   AI_SESSIONS_USE: { resource: 'ai_sessions', action: 'use' },
 
+  // AI for Office prompt templates (the admin template manager). Dedicated so
+  // that viewing or authoring the prompts offered to every add-in user does not
+  // ride on the generic organizations grants. Writes additionally require an
+  // MFA-assured session at the route.
+  CLIENT_AI_TEMPLATES_READ: { resource: 'client_ai_templates', action: 'read' },
+  CLIENT_AI_TEMPLATES_WRITE: { resource: 'client_ai_templates', action: 'write' },
+
   // AI agents (#3821) — authoring an agent policy is what will eventually
   // authorize autonomous action on customer machines, so it gets its own
   // capability rather than riding on organizations:write. Sharing that grant
