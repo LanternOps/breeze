@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq, and, ilike, desc, sql } from 'drizzle-orm';
 import { db } from '../../db';
+import { sqlUuidArray } from '../../db/sqlValues';
 import {
   c2cBackupItems,
   c2cBackupJobs,
@@ -104,7 +105,9 @@ c2cItemsRoutes.post(
       .where(
         and(
           eq(c2cBackupItems.orgId, orgId),
-          sql`${c2cBackupItems.id} = ANY(${payload.itemIds}::uuid[])`
+          // sqlUuidArray, not `${payload.itemIds}::uuid[]`: Drizzle spreads a JS
+          // array into `($1, $2)::uuid[]`, which Postgres rejects (#8297).
+          sql`${c2cBackupItems.id} = ANY(${sqlUuidArray(payload.itemIds)})`
         )
       )
       .limit(payload.itemIds.length);
