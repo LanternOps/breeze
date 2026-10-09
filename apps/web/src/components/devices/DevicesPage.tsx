@@ -809,6 +809,7 @@ export default function DevicesPage() {
           // and sorts those rows last. Trend is validated against the known
           // enum rather than blind-cast, so an unexpected API value falls back
           // to null (no glyph) instead of leaking through the type.
+          reliabilityProvisional: d.reliabilityProvisional === true,
           reliabilityScore: typeof d.reliabilityScore === 'number' ? d.reliabilityScore : null,
           reliabilityTrend:
             d.reliabilityTrend === 'improving' ||

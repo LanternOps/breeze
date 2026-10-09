@@ -729,6 +729,19 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     expect(unscored.textContent).toContain('—');
   });
 
+  it('renders a provisional score muted with a provisional title, not the success band (#5876)', () => {
+    seedColumns('reliability');
+    const id = 'c7c7c7c7-0000-0000-0000-000000000001';
+    render(<DeviceList devices={[{ ...baseDevice, id, hostname: 'host-prov', reliabilityScore: 95, reliabilityProvisional: true }]} />);
+
+    const cell = screen.getByTestId(`device-${id}-reliability`);
+    const badge = cell.querySelector('span') as HTMLElement;
+    expect(badge.getAttribute('title')).toBe('Reliability 95/100 · provisional (recent fix or reimage)');
+    expect(badge.className).toContain('bg-muted');
+    expect(badge.className).toContain('text-muted-foreground');
+    expect(badge.className).not.toContain('success');
+  });
+
   it('does not render a trend glyph for a scored device with no trend (#1720)', () => {
     seedColumns('reliability');
     const device: Device = {

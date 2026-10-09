@@ -16,6 +16,7 @@ import {
   ChevronRight,
   Loader2,
   Sparkles,
+  ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -69,6 +70,7 @@ const ACTION_RULES: { prefix: string; icon: LucideIcon }[] = [
   { prefix: "device.decommission", icon: Trash2 },
   { prefix: "device.permanent_delete", icon: Trash2 },
   { prefix: "device.restore", icon: RotateCcw },
+  { prefix: "device.reliability", icon: ShieldCheck }, // baseline set / cleared (#5876)
   // Automated agent-dispatched commands (scheduled patches, automations). Listed
   // here ONLY so ruleFor() can pick an icon — they are deliberately excluded
   // from ACTION_PREFIXES below. The server surfaces these solely via the
