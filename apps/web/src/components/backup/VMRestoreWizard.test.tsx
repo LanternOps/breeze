@@ -7,6 +7,7 @@ import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  restoreAccessTokenFromCookie: vi.fn(async () => true),
 }));
 
 // runAction routes every outcome through the Toast singleton.
@@ -349,11 +350,11 @@ describe('VMRestoreWizard', () => {
         posts += 1;
         if (posts === 1) {
           return makeJsonResponse({
-            error: 'Enrol a second factor to confirm this restore.',
+            error: 'Enroll a second factor to confirm this restore.',
             code: 'MFA_ENROLLMENT_REQUIRED',
             stepUp: {
               operation: 'backup_unattested_restore',
-              method: 'enrol',
+              method: 'enroll',
               reason: 'producer_only_other_target',
               resource: { snapshotId: 'snapshot-1', targetDeviceId: 'device-1', commandType: 'vm_instant_boot' },
             },
@@ -376,7 +377,7 @@ describe('VMRestoreWizard', () => {
 
     const prompt = await screen.findByTestId('unattested-restore-stepup');
     expect(prompt.textContent).toMatch(/only the original device can check/i);
-    expect(screen.getByTestId('unattested-restore-stepup-enrol').getAttribute('href')).toBe('/settings/profile');
+    expect(screen.getByTestId('unattested-restore-stepup-enroll').getAttribute('href')).toBe('/settings/profile');
     expect(screen.queryByTestId('unattested-restore-stepup-confirm')).toBeNull();
     expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
 
@@ -388,6 +389,49 @@ describe('VMRestoreWizard', () => {
     expect(bodies[1]).toEqual(bodies[0]);
     expect(bodies[1]).not.toHaveProperty('stepUpGrant');
     await waitFor(() => expect(screen.queryByTestId('unattested-restore-stepup')).toBeNull());
+  });
+
+  it('a Retry that fails keeps the set-up link and Retry visible; nothing was restored', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    let posts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/backup/restore/instant-boot') {
+        posts += 1;
+        if (posts === 1) {
+          return makeJsonResponse({
+            error: 'Enroll a second factor to confirm this restore.',
+            code: 'MFA_ENROLLMENT_REQUIRED',
+            stepUp: {
+              operation: 'backup_unattested_restore',
+              method: 'enroll',
+              reason: 'producer_only_other_target',
+              resource: { snapshotId: 'snapshot-1', targetDeviceId: 'device-1', commandType: 'vm_instant_boot' },
+            },
+          }, false, 403);
+        }
+        return makeJsonResponse({ error: 'Instant boot service unavailable' }, false, 500);
+      }
+      return base(input, init);
+    });
+
+    render(<VMRestoreWizard />);
+    fireEvent.click(await screen.findByRole('button', { name: /Nightly Snapshot/i }));
+    fireEvent.click(screen.getByRole('button', { name: /3\. Target Host/i }));
+    fireEvent.click(await screen.findByRole('radio'));
+    fireEvent.click(screen.getByRole('button', { name: /5\. VM Name/i }));
+    fireEvent.change(screen.getByLabelText(/VM Name/i), { target: { value: 'Instant VM' } });
+    fireEvent.click(screen.getByRole('button', { name: /2\. Mode/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Instant Boot/i }));
+    fireEvent.click(screen.getByRole('button', { name: /6\. Review/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Start Instant Boot/i }));
+    await screen.findByTestId('unattested-restore-stepup-enroll');
+
+    fireEvent.click(screen.getByTestId('unattested-restore-stepup-retry'));
+    await waitFor(() => expect(posts).toBe(2));
+    await waitFor(() => expect(screen.getByTestId('unattested-restore-stepup-retry')).not.toBeDisabled());
+    expect(screen.getByTestId('unattested-restore-stepup-enroll')).toBeTruthy();
+    expect(await screen.findByText('Instant boot service unavailable')).toBeTruthy();
+    expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 
   it('does not offer the rebuild engine for a snapshot without a layout manifest', async () => {

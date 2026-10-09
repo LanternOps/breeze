@@ -740,20 +740,20 @@ export default function RecoveryBootstrapTab() {
   // after the operator confirms it (two-factor when enabled); the server asks.
   const unattestedStepUp = useUnattestedRestoreStepUp();
 
-  const submitCreateToken = useCallback(async (extras: UnattestedRestoreExtras) => {
+  const submitCreateToken = useCallback(async (extras: UnattestedRestoreExtras): Promise<boolean> => {
     setError(undefined);
     setErrorReasons([]);
     setTokenMessage(undefined);
 
     if (!createSnapshotId) {
       setError('Select a snapshot first.');
-      return;
+      return false;
     }
 
     const expiresInHours = Number(createExpiresInHours);
     if (!Number.isFinite(expiresInHours) || expiresInHours < 1) {
       setError('Expiration must be at least 1 hour.');
-      return;
+      return false;
     }
 
     let parsedTargetConfig: Record<string, unknown> | undefined;
@@ -766,7 +766,7 @@ export default function RecoveryBootstrapTab() {
         parsedTargetConfig = parsed;
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Target config must be valid JSON.');
-        return;
+        return false;
       }
     }
 
@@ -799,6 +799,7 @@ export default function RecoveryBootstrapTab() {
       setTokenMessage('Recovery token created. Copy the CLI command before you leave this page.');
       setCreateTargetConfig('');
       setCreateExpiresInHours('24');
+      return true;
     } catch (err) {
       // The API answers 409 with the raw machine token in `error` (e.g.
       // `snapshot_not_bare_metal_restorable`) plus a `reasons` array —
@@ -815,6 +816,7 @@ export default function RecoveryBootstrapTab() {
       } else {
         setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToCreateRecoveryToken'));
       }
+      return false;
     } finally {
       setCreating(false);
     }

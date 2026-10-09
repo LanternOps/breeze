@@ -279,7 +279,7 @@ describe('a user without a second factor', () => {
     mocks.userIsMfaProtected.mockResolvedValue(false);
   });
 
-  const enrolmentRequired = (reason: string, target = SOURCE) => ({
+  const enrollmentRequired = (reason: string, target = SOURCE) => ({
     ok: false,
     status: 403,
     body: {
@@ -287,7 +287,7 @@ describe('a user without a second factor', () => {
       code: 'MFA_ENROLLMENT_REQUIRED',
       stepUp: {
         operation: 'backup_unattested_restore',
-        method: 'enrol',
+        method: 'enroll',
         reason,
         resource: { snapshotId: SNAPSHOT, targetDeviceId: target, commandType: 'backup_restore' },
       },
@@ -298,33 +298,34 @@ describe('a user without a second factor', () => {
     ['a snapshot taken before attestations existed', unattested('unattested_legacy'), 'unattested_legacy', SOURCE],
     ['a snapshot without an attestation for another reason', unattested('unattested'), 'unattested', SOURCE],
     ['a device-local snapshot restored onto another device', attested('producer_only'), 'producer_only_other_target', OTHER],
-  ])('%s: asked to enrol a second factor, with the step-up resource to resume with', async (_name, integrity, reason, target) => {
+  ])('%s: asked to enroll a second factor, with the step-up resource to resume with', async (_name, integrity, reason, target) => {
     mocks.resolveRestoreIntegrity.mockResolvedValue(integrity);
     const out = await checkRestoreIntegrityRequest(ctx(), request({ targetDeviceId: target }));
-    expect(out).toEqual(enrolmentRequired(reason, target));
+    expect(out).toEqual(enrollmentRequired(reason, target));
     expect(mocks.userIsMfaProtected).toHaveBeenCalledWith(USER);
   });
 
   it('a presented grant is never consumed, and nothing is recorded', async () => {
+    // A grant is bound to the MFA epoch, so one held by a user without a
+    // factor is never valid: the consume finds nothing to spend.
     mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
-    mocks.consumeStepUpGrant.mockResolvedValue(true);
-    expect(await checkRestoreIntegrityRequest(ctx(), request({ stepUpGrant: GRANT }))).toEqual(enrolmentRequired('unattested_legacy'));
-    expect(await gateRestoreCommand(ctx(), request({ stepUpGrant: GRANT }))).toEqual(enrolmentRequired('unattested_legacy'));
-    expect(mocks.consumeStepUpGrant).not.toHaveBeenCalled();
-    expect(mocks.getUserEpochs).not.toHaveBeenCalled();
+    mocks.consumeStepUpGrant.mockResolvedValue(false);
+    expect(await checkRestoreIntegrityRequest(ctx(), request({ stepUpGrant: GRANT }))).toEqual(enrollmentRequired('unattested_legacy'));
+    expect(await gateRestoreCommand(ctx(), request({ stepUpGrant: GRANT }))).toEqual(enrollmentRequired('unattested_legacy'));
     expect(mocks.recordRestoreAuthorization).not.toHaveBeenCalled();
+    expect(mocks.userIsMfaProtected).toHaveBeenCalledTimes(2);
   });
 
   it('a confirmation flag is not accepted in place of a second factor', async () => {
     mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
     expect(await checkRestoreIntegrityRequest(ctx(), request({ confirmUnattestedRestore: true })))
-      .toEqual(enrolmentRequired('unattested_legacy'));
+      .toEqual(enrollmentRequired('unattested_legacy'));
   });
 
   it('uses the factor state the caller read in the request context', async () => {
     mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
     const out = await checkRestoreIntegrityRequest(ctx(), request({ userMfaProtected: false }));
-    expect(out).toEqual(enrolmentRequired('unattested_legacy'));
+    expect(out).toEqual(enrollmentRequired('unattested_legacy'));
     expect(mocks.userIsMfaProtected).not.toHaveBeenCalled();
   });
 
@@ -370,6 +371,23 @@ describe('a user without a second factor', () => {
 });
 
 describe('a user with a second factor', () => {
+  it('a valid grant restores without looking up the user\'s factors', async () => {
+    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
+    mocks.consumeStepUpGrant.mockResolvedValue(true);
+    expect(await checkRestoreIntegrityRequest(ctx(), request({ stepUpGrant: GRANT })))
+      .toEqual({ ok: true, authorizationReason: 'unattested_legacy', confirmationMethod: 'mfa' });
+    expect(mocks.consumeStepUpGrant).toHaveBeenCalledTimes(1);
+    expect(mocks.userIsMfaProtected).not.toHaveBeenCalled();
+  });
+
+  it('an invalid grant looks up the factors to answer with the step-up', async () => {
+    mocks.resolveRestoreIntegrity.mockResolvedValue(unattested('unattested_legacy'));
+    mocks.consumeStepUpGrant.mockResolvedValue(false);
+    expect(await checkRestoreIntegrityRequest(ctx(), request({ stepUpGrant: GRANT })))
+      .toMatchObject({ ok: false, status: 403, body: { code: 'STEP_UP_REQUIRED', stepUp: { method: 'mfa' } } });
+    expect(mocks.userIsMfaProtected).toHaveBeenCalledWith(USER);
+  });
+
   it.each([
     ['a snapshot taken before attestations existed', unattested('unattested_legacy'), SOURCE],
     ['a snapshot without an attestation for another reason', unattested('unattested'), SOURCE],

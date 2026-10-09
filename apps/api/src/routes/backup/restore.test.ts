@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
@@ -1056,6 +1056,11 @@ describe('restore routes', () => {
       const RESOURCE = { snapshotId: 'snap-db-1', targetDeviceId: 'device-2', commandType: 'backup_restore' };
       let realApp: Hono;
 
+      afterEach(() => {
+        // Module-level state shared with every other test in this file.
+        gateDeps.enable2fa.value = true;
+      });
+
       beforeEach(async () => {
         const actual = await vi.importActual<typeof import('./restoreIntegrityGate')>('./restoreIntegrityGate');
         integrityGate.check.mockImplementation(actual.checkRestoreIntegrityRequest as any);
@@ -1090,17 +1095,18 @@ describe('restore routes', () => {
         body: JSON.stringify({ snapshotId: 'snap-db-1', restoreType: 'full', deviceId: 'device-2', ...body }),
       });
 
-      it('a user without a second factor is asked to enrol one; nothing is queued and no authorization is recorded', async () => {
+      it('a user without a second factor is asked to enroll one; nothing is queued and no authorization is recorded', async () => {
         gateDeps.userIsMfaProtected.mockResolvedValue(false);
+        // A grant is bound to the MFA epoch: one held by a user without a factor is never valid.
+        gateDeps.consumeStepUpGrant.mockResolvedValueOnce(false);
         snapshotRows();
         const res = await postReal({ stepUpGrant: GRANT, confirmUnattestedRestore: true });
         expect(res.status).toBe(403);
         expect(await res.json()).toEqual({
-          error: 'Enrol a second factor to confirm this restore.',
+          error: 'Enroll a second factor to confirm this restore.',
           code: 'MFA_ENROLLMENT_REQUIRED',
-          stepUp: { operation: 'backup_unattested_restore', method: 'enrol', reason: 'unattested_legacy', resource: RESOURCE },
+          stepUp: { operation: 'backup_unattested_restore', method: 'enroll', reason: 'unattested_legacy', resource: RESOURCE },
         });
-        expect(gateDeps.consumeStepUpGrant).not.toHaveBeenCalled();
         expect(gateDeps.recordRestoreAuthorization).not.toHaveBeenCalled();
         expect(insertMock).not.toHaveBeenCalled();
         expect(queueCommandForExecutionMock).not.toHaveBeenCalled();

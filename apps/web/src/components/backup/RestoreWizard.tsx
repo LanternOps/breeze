@@ -366,7 +366,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
   // operator confirms it (two-factor when enabled); the server asks for it.
   const unattestedStepUp = useUnattestedRestoreStepUp();
 
-  const submitRestore = useCallback(async (extras: UnattestedRestoreExtras) => {
+  const submitRestore = useCallback(async (extras: UnattestedRestoreExtras): Promise<boolean> => {
     try {
       setRestoring(true);
       setRestoreError(undefined);
@@ -406,14 +406,16 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
       }
       setRestoreSuccess(confirmation);
       await fetchRestoreHistory();
+      return true;
     } catch (err) {
       // 401 is handled by the auth redirect; every other ActionError was
       // already toasted by runAction, and the inline banner keeps the detail
       // on screen next to the wizard controls.
-      if (err instanceof ActionError && err.status === 401) return;
+      if (err instanceof ActionError && err.status === 401) return false;
       // The confirmation prompt handles a step-up request.
       if (isUnattestedRestoreStepUp(err)) throw err;
       setRestoreError(err instanceof Error ? err.message : 'Failed to start restore');
+      return false;
     } finally {
       setRestoring(false);
     }

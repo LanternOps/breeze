@@ -20,9 +20,12 @@
  *     authorization and its audit event are recorded the same way.
  *   - the same, requested by a user who has no second factor to step up
  *     with (two-factor authentication enabled): 403 `MFA_ENROLLMENT_REQUIRED`
- *     with `stepUp.method: 'enrol'` and the same operation and resource, so
+ *     with `stepUp.method: 'enroll'` and the same operation and resource, so
  *     the client can resume with the step-up once a factor is enrolled.
- *     Nothing is consumed or recorded. If the factor lookup fails, the
+ *     The user's factors are looked up only when no valid grant was
+ *     presented: a grant is bound to the user's MFA epoch, so a valid one
+ *     already proves a factor, and a user without one cannot hold a valid
+ *     grant. Nothing is consumed or recorded. If the factor lookup fails, the
  *     two-factor step-up is asked for instead.
  *   - a caller without an interactive user session (API key, MCP token) can
  *     never confirm one: 409 `snapshot_integrity_unavailable`.
@@ -51,13 +54,13 @@ import { ENABLE_2FA } from '../auth/schemas';
 
 export const UNATTESTED_RESTORE_STEP_UP_OPERATION = 'backup_unattested_restore' as const;
 
-/** Answer code for a user who must enrol a second factor before confirming a restore. */
+/** Answer code for a user who must enroll a second factor before confirming a restore. */
 export const MFA_ENROLLMENT_REQUIRED_CODE = 'MFA_ENROLLMENT_REQUIRED' as const;
 
 /**
  * Whether the user has a factor to step up with. A failed lookup answers
  * true, so the user is asked for the two-factor step-up rather than told to
- * enrol a factor they may already have.
+ * enroll a factor they may already have.
  */
 export async function userCanStepUp(userId: string, prefetched?: boolean): Promise<boolean> {
   if (prefetched !== undefined) return prefetched;
@@ -86,7 +89,8 @@ export type RestoreIntegrityRequest = {
   userEpochs?: { authEpoch: number; mfaEpoch: number } | null;
   /**
    * Whether the user has a second factor, read by the caller in the request's
-   * own DB context, for the same reason as `userEpochs`.
+   * own DB context, for the same reason as `userEpochs`. Used only when no
+   * valid grant was presented.
    */
   userMfaProtected?: boolean;
   /**
@@ -143,21 +147,6 @@ export async function checkRestoreIntegrityRequest(
   const method: RestoreConfirmationMethod = ENABLE_2FA ? 'mfa' : 'confirm';
   const resource = { snapshotId: req.snapshotDbId, targetDeviceId: req.targetDeviceId, commandType: req.commandType };
 
-  // Only a proven second factor confirms a restore while two-factor
-  // authentication is enabled: a user without one is told to enrol one, with
-  // the step-up to resume with once they have. Nothing is consumed.
-  if (method === 'mfa' && !(await userCanStepUp(userId!, req.userMfaProtected))) {
-    return {
-      ok: false,
-      status: 403,
-      body: {
-        error: RESTORE_INTEGRITY_MESSAGES.mfa_enrollment_required,
-        code: MFA_ENROLLMENT_REQUIRED_CODE,
-        stepUp: { operation: UNATTESTED_RESTORE_STEP_UP_OPERATION, method: 'enrol', reason: decision.reason, resource },
-      },
-    };
-  }
-
   const stepUpRequired = (): RestoreIntegrityCheck => ({
     ok: false,
     status: 403,
@@ -177,23 +166,39 @@ export async function checkRestoreIntegrityRequest(
     return req.confirmUnattestedRestore === true ? authorized() : stepUpRequired();
   }
 
-  if (!req.stepUpGrant) return stepUpRequired();
-  const epochs = req.userEpochs !== undefined ? req.userEpochs : await getUserEpochs(userId!);
-  if (!epochs) return stepUpRequired();
-  // Missing, stale, replayed and mismatched grants are one answer on purpose.
-  const consumed = await consumeStepUpGrant(req.stepUpGrant, {
-    userId: userId!,
-    operation: UNATTESTED_RESTORE_STEP_UP_OPERATION,
-    authEpoch: epochs.authEpoch,
-    mfaEpoch: epochs.mfaEpoch,
-    sid: sid!,
-    resourceDigest: unattestedRestoreResourceDigest({
-      snapshotDbId: req.snapshotDbId,
-      targetDeviceId: req.targetDeviceId,
-      commandType: req.commandType,
-    }),
-  });
-  return consumed ? authorized() : stepUpRequired();
+  if (req.stepUpGrant) {
+    const epochs = req.userEpochs !== undefined ? req.userEpochs : await getUserEpochs(userId!);
+    // Missing, stale, replayed and mismatched grants are one answer on purpose.
+    const consumed = !!epochs && await consumeStepUpGrant(req.stepUpGrant, {
+      userId: userId!,
+      operation: UNATTESTED_RESTORE_STEP_UP_OPERATION,
+      authEpoch: epochs.authEpoch,
+      mfaEpoch: epochs.mfaEpoch,
+      sid: sid!,
+      resourceDigest: unattestedRestoreResourceDigest({
+        snapshotDbId: req.snapshotDbId,
+        targetDeviceId: req.targetDeviceId,
+        commandType: req.commandType,
+      }),
+    });
+    if (consumed) return authorized();
+  }
+
+  // No valid grant. Only a proven second factor confirms a restore while
+  // two-factor authentication is enabled: a user without one is told to
+  // enroll one, with the step-up to resume with once they have.
+  if (!(await userCanStepUp(userId!, req.userMfaProtected))) {
+    return {
+      ok: false,
+      status: 403,
+      body: {
+        error: RESTORE_INTEGRITY_MESSAGES.mfa_enrollment_required,
+        code: MFA_ENROLLMENT_REQUIRED_CODE,
+        stepUp: { operation: UNATTESTED_RESTORE_STEP_UP_OPERATION, method: 'enroll', reason: decision.reason, resource },
+      },
+    };
+  }
+  return stepUpRequired();
 }
 
 /**
