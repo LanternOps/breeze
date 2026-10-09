@@ -1,6 +1,6 @@
 import { collectionFenced, pendingInvoiceControl } from './collectionControl';
 import { toMinorUnits } from '../stripeMoney';
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, ne, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { billingNoticeOutbox, billingLinkTokens, invoiceCollectionAttempts, invoiceAutopaySchedules,
   orgAutopayEnrollments, orgPaymentMethods, invoices } from '../../db/schema';
@@ -127,9 +127,11 @@ export async function confirmInvoicePayment(token: string): Promise<{ url?: stri
 export async function releaseInvoiceConfirmation(input: { invoiceId: string; orgId: string }): Promise<AutopayConfirmationRelease> {
   assertNoHeldDbContextForStripe('releaseInvoiceConfirmation');
   const attempt = await withSystemDbAccessContext(async () => {
+    // A draft is MSP-internal: refuse it with the same error as a missing or
+    // other-org invoice, so the response never says an unissued invoice exists (#8254).
     const [invoice] = await db.select().from(invoices)
-      .where(and(eq(invoices.id, input.invoiceId), eq(invoices.orgId, input.orgId))).limit(1);
-    if (!invoice || invoice.id !== input.invoiceId || invoice.orgId !== input.orgId) {
+      .where(and(eq(invoices.id, input.invoiceId), eq(invoices.orgId, input.orgId), ne(invoices.status, 'draft'))).limit(1);
+    if (!invoice || invoice.id !== input.invoiceId || invoice.orgId !== input.orgId || invoice.status === 'draft') {
       throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
     }
     const latest = await latestAttempt(invoice.id);

@@ -40,13 +40,20 @@ const inputClass = 'h-10 w-full rounded-md border bg-background px-3 text-sm dis
 export function OpenAiCompatibleConnectionForm({
   connection,
   onChange,
+  baseUrlError = null,
+  disabled = false,
 }: {
   connection: AiConnectionDto | null;
   onChange: (d: OpenAiDraft) => void;
+  /** The server refused this Base URL (unresolvable / unreachable / egress policy); shown on the field. */
+  baseUrlError?: string | null;
+  /** The drawer is saving: lock the inputs so the draft cannot drift from what was sent. */
+  disabled?: boolean;
 }) {
   const { t } = useTranslation('settings');
   const readOnly = connection?.managedBy === 'env';
   const released = readOnly && connection?.envReleased === true;
+  const locked = readOnly || disabled;
   const [name, setName] = useState(connection?.name ?? '');
   const [baseUrl, setBaseUrl] = useState(connection?.baseUrl ?? '');
   const [apiKey, setApiKey] = useState('');
@@ -77,19 +84,26 @@ export function OpenAiCompatibleConnectionForm({
       <div className="space-y-1">
         <label className="text-sm font-medium" htmlFor="ai-connection-openai-name">{t('aiModels.connections.openai.name')}</label>
         <input id="ai-connection-openai-name" data-testid="ai-connection-openai-name" className={inputClass} value={name}
-          maxLength={80} disabled={readOnly} onChange={(e) => setName(e.target.value)} />
+          maxLength={80} disabled={locked} onChange={(e) => setName(e.target.value)} />
       </div>
       <div className="space-y-1">
         <label className="text-sm font-medium" htmlFor="ai-connection-openai-base-url">{t('aiModels.connections.openai.baseUrl')}</label>
         <input id="ai-connection-openai-base-url" data-testid="ai-connection-openai-base-url" className={inputClass} value={baseUrl}
-          placeholder="https://llm.example.com/v1" inputMode="url" autoComplete="off" disabled={readOnly}
+          placeholder="https://llm.example.com/v1" inputMode="url" autoComplete="off" disabled={locked}
+          aria-invalid={baseUrlError ? true : undefined}
+          aria-describedby={baseUrlError ? 'ai-connection-openai-base-url-help ai-connection-openai-base-url-error' : 'ai-connection-openai-base-url-help'}
           onChange={(e) => setBaseUrl(e.target.value)} />
-        <p className="text-xs text-muted-foreground">{t('aiModels.connections.openai.baseUrlHelp')}</p>
+        <p id="ai-connection-openai-base-url-help" className="text-xs text-muted-foreground">{t('aiModels.connections.openai.baseUrlHelp')}</p>
+        {baseUrlError && (
+          <p id="ai-connection-openai-base-url-error" data-testid="ai-connection-openai-base-url-error" role="alert" className="text-xs text-destructive">
+            {baseUrlError}
+          </p>
+        )}
       </div>
       <div className="space-y-1">
         <label className="text-sm font-medium" htmlFor="ai-connection-openai-api-key">{t('aiModels.connections.openai.apiKey')}</label>
         <input id="ai-connection-openai-api-key" data-testid="ai-connection-openai-api-key" type="password" autoComplete="new-password"
-          className={inputClass} value={apiKey} disabled={readOnly || removeKey}
+          className={inputClass} value={apiKey} disabled={locked || removeKey}
           placeholder={connection?.keyLast4 ? t('aiModels.connections.openai.keepKey') : t('aiModels.connections.openai.optional')}
           onChange={(e) => setApiKey(e.target.value)} />
         <p className="text-xs text-muted-foreground">{t('aiModels.connections.openai.apiKeyHelp')}</p>
@@ -106,7 +120,7 @@ export function OpenAiCompatibleConnectionForm({
       </div>
       {connection?.keyLast4 && !readOnly && (
         <label className="flex items-center gap-2 text-sm">
-          <input data-testid="ai-connection-openai-remove-key" type="checkbox" checked={removeKey}
+          <input data-testid="ai-connection-openai-remove-key" type="checkbox" checked={removeKey} disabled={disabled}
             onChange={(e) => { setRemoveKey(e.target.checked); if (e.target.checked) setApiKey(''); }} />
           {t('aiModels.connections.openai.removeKey')}
         </label>

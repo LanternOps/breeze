@@ -26,7 +26,10 @@ import { canonicalJsonStringify } from './exportSafety';
  *      fingerprint is a 409 (the key was reused with another request).
  *   5. `claimIdempotency` inside the write's own bounded context, BEFORE the
  *      resource insert, so claim + resource commit together. A lost race on
- *      the unique index returns null: the winner is committing.
+ *      the unique index returns null. ON CONFLICT DO NOTHING has waited for
+ *      the holder to finish by then, so the caller looks the key up again
+ *      and answers from the committed holder; a holder that stays invisible
+ *      is hidden by RLS (its ticket left the principal's organizations).
  *   6. `linkIdempotencyResource` with the created id (and, for a create, the
  *      new ticket id), same transaction.
  *

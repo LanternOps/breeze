@@ -22,7 +22,7 @@ import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityStatCard from "./SecurityStatCard";
 type FirewallProfile = {
   name: string;
-  enabled: boolean;
+  enabled: boolean | null;
   inboundPolicy: string;
   outboundPolicy: string;
 };
@@ -30,14 +30,17 @@ type FirewallDevice = {
   deviceId: string;
   deviceName: string;
   os: string;
-  firewallEnabled: boolean;
+  // null = unknown: the agent's collector failed or never reported (#8252).
+  // The API sends no profiles and a null rulesCount for it.
+  firewallEnabled: boolean | null;
   profiles: FirewallProfile[];
-  rulesCount: number;
+  rulesCount: number | null;
 };
 type Summary = {
   total: number;
   enabled: number;
   disabled: number;
+  unknown?: number;
   coveragePercent: number;
 };
 type Pagination = {
@@ -293,7 +296,11 @@ export default function FirewallPage() {
                           {d.os}
                         </div>
                         <div className="px-4 py-3">
-                          {d.firewallEnabled ? (
+                          {d.firewallEnabled === null ? (
+                            <span className="inline-flex rounded-full border bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground">
+                              {t("securityFirewallPage.unknown")}
+                            </span>
+                          ) : d.firewallEnabled ? (
                             <span className="inline-flex rounded-full border bg-emerald-500/15 px-2 py-0.5 text-xs font-semibold text-emerald-700 border-emerald-500/30">
                               {t("securityFirewallPage.enabled")}
                             </span>
@@ -304,7 +311,7 @@ export default function FirewallPage() {
                           )}
                         </div>
                         <div className="px-4 py-3 text-right text-sm text-muted-foreground">
-                          {d.rulesCount}
+                          {d.rulesCount ?? "—"}
                         </div>
                       </div>
                       {isExpanded && (
@@ -331,7 +338,11 @@ export default function FirewallPage() {
                                 <tr key={p.name}>
                                   <td className="py-1 font-medium">{p.name}</td>
                                   <td className="py-1">
-                                    {p.enabled ? (
+                                    {p.enabled === null ? (
+                                      <span className="text-muted-foreground">
+                                        {t("securityFirewallPage.unknown")}
+                                      </span>
+                                    ) : p.enabled ? (
                                       <span className="text-emerald-600">
                                         {t("securityFirewallPage.active")}
                                       </span>

@@ -531,6 +531,23 @@ it('self-manages the two research-starting remediation POSTs and no sibling rout
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/generate/extra')).toBe(false);
 });
 
+// #7943 — the AI agents manual-run trigger admits through
+// createAndEnqueueAgentRun, which opens its own system transaction(s) and
+// enqueues after they commit. Only that POST opts out: the GET run list on the
+// same path and every sibling agent mutation keep the ambient request tx.
+it('self-manages POST /ai/agents/:id/runs and no sibling agent route', () => {
+  const ID = '11111111-1111-4111-8111-111111111111';
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/ai/agents/${ID}/runs`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/ai/agents/${ID}/runs/`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', `/api/v1/ai/agents/${ID}/runs`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/ai/agents/runs')).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', `/api/v1/ai/agents/runs/${ID}`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/ai/agents/${ID}/enable`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/ai/agents/${ID}/circuit/reset`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/ai/agents/schedules/${ID}/runs`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/ai/fleet-design/runs')).toBe(false);
+});
+
 // #3127 — the four chat message-send routes may settle a turn blocked on
 // approval waits and then wait (bounded) for it to conclude. That wait does no
 // DB work, so it must not run inside a held request transaction: each route

@@ -712,7 +712,10 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         if ('error' in access) return JSON.stringify({ error: access.error });
 
         if (action === 'add') {
-          const tagsArray = sql`${tagsInput}::text[]`;
+          // ARRAY[$1, $2, ...]::text[], one bound parameter per tag. A bare
+          // `${tagsInput}::text[]` is spread by Drizzle into `($1, $2)::text[]`,
+          // which Postgres rejects for every list length (#8297).
+          const tagsArray = sql`ARRAY[${sql.join(tagsInput.map((tag) => sql`${tag}`), sql`, `)}]::text[]`;
           await db.execute(
             sql`UPDATE devices SET tags = (SELECT array_agg(DISTINCT t) FROM unnest(array_cat(tags, ${tagsArray})) t), updated_at = now() WHERE id = ${deviceId}`
           );

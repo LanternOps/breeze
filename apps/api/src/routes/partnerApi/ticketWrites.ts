@@ -39,6 +39,7 @@ import {
   linkIdempotencyResource,
   requestFingerprint,
   validateIdempotencyHeader,
+  type IdempotencyReplay,
   type PartnerApiIdempotencyRoute,
 } from './idempotency';
 import { partnerTicketCommentWriteResponseSchema, partnerTicketWriteResponseSchema } from './schemas';
@@ -183,16 +184,10 @@ function notFound(c: Json): Response {
 const IDEMPOTENCY_CODES = {
   invalid: 'partner_tickets_invalid_idempotency_key',
   reused: 'partner_tickets_idempotency_key_reused',
-  inFlight: 'partner_tickets_idempotency_in_flight',
 } as const;
 
-function idempotencyFailure(c: Json, kind: 'mismatch' | 'raced'): Response {
-  switch (kind) {
-    case 'mismatch':
-      return c.json({ error: 'X-Idempotency-Key was already used with a different request.', code: IDEMPOTENCY_CODES.reused }, 409);
-    case 'raced':
-      return c.json({ error: 'A concurrent request holds this X-Idempotency-Key; retry.', code: IDEMPOTENCY_CODES.inFlight }, 409);
-  }
+function idempotencyKeyReused(c: Json): Response {
+  return c.json({ error: 'X-Idempotency-Key was already used with a different request.', code: IDEMPOTENCY_CODES.reused }, 409);
 }
 
 type TicketWithRef = { row: TicketRow; ref: TicketExternalRef | null };
@@ -249,18 +244,34 @@ async function withIdempotency<T>(
   fingerprint: string,
   load: (resourceId: string) => Promise<T | null>,
   create: () => Promise<{ id: string; ticketId: string; value: T }>,
-): Promise<{ kind: 'created' | 'replay'; value: T } | { kind: 'mismatch' | 'raced' | 'gone' }> {
+): Promise<{ kind: 'created' | 'replay'; value: T } | { kind: 'mismatch' | 'gone' }> {
   if (!key) return { kind: 'created', value: (await create()).value };
-  const replay = await findIdempotencyReplay(principal, route, key, fingerprint);
-  if (replay.kind === 'mismatch') return { kind: 'mismatch' };
-  if (replay.kind === 'replay') {
+  const answerFrom = async (
+    found: Exclude<IdempotencyReplay, { kind: 'none' }>,
+  ): Promise<{ kind: 'replay'; value: T } | { kind: 'mismatch' | 'gone' }> => {
+    if (found.kind === 'mismatch') return { kind: 'mismatch' };
     // Re-read through the partner-bound lookup: the resource may have been
     // soft-deleted or moved out of the principal's set since it was created.
-    const value = await load(replay.resourceId);
+    const value = await load(found.resourceId);
     return value === null ? { kind: 'gone' } : { kind: 'replay', value };
-  }
+  };
+  const replay = await findIdempotencyReplay(principal, route, key, fingerprint);
+  if (replay.kind !== 'none') return answerFrom(replay);
   const claim = await claimIdempotency({ principal, orgId: target.orgId, ticketId: target.ticketId, route, key, fingerprint });
-  if (!claim) return { kind: 'raced' };
+  if (!claim) {
+    // The key is taken. ON CONFLICT DO NOTHING waits for a concurrent holder
+    // to finish, so the holder has committed by now, and this READ COMMITTED
+    // read sees it: answer the retry from it directly.
+    const holder = await findIdempotencyReplay(principal, route, key, fingerprint);
+    if (holder.kind !== 'none') return answerFrom(holder);
+    // Still invisible: RLS hides the holder because its ticket has left this
+    // principal's organizations, and no retry can change that. Say what is
+    // true rather than "in flight" until retention reaps the row (#8235
+    // review). A create retry is asking for that ticket: 404, like a replay
+    // whose ticket moved out. A comment was authorized against an accessible
+    // path ticket, so a hidden holder guards ANOTHER ticket: the key was reused.
+    return { kind: target.ticketId ? 'mismatch' : 'gone' };
+  }
   const created = await create();
   await linkIdempotencyResource(claim.id, created.id, target.ticketId ? undefined : created.ticketId);
   return { kind: 'created', value: created.value };
@@ -304,7 +315,7 @@ partnerTicketWriteRoutes.post(
       if (outcome.kind === 'created') return ticketResponse(c, outcome.value, 201);
       if (outcome.kind === 'replay') return ticketResponse(c, outcome.value, 200, true);
       if (outcome.kind === 'gone') return notFound(c);
-      return idempotencyFailure(c, outcome.kind);
+      return idempotencyKeyReused(c);
     } catch (err) {
       return handleTicketError(c, err);
     }
@@ -461,7 +472,7 @@ partnerTicketWriteRoutes.post(
       if (outcome.kind === 'created') return commentResponse(c, outcome.value, orgId, 201);
       if (outcome.kind === 'replay') return commentResponse(c, outcome.value, orgId, 200, true);
       if (outcome.kind === 'gone') return notFound(c);
-      return idempotencyFailure(c, outcome.kind);
+      return idempotencyKeyReused(c);
     } catch (err) {
       return handleTicketError(c, err);
     }
