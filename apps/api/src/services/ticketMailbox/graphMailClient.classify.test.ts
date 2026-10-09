@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { classifyGraphPollError, listInboxDelta, markRead, GRAPH_REQUEST_TIMEOUT_MS } from './graphMailClient';
+import { classifyGraphPollError, listInboxDelta, markRead, getFileAttachmentBytes, GRAPH_POLL_TIMEOUT_MS } from './graphMailClient';
 
 const withStatus = (status: number) => Object.assign(new Error(`HTTP ${status}`), { status });
 
@@ -61,7 +61,7 @@ describe('Graph request deadline (#8299)', () => {
 
     const pending = listInboxDelta('tok', 'support@example.com', null);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(timeoutSpy).toHaveBeenCalledWith(GRAPH_REQUEST_TIMEOUT_MS);
+    expect(timeoutSpy).toHaveBeenCalledWith(GRAPH_POLL_TIMEOUT_MS);
     controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
 
     const err = await pending.catch((e: unknown) => e);
@@ -69,7 +69,18 @@ describe('Graph request deadline (#8299)', () => {
     expect(classifyGraphPollError(err)).toBe('transient');
   });
 
-  it('every Graph call carries the deadline, including markRead', async () => {
+  it('attachment downloads keep no poll deadline (they run outside the sweep)', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ contentBytes: 'aGk=' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getFileAttachmentBytes('tok', 'support@example.com', 'msg-1', 'att-1');
+    const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect(init.signal).toBeUndefined();
+    expect(timeoutSpy).not.toHaveBeenCalled();
+  });
+
+  it('the sweep\'s markRead call carries the deadline', async () => {
     const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 

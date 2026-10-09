@@ -48,28 +48,30 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Per-request deadline for every Graph call, response body included. The mailbox
- * poll sweep processes mailboxes one at a time on a concurrency-1 worker, so a
- * request Graph accepts but never answers would otherwise hold the sweep forever
- * and stop ingestion for every mailbox (#8299). On expiry fetch rejects with a
- * TimeoutError, which classifyGraphPollError treats as transient. 60 s covers the
- * largest attachment download (10 MB, base64 in JSON).
+ * Per-request deadline for the Graph calls the mailbox poll sweep makes (the
+ * delta read and mark-read), response body included. The sweep processes
+ * mailboxes one at a time on a concurrency-1 worker, so a request Graph accepts
+ * but never answers would otherwise hold the sweep forever and stop ingestion for
+ * every mailbox (#8299). On expiry fetch rejects with a TimeoutError, which
+ * classifyGraphPollError treats as transient. Attachment listing and download run
+ * in the inbound-email worker, not the sweep, and keep their previous behavior.
  */
-export const GRAPH_REQUEST_TIMEOUT_MS = 60_000;
+export const GRAPH_POLL_TIMEOUT_MS = 60_000;
 
-function graphSignal(init?: RequestInit): AbortSignal {
-  const deadline = AbortSignal.timeout(GRAPH_REQUEST_TIMEOUT_MS);
+function graphSignal(init: RequestInit | undefined, timeoutMs: number | undefined): AbortSignal | undefined {
+  if (timeoutMs === undefined) return init?.signal ?? undefined;
+  const deadline = AbortSignal.timeout(timeoutMs);
   return init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
 }
 
 /** Graph fetch with one 429 retry honoring Retry-After. Never follows redirects with the bearer token. */
-async function graphFetch(url: string, token: string, init?: RequestInit): Promise<Response> {
+async function graphFetch(url: string, token: string, init?: RequestInit, timeoutMs?: number): Promise<Response> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const res = await fetch(url, {
       ...init,
       headers: { Authorization: `Bearer ${token}`, ...(init?.headers ?? {}) },
       redirect: 'error',
-      signal: graphSignal(init),
+      signal: graphSignal(init, timeoutMs),
     });
     if (res.status !== 429) return res;
 
@@ -81,7 +83,7 @@ async function graphFetch(url: string, token: string, init?: RequestInit): Promi
     ...init,
     headers: { Authorization: `Bearer ${token}`, ...(init?.headers ?? {}) },
     redirect: 'error',
-    signal: graphSignal(init),
+    signal: graphSignal(init, timeoutMs),
   });
 }
 
@@ -98,7 +100,7 @@ export async function listInboxDelta(
   let finalDelta: string | null = null;
 
   for (let guard = 0; guard < 1000; guard++) {
-    const res = await graphFetch(url, token);
+    const res = await graphFetch(url, token, undefined, GRAPH_POLL_TIMEOUT_MS);
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       const err = new Error(`Graph delta ${res.status}: ${body.slice(0, 200)}`);
@@ -198,7 +200,7 @@ export async function markRead(token: string, mailbox: string, messageId: string
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ isRead: true }),
-  });
+  }, GRAPH_POLL_TIMEOUT_MS);
 }
 
 /**
