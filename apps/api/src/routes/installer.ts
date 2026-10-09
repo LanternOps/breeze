@@ -63,7 +63,7 @@ export function childEnrollmentKeyTtlMinutes(): number {
  * and the on-demand `POST /enrollment-keys/purge-expired` route behind the
  * web UI's "Delete expired" button share the exemption predicate in
  * services/enrollmentKeyPurgeGuards.ts, which skips any parent key that still
- * has a live, unexhausted bootstrap token. So a 30-day/1-year token cannot be
+ * has a live, unexhausted bootstrap token. So a token of up to 30 days cannot be
  * cascade-deleted out from under itself by either before its own expiry (or
  * full consumption). If you're reading this because you found one of those
  * purges and are wondering whether it re-clamps this TTL, it doesn't — see

@@ -102,7 +102,11 @@ Every installer download, installer-link generation, or short-code redemption mi
   Previously, an installer's usable life was capped to its parent enrollment key's *remaining* life, and redemption returned `404` once the parent expired — so a 30-day installer link minted from the Add Device modal's transient ~60-minute parent key died in under an hour. As of this release, the bootstrap token's own `expiresAt` is the sole authority on whether an installer can still enroll a device; the parent key's expiry is no longer checked at redemption time. Revocation still works exactly as before: deleting the parent enrollment key cascade-deletes (`ON DELETE CASCADE`) every outstanding bootstrap token immediately, so a deliberate delete remains an effective kill switch.
 </Aside>
 
-The token's TTL defaults to `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` (30 days) or the admin's chosen link expiry, clamped to the partner's `maxEnrollmentLinkTtlMinutes` cap if one is set — see [Partner & Organization Enrollment Defaults](#partner--organization-enrollment-defaults). The daily purge sweep also will not delete a parent enrollment key while it still has a live, unexhausted bootstrap token outstanding, even past the key's own grace period — see [Automatic Purge of Expired Keys](#automatic-purge-of-expired-keys).
+The token's TTL is the admin's chosen expiry, or `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` (default 7 days) when none is chosen, clamped to the partner's `maxEnrollmentLinkTtlMinutes` cap if one is set — see [Partner & Organization Enrollment Defaults](#partner--organization-enrollment-defaults). It is never more than **30 days** (`43200` minutes):
+
+- `GET /enrollment-keys/:id/installer/:platform` and `POST /enrollment-keys/:id/bootstrap-token` reject an explicit `ttlMinutes` above `43200` with `400` (`ttlMinutes exceeds the installer maximum of 43200 minutes (30 days)`). The same limit applies to the child enrollment key embedded in the legacy macOS zip.
+- Installer links (`POST /enrollment-keys/:id/installer-link`) and enrollment keys are not installers and keep their own lifetimes (up to 1 year). Each installer downloaded from a link carries a token that lives for the link's remaining time, at most 30 days.
+- Tokens already issued keep the expiry they were issued with. The daily purge sweep also will not delete a parent enrollment key while it still has a live, unexhausted bootstrap token outstanding, even past the key's own grace period — see [Automatic Purge of Expired Keys](#automatic-purge-of-expired-keys).
 
 ---
 
@@ -152,7 +156,7 @@ When neither `expiresAt` nor `ttlMinutes` is supplied, the key expires after `EN
 </Aside>
 
 <Aside type="tip">
-  In the dashboard, the **Add Device** modal has a **Link expires in** picker that sets the per-link lifetime (for example 1 hour, 24 hours, 7 days, up to 1 year) without changing the server's environment default. The picker sends `ttlMinutes`.
+  In the dashboard, the **Add Device** modal has a **Link expires in** picker that sets the per-link lifetime without changing the server's environment default. The picker sends `ttlMinutes`. On the **Installer** tab it offers up to 30 days, the most a downloaded installer can carry; on the **CLI** tab, which creates an enrollment key, it offers up to 1 year. Both are further limited by the partner cap.
 </Aside>
 
 <Aside type="note">
@@ -247,7 +251,7 @@ curl -X DELETE https://breeze.yourdomain.com/api/v1/enrollment-keys/KEY_UUID \
 
 Expired enrollment keys are hard-deleted automatically by a daily sweep that runs at **04:00 UTC**. A key is only purged once it has been expired for a grace period of `ENROLLMENT_KEY_PURGE_AFTER_DAYS` days (default **7**), so a recently expired key remains visible long enough to audit or rotate. Keys with no expiration date are never auto-purged. Set `ENROLLMENT_KEY_CLEANUP_ENABLED=false` to disable the sweep entirely.
 
-A key is also skipped by the sweep — even past its grace period — while it still has a live, unexhausted [installer bootstrap token](#installer-bootstrap-tokens) outstanding, so a long-lived installer link (30 days, 1 year) cannot be purged out from under itself before its own token expires or is fully consumed.
+A key is also skipped by the sweep — even past its grace period — while it still has a live, unexhausted [installer bootstrap token](#installer-bootstrap-tokens) outstanding, so an installer whose token lives up to 30 days cannot be purged out from under itself before its own token expires or is fully consumed.
 
 Installer bootstrap tokens and deployment invites that reference a purged key are cascade-deleted along with it.
 
@@ -418,7 +422,7 @@ There is no option to mint a key or installer link that never expires, by design
 |----------|---------|-------------|
 | `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` | `43200` | Default time-to-live for new enrollment keys when `expiresAt` is not specified. |
 | `CHILD_ENROLLMENT_KEY_TTL_MINUTES` | `43200` | Fresh TTL (minutes) given to a "child" enrollment key minted at installer-download, installer-link, or short-code redemption time, measured from mint time rather than the parent key's remaining lifetime. Clamped to the partner's `maxEnrollmentLinkTtlMinutes` cap. |
-| `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` | `43200` | Base TTL (minutes) for a freshly-issued [installer bootstrap token](#installer-bootstrap-tokens) when no explicit `ttlMinutes` is supplied. The token's own expiry, not the parent enrollment key's, governs how long an installer has to complete enrollment. |
+| `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` | `10080` | Base TTL (minutes) for a freshly-issued [installer bootstrap token](#installer-bootstrap-tokens) when no explicit `ttlMinutes` is supplied. Maximum `43200` (30 days); a larger value is clamped, with a warning at API startup. The token's own expiry, not the parent enrollment key's, governs how long an installer has to complete enrollment. |
 | `INSTALLER_PARENT_MIN_REMAINING_SECONDS` | `60` | Minimum remaining lifetime (seconds) a parent enrollment key must have to be used as an installer source. Guards against building an installer from a parent that expires before the download reaches the target machine. |
 | `ENROLLMENT_KEY_PEPPER` | -- | Pepper used for SHA-256 hashing of enrollment keys. **Required in production** (at least 32 characters, not a placeholder value) — the server refuses to start without it. `APP_ENCRYPTION_KEY`, `SSO_ENCRYPTION_KEY`, `SECRET_ENCRYPTION_KEY`, `JWT_SECRET`, and `SESSION_SECRET` are only consulted as legacy fallbacks when matching keys hashed before this requirement took effect. |
 | `AGENT_ENROLLMENT_SECRET` | -- | Static secret that gates the enrollment endpoint in production. If empty or unset, the gate is skipped in non-production environments. |

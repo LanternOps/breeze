@@ -16,6 +16,24 @@ Last release: **v0.121.0** (2026-10-03).
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
+- **Bootstrap tokens embedded in downloaded installers now default to 7 days
+  and last at most 30 days.** The previous default was 30 days in code and
+  1 day under the bundled compose files (`1440`). `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES`
+  now defaults to `10080` in code and in both compose files. A value above
+  `43200` (30 days) is clamped, with a warning at API startup. Set the variable
+  to keep a different value up to 30 days.
+  - The installer download (`GET /enrollment-keys/:id/installer/:platform`) and
+    `POST /enrollment-keys/:id/bootstrap-token` now reject an explicit
+    `ttlMinutes` above `43200` with `400`. The child enrollment key embedded in
+    the legacy macOS zip is held to the same 30 days.
+  - The Add Device modal's Installer tab offers expiries up to 30 days (it
+    previously offered 90 days and 1 year); a longer partner/org default
+    preselects 30 days there. That picker also sizes links generated from the
+    tab. The CLI tab is unchanged.
+  - The installer-link API (`POST /enrollment-keys/:id/installer-link`) and
+    enrollment keys still accept lifetimes up to a year; each installer
+    downloaded from a link carries a token of at most 30 days.
+  - Installers already downloaded keep their original expiry.
 - **Database migrations take brief exclusive locks on busy tables.** The
   `2026-12-13-110000/110100/110200` migrations redefine foreign keys on child
   tables of `users`, `devices`, `alerts`, `tickets`, `roles` and others. Each
