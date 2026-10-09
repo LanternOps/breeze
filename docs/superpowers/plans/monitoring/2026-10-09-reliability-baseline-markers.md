@@ -2421,4 +2421,4 @@ Then run the full web suite with `cd apps/web && npx vitest run` and `pnpm --fil
 - Clear the marker and see the score restore.
 - Confirm both events appear in the activity feed.
 
-Open the W2 PR with `Closes #8312` (and `Closes #5876` on this final PR)`.
+Open the W2 PR with `Closes #8312` and `Closes #5876` (this is the final PR).
