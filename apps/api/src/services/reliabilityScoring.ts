@@ -1699,14 +1699,26 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
   // duplicate event re-reported in a row past the cursor would be counted again
   // on top of the cached count. Rebuilding from raw rows is cheap (history is a
   // bounded 90-day window) and is exactly what the old cold path already did.
-  const windowEnd = new Date();
-  const baseline = await getActiveReliabilityBaseline(device.id);
-  const { values } = await scoreDeviceReliabilityAsOf(
-    { id: device.id, deviceRole: device.deviceRole, enrolledAt: device.enrolledAt ?? null },
-    windowEnd,
-    baseline,
-  );
-  await persistDeviceReliability(device, values, baseline?.id ?? null);
+  // The setWhere guard in persistDeviceReliability reads the marker table with the
+  // upsert statement's ORIGINAL snapshot (READ COMMITTED). If this upsert blocks on a
+  // row lock held by a marker-route transaction, it wakes after that commit but its
+  // guard subquery still sees the OLD active marker, so the guard passes and a stale
+  // score would overwrite the marker-aware one. The re-read below is a NEW statement
+  // (fresh snapshot), so it sees whatever commit the upsert waited on; if the marker
+  // moved, re-score against it. This is not redundant with the guard.
+  const MAX_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const baseline = await getActiveReliabilityBaseline(device.id);
+    const { values } = await scoreDeviceReliabilityAsOf(
+      { id: device.id, deviceRole: device.deviceRole, enrolledAt: device.enrolledAt ?? null },
+      new Date(),
+      baseline,
+    );
+    await persistDeviceReliability(device, values, baseline?.id ?? null);
+    const after = await getActiveReliabilityBaseline(device.id);
+    if ((after?.id ?? null) === (baseline?.id ?? null)) return true;
+  }
+  console.warn('[reliability] active baseline kept changing; giving up after 3 attempts', { deviceId: device.id });
   return true;
 }
 

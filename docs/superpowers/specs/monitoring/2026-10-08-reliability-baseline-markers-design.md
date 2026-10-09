@@ -210,7 +210,16 @@ How the possible interleavings resolve:
 - **The worker writes while the marker transaction is still open.** The worker's write lands first. The marker
   transaction's own upsert then blocks on the row lock until the worker commits, and overwrites it with the
   marker-aware score.
+- **The worker's upsert blocks on the marker route's row lock.** The guard's subquery runs on the statement's
+  original snapshot (READ COMMITTED), so after waking it still sees the OLD active marker and the guard passes,
+  letting the stale score overwrite the marker-aware one. This is a snapshot gap in the guard itself. The scorer
+  therefore re-reads the active marker in a new statement after every write (fresh snapshot, sees the commit it
+  waited on). If the marker changed, it re-scores and writes again, at most 3 attempts, then logs a warning and
+  returns.
 - **The first-ever row.** The INSERT path is unguarded. Any later marker change goes through the guarded update.
+
+A route-path upsert can itself wait on a row lock held by a long nightly org-scan transaction. This is
+accepted: it is rare and bounded by the scan's duration.
 
 The marker routes insert or clear the marker and recompute inside the request transaction that
 `authMiddleware` already opens, so the marker and the score commit together. A route-path recompute calls
