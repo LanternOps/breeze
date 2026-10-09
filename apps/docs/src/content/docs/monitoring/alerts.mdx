@@ -29,7 +29,7 @@ The file `monitoring/rules/breeze-rules.yml` ships with these rules:
 | `APIServiceDown` | critical | API target down for 2 minutes |
 | `EndpointLatencyHigh` | warning | Any endpoint P95 > 5s for 5 minutes |
 | `High4xxRate` | warning | 4xx rate > 20% for 10 minutes |
-| `DbPoolPermitsHeldByAbandonedTransactions` | warning | Abandoned pool permits (transactions abandoned at their database session-setup deadline) continuously present for 3 minutes (API or worker) |
+| `DbPoolPermitsHeldByAbandonedTransactions` | warning | Abandoned pool permits (transactions abandoned at their database session-setup deadline or after the pool-acquire budget expired; see `[db-pool-acquire]` and `[db-wedged-backend]` logs) continuously present for 3 minutes (API or worker) |
 
 ### Infrastructure Alerts
 

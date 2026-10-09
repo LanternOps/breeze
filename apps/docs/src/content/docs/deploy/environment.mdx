@@ -480,7 +480,7 @@ and the log or `/metrics` as the detail. The numbers are exported on
 | `breeze_db_pool_health_check_failures` | Evaluations that threw before producing a verdict. |
 | `breeze_db_pool_health_probe_close_failures` | Probe clients whose close failed — each a possible leaked connection. |
 | `breeze_db_pool_admission_permits` / `_in_use` / `_waiting` | Request-transaction permits configured, held and waited for. `-1` when the process has no request pool. |
-| `breeze_db_pool_admission_abandoned` / `_effective_permits` | Permits held by transactions abandoned at their connection-setup deadline, and the permits actually available (`permits − abandoned`). |
+| `breeze_db_pool_admission_abandoned` / `_effective_permits` | Permits held by transactions abandoned at their connection-setup deadline or after the pool-acquire budget expired (see `[db-pool-acquire]` and `[db-wedged-backend]` logs), and the permits actually available (`permits − abandoned`). |
 | `breeze_db_pool_admission_cancelled_waiters_total` | Requests that gave up waiting for a permit before ever reaching the database. |
 | `breeze_db_pool_admission_abandoned_total`, `breeze_db_pool_admission_abandoned_returned_total{how="…"}` | Permits abandoned, and returned by `rollback` (the slow statement finished) or `connection-closed` (a wedged connection was reclaimed). |
 | `breeze_db_pool_acquire_timeouts_total{timer="…"}`, `breeze_db_prologue_deadline_expiries_total{timer="…"}` | Pool-acquire and connection-setup timeouts; `timer="late"` means the API's event loop was stalled at the deadline. |

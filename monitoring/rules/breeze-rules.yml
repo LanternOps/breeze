@@ -85,7 +85,7 @@ groups:
           severity: warning
         annotations:
           summary: "Abandoned DB transactions are holding pool permits on {{ $labels.instance }}"
-          description: "Abandoned pool permits (transactions abandoned at their RLS prologue deadline) continuously present for 3m; currently {{ $value }}. Check [db-wedged-backend] and [db-pool-admission] logs."
+          description: "Abandoned pool permits (transactions abandoned at their RLS prologue deadline or after the pool-acquire budget expired) continuously present for 3m; currently {{ $value }}. Check [db-pool-acquire], [db-wedged-backend] and [db-pool-admission] logs."
 
   - name: breeze-infrastructure-alerts
     interval: 30s

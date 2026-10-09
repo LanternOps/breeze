@@ -267,7 +267,7 @@ const dbPoolAdmissionWaitingGauge = new Gauge({
 });
 const dbPoolAdmissionAbandonedGauge = new Gauge({
   name: 'breeze_db_pool_admission_abandoned',
-  help: 'Permits held by transactions abandoned at their RLS prologue deadline and not yet settled; -1 when no request pool',
+  help: 'Permits held by transactions abandoned at their RLS prologue deadline or pool-acquire expiry and not yet settled; -1 when no request pool',
   registers: [register]
 });
 const dbPoolAdmissionEffectivePermitsGauge = new Gauge({
@@ -282,7 +282,7 @@ const dbPoolAdmissionCancelledWaitersGauge = new Gauge({
 });
 const dbPoolAdmissionAbandonedTotalGauge = new Gauge({
   name: 'breeze_db_pool_admission_abandoned_total',
-  help: 'Permits abandoned at an RLS prologue deadline since process start; monotonic',
+  help: 'Permits abandoned at an RLS prologue deadline or pool-acquire expiry since process start; monotonic',
   registers: [register]
 });
 const dbPoolAdmissionAbandonedReturnedGauge = new Gauge({
