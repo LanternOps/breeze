@@ -1072,7 +1072,7 @@ The warranty worker looks each physical device's serial number up against its ma
 |---|---|---|
 | `QBO_CLIENT_ID` | — | Intuit OAuth client ID for the QuickBooks Online integration |
 | `QBO_CLIENT_SECRET` | — | Intuit OAuth client secret |
-| `QBO_REDIRECT_URI` | — | OAuth callback URL registered with Intuit (e.g. `https://your-domain/accounting/quickbooks/callback`) |
+| `QBO_REDIRECT_URI` | — | OAuth callback URL registered with Intuit (e.g. `https://your-domain/api/v1/accounting/quickbooks/callback`) |
 | `QBO_ENVIRONMENT` | — | `sandbox` or `production` |
 | `QBO_WEBHOOK_VERIFIER_TOKEN` | — | Intuit app verifier token for `POST /api/v1/webhooks/quickbooks`. Optional. Without it the webhook endpoint answers `503` on every delivery (so Intuit keeps retrying) and payments arrive on the 15-minute reconcile sweep instead — the sweep is the guaranteed path either way, the webhook only makes it faster. Intuit allows one webhook endpoint per app, so a multi-region deployment can only point it at one region. |
 
