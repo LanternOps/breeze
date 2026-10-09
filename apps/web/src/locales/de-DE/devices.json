@@ -2108,7 +2108,23 @@
     },
     "updated": "Aktualisiert {{date}}",
     "uptimeWindow": "{{days}}d Betriebszeit",
-    "youngDeviceTooltip": "Dieses Gerät wurde vor {{age}} Tag(en) registriert, daher umfassen die {{days}}-Tagesfenster nur die bisherige Lebensdauer."
+    "youngDeviceTooltip": "Dieses Gerät wurde vor {{age}} Tag(en) registriert, daher umfassen die {{days}}-Tagesfenster nur die bisherige Lebensdauer.",
+    "baseline": {
+      "reasons": {
+        "reimaged": "Neu aufgesetzt",
+        "remediated": "Behoben",
+        "hardware_replaced": "Hardware ersetzt"
+      },
+      "bannerProvisional": "Bewertung seit {{reason}} am {{date}} durch {{who}} — vorläufig, {{days}} von {{required}} Tagen gemeldet",
+      "bannerMature": "Bewertung seit {{reason}} am {{date}} durch {{who}} ({{days}} Tage)",
+      "system": "Breeze (automatisch)",
+      "someone": "einen Techniker",
+      "provisional": "Vorläufig",
+      "beforeAfterTitle": "Vorher → seitdem",
+      "basedOnDays": "Vorher-Wert basiert auf {{count}} Tagen Verlauf",
+      "history": "Markierungsverlauf",
+      "cleared": "Aufgehoben"
+    }
   },
   "deviceScriptHistory": {
     "copyToClipboard": "In die Zwischenablage kopieren",

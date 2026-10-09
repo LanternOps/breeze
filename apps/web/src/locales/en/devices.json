@@ -2108,7 +2108,23 @@
     },
     "updated": "Updated {{date}}",
     "uptimeWindow": "{{days}}d uptime",
-    "youngDeviceTooltip": "This device enrolled {{age}} day(s) ago, so the {{days}}-day windows only span its lifetime so far."
+    "youngDeviceTooltip": "This device enrolled {{age}} day(s) ago, so the {{days}}-day windows only span its lifetime so far.",
+    "baseline": {
+      "reasons": {
+        "reimaged": "Reimaged",
+        "remediated": "Remediated",
+        "hardware_replaced": "Hardware replaced"
+      },
+      "bannerProvisional": "Scoring since {{reason}} on {{date}} by {{who}} — provisional, {{days}} of {{required}} days reported",
+      "bannerMature": "Scoring since {{reason}} on {{date}} by {{who}} ({{days}} days)",
+      "system": "Breeze (automatic)",
+      "someone": "a technician",
+      "provisional": "Provisional",
+      "beforeAfterTitle": "Before → since",
+      "basedOnDays": "Before based on {{count}} days of history",
+      "history": "Marker history",
+      "cleared": "Cleared"
+    }
   },
   "deviceScriptHistory": {
     "copyToClipboard": "Copy to clipboard",

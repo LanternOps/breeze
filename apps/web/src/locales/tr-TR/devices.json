@@ -2108,7 +2108,23 @@
     },
     "updated": "Güncellendi {{date}}",
     "uptimeWindow": "{{days}}d çalışma süresi",
-    "youngDeviceTooltip": "Bu cihaz {{age}} gün önce kaydoldu, dolayısıyla {{days}} günlük aralıklar yalnızca şu ana kadarki ömrünü kapsıyor."
+    "youngDeviceTooltip": "Bu cihaz {{age}} gün önce kaydoldu, dolayısıyla {{days}} günlük aralıklar yalnızca şu ana kadarki ömrünü kapsıyor.",
+    "baseline": {
+      "reasons": {
+        "reimaged": "Yeniden kuruldu",
+        "remediated": "Giderildi",
+        "hardware_replaced": "Donanım değiştirildi"
+      },
+      "bannerProvisional": "{{date}} tarihindeki {{reason}} işleminden ({{who}}) bu yana puanlama — geçici, {{required}} günün {{days}} günü raporlandı",
+      "bannerMature": "{{date}} tarihindeki {{reason}} işleminden ({{who}}) bu yana puanlama ({{days}} gün)",
+      "system": "Breeze (otomatik)",
+      "someone": "bir teknisyen",
+      "provisional": "Geçici",
+      "beforeAfterTitle": "Önce → sonra",
+      "basedOnDays": "Önceki değer {{count}} günlük geçmişe dayanıyor",
+      "history": "İşaretçi geçmişi",
+      "cleared": "Kaldırıldı"
+    }
   },
   "deviceScriptHistory": {
     "copyToClipboard": "Panoya kopyala",

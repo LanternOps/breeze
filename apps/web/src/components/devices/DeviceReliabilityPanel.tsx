@@ -10,6 +10,7 @@ import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import { useAiStore } from '../../stores/aiStore';
 import { usePermissions } from '../../lib/permissions';
 import HelpTooltip from '../shared/HelpTooltip';
+import ReliabilityBaselineSection, { type ReliabilityBaselineDetails } from './ReliabilityBaselineSection';
 import { formatNumber, formatPercent } from '@/lib/i18n/format';
 import { useStableT } from '@/lib/i18n/useStableT';
 
@@ -47,6 +48,10 @@ type ReliabilitySnapshot = {
   drivers?: ReliabilityDriver[];
   computedAt: string;
   enrolledAt?: string | null;
+  // #5876: while the active baseline marker is provisional the API already
+  // reports trend 'stable' and MTBF null; the panel renders both as a dash.
+  provisional?: boolean;
+  baseline?: ReliabilityBaselineDetails | null;
 };
 
 type ReliabilityOffender = {
@@ -360,7 +365,9 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   const startDeviceTask = useAiStore((s) => s.startDeviceTask);
   // #6396: the sidebar is unmounted without ai_sessions:use, so this button
   // would be a dead click (and a background 403) for roles without it.
-  const canUseAi = usePermissions().can('ai_sessions', 'use');
+  const permissions = usePermissions();
+  const canUseAi = permissions.can('ai_sessions', 'use');
+  const canWriteDevices = permissions.can('devices', 'write');
 
   const askAi = useCallback(() => {
     if (!snapshot) return;
@@ -521,6 +528,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   const youngDevice = ageDays !== null && ageDays < OFFENDER_WINDOW_DAYS;
   const offenderEventTotal =
     snapshot.serviceFailureCount30d + snapshot.hardwareErrorCount30d + snapshot.hangCount30d;
+  const provisional = snapshot.provisional === true;
 
   return (
     <div className="rounded-lg border bg-card p-5 shadow-xs">
@@ -556,13 +564,27 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
                   })}
                 />
               </div>
-              <div className={`text-3xl font-semibold tabular-nums ${scoreClass(snapshot.reliabilityScore)}`}>
-                {snapshot.reliabilityScore}
+              <div className="flex items-center gap-2">
+                <div
+                  className={`text-3xl font-semibold tabular-nums ${provisional ? 'text-muted-foreground' : scoreClass(snapshot.reliabilityScore)}`}
+                >
+                  {snapshot.reliabilityScore}
+                </div>
+                {provisional && (
+                  <span
+                    data-testid="reliability-provisional-pill"
+                    className="rounded-full border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                  >
+                    {t('deviceReliabilityPanel.baseline.provisional')}
+                  </span>
+                )}
               </div>
             </div>
             <div>
               <div className="text-xs text-muted-foreground">{t('deviceReliabilityPanel.trend')}</div>
-              <div className="text-sm font-medium capitalize">{t(/* i18n-dynamic */ `deviceReliabilityPanel.trends.${snapshot.trendDirection}`)}</div>
+              <div className="text-sm font-medium capitalize" data-testid="reliability-trend-value">
+                {provisional ? '—' : t(/* i18n-dynamic */ `deviceReliabilityPanel.trends.${snapshot.trendDirection}`)}
+              </div>
             </div>
             {showTopDragStat && topDrag ? (
               <div>
@@ -598,8 +620,8 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
             )}
             <div>
               <div className="text-xs text-muted-foreground">{t('deviceReliabilityPanel.mtbf')}</div>
-              <div className="text-sm font-medium tabular-nums">
-                {snapshot.mtbfHours === null ? '—' : `${Math.round(snapshot.mtbfHours)}h`}
+              <div className="text-sm font-medium tabular-nums" data-testid="reliability-mtbf-value">
+                {provisional || snapshot.mtbfHours === null ? '—' : `${Math.round(snapshot.mtbfHours)}h`}
               </div>
             </div>
           </div>
@@ -665,6 +687,21 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
               feedback route remains for when a real loop exists. */}
         </div>
       </div>
+
+      <ReliabilityBaselineSection
+        deviceId={deviceId}
+        snapshot={{
+          reliabilityScore: snapshot.reliabilityScore,
+          crashCount30d: snapshot.crashCount30d,
+          hangCount30d: snapshot.hangCount30d,
+          serviceFailureCount30d: snapshot.serviceFailureCount30d,
+          hardwareErrorCount30d: snapshot.hardwareErrorCount30d,
+          provisional,
+          baseline: snapshot.baseline ?? null,
+        }}
+        canWrite={canWriteDevices}
+        onChanged={() => void fetchReliability()}
+      />
 
       {factorRows.length > 0 ? (
         <div className="mt-5" data-testid="reliability-factors">

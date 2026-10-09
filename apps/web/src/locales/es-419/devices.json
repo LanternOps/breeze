@@ -2108,7 +2108,23 @@
     },
     "updated": "Actualizado {{date}}",
     "uptimeWindow": "tiempo de actividad {{days}}d",
-    "youngDeviceTooltip": "Este dispositivo se registró hace {{age}} día(s), por lo que las ventanas del día {{days}} solo abarcan su vida útil hasta el momento."
+    "youngDeviceTooltip": "Este dispositivo se registró hace {{age}} día(s), por lo que las ventanas del día {{days}} solo abarcan su vida útil hasta el momento.",
+    "baseline": {
+      "reasons": {
+        "reimaged": "Reinstalado",
+        "remediated": "Corregido",
+        "hardware_replaced": "Hardware reemplazado"
+      },
+      "bannerProvisional": "Puntuación desde {{reason}} el {{date}} por {{who}} — provisional, {{days}} de {{required}} días reportados",
+      "bannerMature": "Puntuación desde {{reason}} el {{date}} por {{who}} ({{days}} días)",
+      "system": "Breeze (automático)",
+      "someone": "un técnico",
+      "provisional": "Provisoria",
+      "beforeAfterTitle": "Antes → desde entonces",
+      "basedOnDays": "Valor anterior basado en {{count}} días de historial",
+      "history": "Historial de marcadores",
+      "cleared": "Eliminado"
+    }
   },
   "deviceScriptHistory": {
     "copyToClipboard": "Copiar al portapapeles",
