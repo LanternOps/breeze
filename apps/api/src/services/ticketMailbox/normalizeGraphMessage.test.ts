@@ -47,6 +47,30 @@ describe('normalizeGraphMessage', () => {
     expect(normalizeGraphMessage({ ...msg, hasAttachments: true }, 'p', 'support@a.com').attachments).toEqual([]);
   });
 
+  // #8299: the review queue's Convert rebuilds the ticket from `raw`, so the
+  // Graph row must carry the body and sender name under the neutral keys.
+  it('persists the body text and sender name on raw for the review-queue Convert', () => {
+    const raw = normalizeGraphMessage(msg, 'partner-9', 'support@a.com').raw;
+    expect(raw.bodyText).toBe('help');
+    expect(raw.fromName).toBe('Cust');
+  });
+
+  it('stores a null fromName when Graph gives no display name', () => {
+    const raw = normalizeGraphMessage({ ...msg, from: { emailAddress: { address: 'cust@x.com' } } }, 'partner-9', 'support@a.com').raw;
+    expect(raw.fromName).toBeNull();
+  });
+
+  it('drops U+0000 from the persisted body and name (jsonb rejects it)', () => {
+    const raw = normalizeGraphMessage({
+      ...msg,
+      from: { emailAddress: { address: 'cust@x.com', name: 'Cu\u0000st' } },
+      body: { contentType: 'text', content: 'printer\u0000 down' },
+    }, 'partner-9', 'support@a.com').raw;
+    expect(raw.bodyText).toBe('printer down');
+    expect(raw.fromName).toBe('Cust');
+    expect(JSON.stringify(raw)).not.toContain('\\u0000');
+  });
+
   it('preserves CC participants in the inbound audit metadata', () => {
     const ccRecipients = [{ emailAddress: { address: 'colleague@x.com' } }];
     expect(normalizeGraphMessage({ ...msg, ccRecipients }, 'partner-9', 'support@a.com').raw.ccRecipients).toEqual(ccRecipients);

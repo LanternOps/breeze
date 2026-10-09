@@ -38,6 +38,11 @@ function trustedAuthResults(
 
 
 
+/** jsonb cannot store U+0000; drop it from strings persisted in `raw`. */
+function stripNul(value: string): string {
+  return value.includes('\u0000') ? value.replace(/\u0000/g, '') : value;
+}
+
 /** Pure mapping: Graph message -> the pipeline's NormalizedInboundEmail. */
 export function normalizeGraphMessage(
   msg: GraphMessage,
@@ -85,6 +90,15 @@ export function normalizeGraphMessage(
       ccRecipients: msg.ccRecipients ?? [],
       graphConversationId: msg.conversationId,
       receivedDateTime: msg.receivedDateTime,
+      // Persist the normalized body + sender name under the same neutral keys the
+      // Gmail normalizer writes. ticket_email_inbound has no body column, and the
+      // review queue's "convert to ticket" rebuilds the description and submitter
+      // name from `raw` (convertEmailInbound). Without them a quarantined Microsoft
+      // 365 message converted to a ticket with only its subject (#8299). U+0000 is
+      // removed because Postgres jsonb rejects it, which would turn a quarantine
+      // into a failed insert.
+      bodyText: stripNul(text),
+      fromName: msg.from?.emailAddress?.name ? stripNul(msg.from.emailAddress.name) : null,
     },
   };
 }
