@@ -503,6 +503,8 @@ const actionLabels: Record<string, string> = {
   'device.filesystem.cleanup.preview': 'Disk cleanup previewed',
   'device.filesystem.cleanup.execute': 'Disk cleanup executed',
   'device.maintenance.enable': 'Maintenance mode enabled',
+  'device.reliability.baseline_set': 'Reliability baseline set',
+  'device.reliability.baseline_cleared': 'Reliability baseline cleared',
   'device.maintenance.extend': 'Maintenance mode extended',
   'device.maintenance.disable': 'Maintenance mode disabled',
   'device.recovery_key.reveal': 'Recovery key revealed',

@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { deviceReliability, deviceReliabilityHistory, devices } from '../../db/schema';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 import {
   clearReliabilityBaseline, createReliabilityBaseline, listReliabilityBaselines,
@@ -35,7 +35,7 @@ async function deviceWithCrashHistory() {
       crashEvents: daysAgo >= 20 && daysAgo <= 25 ? [{ type: 'bsod' as const, timestamp: new Date(collectedAt.getTime() - 60_000).toISOString() }] : [],
     };
   }));
-  return { orgId: org!.id, device: { id: device!.id, orgId: org!.id, deviceRole: 'workstation', enrolledAt: new Date(now - 120 * DAY) } };
+  return { partnerId: partner!.id, orgId: org!.id, device: { id: device!.id, orgId: org!.id, deviceRole: 'workstation', enrolledAt: new Date(now - 120 * DAY) } };
 }
 
 describe('reliability baselines (real DB)', () => {
@@ -155,5 +155,26 @@ describe('reliability baselines (real DB)', () => {
     const [row] = await asSystem(() => db.select().from(deviceReliability).where(eq(deviceReliability.deviceId, device.id)));
     expect((row!.details as any).baseline?.id).toBe(marker!.id);
     expect(row!.crashCount30d).toBe(0);
+  });
+
+  it('create, list and clear work under an organization-scoped (request-path) context', async () => {
+    const { partnerId, orgId, device } = await deviceWithCrashHistory();
+    const user = await createUser({ partnerId, orgId, name: 'Baseline Tech', email: `bl-${randomUUID()}@example.com` });
+    await asSystem(() => computeAndPersistDeviceReliability(device.id));
+    const orgCtx: DbAccessContext = {
+      scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], currentPartnerId: partnerId,
+    };
+    const asOrg = <T>(fn: () => Promise<T>) => withDbAccessContext(orgCtx, fn);
+
+    const marker = await asOrg(() => createReliabilityBaseline({
+      device, reason: 'remediated', baselineAt: new Date(Date.now() - 10 * DAY), note: 'Updated storage driver',
+      source: 'manual', sourceRef: null, createdBy: user.id, recompute: true,
+    }));
+    expect(marker!.createdBy!.name).toBe('Baseline Tech');
+    const list = await asOrg(() => listReliabilityBaselines(device.id));
+    expect(list.find((m) => m.id === marker!.id)).toMatchObject({ active: true });
+    expect(await asOrg(() => clearReliabilityBaseline({ deviceId: device.id, baselineId: marker!.id, clearedBy: user.id }))).toBe('cleared');
+    const [row] = await asSystem(() => db.select().from(deviceReliability).where(eq(deviceReliability.deviceId, device.id)));
+    expect((row!.details as any).baseline).toBeUndefined();
   });
 });

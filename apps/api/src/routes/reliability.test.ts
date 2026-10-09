@@ -2,11 +2,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 // Mock auth middleware so it doesn't try to read JWT tokens
+const permGate = vi.hoisted(() => ({ denied: new Set<string>() }));
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: async (c: any, next: any) => await next(),
-  requirePermission: () => async (c: any, next: any) => await next(),
-  requireScope: () => async (c: any, next: any) => await next(),
+  authMiddleware: async (_c: any, next: any) => await next(),
+  requirePermission: (resource: string, action: string) => async (c: any, next: any) => {
+    if (permGate.denied.has(`${resource}:${action}`)) return c.json({ error: 'Permission denied' }, 403);
+    await next();
+  },
+  requireScope: () => async (_c: any, next: any) => await next(),
 }));
+vi.mock('../services/reliabilityBaselines', () => ({
+  createReliabilityBaseline: vi.fn(), clearReliabilityBaseline: vi.fn(), listReliabilityBaselines: vi.fn(),
+}));
+vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 
 vi.mock('../services/reliabilityScoring', () => ({
   listReliabilityDevices: vi.fn(),
@@ -35,6 +43,8 @@ import {
   getDeviceReliability,
   evaluateReliabilityScores,
 } from '../services/reliabilityScoring';
+import { createReliabilityBaseline, clearReliabilityBaseline, listReliabilityBaselines } from '../services/reliabilityBaselines';
+import { writeRouteAudit } from '../services/auditEvents';
 import { emitDeviceReliabilityFeedback } from '../services/mlFeedbackEmitters';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './devices/helpers';
 
@@ -76,6 +86,7 @@ function buildApp(overrides: AuthOverrides = {}): Hono {
 describe('public reliability routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    permGate.denied.clear();
   });
 
   // ──────────────────────────────────────────────────────────
@@ -570,5 +581,89 @@ describe('public reliability routes', () => {
       expect(res.status).toBe(400);
       expect(vi.mocked(getDeviceReliabilityOffenders)).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('baselines (#5876)', () => {
+  const device = { id: DEVICE_ID, orgId: ORG_ID, siteId: SITE_ID, hostname: 'pc-1', deviceRole: 'workstation', enrolledAt: null };
+  const dto = { id: '00000000-0000-0000-0000-0000000000b1', baselineAt: '2026-10-08T00:00:00.000Z', reason: 'remediated',
+    source: 'manual', note: 'Fixed driver', beforeSnapshot: null, createdBy: null, createdAt: '2026-10-08T00:00:00.000Z',
+    clearedAt: null, clearedBy: null, active: true };
+  beforeEach(() => {
+    permGate.denied.clear();
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(device as any);
+    vi.mocked(getDeviceReliability).mockResolvedValue(null);
+  });
+
+  it('POST requires devices:write', async () => {
+    permGate.denied.add('devices:write');
+    const res = await buildApp().request(`/reliability/${DEVICE_ID}/baselines`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'reimaged' }),
+    });
+    expect(res.status).toBe(403);
+    expect(createReliabilityBaseline).not.toHaveBeenCalled();
+  });
+
+  it('POST rejects a remediated marker without a note', async () => {
+    const res = await buildApp().request(`/reliability/${DEVICE_ID}/baselines`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'remediated', note: '  ' }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('note_required');
+  });
+
+  it('POST rejects a marker older than 30 days', async () => {
+    const res = await buildApp().request(`/reliability/${DEVICE_ID}/baselines`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'reimaged', baselineAt: new Date(Date.now() - 31 * 86_400_000).toISOString() }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('baseline_too_old');
+  });
+
+  it('POST creates a manual marker attributed to the caller and audits it', async () => {
+    vi.mocked(createReliabilityBaseline).mockResolvedValue(dto as any);
+    const res = await buildApp().request(`/reliability/${DEVICE_ID}/baselines`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'remediated', note: 'Fixed driver', source: 'bare_metal_recovery', orgId: ORG_ID_2 }),
+    });
+    expect(res.status).toBe(201);
+    expect(createReliabilityBaseline).toHaveBeenCalledWith(expect.objectContaining({
+      device: expect.objectContaining({ id: DEVICE_ID, orgId: ORG_ID }),
+      source: 'manual', sourceRef: null, createdBy: 'user-1', recompute: true, reason: 'remediated', note: 'Fixed driver',
+    }));
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'device.reliability.baseline_set', resourceType: 'device', resourceId: DEVICE_ID, orgId: ORG_ID,
+    }));
+  });
+
+  it('POST returns 403 on site access denial and 404 for an unknown device', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValueOnce(SITE_ACCESS_DENIED as any);
+    const denied = await buildApp().request(`/reliability/${DEVICE_ID}/baselines`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'reimaged' }),
+    });
+    expect(denied.status).toBe(403);
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValueOnce(null);
+    const missing = await buildApp().request(`/reliability/${DEVICE_ID}/baselines`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'reimaged' }),
+    });
+    expect(missing.status).toBe(404);
+  });
+
+  it('DELETE maps not_found → 404 and already_cleared → 409, and audits a clear', async () => {
+    vi.mocked(clearReliabilityBaseline).mockResolvedValueOnce('not_found');
+    expect((await buildApp().request(`/reliability/${DEVICE_ID}/baselines/${dto.id}`, { method: 'DELETE' })).status).toBe(404);
+    vi.mocked(clearReliabilityBaseline).mockResolvedValueOnce('already_cleared');
+    expect((await buildApp().request(`/reliability/${DEVICE_ID}/baselines/${dto.id}`, { method: 'DELETE' })).status).toBe(409);
+    vi.mocked(clearReliabilityBaseline).mockResolvedValueOnce('cleared');
+    expect((await buildApp().request(`/reliability/${DEVICE_ID}/baselines/${dto.id}`, { method: 'DELETE' })).status).toBe(200);
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'device.reliability.baseline_cleared' }));
+  });
+
+  it('GET lists markers with devices:read', async () => {
+    vi.mocked(listReliabilityBaselines).mockResolvedValue([dto] as any);
+    const res = await buildApp().request(`/reliability/${DEVICE_ID}/baselines`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).baselines).toHaveLength(1);
   });
 });
