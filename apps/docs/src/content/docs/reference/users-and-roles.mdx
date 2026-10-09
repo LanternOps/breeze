@@ -374,6 +374,7 @@ Permissions are stored as `resource:action` pairs in the `permissions` table. Ro
 | `time_entries` | Ticket time entries |
 | `users` | User and role management |
 | `organizations` | Organisation CRUD |
+| `webhooks` | Viewing webhook configuration and delivery history (`read`). Creating, editing, testing and deleting webhooks requires `organizations:write`. Granted by default to Org Admin, Org Technician and Partner Technician |
 | `sso` | SSO provider configuration and verified domains |
 | `sites` | Site management |
 | `automations` | Automation workflows |
@@ -483,6 +484,7 @@ The following named permission constants (`packages/shared/src/constants/permiss
 | `ORGS_READ` | `organizations` | `read` |
 | `ORGS_WRITE` | `organizations` | `write` |
 | `ORGS_DELETE` | `organizations` | `delete` |
+| `WEBHOOKS_READ` | `webhooks` | `read` |
 | `SSO_ADMIN` | `sso` | `admin` |
 | `SITES_READ` | `sites` | `read` |
 | `SITES_WRITE` | `sites` | `write` |

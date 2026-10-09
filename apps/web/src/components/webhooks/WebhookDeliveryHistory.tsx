@@ -99,13 +99,13 @@ export default function WebhookDeliveryHistory({
               <th className="px-4 py-3">{t('longTail.webhooks.WebhookDeliveryHistory.headers.event')}</th>
               <th className="px-4 py-3">{t('common:labels.status')}</th>
               <th className="px-4 py-3">{t('longTail.webhooks.WebhookDeliveryHistory.headers.response')}</th>
-              <th className="px-4 py-3 text-right">{t('longTail.webhooks.WebhookDeliveryHistory.headers.action')}</th>
+              {onRetry && <th className="px-4 py-3 text-right">{t('longTail.webhooks.WebhookDeliveryHistory.headers.action')}</th>}
             </tr>
           </thead>
           <tbody className="divide-y">
             {deliveries.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-4 py-12 text-center">
+                <td colSpan={onRetry ? 5 : 4} className="px-4 py-12 text-center">
                   <p className="text-sm text-muted-foreground">{t('longTail.webhooks.WebhookDeliveryHistory.empty')}</p>
                 </td>
               </tr>
@@ -134,17 +134,19 @@ export default function WebhookDeliveryHistory({
                     <td className="px-4 py-3 text-sm text-muted-foreground">
                       {delivery.responseCode ? `HTTP ${delivery.responseCode}` : '—'}
                     </td>
+                    {onRetry && (
                     <td className="px-4 py-3 text-right">
                       <button
                         type="button"
                         onClick={() => handleRetry(delivery)}
-                        disabled={delivery.status !== 'failed' || !onRetry || isRetrying}
+                        disabled={delivery.status !== 'failed' || isRetrying}
                         className="inline-flex h-8 items-center gap-1 rounded-md border px-2 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <RotateCcw className="h-3.5 w-3.5" />
                         {isRetrying ? t('longTail.webhooks.WebhookDeliveryHistory.retrying') : t('common:actions.retry')}
                       </button>
                     </td>
+                    )}
                   </tr>
                 );
               })
