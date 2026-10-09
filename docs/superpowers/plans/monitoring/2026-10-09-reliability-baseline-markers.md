@@ -1,6 +1,6 @@
 ---
 title: Reliability baseline markers — reset after reimage, mark remediation work
-tracking_issue: LanternOps/breeze#5876
+tracking_issue: LanternOps/breeze#8310  # feature parent; originating request #5876
 spec: docs/superpowers/specs/monitoring/2026-10-08-reliability-baseline-markers-design.md
 status: approved design 2026-10-08 — advisor quorum complete (Fable + Codex gpt-6-astra xhigh, AGREE-WITH-CHANGES folded in)
 waves: W1 (API — table, scorer, routes, auto-marker, consumers), W2 (web — panel, dialog, list, feed)
@@ -57,7 +57,7 @@ These failure modes are implied by the spec but easy to leave untested. Each one
 
 # Wave W1 — API
 
-Branch: `feature/5876-reliability-baselines/wave-<W1 sub-issue#>` (created by `feature-lifecycle` `start_wave`).
+Branch: `feature/5876-reliability-baselines/wave-8311` (created by `feature-lifecycle` `start_wave`).
 
 ### Task 1: Table, migration, schema, registrations, RLS contract
 
@@ -2137,13 +2137,13 @@ git commit -m "feat(api): surface provisional reliability to fleet findings, dev
   Expected: all PASS. Check the reported file counts match the list, because "No test files found" means a path is wrong.
 - [ ] **Step 3: Drift and naming.** Run `pnpm db:check-drift` and `scripts/check-migration-naming.sh --against-ref origin/main` (after `git fetch origin main`). Expected: clean. If the naming check fails because main gained a later migration, rename the file to sort after it, and update the `MIGRATION` constant in the RLS test.
 - [ ] **Step 4: Manual verification as `breeze_app`.** Run `docker exec -it <test-stack pg container> psql -U breeze_app -d breeze`. Set an org context for org B, then try `INSERT INTO device_reliability_baselines (...)` for an org-A device. Expected: `new row violates row-level security policy`.
-- [ ] **Step 5: Open the W1 PR** with `Closes #<W1 sub-issue>` in the body. Tear down with `pnpm test-stack down`.
+- [ ] **Step 5: Open the W1 PR** with `Closes #8311` in the body. Tear down with `pnpm test-stack down`.
 
 ---
 
 # Wave W2 — Web
 
-Branch: `feature/5876-reliability-baselines/wave-<W2 sub-issue#>`, based on `main` after W1 merges.
+Branch: `feature/5876-reliability-baselines/wave-8312`, based on `main` after W1 merges.
 
 ### Task 11: Panel types, banner, provisional state and before/after
 
@@ -2421,4 +2421,4 @@ Then run the full web suite with `cd apps/web && npx vitest run` and `pnpm --fil
 - Clear the marker and see the score restore.
 - Confirm both events appear in the activity feed.
 
-Open the W2 PR with `Closes #<W2 sub-issue>`.
+Open the W2 PR with `Closes #8312` (and `Closes #5876` on this final PR)`.
