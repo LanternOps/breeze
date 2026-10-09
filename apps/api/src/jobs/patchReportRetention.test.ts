@@ -12,6 +12,7 @@ const state = vi.hoisted(() => {
   const base = `${process.env.TMPDIR ?? '/tmp'}/breeze-patch-retention-${process.pid}-${Math.random().toString(36).slice(2)}`;
   process.env.PATCH_REPORT_STORAGE_PATH = `${base}/patch-reports`;
   delete process.env.PATCH_REPORT_RETENTION_DAYS;
+  delete process.env.PATCH_REPORT_ORPHAN_MIN_AGE_MS;
   return {
     base,
     root: `${base}/patch-reports`,
@@ -20,8 +21,9 @@ const state = vi.hoisted(() => {
     /** Rows the orphan lookup returns (ids that still own their file). */
     referencedRows: [] as Array<{ id: string }>,
     lookupError: null as Error | null,
-    updates: [] as Array<{ set: Record<string, unknown> }>,
-    updateRows: [{ id: 'x' }] as Array<{ id: string }>,
+    updates: [] as Array<{ set: Record<string, unknown>; ids: unknown }>,
+    /** Every inArray() right-hand side, in call order. */
+    inArrayCalls: [] as unknown[],
     contexts: [] as Array<string | undefined>,
   };
 });
@@ -30,6 +32,17 @@ vi.mock('bullmq', () => ({ Job: class {}, Queue: vi.fn(), Worker: vi.fn() }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn() }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureMessage: vi.fn() }));
+
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return {
+    ...actual,
+    inArray: ((left: unknown, right: unknown) => {
+      state.inArrayCalls.push(right);
+      return (actual.inArray as (l: unknown, r: unknown) => unknown)(left, right);
+    }) as typeof actual.inArray,
+  };
+});
 
 vi.mock('../db/schema', () => ({
   patchComplianceReports: {
@@ -60,11 +73,15 @@ vi.mock('../db', () => {
       }),
     })),
   }));
+  // The expiry UPDATE matches every id it is given (the last inArray call).
   const update = vi.fn(() => ({
-    set: vi.fn((values: Record<string, unknown>) => {
-      state.updates.push({ set: values });
-      return { where: vi.fn(() => ({ returning: vi.fn(async () => state.updateRows) })) };
-    }),
+    set: vi.fn((values: Record<string, unknown>) => ({
+      where: vi.fn(() => {
+        const ids = state.inArrayCalls.at(-1) as string[];
+        state.updates.push({ set: values, ids });
+        return { returning: vi.fn(async () => ids.map((id) => ({ id }))) };
+      }),
+    })),
   }));
   return {
     db: { select, update },
@@ -86,7 +103,8 @@ import { captureMessage } from '../services/sentry';
 const REPORT_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const REPORT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const REPORT_C = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 const NOW = new Date();
 
 const fileOf = (id: string) => join(state.root, `${id}.csv`);
@@ -101,21 +119,27 @@ async function exists(path: string): Promise<boolean> {
 }
 
 async function writeReport(path: string, ageDays: number): Promise<void> {
+  await writeFileAged(path, ageDays * DAY_MS);
+}
+
+async function writeFileAged(path: string, ageMs: number): Promise<void> {
   await writeFile(path, 'metric,value\n', 'utf8');
-  const when = new Date(NOW.getTime() - ageDays * DAY_MS);
+  const when = new Date(NOW.getTime() - ageMs);
   await utimes(path, when, when);
 }
 
 beforeEach(async () => {
   vi.clearAllMocks();
   delete process.env.PATCH_REPORT_RETENTION_DAYS;
+  delete process.env.PATCH_REPORT_ORPHAN_MIN_AGE_MS;
+  process.env.PATCH_REPORT_STORAGE_PATH = state.root;
   await rm(state.base, { recursive: true, force: true });
   await mkdir(state.root, { recursive: true });
   state.expiryPages = [];
   state.referencedRows = [];
   state.lookupError = null;
   state.updates = [];
-  state.updateRows = [{ id: 'x' }];
+  state.inArrayCalls = [];
   state.contexts = [];
 });
 
@@ -134,6 +158,7 @@ describe('expirePatchReportFiles', () => {
     expect(await exists(fileOf(REPORT_A))).toBe(false);
     expect(state.updates).toHaveLength(1);
     expect(state.updates[0]!.set).toEqual(expect.objectContaining({ status: 'expired', outputPath: null }));
+    expect(state.updates[0]!.ids).toEqual([REPORT_A]);
     // Background work: every read and write runs in system scope, never contextless.
     expect(withSystemDbAccessContext).toHaveBeenCalled();
   });
@@ -164,18 +189,44 @@ describe('expirePatchReportFiles', () => {
     errorSpy.mockRestore();
   });
 
-  it('never unlinks an output path that is not the report\'s own file', async () => {
+  it('never unlinks an output path that is not the report\'s own file in the storage directory', async () => {
     const foreign = join(state.base, 'not-a-report.csv');
     await writeFile(foreign, 'keep me', 'utf8');
-    state.expiryPages = [[{ id: REPORT_A, outputPath: foreign }]];
+    // Correctly named, but reached by climbing out of the storage directory.
+    const climbed = join(state.base, `${REPORT_B}.csv`);
+    await writeFile(climbed, 'keep me too', 'utf8');
+    state.expiryPages = [[
+      { id: REPORT_A, outputPath: foreign },
+      { id: REPORT_B, outputPath: `${state.root}/../${REPORT_B}.csv` },
+    ]];
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const result = await expirePatchReportFiles({ now: NOW });
 
     expect(await exists(foreign)).toBe(true);
-    expect(result.expired).toBe(1);
+    expect(await exists(climbed)).toBe(true);
+    expect(result.expired).toBe(2);
     expect(state.updates[0]!.set).toEqual(expect.objectContaining({ status: 'expired', outputPath: null }));
     warnSpy.mockRestore();
+  });
+
+  it('expires a whole page in one UPDATE, leaving out rows whose file could not be removed', async () => {
+    await writeReport(fileOf(REPORT_A), 40);
+    await mkdir(fileOf(REPORT_B)); // unlink fails with EISDIR/EPERM
+    state.expiryPages = [[
+      { id: REPORT_A, outputPath: fileOf(REPORT_A) },
+      { id: REPORT_B, outputPath: fileOf(REPORT_B) },
+      { id: REPORT_C, outputPath: fileOf(REPORT_C) }, // already gone
+    ]];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await expirePatchReportFiles({ now: NOW });
+
+    expect(result).toEqual({ expired: 2, keptForRetry: 1 });
+    expect(state.updates).toHaveLength(1);
+    expect(state.updates[0]!.ids).toEqual([REPORT_A, REPORT_C]);
+    expect(state.contexts.filter((label) => label === 'patchReportRetention.expire')).toHaveLength(1);
+    errorSpy.mockRestore();
   });
 
   it('pages through every expired row', async () => {
@@ -209,14 +260,14 @@ describe('sweepOrphanedPatchReportFiles', () => {
   it('removes old files with no owning row and keeps referenced, recent and foreign files', async () => {
     await writeReport(fileOf(REPORT_A), 40); // orphan, old → removed
     await writeReport(fileOf(REPORT_B), 40); // still referenced → kept
-    await writeReport(fileOf(REPORT_C), 2); // orphan but inside the window → kept
+    await writeFileAged(fileOf(REPORT_C), 10 * 60 * 1000); // orphan, but may be mid-generation → kept
     const foreign = join(state.root, 'notes.csv');
     await writeReport(foreign, 40); // not a report file name → never touched
     state.referencedRows = [{ id: REPORT_B }];
 
     const result = await sweepOrphanedPatchReportFiles({ now: NOW });
 
-    expect(result).toEqual(expect.objectContaining({ scanned: 2, removed: 1, failed: 0, refused: false }));
+    expect(result).toEqual({ scanned: 2, removed: 1, failed: 0 });
     expect(await exists(fileOf(REPORT_A))).toBe(false);
     expect(await exists(fileOf(REPORT_B))).toBe(true);
     expect(await exists(fileOf(REPORT_C))).toBe(true);
@@ -224,14 +275,25 @@ describe('sweepOrphanedPatchReportFiles', () => {
     expect(state.contexts).toContain('patchReportRetention.orphanLookup');
   });
 
-  it('honours PATCH_REPORT_RETENTION_DAYS for the orphan age', async () => {
-    process.env.PATCH_REPORT_RETENTION_DAYS = '1';
-    await writeReport(fileOf(REPORT_A), 2);
+  it('removes an orphan once it is past the orphan floor, well inside the retention window', async () => {
+    // E.g. an erased org's file whose unlink failed: its row is gone, so it
+    // must not wait out the 30-day report window.
+    await writeFileAged(fileOf(REPORT_A), 2 * HOUR_MS);
 
     const result = await sweepOrphanedPatchReportFiles({ now: NOW });
 
     expect(result.removed).toBe(1);
     expect(await exists(fileOf(REPORT_A))).toBe(false);
+  });
+
+  it('honours PATCH_REPORT_ORPHAN_MIN_AGE_MS for the orphan floor', async () => {
+    process.env.PATCH_REPORT_ORPHAN_MIN_AGE_MS = String(3 * HOUR_MS);
+    await writeFileAged(fileOf(REPORT_A), 2 * HOUR_MS);
+
+    const result = await sweepOrphanedPatchReportFiles({ now: NOW });
+
+    expect(result.removed).toBe(0);
+    expect(await exists(fileOf(REPORT_A))).toBe(true);
   });
 
   it('does not follow a symlink named like a report file', async () => {
@@ -257,19 +319,35 @@ describe('sweepOrphanedPatchReportFiles', () => {
     expect(await exists(join(nested, `${REPORT_A}.csv`))).toBe(true);
   });
 
-  it('refuses to walk a storage directory that is itself a symlink', async () => {
+  it('sweeps a storage directory that is itself a symlink to the relocated directory', async () => {
     const elsewhere = join(state.base, 'elsewhere');
     await mkdir(elsewhere);
     await writeReport(join(elsewhere, `${REPORT_A}.csv`), 40);
+    await writeReport(join(elsewhere, `${REPORT_B}.csv`), 40);
     await rm(state.root, { recursive: true, force: true });
     await symlink(elsewhere, state.root);
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    state.referencedRows = [{ id: REPORT_B }];
 
     const result = await sweepOrphanedPatchReportFiles({ now: NOW });
 
-    expect(result).toEqual(expect.objectContaining({ refused: true, removed: 0 }));
-    expect(await exists(join(elsewhere, `${REPORT_A}.csv`))).toBe(true);
-    warnSpy.mockRestore();
+    expect(result).toEqual({ scanned: 2, removed: 1, failed: 0 });
+    expect(await exists(join(elsewhere, `${REPORT_A}.csv`))).toBe(false);
+    expect(await exists(join(elsewhere, `${REPORT_B}.csv`))).toBe(true);
+  });
+
+  it('reports a storage path that is not a directory instead of skipping silently', async () => {
+    await rm(state.root, { recursive: true, force: true });
+    await writeFile(state.root, 'not a directory', 'utf8');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await sweepOrphanedPatchReportFiles({ now: NOW });
+
+    expect(result).toEqual({ scanned: 0, removed: 0, failed: 1 });
+    expect(captureMessage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'patch_report_file_removal_failed' }),
+    );
+    errorSpy.mockRestore();
   });
 
   it('removes nothing when the row lookup fails (fails closed)', async () => {
@@ -284,7 +362,7 @@ describe('sweepOrphanedPatchReportFiles', () => {
     await rm(state.root, { recursive: true, force: true });
 
     await expect(sweepOrphanedPatchReportFiles({ now: NOW })).resolves.toEqual(
-      expect.objectContaining({ scanned: 0, removed: 0, refused: false }),
+      { scanned: 0, removed: 0, failed: 0 },
     );
   });
 });

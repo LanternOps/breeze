@@ -9,7 +9,8 @@ import { devicePatches, devices, patchComplianceReports, patches, patchSourceEnu
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 import { EFFECTIVE_PATCH_SEVERITY_SQL } from '../services/patchSeverityOverlay';
 import { csvRow } from '../services/spreadsheetExport';
-import { errnoCode, patchReportStorageDir } from '../services/patchReportFiles';
+import { patchReportStorageDir } from '../services/patchReportFiles';
+import { errnoCode } from '../utils/fsErrno';
 import {
   decodeSiteScope,
   intersectSiteScopes,
@@ -324,9 +325,12 @@ async function processGenerateComplianceReport(
     .where(eq(patchComplianceReports.id, report.id))
     .returning({ id: patchComplianceReports.id });
   if (completed.length === 0) {
-    // No row to complete (it was deleted, e.g. by an org erasure), so nothing
-    // will ever point at this file: remove it now rather than leave it for the
-    // retention job's orphan sweep.
+    // Belt-and-braces; not expected to run. The claim UPDATE above holds this
+    // row's lock in the same transaction, so an org erasure's DELETE waits
+    // for this transaction to commit and then removes the file itself (the
+    // cascade step returns the final output_path). Should the row ever be
+    // missing here anyway, nothing would point at the file, so remove it now
+    // rather than leave it to the retention job's orphan sweep.
     try {
       await unlink(outputPath);
     } catch (err) {

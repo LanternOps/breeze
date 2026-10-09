@@ -1,16 +1,17 @@
-import { lstat, readdir, unlink } from 'node:fs/promises';
+import { lstat, readdir, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
-import { and, asc, eq, gt, inArray, isNotNull, isNull, lt, or } from 'drizzle-orm';
+import { and, asc, gt, inArray, isNotNull, isNull, lt, or } from 'drizzle-orm';
 import { Job, Queue, Worker } from 'bullmq';
 
 import { db, withSystemDbAccessContext } from '../db';
 import { patchComplianceReports } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { captureMessage } from '../services/sentry';
+import { envInt } from '../utils/envInt';
+import { errnoCode } from '../utils/fsErrno';
 import {
   PATCH_REPORT_FILE_RE,
-  errnoCode,
   patchReportFileFor,
   patchReportRetentionMs,
   patchReportStorageDir,
@@ -28,13 +29,16 @@ import { jobSchedule } from './scheduleRegistry';
  *      the row `expired` with no `output_path`, and
  *   2. removes `<uuid>.csv` files in the storage directory that no row owns
  *      (leftovers from an erasure that could not unlink, or from a generation
- *      whose row was never completed), once they are older than the same window.
+ *      whose row was never completed), once they are older than
+ *      PATCH_REPORT_ORPHAN_MIN_AGE_MS (default 1 hour).
  */
 
 export const PATCH_REPORT_RETENTION_QUEUE = 'patch-report-retention';
 const JOB_NAME = 'sweep-expired-patch-reports';
 const EXPIRY_BATCH = 500;
 const ORPHAN_LOOKUP_BATCH = 500;
+const DEFAULT_ORPHAN_MIN_AGE_MS = 60 * 60 * 1000;
+const ORPHAN_MIN_AGE_FLOOR_MS = 10 * 60 * 1000;
 
 let queue: Queue | null = null;
 let worker: Worker | null = null;
@@ -84,6 +88,10 @@ export async function expirePatchReportFiles(
       'patchReportRetention.expiredScan',
     );
 
+    // Files first, one by one; then a single UPDATE for the whole page over
+    // the rows whose file is gone (removed now or already missing). A row
+    // whose file could not be removed stays as it is, so the next run retries.
+    const expiredIds: string[] = [];
     for (const row of page) {
       const file = patchReportFileFor(row.id, row.outputPath);
       if (file) {
@@ -97,23 +105,24 @@ export async function expirePatchReportFiles(
           }
         }
       } else {
-        console.warn(`[patchReportRetention] report ${row.id} has an unrecognised output path; expiring the row only`);
+        console.warn(`[patchReportRetention] report ${row.id} has an output path outside the storage directory; expiring the row only`);
       }
+      expiredIds.push(row.id);
+    }
 
-      // Conditional on the path still being the one just removed, so a row
-      // that changed underneath the sweep is left for the next run.
+    if (expiredIds.length > 0) {
       const updated = await withSystemDbAccessContext(
         () => db
           .update(patchComplianceReports)
           .set({ status: 'expired', outputPath: null, updatedAt: new Date() })
           .where(and(
-            eq(patchComplianceReports.id, row.id),
-            eq(patchComplianceReports.outputPath, row.outputPath as string),
+            inArray(patchComplianceReports.id, expiredIds),
+            isNotNull(patchComplianceReports.outputPath),
           ))
           .returning({ id: patchComplianceReports.id }),
         'patchReportRetention.expire',
       );
-      if (updated.length > 0) result.expired++;
+      result.expired += updated.length;
     }
 
     if (page.length < batchSize) break;
@@ -133,36 +142,60 @@ export interface PatchReportOrphanSweep {
   scanned: number;
   removed: number;
   failed: number;
-  /** The storage directory is not a plain directory (e.g. a symlink); nothing was walked. */
-  refused: boolean;
 }
 
 /**
- * Remove report files no row owns. Only regular files named `<uuid>.csv`
- * directly inside the resolved storage directory are considered: symlinks are
- * never followed (`lstat`), subdirectories are never entered, and a storage
- * directory that is itself a symlink is refused. A file counts as owned while
- * its report row exists with an `output_path`. Row lookups fail closed: if one
- * throws, nothing in that batch is removed.
+ * How old an unowned report file must be before the orphan sweep removes it.
+ * The worker writes the file a moment before its transaction commits the
+ * row's `output_path` (well inside the 5-minute report job lock), so a file
+ * younger than that may simply not be committed yet. Default 1 hour, never
+ * below 10 minutes. Deliberately much shorter than the retention window: an
+ * orphan has no row, so nothing about it is still downloadable.
+ */
+function patchReportOrphanMinAgeMs(): number {
+  return Math.max(ORPHAN_MIN_AGE_FLOOR_MS, envInt('PATCH_REPORT_ORPHAN_MIN_AGE_MS', DEFAULT_ORPHAN_MIN_AGE_MS));
+}
+
+/**
+ * Remove report files no row owns: leftovers from an org erasure whose unlink
+ * failed, or from a generation whose row was never completed. Only entries
+ * named `<uuid>.csv` that are regular files by `lstat` are considered, so a
+ * symlink inside the directory is never followed and subdirectories are never
+ * entered. The storage directory itself may be a symlink (relocating it that
+ * way is normal); it is resolved with `stat`, as the worker writing through it
+ * does. A file counts as owned while its report row exists with an
+ * `output_path`. Row lookups fail closed: if one throws, nothing in that batch
+ * is removed.
  */
 export async function sweepOrphanedPatchReportFiles(
   opts: { now?: Date; minAgeMs?: number; lookupBatchSize?: number } = {},
 ): Promise<PatchReportOrphanSweep> {
   const root = patchReportStorageDir();
-  const cutoffMs = (opts.now ?? new Date()).getTime() - (opts.minAgeMs ?? patchReportRetentionMs());
+  const cutoffMs = (opts.now ?? new Date()).getTime() - (opts.minAgeMs ?? patchReportOrphanMinAgeMs());
   const batchSize = opts.lookupBatchSize ?? ORPHAN_LOOKUP_BATCH;
-  const result: PatchReportOrphanSweep = { scanned: 0, removed: 0, failed: 0, refused: false };
+  const result: PatchReportOrphanSweep = { scanned: 0, removed: 0, failed: 0 };
   const failures: string[] = [];
   const recordFailure = (file: string, err: unknown) => {
     result.failed++;
     failures.push(`${file}: ${errnoCode(err) ?? (err instanceof Error ? err.message : String(err))}`);
   };
+  const reportFailures = () => {
+    if (result.failed === 0) return;
+    console.error(
+      `[patchReportRetention] orphan sweep: ${result.failed} failure(s) (${result.removed} orphaned file(s) removed)`,
+      failures.slice(0, 20),
+    );
+    captureMessage('[patchReportRetention] orphan sweep could not remove some patch report files', {
+      eventCode: 'patch_report_file_removal_failed',
+      level: 'error',
+    });
+  };
 
   try {
-    const info = await lstat(root);
+    const info = await stat(root);
     if (!info.isDirectory()) {
-      console.warn(`[patchReportRetention] not sweeping ${root}: not a plain directory (symlinks are not followed)`);
-      result.refused = true;
+      recordFailure(root, new Error('PATCH_REPORT_STORAGE_PATH is not a directory'));
+      reportFailures();
       return result;
     }
   } catch (err) {
@@ -172,9 +205,8 @@ export async function sweepOrphanedPatchReportFiles(
 
   const candidates: Array<{ id: string; file: string }> = [];
   for (const entry of await readdir(root, { withFileTypes: true })) {
-    if (!entry.isFile() || !PATCH_REPORT_FILE_RE.test(entry.name)) continue;
+    if (!PATCH_REPORT_FILE_RE.test(entry.name)) continue;
     const file = path.join(root, entry.name);
-    if (path.dirname(file) !== root) continue;
     try {
       const info = await lstat(file);
       if (!info.isFile() || info.mtimeMs >= cutoffMs) continue;
@@ -212,16 +244,7 @@ export async function sweepOrphanedPatchReportFiles(
     }
   }
 
-  if (result.failed > 0) {
-    console.error(
-      `[patchReportRetention] orphan sweep: ${result.failed} failure(s) (${result.removed} orphaned file(s) removed)`,
-      failures.slice(0, 20),
-    );
-    captureMessage('[patchReportRetention] orphan sweep could not remove some patch report files', {
-      eventCode: 'patch_report_file_removal_failed',
-      level: 'error',
-    });
-  }
+  reportFailures();
   return result;
 }
 

@@ -12,6 +12,8 @@
 import { unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { captureMessage } from './sentry';
+import { envInt } from '../utils/envInt';
+import { errnoCode } from '../utils/fsErrno';
 
 export const DEFAULT_PATCH_REPORT_STORAGE_PATH = './data/patch-reports';
 export const DEFAULT_PATCH_REPORT_RETENTION_DAYS = 30;
@@ -25,16 +27,13 @@ export function patchReportStorageDir(): string {
 }
 
 /**
- * How long a generated report file is kept, in days. Unset or unparsable means
- * the default; anything below one day is raised to one, so a typo can never
- * expire a report while its requester is still waiting to download it.
+ * How long a generated report file is kept, in days. Unset, blank or not a
+ * plain integer (`5e1`, `0x10`) means the default — `envInt` rejects a prefix
+ * misparse rather than acting on it, which matters here because the value
+ * drives deletion. Anything below one day is raised to one.
  */
 export function patchReportRetentionDays(): number {
-  const raw = process.env.PATCH_REPORT_RETENTION_DAYS;
-  if (raw === undefined || raw.trim() === '') return DEFAULT_PATCH_REPORT_RETENTION_DAYS;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed)) return DEFAULT_PATCH_REPORT_RETENTION_DAYS;
-  return Math.max(1, parsed);
+  return Math.max(1, envInt('PATCH_REPORT_RETENTION_DAYS', DEFAULT_PATCH_REPORT_RETENTION_DAYS));
 }
 
 export function patchReportRetentionMs(): number {
@@ -57,19 +56,21 @@ export function isPatchReportPastRetention(
 }
 
 /**
- * The file behind a report row, or null when `output_path` is not a path the
- * report worker writes (absolute, named `<report id>.csv`). Removal paths only
- * ever unlink what this returns, so a malformed or foreign `output_path` can
- * never make them delete some other file.
+ * The file behind a report row, or null unless `output_path` is exactly what
+ * the report worker writes: an absolute path, with no `..` segment, directly
+ * inside the current storage directory, named `<report id>.csv`. Removal
+ * paths only ever unlink what this returns, so a malformed or foreign
+ * `output_path` cannot make them delete any other file. (A report written
+ * before the storage directory was moved resolves to null; its file is then
+ * left where it is.)
  */
 export function patchReportFileFor(reportId: string, outputPath: string | null): string | null {
   if (!outputPath || !path.isAbsolute(outputPath)) return null;
-  if (path.basename(outputPath).toLowerCase() !== `${reportId}.csv`.toLowerCase()) return null;
-  return path.normalize(outputPath);
-}
-
-export function errnoCode(err: unknown): string | undefined {
-  return err instanceof Error && 'code' in err ? (err as NodeJS.ErrnoException).code : undefined;
+  if (outputPath.split(/[\\/]/).includes('..')) return null;
+  const normalized = path.normalize(outputPath);
+  if (path.dirname(normalized) !== patchReportStorageDir()) return null;
+  if (path.basename(normalized).toLowerCase() !== `${reportId}.csv`.toLowerCase()) return null;
+  return normalized;
 }
 
 export interface PatchReportFileRemoval {

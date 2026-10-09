@@ -10,7 +10,8 @@
  *     migration), and leaves a report inside the window alone. Its reads run
  *     in system scope: a contextless read under breeze_app sees no rows.
  *  3. The orphan sweep keeps a file whose row still owns it and removes one
- *     whose row is gone — the lookup must SEE the rows.
+ *     whose row is gone after the orphan floor (1 h), not the 30-day window —
+ *     the lookup must SEE the rows.
  */
 import './setup';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -23,6 +24,7 @@ const storageRoot = vi.hoisted(() => {
   const root = `${process.env.TMPDIR ?? '/tmp'}/breeze-patch-report-int-${process.pid}-${Math.random().toString(36).slice(2)}`;
   process.env.PATCH_REPORT_STORAGE_PATH = root;
   delete process.env.PATCH_REPORT_RETENTION_DAYS;
+  delete process.env.PATCH_REPORT_ORPHAN_MIN_AGE_MS;
   return root;
 });
 
@@ -128,14 +130,17 @@ describe('patch compliance report files follow their rows', () => {
     const owned = await report(s.orgA, 1);
     const ownedAged = new Date(Date.now() - 40 * DAY_MS);
     await utimes(owned.path, ownedAged, ownedAged);
+    // An orphan only a couple of hours old (e.g. an erased org's file whose
+    // unlink failed) goes on the next run, not after the 30-day window.
     const orphan = await report(s.orgA, 1);
-    await utimes(orphan.path, ownedAged, ownedAged);
+    const orphanAged = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await utimes(orphan.path, orphanAged, orphanAged);
     await getTestDb().execute(sql`DELETE FROM patch_compliance_reports WHERE id = ${orphan.id}`);
 
     const result = await runPatchReportRetentionOnce();
 
     expect(await exists(owned.path)).toBe(true);
     expect(await exists(orphan.path)).toBe(false);
-    expect(result.orphans).toMatchObject({ removed: 1, failed: 0, refused: false });
+    expect(result.orphans).toMatchObject({ removed: 1, failed: 0 });
   });
 });

@@ -12,7 +12,8 @@ import {
 } from './patchReportFiles';
 import { captureMessage } from './sentry';
 
-const ROOT = join(process.env.TMPDIR ?? '/tmp', `breeze-patch-report-files-${process.pid}-${Math.random().toString(36).slice(2)}`);
+const BASE = join(process.env.TMPDIR ?? '/tmp', `breeze-patch-report-files-${process.pid}-${Math.random().toString(36).slice(2)}`);
+const ROOT = join(BASE, 'patch-reports');
 const REPORT_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const REPORT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -29,13 +30,15 @@ async function exists(path: string): Promise<boolean> {
 beforeEach(async () => {
   vi.clearAllMocks();
   delete process.env.PATCH_REPORT_RETENTION_DAYS;
-  await rm(ROOT, { recursive: true, force: true });
+  process.env.PATCH_REPORT_STORAGE_PATH = ROOT;
+  await rm(BASE, { recursive: true, force: true });
   await mkdir(ROOT, { recursive: true });
 });
 
 afterAll(async () => {
   delete process.env.PATCH_REPORT_RETENTION_DAYS;
-  await rm(ROOT, { recursive: true, force: true });
+  delete process.env.PATCH_REPORT_STORAGE_PATH;
+  await rm(BASE, { recursive: true, force: true });
 });
 
 describe('patchReportRetentionDays', () => {
@@ -46,6 +49,11 @@ describe('patchReportRetentionDays', () => {
     ['7', 7],
     ['0', 1],
     ['-5', 1],
+    // A prefix parse would read these as 5 and 0 and expire reports early;
+    // they are not plain integers, so the default applies.
+    ['5e1', 30],
+    ['0x10', 30],
+    [' 45 ', 45],
   ])('PATCH_REPORT_RETENTION_DAYS=%s → %d', (raw, expected) => {
     if (raw === undefined) delete process.env.PATCH_REPORT_RETENTION_DAYS;
     else process.env.PATCH_REPORT_RETENTION_DAYS = raw;
@@ -67,12 +75,23 @@ describe('isPatchReportPastRetention', () => {
 });
 
 describe('patchReportFileFor', () => {
-  it('accepts only an absolute path named after the report', () => {
-    expect(patchReportFileFor(REPORT_A, `/data/patch-reports/${REPORT_A}.csv`)).toBe(`/data/patch-reports/${REPORT_A}.csv`);
-    expect(patchReportFileFor(REPORT_A, `/data/patch-reports/${REPORT_B}.csv`)).toBeNull();
-    expect(patchReportFileFor(REPORT_A, `data/patch-reports/${REPORT_A}.csv`)).toBeNull();
+  it('accepts only the report\'s own file directly inside the storage directory', () => {
+    expect(patchReportFileFor(REPORT_A, join(ROOT, `${REPORT_A}.csv`))).toBe(join(ROOT, `${REPORT_A}.csv`));
+    expect(patchReportFileFor(REPORT_A, join(ROOT, `${REPORT_B}.csv`))).toBeNull();
+    expect(patchReportFileFor(REPORT_A, `patch-reports/${REPORT_A}.csv`)).toBeNull();
     expect(patchReportFileFor(REPORT_A, '/etc/passwd')).toBeNull();
     expect(patchReportFileFor(REPORT_A, null)).toBeNull();
+  });
+
+  it('refuses a correctly named file outside the storage directory', () => {
+    expect(patchReportFileFor(REPORT_A, `/srv/${REPORT_A}.csv`)).toBeNull();
+    expect(patchReportFileFor(REPORT_A, join(ROOT, 'nested', `${REPORT_A}.csv`))).toBeNull();
+  });
+
+  it('refuses a path that climbs out of the storage directory with ..', () => {
+    expect(patchReportFileFor(REPORT_A, `${ROOT}/../../srv/${REPORT_A}.csv`)).toBeNull();
+    // Even when it normalises back into the storage directory.
+    expect(patchReportFileFor(REPORT_A, `${ROOT}/../patch-reports/${REPORT_A}.csv`)).toBeNull();
   });
 });
 
@@ -93,6 +112,21 @@ describe('removePatchReportFiles', () => {
     expect(result).toEqual({ removed: 1, missing: 1, failed: 0, unresolvable: 1 });
     expect(await exists(fileA)).toBe(false);
     expect(await exists(foreign)).toBe(true);
+    warnSpy.mockRestore();
+  });
+
+  it('never removes a correctly named file outside the storage directory', async () => {
+    const outside = join(BASE, `${REPORT_A}.csv`);
+    await writeFile(outside, 'x', 'utf8');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await removePatchReportFiles([
+      { id: REPORT_A, outputPath: `${ROOT}/../${REPORT_A}.csv` },
+      { id: REPORT_A, outputPath: outside },
+    ], 'test');
+
+    expect(result).toEqual({ removed: 0, missing: 0, failed: 0, unresolvable: 2 });
+    expect(await exists(outside)).toBe(true);
     expect(captureMessage).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });

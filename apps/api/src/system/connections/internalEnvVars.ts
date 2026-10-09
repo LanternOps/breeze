@@ -354,6 +354,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // PATH
   PATH: 'OS env passed to the Agent SDK CLI by a dev spike script',
   // PATCH_*
+  PATCH_REPORT_ORPHAN_MIN_AGE_MS: 'timing knob',
   PATCH_REPORT_RETENTION_DAYS: 'data retention window',
   PATCH_REPORT_STORAGE_PATH: 'filesystem path',
   PATCH_TOMBSTONE_PRUNE_AFTER_HOURS: 'data retention window',
