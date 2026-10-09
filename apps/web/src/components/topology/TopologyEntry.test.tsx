@@ -1,6 +1,6 @@
 import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import TopologyEntry from './TopologyEntry';
 import { topologyApi, TopologyReadError } from './topologyApi';
 import { clearTopologyPrefetch } from './topologyPrefetch';
@@ -159,4 +159,81 @@ it('keeps keyboard focus on the site select when the site changes (the select ne
   await screen.findByTestId('topology-explorer');
   expect(document.activeElement).toBe(select);
   expect(screen.getAllByTestId('topology-site')).toHaveLength(1);
+});
+
+describe('an org switch after a site link has been applied (#8113)', () => {
+  const ORG_A = '77777777-7777-4777-8777-777777777777', ORG_B = '88888888-8888-4888-8888-888888888888', ORG_C = '99999999-9999-4999-8999-999999999999';
+
+  it('the user\'s org switch wins: the link is not re-resolved, the selector is not moved back, and the site leaves the hash', async () => {
+    window.location.hash = `#topology/site/${OTHER}/view/logical`;
+    const selectOrganization = vi.fn();
+    vi.mocked(topologyApi.siteOwner).mockResolvedValue({ id: OTHER, orgId: ORG_B });
+    vi.mocked(topologyApi.settings).mockResolvedValue(topologySettingsFixture());
+    const view = render(<TopologyEntry sites={[{ id: SITE, name: 'HQ' }]} organization={{ currentOrgId: ORG_A, selectOrganization }} />);
+    // The link moves the selector to the site's organization once (#7882)...
+    await waitFor(() => expect(selectOrganization).toHaveBeenCalledWith(ORG_B));
+    view.rerender(<TopologyEntry sites={[]} organization={{ currentOrgId: ORG_B, selectOrganization }} />);
+    view.rerender(<TopologyEntry sites={[{ id: OTHER, name: 'Warehouse' }]} organization={{ currentOrgId: ORG_B, selectOrganization }} />);
+    expect(await screen.findByTestId('topology-explorer')).toBeInTheDocument();
+    const lookups = vi.mocked(topologyApi.siteOwner).mock.calls.length;
+    // ...then the user picks another organization (the store empties the site list in the same update).
+    view.rerender(<TopologyEntry sites={[]} organization={{ currentOrgId: ORG_C, selectOrganization }} />);
+    await waitFor(() => expect(window.location.hash).toBe('#topology/view/logical'));
+    view.rerender(<TopologyEntry sites={[{ id: SITE, name: 'Branch' }]} organization={{ currentOrgId: ORG_C, selectOrganization }} />);
+    await waitFor(() => expect(topologyApi.settings).toHaveBeenCalledWith(SITE, expect.anything()));
+    expect(selectOrganization).toHaveBeenCalledTimes(1);
+    expect(topologyApi.siteOwner).toHaveBeenCalledTimes(lookups);
+    expect(screen.queryByTestId('topology-site-not-in-org')).toBeNull();
+  });
+
+  it('a switch made while the link\'s owner lookup is still in flight also wins (no late snap-back)', async () => {
+    window.location.hash = `#topology/site/${OTHER}/view/logical`;
+    const selectOrganization = vi.fn();
+    let answer!: (owner: { id: string; orgId: string }) => void;
+    vi.mocked(topologyApi.siteOwner).mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    const view = render(<TopologyEntry sites={[]} organization={{ currentOrgId: ORG_A, selectOrganization }} />);
+    await waitFor(() => expect(topologyApi.siteOwner).toHaveBeenCalledTimes(1));
+    view.rerender(<TopologyEntry sites={[]} organization={{ currentOrgId: ORG_C, selectOrganization }} />);
+    await waitFor(() => expect(window.location.hash).toBe('#topology/view/logical'));
+    answer({ id: OTHER, orgId: ORG_B });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(selectOrganization).not.toHaveBeenCalled();
+    expect(topologyApi.siteOwner).toHaveBeenCalledTimes(1);
+  });
+
+  it('the store selecting its first organization while a link resolves (fresh session) is not a user switch', async () => {
+    window.location.hash = `#topology/site/${OTHER}/view/overview`;
+    const selectOrganization = vi.fn();
+    vi.mocked(topologyApi.siteOwner).mockResolvedValue({ id: OTHER, orgId: ORG_B });
+    const view = render(<TopologyEntry sites={[]} organization={{ currentOrgId: null, selectOrganization }} />);
+    view.rerender(<TopologyEntry sites={[]} organization={{ currentOrgId: ORG_A, selectOrganization }} />);
+    await waitFor(() => expect(selectOrganization).toHaveBeenCalledWith(ORG_B));
+    expect(window.location.hash).toBe(`#topology/site/${OTHER}/view/overview`);
+  });
+
+  it('a site picked from this organization\'s list is dropped, not chased, when the user switches organization', async () => {
+    window.location.hash = `#topology/site/${OTHER}/view/overview`;
+    const selectOrganization = vi.fn();
+    vi.mocked(topologyApi.settings).mockResolvedValue(topologySettingsFixture());
+    const view = render(<TopologyEntry sites={[{ id: SITE, name: 'HQ' }, { id: OTHER, name: 'Warehouse' }]} organization={{ currentOrgId: ORG_A, selectOrganization }} />);
+    expect(await screen.findByTestId('topology-explorer')).toBeInTheDocument();
+    view.rerender(<TopologyEntry sites={[]} organization={{ currentOrgId: ORG_B, selectOrganization }} />);
+    await waitFor(() => expect(window.location.hash).toBe('#topology/view/overview'));
+    expect(topologyApi.siteOwner).not.toHaveBeenCalled();
+    expect(selectOrganization).not.toHaveBeenCalled();
+  });
+
+  it('a new link opened after the switch is resolved again (once per link, not once per page)', async () => {
+    window.location.hash = `#topology/site/${OTHER}/view/overview`;
+    const selectOrganization = vi.fn();
+    vi.mocked(topologyApi.settings).mockResolvedValue(topologySettingsFixture());
+    const view = render(<TopologyEntry sites={[{ id: OTHER, name: 'Warehouse' }]} organization={{ currentOrgId: ORG_A, selectOrganization }} />);
+    expect(await screen.findByTestId('topology-explorer')).toBeInTheDocument();
+    view.rerender(<TopologyEntry sites={[{ id: SITE, name: 'HQ' }]} organization={{ currentOrgId: ORG_B, selectOrganization }} />);
+    await waitFor(() => expect(window.location.hash).toBe('#topology/view/overview'));
+    vi.mocked(topologyApi.siteOwner).mockResolvedValue({ id: OTHER, orgId: ORG_A });
+    window.location.hash = `#topology/site/${OTHER}/view/overview`;
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await waitFor(() => expect(selectOrganization).toHaveBeenCalledWith(ORG_A));
+  });
 });
