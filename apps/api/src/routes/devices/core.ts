@@ -6,6 +6,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
 import { getRedis } from '../../services/redis';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
+import { reliabilityProvisionalSql } from '../../services/reliabilityBaselineQueries';
 import {
   devices,
   deviceHardware,
@@ -1210,6 +1211,8 @@ coreRoutes.get(
         // leftJoin stays tenant-safe; null when no score computed yet.
         reliabilityScore: deviceReliability.reliabilityScore,
         reliabilityTrend: deviceReliability.trendDirection,
+        // #5876: coalesce(...) is false when the leftJoin finds no score row.
+        reliabilityProvisional: reliabilityProvisionalSql,
         // Hardware & RAID rollup (#6854 W04) — null when no report yet.
         hardwareHealth: deviceHardwareHealth.health,
         hardwareHealthSummary: deviceHardwareHealth.summary,
@@ -1429,6 +1432,7 @@ coreRoutes.get(
         // score yet (no device_reliability row) — the list renders a dash.
         reliabilityScore: d.reliabilityScore ?? null,
         reliabilityTrend: d.reliabilityTrend ?? null,
+        reliabilityProvisional: d.reliabilityProvisional === true,
         hardwareHealth: d.hardwareHealth ?? null,
         hardwareHealthSummary: d.hardwareHealthSummary ?? null,
         helperLifecycleMode: d.helperLifecycleMode ?? null,

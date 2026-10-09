@@ -35,3 +35,13 @@ it('#7132: includeReliability adds the score drivers and hardware offenders, nev
  expect(result.reliability.drivers[0]).toMatchObject({factor:'hardwareErrors'});
  expect(result.hardwareOffenders30d).toEqual([{key:'filtermanager',label:'Microsoft-Windows-FilterManager',count:50,lastOccurrence:'2026-09-10T01:26:00.000Z'}]);
 });
+it('#5876: includeReliability surfaces the baseline marker (reason, baselineAt, provisional, reportedDaysSinceBaseline) and null when absent',async()=>{
+ const tools=new Map<string,AiTool>();registerDeviceTools(tools);const tool=tools.get('get_device_hardware_health');
+ m.access.mockResolvedValue({device:{id:'id'}});m.view.mockResolvedValue({health:'ok'});m.getOffenders.mockResolvedValue({services:[],hardware:[],hangs:[]});
+ m.getReliability.mockResolvedValue({reliabilityScore:90,trendDirection:'stable',drivers:[],provisional:true,baseline:{id:'b',baselineAt:'2026-10-01T00:00:00.000Z',reason:'remediated',source:'manual',reportedDaysSinceBaseline:3,provisional:true}});
+ let result=JSON.parse(await tool!.handler({deviceId:'id',includeReliability:true},{} as any));
+ expect(result.reliability.baseline).toEqual({reason:'remediated',baselineAt:'2026-10-01T00:00:00.000Z',provisional:true,reportedDaysSinceBaseline:3});
+ m.getReliability.mockResolvedValue({reliabilityScore:90,trendDirection:'stable',drivers:[],provisional:false,baseline:null});
+ result=JSON.parse(await tool!.handler({deviceId:'id',includeReliability:true},{} as any));
+ expect(result.reliability.baseline).toBeNull();
+});

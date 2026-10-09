@@ -398,6 +398,15 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
               trendDirection: reliability.trendDirection,
               // The scored inputs behind the number: per-factor score/weight/lostPoints/evidence.
               drivers: reliability.drivers ?? [],
+              // #5876: a fresh score after a fix/reimage is not long-term health.
+              baseline: reliability.baseline
+                ? {
+                    reason: reliability.baseline.reason,
+                    baselineAt: reliability.baseline.baselineAt,
+                    provisional: reliability.baseline.provisional,
+                    reportedDaysSinceBaseline: reliability.baseline.reportedDaysSinceBaseline,
+                  }
+                : null,
             }
           : null;
         // Top hardware offenders (source + distinct event count) for the same
