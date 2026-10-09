@@ -35,7 +35,7 @@ circuit_terminations
 circuit_served_sites
 ```
 
-`circuit_terminations` is deliberately a separate 0..1 relationship instead of a nullable interface FK on `circuits`. Routine topology coalescing/generation replacement must transfer operator-owned WAN role and circuit termination to the known successor interface before deleting the predecessor. If no deterministic successor exists, deleting the relationship leaves the customer circuit record intact in a visible `needs_reassociation` state rather than deleting the carrier service record or storing a stale primary site.
+`circuit_terminations` is deliberately a separate 0..1 relationship instead of a nullable interface FK on `circuits`. Routine topology coalescing carries the operator-owned WAN role and circuit termination to the known successor interface before deleting the predecessor. A generation roll has no proven successor by definition, so it never transfers: the predecessor is retired and the circuit surfaces `needs_reassociation`. The state is derived at read time from the termination's interface and its owner node; only a hard delete of a terminating interface (for example site deletion) needs a database trigger, because application code cannot run before an FK cascade. The customer circuit record is never deleted and no stale primary site is stored.
 
 ---
 
@@ -94,9 +94,9 @@ No circuit entity currently exists. A circuit is therefore genuinely new custome
 
 ### 0.5 Site moves
 
-Discovered-asset site moves intentionally invalidate topology authority: the current move path deletes topology node bindings and later allows topology to be re-established in the target site. A stable asset record can therefore outlive the topology interface row that represented its old site/interface generation.
+Discovered-asset site moves intentionally invalidate topology authority: the current move path (`discoveredAssetSiteMove.ts`, through database triggers) deletes topology node bindings and later allows topology to be re-established in the target site. It does not touch `topology_interfaces`: the interface row stays current in its old site while its owner node no longer has a binding. A stable asset record can therefore outlive the topology binding that represented its old site/interface generation.
 
-That means a circuit must survive an interface disappearing or being replaced. When the topology lifecycle knows the predecessor/successor pair, V1 carries the operator-owned WAN role and termination to the successor. When no deterministic successor exists, V1 exposes **needs reassociation** rather than silently treating the circuit as an ordinary unassigned record.
+That means a circuit must survive an interface being retired, unbound or removed. Only coalescing has a known predecessor/successor pair (`physicalPublication.ts`), and V1 carries the operator-owned WAN role and termination to the successor there. A generation roll (`planInterfaceGeneration`) allocates a new epoch only when continuity is a conflict or unproven-and-different, that is, when no successor is proven, and a rename with the same MAC keeps the same row id; a roll therefore has nothing to transfer. In every case without a proven successor, V1 exposes **needs reassociation** rather than silently treating the circuit as an ordinary unassigned record.
 
 ### 0.6 Monitor/interface context
 
@@ -115,16 +115,16 @@ Alert/ticket context is deferred to Wave 2. That wave must first define and test
 | D3 | Placement site | **Not stored.** Site is derived live from the subject asset. | Placement survives a same-org site move and cannot drift from asset assignment. |
 | D4 | Placement vocabulary | **Room, rack, rack unit, height U only.** | Typed V1 fields; no cable/patch-panel model and no generic JSON bag. |
 | D5 | WAN classification | **`topology_interfaces.role = 'wan'`, operator-owned.** | Reuses the existing interface record; no parallel interface entity. |
-| D6 | Discovery ownership | **Discovery never overwrites a non-NULL operator role; known topology successor paths transfer the role.** | Prevents refresh/coalesce/generation roll from erasing WAN classification. |
+| D6 | Discovery ownership | **Discovery never overwrites a non-NULL operator role; the coalescing successor path transfers the role.** | Prevents refresh/coalesce from erasing WAN classification. A generation roll has no successor, so it does not transfer. |
 | D7 | Circuit ownership | **Org-owned customer data.** | Circuits are customer service records, not partner-wide policy/config. |
 | D8 | Circuit identity | **Provider + CID are scalar fields; no provider table in V1.** | Avoids a second provider-management subsystem. |
 | D9 | Termination | **Separate `circuit_terminations`, max one active termination per circuit.** | Lets the circuit survive interface deletion/replacement while keeping cross-org linkage enforceable. |
 | D10 | Primary site | **Derived from the current terminating interface/site; never stored.** | Eliminates duplicate state and follows Todd's explicit requirement. |
 | D11 | Additional sites | **Separate `circuit_served_sites`.** | Same-org FK enforcement; represents dependency/use, not outage state. |
 | D12 | Primary site in served list | **Rejected on write and de-duplicated on read.** | Keeps “additional” semantically distinct from termination. |
-| D13 | Interface lifecycle | **Known successor: transfer role + termination. Unknown successor: `needs_reassociation`.** | Routine topology churn must not silently erase operator-owned context, while uncertain replacement must not be guessed. |
-| D14 | Asset/site move | **Placement follows automatically; topology carries termination across a deterministic interface successor, otherwise the circuit becomes `needs_reassociation`.** | Placement is asset-bound; topology interfaces can rotate across moves/generations but known replacement paths can preserve operator context safely. |
-| D15 | Asset deletion | **Placement cascades; circuit survives; termination relation disappears with its interface.** | A carrier circuit can continue to exist after router replacement. |
+| D13 | Interface lifecycle | **Coalescing with a known successor: transfer role + termination. No proven successor (generation roll, retire, unbound owner node, hard delete): `needs_reassociation`.** | Routine topology churn must not silently erase operator-owned context, while uncertain replacement must not be guessed. |
+| D14 | Asset/site move | **Placement follows automatically; the termination stays on the old-site interface and is derived as `needs_reassociation` while its owner node has no binding.** | Placement is asset-bound; a site move drops node bindings but does not touch interface rows, so the old interface must not be presented as the current primary site. |
+| D15 | Asset deletion | **Placement cascades; circuit survives; asset deletion does not delete topology nodes or interfaces, so the termination follows the derived state in §5.4.** | A carrier circuit can continue to exist after router replacement. |
 | D16 | Health semantics | **Circuit service metadata is administrative, not live outage health.** | Monitoring remains the source of operational health. |
 | D17 | Alert/ticket context | **Wave 2 after explicit alert-to-interface provenance exists.** | The current monitor binding writer does not populate `interfaceId`, so Wave 1 must not promise enrichment that resolves zero alerts. |
 | D18 | Impact wording | **“Potentially impacted sites”.** | Served-site association does not model redundancy or prove an outage. |
@@ -279,7 +279,11 @@ Implementation must verify or add the composite unique key required on the refer
 
 The row may be partially populated. An empty placement (all four placement fields NULL) is not persisted; deleting the last value deletes the placement row.
 
-**Linked discovered-asset authority:** if `discovered_assets.linked_device_id` is NULL, the discovered asset may own its placement row. Once it is linked to a managed device, the managed device becomes the sole authoritative placement subject for that physical box. The link operation resolves placement atomically: if only the discovered asset has placement, move it to the device; if only the device has placement, keep it; if both are identical, keep the device row and remove the duplicate discovered row; if both exist and differ, reject the link with a placement-conflict response so an operator chooses which values survive. Unlinking does not clone placement back to the discovered asset; the device retains the authoritative row until an operator explicitly creates a new discovered placement after unlink.
+**Linked discovered-asset authority:** if `discovered_assets.linked_device_id` is NULL, the discovered asset may own its placement row. Once it is linked to a managed device, the managed device becomes the sole authoritative placement subject for that physical box. Every writer of `linked_device_id` follows a deterministic rule:
+
+- **Manual link (operator action):** resolved atomically. If only the discovered asset has placement, move it to the device; if only the device has placement, keep it; if both are identical, keep the device row and remove the duplicate discovered row; if both exist and differ, reject the link with a placement-conflict response so an operator chooses which values survive.
+- **Automatic link** (the discovery worker's MAC/IP auto-link and the agent-reported BMC association): these paths cannot return a conflict, so the same rule applies except that a differing pair is never rejected: the device placement wins and the discovered asset's placement row is deleted in the same transaction.
+- **Unlink, any path** (manual unlink, the discovery worker's cross-site stale-link cleanup, a discovered-asset site move whose linked device is not in the target site, and device deletion): placement is never cloned back. The device keeps its row (or loses it together with the device on deletion); the discovered asset has no placement until an operator explicitly creates one.
 
 ### 5.2 `topology_interfaces.role`
 
@@ -297,7 +301,7 @@ Write contract:
 PATCH interface role -> `wan` or NULL
 ```
 
-The topology publication/materialization path must preserve the stored role when updating a current interface. In addition, every repository path that replaces one interface row with a known successor, including coalescing and topology generation roll, must carry a non-NULL operator role to the successor before the predecessor is deleted/retired. Discovery may create a genuinely new interface with `role = NULL`; it must not reset a role on the same row or drop one during a deterministic replacement.
+The topology publication/materialization path must preserve the stored role when updating a current interface. The coalescing path, which has a real from -> to map, must carry a non-NULL operator role to the successor before the predecessor is deleted (rules in §6.4). A generation roll does not transfer: it retires the predecessor and allocates a new row with `role = NULL`, because links are not inherited and no successor is proven. Discovery may create a genuinely new interface with `role = NULL`; it must not reset a role on the same row.
 
 V1 does not add speculative values such as `lan`, `uplink`, `trunk`, or `management`. Those can be specified separately if needed.
 
@@ -327,7 +331,7 @@ CREATE TABLE circuits (
 );
 ```
 
-`administrative_status` describes the service record lifecycle. It is not the live monitor result and must not be rendered as current reachability. `needs_reassociation` records lifecycle intent only: it is set to `true` when Breeze removes a termination because a topology/site lifecycle event has no deterministic successor, and reset to `false` when a termination is successfully assigned or when an authorized user intentionally leaves the circuit unassigned. It is not a stored primary-site field.
+`administrative_status` describes the service record lifecycle. It is not the live monitor result and must not be rendered as current reachability. `needs_reassociation` is written only by the database trigger defined in §5.4 when a terminating interface is hard-deleted (no application lifecycle path writes it), and is cleared when a termination is successfully assigned or an authorized user intentionally detaches the circuit. Retired-interface and unbound-owner cases are not stored; they are derived at read time (§5.4). It is not a stored primary-site field.
 
 Required indexes:
 
@@ -368,9 +372,21 @@ Required FKs:
 
 To make the second FK enforceable without storing the primary site, implementation may add a redundant unique key/index on `topology_interfaces(id, org_id)` if one does not already exist. `topology_interfaces.id` is already globally unique; the composite key exists only to make same-org linkage a database invariant.
 
-Deleting a topology interface without a deterministic successor deletes only the termination relationship after setting the circuit's `needs_reassociation = true`. The circuit itself remains. A manual/intentional termination removal leaves `needs_reassociation = false`.
+**Derived termination state.** Readers compute `terminationState` as follows:
 
-An interface with `retired_at IS NOT NULL` is not considered a current termination even if a stale relation somehow remains during a transition. Deterministic predecessor/successor transitions transfer the termination first. If no safe successor is known, cleanup removes the stale relation and readers return `terminationState = 'needs_reassociation'` rather than silently presenting a normal unassigned circuit.
+```text
+assigned             termination row exists, its interface has retired_at IS NULL,
+                     and the interface's owner node has at least one topology_node_bindings row
+needs_reassociation  termination row exists but the interface is retired or its owner node has
+                     no binding, OR there is no termination row and circuits.needs_reassociation = true
+unassigned           no termination row and circuits.needs_reassociation = false
+```
+
+Retiring an interface is an UPDATE, not a delete, and a discovered-asset site move deletes node bindings without touching interfaces, so neither needs a writer: the state follows from data that already exists. A termination that is not `assigned` never contributes a primary site, and the read model returns `termination: null` for it.
+
+**Hard delete.** Site deletion and node deletion reach `topology_interfaces` only through FK cascade, so application code cannot run before it. A `BEFORE DELETE` row trigger on `topology_interfaces` (`SECURITY INVOKER`, same-org predicate, following the existing `breeze_detach_topology_monitor_authority` pattern) sets `circuits.needs_reassociation = true` for the circuit terminating on `OLD.id`; the FK cascade then removes the termination row and the circuit remains. This trigger is the only writer of the flag on lifecycle paths. A manual/intentional termination removal leaves `needs_reassociation = false`. Implementation tests must prove the trigger fires for cascaded deletes.
+
+Open point for the maintainer: a WAN interface whose owner node never had an inventory binding (for example an unbound physical-target or remote-chassis node) would derive `needs_reassociation`. V1 does not add a bound-owner precondition for creating a termination; this is flagged for review rather than assumed.
 
 The interface must be current (`retired_at IS NULL`) and `role = 'wan'` before a termination can be created.
 
@@ -438,30 +454,36 @@ placement site on read = asset's new current site
 
 Circuit:
 
-- If the same current interface row remains valid in the new topology scope, the primary site is re-derived from it.
-- If the topology lifecycle has a deterministic predecessor -> successor mapping (for example coalescing or generation roll), it must transfer `role = 'wan'` and the `circuit_terminations` row to the successor before deleting/retiring the predecessor. Existing relationship/observation re-pointing is the lifecycle precedent.
-- If the old interface disappears and Breeze cannot prove a unique successor, the termination relation is removed, the circuit remains durable, and readers surface `terminationState = 'needs_reassociation'`.
-- The operator reattaches that circuit to a current WAN interface after topology is re-established.
+- A discovered-asset site move deletes the asset's topology node bindings (`discoveredAssetSiteMove.ts` and its triggers) but does not touch interface rows. The interface stays current in its old site and its owner node has no binding, so the circuit is derived as `needs_reassociation` (§5.4) instead of presenting the old site as the current primary site.
+- If topology later re-establishes a node/interface in the target site, the operator reattaches the circuit to the current WAN interface there. If the same owner node regains a binding, the derived state returns to `assigned`.
+- Only coalescing has a deterministic predecessor -> successor mapping; its transfer rules are in §6.4. A generation roll does not.
 
-V1 does **not** invent a successor by `name`, `os_index`, MAC, or `interface_key`; those values can change or collide. Carry-over is allowed only when the topology lifecycle itself already knows the old/new identity mapping.
+V1 does **not** invent a successor by `name`, `os_index`, MAC, or `interface_key`; those values can change or collide. Carry-over is allowed only when the topology lifecycle itself already knows the old/new identity mapping (coalescing).
 
 ### 6.3 Asset deletion
 
 Placement is deleted through the subject FK cascade.
 
-Topology lifecycle removes the interface/binding. If there is a deterministic replacement interface, role and termination are transferred first; otherwise `circuit_terminations` is deleted and the circuit survives as `needs_reassociation`.
+Deleting an asset does not delete topology nodes or interfaces. The interface and its termination stay with the owner node; once that node has no binding, or the interface is later retired or removed, the circuit follows the derived-state and hard-delete rules in §5.4 and surfaces as `needs_reassociation`.
 
 This is deliberate because deleting/replacing a router does not prove that the carrier circuit ceased to exist.
 
 ### 6.4 Interface coalescing and generation roll
 
-A retired interface cannot be selected for a new termination. Before a known predecessor interface is deleted or retired, coalescing/generation lifecycle code must re-point a current circuit termination and copy the operator-owned non-NULL role to the successor in the same lifecycle operation. The transfer must preserve same-org invariants and termination uniqueness.
+Only coalescing has a real from -> to map (`planMergedInterfaces`, applied by `applyMergedInterfaces`). It runs `DELETE FROM topology_interfaces` on the `from` row after re-pointing relationships and observations, and that delete would cascade-drop the termination. Before that delete, in the same transaction and with the deferrable FKs, the coalescing path must:
 
-If no deterministic successor exists, the lifecycle transaction first sets `circuits.needs_reassociation = true` and then removes the termination relation. The old interface row remains topology history, not live service authority. A successful successor transfer or later reassociation sets the flag back to `false`.
+1. **Role:** copy a non-NULL operator role from `from` to `to` when `to.role IS NULL`.
+2. **Termination, `from` has none:** nothing to do.
+3. **Termination, only `from` has one:** re-point it to `to`, including when `to` is itself retired. A retired target is never a current termination, so the circuit is then derived as `needs_reassociation`.
+4. **Termination, both sides have one** (two different circuits, because `interface_id` is UNIQUE and `circuit_id` is the primary key): the target's termination is kept and the `from` termination is not moved. Deleting the `from` row triggers `needs_reassociation` for that other circuit (§5.4).
+
+The re-own-then-retire path (a merged loser interface is re-owned and retired when the survivor already has a current generation for the key) keeps the same row id, so termination and role stay on that row. It proves no successor, so nothing is transferred and the retired interface derives `needs_reassociation`.
+
+A generation roll (`planInterfaceGeneration` with `retireCurrent = true`) allocates a new row and retires the old one; links are not inherited and no successor is proven. The old row keeps its role and termination as history, the new row has `role = NULL`, and the circuit derives `needs_reassociation` until the operator marks the new interface `wan` and reassigns it. A retired interface cannot be selected for a new termination.
 
 ### 6.5 Site deletion
 
-Deleting a site follows the existing site/topology cascade. Before a terminating interface is removed as part of that cascade, the lifecycle path sets the affected circuit's `needs_reassociation = true`; deletion then removes its `circuit_terminations` row. The circuit itself survives, while `circuit_served_sites` rows for the deleted site cascade independently. No stale primary site is retained because primary site is derived, not stored.
+Deleting a site follows the existing site/topology cascade (`topology_interfaces_site_fk` is `ON DELETE CASCADE`). The `BEFORE DELETE` trigger in §5.4 sets `needs_reassociation = true` on the affected circuit before the cascade removes its `circuit_terminations` row. The circuit itself survives, while `circuit_served_sites` rows for the deleted site cascade independently. No stale primary site is retained because primary site is derived, not stored.
 
 ### 6.6 Circuit deletion
 
@@ -610,7 +632,7 @@ Server validates:
 - `role = 'wan'`;
 - interface/site write authorization;
 - interface not already terminating another circuit;
-- successful assignment/reassignment clears server-managed `needs_reassociation`; intentional `DELETE /circuits/:id/termination` also clears it, while topology/site lifecycle loss sets it as defined in §6.
+- successful assignment/reassignment clears server-managed `needs_reassociation`; intentional `DELETE /circuits/:id/termination` also clears it, while hard deletion of the terminating interface sets it through the trigger in §5.4.
 
 Served-sites write:
 
@@ -631,7 +653,7 @@ Server validates every site in the circuit org, every site is writable by the ca
   bandwidthBps,
   serviceType,
   administrativeStatus,
-  terminationState: 'assigned' | 'unassigned' | 'needs_reassociation', // derived from termination + needs_reassociation
+  terminationState: 'assigned' | 'unassigned' | 'needs_reassociation', // derived from termination row, interface state, owner-node binding and needs_reassociation (§5.4)
 
   termination: null | {
     interfaceId,
@@ -784,7 +806,7 @@ Implementation must use a new, sort-last migration name according to the migrati
 
 All four new tables must be added to:
 
-- `CORE_ORG_CASCADE_DELETE_ORDER` in `apps/api/src/services/tenantCascade.ts`, in alphabetical/FK-safe order;
+- `CORE_ORG_CASCADE_DELETE_ORDER` in `apps/api/src/services/tenantCascade.ts`, at their alphabetical position (see §12.2);
 - `CORE_TENANT_EXPORT_POLICY` in `apps/api/src/services/tenantExportPolicyRegistry.ts` with every column classified;
 - the organization merge registry (`apps/api/src/services/orgMergeRegistry.ts`) with merge policy **`repoint`** for these org-owned rows;
 - schema exports in `apps/api/src/db/schema/index.ts`.
@@ -793,15 +815,16 @@ Shape-1 tables do not require an RLS allowlist entry, but the RLS coverage integ
 
 ### 12.2 FK ordering
 
-Org erasure order must respect children before parents:
+`CORE_ORG_CASCADE_DELETE_ORDER` is an alphabetical list kept for determinism; the actual DELETE order is computed at runtime from the FK graph (`topologicalCascadeOrder`), and the tenant-cascade integration contract fails CI when an `org_id` table is missing from the list. The new tables are registered by name at their alphabetical position, for example:
 
 ```text
+asset_physical_placements   between asset_checkouts and audit_baseline_apply_approvals
 circuit_served_sites
 circuit_terminations
 circuits
 ```
 
-`asset_physical_placements` must precede any parent it references if deletion is performed manually rather than relying on cascade. The tenant-cascade integration contract is the final authority for ordering.
+Every new FK is an explicit `ON DELETE CASCADE`, so list position does not affect erasure order. The tenant-cascade integration contract is the final authority.
 
 ### 12.3 Export policy buckets
 
@@ -865,10 +888,10 @@ Wave 1 implements the durable data/lifecycle contract only:
 schema + tenancy registrations
 placement authority + link/unlink behavior
 WAN role mutation
-coalesce/generation role + termination carry-over
+coalesce role + termination carry-over; generation roll -> needs_reassociation
 circuit CRUD + termination + served sites
 derived primary site
-unassigned vs needs_reassociation
+unassigned vs needs_reassociation (derived state + hard-delete trigger)
 asset/interface circuit UI
 site-scoped reassociation picker
 ```
@@ -886,7 +909,7 @@ Wave 2 starts only after an explicit interface provenance source is defined for 
 - [ ] A managed device can store room, rack, rack unit and height U.
 - [ ] An unlinked discovered asset can store the same placement fields.
 - [ ] The API cannot create one placement row pointing to both subject types or neither.
-- [ ] Linking a discovered asset to a managed device leaves exactly one authoritative placement on the device; conflicting non-identical placements reject the link until explicitly resolved; unlinking does not duplicate placement back.
+- [ ] Linking a discovered asset to a managed device leaves exactly one authoritative placement on the device: manual link rejects conflicting non-identical placements until resolved; automatic link (discovery worker, agent-reported BMC association) keeps the device placement and drops the discovered one; no unlink path clones placement back.
 - [ ] Cross-org subject references fail at the database layer.
 - [ ] A same-org site move does not require rewriting the placement row.
 - [ ] Deleting the asset removes its placement.
@@ -896,7 +919,7 @@ Wave 2 starts only after an explicit interface provenance source is defined for 
 
 - [ ] An existing current topology interface can be marked `wan` and cleared to NULL.
 - [ ] Discovery/publication does not overwrite a non-NULL operator role.
-- [ ] Coalescing and generation-roll paths transfer a non-NULL operator role to the deterministic successor interface.
+- [ ] Coalescing transfers a non-NULL operator role to the successor interface; a generation roll does not transfer and leaves the circuit `needs_reassociation`.
 - [ ] No extra interface record is created.
 - [ ] A retired interface cannot be selected as a circuit termination.
 - [ ] WAN cannot be cleared while a current termination still references the interface unless detachment occurs in the same action.
@@ -909,8 +932,8 @@ Wave 2 starts only after an explicit interface provenance source is defined for 
 - [ ] One current interface cannot terminate two circuits.
 - [ ] Cross-org termination is impossible at the database layer.
 - [ ] Primary site is returned from the current termination and is not stored on `circuits`.
-- [ ] Deterministic interface replacement transfers the termination to the successor without losing the circuit association.
-- [ ] Interface deletion/replacement without a deterministic successor sets `needs_reassociation = true`, removes only the termination, and leaves the circuit record intact.
+- [ ] Coalescing with a known successor transfers the termination without losing the circuit association; the retired-target, both-sides-terminated and re-own-then-retire cases behave as defined in §6.4.
+- [ ] A retired interface or an owner node without a binding derives `needs_reassociation` with no stored write; hard deletion of the terminating interface sets `needs_reassociation = true` through the trigger, removes only the termination, and leaves the circuit record intact.
 - [ ] Manual termination removal leaves the circuit intentionally unassigned with `needs_reassociation = false`; successful reassociation resets the flag to `false`.
 - [ ] Asset deletion does not delete the circuit record.
 - [ ] Reassociation to a replacement WAN interface restores the derived primary site.
@@ -958,17 +981,17 @@ When implementation begins, the minimum test set is:
 
 - placement create/update/delete for device and discovered asset;
 - placement XOR validation;
-- linked discovered-asset/device placement authority on link/unlink, including conflicting-placement rejection;
+- linked discovered-asset/device placement authority on manual link (conflict rejection), automatic link (device wins) and every unlink path;
 - site-scoped authorization for both subject kinds;
 - WAN role mutation and clearing guard;
 - publication/materialization regression proving operator role survives discovery refresh;
-- coalescing and generation-roll regressions proving WAN role and circuit termination transfer to a deterministic successor;
+- coalescing regressions (known successor, retired target, both sides terminated, re-own-then-retire) proving WAN role and termination handling, and a generation-roll regression proving no transfer and a derived `needs_reassociation`;
 - circuit CRUD validation;
 - termination requires current WAN interface;
 - termination uniqueness;
 - served-site same-org validation and primary-site exclusion;
 - primary-site derivation;
-- intentional unassigned vs `needs_reassociation` state and flag transitions;
+- intentional unassigned vs `needs_reassociation` derived state, trigger-written flag and flag transitions;
 - site-scoped reassociation picker authorization/redaction;
 - `runAction` coverage for all new web mutations.
 
@@ -981,8 +1004,8 @@ When implementation begins, the minimum test set is:
 - organization merge with placement + circuit + termination + served sites;
 - tenant cascade deletion order;
 - tenant export policy coverage and export/erasure roundtrip;
-- topology interface deletion/retirement without a successor leaves the circuit durable as `needs_reassociation`;
-- deterministic interface replacement preserves termination and WAN role;
+- interface retirement, owner-node unbinding (discovered-asset site move) and hard deletion (including the site-delete cascade firing the trigger) surface the circuit as durable `needs_reassociation`;
+- coalescing with a known successor preserves termination and WAN role;
 - site deletion removes termination/served-site relations but preserves the circuit record;
 - discovery publication preserves `topology_interfaces.role = 'wan'`.
 
@@ -1069,7 +1092,7 @@ Todd's four explicit design points are resolved as follows:
 | Maintainer point | V1 resolution |
 |---|---|
 | **Tenancy:** org-owned, RLS, erasure/export, cross-org served-sites rejected | §§5, 7, 12, 13, 16–18. Shape 1, DB-enforced composite FKs, cascade/export/org-merge contracts. |
-| **Primary site derived, not stored; define move/delete** | §§5.4, 6. Known topology replacements transfer role/termination; unknown replacement or site deletion removes only the termination and surfaces `needs_reassociation`; placement follows asset moves automatically. |
+| **Primary site derived, not stored; define move/delete** | §§5.4, 6. Coalescing transfers role/termination; generation roll, retire and site move (unbound owner node) derive `needs_reassociation`; hard delete (site delete) uses a trigger; placement follows asset moves automatically. |
 | **“Potentially impacted” wording only** | §§9.4, 11, 15–16. No redundancy/outage inference. |
 | **Minimum V1 surface** | §9. Wave 1 is schema + placement + WAN role + circuits API/UI. Alert/ticket context is Wave 2 after explicit interface provenance; topology rendering remains deferred. |
 
