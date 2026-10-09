@@ -925,6 +925,40 @@ function isBreezeSelfServiceFailure(serviceName: string | undefined): boolean {
 // not the row's collectedAt. An event near midnight can be re-reported in rows
 // on either side of a day boundary; anchoring on the event timestamp keeps the
 // distinct event in exactly one bucket regardless of which rows reported it.
+function eventTimestampMs(eventTimestamp: string | undefined, fallback: Date): number {
+  if (eventTimestamp) {
+    const ms = Date.parse(eventTimestamp);
+    if (!Number.isNaN(ms)) return ms;
+  }
+  return fallback.getTime();
+}
+
+/**
+ * #5876 baseline cut, at EVENT granularity. Rows collected before the marker are
+ * dropped whole (their samples must not count as observed days). Inside rows
+ * collected at/after it, events whose own timestamp precedes the marker are
+ * dropped — the agent posts ~every 24h, so a post-marker row can carry
+ * pre-marker events. Events without a parseable timestamp fall back to the
+ * row's collectedAt, matching eventDayKey().
+ */
+function applyBaselineToRows<T extends ScoringHistoryRow>(rows: T[], baselineAt: Date | null): T[] {
+  if (!baselineAt) return rows;
+  const cutMs = baselineAt.getTime();
+  return rows
+    .filter((row) => row.collectedAt.getTime() >= cutMs)
+    .map((row) => {
+      const keep = <E extends { timestamp?: string }>(events: E[]): E[] =>
+        events.filter((event) => eventTimestampMs(event.timestamp, row.collectedAt) >= cutMs);
+      return {
+        ...row,
+        crashEvents: keep(row.crashEvents),
+        appHangs: keep(row.appHangs),
+        serviceFailures: keep(row.serviceFailures),
+        hardwareErrors: keep(row.hardwareErrors),
+      };
+    });
+}
+
 function eventDayKey(eventTimestamp: string | undefined, fallback: Date): string {
   if (eventTimestamp) {
     const ms = Date.parse(eventTimestamp);
@@ -2252,6 +2286,7 @@ export async function getOrgReliabilitySummary(orgId: string, options: { siteIds
 }
 
 export const reliabilityScoringInternals = {
+  applyBaselineToRows,
   parseAggregateState,
   mergeRowsIntoDailyBuckets,
   sortDailyBuckets,

@@ -1684,3 +1684,42 @@ describe('aggregateReliabilityOffenders', () => {
     expect(unfiltered.services.map((offender) => offender.label).sort()).toEqual(['InWindow', 'OldReReport']);
   });
 });
+
+describe('applyBaselineToRows (#5876)', () => {
+  const baselineAt = new Date('2026-02-20T12:00:00.000Z');
+  it('drops rows collected before the marker entirely', () => {
+    const rows = [
+      makeHistoryRow({ collectedAt: new Date('2026-02-20T11:59:59.000Z'), crashEvents: [{ type: 'bsod', timestamp: '2026-02-20T11:00:00.000Z' }] }),
+      makeHistoryRow({ collectedAt: new Date('2026-02-21T10:00:00.000Z') }),
+    ];
+    const out = reliabilityScoringInternals.applyBaselineToRows(rows as any, baselineAt);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.collectedAt.toISOString()).toBe('2026-02-21T10:00:00.000Z');
+  });
+  it('drops pre-marker events carried in a post-marker row and keeps post-marker events', () => {
+    const rows = [makeHistoryRow({
+      collectedAt: new Date('2026-02-21T10:00:00.000Z'),
+      crashEvents: [
+        { type: 'bsod', timestamp: '2026-02-20T09:00:00.000Z' },
+        { type: 'bsod', timestamp: '2026-02-21T09:00:00.000Z' },
+      ],
+      appHangs: [{ processName: 'a', timestamp: '2026-02-20T11:00:00.000Z', duration: 5, resolved: true }],
+      serviceFailures: [{ serviceName: 's', timestamp: '2026-02-20T13:00:00.000Z', recovered: false }],
+      hardwareErrors: [{ type: 'disk', severity: 'error', source: 'disk', timestamp: '2026-02-19T00:00:00.000Z' }],
+    })];
+    const [row] = reliabilityScoringInternals.applyBaselineToRows(rows as any, baselineAt);
+    expect(row!.crashEvents.map((e: any) => e.timestamp)).toEqual(['2026-02-21T09:00:00.000Z']);
+    expect(row!.appHangs).toEqual([]);
+    expect(row!.serviceFailures).toHaveLength(1);
+    expect(row!.hardwareErrors).toEqual([]);
+  });
+  it('falls back to collectedAt for events with a missing or unparseable timestamp', () => {
+    const rows = [makeHistoryRow({ collectedAt: new Date('2026-02-21T10:00:00.000Z'), crashEvents: [{ type: 'bsod' }, { type: 'bsod', timestamp: 'garbage' }] })];
+    const [row] = reliabilityScoringInternals.applyBaselineToRows(rows as any, baselineAt);
+    expect(row!.crashEvents).toHaveLength(2);
+  });
+  it('is the identity when there is no marker', () => {
+    const rows = [makeHistoryRow({})];
+    expect(reliabilityScoringInternals.applyBaselineToRows(rows as any, null)).toBe(rows);
+  });
+});
