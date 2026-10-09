@@ -908,6 +908,7 @@ const REPOINT_TABLES: readonly string[] = [
   "device_recovery_keys",
   "device_registry_state",
   "device_reliability",
+  "device_reliability_baselines",
   "device_reliability_history",
   "device_sessions",
   "device_software_inventory_state",

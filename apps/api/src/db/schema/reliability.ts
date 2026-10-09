@@ -1,6 +1,8 @@
-import { pgTable, uuid, timestamp, bigint, jsonb, index, integer, real, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, timestamp, bigint, jsonb, index, integer, real, pgEnum, text, foreignKey, check, uniqueIndex } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { devices } from './devices';
 import { organizations } from './orgs';
+import { users } from './users';
 
 export type ReliabilityCrashEvent = {
   // app_crash = a per-app crash report (macOS), counted toward the crash factor
@@ -101,3 +103,49 @@ export const deviceReliability = pgTable('device_reliability', {
   scoreIdx: index('reliability_score_idx').on(table.reliabilityScore),
   trendIdx: index('reliability_trend_idx').on(table.trendDirection)
 }));
+
+export const RELIABILITY_BASELINE_REASON_VALUES = ['reimaged', 'remediated', 'hardware_replaced'] as const;
+export const RELIABILITY_BASELINE_SOURCE_VALUES = ['manual', 'bare_metal_recovery'] as const;
+
+// #5876 baseline markers. SQL migration is authoritative for DEFERRABLE INITIALLY
+// IMMEDIATE (Drizzle has no deferrability builder — same as device_time_daily).
+export const deviceReliabilityBaselines = pgTable(
+  'device_reliability_baselines',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+    deviceId: uuid('device_id').notNull(),
+    baselineAt: timestamp('baseline_at', { withTimezone: true }).notNull(),
+    reason: text('reason').$type<(typeof RELIABILITY_BASELINE_REASON_VALUES)[number]>().notNull(),
+    source: text('source').$type<(typeof RELIABILITY_BASELINE_SOURCE_VALUES)[number]>().notNull().default('manual'),
+    sourceRef: uuid('source_ref'),
+    note: text('note'),
+    beforeSnapshot: jsonb('before_snapshot').$type<Record<string, unknown>>(),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    clearedAt: timestamp('cleared_at', { withTimezone: true }),
+    clearedBy: uuid('cleared_by').references(() => users.id, { onDelete: 'set null' }),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.deviceId, t.orgId],
+      foreignColumns: [devices.id, devices.orgId],
+      name: 'device_reliability_baselines_device_org_fkey',
+    }).onUpdate('cascade').onDelete('cascade'),
+    index('device_reliability_baselines_active_idx')
+      .on(t.deviceId, t.baselineAt.desc(), t.createdAt.desc())
+      .where(sql`${t.clearedAt} IS NULL`),
+    index('device_reliability_baselines_org_idx').on(t.orgId),
+    uniqueIndex('device_reliability_baselines_source_ref_uq')
+      .on(t.deviceId, t.sourceRef)
+      .where(sql`${t.sourceRef} IS NOT NULL`),
+    check('device_reliability_baselines_reason_check', sql`${t.reason} IN ('reimaged', 'remediated', 'hardware_replaced')`),
+    check('device_reliability_baselines_source_check', sql`${t.source} IN ('manual', 'bare_metal_recovery')`),
+    check(
+      'device_reliability_baselines_note_check',
+      sql`NOT (${t.reason} = 'remediated' AND ${t.source} = 'manual') OR (${t.note} IS NOT NULL AND length(btrim(${t.note})) > 0)`,
+    ),
+  ],
+);
+
+export type DeviceReliabilityBaselineRow = typeof deviceReliabilityBaselines.$inferSelect;

@@ -336,7 +336,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_metrics', 'device_mtls_certificates', 'device_network', 'device_patches',
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
   'agent_rollback_events', 'agent_rollback_directives',
-  'device_reliability', 'device_reliability_history', 'device_sessions', 'device_software_inventory_state',
+  'device_reliability', 'device_reliability_baselines', 'device_reliability_history', 'device_sessions', 'device_software_inventory_state',
   'device_time_daily',
   'device_time_status',
   'device_vulnerabilities', 'device_warranty',
@@ -686,7 +686,7 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // consistent on the next rebuild.
   'fix_outcomes',
   // Analytics & reliability
-  'device_reliability_history', 'device_reliability',
+  'device_reliability_history', 'device_reliability_baselines', 'device_reliability',
   'playbook_executions', 'time_series_metrics', 'capacity_predictions',
   'device_process_samples', 'remediation_suggestions',
   // metric_anomaly_episodes: device_id + denormalized org_id (episodes W01). Its
