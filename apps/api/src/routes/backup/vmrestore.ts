@@ -154,9 +154,13 @@ vmRestoreRoutes.post(
       if (!authorization.ok) return authorization.response;
 
       // Read in the request context: the engine's org-scoped transaction
-      // below cannot see a partner-level technician's user row.
+      // below cannot see a partner-level technician's user row. The epochs
+      // are needed only to consume a grant, and the factor state only when
+      // there is no grant to consume (to tell enroll from step up). If a
+      // presented grant turns out to be invalid, the gate looks the factor
+      // state up itself and, if it cannot read it, asks for the step-up.
       const userEpochs = auth.user?.id && payload.stepUpGrant ? await getUserEpochs(auth.user.id) : undefined;
-      const userMfaProtected = auth.user?.id ? await userCanStepUp(auth.user.id) : undefined;
+      const userMfaProtected = auth.user?.id && !payload.stepUpGrant ? await userCanStepUp(auth.user.id) : undefined;
       const result = await runInOrg(orgId, () =>
         startRebuildEngineVmRestore({
           orgId,

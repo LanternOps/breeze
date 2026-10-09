@@ -174,7 +174,7 @@ const STEP_UP_OPERATIONS = [
   'backup_unattested_restore',
 ] as const satisfies readonly Exclude<
   StepUpOperation,
-  'enroll_first_factor' | 'sso_reauth_manage_factor' | 'approval_decide' | 'backup_unattested_restore_typed'
+  'enroll_first_factor' | 'sso_reauth_manage_factor' | 'approval_decide'
 >[];
 const stepUpOperation = z
   .enum(STEP_UP_OPERATIONS)

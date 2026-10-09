@@ -204,12 +204,12 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
   // operator confirms it (two-factor when enabled); the server asks for it.
   const unattestedStepUp = useUnattestedRestoreStepUp();
 
-  const submitCreate = useCallback(async (extras: UnattestedRestoreExtras) => {
+  const submitCreate = useCallback(async (extras: UnattestedRestoreExtras): Promise<boolean> => {
     setCreateError(null);
     setCreateErrorReasons([]);
     if (!selectedSnapshotId) {
       setCreateError(t('bareMetalRecovery.selectSnapshotFirst'));
-      return;
+      return false;
     }
     setCreating(true);
     try {
@@ -231,6 +231,7 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
       });
       setCreated(result);
       setActive(result);
+      return true;
     } catch (err) {
       // The confirmation prompt handles a step-up request.
       if (isUnattestedRestoreStepUp(err)) throw err;
@@ -244,6 +245,7 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
         handleActionError(err, t('bareMetalRecovery.createFailed'));
         setCreateError(t('bareMetalRecovery.createFailed'));
       }
+      return false;
     } finally {
       setCreating(false);
     }

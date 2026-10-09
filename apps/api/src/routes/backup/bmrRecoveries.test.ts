@@ -457,7 +457,7 @@ describe('bare-metal recoveries routes', () => {
         createdAt: new Date(), updatedAt: new Date(), mediaBootedAt: null, plannedAt: null, restoringAt: null,
         validatedAt: null, rebootedAt: null, checkedInAt: null, completedAt: null,
       }]));
-      integrityGate.check.mockResolvedValueOnce({ ok: true, authorizationReason: 'unattested_legacy', confirmationMethod: 'typed' });
+      integrityGate.check.mockResolvedValueOnce({ ok: true, authorizationReason: 'unattested_legacy', confirmationMethod: 'mfa' });
       const res = await app.request('/backup/bmr/recoveries', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -469,7 +469,7 @@ describe('bare-metal recoveries routes', () => {
         expect.objectContaining({ snapshotDbId: SNAPSHOT_ID, targetDeviceId: DEVICE_ID, commandType: 'bmr_recover' }),
         'unattested_legacy',
         { recoveryId: RECOVERY_ID },
-        { inCurrentTransaction: true, confirmationMethod: 'typed' },
+        { inCurrentTransaction: true, confirmationMethod: 'mfa' },
       );
     });
 
