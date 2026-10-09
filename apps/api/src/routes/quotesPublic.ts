@@ -6,7 +6,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteBlocks, quoteLines } from '../db/schema/quotes';
 import { partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
-import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
+import { acceptQuoteSchema, declineQuoteSchema, ERROR_CODES } from '@breeze/shared';
 import { verifyQuoteAcceptToken, isQuoteAcceptJtiRevoked, revokeQuoteAcceptJti, type QuoteAcceptClaims } from '../services/quoteAcceptToken';
 import { resolveMergedOrgIds } from '../services/orgMerge';
 import { markQuoteViewed } from '../services/quoteLifecycle';
@@ -156,7 +156,7 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
         data: { branding: { partnerName: data.partnerName } },
       }, 410);
     }
-    if (!data) return c.json({ error: 'Quote not found' }, 404);
+    if (!data) return c.json({ error: 'Quote not found', code: ERROR_CODES.NOT_FOUND }, 404);
     return c.json({ data });
   } catch (err) {
     if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
@@ -177,7 +177,7 @@ quotesPublicRoutes.get('/:token/images/:imageId', zValidator('param', tokenImage
     if (!quote) return null;
     return readQuoteImage(imageId, quote.id);
   }));
-  if (!img) return c.json({ error: 'Image not found' }, 404);
+  if (!img) return c.json({ error: 'Image not found', code: ERROR_CODES.NOT_FOUND }, 404);
   return new Response(new Uint8Array(img.data), { status: 200, headers: { 'Content-Type': img.mime, 'Content-Length': String(img.byteSize), 'Cache-Control': 'private, max-age=300' } });
 });
 
@@ -197,7 +197,7 @@ quotesPublicRoutes.get('/:token/line-image/:lineId', zValidator('param', tokenLi
     if (!quote) return null;
     return loadCustomerLineImage(quote.id, lineId);
   }));
-  if (!img) return c.json({ error: 'Image not found' }, 404);
+  if (!img) return c.json({ error: 'Image not found', code: ERROR_CODES.NOT_FOUND }, 404);
   return new Response(new Uint8Array(img.data), { status: 200, headers: { 'Content-Type': img.mime, 'Content-Length': String(img.byteSize), 'Cache-Control': 'private, max-age=300' } });
 });
 
@@ -216,9 +216,9 @@ quotesPublicRoutes.get('/:token/contract-file/:blockId', zValidator('param', tok
     const [b] = await db.select().from(quoteBlocks).where(and(eq(quoteBlocks.id, blockId), eq(quoteBlocks.quoteId, quote.id), eq(quoteBlocks.blockType, 'contract'))).limit(1);
     return b ?? null;
   }));
-  if (!block) return c.json({ error: 'Contract file not found' }, 404);
+  if (!block) return c.json({ error: 'Contract file not found', code: ERROR_CODES.NOT_FOUND }, 404);
   const [renderData] = await loadContractBlockRenderData([block], { includeFileData: true });
-  if (!renderData || renderData.sourceType !== 'uploaded' || !renderData.fileData) return c.json({ error: 'Contract file not found' }, 404);
+  if (!renderData || renderData.sourceType !== 'uploaded' || !renderData.fileData) return c.json({ error: 'Contract file not found', code: ERROR_CODES.NOT_FOUND }, 404);
   return new Response(new Uint8Array(renderData.fileData), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Length': String(renderData.fileData.length), 'Cache-Control': 'private, max-age=300' } });
 });
 
@@ -333,7 +333,7 @@ quotesPublicRoutes.post('/:token/decline', zValidator('param', tokenParam), zVal
     try { await revokeQuoteAcceptJti(claims.jti); } catch { /* durable backstop holds */ }
     return c.json({ error: 'This link is invalid or has expired', code: 'RESPONSE_CONSUMED' }, 401);
   }
-  if (result !== 'ok') return c.json({ error: 'This quote can no longer be declined' }, 409);
+  if (result !== 'ok') return c.json({ error: 'This quote can no longer be declined', code: ERROR_CODES.CONFLICT }, 409);
   // Consume the single-use token post-commit so a declined link can't be replayed.
   // A failed revoke leaves the link replayable (security-relevant) → capture.
   try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); captureException(err instanceof Error ? err : new Error(String(err))); }

@@ -1271,6 +1271,39 @@ describe('validateConfig', () => {
     warnSpy.mockRestore();
   });
 
+  it('warns at boot, naming the variable, when INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES exceeds 30 days', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({
+      ...validEnv,
+      INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES: '129600',
+    }, () => {
+      validateConfig();
+      const ttlWarnings = warnSpy.mock.calls
+        .map((args) => String(args[0]))
+        .filter((line) => line.includes('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES'));
+      expect(ttlWarnings).toHaveLength(1);
+      expect(ttlWarnings[0]).toContain('43200');
+    });
+    warnSpy.mockRestore();
+  });
+
+  it.each(['43200', '10080', '', 'forever'])(
+    'does not warn about INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES=%j',
+    (value) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      withEnv({
+        ...validEnv,
+        INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES: value,
+      }, () => {
+        validateConfig();
+        expect(
+          warnSpy.mock.calls.some((args) => String(args[0]).includes('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES')),
+        ).toBe(false);
+      });
+      warnSpy.mockRestore();
+    },
+  );
+
   it('rejects short AGENT_ENROLLMENT_SECRET in production when configured', () => {
     withEnv({
       ...validEnv,

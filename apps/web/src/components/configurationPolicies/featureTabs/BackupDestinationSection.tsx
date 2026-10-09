@@ -385,6 +385,20 @@ export default function BackupDestinationSection({
               "policies:configurationPolicies.featureTabs.backupTab.noDestinationsBody",
             )}
           </p>
+          {/* The grid's "New destination" tile only renders when destinations
+              exist, so the empty state needs its own create action — without
+              it an org with zero destinations has no way to make one (#8152). */}
+          <button
+            type="button"
+            onClick={onStartCreate}
+            data-testid="backup-destination-empty-create"
+            className="mt-3 inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition hover:border-primary/40 hover:text-primary"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {i18n.t(
+              "policies:configurationPolicies.featureTabs.backupTab.newDestination",
+            )}
+          </button>
         </div>
       )}
 

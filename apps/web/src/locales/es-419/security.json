@@ -198,7 +198,8 @@
     "running": "En ejecución",
     "threatsDetectedCount": "amenazas {{count}}",
     "unknownProvider": "Proveedor desconocido",
-    "unknownVendor": "Proveedor desconocido"
+    "unknownVendor": "Proveedor desconocido",
+    "unknown": "Desconocido"
   },
   "securityEdrPage": {
     "endpointDetectionAndAmpResponse": "Detección y respuesta de terminales",
@@ -285,7 +286,8 @@
     "totalDevices": "Dispositivos totales",
     "windows": "Windows",
     "statusFilterLabel": "Estado del firewall",
-    "osFilterLabel": "Sistema operativo"
+    "osFilterLabel": "Sistema operativo",
+    "unknown": "Desconocido"
   },
   "securityHuntressIncidentList": {
     "actions": "Acciones",
@@ -534,7 +536,8 @@
     "vulnerabilities": "Vulnerabilidades",
     "weakAdmins": "Administradores débiles",
     "accessDeniedMessage": "No tienes permiso para ver los datos de seguridad de esta organización.",
-    "someSecurityDataPermissionDenied": "Algunos datos de seguridad no son visibles para ti. Consulta a un administrador si necesitas acceso."
+    "someSecurityDataPermissionDenied": "Algunos datos de seguridad no son visibles para ti. Consulta a un administrador si necesitas acceso.",
+    "unknown": "Desconocido"
   },
   "securitySecurityPageHeader": {
     "refresh": "Actualizar",

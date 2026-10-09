@@ -773,6 +773,47 @@ describe('BackupTab', () => {
     expect(saveMock).not.toHaveBeenCalled();
   });
 
+  // #8152: a link that pre-selects a destination (here a profile link, which
+  // selects the org-default sentinel) suppresses the zero-destinations
+  // auto-create, leaving the "Backups need a destination first" empty state.
+  // It must still offer a way to create the org's first destination.
+  it('zero destinations with a pre-selected destination: the empty state opens the create form (#8152)', async () => {
+    const profileLink = {
+      id: 'link-1',
+      featureType: 'backup',
+      featurePolicyId: 'prof-1',
+      inlineSettings: { backupProfileId: 'prof-1', schedule: { frequency: 'daily', time: '02:00' } },
+    };
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/backup/configs') && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+      if (url.startsWith('/backup/profiles') && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={profileLink as never}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText(/Backups need a destination first/i);
+    expect(screen.queryByPlaceholderText('AKIA...')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('backup-destination-empty-create'));
+
+    expect(await screen.findByPlaceholderText('AKIA...')).toBeTruthy();
+    expect(screen.queryByTestId('backup-destination-empty-create')).toBeNull();
+  });
+
   it('destination fetch failure: shows an error instead of the create-first-destination form', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);

@@ -369,6 +369,7 @@
       "crossesFunding": "Ese modelo de respaldo se paga con otra fuente. Primero permita la conmutación entre créditos de Breeze y su propia clave de API.",
       "egress_blocked": "Esa dirección no está permitida.",
       "invalid_url": "Esa URL no es válida.",
+      "endpoint_unreachable": "No se pudo resolver ni alcanzar el host del endpoint. Revisa la URL base.",
       "managed_by_env": "Esta conexión la administra el entorno de la instancia y no se puede cambiar aquí.",
       "connection_in_use": "Una función aún usa un modelo de esta conexión. Elige primero otro modelo predeterminado.",
       "duplicate_model": "Ese ID de modelo ya existe en esta conexión.",

@@ -14,7 +14,7 @@ concurrency:
 
 env:
   PNPM_VERSION: '10.34.5'
-  GO_VERSION: '1.26.6'
+  GO_VERSION: '1.26.9'
 
 # Least-privilege default; the SARIF-uploading job opts into
 # security-events: write per-job below.

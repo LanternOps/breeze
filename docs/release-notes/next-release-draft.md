@@ -16,6 +16,24 @@ Last release: **v0.121.0** (2026-10-03).
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
+- **Bootstrap tokens embedded in downloaded installers now default to 7 days
+  and last at most 30 days.** The previous default was 30 days in code and
+  1 day under the bundled compose files (`1440`). `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES`
+  now defaults to `10080` in code and in both compose files. A value above
+  `43200` (30 days) is clamped, with a warning at API startup. Set the variable
+  to keep a different value up to 30 days.
+  - The installer download (`GET /enrollment-keys/:id/installer/:platform`) and
+    `POST /enrollment-keys/:id/bootstrap-token` now reject an explicit
+    `ttlMinutes` above `43200` with `400`. The child enrollment key embedded in
+    the legacy macOS zip is held to the same 30 days.
+  - The Add Device modal's Installer tab offers expiries up to 30 days (it
+    previously offered 90 days and 1 year); a longer partner/org default
+    preselects 30 days there. That picker also sizes links generated from the
+    tab. The CLI tab is unchanged.
+  - The installer-link API (`POST /enrollment-keys/:id/installer-link`) and
+    enrollment keys still accept lifetimes up to a year; each installer
+    downloaded from a link carries a token of at most 30 days.
+  - Installers already downloaded keep their original expiry.
 - **Database migrations take brief exclusive locks on busy tables.** The
   `2026-12-13-110000/110100/110200` migrations redefine foreign keys on child
   tables of `users`, `devices`, `alerts`, `tickets`, `roles` and others. Each
@@ -26,6 +44,7 @@ Last release: **v0.121.0** (2026-10-03).
   re-applies cleanly on the next restart. Avoid deploying this release during a
   database backup window. No data is rewritten; the new constraints are
   validated afterwards without blocking writes.
+- **Approving an audit baseline apply request now requires MFA and checks its target devices.** On deployments with MFA enabled (`ENABLE_2FA`), approving a request returns 403 `MFA_REQUIRED` unless the approver's session has completed MFA. API keys cannot approve apply requests when MFA is enabled. Rejecting a request does not need MFA. Approving is also refused with 409 ("One or more target devices no longer exist in this organization; ask the requester to submit a new apply request") when any device in the request has since been decommissioned, deleted or moved to another organization. Applying an approved request runs the same check and leaves the approval unconsumed. When two decisions on the same request race, or a decision races the request's expiry, the later one returns 409 ("Apply request was already decided") instead of overwriting the first. Pending requests refused this way can be rejected and resubmitted.
 - **Deleting a role that an access review covered now returns 409** ("Role is
   referenced by access reviews") instead of a server error, so review evidence
   is kept. Deleting a notification channel keeps the alert delivery history it
@@ -33,4 +52,4 @@ Last release: **v0.121.0** (2026-10-03).
   removes all of its occurrences.
 - **Restores now require a v0.120.0 or later backup helper.** Restores that write, import or boot a backup (file, SQL Server, Hyper-V, restore as VM, instant boot, bare-metal recovery and rebuild) are refused for devices whose backup helper does not check restores against snapshot attestations, with "Update the Breeze agent on this device, then try again." Recovery media and recovery tools older than v0.120.0 are refused at code exchange and authentication. Verification and test restore are unchanged. Update agents and rebuild recovery media before upgrading the server.
 - **Backups without an attestation restore after a two-factor confirmation.** Snapshots taken before attestations existed are labelled "Not verified"; restoring one requires a technician's two-factor confirmation (an explicit confirmation when `ENABLE_2FA=false`; a technician without a second factor types the device name instead), recorded in the new `backup_restore_authorizations` table and the audit log (`backup.restore.unattested_override`). AI tools and DR plans refuse such snapshots. New migration: `2026-12-17-170000-backup-restore-authorizations.sql`. `breeze_backup_restore_integrity_total` gains `status="override"` and `status="refused"`.
-- **Approving an audit baseline apply request now requires MFA and checks its target devices.** On deployments with MFA enabled (`ENABLE_2FA`), approving a request returns 403 `MFA_REQUIRED` unless the approver's session has completed MFA. API keys cannot approve apply requests when MFA is enabled. Rejecting a request does not need MFA. Approving is also refused with 409 ("One or more target devices no longer exist in this organization; ask the requester to submit a new apply request") when any device in the request has since been decommissioned, deleted or moved to another organization. Applying an approved request runs the same check and leaves the approval unconsumed. When two decisions on the same request race, or a decision races the request's expiry, the later one returns 409 ("Apply request was already decided") instead of overwriting the first. Pending requests refused this way can be rejected and resubmitted.
+- **Building the agent from source now needs Go 1.26.9.** The agent module and the release builds move from Go 1.26.6 to 1.26.9, and `golang.org/x/net` from v0.59.0 to v0.60.0, picking up the upstream `net/http` and HTTP/2 fixes in those releases. With the default `GOTOOLCHAIN=auto`, `go build` fetches 1.26.9 on its own; with `GOTOOLCHAIN=local`, install Go 1.26.9 first. Pre-built agent binaries need no action.

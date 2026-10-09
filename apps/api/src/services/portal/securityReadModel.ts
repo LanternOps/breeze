@@ -334,6 +334,7 @@ export async function securityDevicesPage(
   const protectionOrder = sql`case
     when ${hasS1Agent} or ${hasHuntressAgent} then 'protected'
     when ${securityStatus.id} is null then 'unknown'
+    when ${securityStatus.realTimeProtection} is null then 'unknown'
     when ${securityStatus.provider} <> 'other'
       and ${securityStatus.realTimeProtection} = true then 'protected'
     else 'unprotected'

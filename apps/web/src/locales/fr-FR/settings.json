@@ -369,6 +369,7 @@
       "crossesFunding": "Ce modèle de secours est payé par une autre source. Autorisez d’abord le basculement entre les crédits Breeze et votre propre clé API.",
       "egress_blocked": "Cette adresse n'est pas autorisée.",
       "invalid_url": "Cette URL n'est pas valide.",
+      "endpoint_unreachable": "L'hôte du point de terminaison est introuvable ou injoignable. Vérifiez l'URL de base.",
       "managed_by_env": "Cette connexion est gérée par l'environnement de l'instance et ne peut pas être modifiée ici.",
       "connection_in_use": "Une fonctionnalité utilise encore un modèle de cette connexion. Choisissez d'abord un autre modèle par défaut.",
       "duplicate_model": "Cet ID de modèle existe déjà sur cette connexion.",

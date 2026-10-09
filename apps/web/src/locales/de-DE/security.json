@@ -198,7 +198,8 @@
     "running": "Wird ausgeführt",
     "threatsDetectedCount": "{{count}} Bedrohungen",
     "unknownProvider": "Unbekannter Anbieter",
-    "unknownVendor": "Unbekannter Anbieter"
+    "unknownVendor": "Unbekannter Anbieter",
+    "unknown": "Unbekannt"
   },
   "securityEdrPage": {
     "endpointDetectionAndAmpResponse": "Endpunkterkennung und -reaktion",
@@ -285,7 +286,8 @@
     "totalDevices": "Gesamtzahl der Geräte",
     "windows": "Windows",
     "statusFilterLabel": "Firewallstatus",
-    "osFilterLabel": "Betriebssystem"
+    "osFilterLabel": "Betriebssystem",
+    "unknown": "Unbekannt"
   },
   "securityHuntressIncidentList": {
     "actions": "Aktionen",
@@ -534,7 +536,8 @@
     "vulnerabilities": "Schwachstellen",
     "weakAdmins": "Schwache Admins",
     "accessDeniedMessage": "Sie haben keine Berechtigung, die Sicherheitsdaten dieser Organisation anzuzeigen.",
-    "someSecurityDataPermissionDenied": "Einige Sicherheitsdaten sind für Sie nicht sichtbar. Wenden Sie sich an einen Administrator, wenn Sie Zugriff benötigen."
+    "someSecurityDataPermissionDenied": "Einige Sicherheitsdaten sind für Sie nicht sichtbar. Wenden Sie sich an einen Administrator, wenn Sie Zugriff benötigen.",
+    "unknown": "Unbekannt"
   },
   "securitySecurityPageHeader": {
     "refresh": "Aktualisieren",

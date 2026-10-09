@@ -20,10 +20,13 @@ import { users } from "./users";
  * short-lived handle flow.
  *
  * Stored as a keyed hash (`token_hash`, see `hashBootstrapToken`), never as
- * plaintext. Tokens live up to the issuing TTL — 30 days by default
- * (INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES), longer when an admin picks it, up
- * to the partner cap — and each is worth up to max_usage enrollments, so the
- * table must not hold redeemable values. The raw token exists only in memory
+ * plaintext. Tokens live up to the issuing TTL — 7 days by default
+ * (INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES), or the lifetime an admin picks or
+ * an installer link has left, never more than 30 days
+ * (MAX_BOOTSTRAP_TOKEN_TTL_MINUTES) and never past the partner cap — and each
+ * is worth up to max_usage enrollments, so the table must not hold redeemable
+ * values. `expires_at` is fixed at issuance; changing the default or maximum
+ * does not alter rows already issued. The raw token exists only in memory
  * at issuance, where it is written into the installer (filename / app bundle
  * name / payload) and returned once; nothing can re-read it later.
  *
