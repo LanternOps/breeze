@@ -60,7 +60,7 @@ New table `device_reliability_baselines`:
 | `baseline_at` | timestamptz NOT NULL | the moment scoring restarts from |
 | `reason` | text NOT NULL | CHECK in (`reimaged`,`remediated`,`hardware_replaced`) |
 | `source` | text NOT NULL | CHECK in (`manual`,`bare_metal_recovery`) |
-| `source_ref` | uuid NULL | `bare_metal_recoveries.id` for automatic markers. NULL for manual ones |
+| `source_ref` | uuid NULL | `bare_metal_recoveries.id` for automatic markers. NULL for manual ones. Soft reference with **no FK**: an FK would have to sort `bare_metal_recoveries` after this table in both delete-ordered lists, and the row only needs to be idempotent, not referentially intact |
 | `note` | text NULL | CHECK: non-blank when `reason='remediated' AND source='manual'`. Max length 2000 is enforced in the API |
 | `before_snapshot` | jsonb NULL | frozen "before" score; schema below |
 | `created_by` | uuid NULL | FK `users` ON DELETE SET NULL. NULL means system (automatic marker) |
@@ -96,8 +96,10 @@ Indexes:
 table, so Partner-Wide First (#2135) does not apply.
 
 Same migration that creates the table:
-- `ENABLE` + `FORCE ROW LEVEL SECURITY`, one policy `USING / WITH CHECK breeze_has_org_access(org_id)`
-  (system scope passes as usual), grants to `breeze_app`.
+- `ENABLE` + `FORCE ROW LEVEL SECURITY`, four policies `breeze_org_isolation_{select,insert,update,delete}`
+  on `public.breeze_has_org_access(org_id)` (house pattern; template
+  `2026-11-10-110000-time-sync-daily.sql`), `GRANT SELECT, INSERT, UPDATE, DELETE, REFERENCES … TO breeze_app`
+  (UPDATE is needed by the org-move and merge re-point).
 
 Registration in the same PR. Each list is enforced by a contract test:
 
@@ -110,9 +112,10 @@ Registration in the same PR. Each list is enforced by a contract test:
 | `CORE_TENANT_EXPORT_POLICY` (`before_snapshot` → `excludedOpen`; everything else `included`) | `services/tenantExportPolicyRegistry.ts` |
 
 Device org-move: the composite FK uses `ON UPDATE CASCADE`, so markers, notes and snapshots
-travel with the device. Confirm that `moveDeviceOrgInTransaction.ts` handles a
-`DEFERRABLE INITIALLY IMMEDIATE` child the same way as its existing peers (e.g.
-`time_sync_daily`). If that path defers constraints by name, add this table's constraint name.
+travel with the device. `moveDeviceOrgInTransaction.ts` needs no change: it re-stamps every
+`CORE_DEVICE_ORG_DENORMALIZED_TABLES` entry generically and names only ticket constraints
+in its `SET CONSTRAINTS`, exactly as for the peer table `device_time_daily`. Do **not** add the
+table to `DEVICE_ORG_FK_CASCADE_TABLES` (pinned to four entries by `moveOrg.coverage.test.ts`).
 
 ## Scoring changes
 
@@ -187,27 +190,46 @@ the marker was placed, because history has kept arriving and ageing out since th
 
 ### Concurrency
 
-Every scorer entrypoint (the worker job, on-demand enqueue, inline agent-route fallback, and the
-new routes) runs inside one transaction that takes
-`pg_advisory_xact_lock(hashtext('device_reliability:' || device_id))`. The active marker is read
-under the lock. Without the lock, a worker run that loaded the old baseline before the marker was
-inserted could finish last and overwrite the fresh score.
+A per-device advisory lock was considered and rejected. The nightly org scan scores every device
+inside **one** system transaction, so a per-device `pg_advisory_xact_lock` would be held until the
+whole org commits. A "Mark work done" click would then block behind the scan.
 
-The marker routes write the marker, take the same lock, recompute and upsert, all in one
-transaction. A route-path recompute bypasses the 10-minute on-demand dedupe.
+Instead the `device_reliability` upsert is **compare-and-set** on the marker the run used:
+
+```sql
+ON CONFLICT (device_id) DO UPDATE SET …
+WHERE (SELECT b.id FROM device_reliability_baselines b
+        WHERE b.device_id = $device AND b.cleared_at IS NULL
+        ORDER BY b.baseline_at DESC, b.created_at DESC, b.id DESC LIMIT 1)
+      IS NOT DISTINCT FROM $baselineIdUsedByThisRun
+```
+
+How the possible interleavings resolve:
+- **The worker writes after the marker change commits.** The guard sees a different active marker, so the
+  stale write is skipped.
+- **The worker writes while the marker transaction is still open.** The worker's write lands first. The marker
+  transaction's own upsert then blocks on the row lock until the worker commits, and overwrites it with the
+  marker-aware score.
+- **The first-ever row.** The INSERT path is unguarded. Any later marker change goes through the guarded update.
+
+The marker routes insert or clear the marker and recompute inside the request transaction that
+`authMiddleware` already opens, so the marker and the score commit together. A route-path recompute calls
+the scorer directly, which bypasses the 10-minute on-demand dedupe.
 
 ## Automatic marker on bare-metal recovery
 
 The heartbeat recovery check-in (`routes/agents/heartbeat.ts`, the `recoveryMarker` block)
 currently reads the recovery, then updates it with no status predicate. Change it to:
 
-1. A guarded `UPDATE bare_metal_recoveries SET status='checked_in' … WHERE id = $1 AND status IN
-   ('restoring','validated','rebooted') RETURNING …`. Only the request that wins the transition
-   proceeds.
+1. A guarded `UPDATE bare_metal_recoveries SET status='checked_in' … WHERE id = $1 AND identity = 'original'
+   AND status IN ('restoring','validated','rebooted') RETURNING …`. Only the request that wins the transition
+   proceeds. The `identity = 'original'` predicate already exists in the read path and must be kept,
+   because a `new`-identity recovery is a different machine.
 2. In the same transaction, insert a marker
    `{ reason:'reimaged', source:'bare_metal_recovery', source_ref: recovery.id, baseline_at: checkedInAt }`
    with `ON CONFLICT (device_id, source_ref) DO NOTHING`, computing its before snapshot.
-3. Enqueue a device recompute after commit.
+3. Enqueue a device recompute after commit (`runAfterDbContextExit`). The enqueue uses a per-marker
+   job id so the 10-minute on-demand dedupe can't swallow it.
 
 An idempotent re-ack (`status = 'checked_in'` already) creates nothing.
 
@@ -221,12 +243,15 @@ check device existence and site access (`getDeviceWithOrgAndSiteCheck`).
 | `GET /reliability/:deviceId/baselines` | `devices:read` | All markers (active and cleared), newest first, with creator/clearer display names and `before_snapshot` |
 | `POST /reliability/:deviceId/baselines` | `devices:write` | Body `{ reason, baselineAt?, note? }`. `baselineAt` defaults to now. Rejects future (>5 min) and older than 30 days with 400. Rejects a blank note for `remediated`. Org, source (`manual`) and actor come from the server. Returns `{ baseline, reliability }` |
 | `DELETE /reliability/:deviceId/baselines/:baselineId` | `devices:write` | Soft clear. 404 if not on this device, 409 if already cleared. Returns `{ reliability }` |
-| `GET /reliability/:deviceId` (existing) | unchanged | Response adds `baseline` from `details.baseline` |
+| `GET /reliability/:deviceId` (existing) | unchanged | `snapshot` gains `baseline` (from `details.baseline`) and `provisional` |
 
 **Audit:** `device.reliability.baseline_set` and `device.reliability.baseline_cleared`, written with
-the awaited `createAuditLog` (not the fire-and-forget variant) using `resourceType:'device'` and
-`resourceId: deviceId`, so the device activity feed (`routes/devices/events.ts`) picks them up. Labels
-are registered in `events.ts` and `DeviceActivityFeed.tsx`. Automatic markers are attributed to system
+`writeRouteAudit` / `writeAuditEvent` (the repo's retrying audit path) using `resourceType:'device'` and
+`resourceId: deviceId`, so the device activity feed (`routes/devices/events.ts`) picks them up. The awaited
+`createAuditLog` was rejected: it opens a second pooled connection while the request transaction is held,
+which is the #1105 pool-starvation pattern. Labels
+are registered in `events.ts` `actionLabels`. `DeviceActivityFeed.tsx` gets a `device.reliability` entry in
+`ACTION_RULES`, because its server-side prefix filter otherwise hides these rows. Automatic markers are attributed to system
 with `details.source = 'bare_metal_recovery'` and `details.recoveryId`.
 
 ## Other consumers
@@ -238,7 +263,7 @@ with `details.source = 'bare_metal_recovery'` and `details.recoveryId`.
 | Device list (`routes/devices/core.ts` reliability join) | Exposes `reliabilityProvisional` |
 | Fleet finding `reliability_offenders` (`services/fleetFindings/producers.ts`) | Excludes provisional devices |
 | Precision evaluation (`evaluateReliabilityScores`) | Ignores failure labels with `occurredAt` before the device's active marker |
-| AI tools (`aiToolsDevice.ts` reliability output), `aiAgents/designEvidence.ts`, `runnerPrompt.ts` | Include `baseline` (reason, date, provisional) so the model doesn't read a fresh score as long-term health |
+| AI tools (`get_device_hardware_health` `includeReliability` in `aiToolsDevice.ts`, `get_fleet_health` in `aiToolsUserRisk.ts`), `aiAgents/designEvidence.ts`, `runnerPrompt.ts` | Include `baseline` (reason, date, provisional) so the model doesn't read a fresh score as long-term health |
 
 ## Web UI (`DeviceReliabilityPanel.tsx`)
 
