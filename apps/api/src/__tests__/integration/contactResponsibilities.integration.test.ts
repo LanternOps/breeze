@@ -20,7 +20,7 @@ import { updateContact } from '../../services/contacts/crud';
 import { requesterAuthorized } from '../../services/callerVerification/access';
 import type { BindingRow } from '../../services/callerVerification/types';
 
-const MIGRATION_FILE = join(__dirname, '../../../migrations/2026-12-17-100400-contact-responsibility-scope.sql');
+const MIGRATION_FILE = join(__dirname, '../../../migrations/2026-12-18-120000-contact-responsibility-scope.sql');
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 function orgContext(orgId: string, partnerId: string): DbAccessContext {
