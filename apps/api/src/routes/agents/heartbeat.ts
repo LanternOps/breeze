@@ -4,9 +4,9 @@ import { Hono } from 'hono';
 import { timingSafeEqual } from 'node:crypto';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '../../lib/validation';
-import { and, eq, notInArray } from 'drizzle-orm';
+import { and, eq, inArray, notInArray } from 'drizzle-orm';
 import { loadDeviceHierarchy, withHierarchy, type DeviceHierarchy } from '../../services/deviceHierarchy';
-import { db, runOutsideDbContext, withDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
+import { db, runAfterDbContextExit, runOutsideDbContext, withDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import {
   maybeDispatchEditionMigration,
   shouldConsiderEditionMigration,
@@ -64,6 +64,8 @@ import { DeferredCacheFills } from '../../services/hotPathCache';
 import { orgHelperSettingsCache, orgPamFallbackCache, orgPolicyProbeCache } from '../../services/agentOrgSettingsCache';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
+import { enqueueDeviceReliabilityComputation } from '../../jobs/reliabilityWorker';
+import { createReliabilityBaseline } from '../../services/reliabilityBaselines';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { publishEvent } from '../../services/eventBus';
 import { DRAIN_CLAIM_TYPE_ALLOWLIST } from '../../middleware/agentAuth';
@@ -1296,23 +1298,70 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       recoveryMarkerAck = true;
     } else if (rec && nonceOk && rec.identity === 'original' && ['restoring', 'validated', 'rebooted'].includes(rec.status)) {
       const checkedInNow = new Date();
-      await db.update(bareMetalRecoveries).set({
+      // #5876: guarded transition — only the heartbeat that wins it records the
+      // recovery on the device and creates the reliability baseline marker.
+      // identity='original' stays in the predicate: a 'new'-identity recovery
+      // is a different machine. Losing the race still acks: the recovery IS
+      // checked in.
+      const [won] = await db.update(bareMetalRecoveries).set({
         status: 'checked_in',
         checkedInAt: checkedInNow,
         rebootedAt: rec.rebootedAt ?? checkedInNow,
         updatedAt: checkedInNow,
-      }).where(eq(bareMetalRecoveries.id, rec.id));
-      deviceUpdates.recoveredAt = checkedInNow;
-      deviceUpdates.recoveredFromSnapshotId = rec.snapshotId;
+      }).where(and(
+        eq(bareMetalRecoveries.id, rec.id),
+        eq(bareMetalRecoveries.identity, 'original'),
+        inArray(bareMetalRecoveries.status, ['restoring', 'validated', 'rebooted']),
+      )).returning({ id: bareMetalRecoveries.id });
       recoveryMarkerAck = true;
-      writeAuditEvent(c, {
-        orgId: agent.orgId,
-        action: 'bmr.recovery.checked_in',
-        resourceType: 'bare_metal_recovery',
-        resourceId: rec.id,
-        result: 'success',
-        details: { deviceId: device.id, snapshotId: rec.snapshotId, from: rec.status },
-      });
+      if (won) {
+        deviceUpdates.recoveredAt = checkedInNow;
+        deviceUpdates.recoveredFromSnapshotId = rec.snapshotId;
+        writeAuditEvent(c, {
+          orgId: agent.orgId,
+          action: 'bmr.recovery.checked_in',
+          resourceType: 'bare_metal_recovery',
+          resourceId: rec.id,
+          result: 'success',
+          details: { deviceId: device.id, snapshotId: rec.snapshotId, from: rec.status },
+        });
+        // The marker is a side effect of the check-in, not part of it: it runs
+        // in its own savepoint so a scorer/SQL failure rolls back only the
+        // marker and can never 500 the heartbeat or undo the check-in (which
+        // would leave the agent resending its marker forever).
+        try {
+          const marker = await withDbTransaction(() => createReliabilityBaseline({
+            device: { id: device.id, orgId: agent.orgId, deviceRole: device.deviceRole ?? null, enrolledAt: device.enrolledAt ?? null },
+            reason: 'reimaged',
+            baselineAt: checkedInNow,
+            note: null,
+            source: 'bare_metal_recovery',
+            sourceRef: rec.id,
+            createdBy: null,
+            recompute: false,
+          }));
+          if (marker) {
+            // actorType 'system' (actorId resolves to the nil system actor) so
+            // the device activity feed, which hides agent-actor rows, shows it.
+            writeAuditEvent(c, {
+              orgId: agent.orgId,
+              actorType: 'system',
+              action: 'device.reliability.baseline_set',
+              resourceType: 'device',
+              resourceId: device.id,
+              details: { baselineId: marker.id, reason: 'reimaged', source: 'bare_metal_recovery', recoveryId: rec.id },
+              result: 'success',
+            });
+            const deviceId = device.id;
+            runAfterDbContextExit('reliability-baseline-recompute', () =>
+              enqueueDeviceReliabilityComputation(deviceId, { dedupeKey: `bmr-${rec.id}` }).catch((err) =>
+                console.error('[heartbeat] reliability recompute enqueue failed', { deviceId, err })));
+          }
+        } catch (err) {
+          console.error('[heartbeat] failed to place reliability baseline marker for recovery', { deviceId: device.id, recoveryId: rec.id, err });
+          captureException(err);
+        }
+      }
     } else {
       writeAuditEvent(c, {
         orgId: agent.orgId,

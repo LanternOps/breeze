@@ -144,6 +144,17 @@ describe('enqueueDeviceReliabilityComputation', () => {
     expect(secondJobId).toBe(firstJobId);
   });
 
+  it('uses a caller-supplied dedupe key instead of the 10-minute slot (#5876)', async () => {
+    await enqueueDeviceReliabilityComputation('dev-1', { dedupeKey: 'baseline-abc' });
+
+    expect(getJobMock).toHaveBeenCalledWith('reliability-device-dev-1-k-baseline-abc');
+    expect(addMock).toHaveBeenCalledWith(
+      'compute-device',
+      expect.anything(),
+      expect.objectContaining({ jobId: 'reliability-device-dev-1-k-baseline-abc' }),
+    );
+  });
+
   it('creates the reliability worker with concurrency 2 (event-loop hardening)', () => {
     createReliabilityWorker();
 
