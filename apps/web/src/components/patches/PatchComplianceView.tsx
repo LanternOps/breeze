@@ -26,6 +26,7 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { useOrgStore } from '../../stores/orgStore';
 import { runAction, ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
+import { downloadBlob } from '@/lib/downloadBlob';
 import { useStableT } from '@/lib/i18n/useStableT';
 
 type ComplianceSummary = {
@@ -325,7 +326,14 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
                 reportPollTimerRef.current = null;
               }
               setBulkSuccess(t('patchComplianceView.export.ready', { reportId }));
-              window.location.assign(`/api/v1/patches/compliance/report/${reportId}/download`);
+              // Fetch through fetchWithAuth: the access token lives in memory
+              // and is attached only by fetchWithAuth, so a plain navigation to
+              // the download URL reaches authMiddleware without a bearer (#8306).
+              const downloadResponse = await fetchWithAuth(`/patches/compliance/report/${reportId}/download`);
+              if (!downloadResponse.ok) {
+                throw new Error(t('patchComplianceView.export.downloadFailed', { reportId }));
+              }
+              downloadBlob(await downloadResponse.blob(), `patch-compliance-${reportId}.csv`);
             } else if (report?.status === 'failed') {
               if (reportPollTimerRef.current) {
                 clearInterval(reportPollTimerRef.current);

@@ -73,6 +73,7 @@
       "ready": "Relatório de conformidade {{reportId}} pronto. Iniciando download...",
       "failed": "Relatório de conformidade {{reportId}} falhou",
       "checkFailed": "Falha ao verificar o status do relatório",
+      "downloadFailed": "Falha ao baixar o relatório de conformidade {{reportId}}",
       "noReportId": "O relatório foi enfileirado, mas nenhum ID de relatório foi retornado"
     },
     "summary": {

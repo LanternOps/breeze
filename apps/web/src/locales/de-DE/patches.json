@@ -73,6 +73,7 @@
       "ready": "Compliance-Bericht {{reportId}} ist bereit. Download wird gestartet...",
       "failed": "Compliance-Bericht {{reportId}} ist fehlgeschlagen",
       "checkFailed": "Berichtsstatus konnte nicht geprüft werden",
+      "downloadFailed": "Compliance-Bericht {{reportId}} konnte nicht heruntergeladen werden",
       "noReportId": "Der Bericht wurde in die Warteschlange eingereiht, aber es wurde keine Berichts-ID zurückgegeben"
     },
     "summary": {
