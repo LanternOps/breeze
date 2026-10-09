@@ -1816,7 +1816,8 @@ describe('addTicketComment', () => {
   // — the comment CONTENT never reaches the outbox, only its id + visibility.
   it('writes a ticket_outbox row (commented) with commentId + isPublic, never the comment content', async () => {
     dbMocks.selectResult.mockResolvedValue([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', firstResponseAt: null }]);
-    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', isPublic: true }]);
+    // The inserted row, as Postgres returns it: the outbox origin is read off it.
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', isPublic: true, originPrincipalKind: 'user', originPrincipalId: null }]);
     dbMocks.updateReturning.mockResolvedValue([{ id: 't-1' }]);
 
     await addTicketComment('t-1', { content: 'SECRET: customer is a flight risk', isPublic: true }, actor);
@@ -4695,7 +4696,7 @@ describe('AI time-entry proposal claim on the ticket outbox (#4177, W04)', () =>
 
   it('sendTicketDraft writes the aiDraft claim (draft, run, trigger) into the ticket.commented outbox payload', async () => {
     dbMocks.selectResult.mockResolvedValueOnce([ticket]).mockResolvedValueOnce([replyDraft]);
-    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', originPrincipalKind: 'user', originPrincipalId: null }]);
     dbMocks.updateReturning.mockResolvedValue([{ id: 'draft-1' }]);
 
     await sendTicketDraft('t-1', 'draft-1', undefined, actor);
@@ -4711,7 +4712,7 @@ describe('AI time-entry proposal claim on the ticket outbox (#4177, W04)', () =>
 
   it('sendTicketDraft writes no claim for a draft with no run', async () => {
     dbMocks.selectResult.mockResolvedValueOnce([ticket]).mockResolvedValueOnce([{ ...replyDraft, runId: null }]);
-    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', originPrincipalKind: 'user', originPrincipalId: null }]);
     dbMocks.updateReturning.mockResolvedValue([{ id: 'draft-1' }]);
 
     await sendTicketDraft('t-1', 'draft-1', undefined, actor);

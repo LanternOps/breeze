@@ -765,8 +765,9 @@ integration *that* something changed with id-only payloads (`ticketId`,
 and `GET /tickets/<id>` are how it reads *what* changed — including this
 principal's `externalTicketId`, which no webhook carries because the key
 is namespaced per integration. `ticket.commented` carries
-`originPrincipalKind` and `originPrincipalId`, so a mirror can ignore
-exactly the comments it posted itself, even when several integrations share
+`originPrincipalKind` and `originPrincipalId`, the same values the feed
+returns for that comment, so a mirror can ignore exactly the comments it
+posted itself, even when several integrations share
 one partner; `ticket.created` and `ticket.assigned` carry `actorPrincipalId`
 for the same purpose. Webhooks are per organization today; a partner-wide
 subscription is a tracked follow-up.
