@@ -668,6 +668,8 @@ The four `OFFLINE_DETECTOR_REEVAL_*` variables were removed in v0.118.0. The job
 | `MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG` | `10` | Concurrent remote sessions per org |
 | `MAX_ACTIVE_REMOTE_SESSIONS_PER_USER` | `5` | Concurrent remote sessions per user |
 | `PATCH_REPORT_STORAGE_PATH` | `./data/patch-reports` | Patch compliance report storage |
+| `PATCH_REPORT_RETENTION_DAYS` | `30` | Days a generated patch compliance report file is kept after it completes (minimum `1`). A daily job then removes the file and marks the report `expired`. A value that is not a plain integer falls back to the default. |
+| `PATCH_REPORT_ORPHAN_MIN_AGE_MS` | `3600000` (1 hour) | How old a `<uuid>.csv` file in `PATCH_REPORT_STORAGE_PATH` that no report owns (for example, left behind when an organization was erased and the file could not be removed at the time) must be before the daily job removes it. Never below 10 minutes. |
 
 ## Rollout Modes
 

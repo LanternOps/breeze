@@ -180,6 +180,17 @@ vi.mock('./screenshotFiles', () => ({
   removeScreenshotFiles: removeScreenshotFilesMock,
 }));
 
+// Patch compliance report CSVs are removed after the patch_compliance_reports
+// step commits. The file side is proven on a real directory in
+// patchReportRetention.test.ts / patchReportFiles.test.ts; here only the
+// hand-off is asserted.
+const { removePatchReportFilesMock } = vi.hoisted(() => ({
+  removePatchReportFilesMock: vi.fn(async (_reports: ReadonlyArray<{ id: string; outputPath: string | null }>, _context: string) => ({ removed: 0, missing: 0, failed: 0, unresolvable: 0 })),
+}));
+vi.mock('./patchReportFiles', () => ({
+  removePatchReportFiles: removePatchReportFilesMock,
+}));
+
 import {
   getOrgCascadeDeleteOrder,
   cascadeDeleteOrg,
@@ -1024,5 +1035,85 @@ describe('cascadeDeleteOrg — helper screenshot files (#8117)', () => {
     await cascadeDeleteOrg(ORG, BY);
 
     expect(removeScreenshotFilesMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('cascadeDeleteOrg — patch compliance report files', () => {
+  const ORG = '00000000-0000-0000-0000-000000000001';
+  const BY = '00000000-0000-0000-0000-000000000002';
+  const REPORT_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const REPORT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+  beforeEach(() => {
+    mockState.executeResponses = [];
+    mockState.executedSql = [];
+    mockState.fkEdges = [];
+    mockState.legalHoldRows = [];
+    mockState.artifactKeyError = null;
+    removePatchReportFilesMock.mockReset();
+    removePatchReportFilesMock.mockResolvedValue({ removed: 0, missing: 0, failed: 0, unresolvable: 0 });
+    vi.mocked(withSystemDbAccessContext).mockImplementation(defaultSystemContextImpl);
+    vi.mocked(db.execute).mockImplementation(defaultExecuteImpl);
+  });
+
+  function stubReportDelete(events: string[], rows: Array<{ id: string; output_path: string | null }>) {
+    vi.mocked(db.execute).mockImplementation(((q: unknown) => {
+      const text = sqlToText(q);
+      if (/DELETE FROM "?patch_compliance_reports"?/.test(text)) {
+        mockState.executedSql.push(text);
+        events.push('delete');
+        return Promise.resolve(Object.assign([...rows], { count: rows.length }));
+      }
+      return defaultExecuteImpl(q as never);
+    }) as any);
+    vi.mocked(withSystemDbAccessContext).mockImplementation((async (fn: () => Promise<unknown>) => {
+      const result = await fn();
+      events.push('commit');
+      return result;
+    }) as any);
+  }
+
+  it('returns each row\'s output path from the DELETE and removes the files only after that step commits', async () => {
+    const events: string[] = [];
+    stubReportDelete(events, [
+      { id: REPORT_A, output_path: `/data/patch-reports/${REPORT_A}.csv` },
+      { id: REPORT_B, output_path: null },
+    ]);
+    removePatchReportFilesMock.mockImplementation(async () => {
+      events.push('unlink');
+      return { removed: 1, missing: 0, failed: 0, unresolvable: 0 };
+    });
+
+    const stats = await cascadeDeleteOrg(ORG, BY);
+
+    const deleteSql = mockState.executedSql.find((t) => /DELETE FROM "?patch_compliance_reports"?/.test(t));
+    expect(deleteSql).toMatch(/RETURNING id, output_path/);
+    expect(removePatchReportFilesMock).toHaveBeenCalledTimes(1);
+    expect(removePatchReportFilesMock).toHaveBeenCalledWith(
+      [{ id: REPORT_A, outputPath: `/data/patch-reports/${REPORT_A}.csv` }],
+      expect.stringContaining(ORG),
+    );
+    const del = events.indexOf('delete');
+    expect(events.slice(del, del + 3)).toEqual(['delete', 'commit', 'unlink']);
+    expect(stats.tablesDeleted.patch_compliance_reports).toBe(2);
+  });
+
+  it('does not fail the erasure when report files cannot be removed', async () => {
+    stubReportDelete([], [{ id: REPORT_A, output_path: `/data/patch-reports/${REPORT_A}.csv` }]);
+    removePatchReportFilesMock.mockResolvedValue({ removed: 0, missing: 0, failed: 1, unresolvable: 0 });
+
+    const stats = await cascadeDeleteOrg(ORG, BY);
+
+    expect(removePatchReportFilesMock).toHaveBeenCalledTimes(1);
+    expect(stats.tablesDeleted.patch_compliance_reports).toBe(1);
+    expect(stats.tablesDeleted.organizations).toBeDefined();
+  });
+
+  it('skips the file step when no report row has a file', async () => {
+    stubReportDelete([], [{ id: REPORT_A, output_path: null }]);
+
+    await cascadeDeleteOrg(ORG, BY);
+
+    expect(removePatchReportFilesMock).not.toHaveBeenCalled();
   });
 });

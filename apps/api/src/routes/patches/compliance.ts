@@ -27,6 +27,7 @@ import {
   resolveRequestReportAuthority,
   type PersistedSiteScopeColumns,
 } from '../../services/siteScope';
+import { isPatchReportPastRetention } from '../../services/patchReportFiles';
 
 import { notParkedDeviceCondition } from '../../services/unassignedPool/selectorPredicate';
 export const complianceRoutes = new Hono();
@@ -36,6 +37,20 @@ export const complianceRoutes = new Hono();
 const isOutstanding = inArray(devicePatches.status, [...OUTSTANDING_DEVICE_PATCH_STATUSES]);
 const requireReportRead = requirePermission(PERMISSIONS.REPORTS_READ.resource, PERMISSIONS.REPORTS_READ.action);
 const requireReportExport = requirePermission(PERMISSIONS.REPORTS_EXPORT.resource, PERMISSIONS.REPORTS_EXPORT.action);
+
+/**
+ * A report whose file the retention job removed, or a completed report already
+ * past PATCH_REPORT_RETENTION_DAYS whose file the next daily run will remove.
+ * Both read as expired so a download is never served past the window.
+ */
+function isReportExpired(report: {
+  status: string;
+  completedAt: Date | null;
+  createdAt: Date | null;
+}): boolean {
+  return report.status === 'expired'
+    || (report.status === 'completed' && isPatchReportPastRetention(report));
+}
 
 // GET /patches/compliance - Get compliance summary
 complianceRoutes.get(
@@ -535,10 +550,11 @@ complianceRoutes.get(
       return c.json({ error: 'Report not found' }, 404);
     }
 
+    const expired = isReportExpired(report);
     return c.json({
       data: {
         id: report.id,
-        status: report.status,
+        status: expired ? 'expired' : report.status,
         format: report.format,
         source: report.source,
         severity: report.severity,
@@ -548,7 +564,7 @@ complianceRoutes.get(
         startedAt: report.startedAt,
         completedAt: report.completedAt,
         createdAt: report.createdAt,
-        downloadUrl: report.outputPath
+        downloadUrl: report.outputPath && !expired
           ? `/api/v1/patches/compliance/report/${report.id}/download`
           : null
       }
@@ -572,6 +588,8 @@ complianceRoutes.get(
         status: patchComplianceReports.status,
         format: patchComplianceReports.format,
         outputPath: patchComplianceReports.outputPath,
+        completedAt: patchComplianceReports.completedAt,
+        createdAt: patchComplianceReports.createdAt,
         executionScopeVersion: patchComplianceReports.executionScopeVersion,
         executionScopeKind: patchComplianceReports.executionScopeKind,
         executionScopeSiteIds: patchComplianceReports.executionScopeSiteIds,
@@ -608,6 +626,10 @@ complianceRoutes.get(
       }
     } catch {
       return c.json({ error: 'Report not found' }, 404);
+    }
+
+    if (isReportExpired(report)) {
+      return c.json({ error: 'This report has expired. Generate a new report to download it.' }, 410);
     }
 
     if (report.status !== 'completed') {

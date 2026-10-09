@@ -356,12 +356,13 @@ Response fields:
 
 | Field | Description |
 |-------|-------------|
-| **`status`** | Current state: `pending`, `running`, `completed`, or `failed` |
+| **`status`** | Current state: `pending`, `running`, `completed`, `failed`, or `expired` |
 | **`rowCount`** | Number of rows in the report (available once completed) |
 | **`summary`** | High-level counts by status (available once completed) |
 | **`startedAt`** | ISO 8601 timestamp when processing began |
 | **`completedAt`** | ISO 8601 timestamp when processing finished |
 | **`errorMessage`** | Populated only if `status` is `failed` |
+| **`downloadUrl`** | Download path once `completed`; `null` before then and once the report has `expired` |
 
 ### Downloading the Report
 
@@ -372,6 +373,8 @@ GET /patches/compliance/report/:id/download
 ```
 
 This returns a file stream in CSV format. Attempting to download before the report is `completed` will return an error.
+
+Report files are kept for 30 days after the report completes (configurable with `PATCH_REPORT_RETENTION_DAYS`). After that the report's `status` is `expired`, `downloadUrl` is `null`, and the download endpoint returns `410 Gone` — generate a new report instead. Report files are also removed when their organization is erased.
 
 ### Real-Time Compliance Summary
 

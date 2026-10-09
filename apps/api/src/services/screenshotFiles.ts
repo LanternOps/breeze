@@ -14,6 +14,9 @@
 import { unlink } from 'fs/promises';
 import { join } from 'path';
 import { captureMessage } from './sentry';
+import { errnoCode } from '../utils/fsErrno';
+
+export { errnoCode };
 
 export const SCREENSHOT_DIR = process.env.SCREENSHOT_STORAGE_DIR || '/tmp/breeze-screenshots';
 
@@ -24,10 +27,6 @@ export const SCREENSHOT_FILE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 
 const KEY_SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
 const KEY_FILE_RE = /^[A-Za-z0-9_-]+\.jpg$/;
-
-export function errnoCode(err: unknown): string | undefined {
-  return err instanceof Error && 'code' in err ? (err as NodeJS.ErrnoException).code : undefined;
-}
 
 /**
  * The file a `storage_key` points at, or null for a key the storage service

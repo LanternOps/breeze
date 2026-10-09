@@ -34,6 +34,7 @@ Last release: **v0.121.0** (2026-10-03).
     enrollment keys still accept lifetimes up to a year; each installer
     downloaded from a link carries a token of at most 30 days.
   - Installers already downloaded keep their original expiry.
+- **Patch compliance report files are kept for 30 days.** A generated compliance report CSV can be downloaded for 30 days after it completes; after that a daily job removes the file and the report shows as `expired` (download returns 410 — generate a new report). Set `PATCH_REPORT_RETENTION_DAYS` to change the window (minimum 1). Report files are also removed when their organization is erased, and stray report files with no report record are cleaned up from `PATCH_REPORT_STORAGE_PATH` once they are an hour old (`PATCH_REPORT_ORPHAN_MIN_AGE_MS`). On the first run after upgrading, existing reports older than the window are expired. New migration: `2026-12-18-110200-patch-compliance-report-expired-status.sql` (adds the `expired` report status).
 - **Database migrations take brief exclusive locks on busy tables.** The
   `2026-12-13-110000/110100/110200` migrations redefine foreign keys on child
   tables of `users`, `devices`, `alerts`, `tickets`, `roles` and others. Each

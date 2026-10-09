@@ -72,6 +72,7 @@
       "queued": "Compliance report {{reportId}} queued. Preparing download...",
       "ready": "Compliance report {{reportId}} is ready. Starting download...",
       "failed": "Compliance report {{reportId}} failed",
+      "expired": "Compliance report {{reportId}} has expired. Generate a new report to download it.",
       "checkFailed": "Failed to check report status",
       "downloadFailed": "Failed to download compliance report {{reportId}}",
       "noReportId": "Report was queued but no report ID was returned"

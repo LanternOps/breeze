@@ -1126,6 +1126,119 @@ describe('patch routes', () => {
     expect(await res.json()).toEqual({ error: 'Report not found' });
   });
 
+  describe('report file retention', () => {
+    const reportId = '55555555-5555-5555-5555-555555555555';
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    function reportRow(overrides: Record<string, unknown>) {
+      const capturedAt = new Date();
+      return {
+        id: reportId,
+        orgId: ACCESSIBLE_ORG_ID,
+        status: 'completed',
+        format: 'csv',
+        source: null,
+        severity: null,
+        summary: { total: 1 },
+        rowCount: 1,
+        errorMessage: null,
+        startedAt: capturedAt,
+        completedAt: capturedAt,
+        createdAt: capturedAt,
+        outputPath: `/tmp/${reportId}.csv`,
+        ...reportScopeColumns(restrictedReportScope(ACCESSIBLE_ORG_ID, [REPORT_SITE_A]), USER_ID, capturedAt),
+        ...overrides,
+      };
+    }
+
+    it('returns 410 for an expired report download', async () => {
+      mockAuthState.permissions = [{ resource: 'reports', action: 'export' }];
+      vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([
+        reportRow({ status: 'expired', outputPath: null }),
+      ]) as any);
+
+      const res = await app.request(`/patches/compliance/report/${reportId}/download`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(410);
+      expect((await res.json()).error).toMatch(/expired/i);
+    });
+
+    it('returns 410 for a completed report past the retention window even before the sweep has run', async () => {
+      mockAuthState.permissions = [{ resource: 'reports', action: 'export' }];
+      const old = new Date(Date.now() - 31 * DAY_MS);
+      vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([
+        reportRow({ completedAt: old, createdAt: old }),
+      ]) as any);
+
+      const res = await app.request(`/patches/compliance/report/${reportId}/download`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(410);
+    });
+
+    it('still returns an opaque not-found (not 410) when the caller cannot see an expired report', async () => {
+      mockAuthState.permissions = [{ resource: 'reports', action: 'export' }];
+      reportAuthorityState.result.authority.scope = restrictedReportScope(ACCESSIBLE_ORG_ID, [REPORT_SITE_B]);
+      vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([
+        reportRow({ status: 'expired', outputPath: null }),
+      ]) as any);
+
+      const res = await app.request(`/patches/compliance/report/${reportId}/download`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('reports the expired state with no download URL', async () => {
+      mockAuthState.permissions = [{ resource: 'reports', action: 'read' }];
+      vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([
+        reportRow({ status: 'expired', outputPath: null }),
+      ]) as any);
+
+      const res = await app.request(`/patches/compliance/report/${reportId}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.status).toBe('expired');
+      expect(body.data.downloadUrl).toBeNull();
+    });
+
+    it('reports a completed report past the window as expired before the sweep has run', async () => {
+      mockAuthState.permissions = [{ resource: 'reports', action: 'read' }];
+      const old = new Date(Date.now() - 31 * DAY_MS);
+      vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([
+        reportRow({ completedAt: old, createdAt: old }),
+      ]) as any);
+
+      const res = await app.request(`/patches/compliance/report/${reportId}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      const body = await res.json();
+      expect(body.data.status).toBe('expired');
+      expect(body.data.downloadUrl).toBeNull();
+    });
+
+    it('keeps the download URL for a completed report inside the window', async () => {
+      mockAuthState.permissions = [{ resource: 'reports', action: 'read' }];
+      vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([reportRow({})]) as any);
+
+      const res = await app.request(`/patches/compliance/report/${reportId}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      const body = await res.json();
+      expect(body.data.status).toBe('completed');
+      expect(body.data.downloadUrl).toBe(`/api/v1/patches/compliance/report/${reportId}/download`);
+    });
+  });
+
   it('queues rollback commands for accessible devices', async () => {
     const insertValues = vi.fn().mockResolvedValue(undefined);
     vi.mocked(db.select)
