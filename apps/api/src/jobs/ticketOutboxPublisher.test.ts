@@ -368,6 +368,63 @@ describe('ticketOutboxPublisher.publishOutboxRows', () => {
     });
   });
 
+  // A rolled-back create must notify nobody, so ticket.created's job is queued
+  // from the COMMITTED row too (#7963's rule, applied to creates).
+  describe('ticket.created → assignee notification job', () => {
+    const createdPayload = {
+      internalNumber: 'T-2026-0042', source: 'api', assigneeId: 'u-2',
+      actorUserId: null, actorPrincipalId: 'sp-1', partnerId: 'p-1',
+    };
+
+    it('queues ticket.created with a deterministic eventId and the recorded actor, then publishes it', async () => {
+      executeMock.mockResolvedValueOnce({ rows: [] });
+      executeMock.mockResolvedValueOnce({
+        rows: [claimedRow({ id: 7, event_type: 'ticket.created', payload: createdPayload })],
+      });
+      updateMock.mockReturnValue({ set: makeUpdateChain().set });
+
+      const result = await publishOutboxRows();
+
+      expect(result).toEqual({ published: 1, skipped: 0 });
+      expect(enqueueTicketEventMock).toHaveBeenCalledTimes(1);
+      expect(enqueueTicketEventMock).toHaveBeenCalledWith({
+        type: 'ticket.created',
+        ticketId: 'ticket-1',
+        orgId: 'org-1',
+        partnerId: 'p-1',
+        actorUserId: null,
+        actorPrincipalId: 'sp-1',
+        eventId: 'ticket-outbox-7',
+        payload: { internalNumber: 'T-2026-0042', assigneeId: 'u-2', source: 'api' },
+      });
+      expect(publishEventMock).toHaveBeenCalledWith(
+        'ticket.created', 'org-1', { ticketId: 'ticket-1', ...createdPayload }, 'ticket-outbox-publisher',
+      );
+      expect(enqueueTicketEventMock.mock.invocationCallOrder[0]!)
+        .toBeLessThan(publishEventMock.mock.invocationCallOrder[0]!);
+      expect(emitTicketEventMock).not.toHaveBeenCalled();
+    });
+
+    it('queues nothing for an unassigned create, or for a row written before the change, but still publishes both', async () => {
+      executeMock.mockResolvedValueOnce({ rows: [] });
+      executeMock.mockResolvedValueOnce({
+        rows: [
+          claimedRow({ id: 8, event_type: 'ticket.created', payload: { ...createdPayload, assigneeId: null } }),
+          // pre-change rows: createTicket already queued their job itself
+          claimedRow({ id: 9, event_type: 'ticket.created', payload: {} }),
+          claimedRow({ id: 10, event_type: 'ticket.created', payload: { internalNumber: 'T-1', source: 'manual', assigneeId: 'u-2' } }),
+        ],
+      });
+      updateMock.mockReturnValue({ set: makeUpdateChain().set });
+
+      const result = await publishOutboxRows();
+
+      expect(result).toEqual({ published: 3, skipped: 0 });
+      expect(enqueueTicketEventMock).not.toHaveBeenCalled();
+      expect(publishEventMock).toHaveBeenCalledTimes(3);
+    });
+  });
+
   it('skips rows with publish_attempts > 5: logs, captures, does not publish', async () => {
     executeMock.mockResolvedValueOnce({
       rows: [{ id: 7, ticket_id: 'ticket-7', event_type: 'ticket.created', publish_attempts: 6 }],

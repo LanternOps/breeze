@@ -7,7 +7,7 @@ import { getBullMQConnection } from '../services/redis';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
-import { emitTicketEvent, enqueueTicketEvent } from '../services/ticketEvents';
+import { emitTicketEvent, enqueueTicketEvent, type TicketEventInput } from '../services/ticketEvents';
 
 /**
  * Drains the `ticket_outbox` transactional outbox (#3828 wave-6-3 task 2 —
@@ -34,9 +34,10 @@ import { emitTicketEvent, enqueueTicketEvent } from '../services/ticketEvents';
  *     eventBus subscriber (automationWorker, webhookDelivery) sees for
  *     free. Extending the mapping is additive — a new EventType literal +
  *     an entry in TICKET_OUTBOX_EVENT_BUS_TYPES, no outbox/schema change.
- *     A committed `ticket.assigned` row is ALSO what queues the assignee
- *     notification on the `ticket-events` queue (#7963 — see
- *     queueAssigneeNotification), before the row is published onto the bus.
+ *     A committed `ticket.assigned` or `ticket.created` row is ALSO what
+ *     queues the assignee notification on the `ticket-events` queue (#7963 —
+ *     see queueAssigneeNotification), before the row is published onto the
+ *     bus.
  *
  * Payload shape: `{ ticketId, ...row.payload }`. `row.payload` was written
  * id-only by `ticketService.ts`'s `writeTicketOutbox` (structured ids/enum
@@ -181,40 +182,68 @@ async function scanAndClaimOutboxRows(): Promise<ClaimResult> {
 
 const optionalString = (value: unknown): string | null => (typeof value === 'string' ? value : null);
 
+type CreatedTicketSource = Extract<TicketEventInput, { type: 'ticket.created' }>['payload']['source'];
+
 /**
- * #7963: queue the assignee-notification job for a committed `ticket.assigned`
- * row. assignTicket used to queue it from inside the request transaction, so a
- * fast worker could read the PRE-commit assignee, conclude "reassigned since"
- * and drop the notification with no retry. Queuing from the committed row
- * means the worker can only ever see the committed assignment, so its
- * "reassigned since" rule is accurate again.
+ * #7963: the assignee-notification job a committed `ticket.assigned` or
+ * `ticket.created` row queues, or null when it queues none.
  *
- * The eventId is deterministic (`ticket-outbox-<row id>`): if this pass queues
- * the job but fails to mark the row published, the next pass queues it again
+ * assignTicket used to queue its job from inside the request transaction, so
+ * a fast worker could read the PRE-commit assignee, conclude "reassigned
+ * since" and drop the notification with no retry. createTicket did the same,
+ * so a create that rolled back afterwards (a Partner API
+ * `409 EXTERNAL_ID_CONFLICT`, any later failure in the request) still
+ * notified the assignee of a ticket that never existed. Queuing from the
+ * committed row fixes both: the worker only ever sees what committed. On a
+ * create the worker notifies only the assignee, under the same dedupe key.
+ *
+ * The eventId is deterministic (`ticket-outbox-<row id>`): if a pass queues
+ * the job but the row is not marked published, the next pass queues it again
  * and the worker's dedupe key (`ticket:<id>:assigned:<assignee>:<eventId>`)
- * suppresses the second notification. Throws when the job cannot be queued,
- * so the caller leaves the row for the next pass.
+ * suppresses the second notification.
  *
- * Skipped (the row still drains) when there is nobody to notify — an
- * unassign, or revalidateTicketAssignee's eligibility clear — and for rows
- * written before this change, which carry no actor fields: assignTicket had
- * already queued their job itself, and queuing again under a new eventId
+ * Null (the row still drains) when there is nobody to notify — an unassign,
+ * revalidateTicketAssignee's eligibility clear, an unassigned create — and for
+ * rows written before this change, which carry no actor fields: the service
+ * had already queued their job itself, and queuing again under a new eventId
  * would notify twice.
+ *
+ * Pure, and exported so the producer→consumer contract test can feed a row
+ * createTicket wrote through this exact mapping into the worker.
  */
-async function queueAssigneeNotification(row: ClaimedOutboxRow): Promise<void> {
+export function assigneeNotificationFromOutboxRow(
+  row: Pick<ClaimedOutboxRow, 'id' | 'org_id' | 'ticket_id' | 'event_type' | 'payload'>,
+): TicketEventInput | null {
+  if (row.event_type !== 'ticket.assigned' && row.event_type !== 'ticket.created') return null;
   const payload = row.payload ?? {};
   const assigneeId = optionalString(payload.assigneeId);
-  if (!assigneeId || !('actorUserId' in payload)) return;
-  await enqueueTicketEvent({
-    type: 'ticket.assigned',
+  if (!assigneeId || !('actorUserId' in payload)) return null;
+  const common = {
     ticketId: row.ticket_id,
     orgId: row.org_id,
     partnerId: optionalString(payload.partnerId),
     actorUserId: optionalString(payload.actorUserId),
     actorPrincipalId: optionalString(payload.actorPrincipalId),
     eventId: `ticket-outbox-${row.id}`,
-    payload: { assigneeId },
-  });
+  };
+  if (row.event_type === 'ticket.created') {
+    return {
+      type: 'ticket.created',
+      ...common,
+      payload: {
+        internalNumber: optionalString(payload.internalNumber) ?? '',
+        assigneeId,
+        source: payload.source as CreatedTicketSource,
+      },
+    };
+  }
+  return { type: 'ticket.assigned', ...common, payload: { assigneeId } };
+}
+
+/** Throws when the job cannot be queued, so the caller leaves the row for the next pass. */
+async function queueAssigneeNotification(row: ClaimedOutboxRow): Promise<void> {
+  const job = assigneeNotificationFromOutboxRow(row);
+  if (job) await enqueueTicketEvent(job);
 }
 
 /**
@@ -227,11 +256,11 @@ async function publishClaimedRows(rows: ClaimedOutboxRow[]): Promise<number[]> {
   for (const row of rows) {
     const busType = TICKET_OUTBOX_EVENT_BUS_TYPES[row.event_type as TicketOutboxEvent];
     try {
-      // #7963: queue the assignee notification before the bus publish. Its
-      // eventId is deterministic, so when a later step of this row fails and
-      // the next pass queues it again, the worker's dedupe key suppresses the
-      // second notification.
-      if (row.event_type === 'ticket.assigned') await queueAssigneeNotification(row);
+      // #7963: queue the assignee notification (assigned, created) before the
+      // bus publish. Its eventId is deterministic, so when a later step of
+      // this row fails and the next pass queues it again, the worker's dedupe
+      // key suppresses the second notification.
+      await queueAssigneeNotification(row);
       if (!busType) {
         // No eventBus mapping for this outbox event type (ticket.restored) —
         // the row still drains cleanly; there is simply nothing to publish.

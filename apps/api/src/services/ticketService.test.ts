@@ -348,15 +348,18 @@ describe('createTicket', () => {
     });
   });
 
-  it('resolves partnerId from the org, allocates a number, inserts, emits ticket.created', async () => {
+  it('resolves partnerId from the org, allocates a number, inserts; queues no ticket.created job itself', async () => {
     dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
 
-    const t = await createTicket({ orgId: 'o-1', subject: 'Printer offline', source: 'manual' }, actor);
+    const t = await createTicket({ orgId: 'o-1', subject: 'Printer offline', source: 'manual', assigneeId: 'u-2' }, actor);
 
     expect(allocateMock).toHaveBeenCalledWith('p-1');
     expect(t.internalNumber).toBe('T-2026-0042');
-    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.created', ticketId: 't-1' }));
+    // #7963's rule, applied to creates: a job queued inside this transaction
+    // would survive its rollback. ticketOutboxPublisher queues it from the
+    // committed outbox row instead.
+    expect(emitMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.created' }));
     expect(auditMock).toHaveBeenCalled();
   });
 
@@ -371,8 +374,12 @@ describe('createTicket', () => {
     expect(valuesMock).toHaveBeenCalledTimes(2);
     const outboxPayload = valuesMock.mock.calls[1]![0];
     expect(outboxPayload).toMatchObject({ orgId: 'o-1', ticketId: 't-1', eventType: 'ticket.created' });
-    // id-only: no subject/description ever reaches the outbox payload.
-    expect(outboxPayload.payload).toEqual({ internalNumber: 'T-2026-0042', source: 'manual', assigneeId: null });
+    // id-only: no subject/description ever reaches the outbox payload. The
+    // actor and partner ride the row for the publisher's assignee job.
+    expect(outboxPayload.payload).toEqual({
+      internalNumber: 'T-2026-0042', source: 'manual', assigneeId: null,
+      actorUserId: 'u-1', actorPrincipalId: null, partnerId: 'p-1',
+    });
     expect(JSON.stringify(outboxPayload)).not.toContain('SECRET');
   });
 
@@ -2728,7 +2735,9 @@ describe('createTicketFromAlert', () => {
 
     const t = await createTicketFromAlert('a-1', actor);
     expect(t.id).toBe('t-9');
-    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.created' }));
+    expect(valuesMock.mock.calls.map((c) => c[0])).toContainEqual(
+      expect.objectContaining({ ticketId: 't-9', eventType: 'ticket.created' }),
+    );
 
     // Assert createTicket's insert payload got priority: 'high' for severity: 'high'
     const ticketInsertPayload = valuesMock.mock.calls[0]![0];
@@ -5019,14 +5028,17 @@ describe('service-principal actor (Partner API tickets, Wave 1)', () => {
     expect(actorProvenance({ kind: 'system', source: 'planned_work' })).toBe('system');
   });
 
-  it('createTicket: audited as api_key keyed by the principal, event actorUserId null', async () => {
+  it('createTicket: audited as api_key keyed by the principal, outbox actorUserId null', async () => {
     dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
     dbMocks.insertReturning.mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
 
     const t = await createTicket({ orgId: 'o-1', subject: 'From PSA', source: 'api' }, spActor);
     expect(t.id).toBe('t-1');
     expect(valuesMock.mock.calls[0]![0]).toMatchObject({ source: 'api', submitterName: 'PSA Bridge' });
-    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.created', actorUserId: null, actorPrincipalId: SP_PRINCIPAL_ID }));
+    expect(valuesMock.mock.calls.map((c) => c[0])).toContainEqual(expect.objectContaining({
+      eventType: 'ticket.created',
+      payload: expect.objectContaining({ actorUserId: null, actorPrincipalId: SP_PRINCIPAL_ID }),
+    }));
     expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
       action: 'ticket.create', actorType: 'api_key', actorId: SP_PRINCIPAL_ID,
       details: expect.objectContaining({ source: 'api', partnerServicePrincipalName: 'PSA Bridge' }),

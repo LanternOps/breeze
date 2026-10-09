@@ -767,8 +767,8 @@ principal's `externalTicketId`, which no webhook carries because the key
 is namespaced per integration. `ticket.commented` carries
 `originPrincipalKind` and `originPrincipalId`, so a mirror can ignore
 exactly the comments it posted itself, even when several integrations share
-one partner; `ticket.assigned` carries `actorPrincipalId` for the same
-purpose. Webhooks are per organization today; a partner-wide
+one partner; `ticket.created` and `ticket.assigned` carry `actorPrincipalId`
+for the same purpose. Webhooks are per organization today; a partner-wide
 subscription is a tracked follow-up.
 
 **Rate limits.** Ticket writes have their own hourly buckets, separate from

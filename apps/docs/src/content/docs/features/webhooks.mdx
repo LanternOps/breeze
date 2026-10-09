@@ -131,7 +131,7 @@ Ticket events are published from the ticketing transactional outbox with **id-on
 
 | Event | Payload (besides `ticketId`) | Description |
 |-------|------------------------------|-------------|
-| `ticket.created` | `internalNumber`, `source`, `assigneeId` | A ticket was opened (from the portal, email, an alert, the UI, the Partner API or AI) |
+| `ticket.created` | `internalNumber`, `source`, `assigneeId`, `actorPrincipalId` | A ticket was opened (from the portal, email, an alert, the UI, the Partner API or AI). `actorPrincipalId` is the service principal that opened it (`null` otherwise) |
 | `ticket.commented` | `commentId`, `isPublic`, `originPrincipalKind`, `originPrincipalId` | A comment, note or feed entry was added. `originPrincipalKind` (`user`, `ai_agent`, `system`, `service_principal`) with `originPrincipalId` (the service principal id or the AI agent id, `null` for people and system notes) lets a mirroring integration skip exactly the comments it authored itself |
 | `ticket.status_changed` | `from`, `to`, `statusId` | The core status changed (`statusId` is the partner's custom status row, when one was used) |
 | `ticket.updated` | `changed` (field names) | Fields were edited — subject, description, priority, category, due date, device, tags, requester |

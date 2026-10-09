@@ -910,11 +910,11 @@ export type CreateTicketInput =
   | (BaseCreateTicketInput & { source: 'email'; submitterEmail: string; submitterName?: string; submittedBy?: string })
   | (BaseCreateTicketInput & { source: Exclude<TicketSource, 'portal' | 'email'>; submittedBy?: string; submitterEmail?: string; submitterName?: string });
 
-// NOTE: emitTicketEvent and createAuditLogAsync below are called while the
-// surrounding request transaction is still open. If the transaction later rolls
-// back, a phantom event/audit row survives — this is an accepted codebase pattern
-// (see auditService.ts). Ticket-event consumers MUST therefore treat
-// ticket-not-found as retryable, not terminal.
+// NOTE: createAuditLogAsync below is called while the surrounding request
+// transaction is still open. If the transaction later rolls back, a phantom
+// audit row survives — this is an accepted codebase pattern (see
+// auditService.ts). The `ticket.created` job is NOT queued here any more: it is
+// queued from the committed outbox row (see the note at writeTicketOutbox).
 export async function createTicket(input: CreateTicketInput, actor: TicketActor) {
   const orgRows = await db
     .select({ id: organizations.id, partnerId: organizations.partnerId })
@@ -1120,14 +1120,14 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
   const ticket = inserted[0];
   if (!ticket) throw new TicketServiceError('Failed to create ticket', 500);
 
-  await emitTicketEvent({
-    type: 'ticket.created',
-    ticketId: ticket.id,
-    orgId: input.orgId,
-    partnerId: org.partnerId ?? null,
-    ...actorEventIdentity(actor),
-    payload: { internalNumber, assigneeId: input.assigneeId ?? null, source: input.source }
-  });
+  // No emitTicketEvent here (#7963's rule, applied to creates). A job queued
+  // now survives a rollback of this transaction — a Partner API create that
+  // answers 409 EXTERNAL_ID_CONFLICT, or any later failure in the request —
+  // and would notify the assignee of a ticket that never existed. The outbox
+  // row commits (or rolls back) with the ticket, and ticketOutboxPublisher
+  // queues the `ticket.created` job from it; the actor and partner ride the
+  // row so the worker can still skip a self-assign.
+  //
   // Ids and enum labels only (never subject/description). No external id:
   // that key is namespaced per Partner API principal (ticket_external_refs)
   // and an org webhook has no single principal to answer for.
@@ -1135,6 +1135,8 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     internalNumber,
     source: input.source,
     assigneeId: input.assigneeId ?? null,
+    ...actorEventIdentity(actor),
+    partnerId: org.partnerId ?? null,
   });
   await createAuditLogAsync({
     orgId: input.orgId,
