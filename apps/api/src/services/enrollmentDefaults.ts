@@ -125,7 +125,7 @@ export async function assertTtlWithinCap(
  * setting a 60-minute cap means nothing minted under them should be usable
  * longer than 60 minutes — including redemption/download/background paths
  * whose TTL comes from a server constant (e.g. `CHILD_ENROLLMENT_KEY_TTL_MINUTES`,
- * `bootstrapTokenExpiresAt()`'s base) rather than a value a human typed
+ * `bootstrapTokenTtlMinutes()`'s base) rather than a value a human typed
  * into a form for this specific request.
  *
  * Use this — not `assertTtlWithinCap` — on exactly those paths: there is no

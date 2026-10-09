@@ -144,8 +144,11 @@ describe('issueBootstrapTokenForKey', () => {
     expect(ttlMs).toBeLessThanOrEqual(10080 * 60 * 1000);
   });
 
+  // Interactive routes reject an explicit ttlMinutes above 30 days with a 400
+  // before calling this; the clamp here is defense in depth for callers that
+  // pass a derived lifetime (an installer link's remaining time).
   it.each([129600, 525600])(
-    'never issues a token living longer than 30 days, even when %i minutes is picked',
+    'never issues a token living longer than 30 days, even when %i minutes is passed',
     async (ttlMinutes) => {
       mockParent();
       const insertedValues = mockInsert();
@@ -162,25 +165,15 @@ describe('issueBootstrapTokenForKey', () => {
       expect(ttlMs).toBeGreaterThan(43200 * 60 * 1000 - 60_000);
       expect(insertedValues()!.expiresAt).toEqual(result.expiresAt);
       // The partner cap is consulted with the already-bounded value.
-      expect(clampTtlToCapMock).toHaveBeenCalledWith('org-1', expect.any(Number));
-      expect(clampTtlToCapMock.mock.calls[0]![1]).toBeLessThanOrEqual(43200);
+      expect(clampTtlToCapMock).toHaveBeenCalledWith('org-1', 43200);
     },
   );
 
-  // Fix round 4 (#2776). The round-3 code computed minutes from rawExpiresAt
-  // and then ALWAYS rebuilt the Date from them, reading the clock a third
-  // time — so an unclamped expiry came back a few milliseconds LATER than the
-  // one the request implied. (The round-3 comment blamed `Math.ceil` producing
-  // 1441 minutes; arithmetically impossible — the quotient is
-  // `requested - elapsed/60000`, always <= requested.) The contract now is an
-  // IDENTITY one: when the cap does not bind, the returned expiry must be the
-  // exact same instant `rawExpiresAt` named, not merely "about right".
-  //
-  // Date.now is stubbed to advance a few ms per call so the three reads inside
-  // the function are distinguishable — that is what makes this discriminating
-  // rather than the previous tolerance-window assertion, which passed against
-  // the pre-fix code too.
-  it('returns the raw expiry byte-identically when the cap does not bind (#2776 round 4)', async () => {
+  // The expiry is built from ONE clock read, after the partner cap has been
+  // applied in whole minutes — there is no Date -> minutes -> Date round trip
+  // to drift or round. Date.now is stubbed to advance a few ms per call so
+  // any extra read inside the function would show up in the result.
+  it('builds the expiry from a single clock read (no round-trip drift)', async () => {
     mockParent();
     mockInsert();
 
@@ -196,20 +189,17 @@ describe('issueBootstrapTokenForKey', () => {
         ttlMinutes: 1440,
       });
 
-      // rawExpiresAt is built on the FIRST Date.now() read, i.e. exactly t0.
-      const rawExpiresAt = new Date(t0 + 1440 * 60 * 1000);
-      expect(result.expiresAt.getTime()).toBe(rawExpiresAt.getTime());
+      expect(clampTtlToCapMock).toHaveBeenCalledWith('org-1', 1440);
+      expect(result.expiresAt.getTime()).toBe(t0 + 1440 * 60 * 1000);
     } finally {
       nowSpy.mockRestore();
     }
   });
 
-  // The floor + verbatim-passthrough pair has one documented boundary: a cap
-  // exactly one minute below the request is NON-binding, so the token is
-  // issued at the full requested lifetime — up to 60s over the cap. Pinned so
-  // nobody "fixes" the drift-free passthrough without noticing they changed
-  // this, and so the comment in the service can't rot away from the code.
-  it('a cap one minute below the request is non-binding (documented <60s overshoot)', async () => {
+  // The previous minute-quantised round trip left a cap one minute below the
+  // request NON-binding (up to 60 s over the cap). Cap and request are now
+  // both whole minutes, so the cap binds exactly.
+  it('a cap one minute below the request binds exactly', async () => {
     mockParent();
     mockInsert();
     clampTtlToCapMock.mockImplementation(async (_orgId: string, ttlMinutes: number) =>
@@ -228,23 +218,52 @@ describe('issueBootstrapTokenForKey', () => {
         ttlMinutes: 1440,
       });
 
-      // floor(1440 - 7ms) === 1439 === the cap, so the clamp is a no-op and
-      // the full 1440-minute expiry survives.
-      expect(clampTtlToCapMock).toHaveBeenCalledWith('org-1', 1439);
-      expect(result.expiresAt.getTime()).toBe(t0 + 1440 * 60 * 1000);
-      // The overshoot is bounded by one minute — never more.
-      expect(result.expiresAt.getTime() - (t0 + 1439 * 60 * 1000)).toBeLessThanOrEqual(60_000);
+      expect(clampTtlToCapMock).toHaveBeenCalledWith('org-1', 1440);
+      expect(result.expiresAt.getTime()).toBe(t0 + 1439 * 60 * 1000);
     } finally {
       nowSpy.mockRestore();
     }
   });
+
+  it('passes the configured base to the partner cap in whole minutes when ttlMinutes is omitted', async () => {
+    mockParent();
+    mockInsert();
+
+    await issueBootstrapTokenForKey({
+      parentEnrollmentKeyId: 'parent-1',
+      createdByUserId: 'user-1',
+      usageKind: "capacity",
+    });
+
+    expect(clampTtlToCapMock).toHaveBeenCalledWith('org-1', 10080);
+  });
+
+  it.each([0, -5, Number.NaN])(
+    'never inserts an expired or invalid expiry for a degenerate ttlMinutes (%s)',
+    async (ttlMinutes) => {
+      mockParent();
+      const insertedValues = mockInsert();
+
+      const result = await issueBootstrapTokenForKey({
+        parentEnrollmentKeyId: 'parent-1',
+        createdByUserId: 'user-1',
+        usageKind: "per_download",
+        ttlMinutes,
+      });
+
+      const expiresAt = insertedValues()!.expiresAt as Date;
+      expect(Number.isNaN(expiresAt.getTime())).toBe(false);
+      expect(expiresAt.getTime()).toBeGreaterThan(Date.now());
+      expect(result.expiresAt).toEqual(expiresAt);
+    },
+  );
 
   // Fix round 3 (#2776): a defensive CLAMP (never a rejection) so the
   // partner cap can't be bypassed by a caller that forgets to check it —
   // in particular serveInstaller's unauthenticated public-download path,
   // which passes no ttlMinutes at all and had no cap consult anywhere in
   // its call chain before this fix.
-  it('clamps the 24h base TTL down when the partner cap is below it', async () => {
+  it('clamps the base TTL down when the partner cap is below it', async () => {
     mockParent();
     mockInsert();
     clampTtlToCapMock.mockImplementation(async (_orgId: string, ttlMinutes: number) =>
