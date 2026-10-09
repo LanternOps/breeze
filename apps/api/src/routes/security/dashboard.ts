@@ -105,8 +105,22 @@ dashboardRoutes.get(
       score: Number(point.overall ?? 0)
     }));
 
-    const avProtected = statuses.filter((status) => status.realTimeProtection).length;
-    const avUnprotected = statuses.length - avProtected;
+    // A null reading is unknown (#8252) and gets its own bucket: counting it as
+    // unprotected / disabled reports "protection off" for a failed collection.
+    const countTriState = (pick: (status: (typeof statuses)[number]) => boolean | null) => {
+      let on = 0;
+      let off = 0;
+      let unknown = 0;
+      for (const status of statuses) {
+        const value = pick(status);
+        if (value === true) on += 1;
+        else if (value === false) off += 1;
+        else unknown += 1;
+      }
+      return { on, off, unknown };
+    };
+    const av = countTriState((status) => status.realTimeProtection);
+    const fw = countTriState((status) => status.firewallEnabled);
 
     return c.json({
       data: {
@@ -124,15 +138,17 @@ dashboardRoutes.get(
         securityScore,
         overallScore: securityScore,
         antivirus: {
-          protected: avProtected,
-          unprotected: avUnprotected
+          protected: av.on,
+          unprotected: av.off,
+          unknown: av.unknown
         },
         firewall: {
-          enabled: statuses.filter((status) => status.firewallEnabled).length,
-          disabled: statuses.filter((status) => !status.firewallEnabled).length
+          enabled: fw.on,
+          disabled: fw.off,
+          unknown: fw.unknown
         },
-        firewallEnabled: statuses.filter((status) => status.firewallEnabled).length,
-        firewallDisabled: statuses.filter((status) => !status.firewallEnabled).length,
+        firewallEnabled: fw.on,
+        firewallDisabled: fw.off,
         encryption: {
           bitlockerEnabled,
           filevaultEnabled,
