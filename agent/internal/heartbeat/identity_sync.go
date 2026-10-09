@@ -1,9 +1,15 @@
 package heartbeat
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -22,32 +28,47 @@ import (
 // copy, so those handlers rejected every new payload as wrong_identity until
 // the agent was re-enrolled.
 //
-// The heartbeat now reports the identity this process holds. When the row
-// disagrees, the server answers with an assertion of the row's org and site,
-// signed by the deployment key this agent pinned from its own server — the
-// same key and pin set that verify diagnostic authorizations, under its own
-// domain. It is accepted only for this agent's own agentId + deviceId (a
-// device id never changes through this path), persisted, and applied by a
-// service restart (updater.RestartSelf): those ids are read without locking
-// all over the agent, so a restart is the one way every component reloads
-// them consistently.
+// Every beat now reports the identity this process holds, with a fresh random
+// nonce. When the row disagrees, the server answers with an assertion of the
+// row's org and site that echoes the nonce, signed by the deployment key this
+// agent pinned from its own server — the same key and pin set that verify
+// diagnostic authorizations, under its own domain. It is accepted only as the
+// answer to this agent's own latest beat (the nonce; no clock involved, so it
+// cannot be replayed and a skewed clock cannot block it), for this agent's own
+// agentId + deviceId (a device id never changes through this path). It is
+// then persisted and applied by a service restart (updater.RestartSelf):
+// those ids are read without locking all over the agent, so a restart is the
+// one way every component reloads them consistently.
 
 const (
 	identitySyncProtocolVersion = 1
 	identityAssertionDomain     = "breeze-agent-identity-v1"
-	// Tolerated agent clock skew either side of the assertion's window.
-	identityAssertionClockSkew = 5 * time.Minute
-	// Upper bound on a window the agent will honour, whatever the server says.
+	// Structural bound on the window the server may state. The nonce, not
+	// the clock, is what makes an assertion fresh.
 	identityAssertionMaxLifetime = time.Hour
+	// A persisted identity that did not take effect after a restart (an
+	// environment override of org/site, say) must not turn every beat into
+	// another restart.
+	identityRestartCooldown = 30 * time.Minute
+	// The restart waits for commands already dispatched from the same beat.
+	identityRestartMaxWait = 5 * time.Minute
+	// Spread the restarts when a whole org is re-homed at once (org merge).
+	identityRestartMaxJitter  = time.Minute
+	identityRestartMarkerFile = "identity-sync-restart.json"
 )
 
-var identityUUIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+var (
+	identityUUIDPattern  = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	identityNoncePattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+)
 
-// ReportedIdentity is the identity this process loaded from agent.yaml.
+// ReportedIdentity is the identity this process loaded from agent.yaml, plus
+// the nonce a server assertion for this beat must echo.
 type ReportedIdentity struct {
 	DeviceID string `json:"deviceId"`
 	OrgID    string `json:"orgId"`
 	SiteID   string `json:"siteId"`
+	Nonce    string `json:"nonce"`
 }
 
 // IdentityAssertion is the server-signed identity of the row this agent
@@ -58,6 +79,7 @@ type IdentityAssertion struct {
 	DeviceID  string `json:"deviceId"`
 	OrgID     string `json:"orgId"`
 	SiteID    string `json:"siteId"`
+	Nonce     string `json:"nonce"`
 	IssuedAt  string `json:"issuedAt"`
 	ExpiresAt string `json:"expiresAt"`
 	KeyID     string `json:"keyId"`
@@ -77,6 +99,7 @@ func (a *IdentityAssertion) canonicalBytes() ([]byte, error) {
 		a.DeviceID,
 		a.OrgID,
 		a.SiteID,
+		a.Nonce,
 		a.IssuedAt,
 		a.ExpiresAt,
 		a.KeyID,
@@ -98,17 +121,20 @@ func (a *IdentityAssertion) canonicalBytes() ([]byte, error) {
 type identitySyncLocal struct {
 	AgentID  string
 	DeviceID string
+	Nonce    string
 	Pinned   []string
-	Now      time.Time
 }
 
-// verifyIdentityAssertion accepts an assertion only when it is for this exact
-// agent and device, within its validity window, and signed by a deployment key
-// this agent already pinned.
+// verifyIdentityAssertion accepts an assertion only when it answers this
+// agent's latest beat (nonce), is for this exact agent and device, and is
+// signed by a deployment key this agent already pinned.
 func verifyIdentityAssertion(a *IdentityAssertion, local identitySyncLocal) error {
 	canonical, err := a.canonicalBytes()
 	if err != nil {
 		return err
+	}
+	if local.Nonce == "" || a.Nonce != local.Nonce {
+		return errors.New("assertion does not answer this agent's latest heartbeat")
 	}
 	if local.AgentID == "" || a.AgentID != local.AgentID {
 		return errors.New("assertion is for a different agent")
@@ -130,12 +156,6 @@ func verifyIdentityAssertion(a *IdentityAssertion, local identitySyncLocal) erro
 	if !expiresAt.After(issuedAt) || expiresAt.Sub(issuedAt) > identityAssertionMaxLifetime {
 		return errors.New("assertion validity window is invalid")
 	}
-	if local.Now.Before(issuedAt.Add(-identityAssertionClockSkew)) {
-		return errors.New("assertion is not yet valid")
-	}
-	if local.Now.After(expiresAt.Add(identityAssertionClockSkew)) {
-		return errors.New("assertion has expired")
-	}
 	sig, err := base64.StdEncoding.DecodeString(a.Signature)
 	if err != nil {
 		return errors.New("assertion signature is not base64")
@@ -146,78 +166,170 @@ func verifyIdentityAssertion(a *IdentityAssertion, local identitySyncLocal) erro
 	return nil
 }
 
-// Seams for tests.
-var (
-	persistServerIdentityFn = config.PersistServerIdentity
-	restartForIdentityFn    = updater.RestartSelf
-	identitySyncNow         = time.Now
-)
-
-// identitySync holds the one-shot latch: once a new identity is persisted and
-// a restart requested, further assertions are ignored until the process
-// restarts. If the restart itself fails, the persisted identity still takes
-// effect on the next start, and the latch keeps a failing restart from being
-// retried on every beat.
-type identitySync struct {
-	restartRequested atomic.Bool
-	rejectionLogged  atomic.Pointer[string]
+// identityRestartMarker records the identity the last restart was for, so a
+// persisted identity that did not take effect cannot trigger a restart loop.
+type identityRestartMarker struct {
+	RestartedAt time.Time `json:"restartedAt"`
+	OrgID       string    `json:"orgId"`
+	SiteID      string    `json:"siteId"`
 }
 
-// reportedIdentity is sent on every beat. Nil until all three ids are known,
-// so a half-configured agent never asks the server for an assertion.
-func (h *Heartbeat) reportedIdentity() *ReportedIdentity {
+// Seams for tests.
+var (
+	persistServerIdentityFn   = config.PersistServerIdentity
+	restartForIdentityFn      = updater.RestartSelf
+	identitySyncNow           = time.Now
+	identityRestartMarkerPath = func() string {
+		return filepath.Join(config.GetDataDir(), identityRestartMarkerFile)
+	}
+	identityRestartJitter = func() time.Duration {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(identityRestartMaxJitter)))
+		if err != nil {
+			return 0
+		}
+		return time.Duration(n.Int64())
+	}
+	identityRestartPollInterval = time.Second
+)
+
+// identitySync holds the per-process state: the nonce of the latest beat, the
+// one-shot restart latch, and the bounded log of the last failure.
+type identitySync struct {
+	nonce            atomic.Pointer[string]
+	restartRequested atomic.Bool
+	failureLogged    atomic.Pointer[string]
+}
+
+func newIdentityNonce() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// reportIdentityForBeat returns the identity to send on this beat with a
+// fresh nonce, and remembers the nonce for the response. Nil until all three
+// ids are known, so a half-configured agent never asks for an assertion.
+func (h *Heartbeat) reportIdentityForBeat() *ReportedIdentity {
 	if h == nil || h.config == nil {
 		return nil
 	}
 	if h.config.DeviceID == "" || h.config.OrgID == "" || h.config.SiteID == "" {
 		return nil
 	}
-	return &ReportedIdentity{DeviceID: h.config.DeviceID, OrgID: h.config.OrgID, SiteID: h.config.SiteID}
+	nonce := newIdentityNonce()
+	if nonce == "" {
+		return nil
+	}
+	h.identitySync.nonce.Store(&nonce)
+	return &ReportedIdentity{DeviceID: h.config.DeviceID, OrgID: h.config.OrgID, SiteID: h.config.SiteID, Nonce: nonce}
+}
+
+// logIdentitySyncFailure logs once per distinct reason, so a server that
+// keeps sending something this agent cannot use does not log on every beat.
+func (h *Heartbeat) logIdentitySyncFailure(level string, msg, reason string) {
+	key := msg + ": " + reason
+	if prev := h.identitySync.failureLogged.Load(); prev != nil && *prev == key {
+		return
+	}
+	h.identitySync.failureLogged.Store(&key)
+	if level == "error" {
+		log.Error(msg, "reason", reason)
+		return
+	}
+	log.Warn(msg, "reason", reason)
+}
+
+func readIdentityRestartMarker(path string) (identityRestartMarker, bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return identityRestartMarker{}, false
+	}
+	var m identityRestartMarker
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return identityRestartMarker{}, false
+	}
+	return m, true
 }
 
 // applyIdentityAssertion verifies a server identity assertion and, when it
-// names a different org or site, persists it and restarts the agent.
-func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) {
-	if a == nil || h == nil || h.config == nil {
-		return
+// names a different org or site, persists it and schedules one restart. It
+// reports whether a restart is pending, so the caller can hold back work this
+// process should not start any more (binary swaps, credential rotation).
+func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) bool {
+	if h == nil || h.config == nil {
+		return false
 	}
 	if h.identitySync.restartRequested.Load() {
-		return
+		return true
+	}
+	if a == nil {
+		return false
+	}
+	nonce := ""
+	if p := h.identitySync.nonce.Load(); p != nil {
+		nonce = *p
 	}
 	local := identitySyncLocal{
 		AgentID:  h.config.AgentID,
 		DeviceID: h.config.DeviceID,
+		Nonce:    nonce,
 		Pinned:   h.pinnedManifestPubKeys(),
-		Now:      identitySyncNow(),
 	}
 	if err := verifyIdentityAssertion(a, local); err != nil {
-		// Bounded per distinct reason: a server that keeps sending an
-		// assertion this agent cannot verify would otherwise log every beat.
-		reason := err.Error()
-		if prev := h.identitySync.rejectionLogged.Load(); prev == nil || *prev != reason {
-			h.identitySync.rejectionLogged.Store(&reason)
-			log.Warn("ignoring server identity assertion", "reason", reason)
-		}
-		return
+		h.logIdentitySyncFailure("warn", "ignoring server identity assertion", err.Error())
+		return false
 	}
-	h.identitySync.rejectionLogged.Store(nil)
 	fromOrg, fromSite := h.config.OrgID, h.config.SiteID
 	if a.OrgID == fromOrg && a.SiteID == fromSite {
-		return
+		return false
 	}
+
+	markerPath := identityRestartMarkerPath()
+	now := identitySyncNow()
+	if m, ok := readIdentityRestartMarker(markerPath); ok && m.OrgID == a.OrgID && m.SiteID == a.SiteID &&
+		now.Sub(m.RestartedAt) < identityRestartCooldown {
+		h.logIdentitySyncFailure("error", "server-assigned identity did not take effect after a restart; not restarting again",
+			"org_id/site_id may be overridden by the environment (BREEZE_ORG_ID / BREEZE_SITE_ID)")
+		return false
+	}
+
 	if !h.identitySync.restartRequested.CompareAndSwap(false, true) {
-		return
+		return true
 	}
 	if err := persistServerIdentityFn(config.ActiveConfigFile(), a.OrgID, a.SiteID); err != nil {
 		h.identitySync.restartRequested.Store(false)
-		log.Error("failed to persist the server-assigned identity; keeping the enrolled one", "error", err.Error())
-		return
+		h.logIdentitySyncFailure("error", "failed to persist the server-assigned identity; keeping the enrolled one", err.Error())
+		return false
+	}
+	if raw, err := json.Marshal(identityRestartMarker{RestartedAt: now, OrgID: a.OrgID, SiteID: a.SiteID}); err == nil {
+		if err := os.WriteFile(markerPath, raw, 0600); err != nil {
+			log.Warn("failed to record the identity restart marker", "error", err.Error())
+		}
 	}
 	log.Info("device was reassigned by the server; restarting to load the new identity",
 		"fromOrgId", fromOrg, "toOrgId", a.OrgID, "fromSiteId", fromSite, "toSiteId", a.SiteID)
-	go func() {
-		if err := restartForIdentityFn(); err != nil {
-			log.Error("restart after identity change failed; the new identity applies on the next start", "error", err.Error())
+	go h.restartForIdentity()
+	return true
+}
+
+// restartForIdentity waits a random jitter and for the commands already
+// running to finish (bounded), then restarts the service. The identity is
+// already on disk, so a restart that fails still applies it on the next start.
+func (h *Heartbeat) restartForIdentity() {
+	if jitter := identityRestartJitter(); jitter > 0 {
+		time.Sleep(jitter)
+	}
+	deadline := identitySyncNow().Add(identityRestartMaxWait)
+	for {
+		inFlight, _ := h.inFlightCommandStats(identitySyncNow())
+		if inFlight == 0 || !identitySyncNow().Before(deadline) {
+			break
 		}
-	}()
+		time.Sleep(identityRestartPollInterval)
+	}
+	if err := restartForIdentityFn(); err != nil {
+		log.Error("restart after identity change failed; the new identity applies on the next start", "error", err.Error())
+	}
 }
