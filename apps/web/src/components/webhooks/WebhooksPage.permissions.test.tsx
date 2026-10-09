@@ -8,8 +8,9 @@ vi.mock('../../lib/permissions', () => ({
   hasPermission: (_p: unknown, r: string, a: string) => h.granted.has(`${r}:${a}`),
 }));
 
+const fetchMock = vi.hoisted(() => vi.fn());
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn((url: string) => {
+  fetchWithAuth: fetchMock.mockImplementation((url: string) => {
     const data = String(url).endsWith('/deliveries')
       ? []
       : [
@@ -32,16 +33,39 @@ vi.mock('../../stores/auth', () => ({
 
 import WebhooksPage from './WebhooksPage';
 
-beforeEach(() => h.granted.clear());
+beforeEach(() => {
+  h.granted.clear();
+  fetchMock.mockClear();
+});
+
+describe('WebhooksPage read is gated on webhooks:read', () => {
+  it('shows the access-denied state and fetches nothing without webhooks:read', async () => {
+    h.granted.add('organizations:read');
+    render(<WebhooksPage />);
+    expect(await screen.findByTestId('webhooks-access-denied')).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Test event' })).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('loads webhooks with webhooks:read', async () => {
+    h.granted.add('webhooks:read');
+    render(<WebhooksPage />);
+    expect(await screen.findByRole('combobox', { name: 'Test event' })).toBeInTheDocument();
+    expect(screen.queryByTestId('webhooks-access-denied')).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith('/webhooks');
+  });
+});
 
 describe('WebhooksPage New Webhook is permission-gated (#7215)', () => {
   it('hides New Webhook without organizations:write while the page still renders', async () => {
+    h.granted.add('webhooks:read');
     render(<WebhooksPage />);
     expect(await screen.findByRole('combobox', { name: 'Test event' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /new webhook/i })).toBeNull();
   });
 
   it('shows New Webhook with organizations:write', async () => {
+    h.granted.add('webhooks:read');
     h.granted.add('organizations:write');
     render(<WebhooksPage />);
     expect(await screen.findByRole('combobox', { name: 'Test event' })).toBeInTheDocument();

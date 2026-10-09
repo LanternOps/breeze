@@ -3,6 +3,10 @@ import '../../lib/i18n';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const fetchWithAuth = vi.fn();
+// Page read is gated on webhooks:read; write gating is covered in WebhooksPage.permissions.test.tsx.
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: (r: string, a: string) => r === 'webhooks' && a === 'read' }),
+}));
 vi.mock('../../stores/auth', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../stores/auth')>()),
   fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args),

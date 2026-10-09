@@ -1476,9 +1476,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   get_service_monitoring_status: { resource: 'devices', action: 'read' },
   // Integration & webhook tools
-  // Matches REST GET /webhooks (routes/webhooks.ts — organizations:read),
-  // bound in aiGuardrails.routeBinding.contract.test.ts.
-  query_webhooks: { resource: 'organizations', action: 'read' },
+  // Matches REST GET /webhooks and GET /webhooks/:id/deliveries
+  // (routes/webhooks.ts — webhooks:read), bound in
+  // aiGuardrails.routeBinding.contract.test.ts.
+  query_webhooks: { resource: 'webhooks', action: 'read' },
   // Route requires organizations:read (routes/psa.ts:435); the tool matches
   // it (aiGuardrails.routeBinding.contract.test.ts).
   query_psa_status: { resource: 'organizations', action: 'read' },

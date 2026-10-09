@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { usePermissions } from '../../lib/permissions';
+import AccessDenied from '../shared/AccessDenied';
 import { Plus, Send } from 'lucide-react';
 import WebhookList, { type Webhook, isWebhookActive } from './WebhookList';
 import WebhookForm, { type WebhookFormValues, webhookEventOptions } from './WebhookForm';
@@ -37,7 +38,20 @@ const formatPayloadPreview = (payload: string | null | undefined, t: (key: strin
 };
 
 
+// Reading webhooks requires webhooks:read (GET /webhooks and the delivery
+// history). Without it the page shows the permission-denied state and makes no
+// request. UX only — every route re-checks server-side.
 export default function WebhooksPage() {
+  const { permissions, can } = usePermissions();
+  if (!can('webhooks', 'read')) {
+    // Grants still loading: render nothing rather than flash the denied state.
+    if (!permissions) return null;
+    return <AccessDenied testId="webhooks-access-denied" />;
+  }
+  return <WebhooksPageContent />;
+}
+
+function WebhooksPageContent() {
   const { t } = useTranslation('common');
   const { can } = usePermissions(); // UX gate; webhook writes require organizations.write
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
