@@ -69,6 +69,7 @@ describe('createPortalFeatureGateStrict', () => {
     ['enableLifecycle', 'PORTAL_LIFECYCLE_DISABLED'],
     ['enableHardwareHealth', 'PORTAL_HARDWARE_HEALTH_DISABLED'],
     ['enableHardwareInventory', 'PORTAL_HARDWARE_INVENTORY_DISABLED'],
+    ['enablePerformanceMetrics', 'PORTAL_PERFORMANCE_METRICS_DISABLED'],
   ] as const)(
     'fails closed for %s',
     async (flag, code) => {
@@ -90,6 +91,18 @@ describe('createPortalFeatureGateStrict', () => {
     const response = await createTestApp('enableSecurity').request('/protected');
 
     expect(response.status).toBe(200);
+  });
+
+  it.each([false, null])('fails closed for enablePerformanceMetrics=%s', async (value) => {
+    dbState.rows = [{ enablePerformanceMetrics: value }];
+    const response = await createTestApp('enablePerformanceMetrics').request('/protected');
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: 'PORTAL_PERFORMANCE_METRICS_DISABLED' });
+  });
+
+  it('continues when enablePerformanceMetrics is explicitly true', async () => {
+    dbState.rows = [{ enablePerformanceMetrics: true }];
+    expect((await createTestApp('enablePerformanceMetrics').request('/protected')).status).toBe(200);
   });
 
   it.each([

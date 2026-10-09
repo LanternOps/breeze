@@ -31,6 +31,7 @@ describe('PORTAL_VISIBILITY_FLAG_KEYS', () => {
       'enableLifecycle',
       'enableHardwareHealth',
       'enableHardwareInventory',
+      'enablePerformanceMetrics',
       'enableNetworkVisibility'
     ]);
   });
@@ -60,6 +61,7 @@ describe('onPortalFlagsChanged', () => {
     enableLifecycle: false,
     enableHardwareHealth: false,
     enableHardwareInventory: false,
+    enablePerformanceMetrics: false,
     enableNetworkVisibility: false,
   };
 
