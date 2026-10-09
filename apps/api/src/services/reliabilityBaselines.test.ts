@@ -37,7 +37,7 @@ describe('reliabilityBaselines service', () => {
     const pred = { id: 'p', baselineAt: new Date('2026-09-20T00:00:00.000Z'), reason: 'reimaged', source: 'manual' };
     m.active.mockResolvedValue(pred);
     const snap = await computeBeforeSnapshot(device, at);
-    expect(m.active).toHaveBeenCalledWith('d1', { atOrBefore: at });
+    expect(m.active).toHaveBeenCalledWith('d1', { before: at });
     expect(m.scoreAsOf).toHaveBeenCalledWith(device, at, pred);
     expect(snap.counts30d.crashes).toBe(4);
   });

@@ -36,8 +36,9 @@ export async function computeBeforeSnapshot(
   device: CreateReliabilityBaselineInput['device'],
   baselineAt: Date,
 ): Promise<ReliabilityBeforeSnapshot> {
-  // Chronological predecessor: the marker that was effective at baselineAt.
-  const predecessor = await getActiveReliabilityBaseline(device.id, { atOrBefore: baselineAt });
+  // Chronological predecessor: the latest active marker strictly before baselineAt
+  // (a marker at the same instant must not zero the window it is snapshotting).
+  const predecessor = await getActiveReliabilityBaseline(device.id, { before: baselineAt });
   const { values, coverageDays, weightProfile } = await scoreDeviceReliabilityAsOf(device, baselineAt, predecessor);
   return reliabilityBeforeSnapshotSchema.parse({
     version: 1,

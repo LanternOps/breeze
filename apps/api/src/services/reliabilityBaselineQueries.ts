@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, lte, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, isNull, lt, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceReliability, deviceReliabilityBaselines } from '../db/schema';
 import type { ActiveReliabilityBaseline } from './reliabilityBaselinePolicy';
@@ -14,10 +14,11 @@ const ACTIVE_ORDER = [
 
 export async function getActiveReliabilityBaseline(
   deviceId: string,
-  opts: { atOrBefore?: Date } = {},
+  // `before` is strict: a marker at exactly that instant is never its own predecessor.
+  opts: { before?: Date } = {},
 ): Promise<ActiveReliabilityBaseline | null> {
   const conditions = [eq(deviceReliabilityBaselines.deviceId, deviceId), isNull(deviceReliabilityBaselines.clearedAt)];
-  if (opts.atOrBefore) conditions.push(lte(deviceReliabilityBaselines.baselineAt, opts.atOrBefore));
+  if (opts.before) conditions.push(lt(deviceReliabilityBaselines.baselineAt, opts.before));
   const [row] = await db
     .select({
       id: deviceReliabilityBaselines.id,
@@ -39,5 +40,8 @@ export function activeBaselineIdSql(deviceId: string): SQL {
     LIMIT 1)`;
 }
 
+// Guarded cast: a non-boolean `provisional` must read as false, never throw and
+// take down the device list or fleet findings with it.
 export const reliabilityProvisionalSql: SQL<boolean> =
-  sql<boolean>`coalesce((${deviceReliability.details}->'baseline'->>'provisional')::boolean, false)`;
+  sql<boolean>`coalesce(CASE WHEN jsonb_typeof(${deviceReliability.details}->'baseline'->'provisional') = 'boolean'
+    THEN (${deviceReliability.details}->'baseline'->>'provisional')::boolean END, false)`;

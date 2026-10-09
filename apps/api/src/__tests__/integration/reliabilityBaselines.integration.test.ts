@@ -1,6 +1,6 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { deviceReliability, deviceReliabilityHistory, devices } from '../../db/schema';
@@ -96,6 +96,23 @@ describe('reliability baselines (real DB)', () => {
     expect((row!.details as any).baseline.id).toBe(later!.id);
   });
 
+  it('a second marker at the same instant takes a predecessor strictly before it (no zero-day snapshot)', async () => {
+    const { device } = await deviceWithCrashHistory();
+    const at = new Date(Date.now() - 10 * DAY);
+    const first = await asSystem(() => createReliabilityBaseline({
+      device, reason: 'reimaged', baselineAt: at, note: null,
+      source: 'manual', sourceRef: null, createdBy: null, recompute: true,
+    }));
+    const second = await asSystem(() => createReliabilityBaseline({
+      device, reason: 'hardware_replaced', baselineAt: new Date(at.getTime()), note: null,
+      source: 'manual', sourceRef: null, createdBy: null, recompute: true,
+    }));
+    // Both snapshots are scored as of T with NO predecessor, so both see the crashes 20-25d ago.
+    expect(second!.beforeSnapshot!.asOf).toBe(at.toISOString());
+    expect(second!.beforeSnapshot!.counts30d.crashes).toBeGreaterThan(0);
+    expect(second!.beforeSnapshot).toEqual(first!.beforeSnapshot);
+  });
+
   it('compare-and-set skips a stale run that scored against the previous marker', async () => {
     const { device } = await deviceWithCrashHistory();
     await asSystem(() => computeAndPersistDeviceReliability(device.id));
@@ -137,21 +154,44 @@ describe('reliability baselines (real DB)', () => {
 
     // Tx A: the marker route. Inserts the marker and upserts the marker-aware row,
     // so it holds that row's lock until the gate opens and it commits.
+    let aPid = 0;
     const txA = asSystem(async () => {
       const created = await createReliabilityBaseline({
         device, reason: 'reimaged', baselineAt: new Date(Date.now() - 10 * DAY), note: null,
         source: 'manual', sourceRef: null, createdBy: null, recompute: true,
       });
+      const [me] = await db.execute<{ pid: number }>(sql`SELECT pg_backend_pid() AS pid`);
+      aPid = Number(me!.pid);
       markerWritten();
       await gate;
       return created;
     });
     await Promise.race([markerWrittenSignal, txA]);
+    expect(aPid).toBeGreaterThan(0);
 
     // Tx B: the worker. Its first read cannot see A's uncommitted marker, so it
     // scores stale and its upsert blocks on A's row lock.
-    const txB = asSystem(() => computeAndPersistDeviceReliability(device.id));
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    let bSettled = false;
+    const txB = asSystem(() => computeAndPersistDeviceReliability(device.id)).finally(() => { bSettled = true; });
+    txB.catch(() => undefined);
+
+    // Poll (separate connection) until some backend is blocked by tx A, so the
+    // race is proven exercised rather than assumed from a fixed sleep.
+    const deadline = Date.now() + 10_000;
+    let blocked = false;
+    while (!blocked) {
+      const rows = await getTestDb().execute<{ waiting: number }>(sql`
+        SELECT count(*)::int AS waiting FROM pg_catalog.pg_stat_activity
+        WHERE datname = current_database() AND ${aPid}::int = ANY(pg_catalog.pg_blocking_pids(pid))`);
+      blocked = (rows[0]?.waiting ?? 0) > 0;
+      if (blocked) break;
+      if (bSettled || Date.now() > deadline) {
+        releaseGate();
+        await Promise.allSettled([txA, txB]);
+        throw new Error(`worker tx B never blocked on marker tx A (pid ${aPid}) ${bSettled ? 'before it settled' : 'within 10s'}; the race was not exercised`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     releaseGate();
 
     const [marker] = await Promise.all([txA, txB]);
@@ -174,6 +214,9 @@ describe('reliability baselines (real DB)', () => {
       source: 'manual', sourceRef: null, createdBy: user.id, recompute: true,
     }));
     expect(marker!.createdBy!.name).toBe('Baseline Tech');
+    // The inline recompute ran under org RLS and persisted the marker-aware row.
+    const [marked] = await asSystem(() => db.select().from(deviceReliability).where(eq(deviceReliability.deviceId, device.id)));
+    expect((marked!.details as any).baseline?.id).toBe(marker!.id);
     const list = await asOrg(() => listReliabilityBaselines(device.id));
     expect(list.find((m) => m.id === marker!.id)).toMatchObject({ active: true });
     expect(await asOrg(() => clearReliabilityBaseline({ deviceId: device.id, baselineId: marker!.id, clearedBy: user.id }))).toBe('cleared');

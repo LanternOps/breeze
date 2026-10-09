@@ -17,7 +17,14 @@ describe('reliabilityBaselineQueries', () => {
   });
   it('reads provisional from details.baseline, defaulting to false', () => {
     const { sql } = render(reliabilityProvisionalSql);
+    expect(sql).toContain(`->'baseline'`);
     expect(sql).toContain(`->'baseline'->>'provisional'`);
     expect(sql.toLowerCase()).toContain('coalesce');
+  });
+  it('only casts provisional when it is a JSON boolean, so a bad value cannot throw', () => {
+    const { sql } = render(reliabilityProvisionalSql);
+    const flat = sql.replace(/\s+/g, ' ').toLowerCase();
+    expect(flat).toContain(`jsonb_typeof(`);
+    expect(flat).toMatch(/case when jsonb_typeof\(.*->'baseline'->'provisional'\) = 'boolean' then \(.*->'baseline'->>'provisional'\)::boolean end/);
   });
 });
