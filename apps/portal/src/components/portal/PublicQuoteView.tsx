@@ -81,7 +81,7 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
   // paid, so the shared deposit-first rule reduces to "deposit if one is set,
   // else the due-on-acceptance total" — the same derivation QuoteDetailView
   // labels its post-accept Pay button with. Only promised when the server says
-  // payment follows (online payment, no autopay) AND something is due.
+  // payment follows (partner takes online payment) AND something is due.
   const payCharge = computeChargeNow({
     depositDue: depositDue != null ? String(depositDue) : null,
     amountPaid: '0.00',

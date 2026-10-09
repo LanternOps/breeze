@@ -734,7 +734,7 @@ export interface PublicQuoteDetail {
    *  payloads omit it, which must read as 'classic' (documentShell's fallback). */
   presentation?: QuotePresentation;
   /** #8231: signing goes straight on to card checkout (the partner takes online
-   *  payment and the client is not on automatic payments). The page still
+   *  payment; automatic-payment clients included). The page still
    *  gates on an amount being due; the server makes the final call on accept. */
   payOnAccept?: boolean;
 }

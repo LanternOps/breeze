@@ -1,24 +1,20 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   createInvoicePayLink: vi.fn(),
   isPartnerOnlinePaymentAvailable: vi.fn(),
-  readOrgAutopayEnrollment: vi.fn(),
   captureException: vi.fn(),
+  captureMessage: vi.fn(),
 }));
 
-vi.mock('../db', () => ({
-  db: {},
-  runOutsideDbContext: <T>(fn: () => T): T => fn(),
-  withSystemDbAccessContext: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-}));
 vi.mock('./invoiceCheckout', () => ({ createInvoicePayLink: mocks.createInvoicePayLink }));
 vi.mock('./partnerStripe', () => ({ isPartnerOnlinePaymentAvailable: mocks.isPartnerOnlinePaymentAvailable }));
-vi.mock('./autopay/customerInvoiceStatus', () => ({ readOrgAutopayEnrollment: mocks.readOrgAutopayEnrollment }));
-vi.mock('./sentry', () => ({ captureException: mocks.captureException }));
+vi.mock('./sentry', () => ({ captureException: mocks.captureException, captureMessage: mocks.captureMessage }));
 vi.mock('./portalUrl', () => ({ portalBase: () => 'https://portal.example.com/portal' }));
 
-import { resolveAcceptCheckoutUrl, isPayOnAcceptAvailable, publicInvoiceCheckoutUrls } from './quoteAcceptCheckout';
+import {
+  resolveAcceptCheckoutUrl, isPayOnAcceptAvailable, publicInvoiceCheckoutUrls, ACCEPT_CHECKOUT_TIMEOUT_MS,
+} from './quoteAcceptCheckout';
 import { InvoiceServiceError } from './invoiceTypes';
 
 const RES = { invoiceId: 'inv-1', invoiceIssued: true, quote: { partnerId: 'p-1', orgId: 'o-1' } };
@@ -38,23 +34,12 @@ describe('publicInvoiceCheckoutUrls', () => {
 describe('isPayOnAcceptAvailable', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('is false without an online payment connection (autopay not even read)', async () => {
+  it('follows the partner online-payment connection', async () => {
     mocks.isPartnerOnlinePaymentAvailable.mockResolvedValue(false);
-    expect(await isPayOnAcceptAvailable('p-1', 'o-1')).toBe(false);
-    expect(mocks.readOrgAutopayEnrollment).not.toHaveBeenCalled();
-  });
-
-  it('is false for an org enrolled in automatic payments', async () => {
+    expect(await isPayOnAcceptAvailable('p-1')).toBe(false);
     mocks.isPartnerOnlinePaymentAvailable.mockResolvedValue(true);
-    mocks.readOrgAutopayEnrollment.mockResolvedValue({ enrolled: true });
-    expect(await isPayOnAcceptAvailable('p-1', 'o-1')).toBe(false);
-    expect(mocks.readOrgAutopayEnrollment).toHaveBeenCalledWith(expect.anything(), 'o-1');
-  });
-
-  it('is true when connected and not enrolled', async () => {
-    mocks.isPartnerOnlinePaymentAvailable.mockResolvedValue(true);
-    mocks.readOrgAutopayEnrollment.mockResolvedValue({ enrolled: false });
-    expect(await isPayOnAcceptAvailable('p-1', 'o-1')).toBe(true);
+    expect(await isPayOnAcceptAvailable('p-1')).toBe(true);
+    expect(mocks.isPartnerOnlinePaymentAvailable).toHaveBeenCalledWith('p-1');
   });
 });
 
@@ -62,9 +47,9 @@ describe('resolveAcceptCheckoutUrl', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.isPartnerOnlinePaymentAvailable.mockResolvedValue(true);
-    mocks.readOrgAutopayEnrollment.mockResolvedValue({ enrolled: false });
     mocks.createInvoicePayLink.mockResolvedValue({ url: 'https://checkout.stripe.com/c/pay/x' });
   });
+  afterEach(() => vi.useRealTimers());
 
   it('mints a public-link-family session for the invoice as an org-scoped anonymous actor', async () => {
     expect(await resolveAcceptCheckoutUrl(RES, INVOICE_URL, CLIENT)).toBe('https://checkout.stripe.com/c/pay/x');
@@ -87,12 +72,6 @@ describe('resolveAcceptCheckoutUrl', () => {
 
   it('does nothing when the partner cannot take online payment', async () => {
     mocks.isPartnerOnlinePaymentAvailable.mockResolvedValue(false);
-    expect(await resolveAcceptCheckoutUrl(RES, INVOICE_URL, CLIENT)).toBeNull();
-    expect(mocks.createInvoicePayLink).not.toHaveBeenCalled();
-  });
-
-  it('does nothing for an autopay-enrolled org', async () => {
-    mocks.readOrgAutopayEnrollment.mockResolvedValue({ enrolled: true });
     expect(await resolveAcceptCheckoutUrl(RES, INVOICE_URL, CLIENT)).toBeNull();
     expect(mocks.createInvoicePayLink).not.toHaveBeenCalled();
   });
@@ -126,5 +105,48 @@ describe('resolveAcceptCheckoutUrl', () => {
     mocks.isPartnerOnlinePaymentAvailable.mockRejectedValue(new Error('db gone'));
     expect(await resolveAcceptCheckoutUrl(RES, INVOICE_URL, CLIENT)).toBeNull();
     expect(mocks.captureException).toHaveBeenCalled();
+  });
+
+  // Todd 10-09: the accept response must not wait on a slow Stripe. A bounded
+  // wait, then the same fallback as a mint failure, reported as a warning.
+  it('gives up after ACCEPT_CHECKOUT_TIMEOUT_MS and falls back to the invoice page', async () => {
+    vi.useFakeTimers();
+    let finishLate!: (v: { url: string }) => void;
+    mocks.createInvoicePayLink.mockReturnValue(new Promise((resolve) => { finishLate = resolve; }));
+    const pending = resolveAcceptCheckoutUrl(RES, INVOICE_URL, CLIENT);
+    await vi.advanceTimersByTimeAsync(ACCEPT_CHECKOUT_TIMEOUT_MS - 1);
+    let settled = false;
+    void pending.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await pending).toBeNull();
+    expect(mocks.captureMessage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'quote_accept_checkout_timeout', level: 'warning' }),
+    );
+    expect(mocks.captureException).not.toHaveBeenCalled();
+    // The Stripe call finishing afterwards is harmless: nothing throws, nothing
+    // is reported, and its session stays reachable from the invoice page's Pay
+    // (same request key — pinned by the integration suite).
+    finishLate({ url: 'https://checkout.stripe.com/c/pay/late' });
+    await vi.runAllTimersAsync();
+    expect(mocks.captureException).not.toHaveBeenCalled();
+  });
+
+  it('a mint that FAILS after the timeout is swallowed (no unhandled rejection)', async () => {
+    vi.useFakeTimers();
+    let failLate!: (e: unknown) => void;
+    mocks.createInvoicePayLink.mockReturnValue(new Promise((_r, reject) => { failLate = reject; }));
+    const pending = resolveAcceptCheckoutUrl(RES, INVOICE_URL, CLIENT);
+    await vi.advanceTimersByTimeAsync(ACCEPT_CHECKOUT_TIMEOUT_MS);
+    expect(await pending).toBeNull();
+    failLate(new Error('late stripe failure'));
+    await vi.runAllTimersAsync();
+    expect(mocks.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('is about five seconds', () => {
+    expect(ACCEPT_CHECKOUT_TIMEOUT_MS).toBe(5_000);
   });
 });

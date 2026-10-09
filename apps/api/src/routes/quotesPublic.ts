@@ -142,7 +142,7 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       const presentationSnap = quote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
       const theme = resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme);
       const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
-      return { owner: { partnerId: quote.partnerId, orgId: quote.orgId }, payload: { quote: toPublicQuoteHeader(quote, totals), blocks, lines: serializedLines, branding: {
+      return { owner: { partnerId: quote.partnerId }, payload: { quote: toPublicQuoteHeader(quote, totals), blocks, lines: serializedLines, branding: {
         partnerName: partner?.name ?? 'Proposal', ...resolveDocumentBrand(brand, partner?.settings),
         supportEmail: brand?.supportEmail ?? null, supportPhone: brand?.supportPhone ?? null,
         theme, pageSize,
@@ -164,7 +164,7 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
     // copy, never the proposal. The accept route re-checks it before minting.
     let payOnAccept = false;
     try {
-      payOnAccept = await isPayOnAcceptAvailable(data.owner.partnerId, data.owner.orgId);
+      payOnAccept = await isPayOnAcceptAvailable(data.owner.partnerId);
     } catch (err) {
       console.error('[quotesPublic] pay-on-accept availability read failed', { quoteId: claims.quoteId, err });
       captureException(err instanceof Error ? err : new Error(String(err)));
